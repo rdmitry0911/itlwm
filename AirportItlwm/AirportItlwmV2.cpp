@@ -65,6 +65,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ic->ic_ac.ac_if.controller);
     IO80211SkywalkInterface *interface = that->fNetIf;
+    XYLog("DEBUG %s msgCode=%d ic_state=%d if_flags=0x%x power_state=%u\n",
+          __FUNCTION__, msgCode, ic->ic_state, ic->ic_ac.ac_if.if_flags, that->power_state);
     if (!interface)
         return;
     switch (msgCode) {
@@ -85,6 +87,11 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    static int wd_count = 0;
+    if (wd_count++ % 10 == 0) // log every 10s
+        XYLog("DEBUG %s [%d] ic_state=%d if_flags=0x%x power_state=%u pmPowerState=%u\n",
+              __FUNCTION__, wd_count, ic->ic_state, ifp->if_flags, power_state, pmPowerState);
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
 }
@@ -342,7 +349,7 @@ bool AirportItlwm::start(IOService *provider)
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     _fCommandGate->enable();
-    power_state = 1;
+    power_state = kWiFiPowerOn;
     XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u bsdInterface=%p\n", __FUNCTION__, power_state, bsdInterface);
     enableAdapter(bsdInterface);
     registerService();
@@ -431,9 +438,10 @@ IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 
 bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 {
+    XYLog("DEBUG %s entry netif=%p power_state=%u\n", __FUNCTION__, netif, power_state);
     IONetworkData *nd;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    
+
     if (super::configureInterface(netif) == false) {
         XYLog("super failed\n");
         return false;
@@ -504,6 +512,9 @@ bool AirportItlwm::
 setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed, OSData * data)
 {
     struct _ifnet *ifq = &fHalService->get80211Controller()->ic_ac.ac_if;
+    XYLog("DEBUG %s status=0x%x (prev=0x%x) active=%d speed=%llu if_flags=0x%x ic_state=%d power_state=%u\n",
+          __FUNCTION__, status, currentStatus, (status & kIONetworkLinkActive) != 0, speed,
+          ifq->if_flags, fHalService->get80211Controller()->ic_state, power_state);
     if (status == currentStatus) {
         return true;
     }
@@ -532,6 +543,8 @@ IOReturn AirportItlwm::
 setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    XYLog("DEBUG %s linkState=%llu deauthReason=%u power_state=%u\n",
+          __FUNCTION__, (uint64_t)arg0, (unsigned int)(uint64_t)arg1, that->power_state);
 #if __IO80211_TARGET >= __MAC_26_0
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1, false, 0, 0);
 #else
@@ -856,6 +869,9 @@ getPOWER(OSObject *object,
     pd->power_state[1] = power_state;
     pd->power_state[2] = power_state;
     pd->power_state[3] = power_state;
+    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    XYLog("DEBUG %s returning power_state=%u if_flags=0x%x ic_state=%d pmPowerState=%u\n",
+          __FUNCTION__, power_state, ifp->if_flags, fHalService->get80211Controller()->ic_state, pmPowerState);
     return kIOReturnSuccess;
 }
 
@@ -865,25 +881,20 @@ setPOWER(OSObject *object,
 {
     if (!pd)
         return kIOReturnError;
-    bool isRunning = (fHalService->get80211Controller()->ic_ac.ac_if.if_flags & (IFF_UP | IFF_RUNNING)) != 0;
-    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur_power_state=%u isRunning=%d pmPowerState=%u\n",
+    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    bool isUp = (ifp->if_flags & IFF_UP) != 0;
+    bool isRunning = (ifp->if_flags & IFF_RUNNING) != 0;
+    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur=%u isUp=%d isRunning=%d pmPowerState=%u\n",
           pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3],
-          power_state, isRunning, pmPowerState);
+          power_state, isUp, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
-        if (pd->power_state[0] == 0) {
-            changePowerStateToPriv(kPowerStateOff);
-            if (isRunning) {
-                net80211_ifstats(fHalService->get80211Controller());
-                disableAdapter(bsdInterface);
-            }
-        } else {
-            changePowerStateToPriv(kPowerStateOn);
-            if (!isRunning)
-                enableAdapter(bsdInterface);
-            else
-                IOLog("DEBUG itlwm: setPOWER: adapter already running, skip enableAdapter\n");
+        uint32_t reqState = pd->power_state[0];
+        // Guard: don't kill an adapter that is still initializing (IFF_UP but not yet IFF_RUNNING)
+        if (reqState == kWiFiPowerOff && isUp && !isRunning) {
+            IOLog("DEBUG itlwm: setPOWER OFF: adapter initializing, deferring\n");
+            return kIOReturnSuccess;
         }
-        power_state = (pd->power_state[0]);
+        handlePowerStateChange(reqState, bsdInterface);
     }
 
     return kIOReturnSuccess;
@@ -936,6 +947,64 @@ void AirportItlwm::disableAdapter(IONetworkInterface *netif)
     }
     if (fHalService)
         fHalService->disable(netif);
+}
+
+//
+// State machine matching Apple's AppleBCMWLANCore::handlePowerStateChange.
+// States: 0=OFF, 1=ON, 4=STANDBY
+// Transitions:
+//   cur=1→req=0: powerOff        cur=0→req=1: powerOn
+//   cur=4→req=0: powerOff        cur=4→req=1: powerOn
+//   cur=0→req=4: powerOn         cur=1→req=4: powerOff
+//   other: error (-1)
+// On powerOn/powerOff failure, state is rolled back.
+//
+int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *netif)
+{
+    uint8_t prevState = power_state;
+    int err = 0;
+
+    XYLog("DEBUG %s cur=%u req=%u\n", __FUNCTION__, prevState, newState);
+
+    if ((newState == kWiFiPowerOff && prevState == kWiFiPowerOn) ||
+        (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
+        // ON→OFF or STANDBY→OFF: power off
+        power_state = kWiFiPowerOff;
+        net80211_ifstats(fHalService->get80211Controller());
+        disableAdapter(netif);
+    }
+    else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
+        // OFF→ON or STANDBY→ON: power on
+        power_state = kWiFiPowerOn;
+        enableAdapter(netif);
+    }
+    else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff) {
+        // OFF→STANDBY: power on (into standby mode)
+        power_state = kWiFiPowerStandby;
+        enableAdapter(netif);
+    }
+    else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
+        // ON→STANDBY: power off (into standby)
+        power_state = kWiFiPowerStandby;
+        net80211_ifstats(fHalService->get80211Controller());
+        disableAdapter(netif);
+    }
+    else if (newState == prevState) {
+        // Same state — no-op
+        XYLog("DEBUG %s already in state %u, no-op\n", __FUNCTION__, prevState);
+    }
+    else {
+        // Invalid transition
+        XYLog("DEBUG %s INVALID transition %u → %u\n", __FUNCTION__, prevState, newState);
+        err = -1;
+    }
+
+    if (err) {
+        XYLog("DEBUG %s FAILED, rollback %u → %u\n", __FUNCTION__, power_state, prevState);
+        power_state = prevState;
+    }
+
+    return err;
 }
 
 IOReturn AirportItlwm::

@@ -1001,25 +1001,20 @@ setPOWER(OSObject *object,
 {
     if (!pd)
         return kIOReturnError;
-    bool isRunning = (fHalService->get80211Controller()->ic_ac.ac_if.if_flags & (IFF_UP | IFF_RUNNING)) != 0;
-    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur_power_state=%u isRunning=%d pmPowerState=%u\n",
+    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    bool isUp = (ifp->if_flags & IFF_UP) != 0;
+    bool isRunning = (ifp->if_flags & IFF_RUNNING) != 0;
+    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur=%u isUp=%d isRunning=%d pmPowerState=%u\n",
           pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3],
-          power_state, isRunning, pmPowerState);
+          power_state, isUp, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
-        if (pd->power_state[0] == 0) {
-            changePowerStateToPriv(kPowerStateOff);
-            if (isRunning) {
-                net80211_ifstats(fHalService->get80211Controller());
-                disableAdapter(fNetIf);
-            }
-        } else {
-            changePowerStateToPriv(kPowerStateOn);
-            if (!isRunning)
-                enableAdapter(fNetIf);
-            else
-                IOLog("DEBUG itlwm: setPOWER: adapter already running, skip enableAdapter\n");
+        uint32_t reqState = pd->power_state[0];
+        // Guard: don't kill an adapter that is still initializing (IFF_UP but not yet IFF_RUNNING)
+        if (reqState == kWiFiPowerOff && isUp && !isRunning) {
+            IOLog("DEBUG itlwm: setPOWER OFF: adapter initializing, deferring\n");
+            return kIOReturnSuccess;
         }
-        power_state = (pd->power_state[0]);
+        handlePowerStateChange(reqState, fNetIf);
     }
 
     return kIOReturnSuccess;

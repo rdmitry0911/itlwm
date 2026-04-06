@@ -33,6 +33,13 @@ enum
     kPowerStateCount
 };
 
+// WiFi radio power states (matches Apple's apple80211_power_state)
+enum {
+    kWiFiPowerOff     = 0,
+    kWiFiPowerOn      = 1,
+    kWiFiPowerStandby = 4,
+};
+
 #define kWatchDogTimerPeriod 1000
 
 extern "C" {
@@ -106,6 +113,7 @@ public:
     static void eventHandler(struct ieee80211com *, int, void *);
     IOReturn enableAdapter(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
+    int handlePowerStateChange(uint32_t newState, IONetworkInterface *netif);
     bool initCCLogs();
 
 #if __IO80211_TARGET >= __MAC_26_0
