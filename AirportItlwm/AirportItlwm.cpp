@@ -510,7 +510,6 @@ void AirportItlwm::stop(IOService *provider)
 {
     XYLog("%s\n", __FUNCTION__);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    super::stop(provider);
     disableAdapter(fNetIf);
     setLinkStatus(kIONetworkLinkValid);
     fHalService->detach(pciNub);
@@ -518,6 +517,7 @@ void AirportItlwm::stop(IOService *provider)
     detachInterface(fNetIf, true);
     OSSafeReleaseNULL(fNetIf);
     releaseAll();
+    super::stop(provider);
 }
 
 bool AirportItlwm::
@@ -865,6 +865,13 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
     return result;
 }
 
+unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domainState)
+{
+    if ((domainState >> 9) & 1)
+        return kPowerStateOff;
+    return (domainState >> 1) & 1;
+}
+
 IOReturn AirportItlwm::setWakeOnMagicPacket(bool active)
 {
     magicPacketEnabled = active;
@@ -923,6 +930,10 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
     ret = pmPolicyMaker->registerPowerDriver(this,
                                              powerStateArray,
                                              kPowerStateCount);
+    if (ret == kIOReturnSuccess) {
+        changePowerStateToPriv(kPowerStateOn);
+        changePowerStateTo(kPowerStateOff);
+    }
     return ret;
 }
 

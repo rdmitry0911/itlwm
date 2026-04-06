@@ -352,9 +352,8 @@ bool AirportItlwm::start(IOService *provider)
 
 void AirportItlwm::stop(IOService *provider)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s entry power_state=%u pmPowerState=%u\n", __PRETTY_FUNCTION__, power_state, pmPowerState);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    super::stop(provider);
     disableAdapter(bsdInterface);
     setLinkStatus(kIONetworkLinkValid);
     fHalService->detach(pciNub);
@@ -362,6 +361,7 @@ void AirportItlwm::stop(IOService *provider)
     detachInterface(fNetIf, true);
     OSSafeReleaseNULL(fNetIf);
     releaseAll();
+    super::stop(provider);
 }
 
 void AirportItlwm::free()
@@ -1035,6 +1035,20 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
     return result;
 }
 
+unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domainState)
+{
+    unsigned long ret;
+    if ((domainState >> 9) & 1)
+        ret = kPowerStateOff;
+    else
+        ret = (domainState >> 1) & 1;
+    XYLog("DEBUG %s domainState=0x%lx (DeviceUsable=%d PowerOn=%d) -> %lu power_state=%u pmPowerState=%u\n",
+          __FUNCTION__, (unsigned long)domainState,
+          (int)((domainState >> 9) & 1), (int)((domainState >> 1) & 1),
+          ret, power_state, pmPowerState);
+    return ret;
+}
+
 IOReturn AirportItlwm::setWakeOnMagicPacket(bool active)
 {
     magicPacketEnabled = active;
@@ -1095,6 +1109,14 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
                                              powerStateArray,
                                              kPowerStateCount);
     XYLog("DEBUG %s registerPowerDriver ret=%d pmPowerState=%u\n", __FUNCTION__, ret, pmPowerState);
+    if (ret == kIOReturnSuccess) {
+        // Match Apple's pattern: assert device desires ON, external starts at OFF.
+        // Without this, PM framework may call setPowerState(0) after registration,
+        // disabling the adapter that start() just enabled.
+        changePowerStateToPriv(kPowerStateOn);
+        changePowerStateTo(kPowerStateOff);
+        XYLog("DEBUG %s changePowerStateToPriv(ON) + changePowerStateTo(OFF) done\n", __FUNCTION__);
+    }
     return ret;
 }
 

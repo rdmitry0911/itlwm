@@ -226,6 +226,7 @@ public:
     virtual IOReturn registerWithPolicyMaker( IOService * policyMaker ) override;
     virtual IOReturn setPowerState( unsigned long powerStateOrdinal,
                                     IOService *   policyMaker) override;
+    virtual unsigned long initialPowerStateForDomainState( IOPMPowerFlags domainState ) override;
     virtual IOReturn setWakeOnMagicPacket( bool active ) override;
     void setPowerStateOff(void);
     void setPowerStateOn(void);
