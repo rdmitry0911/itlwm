@@ -98,11 +98,11 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 
 bool AirportItlwm::init(OSDictionary *properties)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     power_state = 0;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
+    XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
     return ret;
 }
 
@@ -327,7 +327,12 @@ bool AirportItlwm::start(IOService *provider)
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
+    _fCommandGate->enable();
+    power_state = 1;
+    XYLog("DEBUG %s enabling adapter in start, power_state=%u\n", __FUNCTION__, power_state);
+    enableAdapter(bsdInterface);
     registerService();
+    XYLog("DEBUG %s start complete\n", __FUNCTION__);
     return true;
 }
 
@@ -391,17 +396,19 @@ void *AirportItlwm::getFaultReporterFromDriver()
 #if __IO80211_TARGET < __MAC_26_0
 IOReturn AirportItlwm::enable(IO80211SkywalkInterface *netif)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s power_state=%u netif=%p bsdInterface=%p\n", __PRETTY_FUNCTION__, power_state, netif, bsdInterface);
     super::enable(netif);
     _fCommandGate->enable();
     if (power_state)
         enableAdapter(bsdInterface);
+    else
+        XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s power_state=%u\n", __PRETTY_FUNCTION__, power_state);
     super::disable(netif);
     setLinkStatus(kIONetworkLinkValid);
     return kIOReturnSuccess;
@@ -844,9 +851,11 @@ setPOWER(OSObject *object,
 {
     if (!pd)
         return kIOReturnError;
-    IOLog("itlwm: setPOWER: num_radios[%d]  power_state(0:%u  1:%u  2:%u  3:%u)\n", pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3]);
+    bool isRunning = (fHalService->get80211Controller()->ic_ac.ac_if.if_flags & (IFF_UP | IFF_RUNNING)) != 0;
+    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur_power_state=%u isRunning=%d pmPowerState=%u\n",
+          pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3],
+          power_state, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
-        bool isRunning = (fHalService->get80211Controller()->ic_ac.ac_if.if_flags & (IFF_UP | IFF_RUNNING)) != 0;
         if (pd->power_state[0] == 0) {
             changePowerStateToPriv(1);
             if (isRunning) {
@@ -857,10 +866,12 @@ setPOWER(OSObject *object,
             changePowerStateToPriv(2);
             if (!isRunning)
                 enableAdapter(bsdInterface);
+            else
+                IOLog("DEBUG itlwm: setPOWER: adapter already running, skip enableAdapter\n");
         }
         power_state = (pd->power_state[0]);
     }
-    
+
     return kIOReturnSuccess;
 }
 
@@ -889,6 +900,7 @@ SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211Skywal
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
+    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
     fHalService->enable(netif);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
     watchdogTimer->enable();
@@ -897,6 +909,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
+    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
     watchdogTimer->cancelTimeout();
     watchdogTimer->disable();
     fHalService->disable(netif);
@@ -970,9 +983,11 @@ void AirportItlwm::unregistPM()
 IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService *policyMaker)
 {
     IOReturn result = IOPMAckImplied;
-    
-    if (pmPowerState == powerStateOrdinal)
+    XYLog("DEBUG %s ordinal=%lu pmPowerState=%u power_state=%u\n", __FUNCTION__, powerStateOrdinal, pmPowerState, power_state);
+    if (pmPowerState == powerStateOrdinal) {
+        XYLog("DEBUG %s SKIPPED (already in state %lu)\n", __FUNCTION__, powerStateOrdinal);
         return result;
+    }
     switch (powerStateOrdinal) {
         case kPowerStateOff:
             if (powerOffThreadCall) {
@@ -1060,7 +1075,7 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
 
 void AirportItlwm::setPowerStateOff()
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
     disableAdapter(bsdInterface);
     pmPolicyMaker->acknowledgeSetPowerState();
@@ -1068,9 +1083,11 @@ void AirportItlwm::setPowerStateOff()
 
 void AirportItlwm::setPowerStateOn()
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOn;
     if (power_state)
         enableAdapter(bsdInterface);
+    else
+        XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     pmPolicyMaker->acknowledgeSetPowerState();
 }

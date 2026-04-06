@@ -30,6 +30,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     awdlSyncEnable = true;
     power_state = 0;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
+    XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
     return ret;
 }
 
@@ -430,8 +431,13 @@ bool AirportItlwm::start(IOService *provider)
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
+    _fCommandGate->enable();
+    power_state = 1;
+    XYLog("DEBUG %s enabling adapter in start, power_state=%u\n", __FUNCTION__, power_state);
+    enableAdapter(fNetIf);
     registerService();
     fNetIf->registerService();
+    XYLog("DEBUG %s start complete\n", __FUNCTION__);
     return true;
 }
 
@@ -616,11 +622,13 @@ void AirportItlwm::free()
 
 IOReturn AirportItlwm::enable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s power_state=%u netif=%p\n", __PRETTY_FUNCTION__, power_state, netif);
     super::enable(netif);
     _fCommandGate->enable();
     if (power_state)
         enableAdapter(netif);
+    else
+        XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
@@ -634,6 +642,7 @@ IOReturn AirportItlwm::disable(IONetworkInterface *netif)
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
+    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
     fHalService->enable(netif);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
     watchdogTimer->enable();
@@ -642,6 +651,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
+    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
     watchdogTimer->cancelTimeout();
     watchdogTimer->disable();
     fHalService->disable(netif);
@@ -817,9 +827,11 @@ void AirportItlwm::unregistPM()
 IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService *policyMaker)
 {
     IOReturn result = IOPMAckImplied;
-    
-    if (pmPowerState == powerStateOrdinal)
+    XYLog("DEBUG %s ordinal=%lu pmPowerState=%u power_state=%u\n", __FUNCTION__, powerStateOrdinal, pmPowerState, power_state);
+    if (pmPowerState == powerStateOrdinal) {
+        XYLog("DEBUG %s SKIPPED (already in state %lu)\n", __FUNCTION__, powerStateOrdinal);
         return result;
+    }
     switch (powerStateOrdinal) {
         case kPowerStateOff:
             if (powerOffThreadCall) {
@@ -907,7 +919,7 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
 
 void AirportItlwm::setPowerStateOff()
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
     disableAdapter(fNetIf);
     pmPolicyMaker->acknowledgeSetPowerState();
@@ -915,10 +927,12 @@ void AirportItlwm::setPowerStateOff()
 
 void AirportItlwm::setPowerStateOn()
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOn;
     if (power_state)
         enableAdapter(fNetIf);
+    else
+        XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     pmPolicyMaker->acknowledgeSetPowerState();
 }
 
