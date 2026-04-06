@@ -1007,13 +1007,13 @@ setPOWER(OSObject *object,
           power_state, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
         if (pd->power_state[0] == 0) {
-            changePowerStateToPriv(1);
+            changePowerStateToPriv(kPowerStateOn);
             if (isRunning) {
                 net80211_ifstats(fHalService->get80211Controller());
                 disableAdapter(fNetIf);
             }
         } else {
-            changePowerStateToPriv(2);
+            changePowerStateToPriv(kPowerStateOn);
             if (!isRunning)
                 enableAdapter(fNetIf);
             else

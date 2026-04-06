@@ -91,15 +91,21 @@ releaseAll()
 IOReturn ItlIwm::
 enable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x\n",
+          __PRETTY_FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
+          com.sc_flags);
     if (ifp->if_flags & IFF_UP) {
-        XYLog("%s already in activating state\n", __FUNCTION__);
+        XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags |= IFF_UP;
+    XYLog("DEBUG %s calling DVACT_RESUME\n", __FUNCTION__);
     iwm_activate(&com, DVACT_RESUME);
+    XYLog("DEBUG %s calling DVACT_WAKEUP\n", __FUNCTION__);
     iwm_activate(&com, DVACT_WAKEUP);
+    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
@@ -107,12 +113,16 @@ IOReturn ItlIwm::
 disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d)\n",
+          __FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     if (!(ifp->if_flags & IFF_UP)) {
-        XYLog("%s already in diactivating state\n", __FUNCTION__);
+        XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags &= ~IFF_UP;
     iwm_activate(&com, DVACT_QUIESCE);
+    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 

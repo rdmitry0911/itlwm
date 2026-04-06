@@ -4925,29 +4925,43 @@ iwm_radiotap_attach(struct iwm_softc *sc)
 void ItlIwm::
 iwm_init_task(void *arg1)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_softc *sc = (struct iwm_softc *)arg1;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
     int s = splnet();
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWM_FLAG_HW_ERR | IWM_FLAG_RFKILL));
-    
+
+    XYLog("DEBUG %s entry: if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x fatal=%d gen=%d/%d\n",
+          __FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
+          sc->sc_flags, fatal, generation, sc->sc_generation);
+
     //    rw_enter_write(&sc->ioctl_rwl);
     if (generation != sc->sc_generation) {
+        XYLog("DEBUG %s SKIP: generation mismatch %d != %d\n", __FUNCTION__, generation, sc->sc_generation);
         //        rw_exit(&sc->ioctl_rwl);
         splx(s);
         return;
     }
-    
-    if (ifp->if_flags & IFF_RUNNING)
+
+    if (ifp->if_flags & IFF_RUNNING) {
+        XYLog("DEBUG %s stopping (was IFF_RUNNING)\n", __FUNCTION__);
         that->iwm_stop(ifp);
-    else
+    } else {
         sc->sc_flags &= ~IWM_FLAG_HW_ERR;
-    
-    if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
+    }
+
+    if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
+        XYLog("DEBUG %s calling iwm_init\n", __FUNCTION__);
         that->iwm_init(ifp);
-    
+        XYLog("DEBUG %s iwm_init returned, if_flags=0x%x (IFF_RUNNING=%d)\n",
+              __FUNCTION__, ifp->if_flags, !!(ifp->if_flags & IFF_RUNNING));
+    } else {
+        XYLog("DEBUG %s SKIP iwm_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
+              __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
+    }
+
     //    rw_exit(&sc->ioctl_rwl);
     splx(s);
 }
@@ -5190,8 +5204,12 @@ iwm_activate(struct iwm_softc *sc, int act)
             break;
         case DVACT_WAKEUP:
             /* Hardware should be up at this point. */
-            if (iwm_set_hw_ready(sc))
+            if (iwm_set_hw_ready(sc)) {
                 task_add(systq, &sc->init_task);
+            } else {
+                XYLog("%s: DVACT_WAKEUP: iwm_set_hw_ready failed, init_task NOT scheduled\n",
+                      DEVNAME(sc));
+            }
             break;
     }
     

@@ -211,28 +211,37 @@ getDriverController()
 
 IOReturn ItlIwx::enable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x\n",
+          __PRETTY_FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
+          com.sc_flags);
     if (ifp->if_flags & IFF_UP) {
-        XYLog("%s already in activating state\n", __FUNCTION__);
+        XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags |= IFF_UP;
+    XYLog("DEBUG %s calling DVACT_RESUME\n", __FUNCTION__);
     iwx_activate(&com, DVACT_RESUME);
+    XYLog("DEBUG %s calling DVACT_WAKEUP\n", __FUNCTION__);
     iwx_activate(&com, DVACT_WAKEUP);
+    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
 IOReturn ItlIwx::disable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d)\n",
+          __FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     if (!(ifp->if_flags & IFF_UP)) {
-        XYLog("%s already in diactivating state\n", __FUNCTION__);
+        XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags &= ~IFF_UP;
     iwx_activate(&com, DVACT_QUIESCE);
+    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
@@ -13171,29 +13180,43 @@ iwx_radiotap_attach(struct iwx_softc *sc)
 void ItlIwx::
 iwx_init_task(void *arg1)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)arg1;
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     int s = splnet();
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL));
-    
+
+    XYLog("DEBUG %s entry: if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x fatal=%d gen=%d/%d\n",
+          __FUNCTION__, ifp->if_flags,
+          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
+          sc->sc_flags, fatal, generation, sc->sc_generation);
+
     //    rw_enter_write(&sc->ioctl_rwl);
     if (generation != sc->sc_generation) {
+        XYLog("DEBUG %s SKIP: generation mismatch %d != %d\n", __FUNCTION__, generation, sc->sc_generation);
         //        rw_exit(&sc->ioctl_rwl);
         splx(s);
         return;
     }
-    
-    if (ifp->if_flags & IFF_RUNNING)
+
+    if (ifp->if_flags & IFF_RUNNING) {
+        XYLog("DEBUG %s stopping (was IFF_RUNNING)\n", __FUNCTION__);
         that->iwx_stop(ifp);
-    else
+    } else {
         sc->sc_flags &= ~IWX_FLAG_HW_ERR;
-    
-    if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
+    }
+
+    if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
+        XYLog("DEBUG %s calling iwx_init\n", __FUNCTION__);
         that->iwx_init(ifp);
-    
+        XYLog("DEBUG %s iwx_init returned, if_flags=0x%x (IFF_RUNNING=%d)\n",
+              __FUNCTION__, ifp->if_flags, !!(ifp->if_flags & IFF_RUNNING));
+    } else {
+        XYLog("DEBUG %s SKIP iwx_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
+              __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
+    }
+
     //    rw_exit(&sc->ioctl_rwl);
     splx(s);
 }
@@ -13245,8 +13268,12 @@ iwx_activate(struct iwx_softc *sc, int act)
             break;
         case DVACT_WAKEUP:
             /* Hardware should be up at this point. */
-            if (iwx_set_hw_ready(sc))
+            if (iwx_set_hw_ready(sc)) {
                 task_add(systq, &sc->init_task);
+            } else {
+                XYLog("%s: DVACT_WAKEUP: iwx_set_hw_ready failed, init_task NOT scheduled\n",
+                      DEVNAME(sc));
+            }
             break;
     }
     

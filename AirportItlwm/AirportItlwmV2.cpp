@@ -108,18 +108,19 @@ bool AirportItlwm::init(OSDictionary *properties)
 
 IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     IOPCIEDeviceWrapper *wrapper = OSDynamicCast(IOPCIEDeviceWrapper, provider);
     if (!wrapper) {
-        XYLog("%s Not a IOPCIEDeviceWrapper instance\n", __FUNCTION__);
+        XYLog("DEBUG %s FAIL: Not a IOPCIEDeviceWrapper instance\n", __FUNCTION__);
         return NULL;
     }
     pciNub = wrapper->pciNub;
     fHalService = wrapper->fHalService;
     if (!pciNub || !fHalService) {
-        XYLog("%s Not a valid IOPCIEDeviceWrapper instance\n", __FUNCTION__);
+        XYLog("DEBUG %s FAIL: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
         return NULL;
     }
+    XYLog("DEBUG %s OK: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
     return super::probe(provider, score);
 }
 
@@ -180,44 +181,51 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s [STEP 0] entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
     int boot_value = 0;
-    
+
     UInt8 builtIn = 0;
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     setProperty("DriverKitDriver", kOSBooleanFalse);
 #if __IO80211_TARGET >= __MAC_26_0
+    XYLog("DEBUG %s [STEP 1] initCCLogs (Tahoe path)\n", __FUNCTION__);
     if (!initCCLogs()) {
-        XYLog("CCLog init fail\n");
+        XYLog("DEBUG %s [STEP 1] FAIL: CCLog init\n", __FUNCTION__);
         return false;
     }
 #endif
+    XYLog("DEBUG %s [STEP 2] super::start\n", __FUNCTION__);
     if (!super::start(provider)) {
+        XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
         return false;
     }
+    XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
     pciNub->setMemoryEnable(true);
     pciNub->configWrite8(0x41, 0);
     if (pciNub->requestPowerDomainState(kIOPMPowerOn,
                                         (IOPowerConnection *) getParentEntry(gIOPowerPlane), IOPMLowestState) != IOPMNoErr) {
+        XYLog("DEBUG %s [STEP 3] FAIL: requestPowerDomainState\n", __FUNCTION__);
         super::stop(provider);
         return false;
     }
     if (initPCIPowerManagment(pciNub) == false) {
+        XYLog("DEBUG %s [STEP 3] FAIL: initPCIPowerManagment\n", __FUNCTION__);
         super::stop(pciNub);
         return false;
     }
+    XYLog("DEBUG %s [STEP 4] workloop & command gate\n", __FUNCTION__);
     if (_fWorkloop == NULL) {
-        XYLog("No _fWorkloop!!\n");
+        XYLog("DEBUG %s [STEP 4] FAIL: No _fWorkloop\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
         return false;
     }
     _fCommandGate = IOCommandGate::commandGate(this, (IOCommandGate::Action)AirportItlwm::tsleepHandler);
     if (_fCommandGate == 0) {
-        XYLog("No command gate!!\n");
+        XYLog("DEBUG %s [STEP 4] FAIL: No command gate\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
         return false;
@@ -226,27 +234,29 @@ bool AirportItlwm::start(IOService *provider)
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
         !setCurrentMedium(primaryMedium) || !setSelectedMedium(primaryMedium)) {
-        XYLog("setup medium fail\n");
+        XYLog("DEBUG %s [STEP 4] FAIL: setup medium\n", __FUNCTION__);
         releaseAll();
         return false;
     }
+    XYLog("DEBUG %s [STEP 5] HAL initWithController + attach\n", __FUNCTION__);
     fHalService->initWithController(this, _fWorkloop, _fCommandGate);
     fHalService->get80211Controller()->ic_event_handler = eventHandler;
-    
+
     if (PE_parse_boot_argn("-novht", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
     if (PE_parse_boot_argn("-noht40", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOHT40;
-    
+
     if (!fHalService->attach(pciNub)) {
-        XYLog("attach fail\n");
+        XYLog("DEBUG %s [STEP 5] FAIL: HAL attach\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
         return false;
     }
+    XYLog("DEBUG %s [STEP 6] watchdog + scan timers\n", __FUNCTION__);
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
-        XYLog("init watchdog workloop fail\n");
+        XYLog("DEBUG %s [STEP 6] FAIL: watchdog workloop\n", __FUNCTION__);
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -254,7 +264,7 @@ bool AirportItlwm::start(IOService *provider)
     }
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
     if (!watchdogTimer) {
-        XYLog("init watchdog fail\n");
+        XYLog("DEBUG %s [STEP 6] FAIL: watchdog timer\n", __FUNCTION__);
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -265,6 +275,7 @@ bool AirportItlwm::start(IOService *provider)
     _fWorkloop->addEventSource(scanSource);
     scanSource->enable();
 
+    XYLog("DEBUG %s [STEP 7] Skywalk interface init + attach\n", __FUNCTION__);
     fNetIf = new AirportItlwmSkywalkInterface;
 #if __IO80211_TARGET >= __MAC_26_0
     IOEthernetAddress addr;
@@ -273,44 +284,46 @@ bool AirportItlwm::start(IOService *provider)
 #else
     if (!fNetIf->init(this)) {
 #endif
-        XYLog("Skywalk interface init fail\n");
+        XYLog("DEBUG %s [STEP 7] FAIL: Skywalk interface init\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
-    
+
 #if __IO80211_TARGET < __MAC_26_0
     if (!initCCLogs()) {
-        XYLog("CCLog init fail\n");
+        XYLog("DEBUG %s [STEP 7] FAIL: CCLog init (pre-Tahoe)\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
 #endif
     if (!fNetIf->attach(this)) {
-        XYLog("attach to service fail\n");
+        XYLog("DEBUG %s [STEP 7] FAIL: fNetIf attach\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
+    XYLog("DEBUG %s [STEP 8] attachInterface + BSD interface\n", __FUNCTION__);
     if (!attachInterface(fNetIf, this)) {
-        XYLog("attach to interface fail\n");
+        XYLog("DEBUG %s [STEP 8] FAIL: attachInterface\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
     if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface, true)) {
-        XYLog("attach to IONetworkController interface fail\n");
+        XYLog("DEBUG %s [STEP 8] FAIL: IONetworkController attachInterface\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
+    XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
     memset(&registInfo, 0, sizeof(registInfo));
 #if __IO80211_TARGET < __MAC_26_0
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
-        XYLog("initRegistrationInfo fail\n");
+        XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
@@ -323,16 +336,17 @@ bool AirportItlwm::start(IOService *provider)
     if (fNetIf->getInterfaceRole() == 1)
         fNetIf->deferBSDAttach(true);
     fNetIf->start(this);
-    
+
+    XYLog("DEBUG %s [STEP 9] enableAdapter\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     _fCommandGate->enable();
     power_state = 1;
-    XYLog("DEBUG %s enabling adapter in start, power_state=%u\n", __FUNCTION__, power_state);
+    XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u bsdInterface=%p\n", __FUNCTION__, power_state, bsdInterface);
     enableAdapter(bsdInterface);
     registerService();
-    XYLog("DEBUG %s start complete\n", __FUNCTION__);
+    XYLog("DEBUG %s [STEP 10] start COMPLETE power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     return true;
 }
 
@@ -857,13 +871,13 @@ setPOWER(OSObject *object,
           power_state, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
         if (pd->power_state[0] == 0) {
-            changePowerStateToPriv(1);
+            changePowerStateToPriv(kPowerStateOn);
             if (isRunning) {
                 net80211_ifstats(fHalService->get80211Controller());
                 disableAdapter(bsdInterface);
             }
         } else {
-            changePowerStateToPriv(2);
+            changePowerStateToPriv(kPowerStateOn);
             if (!isRunning)
                 enableAdapter(bsdInterface);
             else
@@ -901,18 +915,27 @@ SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211Skywal
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
     XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
+    if (!fHalService) {
+        XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
+        return kIOReturnNotReady;
+    }
     fHalService->enable(netif);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
-    watchdogTimer->enable();
+    if (watchdogTimer) {
+        watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+        watchdogTimer->enable();
+    }
     return kIOReturnSuccess;
 }
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
     XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
-    watchdogTimer->cancelTimeout();
-    watchdogTimer->disable();
-    fHalService->disable(netif);
+    if (watchdogTimer) {
+        watchdogTimer->cancelTimeout();
+        watchdogTimer->disable();
+    }
+    if (fHalService)
+        fHalService->disable(netif);
 }
 
 IOReturn AirportItlwm::
@@ -1057,10 +1080,11 @@ static void handleSetPowerStateOn(thread_call_param_t param0,
 IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
 {
     IOReturn ret;
-    
+
+    XYLog("DEBUG %s entry policyMaker=%p\n", __FUNCTION__, policyMaker);
     pmPowerState = kPowerStateOn;
     pmPolicyMaker = policyMaker;
-    
+
     powerOffThreadCall = thread_call_allocate(
                                             (thread_call_func_t)handleSetPowerStateOff,
                                             (thread_call_param_t)this);
@@ -1070,6 +1094,7 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
     ret = pmPolicyMaker->registerPowerDriver(this,
                                              powerStateArray,
                                              kPowerStateCount);
+    XYLog("DEBUG %s registerPowerDriver ret=%d pmPowerState=%u\n", __FUNCTION__, ret, pmPowerState);
     return ret;
 }
 

@@ -643,18 +643,27 @@ IOReturn AirportItlwm::disable(IONetworkInterface *netif)
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
     XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
+    if (!fHalService) {
+        XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
+        return kIOReturnNotReady;
+    }
     fHalService->enable(netif);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
-    watchdogTimer->enable();
+    if (watchdogTimer) {
+        watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+        watchdogTimer->enable();
+    }
     return kIOReturnSuccess;
 }
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
     XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
-    watchdogTimer->cancelTimeout();
-    watchdogTimer->disable();
-    fHalService->disable(netif);
+    if (watchdogTimer) {
+        watchdogTimer->cancelTimeout();
+        watchdogTimer->disable();
+    }
+    if (fHalService)
+        fHalService->disable(netif);
 }
 
 IOReturn AirportItlwm::getHardwareAddress(IOEthernetAddress *addrP)

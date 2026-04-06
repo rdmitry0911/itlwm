@@ -103,18 +103,20 @@ probe(IOService *provider, SInt32 *score)
 bool IOPCIEDeviceWrapper::
 start(IOService *provider)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     _fWorkloop = IO80211WorkQueue::workQueue();
     if (!super::start(provider)) {
+        XYLog("DEBUG %s FAIL: super::start\n", __FUNCTION__);
         return false;
     }
-    IOLog("%s::super start succeed\n", getName());
+    XYLog("DEBUG %s super::start OK, _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
     UInt8 builtIn = 0;
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     PMinit();
     registerPowerDriver(this, powerStateArray, 2);
     provider->joinPMtree(this);
     registerService();
+    XYLog("DEBUG %s COMPLETE fHalService=%p pciNub=%p\n", __FUNCTION__, fHalService, pciNub);
     return true;
 }
 
@@ -129,5 +131,6 @@ stop(IOService *provider)
 IOReturn IOPCIEDeviceWrapper::
 setPowerState(unsigned long powerStateOrdinal, IOService *whatDevice)
 {
+    XYLog("DEBUG %s ordinal=%lu\n", __FUNCTION__, powerStateOrdinal);
     return IOPMAckImplied;
 }
