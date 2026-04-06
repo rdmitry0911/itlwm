@@ -222,7 +222,12 @@ IOReturn ItlIwx::enable(IONetworkInterface *netif)
     }
     ifp->if_flags |= IFF_UP;
     XYLog("DEBUG %s calling DVACT_RESUME\n", __FUNCTION__);
-    iwx_activate(&com, DVACT_RESUME);
+    int err = iwx_activate(&com, DVACT_RESUME);
+    if (err) {
+        XYLog("DEBUG %s DVACT_RESUME failed err=%d, clearing IFF_UP\n", __FUNCTION__, err);
+        ifp->if_flags &= ~IFF_UP;
+        return kIOReturnError;
+    }
     XYLog("DEBUG %s calling DVACT_WAKEUP\n", __FUNCTION__);
     iwx_activate(&com, DVACT_WAKEUP);
     XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
@@ -2864,12 +2869,11 @@ iwx_ict_reset(struct iwx_softc *sc)
 int ItlIwx::
 iwx_set_hw_ready(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int ready;
-    
+
     IWX_SETBITS(sc, IWX_CSR_HW_IF_CONFIG_REG,
                 IWX_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
-    
+
     ready = iwx_poll_bit(sc, IWX_CSR_HW_IF_CONFIG_REG,
                          IWX_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY,
                          IWX_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY,
@@ -2877,7 +2881,9 @@ iwx_set_hw_ready(struct iwx_softc *sc)
     if (ready)
         IWX_SETBITS(sc, IWX_CSR_MBOX_SET_REG,
                     IWX_CSR_MBOX_SET_REG_OS_ALIVE);
-    
+    else
+        XYLog("DEBUG %s TIMEOUT: NIC not ready\n", __FUNCTION__);
+
     return ready;
 }
 #undef IWX_HW_READY_TIMEOUT
@@ -2885,32 +2891,35 @@ iwx_set_hw_ready(struct iwx_softc *sc)
 int ItlIwx::
 iwx_prepare_card_hw(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
     int t = 0;
     int ntries;
-    
+
     if (iwx_set_hw_ready(sc))
         return 0;
-    
+
+    XYLog("DEBUG %s NIC not ready on first try, retrying with PREPARE\n", __FUNCTION__);
     IWX_SETBITS(sc, IWX_CSR_DBG_LINK_PWR_MGMT_REG,
                 IWX_CSR_RESET_LINK_PWR_MGMT_DISABLED);
     DELAY(1000);
-    
-    
+
     for (ntries = 0; ntries < 10; ntries++) {
         /* If HW is not ready, prepare the conditions to check again */
         IWX_SETBITS(sc, IWX_CSR_HW_IF_CONFIG_REG,
                     IWX_CSR_HW_IF_CONFIG_REG_PREPARE);
-        
+
         do {
-            if (iwx_set_hw_ready(sc))
+            if (iwx_set_hw_ready(sc)) {
+                XYLog("DEBUG %s NIC ready after ntries=%d t=%d\n", __FUNCTION__, ntries, t);
                 return 0;
+            }
             DELAY(200);
             t += 200;
         } while (t < 150000);
         DELAY(25000);
     }
-    
+
+    XYLog("DEBUG %s TIMEOUT after %d retries, NIC not ready\n", __FUNCTION__, ntries);
     return ETIMEDOUT;
 }
 
@@ -3130,19 +3139,21 @@ iwx_conf_msix_hw(struct iwx_softc *sc, int stopped)
 int ItlIwx::
 iwx_start_hw(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry device_family=%d integrated=%d\n", __FUNCTION__, sc->sc_device_family, sc->sc_integrated);
     int err;
-    
+
     err = iwx_prepare_card_hw(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s iwx_prepare_card_hw FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+
     iwx_clear_persistence_bit(sc);
-    
+
     /* Reset the entire device */
     IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
     DELAY(5000);
-    
+
     if (sc->sc_device_family == IWX_DEVICE_FAMILY_22000 && sc->sc_integrated) {
         IWX_SETBITS(sc, IWX_CSR_GP_CNTRL,
                     IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
@@ -3150,27 +3161,29 @@ iwx_start_hw(struct iwx_softc *sc)
         if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                           IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
                           IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 25000)) {
-            XYLog("%s: timeout waiting for clock stabilization\n",
-                  DEVNAME(sc));
+            XYLog("DEBUG %s TIMEOUT clock stabilization (integrated)\n", __FUNCTION__);
             return ETIMEDOUT;
         }
-        
+
         iwx_force_power_gating(sc);
-        
+
         /* Reset the entire device */
         IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
         DELAY(5000);
     }
-    
+
     err = iwx_apm_init(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s iwx_apm_init FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+
     iwx_init_msix_hw(sc);
-    
+
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
-    
+    XYLog("DEBUG %s done sc_flags=0x%x rfkill=%d\n", __FUNCTION__, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
+
     return 0;
 }
 
@@ -4733,37 +4746,39 @@ iwx_load_firmware(struct iwx_softc *sc)
 int ItlIwx::
 iwx_start_fw(struct iwx_softc *sc)
 {
-    
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     int err;
-    
+
     err = iwx_prepare_card_hw(sc);
     if (err) {
-        XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
+        XYLog("DEBUG %s iwx_prepare_card_hw FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    
+
     iwx_enable_rfkill_int(sc);
-    
+
     IWX_WRITE(sc, IWX_CSR_INT, 0xFFFFFFFF);
-    
+
     iwx_disable_interrupts(sc);
-    
+
     /* make sure rfkill handshake bits are cleared */
     IWX_WRITE(sc, IWX_CSR_UCODE_DRV_GP1_CLR, IWX_CSR_UCODE_SW_BIT_RFKILL);
     IWX_WRITE(sc, IWX_CSR_UCODE_DRV_GP1_CLR,
               IWX_CSR_UCODE_DRV_GP1_BIT_CMD_BLOCKED);
-    
+
     /* clear (again), then enable firwmare load interrupt */
     IWX_WRITE(sc, IWX_CSR_INT, ~0);
-    
+
     err = iwx_nic_init(sc);
     if (err) {
-        XYLog("%s: unable to init nic\n", DEVNAME(sc));
+        XYLog("DEBUG %s iwx_nic_init FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    
-    return iwx_load_firmware(sc);
+    XYLog("DEBUG %s iwx_nic_init OK, loading firmware\n", __FUNCTION__);
+
+    err = iwx_load_firmware(sc);
+    XYLog("DEBUG %s iwx_load_firmware returned %d\n", __FUNCTION__, err);
+    return err;
 }
 
 int ItlIwx::
@@ -4814,21 +4829,30 @@ iwx_send_dqa_cmd(struct iwx_softc *sc)
 int ItlIwx::
 iwx_load_ucode_wait_alive(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
     int err;
-    
+
     err = iwx_read_firmware(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s iwx_read_firmware FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+    XYLog("DEBUG %s iwx_read_firmware OK\n", __FUNCTION__);
+
     err = iwx_start_fw(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s iwx_start_fw FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+    XYLog("DEBUG %s iwx_start_fw OK\n", __FUNCTION__);
+
     err = iwx_load_pnvm(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s iwx_load_pnvm FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+    XYLog("DEBUG %s iwx_load_pnvm OK\n", __FUNCTION__);
+
     iwx_post_alive(sc);
     
     return 0;
@@ -4837,7 +4861,8 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
 int ItlIwx::
 iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry readnvm=%d sc_flags=0x%x rfkill=%d\n",
+          __FUNCTION__, readnvm, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
     const int wait_flags = IWX_INIT_COMPLETE;
     struct iwx_nvm_access_complete_cmd nvm_complete = {};
     struct iwx_init_extended_cfg_cmd init_cfg = {
@@ -4846,18 +4871,18 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
     int err;
 
     if ((sc->sc_flags & IWX_FLAG_RFKILL) && !readnvm) {
-        XYLog("%s: radio is disabled by hardware switch\n",
-            DEVNAME(sc));
+        XYLog("DEBUG %s ABORT: radio disabled by hardware switch\n", __FUNCTION__);
         return EPERM;
     }
 
     sc->sc_init_complete = 0;
     err = iwx_load_ucode_wait_alive(sc);
     if (err) {
-        XYLog("%s: failed to load init firmware\n", DEVNAME(sc));
+        XYLog("DEBUG %s iwx_load_ucode_wait_alive FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    
+    XYLog("DEBUG %s ucode alive OK\n", __FUNCTION__);
+
     if (sc->sc_tx_with_siso_diversity)
         init_cfg.init_flags |= htole32(IWX_INIT_PHY);
 
@@ -4867,37 +4892,39 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
      */
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_SYSTEM_GROUP,
                                            IWX_INIT_EXTENDED_CFG_CMD), IWX_CMD_SEND_IN_RFKILL, sizeof(init_cfg), &init_cfg);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s INIT_EXTENDED_CFG_CMD FAILED err=%d\n", __FUNCTION__, err);
         return err;
+    }
 
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP,
                                            IWX_NVM_ACCESS_COMPLETE), IWX_CMD_SEND_IN_RFKILL, sizeof(nvm_complete), &nvm_complete);
-    if (err)
-        return err;
-
-    /* Wait for the init complete notification from the firmware. */
-//    while ((sc->sc_init_complete & wait_flags) != wait_flags) {
-//        err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit",
-//            SEC_TO_NSEC(2));
-//        if (err)
-//            return err;
-//    }
-    err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
     if (err) {
+        XYLog("DEBUG %s NVM_ACCESS_COMPLETE FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
+
+    /* Wait for the init complete notification from the firmware. */
+    err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
+    if (err) {
+        XYLog("DEBUG %s tsleep init_complete TIMEOUT err=%d sc_init_complete=0x%x\n",
+              __FUNCTION__, err, sc->sc_init_complete);
+        return err;
+    }
+    XYLog("DEBUG %s init_complete OK sc_init_complete=0x%x\n", __FUNCTION__, sc->sc_init_complete);
 
     if (readnvm) {
         err = iwx_nvm_get(sc);
         if (err) {
-            XYLog("%s: failed to read nvm\n", DEVNAME(sc));
+            XYLog("DEBUG %s iwx_nvm_get FAILED err=%d\n", __FUNCTION__, err);
             return err;
         }
         if (IEEE80211_ADDR_EQ(etheranyaddr, sc->sc_ic.ic_myaddr))
             IEEE80211_ADDR_COPY(sc->sc_ic.ic_myaddr,
                 sc->sc_nvm.hw_addr);
-        
+
     }
+    XYLog("DEBUG %s COMPLETE\n", __FUNCTION__);
     return 0;
 }
 
@@ -10057,23 +10084,30 @@ iwx_send_temp_report_ths_cmd(struct iwx_softc *sc)
 int ItlIwx::
 iwx_init_hw(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     struct ieee80211com *ic = &sc->sc_ic;
     int err, i;
-    
+
     err = iwx_preinit(sc);
-    if (err)
-        return err;
-    
-    err = iwx_start_hw(sc);
     if (err) {
-        XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
+        XYLog("DEBUG %s iwx_preinit FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    
-    err = iwx_run_init_mvm_ucode(sc, 0);
-    if (err)
+    XYLog("DEBUG %s iwx_preinit OK\n", __FUNCTION__);
+
+    err = iwx_start_hw(sc);
+    if (err) {
+        XYLog("DEBUG %s iwx_start_hw FAILED err=%d\n", __FUNCTION__, err);
         return err;
+    }
+    XYLog("DEBUG %s iwx_start_hw OK\n", __FUNCTION__);
+
+    err = iwx_run_init_mvm_ucode(sc, 0);
+    if (err) {
+        XYLog("DEBUG %s iwx_run_init_mvm_ucode FAILED err=%d\n", __FUNCTION__, err);
+        return err;
+    }
+    XYLog("DEBUG %s iwx_run_init_mvm_ucode OK\n", __FUNCTION__);
     
     if (!iwx_nic_lock(sc))
         return EBUSY;
@@ -10216,52 +10250,56 @@ iwx_allow_mcast(struct iwx_softc *sc)
 int ItlIwx::
 iwx_init(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     int err, generation;
     int i;
 
+    XYLog("DEBUG %s entry: if_flags=0x%x sc_flags=0x%x\n", __FUNCTION__, ifp->if_flags, sc->sc_flags);
+
     memset(sc->sc_tid_data, 0, sizeof(sc->sc_tid_data));
     for (i = 0; i < ARRAY_SIZE(sc->sc_tid_data); i++) {
         sc->sc_tid_data[i].qid = IWX_INVALID_QUEUE;
     }
-    
+
     //    rw_assert_wrlock(&sc->ioctl_rwl);
-    
+
     generation = ++sc->sc_generation;
-    
+
     //    KASSERT(sc->task_refs.refs == 0);
     //    refcnt_init(&sc->task_refs);
-    
+
     err = iwx_init_hw(sc);
     if (err) {
+        XYLog("DEBUG %s iwx_init_hw FAILED err=%d\n", __FUNCTION__, err);
         if (generation == sc->sc_generation)
             iwx_stop_device(sc);
         return err;
     }
-    
+    XYLog("DEBUG %s iwx_init_hw OK\n", __FUNCTION__);
+
     if (sc->sc_nvm.sku_cap_11n_enable)
         iwx_setup_ht_rates(sc);
-    
+
     if (sc->sc_nvm.sku_cap_11ac_enable)
         iwx_setup_vht_rates(sc);
-    
+
     if (sc->sc_nvm.sku_cap_11ax_enable)
         iwx_setup_he_rates(sc);
-    
+
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
     ifp->if_flags |= IFF_RUNNING;
-    
+    XYLog("DEBUG %s IFF_RUNNING set, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
+
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
         return 0;
     }
-    
+
     ieee80211_begin_scan(ifp);
-    
+
     /*
      * ieee80211_begin_scan() ends up scheduling iwx_newstate_task().
      * Wait until the transition to SCAN state has completed.
@@ -10269,14 +10307,18 @@ iwx_init(struct _ifnet *ifp)
     do {
         err = tsleep_nsec(&ic->ic_state, PCATCH, "iwxinit",
             SEC_TO_NSEC(1));
-        if (generation != sc->sc_generation)
+        if (generation != sc->sc_generation) {
+            XYLog("DEBUG %s generation mismatch, returning ENXIO\n", __FUNCTION__);
             return ENXIO;
+        }
         if (err) {
+            XYLog("DEBUG %s tsleep err=%d ic_state=%d, stopping\n", __FUNCTION__, err, ic->ic_state);
             iwx_stop(ifp);
             return err;
         }
     } while (ic->ic_state != IEEE80211_S_SCAN);
-    
+
+    XYLog("DEBUG %s COMPLETE: ic_state=SCAN if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return 0;
 }
 
@@ -10375,9 +10417,11 @@ iwx_stop(struct _ifnet *ifp)
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int i, s = splnet();
-    
+
+    XYLog("DEBUG %s entry: if_flags=0x%x sc_flags=0x%x\n", __FUNCTION__, ifp->if_flags, sc->sc_flags);
+
     //    rw_assert_wrlock(&sc->ioctl_rwl);
-    
+
     sc->sc_flags |= IWX_FLAG_SHUTDOWN; /* Disallow new tasks. */
     
     /* Cancel scheduled tasks and let any stale tasks finish up. */
@@ -13224,18 +13268,22 @@ iwx_init_task(void *arg1)
 int ItlIwx::
 iwx_resume(struct iwx_softc *sc)
 {
+    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     pcireg_t reg;
-    
+    int err;
+
     /* Clear device-specific "PCI retry timeout" register (41h). */
     reg = pci_conf_read(sc->sc_pct, sc->sc_pcitag, 0x40);
     pci_conf_write(sc->sc_pct, sc->sc_pcitag, 0x40, reg & ~0xff00);
-    
+
     if (!sc->sc_msix) {
         /* Hardware bug workaround. */
         reg = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                             PCI_COMMAND_STATUS_REG);
-        if (reg & PCI_COMMAND_INTERRUPT_DISABLE)
+        if (reg & PCI_COMMAND_INTERRUPT_DISABLE) {
+            XYLog("DEBUG %s clearing PCI_COMMAND_INTERRUPT_DISABLE\n", __FUNCTION__);
             reg &= ~PCI_COMMAND_INTERRUPT_DISABLE;
+        }
         pci_conf_write(sc->sc_pct, sc->sc_pcitag,
                        PCI_COMMAND_STATUS_REG, reg);
     }
@@ -13243,7 +13291,10 @@ iwx_resume(struct iwx_softc *sc)
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
 
-    return iwx_prepare_card_hw(sc);
+    err = iwx_prepare_card_hw(sc);
+    XYLog("DEBUG %s iwx_prepare_card_hw returned %d, sc_flags=0x%x rfkill=%d\n",
+          __FUNCTION__, err, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
+    return err;
 }
 
 int ItlIwx::
@@ -13268,14 +13319,15 @@ iwx_activate(struct iwx_softc *sc, int act)
             break;
         case DVACT_WAKEUP:
             /* Hardware should be up at this point. */
-            if (iwx_set_hw_ready(sc)) {
+            err = iwx_prepare_card_hw(sc);
+            if (err == 0) {
                 task_add(systq, &sc->init_task);
             } else {
-                XYLog("%s: DVACT_WAKEUP: iwx_set_hw_ready failed, init_task NOT scheduled\n",
-                      DEVNAME(sc));
+                XYLog("%s: DVACT_WAKEUP: iwx_prepare_card_hw failed err=%d, init_task NOT scheduled\n",
+                      DEVNAME(sc), err);
             }
             break;
     }
-    
-    return 0;
+
+    return err;
 }

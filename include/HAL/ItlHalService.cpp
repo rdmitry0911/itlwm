@@ -20,6 +20,7 @@ OSDefineMetaClassAndAbstractStructors(ItlHalService, OSObject)
 bool ItlHalService::
 initWithController(IOEthernetController *controller, IOWorkLoop *workloop, IOCommandGate *commandGate)
 {
+    XYLog("DEBUG %s controller=%p workloop=%p commandGate=%p\n", __FUNCTION__, controller, workloop, commandGate);
     this->controller = controller;
     this->controller->retain();
     this->mainWorkLoop = workloop;
@@ -30,6 +31,7 @@ initWithController(IOEthernetController *controller, IOWorkLoop *workloop, IOCom
     this->inner_gp_attr = lck_grp_attr_alloc_init();
     this->inner_gp = lck_grp_alloc_init("itlwm_tsleep", this->inner_gp_attr);
     this->inner_lock = lck_mtx_alloc_init(this->inner_gp, this->inner_attr);
+    XYLog("DEBUG %s done, lock=%p\n", __FUNCTION__, this->inner_lock);
     return true;
 }
 
