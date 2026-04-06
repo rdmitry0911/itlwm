@@ -917,6 +917,8 @@ void AirportItlwm::setPowerStateOn()
 {
     XYLog("%s\n", __FUNCTION__);
     pmPowerState = kPowerStateOn;
+    if (power_state)
+        enableAdapter(fNetIf);
     pmPolicyMaker->acknowledgeSetPowerState();
 }
 
