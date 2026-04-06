@@ -260,7 +260,13 @@ bool AirportItlwm::start(IOService *provider)
     scanSource->enable();
 
     fNetIf = new AirportItlwmSkywalkInterface;
+#if __IO80211_TARGET >= __MAC_26_0
+    IOEthernetAddress addr;
+    getHardwareAddress(&addr);
+    if (!fNetIf->init(this, (ether_addr *)&addr)) {
+#else
     if (!fNetIf->init(this)) {
+#endif
         XYLog("Skywalk interface init fail\n");
         super::stop(provider);
         releaseAll();
@@ -294,18 +300,14 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     memset(&registInfo, 0, sizeof(registInfo));
+#if __IO80211_TARGET < __MAC_26_0
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("initRegistrationInfo fail\n");
         super::stop(provider);
         releaseAll();
         return false;
     }
-    if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
-        XYLog("initRegistrationInfo fail\n");
-        super::stop(provider);
-        releaseAll();
-        return false;
-    }
+#endif
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
@@ -323,7 +325,7 @@ bool AirportItlwm::start(IOService *provider)
 
 void AirportItlwm::stop(IOService *provider)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("%s\n", __PRETTY_FUNCTION__);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     super::stop(provider);
     disableAdapter(bsdInterface);
@@ -364,7 +366,11 @@ bool AirportItlwm::createWorkQueue()
     return _fWorkloop != 0;
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+IO80211WorkQueue *AirportItlwm::getWorkQueue() const
+#else
 IO80211WorkQueue *AirportItlwm::getWorkQueue()
+#endif
 {
     return _fWorkloop;
 }
@@ -374,6 +380,7 @@ void *AirportItlwm::getFaultReporterFromDriver()
     return driverFaultReporter;
 }
 
+#if __IO80211_TARGET < __MAC_26_0
 IOReturn AirportItlwm::enable(IO80211SkywalkInterface *netif)
 {
     XYLog("%s\n", __PRETTY_FUNCTION__);
@@ -391,6 +398,7 @@ IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
     setLinkStatus(kIONetworkLinkValid);
     return kIOReturnSuccess;
 }
+#endif
 
 bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 {
@@ -410,7 +418,7 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     ifp->netStat = fpNetStats;
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
     fpNetStats->collisions = 0;
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);
 #endif
     
@@ -474,13 +482,12 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
     currentStatus = status;
     if (fNetIf) {
         if (status & kIONetworkLinkActive) {
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
             bsdInterface->startOutputThread();
 #endif
             getCommandGate()->runAction(setLinkStateGated, (void *)kIO80211NetworkLinkUp, (void *)0);
-//            fNetIf->setLinkQualityMetric(100);
         } else if (!(status & kIONetworkLinkNoNetworkChange)) {
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
             bsdInterface->stopOutputThread();
             bsdInterface->flushOutputQueue();
 #endif
@@ -496,7 +503,11 @@ IOReturn AirportItlwm::
 setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+#if __IO80211_TARGET >= __MAC_26_0
+    IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1, false, 0, 0);
+#else
     IOReturn ret = that->fNetIf->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1);
+#endif
     that->fNetIf->setRunningState((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp);
     that->fNetIf->postMessage(APPLE80211_M_LINK_CHANGED, NULL, 0, false);
     that->fNetIf->postMessage(APPLE80211_M_BSSID_CHANGED, NULL, 0, false);
@@ -510,7 +521,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     return ret;
 }
 
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
 IOReturn AirportItlwm::outputStart(IONetworkInterface *interface, IOOptionBits options)
 {
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
@@ -845,6 +856,7 @@ setPOWER(OSObject *object,
     return kIOReturnSuccess;
 }
 
+#if __IO80211_TARGET < __MAC_26_0
 SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigned long cmd,void *data, bool b1, bool b2)
 {
     if (!ml_at_interrupt_context())
@@ -865,6 +877,7 @@ SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211Skywal
         XYLog("%s 2 cmd: %s request: %d\n", __FUNCTION__, convertApple80211IOCTLToString(cmd), request);
     return kIOReturnUnsupported;
 }
+#endif
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {

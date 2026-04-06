@@ -11,6 +11,7 @@
 
 struct apple80211_wcl_advisory_info;
 struct apple80211_wcl_tx_rx_latency;
+struct apple80211_wcl_update_link_state;
 
 class IO80211InfraInterface : public IO80211SkywalkInterface {
     OSDeclareAbstractStructors(IO80211InfraInterface)
@@ -32,13 +33,23 @@ public:
     virtual void postMessage(UInt,void *,unsigned long,bool) APPLE_KEXT_OVERRIDE;
     virtual IOReturn recordOutputPackets(TxSubmissionDequeueStats *,TxSubmissionDequeueStats *) APPLE_KEXT_OVERRIDE;
     virtual void logTxPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,apple80211_wme_ac,bool) APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual void logTxCompletionPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,unsigned char *,apple80211_wme_ac,int,UInt,bool,bool) APPLE_KEXT_OVERRIDE;
+#else
     virtual void logTxCompletionPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,unsigned char *,apple80211_wme_ac,int,UInt,bool) APPLE_KEXT_OVERRIDE;
+#endif
     virtual IOReturn recordCompletionPackets(TxCompletionEnqueueStats *,TxCompletionEnqueueStats *) APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual IOReturn inputPacket(IO80211NetworkPacket *,packet_info_tag *,ether_header *,bool *,bool) APPLE_KEXT_OVERRIDE;
+#else
     virtual IOReturn inputPacket(IO80211NetworkPacket *,packet_info_tag *,ether_header *,bool *) APPLE_KEXT_OVERRIDE;
+#endif
     virtual SInt64 pendingPackets(unsigned char) APPLE_KEXT_OVERRIDE;
     virtual SInt64 packetSpace(unsigned char) APPLE_KEXT_OVERRIDE;
     virtual bool isDebounceOnGoing(void) APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET < __MAC_26_0
     virtual bool setLinkState(IO80211LinkState,UInt,bool debounceTimeout = 30,UInt code = 0) APPLE_KEXT_OVERRIDE;
+#endif
     virtual IO80211LinkState linkState(void) APPLE_KEXT_OVERRIDE;
     virtual void setScanningState(UInt,bool,apple80211_scan_data *,int) APPLE_KEXT_OVERRIDE;
     virtual void setDataPathState(bool) APPLE_KEXT_OVERRIDE;
@@ -61,22 +72,46 @@ public:
     virtual void setInfraSpecificFrameStats(apple80211_stat_report *,apple80211_infra_specific_stats *) APPLE_KEXT_OVERRIDE;
 #endif
     virtual SInt64 getWmeTxCounters(unsigned long long *) APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET < __MAC_26_0
     virtual void setEnabledBySystem(bool) APPLE_KEXT_OVERRIDE;
     virtual bool enabledBySystem(void) APPLE_KEXT_OVERRIDE;
     virtual bool willRoam(ether_addr *,UInt) APPLE_KEXT_OVERRIDE;
+#endif
     virtual void setPeerManagerLogFlag(UInt,UInt,UInt) APPLE_KEXT_OVERRIDE;
     virtual void setWoWEnabled(bool) APPLE_KEXT_OVERRIDE;
     virtual bool wowEnabled(void) APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual UInt64 createLinkQualityMonitor(IO80211Peer *,bool) APPLE_KEXT_OVERRIDE;
+#else
     virtual UInt64 createLinkQualityMonitor(IO80211Peer *,IOService *) APPLE_KEXT_OVERRIDE;
+#endif
     virtual void releaseLinkQualityMonitor(IO80211Peer *) APPLE_KEXT_OVERRIDE;
     virtual int getAssocState(void) APPLE_KEXT_OVERRIDE;
     virtual void *getLQMSummary(apple80211_lqm_summary *) APPLE_KEXT_OVERRIDE;
+
+#if __IO80211_TARGET >= __MAC_26_0
+    // Tahoe: setLinkState moved here from IO80211SkywalkInterface [463]
+    virtual bool setLinkState(IO80211LinkState,UInt,bool,UInt,UInt);
+    // [464]
+    virtual IOReturn setLinkStateInternal(IO80211LinkState,uint,bool,uint,uint);
+    // [465]
+    virtual void setCurrentApAddress(ether_addr *);
+    // [466]
+    virtual void setWCL_ADVISORTY_INFO(apple80211_wcl_advisory_info *);
+    // [467]
+    virtual void *getWCL_TX_RX_LATENCY(apple80211_wcl_tx_rx_latency *);
+    // [468]
+    virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *);
+    // [469]
+    virtual void createLQMData(void);
+#else
     virtual IOReturn setLinkStateInternal(IO80211LinkState,uint,bool,uint,apple80211_link_changed_event_data &);
     virtual void setPoweredOnByUser(bool);
     virtual void setCurrentBssid(ether_addr *);
     virtual void setWCL_ADVISORTY_INFO(apple80211_wcl_advisory_info *);
     virtual void *getWCL_TX_RX_LATENCY(apple80211_wcl_tx_rx_latency *);
-    
+#endif
+
 public:
     char _data[0x120];
 };

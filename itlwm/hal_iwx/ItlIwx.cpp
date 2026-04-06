@@ -4134,7 +4134,8 @@ iwx_setup_he_rates(struct iwx_softc *sc)
      * PPET8 set to 7
      */
     uint8_t ppe_thres[] = {0x61, 0x1c, 0xc7, 0x71};
-    memcpy(ic->ic_ppe_thres, ppe_thres, sizeof(ic->ic_ppe_thres));
+    memset(ic->ic_ppe_thres, 0, sizeof(ic->ic_ppe_thres));
+    memcpy(ic->ic_ppe_thres, ppe_thres, sizeof(ppe_thres));
 }
 
 #define IWX_MAX_RX_BA_SESSIONS 16
@@ -5838,7 +5839,7 @@ iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring)
             ifq_clr_oactive(&ifp->if_snd);
             (*ifp->if_start)(ifp);
         }
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
         ifp->iface->signalOutputThread();
 #endif
     }

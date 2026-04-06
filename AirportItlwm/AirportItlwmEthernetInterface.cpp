@@ -70,7 +70,12 @@ bpfOutputPacket(ifnet_t interface, u_int32_t data_link_type, mbuf_t packet)
 {
     XYLog("%s data_link_type: %d\n", __FUNCTION__, data_link_type);
     AirportItlwmEthernetInterface *networkInterface = (AirportItlwmEthernetInterface *)ifnet_softc(interface);
+#if __IO80211_TARGET >= __MAC_26_0
+    mbuf_freem(packet);
+    return ENOTSUP;
+#else
     return networkInterface->enqueueOutputPacket(packet);
+#endif
 }
 
 errno_t AirportItlwmEthernetInterface::

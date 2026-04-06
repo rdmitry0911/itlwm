@@ -15,7 +15,11 @@ class AirportItlwmSkywalkInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AirportItlwmSkywalkInterface)
     
 public:
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual bool init(IOService *, ether_addr *) override;
+#else
     virtual bool init(IOService *) override;
+#endif
 //    virtual ifnet_t getBSDInterface(void) override;
     
     void associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index);

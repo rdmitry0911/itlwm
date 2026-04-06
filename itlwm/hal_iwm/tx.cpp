@@ -429,7 +429,7 @@ iwm_send_update_mcc_cmd(struct iwm_softc *sc, const char *alpha2)
     struct iwm_host_cmd hcmd = {
         .id = IWM_MCC_UPDATE_CMD,
         .flags = IWM_CMD_WANT_RESP,
-        .resp_pkt_len = IWM_CMD_RESP_MAX,
+        .resp_pkt_len = (size_t)IWM_CMD_RESP_MAX,
         .data = { &mcc_cmd },
     };
     struct iwm_rx_packet *pkt;

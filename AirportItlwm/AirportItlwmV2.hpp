@@ -70,8 +70,10 @@ public:
     virtual IOService* probe(IOService* provider, SInt32* score) override;
     virtual bool start(IOService *provider) override;
     virtual void stop(IOService *provider) override;
+#if __IO80211_TARGET < __MAC_26_0
     virtual IOReturn enable(IO80211SkywalkInterface *netif) override;
     virtual IOReturn disable(IO80211SkywalkInterface *netif) override;
+#endif
     virtual IOReturn setHardwareAddress(const void *addr, UInt32 addrBytes) override;
     virtual IOReturn getHardwareAddress(IOEthernetAddress* addrP) override;
     virtual IOReturn getPacketFilters(const OSSymbol *group, UInt32 *filters) const override;
@@ -86,7 +88,7 @@ public:
     virtual IONetworkInterface * createInterface() override;
     virtual bool configureInterface(IONetworkInterface *netif) override;
     virtual UInt32 outputPacket(mbuf_t, void * param) override;
-#ifdef __PRIVATE_SPI__
+#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     virtual IOReturn outputStart(IONetworkInterface *interface, IOOptionBits options) override;
     virtual IOReturn networkInterfaceNotification(
                         IONetworkInterface * interface,
@@ -99,14 +101,18 @@ public:
                                UInt64                  speed        = 0,
                                OSData *                data         = 0) override;
     static IOReturn setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
-    
+
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
     IOReturn enableAdapter(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
     bool initCCLogs();
-    
+
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual IO80211WorkQueue *getWorkQueue() const override;
+#else
     virtual IO80211WorkQueue *getWorkQueue() override;
+#endif
     virtual bool requiresExplicitMBufRelease() override {
         return false;
     }
@@ -120,25 +126,30 @@ public:
         XYLog("%s\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
-    
+
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
-    
+
     virtual void *getFaultReporterFromDriver() override;
-    
+
+#if __IO80211_TARGET < __MAC_26_0
     virtual SInt32 apple80211_ioctl(IO80211SkywalkInterface *,unsigned long,void *, bool, bool) override;
     virtual SInt32 apple80211SkywalkRequest(UInt,int,IO80211SkywalkInterface *,void *) override;
     virtual SInt32 apple80211SkywalkRequest(UInt,int,IO80211SkywalkInterface *,void *,void *) override;
+#endif
 
     bool createMediumTables(const IONetworkMedium **primary);
     void releaseAll();
     void watchdogAction(IOTimerEventSource *timer);
-    
+
     virtual SInt32 enableFeature(IO80211FeatureCode, void*) override;
     virtual bool isCommandProhibited(int command) override {
-//        if (!ml_at_interrupt_context())
-//            XYLog("%s %s\n", __FUNCTION__, convertApple80211IOCTLToString(command));
         return false;
     };
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual bool isCommandAllowedInRestrictedMode(int command) override {
+        return false;
+    };
+#endif
     virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {
         XYLog("%s\n", __FUNCTION__);
         return 0;
@@ -152,29 +163,44 @@ public:
         return getHARDWARE_VERSION((OSObject *)interface, data);
     };
     virtual IOReturn getCARD_CAPABILITIES(IO80211SkywalkInterface *interface,apple80211_capability_data *data) override {
-//        XYLog("%s\n", __FUNCTION__);
         return getCARD_CAPABILITIES((OSObject *)interface, data);
     }
     virtual IOReturn getPOWER(IO80211SkywalkInterface *interface,apple80211_power_data *data) override {
-//        XYLog("%s\n", __FUNCTION__);
         return getPOWER((OSObject *)interface, data);
     }
     virtual IOReturn setPOWER(IO80211SkywalkInterface *interface,apple80211_power_data *data) override {
-//        XYLog("%s\n", __FUNCTION__);
         return setPOWER((OSObject *)interface, data);
     }
     virtual IOReturn getCOUNTRY_CODE(IO80211SkywalkInterface *interface,apple80211_country_code_data *data) override {
-//        XYLog("%s\n", __FUNCTION__);
         return getCOUNTRY_CODE((OSObject *)interface, data);
     }
     virtual IOReturn setCOUNTRY_CODE(IO80211SkywalkInterface *interface,apple80211_country_code_data *data) override {
-//        XYLog("%s\n", __FUNCTION__);
         return setCOUNTRY_CODE((OSObject *)interface, data);
     }
     virtual IOReturn setGET_DEBUG_INFO(IO80211SkywalkInterface *interface,apple80211_debug_command *data) override {
         XYLog("%s\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual IOReturn getPLATFORM_CONFIG(IO80211SkywalkInterface *interface, apple80211_platform_config *data) override {
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getDEVICE_ORIENTATION(IO80211SkywalkInterface *interface, apple80211_device_orientation *data) override {
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setDEVICE_ORIENTATION(IO80211SkywalkInterface *interface, apple80211_device_orientation *data) override {
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getACCESSORY_STATE(IO80211SkywalkInterface *interface, apple80211_device_accessory_info *data) override {
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setACCESSORY_STATE(IO80211SkywalkInterface *interface, apple80211_device_accessory_info *data) override {
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getPOWERTABLE_VERSION(IO80211SkywalkInterface *interface, apple80211_powertable_version_data *data) override {
+        return kIOReturnUnsupported;
+    }
+#endif
     
     //scan
     static void fakeScanDone(OSObject *owner, IOTimerEventSource *sender);

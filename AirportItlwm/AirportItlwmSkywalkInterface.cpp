@@ -264,6 +264,16 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
     }
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwmSkywalkInterface::
+init(IOService *provider, ether_addr *addr)
+{
+    bool ret = IO80211SkywalkInterface::init(provider, addr);
+    if (!ret) {
+        XYLog("%s IO80211SkywalkInterface init failed\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+#else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
 {
@@ -272,6 +282,7 @@ init(IOService *provider)
         XYLog("%s IO80211InfraInterface init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
+#endif
     instance = OSDynamicCast(AirportItlwm, provider);
     if (!instance)
         return false;

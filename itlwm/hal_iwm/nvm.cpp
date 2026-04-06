@@ -160,7 +160,7 @@ iwm_nvm_read_chunk(struct iwm_softc *sc, uint16_t section, uint16_t offset,
     struct iwm_host_cmd cmd = {
         .id = IWM_NVM_ACCESS_CMD,
         .flags = (IWM_CMD_WANT_RESP | IWM_CMD_SEND_IN_RFKILL),
-        .resp_pkt_len = IWM_CMD_RESP_MAX,
+        .resp_pkt_len = (size_t)IWM_CMD_RESP_MAX,
         .data = { &nvm_access_cmd, },
     };
     int err, offset_read;
