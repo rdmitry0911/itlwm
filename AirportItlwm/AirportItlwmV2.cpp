@@ -187,6 +187,12 @@ bool AirportItlwm::start(IOService *provider)
     UInt8 builtIn = 0;
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     setProperty("DriverKitDriver", kOSBooleanFalse);
+#if __IO80211_TARGET >= __MAC_26_0
+    if (!initCCLogs()) {
+        XYLog("CCLog init fail\n");
+        return false;
+    }
+#endif
     if (!super::start(provider)) {
         return false;
     }
@@ -275,12 +281,14 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
     
+#if __IO80211_TARGET < __MAC_26_0
     if (!initCCLogs()) {
         XYLog("CCLog init fail\n");
         super::stop(provider);
         releaseAll();
         return false;
     }
+#endif
     if (!fNetIf->attach(this)) {
         XYLog("attach to service fail\n");
         super::stop(provider);
