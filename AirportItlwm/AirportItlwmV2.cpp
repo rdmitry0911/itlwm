@@ -189,23 +189,16 @@ initCCLogs()
     driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(this, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
     XYLog("%s driverSnapshotsPipeRet %d\n", __FUNCTION__, driverSnapshotsPipe != NULL);
     
-    CCStreamOptions logStreamOptions = { 0 };
-    logStreamOptions.stream_type = 0;
-    logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
-    CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
-    driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
-    XYLog("%s driverLogStream: base=%p class=%s cast=%p retainCnt=%d\n", __FUNCTION__,
-          logStreamBase, logStreamBase ? logStreamBase->getMetaClass()->getClassName() : "null",
-          driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
-    if (logStreamBase && !driverLogStream)
-        logStreamBase->release();
-
     CCStreamOptions faultReportOptions = { 0 };
     faultReportOptions.stream_type = 1;
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
     driverFaultReporter = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
     XYLog("%s driverFaultReporterRet %d\n", __FUNCTION__, driverFaultReporter != NULL);
-    return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverLogStream && driverFaultReporter;
+    // NOTE: CCLogStream creation is deferred to after super::start() —
+    // creating it before IO80211Controller::start() causes a deadlock because
+    // the framework calls vtable[429] during start() and passes the CCLogStream
+    // to CoreCapture cc_log, which needs IO80211 infrastructure not yet ready.
+    return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverFaultReporter;
 }
 
 bool AirportItlwm::start(IOService *provider)
@@ -224,14 +217,25 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
-    XYLog("DEBUG %s [STEP 2] super::start (IO80211Controller::start) driverLogStream=%p retainCnt=%d\n",
-          __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
+    // NOTE: driverLogStream is NULL here intentionally.  vtable[429] returns NULL
+    // during super::start() — all 28+ framework call sites check for NULL and skip
+    // logging.  Creating CCLogStream before start() causes a deadlock in CoreCapture.
+    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=NULL — will create after start)\n", __FUNCTION__);
     if (!super::start(provider)) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s [STEP 2] super::start OK — driverLogStream retainCnt=%d (expect +1 if framework retained)\n",
-          __FUNCTION__, driverLogStream ? driverLogStream->getRetainCount() : -1);
+    // IO80211 infrastructure is now ready — safe to create CCLogStream
+    {
+        CCStreamOptions logStreamOptions = { 0 };
+        logStreamOptions.stream_type = 0;
+        logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
+        CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
+        driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
+        XYLog("DEBUG %s [STEP 2a] driverLogStream: base=%p cast=%p\n", __FUNCTION__, logStreamBase, driverLogStream);
+        if (logStreamBase && !driverLogStream)
+            logStreamBase->release();
+    }
     XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
@@ -360,14 +364,13 @@ bool AirportItlwm::start(IOService *provider)
         releaseAll();
         return false;
     }
+#endif
+    // fRegistrationInfo must be allocated on ALL targets (including Tahoe).
+    // Before these fixes, skipping it on Tahoe caused fNetIf->start() to hang.
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
-    XYLog("DEBUG %s [STEP 8a] pre-Tahoe: initRegistrationInfo + mExpansionData setup DONE\n", __FUNCTION__);
-#else
-    XYLog("DEBUG %s [STEP 8a] Tahoe: SKIP mExpansionData/fRegistrationInfo (managed by Skywalk)\n", __FUNCTION__);
-#endif
     XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, calling deferBSDAttach + start\n",
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
     if (fNetIf->getInterfaceRole() == 1)
@@ -441,7 +444,7 @@ void AirportItlwm::free()
 
 bool AirportItlwm::createWorkQueue()
 {
-    XYLog("%s %d\n", __FUNCTION__, _fWorkloop != 0);
+    XYLog("DEBUG %s _fWorkloop=%p → %d\n", __FUNCTION__, _fWorkloop, _fWorkloop != 0);
     return _fWorkloop != 0;
 }
 
@@ -451,6 +454,9 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue() const
 IO80211WorkQueue *AirportItlwm::getWorkQueue()
 #endif
 {
+    static int sGetWorkQueueCount = 0;
+    if (++sGetWorkQueueCount <= 3)
+        XYLog("DEBUG %s #%d returning %p\n", __FUNCTION__, sGetWorkQueueCount, _fWorkloop);
     return _fWorkloop;
 }
 
@@ -772,27 +778,26 @@ static int sReleaseFlowQueueCallCount = 0;
 void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
 {
     int n = ++sReleaseFlowQueueCallCount;
-    if (n <= 3)
-        XYLog("DEBUG [vtable429] releaseFlowQueue call #%d returning driverLogStream=%p rc=%d\n",
+    if (n <= 10)
+        XYLog("DEBUG [vtable429] releaseFlowQueue #%d driverLogStream=%p rc=%d\n",
               n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
     return driverLogStream;
 }
 
-// vtable[431] — IO80211ControllerMonitor::initWithControllerAndProvider() calls this
-// during createIOReporters.
-static int sGetDriverLogStreamCallCount = 0;
-void *AirportItlwm::getDriverLogStream()
+static int sRestrictedModeCallCount = 0;
+bool AirportItlwm::isCommandAllowedInRestrictedMode(int command)
 {
-    int n = ++sGetDriverLogStreamCallCount;
-    if (n <= 3)
-        XYLog("DEBUG [vtable431] getDriverLogStream call #%d returning driverLogStream=%p rc=%d\n",
-              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
-    return driverLogStream;
+    int n = ++sRestrictedModeCallCount;
+    if (n <= 10)
+        XYLog("DEBUG [vtable431] isCommandAllowedInRestrictedMode #%d cmd=%d → false\n", n, command);
+    return false;
 }
 #endif
 
 bool AirportItlwm::getLogPipes(CCPipe**logPipe, CCPipe**eventPipe, CCPipe**snapshotsPipe)
 {
+    XYLog("DEBUG %s logPipe=%p dataPipe=%p snapPipe=%p\n", __FUNCTION__,
+          driverLogPipe, driverDataPathPipe, driverSnapshotsPipe);
     bool ret = false;
     if (logPipe) {
         *logPipe = driverLogPipe;

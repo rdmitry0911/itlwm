@@ -233,9 +233,10 @@ public:
     // [430]
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**);
     // [431] pure virtual - NEW in Tahoe
-    // Called from IO80211ControllerMonitor::initWithControllerAndProvider() during
-    // createIOReporters.  Must return non-null CCLogStream* or createIOReporters fails.
-    virtual void *getDriverLogStream() = 0;
+    // Previously misidentified as getDriverLogStream.  Returning non-zero from this
+    // slot enables restricted-mode command paths in IO80211Controller::start() that
+    // cause a deadlock.  The real log-stream getter is vtable[429] (releaseFlowQueue).
+    virtual bool isCommandAllowedInRestrictedMode(int) = 0;
     // [432]
     virtual void enableFeatureForLoggingFlags(unsigned long long) {};
     // [433]

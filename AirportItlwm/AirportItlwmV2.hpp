@@ -136,10 +136,11 @@ public:
     }
 
 #if __IO80211_TARGET >= __MAC_26_0
-    // [429] override — IO80211Controller::start() calls vtable offset 0xd68 for global logger
+    // [429] override — IO80211Family calls vtable offset 0xd68 (28+ sites) to get
+    // CCLogStream* for logging.  Returns NULL until CCLogStream is created after start().
     virtual void *releaseFlowQueue(IO80211FlowQueue *) override;
-    // [431] override — IO80211ControllerMonitor needs this for createIOReporters
-    virtual void *getDriverLogStream() override;
+    // [431] override — must return false (0), otherwise restricted-mode paths cause deadlock
+    virtual bool isCommandAllowedInRestrictedMode(int command) override;
 #endif
 
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
@@ -158,6 +159,8 @@ public:
 
     virtual SInt32 enableFeature(IO80211FeatureCode, void*) override;
     virtual bool isCommandProhibited(int command) override {
+        static int sCount = 0;
+        if (++sCount <= 5) XYLog("DEBUG %s #%d cmd=%d → false\n", __FUNCTION__, sCount, command);
         return false;
     };
     virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {
