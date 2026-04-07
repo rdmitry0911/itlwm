@@ -230,7 +230,10 @@ public:
     // [430]
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**);
     // [431] pure virtual - NEW in Tahoe
-    virtual bool isCommandAllowedInRestrictedMode(int) = 0;
+    // Returns driver's CCLogStream* used as the global logger and for IO80211ControllerMonitor.
+    // Called from IO80211Controller::start() and IO80211ControllerMonitor::initWithControllerAndProvider().
+    // Must return non-null or createIOReporters will fail.
+    virtual void *getDriverLogStream() = 0;
     // [432]
     virtual void enableFeatureForLoggingFlags(unsigned long long) {};
     // [433]

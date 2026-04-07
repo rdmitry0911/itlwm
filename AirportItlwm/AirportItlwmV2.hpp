@@ -137,6 +137,10 @@ public:
 
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
 
+#if __IO80211_TARGET >= __MAC_26_0
+    virtual void *getDriverLogStream() override;
+#endif
+
     virtual void *getFaultReporterFromDriver() override;
 
 #if __IO80211_TARGET < __MAC_26_0
@@ -153,11 +157,6 @@ public:
     virtual bool isCommandProhibited(int command) override {
         return false;
     };
-#if __IO80211_TARGET >= __MAC_26_0
-    virtual bool isCommandAllowedInRestrictedMode(int command) override {
-        return false;
-    };
-#endif
     virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {
         XYLog("%s\n", __FUNCTION__);
         return 0;

@@ -411,6 +411,7 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue()
 
 void *AirportItlwm::getFaultReporterFromDriver()
 {
+    XYLog("DEBUG %s returning %p\n", __FUNCTION__, driverFaultReporter);
     return driverFaultReporter;
 }
 
@@ -705,6 +706,14 @@ enableFeature(IO80211FeatureCode code, void *data)
     }
     return 102;
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+void *AirportItlwm::getDriverLogStream()
+{
+    XYLog("DEBUG %s returning driverLogPipe=%p\n", __FUNCTION__, driverLogPipe);
+    return driverLogPipe;
+}
+#endif
 
 bool AirportItlwm::getLogPipes(CCPipe**logPipe, CCPipe**eventPipe, CCPipe**snapshotsPipe)
 {
