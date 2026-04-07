@@ -357,14 +357,30 @@ bool AirportItlwm::start(IOService *provider)
     }
     XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
     memset(&registInfo, 0, sizeof(registInfo));
-#if __IO80211_TARGET < __MAC_26_0
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
         return false;
     }
-#endif
+    {
+        // Dump first 64 bytes of RegistrationInfo to verify it's non-zero
+        uint8_t *p = (uint8_t *)&registInfo;
+        bool allZero = true;
+        for (int i = 0; i < 64 && i < (int)sizeof(registInfo); i++)
+            if (p[i]) { allZero = false; break; }
+        XYLog("DEBUG %s [STEP 8] initRegistrationInfo OK, size=%lu, allZero=%d\n",
+              __FUNCTION__, sizeof(registInfo), allZero);
+        XYLog("DEBUG %s [STEP 8] regInfo[0-31]: %02x %02x %02x %02x %02x %02x %02x %02x "
+              "%02x %02x %02x %02x %02x %02x %02x %02x "
+              "%02x %02x %02x %02x %02x %02x %02x %02x "
+              "%02x %02x %02x %02x %02x %02x %02x %02x\n",
+              __FUNCTION__,
+              p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+              p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
+              p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
+              p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
+    }
     // fRegistrationInfo must be allocated on ALL targets (including Tahoe).
     // Before these fixes, skipping it on Tahoe caused fNetIf->start() to hang.
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
@@ -387,6 +403,12 @@ bool AirportItlwm::start(IOService *provider)
     power_state = kWiFiPowerOn;
     XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u bsdInterface=%p\n", __FUNCTION__, power_state, bsdInterface);
     enableAdapter(bsdInterface);
+    {
+        struct ieee80211com *ic_dbg = fHalService->get80211Controller();
+        struct _ifnet *ifp_dbg = &ic_dbg->ic_ac.ac_if;
+        XYLog("DEBUG %s [STEP 9a] post-enable: ic_state=%d if_flags=0x%x ic_caps=0x%x ic_opmode=%d\n",
+              __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags, ic_dbg->ic_caps, ic_dbg->ic_opmode);
+    }
     registerService();
     XYLog("DEBUG %s [STEP 10] start COMPLETE power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     return true;
@@ -656,7 +678,10 @@ extern const char* hexdump(uint8_t *buf, size_t len);
 
 UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
 {
-//    XYLog("%s\n", __FUNCTION__);
+    static int sOutputCount = 0;
+    if (++sOutputCount <= 5)
+        XYLog("DEBUG %s #%d m=%p param=%p ic_state=%d\n", __FUNCTION__, sOutputCount, m, param,
+              fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     
@@ -971,22 +996,11 @@ setPOWER(OSObject *object,
 {
     if (!pd)
         return kIOReturnError;
-    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    bool isUp = (ifp->if_flags & IFF_UP) != 0;
-    bool isRunning = (ifp->if_flags & IFF_RUNNING) != 0;
-    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur=%u isUp=%d isRunning=%d pmPowerState=%u\n",
-          pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3],
-          power_state, isUp, isRunning, pmPowerState);
-    if (pd->num_radios > 0) {
-        uint32_t reqState = pd->power_state[0];
-        // Guard: don't kill an adapter that is still initializing (IFF_UP but not yet IFF_RUNNING)
-        if (reqState == kWiFiPowerOff && isUp && !isRunning) {
-            IOLog("DEBUG itlwm: setPOWER OFF: adapter initializing, deferring\n");
-            return kIOReturnSuccess;
-        }
-        handlePowerStateChange(reqState, bsdInterface);
-    }
-
+    XYLog("%s num_radios=%d req=%u cur=%u pmPowerState=%u\n",
+          __FUNCTION__, pd->num_radios,
+          pd->num_radios > 0 ? pd->power_state[0] : 0, power_state, pmPowerState);
+    if (pd->num_radios > 0)
+        handlePowerStateChange(pd->power_state[0], bsdInterface);
     return kIOReturnSuccess;
 }
 
@@ -1015,12 +1029,17 @@ SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211Skywal
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
-    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : NULL;
+    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u ic_state=%d\n",
+          __FUNCTION__, netif, power_state, pmPowerState, ic ? ic->ic_state : -1);
     if (!fHalService) {
         XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
         return kIOReturnNotReady;
     }
     fHalService->enable(netif);
+    struct _ifnet *ifp = &ic->ic_ac.ac_if;
+    XYLog("DEBUG %s post-enable: ic_state=%d if_flags=0x%x\n",
+          __FUNCTION__, ic->ic_state, ifp->if_flags);
     if (watchdogTimer) {
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
