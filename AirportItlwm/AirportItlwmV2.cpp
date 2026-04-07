@@ -118,6 +118,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     power_state = 0;
+    driverLogStream = nullptr;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
     XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
     return ret;
@@ -204,7 +205,7 @@ initCCLogs()
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
     driverFaultReporter = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
     XYLog("%s driverFaultReporterRet %d\n", __FUNCTION__, driverFaultReporter != NULL);
-    return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverFaultReporter;
+    return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverLogStream && driverFaultReporter;
 }
 
 bool AirportItlwm::start(IOService *provider)
@@ -359,11 +360,14 @@ bool AirportItlwm::start(IOService *provider)
         releaseAll();
         return false;
     }
-#endif
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
+    XYLog("DEBUG %s [STEP 8a] pre-Tahoe: initRegistrationInfo + mExpansionData setup DONE\n", __FUNCTION__);
+#else
+    XYLog("DEBUG %s [STEP 8a] Tahoe: SKIP mExpansionData/fRegistrationInfo (managed by Skywalk)\n", __FUNCTION__);
+#endif
     XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, calling deferBSDAttach + start\n",
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
     if (fNetIf->getInterfaceRole() == 1)
@@ -761,9 +765,28 @@ enableFeature(IO80211FeatureCode code, void *data)
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
+// vtable[429] — IO80211Controller::start() calls offset 0xd68 and stores the return
+// in a global logger used by 28+ IO80211Family call sites.  Apple drivers override
+// this releaseFlowQueue slot to return their CCLogStream*.
+static int sReleaseFlowQueueCallCount = 0;
+void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
+{
+    int n = ++sReleaseFlowQueueCallCount;
+    if (n <= 3)
+        XYLog("DEBUG [vtable429] releaseFlowQueue call #%d returning driverLogStream=%p rc=%d\n",
+              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
+    return driverLogStream;
+}
+
+// vtable[431] — IO80211ControllerMonitor::initWithControllerAndProvider() calls this
+// during createIOReporters.
+static int sGetDriverLogStreamCallCount = 0;
 void *AirportItlwm::getDriverLogStream()
 {
-    XYLog("DEBUG %s returning %p\n", __FUNCTION__, driverLogStream);
+    int n = ++sGetDriverLogStreamCallCount;
+    if (n <= 3)
+        XYLog("DEBUG [vtable431] getDriverLogStream call #%d returning driverLogStream=%p rc=%d\n",
+              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
     return driverLogStream;
 }
 #endif

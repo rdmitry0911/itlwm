@@ -225,15 +225,16 @@ public:
     }
     // [428]
     virtual IO80211FlowQueueLegacy* requestFlowQueue(FlowIdMetadata const*);
-    // [429]
-    virtual void releaseFlowQueue(IO80211FlowQueue *);
+    // [429] — IO80211Controller::start() calls this at vtable offset 0xd68 to get the
+    // driver's CCLogStream* for the global logger.  The base-class symbol name is
+    // releaseFlowQueue, but Apple drivers override this slot to return CCLogStream*.
+    // IO80211Family uses the returned pointer in 28+ call sites for logging.
+    virtual void *releaseFlowQueue(IO80211FlowQueue *);
     // [430]
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**);
     // [431] pure virtual - NEW in Tahoe
-    // Returns driver's CCLogStream* used as the global logger (stored via setGlobalLogger).
-    // Called from IO80211Controller::start() at vtable offset 0xd68 with no args besides 'this'.
-    // IO80211Controller::stop() releases ivars->0x58 and clears the global.
-    // Returning NULL is safe — framework handles it; returning wrong type (e.g. CCPipe*) panics.
+    // Called from IO80211ControllerMonitor::initWithControllerAndProvider() during
+    // createIOReporters.  Must return non-null CCLogStream* or createIOReporters fails.
     virtual void *getDriverLogStream() = 0;
     // [432]
     virtual void enableFeatureForLoggingFlags(unsigned long long) {};

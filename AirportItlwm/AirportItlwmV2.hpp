@@ -135,11 +135,14 @@ public:
         return kIOReturnSuccess;
     }
 
-    virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
-
 #if __IO80211_TARGET >= __MAC_26_0
+    // [429] override — IO80211Controller::start() calls vtable offset 0xd68 for global logger
+    virtual void *releaseFlowQueue(IO80211FlowQueue *) override;
+    // [431] override — IO80211ControllerMonitor needs this for createIOReporters
     virtual void *getDriverLogStream() override;
 #endif
+
+    virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
 
     virtual void *getFaultReporterFromDriver() override;
 
