@@ -230,9 +230,10 @@ public:
     // [430]
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**);
     // [431] pure virtual - NEW in Tahoe
-    // Returns driver's CCLogStream* used as the global logger and for IO80211ControllerMonitor.
-    // Called from IO80211Controller::start() and IO80211ControllerMonitor::initWithControllerAndProvider().
-    // Must return non-null or createIOReporters will fail.
+    // Returns driver's CCLogStream* used as the global logger (stored via setGlobalLogger).
+    // Called from IO80211Controller::start() at vtable offset 0xd68 with no args besides 'this'.
+    // IO80211Controller::stop() releases ivars->0x58 and clears the global.
+    // Returning NULL is safe — framework handles it; returning wrong type (e.g. CCPipe*) panics.
     virtual void *getDriverLogStream() = 0;
     // [432]
     virtual void enableFeatureForLoggingFlags(unsigned long long) {};

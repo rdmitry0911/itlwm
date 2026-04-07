@@ -24,8 +24,10 @@ IOCommandGate *_fCommandGate;
 
 void AirportItlwm::releaseAll()
 {
-    XYLog("DEBUG %s [1] CCPipes: logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
-          __FUNCTION__, driverLogPipe, driverDataPathPipe, driverSnapshotsPipe, driverFaultReporter);
+    XYLog("DEBUG %s [1] logStream=%p(rc=%d) logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
+          __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1,
+          driverLogPipe, driverDataPathPipe, driverSnapshotsPipe, driverFaultReporter);
+    OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
     OSSafeReleaseNULL(driverDataPathPipe);
     OSSafeReleaseNULL(driverSnapshotsPipe);
@@ -186,6 +188,17 @@ initCCLogs()
     driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(this, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
     XYLog("%s driverSnapshotsPipeRet %d\n", __FUNCTION__, driverSnapshotsPipe != NULL);
     
+    CCStreamOptions logStreamOptions = { 0 };
+    logStreamOptions.stream_type = 0;
+    logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
+    CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
+    driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
+    XYLog("%s driverLogStream: base=%p class=%s cast=%p retainCnt=%d\n", __FUNCTION__,
+          logStreamBase, logStreamBase ? logStreamBase->getMetaClass()->getClassName() : "null",
+          driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
+    if (logStreamBase && !driverLogStream)
+        logStreamBase->release();
+
     CCStreamOptions faultReportOptions = { 0 };
     faultReportOptions.stream_type = 1;
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
@@ -210,11 +223,14 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
-    XYLog("DEBUG %s [STEP 2] super::start\n", __FUNCTION__);
+    XYLog("DEBUG %s [STEP 2] super::start (IO80211Controller::start) driverLogStream=%p retainCnt=%d\n",
+          __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
     if (!super::start(provider)) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
         return false;
     }
+    XYLog("DEBUG %s [STEP 2] super::start OK — driverLogStream retainCnt=%d (expect +1 if framework retained)\n",
+          __FUNCTION__, driverLogStream ? driverLogStream->getRetainCount() : -1);
     XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
@@ -343,13 +359,11 @@ bool AirportItlwm::start(IOService *provider)
         releaseAll();
         return false;
     }
+#endif
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
-#else
-    XYLog("DEBUG %s [STEP 8] Tahoe: skipping initRegistrationInfo (handled by framework)\n", __FUNCTION__);
-#endif
     XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, calling deferBSDAttach + start\n",
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
     if (fNetIf->getInterfaceRole() == 1)
@@ -749,8 +763,8 @@ enableFeature(IO80211FeatureCode code, void *data)
 #if __IO80211_TARGET >= __MAC_26_0
 void *AirportItlwm::getDriverLogStream()
 {
-    XYLog("DEBUG %s returning driverLogPipe=%p\n", __FUNCTION__, driverLogPipe);
-    return driverLogPipe;
+    XYLog("DEBUG %s returning %p\n", __FUNCTION__, driverLogStream);
+    return driverLogStream;
 }
 #endif
 

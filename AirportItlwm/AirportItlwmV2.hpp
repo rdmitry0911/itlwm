@@ -282,7 +282,8 @@ public:
     CCPipe *driverLogPipe;
     CCPipe *driverDataPathPipe;
     CCPipe *driverSnapshotsPipe;
-    
+
+    CCLogStream *driverLogStream;
     CCStream *driverFaultReporter;
 };
 
