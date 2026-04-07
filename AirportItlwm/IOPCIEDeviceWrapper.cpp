@@ -123,9 +123,12 @@ start(IOService *provider)
 void IOPCIEDeviceWrapper::
 stop(IOService *provider)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
+    XYLog("DEBUG %s [1] entry provider=%p _fWorkloop=%p\n", __PRETTY_FUNCTION__, provider, _fWorkloop);
+    XYLog("DEBUG %s [2] PMstop\n", __FUNCTION__);
     PMstop();
+    XYLog("DEBUG %s [3] super::stop\n", __FUNCTION__);
     super::stop(provider);
+    XYLog("DEBUG %s [4] DONE\n", __FUNCTION__);
 }
 
 IOReturn IOPCIEDeviceWrapper::
