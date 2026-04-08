@@ -105,7 +105,26 @@ start(IOService *provider)
 {
     XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     _fWorkloop = IO80211WorkQueue::workQueue();
-    if (!super::start(provider)) {
+    XYLog("DEBUG %s _fWorkloop=%p, calling super::start...\n", __FUNCTION__, _fWorkloop);
+
+    // Panic timer: catch hangs inside IOService::start()
+    static volatile bool wrapperStartReturned = false;
+    wrapperStartReturned = false;
+    thread_call_t wrapperTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!wrapperStartReturned)
+                panic("IOPCIEDeviceWrapper: super::start() hung — did not return within 60 seconds");
+        }, NULL);
+    uint64_t wrapperDeadline;
+    clock_interval_to_deadline(60, kSecondScale, &wrapperDeadline);
+    thread_call_enter_delayed(wrapperTimer, wrapperDeadline);
+
+    bool ret = super::start(provider);
+
+    wrapperStartReturned = true;
+    thread_call_cancel(wrapperTimer);
+    thread_call_free(wrapperTimer);
+    if (!ret) {
         XYLog("DEBUG %s FAIL: super::start\n", __FUNCTION__);
         return false;
     }

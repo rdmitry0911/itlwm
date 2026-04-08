@@ -140,6 +140,12 @@ bool AirportItlwm::init(OSDictionary *properties)
 IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 {
     XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
+
+    int delay_secs = 0;
+    if (PE_parse_boot_argn("itlwm_delay", &delay_secs, sizeof(delay_secs)) && delay_secs > 0) {
+        XYLog("DEBUG %s itlwm_delay=%d — pausing before probe...\n", __FUNCTION__, delay_secs);
+        IOSleep(delay_secs * 1000);
+    }
     IOPCIEDeviceWrapper *wrapper = OSDynamicCast(IOPCIEDeviceWrapper, provider);
     if (!wrapper) {
         XYLog("DEBUG %s FAIL: Not a IOPCIEDeviceWrapper instance\n", __FUNCTION__);
@@ -151,8 +157,27 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
         XYLog("DEBUG %s FAIL: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
         return NULL;
     }
-    XYLog("DEBUG %s OK: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
-    return super::probe(provider, score);
+    XYLog("DEBUG %s OK: pciNub=%p fHalService=%p — calling super::probe (IO80211Controller)\n", __FUNCTION__, pciNub, fHalService);
+
+    // Panic timer: catch hangs inside IO80211Controller::probe()
+    static volatile bool probeReturned = false;
+    probeReturned = false;
+    thread_call_t probeTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!probeReturned)
+                panic("AirportItlwm: IO80211Controller::probe() hung — did not return within 60 seconds");
+        }, NULL);
+    uint64_t probeDeadline;
+    clock_interval_to_deadline(60, kSecondScale, &probeDeadline);
+    thread_call_enter_delayed(probeTimer, probeDeadline);
+
+    IOService *result = super::probe(provider, score);
+
+    probeReturned = true;
+    thread_call_cancel(probeTimer);
+    thread_call_free(probeTimer);
+    XYLog("DEBUG %s super::probe returned %p\n", __FUNCTION__, result);
+    return result;
 }
 
 #define LOWER32(x)  ((uint64_t)(x) & 0xffffffff)
@@ -231,8 +256,38 @@ initCCLogs()
 bool AirportItlwm::start(IOService *provider)
 {
     XYLog("DEBUG %s [STEP 0] entry provider=%p\n", __PRETTY_FUNCTION__, provider);
+
+    // boot-arg "itlwm_delay=N" — pause N seconds so verbose boot output
+    // stays on screen long enough to read/photograph.
+    int delay_secs = 0;
+    if (PE_parse_boot_argn("itlwm_delay", &delay_secs, sizeof(delay_secs)) && delay_secs > 0) {
+        XYLog("DEBUG %s itlwm_delay=%d — pausing to let you read the screen...\n", __FUNCTION__, delay_secs);
+        IOSleep(delay_secs * 1000);
+        XYLog("DEBUG %s delay done, continuing\n", __FUNCTION__);
+    }
+
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
     int boot_value = 0;
+
+    // Diagnostic: panic timer covering the entire start() method.
+    // Tracks the last completed step so the panic message shows exactly where
+    // the driver hung.  Requires boot-args: -v debug=0x100 keepsyms=1
+    static volatile int startStep = 0;
+    static volatile bool startCompleted = false;
+    startStep = 0;
+    startCompleted = false;
+    thread_call_t panicTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!startCompleted)
+                panic("AirportItlwm: start() hung after step %d — did not complete within 60 seconds. "
+                      "Boot with -v debug=0x100 keepsyms=1 to see preceding XYLog output.",
+                      startStep);
+        }, NULL);
+    uint64_t panicDeadline;
+    clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
+    thread_call_enter_delayed(panicTimer, panicDeadline);
+    XYLog("DEBUG %s panic timer armed (60s, covers all steps)\n", __FUNCTION__);
+#define DISARM_PANIC_TIMER() do { startCompleted = true; thread_call_cancel(panicTimer); thread_call_free(panicTimer); } while(0)
 
     UInt8 builtIn = 0;
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
@@ -241,33 +296,20 @@ bool AirportItlwm::start(IOService *provider)
     XYLog("DEBUG %s [STEP 1] initCCLogs (Tahoe path)\n", __FUNCTION__);
     if (!initCCLogs()) {
         XYLog("DEBUG %s [STEP 1] FAIL: CCLog init\n", __FUNCTION__);
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 1;
 #endif
-    // Diagnostic: panic timer to catch deadlocks inside super::start().
-    // If super::start() hangs, after 30 seconds the kernel will panic
-    // with a full stack trace visible on screen (debug=0x100 keepsyms=1).
-    // The backtrace will show the exact function/lock causing the deadlock.
-    static volatile bool superStartReturned = false;
-    superStartReturned = false;
-    thread_call_t panicTimer = thread_call_allocate(
-        [](thread_call_param_t, thread_call_param_t) {
-            if (!superStartReturned)
-                panic("AirportItlwm: super::start() deadlock — did not return within 30 seconds");
-        }, NULL);
-    uint64_t panicDeadline;
-    clock_interval_to_deadline(30, kSecondScale, &panicDeadline);
-    thread_call_enter_delayed(panicTimer, panicDeadline);
-
-    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=%p) — panic timer armed (30s)\n", __FUNCTION__, driverLogStream);
+    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=%p)\n", __FUNCTION__, driverLogStream);
     bool superResult = super::start(provider);
-    superStartReturned = true;
-    thread_call_cancel(panicTimer);
-    thread_call_free(panicTimer);
+    startStep = 2;
     if (!superResult) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 3;
     XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
@@ -277,18 +319,22 @@ bool AirportItlwm::start(IOService *provider)
                                         (IOPowerConnection *) getParentEntry(gIOPowerPlane), IOPMLowestState) != IOPMNoErr) {
         XYLog("DEBUG %s [STEP 3] FAIL: requestPowerDomainState\n", __FUNCTION__);
         super::stop(provider);
+        DISARM_PANIC_TIMER();
         return false;
     }
     if (initPCIPowerManagment(pciNub) == false) {
         XYLog("DEBUG %s [STEP 3] FAIL: initPCIPowerManagment\n", __FUNCTION__);
         super::stop(pciNub);
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 4;
     XYLog("DEBUG %s [STEP 4] workloop & command gate\n", __FUNCTION__);
     if (_fWorkloop == NULL) {
         XYLog("DEBUG %s [STEP 4] FAIL: No _fWorkloop\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     _fCommandGate = IOCommandGate::commandGate(this, (IOCommandGate::Action)AirportItlwm::tsleepHandler);
@@ -296,6 +342,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 4] FAIL: No command gate\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     _fWorkloop->addEventSource(_fCommandGate);
@@ -304,8 +351,10 @@ bool AirportItlwm::start(IOService *provider)
         !setCurrentMedium(primaryMedium) || !setSelectedMedium(primaryMedium)) {
         XYLog("DEBUG %s [STEP 4] FAIL: setup medium\n", __FUNCTION__);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 5;
     XYLog("DEBUG %s [STEP 5] HAL initWithController + attach\n", __FUNCTION__);
     fHalService->initWithController(this, _fWorkloop, _fCommandGate);
     fHalService->get80211Controller()->ic_event_handler = eventHandler;
@@ -319,8 +368,10 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 5] FAIL: HAL attach\n", __FUNCTION__);
         super::stop(pciNub);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 6;
     XYLog("DEBUG %s [STEP 6] watchdog + scan timers\n", __FUNCTION__);
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
@@ -328,6 +379,7 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
@@ -336,6 +388,7 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     fWatchdogWorkLoop->addEventSource(watchdogTimer);
@@ -343,6 +396,7 @@ bool AirportItlwm::start(IOService *provider)
     _fWorkloop->addEventSource(scanSource);
     scanSource->enable();
 
+    startStep = 7;
     XYLog("DEBUG %s [STEP 7] Skywalk interface init + attach\n", __FUNCTION__);
     fNetIf = new AirportItlwmSkywalkInterface;
 #if __IO80211_TARGET >= __MAC_26_0
@@ -355,6 +409,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: Skywalk interface init\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     fNetIf->setInterfaceRole(1);
@@ -365,6 +420,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: CCLog init (pre-Tahoe)\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
 #endif
@@ -372,19 +428,23 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 7] FAIL: fNetIf attach\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
+    startStep = 8;
     XYLog("DEBUG %s [STEP 8] attachInterface + BSD interface\n", __FUNCTION__);
     if (!attachInterface(fNetIf, this)) {
         XYLog("DEBUG %s [STEP 8] FAIL: attachInterface\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface, true)) {
         XYLog("DEBUG %s [STEP 8] FAIL: IONetworkController attachInterface\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
@@ -393,6 +453,7 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
         super::stop(provider);
         releaseAll();
+        DISARM_PANIC_TIMER();
         return false;
     }
     {
@@ -423,10 +484,12 @@ bool AirportItlwm::start(IOService *provider)
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
     if (fNetIf->getInterfaceRole() == 1)
         fNetIf->deferBSDAttach(true);
+    startStep = 81; // 8c — fNetIf->start
     XYLog("DEBUG %s [STEP 8c] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
     fNetIf->start(this);
     XYLog("DEBUG %s [STEP 8d] fNetIf->start returned OK\n", __FUNCTION__);
 
+    startStep = 9;
     XYLog("DEBUG %s [STEP 9] enableAdapter\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
@@ -441,8 +504,11 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 9a] post-enable: ic_state=%d if_flags=0x%x ic_caps=0x%x ic_opmode=%d\n",
               __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags, ic_dbg->ic_caps, ic_dbg->ic_opmode);
     }
+    startStep = 10;
     registerService();
     XYLog("DEBUG %s [STEP 10] start COMPLETE power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
+    DISARM_PANIC_TIMER();
+#undef DISARM_PANIC_TIMER
     return true;
 }
 
