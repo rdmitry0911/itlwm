@@ -476,6 +476,17 @@ bool AirportItlwm::start(IOService *provider)
     }
     // fRegistrationInfo must be allocated on ALL targets (including Tahoe).
     // Before these fixes, skipping it on Tahoe caused fNetIf->start() to hang.
+    // IO80211SkywalkInterface::init() may not allocate ExpansionData on Tahoe,
+    // so allocate ourselves if NULL.  256 bytes covers the real Apple layout
+    // (our headers only declare 2 fields, but the kernel struct has ~15).
+    if (!fNetIf->mExpansionData) {
+        XYLog("DEBUG %s mExpansionData is NULL — allocating\n", __FUNCTION__);
+        fNetIf->mExpansionData = (IOSkywalkNetworkInterface::ExpansionData *)IOMallocZero(256);
+    }
+    if (!fNetIf->mExpansionData2) {
+        XYLog("DEBUG %s mExpansionData2 is NULL — allocating\n", __FUNCTION__);
+        fNetIf->mExpansionData2 = (IOSkywalkEthernetInterface::ExpansionData *)IOMallocZero(256);
+    }
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
