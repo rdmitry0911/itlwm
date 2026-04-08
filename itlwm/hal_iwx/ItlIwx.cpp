@@ -1393,9 +1393,13 @@ iwx_read_firmware(struct iwx_softc *sc)
     size_t len;
     OSData *fwData = NULL;
     
+    XYLog("DEBUG %s entry fw_status=%d\n", __FUNCTION__, fw->fw_status);
     if (fw->fw_status == IWX_FW_STATUS_DONE)
         return 0;
-    
+
+    if (fw->fw_status == IWX_FW_STATUS_INPROGRESS) {
+        XYLog("DEBUG %s WARNING: fw_status INPROGRESS, waiting (INFSLP)...\n", __FUNCTION__);
+    }
     while (fw->fw_status == IWX_FW_STATUS_INPROGRESS)
         tsleep_nsec(&sc->sc_fw, 0, "iwxfwp", INFSLP);
     fw->fw_status = IWX_FW_STATUS_INPROGRESS;
@@ -2117,17 +2121,20 @@ out:
 int ItlIwx::
 iwx_load_pnvm(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry sku_id=[%u,%u,%u]\n", __FUNCTION__,
+          sc->sku_id[0], sc->sku_id[1], sc->sku_id[2]);
     int err;
-    
+
     /* if the SKU_ID is empty, there's nothing to do */
-    if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2])
+    if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2]) {
+        XYLog("DEBUG %s SKU_ID empty, skip\n", __FUNCTION__);
         return 0;
-    
+    }
+
     if (!iwx_read_pnvm(sc)) {
         goto out;
     };
-    
+
 out:
     /* kick the doorbell */
     if (iwx_nic_lock(sc)) {
@@ -2135,11 +2142,14 @@ out:
         IWX_UREG_DOORBELL_TO_ISR6_PNVM);
         iwx_nic_unlock(sc);
     }
-    
+
+    XYLog("DEBUG %s waiting 2s for pnvm init_complete (tsleep)...\n", __FUNCTION__);
     err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
-    
+    XYLog("DEBUG %s tsleep returned err=%d sc_init_complete=0x%x\n",
+          __FUNCTION__, err, sc->sc_init_complete);
+
     iwx_pnvm_free(&sc->sc_fw);
-    
+
     return err;
 }
 
@@ -2961,37 +2971,19 @@ int ItlIwx::
 iwx_apm_init(struct iwx_softc *sc)
 {
     int err = 0;
-    
-    /*
-     * Disable L0s without affecting L1;
-     *  don't wait for ICH L0s (ICH bug W/A)
-     */
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
+
     IWX_SETBITS(sc, IWX_CSR_GIO_CHICKEN_BITS,
                 IWX_CSR_GIO_CHICKEN_BITS_REG_BIT_L1A_NO_L0S_RX);
-    
-    /* Set FH wait threshold to maximum (HW error during stress W/A) */
     IWX_SETBITS(sc, IWX_CSR_DBG_HPET_MEM_REG, IWX_CSR_DBG_HPET_MEM_REG_VAL);
-    
-    /*
-     * Enable HAP INTA (interrupt from management bus) to
-     * wake device's PCI Express link L1a -> L0s
-     */
     IWX_SETBITS(sc, IWX_CSR_HW_IF_CONFIG_REG,
                 IWX_CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
-    
+
     iwx_apm_config(sc);
-    
-    /*
-     * Set "initialization complete" bit to move adapter from
-     * D0U* --> D0A* (powered-up active) state.
-     */
+
     IWX_SETBITS(sc, IWX_CSR_GP_CNTRL, IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
-    
-    /*
-     * Wait for clock stabilization; once stabilized, access to
-     * device-internal resources is supported, e.g. iwx_write_prph()
-     * and accesses to uCode SRAM.
-     */
+
+    XYLog("DEBUG %s polling MAC_CLOCK_READY...\n", __FUNCTION__);
     if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 25000)) {
@@ -3000,6 +2992,7 @@ iwx_apm_init(struct iwx_softc *sc)
         err = ETIMEDOUT;
         goto out;
     }
+    XYLog("DEBUG %s MAC_CLOCK_READY OK\n", __FUNCTION__);
 out:
     if (err)
         XYLog("%s: apm init error %d\n", DEVNAME(sc), err);
@@ -3302,16 +3295,22 @@ int ItlIwx::
 iwx_nic_init(struct iwx_softc *sc)
 {
     int err;
-    
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
+
     iwx_apm_init(sc);
+    XYLog("DEBUG %s apm_init done, calling nic_config\n", __FUNCTION__);
     iwx_nic_config(sc);
-    
+    XYLog("DEBUG %s nic_config done, calling nic_rx_init\n", __FUNCTION__);
+
     err = iwx_nic_rx_init(sc);
-    if (err)
+    if (err) {
+        XYLog("DEBUG %s nic_rx_init FAILED err=%d\n", __FUNCTION__, err);
         return err;
-    
+    }
+
     IWX_SETBITS(sc, IWX_CSR_MAC_SHADOW_REG_CTRL, 0x800fffff);
-    
+    XYLog("DEBUG %s done\n", __FUNCTION__);
+
     return 0;
 }
 
@@ -4693,27 +4692,33 @@ out:
 int ItlIwx::
 iwx_load_firmware(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s entry device_family=%d\n", __FUNCTION__, sc->sc_device_family);
     struct iwx_fw_sects *fws;
     int err/*, w*/;
 
     sc->sc_uc.uc_intr = 0;
-    
+
     fws = &sc->sc_fw.fw_sects[IWX_UCODE_TYPE_REGULAR];
-    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
+    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
+        XYLog("DEBUG %s calling ctxt_info_gen3_init\n", __FUNCTION__);
         err = iwx_ctxt_info_gen3_init(sc, fws);
-    else
+    } else {
+        XYLog("DEBUG %s calling ctxt_info_init\n", __FUNCTION__);
         err = iwx_ctxt_info_init(sc, fws);
+    }
     if (err) {
-        XYLog("%s: could not init context info\n", DEVNAME(sc));
+        XYLog("%s: could not init context info err=%d\n", DEVNAME(sc), err);
         return err;
     }
-    
+    XYLog("DEBUG %s ctxt_info done, waiting 1s for FW load (tsleep)...\n", __FUNCTION__);
+
     /* wait for the firmware to load */
 //    for (w = 0; !sc->sc_uc.uc_intr && w < 10; w++) {
 //        err = tsleep_nsec(&sc->sc_uc, 0, "iwxuc", MSEC_TO_NSEC(100));
 //    }
     err = tsleep_nsec(&sc->sc_uc, 0, "iwxuc", SEC_TO_NSEC(1));
+    XYLog("DEBUG %s tsleep returned err=%d uc_intr=%d uc_ok=%d\n",
+          __FUNCTION__, err, sc->sc_uc.uc_intr, sc->sc_uc.uc_ok);
     if (err || !sc->sc_uc.uc_ok) {
         if (iwx_nic_lock(sc)) {
             XYLog("SecBoot CPU1 Status: 0x%x, CPU2 Status: 0x%x\n",
@@ -12768,27 +12773,33 @@ iwx_preinit(struct iwx_softc *sc)
     struct _ifnet *ifp = IC2IFP(ic);
     int err;
     static int attached;
-    
+
+    XYLog("DEBUG iwx_preinit: iwx_prepare_card_hw...\n");
     err = iwx_prepare_card_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
-    
+    XYLog("DEBUG iwx_preinit: iwx_prepare_card_hw done\n");
+
     if (attached) {
         /* Update MAC in case the upper layers changed it. */
         IEEE80211_ADDR_COPY(sc->sc_ic.ic_myaddr,
                             ((struct arpcom *)ifp)->ac_enaddr);
         return 0;
     }
-    
+
+    XYLog("DEBUG iwx_preinit: iwx_start_hw...\n");
     err = iwx_start_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
-    
+    XYLog("DEBUG iwx_preinit: iwx_start_hw done\n");
+
+    XYLog("DEBUG iwx_preinit: iwx_run_init_mvm_ucode...\n");
     err = iwx_run_init_mvm_ucode(sc, 1);
+    XYLog("DEBUG iwx_preinit: iwx_run_init_mvm_ucode returned %d\n", err);
     iwx_stop_device(sc);
     if (err)
         return err;
@@ -13138,9 +13149,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memcpy(ifp->if_xname, DEVNAME(sc), IFNAMSIZ);
     
     if_attach(ifp);
+    XYLog("DEBUG iwx_attach: ieee80211_ifattach...\n");
     ieee80211_ifattach(ifp, getController());
+    XYLog("DEBUG iwx_attach: ieee80211_media_init...\n");
     ieee80211_media_init(ifp);
-    
+    XYLog("DEBUG iwx_attach: media_init done\n");
+
 #if NBPFILTER > 0
     iwx_radiotap_attach(sc);
 #endif
@@ -13183,9 +13197,11 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
+    XYLog("DEBUG iwx_attach: calling iwx_preinit...\n");
     if (iwx_preinit(sc)) {
         goto fail5;
     }
+    XYLog("DEBUG iwx_attach: iwx_preinit done OK\n");
     
     return true;
     
