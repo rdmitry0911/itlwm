@@ -136,11 +136,12 @@ public:
     }
 
 #if __IO80211_TARGET >= __MAC_26_0
-    // [429] override — IO80211Family calls vtable offset 0xd68 (28+ sites) to get
-    // CCLogStream* for logging.  Returns NULL until CCLogStream is created after start().
+    // dump[429] = releaseFlowQueue at vptr+0xD58.  Not called during start().
     virtual void *releaseFlowQueue(IO80211FlowQueue *) override;
-    // [431] override — must return false (0), otherwise restricted-mode paths cause deadlock
-    virtual bool isCommandAllowedInRestrictedMode(int command) override;
+    // dump[431] = getDriverLogStream (pure virtual) at vptr+0xD68.
+    // IO80211Controller::start() calls this for setGlobalLogger(CCLogStream*).
+    // Must return valid CCLogStream*.
+    virtual void *getDriverLogStream() override;
 #endif
 
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;

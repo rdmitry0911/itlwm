@@ -174,7 +174,10 @@ initCCLogs()
     driverLogOptions.pad10 = 2;
     driverLogOptions.file_options = 0;
     driverLogOptions.log_policy = 0;
-    driverLogPipe = CCPipe::withOwnerNameCapacity(this, "com.zxystd.AirportItlwm", "DriverLogs", &driverLogOptions);
+    // Use pciNub as owner (not this) — Apple's BCM driver uses the bus interface as CCPipe owner.
+    // Using the IO80211Controller as owner conflicts with CoreCapture registration in
+    // IO80211Controller::setupControlPathLogging(), causing a deadlock during super::start().
+    driverLogPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "DriverLogs", &driverLogOptions);
     XYLog("%s driverLogPipeRet %d\n", __FUNCTION__, driverLogPipe != NULL);
     
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
@@ -189,7 +192,7 @@ initCCLogs()
     driverLogOptions.pad10 = LOWER32(0x202800000);
     driverLogOptions.file_options = 0;
     driverLogOptions.log_policy = 0;
-    driverDataPathPipe = CCPipe::withOwnerNameCapacity(this, "com.zxystd.AirportItlwm", "DatapathEvents", &driverLogOptions);
+    driverDataPathPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "DatapathEvents", &driverLogOptions);
     XYLog("%s driverDataPathPipeRet %d\n", __FUNCTION__, driverDataPathPipe != NULL);
     
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
@@ -199,7 +202,7 @@ initCCLogs()
     strlcpy(driverLogOptions.name, "0", sizeof(driverLogOptions.name));
     strlcpy(driverLogOptions.directory_name, "WiFi", sizeof(driverLogOptions.directory_name));
     driverLogOptions.pipe_size = 128;
-    driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(this, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
+    driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
     XYLog("%s driverSnapshotsPipeRet %d\n", __FUNCTION__, driverSnapshotsPipe != NULL);
     
     CCStreamOptions faultReportOptions = { 0 };
@@ -209,8 +212,9 @@ initCCLogs()
     XYLog("%s driverFaultReporterRet %d\n", __FUNCTION__, driverFaultReporter != NULL);
 
     // CCLogStream MUST be created before super::start() — IO80211Controller::start()
-    // calls createIOReporters() → IO80211ControllerMonitor::initWithController() which
-    // reads fLogger via vtable[429].  If NULL, createIOReporters fails and start() aborts.
+    // calls vtable[431] (getDriverLogStream, vptr offset 0xd68) to get CCLogStream*,
+    // stores it in global logger, then calls createIOReporters().
+    // If NULL, IO80211ControllerMonitor fails and start() aborts.
     {
         CCStreamOptions logStreamOptions = { 0 };
         logStreamOptions.stream_type = 0;
@@ -240,8 +244,27 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
-    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=%p)\n", __FUNCTION__, driverLogStream);
-    if (!super::start(provider)) {
+    // Diagnostic: panic timer to catch deadlocks inside super::start().
+    // If super::start() hangs, after 30 seconds the kernel will panic
+    // with a full stack trace visible on screen (debug=0x100 keepsyms=1).
+    // The backtrace will show the exact function/lock causing the deadlock.
+    static volatile bool superStartReturned = false;
+    superStartReturned = false;
+    thread_call_t panicTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!superStartReturned)
+                panic("AirportItlwm: super::start() deadlock — did not return within 30 seconds");
+        }, NULL);
+    uint64_t panicDeadline;
+    clock_interval_to_deadline(30, kSecondScale, &panicDeadline);
+    thread_call_enter_delayed(panicTimer, panicDeadline);
+
+    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=%p) — panic timer armed (30s)\n", __FUNCTION__, driverLogStream);
+    bool superResult = super::start(provider);
+    superStartReturned = true;
+    thread_call_cancel(panicTimer);
+    thread_call_free(panicTimer);
+    if (!superResult) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
         return false;
     }
@@ -475,7 +498,8 @@ void AirportItlwm::free()
 
 bool AirportItlwm::createWorkQueue()
 {
-    XYLog("DEBUG %s _fWorkloop=%p → %d\n", __FUNCTION__, _fWorkloop, _fWorkloop != 0);
+    _fWorkloop = IO80211WorkQueue::workQueue();
+    XYLog("DEBUG %s created IO80211WorkQueue _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
     return _fWorkloop != 0;
 }
 
@@ -485,8 +509,11 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue() const
 IO80211WorkQueue *AirportItlwm::getWorkQueue()
 #endif
 {
+    // getWorkQueue is called multiple times during IO80211Controller::start():
+    //  #1 = createWorkQueue phase, #2 = CommandGate alloc (after RangingManager),
+    //  #3 = inside CreatePostOffice, #4 = TimerSource alloc, #5 = TimerFactory alloc
     static int sGetWorkQueueCount = 0;
-    if (++sGetWorkQueueCount <= 3)
+    if (++sGetWorkQueueCount <= 20)
         XYLog("DEBUG %s #%d returning %p\n", __FUNCTION__, sGetWorkQueueCount, _fWorkloop);
     return _fWorkloop;
 }
@@ -806,26 +833,28 @@ enableFeature(IO80211FeatureCode code, void *data)
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
-// vtable[429] — IO80211Controller::start() calls offset 0xd68 and stores the return
-// in a global logger used by 28+ IO80211Family call sites.  Apple drivers override
-// this releaseFlowQueue slot to return their CCLogStream*.
+// vtable dump[429] = releaseFlowQueue at vptr+0xD58.  Not called during start().
 static int sReleaseFlowQueueCallCount = 0;
 void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
 {
     int n = ++sReleaseFlowQueueCallCount;
     if (n <= 50)
-        XYLog("DEBUG [vtable429] releaseFlowQueue #%d driverLogStream=%p rc=%d\n",
-              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
-    return driverLogStream;
+        XYLog("DEBUG [vtable429] releaseFlowQueue #%d\n", n);
+    return nullptr;
 }
 
-static int sRestrictedModeCallCount = 0;
-bool AirportItlwm::isCommandAllowedInRestrictedMode(int command)
+// vtable dump[431] = getDriverLogStream (pure virtual) at vptr+0xD68.
+// IO80211Controller::start() calls this to get CCLogStream* for setGlobalLogger(),
+// then createIOReporters() uses it.  Must return valid CCLogStream*.
+// (Dump indexes include 2 RTTI entries, so vptr offset = (431-2)*8 = 0xD68.)
+static int sGetDriverLogStreamCallCount = 0;
+void *AirportItlwm::getDriverLogStream()
 {
-    int n = ++sRestrictedModeCallCount;
+    int n = ++sGetDriverLogStreamCallCount;
     if (n <= 50)
-        XYLog("DEBUG [vtable431] isCommandAllowedInRestrictedMode #%d cmd=%d → false\n", n, command);
-    return false;
+        XYLog("DEBUG [vtable431] getDriverLogStream #%d driverLogStream=%p rc=%d\n",
+              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
+    return driverLogStream;
 }
 #endif
 
