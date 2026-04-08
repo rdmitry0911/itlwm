@@ -496,6 +496,36 @@ struct apple80211_scan_result
 #endif
 } __attribute__((packed));
 
+// WCL channel info entry — 8 bytes per channel
+// Reverse-engineered from AppleBCMWLAN::getWCL_CHANNELS_INFO (macOS 26.x)
+#define APPLE80211_WCL_MAX_CHANNELS 400
+struct apple80211_wcl_channel_entry {
+    uint16_t chan_spec;        // 0x00 - channel spec (chanspec_t or channel number)
+    uint8_t  max_tx_power;     // 0x02 - max tx power
+    uint8_t  min_tx_power;     // 0x03 - min tx power
+    uint8_t  field4;           // 0x04
+    uint8_t  field5;           // 0x05
+    uint8_t  indoor;           // 0x06 - indoor restriction
+    uint8_t  flags;            // 0x07 - bit0:restricted bit1:radar bit2:passive bit4:40MHz bit5:80MHz bit6:160MHz
+} __attribute__((packed));
+
+// WCL channel info — 0xC88 bytes total
+// Layout: entries(400*8=3200) + metadata(8) = 3208
+struct apple80211ChannelInfo {
+    struct apple80211_wcl_channel_entry entries[APPLE80211_WCL_MAX_CHANNELS]; // 0x0000
+    uint16_t num_channels;     // 0x0C80
+    uint16_t config;           // 0x0C82
+    uint8_t  flag1;            // 0x0C84
+    uint8_t  support_6e;       // 0x0C85
+    uint16_t padding;          // 0x0C86
+} __attribute__((packed));     // 0x0C88 total
+
+// WCL BSS info (beacon message) — 0x84 (132) bytes
+// Reverse-engineered from AppleBCMWLAN::getWCL_BSS_INFO (macOS 26.x)
+struct apple80211_beacon_msg {
+    uint8_t  data[0x84];       // opaque — exact layout TBD from boot log analysis
+} __attribute__((packed));
+
 // BGScan cached network entry — 0x14 (20) bytes each
 // Reverse-engineered from IO80211Family/WCLBGScanManager (macOS 26.x)
 #define APPLE80211_BGSCAN_MAX_NETWORKS 140

@@ -1246,3 +1246,102 @@ getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
     XYLog("%s count=%u timestamp=%llu\n", __FUNCTION__, count, now);
     return kIOReturnSuccess;
 }
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
+{
+    if (!data)
+        return kIOReturnError;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    bzero(data, sizeof(*data));
+
+    uint16_t count = 0;
+    for (int i = 0; i < IEEE80211_CHAN_MAX && count < APPLE80211_WCL_MAX_CHANNELS; i++) {
+        struct ieee80211_channel *ch = &ic->ic_channels[i];
+        if (ch->ic_freq == 0)
+            continue;
+
+        struct apple80211_wcl_channel_entry *entry = &data->entries[count];
+        entry->chan_spec = ieee80211_chan2ieee(ic, ch);
+        entry->max_tx_power = 0;
+        entry->min_tx_power = 0;
+        entry->field4 = 0;
+        entry->field5 = 0;
+        entry->indoor = 0;
+
+        uint8_t flags = 0;
+        if (ch->ic_flags & IEEE80211_CHAN_PASSIVE)
+            flags |= (1 << 2);  // bit2: passive
+        if (ch->ic_flags & IEEE80211_CHAN_DFS)
+            flags |= (1 << 1);  // bit1: radar/DFS
+        if (IEEE80211_IS_CHAN_HT40(ch) || IEEE80211_IS_CHAN_VHT40(ch))
+            flags |= (1 << 4);  // bit4: 40MHz
+        if (IEEE80211_IS_CHAN_VHT80(ch))
+            flags |= (1 << 5);  // bit5: 80MHz
+        entry->flags = flags;
+        count++;
+    }
+
+    data->num_channels = count;
+    data->support_6e = 0;
+
+    XYLog("WCL [530] %s num_channels=%u\n", __FUNCTION__, count);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_BSS_INFO(apple80211_beacon_msg *data)
+{
+    if (!data)
+        return kIOReturnError;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL) {
+        XYLog("WCL [526] %s not associated ic_state=%d\n", __FUNCTION__, ic->ic_state);
+        return kIOReturnError;
+    }
+
+    struct ieee80211_node *ni = ic->ic_bss;
+    bzero(data, sizeof(*data));
+
+    // Populate at known offsets — exact layout is reverse-engineered,
+    // fields may shift. Log raw bytes for verification.
+    uint8_t *buf = data->data;
+
+    // +0x00: BSSID (6 bytes) — most beacon structs start with BSSID
+    memcpy(buf + 0x00, ni->ni_bssid, 6);
+    // +0x06: beacon interval (2 bytes LE)
+    *(uint16_t *)(buf + 0x06) = ni->ni_intval;
+    // +0x08: capability info (2 bytes LE)
+    *(uint16_t *)(buf + 0x08) = ni->ni_capinfo;
+    // +0x0A: channel number (2 bytes LE)
+    *(uint16_t *)(buf + 0x0A) = ieee80211_chan2ieee(ic, ni->ni_chan);
+    // +0x0C: RSSI (2 bytes LE, signed)
+    *(int16_t *)(buf + 0x0C) = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+    // +0x0E: noise (2 bytes LE, signed)
+    *(int16_t *)(buf + 0x0E) = -fHalService->getDriverInfo()->getBSSNoise();
+    // +0x10: SSID length (1 byte)
+    buf[0x10] = ni->ni_esslen;
+    // +0x11: SSID (up to 32 bytes)
+    if (ni->ni_esslen > 0)
+        memcpy(buf + 0x11, ni->ni_essid, MIN(ni->ni_esslen, 32));
+    // +0x7C: IE length (2 bytes LE)
+    uint16_t ie_len = 0;
+    if (ni->ni_rsnie_tlv && ni->ni_rsnie_tlv_len > 0)
+        ie_len = MIN(ni->ni_rsnie_tlv_len, (uint16_t)(0x84 - 0x7E));
+    *(uint16_t *)(buf + 0x7C) = ie_len;
+    // +0x7E: IE data (remaining bytes)
+    if (ie_len > 0)
+        memcpy(buf + 0x7E, ni->ni_rsnie_tlv, ie_len);
+
+    XYLog("WCL [526] %s bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d ssid_len=%u ie_len=%u\n",
+          __FUNCTION__,
+          ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
+          ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
+          ieee80211_chan2ieee(ic, ni->ni_chan),
+          -(0 - IWM_MIN_DBM - ni->ni_rssi), ni->ni_esslen, ie_len);
+    // Dump first 32 bytes for offset verification
+    XYLog("WCL [526] hex[0x00-0x1F]: %s\n", hexdump(buf, 32));
+    return kIOReturnSuccess;
+}

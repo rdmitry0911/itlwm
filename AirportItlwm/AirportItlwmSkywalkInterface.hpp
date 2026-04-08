@@ -179,7 +179,7 @@ public:
     // [525]
     virtual IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *) override { XYLog("DEBUG VTABLE [525] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [526]
-    virtual IOReturn getWCL_BSS_INFO(apple80211_beacon_msg *) override { XYLog("DEBUG VTABLE [526] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_BSS_INFO(apple80211_beacon_msg *) override;
     // [527]
     virtual IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *) override { XYLog("DEBUG VTABLE [527] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [528]
@@ -187,7 +187,7 @@ public:
     // [529]
     virtual IOReturn getHE_COUNTERS(apple80211_he_counters_ctl *) override { XYLog("DEBUG VTABLE [529] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [530]
-    virtual IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo *) override { XYLog("DEBUG VTABLE [530] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo *) override;
     // [531]
     virtual IOReturn getRSN_XE(apple80211_rsn_xe_data *) override { XYLog("DEBUG VTABLE [531] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [532]
