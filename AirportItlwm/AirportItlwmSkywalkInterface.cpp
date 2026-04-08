@@ -273,21 +273,22 @@ bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
     XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
+    // Apple's pattern: call the no-arg init chain FIRST so that
+    // IO80211InfraInterface::init() allocates the link-state object at
+    // this+0x128 (and sets this+0x120 via initIvars).  The two-arg
+    // IO80211SkywalkInterface::init(provider, addr) checks this+0x120:
+    // if already set it skips the base init and only copies the MAC address.
+    if (!IO80211InfraInterface::init()) {
+        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+    XYLog("DEBUG %s IO80211InfraInterface::init OK (linkState obj allocated)\n", __FUNCTION__);
     bool ret = IO80211SkywalkInterface::init(provider, addr);
     if (!ret) {
         XYLog("%s IO80211SkywalkInterface init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
     XYLog("DEBUG %s IO80211SkywalkInterface::init OK\n", __FUNCTION__);
-    // IO80211SkywalkInterface::init(IOService*, ether_addr*) does NOT chain to
-    // IO80211InfraInterface::init(), which allocates the link-state object at
-    // this+0x128.  Without it, linkState() dereferences NULL during
-    // IO80211PeerManager::initWithInterface → page fault.
-    if (!IO80211InfraInterface::init()) {
-        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
-        return false;
-    }
-    XYLog("DEBUG %s IO80211InfraInterface::init OK (linkState obj allocated)\n", __FUNCTION__);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
