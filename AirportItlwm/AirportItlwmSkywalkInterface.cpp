@@ -279,6 +279,15 @@ init(IOService *provider, ether_addr *addr)
         return false;
     }
     XYLog("DEBUG %s IO80211SkywalkInterface::init OK\n", __FUNCTION__);
+    // IO80211SkywalkInterface::init(IOService*, ether_addr*) does NOT chain to
+    // IO80211InfraInterface::init(), which allocates the link-state object at
+    // this+0x128.  Without it, linkState() dereferences NULL during
+    // IO80211PeerManager::initWithInterface → page fault.
+    if (!IO80211InfraInterface::init()) {
+        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
+        return false;
+    }
+    XYLog("DEBUG %s IO80211InfraInterface::init OK (linkState obj allocated)\n", __FUNCTION__);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
