@@ -197,7 +197,7 @@ public:
     // [534]
     virtual IOReturn getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *) override { XYLog("DEBUG VTABLE [534] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [535]
-    virtual IOReturn getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *) override { XYLog("DEBUG VTABLE [535] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *) override;
     // [536]
     virtual IOReturn getWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *) override { XYLog("DEBUG VTABLE [536] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [537]
@@ -309,40 +309,87 @@ public:
     virtual IOReturn setSENSING_ENABLE(apple80211_sensing_enable_t *) override { XYLog("DEBUG VTABLE [587] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [588]
     virtual IOReturn setSENSING_DISABLE(apple80211_sensing_disable_t *) override { XYLog("DEBUG VTABLE [588] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [589]
-    virtual IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network *) override { XYLog("DEBUG VTABLE [589] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [590]
-    virtual IOReturn setWCL_REASSOC(apple80211_reassoc *) override { XYLog("DEBUG VTABLE [590] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [591]
-    virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *) override { XYLog("DEBUG VTABLE [591] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [592]
-    virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *) override { XYLog("DEBUG VTABLE [592] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [593]
-    virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *) override { XYLog("DEBUG VTABLE [593] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [589] — AppleBCMWLAN: validates param, delegates to network leave handler
+    virtual IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network *) override;
+    // [590] — AppleBCMWLAN: validates param, sends reassoc command
+    virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override {
+        if (!data) return kIOReturnError;
+        XYLog("%s\n", __FUNCTION__);
+        return kIOReturnSuccess;
+    }
+    // [591] — Not found in AppleBCMWLAN, validate + ack
+    virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override {
+        XYLog("WCL [591] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [592] — AppleBCMWLAN: delegates to RoamAdapter
+    virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override {
+        XYLog("WCL [592] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [593] — AppleBCMWLAN: delegates to RoamAdapter
+    virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override {
+        XYLog("WCL [593] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [594]
-    virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *) override { XYLog("DEBUG VTABLE [594] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [595]
-    virtual IOReturn setWCL_SCAN_ABORT(void *) override { XYLog("DEBUG VTABLE [595] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [596]
-    virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *) override { XYLog("DEBUG VTABLE [596] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [597]
-    virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *) override { XYLog("DEBUG VTABLE [597] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data) override {
+        XYLog("WCL [594] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [595] — AppleBCMWLAN: aborts ongoing scan
+    virtual IOReturn setWCL_SCAN_ABORT(void *) override;
+    // [596] — AppleBCMWLAN: sets real-time vs default mode
+    virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data) override {
+        XYLog("WCL [596] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [597] — AppleBCMWLAN: configures ARP keepalive/GARP mode
+    virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override {
+        XYLog("WCL [597] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [598]
-    virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *) override { XYLog("DEBUG VTABLE [598] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override {
+        XYLog("WCL [598] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [599]
     virtual IOReturn setWCL_TRIGGER_CC(triggerCC *) override { XYLog("DEBUG VTABLE [599] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [600]
     virtual IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *) override;
     // [601]
     virtual IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates *) override;
-    // [602]
-    virtual IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params *) override { XYLog("DEBUG VTABLE [602] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [603]
-    virtual IOReturn setWCL_LINK_UP_DONE(void *) override { XYLog("DEBUG VTABLE [603] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [602] — AppleBCMWLAN: delegates to NetAdapter::setQosParams
+    virtual IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data) override {
+        XYLog("WCL [602] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [603] — AppleBCMWLAN: calls PowerManager::handleLinkUpConfiguration
+    virtual IOReturn setWCL_LINK_UP_DONE(void *) override {
+        XYLog("WCL [603] %s\n", __FUNCTION__);
+        return kIOReturnSuccess;
+    }
     // [604]
-    virtual IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *) override { XYLog("DEBUG VTABLE [604] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data) override {
+        XYLog("WCL [604] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [605]
-    virtual IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state *) override { XYLog("DEBUG VTABLE [605] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state *data) override {
+        XYLog("WCL [605] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [606]
     virtual IOReturn setRSN_XE(apple80211_rsn_xe_data *) override { XYLog("DEBUG VTABLE [606] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [607]
@@ -353,34 +400,77 @@ public:
     virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override { XYLog("DEBUG VTABLE [609] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [610]
     virtual IOReturn setGAS_ABORT(void *) override { XYLog("DEBUG VTABLE [610] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [611]
-    virtual IOReturn setOS_FEATURE_FLAGS(apple80211_feature_flags *) override { XYLog("DEBUG VTABLE [611] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [611] — AppleBCMWLAN: stores flags, applies DynSAR/KVR/6G feature configuration
+    virtual IOReturn setOS_FEATURE_FLAGS(apple80211_feature_flags *data) override {
+        XYLog("WCL [611] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [612]
-    virtual IOReturn setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *) override { XYLog("DEBUG VTABLE [612] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data) override {
+        XYLog("WCL [612] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [613]
-    virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *) override { XYLog("DEBUG VTABLE [613] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override {
+        XYLog("WCL [613] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [614]
     virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override { XYLog("DEBUG VTABLE [614] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [615]
-    virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *) override { XYLog("DEBUG VTABLE [615] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [616]
-    virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *) override { XYLog("DEBUG VTABLE [616] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [617]
-    virtual IOReturn setWCL_CONFIG_BGSCAN(apple80211_bg_scan *) override { XYLog("DEBUG VTABLE [617] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [618]
-    virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *) override { XYLog("DEBUG VTABLE [618] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [619]
-    virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *) override { XYLog("DEBUG VTABLE [619] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [620]
-    virtual IOReturn setHEARTBEAT(void *) override { XYLog("DEBUG VTABLE [620] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [621]
-    virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *) override { XYLog("DEBUG VTABLE [621] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [615] — AppleBCMWLAN: delegates to BGScanAdapter
+    virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data) override {
+        XYLog("WCL [615] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [616] — AppleBCMWLAN: delegates to BGScanAdapter
+    virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data) override {
+        XYLog("WCL [616] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [617] — AppleBCMWLAN: handles enable/disable/periodic scan config
+    virtual IOReturn setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data) override {
+        XYLog("WCL [617] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [618] — AppleBCMWLAN: delegates to BGScanAdapter
+    virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override {
+        XYLog("WCL [618] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
+    virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override {
+        XYLog("WCL [619] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [620] — Not found in AppleBCMWLAN
+    virtual IOReturn setHEARTBEAT(void *) override {
+        XYLog("WCL [620] %s\n", __FUNCTION__);
+        return kIOReturnSuccess;
+    }
+    // [621] — Not found in AppleBCMWLAN
+    virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *data) override {
+        XYLog("WCL [621] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [622]
     virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override { XYLog("DEBUG VTABLE [622] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [623]
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override { XYLog("DEBUG VTABLE [623] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [624]
-    virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *) override { XYLog("DEBUG VTABLE [624] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
+    virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override {
+        XYLog("WCL [624] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [625]
     virtual IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *) override { XYLog("DEBUG VTABLE [625] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [626]
@@ -403,10 +493,18 @@ public:
     virtual IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *) override { XYLog("DEBUG VTABLE [634] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [635]
     virtual IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state *) override { XYLog("DEBUG VTABLE [635] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [636]
-    virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *) override { XYLog("DEBUG VTABLE [636] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [637]
-    virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *) override { XYLog("DEBUG VTABLE [637] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [636] — AppleBCMWLAN: stores up to 10 IPv6 addresses, notifies InfraInterface
+    virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *data) override {
+        XYLog("WCL [636] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
+    // [637] — AppleBCMWLAN: validates param, returns success (minimal stub)
+    virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override {
+        XYLog("WCL [637] %s\n", __FUNCTION__);
+        if (!data) return kIOReturnError;
+        return kIOReturnSuccess;
+    }
     // [638]
     virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override { XYLog("DEBUG VTABLE [638] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [639]

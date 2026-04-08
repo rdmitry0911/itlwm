@@ -496,6 +496,27 @@ struct apple80211_scan_result
 #endif
 } __attribute__((packed));
 
+// BGScan cached network entry — 0x14 (20) bytes each
+// Reverse-engineered from IO80211Family/WCLBGScanManager (macOS 26.x)
+#define APPLE80211_BGSCAN_MAX_NETWORKS 140
+struct apple80211_bgscan_cached_network_entry {
+    uint8_t  bssid[6];        // 0x00 - BSSID
+    uint16_t channel;          // 0x06 - channel number
+    int16_t  rssi;             // 0x08 - RSSI in dBm
+    uint16_t capability;       // 0x0A - capability flags
+    uint32_t ssid_crc;         // 0x0C - CRC32 of SSID for identification
+    uint32_t age_ms;           // 0x10 - age in milliseconds
+} __attribute__((packed));
+
+// BGScan cached network data list — 0xB00 (2816) bytes total
+// Layout: count(4) + entries(140*20=2800) + reserved(4) + timestamp(8) = 2816
+struct apple80211_bgscan_cached_network_data_list {
+    uint32_t count;                                                     // 0x000
+    struct apple80211_bgscan_cached_network_entry entries[APPLE80211_BGSCAN_MAX_NETWORKS]; // 0x004
+    uint32_t reserved;                                                  // 0xAF4
+    uint64_t timestamp;                                                 // 0xAF8
+} __attribute__((packed));                                              // 0xB00 total
+
 struct apple80211_network_data
 {
     u_int32_t                   version;

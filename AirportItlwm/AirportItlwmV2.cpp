@@ -111,6 +111,7 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     UInt32 msg = 0;
     AirportItlwm *that = (AirportItlwm *)owner;
     that->fNetIf->postMessage(APPLE80211_M_SCAN_DONE, &msg, 4, 0);
+    that->fNetIf->postMessage(APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, 0);
 }
 
 bool AirportItlwm::init(OSDictionary *properties)

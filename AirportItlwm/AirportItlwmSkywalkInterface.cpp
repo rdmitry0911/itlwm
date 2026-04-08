@@ -1086,6 +1086,51 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
     return kIOReturnSuccess;
 }
 
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
+{
+    if (!data)
+        return kIOReturnError;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+
+    if (ic->ic_state < IEEE80211_S_SCAN)
+        return kIOReturnSuccess;
+
+    if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
+        IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH)
+        return kIOReturnSuccess;
+
+    disassocIsVoluntary = true;
+
+    ieee80211_del_ess(ic, nullptr, 0, 1);
+    ieee80211_deselect_ess(ic);
+#ifdef USE_APPLE_SUPPLICANT
+    ic->ic_rsn_ie_override[1] = 0;
+#endif
+    ic->ic_assoc_status = APPLE80211_STATUS_UNAVAILABLE;
+    ic->ic_deauth_reason = APPLE80211_REASON_ASSOC_LEAVING;
+    ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_SCAN_ABORT(void *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+
+    if (ic->ic_flags & IEEE80211_F_BGSCAN)
+        ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+    if (ic->ic_flags & IEEE80211_F_ASCAN)
+        ic->ic_flags &= ~IEEE80211_F_ASCAN;
+
+    return kIOReturnSuccess;
+}
+
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);
 
 static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_node *fNextNodeToSend, apple80211_scan_result *result)
@@ -1162,5 +1207,42 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
     if (fNextNodeToSend == NULL)
         fScanResultWrapping = true;
 
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
+{
+    if (!data)
+        return kIOReturnError;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    bzero(data, sizeof(*data));
+
+    uint64_t now = airport_up_time();
+    uint32_t count = 0;
+    struct ieee80211_node *ni;
+
+    RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
+        if (count >= APPLE80211_BGSCAN_MAX_NETWORKS)
+            break;
+        if (ni->ni_chan == NULL || ni->ni_chan == IEEE80211_CHAN_ANYC)
+            continue;
+
+        struct apple80211_bgscan_cached_network_entry *entry = &data->entries[count];
+        memcpy(entry->bssid, ni->ni_bssid, 6);
+        entry->channel = ieee80211_chan2ieee(ic, ni->ni_chan);
+        entry->rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+        entry->capability = ni->ni_capinfo;
+        entry->ssid_crc = ether_crc32_le_update(0xFFFFFFFF,
+                            (const u_int8_t *)ni->ni_essid, ni->ni_esslen);
+        entry->age_ms = (uint32_t)(now - ni->ni_age_ts);
+        count++;
+    }
+
+    data->count = count;
+    data->timestamp = now;
+
+    XYLog("%s count=%u timestamp=%llu\n", __FUNCTION__, count, now);
     return kIOReturnSuccess;
 }
