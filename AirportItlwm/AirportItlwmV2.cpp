@@ -77,19 +77,25 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     IO80211SkywalkInterface *interface = that->fNetIf;
     XYLog("DEBUG %s msgCode=%d ic_state=%d if_flags=0x%x power_state=%u\n",
           __FUNCTION__, msgCode, ic->ic_state, ic->ic_ac.ac_if.if_flags, that->power_state);
-    if (!interface)
+    if (!interface) {
+        XYLog("DEBUG %s SKIP: interface=NULL\n", __FUNCTION__);
         return;
+    }
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
+            XYLog("DEBUG %s → posting COUNTRY_CODE_CHANGED\n", __FUNCTION__);
             interface->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, 0);
             break;
         case IEEE80211_EVT_STA_ASSOC_DONE:
+            XYLog("DEBUG %s → posting ASSOC_DONE\n", __FUNCTION__);
             interface->postMessage(APPLE80211_M_ASSOC_DONE, NULL, 0, 0);
             break;
         case IEEE80211_EVT_STA_DEAUTH:
+            XYLog("DEBUG %s → posting DEAUTH_RECEIVED deauth_reason=%d\n", __FUNCTION__, ic->ic_deauth_reason);
             interface->postMessage(APPLE80211_M_DEAUTH_RECEIVED, NULL, 0, 0);
             break;
         default:
+            XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);
             break;
     }
 }
@@ -99,9 +105,13 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     struct ieee80211com *ic = fHalService->get80211Controller();
     static int wd_count = 0;
-    if (wd_count++ % 10 == 0) // log every 10s
-        XYLog("DEBUG %s [%d] ic_state=%d if_flags=0x%x power_state=%u pmPowerState=%u\n",
-              __FUNCTION__, wd_count, ic->ic_state, ifp->if_flags, power_state, pmPowerState);
+    static int wd_last_state = -1;
+    wd_count++;
+    if (wd_count <= 30 || wd_count % 10 == 0 || ic->ic_state != wd_last_state) {
+        XYLog("DEBUG %s [%d] ic_state=%d if_flags=0x%x power_state=%u pmPowerState=%u link=0x%x\n",
+              __FUNCTION__, wd_count, ic->ic_state, ifp->if_flags, power_state, pmPowerState, currentStatus);
+        wd_last_state = ic->ic_state;
+    }
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
 }
@@ -110,6 +120,8 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
     UInt32 msg = 0;
     AirportItlwm *that = (AirportItlwm *)owner;
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    XYLog("DEBUG %s ic_state=%d posting SCAN_DONE + BGSCAN_CACHED_NETWORK_AVAILABLE\n", __FUNCTION__, ic->ic_state);
     that->fNetIf->postMessage(APPLE80211_M_SCAN_DONE, &msg, 4, 0);
     that->fNetIf->postMessage(APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, 0);
 }
@@ -195,10 +207,20 @@ initCCLogs()
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
     driverFaultReporter = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
     XYLog("%s driverFaultReporterRet %d\n", __FUNCTION__, driverFaultReporter != NULL);
-    // NOTE: CCLogStream creation is deferred to after super::start() —
-    // creating it before IO80211Controller::start() causes a deadlock because
-    // the framework calls vtable[429] during start() and passes the CCLogStream
-    // to CoreCapture cc_log, which needs IO80211 infrastructure not yet ready.
+
+    // CCLogStream MUST be created before super::start() — IO80211Controller::start()
+    // calls createIOReporters() → IO80211ControllerMonitor::initWithController() which
+    // reads fLogger via vtable[429].  If NULL, createIOReporters fails and start() aborts.
+    {
+        CCStreamOptions logStreamOptions = { 0 };
+        logStreamOptions.stream_type = 0;
+        logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
+        CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
+        driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
+        XYLog("%s driverLogStream: base=%p cast=%p\n", __FUNCTION__, logStreamBase, driverLogStream);
+        if (logStreamBase && !driverLogStream)
+            logStreamBase->release();
+    }
     return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverFaultReporter;
 }
 
@@ -218,24 +240,10 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
-    // NOTE: driverLogStream is NULL here intentionally.  vtable[429] returns NULL
-    // during super::start() — all 28+ framework call sites check for NULL and skip
-    // logging.  Creating CCLogStream before start() causes a deadlock in CoreCapture.
-    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=NULL — will create after start)\n", __FUNCTION__);
+    XYLog("DEBUG %s [STEP 2] super::start (driverLogStream=%p)\n", __FUNCTION__, driverLogStream);
     if (!super::start(provider)) {
         XYLog("DEBUG %s [STEP 2] FAIL: super::start returned false\n", __FUNCTION__);
         return false;
-    }
-    // IO80211 infrastructure is now ready — safe to create CCLogStream
-    {
-        CCStreamOptions logStreamOptions = { 0 };
-        logStreamOptions.stream_type = 0;
-        logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
-        CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
-        driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
-        XYLog("DEBUG %s [STEP 2a] driverLogStream: base=%p cast=%p\n", __FUNCTION__, logStreamBase, driverLogStream);
-        if (logStreamBase && !driverLogStream)
-            logStreamBase->release();
     }
     XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
@@ -790,6 +798,7 @@ IOReturn AirportItlwm::getPacketFilters(const OSSymbol *group, UInt32 *filters) 
 SInt32 AirportItlwm::
 enableFeature(IO80211FeatureCode code, void *data)
 {
+    XYLog("DEBUG %s code=%d\n", __FUNCTION__, code);
     if (code == kIO80211Feature80211n) {
         return 0;
     }
@@ -804,7 +813,7 @@ static int sReleaseFlowQueueCallCount = 0;
 void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
 {
     int n = ++sReleaseFlowQueueCallCount;
-    if (n <= 10)
+    if (n <= 50)
         XYLog("DEBUG [vtable429] releaseFlowQueue #%d driverLogStream=%p rc=%d\n",
               n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
     return driverLogStream;
@@ -814,7 +823,7 @@ static int sRestrictedModeCallCount = 0;
 bool AirportItlwm::isCommandAllowedInRestrictedMode(int command)
 {
     int n = ++sRestrictedModeCallCount;
-    if (n <= 10)
+    if (n <= 50)
         XYLog("DEBUG [vtable431] isCommandAllowedInRestrictedMode #%d cmd=%d → false\n", n, command);
     return false;
 }

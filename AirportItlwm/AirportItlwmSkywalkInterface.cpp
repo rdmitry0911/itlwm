@@ -95,7 +95,11 @@ static int ieeeChanFlag2apple(int flags, int bw)
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    
+    XYLog("DEBUG %s ssid_len=%u auth_lower=%u auth_upper=%u key_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x ic_state=%d\n",
+          __FUNCTION__, ssid_len, authtype_lower, authtype_upper, key_len,
+          bssid.octet[0], bssid.octet[1], bssid.octet[2],
+          bssid.octet[3], bssid.octet[4], bssid.octet[5], ic->ic_state);
+
     ieee80211_disable_rsn(ic);
     ieee80211_disable_wep(ic);
     
@@ -311,29 +315,25 @@ IOReturn AirportItlwmSkywalkInterface::
 getSSID(struct apple80211_ssid_data *sd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
-    static int sGetSSIDCount = 0;
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(sd, 0, sizeof(*sd));
         sd->version = APPLE80211_VERSION;
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
-        if (++sGetSSIDCount <= 5)
-            XYLog("DEBUG %s #%d ssid=%s len=%u\n", __FUNCTION__, sGetSSIDCount, ic->ic_des_essid, sd->ssid_len);
+        XYLog("DEBUG %s ssid=%s len=%u\n", __FUNCTION__, ic->ic_des_essid, sd->ssid_len);
         return kIOReturnSuccess;
     }
-    if (++sGetSSIDCount <= 5)
-        XYLog("DEBUG %s #%d ic_state=%d (not RUN) → 6\n", __FUNCTION__, sGetSSIDCount, ic->ic_state);
+    XYLog("DEBUG %s ic_state=%d (not RUN) → 6\n", __FUNCTION__, ic->ic_state);
     return 6;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 getAUTH_TYPE(struct apple80211_authtype_data *ad)
 {
-    static int sCount = 0;
     ad->version = APPLE80211_VERSION;
     ad->authtype_lower = current_authtype_lower;
     ad->authtype_upper = current_authtype_upper;
-    if (++sCount <= 3) XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, current_authtype_lower, current_authtype_upper);
+    XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, current_authtype_lower, current_authtype_upper);
     return kIOReturnSuccess;
 }
 
@@ -407,17 +407,24 @@ setCIPHER_KEY(struct apple80211_key *key)
             break;
     }
     //fInterface->postMessage(APPLE80211_M_CIPHER_KEY_CHANGED);
+    if (key->key_cipher_type == APPLE80211_CIPHER_TKIP ||
+        key->key_cipher_type == APPLE80211_CIPHER_AES_OCB ||
+        key->key_cipher_type == APPLE80211_CIPHER_AES_CCM) {
+        if (key->key_flags == 0) {
+            // GTK installed — 4-way handshake complete, notify Apple supplicant
+            XYLog("%s posting RSN_HANDSHAKE_DONE after GTK install\n", __FUNCTION__);
+            postMessage(APPLE80211_M_RSN_HANDSHAKE_DONE, NULL, 0, false);
+        }
+    }
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 getPHY_MODE(struct apple80211_phymode_data *pd)
 {
-    static int sPhyModeCount = 0;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (++sPhyModeCount <= 3)
-        XYLog("DEBUG %s #%d ic_curmode=%d ic_flags=0x%x ic_state=%d\n",
-              __FUNCTION__, sPhyModeCount, ic->ic_curmode, ic->ic_flags, ic->ic_state);
+    XYLog("DEBUG %s ic_curmode=%d ic_flags=0x%x ic_state=%d\n",
+          __FUNCTION__, ic->ic_curmode, ic->ic_flags, ic->ic_state);
     pd->version = APPLE80211_VERSION;
     pd->phy_mode = APPLE80211_MODE_11A
     | APPLE80211_MODE_11B
@@ -465,8 +472,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getCHANNEL(struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
-    static int sChCount = 0;
-    if (++sChCount <= 5) XYLog("DEBUG VTABLE [471] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+    XYLog("DEBUG VTABLE [471] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(cd, 0, sizeof(apple80211_channel_data));
         cd->version = APPLE80211_VERSION;
@@ -481,12 +487,10 @@ getCHANNEL(struct apple80211_channel_data *cd)
 IOReturn AirportItlwmSkywalkInterface::
 getSTATE(struct apple80211_state_data *sd)
 {
-    static int sGetStateCount = 0;
     memset(sd, 0, sizeof(*sd));
     sd->version = APPLE80211_VERSION;
     sd->state = fHalService->get80211Controller()->ic_state;
-    if (++sGetStateCount <= 10)
-        XYLog("DEBUG %s #%d ic_state=%d\n", __FUNCTION__, sGetStateCount, sd->state);
+    XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, sd->state);
     return kIOReturnSuccess;
 }
 
@@ -500,8 +504,10 @@ getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
         size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
         for (int i = 0; i < size; i++)
             ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
+        XYLog("DEBUG %s OK\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
+    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
     return 6;
 }
 
@@ -510,6 +516,7 @@ getVHT_MCS_INDEX_SET(struct apple80211_vht_mcs_index_set_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
+        XYLog("DEBUG %s ic_bss=%p ic_curmode=%d → error\n", __FUNCTION__, ic->ic_bss, ic->ic_curmode);
         return kIOReturnError;
     }
     memset(data, 0, sizeof(struct apple80211_vht_mcs_index_set_data));
@@ -523,6 +530,7 @@ getMCS_VHT(struct apple80211_mcs_vht_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
+        XYLog("DEBUG %s ic_bss=%p ic_curmode=%d → error\n", __FUNCTION__, ic->ic_bss, ic->ic_curmode);
         return kIOReturnError;
     }
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
@@ -559,10 +567,9 @@ getRATE_SET(struct apple80211_rate_set_data *ad)
         ad->num_rates = ic->ic_bss->ni_rates.rs_nrates;
         size_t size = min(ic->ic_bss->ni_rates.rs_nrates, ARRAY_SIZE(ad->rates));
         for (int i=0; i < size; i++) {
-            struct apple80211_rate apple_rate = ad->rates[i];
-            apple_rate.version = APPLE80211_VERSION;
-            apple_rate.rate = ic->ic_bss->ni_rates.rs_rates[i];
-            apple_rate.flags = 0;
+            ad->rates[i].version = APPLE80211_VERSION;
+            ad->rates[i].rate = ic->ic_bss->ni_rates.rs_rates[i];
+            ad->rates[i].flags = 0;
         }
         return kIOReturnSuccess;
     }
@@ -596,8 +603,10 @@ IOReturn AirportItlwmSkywalkInterface::
 getRATE(struct apple80211_rate_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL)
+    if (ic->ic_bss == NULL) {
+        XYLog("DEBUG %s ic_bss=NULL → 6\n", __FUNCTION__);
         return 6;
+    }
     int nss;
     int sgi;
     int index = 0;
@@ -649,18 +658,16 @@ IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    static int sCount = 0;
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(bd, 0, sizeof(*bd));
         bd->version = APPLE80211_VERSION;
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
-        if (++sCount <= 3)
-            XYLog("DEBUG %s %02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
-                  bd->bssid.octet[0], bd->bssid.octet[1], bd->bssid.octet[2],
-                  bd->bssid.octet[3], bd->bssid.octet[4], bd->bssid.octet[5]);
+        XYLog("DEBUG %s %02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
+              bd->bssid.octet[0], bd->bssid.octet[1], bd->bssid.octet[2],
+              bd->bssid.octet[3], bd->bssid.octet[4], bd->bssid.octet[5]);
         return kIOReturnSuccess;
     }
-    if (++sCount <= 3) XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
+    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
     return 6;
 }
 
@@ -668,8 +675,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    static int sRssiCount = 0;
-    if (++sRssiCount <= 5) XYLog("DEBUG VTABLE [476] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+    XYLog("DEBUG VTABLE [476] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(rd, 0, sizeof(*rd));
         rd->num_radios = 1;
@@ -748,16 +754,17 @@ getNOISE(struct apple80211_noise_data *nd)
         nd->noise[0]
         = nd->aggregate_noise = -fHalService->getDriverInfo()->getBSSNoise();
         nd->noise_unit = APPLE80211_UNIT_DBM;
+        XYLog("DEBUG %s noise=%d\n", __FUNCTION__, nd->noise[0]);
         return kIOReturnSuccess;
     }
+    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
     return 6;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 getPOWERSAVE(struct apple80211_powersave_data *pd)
 {
-    static int sCount = 0;
-    if (++sCount <= 3) XYLog("DEBUG VTABLE [472] %s\n", __FUNCTION__);
+    XYLog("DEBUG VTABLE [472] %s\n", __FUNCTION__);
     pd->version = APPLE80211_VERSION;
     pd->powersave_level = APPLE80211_POWERSAVE_MODE_DISABLED;
     return kIOReturnSuccess;
@@ -766,8 +773,7 @@ getPOWERSAVE(struct apple80211_powersave_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 getNSS(struct apple80211_nss_data *data)
 {
-    static int sCount = 0;
-    if (++sCount <= 3) XYLog("DEBUG VTABLE [510] %s nss=%d\n", __FUNCTION__, fHalService->getDriverInfo()->getTxNSS());
+    XYLog("DEBUG VTABLE [510] %s nss=%d\n", __FUNCTION__, fHalService->getDriverInfo()->getTxNSS());
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
@@ -823,17 +829,21 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setDISASSOCIATE(void *ad)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
-    if (ic->ic_state < IEEE80211_S_SCAN)
+    if (ic->ic_state < IEEE80211_S_SCAN) {
+        XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
         return kIOReturnSuccess;
-    
+    }
+
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
-    
-    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH)
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
+        XYLog("DEBUG %s SKIP: ic_state=%d (ASSOC/AUTH)\n", __FUNCTION__, ic->ic_state);
         return kIOReturnSuccess;
+    }
     
     disassocIsVoluntary = true;
 
@@ -864,10 +874,8 @@ getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
             ad->num_channels++;
         }
     }
-    static int sSupChCount = 0;
-    if (++sSupChCount <= 3)
-        XYLog("DEBUG %s #%d num_channels=%d ic_state=%d\n",
-              __FUNCTION__, sSupChCount, ad->num_channels, ic->ic_state);
+    XYLog("DEBUG %s num_channels=%d ic_state=%d\n",
+          __FUNCTION__, ad->num_channels, ic->ic_state);
     return kIOReturnSuccess;
 }
 
@@ -890,7 +898,7 @@ getDEAUTH(struct apple80211_deauth_data *da)
     da->version = APPLE80211_VERSION;
     struct ieee80211com *ic = fHalService->get80211Controller();
     da->deauth_reason = ic->ic_deauth_reason;
-//    XYLog("%s, %d\n", __FUNCTION__, da->deauth_reason);
+    XYLog("DEBUG %s deauth_reason=%d ic_state=%d\n", __FUNCTION__, da->deauth_reason, ic->ic_state);
     return kIOReturnSuccess;
 }
 
@@ -907,7 +915,7 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
         hv->status = APPLE80211_STATUS_SUCCESS;
     else
         hv->status = APPLE80211_STATUS_UNAVAILABLE;
-//    XYLog("%s, %d\n", __FUNCTION__, hv->status);
+    XYLog("DEBUG %s status=%d ic_state=%d\n", __FUNCTION__, hv->status, ic->ic_state);
     return kIOReturnSuccess;
 }
 
@@ -926,7 +934,7 @@ setCLEAR_PMKSA_CACHE(void *req)
 IOReturn AirportItlwmSkywalkInterface::
 setDEAUTH(struct apple80211_deauth_data *da)
 {
-    XYLog("%s\n", __FUNCTION__);
+    XYLog("DEBUG %s reason=%d\n", __FUNCTION__, da ? da->deauth_reason : -1);
     return kIOReturnSuccess;
 }
 
@@ -934,10 +942,13 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS(struct apple80211_mcs_data* md)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN ||  ic->ic_bss == NULL || !md)
+    if (ic->ic_state != IEEE80211_S_RUN ||  ic->ic_bss == NULL || !md) {
+        XYLog("DEBUG %s ic_state=%d ic_bss=%p → 6\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
         return 6;
+    }
     md->version = APPLE80211_VERSION;
     md->index = ic->ic_bss->ni_txmcs;
+    XYLog("DEBUG %s mcs=%d\n", __FUNCTION__, md->index);
     return kIOReturnSuccess;
 }
 
@@ -1195,25 +1206,22 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
 IOReturn AirportItlwmSkywalkInterface::
 getSCAN_RESULT(struct apple80211_scan_result *sr)
 {
-    static int sScanResultCount = 0;
     if (fNextNodeToSend == NULL) {
         if (fScanResultWrapping) {
             fScanResultWrapping = false;
-            if (++sScanResultCount <= 10)
-                XYLog("DEBUG %s #%d wrapping done → 5\n", __FUNCTION__, sScanResultCount);
+            XYLog("DEBUG %s wrapping done → 5\n", __FUNCTION__);
             return 5;
         } else {
             fNextNodeToSend = RB_MIN(ieee80211_tree, &fHalService->get80211Controller()->ic_tree);
             if (fNextNodeToSend == NULL) {
-                if (++sScanResultCount <= 10)
-                    XYLog("DEBUG %s #%d no nodes → 5\n", __FUNCTION__, sScanResultCount);
+                XYLog("DEBUG %s no nodes → 5\n", __FUNCTION__);
                 return 5;
             }
         }
     }
-    if (++sScanResultCount <= 10)
-        XYLog("DEBUG %s #%d ssid=%s rssi=%d\n", __FUNCTION__, sScanResultCount,
-              fNextNodeToSend->ni_essid, fNextNodeToSend->ni_rssi);
+    XYLog("DEBUG %s ssid=%s rssi=%d ch=%d\n", __FUNCTION__,
+          fNextNodeToSend->ni_essid, fNextNodeToSend->ni_rssi,
+          fNextNodeToSend->ni_chan ? ieee80211_chan2ieee(fHalService->get80211Controller(), fNextNodeToSend->ni_chan) : -1);
     convertNodeToScanResult(fHalService, fNextNodeToSend, sr);
     
     fNextNodeToSend = RB_NEXT(ieee80211_tree, &HalService->get80211Controller()->ic_tree, fNextNodeToSend);
