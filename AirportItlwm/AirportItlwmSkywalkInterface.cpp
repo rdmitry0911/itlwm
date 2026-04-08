@@ -273,39 +273,18 @@ bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
     XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
-    // Apple reference init order (verified via BootKC disassembly):
-    //
-    // IO80211InfraInterface::init() [0x22de5a4] chains to:
-    //   IO80211SkywalkInterface::init() [no-arg, 0x2274362] which calls:
-    //     IOSkywalkEthernetInterface::init(NULL) — ONE call
-    //     initIvars() — allocates fresh expansion data at this+0x120
-    //   then allocates InfraInterface expansion data at this+0x128
-    //
-    // We must NOT also call IO80211SkywalkInterface::init(provider, addr):
-    // it would call IOSkywalkEthernetInterface::init a second time and re-run
-    // initIvars(), which memset()s the first 0xF0 bytes of expansion data
-    // (clearing fields IO80211PeerManager::initWithInterface depends on).
+    // AppleBCMWLAN reference (BootKC disassembly):
+    //   FUN_ffffff800155c6ac allocates the interface, then calls the no-arg
+    //   init() via vtable → AppleBCMWLANSkywalkInterface::init() →
+    //   IO80211InfraInterface::init() → IO80211SkywalkInterface::init() →
+    //   IOSkywalkEthernetInterface::init(NULL) + initIvars().
+    //   The two-arg init(IOService*, ether_addr*) is never called.
+    //   MAC address is handled by getHardwareAddress(), not by init.
     if (!IO80211InfraInterface::init()) {
         XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
     XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
-
-    // Copy MAC address into SkywalkInterface expansion data, matching the
-    // two-arg init at 0x2274418-0x227442c:
-    //   mov rax, [this + 0x120]       ; expansion data
-    //   mov [rax + 0xe4], dword from addr[0..3]
-    //   mov [rax + 0xe8], word  from addr[4..5]
-    // Offset 0x120 from this is validated: sizeof(IOSkywalkEthernetInterface)
-    // == 0x110 (static_assert), + 0x10 bytes into IO80211SkywalkInterface::_data.
-    if (addr) {
-        char *expData = *(char **)((char *)this + 0x120);
-        if (expData) {
-            memcpy(expData + 0xe4, addr, 4);
-            memcpy(expData + 0xe8, (const char *)addr + 4, 2);
-            XYLog("DEBUG %s MAC copied to expansion data\n", __FUNCTION__);
-        }
-    }
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
