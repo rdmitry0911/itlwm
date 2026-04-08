@@ -597,8 +597,15 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue()
 
 void *AirportItlwm::getFaultReporterFromDriver()
 {
-    XYLog("DEBUG %s returning %p\n", __FUNCTION__, driverFaultReporter);
-    return driverFaultReporter;
+    // IO80211PeerManager::initWithInterface expects the fault reporter to be
+    // a specific IOService nub from the data-path infrastructure (see
+    // AppleBCMWLANCore::getFaultReporterFromDriver — chains through
+    // expansionData→[0x1510]→[0x88]→[0x28]).  It calls vtable method +0x120
+    // on the returned object with non-OSString args; on a CCStream that slot
+    // maps to IORegistryEntry::copyProperty → NULL-deref page fault.
+    // Return NULL so findAndAttachToFaultReporter takes the error path and
+    // PeerManager safely skips the fault-reporter block.
+    return NULL;
 }
 
 #if __IO80211_TARGET < __MAC_26_0
