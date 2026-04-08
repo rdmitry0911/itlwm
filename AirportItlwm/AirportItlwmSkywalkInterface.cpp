@@ -329,15 +329,18 @@ getSSID(struct apple80211_ssid_data *sd)
 IOReturn AirportItlwmSkywalkInterface::
 getAUTH_TYPE(struct apple80211_authtype_data *ad)
 {
+    static int sCount = 0;
     ad->version = APPLE80211_VERSION;
     ad->authtype_lower = current_authtype_lower;
     ad->authtype_upper = current_authtype_upper;
+    if (++sCount <= 3) XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, current_authtype_lower, current_authtype_upper);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setAUTH_TYPE(struct apple80211_authtype_data *ad)
 {
+    XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, ad->authtype_lower, ad->authtype_upper);
     current_authtype_lower = ad->authtype_lower;
     current_authtype_upper = ad->authtype_upper;
     return kIOReturnSuccess;
@@ -646,12 +649,18 @@ IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    static int sCount = 0;
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(bd, 0, sizeof(*bd));
         bd->version = APPLE80211_VERSION;
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
+        if (++sCount <= 3)
+            XYLog("DEBUG %s %02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
+                  bd->bssid.octet[0], bd->bssid.octet[1], bd->bssid.octet[2],
+                  bd->bssid.octet[3], bd->bssid.octet[4], bd->bssid.octet[5]);
         return kIOReturnSuccess;
     }
+    if (++sCount <= 3) XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
     return 6;
 }
 
@@ -747,6 +756,8 @@ getNOISE(struct apple80211_noise_data *nd)
 IOReturn AirportItlwmSkywalkInterface::
 getPOWERSAVE(struct apple80211_powersave_data *pd)
 {
+    static int sCount = 0;
+    if (++sCount <= 3) XYLog("DEBUG VTABLE [472] %s\n", __FUNCTION__);
     pd->version = APPLE80211_VERSION;
     pd->powersave_level = APPLE80211_POWERSAVE_MODE_DISABLED;
     return kIOReturnSuccess;
@@ -755,6 +766,8 @@ getPOWERSAVE(struct apple80211_powersave_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 getNSS(struct apple80211_nss_data *data)
 {
+    static int sCount = 0;
+    if (++sCount <= 3) XYLog("DEBUG VTABLE [510] %s nss=%d\n", __FUNCTION__, fHalService->getDriverInfo()->getTxNSS());
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
