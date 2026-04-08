@@ -462,6 +462,8 @@ IOReturn AirportItlwmSkywalkInterface::
 getCHANNEL(struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
+    static int sChCount = 0;
+    if (++sChCount <= 5) XYLog("DEBUG VTABLE [471] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(cd, 0, sizeof(apple80211_channel_data));
         cd->version = APPLE80211_VERSION;
@@ -567,6 +569,7 @@ getRATE_SET(struct apple80211_rate_set_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getOP_MODE(struct apple80211_opmode_data *od)
 {
+    XYLog("DEBUG VTABLE [475] %s\n", __FUNCTION__);
     od->version = APPLE80211_VERSION;
     od->op_mode = APPLE80211_M_STA;
     return kIOReturnSuccess;
@@ -656,6 +659,8 @@ IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    static int sRssiCount = 0;
+    if (++sRssiCount <= 5) XYLog("DEBUG VTABLE [476] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(rd, 0, sizeof(*rd));
         rd->num_radios = 1;
@@ -803,7 +808,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
-setDISASSOCIATE(struct apple80211_disassoc_data *ad)
+setDISASSOCIATE(void *ad)
 {
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -833,6 +838,7 @@ setDISASSOCIATE(struct apple80211_disassoc_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
 {
+    XYLog("DEBUG VTABLE [477] %s\n", __FUNCTION__);
     if (!ad)
         return kIOReturnError;
     ad->version = APPLE80211_VERSION;
@@ -893,7 +899,7 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
-setSCANCACHE_CLEAR(void *req)
+setCLEAR_PMKSA_CACHE(void *req)
 {
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -970,6 +976,112 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
     if (scanSource) {
         scanSource->setTimeoutMS(100);
         scanSource->enable();
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_SCAN_REQ(apple80211ScanRequest *req)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(req);
+
+    // Dump key fields from apple80211ScanRequest (total 0x1598 bytes)
+    // Offsets from decompiled AppleBCMWLAN/IO80211Family
+    uint32_t num_channels = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x54) : 0;
+    uint32_t scan_type = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x44) : 0;
+    uint32_t bss_type = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x14) : 0;
+    uint32_t ssid_len = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x20) : 0;
+    XYLog("DEBUG %s ic_state=%d req=%p scan_type=%u bss_type=%u ssid_len=%u num_channels=%u\n",
+          __FUNCTION__, ic->ic_state, req, scan_type, bss_type, ssid_len, num_channels);
+
+    // Dump first 96 bytes of struct for offset verification
+    if (req) {
+        XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
+        XYLog("DEBUG %s hex[0x30-0x5F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x30, 48));
+    }
+
+    if (!req)
+        return kIOReturnBadArgument;
+    if (fScanResultWrapping)
+        return 22;
+    if (ic->ic_state <= IEEE80211_S_INIT)
+        return 22;
+
+    ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+    if (scanSource) {
+        scanSource->setTimeoutMS(100);
+        scanSource->enable();
+    }
+    XYLog("DEBUG %s → scan triggered OK\n", __FUNCTION__);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
+{
+    if (!candidates)
+        return kIOReturnBadArgument;
+
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
+
+    // Extract fields from apple80211AssocCandidates struct (offsets from decompiled AppleBCMWLAN)
+    uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(raw + 0x0C);
+    uint32_t auth_lower = *reinterpret_cast<const uint32_t *>(raw + 0x10);
+    uint32_t auth_upper = *reinterpret_cast<const uint32_t *>(raw + 0x14);
+    uint32_t ssid_len = *reinterpret_cast<const uint32_t *>(raw + 0x1C);
+    const uint8_t *ssid = raw + 0x20;
+    uint16_t rsn_ie_len = *reinterpret_cast<const uint16_t *>(raw + 0xD4);
+    const uint8_t *rsn_ie = raw + 0xD6;
+    const struct ether_addr *bssid = reinterpret_cast<const struct ether_addr *>(raw + 0x1F4);
+
+    if (ssid_len > APPLE80211_MAX_SSID_LEN)
+        ssid_len = APPLE80211_MAX_SSID_LEN;
+
+    char ssid_str[APPLE80211_MAX_SSID_LEN + 1];
+    memcpy(ssid_str, ssid, ssid_len);
+    ssid_str[ssid_len] = '\0';
+
+    XYLog("DEBUG %s [%s] mode=%d auth_lower=%d auth_upper=%d rsn_ie_len=%d ic_state=%d\n",
+          __FUNCTION__, ssid_str, ap_mode, auth_lower, auth_upper, rsn_ie_len, ic->ic_state);
+    XYLog("DEBUG %s BSSID=%02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
+          bssid->octet[0], bssid->octet[1], bssid->octet[2],
+          bssid->octet[3], bssid->octet[4], bssid->octet[5]);
+
+    // Dump first 64 bytes and BSSID region for offset verification
+    XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
+    XYLog("DEBUG %s hex[0x1F0-0x21F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x1F0, 48));
+
+    if (ic->ic_state < IEEE80211_S_SCAN) {
+        XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        return kIOReturnSuccess;
+    }
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
+        XYLog("DEBUG %s SKIP: already in ASSOC/AUTH ic_state=%d\n", __FUNCTION__, ic->ic_state);
+        return kIOReturnSuccess;
+    }
+
+    if (ap_mode != APPLE80211_AP_MODE_IBSS) {
+        disassocIsVoluntary = false;
+
+        struct apple80211_authtype_data auth_type_data;
+        auth_type_data.version = APPLE80211_VERSION;
+        auth_type_data.authtype_upper = auth_upper;
+        auth_type_data.authtype_lower = auth_lower;
+        setAUTH_TYPE(&auth_type_data);
+
+        if (rsn_ie_len > 0 && rsn_ie_len <= APPLE80211_MAX_RSN_IE_LEN) {
+            struct apple80211_rsn_ie_data rsn_ie_data;
+            rsn_ie_data.version = APPLE80211_VERSION;
+            rsn_ie_data.len = rsn_ie[1] + 2;
+            memcpy(rsn_ie_data.ie, rsn_ie, MIN(rsn_ie_data.len, (uint16_t)APPLE80211_MAX_RSN_IE_LEN));
+            setRSN_IE(&rsn_ie_data);
+        }
+
+        associateSSID(const_cast<uint8_t *>(ssid), ssid_len, *bssid,
+                      auth_lower, auth_upper, NULL, 0, 0);
     }
     return kIOReturnSuccess;
 }
