@@ -161,11 +161,7 @@ public:
     void watchdogAction(IOTimerEventSource *timer);
 
     virtual SInt32 enableFeature(IO80211FeatureCode, void*) override;
-    virtual bool isCommandProhibited(int command) override {
-        static int sCount = 0;
-        if (++sCount <= 50) XYLog("DEBUG %s #%d cmd=%d → false\n", __FUNCTION__, sCount, command);
-        return false;
-    };
+    virtual bool isCommandProhibited(int command) override;
     virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {
         XYLog("%s\n", __FUNCTION__);
         return 0;
