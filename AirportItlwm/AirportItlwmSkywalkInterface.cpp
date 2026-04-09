@@ -285,14 +285,15 @@ free()
         [](thread_call_param_t, thread_call_param_t) {
             if (!(sRT.rtMask & 0x800000))
                 panic("SkywalkInterface::free hung  "
-                      "skFreeStep=%u rtMask=0x%07x rt2=0x%02x | "
+                      "skFreeStep=%u rtMask=0x%07x rt2=0x%04x | "
                       "stopStep=%u freeStep=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
                       "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x "
                       "ls=%d lsCnt=%u scan=%u pmCnt=%u | "
                       "scanReq=%u assoc=%u scanRes=%u "
-                      "icfl=0x%x esslen=%u nodes=%u mfail=0x%x",
+                      "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
+                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
                       sRT.skFreeStep, sRT.rtMask, sRT.rtMask2,
                       sRT.stopStep, sRT.freeStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
@@ -304,7 +305,10 @@ free()
                       sRT.scanCount, sRT.pmCount,
                       sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
                       sRT.ic_flags, sRT.ic_des_esslen,
-                      sRT.nodeCount, sRT.matchFail);
+                      sRT.nodeCount, sRT.matchFail,
+                      (void *)(uintptr_t)sRT.fVarsPtr,
+                      (void *)(uintptr_t)sRT.bsdIfPtr,
+                      sRT.enableCnt, sRT.disableCnt);
         }, NULL);
     uint64_t skFreeDeadline;
     clock_interval_to_deadline(30, kSecondScale, &skFreeDeadline);
@@ -334,6 +338,17 @@ free()
         mExpansionData2 = NULL;
     }
     sRT.skFreeStep = 4;
+    // Clean up fVars->registrationInfo we populated in start().
+    // Must NULL it before super::free() → IOSkywalkNetworkInterface::free()
+    // to prevent the framework from double-freeing our IOMalloc'd buffer.
+    {
+        void **fVars = *(void ***)((uint8_t *)this + 0xC0);
+        if (fVars && fVars[0]) {
+            XYLog("DEBUG %s freeing fVars->registrationInfo=%p\n", __FUNCTION__, fVars[0]);
+            IOFree(fVars[0], 0x108);
+            fVars[0] = NULL;
+        }
+    }
     instance = NULL;
     fHalService = NULL;
     scanSource = NULL;

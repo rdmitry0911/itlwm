@@ -77,19 +77,27 @@ enum {
 // 26  0x4000000  ether_ifattach done
 // 27  0x8000000  setInterfaceType(IFT_IEEE80211) called
 //
-// rtMask2 bits (BSD / framework lifecycle):
-//  0  0x001  fNetIf->getBSDInterface() returned non-NULL after start
-//  1  0x002  fNetIf->getBSDName() returned non-NULL after start
-//  2  0x004  first SCAN_REQ IOCTL from framework
-//  3  0x008  first ASSOCIATE IOCTL from framework
-//  4  0x010  first getSCAN_RESULT IOCTL from framework
-//  5  0x020  setSSID IOCTL from framework
-//  6  0x040  setPOWER IOCTL from framework
-//  7  0x080  DISASSOCIATE IOCTL from framework
+// rtMask2 bits (BSD / framework / Skywalk lifecycle):
+//  0  0x0001  fNetIf->getBSDInterface() returned non-NULL after start
+//  1  0x0002  fNetIf->getBSDName() returned non-NULL after start
+//  2  0x0004  first SCAN_REQ IOCTL from framework
+//  3  0x0008  first ASSOCIATE IOCTL from framework
+//  4  0x0010  first getSCAN_RESULT IOCTL from framework
+//  5  0x0020  setSSID IOCTL from framework
+//  6  0x0040  setPOWER IOCTL from framework
+//  7  0x0080  DISASSOCIATE IOCTL from framework
+//  8  0x0100  fVars (this+0xC0) non-NULL after init
+//  9  0x0200  fVars->registrationInfo populated by us
+// 10  0x0400  initBSDInterfaceParameters called by Skywalk
+// 11  0x0800  prepareBSDInterface called by Skywalk
+// 12  0x1000  setInterfaceEnable(true) called
+// 13  0x2000  setRunningState called
+// 14  0x4000  enable() called on interface
+// 15  0x8000  postMessage called (first time, from Skywalk)
 // ---------------------------------------------------------------
 struct RuntimeDiag {
     volatile uint32_t rtMask;
-    volatile uint32_t rtMask2;      // BSD/framework lifecycle bits
+    volatile uint32_t rtMask2;      // BSD/framework/Skywalk lifecycle bits
     volatile int      ic_state;     // last seen ieee80211 state
     volatile uint32_t if_flags;     // last seen interface flags
     volatile uint32_t power_state;
@@ -117,6 +125,10 @@ struct RuntimeDiag {
     volatile uint32_t ic_des_esslen;// last seen ic->ic_des_esslen
     volatile uint32_t nodeCount;    // scan tree node count at last choose_bss
     volatile uint32_t matchFail;    // last match_bss fail bitmask
+    volatile uint64_t fVarsPtr;     // raw fVars pointer (this+0xC0)
+    volatile uint64_t bsdIfPtr;     // last seen BSD interface pointer
+    volatile uint32_t enableCnt;    // enable() call count
+    volatile uint32_t disableCnt;   // disable() call count
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)
