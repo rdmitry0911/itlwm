@@ -138,7 +138,9 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     // dispatch (like Apple's postMessageInfra), NOT through
     // IO80211InfraInterface::postMessage which calls
     // updateCountryCodeProperty → sendIOUCToWcl (panics on workloop).
-    that->postMessage(that->fNetIf, msg, NULL, 0, true);
+    // arg1 = optional data pointer, arg2 = optional data length
+    // (reference: scanComplete passes &status/4, others pass NULL/0).
+    that->postMessage(that->fNetIf, msg, arg1, (unsigned int)(uintptr_t)arg2, true);
     RT_SET(5);
     return kIOReturnSuccess;
 }
@@ -159,6 +161,9 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         return;
     }
     UInt32 apple80211Msg;
+    void *msgData = NULL;
+    unsigned int msgDataLen = 0;
+    static UInt32 scanStatus;  // static — must survive until postMessageGated runs
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
             RT_SET(1);
@@ -173,17 +178,20 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
             break;
         case IEEE80211_EVT_SCAN_DONE:
-            // Trigger fakeScanDone on the workloop — posts SCAN_DONE +
-            // BGSCAN_CACHED_NETWORK_AVAILABLE to the Apple80211 framework.
-            if (that->scanSource)
-                that->scanSource->setTimeoutMS(0);
-            return;
+            // Reference: AppleBCMWLANCore::scanComplete calls
+            // postMessage(infra, 10, &status, 4, 1) directly — no timer.
+            apple80211Msg = APPLE80211_M_SCAN_DONE;
+            scanStatus = data ? *(UInt32 *)data : 0;
+            msgData = &scanStatus;
+            msgDataLen = sizeof(scanStatus);
+            break;
         default:
             XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);
             return;
     }
     // Defer postMessage to workloop context — cannot call from interrupt thread.
-    that->getCommandGate()->runAction(postMessageGated, (void *)(uintptr_t)apple80211Msg);
+    that->getCommandGate()->runAction(postMessageGated,
+        (void *)(uintptr_t)apple80211Msg, msgData, (void *)(uintptr_t)msgDataLen);
 }
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
