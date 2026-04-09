@@ -31,22 +31,26 @@ IOCommandGate *_fCommandGate;
 // The panic timer dumps this so one crash report shows everything.
 //
 // rtMask bits:
-//  0  0x0001  eventHandler called at least once
-//  1  0x0002  eventHandler: COUNTRY_CODE_UPDATE seen
-//  2  0x0004  eventHandler: ASSOC_DONE seen
-//  3  0x0008  eventHandler: DEAUTH seen
-//  4  0x0010  postMessageGated entered
-//  5  0x0020  postMessageGated succeeded
-//  6  0x0040  setLinkStatus called
-//  7  0x0080  setLinkStateGated called
-//  8  0x0100  watchdogAction called
-//  9  0x0200  enableAdapter called
-// 10  0x0400  disableAdapter called
-// 11  0x0800  first IOCTL processed
-// 12  0x1000  setPowerState called
-// 13  0x2000  fakeScanDone called
-// 14  0x4000  setLinkState returned OK
-// 15  0x8000  (reserved)
+//  0  0x00001  eventHandler called at least once
+//  1  0x00002  eventHandler: COUNTRY_CODE_UPDATE seen
+//  2  0x00004  eventHandler: ASSOC_DONE seen
+//  3  0x00008  eventHandler: DEAUTH seen
+//  4  0x00010  postMessageGated entered
+//  5  0x00020  postMessageGated succeeded
+//  6  0x00040  setLinkStatus called
+//  7  0x00080  setLinkStateGated called
+//  8  0x00100  watchdogAction called
+//  9  0x00200  enableAdapter called
+// 10  0x00400  disableAdapter called
+// 11  0x00800  first IOCTL processed
+// 12  0x01000  setPowerState called
+// 13  0x02000  fakeScanDone called
+// 14  0x04000  setLinkState returned OK
+// 15  0x08000  init() completed
+// 16  0x10000  createWorkQueue completed
+// 17  0x20000  configureInterface completed
+// 18  0x40000  start() completed (disarmed)
+// 19  0x80000  stop() entered
 // ---------------------------------------------------------------
 struct RuntimeDiag {
     volatile uint32_t rtMask;
@@ -62,6 +66,9 @@ struct RuntimeDiag {
     volatile uint32_t lastPostMsg;  // last postMessage code
     volatile int      lastLinkState;// last link state (up=2/down=1)
     volatile uint32_t linkSetCount; // total setLinkStatus calls
+    volatile int      lastEvtCode;  // last eventHandler msgCode
+    volatile uint32_t scanCount;    // total fakeScanDone calls
+    volatile uint32_t pmCount;      // total setPowerState calls
 };
 static RuntimeDiag sRT = {};
 #define RT_SET(bit) do { sRT.rtMask |= (1u << (bit)); } while(0)
@@ -127,7 +134,11 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     if (!that || !that->fNetIf) return kIOReturnNotReady;
     UInt32 msg = (UInt32)(uintptr_t)arg0;
     sRT.lastPostMsg = msg;
-    that->fNetIf->postMessage(msg, NULL, 0, true);
+    // Use controller-level postMessage — routes through IO80211Controller
+    // dispatch (like Apple's postMessageInfra), NOT through
+    // IO80211InfraInterface::postMessage which calls
+    // updateCountryCodeProperty → sendIOUCToWcl (panics on workloop).
+    that->postMessage(that->fNetIf, msg, NULL, 0, true);
     RT_SET(5);
     return kIOReturnSuccess;
 }
@@ -138,6 +149,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ic->ic_ac.ac_if.controller);
     RT_SET(0);
     sRT.evtCount++;
+    sRT.lastEvtCode = msgCode;
     sRT.ic_state = ic->ic_state;
     sRT.if_flags = ic->ic_ac.ac_if.if_flags;
     XYLog("DEBUG %s msgCode=%d ic_state=%d if_flags=0x%x power_state=%u\n",
@@ -193,12 +205,13 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
     RT_SET(13);
+    sRT.scanCount++;
     UInt32 msg = 0;
     AirportItlwm *that = (AirportItlwm *)owner;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
     XYLog("DEBUG %s ic_state=%d posting SCAN_DONE + BGSCAN_CACHED_NETWORK_AVAILABLE\n", __FUNCTION__, ic->ic_state);
-    that->fNetIf->postMessage(APPLE80211_M_SCAN_DONE, &msg, 4, true);
-    that->fNetIf->postMessage(APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
@@ -216,6 +229,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     power_state = 0;
     driverLogStream = nullptr;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
+    RT_SET(15);
     XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
     return ret;
 }
@@ -487,20 +501,23 @@ bool AirportItlwm::start(IOService *provider)
             StartDiag *d = (StartDiag *)ctx;
             if (!(d->mask & 0x20000))
                 panic("AirportItlwm::start hung  "
-                      "startMask=0x%05x step=%d rtMask=0x%04x | "
-                      "self=%p logStream=%p faultRep=%p wl=%p netIf=%p bsd=%p | "
+                      "sMask=0x%05x step=%d rtMask=0x%05x | "
+                      "self=%p log=%p fault=%p wl=%p nif=%p bsd=%p | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x "
-                      "evt=%u pm=%u wd=%u | "
+                      "evt=%u(last=%d) pm=%u wd=%u | "
                       "ioctl=%u lastIo=%d lastPM=0x%x "
-                      "ls=%d lsCnt=%u",
+                      "ls=%d lsCnt=%u scan=%u pmCnt=%u",
                       d->mask, d->step, sRT.rtMask, d->self,
                       d->logStream, d->faultReporter,
                       d->workloop, d->netIf, d->bsdIf,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
-                      sRT.linkStatus, sRT.evtCount, sRT.postMsgCount,
-                      sRT.wdCount, sRT.ioctlCount, sRT.lastIoctl,
+                      sRT.linkStatus,
+                      sRT.evtCount, sRT.lastEvtCode,
+                      sRT.postMsgCount, sRT.wdCount,
+                      sRT.ioctlCount, sRT.lastIoctl,
                       sRT.lastPostMsg, sRT.lastLinkState,
-                      sRT.linkSetCount);
+                      sRT.linkSetCount, sRT.scanCount,
+                      sRT.pmCount);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -759,6 +776,7 @@ bool AirportItlwm::start(IOService *provider)
     SD_SET(16); // enableAdapter OK
     sDiag.step = 10;
     registerService();
+    RT_SET(18);
     XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
     DISARM_PANIC_TIMER();
 #undef DISARM_PANIC_TIMER
@@ -768,6 +786,7 @@ bool AirportItlwm::start(IOService *provider)
 
 void AirportItlwm::stop(IOService *provider)
 {
+    RT_SET(19);
     XYLog("DEBUG %s [1] entry power_state=%u pmPowerState=%u provider=%p fHalService=%p\n",
           __PRETTY_FUNCTION__, power_state, pmPowerState, provider, fHalService);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
@@ -819,6 +838,7 @@ void AirportItlwm::free()
 bool AirportItlwm::createWorkQueue()
 {
     _fWorkloop = IO80211WorkQueue::workQueue();
+    RT_SET(16);
     XYLog("DEBUG %s created IO80211WorkQueue _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
     return _fWorkloop != 0;
 }
@@ -867,6 +887,7 @@ IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 
 bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 {
+    RT_SET(17);
     XYLog("DEBUG %s entry netif=%p power_state=%u\n", __FUNCTION__, netif, power_state);
     IONetworkData *nd;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
@@ -995,9 +1016,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     if (ret == kIOReturnSuccess) RT_SET(14);
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     that->fNetIf->setRunningState((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp);
-    that->fNetIf->postMessage(APPLE80211_M_LINK_CHANGED, NULL, 0, true);
-    that->fNetIf->postMessage(APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
-    that->fNetIf->postMessage(APPLE80211_M_SSID_CHANGED, NULL, 0, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
     if ((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp) {
         that->fNetIf->reportLinkStatus(3, 0x80);
     } else {
@@ -1330,7 +1351,7 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
     XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
         memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
-        fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, true);
+        postMessage(fNetIf, APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, true);
     }
     return kIOReturnSuccess;
 }
@@ -1549,6 +1570,7 @@ void AirportItlwm::unregistPM()
 IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService *policyMaker)
 {
     RT_SET(12);
+    sRT.pmCount++;
     IOReturn result = IOPMAckImplied;
     XYLog("DEBUG %s ordinal=%lu pmPowerState=%u power_state=%u\n", __FUNCTION__, powerStateOrdinal, pmPowerState, power_state);
     if (pmPowerState == powerStateOrdinal) {
