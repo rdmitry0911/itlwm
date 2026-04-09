@@ -19,6 +19,28 @@
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
 
+// ---------------------------------------------------------------------------
+// Forward declarations for IO80211Family / CoreCapture private classes.
+// Only the factory methods we need are declared; the C++ name mangling
+// produces the exact symbols that the kext loader resolves at runtime from
+// com.apple.iokit.IO80211Family and com.apple.driver.corecapture.
+// ---------------------------------------------------------------------------
+class CCDataStream;
+
+class CCFaultReporter {
+public:
+    static CCFaultReporter *withStreamWorkloop(CCDataStream *stream, IOWorkLoop *workloop);
+};
+
+class IO80211FaultReporter {
+public:
+    static IO80211FaultReporter *allocWithParams(CCFaultReporter *reporter);
+};
+
+// Reference the real gMetaClass from com.apple.driver.corecapture for safe casting.
+extern const OSMetaClass * const gCCDataStreamMetaClassRef
+    __asm("__ZN12CCDataStream10gMetaClassE");
+
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
 
@@ -32,6 +54,10 @@ void AirportItlwm::releaseAll()
     OSSafeReleaseNULL(driverDataPathPipe);
     OSSafeReleaseNULL(driverSnapshotsPipe);
     OSSafeReleaseNULL(driverFaultReporter);
+    if (io80211FaultReporter) {
+        ((OSObject *)io80211FaultReporter)->release();
+        io80211FaultReporter = NULL;
+    }
     if (fHalService) {
         XYLog("DEBUG %s [2] releasing fHalService=%p\n", __FUNCTION__, fHalService);
         fHalService->release();
@@ -250,6 +276,27 @@ initCCLogs()
         if (logStreamBase && !driverLogStream)
             logStreamBase->release();
     }
+    // Create IO80211FaultReporter from the fault-reporter data stream.
+    // CCStream::withPipeAndName with stream_type=1 creates a CCDataStream at runtime.
+    // We cast it and pass it through CCFaultReporter::withStreamWorkloop, then wrap
+    // the result in IO80211FaultReporter::allocWithParams — the same chain Apple uses.
+    if (driverFaultReporter) {
+        CCDataStream *dataStream = (CCDataStream *)OSMetaClassBase::safeMetaCast(
+            (OSMetaClassBase *)driverFaultReporter, gCCDataStreamMetaClassRef);
+        XYLog("%s driverFaultReporter=%p -> CCDataStream cast=%p\n",
+              __FUNCTION__, driverFaultReporter, dataStream);
+        if (dataStream) {
+            CCFaultReporter *ccfr = CCFaultReporter::withStreamWorkloop(
+                dataStream, _fWorkloop);
+            XYLog("%s CCFaultReporter::withStreamWorkloop=%p\n", __FUNCTION__, ccfr);
+            if (ccfr) {
+                io80211FaultReporter = IO80211FaultReporter::allocWithParams(ccfr);
+                XYLog("%s IO80211FaultReporter::allocWithParams=%p\n",
+                      __FUNCTION__, io80211FaultReporter);
+            }
+        }
+    }
+
     return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverFaultReporter;
 }
 
@@ -597,15 +644,11 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue()
 
 void *AirportItlwm::getFaultReporterFromDriver()
 {
-    // IO80211PeerManager::initWithInterface expects the fault reporter to be
-    // a specific IOService nub from the data-path infrastructure (see
-    // AppleBCMWLANCore::getFaultReporterFromDriver — chains through
-    // expansionData→[0x1510]→[0x88]→[0x28]).  It calls vtable method +0x120
-    // on the returned object with non-OSString args; on a CCStream that slot
-    // maps to IORegistryEntry::copyProperty → NULL-deref page fault.
-    // Return NULL so findAndAttachToFaultReporter takes the error path and
-    // PeerManager safely skips the fault-reporter block.
-    return NULL;
+    // Apple returns IO80211FaultReporter* (wrapping CCFaultReporter) here.
+    // findAndAttachToFaultReporter panics if this returns NULL.
+    // Returning CCStream* causes page faults in PeerManager because
+    // IOService-derived vtable offsets don't match IO80211FaultReporter's layout.
+    return io80211FaultReporter;
 }
 
 #if __IO80211_TARGET < __MAC_26_0

@@ -292,6 +292,8 @@ public:
 
     CCLogStream *driverLogStream;
     CCStream *driverFaultReporter;
+
+    void *io80211FaultReporter;   // IO80211FaultReporter* — allocated via IO80211Family API
 };
 
 #endif /* AirportItlwmV2_hpp */
