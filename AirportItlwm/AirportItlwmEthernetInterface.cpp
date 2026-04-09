@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwmEthernetInterface.hpp"
+#include "AirportItlwmV2.hpp"
 
 #include <sys/_if_ether.h>
 #include <net80211/ieee80211_var.h>
@@ -18,8 +19,16 @@ bool AirportItlwmEthernetInterface::
 initWithSkywalkInterfaceAndProvider(IONetworkController *controller, IO80211SkywalkInterface *interface)
 {
     bool ret = super::init(controller);
-    if (ret)
+    if (ret) {
         this->interface = interface;
+        // The framework's _getIfListCopy identifies WiFi interfaces by
+        // sdl_type == IFT_IEEE80211 (0x47) from getifaddrs().
+        // IOEthernetInterface::init sets IFT_ETHER (0x06), so the framework
+        // never recognises en0 as WiFi and never sends IOCTLs.
+        setInterfaceType(0x47); // IFT_IEEE80211
+        RT_SET(27);
+        sRT.ifType = 0x47;
+    }
     this->isAttach = false;
     return ret;
 }

@@ -26,52 +26,8 @@ OSDefineMetaClassAndStructors(CTimeout, OSObject)
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
 
-// ---------------------------------------------------------------
-// Global runtime diagnostic — survives across all methods.
-// The panic timer dumps this so one crash report shows everything.
-//
-// rtMask bits:
-//  0  0x00001  eventHandler called at least once
-//  1  0x00002  eventHandler: COUNTRY_CODE_UPDATE seen
-//  2  0x00004  eventHandler: ASSOC_DONE seen
-//  3  0x00008  eventHandler: DEAUTH seen
-//  4  0x00010  postMessageGated entered
-//  5  0x00020  postMessageGated succeeded
-//  6  0x00040  setLinkStatus called
-//  7  0x00080  setLinkStateGated called
-//  8  0x00100  watchdogAction called
-//  9  0x00200  enableAdapter called
-// 10  0x00400  disableAdapter called
-// 11  0x00800  first IOCTL processed
-// 12  0x01000  setPowerState called
-// 13  0x02000  fakeScanDone called
-// 14  0x04000  setLinkState returned OK
-// 15  0x08000  init() completed
-// 16  0x10000  createWorkQueue completed
-// 17  0x20000  configureInterface completed
-// 18  0x40000  start() completed (disarmed)
-// 19  0x80000  stop() entered
-// ---------------------------------------------------------------
-struct RuntimeDiag {
-    volatile uint32_t rtMask;
-    volatile int      ic_state;     // last seen ieee80211 state
-    volatile uint32_t if_flags;     // last seen interface flags
-    volatile uint32_t power_state;
-    volatile uint32_t linkStatus;   // currentStatus
-    volatile uint32_t evtCount;     // total eventHandler calls
-    volatile uint32_t postMsgCount; // total postMessageGated calls
-    volatile uint32_t wdCount;      // watchdog ticks
-    volatile uint32_t ioctlCount;   // total IOCTL calls
-    volatile int      lastIoctl;    // last IOCTL command
-    volatile uint32_t lastPostMsg;  // last postMessage code
-    volatile int      lastLinkState;// last link state (up=2/down=1)
-    volatile uint32_t linkSetCount; // total setLinkStatus calls
-    volatile int      lastEvtCode;  // last eventHandler msgCode
-    volatile uint32_t scanCount;    // total fakeScanDone calls
-    volatile uint32_t pmCount;      // total setPowerState calls
-};
-static RuntimeDiag sRT = {};
-#define RT_SET(bit) do { sRT.rtMask |= (1u << (bit)); } while(0)
+// RuntimeDiag struct defined in AirportItlwmV2.hpp
+RuntimeDiag sRT = {};
 
 void AirportItlwm::releaseAll()
 {
@@ -180,6 +136,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         case IEEE80211_EVT_SCAN_DONE:
             // Reference: AppleBCMWLANCore::scanComplete calls
             // postMessage(infra, 10, &status, 4, 1) directly — no timer.
+            RT_SET(25);
+            sRT.scanDoneCount++;
             apple80211Msg = APPLE80211_M_SCAN_DONE;
             scanStatus = data ? *(UInt32 *)data : 0;
             msgData = &scanStatus;
@@ -823,37 +781,102 @@ bool AirportItlwm::start(IOService *provider)
 void AirportItlwm::stop(IOService *provider)
 {
     RT_SET(19);
-    XYLog("DEBUG %s [1] entry power_state=%u pmPowerState=%u provider=%p fHalService=%p\n",
-          __PRETTY_FUNCTION__, power_state, pmPowerState, provider, fHalService);
+    sRT.stopStep = 1;
+    XYLog("DEBUG %s [1] entry power_state=%u pmPowerState=%u provider=%p fHalService=%p "
+          "rtMask=0x%07x\n",
+          __PRETTY_FUNCTION__, power_state, pmPowerState, provider, fHalService, sRT.rtMask);
+
+    // Panic timer — catches hangs in the teardown path.
+    thread_call_t stopTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            panic("AirportItlwm::stop hung  "
+                  "stopStep=%u rtMask=0x%07x | "
+                  "ic=%d fl=0x%x pwr=%u link=0x%x | "
+                  "evt=%u(last=%d) pm=%u wd=%u ioctl=%u(last=%d) "
+                  "scanDone=%u scan=%u pmCnt=%u ls=%d lsCnt=%u "
+                  "ifType=0x%x skFree=%u free=%u",
+                  sRT.stopStep, sRT.rtMask,
+                  sRT.ic_state, sRT.if_flags, sRT.power_state,
+                  sRT.linkStatus,
+                  sRT.evtCount, sRT.lastEvtCode,
+                  sRT.postMsgCount, sRT.wdCount,
+                  sRT.ioctlCount, sRT.lastIoctl,
+                  sRT.scanDoneCount, sRT.scanCount, sRT.pmCount,
+                  sRT.lastLinkState, sRT.linkSetCount,
+                  sRT.ifType, sRT.skFreeStep, sRT.freeStep);
+        }, NULL);
+    uint64_t stopDeadline;
+    clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
+    thread_call_enter_delayed(stopTimer, stopDeadline);
+
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    sRT.stopStep = 2;
     XYLog("DEBUG %s [2] disableAdapter bsdInterface=%p\n", __FUNCTION__, bsdInterface);
     disableAdapter(bsdInterface);
+    sRT.stopStep = 3;
     XYLog("DEBUG %s [3] setLinkStatus\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
+    sRT.stopStep = 4;
     XYLog("DEBUG %s [4] fHalService->detach pciNub=%p\n", __FUNCTION__, pciNub);
     fHalService->detach(pciNub);
+    sRT.stopStep = 5;
     XYLog("DEBUG %s [5] ether_ifdetach ifp=%p\n", __FUNCTION__, ifp);
     ether_ifdetach(ifp);
+    sRT.stopStep = 6;
     XYLog("DEBUG %s [6] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
     detachInterface(fNetIf, true);
+    sRT.stopStep = 7;
     XYLog("DEBUG %s [7] release fNetIf\n", __FUNCTION__);
     OSSafeReleaseNULL(fNetIf);
+    sRT.stopStep = 8;
     XYLog("DEBUG %s [8] releaseAll\n", __FUNCTION__);
     releaseAll();
+    sRT.stopStep = 9;
     XYLog("DEBUG %s [9] super::stop\n", __FUNCTION__);
     super::stop(provider);
+    sRT.stopStep = 10;
     XYLog("DEBUG %s [10] DONE\n", __FUNCTION__);
+    thread_call_cancel(stopTimer);
+    thread_call_free(stopTimer);
 }
 
 void AirportItlwm::free()
 {
-    XYLog("DEBUG %s [1] entry fHalService=%p syncFrameTemplate=%p roamProfile=%p btcProfile=%p\n",
-          __PRETTY_FUNCTION__, fHalService, syncFrameTemplate, roamProfile, btcProfile);
+    RT_SET(20);
+    sRT.freeStep = 1;
+    XYLog("DEBUG %s [1] entry fHalService=%p syncFrameTemplate=%p roamProfile=%p btcProfile=%p "
+          "rtMask=0x%07x\n",
+          __PRETTY_FUNCTION__, fHalService, syncFrameTemplate, roamProfile, btcProfile, sRT.rtMask);
+
+    // Panic timer — catches hangs in IO80211Controller::free() chain
+    thread_call_t freeTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!(sRT.rtMask & 0x200000))
+                panic("AirportItlwm::free hung  "
+                      "freeStep=%u rtMask=0x%07x | "
+                      "stopStep=%u skFree=%u | "
+                      "ic=%d fl=0x%x pwr=%u link=0x%x | "
+                      "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
+                      "scanDone=%u ifType=0x%x",
+                      sRT.freeStep, sRT.rtMask,
+                      sRT.stopStep, sRT.skFreeStep,
+                      sRT.ic_state, sRT.if_flags, sRT.power_state,
+                      sRT.linkStatus,
+                      sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
+                      sRT.ioctlCount, sRT.lastIoctl,
+                      sRT.scanDoneCount, sRT.ifType);
+        }, NULL);
+    uint64_t freeDeadline;
+    clock_interval_to_deadline(60, kSecondScale, &freeDeadline);
+    thread_call_enter_delayed(freeTimer, freeDeadline);
+
+    sRT.freeStep = 2;
     if (fHalService != NULL) {
         XYLog("DEBUG %s [2] releasing fHalService\n", __FUNCTION__);
         fHalService->release();
         fHalService = NULL;
     }
+    sRT.freeStep = 3;
     if (syncFrameTemplate != NULL && syncFrameTemplateLength > 0) {
         IOFree(syncFrameTemplate, syncFrameTemplateLength);
         syncFrameTemplateLength = 0;
@@ -867,8 +890,12 @@ void AirportItlwm::free()
         IOFree(btcProfile, sizeof(struct apple80211_btc_profiles_data));
         btcProfile = NULL;
     }
+    sRT.freeStep = 4;
     XYLog("DEBUG %s [3] super::free\n", __FUNCTION__);
     super::free();
+    RT_SET(21);
+    thread_call_cancel(freeTimer);
+    thread_call_free(freeTimer);
 }
 
 bool AirportItlwm::createWorkQueue()
@@ -941,6 +968,7 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     ifp->netStat = fpNetStats;
     XYLog("DEBUG %s ether_ifattach ifp=%p netif=%p\n", __FUNCTION__, ifp, netif);
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
+    RT_SET(26);
     fpNetStats->collisions = 0;
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);
@@ -953,6 +981,7 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 
 IONetworkInterface *AirportItlwm::createInterface()
 {
+    RT_SET(24);
     XYLog("DEBUG %s entry fNetIf=%p\n", __FUNCTION__, fNetIf);
     AirportItlwmEthernetInterface *netif = new AirportItlwmEthernetInterface;
     if (!netif) {

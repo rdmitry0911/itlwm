@@ -43,6 +43,66 @@ enum {
 
 #define kWatchDogTimerPeriod 1000
 
+// ---------------------------------------------------------------
+// Global runtime diagnostic — survives across all methods.
+// Panic timers dump this so one crash report shows everything.
+//
+// rtMask bits:
+//  0  0x0000001  eventHandler called at least once
+//  1  0x0000002  eventHandler: COUNTRY_CODE_UPDATE seen
+//  2  0x0000004  eventHandler: ASSOC_DONE seen
+//  3  0x0000008  eventHandler: DEAUTH seen
+//  4  0x0000010  postMessageGated entered
+//  5  0x0000020  postMessageGated succeeded
+//  6  0x0000040  setLinkStatus called
+//  7  0x0000080  setLinkStateGated called
+//  8  0x0000100  watchdogAction called
+//  9  0x0000200  enableAdapter called
+// 10  0x0000400  disableAdapter called
+// 11  0x0000800  first IOCTL processed
+// 12  0x0001000  setPowerState called
+// 13  0x0002000  fakeScanDone called
+// 14  0x0004000  setLinkState returned OK
+// 15  0x0008000  init() completed
+// 16  0x0010000  createWorkQueue completed
+// 17  0x0020000  configureInterface completed
+// 18  0x0040000  start() completed (disarmed)
+// 19  0x0080000  stop() entered
+// 20  0x0100000  AirportItlwm::free() entered
+// 21  0x0200000  AirportItlwm::free() super::free done
+// 22  0x0400000  SkywalkInterface::free() entered
+// 23  0x0800000  SkywalkInterface::free() super::free done
+// 24  0x1000000  createInterface called
+// 25  0x2000000  SCAN_DONE event received
+// 26  0x4000000  ether_ifattach done
+// 27  0x8000000  setInterfaceType(IFT_IEEE80211) called
+// ---------------------------------------------------------------
+struct RuntimeDiag {
+    volatile uint32_t rtMask;
+    volatile int      ic_state;     // last seen ieee80211 state
+    volatile uint32_t if_flags;     // last seen interface flags
+    volatile uint32_t power_state;
+    volatile uint32_t linkStatus;   // currentStatus
+    volatile uint32_t evtCount;     // total eventHandler calls
+    volatile uint32_t postMsgCount; // total postMessageGated calls
+    volatile uint32_t wdCount;      // watchdog ticks
+    volatile uint32_t ioctlCount;   // total IOCTL calls
+    volatile int      lastIoctl;    // last IOCTL command
+    volatile uint32_t lastPostMsg;  // last postMessage code
+    volatile int      lastLinkState;// last link state (up=2/down=1)
+    volatile uint32_t linkSetCount; // total setLinkStatus calls
+    volatile int      lastEvtCode;  // last eventHandler msgCode
+    volatile uint32_t scanCount;    // total fakeScanDone calls
+    volatile uint32_t pmCount;      // total setPowerState calls
+    volatile uint32_t scanDoneCount;// total SCAN_DONE events from firmware
+    volatile uint32_t stopStep;     // last step reached in stop()
+    volatile uint32_t freeStep;     // last step in AirportItlwm::free()
+    volatile uint32_t skFreeStep;   // last step in SkywalkInterface::free()
+    volatile uint32_t ifType;       // interface type set (0x47=WiFi, 0x06=Ether)
+};
+extern RuntimeDiag sRT;
+#define RT_SET(bit) do { sRT.rtMask |= (1u << (bit)); } while(0)
+
 extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);
 }

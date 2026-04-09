@@ -268,6 +268,79 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
     }
 }
 
+void AirportItlwmSkywalkInterface::
+free()
+{
+    RT_SET(22);
+    sRT.skFreeStep = 1;
+    XYLog("DEBUG %s entry mExpansionData=%p mExpansionData2=%p "
+          "instance=%p fHalService=%p rtMask=0x%07x\n",
+          __FUNCTION__, mExpansionData, mExpansionData2,
+          instance, fHalService, sRT.rtMask);
+
+    // Panic timer — the previous crash (panic8) was in the destructor chain
+    // triggered by super::free() → IO80211SkywalkInterface::free() → D0 → D1.
+    // If it hangs again, dump full lifecycle state.
+    thread_call_t skFreeTimer = thread_call_allocate(
+        [](thread_call_param_t, thread_call_param_t) {
+            if (!(sRT.rtMask & 0x800000))
+                panic("SkywalkInterface::free hung  "
+                      "skFreeStep=%u rtMask=0x%07x | "
+                      "stopStep=%u freeStep=%u | "
+                      "ic=%d fl=0x%x pwr=%u link=0x%x | "
+                      "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
+                      "scanDone=%u ifType=0x%x "
+                      "ls=%d lsCnt=%u scan=%u pmCnt=%u",
+                      sRT.skFreeStep, sRT.rtMask,
+                      sRT.stopStep, sRT.freeStep,
+                      sRT.ic_state, sRT.if_flags, sRT.power_state,
+                      sRT.linkStatus,
+                      sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
+                      sRT.ioctlCount, sRT.lastIoctl,
+                      sRT.scanDoneCount, sRT.ifType,
+                      sRT.lastLinkState, sRT.linkSetCount,
+                      sRT.scanCount, sRT.pmCount);
+        }, NULL);
+    uint64_t skFreeDeadline;
+    clock_interval_to_deadline(30, kSecondScale, &skFreeDeadline);
+    thread_call_enter_delayed(skFreeTimer, skFreeDeadline);
+
+    // Free registration info and expansion data we allocated in the
+    // controller's start().  Must run before super::free() so parent
+    // destructors don't encounter stale pointers in zero-filled blocks.
+    sRT.skFreeStep = 2;
+    if (mExpansionData) {
+        if (mExpansionData->fRegistrationInfo) {
+            IOFree(mExpansionData->fRegistrationInfo,
+                   sizeof(IOSkywalkNetworkInterface::RegistrationInfo));
+            mExpansionData->fRegistrationInfo = NULL;
+        }
+        IOFree(mExpansionData, 256);
+        mExpansionData = NULL;
+    }
+    sRT.skFreeStep = 3;
+    if (mExpansionData2) {
+        if (mExpansionData2->fRegistrationInfo) {
+            IOFree(mExpansionData2->fRegistrationInfo,
+                   sizeof(IOSkywalkEthernetInterface::RegistrationInfo));
+            mExpansionData2->fRegistrationInfo = NULL;
+        }
+        IOFree(mExpansionData2, 256);
+        mExpansionData2 = NULL;
+    }
+    sRT.skFreeStep = 4;
+    instance = NULL;
+    fHalService = NULL;
+    scanSource = NULL;
+    fNextNodeToSend = NULL;
+    sRT.skFreeStep = 5;
+    XYLog("DEBUG %s calling super::free (IO80211InfraProtocol)\n", __FUNCTION__);
+    super::free();
+    RT_SET(23);
+    thread_call_cancel(skFreeTimer);
+    thread_call_free(skFreeTimer);
+}
+
 #if __IO80211_TARGET >= __MAC_26_0
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
