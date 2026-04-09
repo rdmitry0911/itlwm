@@ -172,6 +172,12 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             RT_SET(3);
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
             break;
+        case IEEE80211_EVT_SCAN_DONE:
+            // Trigger fakeScanDone on the workloop — posts SCAN_DONE +
+            // BGSCAN_CACHED_NETWORK_AVAILABLE to the Apple80211 framework.
+            if (that->scanSource)
+                that->scanSource->setTimeoutMS(0);
+            return;
         default:
             XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);
             return;
@@ -257,20 +263,39 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
     XYLog("DEBUG %s OK: pciNub=%p fHalService=%p — calling super::probe (IO80211Controller)\n", __FUNCTION__, pciNub, fHalService);
 
     // Panic timer: catch hangs inside IO80211Controller::probe()
-    static volatile bool probeReturned = false;
-    probeReturned = false;
+    // Captures global rtMask + key pointers so one crash report is enough.
+    struct ProbeDiag {
+        volatile bool     returned;
+        void             *self;
+        void             *provider;
+        void             *pciNub;
+        void             *halService;
+    };
+    static ProbeDiag sPD = {};
+    sPD = { false, this, provider, pciNub, fHalService };
+
     thread_call_t probeTimer = thread_call_allocate(
-        [](thread_call_param_t, thread_call_param_t) {
-            if (!probeReturned)
-                panic("AirportItlwm: IO80211Controller::probe() hung — did not return within 60 seconds");
-        }, NULL);
+        [](thread_call_param_t ctx, thread_call_param_t) {
+            ProbeDiag *d = (ProbeDiag *)ctx;
+            if (!d->returned)
+                panic("AirportItlwm::probe hung  "
+                      "rtMask=0x%05x | self=%p prov=%p pci=%p hal=%p | "
+                      "ic=%d fl=0x%x pwr=%u link=0x%x "
+                      "evt=%u(last=%d) pm=%u wd=%u scan=%u",
+                      sRT.rtMask, d->self, d->provider,
+                      d->pciNub, d->halService,
+                      sRT.ic_state, sRT.if_flags, sRT.power_state,
+                      sRT.linkStatus,
+                      sRT.evtCount, sRT.lastEvtCode,
+                      sRT.postMsgCount, sRT.wdCount, sRT.scanCount);
+        }, &sPD);
     uint64_t probeDeadline;
     clock_interval_to_deadline(60, kSecondScale, &probeDeadline);
     thread_call_enter_delayed(probeTimer, probeDeadline);
 
     IOService *result = super::probe(provider, score);
 
-    probeReturned = true;
+    sPD.returned = true;
     thread_call_cancel(probeTimer);
     thread_call_free(probeTimer);
     XYLog("DEBUG %s super::probe returned %p\n", __FUNCTION__, result);
@@ -428,13 +453,16 @@ initCCLogs()
           sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
 
     if (!ok) {
-        panic("AirportItlwm::initCCLogs FAILED  mask=0x%03x | "
+        panic("AirportItlwm::initCCLogs FAILED  ccMask=0x%03x rtMask=0x%05x | "
               "pci=%p logPipe=%p dataPath=%p snap=%p "
-              "faultStream=%p dataStream=%p wl=%p ccfr=%p io80211fr=%p logStream=%p",
-              sCCDiag.mask, sCCDiag.pciNub,
+              "faultStream=%p dataStream=%p wl=%p ccfr=%p io80211fr=%p logStream=%p | "
+              "ic=%d fl=0x%x pwr=%u evt=%u pm=%u",
+              sCCDiag.mask, sRT.rtMask, sCCDiag.pciNub,
               sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
               sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
-              sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
+              sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream,
+              sRT.ic_state, sRT.if_flags, sRT.power_state,
+              sRT.evtCount, sRT.postMsgCount);
     }
 
     return ok;
