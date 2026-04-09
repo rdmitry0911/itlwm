@@ -19,27 +19,9 @@
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
 
-// ---------------------------------------------------------------------------
-// Forward declarations for IO80211Family / CoreCapture private classes.
-// Only the factory methods we need are declared; the C++ name mangling
-// produces the exact symbols that the kext loader resolves at runtime from
-// com.apple.iokit.IO80211Family and com.apple.driver.corecapture.
-// ---------------------------------------------------------------------------
-class CCDataStream;
+#include "Airport/CCDataStream.h"
+#include "Airport/CCFaultReporter.h"
 
-class CCFaultReporter {
-public:
-    static CCFaultReporter *withStreamWorkloop(CCDataStream *stream, IOWorkLoop *workloop);
-};
-
-class IO80211FaultReporter {
-public:
-    static IO80211FaultReporter *allocWithParams(CCFaultReporter *reporter);
-};
-
-// Reference the real gMetaClass from com.apple.driver.corecapture for safe casting.
-extern const OSMetaClass * const gCCDataStreamMetaClassRef
-    __asm("__ZN12CCDataStream10gMetaClassE");
 
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
@@ -55,7 +37,7 @@ void AirportItlwm::releaseAll()
     OSSafeReleaseNULL(driverSnapshotsPipe);
     OSSafeReleaseNULL(driverFaultReporter);
     if (io80211FaultReporter) {
-        ((OSObject *)io80211FaultReporter)->release();
+        io80211FaultReporter->release();
         io80211FaultReporter = NULL;
     }
     if (fHalService) {
@@ -212,6 +194,43 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 bool AirportItlwm::
 initCCLogs()
 {
+    // ---------------------------------------------------------------
+    // CoreCapture lifecycle diagnostic — bitmask tracks each factory
+    // call so a single panic report pinpoints the exact failure.
+    //
+    // Bit  Hex   Phase
+    //  0   0x001  initCCLogs entered
+    //  1   0x002  driverLogPipe created
+    //  2   0x004  driverDataPathPipe created
+    //  3   0x008  driverSnapshotsPipe created
+    //  4   0x010  driverFaultReporter (CCStream) created
+    //  5   0x020  OSDynamicCast(CCDataStream) OK
+    //  6   0x040  frWorkloop created
+    //  7   0x080  CCFaultReporter::withStreamWorkloop OK
+    //  8   0x100  IO80211FaultReporter::allocWithParams OK
+    //  9   0x200  driverLogStream (CCLogStream) created
+    // 10   0x400  initCCLogs returning true
+    // ---------------------------------------------------------------
+    struct CCDiag {
+        volatile uint32_t mask;
+        void *pciNub;
+        void *logPipe;
+        void *dataPathPipe;
+        void *snapshotsPipe;
+        void *faultStream;     // CCStream* from withPipeAndName
+        void *dataStream;      // CCDataStream* after OSDynamicCast
+        void *frWorkloop;
+        void *ccFaultReporter;
+        void *io80211FR;
+        void *logStream;
+    };
+    static CCDiag sCCDiag = {};
+    sCCDiag = {};
+    sCCDiag.pciNub = pciNub;
+#define CC_SET(bit) do { sCCDiag.mask |= (1u << (bit)); } while(0)
+
+    CC_SET(0);
+
     CCPipeOptions driverLogOptions = { 0 };
     driverLogOptions.pipe_type = 0;
     driverLogOptions.log_data_type = 1;
@@ -229,8 +248,9 @@ initCCLogs()
     // Using the IO80211Controller as owner conflicts with CoreCapture registration in
     // IO80211Controller::setupControlPathLogging(), causing a deadlock during super::start().
     driverLogPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "DriverLogs", &driverLogOptions);
-    XYLog("%s driverLogPipeRet %d\n", __FUNCTION__, driverLogPipe != NULL);
-    
+    sCCDiag.logPipe = driverLogPipe;
+    if (driverLogPipe) CC_SET(1);
+
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
     driverLogOptions.pipe_type = 0;
     driverLogOptions.log_data_type = 0;
@@ -244,8 +264,9 @@ initCCLogs()
     driverLogOptions.file_options = 0;
     driverLogOptions.log_policy = 0;
     driverDataPathPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "DatapathEvents", &driverLogOptions);
-    XYLog("%s driverDataPathPipeRet %d\n", __FUNCTION__, driverDataPathPipe != NULL);
-    
+    sCCDiag.dataPathPipe = driverDataPathPipe;
+    if (driverDataPathPipe) CC_SET(2);
+
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
     driverLogOptions.pipe_type = 0x200000001;
     driverLogOptions.log_data_type = 2;
@@ -254,55 +275,81 @@ initCCLogs()
     strlcpy(driverLogOptions.directory_name, "WiFi", sizeof(driverLogOptions.directory_name));
     driverLogOptions.pipe_size = 128;
     driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
-    XYLog("%s driverSnapshotsPipeRet %d\n", __FUNCTION__, driverSnapshotsPipe != NULL);
-    
+    sCCDiag.snapshotsPipe = driverSnapshotsPipe;
+    if (driverSnapshotsPipe) CC_SET(3);
+
     CCStreamOptions faultReportOptions = { 0 };
     faultReportOptions.stream_type = 1;
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
     driverFaultReporter = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
-    XYLog("%s driverFaultReporterRet %d\n", __FUNCTION__, driverFaultReporter != NULL);
+    sCCDiag.faultStream = driverFaultReporter;
+    if (driverFaultReporter) CC_SET(4);
 
     // CCLogStream MUST be created before super::start() — IO80211Controller::start()
-    // calls vtable[431] (getDriverLogStream, vptr offset 0xd68) to get CCLogStream*,
-    // stores it in global logger, then calls createIOReporters().
-    // If NULL, IO80211ControllerMonitor fails and start() aborts.
+    // calls vtable[431] (getDriverLogStream) to get CCLogStream* for setGlobalLogger().
     {
         CCStreamOptions logStreamOptions = { 0 };
         logStreamOptions.stream_type = 0;
         logStreamOptions.console_level = 0xFFFFFFFFFFFFFFFF;
         CCStream *logStreamBase = CCStream::withPipeAndName(driverLogPipe, "DriverLogStream", &logStreamOptions);
         driverLogStream = OSDynamicCast(CCLogStream, logStreamBase);
-        XYLog("%s driverLogStream: base=%p cast=%p\n", __FUNCTION__, logStreamBase, driverLogStream);
         if (logStreamBase && !driverLogStream)
             logStreamBase->release();
     }
+    sCCDiag.logStream = driverLogStream;
+    if (driverLogStream) CC_SET(9);
+
     // Create IO80211FaultReporter from the fault-reporter data stream.
-    // IO80211Controller::start calls getFaultReporterFromDriver BEFORE createWorkQueue,
-    // so _fWorkloop (IO80211WorkQueue) is not yet available. Apple's bus interface
-    // creates its own IOWorkLoop before super::start — we do the same here.
+    // Reference: AppleBCMWLANLogger::init() creates CCDataStream via
+    // CCStream::withPipeAndName(pipe, name, {stream_type=1}), casts with
+    // safeMetaCast, then CCFaultReporter::withStreamWorkloop →
+    // IO80211FaultReporter::allocWithParams.
     if (driverFaultReporter) {
-        CCDataStream *dataStream = (CCDataStream *)OSMetaClassBase::safeMetaCast(
-            (OSMetaClassBase *)driverFaultReporter, gCCDataStreamMetaClassRef);
-        XYLog("%s driverFaultReporter=%p -> CCDataStream cast=%p\n",
-              __FUNCTION__, driverFaultReporter, dataStream);
+        CCDataStream *dataStream = OSDynamicCast(CCDataStream, driverFaultReporter);
+        sCCDiag.dataStream = dataStream;
         if (dataStream) {
+            CC_SET(5);
             IOWorkLoop *frWorkloop = IOWorkLoop::workLoop();
-            XYLog("%s frWorkloop=%p\n", __FUNCTION__, frWorkloop);
+            sCCDiag.frWorkloop = frWorkloop;
             if (frWorkloop) {
+                CC_SET(6);
                 CCFaultReporter *ccfr = CCFaultReporter::withStreamWorkloop(
                     dataStream, frWorkloop);
-                XYLog("%s CCFaultReporter::withStreamWorkloop=%p\n", __FUNCTION__, ccfr);
+                sCCDiag.ccFaultReporter = ccfr;
                 if (ccfr) {
+                    CC_SET(7);
                     io80211FaultReporter = IO80211FaultReporter::allocWithParams(ccfr);
-                    XYLog("%s IO80211FaultReporter::allocWithParams=%p\n",
-                          __FUNCTION__, io80211FaultReporter);
+                    sCCDiag.io80211FR = io80211FaultReporter;
+                    if (io80211FaultReporter) CC_SET(8);
                 }
                 frWorkloop->release();
             }
         }
     }
 
-    return driverLogPipe && driverDataPathPipe && driverSnapshotsPipe && driverFaultReporter;
+    bool ok = driverLogPipe && driverDataPathPipe && driverSnapshotsPipe
+        && driverFaultReporter && io80211FaultReporter;
+    if (ok) CC_SET(10);
+
+    XYLog("%s mask=0x%03x | logPipe=%p dataPath=%p snap=%p "
+          "faultStream=%p ds=%p wl=%p ccfr=%p io80211fr=%p logStream=%p\n",
+          __FUNCTION__, sCCDiag.mask,
+          sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
+          sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
+          sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
+
+    if (!ok) {
+        panic("AirportItlwm::initCCLogs FAILED  mask=0x%03x | "
+              "pci=%p logPipe=%p dataPath=%p snap=%p "
+              "faultStream=%p dataStream=%p wl=%p ccfr=%p io80211fr=%p logStream=%p",
+              sCCDiag.mask, sCCDiag.pciNub,
+              sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
+              sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
+              sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
+    }
+
+    return ok;
+#undef CC_SET
 }
 
 bool AirportItlwm::start(IOService *provider)
@@ -708,8 +755,6 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue()
 
 void *AirportItlwm::getFaultReporterFromDriver()
 {
-    // Simple getter — matches AppleBCMWLANCore::getFaultReporterFromDriver.
-    // io80211FaultReporter is created in initCCLogs() before super::start().
     return io80211FaultReporter;
 }
 

@@ -25,6 +25,7 @@
 #include "ItlIwn.hpp"
 
 #include "AirportItlwmEthernetInterface.hpp"
+#include "Airport/IO80211FaultReporter.h"
 
 enum
 {
@@ -293,7 +294,7 @@ public:
     CCLogStream *driverLogStream;
     CCStream *driverFaultReporter;
 
-    void *io80211FaultReporter;   // IO80211FaultReporter* — allocated via IO80211Family API
+    IO80211FaultReporter *io80211FaultReporter;
 };
 
 #endif /* AirportItlwmV2_hpp */
