@@ -47,7 +47,7 @@ enum {
 // Global runtime diagnostic — survives across all methods.
 // Panic timers dump this so one crash report shows everything.
 //
-// rtMask bits:
+// rtMask bits (32-bit):
 //  0  0x0000001  eventHandler called at least once
 //  1  0x0000002  eventHandler: COUNTRY_CODE_UPDATE seen
 //  2  0x0000004  eventHandler: ASSOC_DONE seen
@@ -76,9 +76,20 @@ enum {
 // 25  0x2000000  SCAN_DONE event received
 // 26  0x4000000  ether_ifattach done
 // 27  0x8000000  setInterfaceType(IFT_IEEE80211) called
+//
+// rtMask2 bits (BSD / framework lifecycle):
+//  0  0x001  fNetIf->getBSDInterface() returned non-NULL after start
+//  1  0x002  fNetIf->getBSDName() returned non-NULL after start
+//  2  0x004  first SCAN_REQ IOCTL from framework
+//  3  0x008  first ASSOCIATE IOCTL from framework
+//  4  0x010  first getSCAN_RESULT IOCTL from framework
+//  5  0x020  setSSID IOCTL from framework
+//  6  0x040  setPOWER IOCTL from framework
+//  7  0x080  DISASSOCIATE IOCTL from framework
 // ---------------------------------------------------------------
 struct RuntimeDiag {
     volatile uint32_t rtMask;
+    volatile uint32_t rtMask2;      // BSD/framework lifecycle bits
     volatile int      ic_state;     // last seen ieee80211 state
     volatile uint32_t if_flags;     // last seen interface flags
     volatile uint32_t power_state;
@@ -99,9 +110,17 @@ struct RuntimeDiag {
     volatile uint32_t freeStep;     // last step in AirportItlwm::free()
     volatile uint32_t skFreeStep;   // last step in SkywalkInterface::free()
     volatile uint32_t ifType;       // interface type set (0x47=WiFi, 0x06=Ether)
+    volatile uint32_t scanReqCount; // total SCAN_REQ IOCTLs from framework
+    volatile uint32_t assocCount;   // total ASSOCIATE IOCTLs from framework
+    volatile uint32_t scanResCount; // total getSCAN_RESULT IOCTLs
+    volatile uint32_t ic_flags;     // last seen ic->ic_flags (AUTO_JOIN, PSK, etc.)
+    volatile uint32_t ic_des_esslen;// last seen ic->ic_des_esslen
+    volatile uint32_t nodeCount;    // scan tree node count at last choose_bss
+    volatile uint32_t matchFail;    // last match_bss fail bitmask
 };
 extern RuntimeDiag sRT;
-#define RT_SET(bit) do { sRT.rtMask |= (1u << (bit)); } while(0)
+#define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)
+#define RT2_SET(bit) do { sRT.rtMask2 |= (1u << (bit)); } while(0)
 
 extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);

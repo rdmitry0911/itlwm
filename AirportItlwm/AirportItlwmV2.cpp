@@ -162,6 +162,8 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     sRT.if_flags = ifp->if_flags;
     sRT.power_state = power_state;
     sRT.linkStatus = currentStatus;
+    sRT.ic_flags = ic->ic_flags;
+    sRT.ic_des_esslen = ic->ic_des_esslen;
     static int wd_count = 0;
     static int wd_last_state = -1;
     wd_count++;
@@ -419,11 +421,11 @@ initCCLogs()
           sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
 
     if (!ok) {
-        panic("AirportItlwm::initCCLogs FAILED  ccMask=0x%03x rtMask=0x%05x | "
+        panic("AirportItlwm::initCCLogs FAILED  ccMask=0x%03x rtMask=0x%07x rt2=0x%02x | "
               "pci=%p logPipe=%p dataPath=%p snap=%p "
               "faultStream=%p dataStream=%p wl=%p ccfr=%p io80211fr=%p logStream=%p | "
               "ic=%d fl=0x%x pwr=%u evt=%u pm=%u",
-              sCCDiag.mask, sRT.rtMask, sCCDiag.pciNub,
+              sCCDiag.mask, sRT.rtMask, sRT.rtMask2, sCCDiag.pciNub,
               sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
               sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
               sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream,
@@ -495,13 +497,15 @@ bool AirportItlwm::start(IOService *provider)
             StartDiag *d = (StartDiag *)ctx;
             if (!(d->mask & 0x20000))
                 panic("AirportItlwm::start hung  "
-                      "sMask=0x%05x step=%d rtMask=0x%05x | "
+                      "sMask=0x%05x step=%d rtMask=0x%07x rt2=0x%02x | "
                       "self=%p log=%p fault=%p wl=%p nif=%p bsd=%p | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x "
                       "evt=%u(last=%d) pm=%u wd=%u | "
                       "ioctl=%u lastIo=%d lastPM=0x%x "
-                      "ls=%d lsCnt=%u scan=%u pmCnt=%u",
-                      d->mask, d->step, sRT.rtMask, d->self,
+                      "ls=%d lsCnt=%u scan=%u pmCnt=%u | "
+                      "scanReq=%u assoc=%u scanRes=%u "
+                      "icfl=0x%x esslen=%u nodes=%u mfail=0x%x",
+                      d->mask, d->step, sRT.rtMask, sRT.rtMask2, d->self,
                       d->logStream, d->faultReporter,
                       d->workloop, d->netIf, d->bsdIf,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
@@ -511,7 +515,10 @@ bool AirportItlwm::start(IOService *provider)
                       sRT.ioctlCount, sRT.lastIoctl,
                       sRT.lastPostMsg, sRT.lastLinkState,
                       sRT.linkSetCount, sRT.scanCount,
-                      sRT.pmCount);
+                      sRT.pmCount,
+                      sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
+                      sRT.ic_flags, sRT.ic_des_esslen,
+                      sRT.nodeCount, sRT.matchFail);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -742,15 +749,25 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
-    XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, calling deferBSDAttach + start\n",
+    XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, starting (no deferBSDAttach)\n",
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
-    if (fNetIf->getInterfaceRole() == 1)
-        fNetIf->deferBSDAttach(true);
+    // Do NOT call deferBSDAttach(true) — it prevents the SkywalkInterface
+    // from creating its BSD ifnet (en0), so airportd's _getIfListCopy
+    // returns ifCount=0 and the WiFi framework never sends IOCTLs.
+    // Apple's real driver also defers but later un-defers; our code never
+    // called deferBSDAttach(false), so the BSD device was never created.
     sDiag.step = 81;
     XYLog("DEBUG %s [STEP 8c] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
     fNetIf->start(this);
     SD_SET(15); // fNetIf->start OK
-    XYLog("DEBUG %s [STEP 8d] fNetIf->start returned OK\n", __FUNCTION__);
+    {
+        const char *bsdName = fNetIf->getBSDName();
+        ifnet_t bsdIf = fNetIf->getBSDInterface();
+        if (bsdIf) RT2_SET(0);
+        if (bsdName) RT2_SET(1);
+        XYLog("DEBUG %s [STEP 8d] fNetIf->start OK, bsdName=%s bsdIf=%p rtMask2=0x%02x\n",
+              __FUNCTION__, bsdName ? bsdName : "(null)", bsdIf, sRT.rtMask2);
+    }
 
     sDiag.step = 9;
     XYLog("DEBUG %s [STEP 9] enableAdapter\n", __FUNCTION__);
@@ -790,12 +807,14 @@ void AirportItlwm::stop(IOService *provider)
     thread_call_t stopTimer = thread_call_allocate(
         [](thread_call_param_t, thread_call_param_t) {
             panic("AirportItlwm::stop hung  "
-                  "stopStep=%u rtMask=0x%07x | "
+                  "stopStep=%u rtMask=0x%07x rt2=0x%02x | "
                   "ic=%d fl=0x%x pwr=%u link=0x%x | "
                   "evt=%u(last=%d) pm=%u wd=%u ioctl=%u(last=%d) "
                   "scanDone=%u scan=%u pmCnt=%u ls=%d lsCnt=%u "
-                  "ifType=0x%x skFree=%u free=%u",
-                  sRT.stopStep, sRT.rtMask,
+                  "ifType=0x%x skFree=%u free=%u | "
+                  "scanReq=%u assoc=%u scanRes=%u "
+                  "icfl=0x%x esslen=%u nodes=%u mfail=0x%x",
+                  sRT.stopStep, sRT.rtMask, sRT.rtMask2,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
                   sRT.evtCount, sRT.lastEvtCode,
@@ -803,7 +822,10 @@ void AirportItlwm::stop(IOService *provider)
                   sRT.ioctlCount, sRT.lastIoctl,
                   sRT.scanDoneCount, sRT.scanCount, sRT.pmCount,
                   sRT.lastLinkState, sRT.linkSetCount,
-                  sRT.ifType, sRT.skFreeStep, sRT.freeStep);
+                  sRT.ifType, sRT.skFreeStep, sRT.freeStep,
+                  sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
+                  sRT.ic_flags, sRT.ic_des_esslen,
+                  sRT.nodeCount, sRT.matchFail);
         }, NULL);
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
@@ -853,18 +875,23 @@ void AirportItlwm::free()
         [](thread_call_param_t, thread_call_param_t) {
             if (!(sRT.rtMask & 0x200000))
                 panic("AirportItlwm::free hung  "
-                      "freeStep=%u rtMask=0x%07x | "
+                      "freeStep=%u rtMask=0x%07x rt2=0x%02x | "
                       "stopStep=%u skFree=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
                       "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
-                      "scanDone=%u ifType=0x%x",
-                      sRT.freeStep, sRT.rtMask,
+                      "scanDone=%u ifType=0x%x | "
+                      "scanReq=%u assoc=%u scanRes=%u "
+                      "icfl=0x%x esslen=%u nodes=%u mfail=0x%x",
+                      sRT.freeStep, sRT.rtMask, sRT.rtMask2,
                       sRT.stopStep, sRT.skFreeStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
                       sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
                       sRT.ioctlCount, sRT.lastIoctl,
-                      sRT.scanDoneCount, sRT.ifType);
+                      sRT.scanDoneCount, sRT.ifType,
+                      sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
+                      sRT.ic_flags, sRT.ic_des_esslen,
+                      sRT.nodeCount, sRT.matchFail);
         }, NULL);
     uint64_t freeDeadline;
     clock_interval_to_deadline(60, kSecondScale, &freeDeadline);
@@ -1443,6 +1470,7 @@ IOReturn AirportItlwm::
 setPOWER(OSObject *object,
                          struct apple80211_power_data *pd)
 {
+    RT2_SET(6);
     if (!pd)
         return kIOReturnError;
     XYLog("%s num_radios=%d req=%u cur=%u pmPowerState=%u\n",

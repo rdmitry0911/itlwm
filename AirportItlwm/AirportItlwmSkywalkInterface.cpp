@@ -285,13 +285,15 @@ free()
         [](thread_call_param_t, thread_call_param_t) {
             if (!(sRT.rtMask & 0x800000))
                 panic("SkywalkInterface::free hung  "
-                      "skFreeStep=%u rtMask=0x%07x | "
+                      "skFreeStep=%u rtMask=0x%07x rt2=0x%02x | "
                       "stopStep=%u freeStep=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
                       "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x "
-                      "ls=%d lsCnt=%u scan=%u pmCnt=%u",
-                      sRT.skFreeStep, sRT.rtMask,
+                      "ls=%d lsCnt=%u scan=%u pmCnt=%u | "
+                      "scanReq=%u assoc=%u scanRes=%u "
+                      "icfl=0x%x esslen=%u nodes=%u mfail=0x%x",
+                      sRT.skFreeStep, sRT.rtMask, sRT.rtMask2,
                       sRT.stopStep, sRT.freeStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
@@ -299,7 +301,10 @@ free()
                       sRT.ioctlCount, sRT.lastIoctl,
                       sRT.scanDoneCount, sRT.ifType,
                       sRT.lastLinkState, sRT.linkSetCount,
-                      sRT.scanCount, sRT.pmCount);
+                      sRT.scanCount, sRT.pmCount,
+                      sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
+                      sRT.ic_flags, sRT.ic_des_esslen,
+                      sRT.nodeCount, sRT.matchFail);
         }, NULL);
     uint64_t skFreeDeadline;
     clock_interval_to_deadline(30, kSecondScale, &skFreeDeadline);
@@ -862,6 +867,7 @@ getNSS(struct apple80211_nss_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
+    RT2_SET(3); sRT.assocCount++;
     XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
           (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
           (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
@@ -908,6 +914,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setDISASSOCIATE(void *ad)
 {
+    RT2_SET(7);
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
@@ -1053,6 +1060,7 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
 IOReturn AirportItlwmSkywalkInterface::
 setSCAN_REQ(struct apple80211_scan_data *sd)
 {
+    RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("DEBUG %s Type: %u BSS Type: %u PHY Mode: %u Dwell: %u Rest: %u Channels: %u SSID: %s ic_state=%d\n",
           __FUNCTION__,
@@ -1086,6 +1094,7 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
+    RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(req);
 
@@ -1123,6 +1132,7 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
+    RT2_SET(3); sRT.assocCount++;
     if (!candidates)
         return kIOReturnBadArgument;
 
@@ -1285,6 +1295,7 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
 IOReturn AirportItlwmSkywalkInterface::
 getSCAN_RESULT(struct apple80211_scan_result *sr)
 {
+    RT2_SET(4); sRT.scanResCount++;
     if (fNextNodeToSend == NULL) {
         if (fScanResultWrapping) {
             fScanResultWrapping = false;

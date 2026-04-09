@@ -1320,15 +1320,16 @@ struct ieee80211_node *
 ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
                           struct ieee80211_node **curbs)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_node *ni, *nextbs, *selbs = NULL,
     *selbs2 = NULL, *selbs5 = NULL;
     uint8_t min_5ghz_rssi;
-    
+    int nodeCount = 0, failCount = 0;
+
     ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
-    
+
     for (; ni != NULL; ni = nextbs) {
         nextbs = RB_NEXT(ieee80211_tree, &ic->ic_tree, ni);
+        nodeCount++;
         if (ni->ni_fails) {
             /*
              * The configuration of the access points may change
@@ -1340,13 +1341,18 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
             DPRINTF(("%s %s ni->ni_fails=%d\n", __FUNCTION__, ni->ni_essid, ni->ni_fails));
             continue;
         }
-        
+
         if (curbs && ieee80211_node_cmp(ic->ic_bss, ni) == 0)
             *curbs = ni;
-        
+
         int fail = ieee80211_match_bss(ic, ni, bgscan);
         if (fail != 0) {
-            DPRINTF(("%s ieee80211_match_bss==FALSE, ssid=%s, bssid=%s, %d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), fail));
+            failCount++;
+            if (failCount <= 3)
+                XYLog("%s reject ssid=%s fail=0x%x des_esslen=%d auto_join=%d\n",
+                      __FUNCTION__, ni->ni_essid, fail,
+                      ic->ic_des_esslen,
+                      !!(ic->ic_flags & IEEE80211_F_AUTO_JOIN));
             continue;
         }
         
@@ -1377,6 +1383,9 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
     if (selbs2 != NULL) {
         XYLog("%s 2ghz ssid=%s mac=%s rssi=%d\n", __FUNCTION__, selbs2->ni_essid, ether_sprintf(selbs2->ni_bssid), selbs2->ni_rssi);
     }
+    if (!selbs5 && !selbs2 && !selbs)
+        XYLog("%s: no BSS selected (nodes=%d rejected=%d des_esslen=%d)\n",
+              __FUNCTION__, nodeCount, failCount, ic->ic_des_esslen);
     if (selbs5 && (*ic->ic_node_checkrssi)(ic, selbs5))
         selbs = selbs5;
     else if (selbs5 && selbs2)
