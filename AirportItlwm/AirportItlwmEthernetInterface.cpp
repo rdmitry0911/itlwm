@@ -36,7 +36,8 @@ initWithSkywalkInterfaceAndProvider(IONetworkController *controller, IO80211Skyw
 IOReturn AirportItlwmEthernetInterface::
 attachToDataLinkLayer( IOOptionBits options, void *parameter )
 {
-    XYLog("%s\n", __FUNCTION__);
+    RT3_SET(5);
+    XYLog("DEBUG %s entry ifnet=%p interface=%p\n", __FUNCTION__, getIfnet(), interface);
     char infName[IFNAMSIZ];
     IOReturn ret = super::attachToDataLinkLayer(options, parameter);
     if (ret == kIOReturnSuccess && interface) {
@@ -51,16 +52,22 @@ attachToDataLinkLayer( IOOptionBits options, void *parameter )
             setProperty(kIOMACAddress,  (void *) &addr,
                         kIOEthernetAddressSize);
         interface->registerService();
+        RT3_SET(7);
+        XYLog("DEBUG %s calling prepareBSDInterface ifnet=%p\n", __FUNCTION__, getIfnet());
         interface->prepareBSDInterface(getIfnet(), 0);
-//        ret = bpf_attach(getIfnet(), DLT_RAW, 0x48, &AirportItlwmEthernetInterface::bpfOutputPacket, &AirportItlwmEthernetInterface::bpfTap);
+        RT3_SET(8);
+        XYLog("DEBUG %s prepareBSDInterface returned OK\n", __FUNCTION__);
     }
     isAttach = true;
+    RT3_SET(6);
     return ret;
 }
 
 void AirportItlwmEthernetInterface::
 detachFromDataLinkLayer(IOOptionBits options, void *parameter)
 {
+    RT3_SET(9);
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
     super::detachFromDataLinkLayer(options, parameter);
     isAttach = false;
 }

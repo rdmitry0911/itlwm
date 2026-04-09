@@ -285,8 +285,8 @@ free()
         [](thread_call_param_t, thread_call_param_t) {
             if (!(sRT.rtMask & 0x800000))
                 panic("SkywalkInterface::free hung  "
-                      "skFreeStep=%u rtMask=0x%07x rt2=0x%04x | "
-                      "stopStep=%u freeStep=%u | "
+                      "skFreeStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
+                      "stopStep=%u freeStep=%u ss=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
                       "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x "
@@ -294,8 +294,8 @@ free()
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
-                      sRT.skFreeStep, sRT.rtMask, sRT.rtMask2,
-                      sRT.stopStep, sRT.freeStep,
+                      sRT.skFreeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
+                      sRT.stopStep, sRT.freeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
                       sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
@@ -397,6 +397,7 @@ init(IOService *provider)
     }
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
+    RT3_SET(12); // SkywalkInterface::init OK
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
     return true;

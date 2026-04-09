@@ -502,7 +502,8 @@ bool AirportItlwm::start(IOService *provider)
             StartDiag *d = (StartDiag *)ctx;
             if (!(d->mask & 0x20000))
                 panic("AirportItlwm::start hung  "
-                      "sMask=0x%05x step=%d rtMask=0x%07x rt2=0x%04x | "
+                      "sMask=0x%05x step=%d ss=%u "
+                      "rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                       "self=%p log=%p fault=%p wl=%p nif=%p bsd=%p | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x "
                       "evt=%u(last=%d) pm=%u wd=%u | "
@@ -511,7 +512,8 @@ bool AirportItlwm::start(IOService *provider)
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
-                      d->mask, d->step, sRT.rtMask, sRT.rtMask2, d->self,
+                      d->mask, d->step, sRT.startStep,
+                      sRT.rtMask, sRT.rtMask2, sRT.rtMask3, d->self,
                       d->logStream, d->faultReporter,
                       d->workloop, d->netIf, d->bsdIf,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
@@ -705,16 +707,16 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     SD_SET(13); // attachInterface OK
-    if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface, true)) {
-        XYLog("DEBUG %s [STEP 8] FAIL: IONetworkController attachInterface\n", __FUNCTION__);
-        super::stop(provider);
-        releaseAll();
-        DISARM_PANIC_TIMER();
-        return false;
-    }
-    SD_SET(14); // bsdInterface OK
-    sDiag.bsdIf = bsdInterface;
-    XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
+    // Populate fVars->registrationInfo BEFORE IONetworkController::attachInterface,
+    // because attachInterface triggers attachToDataLinkLayer which calls
+    // prepareBSDInterface, and that reads fVars[0]->mtu at offset 0x4c.
+    //
+    // IOSkywalkNetworkInterface::prepareBSDInterface disassembly (confirmed via Ghidra):
+    //   mov rax, [rdi + 0xC0]      ; rax = this->fVars
+    //   mov [rax + 0x08], rsi      ; fVars[1] = ifnet_t
+    //   mov rax, [rax]             ; rax = fVars[0] = registrationInfo
+    //   mov esi, [rax + 0x4c]      ; registrationInfo->mtu  ← crashes if NULL
+    sRT.startStep = 80;
     memset(&registInfo, 0, sizeof(registInfo));
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
@@ -723,8 +725,8 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
+    RT3_SET(0); // initRegistrationInfo OK
     {
-        // Dump first 64 bytes of RegistrationInfo to verify it's non-zero
         uint8_t *p = (uint8_t *)&registInfo;
         bool allZero = true;
         for (int i = 0; i < 64 && i < (int)sizeof(registInfo); i++)
@@ -741,11 +743,6 @@ bool AirportItlwm::start(IOService *provider)
               p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
               p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
     }
-    // fRegistrationInfo must be allocated on ALL targets (including Tahoe).
-    // Before these fixes, skipping it on Tahoe caused fNetIf->start() to hang.
-    // IO80211SkywalkInterface::init() may not allocate ExpansionData on Tahoe,
-    // so allocate ourselves if NULL.  256 bytes covers the real Apple layout
-    // (our headers only declare 2 fields, but the kernel struct has ~15).
     if (!fNetIf->mExpansionData) {
         XYLog("DEBUG %s mExpansionData is NULL — allocating\n", __FUNCTION__);
         fNetIf->mExpansionData = (IOSkywalkNetworkInterface::ExpansionData *)IOMallocZero(256);
@@ -758,30 +755,14 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
-    // Populate fVars->registrationInfo so prepareBSDInterface can read MTU
-    // (offset 0x4c), hw assists (0x20), and interface flags.
-    //
+    RT3_SET(1); // mExpansionData populated
     // IOSkywalkNetworkInterface keeps a private fVars ptr at this+0xC0
     // (allocated in init(), 0x68 bytes).  prepareBSDInterface reads
     // registrationInfo from fVars+0x0 — NOT from mExpansionData.
     //
-    // In the Apple driver this field is set by the call chain:
-    //   AppleBCMWLANPCIeSkywalk::registerSkywalkInterface
-    //     → IO80211InfraInterface::registerInfraEthernetInterface
-    //       → IOSkywalkEthernetInterface::registerEthernetInterface
-    //         → IOSkywalkNetworkInterface::registerNetworkInterface
-    //
-    // We cannot call registerNetworkInterface() because it validates
-    // logicalLink != NULL and (bufferPool1 | bufferPool2) != 0.
-    // Those objects (IOSkywalkLogicalLink, IOSkywalkPacketBufferPool)
-    // are built from real Skywalk packet queues / DMA rings that the
-    // BCM driver creates from hardware.  Our data path goes through
-    // the OpenBSD ieee80211 stack (mbuf → ifnet), bypassing Skywalk
-    // entirely, so we have no real queue/pool objects to provide.
-    //
-    // Direct write into fVars is the minimally invasive approach:
-    // we supply only what prepareBSDInterface actually reads, without
-    // fabricating fake Skywalk data-path objects.  Real size is 0x108.
+    // In the Apple driver this field is set by registerNetworkInterface()
+    // which we cannot call (requires real Skywalk LogicalLink/BufferPool).
+    // Direct write into fVars is the minimally invasive approach.
     {
         void **fVars = *(void ***)((uint8_t *)fNetIf + 0xC0);
         sRT.fVarsPtr = (uint64_t)(uintptr_t)fVars;
@@ -793,16 +774,34 @@ bool AirportItlwm::start(IOService *provider)
             RT2_SET(9);
             XYLog("DEBUG %s [STEP 8b] fVars=%p regInfo=%p (populated)\n",
                   __FUNCTION__, fVars, regCopy);
+            RT3_SET(2); // fVars[0] written
         } else {
-            XYLog("DEBUG %s [STEP 8b] fVars=%p regInfo=%p (not populated)\n",
+            XYLog("DEBUG %s [STEP 8b] fVars=%p regInfo=%p (already set or fVars NULL)\n",
                   __FUNCTION__, fVars, fVars ? fVars[0] : NULL);
         }
     }
+    sRT.startStep = 81;
+    RT3_SET(3); // entering IONetworkController::attachInterface
+    XYLog("DEBUG %s [STEP 8c] IONetworkController::attachInterface (fVars[0] ready)\n", __FUNCTION__);
+    if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface, true)) {
+        XYLog("DEBUG %s [STEP 8] FAIL: IONetworkController attachInterface\n", __FUNCTION__);
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    RT3_SET(4); // IONetworkController::attachInterface OK
+    SD_SET(14); // bsdInterface OK
+    sDiag.bsdIf = bsdInterface;
+    XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
     XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, starting\n",
           __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
+    sRT.startStep = 82;
     sDiag.step = 81;
-    XYLog("DEBUG %s [STEP 8c] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
+    RT3_SET(10); // entering fNetIf->start
+    XYLog("DEBUG %s [STEP 8d] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
     fNetIf->start(this);
+    RT3_SET(11); // fNetIf->start returned
     SD_SET(15); // fNetIf->start OK
     {
         const char *bsdName = fNetIf->getBSDName();
@@ -852,15 +851,15 @@ void AirportItlwm::stop(IOService *provider)
     thread_call_t stopTimer = thread_call_allocate(
         [](thread_call_param_t, thread_call_param_t) {
             panic("AirportItlwm::stop hung  "
-                  "stopStep=%u rtMask=0x%07x rt2=0x%04x | "
+                  "stopStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                   "ic=%d fl=0x%x pwr=%u link=0x%x | "
                   "evt=%u(last=%d) pm=%u wd=%u ioctl=%u(last=%d) "
                   "scanDone=%u scan=%u pmCnt=%u ls=%d lsCnt=%u "
-                  "ifType=0x%x skFree=%u free=%u | "
+                  "ifType=0x%x skFree=%u free=%u ss=%u | "
                   "scanReq=%u assoc=%u scanRes=%u "
                   "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                   "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
-                  sRT.stopStep, sRT.rtMask, sRT.rtMask2,
+                  sRT.stopStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
                   sRT.evtCount, sRT.lastEvtCode,
@@ -869,6 +868,7 @@ void AirportItlwm::stop(IOService *provider)
                   sRT.scanDoneCount, sRT.scanCount, sRT.pmCount,
                   sRT.lastLinkState, sRT.linkSetCount,
                   sRT.ifType, sRT.skFreeStep, sRT.freeStep,
+                  sRT.startStep,
                   sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
                   sRT.ic_flags, sRT.ic_des_esslen,
                   sRT.nodeCount, sRT.matchFail,
@@ -894,6 +894,7 @@ void AirportItlwm::stop(IOService *provider)
     XYLog("DEBUG %s [5] ether_ifdetach ifp=%p\n", __FUNCTION__, ifp);
     ether_ifdetach(ifp);
     sRT.stopStep = 6;
+    RT3_SET(15); // detachInterface entered
     XYLog("DEBUG %s [6] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
     detachInterface(fNetIf, true);
     sRT.stopStep = 7;
@@ -924,16 +925,16 @@ void AirportItlwm::free()
         [](thread_call_param_t, thread_call_param_t) {
             if (!(sRT.rtMask & 0x200000))
                 panic("AirportItlwm::free hung  "
-                      "freeStep=%u rtMask=0x%07x rt2=0x%04x | "
-                      "stopStep=%u skFree=%u | "
+                      "freeStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
+                      "stopStep=%u skFree=%u ss=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
                       "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x | "
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
-                      sRT.freeStep, sRT.rtMask, sRT.rtMask2,
-                      sRT.stopStep, sRT.skFreeStep,
+                      sRT.freeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
+                      sRT.stopStep, sRT.skFreeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
                       sRT.evtCount, sRT.postMsgCount, sRT.wdCount,

@@ -94,10 +94,29 @@ enum {
 // 13  0x2000  setRunningState called
 // 14  0x4000  enable() called on interface
 // 15  0x8000  postMessage called (first time, from Skywalk)
+//
+// rtMask3 bits (registration / BSD attach / interface bring-up):
+//  0  0x0001  initRegistrationInfo completed
+//  1  0x0002  mExpansionData populated
+//  2  0x0004  fVars[0] written (pre-attachInterface)
+//  3  0x0008  IONetworkController::attachInterface entered
+//  4  0x0010  IONetworkController::attachInterface OK
+//  5  0x0020  attachToDataLinkLayer entered
+//  6  0x0040  attachToDataLinkLayer completed
+//  7  0x0080  prepareBSDInterface entered (from attachToDataLinkLayer)
+//  8  0x0100  prepareBSDInterface returned (from attachToDataLinkLayer)
+//  9  0x0200  detachFromDataLinkLayer entered
+// 10  0x0400  fNetIf->start() entered
+// 11  0x0800  fNetIf->start() returned
+// 12  0x1000  SkywalkInterface::init OK
+// 13  0x2000  SkywalkInterface::start entered
+// 14  0x4000  SkywalkInterface::stop entered
+// 15  0x8000  IONetworkController::detachInterface entered
 // ---------------------------------------------------------------
 struct RuntimeDiag {
     volatile uint32_t rtMask;
     volatile uint32_t rtMask2;      // BSD/framework/Skywalk lifecycle bits
+    volatile uint32_t rtMask3;      // registration/BSD attach/bring-up bits
     volatile int      ic_state;     // last seen ieee80211 state
     volatile uint32_t if_flags;     // last seen interface flags
     volatile uint32_t power_state;
@@ -129,10 +148,12 @@ struct RuntimeDiag {
     volatile uint64_t bsdIfPtr;     // last seen BSD interface pointer
     volatile uint32_t enableCnt;    // enable() call count
     volatile uint32_t disableCnt;   // disable() call count
+    volatile uint32_t startStep;    // fine-grained start() progress
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)
 #define RT2_SET(bit) do { sRT.rtMask2 |= (1u << (bit)); } while(0)
+#define RT3_SET(bit) do { sRT.rtMask3 |= (1u << (bit)); } while(0)
 
 extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);
