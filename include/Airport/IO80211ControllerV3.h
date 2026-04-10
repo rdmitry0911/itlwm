@@ -155,7 +155,9 @@ public:
     virtual const OSString * newModelString() const APPLE_KEXT_OVERRIDE;
     virtual bool createWorkLoop() APPLE_KEXT_OVERRIDE;
     virtual IOReturn getHardwareAddress(IOEthernetAddress *) APPLE_KEXT_OVERRIDE;
-    virtual IOReturn setHardwareAddress(const IOEthernetAddress * addrP) APPLE_KEXT_OVERRIDE;
+    // setHardwareAddress(IOEthernetAddress const*) NOT overridden here:
+    // kernel exports IOEthernetController::setHardwareAddress, not IO80211Controller's.
+    // Declaring an override generates an unresolvable symbol.
     virtual IOReturn setMulticastMode(bool active) APPLE_KEXT_OVERRIDE;
     virtual IOReturn setPromiscuousMode(bool active) APPLE_KEXT_OVERRIDE;
 

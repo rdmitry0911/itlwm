@@ -21,7 +21,17 @@ class TxSubmissionDequeueStats;
 class TxCompletionEnqueueStats;
 class IO80211NetworkPacket;
 class PacketSkywalkScratch;
-typedef UInt64 IO80211FlowQueueHash;
+// IO80211FlowQueueHash is a proper class in the kernel (mangled as
+// "20IO80211FlowQueueHash"), not a typedef.  Using a typedef causes
+// symbol mangling mismatch (y vs 20IO80211FlowQueueHash).
+// Wrapping UInt64 in a struct preserves the same size/ABI but gives
+// the correct C++ mangled name for kernel symbol binding.
+struct IO80211FlowQueueHash {
+    UInt64 hash;
+    IO80211FlowQueueHash() : hash(0) {}
+    IO80211FlowQueueHash(UInt64 h) : hash(h) {}
+    operator UInt64() const { return hash; }
+};
 class IO80211Peer;
 class CCPipe;
 class IO80211APIUserClient;
@@ -37,6 +47,14 @@ struct apple80211_ManagementInformationBasedot11_counters;
 struct apple80211_lteCoex_report;
 struct apple80211_frame_counters;
 struct userPrintCtx;
+// Forward declarations for IO80211SkywalkInterface virtual methods.
+// Parameter types must match kernel exports (checked via nm on BootKC 26.3).
+struct apple82011_postMessage_dps;          // note: "82011" is the kernel symbol spelling
+struct apple80211_rx_data_stall_report;
+struct apple80211_data_path_peer_stats;
+struct apple80211_data_path_interface_stats;
+struct apple80211_latency_all_ac;
+struct ifnet_traffic_descriptor_common;
 struct apple80211_lqm_summary;
 struct apple80211_infra_specific_stats;
 
@@ -130,7 +148,7 @@ public:
     virtual void setInterfaceMIBdot11(apple80211_stat_report *,apple80211_ManagementInformationBasedot11_counters *); // [389]
     virtual void setFrameStats(apple80211_stat_report *,apple80211_frame_counters *);  // [390]
     virtual void setInfraSpecificFrameStats(apple80211_stat_report *,apple80211_infra_specific_stats *); // [391]
-    virtual void setRxDataStallStats(apple80211_stat_report *,void *);                 // [392] NEW
+    virtual void setRxDataStallStats(apple80211_stat_report *,apple80211_rx_data_stall_report *); // [392] NEW
     virtual SInt64 getWmeTxCounters(unsigned long long *);                             // [393]
     // setEnabledBySystem, enabledBySystem, willRoam REMOVED
     virtual void setPeerManagerLogFlag(UInt,UInt,UInt);                                 // [394]
@@ -192,18 +210,18 @@ public:
     virtual void *attachPeer(ether_addr *);                                                    // [448] NEW
     virtual void *detachPeer(ether_addr *);                                                    // [449] NEW
     virtual void setDebugTrafficReport(bool);                                                  // [450] NEW
-    virtual void *getDataPathInterfaceStats(void *);                                           // [451] NEW
-    virtual void *getDataPathPeerStats(void *);                                                // [452] NEW
+    virtual void *getDataPathInterfaceStats(apple80211_data_path_interface_stats *);             // [451] NEW
+    virtual void *getDataPathPeerStats(apple80211_data_path_peer_stats *);                     // [452] NEW
     virtual void *getLastQueuePacketTime(ether_addr *);                                        // [453] NEW
     virtual void *getLastRxUnicastLinkActivityTime(ether_addr *);                              // [454] NEW
-    virtual void *updateInterfaceDataStats(void *);                                            // [455] NEW
-    virtual void *updatePeerDataStats(void *);                                                 // [456] NEW
+    virtual void *updateInterfaceDataStats(apple80211_data_path_interface_stats *);              // [455] NEW
+    virtual void *updatePeerDataStats(apple80211_data_path_peer_stats *);                      // [456] NEW
     virtual void logTxLatency(unsigned char *,UInt,unsigned long long);                         // [457] NEW
     virtual void logRxLatency(UInt,unsigned long long);                                         // [458] NEW
-    virtual void *getNClearTxRxLatency(void *,void *);                                         // [459] NEW
+    virtual void *getNClearTxRxLatency(apple80211_latency_all_ac *,apple80211_latency_all_ac *); // [459] NEW
     virtual void getLastTxTimeStamp(unsigned long long &);                                      // [460] NEW
     virtual void getLastRxTimeStamp(unsigned long long &);                                      // [461] NEW
-    virtual void syncDPSStats(void *);                                                          // [462] NEW
+    virtual void syncDPSStats(apple82011_postMessage_dps *);                                     // [462] NEW
 
 #else /* Sonoma 14.4 and earlier */
 

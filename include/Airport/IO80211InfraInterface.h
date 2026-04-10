@@ -28,8 +28,9 @@ public:
     virtual SInt32 setInterfaceEnable(bool) APPLE_KEXT_OVERRIDE;
     virtual UInt getHardwareAssists(void) APPLE_KEXT_OVERRIDE;
     virtual bool bpfTap(UInt,UInt) APPLE_KEXT_OVERRIDE;
-    virtual void getHardwareAddress(ether_addr *) APPLE_KEXT_OVERRIDE;
-    virtual void setHardwareAddress(ether_addr *) APPLE_KEXT_OVERRIDE;
+    // getHardwareAddress / setHardwareAddress NOT overridden here:
+    // kernel exports these on IO80211SkywalkInterface, not IO80211InfraInterface.
+    // Declaring overrides here generates unresolvable symbols.
     virtual void postMessage(UInt,void *,unsigned long,bool) APPLE_KEXT_OVERRIDE;
     virtual IOReturn recordOutputPackets(TxSubmissionDequeueStats *,TxSubmissionDequeueStats *) APPLE_KEXT_OVERRIDE;
     virtual void logTxPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,apple80211_wme_ac,bool) APPLE_KEXT_OVERRIDE;

@@ -13,7 +13,12 @@
 
 #include "IOSkywalkInterface.h"
 
-typedef UInt if_link_status;
+// if_link_status is a struct in the kernel (mangled as "14if_link_status"),
+// not a typedef.  Using typedef UInt produces mangled "j" (unsigned int).
+struct if_link_status {
+    UInt status;
+};
+struct ifnet_traffic_descriptor_common;
 class IOSkywalkPacketQueue;
 class IOSkywalkLogicalLink;
 class IOSkywalkPacketBufferPool;
@@ -79,22 +84,22 @@ public:
     virtual SInt32 initBSDInterfaceParameters(ifnet_init_eparams *,sockaddr_dl **) = 0;
     virtual bool prepareBSDInterface(ifnet_t,UInt);
     virtual void finalizeBSDInterface(ifnet_t,UInt);
-    virtual ifnet_t getBSDInterface(void);
+    virtual ifnet_t getBSDInterface(void) const;
     virtual void setBSDName(char const*);
-    virtual const char *getBSDName(void);
+    virtual const char *getBSDName(void) const;
     virtual IOReturn processBSDCommand(ifnet_t,UInt,void *);
     virtual IOReturn processInterfaceCommand(ifdrv *);
     virtual IOReturn interfaceAdvisoryEnable(bool);
-    virtual SInt32 setRxFlowSteering(UInt,void *,UInt);
+    virtual SInt32 setRxFlowSteering(UInt, ifnet_traffic_descriptor_common *, UInt);
     virtual SInt32 setInterfaceEnable(bool);
     virtual SInt32 setRunningState(bool);
     virtual IOReturn handleChosenMedia(UInt);
     virtual void *getSupportedMediaArray(UInt *,UInt *);
     virtual void *getPacketTapInfo(UInt *,UInt *);
-    virtual UInt getUnsentDataByteCount(UInt *,UInt *,UInt);
+    virtual UInt getUnsentDataByteCount(UInt *,UInt *,UInt) const;
     virtual UInt32 getSupportedWakeFlags(UInt *);
     virtual void enableNetworkWake(UInt);
-    virtual void calculateRingSizeForQueue(IOSkywalkPacketQueue const*,UInt *);
+    virtual void calculateRingSizeForQueue(IOSkywalkPacketQueue const*,UInt *) const;
     virtual UInt getMaxTransferUnit(void);
     virtual void setMaxTransferUnit(UInt);
     virtual UInt getMinPacketSize(void);
