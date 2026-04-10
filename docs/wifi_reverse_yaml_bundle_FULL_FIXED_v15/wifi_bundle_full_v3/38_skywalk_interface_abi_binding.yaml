@@ -1,0 +1,118 @@
+version: v8
+scope:
+  subsystem: AppleBCMWLANCoreMac + IOSkywalkFamily
+  focus: hard ABI binding for AppleBCMWLANSkywalkInterface
+  objective: >-
+    Combine the user-confirmed IOSkywalkNetworkInterface vtable reconstruction with the
+    decompiled AppleBCMWLANSkywalkInterface implementation to create a stable override map.
+
+user_supplied_binary_anchor:
+  source: user_reverse_result
+  statement: >-
+    IOSkywalkNetworkInterface vtable from IOSkywalkFamily.kext (x86_64, macOS 26.3) matches the
+    custom header exactly: 41/41 virtual methods plus 10 reserved slots.
+  trust_level: high
+  impact:
+    - virtual slot names can be treated as kernel-true for this OS build
+    - AppleBCMWLANSkywalkInterface override binding can proceed on ABI grounds, not heuristics
+
+applebcmwlanskywalkinterface_object:
+  object_size: 0x140
+  metaclass_size: 0x140
+  ivars_pointer_index_qword_0x27:
+    byte_offset: 0x138
+    confidence: high
+  derived_internal_observations:
+    queue_space_array_base_in_ivars: "+0x78"
+    role_or_ac_count_u8: "+0x2a"
+    wme_ac_array_copy_dst: "+0x2c"
+    param_8_u32: "+0x10"
+    log_stream_ref: "+0xa8"
+    provider_cookie_or_aux_ref: "+0x8"
+    bool_flag_primary: "+0xa2"
+    bool_flag_secondary: "+0xa1"
+
+directly_observed_methods:
+  packetSpace:
+    semantic: return queue-specific packet space object/capacity proxy
+    implementation_anchor:
+      - "loads ivars from self+0x138"
+      - "indexes qword table at ivars+0x78 + queue_id*8"
+      - "calls virtual method at slot +0x340 on queue-space object"
+  removePacketQueue:
+    semantic: remove flow-queue hash from bus-side skywalk object
+    implementation_anchor:
+      - "requires ivars non-null"
+      - "requires ivars[0] and ivars[4] valid"
+      - "calls self virtual at slot +0xd08 to get logger/fault stream"
+      - "dispatches to (*(ivars+0x20)->vtable[0xbc8/8])"
+  initWithProviderAndParameters:
+    semantic: bind provider, role, WME/AC parameters, log stream, flags, and auxiliary handles
+    implementation_anchor:
+      - "role/config byte stored at ivars+0x2a"
+      - "array copy of param_7 into ivars+0x2c for param_6 entries"
+      - "param_8 stored at ivars+0x10"
+      - "log stream retained into ivars+0xa8"
+      - "param_10 stored at ivars+0x8"
+      - "flags stored at ivars+0xa2 and ivars+0xa1"
+
+boundary_to_bus:
+  bus_side_anchor:
+    getBusSkywalk:
+      storage_offset: owner+0x11e8
+    allocateSkywalkBusResource:
+      storage_offsets:
+        tx_submit_queue_hint_a: owner+0x11d0
+        tx_submit_queue_hint_b: owner+0x11d4
+        flow_queue_hint: owner+0x11d8
+        ring_hint: owner+0x11dc
+        misc_hint: owner+0x11e0
+      semantic: allocate and size bus-side skywalk support object
+    findAndReleaseFlowQueueWithFlowId:
+      queue_range_offsets:
+        first: owner+0x174
+        limit: owner+0x178
+      queue_table_base: owner+0x1340
+      skywalk_object: owner+0x11e8
+      semantic: detach tx submission firmware queue for matching flow hash
+
+abi_binding_strategy:
+  pass_1_known_slots:
+    goal: tag AppleBCMWLANSkywalkInterface methods that are already directly observed
+    outputs:
+      - concrete method semantics
+      - object/ivar offsets
+  pass_2_slot_binding:
+    goal: align directly observed methods against the confirmed IOSkywalkNetworkInterface contract
+    candidate_slots:
+      - captureInterfaceState
+      - restoreInterfaceState
+      - setMTU
+      - getBSDNamePrefix
+      - getBSDUnitNumber
+      - enableNetworkWake
+      - reportDetailedLinkStatus
+      - calculateRingSizeForQueue
+    rule: >-
+      only bind a slot when either the decompiled method name is explicit or a callsite/log/offset
+      chain makes the correspondence unique
+  pass_3_datapath_matrix:
+    goal: connect interface virtuals with bus-side skywalk resource lifecycles
+    outputs:
+      - interface method -> bus object dependency matrix
+      - wake/sleep/restore candidates
+      - queue attach/detach and space-query paths
+
+remaining_unknowns:
+  - exact mapping from every AppleBCMWLANSkywalkInterface override to the 41-slot contract
+  - exact semantic of self virtual +0xd08 in removePacketQueue logger path
+  - exact class identity of the object at ivars+0x20
+
+current_status:
+  finished:
+    - hard ABI anchor exists
+    - object/ivars map for AppleBCMWLANSkywalkInterface improved
+    - interface-to-bus dependency anchors identified
+  unfinished:
+    - full override-to-slot binding matrix
+    - fieldmap of bus-side skywalk object at owner+0x11e8

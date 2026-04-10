@@ -1,0 +1,55 @@
+document: Skywalk queue contracts v12
+version: 12
+status: strengthened_by_kernel_vtable_anchor_and_coremac_ivar_paths
+
+hard_anchor:
+  source: externally validated IOSkywalkNetworkInterface vtable reconstruction
+  result: 41_methods_plus_10_reserved exact match
+  implications:
+    - virtual slots on the skywalk boundary can be bound mechanically
+    - AppleBCMWLANSkywalkInterface should be treated as a concrete override-bearing implementation against a known ABI shell
+
+AppleBCMWLANSkywalkInterface:
+  object_size: 0x140
+  anchors:
+    - self_plus_0x138 == self[0x27] => ivars_ptr
+    - ivars_ptr_plus_0x78 => packet_space_table_or_queue_space_vector
+    - ivars_ptr_plus_0x20 => bus_interface_ptr_used_by_removePacketQueue
+    - ivars_ptr_plus_0x10 => config_or_mode scalar
+    - ivars_ptr_plus_0xA8 => log_stream_ptr
+    - ivars_ptr_plus_0x08 => fault_reporter_or_provider_related ptr
+    - ivars_ptr_plus_0xA2 => bool-like init parameter storage
+    - ivars_ptr_plus_0xA1 => zeroed bool-like field during init
+
+queue_contracts:
+  packetSpace(queue_id):
+    behavior:
+      - lookup pointer from ivars+0x78 + queue_id*8
+      - if present, call virtual slot 0x340 on the queue-space object
+      - else return 0
+    interpretation:
+      - ivars+0x78 is not generic storage; it behaves as queue-indexed packet-space registry
+  removePacketQueue(flow_hash):
+    preconditions:
+      - ivars_ptr must exist
+      - bus interface pointer in ivars must be valid
+    actions:
+      - invoke bus-side gate/lock-like slot on nested object
+      - invoke self virtual slot around 0xD08 for logging/tracing handle
+      - call bus-interface virtual slot 0xBC8 with flow_hash
+    failure_texts:
+      - No ivars
+      - remove packet queue, bus interface is not valid
+
+init_parameter_capture:
+  initWithProviderAndParameters:
+    stores:
+      - role
+      - provider/core pointer
+      - WME-related array bytes
+      - config scalar
+      - log_stream retain
+      - fault_reporter/provider-like pointer
+      - boolean feature flags
+    notes:
+      - this path is a high-value future source for binding known IOSkywalkNetworkInterface slots to concrete WLAN semantics

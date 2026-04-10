@@ -1,0 +1,87 @@
+version: 13
+title: WCLScanManager gap closure
+scope: kernel-side symbolic closure for first CommonFsmManager owner
+status: partially closed with concrete owner-binding and semi-symbolic state machine
+
+owner:
+  class: WCLScanManager
+  file_hint: WCLScanManager.cpp
+  confidence: high
+  evidence:
+    - "panic/assert string: Invalid scan state, avoid state machine being stuck"
+    - "logs: WCLScanManager incoming scan request for UUID %s"
+    - "logs: WCLScanManager ignoring in state %d"
+
+object_layout:
+  this:
+    +0x10:
+      role: CommonFsmManager runtime pointer holder
+      confidence: high
+      evidence: "ignore() reads current state as *(u8 *)(*(long *)(this+0x10)+0x10)"
+    +0x20:
+      role: owner/private context
+      confidence: high
+      subfields:
+        +0x48:
+          role: first scan-related subordinate object with nested pointer chain
+          confidence: medium
+        +0x50:
+          role: second scan-related subordinate object with nested pointer chain
+          confidence: medium
+        +0x78:
+          role: log stream / CCLogStream-like handle
+          confidence: high
+
+confirmed_event_contract:
+  handleScanRequest:
+    function_site: FUN_ffffff8002120adc
+    event_1:
+      symbolic_name: no_subordinate_scan_context_or_direct_enqueue_path
+      invocation: "CommonFsmManager::processEvent(this, 1, 0)"
+      preconditions:
+        - "*(long *)(*(long *)(*(long *)(ctx+0x48)+0x10)+8) == 0"
+        - "*(long *)(*(long *)(*(long *)(ctx+0x50)+0x10)+8) == 0"
+        - "FUN_ffffff800211f4ea(this, request) != 0"
+      postconditions:
+        - "if processEvent succeeds: owner logs and continues"
+      confidence: medium
+    event_2:
+      symbolic_name: delegate_request_to_existing_scan_subsystem
+      invocation: "CommonFsmManager::processEvent(this, 2, request)"
+      preconditions:
+        - "*(long *)(*(long *)(*(long *)(ctx+0x50)+0x10)+8) != 0"
+        - "request has flag bit 0x10 set at request->opaque+0x1310"
+      postconditions:
+        - "on success, FUN_ffffff80021257a8(ctx+0x48, request) runs"
+        - "on certain failures, panic guard fires"
+      confidence: medium-high
+
+ignore_path:
+  function_site: FUN_ffffff8002120a74
+  return_code: 0xe00002bc
+  behavior:
+    - "logs current state byte from runtime+0x10"
+    - "acts as explicit ignore action for unsupported state/event combinations"
+  confidence: high
+
+fatal_guard:
+  assertion: "Invalid scan state, avoid state machine being stuck"
+  source_file: WCLScanManager.cpp
+  line_candidates:
+    - 0x4b3
+    - 0x4ca
+  triggers:
+    - "null request"
+    - "failed delegated path after event 2 path"
+  confidence: high
+
+closure_result:
+  achieved:
+    - "first CommonFsmManager owner concretely identified"
+    - "two real event IDs bound to one owner"
+    - "ignore action and current-state read path bound"
+    - "panic guard bound to state-machine misuse"
+  not_yet_achieved:
+    - "exact descriptor_ptr assignment site"
+    - "true symbolic names for all states"
+    - "true symbolic names for action table entries"

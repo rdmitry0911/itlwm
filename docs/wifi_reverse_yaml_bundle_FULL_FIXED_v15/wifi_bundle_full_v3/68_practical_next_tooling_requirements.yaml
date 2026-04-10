@@ -1,0 +1,58 @@
+version: 14
+topic: practical next tooling requirements
+status: explicit_boundary_reached
+
+statement:
+  - "The remaining gap is not solvable by more narrative lifting from the same C pseudocode."
+  - "The remaining gap requires xref-aware or relocation-aware binary analysis."
+
+minimum_required_next_pass:
+  - step: 1
+    name: recover_runtime_descriptor_assignment
+    method:
+      - "Open the owner init/constructor and all writes to owner+0x10 runtime."
+      - "Track writes to runtime+0x08."
+      - "Correlate with nearby __const / __cstring / relocation targets."
+    output:
+      - "descriptor base address"
+      - "first owner with exact descriptor origin"
+  - step: 2
+    name: lift_adjacent_rodata_vectors
+    method:
+      - "From recovered descriptor base, decode neighboring pointers."
+      - "Validate vector lengths against state_count/event_count/action_count."
+      - "Cross-check against trace strings used by CommonFsmManager."
+    output:
+      - "state names"
+      - "event names"
+      - "possibly trace/fsm name"
+  - step: 3
+    name: bind_action_callbacks
+    method:
+      - "Walk action_table[action_id] entries with 0x10 stride."
+      - "Resolve callback pointers to functions."
+      - "Map callback bodies back to owner-local semantics."
+    output:
+      - "fully or mostly symbolic FSM"
+
+why_no_more_kexts_are_needed:
+  - "IO80211Family already contains the CommonFsmManager interpreter and WCLScanManager owner logic."
+  - "Additional kexts are no longer the bottleneck for this specific hole."
+
+recommended_external_artifacts_if_available:
+  - "Ghidra/Binja/IDA xrefs for writes to runtime+0x08"
+  - "__DATA_CONST / __const dump around recovered descriptor candidate"
+  - "relocation-resolved pointer table near descriptor candidate"
+  - "one screenshot or dump of the relevant owner init basic block"
+
+done_vs_blocked:
+  done:
+    - "owner binding"
+    - "runtime layout"
+    - "descriptor internal shape"
+    - "real event IDs"
+    - "ignore/stuck-state semantics"
+  blocked:
+    - "exact descriptor origin"
+    - "exact state/event string vectors"
+    - "full symbolic action naming"

@@ -1,0 +1,171 @@
+document_type: wifi_reverse_call_formats_v3
+purpose: Normalize procedural/method call formats, payload conventions, completion models, and likely ABI contracts visible in the uploaded decompilations.
+call_patterns:
+  - family: OSMetaClass object lifecycle
+    methods:
+      - withX(...): allocator/factory wrapper returning newly allocated object or null
+      - init*(...): secondary initializer, may assert or return false/0 on failure
+      - start(provider): attach to provider and enter runtime
+      - stop(provider): quiesce/tear down provider binding
+      - free(): release retained objects and embedded payloads
+    notes:
+      - Many classes split object shell and separately allocated payload/subobject.
+      - free() often validates inner payload invariants before deallocation.
+  - family: CommonFsmManager
+    methods:
+      - signature: initWithOptions(CommonFsmManagerOptions& opts)
+        format:
+          args:
+            - opts: FSM config bundle containing descriptor/tables/possibly owner and initial state
+          returns: bool_or_status_like
+          side_effects:
+            - binds runtime pointer at self+0x10
+            - validates descriptor presence
+      - signature: validateFsmConfig()
+        format:
+          args: []
+          returns: void
+          side_effects:
+            - checks multiple descriptor pointers
+            - sets runtime validity flag
+      - signature: processEvent(event_id, payload)
+        format:
+          args:
+            - event_id: u8_or_small_enum
+            - payload: opaque pointer or context object
+          dispatch:
+            - reads current-state byte
+            - computes transition slot [state,event]
+            - updates next-state
+            - invokes action callback(this_or_owner_adjusted, payload)
+          diagnostics:
+            - emits 'FSM %s: in state: %s got event: %s moved into: %s'
+      - signature: getState()
+        returns: u8
+  - family: AppleOLYHALPortInterfacePCIe dext-message API
+    methods:
+      - signature: setupDextMsgCompletion(msg_id)
+        args: [u32 msg_id]
+        returns: IOReturn
+        semantics: Reserve/register completion bookkeeping for a dext transaction.
+      - signature: waitForDextMsgCompletion(msg_id, timeout_ms_or_step, flags)
+        args: [u32 msg_id, u32 arg1, u32 arg2]
+        returns: IOReturn
+        semantics: Blocking wait for dext response path.
+      - signature: signalDextMsgCompletion(msg_id, completion_code, status)
+        args: [u32 msg_id, u32 completion_code, s32 status]
+        returns: IOReturn
+        semantics: Completes one registered dext transaction.
+      - signature: abandonDextMsg(msg_id, reason)
+        args: [u32 msg_id, u32 reason]
+        returns: IOReturn
+        semantics: Local cancellation/abandon path.
+      - signature: getDextMsgInfo(msg_id)
+        args: [u32 msg_id]
+        returns: pointer_or_null
+        semantics: Searches intrusive pending-message list by id.
+      - signature: sendActionMessageToDext(owner, action_type, params)
+        args: [OSObject* owner, AppleOLYHALPortInterfaceActionType action_type, void* params]
+        returns: IOReturn
+      - signature: sendErrorMessageToDext(context, error_event, payload_data)
+        args: [void* context, AppleOLYHALPortInterfacePCIeErrorHandlerEvent error_event, OSData* payload]
+        returns: IOReturn
+    payload_conventions:
+      - action_type and error_event are strong enums even if underlying constants are not fully lifted.
+      - params is opaque and action-specific.
+      - completion is keyed by transaction id rather than pointer equality.
+  - family: AppleOLYHALPortInterfacePCIe AMFM/reset handling
+    methods:
+      - signature: processAMFMMessageGated(...)
+        semantics:
+          - gated handler for action/fault/reset messages
+          - asserts on owner/action pairing
+          - checks reset phase against kResetStepRequested and kResetStepBusQuiesced
+          - distinguishes internal reset vs external path
+          - checks pending-error-handling exclusion
+    inferred_message_fields:
+      - owner
+      - action
+      - params
+      - reset_progress
+      - reset_is_internal
+  - family: AppleConvergedIPCInterface transport ABI
+    methods:
+      - signature: write(AppleConvergedIPCMemoryCommand** cmds, IOACIPCCompletion* completion)
+      - signature: read(AppleConvergedIPCMemoryCommand** cmds, uint64_t* out_len, void** out_cookie, IOACIPCCompletion* completion)
+      - signature: startChannel(acipcDirection dir, IOACIPCCompletion* completion)
+      - signature: abortChannel(acipcDirection dir, IOACIPCCompletion* completion)
+    semantics:
+      - Completion object is the standard async callback token for request completion.
+      - Command pointer array implies scatter/gather or multi-segment transfer lists.
+      - read() uniquely exposes output length and an opaque returned context/cookie.
+  - family: AppleConvergedIPCRequest
+    methods:
+      - signature: prepare(AppleConvergedIPCInterface* iface, AppleConvergedIPCMemoryCommand* cmd, IOACIPCCompletion* completion, bool is_read, bool option)
+      - signature: prepareSkywalkTransfer(AppleConvergedIPCInterface* iface, AppleConvergedIPCSkywalkIO* skywalk_io, bool is_read, bool option)
+    semantics:
+      - Request object materializes one pending IPC DMA transfer.
+      - Separate entry point confirms Skywalk uses a specialized command shape.
+  - family: AppleConvergedIPCMemoryPolicy
+    methods:
+      - signature: setMapper(IOMapper*)
+      - signature: prepareDMATransfer(IOMemoryDescriptor*)
+      - signature: updateUse(bool in_use)
+    semantics:
+      - Encodes DMA preparation and mapping policy rather than channel logic.
+  - family: AppleConvergedIPCBTAdapter
+    methods:
+      - signature: init(IOService* iface)
+      - signature: openInterface(IOService* client, uint32_t options, void* arg)
+      - signature: closeInterface(IOService* client, uint32_t options)
+      - signature: read(IOMemoryDescriptor* md, uint64_t* out_len, IOACIPCCompletion* completion)
+    semantics:
+      - Adapter is a light delegator over underlying interface vtable methods.
+      - closeInterface validates interface-open state first.
+  - family: AppleConvergedIPCRTIInterface / ACIPCRTIPipe
+    methods:
+      - signature: validateProperties()
+      - signature: asyncCompletion(uint32_t token)
+      - signature: setupPipe(...)
+      - signature: dummyMessageCallback(void* ctx, int status)
+      - signature: linkRecovery()
+    semantics:
+      - token-based async completion strongly implies outstanding-request table.
+      - validateProperties() likely consumes OSDictionary keys before enabling pipe.
+      - linkRecovery() is transport-resynchronization rather than high-level reconnect.
+  - family: IOTimeSyncRootService / daemon client
+    methods:
+      - signature: probe(IOService* provider, int* score)
+      - signature: start(IOService* provider)
+      - signature: IOTimeSyncDaemonClientBase::start(client_id, service, daemon_service)
+    semantics:
+      - RootService probe blocks until TimeSyncTime dependency is present.
+      - Daemon client owns retained references to service endpoints.
+  - family: IO80211TimeSyncPeer statistics helpers
+    methods:
+      - signature: withAddressAndPeerManager(IO80211PeerManager* mgr, uint8_t* addr, uint8_t* ip, bool flag)
+      - signature: initWithAddressAndPeerManager(...)
+      - signature: incrementTxCounters(msgType, txStatus, qos_or_tid)
+      - signature: resetStats()
+    semantics:
+      - Message type -> compact index via msgType2Index().
+      - TX status -> reason bucket via txStatus2Reason().
+      - Counter update path is deterministic enough to model as a small stats ABI.
+format_taxonomy:
+  async_completion_style:
+    fields:
+      - completion object pointer
+      - request token or msg_id
+      - status code
+      - optional output length/cookie
+  intrusive_list_style:
+    fields:
+      - sentinel head inside owning object
+      - link node embedded in per-request object
+      - lookup by numeric request id
+  gated_handler_style:
+    fields:
+      - workloop/command-gate context
+      - owner/action pair
+      - params pointer
+      - reset/error substate

@@ -1,0 +1,149 @@
+version: 1
+topic: BSD attach call-chain targets
+status: targeted_followup_plan
+purpose: >-
+  Narrow follow-up document for closing the remaining BSD/Skywalk attach gap.
+  This is not another broad lifecycle summary; it is a concrete target list
+  for recovering the final caller chains around BSD interface registration,
+  attach deferral, naming, and logical-link lifecycle.
+
+known_facts:
+  - "AppleBCMWLANSkywalkInterface exists as the Skywalk/BSD-facing interface wrapper."
+  - "prepareBSDInterface is a real attach stage."
+  - "prepareBSDInterface performs internal setup and then BPF attach."
+  - "ifnet is visible to lower layers before operational LINK_UP in NET_MANAGER."
+  - "BSD/Skywalk interface creation is distinct from later connect/link FSM progress."
+
+remaining_gap_statement: >-
+  The remaining gap is no longer architectural. It is a caller/xref precision
+  gap: exactly where the Wi-Fi stack invokes BSD naming, logical-link
+  registration, deferred attach, and finalization hooks on the concrete
+  interface object.
+
+primary_targets:
+  - symbol: registerNetworkInterfaceWithLogicalLink
+    why_it_matters: >-
+      Likely the point where the concrete network interface becomes associated
+      with a Skywalk logical link and moves from prepared object to registered
+      networking participant.
+    what_to_recover:
+      - concrete caller(s)
+      - call ordering relative to prepareBSDInterface
+      - parameters supplied for logical-link registration
+      - whether registration is conditional or deferred
+    likely_outputs:
+      - link/interface association timing
+      - registration prerequisites
+      - teardown pairing point
+
+  - symbol: deferBSDAttach
+    why_it_matters: >-
+      May explain whether Apple delays BSD exposure until some prerequisite is
+      met rather than attaching immediately during interface object creation.
+    what_to_recover:
+      - caller(s)
+      - branch conditions
+      - relation to prepareBSDInterface and registration
+      - whether defer is used only for specific modes / roles
+    likely_outputs:
+      - precise boundary between object creation and BSD exposure
+      - attach timing policy
+
+  - symbol: setBSDName
+    why_it_matters: >-
+      Needed to understand who assigns the visible BSD interface name and when.
+    what_to_recover:
+      - caller(s)
+      - input string source
+      - whether name is assigned before or after registration
+    likely_outputs:
+      - naming policy
+      - interface identity timing
+
+  - symbol: getBSDNamePrefix
+    why_it_matters: >-
+      Helps determine prefix policy (e.g. en/awdl-like variants) and may reveal
+      role-dependent naming logic.
+    what_to_recover:
+      - callers
+      - role-dependent branches
+      - relation to unit-number assignment
+    likely_outputs:
+      - prefix selection policy
+      - role/class mapping
+
+  - symbol: getBSDUnitNumber
+    why_it_matters: >-
+      Needed to know where unit selection comes from and whether it is
+      interface-local, provider-driven, or allocated centrally.
+    what_to_recover:
+      - callers
+      - unit number storage origin
+      - allocation / fetch policy
+    likely_outputs:
+      - exact unit-number path
+      - stable interface identity rules
+
+  - symbol: finalizeBSDInterface
+    why_it_matters: >-
+      Needed to complete the lifecycle: teardown/finalize sequence and its
+      relation to deregistration and queue release.
+    what_to_recover:
+      - callers
+      - ordering relative to deregisterLogicalLink
+      - interaction with free/teardown path
+    likely_outputs:
+      - proper teardown model
+      - shutdown/reset cleanup ordering
+
+  - symbol: deregisterLogicalLink
+    why_it_matters: >-
+      Completes the registration lifecycle and shows how Apple tears down
+      logical-link state without necessarily destroying the interface object
+      immediately.
+    what_to_recover:
+      - caller(s)
+      - ordering relative to finalize/free
+      - whether deregistration occurs on reset, sleep, destroy, or all three
+    likely_outputs:
+      - logical-link teardown semantics
+      - safe reset/teardown ordering
+
+search_strategy:
+  stage_1_virtual_slot_focus:
+    objective: >-
+      Enumerate concrete call sites for BSD/Skywalk hooks via vtable slot use,
+      not just symbol names in the abstract.
+    methods:
+      - "scan decompilation/disasm for calls using IOSkywalkNetworkInterface virtual slots near BSD methods"
+      - "search caller sites around prepareBSDInterface and finalizeBSDInterface"
+      - "search for naming/unit strings and associated set/get methods"
+
+  stage_2_concrete_interface_binding:
+    objective: >-
+      Prove which concrete object invokes the hooks and where the call chain
+      crosses from AppleBCMWLANSkywalkInterface into common BSD/Skywalk helpers.
+    methods:
+      - "follow AppleBCMWLANSkywalkInterface init/withProvider paths"
+      - "follow getInterfaceUnitNumber / ifnet / queue-space related methods"
+      - "look for role/provider/controller branches that gate BSD attach"
+
+  stage_3_registration_teardown_pairing:
+    objective: >-
+      Reconstruct open/close symmetry for BSD/logical-link lifecycle.
+    methods:
+      - "pair registerNetworkInterfaceWithLogicalLink with deregisterLogicalLink"
+      - "pair prepareBSDInterface with finalizeBSDInterface"
+      - "cross-check free/teardown paths for null-tolerant cleanup"
+
+expected_final_products:
+  - "exact attach call chain"
+  - "exact teardown call chain"
+  - "BSD naming/unit policy note"
+  - "logical-link registration sequencing note"
+  - "deferred attach policy note"
+
+stop_condition:
+  - "A single ordered call chain exists from interface object creation -> BSD prep -> logical-link registration -> ifnet visibility."
+  - "A single ordered teardown chain exists from reset/destroy -> deregisterLogicalLink -> finalizeBSDInterface -> free."
+  - "Naming/unit policy is grounded in concrete caller evidence."

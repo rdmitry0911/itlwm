@@ -1,0 +1,18 @@
+document_type: bt_coex_and_olybt_v2
+components:
+  - AppleConvergedIPCBTAdapter
+  - AppleConvergedIPCRTIDevice
+  - AppleConvergedIPCRTIInterface
+  - ACIPCRTIPipe
+scope_note: This is not the Wi-Fi data plane itself, but it materially affects coexistence, shared transport, recovery, and dump/control paths.
+confirmed_behaviors:
+  - AppleConvergedIPCBTAdapter wraps an interface service and forwards open/close/read operations.
+  - AppleConvergedIPCRTIDevice start enables skywalk-related property path(s) and stop has explicit teardown assertions.
+  - AppleConvergedIPCRTIInterface has async callback/completion paths and setupPipe/validateProperties/control helpers.
+  - ACIPCRTIPipe includes linkRecovery logic, indicating explicit transport recovery state.
+  - setupDeviceParams reads chip object, DMA/VA/PA related values, and MSI counts.
+  - readCoreDumpMMIO path exists and logs detailed header/header-offset failures.
+practical_use_for_wifi_reverse:
+  - explains BT coexistence pressure points
+  - explains shared OLY/RTI transport and recovery path
+  - explains MMIO coredump and diagnostic record retrieval

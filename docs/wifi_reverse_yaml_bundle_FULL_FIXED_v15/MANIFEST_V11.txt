@@ -1,0 +1,61 @@
+Added in V11 (2026-04-10):
+
+Closes ALL remaining gaps from V10 MANIFEST. Source: direct binary extraction
+from BootKernelExtensions.kc (macOS 26.3, 25D125) and Ghidra decompilation of
+IO80211Family_decompiled.c / AppleBCMWLAN_Core_decompiled.c.
+
+- 89_remaining_gaps_closed.yaml
+    Seven sections closing every gap:
+
+    1. Complete event code->name string table (246 entries, codes 0x00-0xF5)
+       - Extracted from DAT_ffffff80023fe7c0 in IO80211Family DATA segment
+       - Chained fixup pointer table decoded from KC binary
+       - All 246 names recovered: APPLE80211_M_POWER_CHANGED through
+         APPLE80211_M_RX_DATA_STALL
+       - Critical events for itlwm identified (POWER_CHANGED, SSID_CHANGED,
+         BSSID_CHANGED, LINK_CHANGED, ASSOC_DONE, SCAN_DONE,
+         WCL_CONNECT_COMPLETE_EVENT)
+
+    2. CONNECT_COMPLETE full 164-byte struct (0xa4)
+       - Disassembled from sendConnectComplete @ 0xffffff800157d472 using capstone
+       - Root cause of Ghidra truncation: bzero (FUN_ffffff8000101100) was
+         falsely classified as non-returning
+       - Full struct: 4-byte header (status + reason_flags) + 10 BSS entries
+         of 16 bytes each, populated from JoinAdapter ivars at stride 0x44
+       - Event code confirmed: 0xD5 = APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT
+       - postMessage call signature and arguments fully documented
+       - itlwm implementation guidance included
+
+    3. IO80211SkywalkInterface::setPowerState @ 0xffffff8002277434
+       - On wake: calls IO80211MacAddressAgent::wake()
+       - On sleep: cancels peer manager timers
+       - Stores power state at expansionData+0xe0 (0=sleep, 2=awake)
+       - Chains to IOSkywalkNetworkInterface::setPowerState via super
+
+    4. IO80211InfraInterface::setPowerState @ 0xffffff80022e673c
+       - Wraps base setPowerState + WCL system state notification
+       - On wake: sends RNG_EVENT_WAKE, restores lowLatency/proximity
+       - On sleep: sends RNG_EVENT_SLEEP, cancels debounce timers
+       - WCL bulletin board message code: 0x802869c8, subtype 0x206
+
+    5. IO80211InfraInterface::stop @ 0xffffff80022de4d8
+       - Teardown order: base -> beacon mute -> scan manager -> RNG agent
+         -> deauth monitor -> AVC advisory
+       - InfraInterface expansion data at self+0x128, 0x3c60 bytes zeroed on free
+
+    6. IO80211SkywalkInterface::stop @ 0xffffff800227750e
+       - Releases NAN, proximity, lowLatency interfaces
+       - Releases TX/RX pools from core expansion data +0x528/+0x530
+       - Stops IO80211Glue
+       - Critical: pools/queues must survive until stop()
+
+    7. getBSDNamePrefix / getBSDUnitNumber complete implementations
+       - IOSkywalkNetworkInterface base: NULL / 0
+       - IOSkywalkEthernetInterface: "en"
+       - AppleBCMWLAN overrides: "llw", "awdl", "nan", "p2p"
+       - IO80211Family consolidated prefix table: en/awdl/ap/nan/llw
+       - getBSDUnitNumber: base=0, APSTA hardcoded to 1
+       - itlwm guidance: base return 0 is correct for primary STA
+
+Remaining gaps: NONE
+All items from V10 remaining gaps list are now fully documented.

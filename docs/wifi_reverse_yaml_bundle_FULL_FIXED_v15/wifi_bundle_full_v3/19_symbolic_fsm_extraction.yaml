@@ -1,0 +1,130 @@
+version: 4
+topic: symbolic_fsm_extraction
+scope:
+  primary_target:
+    class: CommonFsmManager
+    evidence:
+      - "validateFsmConfig() walks a descriptor rooted at self+0x10 -> puVar4 -> plVar5"
+      - "descriptor contains transition matrix, action table, state count, event count, action count"
+      - "processEvent(event, arg) is table-driven and used by WCLScanManager"
+  secondary_targets:
+    - WCLScanManager
+    - GAS-related FSM wrappers
+    - roam/association wrappers
+goal:
+  - recover symbolic state names
+  - recover symbolic event names
+  - recover action callback names and dispatch ABI
+  - map each concrete manager instance to one descriptor table
+confirmed_runtime_model:
+  CommonFsmManager:
+    object_size: 0x18
+    fields:
+      - offset: 0x10
+        name: runtime_ptr
+        confidence: high
+        basis: "validateFsmConfig dereferences *(u32**)(self+0x10)"
+    runtime_blob:
+      - offset: 0x00
+        name: fsm_id
+        type: u32
+        confidence: high
+      - offset: 0x08
+        name: descriptor_ptr
+        type: ptr
+        confidence: high
+      - offset: 0x12
+        name: descriptor_valid
+        type: bool
+        confidence: high
+        basis: "validateFsmConfig writes *(bool*)((long)puVar4+0x12)"
+descriptor_model:
+  pointer_fields:
+    - index: 0
+      role: transition_matrix_ptr
+      confidence: high
+      notes: "indexed as *(byte*)(*plVar5 + state_row_offset + event*2 + {0,1})"
+    - index: 1
+      role: action_descriptor_array_ptr
+      confidence: high
+      notes: "validateFsmConfig checks *(long *)(plVar5[1] + actionId*0x10)"
+    - index: 2
+      role: state_metadata_ptr_or_names
+      confidence: medium
+      notes: "must be non-null for descriptor_valid"
+    - index: 3
+      role: event_metadata_ptr_or_names
+      confidence: medium
+      notes: "must be non-null for descriptor_valid"
+    - index: 4
+      role: action_metadata_ptr_or_names
+      confidence: medium
+      notes: "must be non-null for descriptor_valid"
+  scalar_fields:
+    - offset: 0x29
+      name: event_count
+      type: u8
+      confidence: high
+    - offset: 0x2a
+      name: state_count
+      type: u8
+      confidence: high
+    - offset: 0x2b
+      name: action_count
+      type: u8
+      confidence: high
+transition_encoding:
+  row_stride: "event_count * 2 bytes"
+  cell:
+    - byte0: next_state
+    - byte1: action_id
+  sentinels:
+    next_state_0xff: "special/no transition"
+  validation_rules:
+    - "next_state must be < state_count unless 0xff"
+    - "action_id must be < action_count"
+    - "action_descriptor_array[action_id] must be non-null"
+direct_evidence:
+  - statement: "validateFsmConfig() iterates over state_count and event_count and validates nextState/actionId pairs"
+    citation: "fileciteturn11file4"
+  - statement: "WCLScanManager invokes CommonFsmManager::processEvent with numeric events 1 and 2"
+    citation: "fileciteturn11file0turn11file1"
+  - statement: "WCLScanManager logs the current numeric state from *(u8*)(*(long*)(self+0x10)+0x10)"
+    citation: "fileciteturn11file1"
+symbol_lifting_plan:
+  stage_1_descriptor_hunt:
+    method:
+      - "Locate all cross-references to CommonFsmManager::validateFsmConfig and init paths."
+      - "For each manager ctor/init, identify the constant descriptor pointer stored into runtime_blob->descriptor_ptr."
+      - "Recover the descriptor object in __DATA_CONST / __const / rodata."
+    outputs:
+      - "manager_instance -> descriptor_ptr map"
+      - "descriptor_ptr -> counts/transition table/action array"
+  stage_2_action_array_recovery:
+    method:
+      - "Follow action_descriptor_array[actionId] entries."
+      - "Each action entry is expected to include a callback pointer or thunk."
+      - "Resolve callback symbol names or nearest function labels."
+    outputs:
+      - "action_id -> callback symbol"
+      - "callback ABI normalization"
+  stage_3_symbolic_names:
+    method:
+      - "Search adjacent rodata around descriptor_ptr for parallel char* arrays or packed strings."
+      - "Mine log strings in manager methods for state/event textual hints."
+      - "Correlate current-state log sites with surrounding switch/guard code."
+    outputs:
+      - "state_id -> symbolic_state_name"
+      - "event_id -> symbolic_event_name"
+  stage_4_machine_specific_reification:
+    method:
+      - "Materialize per-manager FSM YAML with symbolic names where recovered."
+      - "Keep numeric aliases when symbols are absent."
+deliverables_for_v5:
+  - manager_descriptor_inventory
+  - action_callback_catalog
+  - symbolic_state_event_tables
+  - per-machine_transition_graphs
+residual_risk:
+  - "some metadata may be stripped, requiring name inference from logs rather than direct tables"
+  - "different managers may share CommonFsmManager runtime layout but not metadata layout extensions"

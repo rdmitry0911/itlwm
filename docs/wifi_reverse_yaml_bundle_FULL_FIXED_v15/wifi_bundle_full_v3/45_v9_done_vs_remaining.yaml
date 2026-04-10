@@ -1,0 +1,32 @@
+version: v9
+topic: done vs remaining
+done:
+  kernel_breadth:
+    - io80211 family
+    - bcm wlan core
+    - pcie bus interface
+    - corecapture
+    - oly hal
+    - ios timesync
+    - converged pci
+    - oly bt control
+  data_model:
+    - commonfsm runtime/descriptor format
+    - skywalk boundary abi anchor
+    - hal/completion/assertion surfaces
+    - timesync and convergence domains
+  owner_progress:
+    - WCLScanManager confirmed as concrete CommonFsmManager owner
+
+remaining:
+  - full processEvent caller inventory
+  - exact descriptor_ptr origins for owners
+  - rodata vector lift for state/event names
+  - action callback naming
+  - second fully worked symbolic owner
+  - optional airportd/CoreWLAN for userland policy completeness
+
+truthfulness_notes:
+  - no fully symbolic FSM recovered yet from descriptor tables alone
+  - WCLScanManager is semi-symbolic, not fully named
+  - next gains require relocation/xref-aware lifting more than new binaries

@@ -1,0 +1,34 @@
+document_type: scan_and_join_fsm_v2
+components:
+  - WCLScanManager
+  - WCLController
+  - framework-side join control
+confirmed_behaviors:
+  - WCLScanManager has explicit stuck-state protection via 'Invalid scan state, avoid state machine being stuck'.
+  - Incoming scan requests are validated against current prerequisites/subordinate objects before processEvent() is called.
+  - Distinct numeric events are issued depending on path shape; current evidence strongly supports at least event 1 and event 2 in handleScanRequest.
+  - The manager can reject/ignore work in the current state and logs 'WCLScanManager ignoring in state %d'.
+  - Join is a controller lifecycle distinct from raw scan execution; controller/runtime logs scan and join progression separately.
+state_model:
+  states:
+    - id: numeric
+      naming: unresolved
+      status: confirmed_but_unnamed
+  events:
+    - id: 1
+      role: scan path transition after one prerequisite branch
+      status: inferred_from_handleScanRequest
+    - id: 2
+      role: scan path transition when alternate subordinate object/path is active
+      status: inferred_from_handleScanRequest
+operational_flow:
+  - receive scan request
+  - validate current scan state and prerequisites
+  - inject CommonFsmManager event
+  - launch helper / firmware-facing scan path
+  - on completion/failure, inject follow-up events or return an error
+join_coupling:
+  - scan results and state gating feed join start
+  - join completion exists as a distinct upper-level lifecycle event
+strict_notes:
+  - v2 intentionally does not invent symbolic state names absent in decompilation evidence.

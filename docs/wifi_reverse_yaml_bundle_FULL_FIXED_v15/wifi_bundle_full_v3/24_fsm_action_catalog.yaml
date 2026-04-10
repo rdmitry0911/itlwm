@@ -1,0 +1,91 @@
+version: 5
+scope: kernel
+subject: fsm_action_catalog
+summary:
+  goal: >-
+    Normalize the action semantics already visible around CommonFsmManager call-sites,
+    while separating true descriptor actions from surrounding helper branches.
+  note: >-
+    Action names below are semantic labels for reverse-engineering convenience. They do
+    not claim to be original Apple symbols unless explicitly marked confirmed.
+
+action_model:
+  confirmed_runtime_contract:
+    - transition entry yields {next_state, action_id}
+    - action_id indexes a 0x10-byte entry in action_table
+    - action entry[0] must be non-null before processEvent may proceed
+  inferred_action_entry_shape:
+    - qword0: callback_or_trampoline
+    - qword1: bound_context_or_metadata
+
+common_action_buckets:
+  ignore_action:
+    confidence: medium
+    evidence:
+      - WCLScanManager::ignore logs current state and returns kIOReturnNotReady-like status
+    likely_role: self-transition/no-op with diagnostic logging
+  start_scan_preflight:
+    confidence: medium
+    evidence:
+      - handleScanRequest path validates current subordinate scan objects before emitting event
+      - helper FUN_ffffff800211f4ea acts as admission/preflight gate
+    likely_role: prepare request state and subordinate structures
+  dispatch_scan_to_primary_engine:
+    confidence: medium
+    evidence:
+      - branch invoking FUN_ffffff8002120996 after preflight success
+    likely_role: materialize scan request into lower engine or queue
+  dispatch_scan_to_secondary_engine:
+    confidence: medium
+    evidence:
+      - event 2 path calls FUN_ffffff80021257a8 against object at owner+0x48
+    likely_role: hand off to alternate scan backend/manager
+  error_or_abort_transition:
+    confidence: medium
+    evidence:
+      - on certain failures processEvent(event=1) is immediately followed by fatal logging/abort
+    likely_role: transition into failure state and/or unblock caller
+
+wcl_scan_specific_catalog:
+  observed_numeric_events:
+    - id: 1
+      likely_semantics: preflight-failed / fallback-transition / error-advance
+      confidence: medium
+    - id: 2
+      likely_semantics: alternate-engine dispatch / pending-scan path
+      confidence: medium
+  observed_state_usage:
+    - field_access: manager.runtime_ptr->current_state
+      use: diagnostic only in current snippets
+      confidence: high
+  pending_symbol_lift:
+    - exact state names
+    - exact action callback addresses
+    - full event domain cardinality
+
+non_commonfsm_dispatch_tables:
+  acipc_rti_message_completion:
+    form: switch-based completion dispatcher
+    observed_cases:
+      - open_close_cr_completion
+      - trap_completion
+      - generic completion sending event code 0x19
+    relevance: >-
+      Not a CommonFsmManager, but operationally similar: completion status + message type
+      select a handler path and possibly forward an event via virtual slot +0x70.
+  dext_message_tracking_in_olyhal:
+    form: list lookup by msg_id + completion/abort bookkeeping
+    relevance: >-
+      Queue-like action catalog for transport/reset recovery rather than logical Wi‑Fi states.
+
+symbol_lift_plan:
+  pass_1:
+    - enumerate every call to CommonFsmManager::processEvent
+    - bucket by caller class and numeric event
+  pass_2:
+    - find nearest constructor/init storing descriptor_ptr
+    - dump action_table addresses and callback targets
+  pass_3:
+    - correlate callback targets with nearby log strings and helper names
+  pass_4:
+    - rename action ids into symbolic names and retrofit all YAMLs

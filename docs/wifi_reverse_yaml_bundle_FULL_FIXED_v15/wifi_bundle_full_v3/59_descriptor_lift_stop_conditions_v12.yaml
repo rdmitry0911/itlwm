@@ -1,0 +1,47 @@
+document: Descriptor lift stop conditions v12
+version: 12
+purpose:
+  Define exactly where the current static-C-only method stops being reliable and what evidence is
+  required before promoting semi-symbolic claims to fully symbolic ones.
+
+safe_to_claim_without_more_lifting:
+  - CommonFsmManager is a descriptor-backed FSM interpreter.
+  - transition cells are 2-byte packed records: next_state, action_id.
+  - runtime stores descriptor_ptr/current_state/descriptor_valid.
+  - WCLScanManager injects at least events 1 and 2 and exposes an ignore-path.
+  - AppleBCMWLANSkywalkInterface is a 0x140 object with ivars at self+0x138/self[0x27].
+
+must_not_claim_yet:
+  - exact symbolic names of WCLScanManager states
+  - exact symbolic names of events 1 and 2
+  - exact per-action callback names without action-table-to-function lift
+  - exact descriptor field names at 0x10/0x18/0x20 unless rodata adjacency/xref confirms them
+
+promotion_requirements:
+  symbolic_state_name:
+    requires_any_two:
+      - rodata vector adjacency matching state_count
+      - trace string usage proving vector role
+      - owner callback/assert text naming same state
+  symbolic_event_name:
+    requires_any_two:
+      - rodata vector adjacency matching event_count
+      - owner-side dispatch switch or assert text naming event
+      - trace/log output string reference binding numeric event to label
+  action_name:
+    requires:
+      - action_table callback pointer lift
+      - callback body anchored to owner-local semantic/log/assert strings
+
+methodological_boundary:
+  static_c_decompile_only:
+    strength:
+      - enough for runtime layout and packed-table semantics
+    weakness:
+      - tends to lose descriptor assignment sites and rodata/relocation intent
+  next_required_pass:
+    type: xref_or_relocation_aware
+    focus:
+      - owner init sites
+      - descriptor_ptr stores
+      - adjacent const blobs

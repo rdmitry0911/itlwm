@@ -1,0 +1,86 @@
+document_type: wifi_reverse_gap_closure_strategy_v3
+goal: Close the remaining symbolic and structural gaps without resorting to guesswork.
+remaining_gap_classes:
+  - symbolic_fsm_names
+  - ivar_maps_and_embedded_structs
+  - opaque_payload_formats
+  - cross-boundary kernel_to_userland orchestration
+strategy:
+  phase_1_symbol_lift_from_existing_kernel_decompilations:
+    priority: highest
+    tasks:
+      - name: dump CommonFsmManager descriptor adjacency
+        method:
+          - locate every caller of initWithOptions(CommonFsmManagerOptions&)
+          - recover the descriptor pointer passed in options
+          - parse adjacent rodata for state-string/event-string/action-string tables
+          - emit per-FSM YAML with numeric->symbolic mapping
+        expected_output:
+          - state_names
+          - event_names
+          - action_names_or_action_callbacks
+      - name: recover WCLScanManager/WCLGASFsm concrete tables
+        method:
+          - backtrack from processEvent callsites
+          - identify event constants injected by manager methods
+          - locate owning descriptor objects in .const / .data
+      - name: recover roam/power/WoW enum labels
+        method:
+          - search for diagnostic strings around handleRoam*, wow*, power*, sleep*, wake*
+          - correlate stores to one-byte/two-byte substate fields
+  phase_2_ivar_and_structure_reconstruction:
+    priority: high
+    tasks:
+      - name: strict AppleBCMWLANCore ivar map
+        method:
+          - enumerate constructor/init stores relative to core base and +0x128 subobject base
+          - group by allocator/init/free path to identify stable submodule slots
+          - annotate slot -> class -> lifecycle edges
+      - name: OLYHAL dext message struct lift
+        method:
+          - inspect all accesses relative to node returned by getDextMsgInfo()
+          - classify id/status/flags/owner/params/list-link fields
+      - name: ACIPC request/memory policy struct lift
+        method:
+          - inspect prepare()/prepareDMATransfer()/setMapper()/updateUse() callers
+          - reconstruct transfer descriptor and DMA policy field set
+  phase_3_cross-domain control recovery:
+    priority: medium
+    tasks:
+      - name: build kernel control/message matrix
+        method:
+          - enumerate sendActionMessageToDext/sendErrorMessageToDext callers
+          - enumerate AppleConvergedIPCInterface read/write/start/abort channel callers
+          - produce action_type / error_event / channel-direction matrices
+      - name: timesync service graph completion
+        method:
+          - enumerate IOTimeSync* service/daemon-client start paths
+          - reconstruct provider/service/client ownership graph
+  phase_4_userland_only_if_needed:
+    trigger: required only for end-to-end policy/orchestration completeness
+    tasks:
+      - airportd decompilation
+      - optional CoreWLAN.framework and WiFiPolicy.framework decompilation
+    benefit:
+      - symbolic policy states for auto-join/roam preference
+      - userland timers/backoff heuristics
+      - daemon->kernel request chronology
+what_can_be_closed_without_airportd:
+  - nearly all kernel FSM symbolic names
+  - most structure layouts for transport/FSM/runtime objects
+  - most call-format and completion-format descriptions
+  - precise bus/core/hal/timesync/coex lifecycle graphs
+what_still_requires_airportd:
+  - policy reasons for when scan/join/roam is initiated
+  - saved-network and scoring policy
+  - captive/user-intent/auto-join orchestration
+recommended_next_execution_order:
+  - 1) CommonFsmManager descriptor/table extraction
+  - 2) AppleBCMWLANCore ivar map lift
+  - 3) OLYHAL dext msg + ACIPC request structure lift
+  - 4) optional airportd only after kernel symbolic coverage plateaus
+success_criteria:
+  - every major FSM has symbolic state/event labels
+  - each transport/control API has argument and completion schemas
+  - each major object has at least partial field map with confidence tags
+  - residual unknowns are isolated to policy/userland or tiny opaque blobs

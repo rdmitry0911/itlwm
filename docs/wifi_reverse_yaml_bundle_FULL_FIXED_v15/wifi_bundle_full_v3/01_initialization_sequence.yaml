@@ -1,0 +1,61 @@
+document_type: wifi_initialization_sequence_v2
+sequence:
+  - step: 1
+    component: AppleBCMWLANBusInterfacePCIe
+    phase: deferred_start_enter
+    status: confirmed
+    details:
+      - deferredStart performs PCIe enumeration, logger checks, and failure-report routing.
+      - init failures are centralized through reportInitFailure(...).
+  - step: 2
+    component: AppleBCMWLANBusInterfacePCIe
+    phase: discover_or_retain_AppleOLYHAL
+    status: confirmed
+    details:
+      - A matching dictionary for AppleOLYHAL is created lazily.
+      - Matching service is retained and used as a provider/port-control dependency.
+  - step: 3
+    component: AppleBCMWLANBusInterfacePCIe
+    phase: configure_TimeSync_capability
+    status: confirmed
+    details:
+      - configureTimeSyncCapability() updates capability field(s).
+      - For non-forced paths, the bus discovers AppleOLYHAL and constructs AppleBCMWLANTimeSyncEngine::withProviderAndBus(...).
+      - Existing HAL-derived capability bits influence setup.
+  - step: 4
+    component: AppleBCMWLANBusInterfacePCIe
+    phase: chip_and_transport_prepare
+    status: confirmed
+    details:
+      - Chip manager / backplane / BAR-window logic is initialized.
+      - Bus accessibility and APB accessibility checks gate register accesses and recovery diagnostics.
+  - step: 5
+    component: AppleBCMWLANCore
+    phase: construct_vendor_submodules
+    status: confirmed
+    details:
+      - Core allocates a long list of submodules/adapters in stable order.
+      - Failures unwind via logging, free/stop, and init-failure reporting.
+  - step: 6
+    component: CommonFsmManager + framework objects
+    phase: framework_fsm_runtime_available
+    status: confirmed
+    details:
+      - CommonFsmManager is the shared event dispatcher for multiple framework FSMs.
+      - WCLScanManager and other framework components begin injecting events once subordinate prerequisites are present.
+  - step: 7
+    component: AppleConvergedIPCControl / AppleConvergedPCI
+    phase: convergence_power_reporting_online
+    status: confirmed
+    details:
+      - Reporter objects are created for interrupt, logging, interface, current power state, and quiesce activity.
+      - These reporters form the structured observability/control plane around converged PCI power and service state.
+  - step: 8
+    component: operational_runtime
+    phase: driver_ready_runtime_callbacks
+    status: confirmed
+    details:
+      - Runtime now consists of scan/join/roam/auth paths, data path queues/rings, TimeSync service graph, and low-power recovery paths.
+      - CoreCapture may be attached to expose logs/data/fault streams.
+notes:
+  - This is a kernel-side bring-up sequence; userland orchestration (airportd / CoreWLAN policy) is intentionally out of scope for v2.

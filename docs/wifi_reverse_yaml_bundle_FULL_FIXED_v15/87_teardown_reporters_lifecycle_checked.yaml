@@ -1,0 +1,478 @@
+version: 1
+topic: teardown sequencing + statistics/reporters/monitors lifecycle
+status: extraction_pass_complete
+purpose: >-
+  Closes two remaining gaps: (A) exact attach↔teardown symmetry for
+  logical-link registration, sleep/wake, reset, destroy paths;
+  (B) complete reporter/monitor inventory with create/update/destroy lifecycle.
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  decompilation: "ghidra_output/ — IO80211Family and IOSkywalkFamily vtables"
+  cross_ref:
+    - "85_bsd_attach_chain_xref.yaml (attach sequence)"
+    - "20_skywalk_interface_contracts.yaml (vtable anchors)"
+    - "07_power_and_wow.yaml (power state model)"
+
+# ═══════════════════════════════════════════════════════════════
+# PART A: TEARDOWN SEQUENCING
+# ═══════════════════════════════════════════════════════════════
+
+teardown:
+
+  # ─────────────────────────────────────────
+  # SCENARIO 1: STOP (normal shutdown)
+  # ─────────────────────────────────────────
+
+  stop_sequence:
+    description: >-
+      Exact call order during IO80211InfraInterface::stop → free path.
+      deregisterLogicalLink happens INSIDE super::stop at the
+      IOSkywalkNetworkInterface level — NOT called by IO80211 code directly.
+
+    IO80211InfraInterface_stop:
+      addr: "0xffffff80022de4d8"
+      vtable_slot: "[187]"
+      sequence:
+        - step: 1
+          action: "IO80211SkywalkInterface::stop (chained — see below)"
+        - step: 2
+          action: "if ivars[0x2c] (ScanManager-related): call vtable+0x90 (ScanManager::stop)"
+        - step: 3
+          action: "if ivars[0x00] (ScanManager): IO80211ScanManager::stop()"
+        - step: 4
+          action: "if ivars[0x2f] (TrafficMonitor child): vtable+0x218 (cancelTimer) + vtable+0x158 (stopTimer)"
+        - step: 5
+          action: "if ivars[0x26] (IOTimer): clear ivars+0x28 byte, vtable+0x218 (cancelTimer)"
+        - step: 6
+          action: "if ivars[0x2d] (EventPipe): vtable+0x28 (release)"
+        - step: 7
+          action: "clear ivars[0x2d] = 0"
+
+    IO80211SkywalkInterface_stop:
+      addr: "0xffffff800227750e"
+      continuation: "FUN_ffffff800227754a"
+      sequence:
+        - step: 1
+          action: "vtable+0x798 call (flush packet queues / datapath teardown)"
+        - step: 2
+          action: "if ivars+0x80 (TrafficMonitor): vtable+0x870 (stop), release"
+        - step: 3
+          action: "clear ivars+0x80 = 0"
+        - step: 4
+          action: "if ivars+0x78 (monitor/timer): release, clear"
+        - step: 5
+          action: "if ivars+0x50 (command gate/timer): release, clear"
+        - step: 6
+          action: >-
+            if role != 2 (not AWDL/P2P):
+              peerManager->controller: stop timer sources (vtable+0x158 x2)
+              peerManager vtable+0x290 (stop/flush)
+              release peerManager
+        - step: 7
+          action: "clear ivars+0x28 (peerManager) = 0"
+        - step: 8
+          action: "if ivars+0xd8 (glue): IO80211Glue::stop()"
+        - step: 9
+          action: >-
+            super::stop() via PTR_DAT + 0x5d8
+            → IOSkywalkNetworkInterface::stop()
+            → CALLS deregisterLogicalLink() [slot 285]
+              → BSD ifnet detached
+              → logical link destroyed
+              → pool/queue cleanup
+          critical: true
+        - step: 10
+          action: 'Log "IO80211SkywalkInterface::stop[%s] RC=<%d> core RC=<%d>"'
+
+    ordering_rules:
+      - "Packet queues flushed BEFORE PeerManager stopped"
+      - "PeerManager stopped BEFORE deregisterLogicalLink"
+      - "deregisterLogicalLink happens inside super::stop (IOSkywalkNetworkInterface level)"
+      - "BSD interface detached INSIDE deregisterLogicalLink"
+      - "Pools/queues destroyed AFTER logical link deregistration"
+      - "IOService::detach called by IOKit framework AFTER stop completes"
+      - "free() runs when retain count hits 0, after detach"
+      - "Reporters/monitors released in free(), NOT in stop()"
+
+  # ─────────────────────────────────────────
+  # SCENARIO 2: FREE (after retain count → 0)
+  # ─────────────────────────────────────────
+
+  free_sequence:
+
+    IO80211InfraInterface_free:
+      addr: "0xffffff80022de5da"
+      sequence:
+        - step: 1
+          action: "set ivars+0x29 (freeing flag) = 1"
+        - step: 2
+          action: "if ivars[0x2f]: release, clear (TrafficMonitor child)"
+        - step: 3
+          action: "if ivars[0x31]: release, clear"
+        - step: 4
+          action: "if ivars[0x00] (ScanManager): release, clear"
+        - step: 5
+          action: "if ivars[0x2a]: release, clear"
+        - step: 6
+          action: "if ivars[0x26] (IOTimer): release, clear"
+        - step: 7
+          action: "if ivars[0x27]: release, clear"
+        - step: 8
+          action: "if ivars[0x78b]: release, clear"
+        - step: 9
+          action: "free ivars block (0x3C60 bytes)"
+        - step: 10
+          action: "IO80211SkywalkInterface::free(self)"
+
+    IO80211SkywalkInterface_free:
+      addr: "0xffffff8002274e58"
+      continuation: "FUN_ffffff8002274e93"
+      sequence:
+        - step: 1
+          action: 'Log "IO80211SkywalkInterface::free[%s] start"'
+        - step: 2a
+          action: "release ivars+0xd8 (glue pointer)"
+        - step: 2b
+          action: "release ivars+0xb8 (interface role string)"
+        - step: 2c
+          action: "release ivars+0xa8 (CCLogStream*)"
+        - step: 2d
+          action: "release ivars+0x40 (InterfaceMonitor)"
+        - step: 2e
+          action: "release ivars+0x48 (InterfaceSnapshots)"
+        - step: 2f
+          action: "release ivars+0x18 (work object)"
+        - step: 2g
+          action: "release ivars+0xc8 (aux object)"
+        - step: 2h
+          action: "release ivars+0x30 (ControllerMonitor backref)"
+        - step: 2i
+          action: "release ivars+0x38"
+        - step: 3
+          action: "free ivars block (0xF0 bytes)"
+        - step: 4
+          action: "super::free() → IOSkywalkEthernetInterface → IOSkywalkNetworkInterface → IOSkywalkInterface::free"
+        - step: 5
+          action: 'Log "IO80211SkywalkInterface::free end"'
+
+    IO80211Controller_free:
+      addr: "0xffffff80022131aa"
+      continuation: "FUN_ffffff80022131c6"
+      sequence:
+        - step: 1
+          action: "release ivars+0x3c0 (CommandGate)"
+        - step: 2
+          action: "release ivars+0x370 (RangingManager)"
+        - step: 3
+          action: "release ivars+0x3a8 (TimerFactory) — vtable+0x118 then clear"
+        - step: 4
+          action: "drain linked list at ivars+0x4e0 (interface list) — release each node's reporter ref (+0x18), free each node"
+        - step: 5
+          action: "release ivars+0xa00 (scan cache)"
+        - step: 6
+          action: "release debug WorkQueue ref"
+        - step: 7
+          action: "if !(flag at +0x3a0 & 1): release ivars+0x398 (FaultReporter)"
+        - step: 8
+          action: "free ivars block (0xB58 bytes)"
+        - step: 9
+          action: "super::free() via PTR_DAT + 0xa0"
+        - step: 10
+          action: 'Log "IO80211Controller::free end"'
+
+  # ─────────────────────────────────────────
+  # SCENARIO 3: SLEEP/WAKE
+  # ─────────────────────────────────────────
+
+  sleep_wake:
+    critical_finding: >-
+      The logical link is NOT torn down during sleep/wake.
+      The BSD interface is preserved across sleep/wake.
+      powerOnNotification() and powerOffNotification() in
+      IO80211SkywalkInterface are NO-OPs (both return; at
+      0xffffff8002278530 and 0xffffff8002278536).
+
+    power_path:
+      - "IO80211InfraInterface::setPowerState() [slot 255] handles transition"
+      - "Controller-level power management via AppleBCMWLAN power state adapters"
+      - "WoW (Wake on Wireless) managed via setWoWEnabled(bool)"
+    bus_layer:
+      - "_inLowPowerPCI flag at +0x149 in AppleConvergedIPCControl"
+      - "powerStateDidChangeToGated clears low-power bookkeeping"
+      - "PCIe link power mgmt is independent of logical link registration"
+    conclusion: >-
+      No registerNetworkInterfaceWithLogicalLink/deregisterLogicalLink
+      calls during sleep/wake. Only firmware power state changes.
+
+  # ─────────────────────────────────────────
+  # SCENARIO 4: RESET
+  # ─────────────────────────────────────────
+
+  reset:
+    notes: >-
+      DRIVER_RESET (0xd6) does NOT tear down the logical link or BSD
+      interface. It's a signal to all WCL managers to reset their FSMs
+      (see 86_concrete_event_payload_maps.yaml DRIVER_RESET entry).
+      The Skywalk registration survives reset — only the firmware and
+      internal state machines restart.
+
+  # ─────────────────────────────────────────
+  # SCENARIO 5: willTerminate/didTerminate
+  # ─────────────────────────────────────────
+
+  termination:
+    vtable_slots:
+      willTerminate: "[130] — overridden by IOSkywalkNetworkInterface"
+      didTerminate: "[131] — overridden by IOSkywalkInterface"
+      finalize: "[195] — NOT overridden by any wifi class"
+    sequence: >-
+      willTerminate → didTerminate → stop → free is standard IOKit flow.
+      All real teardown logic lives in stop() as documented above.
+
+  # ─────────────────────────────────────────
+  # FULL TEARDOWN DIAGRAM
+  # ─────────────────────────────────────────
+
+  full_diagram: |
+    IO80211InfraInterface::stop()
+      ├── IO80211SkywalkInterface::stop()
+      │     ├── flush packet queues (vtable+0x798)
+      │     ├── stop & release TrafficMonitor
+      │     ├── release timers/monitors at ivars+0x78, +0x50
+      │     ├── if not P2P: stop PeerManager timers, flush, release
+      │     ├── IO80211Glue::stop()
+      │     └── IOSkywalkNetworkInterface::stop()  ← CALLS deregisterLogicalLink()
+      │           ├── deregisterLogicalLink()
+      │           │     ├── finalizeBSDInterface() callback
+      │           │     ├── detach BSD ifnet
+      │           │     └── destroy logical link
+      │           └── pool/queue cleanup
+      ├── stop ScanManager
+      ├── cancel timers (ivars[0x2f], [0x26])
+      └── release EventPipe
+
+      [retain count → 0]
+
+    IO80211InfraInterface::free()
+      ├── release ScanManager, timers, misc (ivars 0x3C60 block)
+      └── IO80211SkywalkInterface::free()
+            ├── release CCLogStream*, InterfaceMonitor, Snapshots, role string
+            ├── free ivars (0xF0 block)
+            └── IOSkywalkNetworkInterface::free()
+                  └── IOSkywalkInterface::free()
+                        └── IOService::free()
+
+# ═══════════════════════════════════════════════════════════════
+# PART B: STATISTICS/REPORTERS/MONITORS LIFECYCLE
+# ═══════════════════════════════════════════════════════════════
+
+reporters:
+
+  # ─────────────────────────────────────────
+  # INVENTORY TABLE
+  # ─────────────────────────────────────────
+
+  inventory:
+    - name: IO80211InterfaceMonitor
+      created_by: IO80211SkywalkInterface
+      storage: "IO80211SkywalkInterface::ivars+0x40"
+      created_when: "Lazily — on first updateInterfaceDataStats() if ivars+0x40 == 0"
+      reporter_type: "IOSimpleReporter (multiple instances, ≥4)"
+      ivars_size: "0x2D08 bytes"
+      side: interface
+      update_trigger: on_demand_via_IOReporting
+      destroyed_in: "free() — destroyReporters() then release"
+      create_addr: "0xffffff800227511a (IO80211SkywalkInterface::createIOReporters)"
+      destroy_addr: "0xffffff80022ef0fc (destroyReporters), 0xffffff80022ef016 (free)"
+
+    - name: IO80211ControllerMonitor
+      created_by: IO80211Controller
+      storage: "IO80211Controller::ivars+0x30"
+      created_when: "During IO80211Controller::start()"
+      reporter_type: "IOSimpleReporter via FUN_ffffff8000b00e20 (IOReporter::with)"
+      channel_config: "channelID=0x900820000000000, 20 (0x14) channels"
+      ivars_size: "0xDC0 bytes"
+      side: controller
+      update_trigger: "on_demand via IOReporting framework"
+      destroyed_in: "free() — destroyReporters() then release"
+      create_addr: "0xffffff8002310e82 (createReportersAndLegend)"
+      update_addr: "0xffffff800231cda2 (updateReportDetail)"
+      destroy_addr: "0xffffff8002311aa0 (destroyReporters), 0xffffff8002311a26 (free)"
+      statistics_tracked:
+        - "Tx Bytes (string at 0xffffff80023b7014)"
+        - "Channel statistics"
+        - "Chip Frames"
+        - "AMPDU statistics"
+        - "BT Coex statistics"
+        - "Per-AC Tx/Rx counters: 9 WME queues × 5 entries"
+        - "0x16 additional named counters at ivars+0x690"
+
+    - name: IO80211PeerMonitor
+      created_by: IO80211PeerManager
+      storage: "per-peer allocation"
+      created_when: "On peer association"
+      reporter_type: IOSimpleReporter
+      side: interface
+      destroyed_in: "free() — destroyReporters() then release, increments destruction counter at param_4+0xb18"
+      create_addr: "0xffffff80022f8122 (createReportersAndLegend)"
+      update_addr: "0xffffff80022ffe3c (updateReportDetails)"
+      destroy_addr: "0xffffff80022f86e4 (destroyReporters), 0xffffff80022f8542 (free)"
+      statistics_tracked:
+        - "Per-peer Tx/Rx data counters"
+        - "TxCompletion debug counters"
+        - "TxInput counters"
+        - "Control VO Tx status"
+        - "Data, LowLatencyData, DataSnapshot sub-categories"
+      subcreators:
+        - "createReportersAndLegendForData"
+        - "createReportersAndLegendForLowLatencyData"
+        - "createReportersAndLegendForDataSnapshot"
+
+    - name: IO80211ScanManager_reporters
+      created_by: IO80211ScanManager
+      storage: "IO80211ScanManager::ivars+0x58"
+      reporter_type: "IOSimpleReporter, channelID=0x6400000000000000"
+      side: interface
+      statistics_tracked: "Scan type counts (string 'Scan Type None' at 0xffffff80023952ad)"
+      destroyed_in: "IO80211ScanManager::free() calls destroyReporters()"
+      create_addr: "0xffffff800225e4b2"
+
+    - name: IO80211Peer_reporters
+      created_by: IO80211Peer::createIOReporters(IOService*)
+      created_when: "On peer association, if _statsIDValid and _statsID set and getPeerManager() non-null"
+      create_addr: "0xffffff80021c4cf4"
+      side: interface
+
+    - name: IO80211AssociationJoinSnapshot
+      created_by: IO80211SkywalkInterface
+      storage: "IO80211SkywalkInterface::ivars+0x48"
+      accessed_via: "IO80211InfraInterface::updateReport checks getInterfaceSnapshots()"
+      create_addr: "0xffffff80022bfd62"
+      side: interface
+
+    - name: IO80211TrafficMonitor
+      created_by: IO80211SkywalkInterface
+      storage: "IO80211SkywalkInterface::ivars+0x80"
+      stopped_in: "IO80211SkywalkInterface::stop() — vtable+0x870 then release"
+      side: interface
+
+  # ─────────────────────────────────────────
+  # CUSTOM REPORTER CLASSES
+  # ─────────────────────────────────────────
+
+  custom_classes:
+
+    IO80211SimpleReporter:
+      object_size: "0x90"
+      ivars_at: "self+0x88"
+      ivars_content:
+        - {field: "ivars[0]", type: uint32, name: numChannels}
+        - {field: "ivars[1]", type: ptr, name: values_array, notes: "each channel = 0x20 bytes"}
+      free_addr: "0xffffff800212763a"
+      free_action: "releases values array, frees 0x18 ivars block"
+
+    IO80211HistogramReporter:
+      object_size: "0xB0"
+      ivars_at: "self+0xA8"
+      ivars_content:
+        - {field: "self+0x34", type: uint32, name: bucket_count}
+        - {field: "ivars[0]", type: ptr, name: bucket_array, notes: "each bucket = 8 bytes"}
+      free_addr: "0xffffff8002127182"
+      free_action: "releases bucket array, frees 8-byte ivars block"
+
+  # ─────────────────────────────────────────
+  # CORECAPTURE / CCLOGSTREAM / CCFAULTREPORTER
+  # ─────────────────────────────────────────
+
+  corecapture_lifecycle:
+
+    CCLogStream:
+      ownership: "IO80211SkywalkInterface::ivars+0xA8"
+      created_by: "External — passed in from AppleBCMWLANCore during initWithProviderAndParameters"
+      retained: "During init (retain call observed)"
+      released: "During IO80211SkywalkInterface::free() step 2c"
+      accessor: "getLogger() [vtable slot 419] returns ivars+0xA8"
+      controller_level: "IO80211Controller::setGlobalLogger(CCLogStream*) at 0xffffff80022125cc"
+      propagation: "WCLBeaconDuplicator::createBeaconDuplicator(CCLogStream*) shows subcomponent receipt"
+
+    IO80211FaultReporter:
+      wraps: CCFaultReporter
+      alloc_addr: "0xffffff8002240494 (allocWithParams)"
+      init_addr: "0xffffff8002240502 (init)"
+      free_addr: "0xffffff800224054e"
+      free_sequence:
+        - "Release wrapped CCFaultReporter (ivars[0] → vtable+0x28)"
+        - "Clear ivars[0] = 0"
+        - "Free ivars pointer, clear self+0x10"
+      unregister_addr: "0xffffff80022405d2 (unregisterCallbacks)"
+      controller_storage: "IO80211Controller::ivars+0x398"
+      controller_created: "IO80211Controller::start() via findAndAttachToFaultReporter() at 0xffffff8002212cf4"
+      controller_released: "IO80211Controller::free() — if flag at +0x3a0 bit 0 clear, release +0x398"
+      wcl_access: "WCLController::getCommonFaultReporter() at 0xffffff800210df92 returns ivars+0x78"
+
+    CoreCapture:
+      attach: "attach(provider) adds CoreCapture category"
+      detach: "detach(provider) removes it"
+      triggers:
+        - "WCLNetManager::handleReassociateWithCoreCapture on reassociation"
+        - "WCLDeauthDisassoc::triggerCoreCapture on deauth/disassoc"
+      notes: "Diagnostic data capture, not tied to logical link lifecycle"
+
+  # ─────────────────────────────────────────
+  # configureReport / updateReport DISPATCH CHAIN
+  # ─────────────────────────────────────────
+
+  report_dispatch:
+
+    IO80211Controller_configureReport:
+      addr: "0xffffff8002219746"
+      sequence:
+        - "Forward to ControllerMonitor's reporter (ivars+0x30 → reporter at +0x10)"
+        - "Forward to primary interface via vtable+0xC80 → interface configureReport (vtable+0x428)"
+        - "Forward to interface at controller::ivars+0x190 if present"
+        - "Forward to interface at controller::ivars+0x3b0 if present"
+        - "Forward to interface at controller::ivars+0x3b8 if present"
+
+    IO80211InfraInterface_updateReport:
+      addr: "0xffffff80022e28be"
+      sequence:
+        - "Get InterfaceMonitor (ivars+0x40) → updateReport its reporter"
+        - "Get InterfaceSnapshots (ivars+0x48) → updateReport its reporter"
+        - "Get ScanManager from InfraInterface ivars → updateReport its reporter"
+        - "Forward to PeerManager (vtable+0x2e8) for per-peer reporter updates"
+
+    update_trigger: >-
+      On-demand via IOReporting framework (kernel IOReporter system calls
+      configureReport/updateReport when a client requests stats).
+      handleIOReporterLegendIsCalm timer at 0xffffff8002212ebe manages
+      legend stabilization after changes. NOT periodic.
+
+# ═══════════════════════════════════════════════════════════════
+# GAPS REQUIRING FRESH GHIDRA PASSES
+# ═══════════════════════════════════════════════════════════════
+
+gaps:
+  - target: "IOSkywalkNetworkInterface::willTerminate()"
+    reason: "Implementation in IOSkywalkFamily — does it call deregisterLogicalLink or just set flag?"
+    priority: medium
+
+  - target: "IOSkywalkNetworkInterface::deregisterLogicalLink() implementation"
+    reason: "Exact internal sequence — BSD detach order relative to pool destruction"
+    priority: high
+
+  - target: "IO80211InfraInterface::setPowerState() body"
+    reason: "Real power logic — powerOn/OffNotification are no-ops, power lives here"
+    priority: medium
+
+  - target: "IO80211Controller::stop() body"
+    reason: "Not labeled in decompilation — shows interface detachment order"
+    priority: medium
+
+  - target: "IOSimpleReporter::with() parameter mapping"
+    reason: "Factory at FUN_ffffff8000b00e20 — channelCount, groupID, subgroup semantics"
+    priority: low
+
+  - target: "AppleBCMWLANSkywalkInterface full vtable"
+    reason: "Confirm which of 41 IOSkywalkNetworkInterface methods are overridden"
+    priority: low

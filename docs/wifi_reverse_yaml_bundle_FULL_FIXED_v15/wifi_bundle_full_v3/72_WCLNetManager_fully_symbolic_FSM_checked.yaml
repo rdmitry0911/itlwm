@@ -1,0 +1,368 @@
+version: 1
+topic: WCLNetManager fully symbolic FSM
+status: checked
+source: BootKernelExtensions.kc 26.3 (25D125) via chained fixup decode + KDK delta matching
+fsm_name: NET_MANAGER
+context_va: 18446743523991492144
+context_fileoff: 36705840
+context_size: 824
+states:
+  0: LINK_DOWN
+  1: WAITING_FOR_CONNECT_COMPLETE
+  2: WAITING_FOR_IP
+  3: LINK_UP
+  4: DEAUTH
+  5: SLEEP
+  6: SLEEP_DEAUTH
+events:
+  0: LINK_UP
+  1: CONNECT_COMPLETE
+  2: LINK_DOWN_IND
+  3: LINK_DOWN_COMPLETE
+  4: LEAVE_NETWORK
+  5: LINK_SUPPRESS
+  6: SLEEP
+  7: WAKE
+  8: IPV4_STATUS
+  9: DRIVER_RESET
+  10: ASSOC_TIMER
+actions:
+  0:
+    name: ignore
+    kdk_symbol: WCLNetManager::ignore
+  1:
+    name: unhandledEvent
+    kdk_symbol: WCLNetManager::unhandledEvent
+  2:
+    name: firstLinkUp
+    kdk_symbol: WCLNetManager::firstLinkUp
+  3:
+    name: linkUp
+    kdk_symbol: WCLNetManager::linkUp
+  4:
+    name: connectComplete
+    kdk_symbol: WCLNetManager::connectComplete
+  5:
+    name: ipStatusInWaitForIp
+    kdk_symbol: WCLNetManager::ipStatusInWaitForIp
+  6:
+    name: ipStatus
+    kdk_symbol: WCLNetManager::ipStatus
+  7:
+    name: linkDownInd
+    kdk_symbol: WCLNetManager::linkDownInd
+  8:
+    name: forceLinkDown
+    kdk_symbol: WCLNetManager::forceLinkDown
+  9:
+    name: linkDownComplete
+    kdk_symbol: WCLNetManager::linkDownComplete
+  10:
+    name: linkDownCompleteInSleep
+    kdk_symbol: WCLNetManager::linkDownCompleteInSleep
+  11:
+    name: leaveNetwork
+    kdk_symbol: WCLNetManager::leaveNetwork
+  12:
+    name: joinAbort
+    kdk_symbol: WCLNetManager::joinAbort
+  13:
+    name: linkSuppress
+    kdk_symbol: WCLNetManager::linkSuppress
+  14:
+    name: sleep
+    kdk_symbol: WCLNetManager::sleep
+  15:
+    name: wake
+    kdk_symbol: WCLNetManager::wake
+  16:
+    name: driverResetInIpValid
+    kdk_symbol: WCLNetManager::driverResetInIpValid
+  17:
+    name: verifyLinkDown
+    kdk_symbol: WCLNetManager::verifyLinkDown
+    note: UNUSED in matrix
+  18:
+    name: sleepBeforeConnectComplete
+    kdk_symbol: WCLNetManager::sleepBeforeConnectComplete
+  19:
+    name: assocTimerAction
+    kdk_symbol: WCLNetManager::assocTimerAction
+  20:
+    name: wakeLeave
+    kdk_symbol: WCLNetManager::wakeLeave
+  21:
+    name: linkUpInSleep
+    kdk_symbol: WCLNetManager::linkUpInSleep
+transition_matrix:
+  LINK_DOWN:
+    LINK_UP:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: firstLinkUp
+    CONNECT_COMPLETE:
+      next: LINK_DOWN
+      action: ignore
+    LINK_DOWN_IND:
+      next: LINK_DOWN
+      action: ignore
+    LINK_DOWN_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LEAVE_NETWORK:
+      next: LINK_DOWN
+      action: joinAbort
+    LINK_SUPPRESS:
+      next: =SELF=
+      action: unhandledEvent
+    SLEEP:
+      next: LINK_DOWN
+      action: ignore
+    WAKE:
+      next: LINK_DOWN
+      action: ignore
+    IPV4_STATUS:
+      next: LINK_DOWN
+      action: ignore
+    DRIVER_RESET:
+      next: LINK_DOWN
+      action: ignore
+    ASSOC_TIMER:
+      next: LINK_DOWN
+      action: ignore
+  WAITING_FOR_CONNECT_COMPLETE:
+    LINK_UP:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: firstLinkUp
+    CONNECT_COMPLETE:
+      next: WAITING_FOR_IP
+      action: connectComplete
+    LINK_DOWN_IND:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: linkDownInd
+    LINK_DOWN_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LEAVE_NETWORK:
+      next: DEAUTH
+      action: leaveNetwork
+    LINK_SUPPRESS:
+      next: =SELF=
+      action: unhandledEvent
+    SLEEP:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: sleepBeforeConnectComplete
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    IPV4_STATUS:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: ignore
+    DRIVER_RESET:
+      next: DEAUTH
+      action: forceLinkDown
+    ASSOC_TIMER:
+      next: WAITING_FOR_CONNECT_COMPLETE
+      action: assocTimerAction
+  WAITING_FOR_IP:
+    LINK_UP:
+      next: WAITING_FOR_IP
+      action: linkUp
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN_IND:
+      next: WAITING_FOR_IP
+      action: linkDownInd
+    LINK_DOWN_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LEAVE_NETWORK:
+      next: DEAUTH
+      action: leaveNetwork
+    LINK_SUPPRESS:
+      next: DEAUTH
+      action: linkSuppress
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    IPV4_STATUS:
+      next: LINK_UP
+      action: ipStatusInWaitForIp
+    DRIVER_RESET:
+      next: DEAUTH
+      action: forceLinkDown
+    ASSOC_TIMER:
+      next: WAITING_FOR_IP
+      action: assocTimerAction
+  LINK_UP:
+    LINK_UP:
+      next: LINK_UP
+      action: linkUp
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN_IND:
+      next: LINK_UP
+      action: linkDownInd
+    LINK_DOWN_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LEAVE_NETWORK:
+      next: DEAUTH
+      action: leaveNetwork
+    LINK_SUPPRESS:
+      next: DEAUTH
+      action: linkSuppress
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    IPV4_STATUS:
+      next: LINK_UP
+      action: ipStatus
+    DRIVER_RESET:
+      next: DEAUTH
+      action: driverResetInIpValid
+    ASSOC_TIMER:
+      next: LINK_UP
+      action: assocTimerAction
+  DEAUTH:
+    LINK_UP:
+      next: =SELF=
+      action: unhandledEvent
+    CONNECT_COMPLETE:
+      next: DEAUTH
+      action: ignore
+    LINK_DOWN_IND:
+      next: DEAUTH
+      action: ignore
+    LINK_DOWN_COMPLETE:
+      next: LINK_DOWN
+      action: linkDownComplete
+    LEAVE_NETWORK:
+      next: DEAUTH
+      action: ignore
+    LINK_SUPPRESS:
+      next: DEAUTH
+      action: linkSuppress
+    SLEEP:
+      next: SLEEP_DEAUTH
+      action: ignore
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    IPV4_STATUS:
+      next: DEAUTH
+      action: ignore
+    DRIVER_RESET:
+      next: DEAUTH
+      action: forceLinkDown
+    ASSOC_TIMER:
+      next: DEAUTH
+      action: ignore
+  SLEEP:
+    LINK_UP:
+      next: SLEEP
+      action: linkUpInSleep
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN_IND:
+      next: SLEEP
+      action: linkDownInd
+    LINK_DOWN_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LEAVE_NETWORK:
+      next: SLEEP_DEAUTH
+      action: leaveNetwork
+    LINK_SUPPRESS:
+      next: SLEEP_DEAUTH
+      action: linkSuppress
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE:
+      next: LINK_UP
+      action: wake
+    IPV4_STATUS:
+      next: SLEEP
+      action: ignore
+    DRIVER_RESET:
+      next: DEAUTH
+      action: forceLinkDown
+    ASSOC_TIMER:
+      next: SLEEP
+      action: ignore
+  SLEEP_DEAUTH:
+    LINK_UP:
+      next: SLEEP_DEAUTH
+      action: ignore
+    CONNECT_COMPLETE:
+      next: SLEEP_DEAUTH
+      action: ignore
+    LINK_DOWN_IND:
+      next: SLEEP_DEAUTH
+      action: ignore
+    LINK_DOWN_COMPLETE:
+      next: LINK_DOWN
+      action: linkDownCompleteInSleep
+    LEAVE_NETWORK:
+      next: SLEEP_DEAUTH
+      action: ignore
+    LINK_SUPPRESS:
+      next: SLEEP_DEAUTH
+      action: linkSuppress
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE:
+      next: LINK_UP
+      action: wakeLeave
+    IPV4_STATUS:
+      next: SLEEP_DEAUTH
+      action: ignore
+    DRIVER_RESET:
+      next: SLEEP_DEAUTH
+      action: forceLinkDown
+    ASSOC_TIMER:
+      next: SLEEP_DEAUTH
+      action: ignore
+raw_matrix_hex: '01 02 00 00 00 00 ff 01 00 0c ff 01 00 00 00 00 00 00 00 00 00 00
+
+  01 02 02 04 01 07 ff 01 04 0b ff 01 01 12 ff 01 01 00 04 08 01 13
+
+  02 03 ff 01 02 07 ff 01 04 0b 04 0d 05 0e ff 01 03 05 04 08 02 13
+
+  03 03 ff 01 03 07 ff 01 04 0b 04 0d 05 0e ff 01 03 06 04 10 03 13
+
+  ff 01 04 00 04 00 00 09 04 00 04 0d 06 00 ff 01 04 00 04 08 04 00
+
+  05 15 ff 01 05 07 ff 01 06 0b 06 0d ff 01 03 0f 05 00 04 08 05 00
+
+  06 00 06 00 06 00 00 0a 06 00 06 0d ff 01 03 14 06 00 06 08 06 00
+
+  '
+context_layout:
+  +0x000_to_0x09f: BB callback table + padding
+  +0x0a0_to_0x139: transition matrix (154 bytes = 7 x 11 x 2)
+  +0x140_to_0x29f: action table (22 entries x 0x10 = 352 bytes)
+  +0x2a0_to_0x2d7: state name vector (7 x 8)
+  +0x2d8_to_0x32f: event name vector (11 x 8)
+  +0x330_to_0x337: FSM name pointer -> 'NET_MANAGER'
+behavioral_notes:
+  happy_path: LINK_DOWN -> WAITING_FOR_CONNECT_COMPLETE (LINK_UP/firstLinkUp) -> WAITING_FOR_IP (CONNECT_COMPLETE/connectComplete) -> LINK_UP (IPV4_STATUS/ipStatusInWaitForIp). IP acquisition is the gate between WAITING_FOR_IP and LINK_UP.
+  deauth_drain: DEAUTH is a drain state. Only LINK_DOWN_COMPLETE exits it (to LINK_DOWN). SLEEP from DEAUTH goes to SLEEP_DEAUTH. All other events stay or ignore.
+  sleep_wake: SLEEP preserves link state. WAKE from SLEEP -> LINK_UP (wake). WAKE from SLEEP_DEAUTH -> LINK_UP (wakeLeave, initiates leave after wake). LINK_UP events during SLEEP use linkUpInSleep (deferred processing).
+  driver_reset: DRIVER_RESET -> DEAUTH via forceLinkDown from all active states. From DEAUTH and SLEEP_DEAUTH it re-triggers forceLinkDown (stays).
+consistency_check:
+  result: ok
+  notes:
+  - raw_matrix_hex matches transition_matrix exactly (154 bytes = 7 states x 11 events x 2 bytes).
+  - context_layout sizes are internally consistent, including the 154-byte matrix and 352-byte action table.
+  - No internal contradictions were found.

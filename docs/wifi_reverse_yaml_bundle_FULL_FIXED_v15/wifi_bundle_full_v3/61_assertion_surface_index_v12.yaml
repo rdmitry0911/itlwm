@@ -1,0 +1,36 @@
+document: Assertion surface index v12
+version: 12
+purpose:
+  Preserve the most semantically rich assert/completion strings as future naming anchors for low-power,
+  reset, and transport state reconstruction.
+
+AppleOLYHALPortInterfacePCIe_AMFM:
+  anchors:
+    - '!fAction && !fOwner'
+    - 'fOwner && fAction'
+    - '!fPendingErrorHandling'
+    - 'params'
+    - 'fResetProgress == kResetStepBusQuiesced'
+    - '!fResetProgress'
+    - 'fResetProgress != kResetStepRequested'
+    - 'ret == kIOReturnSuccess'
+    - 'fClientStatus == kClientCrashed'
+    - 'Pending powerOn never arrived'
+    - 'pActionType == kAppleOLYHALPortInterfacePowerActionTypeHardReset'
+  interpretation:
+    - reset machine includes explicit Requested -> BusQuiesced gating
+    - owner/action pairing is an invariant, not a loose convention
+    - pending-error-handling is mutually exclusive with at least part of normal AMFM processing
+
+AppleConvergedIPC_ACIPCControl:
+  anchors:
+    - linkUpCheck assertion sites
+    - linkDownCheck assertion sites
+    - hostExitSleepCompletion assertion site
+  interpretation:
+    - link/sleep boundaries remain assertion-heavy and are useful for reconstructing converge-side power sequencing
+
+usage_rules:
+  - assertions are strong semantic anchors for naming state invariants
+  - assertions alone do not prove the full state graph
+  - prefer assertions when callback names are missing but state invariants are explicit

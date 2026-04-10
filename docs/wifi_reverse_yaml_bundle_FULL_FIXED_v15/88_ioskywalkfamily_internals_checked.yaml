@@ -1,0 +1,611 @@
+version: 1
+topic: IOSkywalkFamily.kext internals — targeted decompilation of 10 gap methods
+status: extraction_pass_complete
+purpose: >-
+  Closes the "IOSkywalkFamily.kext internals (10 methods need Ghidra pass)"
+  gap identified in files 85–87. Decompiled from macOS 26.3 BootKernelExtensions.kc
+  via Ghidra on remote host dima@192.168.40.116.
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  decompilation: "ghidra_output/IOSkywalkFamily_decompiled.c (38,259 lines)"
+  remote_host: "dima@192.168.40.116:/srv/project/ghidra_output/"
+
+# ═══════════════════════════════════════════════════════════════
+#   PART 1 — REGISTRATION / DEREGISTRATION LIFECYCLE
+#   (IOSkywalkNetworkInterface)
+# ═══════════════════════════════════════════════════════════════
+
+field_map_self_offsets:
+  description: "IOSkywalkNetworkInterface instance layout"
+  fields:
+    - {offset: "0x90",  type: "OSObject*",  role: "retained queue-set or similar; released in deregister"}
+    - {offset: "0x98",  type: "OSObject*",  role: "retained queue-set; released in deregister"}
+    - {offset: "0xa0",  type: "OSObject*",  role: "retained queue manager; released in deregister"}
+    - {offset: "0xb8",  type: "uint64",     role: "async result code sentinel (0xe00002c7 = pending)"}
+    - {offset: "0xc0",  type: "NIF_Context*", role: "networkInterfaceState block — central per-interface state"}
+    - {offset: "0xc8",  type: "IOService*", role: "nexusProvider (BSDClient or Skywalk controller)"}
+    - {offset: "0xd0",  type: "OSObject*",  role: "nexus registration / arena; released in deregister"}
+
+nif_context_struct:
+  description: "NIF context block (pointed to by self+0xC0)"
+  fields:
+    - {offset: "0x00", role: "alive flag / reference count (zeroed in deregister)"}
+    - {offset: "0x08", role: "ifnet pointer (set by prepareBSDInterface)"}
+    - {offset: "0x10", role: "object (freed in free(); asserted NULL)"}
+    - {offset: "0x18", role: "panic message string / object (asserted NULL in free())"}
+    - {offset: "0x20", role: "retained OSObject; released in free()"}
+    - {offset: "0x28", role: "BSD zone allocation (zone_free'd in free())"}
+    - {offset: "0x41", role: "BSD name buffer (16 bytes = IFNAMSIZ; setBSDName/getBSDName)"}
+    - {offset: "0x4c", role: "(via nested ptr at +0x00) baudrate value for ifnet_set_baudrate"}
+
+# ---------------------------------------------------------------
+IOSkywalkNetworkInterface_stop:
+  address: "0xffffff8002a36d62"
+  lines: "10543–10553"
+  signature: "void stop(IOService *provider)"
+  behavior: >-
+    If self+0xC0 (NIF context) is non-NULL, calls deregisterNetworkInterface.
+    Then chains to super::stop(provider).
+  calls_deregisterLogicalLink: false
+  calls_deregisterNetworkInterface: true
+  note: >-
+    stop() does NOT directly call deregisterLogicalLink.
+    It calls deregisterNetworkInterface which does the full teardown.
+
+# ---------------------------------------------------------------
+deregisterNetworkInterface:
+  address: "0xffffff8002a36d98"
+  lines: "10557–10592"
+  signature: "IOReturn deregisterNetworkInterface(void)"
+  teardown_order:
+    - "1. Pre-cleanup nexus provider via FUN_0xa375d2 (deregister if refcount > 1)"
+    - "2. Logical link deregistration: nexusProvider vtable+0x1d8"
+    - "3. Release queue objects: self+0xa0, +0x98, +0x90"
+    - "4. Release nexus registration: self+0xd0"
+    - "5. Zero NIF alive flag at *(*(self+0xc0)) and free sub-allocation"
+  return: "0 (kIOReturnSuccess) — always"
+
+# ---------------------------------------------------------------
+IOSkywalkNetworkInterface_free:
+  address: "0xffffff8002a36efa"
+  lines: "10596–10632"
+  signature: "void free(void)"
+  behavior: >-
+    Calls deregisterNetworkInterface (defensive/idempotent).
+    Then destroys NIF context block: zone_free(context+0x28),
+    assert NULL (context+0x10, context+0x18), release(context+0x20),
+    free context block itself. Chains to super::free().
+  note: >-
+    free() is the last lifecycle method. It calls deregisterNetworkInterface
+    again to ensure teardown even if stop() was skipped.
+
+# ---------------------------------------------------------------
+registerNetworkInterface_queues_variant:
+  address: "0xffffff8002a36fd2"
+  lines: "10636–10695"
+  signature: "IOReturn registerNetworkInterface(self, provider, txQueues, queueCount, param5, param6)"
+  behavior: >-
+    Higher-level entry point: builds IOSkywalkLogicalLink from TX/RX queue arrays,
+    then delegates to registerNetworkInterface(logicalLink) at 0xa37100.
+    Uses 80-byte default config template from DAT_0xa5d278.
+    Checks for primary queue type (0x10000) via FUN_0xa406ac.
+  error_codes:
+    - "0xe00002c2 (kIOReturnBadArgument): NULL queue set or NULL logical link"
+
+# ---------------------------------------------------------------
+registerNetworkInterface_logicalLink_variant:
+  address: "0xffffff8002a37100"
+  lines: "10699–10712"
+  signature: "IOReturn registerNetworkInterface(self, regInfo, logicalLink, param4, param5)"
+  validation:
+    - "regInfo != NULL"
+    - "regInfo[1] > 0x107 (size >= 264 bytes)"
+    - "regInfo[0] == 1 (version = 1)"
+    - "logicalLink != 0"
+    - "regInfo[5] < 0x401 (maxQueues < 1024)"
+    - "param4 != 0 OR param5 != 0 (at least one callback)"
+  on_failure: "returns 0xe00002c2"
+  on_success: "tail-calls into kernel registration implementation"
+
+# ---------------------------------------------------------------
+registerNetworkInterfaceWithLogicalLink:
+  address: "0xffffff8002a3732c"
+  lines: "10716–10723"
+  signature: "void registerNetworkInterfaceWithLogicalLink(void)"
+  behavior: >-
+    Pure trampoline — tail-call to registerNetworkInterface(logicalLink) at 0xa37100.
+    Ghidra shows void(void) because parameters are forwarded via registers.
+  relationship: >-
+    Public vtable entry → registerNetworkInterface(logicalLink) → validation + registration.
+
+  core_registration_body_at_0xa37640:
+    lines: "10730–10812"
+    behavior: >-
+      Actual registration implementation:
+      1. Check logicalLink != NULL (else 0xe00002c2)
+      2. Check nexusProvider (self+0xc8) != NULL (else 0xe00002f0)
+      3. Call nexusProvider vtable+0x1c8 (registerLogicalLink)
+      4. If success: iterate queues (link+0x28 count), configure each
+         via FUN_0xa37336, send command 0xe0060106 via vtable+0x740
+      5. Return 0 on success, 0xe00002f0 on failure
+
+# ---------------------------------------------------------------
+deregisterLogicalLink:
+  address: "0xffffff8002a376d0"
+  lines: "10813–10820"
+  signature: "void deregisterLogicalLink(void)"
+  behavior: >-
+    Pure trampoline — tail-call to deregisterNetworkInterface at 0xa36d98.
+    deregisterLogicalLink == deregisterNetworkInterface (same operation).
+  note: >-
+    The logical link IS the nexus connection — removing it requires
+    full teardown of queues, registration, and alive flag.
+
+  registerLogicalLink_counterpart_at_0xa376da:
+    behavior: >-
+      1. Check logicalLink != NULL (else 0xe00002c2)
+      2. Check not already registered via nexusProvider vtable+0x1c8
+      3. Validate exactly 1 "primary" queue (bit 0 set) and link flag bit 0 == 0
+      4. Send command 0xe0060105 via vtable+0x740
+      5. Register via nexusProvider vtable+0x1c8
+      6. On success: bind link to self via FUN_0xa39562 (setInterface)
+      7. Return 0 on success, 0xe00002bc on failure
+
+
+# ═══════════════════════════════════════════════════════════════
+#   PART 2 — BSD INTERFACE CREATION METHODS
+# ═══════════════════════════════════════════════════════════════
+
+prepareBSDInterface:
+  address: "0xffffff8002a379de"
+  lines: "10996–11026"
+  signature: "IOReturn prepareBSDInterface(long *self, long ifnet)"
+  returns: "0xe00002c2 (kIOReturnUnsupported) — always in base class"
+  behavior:
+    - "Stores ifnet pointer at nifCtx+0x08"
+    - "Calls ifnet_set_baudrate(ifnet, nifCtx->baudrate) — panics on failure"
+    - "Gets capability flags via vtable+0x9b8 (getInterfaceFlags)"
+    - "Bit 22 set → ifnet_set_tso(ifnet, 1)"
+    - "Bit 23 set → bpf_tap_enable(ifnet, 1)"
+    - "Bit 24 set → bpf_tap_mode or checksum offload enable"
+    - "Bit 25 set → ifnet_set_lro(ifnet)"
+  note: >-
+    Base class does real setup (ifnet, baudrate, capabilities) but returns
+    kIOReturnUnsupported. Subclasses MUST override for success return.
+
+finalizeBSDInterface:
+  address: "0xffffff8002a37aa0"
+  lines: "11030–11037"
+  signature: "void finalizeBSDInterface(long self)"
+  behavior: >-
+    Unconditionally panics via *(nifCtx+0x18) message string.
+    Pure-virtual pattern — subclasses MUST override.
+
+setBSDName:
+  address: "0xffffff8002a37b04"
+  lines: "11051–11061"
+  signature: "void setBSDName(long self, long nameStr)"
+  behavior: >-
+    If nameStr != NULL: strlcpy(nifCtx+0x41, nameStr, 0x10).
+    16-byte IFNAMSIZ limit. NULL input is silently ignored.
+
+getBSDName:
+  address: "0xffffff8002a37b26"
+  lines: "11065–11071"
+  signature: "char* getBSDName(long self)"
+  behavior: "Returns direct pointer to nifCtx+0x41 (live pointer, not a copy)"
+
+getBSDNamePrefix:
+  base_address: "0xffffff8002a388ee"
+  base_behavior: "Returns NULL (not decompiled — fell in Ghidra gap between 0xa38892 and 0xa38956)"
+  override_class: "IOSkywalkEthernetInterface"
+  override_address: "0xffffff8002a3f21a"
+  override_lines: "17245–17257"
+  override_behavior: >-
+    Calls super::getBSDNamePrefix(). If NULL, returns &DAT_0xa5c8dc = "en".
+    This is how macOS names interfaces en0, en1, etc.
+
+getBSDUnitNumber:
+  base_address: "0xffffff8002a38914"
+  base_behavior: "Returns 0 or -1 (not decompiled — same Ghidra gap)"
+  note: >-
+    Unit number is typically assigned by IOKit matching or BSD stack during
+    ifnet_allocate_extended(). The override at 0xa3f1fc (defaulting to 0x2e=46)
+    is likely getMinPacketSize, NOT getBSDUnitNumber — super thunk 0x38856 ≠ 0x38914.
+
+deferBSDAttach:
+  address: "0xffffff8002a38c10"
+  lines: "11965–11986"
+  signature: "IOReturn deferBSDAttach(long *self, int defer)"
+  behavior_defer_false:
+    - "removeProperty('IODeferBSDAttach') via vtable+0x2a0"
+    - "registerService(0) via vtable+0x5b0 — triggers IOKit matching"
+    - "returns 0 (kIOReturnSuccess)"
+  behavior_defer_true:
+    - "setProperty('IODeferBSDAttach', 1) via vtable+0x278"
+    - "returns 0 or 0xe00002bd on failure"
+  critical_note: >-
+    CONFIRMED: deferBSDAttach(false) removes IODeferBSDAttach property
+    then calls registerService(0). This is the trigger that makes
+    IOSkywalkNetworkBSDClient match and attach, creating the BSD ifnet.
+
+
+# ═══════════════════════════════════════════════════════════════
+#   PART 3 — IOSkywalkNetworkBSDClient LIFECYCLE
+# ═══════════════════════════════════════════════════════════════
+
+BSDClient_class_identity:
+  class: IOSkywalkNetworkBSDClient
+  instance_size: "0x148"
+  inherits_from: IOSkywalkBSDClient
+  vtable_pointer: "DAT_0xa623f8"
+  metaclass_global: "DAT_0xa6df28"
+
+BSDClient_instance_fields:
+  - {offset: "0x88",  role: "parent provider (IOSkywalkNetworkInterface)"}
+  - {offset: "0x90",  role: "workloop / command gate"}
+  - {offset: "0xe8",  role: "networkInterface (IOSkywalkNetworkInterface*)"}
+  - {offset: "0xf0",  role: "ifnet_init_eparams or properties pointer"}
+  - {offset: "0xf8",  role: "ifnet (BSD ifnet pointer, stored after nexus creation)"}
+  - {offset: "0x100", role: "identifier/dict (used in newUserClient)"}
+  - {offset: "0x118", role: "gated action function pointer"}
+  - {offset: "0x120", role: "power assertion / timer ID"}
+  - {offset: "0x128", role: "ioctl nesting counter"}
+  - {offset: "0x138", role: "flags dword (0xaaaaaaaa = poison sentinel)"}
+  - {offset: "0x13c", role: "bit 0: IFF_UP received flag"}
+  - {offset: "0x13d", role: "bit 0: ioctl in progress mutex"}
+  - {offset: "0x13e", role: "bit 0: enable requested flag"}
+  - {offset: "0x13f", role: "bit 0: connected flag"}
+  - {offset: "0x140", role: "bit 0: interface enabled flag"}
+  - {offset: "0x141", role: "bit 0: power state active flag"}
+  - {offset: "0x142", role: "bit 0: suspend requested / deferred-disable"}
+  - {offset: "0x143", role: "byte: nexus prepared flag"}
+  - {offset: "0x145", role: "bit 0: priority / ordering hint"}
+
+# ---------------------------------------------------------------
+BSDClient_start:
+  address: "0xffffff8002a2c574"
+  lines: "1137–1200"
+  signature: "bool start(IOService* provider)"
+  behavior: >-
+    THIN subclass override. Calls super::start (IOSkywalkBSDClient at 0xa2b74c)
+    which does the heavy lifting. Then poison-inits 344-byte local params struct,
+    checks metaclass singleton, cleans up stale interface if self+0xe8 != 0.
+  critical_insight: >-
+    BSD ifnet is NOT created in start()! start() only sets up the nexus
+    registration. The actual ifnet appears later through the nexus callback
+    path: prepareNexusCallback → gatedPrepareNexus → registerBSDInterface.
+
+BSDClient_parent_start:
+  address: "0xffffff8002a2b74c"
+  class: "IOSkywalkBSDClient (parent)"
+  behavior:
+    - "Calls grandparent IOSkywalkClient::start"
+    - "Opens interface via vtable[0x8a0]"
+    - "Registers as client: provider->vtable[0x5d0](provider, self, 0, 0)"
+    - "Sets up BSD name/params via FUN_0xa2b566"
+    - "Creates nexus registration via FUN_ffffff8000987c40"
+    - "Sets IOSkywalkNexusUUID property"
+    - "Calls registerService()"
+  result: "BSDClient registered, nexus created, but NO ifnet yet"
+
+# ---------------------------------------------------------------
+prepareNexusCallback:
+  address: "0xffffff8002a2d3f4"
+  behavior: >-
+    Callback from Skywalk nexus system when channel is ready.
+    Stores nexus channel ref at self+0x100, dispatches gatedPrepareNexus
+    onto command gate for thread safety.
+
+gatedPrepareNexus:
+  address: "0xffffff8002a2d720"
+  behavior: >-
+    THIS is where the BSD ifnet is actually created.
+    Calls networkInterface->registerBSDInterface(ifnet, 0) at vtable 0x8e8,
+    which internally triggers: prepareBSDInterface → finalizeBSDInterface → setBSDName.
+    Then stores ifnet at self+0xf8, configures nexus channel,
+    sets nexusPrepared flag (self+0x143 = 1).
+  creates_bsd_ifnet: true
+
+# ---------------------------------------------------------------
+adjustInterfaceEnable:
+  address: "0xffffff8002a2d7a2"
+  behavior: >-
+    Central state machine for enable/disable. Called from ioctlHandler,
+    connectedAction, disconnectedAction, enableInterface, disableInterface.
+    Has deeply nested Skywalk lock acquisition path (3 levels) and simpler
+    legacy path. Manages flags: enableRequested(0x13e), connected(0x13f),
+    enabled(0x140), powerActive(0x141), suspendRequested(0x142).
+
+enableInterface:
+  address: "0xffffff8002a2d84e"
+  behavior: >-
+    Calls provider vtable+0x850 (enableBSDInterface). On success:
+    sets enabled=1, calls reportInterfaceWakeFlags, updates link state.
+
+disableInterface:
+  address: "0xffffff8002a2d8d8"
+  behavior: >-
+    Updates link state to 0 (down), calls provider vtable+0x858
+    (disableBSDInterface), sets enabled=0.
+
+ioctlHandler:
+  address: "0xffffff8002a2ccf8"
+  behavior: >-
+    BSD ioctl dispatch. SIOCSIFFLAGS (0x80206910) receives special handling:
+    manages power state (requestPowerOn/Off), IFF_UP/IFF_RUNNING flags,
+    adjustInterfaceEnable calls. Other ioctls delegated to
+    networkInterface vtable+0x910.
+
+# ---------------------------------------------------------------
+connectedAction:
+  address: "0xffffff8002a2da3a"
+  behavior: "Sets connected=1, calls adjustInterfaceEnable(). Reverts on failure."
+
+preDisconnectAction:
+  address: "0xffffff8002a2daaa"
+  behavior: "Sets connected=0, calls adjustInterfaceEnable(). Returns 0 always."
+
+disconnected:
+  address: "0xffffff8002a2db2e"
+  behavior: >-
+    Dispatches disconnectedAction on gate, then deregisters BSDClient
+    from networkInterface via vtable+0x868.
+
+detachInterface:
+  address: "0xffffff8002a2db86"
+  behavior: >-
+    Recursive Skywalk channel teardown, then closeInterface
+    (cancel timers, deregister), ifnet_release, ifnet=NULL.
+
+closeInterface:
+  address: "0xffffff8002a2d450"
+  behavior: "Cancels timers, calls provider vtable+0x5d8 (deregisterClient)."
+
+
+# ═══════════════════════════════════════════════════════════════
+#   PART 4 — IOSkywalkEthernetInterface REGISTRATION
+# ═══════════════════════════════════════════════════════════════
+
+registerEthernetInterface_queueArray:
+  address: "0xffffff8002a3d994"
+  lines: "15935–15956"
+  signature: "IOReturn registerEthernetInterface(self, regInfo, queues, queueCount, param5, param6)"
+  behavior:
+    - "Validates RegistrationInfo via FUN_0xa3d900: version==1, size>=0x130"
+    - "On success: calls registerNetworkInterface(queues) at 0xa36fd2 with **(self+0x118)"
+    - "On failure: calls deregisterEthernetInterface(self, 0) for cleanup"
+  field_0x118: >-
+    self+0x118 on IOSkywalkEthernetInterface points to internal
+    EthernetRegistrationContext. First member is IOSkywalkLogicalLink*
+    (double-deref: **(self+0x118)).
+
+registerEthernetInterface_logicalLink:
+  address: "0xffffff8002a3da56"
+  lines: "15980–15998"
+  signature: "IOReturn registerEthernetInterface(self, regInfo, param3, param4, param5)"
+  behavior: >-
+    Same RegistrationInfo validation. On success: directly calls
+    registerNetworkInterfaceWithLogicalLink at 0xa37100 with **(self+0x118).
+    Skips queue/pool creation. Used by IO80211 Wi-Fi interfaces that
+    manage their own LogicalLink topology.
+
+deregisterEthernetInterface:
+  address: "0xffffff8002a3da04"
+  lines: "15960–15976"
+  behavior:
+    - "Calls base deregisterNetworkInterface at 0xa36d98"
+    - "If success: asserts **(self+0x118) == 0 (logicalLink must be cleared)"
+    - "Cleanup helper at 0xa3d76e releases the 0x118 context struct"
+
+# ---------------------------------------------------------------
+IOSkywalkLogicalLink:
+  zone_size: "0x30 (48 bytes)"
+  class_string: "IOSkywalkLogicalLink"
+  metaclass: "DAT_0xa5e090"
+  layout:
+    - {offset: "0x10", type: "OSArray*", role: "queueSets array"}
+    - {offset: "0x18", type: "IOSkywalkNetworkInterface*", role: "interface (set by setInterface)"}
+    - {offset: "0x20", type: "IOSkywalkNetworkInterface*", role: "interface (read by getInterface)"}
+    - {offset: "0x28", type: "uint64", role: "numQueueSets count"}
+  setInterface:
+    address: "0xffffff8002a39562"
+    behavior: >-
+      Stores interface at link+0x18. Iterates all queue sets (link+0x28 count),
+      for each queue: gets pool via vtable+0x1e8, registers channel with
+      interface event system, configures channel, resets state.
+  getInterface:
+    address: "0xffffff8002a39536"
+    behavior: "return *(link + 0x20)"
+  getQueueSet:
+    address: "0xffffff8002a39540"
+    behavior: "Bounds-checked: if index > numQueueSets return 0; else return queueSets[index]"
+  getQueueSetUnchecked:
+    address: "0xffffff8002a39549"
+    behavior: "No bounds check — direct array access"
+
+# ---------------------------------------------------------------
+RegistrationInfo:
+  size: "0x130 (304 bytes)"
+  sentinel_fill: "0xAA (poison to detect uninitialized fields)"
+  fields:
+    - {offset: "0x00", name: "version", value: "must be 1"}
+    - {offset: "0x04", name: "size", value: "must be >= 0x130"}
+    - {offset: "0x14", name: "maxQueues", value: "must be < 0x401 (1024)"}
+  population: >-
+    FUN_0xa42a80 (initRegistrationInfo) — not in IOSkywalkFamily.kext,
+    called with (self, buffer) to populate from IORegistry properties.
+  default_config_table:
+    address: "DAT_0xa5d278"
+    size: "80 bytes (10 × uint64)"
+    purpose: "Copied as base registration options template"
+
+
+# ═══════════════════════════════════════════════════════════════
+#   PART 5 — IOSkywalkEthernetInterface POWER & KEEP-ALIVE
+# ═══════════════════════════════════════════════════════════════
+
+setPowerState:
+  address: "0xffffff8002a3f138"
+  lines: "17168–17199"
+  signature: "int setPowerState(long *self, long powerState)"
+  behavior:
+    power_on: "Returns 0 immediately (nothing to do)"
+    power_off:
+      - "If provider (self+0x108) is NULL: return 0"
+      - "Allocates config buffer via provider vtable+0x2e0"
+      - "If no keep-alive config (self+0x100 == NULL): sets buffer[0] = 0x50 (flush marker)"
+      - "If keep-alive exists: calls updateKeepAlive + validateAndApplyKeepAlive"
+      - "Applies power config via self vtable+0xAA8"
+      - "Releases keep-alive config (self+0x100), zeroes it"
+
+updateKeepAlive:
+  address: "0xffffff8002a3e836"
+  lines: "16632–16736"
+  signature: "uint32 updateKeepAlive(long self)"
+  behavior:
+    arp_entries:
+      source: "*(self+0x100) + 0x68 (count), +0x70 (array)"
+      stride: "0x24 bytes per ARP keep-alive entry"
+      per_entry: "Read src/dst IP + ports, byte-swap from network order, validate via ARP resolution"
+    nd_entries:
+      source: "*(self+0x100) + 0x78 (count), +0x80 (array)"
+      stride: "0x3C bytes per ND/IPv6 keep-alive entry"
+      per_entry: "Read IPv6 src/dst (8 × uint16 each), byte-swap, validate via ND resolution"
+  return: "0 on success, 0xe00002bc if any entry failed resolution"
+
+getMinPacketSize:
+  address: "0xffffff8002a3f1fc"
+  lines: "17229–17241"
+  fallback: "If subclass returns 0, defaults to 0x2E (46 bytes — minimum Ethernet frame)"
+
+getMaxPacketSize:
+  address: "0xffffff8002a3f1de"
+  lines: "17215–17225"
+  fallback: "If subclass returns 0, defaults to 0x5DC (1500 bytes — standard Ethernet MTU)"
+
+
+# ═══════════════════════════════════════════════════════════════
+#   FULL BSD INTERFACE CREATION SEQUENCE (consolidated)
+# ═══════════════════════════════════════════════════════════════
+
+bsd_ifnet_creation_sequence:
+  description: >-
+    Complete timeline from driver start to BSD en0 appearing.
+    Synthesized from all four decompilation passes.
+
+  phase_1_start:
+    trigger: "IOService matching attaches IOSkywalkNetworkBSDClient to IOSkywalkNetworkInterface"
+    calls:
+      - "IOSkywalkClient::start (grandparent)"
+      - "IOSkywalkBSDClient::start (0xa2b74c): openInterface, registerClient, setupBSDName, createNexusRegistration, set IOSkywalkNexusUUID, registerService"
+      - "IOSkywalkNetworkBSDClient::start (0xa2c574): super::start, poison-init params, metaclass check"
+    result: "BSDClient is registered, nexus registration created, but NO ifnet yet"
+
+  phase_2_nexus_ready:
+    trigger: "Skywalk nexus system calls back when channel is ready (async)"
+    calls:
+      - "prepareNexusCallback (0xa2d3f4): stores nexus channel at self+0x100, dispatches gatedPrepareNexus on command gate"
+      - "gatedPrepareNexus (0xa2d720): calls networkInterface->registerBSDInterface(ifnet, 0) at vtable 0x8e8"
+      - "  → prepareBSDInterface (0xa379de): stores ifnet, sets baudrate/TSO/BPF/LRO"
+      - "  → finalizeBSDInterface (overridden by subclass — base panics)"
+      - "  → setBSDName (0xa37b04): copies name to nifCtx+0x41"
+      - "Stores ifnet at self+0xf8, configures nexus channel, sets nexusPrepared=1"
+    result: "BSD ifnet (en0) is NOW CREATED and visible to networking stack"
+
+  phase_3_connect:
+    trigger: "Network stack or driver calls connect"
+    calls:
+      - "preConnect (0xa2d9c0): registerClient, preConnectAction on gate"
+      - "connectedAction (0xa2da3a): connected=1, adjustInterfaceEnable"
+      - "enableInterface (0xa2d84e): enables BSD interface, reports wake flags, updates link state"
+    result: "Interface is connected and enabled"
+
+  phase_4_ioctl:
+    trigger: "BSD stack sends SIOCSIFFLAGS (0x80206910)"
+    handler: "ioctlHandler (0xa2ccf8): power management, IFF_UP/IFF_RUNNING, adjustInterfaceEnable"
+
+  phase_5_teardown:
+    trigger: "Interface removal or driver stop"
+    calls:
+      - "preDisconnect: connected=0, adjustInterfaceEnable"
+      - "disconnected: deregisterClient"
+      - "detachInterface: recursive Skywalk teardown, closeInterface, ifnet_release"
+      - "OR: stop → deregisterNetworkInterface → full queue/link teardown"
+      - "OR: free → defensive deregisterNetworkInterface → destroy NIF context"
+
+
+# ═══════════════════════════════════════════════════════════════
+#   VTABLE OFFSET QUICK REFERENCE
+# ═══════════════════════════════════════════════════════════════
+
+vtable_offsets_IOSkywalkNetworkInterface:
+  "0x278": "setProperty(const char*, value)"
+  "0x2a0": "removeProperty(const char*)"
+  "0x5b0": "registerService(IOOptionBits)"
+  "0x740": "command dispatch (codes 0xe0060105/106/107)"
+  "0x850": "enableBSDInterface(flags)"
+  "0x858": "disableBSDInterface(flags)"
+  "0x860": "registerClient/openInterface"
+  "0x868": "deregisterClient/closeInterface"
+  "0x870": "isTerminating() → bool"
+  "0x8e8": "registerBSDInterface(ifnet, flags) — THE ifnet creation call"
+  "0x910": "ioctlHandler(ifnet, cmd, data) — ioctl passthrough"
+  "0x938": "requestPowerStateChange(on/off)"
+  "0x950": "getInterfaceType()"
+  "0x9b8": "getInterfaceFlags() → capability bitmask (bits 22-25 = TSO/BPF/LRO)"
+  "0x9d0": "acknowledgePowerChange(flags)"
+
+vtable_offsets_nexusProvider:
+  "0x1c8": "registerLogicalLink / checkRegistered"
+  "0x1d8": "deregisterLogicalLink / detach"
+  "0x1e0": "deregisterFromNexus (used when refcount > 1)"
+
+
+# ═══════════════════════════════════════════════════════════════
+#   KERNEL FUNCTION IDENTIFICATIONS
+# ═══════════════════════════════════════════════════════════════
+
+kernel_functions_identified:
+  "FUN_ffffff80004ba740": "panic()"
+  "FUN_ffffff80004794c0": "strlcpy(dst, src, maxlen)"
+  "FUN_ffffff800062ba70": "ifnet_set_baudrate(ifnet, baudrate)"
+  "FUN_ffffff800062f740": "ifnet_set_tso(ifnet, enable)"
+  "FUN_ffffff80005cbae0": "bpf_tap_enable(ifnet, enable)"
+  "FUN_ffffff80005cbb90": "bpf_tap_mode() or checksum offload"
+  "FUN_ffffff800062f7c0": "ifnet_set_lro(ifnet)"
+  "FUN_ffffff800062ad90": "ifnet_get_flags(ifnet)"
+  "FUN_ffffff800062ab70": "ifnet_release(ifnet)"
+  "FUN_ffffff8000987c40": "skywalk nexus registration create"
+  "FUN_ffffff80005ac190": "nexus channel ring configuration"
+
+
+# ═══════════════════════════════════════════════════════════════
+#   REMAINING GAPS
+# ═══════════════════════════════════════════════════════════════
+
+remaining_gaps:
+  - id: gap_1
+    description: "CONNECT_COMPLETE full 164-byte struct (from file 86)"
+    reason: "Ghidra decompiler truncated the bulletinBoardMessage assembly"
+
+  - id: gap_2
+    description: "Event code→name string table at DAT_ffffff80023fe7c0"
+    reason: "Needs separate IO80211Family Ghidra pass"
+
+  - id: gap_3
+    description: "IO80211InfraInterface::setPowerState body"
+    reason: "Lives in IO80211Family.kext, not IOSkywalkFamily"
+
+  - id: gap_4
+    description: "IO80211Controller::stop body"
+    reason: "Lives in IO80211Family.kext, not IOSkywalkFamily"
+
+  - id: gap_5
+    description: "getBSDNamePrefix base impl exact bytecode at 0xa388ee"
+    reason: "Ghidra gap — inferred to return NULL from override behavior"
+
+  - id: gap_6
+    description: "getBSDUnitNumber base impl exact bytecode at 0xa38914"
+    reason: "Ghidra gap — inferred to return 0 or -1"

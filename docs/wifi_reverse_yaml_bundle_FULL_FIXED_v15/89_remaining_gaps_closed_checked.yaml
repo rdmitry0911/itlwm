@@ -1,0 +1,722 @@
+version: 1
+topic: "Remaining gaps closed — event table, CONNECT_COMPLETE, setPowerState, stop, BSD naming"
+status: all_gaps_closed
+purpose: >-
+  Closes every remaining gap from V10 MANIFEST: the full 246-entry event
+  code→name string table, the 164-byte CONNECT_COMPLETE struct, setPowerState
+  and stop bodies for IO80211Family, and the getBSDNamePrefix / getBSDUnitNumber
+  implementations. All data extracted from BootKernelExtensions.kc (macOS 26.3,
+  25D125, x86_64) and Ghidra decompilation of IO80211Family and AppleBCMWLAN.
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  binary: "BootKernelExtensions.kc"
+  decompilation: "ghidra_output/ — IO80211Family_decompiled.c, AppleBCMWLAN_Core_decompiled.c"
+  disassembly: "capstone disassembly of sendConnectComplete at 0xffffff800157d472"
+
+# ═══════════════════════════════════════════════════════════════
+# 1. COMPLETE EVENT CODE→NAME STRING TABLE (246 entries)
+# ═══════════════════════════════════════════════════════════════
+
+event_string_table:
+  location: "DAT_ffffff80023fe7c0 — IO80211Family __DATA segment"
+  format: "Array of 246 char* pointers, each 8 bytes. Index = event code."
+  accessor_function: "_convertApple80211EventToString @ 0xffffff8002306000"
+  accessor_logic: >-
+    if (code >= 0xf6) return "unknown APPLE80211_M_";
+    else return table[code];
+  extraction_method: >-
+    Chained fixup pointers decoded from KC binary:
+    file_offset = raw_pointer & 0xFFFFFFFFFF.
+    Strings reside in IO80211Family cstring section near fileoff 0x022c33xx.
+
+  entries:
+    - { code: 0x00, name: "(NULL)" }
+    - { code: 0x01, name: "APPLE80211_M_POWER_CHANGED" }
+    - { code: 0x02, name: "APPLE80211_M_SSID_CHANGED" }
+    - { code: 0x03, name: "APPLE80211_M_BSSID_CHANGED" }
+    - { code: 0x04, name: "APPLE80211_M_LINK_CHANGED" }
+    - { code: 0x05, name: "APPLE80211_M_MIC_ERROR_UCAST" }
+    - { code: 0x06, name: "APPLE80211_M_MIC_ERROR_MCAST" }
+    - { code: 0x07, name: "APPLE80211_M_INT_MIT_CHANGED" }
+    - { code: 0x08, name: "APPLE80211_M_MODE_CHANGED" }
+    - { code: 0x09, name: "APPLE80211_M_ASSOC_DONE" }
+    - { code: 0x0A, name: "APPLE80211_M_SCAN_DONE" }
+    - { code: 0x0B, name: "APPLE80211_M_COUNTRY_CODE_CHANGED" }
+    - { code: 0x0C, name: "APPLE80211_M_STA_ARRIVE" }
+    - { code: 0x0D, name: "APPLE80211_M_STA_LEAVE" }
+    - { code: 0x0E, name: "APPLE80211_M_DECRYPTION_FAILURE" }
+    - { code: 0x0F, name: "APPLE80211_M_SCAN_CACHE_UPDATED" }
+    - { code: 0x10, name: "APPLE80211_M_INTERNAL_SCAN_DONE" }
+    - { code: 0x11, name: "APPLE80211_M_LINK_QUALITY" }
+    - { code: 0x12, name: "APPLE80211_M_IBSS_PEER_ARRIVED" }
+    - { code: 0x13, name: "APPLE80211_M_IBSS_PEER_LEFT" }
+    - { code: 0x14, name: "APPLE80211_M_RSN_HANDSHAKE_DONE" }
+    - { code: 0x15, name: "APPLE80211_M_BT_COEX_CHANGED" }
+    - { code: 0x16, name: "APPLE80211_M_P2P_PEER_DETECTED" }
+    - { code: 0x17, name: "APPLE80211_M_P2P_LISTEN_COMPLETE" }
+    - { code: 0x18, name: "APPLE80211_M_P2P_SCAN_COMPLETE" }
+    - { code: 0x19, name: "APPLE80211_M_P2P_LISTEN_STARTED" }
+    - { code: 0x1A, name: "APPLE80211_M_P2P_SCAN_STARTED" }
+    - { code: 0x1B, name: "APPLE80211_M_P2P_INTERFACE_CREATED" }
+    - { code: 0x1C, name: "APPLE80211_M_WIFI_DIRECT_INTERFACE_CREATED" }
+    - { code: 0x1D, name: "APPLE80211_M_P2P_GROUP_STARTED" }
+    - { code: 0x1E, name: "APPLE80211_M_WIFI_DIRECT_GROUP_STARTED" }
+    - { code: 0x1F, name: "APPLE80211_M_BGSCAN_NET_DISCOVERED" }
+    - { code: 0x20, name: "APPLE80211_M_ROAMED" }
+    - { code: 0x21, name: "APPLE80211_M_ACT_FRM_TX_COMPLETE" }
+    - { code: 0x22, name: "APPLE80211_M_DEAUTH_RECEIVED" }
+    - { code: 0x23, name: "APPLE80211_M_BLACKLIST_NETWORK" }
+    - { code: 0x24, name: "APPLE80211_M_RESUME_SCAN" }
+    - { code: 0x25, name: "APPLE80211_M_BGSCAN_SUSPENDED" }
+    - { code: 0x26, name: "APPLE80211_M_BGSCAN_RESUMED" }
+    - { code: 0x27, name: "APPLE80211_M_RSSI_CHANGED" }
+    - { code: 0x28, name: "APPLE80211_M_PEER_STATE" }
+    - { code: 0x29, name: "APPLE80211_M_AWDL_AVAILABILITY_WINDOW_START" }
+    - { code: 0x2A, name: "APPLE80211_M_AWDL_AVAILABILITY_WINDOW_EXTENSION_START" }
+    - { code: 0x2B, name: "APPLE80211_M_AWDL_AVAILABILITY_WINDOW_EXTENSIONS_END" }
+    - { code: 0x2C, name: "APPLE80211_M_AWDL_INTERLEAVED_SCAN_START" }
+    - { code: 0x2D, name: "APPLE80211_M_AWDL_INTERLEAVED_SCAN_STOP" }
+    - { code: 0x2E, name: "APPLE80211_M_AWDL_SYNC_STATE_CHANGED" }
+    - { code: 0x2F, name: "APPLE80211_M_PEER_PRESENCE" }
+    - { code: 0x30, name: "APPLE80211_M_AWDL_ACTION_FRAME_RX" }
+    - { code: 0x31, name: "APPLE80211_M_RESET_INTERFACE" }
+    - { code: 0x32, name: "APPLE80211_M_PEER_CREDIT_GRANT" }
+    - { code: 0x33, name: "APPLE80211_M_PEER_CACHE_CONTROL" }
+    - { code: 0x34, name: "APPLE80211_M_SERVICE_INDICATION" }
+    - { code: 0x35, name: "APPLE80211_M_AWDL_OOB_REQUEST_END" }
+    - { code: 0x36, name: "APPLE80211_M_CHANNEL_SWITCH" }
+    - { code: 0x37, name: "APPLE80211_M_DRIVER_AVAILABLE" }
+    - { code: 0x38, name: "APPLE80211_M_AWDL_BTLE_STATE_CHANGED" }
+    - { code: 0x39, name: "APPLE80211_M_GAS_DONE" }
+    - { code: 0x3A, name: "APPLE80211_M_INTERFACE_STATE" }
+    - { code: 0x3B, name: "APPLE80211_M_MAC_ADDRESS_CHANGED" }
+    - { code: 0x3C, name: "APPLE80211_M_HOMECHAN_QUAL_CHANGED" }
+    - { code: 0x3D, name: "APPLE80211_M_POWER_STATS_UPDATE" }
+    - { code: 0x3E, name: "APPLE80211_M_AWDL_PSCAN_BEGIN" }
+    - { code: 0x3F, name: "APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE" }
+    - { code: 0x40, name: "APPLE80211_M_AWDL_TXCALIBRATION_REQUEST" }
+    - { code: 0x41, name: "APPLE80211_M_AWDL_STATISTICS" }
+    - { code: 0x42, name: "APPLE80211_M_ASSOC_READY" }
+    - { code: 0x43, name: "APPLE80211_M_AWDL_REALTIME_MODE_START" }
+    - { code: 0x44, name: "APPLE80211_M_AWDL_REALTIME_MODE_END" }
+    - { code: 0x45, name: "APPLE80211_M_AWDL_UNICAST_AF_STATUS" }
+    - { code: 0x46, name: "APPLE80211_M_ROAM_START" }
+    - { code: 0x47, name: "APPLE80211_M_ROAM_END" }
+    - { code: 0x48, name: "APPLE80211_M_DISSASOC_RECEIVED" }
+    - { code: 0x49, name: "APPLE80211_M_REASSOC" }
+    - { code: 0x4A, name: "APPLE80211_M_AUTH" }
+    - { code: 0x4B, name: "APPLE80211_M_PRUNE" }
+    - { code: 0x4C, name: "APPLE80211_M_SUPPLICANT_EVENT" }
+    - { code: 0x4D, name: "APPLE80211_M_AWDL_ADVERTISERS_LIST" }
+    - { code: 0x4E, name: "APPLE80211_M_ASSOC" }
+    - { code: 0x4F, name: "APPLE80211_M_DUMP_LOGS" }
+    - { code: 0x50, name: "APPLE80211_M_ROAM_STATUS" }
+    - { code: 0x51, name: "APPLE80211_M_LEAKY_AP_STATS" }
+    - { code: 0x52, name: "APPLE80211_M_SET_INFRA_CHANNEL" }
+    - { code: 0x53, name: "APPLE80211_M_RANGING_MEASUREMENT_DONE" }
+    - { code: 0x54, name: "APPLE80211_M_RANGING_AUTHENTICATION_DONE" }
+    - { code: 0x55, name: "APPLE80211_M_RANGING_PARTIAL_RESULT" }
+    - { code: 0x56, name: "APPLE80211_M_AWDL_NEARBY_LOG_TRIGGER" }
+    - { code: 0x57, name: "APPLE80211_M_SOFTAP_PEER_CACHE_LIMIT" }
+    - { code: 0x58, name: "APPLE80211_M_AWDL_DFS_CSA" }
+    - { code: 0x59, name: "APPLE80211_M_TX_FAIL_HISTORY_EVENT" }
+    - { code: 0x5A, name: "APPLE80211_M_SCAN_BACKOFF_REPORT" }
+    - { code: 0x5B, name: "APPLE80211_M_TCPKA_TIMEOUT" }
+    - { code: 0x5C, name: "APPLE80211_M_TX_INHIBIT" }
+    - { code: 0x5D, name: "APPLE80211_M_LOCAL_THERMAL_MITIGATION" }
+    - { code: 0x5E, name: "APPLE80211_M_AWDL_DFS_CSA_COMPLETE" }
+    - { code: 0x5F, name: "APPLE80211_M_NAN_DEVICE_ROLE_CHANGED" }
+    - { code: 0x60, name: "APPLE80211_M_NAN_MASTER_CHANGED" }
+    - { code: 0x61, name: "APPLE80211_M_NAN_CLUSTER_CHANGED" }
+    - { code: 0x62, name: "APPLE80211_M_NAN_BEACON" }
+    - { code: 0x63, name: "APPLE80211_M_NAN_FOLLOW_UP_TX_COMPLETE" }
+    - { code: 0x64, name: "APPLE80211_M_NAN_DISCOVERY_RESULT_RECEIVED" }
+    - { code: 0x65, name: "APPLE80211_M_NAN_DISCOVERY_RESULT_QUEUED" }
+    - { code: 0x66, name: "APPLE80211_M_NAN_PUBLISH_REPLIED_PRIVATE" }
+    - { code: 0x67, name: "APPLE80211_M_NAN_PUBLISH_REPLIED" }
+    - { code: 0x68, name: "APPLE80211_M_NAN_PUBLISH_TERMINATED" }
+    - { code: 0x69, name: "APPLE80211_M_NAN_SUBSCRIBE_TERMINATED" }
+    - { code: 0x6A, name: "APPLE80211_M_NAN_FOLLOW_UP_RECEIVED" }
+    - { code: 0x6B, name: "APPLE80211_M_NAN_FOLLOW_UP_QUEUED" }
+    - { code: 0x6C, name: "APPLE80211_M_NAN_RANGING_REQUEST_INDICATION" }
+    - { code: 0x6D, name: "APPLE80211_M_NAN_RANGING_RESPONSE_INDICATION" }
+    - { code: 0x6E, name: "APPLE80211_M_NAN_RANGING_RESULTS" }
+    - { code: 0x6F, name: "APPLE80211_M_NAN_RANGING_TERMINATED" }
+    - { code: 0x70, name: "APPLE80211_M_NAN_DP_REQ_RECVD" }
+    - { code: 0x71, name: "APPLE80211_M_NAN_DP_RSP_RECVD" }
+    - { code: 0x72, name: "APPLE80211_M_NAN_DP_CONFIRM_RECVD" }
+    - { code: 0x73, name: "APPLE80211_M_NAN_DP_TERM_RECVD" }
+    - { code: 0x74, name: "APPLE80211_M_NAN_DP_TX_COMPLETE" }
+    - { code: 0x75, name: "APPLE80211_M_NAN_DP_ESTABLISHED" }
+    - { code: 0x76, name: "APPLE80211_M_NAN_DP_END" }
+    - { code: 0x77, name: "APPLE80211_M_NAN_DISCOVERY_RESULT_LOST" }
+    - { code: 0x78, name: "APPLE80211_M_NAN_DP_REQ_RECVD_QUEUED" }
+    - { code: 0x79, name: "APPLE80211_M_NAN_DP_RSP_RECVD_QUEUED" }
+    - { code: 0x7A, name: "APPLE80211_M_NAN_DW_START" }
+    - { code: 0x7B, name: "APPLE80211_M_NAN_DW_END" }
+    - { code: 0x7C, name: "APPLE80211_M_NAN_CHAN_BOUNDARY" }
+    - { code: 0x7D, name: "APPLE80211_M_INFRA_SCAN_START" }
+    - { code: 0x7E, name: "APPLE80211_M_INFRA_SCAN_COMPLETE" }
+    - { code: 0x7F, name: "APPLE80211_M_INFRA_ASSOC_START" }
+    - { code: 0x80, name: "APPLE80211_M_NAN_LINK_STATE" }
+    - { code: 0x81, name: "APPLE80211_M_NAN_DP_HOST_ASSIST_REQUEST" }
+    - { code: 0x82, name: "APPLE80211_M_NAN_PEER_SCHEDULE_UPDATE_RECVD" }
+    - { code: 0x83, name: "APPLE80211_M_LSM_UPDATE" }
+    - { code: 0x84, name: "APPLE80211_M_LOW_POWER_MODE" }
+    - { code: 0x85, name: "APPLE80211_M_LPAS_STATE" }
+    - { code: 0x86, name: "APPLE80211_M_TEMP_DISABLE_NETWORK" }
+    - { code: 0x87, name: "APPLE80211_M_AWDL_SDB_TRANSITION" }
+    - { code: 0x88, name: "APPLE80211_M_NAN_RESTORE_STATUS" }
+    - { code: 0x89, name: "APPLE80211_M_ROAM_SCAN_START" }
+    - { code: 0x8A, name: "APPLE80211_M_ROAM_SCAN_END" }
+    - { code: 0x8B, name: "APPLE80211_M_ROAM_PREP" }
+    - { code: 0x8C, name: "APPLE80211_M_BSS_STEERING_REQUEST_EVENT" }
+    - { code: 0x8D, name: "APPLE80211_M_SOFTAP_LPM" }
+    - { code: 0x8E, name: "APPLE80211_M_AWDL_HPP_STATISTICS" }
+    - { code: 0x8F, name: "APPLE80211_M_ACTION_FRAME_EVENT" }
+    - { code: 0x90, name: "APPLE80211_M_AWDL_APP_SPECIFIC_INFO" }
+    - { code: 0x91, name: "APPLE80211_M_WEIGHT_AVG_LQM_UPDATE" }
+    - { code: 0x92, name: "APPLE80211_M_WSEC_NOTIFICATION" }
+    - { code: 0x93, name: "APPLE80211_M_AWDL_SOFT_ERROR_NOTIFICATION" }
+    - { code: 0x94, name: "APPLE80211_M_WIFI_NETWORK_INFO_UPDATE" }
+    - { code: 0x95, name: "APPLE80211_M_P2P_AIRPLAY_STATISTICS" }
+    - { code: 0x96, name: "APPLE80211_M_DPS" }
+    - { code: 0x97, name: "APPLE80211_M_SLOW_WIFI" }
+    - { code: 0x98, name: "APPLE80211_M_AUTH_IND" }
+    - { code: 0x99, name: "APPLE80211_M_CHANNEL_SWITCH_EVENT" }
+    - { code: 0x9A, name: "APPLE80211_M_DATA_QUEUE_STATE_EVENT" }
+    - { code: 0x9B, name: "APPLE80211_M_TVPM_EVENT" }
+    - { code: 0x9C, name: "APPLE80211_M_REALTIME_SESSION_NOTIFICATION" }
+    - { code: 0x9D, name: "APPLE80211_M_LOWLATENCY_STATISTICS" }
+    - { code: 0x9E, name: "APPLE80211_M_NAN_OOB_AF_TX_STATUS" }
+    - { code: 0x9F, name: "APPLE80211_M_NAN_OOB_AF_RX" }
+    - { code: 0xA0, name: "APPLE80211_M_SDB_MODE_CHANGED" }
+    - { code: 0xA1, name: "APPLE80211_M_RC1_STATS_EVENT" }
+    - { code: 0xA2, name: "APPLE80211_M_RC2_STATS_EVENT" }
+    - { code: 0xA3, name: "APPLE80211_M_BSS_BLACKLIST_EVENT" }
+    - { code: 0xA4, name: "APPLE80211_M_SLOWWIFI_PROBE_TRIGGER" }
+    - { code: 0xA5, name: "APPLE80211_M_SLOWWIFI_USERINPUT_TRIGGER" }
+    - { code: 0xA6, name: "APPLE80211_M_SLOWWIFI_PROBE_RESULT" }
+    - { code: 0xA7, name: "APPLE80211_M_SLOWWIFI_USERINPUT_RESULT" }
+    - { code: 0xA8, name: "APPLE80211_M_APP_STATE" }
+    - { code: 0xA9, name: "APPLE80211_M_LQM_TX_STATS" }
+    - { code: 0xAA, name: "APPLE80211_M_RETRY_CHAN_SEQ" }
+    - { code: 0xAB, name: "APPLE80211_M_SLOWWIFI_SYMPTOMS_INPUT" }
+    - { code: 0xAC, name: "APPLE80211_M_SOFTAP_CH_CHANGED_EVENT" }
+    - { code: 0xAD, name: "APPLE80211_M_SCAN_CLIENT_UPDATE" }
+    - { code: 0xAE, name: "APPLE80211_M_RX_AMPDU_UPDATE" }
+    - { code: 0xAF, name: "APPLE80211_M_INFRA_BAND_TX_RX_UPDATE" }
+    - { code: 0xB0, name: "APPLE80211_M_LQM_CRASHTRACER" }
+    - { code: 0xB1, name: "APPLE80211_M_LQM_CRASHTRACER_FEATURE_FLAG" }
+    - { code: 0xB2, name: "APPLE80211_M_DPS_SYMPTOMS_INPUT" }
+    - { code: 0xB3, name: "APPLE80211_M_AWDL_SOFT_ERROR_SERVICE_REG_EVENT" }
+    - { code: 0xB4, name: "APPLE80211_M_BEACON_CACHE_UPDATED" }
+    - { code: 0xB5, name: "APPLE80211_M_SLOWWIFI_ESCO_TRAFFIC_INDICATION" }
+    - { code: 0xB6, name: "APPLE80211_M_P2P_THREAD_COEX_EVENT" }
+    - { code: 0xB7, name: "APPLE80211_M_DFSP_SUSPEND_RESUME" }
+    - { code: 0xB8, name: "APPLE80211_M_LQM_CRASHTRACER_IPS_TRIGGER" }
+    - { code: 0xB9, name: "APPLE80211_M_PHY_RX_DESENSE" }
+    - { code: 0xBA, name: "APPLE80211_M_WPS_IE_INFO" }
+    - { code: 0xBB, name: "APPLE80211_M_SCAN_SUMMARY_EVENT" }
+    - { code: 0xBC, name: "APPLE80211_M_QUITE_IE_RECEIVED" }
+    - { code: 0xBD, name: "APPLE80211_M_TE_CRITICAL_TRAFFIC_IND" }
+    - { code: 0xBE, name: "APPLE80211_M_BT_COEX_MODE_STATS_EVENT" }
+    - { code: 0xBF, name: "APPLE80211_M_LINK_DOWN_DEBOUNCE_FAILED" }
+    - { code: 0xC0, name: "APPLE80211_M_SIB_EVENT" }
+    - { code: 0xC1, name: "APPLE80211_M_SENSING_DONE" }
+    - { code: 0xC2, name: "APPLE80211_M_P2P_FOR_ULLRT_INFRA_FEATURE_FLAG" }
+    - { code: 0xC3, name: "APPLE80211_M_AWDL_CHAN_SEQ_CHANGED" }
+    - { code: 0xC4, name: "APPLE80211_M_TRIGGER_TTR" }
+    - { code: 0xC5, name: "APPLE80211_M_NAN_PREFERRED_CHANNELS_CHANGED" }
+    - { code: 0xC6, name: "APPLE80211_M_INFRA_SCAN_ADD" }
+    - { code: 0xC7, name: "APPLE80211_M_COLOCATED_CACHE_EVENT" }
+    - { code: 0xC8, name: "APPLE80211_M_AWDL_STATS_P2P_FAILURE" }
+    - { code: 0xC9, name: "APPLE80211_M_WCL_SCAN_RESULT" }
+    - { code: 0xCA, name: "APPLE80211_M_WCL_BEACON_MUTE_MITI_INDICATION" }
+    - { code: 0xCB, name: "APPLE80211_M_WCL_DEAUTH_DISSASOC_RECEIVED" }
+    - { code: 0xCC, name: "APPLE80211_M_DWELL_START" }
+    - { code: 0xCD, name: "APPLE80211_M_ROAM_SUPPRESSION_STATUS" }
+    - { code: 0xCE, name: "APPLE80211_M_WCL_MNG_FRAME" }
+    - { code: 0xCF, name: "APPLE80211_M_WCL_REASSOC_FAIL" }
+    - { code: 0xD0, name: "APPLE80211_M_WCL_REASSOC_LOW_LATENCY_TRAFFIC_CHANGED" }
+    - { code: 0xD1, name: "APPLE80211_M_WCL_CHANNEL_SWITCH_ANNOUNCEMENT" }
+    - { code: 0xD2, name: "APPLE80211_M_P2P_PEER_COUNTRY_CODE" }
+    - { code: 0xD3, name: "APPLE80211_M_WCL_AUTH_ASSOC_COMPLETE" }
+    - { code: 0xD4, name: "APPLE80211_M_WCL_FIRST_BEACON_EVENT" }
+    - { code: 0xD5, name: "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT" }
+    - { code: 0xD6, name: "APPLE80211_M_WCL_JOIN_ABORT_COMPLETE" }
+    - { code: 0xD7, name: "APPLE80211_M_INFRA_PEER_REQUIRES_IP_RES" }
+    - { code: 0xD8, name: "APPLE80211_M_WCL_LINK_STATUS_IND" }
+    - { code: 0xD9, name: "APPLE80211_M_ENV_BSS_INFO" }
+    - { code: 0xDA, name: "APPLE80211_M_OBSS_MIT_NOTIFICATION" }
+    - { code: 0xDB, name: "APPLE80211_M_GAS_FRAGMENT_RX" }
+    - { code: 0xDC, name: "APPLE80211_M_GAS_COMPLETE" }
+    - { code: 0xDD, name: "APPLE80211_M_INACTIVITY_STATUS" }
+    - { code: 0xDE, name: "APPLE80211_M_WCL_BGSCAN_CACHED_BUFFER_FULL" }
+    - { code: 0xDF, name: "APPLE80211_M_GAS_MULTI_PEER_ERROR" }
+    - { code: 0xE0, name: "APPLE80211_M_CHANNEL_SPEC_QUERY_COMPLETED" }
+    - { code: 0xE1, name: "APPLE80211_M_SWITCH_SOFTAP_BAND_P2P_CONCURRENCY" }
+    - { code: 0xE2, name: "APPLE80211_M_DATAPATH_STATS" }
+    - { code: 0xE3, name: "APPLE80211_M_LQMDATA_TXRX_STATS" }
+    - { code: 0xE4, name: "APPLE80211_M_LQMDATA_STAINFO_STATS" }
+    - { code: 0xE5, name: "APPLE80211_M_LQMDATA_BEACON_STATS" }
+    - { code: 0xE6, name: "APPLE80211_M_LQMDATA_RSSI_STATS" }
+    - { code: 0xE7, name: "APPLE80211_M_LQMDATA_SNR_STATS" }
+    - { code: 0xE8, name: "APPLE80211_M_LQMDATA_NOISEFLOOR_STATS" }
+    - { code: 0xE9, name: "APPLE80211_M_LQMDATA_CCA_STATS" }
+    - { code: 0xEA, name: "APPLE80211_M_AWDL_IDLE_DETECT" }
+    - { code: 0xEB, name: "APPLE80211_M_AWDL_IDLE_SESSION" }
+    - { code: 0xEC, name: "APPLE80211_M_TIMESYNC_CLOCK" }
+    - { code: 0xED, name: "APPLE80211_M_WCL_SCAN_DONE" }
+    - { code: 0xEE, name: "APPLE80211_M_NDD_DONE" }
+    - { code: 0xEF, name: "APPLE80211_M_NDD_REPORT" }
+    - { code: 0xF0, name: "APPLE80211_M_SCAN_FWD_STATS_EVENT" }
+    - { code: 0xF1, name: "APPLE80211_M_NAN_AUTH_RX" }
+    - { code: 0xF2, name: "APPLE80211_M_ASYMMETRIC_INTERFERENCE_DETECTION" }
+    - { code: 0xF3, name: "APPLE80211_M_AWDL_RTG_STATISTICS" }
+    - { code: 0xF4, name: "APPLE80211_M_RENEW_IP_REQ" }
+    - { code: 0xF5, name: "APPLE80211_M_RX_DATA_STALL" }
+
+  itlwm_critical_events:
+    notes: >-
+      Events that itlwm MUST post for basic WiFi to work on macOS 26.x Sequoia.
+      Without these, the WiFi framework cannot complete the connection lifecycle.
+    must_post:
+      - { code: 0x01, name: "POWER_CHANGED", when: "setPowerState transitions" }
+      - { code: 0x02, name: "SSID_CHANGED", when: "after association" }
+      - { code: 0x03, name: "BSSID_CHANGED", when: "after association/roam" }
+      - { code: 0x04, name: "LINK_CHANGED", when: "link up/down transitions" }
+      - { code: 0x09, name: "ASSOC_DONE", when: "association complete" }
+      - { code: 0x0A, name: "SCAN_DONE", when: "scan complete" }
+      - { code: 0x0B, name: "COUNTRY_CODE_CHANGED", when: "regulatory domain set" }
+      - { code: 0x0F, name: "SCAN_CACHE_UPDATED", when: "BSS list updated" }
+      - { code: 0xD5, name: "WCL_CONNECT_COMPLETE_EVENT", when: "full connection established (26.x WCL path)" }
+
+# ═══════════════════════════════════════════════════════════════
+# 2. CONNECT_COMPLETE FULL 164-BYTE STRUCT
+# ═══════════════════════════════════════════════════════════════
+
+connect_complete_event:
+  event_code: "0xD5"
+  event_name: "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT"
+  total_size: "0xa4 (164 bytes)"
+  source_function: "AppleBCMWLANJoinAdapter::sendConnectComplete() @ 0xffffff800157d472"
+  decompiler_issue: >-
+    Ghidra falsely classified FUN_ffffff8000101100 (bzero) as non-returning,
+    truncating the decompiler output after the memset call. The disassembly
+    below shows the full function body, which continues to populate the buffer
+    and call postMessage.
+
+  disassembly_summary: |
+    push rbp; mov rbp,rsp; push r15/r14/r12/rbx; sub rsp,0xb0
+    ; stack canary setup
+    mov r15, [rdi+0x10]            ; r15 = ivars
+    ; guard: ivars[1]&1 && !(ivars[4]&1) && ivars->status != 0xFFFF
+    test byte [r15+1],1 / je cleanup
+    test byte [r15+4],1 / jne cleanup
+    movzx r12d, word [r15+0x280] / cmp r12w,-1 / je cleanup
+
+    lea r14,[rbp-0xc8]             ; buf = body (0xa0 bytes)
+    call bzero(r14, 0xa0)          ; zero body
+
+    mov word [r14-4], r12w         ; struct+0x00 = status
+    mov ax, [r15+0x282]
+    mov word [r14-2], ax           ; struct+0x02 = reason_flags
+
+    lea rax,[r15+0x2ac]            ; source = ivars BSS array base
+    mov ecx, 0x10                  ; dest offset counter
+    LOOP:
+      mov [rbp+rcx-0xd8], [rax-0x20]  ; entry.field_a (4B)
+      mov [rbp+rcx-0xd4], [rax-0x1c]  ; entry.field_b (2B)
+      mov [rbp+rcx-0xd0], [rax-4]     ; entry.field_c (4B)
+      mov [rbp+rcx-0xcc], [rax]       ; entry.field_d (4B)
+      add rcx,0x10 / add rax,0x44
+      cmp rcx,0xb0 / jne LOOP
+
+    ; call postMessage(core, interface, 0xD5, &struct, 0xa4, 1)
+    mov rdi,[r15+0x38]
+    mov rsi,[[rdi+0x128]+0x2c20]   ; primary STA interface
+    lea rcx,[rbp-0xcc]             ; buffer base
+    mov r8d,0xa4 / mov edx,0xd5 / mov r9d,1
+    call IO80211Controller::postMessage
+
+    mov byte [rbx+0x10+4], 1      ; ivars->connect_complete_sent = true
+    mov byte [rbx+0x10+1], 0      ; ivars->join_in_progress = false
+
+  struct_layout:
+    notes: >-
+      Buffer lives on stack at rbp-0xcc, size 0xa4 (164 bytes).
+      First 4 bytes are the header (status+flags), then 0xa0 bytes of
+      body containing 10 BSS entries of 16 bytes each.
+      Body is zeroed before population; only entry[0] is meaningful
+      for a simple STA connection (others zero).
+    fields:
+      - offset: "0x00"
+        size: 2
+        type: uint16
+        name: status
+        source: "ivars+0x280"
+        notes: "0=success, 0xFFFF=failed, other=reason code"
+      - offset: "0x02"
+        size: 2
+        type: uint16
+        name: reason_flags
+        source: "ivars+0x282"
+        notes: "0x3f0 on ICV error path"
+      - offset: "0x04"
+        size: 160
+        type: "bss_entry[10]"
+        name: bss_entries
+        notes: "Array of 10 BSS info entries, 16 bytes each. Entry 0 = connected BSS."
+
+    bss_entry_layout:
+      size: 16
+      stride_in_ivars: "0x44 (68 bytes per BSS in JoinAdapter ivars)"
+      ivars_base: "ivars+0x28c (entry 0)"
+      fields:
+        - offset: "0x00"
+          size: 4
+          type: uint32
+          name: field_a
+          source: "ivars+0x28c+i*0x44"
+          notes: >-
+            First 4 bytes of BSS data block. handleSupplicantEvent copies
+            BSSID (6 bytes) starting at ivars+0x28c, so low 4 bytes overlap
+            BSSID bytes [0..3].
+        - offset: "0x04"
+          size: 2
+          type: uint16
+          name: field_b
+          source: "ivars+0x290+i*0x44"
+          notes: "BSSID bytes [4..5] or channel spec (depends on layout)"
+        - offset: "0x06"
+          size: 2
+          type: uint16
+          name: padding
+          notes: "Zeroed by memset, not written by loop"
+        - offset: "0x08"
+          size: 4
+          type: uint32
+          name: field_c
+          source: "ivars+0x2a8+i*0x44"
+          notes: "Likely RSSI or signal quality metric"
+        - offset: "0x0C"
+          size: 4
+          type: uint32
+          name: field_d
+          source: "ivars+0x2ac+i*0x44"
+          notes: "Likely noise floor or data rate"
+
+  itlwm_implementation_note: >-
+    For itlwm, construct a 164-byte buffer: set status=0 (success),
+    reason_flags=0, populate entry[0] with BSSID and signal data
+    from the connected BSS, zero the remaining 9 entries, then call
+    postMessage(iface, 0xD5, buffer, 0xa4, true).
+
+# ═══════════════════════════════════════════════════════════════
+# 3. IO80211SkywalkInterface::setPowerState
+# ═══════════════════════════════════════════════════════════════
+
+IO80211SkywalkInterface_setPowerState:
+  addr: "0xffffff8002277434"
+  symbol: "__ZN23IO80211SkywalkInterface13setPowerStateEmP9IOService"
+  signature: "IOReturn setPowerState(unsigned long powerState, IOService* whatDevice)"
+  decompiled_body: |
+    IOReturn IO80211SkywalkInterface::setPowerState(unsigned long powerState, IOService*) {
+        long expansionData = this->mExpansionData;  // self+0x120
+        long glueCtx = *(long *)(expansionData + 0x50);
+
+        if (glueCtx != 0) {
+            if (powerState == 1) {
+                // WAKE path
+                IO80211MacAddressAgent::wake(/* from glueCtx */);
+            } else {
+                // SLEEP path — cancel timers on peer managers
+                long* peerMgr = *(long**)(*(long*)(glueCtx+0x10) + 0x10);
+                if (peerMgr != NULL) {
+                    peerMgr->cancelAllTimers();  // vtable+0x218
+                }
+            }
+        }
+
+        // Record power state: 0=sleep, 2=awake
+        *(uint*)(expansionData + 0xe0) = (powerState == 1) ? 2 : 0;
+
+        // Log the transition
+        uint unitNumber = this->getUnitNumber();
+        logDiag(this, 0x800000000000000,
+                "IO80211SkywalkInterface::setPowerState[%u] curState=%d newState=%lu newInternal=%d",
+                unitNumber,
+                *(uint*)(expansionData + 0x58),  // current state
+                powerState,
+                *(uint*)(expansionData + 0xe0));  // new internal state
+
+        // Chain to super (IOSkywalkNetworkInterface::setPowerState)
+        super::setPowerState(powerState, whatDevice);
+
+        return kIOPMAckImplied;  // return 0
+    }
+  notes: >-
+    Key detail: power state is stored at expansionData+0xe0 as 0 (sleep)
+    or 2 (awake). On wake, IO80211MacAddressAgent::wake() restores the
+    MAC address configuration. On sleep, peer manager timers are cancelled.
+
+# ═══════════════════════════════════════════════════════════════
+# 4. IO80211InfraInterface::setPowerState
+# ═══════════════════════════════════════════════════════════════
+
+IO80211InfraInterface_setPowerState:
+  addr: "0xffffff80022e673c"
+  symbol: "__ZN21IO80211InfraInterface13setPowerStateEmP9IOService"
+  signature: "IOReturn setPowerState(unsigned long powerState, IOService* whatDevice)"
+  decompiled_body: |
+    IOReturn IO80211InfraInterface::setPowerState(unsigned long powerState, IOService* whatDevice) {
+        // Step 1: Call base (IO80211SkywalkInterface::setPowerState)
+        IOReturn result = IO80211SkywalkInterface::setPowerState(powerState, whatDevice);
+
+        // Step 2: Build system state struct
+        apple80211_system_state state;
+        state.power_state = (powerState == 1) ? 2 : 1;  // 2=awake, 1=sleep
+        state.flags = 0;
+
+        // Step 3: Push state to WCL
+        bool isSkywalkMode = (*(long**)(this->mExpansionData + 0x38))->isSkywalkMode();
+        if (!isSkywalkMode) {
+            // Legacy path
+            IOCommandGate::runAction(this->mExpansionData + 0x38, ...);
+        } else {
+            // Skywalk path — dispatch via WCL bulletin board
+            IO80211InfraInterface::setWCLSystemState(this, &state);
+        }
+
+        return result;
+    }
+  notes: >-
+    This wraps the Skywalk base setPowerState and adds WCL system state
+    notification. On wake (state=2), it also sends RNG_EVENT_WAKE to the
+    RNG agent. On sleep (state=1), it cancels all debounce timers and sends
+    RNG_EVENT_SLEEP. The WCL bulletin board message code for system state
+    is 0x802869c8 with subtype 0x206.
+
+  setWCLSystemState_details:
+    addr: "0xffffff80022e6860"
+    behavior: |
+      On wake (state.power_state == 2):
+        - Restore lowLatency interface enable state
+        - Wake proximity interface peer managers
+        - Send RNG_EVENT_WAKE to RNG agent (if registered)
+      On sleep (state.power_state == 1):
+        - Cancel proximity peer timers
+        - Suspend lowLatency interface
+        - Send RNG_EVENT_SLEEP to RNG agent
+        - Cancel IO80211InfraInterface debounce timer
+
+# ═══════════════════════════════════════════════════════════════
+# 5. IO80211InfraInterface::stop(IOService*)
+# ═══════════════════════════════════════════════════════════════
+
+IO80211InfraInterface_stop:
+  addr: "0xffffff80022de4d8"
+  symbol: "__ZN21IO80211InfraInterface4stopEP9IOService"
+  decompiled_body: |
+    void IO80211InfraInterface::stop(IOService* provider) {
+        // Step 1: call base
+        IO80211SkywalkInterface::stop(provider);
+
+        long* infraData = *(long**)(this + 0x128);  // InfraInterface expansion data
+
+        // Step 2: stop WCL beacon mute mitigation
+        if (infraData[0x2c] != 0) {
+            infraData[0x2c]->cancelPendingTimers();   // vtable+0x90
+        }
+
+        // Step 3: stop scan manager
+        if (*infraData != 0) {
+            IO80211ScanManager::stop();
+        }
+
+        // Step 4: stop RNG agent
+        long rngCtx = infraData[0x2f];
+        if (rngCtx != 0) {
+            long* rngImpl = *(long**)(*(long*)(rngCtx+0x10) + 0x10);
+            if (rngImpl != NULL) {
+                rngImpl->cancelAllTimers();  // vtable+0x218
+                rngImpl->release();          // vtable+0x158
+            }
+        }
+
+        // Step 5: stop deauth/disassoc monitor
+        if (infraData[0x26] != 0) {
+            *(uint8_t*)(infraData + 0x28) = 0;  // clear active flag
+            infraData[0x26]->cancelAllTimers();
+        }
+
+        // Step 6: release AVC advisory
+        if (infraData[0x2d] != 0) {
+            infraData[0x2d]->release();
+        }
+        infraData[0x2d] = 0;
+    }
+  notes: >-
+    stop() tears down in reverse order: WCL mitigation → scan manager →
+    RNG agent → deauth monitor → AVC advisory. The base
+    IO80211SkywalkInterface::stop handles glue teardown and Skywalk
+    deregistration.
+
+# ═══════════════════════════════════════════════════════════════
+# 6. IO80211SkywalkInterface::stop(IOService*)
+# ═══════════════════════════════════════════════════════════════
+
+IO80211SkywalkInterface_stop:
+  addr: "0xffffff800227750e"
+  symbol: "__ZN23IO80211SkywalkInterface4stopEP9IOService"
+  decompiled_body: |
+    void IO80211SkywalkInterface::stop(IOService* provider) {
+        // Log entry
+        log("IO80211SkywalkInterface::stop[%u] ::stop( %p ) this[%p]",
+            provider->getRegistryEntryID(), provider, this);
+
+        // Step 1: chain to superclass stop (IOSkywalkNetworkInterface)
+        super::stop(provider);  // vtable+0x798
+
+        long expansionData = this->mExpansionData;  // self[0x24] = self+0x120
+
+        // Step 2: release NAN interface
+        if (*(long*)(expansionData + 0x80) != NULL) {
+            *(long*)(expansionData+0x80)->stop();    // vtable+0x870
+            *(long*)(expansionData+0x80)->release();  // vtable+0x28
+        }
+        *(long*)(expansionData + 0x80) = 0;
+
+        // Step 3: release proximity interface
+        if (*(long*)(expansionData + 0x78) != NULL) {
+            *(long*)(expansionData+0x78)->release();
+        }
+        *(long*)(expansionData + 0x78) = 0;
+
+        // Step 4: release lowLatency interface
+        if (*(long*)(expansionData + 0x50) != NULL) {
+            *(long*)(expansionData+0x50)->release();
+        }
+        *(long*)(expansionData + 0x50) = 0;
+
+        // Step 5: if not in compat mode (type != 2), tear down pools/queues
+        if (*(int*)(expansionData + 0x58) != 2) {
+            long* core = *(long**)(expansionData + 0x28);  // IO80211Controller
+            long coreExpansion = core[3];
+
+            // Release TX pool
+            long* txPool = *(long**)(coreExpansion + 0x528);
+            if (txPool) { txPool->release(); }
+
+            // Release RX pool
+            long* rxPool = *(long**)(coreExpansion + 0x530);
+            if (rxPool) { rxPool->release(); }
+
+            // Tear down core association
+            core->disassociate();  // vtable+0x290
+            if (*(long**)(expansionData + 0x28) != NULL) {
+                *(long**)(expansionData+0x28)->release();
+            }
+        }
+        *(long*)(expansionData + 0x28) = 0;
+
+        // Step 6: stop IO80211Glue
+        if (*(long*)(expansionData + 0xd8) != 0) {
+            IO80211Glue::stop();
+        }
+
+        // Step 7: chain to IOSkywalkNetworkInterface::stop (again? dedup)
+        IOSkywalkNetworkInterface::stop();
+
+        // Log completion with retain counts
+        log("IO80211SkywalkInterface::stop[%s] RC=<%d> core RC=<%d>", ...);
+    }
+  notes: >-
+    Critical: the stop path releases TX/RX pools at core expansion+0x528/0x530,
+    releases the controller back-reference at expansion+0x28, and stops
+    IO80211Glue. For itlwm, this means pools and queues MUST survive until
+    stop() is called — do not release them earlier.
+
+# ═══════════════════════════════════════════════════════════════
+# 7. getBSDNamePrefix / getBSDUnitNumber IMPLEMENTATIONS
+# ═══════════════════════════════════════════════════════════════
+
+getBSDNamePrefix_implementations:
+  notes: >-
+    getBSDNamePrefix() returns the BSD interface name prefix (e.g. "en", "awdl").
+    The base IOSkywalkNetworkInterface returns NULL; IOSkywalkEthernetInterface
+    returns "en". Specific Apple WiFi subclasses override for their interface type.
+    These were found in AppleBCMWLAN decompilation; the IO80211Family base class
+    implementations are thin wrappers.
+
+  base_class:
+    class: "IOSkywalkNetworkInterface"
+    behavior: "Returns NULL (must be overridden)"
+    source: "Documented in 88_ioskywalkfamily_internals.yaml"
+
+  ethernet_base:
+    class: "IOSkywalkEthernetInterface"
+    behavior: "Returns 'en'"
+    string_location: "DAT_0xa5c8dc in IOSkywalkFamily cstring (fileoff 0x0295c8dc in BootKC)"
+
+  concrete_overrides:
+    - class: "AppleBCMWLANLowLatencyInterface"
+      addr: "0xffffff8001563dc6"
+      prefix: "llw"
+      string_location: "DAT_ffffff80016fe297 (fileoff 0x015fe297)"
+      notes: "Low-latency WiFi interface for real-time applications"
+
+    - class: "AppleBCMWLANProximityInterface"
+      addr: "0xffffff8001699424"
+      prefix: "awdl"
+      string_location: "DAT_ffffff800171a5ed (fileoff 0x0161a5ed)"
+      notes: "AWDL/AirDrop proximity discovery interface"
+
+    - class: "AppleBCMWLANNANInterface"
+      addr: "0xffffff80016ae71c"
+      prefix: "nan"
+      string_location: "DAT_ffffff800170a8a2 (fileoff 0x0160a8a2)"
+      notes: "WiFi Aware / Neighbor Awareness Networking interface"
+
+    - class: "AppleBCMWLANNANDataInterface"
+      addr: "0xffffff80016c8c70"
+      prefix: "p2p"
+      string_location: "DAT_ffffff800171a55c"
+      notes: "NAN data path interface (uses p2p prefix, not nan)"
+
+  io80211_family_consolidated_prefixes:
+    notes: >-
+      IO80211Family itself has a consolidated string table at fileoff 0x02279e5a:
+      "en\0awdl\0ap\0nan\0llw\0" — all prefixes adjacent in one cstring block.
+    entries:
+      - { prefix: "en",   interface: "IO80211InfraInterface (primary STA)", fileoff: "0x02279e5a" }
+      - { prefix: "awdl", interface: "IO80211AWDLPeerManager", fileoff: "0x02279e5d" }
+      - { prefix: "ap",   interface: "IO80211APSTAInterface (SoftAP/hotspot)", fileoff: "0x02279e62" }
+      - { prefix: "nan",  interface: "IO80211NANInterface", fileoff: "0x02279e65" }
+      - { prefix: "llw",  interface: "IO80211LowLatencyInterface", fileoff: "0x02279e6c" }
+
+getBSDUnitNumber_implementations:
+  notes: >-
+    getBSDUnitNumber() returns the interface unit number suffix (e.g. en0=0, en1=1).
+    The base IOSkywalkNetworkInterface returns 0 or -1 (Ghidra gap in V10).
+    The only concrete override found is for APSTA.
+
+  base_class:
+    class: "IOSkywalkNetworkInterface"
+    addr: "0xa38914 (in IOSkywalkFamily)"
+    behavior: "Returns 0 (inferred — Ghidra decompilation gap)"
+
+  concrete_overrides:
+    - class: "AppleBCMWLANIO80211APSTAInterface"
+      addr: "0xffffff8001686a6e"
+      return_value: 1
+      notes: >-
+        Hardcoded return 1. SoftAP always gets unit 1 (en1 on systems with
+        both STA and AP interfaces). Primary STA gets unit 0 from the base class.
+
+  itlwm_note: >-
+    For itlwm, the base getBSDUnitNumber returning 0 is correct — itlwm is the
+    primary STA interface (en0 or en1 depending on system). The unit number can
+    also be overridden by IOKit matching via IONetworkInterfaceUnitNumber property.

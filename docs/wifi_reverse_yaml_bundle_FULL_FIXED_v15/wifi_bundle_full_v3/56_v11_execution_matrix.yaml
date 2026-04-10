@@ -1,0 +1,24 @@
+version: v11
+done:
+  - CommonFsmManager internal interpreter contract is well constrained
+  - WCLScanManager is established as first symbolic FSM target
+  - Skywalk boundary has a hard ABI anchor and local ivar anchors
+  - OLYHAL assertion/completion surface is strong enough for semantic anchoring
+remaining_true_blockers:
+  - exact descriptor_ptr assignment site recovery for at least one owner
+  - rodata vector lift for state/event names adjacent to descriptor blobs
+  - action callback naming for first owner
+not_blockers_anymore:
+  - lack of kernel binaries
+  - lack of data-path boundary contracts
+  - lack of scan-owner evidence
+recommended_next_pass:
+  name: descriptor-origin xref pass
+  inputs:
+    - owner constructors/inits for WCLScanManager and nearest scan-adjacent managers
+    - writes to manager+0x10 runtime cell
+    - relocation-aware constant materialization around descriptor candidates
+  outputs:
+    - one validated descriptor blob
+    - one action table callback map
+    - one symbolic or near-symbolic FSM

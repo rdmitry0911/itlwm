@@ -1,0 +1,10 @@
+document_type: corecapture_lifecycle_v2
+object: CCCapture
+confirmed_lifecycle:
+  - allocated
+  - attach(provider): attaches CoreCapture category and sets capture property on success
+  - operational_capture
+  - detach(provider): removes category attachment
+  - free: validates backing state and tears down object
+practical_role:
+  - Provides reusable logging/data/fault plumbing for Wi-Fi reverse-engineering and runtime trace collection.

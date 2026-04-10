@@ -1,0 +1,59 @@
+version: v9
+topic: WCLScanManager owner recovery
+status: best_current_symbolic_candidate
+
+confirmed_behaviors:
+  - name: event_1_injection
+    meaning: request/path failure or reset-like transition trigger
+    confidence: medium_high
+  - name: event_2_injection
+    meaning: incoming scan request path
+    confidence: high
+  - name: current_state_read
+    source: manager.runtime.current_state
+    confidence: confirmed
+  - name: stuck_state_guard
+    behavior: hard assert / fatal on invalid scan state
+    confidence: confirmed
+  - name: ignore_path
+    behavior: returns 0xe00002bc when request should not progress
+    confidence: confirmed
+
+owner_binding:
+  owner_class: WCLScanManager
+  commonfsm_instance_role:
+    - scan orchestration FSM
+    - protects against invalid/stuck state
+    - mediates scan request admission and fallback/reset paths
+
+semi_symbolic_overlay:
+  states:
+    - id: unknown_numeric
+      symbolic_cluster:
+        - idle_or_ready
+        - active_scan
+        - failure_or_recovery
+      note: exact naming awaits descriptor/vector lift
+  events:
+    - id: 1
+      symbolic_cluster:
+        - reset
+        - request_failed
+        - recover_to_safe_state
+    - id: 2
+      symbolic_cluster:
+        - scan_request_arrival
+        - start_scan
+  actions:
+    - id: unknown_numeric
+      symbolic_cluster:
+        - request_setup
+        - dispatch_to_submanager
+        - cleanup_or_log
+
+practical_recovery_plan:
+  - enumerate every WCLScanManager function that calls CommonFsmManager::processEvent
+  - identify WCLScanManager init/alloc path where CommonFsmManager is created
+  - recover options/runtime blob fill
+  - lift descriptor base and row/column counts
+  - map state/event vectors from adjacent rodata

@@ -1,0 +1,46 @@
+document:
+  title: Skywalk contract refinement
+  version: v10
+  hard_abi_anchor:
+    class: IOSkywalkNetworkInterface
+    status: externally confirmed exact vtable match
+    match_summary:
+      methods_matched: 41
+      reserved_matched: 10
+      quality: exact
+  AppleBCMWLANSkywalkInterface:
+    object_size: 0x140
+    constructor_sets_vtable: true
+    ivars_ptr_indexed_view:
+      expression: "self[0x27]"
+      byte_offset: 0x138
+    init_parameters:
+      provider: "AppleBCMWLANCore*"
+      interface_index: "u32"
+      role: "SkywalkInterfaceRole"
+      bool_a: "u8/boolean"
+      wme_count: "u8 limited to <5"
+      wme_array_ptr: "apple80211_wme_ac*"
+      config_u32: "u32"
+      log_stream: "CCLogStream*"
+      fault_reporter: "CCFaultReporter*"
+    confirmed_ivars_fields:
+      at_0x10: "config_u32"
+      at_0x2a: "wme_count"
+      at_0x2c: "copied WME array region"
+      at_0xa1: "boolean/status flag reset to 0 in init"
+      at_0xa2: "boolean parameter copied from init"
+      at_0xa8: "retained CCLogStream*"
+      at_0x08: "fault reporter / auxiliary object pointer"
+      at_0x78_plus_queue_index_times_8: "packet space / queue-space pointer array"
+    operational_calls:
+      packetSpace(queue_index):
+        path: "ivars->queue_space[queue_index] then virtual +0x340"
+      removePacketQueue(flow_hash):
+        preconditions:
+          - "ivars exists"
+          - "bus interface is valid"
+        downstream_call: "busInterface virtual +0xbc8"
+  downstream_binding_goal:
+    - "Map each confirmed IOSkywalkNetworkInterface slot to AppleBCMWLANSkywalkInterface override or inherited default."
+    - "Then bind BSD attach/MTU/wake/offload lifecycle edges to Wi-Fi owner logic."

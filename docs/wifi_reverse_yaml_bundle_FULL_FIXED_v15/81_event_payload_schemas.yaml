@@ -1,0 +1,491 @@
+version: 1
+topic: cross-FSM event payload schemas for Wi-Fi driver bring-up
+status: initial_working_draft
+purpose: >-
+  Normalize the minimum event payload contracts a non-Apple network driver
+  should emulate when integrating with an Apple-style Wi-Fi control plane.
+  This document focuses on producer/consumer expectations, payload shape,
+  ownership/lifetime, and bring-up priority rather than exact C structs.
+
+scope:
+  included_planes:
+    - scan_plane
+    - join_assoc_plane
+    - net_link_plane
+    - gas_anqp_plane
+    - lqm_plane
+    - system_state_plane
+    - roam_plane
+  excluded_for_now:
+    - exact packed binary layouts not yet recovered from code/data xrefs
+    - ioctl/userclient serialization
+    - firmware-specific vendor TLVs
+
+schema_conventions:
+  confidence_levels:
+    high: symbolic FSM and payload role strongly constrained by cross-FSM behavior
+    medium: payload fields inferred from consumer semantics and event names
+    low: placeholder abstraction for future field-lift work
+  field_tags:
+    required: field must be present for correct state progression
+    optional: field may be omitted in first bring-up if downstream logic tolerates it
+    derived: field can be synthesized by compatibility glue rather than hardware
+  lifetime_terms:
+    sync: valid only during callback/event handling
+    until_completion: valid until matching complete/abort/reset path
+    sticky: cached and replayable across power or driver availability events
+
+bringup_priority:
+  tier0_must_have:
+    - LINK_UP
+    - CONNECT_COMPLETE
+    - IPV4_STATUS
+    - LINK_DOWN_IND
+    - LINK_DOWN_COMPLETE
+    - SYSTEM_WILL_SLEEP
+    - SYSTEM_AWAKE
+    - DRIVER_RESET
+  tier1_very_useful:
+    - JOIN_SCAN_UPDATE
+    - GAS_REQUEST
+    - GAS_FRAG_RX
+    - GAS_COMPLETE
+    - ROAM_START
+    - ROAM_DONE
+  tier2_can_stub_initially:
+    - ULOFDMA_STATE_CHANGE
+    - SEND_ASR_FRAME
+    - NDD_REQ_ACTIVE
+    - NDD_REQ_PASSIVE
+    - TIMER
+
+event_payloads:
+  LINK_UP:
+    plane: net_link_plane
+    produced_by:
+      - firmware_or_hw_link_state_path
+      - compatibility_glue_after_successful_assoc_if_native indication is absent
+    consumed_by:
+      - NET_MANAGER
+      - AX_MANAGER
+    required_fields:
+      - name: link_is_up
+        type: bool
+        tag: required
+        notes: must indicate positive link establishment
+      - name: bssid
+        type: mac48
+        tag: required
+        notes: target AP identity; may be copied from selected join candidate
+      - name: channel
+        type: channel_desc
+        tag: required
+        notes: primary channel is enough for initial bring-up
+    optional_fields:
+      - name: phy_mode
+        type: enum
+        tag: optional
+      - name: security_mode
+        type: enum
+        tag: optional
+      - name: nss_bw_mcs_summary
+        type: struct
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - NET_MANAGER cannot leave LINK_DOWN toward WAITING_FOR_CONNECT_COMPLETE
+      - AX_MANAGER cannot advance secure-link feature plane
+    implementation_notes:
+      - Minimal shim may synthesize this immediately before CONNECT_COMPLETE if hardware collapses both indications.
+
+  CONNECT_COMPLETE:
+    plane: join_assoc_plane
+    produced_by:
+      - JOIN_MANAGER completion path
+      - firmware association complete indication
+    consumed_by:
+      - NET_MANAGER
+      - ROAM_MANAGER
+    required_fields:
+      - name: status
+        type: status_code
+        tag: required
+        notes: success vs failure; success required for normal path
+      - name: bssid
+        type: mac48
+        tag: required
+      - name: assoc_id
+        type: u16
+        tag: derived
+        notes: can be dummy/nonzero in early bring-up if downstream code only tests presence
+    optional_fields:
+      - name: negotiated_security
+        type: enum
+        tag: optional
+      - name: rsn_caps
+        type: u16
+        tag: optional
+      - name: ie_blob
+        type: bytes
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - NET_MANAGER never reaches WAITING_FOR_IP
+      - ROAM_MANAGER post-connect stabilization never triggers
+    cross_fsm_dependency:
+      - JOIN_MANAGER JOIN_COMPLETE should precede or coincide with NET_MANAGER CONNECT_COMPLETE handling.
+
+  IPV4_STATUS:
+    plane: net_link_plane
+    produced_by:
+      - DHCP_or_IP_configuration_path
+      - compatibility_glue when IP acquisition is externally managed
+    consumed_by:
+      - NET_MANAGER
+    required_fields:
+      - name: ipv4_is_valid
+        type: bool
+        tag: required
+        notes: gate from WAITING_FOR_IP to LINK_UP
+    optional_fields:
+      - name: ipv4_addr
+        type: ipv4
+        tag: optional
+      - name: subnet
+        type: ipv4
+        tag: optional
+      - name: router
+        type: ipv4
+        tag: optional
+    lifetime: sticky
+    failure_if_missing:
+      - NET_MANAGER remains stuck in WAITING_FOR_IP
+    implementation_notes:
+      - For first bring-up, a synthetic valid-IP indication is acceptable once L2 connectivity is established.
+
+  LINK_DOWN_IND:
+    plane: net_link_plane
+    produced_by:
+      - firmware link-loss indication
+      - compatibility glue on explicit disconnect, beacon loss, or reset
+    consumed_by:
+      - NET_MANAGER
+      - ROAM_MANAGER
+    required_fields:
+      - name: reason_code
+        type: enum_or_u32
+        tag: required
+        notes: may be coarse initially: local_leave / remote_loss / reset
+    optional_fields:
+      - name: deauth_code
+        type: u16
+        tag: optional
+      - name: bssid
+        type: mac48
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - DEAUTH drain path and roam/link recovery become inconsistent
+
+  LINK_DOWN_COMPLETE:
+    plane: net_link_plane
+    produced_by:
+      - driver after teardown completion
+      - compatibility glue after firmware confirms disconnect completed
+    consumed_by:
+      - NET_MANAGER
+    required_fields:
+      - name: teardown_complete
+        type: bool
+        tag: required
+    lifetime: sync
+    failure_if_missing:
+      - NET_MANAGER may remain stuck in DEAUTH or SLEEP_DEAUTH
+
+  JOIN_SCAN_UPDATE:
+    plane: join_assoc_plane
+    produced_by:
+      - scan plane while join is evaluating candidates
+    consumed_by:
+      - JOIN_MANAGER
+    required_fields:
+      - name: candidate_available
+        type: bool
+        tag: required
+      - name: candidate_bssid
+        type: mac48
+        tag: required
+      - name: candidate_channel
+        type: channel_desc
+        tag: required
+    optional_fields:
+      - name: rssi
+        type: s32
+        tag: optional
+      - name: security_fit
+        type: enum
+        tag: optional
+      - name: score
+        type: s32
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - JOIN_MANAGER candidate iteration and retry logic degrades or stalls
+    notes:
+      - For minimal bring-up, a single best-candidate update is enough; full candidate list not required.
+
+  GAS_REQUEST:
+    plane: gas_anqp_plane
+    produced_by:
+      - user_or_policy plane requesting ANQP/GAS query
+    consumed_by:
+      - GAS_FSM
+    required_fields:
+      - name: dialog_token
+        type: u8
+        tag: required
+      - name: destination_bssid
+        type: mac48
+        tag: required
+      - name: request_payload
+        type: bytes
+        tag: required
+    optional_fields:
+      - name: comeback_delay_hint
+        type: u16
+        tag: optional
+    lifetime: until_completion
+    failure_if_missing:
+      - GAS_FSM cannot leave IDLE for query lifecycle
+
+  GAS_FRAG_RX:
+    plane: gas_anqp_plane
+    produced_by:
+      - firmware receive path
+    consumed_by:
+      - GAS_FSM
+      - GAS_DEFRAG_FSM
+    required_fields:
+      - name: dialog_token
+        type: u8
+        tag: required
+      - name: fragment_payload
+        type: bytes
+        tag: required
+      - name: more_fragments
+        type: bool
+        tag: required
+    optional_fields:
+      - name: fragment_id
+        type: u8
+        tag: optional
+      - name: comeback_delay
+        type: u16
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - GETTING_RESULT path cannot accumulate fragments
+      - defragmentation FSM never progresses beyond BUFFER_EMPTY/PARTIAL
+
+  GAS_COMPLETE:
+    plane: gas_anqp_plane
+    produced_by:
+      - firmware receive path after final fragment or error-free completion
+    consumed_by:
+      - GAS_FSM
+    required_fields:
+      - name: status
+        type: status_code
+        tag: required
+      - name: dialog_token
+        type: u8
+        tag: required
+    optional_fields:
+      - name: final_payload
+        type: bytes
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - GAS_FSM may remain in GETTING_RESULT / ABORTING cleanup ambiguity
+
+  SYSTEM_WILL_SLEEP:
+    plane: system_state_plane
+    produced_by:
+      - system power manager
+    consumed_by:
+      - SSM
+      - SCAN_MANAGER
+      - JOIN_MANAGER
+      - ROAM_MANAGER
+      - NET_MANAGER
+    required_fields:
+      - name: sleep_imminent
+        type: bool
+        tag: required
+    optional_fields:
+      - name: sleep_reason
+        type: enum
+        tag: optional
+    lifetime: sticky
+    failure_if_missing:
+      - managers may fail to quiesce and later mis-handle wake or link teardown
+
+  SYSTEM_AWAKE:
+    plane: system_state_plane
+    produced_by:
+      - system power manager
+    consumed_by:
+      - SSM
+      - SCAN_MANAGER
+      - JOIN_MANAGER
+      - ROAM_MANAGER
+      - NET_MANAGER
+    required_fields:
+      - name: wake_complete
+        type: bool
+        tag: required
+    optional_fields:
+      - name: wake_reason
+        type: enum
+        tag: optional
+    lifetime: sticky
+    failure_if_missing:
+      - HALTED/SLEEP planes may never return to IDLE/LINK_UP capable states
+
+  DRIVER_RESET:
+    plane: recovery_plane
+    produced_by:
+      - hardware watchdog
+      - firmware assert path
+      - explicit reset/recovery path
+    consumed_by:
+      - SSM
+      - SCAN_MANAGER
+      - JOIN_MANAGER
+      - ROAM_MANAGER
+      - NET_MANAGER
+      - GAS_FSM
+      - BGCOMMON_FSM
+    required_fields:
+      - name: reset_reason
+        type: enum_or_u32
+        tag: required
+      - name: reset_generation
+        type: u32
+        tag: derived
+        notes: monotonic counter recommended for tracing repeated resets
+    optional_fields:
+      - name: fatal
+        type: bool
+        tag: optional
+      - name: dump_available
+        type: bool
+        tag: optional
+    lifetime: sticky
+    failure_if_missing:
+      - managers keep stale in-flight state and deadlock across planes
+
+  ROAM_START:
+    plane: roam_plane
+    produced_by:
+      - roam decision engine
+      - compatibility glue when roaming is firmware-driven but Apple plane must be informed
+    consumed_by:
+      - ROAM_MANAGER
+    required_fields:
+      - name: current_bssid
+        type: mac48
+        tag: required
+      - name: target_candidate_available
+        type: bool
+        tag: required
+    optional_fields:
+      - name: trigger_reason
+        type: enum
+        tag: optional
+      - name: target_bssid
+        type: mac48
+        tag: optional
+      - name: target_channel
+        type: channel_desc
+        tag: optional
+    lifetime: until_completion
+    failure_if_missing:
+      - roam plane never leaves LINK_UP steady state
+
+  ROAM_DONE:
+    plane: roam_plane
+    produced_by:
+      - roam completion path
+    consumed_by:
+      - ROAM_MANAGER
+    required_fields:
+      - name: success
+        type: bool
+        tag: required
+    optional_fields:
+      - name: new_bssid
+        type: mac48
+        tag: optional
+      - name: new_channel
+        type: channel_desc
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - ROAM_MANAGER may stay in ROAM_SCAN/ROAM_REASSOC/WAIT_ROAM_DONE
+
+  TIMER_LQM:
+    plane: lqm_plane
+    produced_by:
+      - periodic timer
+    consumed_by:
+      - LQM_FSM
+    required_fields:
+      - name: tick
+        type: bool
+        tag: required
+    optional_fields:
+      - name: sample_rssi
+        type: s32
+        tag: optional
+      - name: retry_rate
+        type: u32
+        tag: optional
+    lifetime: sync
+    failure_if_missing:
+      - quality monitoring never updates, but basic connectivity may still work
+
+cross_plane_mappings:
+  minimal_boot_sequence:
+    - SSM: DRIVER_AVAILABLE or replay-capable notification path alive
+    - BGCOMMON_FSM: IDLE/FWLOADED/CONFIG path not wedged
+    - NET_MANAGER: able to accept LINK_UP later
+  minimal_connect_sequence:
+    - SCAN_MANAGER: SCAN_REQ -> IN_PROGRESS -> SCAN_COMPLETE -> IDLE
+    - JOIN_MANAGER: JOIN_REQ -> ASSOC_DONE/CONNECT_COMPLETE -> JOIN_COMPLETE
+    - NET_MANAGER: LINK_UP -> CONNECT_COMPLETE -> IPV4_STATUS -> LINK_UP steady state
+  minimal_sleep_wake_sequence:
+    - SSM emits SYSTEM_WILL_SLEEP then SYSTEM_AWAKE
+    - NET_MANAGER transitions through SLEEP/SLEEP_DEAUTH and exits on WAKE
+    - JOIN/ROAM/SCAN managers tolerate HALT/RESUME or POWER_OFF/POWER_ON semantics
+  minimal_gas_sequence:
+    - GAS_REQUEST -> GAS_FRAG_RX* -> GAS_COMPLETE
+    - or GAS_REQUEST -> GAS_QUERY_SEND_ERROR / GAS_COMPLETE_ERROR / GAS_QUERY_TIMEOUT
+
+implementation_advice:
+  for_non_apple_adapters:
+    - Prefer a translation shim that synthesizes Apple-style control-plane events from vendor-native indications.
+    - Keep event emission serialized; many FSMs assume ordered single-threaded control events.
+    - Do not wait for perfect payload fidelity before bring-up; emit minimal required fields first.
+    - Treat DRIVER_RESET, LINK_DOWN_IND, and sleep/wake as first-class correctness boundaries, not afterthoughts.
+  anti_patterns:
+    - Emitting CONNECT_COMPLETE without later IPV4_STATUS when NET_MANAGER expects IP gating.
+    - Emitting LINK_DOWN_IND without LINK_DOWN_COMPLETE on explicit teardown paths.
+    - Dropping SYSTEM_AWAKE or DRIVER_AVAILABLE replay semantics, causing hidden stale state.
+    - Feeding GAS fragments without dialog-token correlation.
+
+next_documents_to_add:
+  - event_provenance_maps.yaml
+  - boundary_interface_contracts.yaml
+  - cross_fsm_debugging_playbooks.yaml
+  - per_plane_minimum_stub_matrix.yaml

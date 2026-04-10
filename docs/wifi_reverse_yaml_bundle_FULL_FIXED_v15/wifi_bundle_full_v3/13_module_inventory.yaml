@@ -1,0 +1,53 @@
+document_type: module_inventory_v2
+files:
+  IO80211Family_decompiled.c:
+    - CommonFsmManager
+    - WCLController
+    - WCLScanManager
+    - WCLGASFsm
+    - IO80211Controller
+    - IO80211SkywalkInterface
+    - IO80211PeerManager
+    - IO80211AWDLPeerManager
+  AppleBCMWLANCoreMac_decompiled.c:
+    - AppleBCMWLANCore
+    - AppleBCMWLANPowerManager
+    - AppleBCMWLANJoinAdapter
+    - AppleBCMWLANNetAdapter
+    - AppleBCMWLANRoamAdapter
+    - AppleBCMWLANPowerStateAdapter
+    - AppleBCMWLANGASAdapter
+    - AppleBCMWLANTimeKeeper
+    - AppleBCMWLANTimeSyncEngine
+  AppleBCMWLANBusInterfacePCIeMac_decompiled.c:
+    - AppleBCMWLANBusInterfacePCIe
+    - AppleBCMWLANChipManagerPCIe
+    - AppleBCMWLANChipBackplane
+    - AppleBCMWLANPCIeSubmissionRing
+    - AppleBCMWLANPCIeCompletionRing
+    - AppleBCMWLANPCIeFlowQueue
+  AppleOLYHALMac_decompiled.c:
+    - AppleOLYHALPortInterfacePCIe
+  IOTimeSyncFamily_decompiled.c:
+    - IOTimeSyncRootService
+    - IOTimeSyncService
+    - IOTimeSyncFilteredService
+    - IOTimeSyncServiceDaemonClient
+    - IOTimeSyncTimedEdgeGenerator
+    - TSNUserWiFiControlInterface
+  AppleConvergedPCI_decompiled.c:
+    - AppleConvergedIPCControl
+    - AppleConvergedIPCInterface
+    - AppleConvergedIPCControlReporter
+    - ACIPCChip43xx variants
+  AppleConvergedIPCOLYBTControl_decompiled.c:
+    - AppleConvergedIPCBTAdapter
+    - AppleConvergedIPCRTIDevice
+    - AppleConvergedIPCRTIInterface
+    - ACIPCRTIPipe
+  corecapture_decompiled.c:
+    - CCCapture
+    - CCPipe
+    - CCLogPipe
+    - CCDataPipe
+    - CCFaultReporter

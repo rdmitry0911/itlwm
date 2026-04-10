@@ -1,0 +1,15 @@
+document_type: corecapture_lifecycle
+object: CCCapture
+confirmed_lifecycle:
+- state: allocated
+- state: attach_to_IOService
+  action: attach(provider) adds CoreCapture category and sets property 8 on success.
+- state: operational_capture
+- state: detach_from_IOService
+  action: detach(provider) removes CoreCapture category attachment.
+- state: free
+  action: frees capture backing / asserts if unexpected ivar still present.
+role_in_wifi_stack: Support/observability rather than radio control; still part of practical reverse-engineering because Wi‑Fi
+  drivers emit capture/log data through it.
+source_refs:
+- corecapture_decompiled.c:75-127

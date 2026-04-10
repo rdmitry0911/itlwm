@@ -1,0 +1,57 @@
+document_type: wifi_reverse_stack_overview_v2
+scope:
+  os: macOS 26.3 (25D125) / KDK 26.3b (25D5087f)
+  goal: Describe kernel-side lifecycle and state-machine structure for the macOS Wi-Fi stack from bus attach through operational runtime, low-power handling, TimeSync, coexistence, and observability.
+  basis_files:
+    - IO80211Family_decompiled.c
+    - AppleBCMWLANCoreMac_decompiled.c
+    - AppleBCMWLANBusInterfacePCIeMac_decompiled.c
+    - AppleOLYHALMac_decompiled.c
+    - IOTimeSyncFamily_decompiled.c
+    - AppleConvergedPCI_decompiled.c
+    - AppleConvergedIPCOLYBTControl_decompiled.c
+    - corecapture_decompiled.c
+layers:
+  - name: observability
+    file: corecapture_decompiled.c
+    modules: [CCCapture, CCPipe, CCLogPipe, CCDataPipe, CCFaultReporter]
+    role: Captures logs, data streams, and fault artifacts emitted by Wi-Fi stack components.
+  - name: framework_control_plane
+    file: IO80211Family_decompiled.c
+    modules: [CommonFsmManager, WCLController, WCLScanManager, WCLGASFsm, IO80211Controller, IO80211PeerManager, IO80211AWDLPeerManager, IO80211SkywalkInterface]
+    role: Generic 802.11 orchestration, common FSM runtime, scanning/joining, AWDL/NAN/P2P coordination, and framework-facing policy transitions.
+  - name: vendor_core
+    file: AppleBCMWLANCoreMac_decompiled.c
+    modules: [AppleBCMWLANCore, AppleBCMWLANPowerManager, AppleBCMWLANJoinAdapter, AppleBCMWLANNetAdapter, AppleBCMWLANRoamAdapter, AppleBCMWLANPowerStateAdapter, AppleBCMWLANGASAdapter, AppleBCMWLANTimeSyncEngine]
+    role: Broadcom-specific core logic, firmware command/event handling, roam/power/WoW flows, vendor adapters.
+  - name: bus_transport
+    file: AppleBCMWLANBusInterfacePCIeMac_decompiled.c
+    modules: [AppleBCMWLANBusInterfacePCIe, AppleBCMWLANChipManagerPCIe, AppleBCMWLANChipBackplane, AppleBCMWLANPCIeSubmissionRing, AppleBCMWLANPCIeCompletionRing, AppleBCMWLANPCIeFlowQueue]
+    role: PCIe attach, chip selection, BAR/backplane/register access, ring setup, transport/runtime recovery.
+  - name: hal_and_convergence
+    files: [AppleOLYHALMac_decompiled.c, AppleConvergedPCI_decompiled.c, AppleConvergedIPCOLYBTControl_decompiled.c]
+    modules: [AppleOLYHALPortInterfacePCIe, AppleConvergedIPCControl, AppleConvergedIPCInterface, AppleConvergedIPCRTIInterface, AppleConvergedIPCBTAdapter]
+    role: HAL service access, converged PCI power/quiesce control, deep-sleep plumbing, BT coexistence and RTI transport.
+  - name: timesync
+    file: IOTimeSyncFamily_decompiled.c
+    modules: [IOTimeSyncRootService, IOTimeSyncService, IOTimeSyncFilteredService, IOTimeSyncServiceDaemonClient, IOTimeSyncTimedEdgeGenerator, TSNUserWiFiControlInterface]
+    role: TimeSync root/service graph, timeline filters, daemon/user-client coordination, Wi-Fi timestamping control surfaces.
+main_cross_layer_edges:
+  - from: AppleBCMWLANBusInterfacePCIe
+    to: AppleOLYHAL service
+    reason: TimeSync and port-control capability discovery / provider hookup.
+  - from: AppleBCMWLANBusInterfacePCIe
+    to: AppleBCMWLANTimeSyncEngine
+    reason: TimeSync engine instantiation via withProviderAndBus after HAL access.
+  - from: WCLScanManager
+    to: CommonFsmManager
+    reason: Scan request handling injects numeric events into shared FSM runtime.
+  - from: AppleConvergedIPCControl
+    to: AppleBCMWLANBusInterfacePCIe / transport side
+    reason: Low-power and deep-sleep transitions mediate converged PCI state and wakeup sequencing.
+  - from: IOTimeSyncFamily
+    to: TSNUserWiFiControlInterface
+    reason: Wi-Fi-specific timestamping control/userland coordination exists in TimeSync family.
+confidence_notes:
+  - Concrete module ownership and top-level sequencing are strongly supported by symbol names and call topology.
+  - Many inner FSM states/events remain partly numeric unless table/string lifting is done from data segments.

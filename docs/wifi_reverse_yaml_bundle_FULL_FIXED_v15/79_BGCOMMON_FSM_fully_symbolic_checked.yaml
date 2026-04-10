@@ -1,0 +1,193 @@
+version: 1
+topic: WCLBGCommonFsm fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125)
+
+fsm_name: BGCOMMON_FSM
+context_va: 0xffffff8002406290
+context_fileoff: 0x2306290
+owner_class: WCLBGCommonFsm
+
+states:
+  0: IDLE
+  1: FWLOADED
+  2: CONFIG_IN_PROGRESS
+  3: CONFIGURED
+  4: SUSPEND_IN_PROGRESS
+  5: SUSPEND
+  6: RESUME_IN_PROGRESS
+  7: RESUME
+
+events:
+  0: FWLOAD
+  1: CONFIG
+  2: CONFIG_FAILED
+  3: CONFIG_DONE
+  4: UNCONFIG
+  5: SUSPEND
+  6: SUSPEND_FAILED
+  7: SUSPEND_DONE
+  8: RESUME
+  9: RESUME_FAILED
+  10: RESUME_DONE
+  11: DRIVER_RESET
+
+actions:
+  0: { name: unhandledEvent,    kdk_symbol: "WCLBGCommonFsm::unhandledEvent" }
+  1: { name: ignore,            kdk_symbol: "WCLBGCommonFsm::ignore" }
+  2: { name: suspendBGScan,     kdk_symbol: "WCLBGCommonFsm::suspendBGScan" }
+  3: { name: resumeBGScan,      kdk_symbol: "WCLBGCommonFsm::resumeBGScan" }
+  4: { name: cleanup,           kdk_symbol: "WCLBGCommonFsm::cleanup" }
+  5: { name: checkPendingWork,  kdk_symbol: "WCLBGCommonFsm::checkPendingWork" }
+
+transition_matrix:
+  IDLE:
+    FWLOAD:          { next: FWLOADED,  action: ignore }
+    CONFIG:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: IDLE,      action: ignore }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: IDLE,      action: ignore }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  FWLOADED:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: =SELF=,    action: ignore }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: =SELF=,    action: ignore }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  CONFIG_IN_PROGRESS:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: =SELF=,    action: ignore }
+    CONFIG_FAILED:   { next: FWLOADED,  action: checkPendingWork }
+    CONFIG_DONE:     { next: CONFIGURED, action: checkPendingWork }
+    UNCONFIG:        { next: FWLOADED,  action: checkPendingWork }
+    SUSPEND:         { next: CONFIG_IN_PROGRESS, action: ignore }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  CONFIGURED:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: SUSPEND_IN_PROGRESS, action: suspendBGScan }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: RESUME_IN_PROGRESS, action: resumeBGScan }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  SUSPEND_IN_PROGRESS:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: SUSPEND_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: =SELF=,    action: ignore }
+    SUSPEND_FAILED:  { next: CONFIGURED, action: checkPendingWork }
+    SUSPEND_DONE:    { next: SUSPEND,   action: checkPendingWork }
+    RESUME:          { next: =SELF=,    action: ignore }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  SUSPEND:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: SUSPEND,   action: ignore }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: RESUME_IN_PROGRESS, action: resumeBGScan }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  RESUME_IN_PROGRESS:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: RESUME_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: =SELF=,    action: ignore }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: =SELF=,    action: ignore }
+    RESUME_FAILED:   { next: CONFIGURED, action: checkPendingWork }
+    RESUME_DONE:     { next: RESUME,    action: checkPendingWork }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+  RESUME:
+    FWLOAD:          { next: =SELF=,    action: ignore }
+    CONFIG:          { next: CONFIG_IN_PROGRESS, action: ignore }
+    CONFIG_FAILED:   { next: =SELF=,    action: ignore }
+    CONFIG_DONE:     { next: =SELF=,    action: ignore }
+    UNCONFIG:        { next: =SELF=,    action: ignore }
+    SUSPEND:         { next: SUSPEND_IN_PROGRESS, action: suspendBGScan }
+    SUSPEND_FAILED:  { next: =SELF=,    action: ignore }
+    SUSPEND_DONE:    { next: =SELF=,    action: ignore }
+    RESUME:          { next: RESUME,    action: ignore }
+    RESUME_FAILED:   { next: =SELF=,    action: ignore }
+    RESUME_DONE:     { next: =SELF=,    action: ignore }
+    DRIVER_RESET:    { next: IDLE,      action: cleanup }
+
+raw_matrix_hex: |
+  01 01 02 01 ff 01 ff 01 ff 01 00 01 ff 01 ff 01 00 01 ff 01 ff 01 00 04
+  ff 01 02 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 00 04
+  ff 01 ff 01 01 05 03 05 01 05 02 01 ff 01 ff 01 02 01 ff 01 ff 01 00 04
+  ff 01 02 01 ff 01 ff 01 ff 01 04 02 ff 01 ff 01 06 03 ff 01 ff 01 00 04
+  ff 01 04 01 ff 01 ff 01 ff 01 ff 01 03 05 05 05 ff 01 ff 01 ff 01 00 04
+  ff 01 02 01 ff 01 ff 01 ff 01 05 01 ff 01 ff 01 06 03 ff 01 ff 01 00 04
+  ff 01 06 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 03 05 07 05 00 04
+  ff 01 02 01 ff 01 ff 01 ff 01 04 02 ff 01 ff 01 07 01 ff 01 ff 01 00 04
+
+behavioral_notes:
+  bg_scan_lifecycle: >-
+    Background scan lifecycle: IDLE -> FWLOADED (firmware loaded) ->
+    CONFIG_IN_PROGRESS -> CONFIGURED. From CONFIGURED, the FSM can
+    enter suspend/resume sub-cycles for power management.
+  suspend_resume_cycle: >-
+    CONFIGURED or RESUME -> SUSPEND_IN_PROGRESS (suspendBGScan) ->
+    SUSPEND. CONFIGURED or SUSPEND -> RESUME_IN_PROGRESS (resumeBGScan)
+    -> RESUME. RESUME is functionally equivalent to CONFIGURED for
+    further suspend/resume cycling.
+  async_completion_pattern: >-
+    Async operations (CONFIG, SUSPEND, RESUME) use the *_IN_PROGRESS
+    intermediate states. Completion is signaled by *_DONE or *_FAILED
+    events, both handled by checkPendingWork which evaluates whether
+    additional work is queued.
+  driver_reset_universal: >-
+    DRIVER_RESET from any state returns to IDLE via cleanup. This is
+    the only transition that uses the cleanup action, providing a
+    guaranteed recovery path.
+  ignore_strategy: >-
+    Unlike other FSMs that use unhandledEvent for impossible
+    transitions, BGCOMMON_FSM uses ignore (action 1) for all
+    inapplicable event/state combinations. unhandledEvent (action 0)
+    exists but is never referenced in the transition matrix.
+  config_reentrant: >-
+    CONFIG event is accepted from multiple states (IDLE, FWLOADED,
+    CONFIGURED, SUSPEND, RESUME) allowing reconfiguration without
+    first unconfiguring. Each transitions to CONFIG_IN_PROGRESS.

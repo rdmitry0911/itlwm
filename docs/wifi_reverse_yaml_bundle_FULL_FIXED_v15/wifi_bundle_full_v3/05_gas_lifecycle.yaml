@@ -1,0 +1,26 @@
+document_type: gas_lifecycle_and_fsm_v2
+components:
+  - AppleBCMWLANGASAdapter
+  - WCLGASFsm
+  - IO80211GASDefragFsm
+adapter_lifecycle:
+  - withDriver(driver, out_fsm**) allocates adapter state
+  - setGASQueryParams prepares query parameters / payload fields
+  - startGASQuery sizes request by firmware API generation/query count
+  - issueGASAbort sends anqpo_stop_query
+  - free releases retained helper/driver/logger references
+fsm_observations:
+  confirmed:
+    - framework-side GAS defragmentation FSM exists
+    - invalid/error paths emit explicit diagnostics
+  split_layers:
+    - vendor-facing layer: AppleBCMWLANGASAdapter
+    - framework-facing layer: WCLGASFsm and IO80211GASDefragFsm
+likely_states:
+  - idle
+  - query_prepared
+  - waiting_for_fragments
+  - complete_or_aborted
+confidence:
+  confirmed: object split, query sizing/abort path
+  inferred: exact per-state labels/order above

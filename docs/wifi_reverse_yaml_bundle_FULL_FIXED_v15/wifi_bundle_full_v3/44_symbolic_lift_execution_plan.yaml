@@ -1,0 +1,56 @@
+version: v9
+topic: symbolic lift execution plan
+status: actionable
+
+phase_1_processevent_xref_inventory:
+  outputs:
+    - full caller list of CommonFsmManager::processEvent
+    - owner class per caller
+    - event ids used by each owner
+  methods:
+    - search exact mangled symbol
+    - inspect decompiler cross-references
+    - recover inlined wrappers if present
+
+phase_2_descriptor_origin_recovery:
+  outputs:
+    - runtime/options blob layout per owner
+    - descriptor_ptr assignment site
+    - descriptor base address
+  methods:
+    - trace CommonFsmManager allocation/init
+    - inspect owner constructors/start/init methods
+    - inspect adjacent rodata and relocation records
+
+phase_3_descriptor_decode:
+  outputs:
+    - transition matrix dimensions
+    - action table entries
+    - state/event vectors
+  methods:
+    - verify row count against transition_rows/state_count
+    - validate callback entries against action_count
+    - reconstruct vectors by pointer adjacency
+
+phase_4_symbolic_overlay:
+  outputs:
+    - state names
+    - event names
+    - action names / callback targets
+    - owner-local FSM diagrams
+  methods:
+    - reuse trace format expectations
+    - correlate with owner asserts/log strings
+    - map callbacks to owner methods
+
+phase_5_boundary_binding:
+  outputs:
+    - skywalk override map
+    - owner→interface contract bindings
+  methods:
+    - slot-by-slot vtable mapping
+    - connect queue/datapath callbacks to lifecycle states
+
+why_this_closes_the_gap:
+  - remaining problem is no longer breadth of binaries
+  - it is deterministic metadata lifting from already-present kernel code

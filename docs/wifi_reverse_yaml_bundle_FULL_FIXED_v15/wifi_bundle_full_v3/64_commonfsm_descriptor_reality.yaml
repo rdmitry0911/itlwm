@@ -1,0 +1,77 @@
+version: 13
+title: CommonFsmManager descriptor reality
+status: concrete enough for targeted relocation/xref lift
+
+manager_layout:
+  self_size: 0x18
+  +0x10:
+    role: runtime pointer
+    confidence: high
+
+runtime_layout:
+  +0x00:
+    role: fsm_id / instance-local small metadata
+    confidence: medium
+  +0x08:
+    role: descriptor_ptr
+    confidence: high
+  +0x10:
+    role: current_state (u8)
+    confidence: high
+  +0x12:
+    role: descriptor_valid / validated boolean
+    confidence: high
+
+descriptor_layout:
+  +0x00:
+    role: transition_matrix_ptr
+    confidence: high
+    format: "state_count * event_count cells, 2 bytes per cell"
+  +0x08:
+    role: action_table_ptr
+    confidence: high
+    format: "array of 0x10-byte entries; callback pointer at entry+0x00"
+  +0x10:
+    role: state_name_vector_ptr_or_trace_support
+    confidence: medium
+  +0x18:
+    role: event_name_vector_ptr_or_trace_support
+    confidence: medium
+  +0x20:
+    role: trace_cookie_or_fsm_name
+    confidence: medium
+  +0x28:
+    role: event_count (u8)
+    confidence: high
+  +0x29:
+    role: state_count (u8) OR reverse ordering candidate
+    confidence: medium
+  +0x2A:
+    role: state_count (u8) OR event_count candidate used by outer loop
+    confidence: high
+  +0x2B:
+    role: action_count (u8)
+    confidence: high
+
+transition_cell:
+  size: 2
+  byte0:
+    role: next_state
+    sentinel: 0xff means invalid/no-transition
+  byte1:
+    role: action_id
+  confidence: high
+
+validated_invariants:
+  - "descriptor_ptr must not be null while processing event"
+  - "transition_matrix_ptr must be non-null"
+  - "action_table_ptr must be non-null"
+  - "action callback for every referenced action_id must be non-null"
+  - "next_state must be < state_count unless 0xff"
+  - "action_id must be < action_count"
+
+trace_surface:
+  format: "FSM %s: in state: %s got event: %s moved into: %s"
+  implication:
+    - "descriptor-adjacent state/event string vectors exist or are derivable"
+    - "fully symbolic lift is blocked by origin recovery, not by interpreter opacity"

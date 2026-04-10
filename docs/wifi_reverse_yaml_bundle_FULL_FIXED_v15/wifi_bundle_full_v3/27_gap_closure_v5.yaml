@@ -1,0 +1,66 @@
+version: 5
+scope: project_plan
+subject: gap_closure_v5
+summary:
+  current_state: >-
+    The dominant remaining gap is no longer binary coverage. It is symbolic lifting:
+    descriptor tables, action tables, concrete ivar maps, and cross-layer naming.
+  what_is_now_solid:
+    - kernel module inventory is broad enough
+    - CommonFsmManager descriptor format is partially reconstructed
+    - Skywalk interface boundary has a hard ABI anchor
+    - transport / convergence / TimeSync / BT coex layers all have usable call/field maps
+
+remaining_gaps:
+  tier_1_symbolic:
+    - symbolic state names for CommonFsmManager-owned machines
+    - symbolic event names for scan/join/roam/security flows
+    - callback target names for action ids
+  tier_2_structural:
+    - ivar map for AppleBCMWLANCore and AppleBCMWLANSkywalkInterface subobjects
+    - dext message node layout in AppleOLYHALPortInterfacePCIe
+    - RTI/ACIPC request/completion packet layouts
+  tier_3_policy:
+    - userland orchestration in airportd / CoreWLAN / WiFiPolicy
+
+recommended_v6_pipeline:
+  stage_1_commonfsm_inventory:
+    tasks:
+      - search every processEventEhPv call site in IO80211Family
+      - group by owner class
+      - record numeric event ids and nearby helper names/log strings
+    deliverable: manager_descriptor_inventory_expanded.yaml
+  stage_2_descriptor_lift:
+    tasks:
+      - identify descriptor_ptr initialization sites
+      - extract static descriptor addresses
+      - decode transition matrices into tables
+      - resolve action_table callbacks
+    deliverable: fsm_descriptor_tables.yaml
+  stage_3_symbol_naming:
+    tasks:
+      - correlate callback addresses with local function symbols
+      - mine rodata/log strings for state/event names
+      - retrofit symbolic aliases into existing YAMLs
+    deliverable: fsm_symbolic_overlay.yaml
+  stage_4_skywalk_contract_completion:
+    tasks:
+      - map local decompiled virtual offsets to user-validated IOSkywalkNetworkInterface slots
+      - identify overridden vs inherited methods
+      - document BSD attach / MTU / wake / TSO / snapshot flows concretely
+    deliverable: skywalk_virtual_override_map.yaml
+  stage_5_optional_userland:
+    trigger: only if full system policy model is required
+    targets:
+      - airportd
+      - CoreWLAN.framework
+      - WiFiPolicy.framework
+
+stop_conditions_for_kernel_bundle:
+  satisfactory_when:
+    - each major FSM has symbolic or semi-symbolic state/event tables
+    - each major transport/control object has normalized field map
+    - interface/bus/firmware/time-sync/coex boundaries have stable call contracts
+  not_required_for_kernel_completeness:
+    - airportd
+    - CoreWLAN policy logic

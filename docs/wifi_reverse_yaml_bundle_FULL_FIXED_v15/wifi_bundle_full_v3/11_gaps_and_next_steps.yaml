@@ -1,0 +1,15 @@
+document_type: known_gaps_and_next_steps
+gaps:
+- Many concrete FSM state names and event names are still numeric because the transition tables were not fully lifted from
+  data sections in this pass.
+- Several AppleBCMWLANCore helper constructors are still unidentified helpers rather than confidently named classes; they
+  are tracked by ivar offset/order in init sequence.
+- Per-state entry/exit actions for WCLScanManager and WCLGASFsm require dedicated extraction of the table object used by CommonFsmManager.
+- Roam substate enums and WoW substate variables exist, but complete state labels require decoding adjacent constant tables
+  / strings beyond the uploaded snippets.
+recommended_next_passes:
+- Lift CommonFsmManager table structures and dump state/event/action string tables.
+- Resolve AppleBCMWLANCore ivar map around +0x128 base to turn helper offsets into stable module names.
+- Trace controller->vendor event wiring for scan/join/roam by following event callbacks around handleJoinStarted / handleRoam*
+  / reportDataPathEvents.
+- Extract power/WoW substate storage fields and transition write sites to build strict state diagrams.

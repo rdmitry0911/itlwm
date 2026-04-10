@@ -1,0 +1,35 @@
+document:
+  title: v10 status matrix
+  version: v10
+  done:
+    kernel_breadth:
+      status: strong
+      includes:
+        - IO80211Family
+        - AppleBCMWLANCoreMac
+        - AppleBCMWLANBusInterfacePCIeMac
+        - AppleOLYHALMac
+        - IOTimeSyncFamily
+        - AppleConvergedPCI
+        - AppleConvergedIPCOLYBTControl
+        - corecapture
+    boundary_contracts:
+      status: strong
+      notes:
+        - "IOSkywalkNetworkInterface exact vtable match is incorporated as hard ABI anchor."
+        - "AppleBCMWLANSkywalkInterface init/packetSpace/removePacketQueue are structurally mapped."
+    fsm_runtime_format:
+      status: strong
+      notes:
+        - "CommonFsmManager descriptor format is known well enough for symbolic overlay."
+        - "WCLScanManager is confirmed best first owner."
+  blocked:
+    first_fully_symbolic_owner_fsm:
+      blocker: "descriptor origin recovery / rodata vector lift"
+      type: "analysis-method limitation, not binary availability"
+    broader_owner_matrix:
+      blocker: "need relocation-aware owner init/xref pass"
+  next_best_action:
+    - "Run a relocation/xref-oriented pass on WCLScanManager owner init / constructor sites."
+    - "Extract one concrete descriptor blob."
+    - "Name one action table and one state/event vector."

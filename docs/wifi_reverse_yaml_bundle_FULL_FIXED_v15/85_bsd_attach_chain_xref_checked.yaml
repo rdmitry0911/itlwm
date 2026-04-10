@@ -1,0 +1,370 @@
+version: 1
+topic: BSD/Skywalk attach call chain — xref-level extraction
+status: extraction_pass_complete
+purpose: >-
+  Exact caller sites, vtable slot dispatch, and sequencing for the
+  IOSkywalkNetworkInterface BSD/Skywalk registration path.
+  Closes the #1 remaining gap identified in 65_remaining_gap_honest_cut.yaml.
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  decompilation: "ghidra_output/IO80211_vtables_BootKC_26.2_25C56.txt + BootKC disasm"
+  yaml_cross_ref: "20_skywalk_interface_contracts.yaml (vtable anchors)"
+
+# ═══════════════════════════════════════════════════════════════
+# VTABLE SLOT REFERENCE (quick-lookup)
+# ═══════════════════════════════════════════════════════════════
+
+vtable_slots:
+  - {slot: 284, offset: "0x8D0", name: registerNetworkInterfaceWithLogicalLink}
+  - {slot: 285, offset: "0x8D8", name: deregisterLogicalLink}
+  - {slot: 286, offset: "0x8E0", name: initBSDInterfaceParameters, notes: "pure virtual in base"}
+  - {slot: 287, offset: "0x8E8", name: prepareBSDInterface}
+  - {slot: 288, offset: "0x8F0", name: finalizeBSDInterface}
+  - {slot: 289, offset: "0x8F8", name: getBSDInterface}
+  - {slot: 290, offset: "0x900", name: setBSDName}
+  - {slot: 291, offset: "0x908", name: getBSDName}
+  - {slot: 292, offset: "0x910", name: processBSDCommand}
+  - {slot: 319, offset: "0x9E8", name: getBSDNamePrefix}
+  - {slot: 320, offset: "0x9F0", name: getBSDUnitNumber}
+  - {slot: 322, offset: "0xA00", name: deferBSDAttach}
+
+# ═══════════════════════════════════════════════════════════════
+# COMPLETE BSD ATTACH SEQUENCE (verified order)
+# ═══════════════════════════════════════════════════════════════
+
+bsd_attach_sequence:
+  description: >-
+    The exact order of calls to bring up a Skywalk WiFi BSD interface
+    on macOS Sequoia (26.x). The legacy IONetworkController::attachInterface
+    path is dead for WiFi — only the Skywalk path works.
+
+  steps:
+    - step: 1
+      call: "IO80211InfraInterface::init(IOService* controller, ether_addr* macAddr)"
+      vtable: "[415] IO80211SkywalkInterface"
+      notes: >-
+        Calls IO80211SkywalkInterface::init() which calls initIvars(),
+        allocates internal state block at self+0x120, sets up event name
+        tracking. IO80211InfraInterface::init adds infra-specific state.
+
+    - step: 2
+      call: "IOService::attach(controller)"
+      vtable: "[208]"
+      notes: "Standard IOService attach — registers interface as child in IORegistry"
+
+    - step: 3
+      call: "initRegistrationInfo(&info, 1, sizeof(info))"
+      type: non_virtual
+      notes: >-
+        Populates IOSkywalkNetworkInterface::RegistrationInfo struct (304 bytes).
+        Returns bool. Called by driver, not by framework.
+
+    - step: 4
+      call: "IOSkywalkPacketBufferPool::withName(name, interface, 0, &poolOpts)"
+      type: factory
+      notes: >-
+        Create TX and RX packet buffer pools. PoolOptions: packetCount,
+        bufferCount, bufferSize, maxBuffersPerPacket. Factory method,
+        not virtual dispatch.
+
+    - step: 5
+      call: "IOSkywalkTxSubmissionQueue::withPool / IOSkywalkRxCompletionQueue::withPool"
+      type: factory
+      critical_note: >-
+        CALLBACK RETURN TYPE IS unsigned int (NOT int).
+        Kernel symbol uses mangled 'j' not 'i' for the callback return.
+        Mismatching this causes symbol binding failure at kext load time.
+      tx_callback_signature: "unsigned int (*)(OSObject*, IOSkywalkTxSubmissionQueue*, const IOSkywalkPacket**, UInt32, void*)"
+      rx_callback_signature: "unsigned int (*)(OSObject*, IOSkywalkRxCompletionQueue*, IOSkywalkPacket**, UInt32, void*)"
+
+    - step: 6
+      call: "registerEthernetInterface(&registInfo, queues, 2, txPool, rxPool, 0)"
+      type: non_virtual
+      class: IOSkywalkEthernetInterface
+      internal_call_chain: >-
+        registerEthernetInterface (non-virtual, in IOSkywalkFamily)
+          → creates IOSkywalkLogicalLink from provided queues
+          → dispatches to vtable [284] registerNetworkInterfaceWithLogicalLink
+          → sets IODeferBSDAttach=true property on interface IOService node
+          → populates fVars[0] with LogicalLink/nexus provider
+      apple_driver_path: >-
+        AppleBCMWLANCore::start
+          → IO80211InfraInterface::registerInfraEthernetInterface (non-virtual)
+            → IOSkywalkEthernetInterface::registerEthernetInterface
+              → [vtable 0x8D0] registerNetworkInterfaceWithLogicalLink
+
+    - step: 7
+      call: "fNetIf->start(provider)"
+      vtable: "[187]"
+      notes: >-
+        IO80211InfraInterface::start → IO80211SkywalkInterface::start.
+        SkywalkInterface::start asserts PeerManager exists at ivars+0x28,
+        panics if null (IO80211SkywalkInterface.cpp:0x183).
+        Creates reporters lazily on first stats request, not during start.
+
+    - step: 8
+      call: "deferBSDAttach(false)"
+      vtable: "[322] at vptr offset 0xA00"
+      notes: >-
+        Removes IODeferBSDAttach property from interface IOService node.
+        Calls registerService() on the interface.
+        IOSkywalkNetworkBSDClient matches against the now-visible interface.
+        BSDClient::start creates the nexus channel and BSD ifnet.
+      triggers:
+        - "[286] initBSDInterfaceParameters — fills ifnet_init_eparams and sockaddr_dl"
+        - "[287] prepareBSDInterface — sets up BPF tap, caches BSD name"
+        - "[288] finalizeBSDInterface — completes BSD registration"
+        - "[290] setBSDName — sets the 'enN' name"
+
+    - step: 9
+      call: "enableAdapter / setInterfaceEnable(true)"
+      notes: "Driver-specific. Starts hardware scanning."
+
+# ═══════════════════════════════════════════════════════════════
+# PER-METHOD DETAIL
+# ═══════════════════════════════════════════════════════════════
+
+methods:
+
+  registerNetworkInterfaceWithLogicalLink:
+    vtable_slot: 284
+    vptr_offset: "0x8D0"
+    signature: >-
+      IOReturn registerNetworkInterfaceWithLogicalLink(
+        IOSkywalkNetworkInterface::RegistrationInfo const*,
+        IOSkywalkLogicalLink*,
+        IOSkywalkPacketBufferPool* txPool,
+        IOSkywalkPacketBufferPool* rxPool,
+        unsigned int flags)
+    caller: "IOSkywalkEthernetInterface::registerEthernetInterface (non-virtual)"
+    implementation: "IOSkywalkFamily.kext (NOT decompiled — lives in BootKernelExtensions.kc)"
+    override_map:
+      IO80211InfraInterface: "inherited from IOSkywalkNetworkInterface (no override)"
+      IO80211SkywalkInterface: "inherited (no override)"
+    lifecycle_position: "After init+attach, after pool/queue creation, before start() and deferBSDAttach"
+    gap: "Implementation body not decompiled — need Ghidra pass on IOSkywalkFamily"
+
+  deferBSDAttach:
+    vtable_slot: 322
+    vptr_offset: "0xA00"
+    signature: "void deferBSDAttach(bool defer)"
+    behavior:
+      "true": "Sets IODeferBSDAttach property — prevents BSDClient matching"
+      "false": >-
+        Removes IODeferBSDAttach property, calls registerService() on interface.
+        IOSkywalkNetworkBSDClient matches, its start() creates nexus channel
+        and BSD ifnet. This triggers the callback chain:
+        initBSDInterfaceParameters → prepareBSDInterface → finalizeBSDInterface → setBSDName
+    callers:
+      - who: "IOSkywalkFamily internally"
+        when: "During registerNetworkInterfaceWithLogicalLink"
+        arg: "true"
+      - who: "Driver code"
+        when: "After registerEthernetInterface and fNetIf->start"
+        arg: "false"
+    override_map: "No override in IO80211 hierarchy — base IOSkywalkNetworkInterface only"
+    gap: "Implementation body in IOSkywalkFamily.kext — not decompiled"
+
+  prepareBSDInterface:
+    vtable_slot: 287
+    vptr_offset: "0x8E8"
+    signature: "bool prepareBSDInterface(ifnet_t, UInt)"
+    call_chain:
+      layer_1_base:
+        class: IOSkywalkNetworkInterface
+        addr: "IOSkywalkFamily.kext (not decompiled)"
+        behavior: "Sets up basic BSD interface properties, attaches BPF tap"
+      layer_2:
+        class: IO80211SkywalkInterface
+        addr: "0xffffff800227508a"
+        behavior: "Calls super::prepareBSDInterface, then caches BSD name via getBSDName"
+      layer_3_infra:
+        class: IO80211InfraInterface
+        addr: "0xffffff80022de74c"
+        behavior: >-
+          Calls IO80211SkywalkInterface::prepareBSDInterface (super chain).
+          If interface role == 1 (Infra):
+            - Creates IO80211AssociationJoinSnapshot
+            - Updates static properties
+            - Sets up timer
+      layer_3_virtual:
+        class: IO80211VirtualInterface
+        addr: "0xffffff80022b0532"
+        behavior: >-
+          Calls IO80211SkywalkInterface::prepareBSDInterface (super).
+          Dispatches vtable+0xef0 and vtable+0xee8 (bpfTap setup).
+          Panics "cannot attach to bpf" if bpfTap fails.
+    pairing: >-
+      Called FIRST, then finalizeBSDInterface. Both called within
+      IOSkywalkNetworkBSDClient::start execution context.
+      prepare sets up BPF, ifnet parameters, and 80211 state.
+      finalize completes BSD interface registration with network stack.
+
+  initBSDInterfaceParameters:
+    vtable_slot: 286
+    vptr_offset: "0x8E0"
+    signature: "void initBSDInterfaceParameters(ifnet_init_eparams*, sockaddr_dl**)"
+    notes: "Pure virtual in IOSkywalkNetworkInterface base"
+    call_chain:
+      IO80211InfraInterface:
+        addr: "0xffffff80022de742"
+        behavior: >-
+          Calls IO80211SkywalkInterface::initBSDInterfaceParameters
+          (at 0xffffff8002275030), which calls super at PTR_DAT + 0x8F0
+          (IOSkywalkEthernetInterface slot [286]).
+          After super returns: if interface role is 1 or 2 (Infra/P2P),
+          sets flag 0x40 on ifnet_init_eparams byte at offset +0x0b.
+    caller: "IOSkywalkFamily internally, during BSDClient::start, before prepareBSDInterface"
+
+  finalizeBSDInterface:
+    vtable_slot: 288
+    vptr_offset: "0x8F0"
+    signature: "void finalizeBSDInterface(ifnet_t, UInt)"
+    caller: "IOSkywalkFamily internally, after prepareBSDInterface"
+    override_map: "No override in IO80211 hierarchy — all use base IOSkywalkNetworkInterface"
+    gap: "Base implementation in IOSkywalkFamily.kext — not decompiled"
+
+  setBSDName:
+    vtable_slot: 290
+    vptr_offset: "0x900"
+    signature: "void setBSDName(char const*)"
+    caller: >-
+      IOSkywalkFamily internally, during BSD interface finalization path.
+      Name is composed from getBSDNamePrefix() + getBSDUnitNumber().
+    override_map: "No override in IO80211 hierarchy"
+    when_stable: "After deferBSDAttach(false) triggers BSDClient → setBSDName returns"
+
+  getBSDNamePrefix:
+    vtable_slot: 319
+    vptr_offset: "0x9E8"
+    signature: "const char* getBSDNamePrefix(void)"
+    override_map:
+      IOSkywalkEthernetInterface_base: {returns: '"en"', location: "IOSkywalkFamily.kext"}
+      IO80211InfraInterface: {returns: '"en"', notes: "inherited, no override"}
+      AppleBCMWLANLowLatencyInterface: {returns: '"llw"', addr: "0xffffff8001563dc6"}
+      AppleBCMWLANProximityInterface: {returns: '"awdl"', addr: "0xffffff8001699424"}
+      AppleBCMWLANNANInterface: {returns: '"nan"', addr: "0xffffff80016ae71c"}
+      AppleBCMWLANNANDataInterface: {returns: "variant", addr: "0xffffff80016c8c70"}
+    itlwm_note: >-
+      Primary WiFi infra interface uses default "en" prefix.
+      No need to override getBSDNamePrefix for basic WiFi.
+
+  getBSDUnitNumber:
+    vtable_slot: 320
+    vptr_offset: "0x9F0"
+    signature: "UInt getBSDUnitNumber(void)"
+    override_map:
+      IOSkywalkNetworkInterface_base: {returns: "dynamically assigned", location: "IOSkywalkFamily.kext"}
+      IO80211InfraInterface: {returns: "inherited (dynamic)"}
+      AppleBCMWLANIO80211APSTAInterface: {returns: "hardcoded 1", addr: "0xffffff8001686a6e"}
+    unit_assignment: >-
+      Base implementation in IOSkywalkFamily.kext assigns the unit number.
+      Primary infra interface typically gets 0 (en0).
+      APSTA forces unit 1 (en1).
+      Exact algorithm unknown — implementation not decompiled.
+
+  deregisterLogicalLink:
+    vtable_slot: 285
+    vptr_offset: "0x8D8"
+    signature: "IOReturn deregisterLogicalLink(void)"
+    caller: >-
+      Called during stop/teardown path to undo registerNetworkInterfaceWithLogicalLink.
+      Called from IOSkywalkNetworkInterface::stop() (super::stop).
+    pairing: "register: registerEthernetInterface → registerNetworkInterfaceWithLogicalLink.
+              deregister: stop → deregisterLogicalLink."
+    override_map: "No override in IO80211 hierarchy"
+    gap: "Implementation body in IOSkywalkFamily.kext — not decompiled"
+
+# ═══════════════════════════════════════════════════════════════
+# INTERFACE NAMING POLICY
+# ═══════════════════════════════════════════════════════════════
+
+naming_policy:
+  prefix_selection: >-
+    Comes from getBSDNamePrefix() [slot 319]. Default is "en" from
+    IOSkywalkEthernetInterface. Specialty Apple interfaces override:
+    "llw" (LowLatency), "awdl" (Proximity), "nan" (NAN).
+    IO80211InfraInterface inherits "en" — no override needed for WiFi.
+
+  unit_number: >-
+    Comes from getBSDUnitNumber() [slot 320]. Base implementation in
+    IOSkywalkFamily assigns dynamically. Primary infra = typically 0.
+    AppleBCMWLANIO80211APSTAInterface hardcodes 1.
+
+  name_stability: >-
+    The BSD name becomes stable after:
+    1. deferBSDAttach(false) triggers IOSkywalkNetworkBSDClient matching
+    2. BSDClient::start creates the nexus/ifnet
+    3. IOSkywalkFamily calls setBSDName() with composed name
+    4. getBSDName() returns the stable name
+    IO80211SkywalkInterface caches the name in ivars at self[0x24]+1.
+
+  role_dependency: >-
+    classNameOverride() [slot 321] returns "IO80211Controller" for all
+    IO80211 interfaces — this is the BSD-visible class name, NOT the
+    interface name prefix. The prefix depends only on getBSDNamePrefix override.
+
+# ═══════════════════════════════════════════════════════════════
+# PAIRING SYMMETRY
+# ═══════════════════════════════════════════════════════════════
+
+pairing:
+  registration:
+    open: "registerEthernetInterface → registerNetworkInterfaceWithLogicalLink [284]"
+    close: "deregisterLogicalLink [285] (called from super::stop)"
+    notes: "Logical link is created during registration and destroyed during stop"
+
+  bsd_interface:
+    open: "prepareBSDInterface [287] → finalizeBSDInterface [288]"
+    close: "BSD ifnet detached inside deregisterLogicalLink"
+    notes: >-
+      Both open callbacks are triggered by IOSkywalkNetworkBSDClient::start
+      (after deferBSDAttach(false)). Close happens inside deregisterLogicalLink
+      during stop path. There is no explicit driver-callable 'undoBSD' method.
+
+# ═══════════════════════════════════════════════════════════════
+# SYMBOL BINDING CRITICAL NOTE
+# ═══════════════════════════════════════════════════════════════
+
+symbol_binding_note:
+  issue: >-
+    IOSkywalkRxCompletionQueue::withPool and IOSkywalkTxSubmissionQueue::withPool
+    callbacks use UNSIGNED INT return type in the kernel. Using int causes
+    symbol binding failure at kext load time.
+  kernel_exports:
+    rx_completion: "__ZN26IOSkywalkRxCompletionQueue8withPoolEP25IOSkywalkPacketBufferPooljjP8OSObjectPFjS3_PS_PP15IOSkywalkPacketjPvES8_j"
+    tx_submission: "__ZN26IOSkywalkTxSubmissionQueue8withPoolEP25IOSkywalkPacketBufferPooljjP8OSObjectPFjS3_PS_PP15IOSkywalkPacketjPvES8_j"
+  note: "The 'j' in the mangled name = unsigned int. Using 'i' (int) causes binding failure."
+
+# ═══════════════════════════════════════════════════════════════
+# GAPS REQUIRING FRESH GHIDRA PASSES
+# ═══════════════════════════════════════════════════════════════
+
+gaps_requiring_ghidra:
+  target: "IOSkywalkFamily.kext inside BootKernelExtensions.kc"
+  methods_needed:
+    - name: registerNetworkInterfaceWithLogicalLink
+      reason: "Core of logical link setup — internal steps unknown"
+    - name: deferBSDAttach
+      reason: "Exact trigger mechanism for BSDClient matching"
+    - name: prepareBSDInterface_base
+      reason: "Base BPF attachment logic"
+    - name: finalizeBSDInterface
+      reason: "BSD registration completion steps"
+    - name: setBSDName
+      reason: "Name storage mechanism"
+    - name: getBSDUnitNumber_base
+      reason: "Unit number assignment algorithm"
+    - name: deregisterLogicalLink
+      reason: "Teardown steps — pool/queue/ifnet ordering"
+    - name: registerEthernetInterface
+      reason: "Non-virtual wrapper that creates LogicalLink"
+    - name: IOSkywalkNetworkBSDClient_start
+      reason: "Creates BSD ifnet via nexus, triggers prepare/finalize callbacks"
+    - name: IOSkywalkNetworkBSDClient_stop
+      reason: "BSD ifnet teardown"
+  symbols_to_target:
+    - "__ZTV27IOSkywalkNetworkInterface"
+    - "__ZTV28IOSkywalkEthernetInterface"
+    - "__ZTV27IOSkywalkNetworkBSDClient"

@@ -1,0 +1,376 @@
+version: 1
+topic: WCLRoamManager fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125) via Ghidra headless + chained fixup decode
+extraction_method:
+- gfsmROAM_MANAGERcontext at VA 0xffffff8002402610
+- file offset 0x2302610 in __REGION350 (vmaddr=0xffffff80023cb000, fileoff=0x22cb000)
+- transition matrix at context+0xa0 (120 bytes, 6 states x 10 events x 2 bytes/cell)
+- action table at context+0x118 (11 entries x 0x10 bytes, Itanium ABI member func ptrs)
+- state name vector at context+0x1c8 (6 ptrs)
+- event name vector at context+0x1f8 (10 ptrs)
+- FSM name at context+0x248 -> "ROAM_MANAGER"
+- bulletin board callback table at context+0x00 (6 entries x 0x18 stride)
+fsm_name: ROAM_MANAGER
+states:
+  0: LINK_DOWN
+  1: LINK_UP
+  2: ROAM_SCAN
+  3: ROAM_REASSOC
+  4: WAIT_ROAM_DONE
+  5: SLEEP
+events:
+  0: CONNECT_COMPLETE
+  1: LINK_DOWN
+  2: ROAM_START
+  3: ROAM_SCAN_END
+  4: ROAM_PREP
+  5: REASSOC
+  6: ROAM_DONE
+  7: SLEEP
+  8: WAKE
+  9: TIMEOUT
+actions:
+  0:
+    name: ignore
+    kdk_symbol: WCLRoamManager::ignore
+    kdk_addr: 18446743523988511228
+  1:
+    name: unhandledEvent
+    kdk_symbol: WCLRoamManager::unhandledEvent
+    kdk_addr: 18446743523988511236
+  2:
+    name: connectComplete
+    kdk_symbol: WCLRoamManager::connectComplete
+    kdk_addr: 18446743523988511346
+  3:
+    name: linkDown
+    kdk_symbol: WCLRoamManager::linkDown
+    kdk_addr: 18446743523988511444
+  4:
+    name: roamStart
+    kdk_symbol: WCLRoamManager::roamStart
+    kdk_addr: 18446743523988511982
+  5:
+    name: roamScanEnd
+    kdk_symbol: WCLRoamManager::roamScanEnd
+    kdk_addr: 18446743523988512834
+  6:
+    name: roamPrep
+    kdk_symbol: WCLRoamManager::roamPrep
+    kdk_addr: 18446743523988513268
+  7:
+    name: reassoc
+    kdk_symbol: WCLRoamManager::reassoc
+    kdk_addr: 18446743523988513466
+    note: UNUSED in transition matrix - no cell references action_id=7
+  8:
+    name: roamDone
+    kdk_symbol: WCLRoamManager::roamDone
+    kdk_addr: 18446743523988513474
+  9:
+    name: sleep
+    kdk_symbol: WCLRoamManager::sleep
+    kdk_addr: 18446743523988515740
+  10:
+    name: wake
+    kdk_symbol: WCLRoamManager::wake
+    kdk_addr: 18446743523988515616
+transition_matrix:
+  LINK_DOWN:
+    CONNECT_COMPLETE:
+      next: LINK_UP
+      action: connectComplete
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: ignore
+    ROAM_START:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_SCAN_END:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_PREP:
+      next: =SELF=
+      action: unhandledEvent
+    REASSOC:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_DONE:
+      next: =SELF=
+      action: unhandledEvent
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    TIMEOUT:
+      next: =SELF=
+      action: unhandledEvent
+  LINK_UP:
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: linkDown
+    ROAM_START:
+      next: ROAM_SCAN
+      action: roamStart
+    ROAM_SCAN_END:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_PREP:
+      next: LINK_UP
+      action: roamPrep
+    REASSOC:
+      next: LINK_UP
+      action: ignore
+    ROAM_DONE:
+      next: LINK_UP
+      action: ignore
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    TIMEOUT:
+      next: =SELF=
+      action: unhandledEvent
+  ROAM_SCAN:
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: linkDown
+    ROAM_START:
+      next: ROAM_SCAN
+      action: roamStart
+    ROAM_SCAN_END:
+      next: ROAM_SCAN
+      action: roamScanEnd
+    ROAM_PREP:
+      next: ROAM_REASSOC
+      action: roamPrep
+    REASSOC:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_DONE:
+      next: LINK_UP
+      action: roamDone
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    TIMEOUT:
+      next: LINK_UP
+      action: ignore
+  ROAM_REASSOC:
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: linkDown
+    ROAM_START:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_SCAN_END:
+      next: ROAM_REASSOC
+      action: roamScanEnd
+    ROAM_PREP:
+      next: ROAM_REASSOC
+      action: roamPrep
+    REASSOC:
+      next: WAIT_ROAM_DONE
+      action: ignore
+    ROAM_DONE:
+      next: LINK_UP
+      action: roamDone
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    TIMEOUT:
+      next: LINK_UP
+      action: ignore
+  WAIT_ROAM_DONE:
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: linkDown
+    ROAM_START:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_SCAN_END:
+      next: WAIT_ROAM_DONE
+      action: roamScanEnd
+    ROAM_PREP:
+      next: =SELF=
+      action: unhandledEvent
+    REASSOC:
+      next: =SELF=
+      action: unhandledEvent
+    ROAM_DONE:
+      next: LINK_UP
+      action: roamDone
+    SLEEP:
+      next: SLEEP
+      action: sleep
+    WAKE:
+      next: =SELF=
+      action: unhandledEvent
+    TIMEOUT:
+      next: LINK_UP
+      action: ignore
+  SLEEP:
+    CONNECT_COMPLETE:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: LINK_DOWN
+      action: linkDown
+    ROAM_START:
+      next: SLEEP
+      action: ignore
+    ROAM_SCAN_END:
+      next: SLEEP
+      action: ignore
+    ROAM_PREP:
+      next: SLEEP
+      action: ignore
+    REASSOC:
+      next: SLEEP
+      action: ignore
+    ROAM_DONE:
+      next: SLEEP
+      action: ignore
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE:
+      next: LINK_UP
+      action: wake
+    TIMEOUT:
+      next: =SELF=
+      action: unhandledEvent
+raw_matrix_hex: '01 02 00 00 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01
+
+  ff 01 ff 01 ff 01 00 03 02 04 ff 01 01 06 01 00
+
+  01 00 05 09 ff 01 ff 01 ff 01 00 03 02 04 02 05
+
+  03 06 ff 01 01 08 05 09 ff 01 01 00 ff 01 00 03
+
+  ff 01 03 05 03 06 04 00 01 08 05 09 ff 01 01 00
+
+  ff 01 00 03 ff 01 04 05 ff 01 ff 01 01 08 05 09
+
+  ff 01 01 00 ff 01 00 03 05 00 05 00 05 00 05 00
+
+  05 00 ff 01 01 0a ff 01
+
+  '
+context_layout:
+  +0x000_to_0x08f:
+    description: bulletin board callback table (6 entries x 0x18 stride)
+  +0x090_to_0x09f:
+    description: padding/alignment (zeros)
+  +0x0a0_to_0x117:
+    description: transition matrix (120 bytes = 6 states x 10 events x 2 bytes/cell)
+  +0x118_to_0x1c7:
+    description: action table (11 entries x 0x10 bytes = 176 bytes)
+    note: Itanium ABI member function pointers {func_ptr:8, this_adj:8}
+  +0x1c8_to_0x1f7:
+    description: state name vector (6 x 8-byte ptrs, chained fixup encoded)
+  +0x1f8_to_0x247:
+    description: event name vector (10 x 8-byte ptrs, chained fixup encoded)
+  +0x248_to_0x24f:
+    description: FSM name pointer -> 'ROAM_MANAGER'
+bulletin_board_callbacks:
+- index: 0
+  meta_type: 0
+  board_id: 552
+  func_fileoff: 33699340
+- index: 1
+  meta_type: 0
+  board_id: 423
+  func_fileoff: 33699488
+- index: 2
+  meta_type: 1
+  board_id: 490
+  func_fileoff: 33702054
+- index: 3
+  meta_type: 1
+  board_id: 575
+  func_fileoff: 33702252
+- index: 4
+  meta_type: 1
+  board_id: 562
+  func_fileoff: 33702366
+- index: 5
+  meta_type: 1
+  board_id: 242
+  func_fileoff: 33702394
+string_table:
+- offset: 35928375
+  string: ROAM_MANAGER_STATE_LINK_DOWN
+- offset: 35928404
+  string: ROAM_MANAGER_STATE_LINK_UP
+- offset: 35928431
+  string: ROAM_MANAGER_STATE_ROAM_SCAN
+- offset: 35928460
+  string: ROAM_MANAGER_STATE_ROAM_REASSOC
+- offset: 35928492
+  string: ROAM_MANAGER_STATE_WAIT_ROAM_DONE
+- offset: 35928526
+  string: ROAM_MANAGER_STATE_SLEEP
+- offset: 35928551
+  string: ROAM_MANAGER_EVENT_CONNECT_COMPLETE
+- offset: 35928587
+  string: ROAM_MANAGER_EVENT_LINK_DOWN
+- offset: 35928616
+  string: ROAM_MANAGER_EVENT_ROAM_START
+- offset: 35928646
+  string: ROAM_MANAGER_EVENT_ROAM_SCAN_END
+- offset: 35928679
+  string: ROAM_MANAGER_EVENT_ROAM_PREP
+- offset: 35928708
+  string: ROAM_MANAGER_EVENT_REASSOC
+- offset: 35928735
+  string: ROAM_MANAGER_EVENT_ROAM_DONE
+- offset: 35928764
+  string: ROAM_MANAGER_EVENT_SLEEP
+- offset: 35928789
+  string: ROAM_MANAGER_EVENT_WAKE
+- offset: 35928813
+  string: ROAM_MANAGER_EVENT_TIMEOUT
+- offset: 35928840
+  string: ROAM_MANAGER
+kdk_to_kc_note: KDK-to-BootKC delta is +0x138, consistent across all 11 action handlers. Inter-function deltas verified identical in both address spaces.
+behavioral_notes:
+  roam_flow: 'Normal roam path: LINK_UP -> ROAM_SCAN (ROAM_START) -> ROAM_REASSOC (ROAM_PREP) -> WAIT_ROAM_DONE (REASSOC) -> LINK_UP (ROAM_DONE). This models the full roam lifecycle: scan candidates, prepare reassoc, wait for completion, return to connected.'
+  scan_phase: ROAM_SCAN accepts ROAM_START re-entry (restart scan), ROAM_SCAN_END (intermediate results), ROAM_PREP (advance to reassoc), and ROAM_DONE (abort early if roam completes during scan). TIMEOUT in ROAM_SCAN returns to LINK_UP via ignore (abort roam silently).
+  reassoc_phase: ROAM_REASSOC accepts ROAM_SCAN_END (late scan results), ROAM_PREP (stay in state), REASSOC (advance to WAIT_ROAM_DONE), ROAM_DONE (complete). REASSOC event uses ignore (action 0), not the reassoc handler (action 7) - this is a state transition only.
+  unused_action: Action 7 (reassoc handler) is registered in the action table but never referenced by any transition matrix cell. It may be invoked through a non-FSM code path or reserved for future use.
+  unhandled_vs_ignore: ROAM_MANAGER distinguishes impossible events (unhandledEvent - logs error) from expected-but-suppressed events (ignore - silent drop). For example, LINK_DOWN + ROAM_START = unhandledEvent (should never happen), but LINK_UP + REASSOC = ignore (normal during connected state). This contrasts with SCAN/JOIN managers which use ignore for both cases.
+  sleep_suppression: SLEEP state suppresses all roam events (ROAM_START through ROAM_DONE) using ignore(0) with explicit next=SLEEP transitions. Only LINK_DOWN (-> LINK_DOWN via linkDown) and WAKE (-> LINK_UP via wake) exit SLEEP.
+  timeout_abort: TIMEOUT from any active roam state (ROAM_SCAN, ROAM_REASSOC, WAIT_ROAM_DONE) returns to LINK_UP via ignore. This is a clean roam abort on timeout - no cleanup handler needed.
+consistency_notes:
+  status: checked
+  summary: No internal contradictions found. Symbolic transition matrix matches raw_matrix_hex exactly; layout sizes and action/state/event counts are consistent.
+  verified_points:
+  - 6 states x 10 events x 2 bytes = 120-byte transition matrix
+  - 11 actions x 0x10 bytes = 176-byte action table
+  - raw_matrix_hex decodes exactly to the symbolic transition_matrix
+  - action 7 (reassoc) is present in the action table and truly unused by all transition cells
+  - kdk_to_kc_note is internally consistent with the listed KDK addresses

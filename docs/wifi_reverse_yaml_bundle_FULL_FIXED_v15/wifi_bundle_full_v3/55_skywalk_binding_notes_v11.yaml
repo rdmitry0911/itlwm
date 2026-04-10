@@ -1,0 +1,23 @@
+version: v11
+focus: refine AppleBCMWLANSkywalkInterface binding against hard IOSkywalkNetworkInterface ABI anchor
+confirmed_contracts:
+  object_size: 0x140
+  ivar_anchor:
+    - self_plus_0x138 aliases self[0x27]
+  queue_space_anchor:
+    - packetSpace(queue_index) dereferences ivars+0x78+(queue_index*8)
+  bus_validity_anchor:
+    - removePacketQueue requires ivars and valid bus interface path through ivars+0x20
+  provider_init_contract:
+    - initWithProviderAndParameters stores role/WME/config/logstream/faultreporter and provider linkage into ivars
+  power_notifications:
+    - powerOnNotification exists and routes through a virtual logger/provider path
+abi_integration_with_user_supplied_vtable_fact:
+  ioskywalknetworkinterface_vtable:
+    status: exact external confirmation supplied by user
+    match: 41_of_41_methods_plus_10_reserved
+    implication: virtual slot semantics at the skywalk boundary may be treated as hard ABI, not heuristic guesses
+binding_guidance:
+  - map AppleBCMWLANSkywalkInterface overrides to known IOSkywalkNetworkInterface slot semantics before inventing local names
+  - prefer offset/slot anchored naming over behavioral paraphrase
+  - use object-size and ivar anchors as guardrails when reconstructing subclass field maps

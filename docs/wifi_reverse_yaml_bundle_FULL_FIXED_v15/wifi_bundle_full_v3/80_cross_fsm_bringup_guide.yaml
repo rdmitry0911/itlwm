@@ -1,0 +1,391 @@
+version: 1
+topic: Cross-FSM bring-up guide for porting other network adapters onto Apple-style Wi-Fi control planes
+status: initial_implementation
+scope:
+  purpose: >-
+    Translate the recovered Apple Wi-Fi FSM corpus into a practical bring-up
+    guide for implementing another network adapter backend while preserving the
+    control-plane contracts expected by the higher layers.
+  audience:
+    - driver authors bringing up a new Wi-Fi adapter under an Apple-style stack
+    - reverse engineers mapping vendor/firmware events onto Apple control planes
+    - developers trying to decide what can be stubbed vs what must be correct early
+  assumptions:
+    - scan/join/net/system-state planes are present and must interoperate
+    - exact firmware commands may differ by adapter, but externally visible event
+      contracts must remain coherent
+    - the goal is staged bring-up: boot -> connect -> stable link -> sleep/wake -> recovery
+
+plan:
+  phases:
+    - phase: 0_inventory
+      goal: establish the minimum owner set needed for first useful bring-up
+      required_fsm:
+        - SCAN_MANAGER
+        - JOIN_MANAGER
+        - NET_MANAGER
+        - SSM
+      recommended_fsm:
+        - ROAM_MANAGER
+        - GAS_FSM
+        - GAS_DEFRAG_FSM
+        - LQM_FSM
+        - BGCOMMON_FSM
+        - AX_MANAGER
+    - phase: 1_minimal_boot
+      goal: driver can boot, publish availability, and tolerate system notifications
+    - phase: 2_minimal_connect
+      goal: driver can scan, join, reach CONNECT_COMPLETE, and provide IPv4-valid link-up
+    - phase: 3_stable_runtime
+      goal: sleep/wake, link-down, deauth, and reset do not wedge the stack
+    - phase: 4_feature_enablement
+      goal: roam, GAS/ANQP, LQM, background scan, 11ax power states, nearby discovery
+    - phase: 5_hardening
+      goal: cross-FSM invariants, timeout behavior, and error recovery are validated
+
+implementation_status:
+  completed_in_this_document:
+    - normalized bring-up phases
+    - required event contracts
+    - minimal must-emulate lists
+    - early stub guidance
+    - cross-FSM invariants
+    - debugging symptom map
+  pending_future_expansion:
+    - payload schemas per event type
+    - class/ivar ownership matrices for all producers and consumers
+    - firmware-facing message templates per vendor/backend
+
+control_planes:
+  scan_plane:
+    owner: SCAN_MANAGER
+    purpose: discover candidate BSS entries and manage scan abort/halt/resume
+    must_emulate_early:
+      - SCAN_REQ
+      - SCAN_COMPLETE
+      - SCAN_ABORT_REQ
+      - HALT
+      - RESUME
+      - SYSTEM_POWER_OFF
+      - SYSTEM_POWER_ON
+    can_stub_initially:
+      - TIMEOUT recovery nuances beyond non-wedging behavior
+      - aggressive scan restart/retry policy
+    danger_if_broken:
+      - join never starts
+      - scan manager stuck in IN_PROGRESS or HALTED
+      - sleep/wake wedges because HALTED cannot return to IDLE
+
+  join_plane:
+    owner: JOIN_MANAGER
+    purpose: candidate selection, association, connect completion, abort handling
+    must_emulate_early:
+      - JOIN_REQ
+      - JOIN_ASSOC_COMPLETE
+      - JOIN_CONNECT_COMPLETE
+      - JOIN_COMPLETE
+      - JOIN_ABORT_REQ
+      - JOIN_ABORT_COMPLETE
+      - DRIVER_RESET
+      - HALT
+      - RESUME
+    can_stub_initially:
+      - TRY_NEXT_CANDIDATE
+      - TRY_NEXT_CANDIDATE_DELAYED
+      - JOIN_SCAN_UPDATE sophistication
+    danger_if_broken:
+      - association may succeed physically but stack never reaches usable link state
+      - abort path leaks active join and poisons later attempts
+
+  net_plane:
+    owner: NET_MANAGER
+    purpose: convert join outcomes into link-visible runtime states and IP-valid readiness
+    must_emulate_early:
+      - LINK_UP
+      - CONNECT_COMPLETE
+      - IPV4_STATUS
+      - LINK_DOWN_IND
+      - LINK_DOWN_COMPLETE
+      - LEAVE_NETWORK
+      - DRIVER_RESET
+      - SLEEP
+      - WAKE
+    can_stub_initially:
+      - assoc timer sophistication
+      - advanced link suppression policy
+    danger_if_broken:
+      - link appears associated but never becomes operational
+      - sleep/deauth drains become stuck
+      - reset cannot cleanly return to LINK_DOWN
+
+  system_state_plane:
+    owner: SSM
+    purpose: broker driver/system notifications and defer/replay them across availability gaps
+    must_emulate_early:
+      - SYSTEM_WILL_SLEEP
+      - SYSTEM_AWAKE
+      - DRIVER_RESET
+      - FW_LOADED
+      - DRIVER_UNAVAILABLE
+      - DRIVER_AVAILABLE
+      - SYSTEM_POWER_ON
+      - SYSTEM_POWER_OFF
+    can_stub_initially:
+      - richer notification coalescing, as long as replay semantics are preserved
+    danger_if_broken:
+      - subscribers miss critical reset/power transitions
+      - wake or power-off appears invisible to dependent managers
+
+  roam_plane:
+    owner: ROAM_MANAGER
+    purpose: retain connectivity while moving between BSS candidates
+    minimum_for_initial_port:
+      - safe ignore or suppression while connected
+      - correct handling of LINK_DOWN, SLEEP, WAKE, ROAM_DONE cleanup
+    full_enablement_requires:
+      - ROAM_START
+      - ROAM_SCAN_END
+      - ROAM_PREP
+      - REASSOC
+      - ROAM_DONE
+
+  gas_plane:
+    owners:
+      - GAS_FSM
+      - GAS_DEFRAG_FSM
+    purpose: GAS/ANQP query lifecycle and fragment reassembly
+    minimum_for_initial_port:
+      - either fully disable upper-layer GAS use, or implement enough for non-crashing busy/abort/complete handling
+    full_enablement_requires:
+      - GAS_REQUEST
+      - GAS_FRAG_RX
+      - GAS_COMPLETE
+      - GAS_COMPLETE_ERROR
+      - GAS_QUERY_TIMEOUT
+      - ABORT
+      - defrag fragment completion/failure path
+
+  maintenance_planes:
+    owners:
+      - LQM_FSM
+      - BGCOMMON_FSM
+      - AX_MANAGER
+      - NDD_MANAGER
+    purpose: monitoring, background scanning, 11ax-specific state, nearby discovery
+    early_policy:
+      may_disable_or_stub: true
+      requirement: >-
+        Stubs must preserve state invariants and never leave upper managers waiting
+        for completions that will not arrive.
+
+minimal_boot_path:
+  objective: stack reaches a sane, notification-capable idle baseline
+  ordered_requirements:
+    - step: publish_driver_available
+      producer: backend driver / bus bring-up
+      consumer: SSM
+      contract: DRIVER_AVAILABLE must be accepted after any temporary unavailable phase
+    - step: publish_fw_loaded
+      producer: firmware/control plane
+      consumer: SSM, BGCOMMON_FSM
+      contract: FW_LOADED must not be dropped in a way that loses replay semantics
+    - step: keep_net_plane_in_link_down
+      producer: backend link-state model
+      consumer: NET_MANAGER
+      contract: idle boot must stabilize at LINK_DOWN, not at deauth or waiting states
+    - step: tolerate_sleep_wake_notifications
+      producer: power/system integration
+      consumer: SSM and scan/join/net-related managers
+      contract: notifications may arrive before first association and must not wedge owners
+  success_criteria:
+    - SSM is in CAN_SEND_NOTIFICATION or can replay deferred notifications
+    - NET_MANAGER is stably in LINK_DOWN
+    - background/aux planes are either idle or explicitly disabled
+
+minimal_connect_path:
+  objective: complete first usable association and bring network stack to operational link
+  ordered_requirements:
+    - step: scan_start
+      producer: backend scan engine
+      consumer: SCAN_MANAGER
+      event: SCAN_REQ
+    - step: scan_done
+      producer: backend scan engine
+      consumer: SCAN_MANAGER
+      event: SCAN_COMPLETE
+      note: candidates must become available for join selection
+    - step: join_start
+      producer: connection policy / join orchestration
+      consumer: JOIN_MANAGER
+      event: JOIN_REQ
+    - step: assoc_complete
+      producer: backend firmware/driver association result
+      consumer: JOIN_MANAGER
+      event: JOIN_ASSOC_COMPLETE
+    - step: connect_complete
+      producer: backend firmware/driver connected indication
+      consumer: JOIN_MANAGER then NET_MANAGER
+      events:
+        - JOIN_CONNECT_COMPLETE
+        - JOIN_COMPLETE
+        - CONNECT_COMPLETE
+    - step: ip_valid
+      producer: network/IP observer
+      consumer: NET_MANAGER
+      event: IPV4_STATUS
+  success_criteria:
+    - SCAN_MANAGER returns to IDLE
+    - JOIN_MANAGER returns to IDLE
+    - NET_MANAGER reaches LINK_UP
+    - no owner remains in HALTED/ABORTED/DEAUTH unexpectedly
+
+minimal_sleep_wake_path:
+  objective: suspend and resume without poisoning scan/join/net state
+  requirements:
+    - SCAN_MANAGER must tolerate HALT/SYSTEM_POWER_OFF and later RESUME/SYSTEM_POWER_ON
+    - JOIN_MANAGER active joins must abort or halt cleanly and later resume from IDLE
+    - NET_MANAGER must transition through SLEEP or SLEEP_DEAUTH and return via WAKE
+    - SSM must either forward or replay notifications after DRIVER_AVAILABLE
+  success_criteria:
+    - no owner remains in HALTED after wake unless explicitly waiting for follow-up cleanup
+    - link can be re-established or preserved without reboot
+
+minimal_recovery_path:
+  objective: recover from resets, forced link-downs, and aborted work
+  requirements:
+    - DRIVER_RESET must not be swallowed silently in SSM
+    - JOIN_MANAGER must leave active path through HALTED or IDLE, not remain IN_PROGRESS
+    - NET_MANAGER must be able to drain DEAUTH back to LINK_DOWN
+    - GAS_FSM must drain ABORTING/HALTED to IDLE on cleanup signals
+    - BGCOMMON_FSM must return to IDLE via cleanup on DRIVER_RESET
+  success_criteria:
+    - repeated connect attempts succeed after reset without requiring process restart
+
+must_emulate_first:
+  absolute_minimum_events:
+    - SCAN_REQ
+    - SCAN_COMPLETE
+    - JOIN_REQ
+    - JOIN_ASSOC_COMPLETE
+    - JOIN_CONNECT_COMPLETE
+    - JOIN_COMPLETE
+    - CONNECT_COMPLETE
+    - IPV4_STATUS
+    - LINK_DOWN_IND
+    - LINK_DOWN_COMPLETE
+    - DRIVER_RESET
+    - SYSTEM_WILL_SLEEP
+    - SYSTEM_AWAKE
+    - SYSTEM_POWER_OFF
+    - SYSTEM_POWER_ON
+    - DRIVER_AVAILABLE
+    - DRIVER_UNAVAILABLE
+    - FW_LOADED
+  rationale: >-
+    Without these, the stack cannot reliably boot, connect, surface a usable link,
+    or recover from common power/reset conditions.
+
+can_stub_initially:
+  with_care:
+    - full roam candidate orchestration
+    - NDD flows
+    - advanced 11ax-specific ASR/ULOFDMA behavior
+    - GAS/ANQP queries if upper layers are prevented from depending on them
+    - rich LQM heuristics beyond start/stop/timer hygiene
+    - background scan suspend/resume sophistication
+  rules:
+    - never leave an owner waiting for a completion your stub will never send
+    - prefer explicit busy/ignore/reject over silent drop if an upper layer expects a response
+    - preserve reset and wake semantics even in stubbed subsystems
+
+cross_fsm_invariants:
+  - name: scan_to_join_handoff
+    invariant: >-
+      JOIN_REQ must only be attempted after scan work yields candidate data or policy already
+      has a valid cached target; SCAN_MANAGER must not remain stuck in IN_PROGRESS after handoff.
+  - name: join_to_net_handoff
+    invariant: >-
+      JOIN_COMPLETE / CONNECT_COMPLETE must be followed by NET_MANAGER progress toward
+      WAITING_FOR_IP and then LINK_UP; if JOIN completes but NET never leaves LINK_DOWN,
+      the backend is missing a contract event.
+  - name: reset_visibility
+    invariant: >-
+      DRIVER_RESET must remain visible to SSM and must drain active work in JOIN/NET/GAS/BGCOMMON.
+  - name: sleep_notification_consistency
+    invariant: >-
+      SYSTEM_WILL_SLEEP / POWER_OFF and WAKE / POWER_ON semantics must be consistent across SSM,
+      SCAN_MANAGER, JOIN_MANAGER, and NET_MANAGER.
+  - name: halted_state_exit
+    invariant: >-
+      Any HALTED-like state entered for quiesce/power/reset must have a concrete exit condition,
+      typically RESUME, SYSTEM_POWER_ON, WAKE, or cleanup completion.
+
+symptom_to_plane_map:
+  - symptom: scan finds APs but connection never starts
+    likely_plane:
+      - scan_plane
+      - join_plane
+    likely_missing:
+      - SCAN_COMPLETE to JOIN_REQ handoff
+      - candidate publication or callback wiring
+  - symptom: association succeeds but interface never becomes usable
+    likely_plane:
+      - join_plane
+      - net_plane
+    likely_missing:
+      - CONNECT_COMPLETE
+      - IPV4_STATUS
+  - symptom: system wakes but Wi-Fi remains dead until reboot
+    likely_plane:
+      - system_state_plane
+      - net_plane
+      - scan_plane
+      - join_plane
+    likely_missing:
+      - replayed notifications
+      - WAKE / SYSTEM_POWER_ON
+      - halted-state cleanup
+  - symptom: after reset, all further join attempts fail immediately
+    likely_plane:
+      - system_state_plane
+      - join_plane
+      - bgcommon
+    likely_missing:
+      - DRIVER_RESET cleanup
+      - return to IDLE/LINK_DOWN baseline
+  - symptom: hotspot/ANQP features hang or leak state
+    likely_plane:
+      - gas_plane
+    likely_missing:
+      - ABORTING/HALTED cleanup
+      - fragment completion/failure transitions
+
+porting_checklist:
+  phase_1_boot:
+    - SSM notifications observable
+    - NET_MANAGER stable in LINK_DOWN
+    - DRIVER_RESET path tested once
+  phase_2_connect:
+    - one successful scan cycle
+    - one successful join cycle
+    - CONNECT_COMPLETE delivered
+    - IPv4-valid transition observed
+  phase_3_runtime:
+    - link-down recovery tested
+    - leave-network path tested
+    - deauth drain to LINK_DOWN tested
+  phase_4_power:
+    - sleep/wake round-trip tested
+    - power-off/power-on notification consistency tested
+  phase_5_extended:
+    - roam disabled safely or fully implemented
+    - GAS either disabled safely or functional
+    - LQM timer path non-crashing
+    - background scan state machine non-poisoning
+
+future_documents_to_add:
+  - event_payload_schemas.yaml
+  - producer_consumer_callback_map.yaml
+  - vendor_backend_translation_patterns.yaml
+  - debugging_playbooks.yaml
+  - generic_wifi_control_plane_model.yaml

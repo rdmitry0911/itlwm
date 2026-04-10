@@ -1,0 +1,100 @@
+version: 5
+scope: kernel
+subject: skywalk_virtual_call_map
+summary:
+  goal: >-
+    Capture the stable virtual boundary between AppleBCMWLANSkywalkInterface and the
+    IOSkywalkNetworkInterface contract, using the user-validated vtable reconstruction
+    as an ABI anchor.
+  provenance:
+    user_validated_vtable:
+      class: IOSkywalkNetworkInterface
+      source: x86_64 IOSkywalkFamily.kext kernel binary analysis
+      result: exact match, 41 methods + 10 reserved
+      status: authoritative anchor for slot naming in downstream reverse work
+
+applebcmwlanskywalkinterface:
+  class_layout:
+    confirmed:
+      - size: 0x140
+      - provider/init entrypoint: initWithProviderAndParameters(provider, ifindex, role, ..., logStream, faultReporter)
+      - queue_lookup_region:
+          expression: '*(long **)(*(long *)(self + 0x138) + 0x78 + qid * 8)'
+          role: queue/packet-space object vector consulted by packetSpace()
+      - ivars_ptr_candidate:
+          expression: self[0x27]
+          role: internal ivar block used by removePacketQueue()
+  ownership_edges:
+    confirmed:
+      - provider: AppleBCMWLANCore
+      - bus_interface_dependency: removePacketQueue requires ivars[0] and ivars[4] valid before delegating into bus interface
+      - logging_via_virtual_slot:
+          expression: self.vfunc(+0xd08)
+          role: returns log stream / trace sink used before queue removal delegation
+  high_value_methods:
+    - packetSpace(queue_id)
+    - removePacketQueue(flow_hash)
+    - initWithProviderAndParameters(...)
+
+ioskywalknetworkinterface_contract:
+  note: >-
+    Method names below are taken from the user-confirmed vtable reconstruction and should
+    be treated as hard slot labels for any class deriving from IOSkywalkNetworkInterface.
+  methods:
+    - registerNetworkInterfaceWithLogicalLink
+    - deregisterLogicalLink
+    - initBSDInterfaceParameters
+    - prepareBSDInterface
+    - finalizeBSDInterface
+    - getBSDInterface
+    - setBSDName
+    - getBSDName
+    - processBSDCommand
+    - processInterfaceCommand
+    - interfaceAdvisoryEnable
+    - setRxFlowSteering
+    - setInterfaceEnable
+    - setRunningState
+    - handleChosenMedia
+    - getSupportedMediaArray
+    - getPacketTapInfo
+    - getUnsentDataByteCount
+    - getSupportedWakeFlags
+    - enableNetworkWake
+    - calculateRingSizeForQueue
+    - getMaxTransferUnit
+    - setMaxTransferUnit
+    - getMinPacketSize
+    - getHardwareAssists
+    - setHardwareAssists
+    - getInterfaceFamily
+    - getInterfaceSubFamily
+    - getInitialMedia
+    - getFeatureFlags
+    - getTxDataOffset
+    - captureInterfaceState
+    - restoreInterfaceState
+    - setMTU
+    - bpfTap
+    - getBSDNamePrefix
+    - getBSDUnitNumber
+    - classNameOverride
+    - deferBSDAttach
+    - reportDetailedLinkStatus
+    - getTSOOptions
+  reserved_slots: 10
+
+reverse_engineering_implications:
+  direct:
+    - any virtual call in AppleBCMWLANSkywalkInterface-derived path can be named by slot rather than guesswork
+    - BSD attach/detach, MTU, wake, TSO, media, BPF, snapshot/restore flows are now ABI-pinned
+  practical_mapping_tasks:
+    - map decompiled indirect offsets in AppleBCMWLANSkywalkInterface to the confirmed IOSkywalkNetworkInterface slot names
+    - identify which methods are overridden locally versus inherited unchanged
+    - build queue/ring sizing contract around calculateRingSizeForQueue + packetSpace + removePacketQueue
+
+open_work:
+  needed_for_full_fieldmap:
+    - concrete ivar layout for self+0x138 owner/queue vector object
+    - exact type behind self[0x27] ivar block
+    - local overrides for setInterfaceEnable / setRunningState / reportDetailedLinkStatus

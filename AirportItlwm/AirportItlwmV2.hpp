@@ -165,6 +165,12 @@ struct RuntimeDiag {
     volatile uint32_t pmOnGateNull;  // handleSetPowerStateOn gate==NULL count
     volatile uint32_t pmAckOffCnt;   // acknowledgeSetPowerState calls from Off path
     volatile uint32_t pmAckOnCnt;    // acknowledgeSetPowerState calls from On path
+    // --- Skywalk object pointers (for stop/free hang diagnosis) ---
+    volatile uint64_t fNetIfPtr;     // raw fNetIf pointer
+    volatile uint64_t fTxPoolPtr;    // raw fTxPool pointer
+    volatile uint64_t fRxPoolPtr;    // raw fRxPool pointer
+    volatile uint64_t fTxQueuePtr;   // raw fTxQueue pointer
+    volatile uint64_t fRxQueuePtr;   // raw fRxQueue pointer
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)

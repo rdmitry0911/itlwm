@@ -1,0 +1,204 @@
+version: 1
+topic: Wi-Fi interface lifecycle and BSD/Skywalk attach path
+status: synthesized_from_current_docs_and_decompilation
+purpose: >-
+  Fill the documentation gap around the interface object lifecycle itself:
+  object allocation, Skywalk-side initialization, BSD-facing preparation,
+  ifnet visibility, queue attachment/detachment, power notifications, and
+  teardown. This document is intended as a practical guide for implementing
+  non-Apple adapters against a similar control plane.
+
+entities:
+  primary_interface_object:
+    name: AppleBCMWLANSkywalkInterface
+    role: >-
+      Skywalk/BSD-facing network interface wrapper for the Wi-Fi stack.
+      It owns or brokers access to packet spaces, queues, controller/provider
+      state, power callbacks, and unit-facing interface identity.
+    observed_properties:
+      object_size: 0x140
+      ivars_anchor:
+        - "self+0x138"
+        - "self[0x27]"
+      queue_space_anchor: "ivars+0x78"
+      notable_methods:
+        - packetSpace
+        - removePacketQueue
+        - getInterfaceUnitNumber
+        - powerOnNotification
+        - powerOffNotification
+
+  secondary_boundary_object:
+    name: IO80211SkywalkInterface / IOSkywalkNetworkInterface contract
+    role: >-
+      Common boundary layer exposing BSD and Skywalk attach/registration hooks.
+    notable_hooks:
+      - initBSDInterfaceParameters
+      - prepareBSDInterface
+      - finalizeBSDInterface
+      - getBSDInterface
+      - setBSDName
+      - getBSDNamePrefix
+      - getBSDUnitNumber
+      - deferBSDAttach
+      - registerNetworkInterfaceWithLogicalLink
+      - deregisterLogicalLink
+
+high_level_lifecycle:
+  - phase: object_allocation
+    description: >-
+      Allocate the Skywalk interface wrapper object and zero/init its ivars.
+      This happens before the network FSMs reach operational LINK_UP.
+    required_outputs:
+      - live interface object
+      - ivars block
+      - provider/controller references
+      - queue-space registry placeholder
+
+  - phase: provider_controller_binding
+    description: >-
+      Bind provider, controller, logger/fault reporter, queue/WME settings,
+      and related runtime configuration into interface ivars.
+    required_outputs:
+      - usable packetSpace() path
+      - valid controller/provider references
+      - valid unit number source
+      - valid queue registry for attach/detach
+
+  - phase: bsd_preparation
+    description: >-
+      Run BSD-facing preparation via the Skywalk/BSD contract. The boundary
+      layer initializes BSD parameters and then performs prepareBSDInterface.
+    required_outputs:
+      - initialized BSD parameters
+      - successful BPF attach
+      - BSD-facing object ready for exposure
+
+  - phase: ifnet_visibility
+    description: >-
+      After BSD preparation, lower layers can observe/use ifnet through the
+      Skywalk path even before operational network LINK_UP is achieved.
+    required_outputs:
+      - getIfnet path valid
+      - queue/ring lower layers allowed to query ifnet
+      - interface name/unit resolved or deferred
+
+  - phase: operational_link_enable
+    description: >-
+      Higher FSM planes (JOIN_MANAGER, NET_MANAGER) drive the already-created
+      interface toward usable networking via LINK_UP / CONNECT_COMPLETE /
+      IPV4_STATUS and related control events.
+    required_outputs:
+      - connect complete path stable
+      - IP status path stable
+      - interface becomes operational to clients
+
+  - phase: steady_state_operations
+    description: >-
+      Interface remains alive while queues, ifnet access, net events, roam,
+      GAS, and power transitions occur. Queue teardown and recreation may
+      happen underneath without re-creating the interface object.
+    required_outputs:
+      - queue attach/detach works
+      - power notifications do not invalidate interface identity
+      - link transitions do not destroy BSD interface unexpectedly
+
+  - phase: power_transition
+    description: >-
+      Power/sleep notifications hit the interface and control planes. The
+      interface object survives and receives powerOnNotification /
+      powerOffNotification while FSMs move into SLEEP/HALTED states.
+    required_outputs:
+      - interface object survives sleep
+      - wake re-enables datapath without rebuilding BSD identity
+      - lower queues can be detached/reattached cleanly
+
+  - phase: teardown
+    description: >-
+      On shutdown/reset/destroy paths, queues are released, logical links are
+      detached/deregistered, reporters/monitors are freed, and the interface
+      object is finalized and released.
+    required_outputs:
+      - queues detached
+      - ifnet/BSD finalization complete
+      - no dangling provider/controller refs
+      - free path idempotent enough for error recovery
+
+detailed_lifecycle:
+  allocation_and_init:
+    observed_sequence:
+      - allocate AppleBCMWLANSkywalkInterface (size 0x140)
+      - initialize common base / metaclass
+      - populate ivars block referenced through self+0x138
+      - make queue-space registry available at ivars+0x78
+    porting_guidance:
+      must_have:
+        - stable object identity before connect path
+        - distinct ivars block for controller/provider state
+        - unit number storage or derivation path
+      can_stub_initially:
+        - advanced statistics
+        - extended reporters
+      danger_if_wrong:
+        - interface appears only after LINK_UP, which is too late for Apple-like lower-layer expectations
+        - queue operations crash due to missing ivars or queue registry
+
+  bsd_attach_path:
+    confirmed_core_steps:
+      - initBSDInterfaceParameters must succeed
+      - prepareBSDInterface performs internal setup and then BPF attach
+      - if BPF attach fails, BSD interface bring-up is considered failed
+    likely_associated_steps:
+      - set/get BSD name and unit
+      - optional deferred BSD attach
+      - logical link registration
+    minimum_emulation_for_new_driver:
+      - construct a BSD-facing interface object before operational link-up
+      - make prepareBSDInterface-equivalent succeed
+      - expose a valid ifnet handle/path for lower consumers
+      - attach to packet tap/BPF equivalent if the host stack expects one
+
+  queue_and_datapath_binding:
+    observed_contracts:
+      - packetSpace(index) queries queue-space registry from interface ivars
+      - removePacketQueue routes through bus/controller validity checks
+      - lower PCIe/Skywalk code detaches TX submission queues using bus skywalk objects
+    practical_rule:
+      - queue lifecycle is subordinate to interface lifecycle; do not tie interface existence to a single queue instance
+
+  power_notifications:
+    observed_contracts:
+      - interface receives powerOnNotification
+      - interface receives powerOffNotification
+      - sleep/wake transitions are also reflected in higher FSMs
+    practical_rule:
+      - power transitions should preserve interface identity, even if datapath is suspended
+
+  teardown_and_free:
+    observed_contracts:
+      - queue-related objects are released from interface ivars/free path
+      - interface monitor/reporter objects may be destroyed separately
+      - free path assumes prior attach objects may already be null
+    practical_rule:
+      - teardown must tolerate partial initialization and partial bring-up failure
+
+missing_details_closed_by_this_doc:
+  - "Creation/attach/operational link are now separated explicitly"
+  - "BSD-facing attach is documented as a distinct pre-LINK_UP stage"
+  - "ifnet visibility is documented as earlier than operational LINK_UP"
+  - "queue lifecycle is tied to interface identity but not equivalent to it"
+  - "power/teardown lifecycle of the interface object is documented"
+
+driver_porting_recipe:
+  minimal_interface_recipe:
+    - "Create Skywalk/BSD-facing interface object early"
+    - "Bind provider/controller/unit/queue registry"
+    - "Run initBSDInterfaceParameters-equivalent"
+    - "Run prepareBSDInterface-equivalent and ensure packet-tap/BPF attach works"
+    - "Expose ifnet handle/path"
+    - "Only then feed LINK_UP / CONNECT_COMPLETE / IPV4_STATUS into higher planes"
+  anti_patterns:
+    - "Creating the interface only after association/connect success"
+    - "Destroying and recreating the BSD identity on each sleep/wake"
+    - "Treating queue attach as equivalent to interface creation"
+    - "Skipping packet tap/BPF attach in an environment that expects it"

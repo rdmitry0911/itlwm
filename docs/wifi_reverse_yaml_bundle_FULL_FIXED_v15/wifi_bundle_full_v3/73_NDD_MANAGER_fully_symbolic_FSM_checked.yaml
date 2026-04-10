@@ -1,0 +1,275 @@
+version: 1
+topic: WCLNearbyDeviceDiscoveryManager fully symbolic FSM
+status: checked
+source: BootKernelExtensions.kc 26.3 (25D125)
+fsm_name: NDD_MANAGER
+context_va: 18446743523991510016
+context_fileoff: 36723712
+owner_class: WCLNearbyDeviceDiscoveryManager
+states:
+  0: IDLE
+  1: ACTIVE
+  2: PASSIVE
+  3: PASSIVE_HALTED
+  4: HALTED
+  5: ABORTED
+events:
+  0: NDD_REQ_ACTIVE
+  1: NDD_REQ_PASSIVE
+  2: NDD_REQ_FAILED
+  3: NDD_ABORT_REQ
+  4: NDD_COMPLETE
+  5: DRIVER_RESET
+  6: HALT
+  7: RESUME
+  8: SYSTEM_POWER_OFF
+  9: TIMEOUT
+actions:
+  0:
+    name: ignoreOrCleanup
+    note: generic cleanup/ignore handler
+  1:
+    name: startActiveRequest
+    note: initiates active NDD scan
+  2:
+    name: startPassiveRequest
+    note: initiates passive NDD scan
+  3:
+    name: handleComplete
+    note: processes NDD scan completion
+  4:
+    name: haltDuringActive
+    note: halts during active scan
+  5:
+    name: timeoutInActive
+    note: handles timeout in active state
+  6:
+    name: systemPowerOff
+    note: handles system power off
+  7:
+    name: failedInPassiveHalted
+    note: handles failure in passive_halted
+  8:
+    name: reqActiveFromPassiveHalted
+    note: active request from passive_halted
+  9:
+    name: resetComplete
+    note: driver reset completion
+  10:
+    name: reqActiveFromHalted
+    note: active request from halted
+  11:
+    name: powerOffInPassive
+    note: power off while passive
+  12:
+    name: resumeInPassive
+    note: resume while in passive state
+  13:
+    name: haltInHaltedOrAbortReq
+    note: halt while already halted/abort
+transition_matrix:
+  IDLE:
+    NDD_REQ_ACTIVE:
+      next: ACTIVE
+      action: startActiveRequest
+    NDD_REQ_PASSIVE:
+      next: PASSIVE
+      action: startPassiveRequest
+    NDD_REQ_FAILED:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_ABORT_REQ:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_COMPLETE:
+      next: IDLE
+      action: resetComplete
+    DRIVER_RESET:
+      next: HALTED
+      action: ignoreOrCleanup
+    HALT:
+      next: HALTED
+      action: ignoreOrCleanup
+    RESUME:
+      next: =SELF=
+      action: ignoreOrCleanup
+    SYSTEM_POWER_OFF:
+      next: IDLE
+      action: systemPowerOff
+    TIMEOUT:
+      next: =SELF=
+      action: ignoreOrCleanup
+  ACTIVE:
+    NDD_REQ_ACTIVE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_REQ_PASSIVE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_REQ_FAILED:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_ABORT_REQ:
+      next: IDLE
+      action: ignoreOrCleanup
+    NDD_COMPLETE:
+      next: ABORTED
+      action: handleComplete
+    DRIVER_RESET:
+      next: IDLE
+      action: resetComplete
+    HALT:
+      next: HALTED
+      action: haltDuringActive
+    RESUME:
+      next: HALTED
+      action: handleComplete
+    SYSTEM_POWER_OFF:
+      next: =SELF=
+      action: ignoreOrCleanup
+    TIMEOUT:
+      next: ACTIVE
+      action: timeoutInActive
+  PASSIVE:
+    NDD_REQ_ACTIVE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_REQ_PASSIVE:
+      next: HALTED
+      action: handleComplete
+    NDD_REQ_FAILED:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_ABORT_REQ:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_COMPLETE:
+      next: IDLE
+      action: ignoreOrCleanup
+    DRIVER_RESET:
+      next: ABORTED
+      action: handleComplete
+    HALT:
+      next: IDLE
+      action: resetComplete
+    RESUME:
+      next: PASSIVE_HALTED
+      action: resumeInPassive
+    SYSTEM_POWER_OFF:
+      next: PASSIVE_HALTED
+      action: powerOffInPassive
+    TIMEOUT:
+      next: =SELF=
+      action: ignoreOrCleanup
+  PASSIVE_HALTED:
+    NDD_REQ_ACTIVE:
+      next: PASSIVE
+      action: reqActiveFromPassiveHalted
+    NDD_REQ_PASSIVE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_REQ_FAILED:
+      next: HALTED
+      action: handleComplete
+    NDD_ABORT_REQ:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_COMPLETE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    DRIVER_RESET:
+      next: =SELF=
+      action: ignoreOrCleanup
+    HALT:
+      next: HALTED
+      action: haltInHaltedOrAbortReq
+    RESUME:
+      next: HALTED
+      action: resetComplete
+    SYSTEM_POWER_OFF:
+      next: =SELF=
+      action: ignoreOrCleanup
+    TIMEOUT:
+      next: =SELF=
+      action: ignoreOrCleanup
+  HALTED:
+    NDD_REQ_ACTIVE:
+      next: PASSIVE
+      action: reqActiveFromHalted
+    NDD_REQ_PASSIVE:
+      next: PASSIVE_HALTED
+      action: ignoreOrCleanup
+    NDD_REQ_FAILED:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_ABORT_REQ:
+      next: HALTED
+      action: haltInHaltedOrAbortReq
+    NDD_COMPLETE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    DRIVER_RESET:
+      next: =SELF=
+      action: ignoreOrCleanup
+    HALT:
+      next: =SELF=
+      action: ignoreOrCleanup
+    RESUME:
+      next: =SELF=
+      action: ignoreOrCleanup
+    SYSTEM_POWER_OFF:
+      next: HALTED
+      action: resetComplete
+    TIMEOUT:
+      next: =SELF=
+      action: ignoreOrCleanup
+  ABORTED:
+    NDD_REQ_ACTIVE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_REQ_PASSIVE:
+      next: IDLE
+      action: ignoreOrCleanup
+    NDD_REQ_FAILED:
+      next: HALTED
+      action: failedInPassiveHalted
+    NDD_ABORT_REQ:
+      next: =SELF=
+      action: ignoreOrCleanup
+    NDD_COMPLETE:
+      next: =SELF=
+      action: ignoreOrCleanup
+    DRIVER_RESET:
+      next: =SELF=
+      action: ignoreOrCleanup
+    HALT:
+      next: =SELF=
+      action: ignoreOrCleanup
+    RESUME:
+      next: =SELF=
+      action: ignoreOrCleanup
+    SYSTEM_POWER_OFF:
+      next: =SELF=
+      action: ignoreOrCleanup
+    TIMEOUT:
+      next: IDLE
+      action: resetComplete
+raw_matrix_hex: '01 01 02 02 ff 00 ff 00 00 09 04 00 04 00 ff 00 00 06 ff 00
+
+  ff 00 ff 00 ff 00 00 00 05 03 00 09 04 04 04 03 ff 00 01 05
+
+  ff 00 04 03 ff 00 ff 00 00 00 05 03 00 09 03 0c 03 0b ff 00
+
+  02 08 ff 00 04 03 ff 00 ff 00 ff 00 04 0d 04 09 ff 00 ff 00
+
+  02 0a 03 00 ff 00 04 0d ff 00 ff 00 ff 00 ff 00 04 09 ff 00
+
+  ff 00 00 00 04 07 ff 00 ff 00 ff 00 ff 00 ff 00 ff 00 00 09
+
+  '
+consistency_check:
+  result: ok_with_inferred_action_names
+  notes:
+  - raw_matrix_hex matches transition_matrix exactly (120 bytes = 6 states x 10 events x 2 bytes).
+  - Action names are explicitly semantic inferences rather than KDK-symbol-backed names; this is documented in the file itself.
+  - No internal contradictions were found.

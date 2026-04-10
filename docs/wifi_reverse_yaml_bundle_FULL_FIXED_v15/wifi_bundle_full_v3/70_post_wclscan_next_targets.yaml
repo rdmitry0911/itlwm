@@ -1,0 +1,56 @@
+version: 1
+topic: Post-WCLScanManager priority queue
+status: updated_after_first_fully_symbolic_fsm
+summary:
+  - First fully symbolic CommonFsmManager owner completed: WCLScanManager / SCAN_MANAGER.
+  - The next goal is to maximize symbolic reuse by targeting owners that are structurally closest to scan.
+  - Priority is based on expected reuse of CommonFsmManager descriptor format, bulletin-board plumbing, power/reset interactions, and proximity to already confirmed event surfaces.
+completed_anchor:
+  owner: WCLScanManager
+  fsm_name: SCAN_MANAGER
+  result: fully_symbolic
+  source_file: 69_WCLScanManager_fully_symbolic_FSM.yaml
+selection_criteria:
+  - shares CommonFsmManager or WCLFsmManager plumbing
+  - already has observable processEvent or state-read patterns in decompilation
+  - likely adjacent to scan / join / association / power-transition control-plane
+  - likely to reuse bulletin-board callback topology
+priority_queue:
+  - rank: 1
+    target: Join/association manager adjacent to scan path
+    rationale:
+      - likely consumes scan output directly
+      - likely reuses similar request/complete/abort/timeout event vocabulary
+      - best candidate for second fully symbolic FSM with minimal methodology change
+    expected_outputs:
+      - owner-local descriptor origin
+      - state and event vectors
+      - action callback map
+      - join/assoc transition matrix
+  - rank: 2
+    target: Power/halt/resume scan-adjacent owner
+    rationale:
+      - WCLScanManager already shows HALT/RESUME/SYSTEM_POWER_* semantics
+      - nearby owner may share reset/power bulletin-board channels
+      - useful for cross-owner consistency of halt/resume semantics
+    expected_outputs:
+      - symbolic power-transition FSM
+      - mapping of SYSTEM_POWER_OFF / SYSTEM_POWER_ON / DRIVER_RESET semantics across owners
+  - rank: 3
+    target: Roam or roam-trigger manager
+    rationale:
+      - likely scan-adjacent and event-rich
+      - high value for end-to-end Wi-Fi control-plane reconstruction
+    expected_outputs:
+      - roam trigger conditions
+      - abort/complete/reset paths
+      - cross-links to join/assoc and scan owners
+cross_owner_tasks:
+  - Build a normalized CommonFsmManager descriptor dumper schema from SCAN_MANAGER.
+  - Compare bulletin-board callback tables across candidate owners.
+  - Build a reusable naming convention for state/event/action vectors.
+  - Correlate power/reset events with AppleOLYHAL and Converged assertion surfaces.
+stop_conditions:
+  - second fully symbolic owner recovered
+  - reusable descriptor-lift recipe proven on at least two owners
+  - cross-owner event naming consistency established

@@ -1,0 +1,48 @@
+version: v11
+owner: WCLScanManager
+goal: first fully symbolic FSM candidate
+why_this_owner_first:
+  - observed direct calls to CommonFsmManager::processEvent with small numeric event domain
+  - explicit reads of current_state from runtime
+  - explicit ignore path and fatal stuck-state guard
+  - rich log strings around scan request handling
+confirmed_observations:
+  runtime_access:
+    - owner reads current state through manager->runtime->current_state
+  events:
+    - event_1:
+        call_shape: processEvent(1, 0)
+        current_interpretation: recovery_or_state_advance_event_after local precheck failure path
+        confidence: semi_symbolic
+    - event_2:
+        call_shape: processEvent(2, request)
+        current_interpretation: incoming scan request dispatch event
+        confidence: semi_symbolic
+  ignore_path:
+    return_code: 0xe00002bc
+    log_shape: "WCLScanManager ignoring in state %d"
+  hard_guard:
+    assertion: "Invalid scan state, avoid state machine being stuck"
+semi_symbolic_overlay:
+  states:
+    - numeric_state_from_runtime
+    - semantics_currently_bound_to_owner_only
+    - full names_blocked_by_descriptor_origin_gap
+  events:
+    1:
+      name_candidate: precheck_failed_or_force_transition
+      evidence_level: low_to_medium
+    2:
+      name_candidate: scan_request_arrived
+      evidence_level: medium
+  actions:
+    unresolved: true
+    note: action callback identities should become nameable once descriptor/action table origin is lifted
+practical_next_steps:
+  - recover the exact CommonFsmManager member field inside WCLScanManager
+  - recover the owner init path that assigns the descriptor blob
+  - verify candidate descriptor counts against observed event domain {1,2,...}
+  - bind action ids to nearby WCLScanManager local handlers
+expected_payoff:
+  - first end-to-end symbolic FSM in the bundle
+  - reusable methodology for second owner

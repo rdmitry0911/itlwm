@@ -1,0 +1,52 @@
+version: 1
+topic: IO80211GASDefragFsm fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125)
+
+fsm_name: GAS_DEFRAG_FSM
+context_va: 0xffffff8002403550
+context_fileoff: 0x2303550
+owner_class: IO80211GASDefragFsm
+
+states:
+  0: BUFFER_EMPTY
+  1: BUFFER_PARTIAL
+  2: BUFFER_COMPLETE
+
+events:
+  0: FRAG_RX_PARTIAL
+  1: FRAG_RX_SUCCESS
+  2: FRAG_RX_FAIL
+  3: COMPLETE_FAIL
+
+actions:
+  0: { name: unhandledEvent,                        kdk_symbol: "IO80211GASDefragFsm::unhandledEvent" }
+  1: { name: ignore,                                kdk_symbol: "IO80211GASDefragFsm::ignore" }
+  2: { name: processGasFragRxPartial,               kdk_symbol: "IO80211GASDefragFsm::processGasFragRxPartial" }
+  3: { name: processGasFragRxPartialInBufferEmpty,   kdk_symbol: "IO80211GASDefragFsm::processGasFragRxPartialInBufferEmpty" }
+  4: { name: processGasCompleteFail,                kdk_symbol: "IO80211GASDefragFsm::processGasCompleteFail" }
+  5: { name: coreCapture,                           kdk_symbol: "IO80211GASDefragFsm::coreCapture" }
+
+transition_matrix:
+  BUFFER_EMPTY:
+    FRAG_RX_PARTIAL:  { next: BUFFER_PARTIAL,  action: processGasFragRxPartialInBufferEmpty }
+    FRAG_RX_SUCCESS:  { next: BUFFER_COMPLETE, action: processGasFragRxPartialInBufferEmpty }
+    FRAG_RX_FAIL:     { next: BUFFER_COMPLETE, action: processGasFragRxPartialInBufferEmpty }
+    COMPLETE_FAIL:    { next: BUFFER_EMPTY,    action: ignore }
+
+  BUFFER_PARTIAL:
+    FRAG_RX_PARTIAL:  { next: BUFFER_PARTIAL,  action: processGasFragRxPartial }
+    FRAG_RX_SUCCESS:  { next: BUFFER_COMPLETE, action: processGasFragRxPartial }
+    FRAG_RX_FAIL:     { next: BUFFER_COMPLETE, action: processGasFragRxPartial }
+    COMPLETE_FAIL:    { next: BUFFER_EMPTY,    action: processGasCompleteFail }
+
+  BUFFER_COMPLETE:
+    FRAG_RX_PARTIAL:  { next: BUFFER_COMPLETE, action: coreCapture }
+    FRAG_RX_SUCCESS:  { next: BUFFER_COMPLETE, action: ignore }
+    FRAG_RX_FAIL:     { next: BUFFER_COMPLETE, action: ignore }
+    COMPLETE_FAIL:    { next: BUFFER_EMPTY,    action: processGasCompleteFail }
+
+raw_matrix_hex: |
+  01 03 02 03 02 03 00 01
+  01 02 02 02 02 02 00 04
+  02 05 02 01 02 01 00 04

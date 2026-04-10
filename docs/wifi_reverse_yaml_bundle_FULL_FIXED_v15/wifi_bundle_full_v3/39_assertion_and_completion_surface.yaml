@@ -1,0 +1,93 @@
+version: v8
+scope:
+  subsystem: AppleConvergedPCI + AppleConvergedIPCOLYBTControl + AppleOLYHALMac
+  focus: assertion and async completion surface
+  objective: >-
+    Normalize the completion, quiesce, and assertion-bearing surfaces that bound the remaining
+    low-power / convergence / OLYBT transport behavior.
+
+appleolyhal_pcie_dext_surface:
+  dext_message_lifecycle:
+    pending_list_head_offset: 0x58
+    get_message_by_id:
+      method: getDextMsgInfo(msg_id)
+      semantic: intrusive-list lookup by numeric message id
+    setup_completion:
+      method: setupDextMsgCompletion(msg_id)
+      semantic: initialize completion bookkeeping for outbound dext message
+    wait_completion:
+      method: waitForDextMsgCompletion(msg_id, timeout, flags)
+      current_stub_status: returns timeout-style error in decompilation
+    signal_completion:
+      method: signalDextMsgCompletion(msg_id, status, detail)
+      current_stub_status: returns unsupported/timeout-style status in decompilation
+    abort_path:
+      method: abortPendingDextMsgs()
+      semantic: mark pending node aborted and complete outstanding waiters
+
+acipccontrol_assertion_surface:
+  link_up_check:
+    assertion_sites:
+      - ACIPCControl.cpp:0x400
+      - ACIPCControl.cpp:0x41f
+    semantic: internal link-up invariant checks
+  link_down_check:
+    assertion_sites:
+      - ACIPCControl.cpp:0x42f
+      - ACIPCControl.cpp:0x44a
+    semantic: internal link-down invariant checks
+  host_exit_sleep_completion:
+    assertion_site: ACIPCControl.cpp:0x490
+    semantic: sleep exit completion sequencing invariant
+  io_command_completion:
+    assertion_site: AppleConvergedIPCIOCommand.cpp:0x0f1
+    semantic: convergence IO completion contract invariant
+
+olybt_rti_assertion_surface:
+  acipcrtipipe:
+    io_completion_internal: ACIPCRTIPipe.cpp:0x290
+    process_td: ACIPCRTIPipe.cpp:0x2bf
+    complete_io: [ACIPCRTIPipe.cpp:0x322, ACIPCRTIPipe.cpp:0x336]
+    check_completed_io: ACIPCRTIPipe.cpp:0x346
+    check_pending_message: ACIPCRTIPipe.cpp:0x3de
+    validate_message: ACIPCRTIPipe.cpp:0x431
+    setup_message: [ACIPCRTIPipe.cpp:0x43e, ACIPCRTIPipe.cpp:0x46e]
+    message_completion: [ACIPCRTIPipe.cpp:0x478]
+  appleconvergedipcrtiinterface:
+    stop: AppleConvergedIPCRTIInterface.cpp:0x0fd
+    dummy_message_callback: AppleConvergedIPCRTIInterface.cpp:0x1a8
+    validate_properties: [0x2a5, 0x2a6]
+
+normalized_completion_patterns:
+  pattern_1_intrusive_pending_io:
+    classes:
+      - AppleOLYHALPortInterfacePCIe
+      - ACIPCRTIPipe
+    shape:
+      - enqueue pending object/node
+      - arm completion bookkeeping
+      - receive status callback or timeout
+      - validate completion state transitions
+  pattern_2_gated_power_transition:
+    classes:
+      - ACIPCControl
+      - AppleConvergedPCI-derived control surfaces
+    shape:
+      - link/quiesce/sleep transition request
+      - gated state update
+      - completion callback or assertion on impossible order
+  pattern_3_dummy_or_default_callback:
+    classes:
+      - AppleConvergedIPCRTIInterface
+    shape:
+      - placeholder callback must not see live traffic unless interface is fully initialized
+
+why_this_matters_for_wifi_bundle:
+  - convergence and OLYBT layers share low-power and completion semantics with Wi-Fi transport bring-up
+  - assertion sites reveal hard protocol invariants even when full nominal-path semantics are still blurry
+  - the completion surface is now bounded enough to map sleep/wake and transport teardown paths systematically
+
+remaining_work:
+  - map numeric completion status enums to semantic names
+  - field-lift pending IO node/message structures for RTI and OLYHAL
+  - correlate assertion surfaces with nominal success-path functions

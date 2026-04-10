@@ -1,0 +1,120 @@
+version: v7
+scope:
+  subsystem: IOSkywalkFamily / AppleBCMWLANSkywalkInterface / AppleBCMWLANBusInterfacePCIe
+  focus: override matrix and hard ABI boundary for Wi-Fi Skywalk integration
+
+validated_external_contract:
+  interface: IOSkywalkNetworkInterface
+  status: fully matched against x86_64 binary vtable
+  slots:
+    validated_methods: 41
+    validated_reserved: 10
+  implication:
+    - virtual call slot naming is stable for the Skywalk-facing interface boundary
+    - overrides in Apple Wi-Fi classes can be mapped without heuristic renaming if a call target lands on a known slot
+
+contract_buckets:
+  registration_and_bsd:
+    methods:
+      - registerNetworkInterfaceWithLogicalLink
+      - deregisterLogicalLink
+      - initBSDInterfaceParameters
+      - prepareBSDInterface
+      - finalizeBSDInterface
+      - getBSDInterface
+      - setBSDName
+      - getBSDName
+      - getBSDNamePrefix
+      - getBSDUnitNumber
+      - deferBSDAttach
+  control_plane:
+    methods:
+      - processBSDCommand
+      - processInterfaceCommand
+      - interfaceAdvisoryEnable
+      - setInterfaceEnable
+      - setRunningState
+      - handleChosenMedia
+      - reportDetailedLinkStatus
+      - classNameOverride
+  datapath_and_queues:
+    methods:
+      - setRxFlowSteering
+      - calculateRingSizeForQueue
+      - getUnsentDataByteCount
+      - getTxDataOffset
+      - bpfTap
+  mtu_and_media:
+    methods:
+      - getSupportedMediaArray
+      - getMaxTransferUnit
+      - setMaxTransferUnit
+      - setMTU
+      - getMinPacketSize
+      - getInitialMedia
+  offload_and_wake:
+    methods:
+      - getPacketTapInfo
+      - getSupportedWakeFlags
+      - enableNetworkWake
+      - getHardwareAssists
+      - setHardwareAssists
+      - getTSOOptions
+  identity_and_snapshot:
+    methods:
+      - getInterfaceFamily
+      - getInterfaceSubFamily
+      - getFeatureFlags
+      - captureInterfaceState
+      - restoreInterfaceState
+
+apple_wifi_specific_anchors:
+  AppleBCMWLANSkywalkInterface:
+    object_size: 0x140
+    ivar_candidates:
+      self_plus_0x138:
+        role: packet_space_or_queue_space_handle
+        confidence: high
+      self_index_0x27:
+        role: flag_or_small scalar in object tail
+        confidence: medium
+    semantic_use:
+      - packetSpace path can now be reasoned as implementing queue/ring-facing portions of the Skywalk contract
+      - removePacketQueue path is boundary-safe to annotate against queue management contract
+  AppleBCMWLANBusInterfacePCIe:
+    owner_plus_0x11e8:
+      role: AppleBCMWLANPCIeSkywalk instance
+      confidence: high
+    owner_plus_0x1340:
+      role: flow-id to queue-object vector base
+      confidence: high
+    owner_plus_0x174_to_0x178:
+      role: valid flow-id range
+      confidence: high
+    semantic_use:
+      - detachTxSubmFwQueue can be documented as queue-release backedge from Wi-Fi bus layer into Skywalk transport
+      - allocateSkywalkBusResource belongs to initial capacity and queue-space provisioning phase
+
+override_mapping_workflow:
+  step_1:
+    action: locate AppleBCMWLANSkywalkInterface vtable or indirect slot callers in decompilation
+  step_2:
+    action: assign method names from validated IOSkywalkNetworkInterface slot order
+  step_3:
+    action: map each override into one of the contract buckets above
+  step_4:
+    action: connect override side effects to bus-side resource owners and flow queue containers
+
+practical_reverse_output:
+  normalized_override_entry:
+    fields:
+      - slot_offset
+      - ioskywalk_method_name
+      - apple_wifi_override_symbol_or_unknown
+      - local_ivar_offsets_touched
+      - downstream_bus_calls
+      - confidence
+
+remaining_gap:
+  - direct AppleBCMWLANSkywalkInterface vtable extraction is still absent from uploaded kernel decompilation set
+  - slot-to-override mapping is therefore boundary-confirmed but only partially owner-confirmed

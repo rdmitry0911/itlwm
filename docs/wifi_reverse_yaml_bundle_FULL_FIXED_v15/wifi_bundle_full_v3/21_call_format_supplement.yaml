@@ -1,0 +1,66 @@
+version: 4
+topic: call_format_supplement
+patterns:
+  common_fsm_event_dispatch:
+    canonical_form: "CommonFsmManager::processEvent(self, event_id:u8, ctx:void*) -> IOReturn/int"
+    observed_calls:
+      - manager: WCLScanManager
+        event_ids:
+          - {id: 1, context: null, semantics: "scan request transition path after validation failure branch"}
+          - {id: 2, context: null_or_request, semantics: "alternate incoming request path when another queue/object is active"}
+        citations:
+          - "fileciteturn11file0turn11file1"
+  async_request_with_completion:
+    canonical_shape:
+      - "prepare local request structure"
+      - "populate opcode/key string/arg pointer/completion fn"
+      - "submit through firmware/control dispatch"
+      - "completion callback logs error and/or advances state"
+    example:
+      subsystem: AppleBCMWLANCoreMac
+      operation: setScanHomeAwayTime
+      evidence:
+        - "request embeds key string 'scan_home_away_time'"
+        - "callback FUN_...ccc0e handles status"
+      citation: "fileciteturn11file10"
+  timesync_engine_factory:
+    canonical_form: "AppleBCMWLANTimeSyncEngine::withProviderAndBus(provider:IOService*, bus:AppleBCMWLANBusInterface*)"
+    notes:
+      - "gated by wlan.timesync.enable tunable at factory entry"
+      - "called from AppleBCMWLANBusInterfacePCIe::configureTimeSyncCapability after AppleOLYHAL service lookup"
+    citation: "fileciteturn11file6turn11file12turn11file16"
+  dext_message_tracking:
+    subsystem: AppleOLYHALPortInterfacePCIe
+    calls:
+      - name: getDextMsgInfo
+        prototype_guess: "DextMsgInfo* getDextMsgInfo(msg_id:int)"
+      - name: setupDextMsgCompletion
+        prototype_guess: "IOReturn setupDextMsgCompletion(msg_id:u32)"
+      - name: waitForDextMsgCompletion
+        prototype_guess: "IOReturn waitForDextMsgCompletion(msg_id:u32, timeout_ms:u32, flags:u32)"
+      - name: signalDextMsgCompletion
+        prototype_guess: "IOReturn signalDextMsgCompletion(msg_id:u32, status:u32, error:int)"
+      - name: abandonDextMsg
+        prototype_guess: "IOReturn abandonDextMsg(msg_id:u32, reason:u32)"
+      - name: abortPendingDextMsgs
+        prototype_guess: "void abortPendingDextMsgs()"
+    citation: "fileciteturn5file3"
+  rti_pipe_message_path:
+    subsystem: ACIPCRTIPipe
+    phases:
+      - validateMessage
+      - setupMessage
+      - messageCompletion
+      - checkPendingMessage
+      - checkCompletedIO
+      - linkRecovery
+    notes:
+      - "cold assertion sites expose source file and phase boundaries"
+    citation: "fileciteturn11file11turn11file15turn11file18"
+  skywalk_packet_helpers:
+    subsystem: AppleBCMWLANPCIeSkywalkPacket
+    helpers:
+      - {name: setPacketId, field_offset_in_backing: 0x70}
+      - {name: getPacketId, field_offset_in_backing: 0x70}
+      - {name: setIngressEgressTimestamp, notes: "timestamp helper follows immediately"}
+    citation: "fileciteturn11file13"

@@ -1,0 +1,138 @@
+version: 6
+scope: kernel
+subject: commonfsm_descriptor_decode
+summary:
+  goal: >-
+    Lock down the concrete in-memory descriptor format consumed by CommonFsmManager,
+    including row packing, callback entry layout, and the exact state/event/action
+    dispatch algorithm.
+  confidence_model:
+    confirmed: directly visible in validateFsmConfig/processEvent/getState
+    inferred: consistent but still awaiting static rodata lift from owner-specific descriptors
+
+class_contract:
+  class_name: CommonFsmManager
+  object_size: 0x18
+  public_surface:
+    - getState()
+    - validateFsmConfig()
+    - processEvent(u8 event, void *payload)
+  internal_anchor:
+    confirmed:
+      - self+0x10 -> runtime_ptr
+      - runtime_ptr+0x08 -> descriptor_ptr
+      - runtime_ptr+0x10 -> current_state:u8
+      - runtime_ptr+0x11 -> last_event:u8
+      - runtime_ptr+0x12 -> flags/descriptor_valid bitfield
+
+descriptor_format:
+  top_level:
+    confirmed:
+      - offset: +0x00
+        name: transition_matrix_ptr
+        type: u8 *
+        semantics: >-
+          Packed matrix storing 2-byte transition cells indexed by
+          state * event_count + event.
+      - offset: +0x08
+        name: action_table_ptr
+        type: action_entry[ ]
+        semantics: >-
+          Table of 0x10-byte action entries. Entry[0] must be a non-null callback/
+          trampoline target.
+      - offset: +0x10
+        name: state_name_table_ptr
+        type: const char ** or opaque name/metadata table
+        semantics: >-
+          Passed into the verbose trace callback as the source of state-name lookups.
+      - offset: +0x18
+        name: event_name_table_ptr
+        type: const char ** or opaque name/metadata table
+        semantics: >-
+          Passed into the verbose trace callback as the source of event-name lookups.
+      - offset: +0x20
+        name: fsm_name_or_trace_cookie
+        type: pointer
+        semantics: >-
+          Forwarded into the verbose trace hook alongside state/event names. Likely
+          FSM name string or trace descriptor.
+      - offset: +0x29
+        name: event_count
+        type: u8
+      - offset: +0x2A
+        name: state_count
+        type: u8
+      - offset: +0x2B
+        name: action_count
+        type: u8
+  transition_cell:
+    confirmed:
+      - byte0: next_state
+      - byte1: action_id
+    semantics:
+      next_state:
+        - 0xFF means preserve current state
+        - otherwise must be < state_count
+      action_id:
+        - must be < action_count
+        - selects action_table[action_id]
+  action_entry:
+    size: 0x10
+    confirmed:
+      - qword0: callback_or_trampoline
+      - qword1: this_adjustment_or_bound_context_offset
+    dispatch_rule: >-
+      The callback target is read from qword0, while the receiver pointer is adjusted
+      by adding qword1 to the manager object pointer before invocation.
+    trampoline_rule:
+      confirmed: >-
+        If callback_or_trampoline has bit0 set, the real target is loaded through a
+        secondary adjustment using the adjusted receiver pointer.
+
+process_event_algorithm:
+  confirmed_steps:
+    - load runtime_ptr = *(self+0x10)
+    - load descriptor_ptr = *(runtime_ptr+0x08)
+    - old_state = *(runtime_ptr+0x10)
+    - linear_index = event_count * old_state + event
+    - next_state = transition_matrix[linear_index * 2 + 0]
+    - action_id  = transition_matrix[linear_index * 2 + 1]
+    - if next_state == 0xFF: effective_next_state = old_state
+    - else: effective_next_state = next_state
+    - store runtime.current_state = effective_next_state
+    - store runtime.last_event = event
+    - if runtime.flags & 1: emit verbose trace with names/cookie from descriptor
+    - entry = action_table[action_id]
+    - adjusted_this = self + entry.qword1
+    - target = entry.qword0 (or tramp-resolved target)
+    - call target(adjusted_this, payload)
+  implications:
+    - CommonFsmManager is a thin descriptor interpreter, not the owner of per-FSM logic
+    - symbolic recovery is therefore descriptor-driven, not class-driven
+    - owner-specific meaning lives in the action callbacks and the name/metadata tables
+
+validation_algorithm:
+  confirmed_checks:
+    - descriptor_ptr != NULL
+    - descriptor fields +0x20/+0x10/+0x18 must all be non-null before descriptor_valid is set
+    - for each state in [0, state_count):
+        for each event in [0, event_count):
+          next_state must be 0xFF or < state_count
+          action_id must be < action_count
+          action_table[action_id].qword0 must be non-null
+  side_effects:
+    - runtime.flags.bit0 is set/cleared based on descriptor completeness
+    - malformed descriptors fail hard with explicit validation asserts
+
+name_table_hypothesis:
+  confirmed:
+    - trace hook receives descriptor[4], descriptor[2][old_state], descriptor[3][event], descriptor[2][new_state]
+  inferred:
+    - descriptor[2] is the state-name vector
+    - descriptor[3] is the event-name vector
+    - descriptor[4] is a stable FSM-name string or per-FSM trace label
+
+immediate_followups:
+  - find every store into runtime_ptr+0x08 to recover concrete descriptor addresses
+  - dump descriptor blobs from rodata and decode their state/event/action cardinalities
+  - identify action callbacks by reading action_table[q].qword0 targets from those blobs

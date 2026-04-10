@@ -1,0 +1,50 @@
+document_type: module_inventory
+files:
+  IO80211Family_decompiled.c:
+  - CommonFsmManager
+  - IO80211Controller
+  - IO80211SkywalkInterface
+  - IO80211PeerManager
+  - IO80211AWDLPeerManager
+  - WCLController
+  - WCLScanManager
+  - WCLGASFsm
+  - WCLFsmManager
+  - WCLBssManager
+  - WCLGlue
+  AppleBCMWLANCoreMac_decompiled.c:
+  - AppleBCMWLANCore
+  - AppleBCMWLANPowerManager
+  - AppleBCMWLANJoinAdapter
+  - AppleBCMWLANNetAdapter
+  - AppleBCMWLANLQM
+  - AppleBCMWLANRoamAdapter
+  - AppleBCMWLANPowerStateAdapter
+  - AppleBCMWLANGASAdapter
+  - AppleBCMWLANKeepAliveOffload
+  - AppleBCMWLANSkywalkInterface
+  - AppleBCMWLANBusSkywalk
+  - AppleBCMWLANTxPowerManager
+  - AppleBCMWLANBssManager
+  - AppleBCMWLANTimeKeeper
+  - AppleBCMWLANTimeSyncEngine
+  AppleBCMWLANBusInterfacePCIeMac_decompiled.c:
+  - AppleBCMWLANBusInterfacePCIe
+  - AppleBCMWLANChipManagerPCIe
+  - AppleBCMWLANChipBackplane
+  - AppleBCMWLANChipMemory
+  - AppleBCMWLANChipConfigSpace
+  - AppleBCMWLANPCIeSkywalk
+  - AppleBCMWLANPCIeFlowQueue
+  - AppleBCMWLANPCIeSubmissionRing
+  - AppleBCMWLANPCIeCompletionRing
+  - AppleBCMWLANPCIeDoorbell
+  - AppleBCMWLANDMASlab
+  corecapture_decompiled.c:
+  - CCCapture
+  - CCPipe
+  - CCDataPipe
+  - CCLogPipe
+  - CCFaultReporter
+  - CCLogStream
+note: This is a reverse-engineering-oriented inventory, not a complete class graph of every helper present in the binaries.

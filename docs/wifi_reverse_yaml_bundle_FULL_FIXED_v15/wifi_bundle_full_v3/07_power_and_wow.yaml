@@ -1,0 +1,56 @@
+document_type: power_wow_lifecycle
+components:
+- AppleBCMWLANPowerManager
+- AppleBCMWLANBusInterfacePCIe
+- AppleBCMWLANCore
+confirmed_sequences:
+- name: power_manager_object_lifecycle
+  flow:
+  - withDriver
+  - initWithDriver
+  - runtime async configuration callbacks
+  - free
+  source_refs:
+  - AppleBCMWLANCoreMac_decompiled.c:22377-22391
+  - AppleBCMWLANCoreMac_decompiled.c:28266-28271
+- name: wow_core_sequence
+  flow:
+  - resetWoWStateMachine
+  - configureWoWEntry
+  - configureWoWExit
+  - resetWoWConfig
+  source_refs:
+  - AppleBCMWLANCoreMac_decompiled.c:120855-120883
+  - AppleBCMWLANCoreMac_decompiled.c:131988-132054
+  - AppleBCMWLANCoreMac_decompiled.c:132941-132977
+  - AppleBCMWLANCoreMac_decompiled.c:135867-136286
+- name: bus_low_power_sequence
+  flow:
+  - setDeviceInDeepSleep(bool)
+  - optionally hit DoorbellCR on DS exit
+  - nanoPowerCycleGated on severe recovery path
+  - disable ring event sources during certain failures
+  source_refs:
+  - AppleBCMWLANBusInterfacePCIeMac_decompiled.c:20849-20900
+  - AppleBCMWLANBusInterfacePCIeMac_decompiled.c:13743-13770
+  - AppleBCMWLANBusInterfacePCIeMac_decompiled.c:34377
+state_model:
+  device_sleep_state:
+    values:
+    - awake
+    - deep_sleep
+    status: confirmed
+  wow_config_state:
+    values:
+    - reset
+    - entry_configured
+    - sleeping
+    - exit_configured/reset
+    status: inferred from explicit entry/exit/reset functions
+  power_policy_subsystems:
+  - MIMO power save
+  - Early Beacon Termination
+  - Beacon-based channel width switch
+  - OPS
+  - Digital Nap
+  - WiFi Call / battery save policies

@@ -1,0 +1,257 @@
+version: 1
+topic: WCLScanManager fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125) via Ghidra headless + chained fixup decode
+extraction_method:
+  - gfsmSCAN_MANAGERcontext at VA 0xffffff8002401e10
+  - transition matrix at context+0xa0 (80 bytes, 4 states x 10 events x 2 bytes/cell)
+  - action table at context+0xf0 (11 entries x 0x10 bytes, Itanium ABI member func ptrs)
+  - state name vector at context+0x1a0 (10 ptrs, file offsets 0x2241311-0x2241417)
+  - event name vector at context+0x1f0 (4 ptrs at 0x2341431-0x2341490, raw kernel VAs)
+  - FSM name at context+0x210 -> "SCAN_MANAGER" (file offset 0x22414b3)
+
+fsm_name: SCAN_MANAGER
+
+states:
+  0: IDLE
+  1: IN_PROGRESS
+  2: HALTED
+  3: ABORTED
+
+events:
+  0: SCAN_REQ
+  1: SCAN_REQ_FAILED
+  2: SCAN_ABORT_REQ
+  3: SCAN_COMPLETE
+  4: HALT
+  5: RESUME
+  6: TIMEOUT
+  7: DRIVER_RESET
+  8: SYSTEM_POWER_OFF
+  9: SYSTEM_POWER_ON
+
+actions:
+  0:
+    name: handleScanRequest
+    kdk_symbol: "WCLScanManager::handleScanRequest"
+    kdk_addr: 0xffffff8002120ad8
+    kc_addr: 0xffffff8002020adc
+  1:
+    name: handleScanRequestFailed
+    kdk_symbol: "WCLScanManager::handleScanRequestFailed"
+    kdk_addr: 0xffffff8002120e9a
+    kc_addr: 0xffffff8002020e9e
+  2:
+    name: handleAbortRequest
+    kdk_symbol: "WCLScanManager::handleAbortRequest"
+    kdk_addr: 0xffffff8002120ea2
+    kc_addr: 0xffffff8002020ea6
+  3:
+    name: handleScanComplete
+    kdk_symbol: "WCLScanManager::handleScanComplete"
+    kdk_addr: 0xffffff8002121082
+    kc_addr: 0xffffff8002021086
+  4:
+    name: ignore
+    kdk_symbol: "WCLScanManager::ignore"
+    kdk_addr: 0xffffff8002120a70
+    kc_addr: 0xffffff8002020a74
+  5:
+    name: handleResume
+    kdk_symbol: "WCLScanManager::handleResume"
+    kdk_addr: 0xffffff800212166c
+    kc_addr: 0xffffff8002021670
+  6:
+    name: handleTimeout
+    kdk_symbol: "WCLScanManager::handleTimeout"
+    kdk_addr: 0xffffff80021214b6
+    kc_addr: 0xffffff80020214ba
+  7:
+    name: handleTimeoutAbort
+    kdk_symbol: "WCLScanManager::handleTimeoutAbort"
+    kdk_addr: 0xffffff8002121708
+    kc_addr: 0xffffff800202170c
+  8:
+    name: handleTimeoutAssert
+    kdk_symbol: "WCLScanManager::handleTimeoutAssert"
+    kdk_addr: 0xffffff80021216ba
+    kc_addr: 0xffffff80020216be
+  9:
+    name: handleDriverReset
+    kdk_symbol: "WCLScanManager::handleDriverReset"
+    kdk_addr: 0xffffff8002121794
+    kc_addr: 0xffffff8002021798
+  10:
+    name: handleScanAbort
+    kdk_symbol: "WCLScanManager::handleScanAbort"
+    kdk_addr: 0xffffff8002121832
+    kc_addr: 0xffffff8002021836
+
+# Transition matrix: cell = [next_state, action_id]
+# 0xFF next_state = stay in current state (SELF-transition)
+transition_matrix:
+  IDLE:
+    SCAN_REQ:         { next: IN_PROGRESS, action: handleScanRequest }
+    SCAN_REQ_FAILED:  { next: =SELF=,      action: ignore }
+    SCAN_ABORT_REQ:   { next: =SELF=,      action: ignore }
+    SCAN_COMPLETE:    { next: IDLE,         action: handleScanComplete }
+    HALT:             { next: HALTED,       action: ignore }
+    RESUME:           { next: =SELF=,      action: ignore }
+    TIMEOUT:          { next: IDLE,         action: handleTimeoutAssert }
+    DRIVER_RESET:     { next: HALTED,       action: ignore }
+    SYSTEM_POWER_OFF: { next: HALTED,       action: ignore }
+    SYSTEM_POWER_ON:  { next: =SELF=,      action: ignore }
+
+  IN_PROGRESS:
+    SCAN_REQ:         { next: IN_PROGRESS, action: handleScanRequest }
+    SCAN_REQ_FAILED:  { next: IDLE,         action: handleScanRequestFailed }
+    SCAN_ABORT_REQ:   { next: ABORTED,      action: handleAbortRequest }
+    SCAN_COMPLETE:    { next: IDLE,         action: handleScanComplete }
+    HALT:             { next: HALTED,       action: handleAbortRequest }
+    RESUME:           { next: =SELF=,      action: ignore }
+    TIMEOUT:          { next: IN_PROGRESS, action: handleTimeout }
+    DRIVER_RESET:     { next: HALTED,       action: handleDriverReset }
+    SYSTEM_POWER_OFF: { next: HALTED,       action: handleScanAbort }
+    SYSTEM_POWER_ON:  { next: =SELF=,      action: ignore }
+
+  HALTED:
+    SCAN_REQ:         { next: =SELF=,      action: ignore }
+    SCAN_REQ_FAILED:  { next: =SELF=,      action: ignore }
+    SCAN_ABORT_REQ:   { next: =SELF=,      action: ignore }
+    SCAN_COMPLETE:    { next: HALTED,       action: handleScanComplete }
+    HALT:             { next: =SELF=,      action: ignore }
+    RESUME:           { next: IDLE,         action: handleResume }
+    TIMEOUT:          { next: HALTED,       action: handleTimeoutAbort }
+    DRIVER_RESET:     { next: =SELF=,      action: ignore }
+    SYSTEM_POWER_OFF: { next: =SELF=,      action: ignore }
+    SYSTEM_POWER_ON:  { next: IDLE,         action: handleResume }
+
+  ABORTED:
+    SCAN_REQ:         { next: =SELF=,      action: ignore }
+    SCAN_REQ_FAILED:  { next: =SELF=,      action: ignore }
+    SCAN_ABORT_REQ:   { next: =SELF=,      action: ignore }
+    SCAN_COMPLETE:    { next: IDLE,         action: handleScanComplete }
+    HALT:             { next: HALTED,       action: ignore }
+    RESUME:           { next: =SELF=,      action: ignore }
+    TIMEOUT:          { next: ABORTED,      action: handleTimeoutAbort }
+    DRIVER_RESET:     { next: =SELF=,      action: ignore }
+    SYSTEM_POWER_OFF: { next: =SELF=,      action: ignore }
+    SYSTEM_POWER_ON:  { next: =SELF=,      action: ignore }
+
+# Raw transition matrix bytes (for verification)
+# Address: gfsmSCAN_MANAGERcontext + 0xa0
+# Format: [next_state:u8, action_id:u8] per cell, row-major, stride = event_count * 2
+raw_matrix_hex: |
+  01 00 ff 04 ff 04 00 03  02 04 ff 04 00 08 02 04
+  02 04 ff 04 01 00 00 01  03 02 00 03 02 02 ff 04
+  01 06 02 09 02 0a ff 04  ff 04 ff 04 ff 04 02 03
+  ff 04 00 05 02 07 ff 04  ff 04 00 05 ff 04 ff 04
+  ff 04 00 03 02 04 ff 04  03 07 ff 04 ff 04 ff 04
+
+# Context layout within gfsmSCAN_MANAGERcontext (VA 0xffffff8002401e10)
+context_layout:
+  +0x000_to_0x097:
+    description: "WCLFsmManager bulletin board callback table (7 entries @ 0x18 stride)"
+  +0x098_to_0x09f:
+    description: "padding / reserved (zeros, except +0x97 = 0x03)"
+  +0x0a0_to_0x0ef:
+    description: "transition matrix (80 bytes = 4 states x 10 events x 2 bytes/cell)"
+  +0x0f0_to_0x19f:
+    description: "action table (11 entries x 0x10 bytes = 176 bytes)"
+    note: "Itanium ABI member function pointers {func_ptr:8, this_adj:8}"
+  +0x1a0_to_0x1ef:
+    description: "state name vector (10 x 8-byte ptrs, chained fixup encoded file offsets)"
+    note: "10 pointers but only 4 used (states 0-3); rest point to event name strings"
+  +0x1f0_to_0x20f:
+    description: "event name vector overflow / additional string ptrs (raw kernel VAs)"
+  +0x210:
+    description: "FSM name pointer -> 'SCAN_MANAGER'"
+
+# Address offset note:
+# KDK symbols (from /srv/project/ghidra_output/kdk_symbols.txt) have addresses
+# that differ from the BootKC chained fixup targets by a constant offset.
+# Example: KDK ignore=0x02120a70, KC target=0x02020a74 (delta=0x0FFFFC).
+# The deltas between handlers are identical in both, confirming the mapping.
+kdk_to_kc_note: >-
+  The KDK and BootKC addresses differ by ~0x100000 (likely different KC base
+  or build variant). Handler identification was verified by matching inter-function
+  deltas, which are identical in both address spaces.
+
+# Bulletin board callback table at context+0x00 (WCLFsmManager infrastructure)
+bulletin_board_callbacks:
+  - index: 0
+    func_kc: 0xffffff800201619a
+    meta: 0x01880001
+  - index: 1
+    func_kc: 0xffffff800201620a
+    meta: 0x00220003
+  - index: 2
+    func_kc: 0xffffff8002015366
+    meta: 0x00270002
+  - index: 3
+    func_kc: 0xffffff8002015a9a
+    meta: 0x01740001
+  - index: 4
+    func_kc: 0xffffff8002015ca8
+    meta: 0x00500002
+  - index: 5
+    func_kc: 0xffffff80020160f8
+    meta: 0x01f70001
+  - index: 6
+    func_kc: 0xffffff8002016232
+    meta: null
+
+# Additional handlers found past the FSM context (bulletin board message handlers)
+additional_handlers:
+  - func: "WCLScanManager::scanDoneEventHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211e038
+  - func: "WCLScanManager::scanRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211e31e
+  - func: "WCLScanManager::scanResultRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211e67c
+  - func: "WCLScanManager::scanCacheRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211ec5a
+  - func: "WCLScanManager::scanCacheClearRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211eef2
+  - func: "WCLScanManager::scanSetPowerProfileHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211f086
+  - func: "WCLScanManager::scanStatusRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211e8d2
+  - func: "WCLScanManager::scanAbortRequestHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211ef0c
+  - func: "WCLScanManager::scanValidChannelupdateHandler(bulletinBoardMessage&)"
+    addr: 0xffffff800211ef8e
+
+# String vector verification
+# The state and event name strings are contiguous in __cstring at file offset 0x2241311:
+string_table:
+  - offset: 0x2241311
+    string: "SCAN_MANAGER_STATE_IDLE"
+  - offset: 0x2241329
+    string: "SCAN_MANAGER_STATE_IN_PROGRESS"
+  - offset: 0x2241348
+    string: "SCAN_MANAGER_STATE_HALTED"
+  - offset: 0x2241362
+    string: "SCAN_MANAGER_STATE_ABORTED"
+  - offset: 0x224137d
+    string: "SCAN_MANAGER_EVENT_SCAN_REQ"
+  - offset: 0x2241399
+    string: "SCAN_MANAGER_EVENT_SCAN_REQ_FAILED"
+  - offset: 0x22413bc
+    string: "SCAN_MANAGER_EVENT_SCAN_ABORT_REQ"
+  - offset: 0x22413de
+    string: "SCAN_MANAGER_EVENT_SCAN_COMPLETE"
+  - offset: 0x22413ff
+    string: "SCAN_MANAGER_EVENT_HALT"
+  - offset: 0x2241417
+    string: "SCAN_MANAGER_EVENT_RESUME"
+  - offset: 0x2241431
+    string: "SCAN_MANAGER_EVENT_TIMEOUT"
+  - offset: 0x224144c
+    string: "SCAN_MANAGER_EVENT_DRIVER_RESET"
+  - offset: 0x224146c
+    string: "SCAN_MANAGER_EVENT_SYSTEM_POWER_OFF"
+  - offset: 0x2241490
+    string: "SCAN_MANAGER_EVENT_SYSTEM_POWER_ON"
+  - offset: 0x22414b3
+    string: "SCAN_MANAGER"

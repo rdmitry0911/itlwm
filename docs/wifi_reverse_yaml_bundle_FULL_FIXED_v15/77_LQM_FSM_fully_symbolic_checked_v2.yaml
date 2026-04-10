@@ -1,0 +1,40 @@
+version: 1
+topic: IO80211LQMData fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125)
+
+fsm_name: LQM_FSM
+context_va: 0xffffff8002405f38
+context_fileoff: 0x2305f38
+owner_class: IO80211LQMData
+
+states:
+  0: IDLE
+  1: ACTIVE
+
+events:
+  0: TIMER
+  1: START
+  2: STOP
+
+actions:
+  0: { name: unhandledEvent, kdk_symbol: "IO80211LQMData::unhandledEvent" }
+  1: { name: ignore,         kdk_symbol: "IO80211LQMData::ignore" }
+  2: { name: start,          kdk_symbol: "IO80211LQMData::start" }
+  3: { name: stop,           kdk_symbol: "IO80211LQMData::stop" }
+  4: { name: timer,          kdk_symbol: "IO80211LQMData::timer" }
+
+transition_matrix:
+  IDLE:
+    TIMER:  { next: =SELF=, action: unhandledEvent }
+    START:  { next: ACTIVE, action: start }
+    STOP:   { next: IDLE,   action: stop }
+
+  ACTIVE:
+    TIMER:  { next: ACTIVE, action: timer }
+    START:  { next: ACTIVE, action: start }
+    STOP:   { next: IDLE,   action: stop }
+
+raw_matrix_hex: |
+  ff 00 01 02 00 03
+  01 04 01 02 00 03

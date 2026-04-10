@@ -1,0 +1,20 @@
+document_type: roam_association_lifecycle_v2
+components:
+  - AppleBCMWLANRoamAdapter
+  - AppleBCMWLANCore roam handlers
+  - AppleBCMWLANPowerStateAdapter
+confirmed_points:
+  - Association start is logged with channel/bandwidth context.
+  - Core has dedicated roam preparation, roam scan start, and roam completion/failure handling regions.
+  - Core stores/report last roam status and a human-readable reason string.
+  - PowerStateAdapter configures roam scan policy for associated sleep.
+phases:
+  - association_start
+  - roam_prep
+  - roam_scan_start
+  - roam_decision_or_fw_exchange
+  - roam_complete_or_fail
+  - last_reason_publish
+substate_notes:
+  - Multiple roam-related enums/strings exist but are not fully lifted in v2.
+  - Roam is cross-cut by sleep policy and likely by LQM/link-quality decisions.

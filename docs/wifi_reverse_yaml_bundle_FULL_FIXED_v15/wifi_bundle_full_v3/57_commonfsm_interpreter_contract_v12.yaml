@@ -1,0 +1,92 @@
+document: CommonFsmManager interpreter contract v12
+version: 12
+status: confirmed_core_layout_with_remaining_descriptor_origin_gap
+purpose:
+  - Normalize the currently confirmed in-memory interpreter model for CommonFsmManager.
+  - Separate confirmed interpreter behavior from still-missing descriptor-origin recovery.
+
+object_model:
+  CommonFsmManager:
+    size_class: 0x18_object
+    fields:
+      - offset: 0x10
+        name: runtime_ptr
+        confidence: confirmed
+        notes: Manager owns a runtime/instance block and delegates getState/processEvent through it.
+  runtime_block:
+    fields:
+      - offset: 0x08
+        name: descriptor_ptr
+        confidence: confirmed
+        notes: validateFsmConfig/processEvent dereference descriptor through runtime+8.
+      - offset: 0x10
+        name: current_state
+        width: u8
+        confidence: confirmed
+      - offset: 0x12
+        name: descriptor_valid
+        width: bool_or_u8
+        confidence: confirmed
+        notes: Set after descriptor presence checks inside validateFsmConfig.
+  descriptor_blob:
+    fields:
+      - offset: 0x00
+        name: transition_matrix_ptr
+        confidence: confirmed
+      - offset: 0x08
+        name: action_table_ptr
+        confidence: confirmed
+      - offset: 0x10
+        name: state_name_vector_ptr_or_trace_name_related
+        confidence: semi_confirmed
+      - offset: 0x18
+        name: event_name_vector_ptr_or_trace_name_related
+        confidence: semi_confirmed
+      - offset: 0x20
+        name: trace_cookie_or_fsm_name_related
+        confidence: inferred
+      - offset: 0x29
+        name: event_count
+        width: u8
+        confidence: confirmed
+      - offset: 0x2A
+        name: state_count
+        width: u8
+        confidence: confirmed
+      - offset: 0x2B
+        name: action_count
+        width: u8
+        confidence: confirmed
+
+transition_format:
+  cell_size: 2
+  layout:
+    - byte0: next_state
+    - byte1: action_id
+  semantics:
+    next_state_ff: may denote invalid/sentinel transition
+    action_id_must_be_lt_action_count: true
+    action_entry_size: 0x10
+    action_callback_ptr_must_be_non_null: true
+
+process_event_algorithm:
+  - load runtime_ptr from manager+0x10
+  - require runtime_ptr and descriptor_ptr
+  - validate event id < event_count and state id < state_count
+  - read 2-byte cell from transition_matrix[current_state][event]
+  - extract next_state and action_id
+  - update current_state before/around callback path
+  - dispatch callback from action_table[action_id]
+  - compute callback this-adjust via action entry payload
+  - emit trace line using fsm/state/event/next-state names when trace enabled
+
+trace_surface:
+  format: 'FSM %s: in state: %s got event: %s moved into: %s'
+  implications:
+    - descriptor-adjacent rodata must contain at least one string vector set for state/event names
+    - fully symbolic lift is blocked by locating those vectors and descriptor assignment sites, not by missing semantics of the interpreter itself
+
+remaining_gap:
+  - exact descriptor_ptr origin per owner
+  - exact action_entry sublayout beyond callback_ptr + this_adjust
+  - exact offsets/names of trace vectors inside descriptor blob

@@ -1,0 +1,71 @@
+version: v11
+focus: owner-side descriptor origin recovery for CommonFsmManager
+status:
+  summary: |
+    Static C decompilation confirms the internal runtime/descriptor contract of CommonFsmManager,
+    but does not yet surface a clean direct assignment site for descriptor_ptr. The work therefore
+    becomes a constrained owner-side origin-recovery pass rather than a search for more binaries.
+  confirmed:
+    - manager_object_size: 0x18
+    - manager_plus_0x10_points_to_runtime: true
+    - runtime_contains_descriptor_ptr: true
+    - runtime_contains_current_state_byte: true
+    - descriptor_valid_flag_is_derived_from_descriptor_members: true
+    - descriptor_contains_transition_matrix_and_action_table: true
+recovered_layout:
+  manager:
+    size: 0x18
+    fields:
+      - offset: 0x10
+        name: runtime_ptr
+        confidence: confirmed
+        evidence: getState/validateFsmConfig/processEvent use manager+0x10 as the owned runtime cell
+  runtime:
+    fields:
+      - offset: 0x08
+        name: descriptor_ptr
+        confidence: confirmed
+      - offset: 0x10
+        name: current_state
+        type: u8
+        confidence: confirmed
+      - offset: 0x12
+        name: descriptor_valid
+        type: bool
+        confidence: confirmed
+  descriptor:
+    fields:
+      - role: transition_matrix_ptr
+        confidence: confirmed
+      - role: action_table_ptr
+        confidence: confirmed
+      - role: state_name_vector_ptr
+        confidence: semi_symbolic
+      - role: event_name_vector_ptr
+        confidence: semi_symbolic
+      - role: trace_cookie_or_fsm_name
+        confidence: semi_symbolic
+      - role: state_count
+        type: u8
+        confidence: confirmed
+      - role: event_count
+        type: u8
+        confidence: confirmed
+      - role: action_count
+        type: u8
+        confidence: confirmed
+hard_constraints_for_origin_search:
+  - descriptor_ptr must ultimately feed validateFsmConfig/processEvent through runtime+0x08
+  - descriptor_ptr must reference a blob whose transition matrix cells decode as (next_state, action_id)
+  - action_id must index a non-null callback at action_table[action_id]
+  - state/event/action counts must be internally consistent with the matrix dimensions
+  - symbolic lift becomes possible if adjacent rodata contains string vectors compatible with trace path
+owner_side_recovery_recipe:
+  - enumerate all constructors/init methods that allocate or own CommonFsmManager
+  - inspect writes into owner->fsm_member and then writes into fsm->runtime
+  - prioritize owners that later call processEvent with low-cardinality numeric events
+  - treat rodata blobs near owner init code as descriptor candidates and validate counts first
+expected_blockers:
+  - decompiler may collapse relocation-fed constants into opaque helper output
+  - descriptor_ptr assignment may occur through helper wrappers or aggregate init functions
+  - full symbolic names may require relocation/xref context outside plain C pseudocode

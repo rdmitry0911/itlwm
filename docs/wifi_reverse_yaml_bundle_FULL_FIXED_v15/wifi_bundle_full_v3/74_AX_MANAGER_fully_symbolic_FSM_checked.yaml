@@ -1,0 +1,205 @@
+version: 1
+topic: WCL11axManager fully symbolic FSM
+status: checked
+source: BootKernelExtensions.kc 26.3 (25D125)
+fsm_name: AX_MANAGER
+context_va: 18446743523991508720
+context_fileoff: 36722416
+owner_class: WCL11axManager
+states:
+  0: LINK_DOWN
+  1: ASSOCIATED
+  2: CONNECTED_SECURE
+  3: SLEEP
+  4: DEEP_SLEEP
+events:
+  0: LINK_UP
+  1: LINK_DOWN
+  2: 4WAYHS_DONE
+  3: ULOFDMA_STATE_CHANGE
+  4: SEND_ASR_FRAME
+  5: SLEEP
+  6: WAKE_OPEN
+  7: WAKE_SECURE
+actions:
+  0:
+    name: ignore
+    kdk_symbol: WCL11axManager action 0
+  1:
+    name: unhandledEvent
+    kdk_symbol: WCL11axManager action 1
+  2:
+    name: linkUp
+    kdk_symbol: WCL11axManager action 2
+  3:
+    name: linkDown
+    kdk_symbol: WCL11axManager action 3
+  4:
+    name: fourWayHsDone
+    kdk_symbol: WCL11axManager action 4
+  5:
+    name: updateUlofdma
+    kdk_symbol: WCL11axManager action 5
+  6:
+    name: sendAsrConnected
+    kdk_symbol: WCL11axManager action 6
+  7:
+    name: sendAsrSleep
+    kdk_symbol: WCL11axManager action 7
+  8:
+    name: sleep
+    kdk_symbol: WCL11axManager action 8
+  9:
+    name: wake
+    kdk_symbol: WCL11axManager action 9
+  10:
+    name: freeAsrFrame
+    kdk_symbol: WCL11axManager action 10
+transition_matrix:
+  LINK_DOWN:
+    LINK_UP:
+      next: =SELF=
+      action: unhandledEvent
+    LINK_DOWN:
+      next: =SELF=
+      action: unhandledEvent
+    4WAYHS_DONE:
+      next: =SELF=
+      action: unhandledEvent
+    ULOFDMA_STATE_CHANGE:
+      next: =SELF=
+      action: unhandledEvent
+    SEND_ASR_FRAME:
+      next: =SELF=
+      action: unhandledEvent
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_OPEN:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_SECURE:
+      next: =SELF=
+      action: unhandledEvent
+  ASSOCIATED:
+    LINK_UP:
+      next: CONNECTED_SECURE
+      action: linkUp
+    LINK_DOWN:
+      next: =SELF=
+      action: unhandledEvent
+    4WAYHS_DONE:
+      next: ASSOCIATED
+      action: ignore
+    ULOFDMA_STATE_CHANGE:
+      next: =SELF=
+      action: unhandledEvent
+    SEND_ASR_FRAME:
+      next: =SELF=
+      action: unhandledEvent
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_OPEN:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_SECURE:
+      next: =SELF=
+      action: unhandledEvent
+  CONNECTED_SECURE:
+    LINK_UP:
+      next: CONNECTED_SECURE
+      action: linkUp
+    LINK_DOWN:
+      next: ASSOCIATED
+      action: linkDown
+    4WAYHS_DONE:
+      next: SLEEP
+      action: fourWayHsDone
+    ULOFDMA_STATE_CHANGE:
+      next: CONNECTED_SECURE
+      action: updateUlofdma
+    SEND_ASR_FRAME:
+      next: CONNECTED_SECURE
+      action: sendAsrConnected
+    SLEEP:
+      next: DEEP_SLEEP
+      action: sleep
+    WAKE_OPEN:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_SECURE:
+      next: =SELF=
+      action: unhandledEvent
+  SLEEP:
+    LINK_UP:
+      next: CONNECTED_SECURE
+      action: linkUp
+    LINK_DOWN:
+      next: ASSOCIATED
+      action: linkDown
+    4WAYHS_DONE:
+      next: SLEEP
+      action: ignore
+    ULOFDMA_STATE_CHANGE:
+      next: SLEEP
+      action: updateUlofdma
+    SEND_ASR_FRAME:
+      next: SLEEP
+      action: sendAsrSleep
+    SLEEP:
+      next: DEEP_SLEEP
+      action: sleep
+    WAKE_OPEN:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_SECURE:
+      next: =SELF=
+      action: unhandledEvent
+  DEEP_SLEEP:
+    LINK_UP:
+      next: DEEP_SLEEP
+      action: ignore
+    LINK_DOWN:
+      next: ASSOCIATED
+      action: linkDown
+    4WAYHS_DONE:
+      next: DEEP_SLEEP
+      action: ignore
+    ULOFDMA_STATE_CHANGE:
+      next: DEEP_SLEEP
+      action: updateUlofdma
+    SEND_ASR_FRAME:
+      next: DEEP_SLEEP
+      action: freeAsrFrame
+    SLEEP:
+      next: =SELF=
+      action: unhandledEvent
+    WAKE_OPEN:
+      next: CONNECTED_SECURE
+      action: wake
+    WAKE_SECURE:
+      next: SLEEP
+      action: wake
+raw_matrix_hex: 'ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01 ff 01
+
+  02 02 ff 01 01 00 ff 01 ff 01 ff 01 ff 01 ff 01
+
+  02 02 01 03 03 04 02 05 02 06 04 08 ff 01 ff 01
+
+  02 02 01 03 03 00 03 05 03 07 04 08 ff 01 ff 01
+
+  04 00 01 03 04 00 04 05 04 0a ff 01 02 09 03 09
+
+  '
+behavioral_notes:
+  hidden_state: DEEP_SLEEP (state 4) is not in the string name table but exists in the transition matrix. It represents deep system sleep where LINK_UP is ignored, ASR frames are freed (not sent), and only WAKE_OPEN/WAKE_SECURE can exit it.
+  external_entry: LINK_DOWN is an all-unhandledEvent state. Entry from LINK_DOWN to ASSOCIATED happens externally via WCL11axManager::linkStateUpdate bulletin board callback, not through the FSM matrix.
+  ax_features: '802.11ax (Wi-Fi 6) specific: ULOFDMA state changes, ASR (Adaptive Spatial Reuse) frame sending varies by state (sendAsrConnected vs sendAsrSleep vs freeAsrFrame in deep sleep).'
+  wake_variants: WAKE_OPEN -> CONNECTED_SECURE (full wake), WAKE_SECURE -> SLEEP (partial wake, maintain security context). Both only from DEEP_SLEEP.
+consistency_check:
+  result: ok
+  notes:
+  - raw_matrix_hex matches transition_matrix exactly (80 bytes = 5 states x 8 events x 2 bytes).
+  - Hidden state DEEP_SLEEP is internally consistent with the matrix and behavioral notes.
+  - Metadata is lighter than some earlier FSM docs but no contradictions were found.

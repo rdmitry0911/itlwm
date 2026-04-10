@@ -1,0 +1,66 @@
+version: v7
+goal: close the remaining kernel-side reverse gap without requiring new binaries
+
+current_state:
+  solved:
+    - kernel module inventory is broad enough
+    - CommonFsmManager runtime/descriptor format is decoded
+    - first concrete owner (WCLScanManager) has semi-symbolic event overlay
+    - Skywalk boundary has a hard external ABI contract
+  unsolved:
+    - per-owner descriptor_ptr origins are not yet enumerated exhaustively
+    - action callbacks remain mostly numeric/opaque
+    - state/event names are not yet lifted from descriptor-adjacent rodata
+    - AppleBCMWLANSkywalkInterface override set is not yet directly tied to slots
+
+highest_value_next_passes:
+  pass_1_descriptor_origin_inventory:
+    objective: recover every owner-specific descriptor pointer assignment
+    method:
+      - search init wrappers around CommonFsmManagerOptions
+      - search constructors/withX factory paths for 0x18 manager allocation + immediate setup
+      - catalog constant addresses and owner classes
+    expected_output:
+      - owner -> descriptor_ptr map
+      - owner -> runtime wrapper function map
+  pass_2_rodata_vector_lift:
+    objective: lift state and event name tables from descriptor blobs
+    method:
+      - for each descriptor_ptr, inspect nearby qword arrays for string pointers
+      - correlate counts at +0x29/+0x2a/+0x2b with candidate vector lengths
+      - confirm against trace format and owner logs
+    expected_output:
+      - symbolic state dictionaries
+      - symbolic event dictionaries
+  pass_3_action_table_lift:
+    objective: assign action callbacks semantic names
+    method:
+      - walk descriptor.action_table entries
+      - rename callbacks from owner-local logging strings and side effects
+      - classify actions as ignore/enter/submit/abort/complete/timer/cleanup/update
+    expected_output:
+      - owner-specific action catalog
+      - cross-owner reusable action taxonomy
+  pass_4_skywalk_override_binding:
+    objective: bind Apple Wi-Fi overrides to validated IOSkywalkNetworkInterface slots
+    method:
+      - extract direct vtable or slot-dispatched methods if available
+      - join local ivar offsets with bucketed external ABI
+      - connect queue/ring/resource paths to slot semantics
+    expected_output:
+      - skywalk override matrix with local side effects
+      - stronger datapath lifecycle narrative
+
+optional_but_not_required:
+  airportd:
+    usefulness: high_for_userland_policy
+    necessity_for_kernel_bundle: low
+    note: >-
+      Decompiling airportd would enrich policy/orchestration and daemon request sequencing,
+      but it is no longer a blocker for the kernel-side YAML closure path.
+
+success_criteria_for_v8_or_v9:
+  - at least two concrete owners with descriptor_ptr recovered
+  - at least one owner fully lifted into symbolic state/event labels
+  - action_entry+0x8 semantics narrowed for one descriptor family
+  - one AppleBCMWLANSkywalkInterface override path tied to a validated IOSkywalk slot

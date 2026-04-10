@@ -1,0 +1,28 @@
+document_type: common_fsm_runtime_v2
+runtime: CommonFsmManager
+confirmed_semantics:
+  state_storage: current-state byte is stored in the live FSM object and exposed through getState().
+  dispatch_model:
+    - processEvent(event, payload) indexes a transition/action table by current-state and event.
+    - next-state may be updated before the action callback is invoked.
+    - action callback is fetched indirectly from a function table.
+  diagnostics:
+    - Null FSM processing is fatal/asserting.
+    - Transition logging format is explicit: 'FSM %s: in state: %s got event: %s moved into: %s'.
+  applicability:
+    - Shared runtime underlies multiple IO80211/WCL machines, not just one scan FSM.
+algorithm_outline:
+  - fetch fsm/table object
+  - read current state byte
+  - compute transition slot from state + event
+  - decode next-state selector and action selector
+  - optionally update state byte
+  - emit log if enabled
+  - invoke resolved action(payload)
+confidence:
+  confirmed: runtime structure and logging semantics
+  inferred: many concrete state/event names for higher-level FSMs still require string-table lifting
+consumers_known_from_current_bundle:
+  - WCLScanManager
+  - GAS-related framework FSMs
+  - additional IO80211 state machines with numeric events/states

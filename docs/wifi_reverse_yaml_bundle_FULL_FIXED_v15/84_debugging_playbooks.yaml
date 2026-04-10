@@ -1,0 +1,364 @@
+version: 1
+topic: Wi-Fi driver bring-up debugging playbooks
+status: draft_practical
+purpose: >-
+  Symptom-oriented debugging handbook for porting or implementing non-Apple
+  network adapters against an Apple-like Wi-Fi control plane inferred from
+  the documented FSM set. The goal is to reduce bring-up time by mapping
+  observed failures to likely broken planes, missing events, and the first
+  FSM/state/action checks to perform.
+
+playbooks:
+  - symptom: "scan results exist, but join never starts"
+    likely_broken_planes:
+      - scan_plane
+      - join_assoc_plane
+      - event_bridge_plane
+    likely_missing_events:
+      - SCAN_COMPLETE
+      - JOIN_REQ
+    first_checks:
+      - "Verify SCAN_MANAGER leaves IN_PROGRESS and reaches IDLE on SCAN_COMPLETE."
+      - "Verify join trigger policy actually emits JOIN_REQ after candidate selection."
+      - "Check provenance bridge from scan result callback to join request generation."
+    first_fsm_checks:
+      - owner: SCAN_MANAGER
+        states_of_interest: [IN_PROGRESS, HALTED, ABORTED]
+        actions_of_interest: [handleScanComplete, handleAbortRequest, ignore]
+      - owner: JOIN_MANAGER
+        states_of_interest: [IDLE]
+        actions_of_interest: [handleJoinRequest]
+    what_to_log_minimally:
+      - "scan request submission"
+      - "scan complete indication"
+      - "candidate selection outcome"
+      - "JOIN_REQ emission"
+    common_root_causes:
+      - "SCAN_COMPLETE never synthesized"
+      - "candidate list empty due to payload shape mismatch"
+      - "join policy bridge not wired"
+      - "SCAN_MANAGER stuck in HALTED/ABORTED after power/reset path"
+    minimal_fix_strategy:
+      - "Force clean SCAN_COMPLETE delivery"
+      - "Emit a minimal JOIN_REQ once a candidate is selected"
+      - "Validate candidate payload schema against join ingress expectations"
+
+  - symptom: "join progresses, but CONNECT_COMPLETE never arrives"
+    likely_broken_planes:
+      - join_assoc_plane
+      - firmware_event_bridge
+      - net_link_plane
+    likely_missing_events:
+      - JOIN_ASSOC_COMPLETE
+      - JOIN_CONNECT_COMPLETE
+      - JOIN_COMPLETE
+    first_checks:
+      - "Confirm JOIN_MANAGER reaches ASSOC_DONE after association indication."
+      - "Confirm CONNECT_COMPLETE-like firmware/driver indication is mapped to JOIN_CONNECT_COMPLETE."
+      - "Check whether JOIN_COMPLETE is gated on a missing post-connect callback."
+    first_fsm_checks:
+      - owner: JOIN_MANAGER
+        states_of_interest: [IN_PROGRESS, ASSOC_DONE, CONNECT_COMPLETE, ABORTED]
+        actions_of_interest:
+          - handleJoinAssocComplete
+          - handleJoinConnectComplete
+          - handleJoinComplete
+          - handleJoinAbortReq
+    what_to_log_minimally:
+      - "assoc success indication"
+      - "security/4-way completion"
+      - "connect-complete indication"
+      - "JOIN_COMPLETE emission"
+    common_root_causes:
+      - "assoc complete delivered with wrong payload type"
+      - "security completion never bridged to join plane"
+      - "connect-complete callback exists but wrong owner consumes it"
+      - "join path drops into ABORTED due to timeout/abort race"
+    minimal_fix_strategy:
+      - "Get ASSOC_DONE stable first"
+      - "Bridge connect-complete indication into JOIN_CONNECT_COMPLETE"
+      - "Ensure JOIN_COMPLETE is emitted as the terminal event"
+
+  - symptom: "JOIN_COMPLETE exists, but link never becomes usable"
+    likely_broken_planes:
+      - net_link_plane
+      - system_state_plane
+      - payload_schema_plane
+    likely_missing_events:
+      - CONNECT_COMPLETE
+      - IPV4_STATUS
+      - LINK_UP
+    first_checks:
+      - "Confirm NET_MANAGER leaves WAITING_FOR_CONNECT_COMPLETE."
+      - "Check if CONNECT_COMPLETE is emitted with enough metadata to transition to WAITING_FOR_IP."
+      - "Verify IPV4_STATUS is delivered after DHCP/IP assignment."
+    first_fsm_checks:
+      - owner: NET_MANAGER
+        states_of_interest: [WAITING_FOR_CONNECT_COMPLETE, WAITING_FOR_IP, LINK_UP, DEAUTH]
+        actions_of_interest:
+          - connectComplete
+          - ipStatusInWaitForIp
+          - ipStatus
+          - forceLinkDown
+    what_to_log_minimally:
+      - "JOIN_COMPLETE"
+      - "CONNECT_COMPLETE into NET_MANAGER"
+      - "IPV4_STATUS payload"
+      - "unexpected DEAUTH transition"
+    common_root_causes:
+      - "CONNECT_COMPLETE not forwarded from join plane to net plane"
+      - "IP status event missing entirely"
+      - "link-down indication races immediately after connect"
+      - "driver reset path silently forces DEAUTH"
+    minimal_fix_strategy:
+      - "Synthesize minimal CONNECT_COMPLETE and IPV4_STATUS events"
+      - "Temporarily suppress non-fatal link-down noise until steady link-up works"
+      - "Instrument NET_MANAGER transitions around WAITING_FOR_IP"
+
+  - symptom: "link comes up, but later random deauth or stuck DEAUTH occurs"
+    likely_broken_planes:
+      - net_link_plane
+      - roam_plane
+      - reset_power_plane
+    likely_missing_events:
+      - LINK_DOWN_COMPLETE
+      - WAKE
+      - ROAM_DONE
+    first_checks:
+      - "Inspect whether DEAUTH drains back to LINK_DOWN via LINK_DOWN_COMPLETE."
+      - "Check if roam actions inject link-down indications during normal reassociation."
+      - "Verify DRIVER_RESET is not being spuriously emitted."
+    first_fsm_checks:
+      - owner: NET_MANAGER
+        states_of_interest: [DEAUTH, SLEEP_DEAUTH, LINK_UP]
+        actions_of_interest:
+          - linkDownInd
+          - forceLinkDown
+          - linkDownComplete
+          - linkDownCompleteInSleep
+      - owner: ROAM_MANAGER
+        states_of_interest: [ROAM_SCAN, ROAM_REASSOC, WAIT_ROAM_DONE]
+        actions_of_interest: [roamStart, roamPrep, roamDone, linkDown]
+    what_to_log_minimally:
+      - "LINK_DOWN_IND reason"
+      - "LINK_DOWN_COMPLETE reason"
+      - "ROAM_START / ROAM_DONE"
+      - "DRIVER_RESET source"
+    common_root_causes:
+      - "missing LINK_DOWN_COMPLETE leaves NET_MANAGER draining forever"
+      - "roam path reuses disconnect plumbing incorrectly"
+      - "sleep/deauth transitions collide with wake path"
+      - "late firmware error interpreted as fatal link down"
+    minimal_fix_strategy:
+      - "Make LINK_DOWN_IND / LINK_DOWN_COMPLETE semantics explicit"
+      - "Separate roam-induced temporary loss from real deauth"
+      - "Gate reset-driven forceLinkDown from non-fatal events"
+
+  - symptom: "roaming breaks connectivity or never completes"
+    likely_broken_planes:
+      - roam_plane
+      - scan_plane
+      - join_assoc_plane
+    likely_missing_events:
+      - ROAM_START
+      - ROAM_PREP
+      - REASSOC
+      - ROAM_DONE
+    first_checks:
+      - "Confirm ROAM_MANAGER leaves LINK_UP and enters ROAM_SCAN on ROAM_START."
+      - "Check that REASSOC moves ROAM_REASSOC to WAIT_ROAM_DONE."
+      - "Verify ROAM_DONE always returns to LINK_UP."
+    first_fsm_checks:
+      - owner: ROAM_MANAGER
+        states_of_interest: [LINK_UP, ROAM_SCAN, ROAM_REASSOC, WAIT_ROAM_DONE, SLEEP]
+        actions_of_interest: [roamStart, roamScanEnd, roamPrep, roamDone, wake]
+    what_to_log_minimally:
+      - "roam trigger cause"
+      - "roam candidate scan end"
+      - "reassoc start"
+      - "roam completion"
+      - "timeout during roam"
+    common_root_causes:
+      - "ROAM_PREP or REASSOC never emitted"
+      - "roam timeout returns to LINK_UP without link restoration"
+      - "sleep path swallows wake/roam sequencing"
+      - "reassoc indication mapped to wrong owner"
+    minimal_fix_strategy:
+      - "First make roam a no-op that cleanly returns to LINK_UP"
+      - "Then layer in ROAM_SCAN and REASSOC"
+      - "Only after that add timeout and sleep interaction handling"
+
+  - symptom: "sleep/wake leaves adapter dead or half alive"
+    likely_broken_planes:
+      - system_state_plane
+      - net_link_plane
+      - roam_plane
+      - bg_offload_plane
+    likely_missing_events:
+      - SYSTEM_WILL_SLEEP
+      - SYSTEM_AWAKE
+      - WAKE
+      - SYSTEM_POWER_ON
+    first_checks:
+      - "Check SSM replay/defer logic around DRIVER_UNAVAILABLE / DRIVER_AVAILABLE."
+      - "Check which FSMs enter HALTED/SLEEP and which event exits them."
+      - "Verify wake indication reaches both net and roam related owners."
+    first_fsm_checks:
+      - owner: SSM
+        states_of_interest: [CAN_SEND_NOTIFICATION, DEFER_SENDING_NOTIFICATION]
+        actions_of_interest:
+          - handleStorePreDeferState
+          - handleReplayNotification
+          - handleSendSleepNotification
+          - handleSendAwakeNotification
+      - owner: NET_MANAGER
+        states_of_interest: [SLEEP, SLEEP_DEAUTH]
+        actions_of_interest: [sleep, wake, wakeLeave, linkUpInSleep]
+      - owner: ROAM_MANAGER
+        states_of_interest: [SLEEP]
+        actions_of_interest: [sleep, wake]
+    what_to_log_minimally:
+      - "SYSTEM_WILL_SLEEP"
+      - "SYSTEM_AWAKE"
+      - "SYSTEM_POWER_OFF / SYSTEM_POWER_ON"
+      - "WAKE into NET_MANAGER and ROAM_MANAGER"
+      - "replayed deferred notifications"
+    common_root_causes:
+      - "notifications deferred but never replayed"
+      - "WAKE only sent to one plane"
+      - "link-down completion lost during sleep"
+      - "driver appears available too late for replay"
+    minimal_fix_strategy:
+      - "Make wake path explicit and broadcast to every affected owner"
+      - "Treat SSM as notification broker, not passive logger"
+      - "Bring sleep path up only after connect path is stable"
+
+  - symptom: "GAS/ANQP hangs, partial fragments accumulate, or query never completes"
+    likely_broken_planes:
+      - gas_anqp_plane
+      - fragment_reassembly_plane
+      - timeout_plane
+    likely_missing_events:
+      - GAS_FRAG_RX
+      - GAS_COMPLETE
+      - GAS_COMPLETE_ERROR
+      - GAS_QUERY_TIMEOUT
+    first_checks:
+      - "Check whether GAS_FSM enters GETTING_RESULT after first fragment."
+      - "Check whether GAS_DEFRAG_FSM advances BUFFER_EMPTY -> BUFFER_PARTIAL/COMPLETE correctly."
+      - "Verify timeout and abort paths return GAS_FSM to IDLE."
+    first_fsm_checks:
+      - owner: GAS_FSM
+        states_of_interest: [IN_PROGRESS, GETTING_RESULT, ABORTING, HALTED]
+        actions_of_interest:
+          - sendGasQuery
+          - processGasFragRx
+          - processGasComplete
+          - processGasQueryTimeout
+          - processAbort
+      - owner: GAS_DEFRAG_FSM
+        states_of_interest: [BUFFER_EMPTY, BUFFER_PARTIAL, BUFFER_COMPLETE]
+        actions_of_interest:
+          - processGasFragRxPartialInBufferEmpty
+          - processGasFragRxPartial
+          - processGasCompleteFail
+          - coreCapture
+    what_to_log_minimally:
+      - "query submission"
+      - "fragment sequence numbers / lengths"
+      - "GAS_COMPLETE / GAS_COMPLETE_ERROR"
+      - "timeout source"
+    common_root_causes:
+      - "fragment metadata not preserved across callbacks"
+      - "GAS_COMPLETE routed before de-frag completes"
+      - "timeout path aborts transport but not FSM"
+      - "HALTED/QUIESCE state entered silently"
+    minimal_fix_strategy:
+      - "Make single-fragment completion work first"
+      - "Then add partial fragment accumulation"
+      - "Then add timeout/error cleanup"
+
+  - symptom: "background scanning/offload poisons bring-up or power transitions"
+    likely_broken_planes:
+      - bg_offload_plane
+      - system_state_plane
+    likely_missing_events:
+      - CONFIG_DONE
+      - SUSPEND_DONE
+      - RESUME_DONE
+      - DRIVER_RESET
+    first_checks:
+      - "Check whether BGCOMMON_FSM is being configured too early."
+      - "Verify suspend/resume transitions finish; do not leave *_IN_PROGRESS stuck."
+      - "Confirm DRIVER_RESET universally returns BGCOMMON_FSM to IDLE."
+    first_fsm_checks:
+      - owner: BGCOMMON_FSM
+        states_of_interest:
+          - CONFIG_IN_PROGRESS
+          - CONFIGURED
+          - SUSPEND_IN_PROGRESS
+          - SUSPEND
+          - RESUME_IN_PROGRESS
+          - RESUME
+        actions_of_interest:
+          - suspendBGScan
+          - resumeBGScan
+          - checkPendingWork
+          - cleanup
+    what_to_log_minimally:
+      - "CONFIG / CONFIG_DONE / CONFIG_FAILED"
+      - "SUSPEND / SUSPEND_DONE / SUSPEND_FAILED"
+      - "RESUME / RESUME_DONE / RESUME_FAILED"
+      - "queued pending work count"
+    common_root_causes:
+      - "background plane enabled before foreground connect path works"
+      - "pending work never drained"
+      - "driver reset cleanup incomplete"
+    minimal_fix_strategy:
+      - "Stub or disable bg/offload until stable link is achieved"
+      - "Only then re-enable CONFIGURED suspend/resume loop"
+
+  - symptom: "quality monitoring or timers misfire and cause spurious behavior"
+    likely_broken_planes:
+      - lqm_plane
+      - timer_plane
+    likely_missing_events:
+      - TIMER
+      - START
+      - STOP
+    first_checks:
+      - "Check whether LQM_FSM leaves IDLE on START."
+      - "Ensure TIMER only fires when ACTIVE unless intentionally tolerated."
+      - "Verify STOP drains back to IDLE."
+    first_fsm_checks:
+      - owner: LQM_FSM
+        states_of_interest: [IDLE, ACTIVE]
+        actions_of_interest: [start, timer, stop, unhandledEvent]
+    what_to_log_minimally:
+      - "timer arm"
+      - "timer fire"
+      - "LQM START"
+      - "LQM STOP"
+    common_root_causes:
+      - "timer callback active before initialization"
+      - "STOP never emitted on teardown"
+      - "timer cadence too aggressive and interpreted as fault"
+    minimal_fix_strategy:
+      - "Start with timer plane disabled or coarse"
+      - "Enable only after stable connect/disconnect"
+
+global_rules:
+  - "Always stabilize SCAN -> JOIN -> NET first before enabling roam, GAS, bg/offload, or 11ax extras."
+  - "Treat SSM and notification replay as infrastructure, not optional polish."
+  - "A missing completion event is often worse than a missing start event because it leaves drain states stuck."
+  - "Prefer explicit synthetic events over implicit state polling during early bring-up."
+
+recommended_debug_order:
+  - "net_link_plane"
+  - "join_assoc_plane"
+  - "scan_plane"
+  - "system_state_plane"
+  - "roam_plane"
+  - "gas_anqp_plane"
+  - "bg_offload_plane"
+  - "lqm_plane"

@@ -1,0 +1,58 @@
+version: 14
+topic: WCLScanManager descriptor-origin closure
+status: maximally_closed_from_current_pseudocode
+owner: WCLScanManager
+interpreter: CommonFsmManager
+
+confirmed_facts:
+  - owner_object_is_commonfsmmanager_derived_or_embedded: true
+  - runtime_ptr_location: "self + 0x10"
+  - current_state_location: "(*(self + 0x10)) + 0x10"
+  - descriptor_valid_flag_location: "(*(self + 0x10)) + 0x12"
+  - descriptor_ptr_location: "(*((u32**)(self + 0x10)) + 2) == *(runtime + 0x08)"
+  - process_event_calls_observed:
+      - event_id: 1
+        arg: 0
+        site: handleScanRequest
+        meaning: "transition used when pre-check path indicates alternate state progression"
+      - event_id: 2
+        arg: request_ptr
+        site: handleScanRequest
+        meaning: "transition used for incoming scan request"
+  - ignore_path_observed:
+      function: ignore
+      return: 0xe00002bc
+      state_read: "*(u8 *)(*(long *)(self + 0x10) + 0x10)"
+  - fatal_guard_observed:
+      string: "Invalid scan state, avoid state machine being stuck"
+      source: WCLScanManager.cpp
+
+closure_result:
+  what_is_closed:
+    - owner_binding_to_CommonFsmManager
+    - concrete_runtime_field_reads
+    - concrete_event_ids_for_two_real_owner_paths
+    - owner-local_ignore_semantics
+    - owner-local_stuck_state_guard
+  what_is_not_closed:
+    - exact_assignment_site_of_runtime_descriptor_ptr
+    - exact_rodata_base_of_state_name_vector
+    - exact_rodata_base_of_event_name_vector
+    - action_callback_symbol_names_for_this_owner
+
+best_reconstruction:
+  likely_owner_model:
+    - "WCLScanManager instance is passed directly as CommonFsmManager self in processEvent calls."
+    - "Runtime object is stored at owner+0x10."
+    - "Descriptor pointer is stored at runtime+0x08 and validated lazily or during init."
+    - "Current state byte at runtime+0x10 is read directly by owner logging/ignore paths."
+  practical_interpretation:
+    - "The remaining gap is no longer architectural."
+    - "The remaining gap is a single unresolved assignment/origin problem for descriptor_ptr and nearby rodata vectors."
+
+evidence_grade:
+  owner_binding: strong
+  runtime_layout: strong
+  event_ids: strong
+  descriptor_origin: unresolved_in_current_C_pseudocode
+  symbolic_state_names: unresolved_without_xref_or_rodata_pass

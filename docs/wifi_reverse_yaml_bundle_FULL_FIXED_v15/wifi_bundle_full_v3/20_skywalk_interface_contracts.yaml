@@ -1,0 +1,102 @@
+version: 4
+topic: skywalk_interface_contracts
+source_note:
+  - "User supplied an independently validated vtable reconstruction for IOSkywalkNetworkInterface from IOSkywalkFamily x86_64 kernel binary."
+  - "41/41 methods plus 10 reserved entries match the local header exactly."
+importance:
+  - "This is a hard ABI anchor, not a heuristic."
+  - "It constrains all AppleBCMWLANSkywalkInterface overrides and call-sites."
+ioskywalknetworkinterface_vtable:
+  status: exact_match_confirmed_by_binary
+  validated_against: "kernel 26.3 (25D125), x86_64 slice"
+  method_count: 41
+  reserved_count: 10
+  methods:
+    - {offset: 0x8D0, name: registerNetworkInterfaceWithLogicalLink}
+    - {offset: 0x8D8, name: deregisterLogicalLink}
+    - {offset: 0x8E0, name: initBSDInterfaceParameters, notes: "pure virtual in base"}
+    - {offset: 0x8E8, name: prepareBSDInterface}
+    - {offset: 0x8F0, name: finalizeBSDInterface}
+    - {offset: 0x8F8, name: getBSDInterface}
+    - {offset: 0x900, name: setBSDName}
+    - {offset: 0x908, name: getBSDName}
+    - {offset: 0x910, name: processBSDCommand}
+    - {offset: 0x918, name: processInterfaceCommand}
+    - {offset: 0x920, name: interfaceAdvisoryEnable}
+    - {offset: 0x928, name: setRxFlowSteering}
+    - {offset: 0x930, name: setInterfaceEnable}
+    - {offset: 0x938, name: setRunningState}
+    - {offset: 0x940, name: handleChosenMedia}
+    - {offset: 0x948, name: getSupportedMediaArray}
+    - {offset: 0x950, name: getPacketTapInfo}
+    - {offset: 0x958, name: getUnsentDataByteCount}
+    - {offset: 0x960, name: getSupportedWakeFlags}
+    - {offset: 0x968, name: enableNetworkWake}
+    - {offset: 0x970, name: calculateRingSizeForQueue}
+    - {offset: 0x978, name: getMaxTransferUnit}
+    - {offset: 0x980, name: setMaxTransferUnit}
+    - {offset: 0x988, name: getMinPacketSize}
+    - {offset: 0x990, name: getHardwareAssists}
+    - {offset: 0x998, name: setHardwareAssists}
+    - {offset: 0x9A0, name: getInterfaceFamily}
+    - {offset: 0x9A8, name: getInterfaceSubFamily}
+    - {offset: 0x9B0, name: getInitialMedia}
+    - {offset: 0x9B8, name: getFeatureFlags}
+    - {offset: 0x9C0, name: getTxDataOffset}
+    - {offset: 0x9C8, name: captureInterfaceState}
+    - {offset: 0x9D0, name: restoreInterfaceState}
+    - {offset: 0x9D8, name: setMTU}
+    - {offset: 0x9E0, name: bpfTap}
+    - {offset: 0x9E8, name: getBSDNamePrefix}
+    - {offset: 0x9F0, name: getBSDUnitNumber}
+    - {offset: 0x9F8, name: classNameOverride}
+    - {offset: 0xA00, name: deferBSDAttach}
+    - {offset: 0xA08, name: reportDetailedLinkStatus}
+    - {offset: 0xA10, name: getTSOOptions}
+    - {offset_range: "0xA18-0xA60", name: "reserved[10]"}
+derived_implications:
+  - "AppleBCMWLANSkywalkInterface can now be modeled against a trusted virtual contract."
+  - "Any call through vtable slots near 0x8D0..0xA10 in derived classes can be symbolized using this map."
+  - "The interface lifecycle can be split into BSD attach, link registration, queue sizing, offload negotiation, wake/tap/MTU, and snapshot/restore domains."
+applebcmwlanskywalkinterface_local_findings:
+  object_model:
+    ivar_block_ptr:
+      owner_offset: 0x138
+      notes: "Core snippets show param_1[0x27] and *(long*)(self+0x138) pointing to a 0xe0-byte ivar block"
+      citation: "fileciteturn11file7turn11file8"
+    ivar_block_size: 0xE0
+    selected_fields:
+      - {offset: 0x08, role: "opaque context or dispatch target", confidence: medium}
+      - {offset: 0x10, role: "interface unit number staging during init", confidence: medium}
+      - {offset: 0x18, role: "controller pointer", confidence: high, citation: "fileciteturn11file8"}
+      - {offset: 0x2A, role: "queue-count or lane-count byte", confidence: medium, citation: "fileciteturn11file7"}
+      - {offset: 0x2C, role: "small queue/ring config array", confidence: medium, citation: "fileciteturn11file7"}
+      - {offset: 0xA1, role: "status flag reset to 0 during init", confidence: medium, citation: "fileciteturn11file7"}
+      - {offset: 0xA2, role: "mode/config byte copied from init arg", confidence: medium, citation: "fileciteturn11file7"}
+      - {offset: 0xA4, role: "BSD/interface unit number", confidence: high, citation: "fileciteturn11file8"}
+      - {offset: 0xA8, role: "retained controller/object pointer", confidence: high, citation: "fileciteturn11file7turn11file8"}
+      - {offset: 0xD8, role: "datapath_connected flag", confidence: high, citation: "fileciteturn11file8"}
+  lifecycle_domains:
+    - domain: construction_init
+      evidence:
+        - "allocates ivar block"
+        - "copies queue-count-limited config"
+        - "retains external object at +0xA8"
+        - "stores mode/config flags and enables skywalk ktrace tunable"
+      citation: "fileciteturn11file7"
+    - domain: free_teardown
+      evidence:
+        - "logs through vtable slot 0xD08-derived logger accessor"
+        - "clears controller field"
+        - "releases retained object at +0xA8"
+        - "frees 0xE0 ivar block"
+      citation: "fileciteturn11file7"
+    - domain: datapath_status
+      evidence:
+        - "getInterfaceUnitNumber reads +0xA4"
+        - "isDataPathConnected reads +0xD8"
+        - "getController reads +0x18"
+      citation: "fileciteturn11file8"
+closure_value:
+  - "This vtable anchor converts many previously 'unknown virtual call' sites into named ABI contracts."
+  - "It is especially useful for AppleBCMWLANSkywalkInterface, AppleBCMWLANPCIeSkywalkPacket, and bus/core skywalk integration."

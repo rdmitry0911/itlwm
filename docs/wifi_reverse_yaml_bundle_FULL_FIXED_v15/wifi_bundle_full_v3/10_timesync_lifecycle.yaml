@@ -1,0 +1,26 @@
+document_type: timesync_lifecycle_v2
+components:
+  - IOTimeSyncRootService
+  - IOTimeSyncService
+  - IOTimeSyncFilteredService
+  - IOTimeSyncServiceDaemonClient
+  - IOTimeSyncTimedEdgeGenerator
+  - TSNUserWiFiControlInterface
+confirmed_root_graph:
+  - IOTimeSyncRootService::probe requires TimeSyncTime service readiness.
+  - Root service start marks the top-level service graph entering runtime.
+filtered_service:
+  - IOTimeSyncFilteredService start configures nominal intervals, filter shift, adaptive mode, and timeline filter hookup before delegating to IOTimeSyncService::start.
+  - Conversion helpers map TimeSync time <-> domain time only when filter state says conversion is valid.
+daemon_client_lifecycle:
+  - init
+  - start(client_id, service, daemon_service)
+  - retain/release service references
+  - free
+wifi_specific_surface:
+  - TSNUserWiFiControlInterface exists inside IOTimeSyncFamily.
+  - This confirms Wi-Fi-specific TimeSync/user-control plumbing in kernel, not just generic time services.
+concurrency_model:
+  - TimedEdgeGenerator requires exclusive-access lock discipline for begin/end/cancel paths.
+strict_notes:
+  - v2 covers kernel TimeSync graph only; companion daemon/userland behavior remains out of scope until airportd/CoreWLAN are decompiled.

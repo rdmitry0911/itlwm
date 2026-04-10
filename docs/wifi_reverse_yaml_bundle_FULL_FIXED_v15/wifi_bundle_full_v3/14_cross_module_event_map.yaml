@@ -1,0 +1,28 @@
+document_type: cross_module_event_map_v2
+edges:
+  - from: WCLScanManager
+    to: CommonFsmManager
+    event_kind: numeric_framework_event
+    evidence_role: scan request handling injects processEvent(1/2/...)
+  - from: AppleBCMWLANBusInterfacePCIe
+    to: AppleOLYHAL service
+    event_kind: provider_lookup_and_capability_query
+    evidence_role: TimeSync capability and HAL/provider access
+  - from: AppleBCMWLANBusInterfacePCIe
+    to: AppleBCMWLANTimeSyncEngine
+    event_kind: object_construction
+    evidence_role: withProviderAndBus() after HAL/provider acquisition
+  - from: AppleConvergedIPCControl
+    to: converged_pci_service
+    event_kind: power_state_change
+    evidence_role: portManualEnableFunction / powerStateDidChangeToGated
+  - from: IOTimeSyncRootService
+    to: IOTimeSyncService graph
+    event_kind: service_graph_start
+    evidence_role: root probe/start requires TimeSyncTime readiness
+  - from: AppleConvergedIPCRTIInterface
+    to: ACIPCRTIPipe
+    event_kind: async completion / link recovery
+    evidence_role: async callback/completion and linkRecovery surfaces
+notes:
+  - This file maps inter-object edges, not per-FSM internal transitions.

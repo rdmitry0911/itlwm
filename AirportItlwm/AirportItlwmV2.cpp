@@ -31,20 +31,26 @@ RuntimeDiag sRT = {};
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
 // Phase 1 stub: acknowledge without transmitting. Data path wired in Phase 2.
-static IOReturn
+//
+// Return type is unsigned int (not IOReturn/int) to match kernel ABI.
+// Kernel symbol uses mangled 'j' (unsigned int), not 'i' (int).
+// Packet param is IOSkywalkPacket * const * (PKP mangling) — the array
+// entries are const, but the packets themselves are mutable.
+static unsigned int
 skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
-                const IOSkywalkPacket **packets, UInt32 count, void *refCon)
+                IOSkywalkPacket * const *packets, UInt32 count, void *refCon)
 {
-    return kIOReturnSuccess;
+    return 0;
 }
 
 // Skywalk RX completion callback — called when driver enqueues received packets.
 // Phase 1 stub: no-op. Data path wired in Phase 2.
-static IOReturn
+// Return type is unsigned int to match kernel ABI (see TX callback comment).
+static unsigned int
 skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
                 IOSkywalkPacket **packets, UInt32 count, void *refCon)
 {
-    return kIOReturnSuccess;
+    return 0;
 }
 
 void AirportItlwm::releaseAll()
@@ -547,7 +553,8 @@ bool AirportItlwm::start(IOService *provider)
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
                       "bsdFl=0x%x bsdMtu=%u | "
                       "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
-                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
+                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
+                      "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p",
                       d->mask, d->step, sRT.startStep,
                       sRT.rtMask, sRT.rtMask2, sRT.rtMask3, d->self,
                       d->logStream, d->faultReporter,
@@ -571,7 +578,12 @@ bool AirportItlwm::start(IOService *provider)
                       sRT.pmOffCancelRet, sRT.pmOnCancelRet,
                       sRT.outputDropPwr,
                       sRT.pmOffGateNull, sRT.pmOnGateNull,
-                      sRT.pmAckOffCnt, sRT.pmAckOnCnt);
+                      sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                      (void *)(uintptr_t)sRT.fNetIfPtr,
+                      (void *)(uintptr_t)sRT.fTxPoolPtr,
+                      (void *)(uintptr_t)sRT.fRxPoolPtr,
+                      (void *)(uintptr_t)sRT.fTxQueuePtr,
+                      (void *)(uintptr_t)sRT.fRxQueuePtr);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -719,6 +731,7 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(11); // fNetIf init OK
     sDiag.netIf = fNetIf;
+    sRT.fNetIfPtr = (uint64_t)(uintptr_t)fNetIf;
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
 
@@ -822,6 +835,8 @@ bool AirportItlwm::start(IOService *provider)
         }
     }
     RT3_SET(2); // pools created
+    sRT.fTxPoolPtr = (uint64_t)(uintptr_t)fTxPool;
+    sRT.fRxPoolPtr = (uint64_t)(uintptr_t)fRxPool;
 
     // Create Skywalk TX submission and RX completion queues
     fTxQueue = IOSkywalkTxSubmissionQueue::withPool(fTxPool, 256, 0, this,
@@ -838,6 +853,8 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     RT3_SET(3); // queues created
+    sRT.fTxQueuePtr = (uint64_t)(uintptr_t)fTxQueue;
+    sRT.fRxQueuePtr = (uint64_t)(uintptr_t)fRxQueue;
 
     // Register the interface through the proper Skywalk path.
     // registerEthernetInterface internally creates a LogicalLink from the queues
@@ -936,7 +953,8 @@ void AirportItlwm::stop(IOService *provider)
                   "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
                   "bsdFl=0x%x bsdMtu=%u | "
                   "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
-                  "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
+                  "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
+                  "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p",
                   sRT.stopStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
@@ -958,7 +976,12 @@ void AirportItlwm::stop(IOService *provider)
                   sRT.pmOffCancelRet, sRT.pmOnCancelRet,
                   sRT.outputDropPwr,
                   sRT.pmOffGateNull, sRT.pmOnGateNull,
-                  sRT.pmAckOffCnt, sRT.pmAckOnCnt);
+                  sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                  (void *)(uintptr_t)sRT.fNetIfPtr,
+                  (void *)(uintptr_t)sRT.fTxPoolPtr,
+                  (void *)(uintptr_t)sRT.fRxPoolPtr,
+                  (void *)(uintptr_t)sRT.fTxQueuePtr,
+                  (void *)(uintptr_t)sRT.fRxQueuePtr);
         }, NULL);
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
@@ -980,17 +1003,17 @@ void AirportItlwm::stop(IOService *provider)
     sRT.stopStep = 6;
     // Release Skywalk queues and pools
     XYLog("DEBUG %s [6] releasing Skywalk queues/pools\n", __FUNCTION__);
-    OSSafeReleaseNULL(fTxQueue);
-    OSSafeReleaseNULL(fRxQueue);
-    OSSafeReleaseNULL(fTxPool);
-    OSSafeReleaseNULL(fRxPool);
+    OSSafeReleaseNULL(fTxQueue);  sRT.fTxQueuePtr = 0;
+    OSSafeReleaseNULL(fRxQueue);  sRT.fRxQueuePtr = 0;
+    OSSafeReleaseNULL(fTxPool);   sRT.fTxPoolPtr = 0;
+    OSSafeReleaseNULL(fRxPool);   sRT.fRxPoolPtr = 0;
     sRT.stopStep = 61;
     RT3_SET(15); // detachInterface entered
     XYLog("DEBUG %s [6b] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
     detachInterface(fNetIf, true);
     sRT.stopStep = 7;
     XYLog("DEBUG %s [7] release fNetIf\n", __FUNCTION__);
-    OSSafeReleaseNULL(fNetIf);
+    OSSafeReleaseNULL(fNetIf);    sRT.fNetIfPtr = 0;
     sRT.stopStep = 8;
     XYLog("DEBUG %s [8] releaseAll\n", __FUNCTION__);
     releaseAll();
@@ -1026,7 +1049,8 @@ void AirportItlwm::free()
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
                       "bsdFl=0x%x bsdMtu=%u | "
                       "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
-                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
+                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
+                      "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p",
                       sRT.freeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                       sRT.stopStep, sRT.skFreeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
@@ -1046,7 +1070,12 @@ void AirportItlwm::free()
                       sRT.pmOffCancelRet, sRT.pmOnCancelRet,
                       sRT.outputDropPwr,
                       sRT.pmOffGateNull, sRT.pmOnGateNull,
-                      sRT.pmAckOffCnt, sRT.pmAckOnCnt);
+                      sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                      (void *)(uintptr_t)sRT.fNetIfPtr,
+                      (void *)(uintptr_t)sRT.fTxPoolPtr,
+                      (void *)(uintptr_t)sRT.fRxPoolPtr,
+                      (void *)(uintptr_t)sRT.fTxQueuePtr,
+                      (void *)(uintptr_t)sRT.fRxQueuePtr);
         }, NULL);
     uint64_t freeDeadline;
     clock_interval_to_deadline(60, kSecondScale, &freeDeadline);

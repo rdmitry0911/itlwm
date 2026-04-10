@@ -1,0 +1,124 @@
+version: 1
+topic: Missing lifecycle gap matrix for Wi-Fi reverse/porting bundle
+status: updated_after_interface_lifecycle_pass
+purpose: >-
+  Inventory which lifecycle areas are already well-covered in the bundle,
+  which were missing or under-documented, and what remains to be extracted
+  or refined for maximum utility when developing other network adapters.
+
+coverage_matrix:
+  well_covered:
+    - area: scan_plane
+      primary_docs:
+        - 69_WCLScanManager_fully_symbolic_FSM_corrected.yaml
+      status: strong
+      notes: "Fully symbolic FSM with states/events/actions and transition matrix."
+    - area: join_assoc_plane
+      primary_docs:
+        - 70_WCLJoinManager_fully_symbolic_FSM_checked.yaml
+      status: strong
+      notes: "Fully symbolic normal join/abort/halt/candidate retry lifecycle."
+    - area: roam_plane
+      primary_docs:
+        - 71_WCLRoamManager_fully_symbolic_FSM_checked.yaml
+      status: strong
+      notes: "Fully symbolic roam scan/reassoc/wait/sleep lifecycle."
+    - area: net_link_plane
+      primary_docs:
+        - 72_WCLNetManager_fully_symbolic_FSM_checked.yaml
+      status: strong
+      notes: "Operational link/IP/deauth/sleep lifecycle is well covered."
+    - area: gas_anqp_plane
+      primary_docs:
+        - 75_GAS_DEFRAG_FSM_fully_symbolic_checked_v2.yaml
+        - 76_GAS_FSM_fully_symbolic_checked.yaml
+      status: strong
+      notes: "Request/fragment/result/abort lifecycle covered."
+    - area: system_notification_plane
+      primary_docs:
+        - 78_SSM_fully_symbolic_checked.yaml
+      status: strong
+      notes: "Replay/defer broker semantics documented."
+    - area: bg_offload_plane
+      primary_docs:
+        - 79_BGCOMMON_FSM_fully_symbolic_checked.yaml
+      status: strong
+      notes: "Config/suspend/resume cycle documented."
+    - area: practical_porting_layers
+      primary_docs:
+        - 80_cross_fsm_bringup_guide.yaml
+        - 81_event_payload_schemas.yaml
+        - 82_event_provenance_maps.yaml
+        - 83_driver_porting_profiles.yaml
+        - 84_debugging_playbooks.yaml
+      status: strong
+      notes: "Bring-up, payload, provenance, porting, and debugging guidance present."
+
+  previously_under_documented_now_closed:
+    - area: interface_lifecycle_bsd_attach
+      new_primary_doc:
+        - 85_interface_lifecycle_and_bsd_attach.yaml
+      status: improved
+      notes: >-
+        The bundle previously had scattered facts about Skywalk interface
+        creation and BSD hooks but no coherent lifecycle document. This gap is
+        now closed at the architecture/bring-up level.
+
+  still_partial:
+    - area: exact_bsd_attach_call_chain
+      status: partial
+      what_is_known:
+        - "prepareBSDInterface is a real attach stage"
+        - "BPF attach is mandatory inside that stage"
+        - "ifnet is visible before operational LINK_UP"
+      what_is_missing:
+        - "exact caller chain for registerNetworkInterfaceWithLogicalLink"
+        - "exact caller chain for deferBSDAttach"
+        - "exact use-sites for setBSDName/getBSDNamePrefix/getBSDUnitNumber"
+      how_to_close:
+        - "xref/disasm pass on IOSkywalkNetworkInterface virtual slot call-sites"
+    - area: interface_name_and_unit_policy
+      status: partial
+      what_is_known:
+        - "BSD name/unit hooks exist in the contract"
+      what_is_missing:
+        - "exact naming policy"
+        - "which component chooses prefix/unit under all modes"
+      how_to_close:
+        - "trace setBSDName/getBSDNamePrefix/getBSDUnitNumber use-sites"
+    - area: full_logical_link_registration_teardown
+      status: partial
+      what_is_known:
+        - "logical link registration/deregistration hooks exist"
+      what_is_missing:
+        - "exact sequencing relative to prepare/finalizeBSDInterface"
+      how_to_close:
+        - "follow registerNetworkInterfaceWithLogicalLink and deregisterLogicalLink callers"
+    - area: payload_fieldmaps_for_real_event_structs
+      status: medium
+      what_is_known:
+        - "normalized payload contracts exist for porting"
+      what_is_missing:
+        - "byte-accurate field maps for every concrete Apple event object"
+      how_to_close:
+        - "targeted structure recovery on connect/link/scan/GAS message producers"
+    - area: statistics_and_reporting_lifecycle
+      status: medium
+      what_is_known:
+        - "some reporters/monitors exist on interface and bus sides"
+      what_is_missing:
+        - "complete creation/update/destroy lifecycle for interface monitors/reporters"
+      how_to_close:
+        - "follow createIOReporters / destroyReporters / monitor fields"
+
+priority_order_for_next_extraction:
+  - "exact_bsd_attach_call_chain"
+  - "interface_name_and_unit_policy"
+  - "full_logical_link_registration_teardown"
+  - "payload_fieldmaps_for_real_event_structs"
+  - "statistics_and_reporting_lifecycle"
+
+practical_takeaway:
+  - "The biggest missing lifecycle was the interface lifecycle itself; this is now documented."
+  - "The biggest remaining gap is not conceptual but call-chain exactness around BSD attach/register/defer hooks."
+  - "For developing other adapters, the bundle is now strong enough to drive early bring-up without waiting for those final xref-level details."

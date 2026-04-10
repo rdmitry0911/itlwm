@@ -1,0 +1,29 @@
+document_type: power_wow_lowpower_v2
+components:
+  - AppleBCMWLANPowerManager
+  - AppleBCMWLANCore
+  - AppleBCMWLANBusInterfacePCIe
+  - AppleConvergedIPCControl
+confirmed_sequences:
+  - name: core_wow_sequence
+    flow: [resetWoWStateMachine, configureWoWEntry, configureWoWExit, resetWoWConfig]
+  - name: vendor_power_manager_lifecycle
+    flow: [withDriver, initWithDriver, runtime_callbacks, operational, free]
+  - name: converged_pci_low_power
+    flow:
+      - portManualEnableFunction may trigger power state change
+      - _inLowPowerPCI flag is re-read/logged after transition attempt
+      - return codes distinguish not-ready / already-in-transition cases
+  - name: powerStateDidChangeToGated
+    flow:
+      - detects low-power exit for PCI service
+      - clears low-power bookkeeping byte(s)
+      - notifies command-gated/power-gated helper object(s)
+state_bytes_known:
+  - field: _inLowPowerPCI
+    location: AppleConvergedIPCControl byte near +0x149 in observed snippet
+    meaning: confirmed low-power residency indicator
+  - field: sleep_enable_request
+    meaning: explicit enable/disable deep-sleep request is logged in portDeepSleep()
+strict_notes:
+  - Converged PCI low-power control sits below the Wi-Fi core yet materially gates bus accessibility and wakeup semantics.

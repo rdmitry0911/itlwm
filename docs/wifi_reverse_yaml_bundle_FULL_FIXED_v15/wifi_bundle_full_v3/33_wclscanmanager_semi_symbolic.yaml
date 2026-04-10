@@ -1,0 +1,109 @@
+version: v7
+scope:
+  subsystem: IO80211Family
+  owner: WCLScanManager
+  focus: first concrete CommonFsmManager owner lifted into semi-symbolic form
+
+class_contract:
+  class_name: WCLScanManager
+  object_size: 0x28
+  metaclass_anchor: DAT_ffffff8002407040
+  ownership_relations:
+    manager_runtime_base: "param_1 + 0x10 points to CommonFsmManager runtime"
+    owner_context_ptr: "param_1 + 0x20 points to owner ivar block with logger/sub-manager refs"
+
+observed_owner_fields:
+  owner_ctx_plus_0x48:
+    role: subordinate queue_or_scan_engine_A
+    evidence: handleScanRequest checks *(...+0x48)->...->8 == 0 before event routing
+    confidence: medium
+  owner_ctx_plus_0x50:
+    role: subordinate queue_or_scan_engine_B
+    evidence: handleScanRequest checks *(...+0x50)->...->8 == 0 before event routing
+    confidence: medium
+  owner_ctx_plus_0x78:
+    role: logger_or_log_stream
+    evidence: repeated FUN_ffffff8003222762 / FUN_ffffff8003220ed6 use
+    confidence: high
+
+observed_control_flow:
+  ignore_path:
+    function: FUN_ffffff8002120a74
+    behavior:
+      - log "WCLScanManager ignoring in state %d"
+      - read current state from runtime+0x10
+      - return 0xe00002bc
+  enqueue_path:
+    function: FUN_ffffff8002120996
+    behavior:
+      - log "scan request submitted for UUID %s"
+      - enqueue current request into in-progress bucket
+  request_entry:
+    function: FUN_ffffff8002120adc
+    behavior:
+      - rejects null request as fatal/stuck-state condition
+      - logs incoming request UUID
+      - branches on subordinate queue emptiness
+      - may call processEvent(1, 0)
+      - may call processEvent(2, request)
+      - uses follow-up routine FUN_ffffff80021257a8 after event 2 success
+
+semi_symbolic_events:
+  - id: 1
+    provisional_name: RejectOrAbortCurrentScanRequest
+    confidence: owner_labeled
+    evidence:
+      - used on branch where preconditions fail and code immediately logs fatal path on nonzero result
+      - ctx argument is null
+  - id: 2
+    provisional_name: BeginOrAdvanceScanSubmission
+    confidence: owner_labeled
+    evidence:
+      - used when subordinate state indicates an active-progress path
+      - ctx argument is current request pointer
+      - success continues into FUN_ffffff80021257a8
+
+state_model:
+  state_id_0:
+    name: InvalidOrUninitialized
+    confidence: owner_labeled
+    evidence: explicit fatal string "Invalid scan state, avoid state machine being stuck"
+  other_states:
+    name: unknown_numeric
+    confidence: unresolved
+    notes:
+      - current state is logged numerically in ignore path
+      - symbolic names likely exist in descriptor string vectors but are not yet lifted
+
+likely_action_buckets:
+  action_submit:
+    candidate_trigger: event 2 success path
+    downstream_calls:
+      - FUN_ffffff80021257a8
+      - request queue/state updates
+    confidence: low
+  action_abort_or_reject:
+    candidate_trigger: event 1 path
+    downstream_calls:
+      - error/fatal logging
+    confidence: low
+
+message_and_request_format_hints:
+  request_uuid_offset:
+    expression: "*(long *)(request + 0x10) + 0x1554"
+    role: printable UUID string inside nested request/object
+    confidence: high
+  request_flag_offset:
+    expression: "*(byte *)(*(long *)(request + 0x10) + 0x1310) & 0x10"
+    role: branch flag gating event-2 path
+    confidence: medium
+
+closure_plan:
+  immediate:
+    - recover WCLScanManager constructor/init function that fills CommonFsmManagerOptions
+    - identify descriptor pointer used by this owner
+    - enumerate action callbacks referenced by descriptor.action_table
+  after_descriptor_lift:
+    - replace numeric states with symbolic labels
+    - split event 1 and 2 provisional names into exact Apple names if present
+    - model subordinate queues at owner_ctx+0x48 and +0x50 explicitly

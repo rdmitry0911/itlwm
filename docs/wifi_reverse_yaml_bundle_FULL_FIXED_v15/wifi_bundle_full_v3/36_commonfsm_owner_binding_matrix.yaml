@@ -1,0 +1,107 @@
+version: v8
+scope:
+  subsystem: IO80211Family
+  focus: CommonFsmManager owner binding matrix
+  objective: >-
+    Convert the remaining symbolic-FSM gap into a finite owner-by-owner worklist, with
+    explicit evidence anchors, owner-local semantics, and liftability status.
+
+common_runtime_contract:
+  manager_object_size: 0x18
+  runtime_ptr_offset: 0x10
+  descriptor_required_for_trace_names: true
+  transition_slot_size: 2
+  action_entry_size: 0x10
+  trace_template:
+    - "FSM %s: in state: %s got event: %s moved into: %s"
+
+owners:
+  WCLScanManager:
+    owner_status: partially_bound
+    evidence:
+      - "owner logs current_state via *(u8 *)(*(long *)(param_1 + 0x10) + 0x10)"
+      - "owner calls CommonFsmManager::processEvent(event=1, ctx=0)"
+      - "owner calls CommonFsmManager::processEvent(event=2, ctx=request)"
+      - "owner hard-aborts on invalid scan state to avoid stuck state"
+    manager_usage_shape:
+      manager_object_is_param_1: true
+      owner_context_offset: 0x20
+      logger_offset_in_owner_context: 0x78
+      subordinate_scan_paths:
+        - owner_context+0x48
+        - owner_context+0x50
+    event_overlay:
+      - id: 1
+        provisional_name: ScanRequestRejectOrAbort
+        evidence_strength: medium
+      - id: 2
+        provisional_name: ScanRequestSubmitOrAdvance
+        evidence_strength: medium
+    state_overlay:
+      current_state_byte_runtime_plus_0x10:
+        role: owner-visible state for ignore-path and fatal-guard logic
+        confidence: high
+      state_zero:
+        role: invalid_or_uninitialized_scan_state
+        confidence: medium
+    remaining_blockers:
+      - descriptor_ptr origin not yet recovered from constructor/init path
+      - state_name vector not yet recovered from rodata
+      - action callbacks not yet assigned semantic names
+    liftability: high
+
+  generic_commonfsm_owners:
+    owner_status: queued
+    identification_rules:
+      - allocate 0x18 CommonFsmManager object or embed equivalent runtime
+      - invoke init/withOptions wrapper with descriptor-like blob
+      - call processEvent(event_id, ctx) from owner-local methods
+      - read runtime current_state byte at runtime+0x10 for diagnostics/ignore paths
+    likely_domains:
+      - scan orchestration
+      - join/association
+      - roaming
+      - possibly AWDL/NAN peer-state micro-machines
+    remaining_blockers:
+      - no full owner sweep completed
+      - descriptors not yet enumerated globally
+
+binding_priorities:
+  priority_1:
+    owner: WCLScanManager
+    why_first: >-
+      Already has observable numeric events, a visible current-state read, and owner-local log
+      strings, so it is the best candidate for first full symbolic lift.
+  priority_2:
+    owner_class_pattern: manager users with ignore-path logging
+    why: >-
+      Current-state logging often implies named states nearby or owner-specific labels that can
+      anchor semi-symbolic overlays.
+  priority_3:
+    owner_class_pattern: manager users with fatal "invalid state" assertions
+    why: >-
+      Those sites often delimit sentinel states and transition constraints.
+
+output_schema_for_future_binding:
+  owner_binding_record:
+    - owner_name
+    - manager_storage_mode
+    - manager_pointer_expression
+    - descriptor_pointer_origin
+    - process_event_callsites
+    - observed_event_ids
+    - observed_state_reads
+    - trace_strings
+    - state_name_source
+    - event_name_source
+    - action_callback_source
+    - confidence_level
+
+what_is_now_done:
+  - Common runtime format is stable enough to normalize owner records
+  - First concrete owner (WCLScanManager) is bound at the semi-symbolic level
+  - Remaining work is now a bounded owner-inventory and descriptor-recovery task
+
+what_is_not_done:
+  - No generic owner list has yet been fully enumerated
+  - No non-WCL owner has yet been lifted to symbolic state/event names

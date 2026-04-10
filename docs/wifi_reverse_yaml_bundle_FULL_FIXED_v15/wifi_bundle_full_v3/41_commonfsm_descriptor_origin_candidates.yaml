@@ -1,0 +1,97 @@
+version: v9
+topic: CommonFsmManager descriptor origin candidates
+status: partial_static_recovery
+
+goal:
+  - identify where descriptor_ptr is expected to originate
+  - separate what is already proven from what still needs relocation/rodata context
+
+confirmed_runtime_layout:
+  manager_object:
+    size: 0x18
+    fields:
+      - offset: 0x10
+        name: runtime_ptr
+        confidence: confirmed
+        basis: CommonFsmManager methods dereference self+0x10 as runtime/options blob
+  runtime_blob:
+    fields:
+      - offset: 0x00
+        name: fsm_id
+        confidence: confirmed
+      - offset: 0x08
+        name: descriptor_ptr
+        confidence: confirmed
+      - offset: 0x10
+        name: current_state
+        type: u8
+        confidence: confirmed
+      - offset: 0x11
+        name: last_event
+        type: u8
+        confidence: confirmed
+      - offset: 0x12
+        name: descriptor_valid
+        type: bool/u8
+        confidence: confirmed
+
+descriptor_layout:
+  confidence: confirmed_static
+  fields:
+    - offset: 0x00
+      name: transition_matrix_ptr
+      type: ptr
+    - offset: 0x08
+      name: action_table_ptr
+      type: ptr
+    - offset: 0x10
+      name: state_name_vector_ptr
+      type: ptr
+    - offset: 0x18
+      name: event_name_vector_ptr
+      type: ptr
+    - offset: 0x20
+      name: trace_cookie_or_fsm_name
+      type: ptr
+      note: passed to trace callback as first string-like parameter
+    - offset: 0x28
+      name: event_count
+      type: u8
+    - offset: 0x29
+      name: state_count
+      type: u8
+    - offset: 0x2A
+      name: transition_rows
+      type: u8
+      note: iterated as outer loop in validateFsmConfig; effectively state-count-like
+    - offset: 0x2B
+      name: action_count
+      type: u8
+
+descriptor_origin_candidates:
+  direct_init_path:
+    description: owner allocates CommonFsmManagerOptions/runtime blob and writes descriptor_ptr before validate/process
+    confidence: high
+    why:
+      - manager methods never synthesize descriptor internally
+      - validate/process treat descriptor as pre-baked immutable blob
+  owner_embedded_constant:
+    description: owner constructor/init references rodata/static descriptor table directly
+    confidence: high
+    why:
+      - descriptor layout matches immutable tables and name vectors
+      - processEvent only reads, never mutates descriptor
+  relocation_assisted_lift:
+    description: exact descriptor base likely recoverable from relocation graph / rodata xrefs, not plain C pseudocode alone
+    confidence: high
+
+where_static_c_decompile_stops_helping:
+  - pseudocode loses exact constant pool addresses for descriptor assignments
+  - callback table entries may appear as indirect code pointers with thunks
+  - state/event name vectors require rodata adjacency or relocation reconstruction
+  - owner-local init sites may be split across inlined helper functions
+
+best_next_targets:
+  - WCLScanManager owner path
+  - another CommonFsmManager owner once processEvent caller is identified
+  - rodata/relocation pass around descriptor assignment sites

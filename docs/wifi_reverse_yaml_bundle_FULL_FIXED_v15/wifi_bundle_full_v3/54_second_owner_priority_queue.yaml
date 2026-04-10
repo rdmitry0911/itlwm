@@ -1,0 +1,30 @@
+version: v11
+purpose: rank next CommonFsmManager owner after WCLScanManager
+ranking_method:
+  criteria:
+    - visible processEvent callsites in pseudocode
+    - small numeric event domain
+    - owner-local logs/assertions
+    - low indirection between owner and manager
+priority_queue:
+  - rank: 1
+    owner: WCLScanManager
+    reason: direct evidence already present; best candidate for first symbolic lift
+  - rank: 2
+    owner_family: scan_or_join_adjacent managers inside IO80211Family
+    reason: likely to share lifecycle adjacency and descriptor style with WCLScanManager
+    confidence: medium
+  - rank: 3
+    owner_family: GAS/ANQP related manager paths
+    reason: event-driven behavior exists, but current evidence is less direct in the available pseudocode
+    confidence: low_to_medium
+  - rank: 4
+    owner_family: roaming/association helper managers
+    reason: useful later, but likely more complex and more deeply nested in owner orchestration
+    confidence: low
+selection_policy:
+  immediate_target: WCLScanManager
+  next_target_after_success: owner with the smallest observed event domain and strongest local logging
+stop_conditions:
+  - stop expanding owner set until one descriptor origin is fully recovered
+  - do not trade one confirmed owner for several weak semi-symbolic ones

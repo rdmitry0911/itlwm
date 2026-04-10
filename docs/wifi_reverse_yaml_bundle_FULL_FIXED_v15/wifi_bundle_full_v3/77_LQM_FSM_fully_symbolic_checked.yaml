@@ -1,0 +1,58 @@
+version: 1
+topic: IO80211LQMData fully symbolic FSM
+status: checked
+source: BootKernelExtensions.kc 26.3 (25D125)
+fsm_name: LQM_FSM
+context_va: 18446743523991510840
+context_fileoff: 36724536
+owner_class: IO80211LQMData
+states:
+  0: IDLE
+  1: ACTIVE
+events:
+  0: TIMER
+  1: START
+  2: STOP
+actions:
+  0:
+    name: unhandledEvent
+    kdk_symbol: IO80211LQMData::unhandledEvent
+  1:
+    name: ignore
+    kdk_symbol: IO80211LQMData::ignore
+  2:
+    name: start
+    kdk_symbol: IO80211LQMData::start
+  3:
+    name: stop
+    kdk_symbol: IO80211LQMData::stop
+  4:
+    name: timer
+    kdk_symbol: IO80211LQMData::timer
+transition_matrix:
+  IDLE:
+    TIMER:
+      next: =SELF=
+      action: unhandledEvent
+    START:
+      next: ACTIVE
+      action: start
+    STOP:
+      next: IDLE
+      action: stop
+  ACTIVE:
+    TIMER:
+      next: ACTIVE
+      action: timer
+    START:
+      next: ACTIVE
+      action: start
+    STOP:
+      next: IDLE
+      action: stop
+consistency_check:
+  result: ok_minimal_metadata
+  notes:
+  - Transition matrix is internally consistent with declared states, events, and actions.
+  - This document does not include raw_matrix_hex or context_layout, so byte-level verification was not possible from this YAML alone.
+  - No internal contradictions were found.

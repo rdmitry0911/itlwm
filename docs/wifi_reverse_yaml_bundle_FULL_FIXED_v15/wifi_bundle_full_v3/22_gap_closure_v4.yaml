@@ -1,0 +1,57 @@
+version: 4
+topic: remaining_gap_closure
+summary:
+  remaining_gap_is_primarily:
+    - symbolic table recovery
+    - ivar field-map tightening
+    - virtual-call naming for the skywalk boundary
+  remaining_gap_is_not_primarily:
+    - missing kernel binaries
+ranked_steps:
+  - step: 1
+    name: build_manager_descriptor_inventory
+    purpose: "Enumerate every CommonFsmManager user and recover descriptor_ptr constants."
+    actions:
+      - "Find all constructors/inits of classes embedding CommonFsmManager."
+      - "Capture stores into runtime_blob->descriptor_ptr."
+      - "Dump nearby rodata objects and transition matrices."
+    expected_gain: "direct state/event/action counts per machine"
+  - step: 2
+    name: recover_action_callback_arrays
+    purpose: "Convert numeric actionId into callback symbol names."
+    actions:
+      - "For each descriptor action array entry, resolve function pointer."
+      - "Normalize thunked callbacks to canonical targets."
+    expected_gain: "named transition actions"
+  - step: 3
+    name: apply_ioskywalknetworkinterface_vtable_anchor
+    purpose: "Rename virtual calls at the network-interface boundary."
+    actions:
+      - "Map calls through offsets 0x8D0..0xA10 to method names from the validated vtable."
+      - "Revisit AppleBCMWLANSkywalkInterface and related classes."
+    expected_gain: "hard ABI names for BSD attach / MTU / wake / offload / snapshot methods"
+  - step: 4
+    name: tighten_struct_maps
+    purpose: "Promote medium-confidence fields to high confidence."
+    targets:
+      - AppleBCMWLANSkywalkInterface ivar block
+      - AppleOLYHAL dext message node
+      - AppleConvergedIPCRequest / MemoryPolicy
+      - ACIPCRTIPipe message objects
+    expected_gain: "richer data-structure YAML and better call-format precision"
+  - step: 5
+    name: optional_userland_orchestration
+    purpose: "Only if policy-level completeness is needed."
+    target: airportd
+    expected_gain: "auto-join/policy/daemon-level state machines"
+decision_rule_for_airportd:
+  - "Not required for kernel-state-machine completeness."
+  - "Required only for userland policy orchestration and end-to-end Wi-Fi control plane."
+new_anchor_from_user:
+  ioskywalknetworkinterface_vtable:
+    status: exact
+    value:
+      - "validates local header against kernel binary"
+      - "removes uncertainty around 41 methods + 10 reserved"
+    consequence:
+      - "virtual-call recovery in skywalk-facing classes can now proceed mechanically rather than heuristically"

@@ -1,0 +1,36 @@
+document:
+  title: Assertion and completion contracts deepened
+  version: v10
+  AppleOLYHALPortInterfacePCIe:
+    dext_msg_tracking:
+      getDextMsgInfo:
+        list_head_offset: 0x58
+        key: "msg_id (int)"
+      abortPendingDextMsgs:
+        pending_list_anchor: "self[0xb]"
+        scheduler_or_gate: "self[10]"
+    AMFM_assertions:
+      - "!fAction && !fOwner"
+      - "fClientStatus == kClientCrashed"
+      - "fResetProgress == kResetStepBusQuiesced"
+      - "fResetIsInternal"
+      - "!fPendingErrorHandling"
+      - "params"
+      - "fOwner && fAction"
+      - "Pending powerOn never arrived"
+      - "pActionType == kAppleOLYHALPortInterfacePowerActionTypeHardReset"
+    interpretation:
+      - "AMFM gated path is a strict reset/error/power state machine with strong invariants."
+      - "These assertions are reliable semantic anchors even where pseudocode is poor."
+  AppleConvergedPCI_ACIPCControl:
+    assertions:
+      - "linkUpCheck assertions at source lines ~0x400/0x41f"
+      - "linkDownCheck assertions at source lines ~0x42f/0x44a"
+    implication: "link state transitions are explicitly gated and instrumented"
+  ACIPCRTIPipe:
+    assertions:
+      - "ioCompletionInternal"
+      - "processTDP"
+      - "completeIO"
+      - "checkCompletedIO"
+    implication: "completion pipeline has a stable staged contract useful for field-map recovery"

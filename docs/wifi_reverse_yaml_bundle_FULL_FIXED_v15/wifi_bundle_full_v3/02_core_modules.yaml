@@ -1,0 +1,45 @@
+document_type: applebcmwlan_core_module_inventory_v2
+core_object: AppleBCMWLANCore
+construction_pattern:
+  summary: Core constructs/retains many submodules lazily or during startup; on failure it logs, frees intermediates, and may stop/report init failure.
+confirmed_modules:
+  - module: AppleBCMWLANPowerManager
+    lifecycle: [allocated, initWithDriver, runtime_callbacks, operational, free]
+  - module: AppleBCMWLANBssManager
+    lifecycle: [allocated, operational]
+  - module: AppleBCMWLANJoinAdapter
+    lifecycle: [allocated, operational, free]
+  - module: AppleBCMWLANNetAdapter
+    lifecycle: [allocated, operational, free]
+  - module: AppleBCMWLANLQM
+    lifecycle: [allocated, operational]
+  - module: AppleBCMWLANKeepAliveOffload
+    lifecycle: [allocated, operational]
+  - module: AppleBCMWLANGASAdapter
+    lifecycle: [allocated, query_param_setup, query_issue_abort, operational, free]
+  - module: AppleBCMWLANRoamAdapter
+    lifecycle: [allocated, roam_runtime, free]
+  - module: AppleBCMWLANPowerStateAdapter
+    lifecycle: [allocated, associated_sleep_roam_config, runtime_power_adjustments, free]
+  - module: AppleBCMWLANSkywalkInterface
+    lifecycle: [allocated, runtime_datapath, free]
+  - module: AppleBCMWLANTimeKeeper
+    lifecycle: [allocated, runtime_time_tracking]
+  - module: AppleBCMWLANTimeSyncEngine
+    lifecycle: [allocated_or_withProviderAndBus, provider_binding, operational, free]
+cross_dependencies:
+  - producer: AppleBCMWLANCore
+    consumer: AppleBCMWLANPowerStateAdapter
+    relation: Core delegates associated-sleep roam scan quota configuration to power-state adapter.
+  - producer: AppleBCMWLANCore
+    consumer: AppleBCMWLANGASAdapter
+    relation: GAS adapter bridges framework GAS flows to vendor/firmware commands.
+  - producer: AppleBCMWLANBusInterfacePCIe
+    consumer: AppleBCMWLANTimeSyncEngine
+    relation: Bus instantiates TimeSync engine during transport capability setup.
+known_runtime_signals:
+  - last_roam_status_and_reason_string
+  - event_msgs_ext mask retrieval
+  - scan_home_away_time request/callback
+limitations:
+  - Several submodule constructor helpers are still identified by symbol/context rather than fully reconstructed class map.

@@ -1,0 +1,259 @@
+document_type: wifi_reverse_data_structures_v3
+purpose: Reverse-engineering-oriented structural model of key objects and payloads observed in the uploaded macOS Wi-Fi kernel decompilations.
+conventions:
+  field_confidence:
+    - confirmed_offset: exact offset/width behavior visible in decompiled code
+    - inferred_role: role inferred from usage pattern, allocator/free path, or surrounding API shape
+  api_style:
+    - object_header: C++ OSMetaClass/OSObject-derived header implied but not re-described unless relevant
+    - inner_payload: heap subobject or embedded runtime payload often held at +0x10 / +0x18 style ivars
+structures:
+  - name: CommonFsmManager
+    source_file: IO80211Family_decompiled.c
+    confidence: mixed
+    outer_object:
+      confirmed_fields:
+        - offset: 0x10
+          type: pointer
+          name: fsm_runtime
+          confidence: confirmed_offset
+          semantics: Owned pointer to FSM runtime/config object; null is fatal during dispatch/free paths.
+    nested_runtime_object:
+      confirmed_fields:
+        - offset: 0x10
+          type: u8
+          name: current_state
+          confidence: confirmed_offset
+          semantics: Returned by getState().
+        - offset: 0x08
+          type: pointer
+          name: fsm_descriptor
+          confidence: inferred_role
+          semantics: Descriptor with state/event/action tables and optional string tables.
+        - offset: 0x12
+          type: bool
+          name: descriptor_valid
+          confidence: confirmed_offset
+          semantics: Written by validateFsmConfig() after checking descriptor table pointers.
+    descriptor_shape:
+      inferred_fields:
+        - name: event_table
+          semantics: Used to derive transition slot from current-state and event.
+        - name: state_string_table
+          semantics: Suggested by explicit log format with state/event names.
+        - name: event_string_table
+          semantics: Suggested by explicit log format with state/event names.
+        - name: action_table
+          semantics: Array of indirect callbacks; low bit may indicate relative thunk/pac-style pointer fixup.
+    invariants:
+      - processEvent requires non-null runtime/descriptor.
+      - Descriptor validity depends on multiple internal pointers being non-null.
+      - Action dispatch is table-driven, not switch-driven.
+  - name: CommonFsmManagerOptions
+    source_file: IO80211Family_decompiled.c
+    confidence: inferred
+    shape:
+      role: Initialization bundle passed to initWithOptions().
+      likely_members:
+        - fsm_descriptor_pointer
+        - initial_state
+        - optional logging/validation flags
+        - optional owner/context pointer
+      note: Exact field layout is still unresolved; options object existence is confirmed by API boundary, not by complete field recovery.
+  - name: IO80211TimeSyncPeer.inner_payload
+    source_file: IO80211Family_decompiled.c
+    confidence: mixed
+    outer_object:
+      confirmed_fields:
+        - offset: 0x10
+          type: pointer
+          name: peer_payload
+          semantics: Separately allocated ~0x260-byte payload freed in free().
+    peer_payload:
+      confirmed_fields:
+        - offset: 0x00
+          type: pointer
+          name: peer_manager
+          semantics: Returned by getPeerManager().
+        - offset: 0x09
+          type: pointer
+          name: ip_address_ptr
+          semantics: getIpAddress() returns payload+9, implying packed address bytes within peer payload.
+        - offset: 0x30
+          type: u32
+          name: tx_success_total
+          semantics: Incremented on tx success path.
+        - offset_range: 0x34..0x68
+          type: u32[]
+          name: tx_success_by_msg_type
+          semantics: Indexed by msgType2Index().
+        - offset: 0x50
+          type: u32
+          name: tx_failure_total
+          semantics: Incremented on failure reasons.
+        - offset_range: 0x6c..
+          type: u32[]
+          name: tx_failure_by_msg_type
+          semantics: Failure counters by message type.
+        - offset_range: 0x88..
+          type: matrix<u32>
+          name: tx_failure_reason_matrix
+          semantics: [msgTypeIndex][reasonBucket] style counters.
+        - offset_range: 0x148..0x260
+          type: stats_blob
+          name: stats_region
+          semantics: Zeroed by resetStats().
+  - name: AppleOLYHALPortInterfacePCIe
+    source_file: AppleOLYHALMac_decompiled.c
+    confidence: mixed
+    confirmed_fields:
+      - offset: 0x50
+        type: queue_or_lock_ref
+        name: dext_msg_gate
+        semantics: Used by abortPendingDextMsgs() when removing a pending message.
+      - offset: 0x58
+        type: intrusive_list_head
+        name: pending_dext_msg_list
+        semantics: Sentinel head used by getDextMsgInfo(msg_id).
+      - offset: 0x150
+        type: u32
+        name: dext_respawn_timeout_ms
+        semantics: Referenced by timeout assert for AppleBCMWLAN dext respawn.
+    dext_msg_node_shape:
+      inferred_fields:
+        - relative_to_list_link: -0x10
+          type: s32
+          name: msg_id
+          semantics: Compared by getDextMsgInfo().
+        - relative_to_list_link: -0x04
+          type: u8
+          name: aborted_or_cancelled
+          semantics: Set before queue removal in abortPendingDextMsgs().
+        - relative_to_list_link: -0x08
+          type: list_link
+          name: link
+          semantics: Passed to queue/list removal helper.
+    reset_progress_model:
+      symbolic_steps_observed:
+        - kResetStepRequested
+        - kResetStepBusQuiesced
+      semantics:
+        - processAMFMMessageGated asserts on exact reset phase and internal/external reset context.
+  - name: AppleConvergedIPCInterface
+    source_file: AppleConvergedPCI_decompiled.c
+    confidence: inferred
+    api_owned_objects:
+      - AppleConvergedIPCMemoryCommand*
+      - IOACIPCCompletion*
+      - optional out_length / out_context pointers
+    likely_state:
+      - mapper
+      - command_gate
+      - skywalk_enabled_flag
+      - channel state by direction
+    semantics:
+      - Abstract transport/memory interface with read/write/startChannel/abortChannel entry points.
+      - Concrete implementations provide mapper and command gate.
+  - name: AppleConvergedIPCRequest
+    source_file: AppleConvergedPCI_decompiled.c
+    confidence: inferred
+    prepare_signature_roles:
+      - interface
+      - memory_command
+      - completion
+      - is_read
+      - may_block_or_use_sg
+    semantics:
+      - Encapsulates one DMA/IPC transfer request.
+      - Has dedicated prepare path for generic memory command and a separate Skywalk transfer path.
+  - name: AppleConvergedIPCMemoryPolicyInfo
+    source_file: AppleConvergedPCI_decompiled.c
+    confidence: inferred
+    likely_fields:
+      - mapper
+      - dma_policy_flags
+      - prepared_use_count
+      - segment or sg metadata
+    semantics:
+      - Couples IOMapper with DMA preparation policy for ACIPC transfers.
+  - name: ACIPCChip43xx common config block
+    source_file: AppleConvergedPCI_decompiled.c
+    confidence: mixed
+    confirmed_layout_example: ACIPCChip4399.initWithRevisionID()
+    confirmed_fields:
+      - offset: 0x08
+        type: u64
+        name: otp_or_mmio_window_0
+      - offset: 0x10
+        type: u64
+        name: otp_or_mmio_window_1
+      - offset: 0x18
+        type: u64
+        name: otp_or_mmio_window_2
+      - offset: 0x20
+        type: u64
+        name: otp_or_mmio_window_3_or_size
+      - offset: 0x28
+        type: u16
+        name: chip_flags_or_disable_mask
+      - offset: 0x2c
+        type: u64
+        name: bar0_window_range_0
+      - offset: 0x34
+        type: u64
+        name: bar0_window_range_1
+      - offset: 0x3c
+        type: u64
+        name: bar0_window_range_2
+      - offset: 0x44
+        type: u64
+        name: bar0_window_range_3
+      - offset: 0x4c
+        type: u32
+        name: aperture_or_ram_size
+      - offset: 0x50
+        type: u8
+        name: revision_id
+    semantics:
+      - Constructor bakes chip-family-specific BAR and backplane map windows.
+      - getNumDoorbell() confirms chip-specific doorbell topology.
+  - name: AppleConvergedIPCRTIInterface
+    source_file: AppleConvergedIPCOLYBTControl_decompiled.c
+    confidence: inferred
+    likely_fields:
+      - property_dict
+      - pipe_ref
+      - callback owner/action
+      - pending async state
+    semantics:
+      - validateProperties() is mandatory before runtime.
+      - asyncCompletion(id) indicates request table keyed by transaction or pipe token.
+      - stop() asserts on teardown discipline.
+  - name: ACIPCRTIPipe
+    source_file: AppleConvergedIPCOLYBTControl_decompiled.c
+    confidence: inferred
+    semantics:
+      - Dedicated RTI transport endpoint with explicit linkRecovery().
+      - Has image/message completion path(s) and strong assertions on recovery sequencing.
+  - name: IOTimeSyncRootService
+    source_file: IOTimeSyncFamily_decompiled.c
+    confidence: mixed
+    confirmed_fields:
+      - object_size: 0x88
+        semantics: OSMetaClass alloc size.
+    semantics:
+      - probe(provider, score*) requires IOTimeSyncTime property/service readiness.
+      - start(provider) enters top-level TimeSync runtime.
+  - name: IOTimeSyncDaemonClientBase
+    source_file: IOTimeSyncFamily_decompiled.c
+    confidence: mixed
+    confirmed_fields:
+      - offset_index: 0x11
+        type: retained_object_ptr
+        semantics: Released in destructor.
+      - offset_index: 0x12
+        type: retained_object_ptr
+        semantics: Released in destructor.
+    semantics:
+      - Base owns two retained endpoints, likely service + daemon/client binding objects.
+      - Destructor pattern confirms explicit ownership graph.

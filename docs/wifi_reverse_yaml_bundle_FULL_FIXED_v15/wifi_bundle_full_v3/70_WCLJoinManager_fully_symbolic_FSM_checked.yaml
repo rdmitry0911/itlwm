@@ -1,0 +1,590 @@
+version: 1
+topic: WCLJoinManager fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125) via Ghidra headless + chained fixup decode
+extraction_method:
+- gfsmJOIN_MANAGERcontext at VA 0xffffff8002402f90
+- file offset 0x2302f90 in __REGION350 (vmaddr=0xffffff80023cb000, fileoff=0x22cb000)
+- transition matrix at context+0xa0 (192 bytes, 6 states x 16 events x 2 bytes/cell)
+- action table at context+0x160 (17 entries x 0x10 bytes, Itanium ABI member func ptrs)
+- state name vector at context+0x270 (6 ptrs)
+- event name vector at context+0x2a0 (16 ptrs)
+- FSM name at context+0x320 -> "JOIN_MANAGER"
+- bulletin board callback table at context+0x328 (20 entries x 0x18 stride)
+fsm_name: JOIN_MANAGER
+states:
+  0: IDLE
+  1: IN_PROGRESS
+  2: ASSOC_DONE
+  3: CONNECT_COMPLETE
+  4: HALTED
+  5: ABORTED
+events:
+  0: JOIN_REQ
+  1: JOIN_REQ_FAILED
+  2: JOIN_ABORT_REQ
+  3: JOIN_ABORT_COMPLETE
+  4: JOIN_ASSOC_COMPLETE
+  5: JOIN_CONNECT_COMPLETE
+  6: JOIN_COMPLETE
+  7: DRIVER_RESET
+  8: HALT
+  9: RESUME
+  10: TIMEOUT
+  11: SYSTEM_POWER_OFF
+  12: SYSTEM_POWER_ON
+  13: TRY_NEXT_CANDIDATE
+  14: TRY_NEXT_CANDIDATE_DELAYED
+  15: JOIN_SCAN_UPDATE
+actions:
+  0:
+    name: ignore
+    kdk_symbol: WCLJoinManager::ignore
+    kdk_addr: 18446743523989355480
+    kc_addr: 18446743523989356224
+  1:
+    name: handleJoinRequest
+    kdk_symbol: WCLJoinManager::handleJoinRequest
+    kdk_addr: 18446743523989355576
+    kc_addr: 18446743523989356320
+  2:
+    name: handleJoinRequestFailed
+    kdk_symbol: WCLJoinManager::handleJoinRequestFailed
+    kdk_addr: 18446743523989359608
+    kc_addr: 18446743523989360352
+  3:
+    name: handleJoinAbortReq
+    kdk_symbol: WCLJoinManager::handleJoinAbortReq
+    kdk_addr: 18446743523989359840
+    kc_addr: 18446743523989360584
+  4:
+    name: handleJoinAbortComplete
+    kdk_symbol: WCLJoinManager::handleJoinAbortComplete
+    kdk_addr: 18446743523989361594
+    kc_addr: 18446743523989362338
+  5:
+    name: handleJoinAssocComplete
+    kdk_symbol: WCLJoinManager::handleJoinAssocComplete
+    kdk_addr: 18446743523989360450
+    kc_addr: 18446743523989361194
+  6:
+    name: handleJoinConnectComplete
+    kdk_symbol: WCLJoinManager::handleJoinConnectComplete
+    kdk_addr: 18446743523989361332
+    kc_addr: 18446743523989362076
+  7:
+    name: handleJoinComplete
+    kdk_symbol: WCLJoinManager::handleJoinComplete
+    kdk_addr: 18446743523989361580
+    kc_addr: 18446743523989362324
+  8:
+    name: handleDriverReset
+    kdk_symbol: WCLJoinManager::handleDriverReset
+    kdk_addr: 18446743523989361716
+    kc_addr: 18446743523989362460
+  9:
+    name: handleResume
+    kdk_symbol: WCLJoinManager::handleResume
+    kdk_addr: 18446743523989361838
+    kc_addr: 18446743523989362582
+  10:
+    name: handleTimeout
+    kdk_symbol: WCLJoinManager::handleTimeout
+    kdk_addr: 18446743523989361930
+    kc_addr: 18446743523989362674
+  11:
+    name: handleTimeoutAssert
+    kdk_symbol: WCLJoinManager::handleTimeoutAssert
+    kdk_addr: 18446743523989362084
+    kc_addr: 18446743523989362828
+  12:
+    name: handleTimeoutAbort
+    kdk_symbol: WCLJoinManager::handleTimeoutAbort
+    kdk_addr: 18446743523989362168
+    kc_addr: 18446743523989362912
+  13:
+    name: handleJoinAbort
+    kdk_symbol: WCLJoinManager::handleJoinAbort
+    kdk_addr: 18446743523989362268
+    kc_addr: 18446743523989363012
+  14:
+    name: handleSendCandidateToDriver
+    kdk_symbol: WCLJoinManager::handleSendCandidateToDriver
+    kdk_addr: 18446743523989357118
+    kc_addr: 18446743523989357862
+  15:
+    name: handleWaitForAllowIndication
+    kdk_symbol: WCLJoinManager::handleWaitForAllowIndication
+    kdk_addr: 18446743523989359046
+    kc_addr: 18446743523989359790
+  16:
+    name: handleJoinScanUpdate
+    kdk_symbol: WCLJoinManager::handleJoinScanUpdate
+    kdk_addr: 18446743523989359200
+    kc_addr: 18446743523989359944
+transition_matrix:
+  IDLE:
+    JOIN_REQ:
+      next: IN_PROGRESS
+      action: handleJoinRequest
+    JOIN_REQ_FAILED:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_ASSOC_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_CONNECT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_COMPLETE:
+      next: =SELF=
+      action: ignore
+    DRIVER_RESET:
+      next: HALTED
+      action: ignore
+    HALT:
+      next: HALTED
+      action: ignore
+    RESUME:
+      next: =SELF=
+      action: ignore
+    TIMEOUT:
+      next: IDLE
+      action: handleTimeoutAssert
+    SYSTEM_POWER_OFF:
+      next: HALTED
+      action: ignore
+    SYSTEM_POWER_ON:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: =SELF=
+      action: ignore
+    JOIN_SCAN_UPDATE:
+      next: =SELF=
+      action: ignore
+  IN_PROGRESS:
+    JOIN_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_REQ_FAILED:
+      next: IDLE
+      action: handleJoinRequestFailed
+    JOIN_ABORT_REQ:
+      next: ABORTED
+      action: handleJoinAbortReq
+    JOIN_ABORT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_ASSOC_COMPLETE:
+      next: ASSOC_DONE
+      action: handleJoinAssocComplete
+    JOIN_CONNECT_COMPLETE:
+      next: CONNECT_COMPLETE
+      action: handleJoinConnectComplete
+    JOIN_COMPLETE:
+      next: IDLE
+      action: handleJoinComplete
+    DRIVER_RESET:
+      next: HALTED
+      action: handleDriverReset
+    HALT:
+      next: HALTED
+      action: handleJoinAbort
+    RESUME:
+      next: =SELF=
+      action: ignore
+    TIMEOUT:
+      next: IN_PROGRESS
+      action: handleTimeout
+    SYSTEM_POWER_OFF:
+      next: HALTED
+      action: handleJoinAbort
+    SYSTEM_POWER_ON:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE:
+      next: IN_PROGRESS
+      action: handleSendCandidateToDriver
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: IN_PROGRESS
+      action: handleWaitForAllowIndication
+    JOIN_SCAN_UPDATE:
+      next: IN_PROGRESS
+      action: handleJoinScanUpdate
+  ASSOC_DONE:
+    JOIN_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_REQ_FAILED:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_REQ:
+      next: ABORTED
+      action: handleJoinAbortReq
+    JOIN_ABORT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_ASSOC_COMPLETE:
+      next: ASSOC_DONE
+      action: handleJoinAssocComplete
+    JOIN_CONNECT_COMPLETE:
+      next: CONNECT_COMPLETE
+      action: handleJoinConnectComplete
+    JOIN_COMPLETE:
+      next: =SELF=
+      action: ignore
+    DRIVER_RESET:
+      next: HALTED
+      action: handleDriverReset
+    HALT:
+      next: HALTED
+      action: handleJoinAbort
+    RESUME:
+      next: =SELF=
+      action: ignore
+    TIMEOUT:
+      next: ASSOC_DONE
+      action: handleTimeout
+    SYSTEM_POWER_OFF:
+      next: HALTED
+      action: handleJoinAbort
+    SYSTEM_POWER_ON:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: =SELF=
+      action: ignore
+    JOIN_SCAN_UPDATE:
+      next: =SELF=
+      action: ignore
+  CONNECT_COMPLETE:
+    JOIN_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_REQ_FAILED:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_REQ:
+      next: ABORTED
+      action: handleJoinAbortReq
+    JOIN_ABORT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_ASSOC_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_CONNECT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_COMPLETE:
+      next: IDLE
+      action: handleJoinComplete
+    DRIVER_RESET:
+      next: HALTED
+      action: handleDriverReset
+    HALT:
+      next: HALTED
+      action: handleJoinAbort
+    RESUME:
+      next: =SELF=
+      action: ignore
+    TIMEOUT:
+      next: CONNECT_COMPLETE
+      action: handleTimeout
+    SYSTEM_POWER_OFF:
+      next: HALTED
+      action: handleJoinAbort
+    SYSTEM_POWER_ON:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE:
+      next: IN_PROGRESS
+      action: handleSendCandidateToDriver
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: IN_PROGRESS
+      action: handleWaitForAllowIndication
+    JOIN_SCAN_UPDATE:
+      next: =SELF=
+      action: ignore
+  HALTED:
+    JOIN_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_REQ_FAILED:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_COMPLETE:
+      next: HALTED
+      action: handleJoinAbortComplete
+    JOIN_ASSOC_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_CONNECT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_COMPLETE:
+      next: =SELF=
+      action: ignore
+    DRIVER_RESET:
+      next: =SELF=
+      action: ignore
+    HALT:
+      next: =SELF=
+      action: ignore
+    RESUME:
+      next: IDLE
+      action: handleResume
+    TIMEOUT:
+      next: HALTED
+      action: handleTimeoutAbort
+    SYSTEM_POWER_OFF:
+      next: =SELF=
+      action: ignore
+    SYSTEM_POWER_ON:
+      next: IDLE
+      action: handleResume
+    TRY_NEXT_CANDIDATE:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: =SELF=
+      action: ignore
+    JOIN_SCAN_UPDATE:
+      next: =SELF=
+      action: ignore
+  ABORTED:
+    JOIN_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_REQ_FAILED:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_REQ:
+      next: =SELF=
+      action: ignore
+    JOIN_ABORT_COMPLETE:
+      next: IDLE
+      action: handleJoinAbortComplete
+    JOIN_ASSOC_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_CONNECT_COMPLETE:
+      next: =SELF=
+      action: ignore
+    JOIN_COMPLETE:
+      next: =SELF=
+      action: ignore
+    DRIVER_RESET:
+      next: =SELF=
+      action: ignore
+    HALT:
+      next: HALTED
+      action: ignore
+    RESUME:
+      next: =SELF=
+      action: ignore
+    TIMEOUT:
+      next: ABORTED
+      action: handleTimeoutAbort
+    SYSTEM_POWER_OFF:
+      next: =SELF=
+      action: ignore
+    SYSTEM_POWER_ON:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE:
+      next: =SELF=
+      action: ignore
+    TRY_NEXT_CANDIDATE_DELAYED:
+      next: =SELF=
+      action: ignore
+    JOIN_SCAN_UPDATE:
+      next: =SELF=
+      action: ignore
+raw_matrix_hex: '01 01 ff 00 ff 00 ff 00 ff 00 ff 00 ff 00 04 00
+
+  04 00 ff 00 00 0b 04 00 ff 00 ff 00 ff 00 ff 00
+
+  ff 00 00 02 05 03 ff 00 02 05 03 06 00 07 04 08
+
+  04 0d ff 00 01 0a 04 0d ff 00 01 0e 01 0f 01 10
+
+  ff 00 ff 00 05 03 ff 00 02 05 03 06 ff 00 04 08
+
+  04 0d ff 00 02 0a 04 0d ff 00 ff 00 ff 00 ff 00
+
+  ff 00 ff 00 05 03 ff 00 ff 00 ff 00 00 07 04 08
+
+  04 0d ff 00 03 0a 04 0d ff 00 01 0e 01 0f ff 00
+
+  ff 00 ff 00 ff 00 04 04 ff 00 ff 00 ff 00 ff 00
+
+  ff 00 00 09 04 0c ff 00 00 09 ff 00 ff 00 ff 00
+
+  ff 00 ff 00 ff 00 00 04 ff 00 ff 00 ff 00 ff 00
+
+  04 00 ff 00 05 0c ff 00 ff 00 ff 00 ff 00 ff 00
+
+  '
+context_layout:
+  +0x000_to_0x08f:
+    description: Bulletin board topic name string pointers (18 x 8-byte ptrs)
+  +0x090_to_0x09f:
+    description: NULL separator + metadata (contains value 14 at +0x098)
+  +0x0a0_to_0x15f:
+    description: transition matrix (192 bytes = 6 states x 16 events x 2 bytes/cell)
+  +0x160_to_0x26f:
+    description: action table (17 entries x 0x10 bytes = 272 bytes)
+    note: Itanium ABI member function pointers {func_ptr:8, this_adj:8}
+  +0x270_to_0x29f:
+    description: state name vector (6 x 8-byte ptrs, chained fixup encoded)
+  +0x2a0_to_0x31f:
+    description: event name vector (16 x 8-byte ptrs, chained fixup encoded)
+  +0x320_to_0x327:
+    description: FSM name pointer -> 'JOIN_MANAGER'
+  +0x328_to_0x507:
+    description: bulletin board callback table (20 entries x 0x18 stride)
+  +0x508_to_0x5bf:
+    description: padding, build info pointers, auxiliary data
+bulletin_board_callbacks:
+- index: 0
+  meta_type: 2
+  board_id: 6
+  handler: WCLJoinManager::micErrorHandler
+- index: 1
+  meta_type: 2
+  board_id: 5
+  handler: WCLJoinManager::micErrorHandler
+  note: duplicate registration on board 0x0005
+- index: 2
+  meta_type: 2
+  board_id: 211
+  handler: WCLJoinManager::authAssocCompleteEventHandler
+- index: 3
+  meta_type: 2
+  board_id: 212
+  handler: WCLJoinManager::firstBeaconEventHandler
+- index: 4
+  meta_type: 2
+  board_id: 213
+  handler: WCLJoinManager::connectCompleteEventHandler
+- index: 5
+  meta_type: 2
+  board_id: 214
+  handler: WCLJoinManager::joinAbortHandler
+- index: 6
+  meta_type: 1
+  board_id: 20
+  handler: WCLJoinManager::assocRequestHandler
+- index: 7
+  meta_type: 1
+  board_id: 91
+  handler: WCLJoinManager::joinBusyQueryForSetRequestHandler
+- index: 8
+  meta_type: 0
+  board_id: 50
+  handler: WCLJoinManager::associationStatusHandler
+- index: 9
+  meta_type: 0
+  board_id: 257
+  handler: WCLJoinManager::joinTrapAWDRequestHandler
+- index: 10
+  meta_type: 3
+  board_id: 9
+  handler: WCLJoinManager::joinIsBusy
+- index: 11
+  meta_type: 3
+  board_id: 13
+  handler: WCLJoinManager::joinAbortRequestHandler
+- index: 12
+  meta_type: 3
+  board_id: 20
+  handler: WCLJoinManager::systemWillSleepNotificationHandler
+- index: 13
+  meta_type: 3
+  board_id: 21
+  handler: WCLJoinManager::systemAwakeNotificationHandler
+- index: 14
+  meta_type: 3
+  board_id: 23
+  handler: WCLJoinManager::driverResetNotificationHandler
+- index: 15
+  meta_type: 3
+  board_id: 25
+  handler: WCLJoinManager::systemPowerOFFNotificationHandler
+- index: 16
+  meta_type: 3
+  board_id: 24
+  handler: WCLJoinManager::systemPowerONNotificationHandler
+- index: 17
+  meta_type: 3
+  board_id: 31
+  handler: WCLJoinManager::dataPathCleanDone
+- index: 18
+  meta_type: 3
+  board_id: 32
+  handler: WCLJoinManager::joinScanUpdate
+- index: 19
+  meta_type: 4
+  board_id: 3
+  handler: WCLJoinManager::simulateJoinStatusHandler
+string_table:
+- string: JOIN_MANAGER_STATE_IDLE
+- string: JOIN_MANAGER_STATE_IN_PROGRESS
+- string: JOIN_MANAGER_STATE_ASSOC_DONE
+- string: JOIN_MANAGER_STATE_CONNECT_COMPLETE
+- string: JOIN_MANAGER_STATE_HALTED
+- string: JOIN_MANAGER_STATE_ABORTED
+- string: JOIN_MANAGER_EVENT_JOIN_REQ
+- string: JOIN_MANAGER_EVENT_JOIN_REQ_FAILED
+- string: JOIN_MANAGER_EVENT_JOIN_ABORT_REQ
+- string: JOIN_MANAGER_EVENT_JOIN_ABORT_COMPLETE
+- string: JOIN_MANAGER_EVENT_JOIN_ASSOC_COMPLETE
+- string: JOIN_MANAGER_EVENT_JOIN_CONNECT_COMPLETE
+- string: JOIN_MANAGER_EVENT_JOIN_COMPLETE
+- string: JOIN_MANAGER_EVENT_DRIVER_RESET
+- string: JOIN_MANAGER_EVENT_HALT
+- string: JOIN_MANAGER_EVENT_RESUME
+- string: JOIN_MANAGER_EVENT_TIMEOUT
+- string: JOIN_MANAGER_EVENT_SYSTEM_POWER_OFF
+- string: JOIN_MANAGER_EVENT_SYSTEM_POWER_ON
+- string: JOIN_MANAGER_EVENT_TRY_NEXT_CANDIDATE
+- string: JOIN_MANAGER_EVENT_TRY_NEXT_CANDIDATE_DELAYED
+- string: JOIN_MANAGER_EVENT_JOIN_SCAN_UPDATE
+- string: JOIN_MANAGER
+kdk_to_kc_note: KDK-to-BootKC delta is +0x2e8 (BootKC = KDK + 0x2e8), consistent across all 17 action handlers and 20 bulletin board callbacks (37 verified matches). The inter-function deltas are identical in both address spaces.
+behavioral_notes:
+  join_flow: 'Normal join path: IDLE -> IN_PROGRESS (JOIN_REQ) -> ASSOC_DONE (JOIN_ASSOC_COMPLETE) -> CONNECT_COMPLETE (JOIN_CONNECT_COMPLETE) -> IDLE (JOIN_COMPLETE). This is the 4-step join lifecycle.'
+  candidate_retry: From IN_PROGRESS and CONNECT_COMPLETE, TRY_NEXT_CANDIDATE triggers handleSendCandidateToDriver, returning to/staying in IN_PROGRESS. TRY_NEXT_CANDIDATE_DELAYED triggers handleWaitForAllowIndication. These enable BSS candidate iteration during join.
+  abort_flow: JOIN_ABORT_REQ from any active state (IN_PROGRESS, ASSOC_DONE, CONNECT_COMPLETE) -> ABORTED via handleJoinAbortReq. ABORTED waits for JOIN_ABORT_COMPLETE -> IDLE via handleJoinAbortComplete. HALTED also handles JOIN_ABORT_COMPLETE (stays HALTED).
+  halt_pattern: HALT/DRIVER_RESET/SYSTEM_POWER_OFF all transition active states to HALTED. Active states use handleJoinAbort or handleDriverReset; IDLE uses ignore. HALTED exits via RESUME or SYSTEM_POWER_ON -> IDLE via handleResume.
+  timeout_pattern: TIMEOUT in active states (IN_PROGRESS, ASSOC_DONE, CONNECT_COMPLETE) stays in current state via handleTimeout. IDLE/TIMEOUT -> handleTimeoutAssert (defensive). HALTED/ABORTED/TIMEOUT -> handleTimeoutAbort (graceful cancel).
+  scan_update: JOIN_SCAN_UPDATE is only handled in IN_PROGRESS state via handleJoinScanUpdate. All other states ignore it.
+consistency_notes:
+  review_status: checked
+  internal_consistency: no contradictory data found
+  verified_points:
+  - transition matrix size matches 6 states x 16 events x 2 bytes = 192 bytes
+  - action table size matches 17 entries x 0x10 bytes = 272 bytes
+  - symbolic transition matrix matches raw_matrix_hex exactly
+  - context layout ranges are size-consistent
+  - KDK-to-BootKC delta across all 17 action handlers is +0x2e8
+  non_blocking_notes:
+  - string_table lists strings without file offsets; this is less rich than the corrected SCAN_MANAGER YAML but not contradictory
+  - behavioral_notes summarize the dominant path and do not attempt to enumerate every alternate transition

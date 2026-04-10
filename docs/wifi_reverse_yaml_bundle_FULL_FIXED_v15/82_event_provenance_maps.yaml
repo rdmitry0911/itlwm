@@ -1,0 +1,483 @@
+version: 1
+topic: Cross-FSM event provenance maps
+status: working_draft
+purpose: >-
+  Map external stimuli, internal callbacks, bulletin-board topics, and FSM event
+  injections into a portable bring-up view for non-Apple adapter drivers.
+  This document answers: who originates an event, who receives it, what bridge
+  mechanism is used, and what a translation shim must synthesize for a new adapter.
+
+scope:
+  planes:
+    - scan
+    - join
+    - roam
+    - net_link
+    - gas_anqp
+    - lqm
+    - system_state
+    - bg_offload
+    - ax_features
+  focus: >-
+    Provenance of high-value events required to boot, connect, sleep/wake,
+    recover from resets, and support ANQP/GAS flows.
+
+model:
+  fields:
+    - event
+    - source_plane
+    - likely_producer
+    - bridge_mechanism
+    - consumer_owner
+    - target_fsm
+    - target_event
+    - minimum_shim_behavior
+    - failure_if_missing
+    - confidence
+
+provenance_maps:
+  - event: LINK_UP
+    source_plane: net_link
+    likely_producer:
+      - firmware/driver link-state indication
+      - post-association success path
+    bridge_mechanism:
+      - bulletin board / owner callback / direct manager injection
+    consumer_owner: WCLNetManager
+    target_fsm: NET_MANAGER
+    target_event: LINK_UP
+    minimum_shim_behavior:
+      - synthesize once association is considered established
+      - provide stable BSSID/channel/security context before firing
+    failure_if_missing:
+      - NET_MANAGER remains in LINK_DOWN
+      - connect path never reaches WAITING_FOR_CONNECT_COMPLETE
+    confidence: high
+
+  - event: CONNECT_COMPLETE
+    source_plane: join
+    likely_producer:
+      - association/auth completion callback
+      - join manager completion path
+    bridge_mechanism:
+      - join completion indication into net manager
+    consumer_owner: WCLNetManager
+    target_fsm: NET_MANAGER
+    target_event: CONNECT_COMPLETE
+    minimum_shim_behavior:
+      - inject only after lower-layer association path is complete
+      - include enough context for IP acquisition gate to begin
+    failure_if_missing:
+      - stuck in WAITING_FOR_CONNECT_COMPLETE
+      - apparent association without usable link
+    confidence: high
+
+  - event: IPV4_STATUS
+    source_plane: net_link
+    likely_producer:
+      - IPv4 stack / interface status callback
+      - address-valid or link-local-valid notification
+    bridge_mechanism:
+      - network interface status callback into WCLNetManager
+    consumer_owner: WCLNetManager
+    target_fsm: NET_MANAGER
+    target_event: IPV4_STATUS
+    minimum_shim_behavior:
+      - emit on first usable IP state if stack expects routed connectivity
+      - may be synthesized conservatively for early bring-up
+    failure_if_missing:
+      - WAITING_FOR_IP never transitions to LINK_UP
+      - link appears associated but not operational
+    confidence: high
+
+  - event: LINK_DOWN_IND
+    source_plane: net_link
+    likely_producer:
+      - firmware deauth/disassoc indication
+      - media loss / beacon loss / carrier-loss indication
+    bridge_mechanism:
+      - link-down indication callback
+    consumer_owner: WCLNetManager
+    target_fsm: NET_MANAGER
+    target_event: LINK_DOWN_IND
+    minimum_shim_behavior:
+      - emit on deauth/disassoc or confirmed carrier-loss
+      - preserve reason code if available for diagnostics
+    failure_if_missing:
+      - stale LINK_UP state
+      - broken recovery and deauth drain behavior
+    confidence: high
+
+  - event: LINK_DOWN_COMPLETE
+    source_plane: net_link
+    likely_producer:
+      - completion of leave/deauth/teardown
+    bridge_mechanism:
+      - teardown completion callback
+    consumer_owner: WCLNetManager
+    target_fsm: NET_MANAGER
+    target_event: LINK_DOWN_COMPLETE
+    minimum_shim_behavior:
+      - emit after hardware/firmware confirms disconnect teardown completed
+    failure_if_missing:
+      - DEAUTH and SLEEP_DEAUTH states never drain back to LINK_DOWN
+    confidence: high
+
+  - event: SCAN_REQ
+    source_plane: scan
+    likely_producer:
+      - user request
+      - policy engine
+      - internal join pre-scan trigger
+    bridge_mechanism:
+      - bulletin board message / request object into WCLScanManager
+    consumer_owner: WCLScanManager
+    target_fsm: SCAN_MANAGER
+    target_event: SCAN_REQ
+    minimum_shim_behavior:
+      - accept active or passive scan request and create scan work item
+    failure_if_missing:
+      - no discovery path; join cannot find candidates
+    confidence: high
+
+  - event: SCAN_COMPLETE
+    source_plane: scan
+    likely_producer:
+      - firmware scan completion
+      - driver scan done callback
+    bridge_mechanism:
+      - scanDoneEventHandler / bulletin board indication
+    consumer_owner: WCLScanManager
+    target_fsm: SCAN_MANAGER
+    target_event: SCAN_COMPLETE
+    minimum_shim_behavior:
+      - emit exactly once per scan request lifecycle
+      - allow completion even if zero results
+    failure_if_missing:
+      - scan manager stuck IN_PROGRESS or ABORTED
+      - join-side candidate flow starves
+    confidence: high
+
+  - event: JOIN_REQ
+    source_plane: join
+    likely_producer:
+      - policy selection after scan
+      - user SSID request
+    bridge_mechanism:
+      - assoc request handler / owner-local request submission
+    consumer_owner: WCLJoinManager
+    target_fsm: JOIN_MANAGER
+    target_event: JOIN_REQ
+    minimum_shim_behavior:
+      - allocate candidate context and kick association/auth path
+    failure_if_missing:
+      - no connection establishment beyond scan
+    confidence: high
+
+  - event: JOIN_ASSOC_COMPLETE
+    source_plane: join
+    likely_producer:
+      - auth/assoc complete firmware event
+      - first successful association indication
+    bridge_mechanism:
+      - authAssocCompleteEventHandler or equivalent
+    consumer_owner: WCLJoinManager
+    target_fsm: JOIN_MANAGER
+    target_event: JOIN_ASSOC_COMPLETE
+    minimum_shim_behavior:
+      - emit when association is complete enough to proceed toward connect-complete
+    failure_if_missing:
+      - join stuck IN_PROGRESS
+      - no advance into ASSOC_DONE
+    confidence: high
+
+  - event: JOIN_CONNECT_COMPLETE
+    source_plane: join
+    likely_producer:
+      - first beacon / post-assoc secure-connect completion
+    bridge_mechanism:
+      - connectCompleteEventHandler or equivalent
+    consumer_owner: WCLJoinManager
+    target_fsm: JOIN_MANAGER
+    target_event: JOIN_CONNECT_COMPLETE
+    minimum_shim_behavior:
+      - emit when post-association connect path is ready to finalize
+    failure_if_missing:
+      - no CONNECT_COMPLETE state
+      - degraded handoff to NET_MANAGER
+    confidence: high
+
+  - event: JOIN_COMPLETE
+    source_plane: join
+    likely_producer:
+      - terminal join success callback
+    bridge_mechanism:
+      - join completion event into manager
+    consumer_owner: WCLJoinManager
+    target_fsm: JOIN_MANAGER
+    target_event: JOIN_COMPLETE
+    minimum_shim_behavior:
+      - emit once per successful join lifecycle
+    failure_if_missing:
+      - JOIN_MANAGER never returns to IDLE
+      - future joins may deadlock
+    confidence: high
+
+  - event: JOIN_SCAN_UPDATE
+    source_plane: join
+    likely_producer:
+      - scan result refresh while join is active
+    bridge_mechanism:
+      - joinScanUpdate bulletin board callback
+    consumer_owner: WCLJoinManager
+    target_fsm: JOIN_MANAGER
+    target_event: JOIN_SCAN_UPDATE
+    minimum_shim_behavior:
+      - optional for early bring-up
+      - can be stubbed unless multi-candidate retry logic is needed
+    failure_if_missing:
+      - weaker candidate iteration and roaming-quality join selection
+    confidence: medium
+
+  - event: ROAM_START
+    source_plane: roam
+    likely_producer:
+      - firmware roaming trigger
+      - policy engine candidate deterioration
+    bridge_mechanism:
+      - roam bulletin board callback / direct manager event
+    consumer_owner: WCLRoamManager
+    target_fsm: ROAM_MANAGER
+    target_event: ROAM_START
+    minimum_shim_behavior:
+      - optional for early bring-up
+      - if unsupported, suppress cleanly rather than partially emitting downstream events
+    failure_if_missing:
+      - no proactive roam
+    confidence: medium
+
+  - event: ROAM_DONE
+    source_plane: roam
+    likely_producer:
+      - roam reassociation completion
+    bridge_mechanism:
+      - completion callback into roam manager
+    consumer_owner: WCLRoamManager
+    target_fsm: ROAM_MANAGER
+    target_event: ROAM_DONE
+    minimum_shim_behavior:
+      - emit only if roam support is enabled and started
+    failure_if_missing:
+      - roam path may wedge in WAIT_ROAM_DONE / active roam states
+    confidence: medium
+
+  - event: GAS_REQUEST
+    source_plane: gas_anqp
+    likely_producer:
+      - Hotspot 2.0 / ANQP requester
+    bridge_mechanism:
+      - query request into IO80211GASFsm
+    consumer_owner: IO80211GASFsm
+    target_fsm: GAS_FSM
+    target_event: GAS_REQUEST
+    minimum_shim_behavior:
+      - optional unless HS2/ANQP is needed
+      - if unsupported, return busy/not-supported rather than partially start
+    failure_if_missing:
+      - ANQP/GAS features unavailable
+    confidence: high
+
+  - event: GAS_FRAG_RX
+    source_plane: gas_anqp
+    likely_producer:
+      - fragment reception from firmware/driver Rx path
+    bridge_mechanism:
+      - Rx callback into GASFsm + GASDefragFsm
+    consumer_owner: IO80211GASFsm / IO80211GASDefragFsm
+    target_fsm: GAS_FSM / GAS_DEFRAG_FSM
+    target_event: GAS_FRAG_RX / FRAG_RX_PARTIAL|SUCCESS|FAIL
+    minimum_shim_behavior:
+      - preserve sequence/order/termination semantics
+      - emit complete/error terminal indication deterministically
+    failure_if_missing:
+      - GAS query hangs or corrupts fragment assembly
+    confidence: high
+
+  - event: TIMER
+    source_plane: lqm
+    likely_producer:
+      - periodic timer callback
+    bridge_mechanism:
+      - timer fire into IO80211LQMData
+    consumer_owner: IO80211LQMData
+    target_fsm: LQM_FSM
+    target_event: TIMER
+    minimum_shim_behavior:
+      - can be stubbed early
+      - start/stop contracts must remain balanced if enabled
+    failure_if_missing:
+      - no LQM updates / degraded quality monitoring
+    confidence: high
+
+  - event: SYSTEM_WILL_SLEEP
+    source_plane: system_state
+    likely_producer:
+      - power management notification
+    bridge_mechanism:
+      - system notification into WCLSystemStateManager and relevant managers
+    consumer_owner: WCLSystemStateManager
+    target_fsm: SSM
+    target_event: SYSTEM_WILL_SLEEP
+    minimum_shim_behavior:
+      - emit before device power loss/quiesce
+      - ensure net/join/scan layers can halt cleanly
+    failure_if_missing:
+      - broken sleep transitions, dangling in-flight work
+    confidence: high
+
+  - event: SYSTEM_AWAKE
+    source_plane: system_state
+    likely_producer:
+      - wake/power-on notification
+    bridge_mechanism:
+      - system notification into WCLSystemStateManager and consumers
+    consumer_owner: WCLSystemStateManager
+    target_fsm: SSM
+    target_event: SYSTEM_AWAKE
+    minimum_shim_behavior:
+      - emit after hardware context is usable again
+    failure_if_missing:
+      - post-wake replay and re-enable paths fail
+    confidence: high
+
+  - event: DRIVER_RESET
+    source_plane: recovery
+    likely_producer:
+      - watchdog
+      - fatal firmware error
+      - explicit reset path
+    bridge_mechanism:
+      - reset notification into multiple managers
+    consumer_owner:
+      - WCLSystemStateManager
+      - WCLNetManager
+      - WCLJoinManager
+      - WCLScanManager
+      - WCLBGCommonFsm
+      - IO80211GASFsm
+    target_fsm:
+      - SSM
+      - NET_MANAGER
+      - JOIN_MANAGER
+      - SCAN_MANAGER
+      - BGCOMMON_FSM
+      - GAS_FSM
+    target_event: DRIVER_RESET
+    minimum_shim_behavior:
+      - broadcast reset consistently across all affected planes
+      - do not reset one plane silently while leaving others stale
+    failure_if_missing:
+      - split-brain state across managers
+      - irrecoverable stuck states after firmware faults
+    confidence: high
+
+owner_callback_evidence:
+  scan_manager:
+    evidence:
+      - scanDoneEventHandler
+      - scanRequestHandler
+      - scanAbortRequestHandler
+      - scanStatusRequestHandler
+      - scanValidChannelupdateHandler
+    note: >-
+      SCAN_MANAGER already exposes a rich bulletin-board/callback surface and is
+      the best reference for source->callback->event mapping.
+  join_manager:
+    evidence:
+      - authAssocCompleteEventHandler
+      - connectCompleteEventHandler
+      - joinAbortHandler
+      - joinScanUpdate
+      - systemWillSleepNotificationHandler
+      - systemAwakeNotificationHandler
+      - driverResetNotificationHandler
+      - systemPowerOFFNotificationHandler
+      - systemPowerONNotificationHandler
+    note: >-
+      JOIN_MANAGER is the strongest multi-source provenance example because it
+      mixes join protocol callbacks and global system notifications.
+  roam_manager:
+    evidence:
+      - bulletin board callback table present
+      - roam manager events imply external callbacks for connect/link/roam phases
+    note: >-
+      ROAM_MANAGER provenance is structurally clear even where callback names are
+      less explicit than JOIN_MANAGER.
+  system_state_manager:
+    evidence:
+      - notification broker semantics in SSM
+    note: >-
+      SSM should be treated as the canonical fan-out point for system sleep/awake/
+      power/reset notifications.
+  gas:
+    evidence:
+      - fragment handling split across GAS_FSM and GAS_DEFRAG_FSM
+    note: >-
+      Provenance here matters because a non-Apple adapter shim often needs to
+      repackage Rx fragments into the expected FSM events.
+
+shim_design_rules:
+  - Always synthesize events at semantic boundaries, not at arbitrary low-level interrupts.
+  - Prefer one terminal completion event per request lifecycle.
+  - Preserve ordering between LINK_UP, CONNECT_COMPLETE, and IPV4_STATUS.
+  - Broadcast DRIVER_RESET consistently to all affected managers.
+  - If a feature is unsupported (roam, ANQP, 11ax extras), suppress entire event families cleanly.
+  - Never emit success-path events without the preceding required preconditions.
+
+minimum_translation_shim:
+  must_emit_first:
+    - LINK_UP
+    - CONNECT_COMPLETE
+    - IPV4_STATUS
+    - LINK_DOWN_IND
+    - LINK_DOWN_COMPLETE
+    - SCAN_REQ
+    - SCAN_COMPLETE
+    - JOIN_REQ
+    - JOIN_ASSOC_COMPLETE
+    - JOIN_CONNECT_COMPLETE
+    - JOIN_COMPLETE
+    - SYSTEM_WILL_SLEEP
+    - SYSTEM_AWAKE
+    - DRIVER_RESET
+  may_stub_initially:
+    - ROAM_START
+    - ROAM_DONE
+    - JOIN_SCAN_UPDATE
+    - GAS_REQUEST
+    - GAS_FRAG_RX
+    - TIMER
+    - ULOFDMA_STATE_CHANGE
+    - SEND_ASR_FRAME
+
+symptom_to_missing_provenance:
+  - symptom: Association appears successful but interface never becomes usable
+    likely_missing:
+      - CONNECT_COMPLETE
+      - IPV4_STATUS
+  - symptom: Disconnect never fully drains
+    likely_missing:
+      - LINK_DOWN_COMPLETE
+  - symptom: Sleep/resume breaks connectivity permanently
+    likely_missing:
+      - SYSTEM_WILL_SLEEP
+      - SYSTEM_AWAKE
+      - DRIVER_RESET consistency
+  - symptom: Join retries never progress to better candidates
+    likely_missing:
+      - JOIN_SCAN_UPDATE
+      - candidate retry provenance
+  - symptom: GAS/ANQP requests hang
+    likely_missing:
+      - GAS_FRAG_RX terminalization
+      - GAS_COMPLETE / GAS_COMPLETE_ERROR provenance

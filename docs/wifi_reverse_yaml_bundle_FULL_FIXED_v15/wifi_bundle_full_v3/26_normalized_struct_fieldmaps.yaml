@@ -1,0 +1,149 @@
+version: 5
+scope: kernel
+subject: normalized_struct_fieldmaps
+summary:
+  goal: >-
+    Consolidate the most useful reconstructed field maps in a single normalization layer,
+    with uniform confidence labels and role descriptions.
+  schema:
+    confirmed_offset: directly observed through loads/stores or control-flow checks
+    inferred_role: structural role inferred from repeated use and neighboring calls
+
+fieldmaps:
+  CommonFsmManager:
+    object_size: 0x18
+    fields:
+      - confirmed_offset: 0x10
+        name: runtime_ptr
+        type: pointer
+        role: pointer to mutable FSM runtime block
+  CommonFsmRuntime:
+    fields:
+      - confirmed_offset: 0x00
+        name: fsm_id
+        type: u32
+      - confirmed_offset: 0x08
+        name: descriptor_ptr
+        type: pointer
+      - confirmed_offset: 0x10
+        name: current_state
+        type: u8
+      - confirmed_offset: 0x12
+        name: descriptor_valid
+        type: bool
+  CommonFsmDescriptor:
+    fields:
+      - inferred_role: transition_matrix
+        access: descriptor[0]
+        type: pointer
+      - inferred_role: action_table
+        access: descriptor[1]
+        type: pointer
+      - inferred_role: aux_descriptor_2
+        access: descriptor[2]
+        type: pointer
+      - inferred_role: aux_descriptor_3
+        access: descriptor[3]
+        type: pointer
+      - inferred_role: aux_descriptor_4
+        access: descriptor[4]
+        type: pointer
+      - confirmed_offset: 0x29
+        name: event_count
+        type: u8
+      - confirmed_offset: 0x2a
+        name: state_count
+        type: u8
+      - confirmed_offset: 0x2b
+        name: action_count
+        type: u8
+  AppleBCMWLANSkywalkInterface:
+    object_size: 0x140
+    fields:
+      - confirmed_offset: 0x138
+        name: queue_owner_or_provider_ext
+        type: pointer
+        role: owner object containing queue vector at +0x78
+      - inferred_role: ivars_ptr
+        access: self[0x27]
+        type: pointer
+        role: internal ivar block for bus-interface validity and flow-queue removal
+  AppleOLYHALPortInterfacePCIe:
+    fields:
+      - confirmed_offset: 0x58
+        name: dext_msg_list_head
+        type: intrusive_list_head
+      - confirmed_offset: 0xa0
+        name: workloop_or_gate_lock
+        type: opaque_handle
+      - confirmed_offset: 0xb0
+        name: first_pending_msg_node_like
+        type: intrusive_list_link
+        role: seen through abortPendingDextMsgs traversal
+      - inferred_role: reset_progress_flags
+        evidence:
+          - kResetStepRequested
+          - kResetStepBusQuiesced
+  IO80211TimeSyncPeer_private:
+    fields:
+      - confirmed_offset: private+0x00
+        name: peer_manager_ptr
+        type: pointer
+      - confirmed_offset: private+0x09
+        name: ip_or_address_region
+        type: byte_span
+      - confirmed_offset: private+0x30
+        name: tx_total_success
+        type: u32
+      - confirmed_offset: private+0x34
+        name: tx_success_by_msg_type[?]
+        type: array<u32>
+      - confirmed_offset: private+0x50
+        name: tx_total_fail
+        type: u32
+      - confirmed_offset: private+0x54
+        name: retry_bucket_total
+        type: u32
+      - confirmed_offset: private+0x58
+        name: retry_buckets[5]
+        type: array<u32>
+      - confirmed_offset: private+0x6c
+        name: tx_fail_by_msg_type[?]
+        type: array<u32>
+      - confirmed_offset: private+0x88
+        name: tx_fail_reason_matrix
+        type: matrix<u32>
+  AppleConvergedIPCRTIDevice:
+    fields:
+      - confirmed_offset: 0x110
+        name: acipc_device_ptr
+        type: pointer
+      - confirmed_offset: 0x11
+        name: log_instance_id_slot
+        type: opaque_index
+        note: accessed as param_1[0x11] in logging paths
+      - confirmed_offset: 0x44
+        name: flags
+        type: u8
+        role: bit0 selects skywalkenabled_memory_pool vs memory_pool
+      - inferred_role: pool_count_or_cr_count_fields
+        evidence: createPools and snapshot formatting mention num pipes / num CRs / actual CRs
+  IOTimeSyncFilteredService:
+    fields:
+      - confirmed_offset: 0x118
+        name: timeline_filter_ptr
+        type: pointer
+      - confirmed_offset: 0x100
+        name: active_rate_value
+        type: u64
+      - confirmed_offset: 0x108
+        name: timeline_source_object
+        type: pointer
+      - confirmed_offset: 0x110
+        name: source_present_flag
+        type: u8
+
+normalization_rules:
+  - prefer semantic role names over guessed Apple ivar names unless symbol-backed
+  - carry both object-relative and private-struct-relative offsets when decompilation uses nested pointers
+  - never upgrade inferred_role to confirmed_offset without explicit load/store evidence

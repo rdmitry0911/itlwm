@@ -1,0 +1,91 @@
+version: v8
+scope:
+  subsystem: full Wi-Fi kernel reverse bundle
+  focus: what is finished vs what is still blocked
+  objective: >-
+    Make the remaining gap explicit and finite so that follow-on work is tactical rather than open-ended.
+
+finished_or_near_finished:
+  kernel_stack_inventory:
+    status: high_confidence
+    notes:
+      - major kernel modules are present
+      - cross-module domains are already split into YAML
+  lifecycle_coverage:
+    status: high_confidence
+    notes:
+      - init, attach, bus bring-up, HAL/convergence, TimeSync, BT coexistence, scan, gas, roam,
+        power, corecapture, and skywalk datapath all have dedicated coverage
+  commonfsm_runtime_format:
+    status: high_confidence
+    notes:
+      - descriptor-backed runtime layout is stable
+      - transition and action table formats are stable
+      - trace contract proves symbolic strings exist
+  skywalk_boundary:
+    status: medium_to_high_confidence
+    notes:
+      - AppleBCMWLANSkywalkInterface ivars map is partially reconstructed
+      - bus-side skywalk anchors are known
+      - external ABI anchor exists from user-confirmed IOSkywalkNetworkInterface vtable
+  low_power_completion_surface:
+    status: medium_confidence
+    notes:
+      - assertion-bearing completion and quiesce surfaces are normalized
+
+still_blocked:
+  fully_symbolic_commonfsm_owners:
+    blocker_type: descriptor_origin_recovery
+    why: >-
+      Owner-specific descriptor pointers and nearby rodata vectors are not yet recovered for most
+      users of CommonFsmManager.
+  full_state_event_name_lift:
+    blocker_type: rodata_vector_lift
+    why: >-
+      The runtime format proves names exist, but the named vectors are not yet harvested from
+      decompiled output or raw Mach-O sections.
+  full_action_callback_semantics:
+    blocker_type: callback_binding
+    why: >-
+      Action ids are structurally validated, but many callbacks still lack stable symbolic names.
+  complete_skywalk_override_matrix:
+    blocker_type: override_binding
+    why: >-
+      The boundary ABI is known, but not every AppleBCMWLANSkywalkInterface override has been bound
+      to a specific IOSkywalkNetworkInterface slot with direct evidence.
+  userland_policy_orchestration:
+    blocker_type: separate_binary_set
+    why: >-
+      airportd/CoreWLAN/WiFiPolicy are still outside the current kernel-only bundle.
+
+not_actually_blocked_anymore:
+  missing_kernel_binaries:
+    status: closed
+    reason: >-
+      The missing-kext problem is effectively solved for kernel-side Wi-Fi reversal; the remaining
+      work is mostly symbolic lifting and origin recovery.
+  lack_of_transport_context:
+    status: closed
+    reason: OLYHAL, convergence, TimeSync, bus, and BT coexistence are now present.
+
+highest_roi_next_steps:
+  - recover descriptor origins for WCLScanManager first
+  - recover descriptor origins for the next two CommonFsmManager owners
+  - dump/normalize rodata vectors adjacent to descriptor blobs
+  - bind action callbacks for WCLScanManager transitions
+  - expand AppleBCMWLANSkywalkInterface override map using the confirmed IOSkywalkNetworkInterface ABI
+
+completion_definition_for_kernel_bundle:
+  minimum_bar:
+    - at least one fully symbolic CommonFsmManager owner
+    - second owner lifted with the same method to prove generality
+    - stable skywalk override matrix for all observed AppleBCMWLANSkywalkInterface methods
+  stretch_goal:
+    - symbolic overlays for all practical scan/join/roam managers
+    - normalized queue-owner and bus-skywalk fieldmaps
+    - explicit low-power completion state graph
+
+bottom_line:
+  statement: >-
+    The bundle is no longer blocked by missing scope. It is now blocked by a narrow, technically
+    tractable symbolic-lifting pass.

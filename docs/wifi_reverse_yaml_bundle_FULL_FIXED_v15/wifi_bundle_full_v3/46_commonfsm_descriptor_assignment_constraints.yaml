@@ -1,0 +1,60 @@
+document:
+  title: CommonFsmManager descriptor assignment constraints
+  version: v10
+  scope:
+    - IO80211Family/CommonFsmManager
+    - owner-binding for WCLScanManager
+  confirmed:
+    object_size: 0x18
+    manager_runtime_ptr_offset: 0x10
+    manager_runtime_role: "manager->runtime/private state block"
+    runtime_descriptor_ptr_access:
+      source: "validateFsmConfig"
+      expression: "plVar5 = *(long **)(runtime + 8)"
+      meaning: "runtime->descriptor_ptr"
+    runtime_current_state_access:
+      source: "WCLScanManager ignore/handleScanRequest"
+      expression: "*(u8 *)(*(long *)(manager + 0x10) + 0x10)"
+      meaning: "runtime->current_state"
+    runtime_descriptor_valid_flag:
+      source: "validateFsmConfig"
+      expression: "*(bool *)(runtime + 0x12) = has_transition_table && has_action_table && has_name_vector"
+      meaning: "runtime->descriptor_valid"
+  descriptor_layout:
+    transition_matrix_ptr:
+      slot: 0
+      evidence: "validateFsmConfig indexes *plVar5 as packed state/event entries"
+      entry_format: "2 bytes per event cell => next_state:u8, action_id:u8"
+    action_table_ptr:
+      slot: 1
+      evidence: "*(long *)(plVar5[1] + actionId * 0x10) checked for non-null callback"
+      action_entry_size: 0x10
+      likely_fields:
+        - callback_ptr
+        - auxiliary_cookie_or_context
+    state_name_vector_ptr:
+      slot: 2
+      evidence: "descriptor_valid requires plVar5[2] != 0"
+      role: "string/name vector for state names or trace metadata"
+    event_name_vector_or_trace_cookie_ptr:
+      slot: 3
+      evidence: "descriptor_valid requires plVar5[3] != 0"
+      role: "event names and/or trace cookie namespace"
+    action_trace_vector_ptr:
+      slot: 4
+      evidence: "descriptor_valid requires plVar5[4] != 0"
+      role: "action trace info, fsm name, or additional trace strings"
+    counts:
+      state_count_offset: 0x2a
+      event_count_offset: 0x29
+      action_count_offset: 0x2b
+  constraints:
+    - "All next_state bytes must be < state_count unless 0xff sentinel."
+    - "All action_id bytes must be < action_count."
+    - "All action_table[action_id].callback_ptr must be non-null."
+    - "Descriptor symbolic lift must therefore start from the owner-side assignment of runtime->descriptor_ptr."
+  inference:
+    why_static_c_decompilation_stalls: >
+      The format is visible inside CommonFsmManager, but owner-side constructor/init sites that
+      assign descriptor bases are not reconstructed with enough relocation fidelity in plain C
+      pseudocode. The remaining work is an xref/relocation pass, not a new-kext pass.

@@ -1,0 +1,37 @@
+document: v12 status and next pass
+version: 12
+current_state:
+  kernel_bundle_breadth: strong
+  data_structure_density: strong
+  boundary_contract_density: strong
+  first_symbolic_target_choice: stabilized_on_WCLScanManager
+  real_blocker: descriptor_origin_and_rodata_vector_recovery
+
+what_is_now_effectively_done:
+  - CommonFsmManager interpreter semantics
+  - WCLScanManager owner-side event injection inventory
+  - Skywalk interface hard ABI anchoring and key ivar/queue contracts
+  - OLYHAL reset/assertion surface indexing
+
+what_is_not_done:
+  - exact descriptor_ptr assignment site for first owner
+  - exact state/event string vectors for first fully symbolic FSM
+  - action table callback naming for first fully symbolic FSM
+
+next_pass_recommendation:
+  name: descriptor_origin_pass_for_first_owner
+  target_order:
+    - WCLScanManager
+    - nearest scan-adjacent second owner using CommonFsmManager
+  required_capabilities:
+    - xref-aware browsing of owner init/constructor sites
+    - relocation/rodata adjacency visibility
+    - optional direct binary/ghidra scripting if decompiler text keeps collapsing stores
+  exit_criteria:
+    - recover one descriptor_ptr origin with confidence
+    - recover one matching state-name or event-name vector
+    - bind at least one action-table callback to owner-local semantics
+
+honest_assessment:
+  The remaining work is now narrow and technical. New decompilations are unlikely to help as much as a
+  better extraction method for descriptor origins and adjacent constant blobs.

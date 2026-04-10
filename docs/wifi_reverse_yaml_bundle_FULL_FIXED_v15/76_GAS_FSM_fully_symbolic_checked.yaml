@@ -1,0 +1,134 @@
+version: 1
+topic: IO80211GASFsm fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125)
+
+fsm_name: GAS_FSM
+context_va: 0xffffff8002403608
+context_fileoff: 0x2303608
+owner_class: IO80211GASFsm
+
+states:
+  0: IDLE
+  1: IN_PROGRESS
+  2: GETTING_RESULT
+  3: ABORTING
+  4: HALTED
+
+events:
+  0: GAS_REQUEST
+  1: GAS_FRAG_RX
+  2: GAS_COMPLETE
+  3: QUIESCE
+  4: DRIVER_RESET
+  5: GAS_COMPLETE_ERROR
+  6: GAS_QUERY_TIMEOUT
+  7: GAS_QUERY_SEND_ERROR
+  8: WAKE
+  9: ABORT
+
+actions:
+  0:  { name: unhandledEvent,                    kdk_symbol: "IO80211GASFsm::unhandledEvent" }
+  1:  { name: ignore,                            kdk_symbol: "IO80211GASFsm::ignore" }
+  2:  { name: busy,                              kdk_symbol: "IO80211GASFsm::busy" }
+  3:  { name: sendGasQuery,                      kdk_symbol: "IO80211GASFsm::sendGasQuery" }
+  4:  { name: processGasQuerySendError,          kdk_symbol: "IO80211GASFsm::processGasQuerySendError" }
+  5:  { name: processGasComplete,                kdk_symbol: "IO80211GASFsm::processGasComplete" }
+  6:  { name: processGasCompleteError,           kdk_symbol: "IO80211GASFsm::processGasCompleteError" }
+  7:  { name: processGasCompleteInIdleOrAborting, kdk_symbol: "IO80211GASFsm::processGasCompleteInIdleOrAborting" }
+  8:  { name: processGasFragRx,                  kdk_symbol: "IO80211GASFsm::processGasFragRx" }
+  9:  { name: processGasQueryTimeout,            kdk_symbol: "IO80211GASFsm::processGasQueryTimeout" }
+  10: { name: processQuiesce,                    kdk_symbol: "IO80211GASFsm::processQuiesce" }
+  11: { name: processDriverReset,                kdk_symbol: "IO80211GASFsm::processDriverReset" }
+  12: { name: processAbort,                      kdk_symbol: "IO80211GASFsm::processAbort" }
+
+transition_matrix:
+  IDLE:
+    GAS_REQUEST:          { next: IN_PROGRESS,  action: sendGasQuery }
+    GAS_FRAG_RX:          { next: IDLE,         action: processGasCompleteInIdleOrAborting }
+    GAS_COMPLETE:         { next: IDLE,         action: processGasCompleteInIdleOrAborting }
+    QUIESCE:              { next: HALTED,       action: ignore }
+    DRIVER_RESET:         { next: IDLE,         action: ignore }
+    GAS_COMPLETE_ERROR:   { next: IDLE,         action: processGasCompleteInIdleOrAborting }
+    GAS_QUERY_TIMEOUT:    { next: =SELF=,       action: unhandledEvent }
+    GAS_QUERY_SEND_ERROR: { next: IDLE,         action: processGasQuerySendError }
+    WAKE:                 { next: IDLE,         action: ignore }
+    ABORT:                { next: IDLE,         action: ignore }
+
+  IN_PROGRESS:
+    GAS_REQUEST:          { next: IN_PROGRESS,    action: busy }
+    GAS_FRAG_RX:          { next: GETTING_RESULT, action: processGasFragRx }
+    GAS_COMPLETE:         { next: IDLE,           action: processGasComplete }
+    QUIESCE:              { next: HALTED,         action: processQuiesce }
+    DRIVER_RESET:         { next: ABORTING,       action: processDriverReset }
+    GAS_COMPLETE_ERROR:   { next: ABORTING,       action: processGasCompleteError }
+    GAS_QUERY_TIMEOUT:    { next: ABORTING,       action: processGasQueryTimeout }
+    GAS_QUERY_SEND_ERROR: { next: IDLE,           action: processGasQuerySendError }
+    WAKE:                 { next: =SELF=,         action: unhandledEvent }
+    ABORT:                { next: ABORTING,       action: processAbort }
+
+  GETTING_RESULT:
+    GAS_REQUEST:          { next: GETTING_RESULT, action: busy }
+    GAS_FRAG_RX:          { next: GETTING_RESULT, action: processGasFragRx }
+    GAS_COMPLETE:         { next: IDLE,           action: processGasComplete }
+    QUIESCE:              { next: HALTED,         action: processQuiesce }
+    DRIVER_RESET:         { next: ABORTING,       action: processDriverReset }
+    GAS_COMPLETE_ERROR:   { next: ABORTING,       action: processGasCompleteError }
+    GAS_QUERY_TIMEOUT:    { next: ABORTING,       action: processGasQueryTimeout }
+    GAS_QUERY_SEND_ERROR: { next: =SELF=,         action: unhandledEvent }
+    WAKE:                 { next: =SELF=,         action: unhandledEvent }
+    ABORT:                { next: ABORTING,       action: processAbort }
+
+  ABORTING:
+    GAS_REQUEST:          { next: ABORTING, action: busy }
+    GAS_FRAG_RX:          { next: IDLE,     action: ignore }
+    GAS_COMPLETE:         { next: IDLE,     action: processGasCompleteInIdleOrAborting }
+    QUIESCE:              { next: HALTED,   action: ignore }
+    DRIVER_RESET:         { next: IDLE,     action: ignore }
+    GAS_COMPLETE_ERROR:   { next: IDLE,     action: processGasCompleteInIdleOrAborting }
+    GAS_QUERY_TIMEOUT:    { next: =SELF=,   action: unhandledEvent }
+    GAS_QUERY_SEND_ERROR: { next: =SELF=,   action: unhandledEvent }
+    WAKE:                 { next: =SELF=,   action: unhandledEvent }
+    ABORT:                { next: IDLE,     action: ignore }
+
+  HALTED:
+    GAS_REQUEST:          { next: HALTED,   action: busy }
+    GAS_FRAG_RX:          { next: HALTED,   action: ignore }
+    GAS_COMPLETE:         { next: HALTED,   action: processGasCompleteInIdleOrAborting }
+    QUIESCE:              { next: HALTED,   action: ignore }
+    DRIVER_RESET:         { next: HALTED,   action: ignore }
+    GAS_COMPLETE_ERROR:   { next: HALTED,   action: processGasCompleteInIdleOrAborting }
+    GAS_QUERY_TIMEOUT:    { next: =SELF=,   action: unhandledEvent }
+    GAS_QUERY_SEND_ERROR: { next: =SELF=,   action: unhandledEvent }
+    WAKE:                 { next: IDLE,     action: ignore }
+    ABORT:                { next: HALTED,   action: ignore }
+
+raw_matrix_hex: |
+  01 03 00 07 00 07 04 01 00 01 00 07 ff 00 00 04 00 01 00 01
+  01 02 02 08 00 05 04 0a 03 0b 03 06 03 09 00 04 ff 00 03 0c
+  02 02 02 08 00 05 04 0a 03 0b 03 06 03 09 ff 00 ff 00 03 0c
+  03 02 00 01 00 07 04 01 00 01 00 07 ff 00 ff 00 ff 00 00 01
+  04 02 04 01 04 07 04 01 04 01 04 07 ff 00 ff 00 00 01 04 01
+
+behavioral_notes:
+  gas_protocol: >-
+    Generic Advertisement Service (GAS) query/response protocol FSM.
+    Manages the lifecycle of GAS queries used for ANQP (Access Network
+    Query Protocol) and Hotspot 2.0 operations.
+  busy_rejection: >-
+    New GAS_REQUEST events during active processing (IN_PROGRESS,
+    GETTING_RESULT, ABORTING, HALTED) invoke busy() — rejects the
+    request without state change.
+  abort_path: >-
+    Multiple error conditions lead to ABORTING: DRIVER_RESET,
+    GAS_COMPLETE_ERROR, GAS_QUERY_TIMEOUT, explicit ABORT. From
+    ABORTING, completion events drain back to IDLE.
+  halted_state: >-
+    HALTED is entered via QUIESCE from any active state. It absorbs
+    most events silently. Only WAKE exits HALTED (back to IDLE).
+    GAS_COMPLETE/GAS_COMPLETE_ERROR still processed via
+    processGasCompleteInIdleOrAborting to clean up pending state.
+  fragment_handling: >-
+    GAS_FRAG_RX in IN_PROGRESS transitions to GETTING_RESULT and
+    continues accumulating fragments there. Works in tandem with
+    GAS_DEFRAG_FSM for fragment reassembly.

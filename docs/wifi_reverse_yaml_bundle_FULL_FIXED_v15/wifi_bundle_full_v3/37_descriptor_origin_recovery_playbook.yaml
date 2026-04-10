@@ -1,0 +1,100 @@
+version: v8
+scope:
+  subsystem: IO80211Family
+  focus: descriptor origin recovery
+  objective: >-
+    Provide a concrete procedure for recovering CommonFsmManager descriptor pointers and adjacent
+    rodata vectors from the decompilation and, where needed, from the original binary image.
+
+known_descriptor_layout:
+  qword_0_transition_matrix_ptr: confirmed
+  qword_1_action_table_ptr: confirmed
+  qword_2_state_name_vector_ptr: confirmed
+  qword_3_event_name_vector_ptr: confirmed
+  qword_4_trace_or_next_state_aux_ptr: likely
+  u8_plus_0x29_event_count: confirmed
+  u8_plus_0x2a_state_count: confirmed
+  u8_plus_0x2b_action_count: confirmed
+
+recovery_pipeline:
+  phase_1_callsite_sweep:
+    purpose: find owner init sites and manager wrappers
+    signatures:
+      - "CommonFsmManager::initWithOptions or wrapper with options blob"
+      - "writes to manager.runtime_ptr->descriptor_ptr"
+      - "owner constructor allocating 0x18 object then storing owner-local logger/context"
+    outputs:
+      - owner_name
+      - init_function
+      - pointer_expression_to_descriptor
+      - confidence
+  phase_2_descriptor_blob_capture:
+    purpose: record candidate descriptor addresses or synthetic labels
+    capture_rules:
+      - preserve exact pointer expression used by init path
+      - preserve surrounding rodata references and immediate operands
+      - preserve neighboring strings if decompiler exposes them
+    outputs:
+      - descriptor_symbol_or_address
+      - neighboring_strings
+      - neighboring_pointer_arrays
+  phase_3_vector_validation:
+    purpose: prove whether rodata arrays are state names, event names, or trace helpers
+    validation:
+      - state_name_vector length should match state_count
+      - event_name_vector length should match event_count
+      - vectors should participate in trace formatting path
+      - strings should be owner-plausible and non-null for live entries
+  phase_4_action_binding:
+    purpose: assign action ids to callbacks
+    validation:
+      - action_table[action_id].callback != NULL
+      - callback references owner-local methods or static helpers
+      - callback names may be derived from adjacent log strings or called methods
+  phase_5_symbolic_overlay_publish:
+    purpose: move manager from semi-symbolic to symbolic
+    required_fields:
+      - stable state dictionary
+      - stable event dictionary
+      - stable action dictionary
+      - descriptor evidence chain
+
+binary_assisted_path:
+  when_needed:
+    - decompilation erases descriptor constant provenance
+    - rodata vector labels are collapsed into anonymous DAT symbols
+    - callback table is easier to recover from relocation-based analysis
+  inputs:
+    - Mach-O __TEXT,__const and __DATA_CONST / __const sections
+    - relocation-backed vtable and pointer arrays
+    - nearby C-string pools
+  outputs:
+    - exact descriptor addresses
+    - exact vector lengths
+    - pointer graph from owner init site to descriptor blob
+
+wclscanmanager_specific_plan:
+  step_1:
+    goal: recover constructor/init site that seeds the manager descriptor
+    expected_result: one descriptor symbol or address
+  step_2:
+    goal: recover state/event vectors adjacent to that descriptor
+    expected_result: symbolic names for at least the currently observed states/events
+  step_3:
+    goal: map event 1 and 2 into stable names
+    expected_result: owner-specific symbolic overlay
+  step_4:
+    goal: enumerate action ids referenced by WCL scan transitions
+    expected_result: action callback catalog with owner semantics
+
+blocking_conditions:
+  purely_static_blockers:
+    - init wrapper not yet located
+    - descriptor provenance not yet stitched back from decompiled code
+  tooling_blockers:
+    - if descriptor blobs must be recovered from raw Mach-O sections not preserved in C output
+    - if anonymous DAT labels need relocation-backed re-symbolization
+
+expected_payoff:
+  - first fully symbolic manager should collapse the remaining gap substantially
+  - descriptor recovery method should generalize to the rest of the manager owners

@@ -1,0 +1,32 @@
+version: 13
+title: Remaining gap after closure pass
+status: narrowed to one hard blocker
+
+closed:
+  - "Owner chosen: WCLScanManager"
+  - "Real event IDs 1 and 2 mapped to one owner"
+  - "Ignore action semantics and current-state read confirmed"
+  - "CommonFsmManager descriptor/interpreter layout sufficiently reconstructed"
+
+hard_blocker:
+  name: descriptor origin recovery
+  description: >
+    Static C decompilation shows descriptor consumption clearly, but not the exact
+    site where WCLScanManager stores or receives runtime->descriptor_ptr. This now
+    requires xref/relocation-aware inspection of assignment sites rather than more
+    broad decompilation.
+  why_not_closed_here:
+    - "uploaded material is C-like pseudocode without relocation graph"
+    - "descriptor base likely arrives through constructor/init helper or adjacent rodata assignment"
+    - "state/event string vectors are not exposed in current snippets as direct symbolized arrays"
+
+best_next_extraction:
+  - "Locate WCLScanManager constructor/init/free helpers around handleScanRequest cluster"
+  - "Search for writes to this+0x10 and then to (*(this+0x10)+0x08)"
+  - "Recover rodata blobs with cell width 2 and counts matching descriptor bytes 0x28..0x2B"
+  - "Use relocation-aware Ghidra pass rather than more C pseudocode"
+
+bottom_line:
+  kernel_gap_status: >
+    Closed as far as possible from current decompilation form. What remains is a targeted
+    binary-analysis task, not a documentation gap.

@@ -1,0 +1,38 @@
+version: v9
+topic: second CommonFsmManager owner candidate matrix
+status: candidate_inventory
+
+selection_criteria:
+  - directly calls CommonFsmManager::processEvent
+  - reads current state or checks invalid/stuck conditions
+  - has clear owner-local logging / asserts
+  - likely uses immutable descriptor tables
+
+candidate_classes:
+  - candidate: WCLScanManager
+    status: primary_confirmed_owner
+    priority: 1
+    rationale:
+      - observed processEvent(1,0)
+      - observed processEvent(2, request)
+      - current_state and invalid-state guard present
+  - candidate: GAS-related manager/adaptor path
+    status: plausible
+    priority: 2
+    rationale:
+      - request/abort/completion lifecycle resembles descriptor-driven FSM
+      - still needs direct processEvent/xref confirmation
+  - candidate: roam/assoc submanager
+    status: plausible
+    priority: 3
+    rationale:
+      - same family tends to use shared FSM runtime patterns for request→transition→callback orchestration
+  - candidate: peer/AWDL scheduling path
+    status: possible
+    priority: 4
+    rationale:
+      - time/event driven machinery may reuse CommonFsmManager-like descriptors
+
+blocked_by:
+  - lack of direct xref inventory for all CommonFsmManager::processEvent callers in current pseudocode-only pass
+  - missing relocation-aware rodata reconstruction

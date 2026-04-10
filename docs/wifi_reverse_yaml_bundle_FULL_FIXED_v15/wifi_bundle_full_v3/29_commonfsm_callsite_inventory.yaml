@@ -1,0 +1,73 @@
+version: 6
+scope: kernel
+subject: commonfsm_callsite_inventory
+summary:
+  goal: >-
+    Organize the presently observed CommonFsmManager owner/caller surface into a
+    reusable inventory for descriptor lifting and symbolic event naming.
+
+confirmed_manager_runtime_sites:
+  common_fsm_manager_core:
+    evidence:
+      - class exists in IO80211Family as a 0x18-byte OSObject-derived helper
+      - implements validateFsmConfig(), processEvent(), getState()
+  wcl_scan_manager:
+    role: first concrete owner already tied to numeric events
+    observed_use:
+      - emits processEvent(event=1, payload=...)
+      - emits processEvent(event=2, payload=...)
+      - reads current_state through manager.getState()/runtime.current_state
+      - has ignore-path and stuck-state guardrails
+    reverse_value:
+      - best first target for full descriptor extraction because event semantics are partially surfaced already
+
+strong_candidates_needing_targeted lift:
+  join_and_assoc_path:
+    reasons:
+      - IO80211Family contains several request/manager classes with process-event-like flow
+      - association/roam/join behavior clearly exhibits phase machines but symbolic descriptor anchors are not yet isolated
+    search_signatures:
+      - constructors allocating 0x18-byte helpers or storing a pointer later consumed at virtual offsets near control methods
+      - traces mentioning current state / got event / moved into
+  awdl_peer_manager_and_related_recovery_paths:
+    reasons:
+      - AWDL contains dense recovery/timer/event logic and multiple stateful subsystems
+      - some routines already show state-like bookkeeping and reset/recovery transitions
+    search_signatures:
+      - per-request handlers taking u8-ish event selectors and opaque payloads
+      - descriptor-like tables adjacent to AWDL source path strings
+  gas_query_or_hotspot_paths:
+    reasons:
+      - GAS handling shows explicit start/abort/completion lifecycles and likely owns compact state machinery
+      - may or may not reuse CommonFsmManager directly; still worth cataloging next to it
+
+owner_to_descriptor_lift_strategy:
+  stage_1_callsite_bucketting:
+    - grep all direct references to processEvent(u8, void*)
+    - group by caller class and numeric event domain
+    - note whether payload is request object, status code, or null
+  stage_2_runtime_store_hunt:
+    - from each owner constructor/init path, identify the manager field
+    - chase stores into manager.runtime_ptr
+    - locate the subsequent store into runtime_ptr+0x08 (descriptor_ptr)
+  stage_3_descriptor_blob_decode:
+    - dump descriptor bytes/ptrs from rodata
+    - normalize state_count/event_count/action_count
+    - decode state/event name vectors when non-null
+  stage_4_action_callback_catalog:
+    - follow each action_table[q].callback
+    - classify callbacks by owner class and side effects
+    - retrofit all lifecycle YAMLs with symbolic event/action names
+
+priority_order:
+  - WCLScanManager
+  - join/assoc manager(s)
+  - roam manager(s)
+  - AWDL recovery/peer managers
+  - GAS / hotspot query managers
+
+expected_outputs_for_v7_or_later:
+  - manager -> descriptor address map
+  - manager -> observed event domain map
+  - descriptor -> symbolic state/event vectors
+  - callback target -> semantic action catalog

@@ -1,0 +1,68 @@
+version: 6
+scope: kernel
+subject: gap_closure_v6
+summary:
+  current_state: >-
+    The remaining gap is no longer missing binaries. It is the conversion of the already
+    visible generic machinery into symbolic, owner-specific graphs and fieldmaps.
+  largest_open_items:
+    - descriptor_ptr origins for each CommonFsmManager owner
+    - symbolic state/event/action names for scan/join/roam/AWDL machines
+    - concrete override map for AppleBCMWLANSkywalkInterface against the pinned IOSkywalkNetworkInterface ABI
+    - deeper fieldmaps for the queue-owner object behind self+0x138 and the ivar block behind self[0x27]
+
+what_is_now_closed:
+  kernel_binary_coverage:
+    status: largely closed
+    reason: >-
+      IO80211Family, AppleBCMWLANCoreMac, AppleBCMWLANBusInterfacePCIeMac,
+      AppleOLYHALMac, IOTimeSyncFamily, AppleConvergedPCI, and OLYBT control already
+      cover the kernel-side Wi-Fi, transport, convergence, and TimeSync domains.
+  common_fsm_runtime_format:
+    status: structurally closed
+    reason: >-
+      validateFsmConfig/processEvent/getState now expose the exact runtime and descriptor
+      interpretation rules even if owner-specific descriptor blobs still need lifting.
+  skywalk_boundary_naming:
+    status: closed at ABI layer
+    reason: >-
+      The IOSkywalkNetworkInterface vtable contract is anchored; what remains is mapping
+      local overrides and ivars.
+
+next_best_actions:
+  v7_track_a_commonfsm_symbolic_lift:
+    tasks:
+      - enumerate all processEvent callsites
+      - identify owner fields holding CommonFsmManager instances
+      - recover each runtime_ptr+0x08 descriptor address
+      - decode descriptor name tables and action callback tables
+    payoff: >-
+      Converts numeric/semi-symbolic scan/join/roam/AWDL state machines into mostly
+      symbolic state diagrams.
+  v7_track_b_skywalk_override_map:
+    tasks:
+      - collect all virtual calls made on AppleBCMWLANSkywalkInterface and its provider-side helpers
+      - correlate local functions against the 41 known slots
+      - identify inherited-vs-overridden slots
+    payoff: >-
+      Produces a definitive Wi-Fi skywalk datapath interface map, including attach,
+      enable, wake, MTU, media and detailed link reporting behavior.
+  v7_track_c_struct_fieldmap_refinement:
+    tasks:
+      - chase owner object behind self+0x138 in AppleBCMWLANSkywalkInterface
+      - chase ivar block at self[0x27]
+      - normalize queue descriptor layout around bus owner +0x1340 and queue_flags source +0x68/+0x14
+    payoff: >-
+      Turns the datapath documentation from contract-level to concrete structure-level.
+
+optional_userland_step:
+  airportd:
+    needed_for: policy/orchestration completeness only
+    not_needed_for: kernel-side FSM and transport completeness
+    timing: after descriptor symbolic lifting, not before
+
+recommended_definition_of_done_for_kernel_bundle:
+  - at least one fully symbolic CommonFsmManager owner (preferably WCLScanManager)
+  - semi-symbolic or better join/roam manager maps
+  - definitive AppleBCMWLANSkywalkInterface override matrix
+  - normalized queue/ring/flow-hash fieldmaps

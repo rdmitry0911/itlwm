@@ -1,0 +1,144 @@
+version: v7
+scope:
+  subsystem: IO80211Family
+  focus: CommonFsmManager symbolic overlay strategy
+  objective: >-
+    Convert numeric or semi-symbolic manager FSMs into stable symbolic descriptions by
+    layering owner-specific event/state names over the already-decoded descriptor/runtime format.
+
+confirmed_runtime_facts:
+  manager_object_size: 0x18
+  runtime_ptr_offset_in_manager: 0x10
+  runtime_fields:
+    fsm_id_u32:
+      source: "validateFsmConfig uses *puVar4"
+      confidence: high
+    descriptor_ptr:
+      source: "plVar5 = *(long **)(puVar4 + 2)"
+      confidence: high
+      likely_runtime_offset: 0x8
+    current_state_u8:
+      source: "WCLScanManager ignore log reads *(u8 *)(*(long *)(param_1 + 0x10) + 0x10)"
+      confidence: high
+      likely_runtime_offset: 0x10
+    descriptor_valid_bool:
+      source: "*(bool *)((long)puVar4 + 0x12) = bVar9"
+      confidence: high
+      likely_runtime_offset: 0x12
+  descriptor_fields:
+    transition_matrix_ptr:
+      source: "*plVar5"
+      confidence: high
+    action_table_ptr:
+      source: "plVar5[1]"
+      confidence: high
+    state_name_vector_ptr:
+      source: "plVar5[2] != 0"
+      confidence: high
+    event_name_vector_ptr:
+      source: "plVar5[3] != 0"
+      confidence: high
+    next_state_name_vector_ptr_or_trace_aux:
+      source: "plVar5[4] != 0"
+      confidence: medium
+    event_count_u8:
+      source: "*(u8 *)((long)plVar5 + 0x29)"
+      confidence: high
+    state_count_u8:
+      source: "*(u8 *)((long)plVar5 + 0x2a)"
+      confidence: high
+    action_count_u8:
+      source: "*(u8 *)((long)plVar5 + 0x2b)"
+      confidence: high
+
+trace_contract:
+  format: "FSM %s: in state: %s got event: %s moved into: %s"
+  implication:
+    - symbolic state names exist for at least one owner-visible trace path
+    - symbolic event names exist for at least one owner-visible trace path
+    - next-state name resolution is separate from numeric next-state byte in transition matrix
+
+transition_entry_format:
+  size_bytes_per_event_slot: 2
+  layout:
+    byte0: next_state_id_or_0xff
+    byte1: action_id
+  validation_rules:
+    - next_state_id == 0xff means sentinel/no-transition branch
+    - next_state_id must be < state_count when not 0xff
+    - action_id must be < action_count
+    - action_table[action_id].callback must be non-null
+
+action_entry_format:
+  size_bytes: 0x10
+  reconstructed_layout:
+    +0x00: callback_fn_ptr
+    +0x08: callback_context_or_owner_cookie
+  notes:
+    - validateFsmConfig checks callback_fn_ptr only
+    - second qword is not yet semantically lifted, but must be preserved in schemas
+
+owner_overlay_plan:
+  WCLScanManager:
+    owner_class_size: 0x28
+    manager_inheritance: CommonFsmManager-derived_or_embedded_runtime_user
+    observed_numeric_events:
+      - event_id: 1
+        trigger: handleScanRequest failure branch before hard abort
+        provisional_name: ScanRequestRejectedOrAbort
+        confidence: medium
+      - event_id: 2
+        trigger: handleScanRequest branch when request enters in-progress path via subordinate queue/state checks
+        provisional_name: ScanRequestStartOrAdvance
+        confidence: medium
+    observed_state_usage:
+      - current_state is logged in ignore path
+      - invalid state zero is treated as fatal/stuck-prevention condition
+    symbolic_lift_strategy:
+      - find owner constructor/init site that fills CommonFsmManagerOptions
+      - recover descriptor pointer constant passed into init path
+      - inspect nearby strings for owner-local labels such as "ignore", "handleScanRequest", and stuck-state diagnostics
+      - assign stable overlay names only when descriptor-string relation is direct
+  generic_other_owners:
+    detection_heuristics:
+      - constructor/init path that allocates 0x18 CommonFsmManager object
+      - call to initWithOptions or equivalent wrapper
+      - repeated processEvent(event_id, ctx) sites with owner-local log strings
+      - owner-local current-state logging through runtime_ptr+0x10
+    overlay_outputs:
+      - per-owner state dictionary
+      - per-owner event dictionary
+      - per-owner action dictionary
+      - confidence split: confirmed / owner-labeled / inferred
+
+semi_symbolic_output_schema:
+  schema_name: owner_fsm_overlay
+  fields:
+    owner: string
+    manager_instance_site: string
+    descriptor_ptr_symbol: string_or_unknown
+    states:
+      - id: integer
+        name: string
+        confidence: [confirmed, owner_labeled, inferred]
+    events:
+      - id: integer
+        name: string
+        confidence: [confirmed, owner_labeled, inferred]
+    actions:
+      - id: integer
+        callback_symbol: string_or_unknown
+        semantic_name: string_or_unknown
+        confidence: [confirmed, owner_labeled, inferred]
+
+remaining_unknowns:
+  - exact runtime struct size beyond offsets 0x10 and 0x12
+  - exact semantic meaning of descriptor qword at index 4
+  - whether action_entry+0x8 is owner object, opaque cookie, or logging metadata
+  - exact owner list beyond WCLScanManager without a wider call-site sweep
+
+next_actions:
+  - enumerate all initWithOptions wrappers and CommonFsmManager allocation wrappers
+  - extract descriptor pointer constants for each owner
+  - identify rodata vectors adjacent to descriptor blobs
+  - correlate trace strings with descriptor tables to replace provisional names

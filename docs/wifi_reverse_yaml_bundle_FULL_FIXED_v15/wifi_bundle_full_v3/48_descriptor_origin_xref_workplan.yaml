@@ -1,0 +1,27 @@
+document:
+  title: Descriptor-origin xref workplan
+  version: v10
+  intent: close_remaining_gap
+  immediate_targets:
+    - owner constructors and initWith... methods that allocate/initialize CommonFsmManager-bearing objects
+    - stores into [obj + 0x10] and then into [runtime + 0x08]
+    - adjacent rodata objects whose tail bytes match state/event/action counts
+  search_patterns:
+    - "calls to CommonFsmManager::validateFsmConfig from owner init"
+    - "writes to manager->runtime_ptr followed by descriptor pointer store"
+    - "literal 2-byte matrix traversal compatible with state_count * event_count * 2"
+    - "string clusters matching trace template: FSM %s / in state / got event / moved into"
+  required_artifacts:
+    - "relocation-aware disassembly for owner init sites"
+    - "rodata dump near candidate descriptor blobs"
+    - "cross-reference list for CommonFsmManager::processEvent callers"
+  success_criteria:
+    partial:
+      - "Recover one owner-specific descriptor blob."
+      - "Recover one state-name vector and one event-name vector."
+    full:
+      - "Produce first fully symbolic owner FSM."
+  why_this_is_next:
+    rationale: >
+      New binaries are no longer the blocker. The blocker is where the descriptor base enters runtime.
+      Once one owner descriptor is recovered, the same machinery can be reused across other owners.

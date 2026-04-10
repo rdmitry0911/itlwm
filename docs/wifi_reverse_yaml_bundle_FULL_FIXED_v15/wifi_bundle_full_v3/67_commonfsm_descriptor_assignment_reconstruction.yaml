@@ -1,0 +1,57 @@
+version: 14
+topic: CommonFsmManager descriptor assignment reconstruction
+status: reconstructed_to_boundary_of_available_material
+
+commonfsm_layout:
+  manager_object_size: 0x18
+  manager_fields:
+    plus_0x10: runtime_ptr
+  runtime_fields:
+    plus_0x00: fsm_id_or_runtime_header_unknown
+    plus_0x08: descriptor_ptr
+    plus_0x10: current_state_u8
+    plus_0x12: descriptor_valid_bool
+  descriptor_fields_reconstructed:
+    plus_0x00_or_deref0: transition_matrix_ptr
+    plus_0x08: action_table_ptr
+    plus_0x10: state_name_vector_ptr_or_related_vector
+    plus_0x18: event_name_vector_ptr_or_related_vector
+    plus_0x20: trace_cookie_or_name_surface
+    plus_0x29: event_count_u8
+    plus_0x2A: state_count_u8
+    plus_0x2B: action_count_u8
+
+validate_fsm_config_algorithm:
+  - "load runtime from self+0x10"
+  - "load descriptor from runtime+0x08"
+  - "panic if descriptor is null while processing"
+  - "descriptor_valid := transition_matrix_ptr != 0 && action_table_ptr != 0 && third_required_vector != 0"
+  - "for each state in state_count"
+  - "for each event in event_count"
+  - "read 2-byte transition cell from transition_matrix"
+  - "cell[0] -> next_state"
+  - "cell[1] -> action_id"
+  - "check next_state < state_count unless 0xff sentinel"
+  - "check action_id < action_count"
+  - "check action_table[action_id].callback != NULL"
+
+process_event_implications:
+  - "transition cell format is packed and stable enough for offline decoder generation"
+  - "action table entries are 0x10 bytes apart"
+  - "symbolic overlay is feasible once descriptor rodata origin is known"
+  - "state/event string vectors almost certainly exist because trace path formats names, not just numbers"
+
+hard_limit_of_current_material:
+  - "current C pseudocode exposes descriptor use but not a trustworthy assignment xref for runtime+0x08"
+  - "therefore the last gap cannot be closed further from these pseudocode slices alone"
+
+conclusion:
+  closed:
+    - interpreter_contract
+    - descriptor_internal_format
+    - transition_cell_format
+    - callback_table_stride
+  blocked:
+    - descriptor_ptr_origin_assignment
+    - owner_init_site_that_installs_descriptor
+    - exact_name_vector_addresses

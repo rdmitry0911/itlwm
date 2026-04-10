@@ -1,0 +1,81 @@
+version: 6
+scope: kernel
+subject: skywalk_datapath_contracts
+summary:
+  goal: >-
+    Consolidate the hard interface contract at the IOSkywalkNetworkInterface boundary
+    with the AppleBCMWLANSkywalkInterface-local queue and bus interactions that are now
+    visible in the Wi-Fi stack decompilations.
+  provenance:
+    ioskywalk_anchor: user-validated exact vtable match, 41 methods + 10 reserved
+
+hard_boundary_contract:
+  base_class: IOSkywalkNetworkInterface
+  contract_status: authoritative
+  implications:
+    - virtual slot naming is ABI-stable for x86_64 macOS 26.3
+    - downstream AppleBCMWLANSkywalkInterface override analysis can now be done mechanically
+    - BSD attach, MTU, wake, media, TSO, packet tap, and state snapshot methods are all pinned
+
+applebcmwlanskywalkinterface_local_model:
+  class_size: 0x140
+  confirmed_fields:
+    - offset: 0x138
+      name: skywalk_provider_or_queue_owner
+      role: >-
+        Owner object containing queue pointers at +0x78 + qid*8 and likely additional
+        ring/resource sizing metadata.
+    - offset: 0x27 * 8
+      name: ivars_ptr_candidate
+      role: >-
+        Internal ivar block consulted by removePacketQueue(); must contain a valid
+        leading object and a bus-interface pointer at +0x20.
+  confirmed_methods:
+    packetSpace(qid):
+      behavior:
+        - load queue object from *( *(self+0x138) + 0x78 + qid*8 )
+        - if non-null, call queue_vfunc(+0x340) and return packet-space object
+        - otherwise return 0
+      interpretation:
+        - per-queue packet-space abstraction is delegated to child queue object
+    removePacketQueue(flow_hash):
+      behavior:
+        - validate ivars block exists
+        - validate ivars[0] and ivars[4] non-null
+        - call ivars[0]->vfunc(+0x158) before queue removal
+        - query log stream via self->vfunc(+0xd08)
+        - delegate actual removal through *(ivars+0x20)->vfunc(+0xbc8)(flow_hash)
+      interpretation:
+        - AppleBCMWLANSkywalkInterface is a façade; queue destruction is ultimately owned by a bus-facing object
+
+bus_side_contracts:
+  getBusSkywalk:
+    behavior:
+      - returns retained skywalk instance from core_or_bus_state+0x11e8
+  allocateSkywalkBusResource:
+    observed_parameters:
+      - default queue/ring values derive from fields around +0x11d0..+0x11e0
+      - q defaults include fallback values 0x200 and 0x400 with owner overrides
+    interpretation:
+      - bus-side skywalk resource sizing is partly policy-driven by cached ivars rather than hardcoded constants
+  findAndReleaseFlowQueueWithFlowId:
+    behavior:
+      - validate hash pointer
+      - validate skywalk instance exists at +0x11e8
+      - bounds-check queue id against [owner+0x174, owner+0x178)
+      - load queue descriptor from owner+0x1340 + qid*8
+      - call AppleBCMWLANPCIeSkywalk::detachTxSubmFwQueue(instance, hash[0], hash[1], qid, queue_flags_bit)
+    structural_takeaway:
+      - flow-hash -> queue-id -> queue-descriptor -> detach path is explicitly materialized in bus code
+
+normalized_override_worklist:
+  must_resolve_next:
+    - which of the 41 IOSkywalkNetworkInterface methods are overridden in AppleBCMWLANSkywalkInterface
+    - where setInterfaceEnable / setRunningState / reportDetailedLinkStatus land in the local class
+    - how calculateRingSizeForQueue relates to allocateSkywalkBusResource sizing fields
+    - whether captureInterfaceState/restoreInterfaceState are delegated or locally implemented
+
+reverse_engineering_value:
+  - completes the kernel datapath boundary without guessing at method names
+  - ties queue/ring sizing to concrete bus-side storage offsets
+  - provides a stable map for future devirtualization of skywalk-related calls

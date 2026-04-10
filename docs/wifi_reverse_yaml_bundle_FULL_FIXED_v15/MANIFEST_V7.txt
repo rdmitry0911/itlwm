@@ -1,0 +1,6 @@
+Added in v7 checked set:
+75_GAS_DEFRAG_FSM_fully_symbolic_checked_v2.yaml
+76_GAS_FSM_fully_symbolic_checked.yaml
+77_LQM_FSM_fully_symbolic_checked_v2.yaml
+78_SSM_fully_symbolic_checked.yaml
+79_BGCOMMON_FSM_fully_symbolic_checked.yaml

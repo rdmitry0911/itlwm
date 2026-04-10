@@ -1,0 +1,263 @@
+version: 1
+topic: Driver porting profiles for non-Apple network adapters
+status: working
+purpose: >-
+  Practical porting guide built on top of the recovered fully symbolic FSMs.
+  The goal is to help implement a translation shim / backend driver for a
+  different adapter while satisfying the expectations of the Apple Wi-Fi stack.
+
+profiles:
+  scan_plane:
+    owners: [SCAN_MANAGER]
+    primary_fsm: SCAN_MANAGER
+    bringup_stage: stage_1_basic_discovery
+    must_emulate:
+      - accept SCAN_REQ and eventually emit SCAN_COMPLETE
+      - support abort path via SCAN_ABORT_REQ with stable completion semantics
+      - preserve HALT/RESUME/SYSTEM_POWER transitions
+    may_stub_initially:
+      - aggressive timeout heuristics
+      - advanced scan result filtering
+      - opportunistic scan restarts
+    danger_if_wrong:
+      - join path never starts
+      - scan manager gets stuck in IN_PROGRESS or ABORTED
+      - sleep/wake leaves stale scan state
+    minimum_tests:
+      - single active scan completes and returns to IDLE
+      - abort during IN_PROGRESS reaches ABORTED then IDLE on SCAN_COMPLETE
+      - HALT then RESUME returns to IDLE
+    depends_on: [system_state_plane]
+    source_docs:
+      - 69_WCLScanManager_fully_symbolic_FSM_corrected.yaml
+
+  join_assoc_plane:
+    owners: [JOIN_MANAGER]
+    primary_fsm: JOIN_MANAGER
+    bringup_stage: stage_2_association
+    must_emulate:
+      - JOIN_REQ -> JOIN_ASSOC_COMPLETE -> JOIN_CONNECT_COMPLETE -> JOIN_COMPLETE
+      - JOIN_ABORT_REQ / JOIN_ABORT_COMPLETE path
+      - TRY_NEXT_CANDIDATE and delayed retry handling or safe rejection
+    may_stub_initially:
+      - candidate iteration sophistication
+      - AWD/tracing side channels
+    danger_if_wrong:
+      - association appears to succeed but connect never reaches NET_MANAGER
+      - join remains stuck in ASSOC_DONE / CONNECT_COMPLETE
+      - leave/reset flows corrupt future attempts
+    minimum_tests:
+      - nominal 4-step join lifecycle returns to IDLE
+      - explicit abort returns to IDLE
+      - DRIVER_RESET from active states reaches HALTED or safe cleanup
+    depends_on: [scan_plane, net_link_plane, system_state_plane]
+    source_docs:
+      - 70_WCLJoinManager_fully_symbolic_FSM_checked.yaml
+
+  net_link_plane:
+    owners: [NET_MANAGER]
+    primary_fsm: NET_MANAGER
+    bringup_stage: stage_3_ip_and_link_stability
+    must_emulate:
+      - LINK_UP indication
+      - CONNECT_COMPLETE indication
+      - IPV4_STATUS indication for transition to LINK_UP
+      - LINK_DOWN_IND and LINK_DOWN_COMPLETE drain semantics
+    may_stub_initially:
+      - nuanced link suppression policies
+      - fine-grained sleep side behaviors beyond basic correctness
+    danger_if_wrong:
+      - system appears associated but never acquires usable link state
+      - deauth drain never finishes
+      - wake leaves link logically up while datapath is dead
+    minimum_tests:
+      - LINK_DOWN -> WAITING_FOR_CONNECT_COMPLETE -> WAITING_FOR_IP -> LINK_UP
+      - LEAVE_NETWORK drains through DEAUTH back to LINK_DOWN
+      - sleep/wake returns to LINK_UP or safe deauth path
+    depends_on: [join_assoc_plane, system_state_plane, lqm_plane]
+    source_docs:
+      - 72_WCLNetManager_fully_symbolic_FSM_checked.yaml
+
+  roam_plane:
+    owners: [ROAM_MANAGER]
+    primary_fsm: ROAM_MANAGER
+    bringup_stage: stage_4_roaming
+    must_emulate:
+      - ROAM_START -> ROAM_SCAN -> ROAM_REASSOC -> WAIT_ROAM_DONE -> ROAM_DONE
+      - LINK_DOWN and sleep/wake handling during roam
+    may_stub_initially:
+      - full roaming support if all roam-triggering events are suppressed consistently
+      - intermediate scan result richness
+    danger_if_wrong:
+      - roaming corrupts stable links
+      - suspend during roam wedges control plane
+    minimum_tests:
+      - roam completes back to LINK_UP
+      - timeout returns to LINK_UP cleanly
+      - sleep then wake exits SLEEP state correctly
+    depends_on: [scan_plane, join_assoc_plane, net_link_plane]
+    source_docs:
+      - 71_WCLRoamManager_fully_symbolic_FSM_checked.yaml
+
+  gas_anqp_plane:
+    owners: [GAS_FSM, GAS_DEFRAG_FSM]
+    primary_fsm: GAS_FSM
+    secondary_fsm: GAS_DEFRAG_FSM
+    bringup_stage: stage_5_hotspot_anqp
+    must_emulate:
+      - GAS_REQUEST submission
+      - fragment receive and accumulation
+      - GAS_COMPLETE / GAS_COMPLETE_ERROR cleanup
+      - QUIESCE / WAKE behavior
+    may_stub_initially:
+      - full Hotspot 2.0 feature set if upper layers never request it
+      - rich corecapture side-effects
+    danger_if_wrong:
+      - ANQP queries hang
+      - fragmented GAS responses leak or poison future requests
+    minimum_tests:
+      - request reaches IN_PROGRESS then IDLE on GAS_COMPLETE
+      - fragmented response path enters GETTING_RESULT and completes
+      - timeout/abort path reaches ABORTING then drains
+    depends_on: [system_state_plane]
+    source_docs:
+      - 76_GAS_FSM_fully_symbolic_checked.yaml
+      - 75_GAS_DEFRAG_FSM_fully_symbolic_checked_v2.yaml
+
+  lqm_plane:
+    owners: [LQM_FSM]
+    primary_fsm: LQM_FSM
+    bringup_stage: stage_6_quality_monitoring
+    must_emulate:
+      - START / STOP lifecycle
+      - periodic TIMER delivery when active
+    may_stub_initially:
+      - sophisticated sampling policy
+      - vendor-specific metrics richness
+    danger_if_wrong:
+      - link monitoring never activates
+      - timers fire in IDLE and cause noise/assertions
+    minimum_tests:
+      - START moves IDLE -> ACTIVE
+      - TIMER in ACTIVE is processed
+      - STOP returns to IDLE
+    depends_on: [net_link_plane]
+    source_docs:
+      - 77_LQM_FSM_fully_symbolic_checked_v2.yaml
+
+  system_state_plane:
+    owners: [SSM]
+    primary_fsm: SSM
+    bringup_stage: stage_0_boot_notifications
+    must_emulate:
+      - SYSTEM_WILL_SLEEP / SYSTEM_AWAKE notification delivery
+      - DRIVER_RESET forwarding
+      - DRIVER_UNAVAILABLE / DRIVER_AVAILABLE defer-and-replay logic
+      - SYSTEM_POWER_ON / SYSTEM_POWER_OFF notifications
+    may_stub_initially:
+      - exotic replay ordering if external semantics remain preserved
+    danger_if_wrong:
+      - subscribers miss reset or sleep/wake transitions
+      - deferred notifications never replay after driver becomes available
+    minimum_tests:
+      - normal immediate notification forwarding
+      - transition to DEFER_SENDING_NOTIFICATION on DRIVER_UNAVAILABLE
+      - replay and return to CAN_SEND_NOTIFICATION on DRIVER_AVAILABLE
+    depends_on: []
+    source_docs:
+      - 78_SSM_fully_symbolic_checked.yaml
+
+  bg_offload_plane:
+    owners: [BGCOMMON_FSM, AX_MANAGER, NDD_MANAGER]
+    primary_fsm: BGCOMMON_FSM
+    additional_fsms: [AX_MANAGER, NDD_MANAGER]
+    bringup_stage: stage_7_optional_offloads
+    must_emulate:
+      - driver reset cleanup
+      - suspend/resume lifecycle if background work is enabled
+      - safe no-op behavior if unsupported features are disabled
+    may_stub_initially:
+      - background scanning/offload sophistication
+      - NDD active/passive discovery
+      - 11ax ULOFDMA / ASR behaviors
+    danger_if_wrong:
+      - background tasks keep stale state across sleep/reset
+      - optional features destabilize primary connectivity
+    minimum_tests:
+      - BGCOMMON reset returns to IDLE from all states
+      - optional feature-disabled build does not inject unsupported events
+      - if AX features are enabled, wake/sleep exits are coherent
+    depends_on: [system_state_plane, net_link_plane]
+    source_docs:
+      - 79_BGCOMMON_FSM_fully_symbolic_checked.yaml
+      - 74_AX_MANAGER_fully_symbolic_FSM_checked.yaml
+      - 73_NDD_MANAGER_fully_symbolic_FSM_checked.yaml
+
+porting_stages:
+  - stage_0_boot_notifications
+  - stage_1_basic_discovery
+  - stage_2_association
+  - stage_3_ip_and_link_stability
+  - stage_4_roaming
+  - stage_5_hotspot_anqp
+  - stage_6_quality_monitoring
+  - stage_7_optional_offloads
+
+recommended_bringup_order:
+  - system_state_plane
+  - scan_plane
+  - join_assoc_plane
+  - net_link_plane
+  - lqm_plane
+  - roam_plane
+  - gas_anqp_plane
+  - bg_offload_plane
+
+minimal_feature_matrix:
+  first_bootable_driver:
+    required:
+      - system_state_plane
+      - scan_plane
+      - join_assoc_plane
+      - net_link_plane
+    optional:
+      - roam_plane
+      - gas_anqp_plane
+      - lqm_plane
+      - bg_offload_plane
+  production_like_driver:
+    required:
+      - system_state_plane
+      - scan_plane
+      - join_assoc_plane
+      - net_link_plane
+      - lqm_plane
+      - roam_plane
+    optional:
+      - gas_anqp_plane
+      - bg_offload_plane
+
+common_failure_mappings:
+  - symptom: scan works but association never starts
+    likely_broken_profiles: [scan_plane, join_assoc_plane]
+  - symptom: association appears complete but link never becomes usable
+    likely_broken_profiles: [join_assoc_plane, net_link_plane]
+  - symptom: sleep/wake causes dead adapter or phantom link-up
+    likely_broken_profiles: [system_state_plane, net_link_plane, roam_plane, bg_offload_plane]
+  - symptom: Hotspot/ANQP queries hang or never complete
+    likely_broken_profiles: [gas_anqp_plane]
+  - symptom: driver stable until reset or firmware restart
+    likely_broken_profiles: [system_state_plane, bg_offload_plane, gas_anqp_plane]
+
+implementation_guidance:
+  translation_shim:
+    - normalize vendor events into Apple-style control-plane events before touching owner-local state
+    - preserve ordering guarantees around CONNECT_COMPLETE, IPV4_STATUS, LINK_DOWN_IND, LINK_DOWN_COMPLETE
+    - treat sleep/wake and reset as system-wide barriers, not local hints
+  testing:
+    - validate each plane independently
+    - only then enable cross-plane interactions
+    - keep a mode where optional planes are force-disabled to isolate regressions
+  logging:
+    - log state, event, action, and producer for every translated event
+    - distinguish impossible events from ignored events where the original FSM does

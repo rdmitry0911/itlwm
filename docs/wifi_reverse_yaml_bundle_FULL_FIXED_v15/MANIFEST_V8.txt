@@ -1,0 +1,4 @@
+Added in V8:
+- 80_cross_fsm_bringup_guide.yaml
+
+Based on checked fully symbolic FSMs already present in bundle.

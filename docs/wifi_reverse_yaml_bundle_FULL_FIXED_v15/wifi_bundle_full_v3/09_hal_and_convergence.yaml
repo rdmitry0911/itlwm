@@ -1,0 +1,23 @@
+document_type: hal_and_convergence_v2
+components:
+  - AppleOLYHALPortInterfacePCIe
+  - AppleConvergedIPCControl
+  - AppleConvergedIPCInterface
+  - AppleConvergedIPCControlReporter
+confirmed_hal_points:
+  - AppleOLYHALPortInterfacePCIe tracks pending dext messages in an internal list.
+  - setupDextMsgCompletion()/getDextMsgInfo()/abortPendingDextMsgs() show explicit request bookkeeping and abort semantics.
+  - Some action/error message entry points currently return not-supported-style IOReturns in the uploaded slice, indicating stubbed or externally completed paths.
+confirmed_convergence_points:
+  - AppleConvergedIPCControl has explicit deep-sleep / manual-enable / power-state-change logic.
+  - Reporter objects are created for interrupt, logging, interfaces, current power, full power state, and quiesce activity.
+  - AppleConvergedIPCInterface exposes startChannel/abortChannel/read/write abstract surface.
+lifecycle_model:
+  - discover/service_bind
+  - command_gate_and_mapper availability
+  - optional reporter registration
+  - deep_sleep_enter_exit mediation
+  - request/response bookkeeping
+  - quiesce or stop
+notes:
+  - This domain is infrastructure shared with Wi-Fi transport and must be modeled separately from vendor core logic.

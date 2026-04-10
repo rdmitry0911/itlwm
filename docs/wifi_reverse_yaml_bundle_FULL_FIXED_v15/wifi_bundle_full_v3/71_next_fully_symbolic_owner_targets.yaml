@@ -1,0 +1,48 @@
+version: 1
+topic: next fully symbolic owner targets after WCLScanManager
+status: prioritized
+basis:
+  - WCLScanManager is now fully symbolic and provides the reference extraction recipe.
+  - The best next target should be topologically adjacent to scan flow, reuse bulletin-board/event infrastructure, and expose concrete owner-local guards or processEvent-like entry points.
+priority_order:
+  1:
+    candidate: join_or_assoc_manager_adjacent_to_scan
+    rationale:
+      - Most likely to consume scan completion results and share scan->join control flow.
+      - Highest expected reuse of the SCAN_MANAGER descriptor-lift recipe.
+      - Likely to expose concrete completion/failure/abort transitions with compact state space.
+    expected_artifacts:
+      - association request event set
+      - join failure reasons
+      - completion/timeout/reset transitions
+  2:
+    candidate: roam_manager_or_fast_roam_owner
+    rationale:
+      - Roam semantics are already visible in AppleBCMWLANCoreMac status/reason reporting.
+      - Good candidate for a second control-plane FSM with richer recovery behavior.
+    hints:
+      - Search around roam status/reason logging and fast-roam abort strings.
+  3:
+    candidate: power_halt_resume_scan_adjacent_owner
+    rationale:
+      - WCLScanManager already exposes HALT/RESUME/SYSTEM_POWER_OFF/SYSTEM_POWER_ON transitions.
+      - A neighboring power owner may reuse the same bulletin-board callbacks and simplify symbolic binding.
+  4:
+    candidate: awdl_peer_manager_sub_fsm_only_after_join_assoc
+    rationale:
+      - AWDL/NAN stack is large and likely higher fan-out.
+      - Better attacked after one more infrastructure-similar owner is finished.
+extraction_recipe_reuse:
+  - start from owner-local event ingress points
+  - identify CommonFsmManager or equivalent runtime field accesses
+  - recover descriptor/context blob from xrefs/relocations
+  - lift transition matrix, action table, and string vectors
+  - bind callbacks by inter-function delta matching against KDK symbols when direct symbol names are absent
+concrete_observations_supporting_priority:
+  - WCLScanManager handleScanRequest issues processEvent(1,0) and processEvent(2,request).
+  - WCLScanManager ignore path reads current_state from runtime and returns 0xe00002bc.
+  - AppleBCMWLANCoreMac already exposes roam status/reason reporting and scan-abort reason strings, making roam/join the most semantically adjacent next layer.
+stop_condition_for_next_owner:
+  - no numeric placeholders remain in states, events, actions, or transition matrix
+  - action handlers are bound to concrete methods
+  - context layout and string vectors are documented

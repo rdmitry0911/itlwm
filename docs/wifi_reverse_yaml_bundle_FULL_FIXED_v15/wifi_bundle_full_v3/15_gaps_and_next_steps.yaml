@@ -1,0 +1,20 @@
+document_type: known_gaps_and_next_steps_v3
+gaps:
+  - Many framework/vendor FSM state names remain numeric because transition tables/string tables were not yet scraped from data sections.
+  - Userland policy/orchestration is still absent; airportd/CoreWLAN/WiFiPolicy are required only for full end-to-end lifecycle beyond kernel.
+  - Some transport/OLYHAL entry points in the uploaded x86_64 slice appear stub-like or externally mediated, so semantics stop at the kernel boundary.
+  - Several AppleBCMWLANCore helper constructors and ivar slots still need a strict ivar map.
+  - Several data structures are only partially reconstructed and still need field-by-field lifting from access sites.
+high_value_next_passes:
+  - dump CommonFsmManager-backed string tables for concrete state/event names
+  - lift AppleBCMWLANCore ivar map around submodule storage
+  - trace scan/join/roam callbacks through framework<->vendor boundary
+  - enumerate sendActionMessageToDext / sendErrorMessageToDext callers and payload types
+  - decode AppleConvergedIPCRequest / MemoryPolicy / RTI pipe structures from access sites
+  - add airportd and CoreWLAN only if system-level policy layer is needed
+expected_result_of_next_pass:
+  - state diagrams with symbolic state/event names
+  - stricter per-module entry/exit actions
+  - partial field maps for major runtime objects
+  - request/completion schemas for transport/HAL/control APIs
+  - clear isolation of remaining userland-only unknowns

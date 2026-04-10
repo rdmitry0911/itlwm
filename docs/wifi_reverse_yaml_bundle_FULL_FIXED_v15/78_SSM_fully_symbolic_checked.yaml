@@ -1,0 +1,84 @@
+version: 1
+topic: WCLSystemStateManager fully symbolic FSM
+status: complete
+source: BootKernelExtensions.kc 26.3 (25D125)
+
+fsm_name: SSM
+context_va: 0xffffff8002405530
+context_fileoff: 0x2305530
+owner_class: WCLSystemStateManager
+
+states:
+  0: CAN_SEND_NOTIFICATION
+  1: DEFER_SENDING_NOTIFICATION
+
+events:
+  0: SYSTEM_WILL_SLEEP
+  1: SYSTEM_AWAKE
+  2: DRIVER_RESET
+  3: FW_LOADED
+  4: DRIVER_UNAVAILABLE
+  5: DRIVER_AVAILABLE
+  6: SYSTEM_POWER_ON
+  7: SYSTEM_POWER_OFF
+
+actions:
+  0:  { name: handleDriverAvailableNotification,  kdk_symbol: "WCLSystemStateManager::handleDriverAvailableNotification" }
+  1:  { name: handleSendAwakeNotification,        kdk_symbol: "WCLSystemStateManager::handleSendAwakeNotification" }
+  2:  { name: handleSendDriverResetNotification,  kdk_symbol: "WCLSystemStateManager::handleSendDriverResetNotification" }
+  3:  { name: handleSendFWLoadNotification,       kdk_symbol: "WCLSystemStateManager::handleSendFWLoadNotification" }
+  4:  { name: handleSendSleepNotification,        kdk_symbol: "WCLSystemStateManager::handleSendSleepNotification" }
+  5:  { name: handleSendPowerOFFNotification,     kdk_symbol: "WCLSystemStateManager::handleSendPowerOFFNotification" }
+  6:  { name: handleSendPowerONNotification,      kdk_symbol: "WCLSystemStateManager::handleSendPowerONNotification" }
+  7:  { name: handleReplayNotification,           kdk_symbol: "WCLSystemStateManager::handleReplayNotification" }
+  8:  { name: handleStorePreDeferState,           kdk_symbol: "WCLSystemStateManager::handleStorePreDeferState" }
+  9:  { name: handleIgnoreAssert,                 kdk_symbol: "WCLSystemStateManager::handleIgnoreAssert" }
+  10: { name: handleIgnore,                       kdk_symbol: "WCLSystemStateManager::handleIgnore" }
+
+transition_matrix:
+  CAN_SEND_NOTIFICATION:
+    SYSTEM_WILL_SLEEP:   { next: CAN_SEND_NOTIFICATION,    action: handleSendSleepNotification }
+    SYSTEM_AWAKE:        { next: CAN_SEND_NOTIFICATION,    action: handleSendAwakeNotification }
+    DRIVER_RESET:        { next: CAN_SEND_NOTIFICATION,    action: handleSendDriverResetNotification }
+    FW_LOADED:           { next: CAN_SEND_NOTIFICATION,    action: handleSendFWLoadNotification }
+    DRIVER_UNAVAILABLE:  { next: DEFER_SENDING_NOTIFICATION, action: handleStorePreDeferState }
+    DRIVER_AVAILABLE:    { next: CAN_SEND_NOTIFICATION,    action: handleDriverAvailableNotification }
+    SYSTEM_POWER_ON:     { next: CAN_SEND_NOTIFICATION,    action: handleSendPowerONNotification }
+    SYSTEM_POWER_OFF:    { next: CAN_SEND_NOTIFICATION,    action: handleSendPowerOFFNotification }
+
+  DEFER_SENDING_NOTIFICATION:
+    SYSTEM_WILL_SLEEP:   { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+    SYSTEM_AWAKE:        { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+    DRIVER_RESET:        { next: DEFER_SENDING_NOTIFICATION, action: handleSendDriverResetNotification }
+    FW_LOADED:           { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+    DRIVER_UNAVAILABLE:  { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+    DRIVER_AVAILABLE:    { next: CAN_SEND_NOTIFICATION,      action: handleReplayNotification }
+    SYSTEM_POWER_ON:     { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+    SYSTEM_POWER_OFF:    { next: DEFER_SENDING_NOTIFICATION, action: handleIgnore }
+
+raw_matrix_hex: |
+  00 04 00 01 00 02 00 03 01 08 00 00 00 06 00 05
+  01 0a 01 0a 01 02 01 0a 01 0a 00 07 01 0a 01 0a
+
+behavioral_notes:
+  notification_broker: >-
+    SSM acts as a system state notification broker. In CAN_SEND state,
+    every system event is immediately forwarded to subscribers via the
+    corresponding handleSend*Notification action.
+  defer_mechanism: >-
+    DRIVER_UNAVAILABLE triggers transition to DEFER state, storing
+    pre-defer state via handleStorePreDeferState. In DEFER, most
+    notifications are silently ignored (handleIgnore) until the driver
+    becomes available again.
+  driver_reset_always_forwarded: >-
+    DRIVER_RESET is the only event forwarded even in DEFER state,
+    using handleSendDriverResetNotification. This ensures subscribers
+    always learn about resets regardless of driver availability.
+  replay_on_available: >-
+    DRIVER_AVAILABLE in DEFER state triggers handleReplayNotification,
+    which replays deferred notifications and transitions back to
+    CAN_SEND. This ensures no state change notifications are lost
+    during driver unavailability.
+  unused_action: >-
+    handleIgnoreAssert (action 9) is registered but never referenced
+    in the transition matrix. May be a debug/development handler.

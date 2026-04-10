@@ -1,0 +1,62 @@
+document: WCLScanManager transition observations v12
+version: 12
+status: first_owner_ready_for_descriptor_origin_pass
+summary:
+  WCLScanManager remains the strongest first target for a fully symbolic FSM because its owner-side
+  event injection and failure policy are directly visible in the decompilation.
+
+owner_binding:
+  manager_object_role: scan_fsm_owner_or_subclass_using_CommonFsmManager_runtime
+  observed_runtime_accesses:
+    - read_current_state_via_manager_runtime: true
+    - log_ignore_state_from_runtime_byte: true
+
+observed_event_injections:
+  - event_id: 1
+    call_pattern: processEvent(manager, 1, NULL)
+    context: request handling path when preflight helper returns non-zero in no-active-scan branch
+    semantic_guess: transition to locally-generated/internal follow-up state
+    confidence: semi_confirmed
+  - event_id: 2
+    call_pattern: processEvent(manager, 2, request_ptr)
+    context: request handling path when alternate queue/context is active
+    semantic_guess: submit/consume incoming scan request
+    confidence: semi_confirmed
+
+ignore_path:
+  function_role: ignore_handler
+  return_code: 0xe00002bc
+  behavior:
+    - logs 'WCLScanManager ignoring in state %d'
+    - reads current_state from runtime+0x10
+  interpretation:
+    - this is a stable owner-specific nonfatal reject path
+    - useful for symbolic overlay because it binds runtime.current_state to user-visible owner behavior
+
+fatal_guards:
+  - text: Invalid scan state, avoid state machine being stuck
+    role: owner-level invariant protecting against illegal input/context combinations
+    implications:
+      - owner has explicit expectations about which states may receive request/null combinations
+      - good anchor for naming illegal-state clusters once descriptor tables are lifted
+
+adjacent_owner_context:
+  owner_plus_0x20:
+    likely: WCLScanManager private ivars/context
+    visible_fields:
+      - offset: 0x48
+        role: subordinate queue_or_scan_context_A
+      - offset: 0x50
+        role: subordinate queue_or_scan_context_B
+      - offset: 0x78
+        role: log_stream_or_trace_context
+  request_object:
+    visible_anchor:
+      - offset: 0x10 -> +0x1554
+        role: UUID string region used for logging
+
+symbolic_lift_priority:
+  highest_value_targets:
+    - constructor_or_init path that writes manager.runtime.descriptor_ptr
+    - nearby rodata/xrefs to scan-related state names
+    - owner-local action callbacks referenced by action table

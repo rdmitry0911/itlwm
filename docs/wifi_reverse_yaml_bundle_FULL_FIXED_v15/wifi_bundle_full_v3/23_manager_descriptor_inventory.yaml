@@ -1,0 +1,142 @@
+version: 5
+scope: kernel
+subject: manager_descriptor_inventory
+summary:
+  goal: >-
+    Enumerate the descriptor-backed manager/runtime patterns that can be recovered
+    from the current decompilation corpus, with emphasis on CommonFsmManager-owned
+    state machines and descriptor-like control objects at neighboring boundaries.
+  confidence_model:
+    confirmed: directly implied by control flow, offsets, or invariant checks
+    inferred: consistent reconstruction from repeated use-sites, not yet symbol-lifted
+
+common_fsm_manager:
+  object_size: 0x18
+  class_anchor:
+    confirmed:
+      - class: CommonFsmManager
+      - metaclass_symbol: DAT_ffffff8002406db0
+      - allocation_size: 0x18
+  top_level_layout:
+    confirmed:
+      - offset: 0x10
+        name: runtime_ptr
+        type: pointer
+        meaning: >-
+          Pointer to embedded/runtime-owned FSM state block; all validated descriptor
+          metadata is reached through this pointer.
+    inferred:
+      - offset: 0x00
+        name: vtable
+        type: pointer
+      - offset: 0x08
+        name: osobject_header_or_refcount_region
+        type: opaque
+  runtime_layout:
+    confirmed:
+      - offset_from_runtime: 0x00
+        name: fsm_id
+        type: u32
+      - offset_from_runtime: 0x08
+        name: descriptor_ptr
+        type: pointer
+        meaning: >-
+          Pointer to the descriptor blob consumed by validateFsmConfig/processEvent.
+      - offset_from_runtime: 0x10
+        name: current_state
+        type: u8
+      - offset_from_runtime: 0x12
+        name: descriptor_valid
+        type: bool
+        meaning: Set by validateFsmConfig after verifying matrix/action tables.
+  descriptor_layout:
+    confirmed:
+      - field: descriptor->transition_matrix
+        access: '*plVar5'
+        type: pointer
+        meaning: packed matrix of (nextState, actionId) byte-pairs
+      - field: descriptor->action_table
+        access: plVar5[1]
+        type: pointer
+        meaning: array of 0x10-byte action entries; first qword must be non-null
+      - field: descriptor->state_count
+        access: byte at descriptor+0x2a
+        type: u8
+      - field: descriptor->event_count
+        access: byte at descriptor+0x29
+        type: u8
+      - field: descriptor->action_count
+        access: byte at descriptor+0x2b
+        type: u8
+      - field: descriptor->aux_table_2
+        access: plVar5[2]
+        type: pointer
+      - field: descriptor->aux_table_3
+        access: plVar5[3]
+        type: pointer
+      - field: descriptor->aux_table_4
+        access: plVar5[4]
+        type: pointer
+    inferred:
+      - field: transition_stride
+        value: event_count * 2
+        meaning: each state owns a compact row of byte-pairs
+      - field: transition_pair_format
+        value: [next_state:u8, action_id:u8]
+        meaning: special next_state 0xff appears reserved/sentinel
+  invariants:
+    confirmed:
+      - validate requires descriptor_ptr != NULL
+      - validate sets descriptor_valid only if aux tables 2/3/4 are all present
+      - each action_id must be < action_count
+      - each referenced action entry must have non-null callback/function pointer
+      - each next_state must be either 0xff or < state_count
+  extraction_targets:
+    next:
+      - find all constructors/factories that populate runtime_ptr->descriptor_ptr
+      - locate static rodata that backs transition_matrix and action_table
+      - map action-table entry second qword(s) to handler/object context
+
+wcl_scan_manager:
+  role: concrete owner/client of CommonFsmManager
+  evidence:
+    confirmed:
+      - handleScanRequest injects numeric events 1 and 2 into CommonFsmManager
+      - ignore() logs current_state via runtime_ptr+0x10
+      - stuck-state assertions indicate specific invalid-state guardrails
+  recovered_event_usage:
+    confirmed:
+      - event_1:
+          context: scan request path when FUN_ffffff800211f4ea fails and machine must advance/error
+      - event_2:
+          context: path where a pending/secondary scan structure exists and another branch is taken
+    inferred:
+      - event_0:
+          meaning: likely idle/no-op bootstrap or request accepted without transition
+      - event_3_plus:
+          meaning: present in descriptor but not yet surfaced in sampled snippets
+  descriptor_recovery_plan:
+    steps:
+      - identify init/constructor creating WCLScanManager's CommonFsmManager runtime
+      - follow store into manager.runtime_ptr->descriptor_ptr
+      - dump row count == event_count and annotate each row with observed callers
+      - use log strings around handlers to back-propagate symbolic state names
+
+gas_and_other_fsm_candidates:
+  candidates:
+    - AppleBCMWLANGASAdapter-owned FSM object(s)
+    - join/roam/security managers inside IO80211Family using similar processEvent style
+    - BT/RTI message completion dispatchers that are table-driven but not full CommonFsmManager users
+  heuristic_signatures_for_followup:
+    - processEventEhPv style methods receiving u8 event + opaque payload
+    - validate-like functions checking state_count/event_count/action_count triplets
+    - logs of form 'in state X got event Y moved into Z'
+
+skywalk_boundary_managers:
+  note: >-
+    Not CommonFsmManager-based, but still descriptor-like in the sense of stable virtual
+    contract tables and queue/ring registration structures.
+  anchors:
+    - AppleBCMWLANSkywalkInterface size 0x140
+    - user-confirmed IOSkywalkNetworkInterface vtable exact match: 41 methods + 10 reserved
+    - queue lookup array at provider_or_ivars+0x78 indexed by queue id in packetSpace()

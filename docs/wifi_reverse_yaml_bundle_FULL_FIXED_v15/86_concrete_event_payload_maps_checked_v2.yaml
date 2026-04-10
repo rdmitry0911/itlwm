@@ -1,0 +1,400 @@
+version: 1
+topic: byte-accurate event payload field maps — producer-side struct recovery
+status: extraction_pass_complete
+purpose: >-
+  Closes the "exact packed binary layouts not yet recovered" gap from
+  81_event_payload_schemas.yaml scope exclusions. These are real C-level
+  struct definitions recovered from Ghidra disassembly of AppleBCMWLAN
+  and IO80211Family in BootKernelExtensions.kc (macOS 26.3, 25D125).
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  decompilation: "ghidra_output/ — AppleBCMWLAN and IO80211Family functions"
+  cross_ref: "81_event_payload_schemas.yaml (normalized schemas)"
+
+# ═══════════════════════════════════════════════════════════════
+# DISPATCH INFRASTRUCTURE
+# ═══════════════════════════════════════════════════════════════
+
+dispatch_infrastructure:
+
+  postMessage:
+    addr: "0xffffff8002219ffe"
+    signature: >-
+      postMessage(IO80211Controller* self, IO80211InfraInterface* iface,
+                  uint32_t messageCode, void* payload, uint32_t payloadSize,
+                  uint32_t flags)
+    notes: >-
+      vtable trampoline to implementation at vtable offset +0x120.
+      The iface argument is fetched from controller ivars:
+        +0x2c20 = primary STA interface
+        +0x2c28 = secondary/P2P interface
+        +0x74f0/+0x74f8 = NAN interfaces
+
+  bulletinBoardMessage:
+    size: "0x30 (48 bytes)"
+    fields:
+      - {offset: "0x00", size: 4, type: uint32, name: topic_id, notes: "low16=type, high16=sub_id packed"}
+      - {offset: "0x08", size: 8, type: uint64, name: payload_size}
+      - {offset: "0x10", size: 8, type: ptr, name: payload_data}
+      - {offset: "0x18", size: 8, type: uint64, name: secondary_payload_size}
+      - {offset: "0x20", size: 8, type: ptr, name: secondary_payload}
+      - {offset: "0x28", size: 1, type: bool, name: handled_flag}
+
+  postMessageQueueEntry:
+    notes: "Used in internal event queue, allocated as payload_size + 0x20"
+    fields:
+      - {offset: "0x00", size: 8, type: ptr, name: next}
+      - {offset: "0x08", size: 8, type: ptr, name: prev}
+      - {offset: "0x10", size: 4, type: uint32, name: flags_type}
+      - {offset: "0x14", size: 4, type: uint32, name: payload_size}
+      - {offset: "0x20", size: var, type: bytes, name: inline_payload}
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 0 — MUST-HAVE EVENTS
+# ═══════════════════════════════════════════════════════════════
+
+events:
+
+  LINK_CHANGED:
+    code: "0xd8 (216)"
+    dispatch: postMessage
+    producer: "AppleBCMWLANNetAdapter::handleLink(wl_event_msg_t*)"
+    producer_addr: "0xffffff800154590a"
+    payload_size: "0x10 (16 bytes)"
+    struct_name: "apple80211_link_changed_data_t (recovered)"
+    fields:
+      - {offset: "0x00", size: 4, type: uint32, name: bssid_lo, notes: "MAC bytes [0..3] from wl_event_msg +0x18, network order"}
+      - {offset: "0x04", size: 2, type: uint16, name: bssid_hi, notes: "MAC bytes [4..5] from wl_event_msg +0x1C"}
+      - {offset: "0x06", size: 1, type: uint8, name: link_state, notes: "wl_event_msg flags bit 0: 1=up, 0=down"}
+      - {offset: "0x07", size: 1, type: uint8, name: interface_type, notes: "From vtable call on interface (vtable+0xb80)"}
+      - {offset: "0x08", size: 4, type: uint32, name: reason_code, notes: "(wl_event_msg reason - 1), clamped to [0..8], 0xFF if invalid"}
+      - {offset: "0x0C", size: 4, type: uint32, name: reserved, notes: "Always 0"}
+    consumers:
+      - "WCLNetManager::linkUp(void*) at 0xffffff800211014a — reads +0x0C"
+    behavior: >-
+      After checking wl_event_msg status (+0x08) != 0, logs
+      "Link change event indicates failure" and skips payload.
+      On success (status=0), resets join completion tracking at +0x1528,
+      builds payload, posts to primary interface.
+    itlwm_note: >-
+      This is the NEW extended code in 26.x. Old APPLE80211_M_LINK_CHANGED
+      was code 4 and still exists for legacy consumers. The BCMWLAN driver
+      posts 0xd8 as a separate structured event.
+
+  CONNECT_COMPLETE:
+    code: "bulletin board topic 0x90002 (NOT a postMessage code)"
+    dispatch: bulletinBoard
+    producer: "AppleBCMWLANJoinAdapter::sendConnectComplete()"
+    producer_addr: "0xffffff800157d472"
+    total_bulletin_size: "0x1d4 (468 bytes)"
+    consumer_expected_size: "0xa4 (164 bytes)"
+    consumer: "WCLJoinManager::connectCompleteEventHandler(bulletinBoardMessage&)"
+    consumer_addr: "0xffffff80021f7850"
+    consumer_validation: "*(long*)(param_2 + 8) == 0xa4"
+    struct_name: "apple80211_connect_complete_t (recovered, partial)"
+    fields:
+      - {offset: "0x00", size: 160, type: "uint8[160]", name: connect_data,
+         notes: "Zero-initialized buffer (0xa0 bytes), filled from BSS info"}
+    known_subfields:
+      - {offset: "0x04", type: bytes, name: beacon_bss_descriptor}
+      - {offset: "0x08", type: uint32, name: status_code}
+      - {offset: "0x4C", type: uint16, name: channel}
+    notes: >-
+      Full payload assembled from BSS info completion callback
+      (FUN_ffffff800157db28). Includes: status, BSSID, association_id,
+      negotiated security, RSN capabilities, IE blob.
+    gap: >-
+      Decompiler truncated struct-filling code at memset. Full field
+      breakdown requires fresh Ghidra pass at 0xffffff800157d472.
+
+  LINK_DOWN_IND:
+    code: "0x04 (4) — legacy APPLE80211_M_LINK_CHANGED with link_state=0"
+    dispatch: postMessage
+    notes: >-
+      On macOS 26.x, link-down is indicated via LINK_CHANGED (0xd8) with
+      link_state=0, plus the legacy code 4 for backwards compatibility.
+      The NEW code 0xd8 carries structured data (see LINK_CHANGED above).
+      The legacy code 4 may carry no payload or minimal status.
+
+  LINK_DOWN_COMPLETE:
+    code: "bulletinBoard FSM event code 3 in NET_MANAGER"
+    dispatch: bulletinBoard
+    payload: "NONE — payload-less event"
+    producer: "WCLNetManager::forceLinkDown() at 0xffffff8002111872"
+    consumers:
+      - "WCLNetManager::linkDownComplete(void*) at 0xffffff80021118ca — stub tail-call"
+      - "WCLNetManager::linkDownCompleteInSleep(void*) at 0xffffff800211189e — calls configureWake() first"
+    notes: "Consumers do not inspect event data — pure signal."
+
+  DRIVER_RESET:
+    code: "0xd6 (214)"
+    dispatch: "postMessage + bulletinBoard broadcast"
+    producer: "AppleBCMWLANJoinAdapter (join failure recovery)"
+    producer_call: "FUN_ffffff8002219ffe(lVar1, iface, 0xd6, 0, 0, 1)"
+    payload: "NULL, size=0 — NO PAYLOAD"
+    consumers_bulletin:
+      - {manager: WCLJoinManager, action: "FSM event 7"}
+      - {manager: WCLScanManager, action: "FSM event 7"}
+      - {manager: WCLGASManager, action: "IO80211GASFsm::handleWATCHDOG()"}
+      - {manager: WCLConfigManager, action: "FSM event"}
+      - {manager: WCLNetManager, method: "driverResetInIpValid()", action: "disconnect suppression debounce"}
+      - {manager: WCLBGScanManager, action: "FSM event"}
+      - {manager: WCLNearbyDeviceDiscoveryManager, action: "FSM event"}
+    notes: "ALL handlers ignore the payload — they just trigger reset paths."
+
+  SYSTEM_WILL_SLEEP:
+    dispatch: bulletinBoard
+    payload: "payload-less signal"
+    consumers:
+      - {manager: WCLNetManager, handler: systemWillSleepNotificationHandler, fsm_event: 6}
+      - {manager: WCLScanManager, handler: systemWillSleepNotificationHandler, fsm_event: 4,
+         payload_note: "Injects uint32=1 meaning 'sleep pending' to its own FSM"}
+      - {manager: WCLJoinManager, handler: systemWillSleepNotificationHandler, fsm_event: 8}
+      - {manager: WCLGASManager, handler: systemWillSleepNotificationHandler,
+         action: "IO80211GASFsm::handleQUIESCE()"}
+
+  SYSTEM_AWAKE:
+    dispatch: bulletinBoard
+    payload: "payload-less signal"
+    consumers:
+      - {manager: WCLNetManager, handler: systemAwakeNotificationHandler, fsm_event: 7}
+      - {manager: WCLScanManager, handler: systemAwakeNotificationHandler, fsm_event: 5}
+      - {manager: WCLJoinManager, handler: systemAwakeNotificationHandler, fsm_event: 9}
+      - {manager: WCLGASManager, handler: systemAwakeNotificationHandler,
+         action: "IO80211GASFsm::handleWAKE()"}
+    additional:
+      - {manager: WCLJoinManager, handler: systemPowerOFFNotificationHandler, fsm_event: "0xb"}
+      - {manager: WCLJoinManager, handler: systemPowerONNotificationHandler, fsm_event: "0xc"}
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 1 — VERY USEFUL EVENTS
+# ═══════════════════════════════════════════════════════════════
+
+  JOIN_SCAN_UPDATE:
+    dispatch: bulletinBoard
+    payload: "NONE — payload-less event"
+    consumer: "WCLJoinManager::joinScanUpdate(bulletinBoardMessage&)"
+    consumer_addr: "0xffffff80021f78f2"
+    action: "Fires FSM event 15 (no payload). Scan candidate data accessed via shared scan results store."
+
+  DEAUTH_DISASSOC:
+    code: "0xcb (203)"
+    dispatch: postMessage
+    producer: "AppleBCMWLANCore::sendDeauthDissasocEvent(wl_event_msg_t*)"
+    producer_addr: "0xffffff80015dbecc"
+    callers:
+      - "AppleBCMWLANCore::handleDisassocEvent(wl_event_msg_t*) at 0xffffff80015bfd58"
+      - "AppleBCMWLANCore::handleDisassocData(wl_event_msg_t*) at 0xffffff80015dbeaa"
+    payload_size: "0x14 (20 bytes)"
+    struct_name: "apple80211_deauth_disassoc_event_t (recovered)"
+    fields:
+      - {offset: "0x00", size: 4, type: uint32, name: status_encoded,
+         notes: "status | 0xe0820400 (if <256), or 0xe3ff8100 (overflow), or 0 (if status=0)"}
+      - {offset: "0x04", size: 4, type: uint32, name: reason_encoded,
+         notes: "reason | 0xe0823000 (if <46), or 0xe3ff8100 (overflow), or 0 (if reason=0)"}
+      - {offset: "0x08", size: 2, type: uint16, name: reason_raw,
+         notes: "Raw reason code from wl_event_msg +0x0C"}
+      - {offset: "0x0A", size: 4, type: uint32, name: addr_lo,
+         notes: "MAC bytes [0..3] from wl_event_msg +0x18"}
+      - {offset: "0x0E", size: 2, type: uint16, name: addr_hi,
+         notes: "MAC bytes [4..5] from wl_event_msg +0x1C"}
+      - {offset: "0x10", size: 1, type: uint8, name: is_deauth,
+         notes: "1 if event_type==6 (deauth), 0 if disassoc"}
+      - {offset: "0x11", size: 3, type: padding, name: padding,
+         notes: "0xaaaaaa — uninitialized sentinel"}
+    encoding_note: >-
+      The 0xe082XXXX prefix is an Apple-internal error domain encoding.
+      Low byte = actual IEEE status/reason code. 0xe3ff8100 = out of range.
+    behavior: >-
+      After posting deauth event, if join adapter at +0x1528 exists,
+      also sets disconnect reason and calls sendConnectComplete().
+
+  GAS_FRAGMENT_RX:
+    code: "0xdb (219)"
+    dispatch: postMessage
+    producer: "AppleBCMWLANGASAdapter::handleGAS_FRAGMENT_RX(wl_event_msg_t*)"
+    producer_addr: "0xffffff800153ebd0"
+    payload_size: "variable: datalen + 0x14"
+    struct_name: "apple80211_gas_rsp_t (known type name from Ghidra symbols)"
+    fields:
+      - {offset: "0x00", size: 4, type: uint32, name: peer_index,
+         notes: "From bcmEventStatusToAppleGasEventStatus"}
+      - {offset: "0x04", size: 6, type: "uint8[6]", name: bssid,
+         notes: "MAC address copied from wl_event addr"}
+      - {offset: "0x0A", size: 2, type: uint16, name: padding}
+      - {offset: "0x0C", size: 4, type: uint32, name: total_data_len,
+         notes: "datalen from wl_event_msg"}
+      - {offset: "0x10", size: 4, type: uint32, name: flag,
+         notes: "Set to 1"}
+      - {offset: "0x14", size: var, type: "uint8[]", name: fragment_data,
+         notes: "Raw GAS response frame data"}
+    consumer_chain:
+      - "IO80211GASFsm::handleGAS_FRAGMENT_RX → FSM event 1"
+      - "IO80211GASFsm::processGasFragRx → updatePeerGASResponseTable"
+    consumer_field_access:
+      - "param_2[3] (offset 0x0C) = total_data_len, must be >= 8"
+      - "*(ushort*)(param_2+0x1a) = fragment payload size within GAS frame"
+      - "param_2+1 (offset 0x04) = BSSID, 6 bytes"
+      - "*param_2 (offset 0x00) = peer_index for logging"
+
+  GAS_COMPLETE:
+    code: "0xdc (220)"
+    dispatch: postMessage
+    producer: "FUN_ffffff800153e79e (in AppleBCMWLANGASAdapter)"
+    callers:
+      - "AppleBCMWLANGASAdapter::handleGAS_COMPLETE(wl_event_msg_t*) at 0xffffff800153ef1e"
+      - "AppleBCMWLANGASAdapter::setGAS_ABORT() at 0xffffff800153e942"
+    payload_size: "4 bytes"
+    struct_name: "apple80211_gas_complete_event_t"
+    fields:
+      - {offset: "0x00", size: 4, type: uint32, name: peer_index,
+         notes: "From bcmEventStatusToAppleGasEventStatus. Values 0-3 valid; >=4 suppresses event."}
+    peer_index_mapping: >-
+      Derived via bcmEventStatusToAppleGasEventStatus() at 0xffffff800153eae8.
+      Valid input statuses: 0, 1, 4, 8 (checked via bitmask 0x113).
+
+  GAS_REQUEST:
+    code: "bulletinBoard topic 0xc5"
+    dispatch: bulletinBoard
+    direction: "inbound to IO80211"
+    consumer: "WCLGASManager::setGAS_REQUEST(bulletinBoardMessage&)"
+    consumer_validation: "*(long*)(param_2 + 8) == 0x714"
+    payload_size: "0x714 (1812 bytes)"
+    struct_name: "apple80211_gas_query_t"
+    known_fields:
+      - {offset: "0x210", size: 2, type: uint16, name: num_peers,
+         notes: "Must be 1-64 (checked < 0x41)"}
+    gap: "Most of the 1812-byte struct unrecovered"
+
+  GAS_RESULTS:
+    direction: "outbound"
+    consumer: "WCLGASManager::getGAS_RESULTS"
+    consumer_validation: "secondary payload >= 0x1820"
+    payload_size: "0x1820 (6176 bytes)"
+    struct_name: "apple80211_gas_result_t"
+    gap: "Internal field layout unrecovered"
+
+# ═══════════════════════════════════════════════════════════════
+# SCAN_DONE (existing but now byte-accurate)
+# ═══════════════════════════════════════════════════════════════
+
+  SCAN_DONE:
+    code: "0x0A (10)"
+    dispatch: postMessage
+    payload_size: "4 bytes"
+    struct_name: "apple80211_scan_done_t"
+    fields:
+      - {offset: "0x00", size: 4, type: int32, name: status,
+         notes: "0 = success, nonzero = error code"}
+
+# ═══════════════════════════════════════════════════════════════
+# COMPLETE EVENT CODE CATALOG (macOS 26.x)
+# ═══════════════════════════════════════════════════════════════
+
+event_code_catalog:
+  notes: >-
+    All postMessage codes observed in AppleBCMWLAN decompilation.
+    String table at DAT_ffffff80023fe7c0 maps codes 0-245 to names.
+  events:
+    - {code: "0x01", decimal: 1,   name: "APPLE80211_M_POWER_CHANGED",        payload: 0}
+    - {code: "0x02", decimal: 2,   name: "APPLE80211_M_SSID_CHANGED",         payload: 8}
+    - {code: "0x0A", decimal: 10,  name: "APPLE80211_M_SCAN_DONE",            payload: 4}
+    - {code: "0x0B", decimal: 11,  name: "APPLE80211_M_COUNTRY_CODE_CHANGED", payload: 0}
+    - {code: "0x0E", decimal: 14,  name: "APPLE80211_M_DECRYPTION_FAILURE",   payload: 8}
+    - {code: "0x23", decimal: 35,  name: "APPLE80211_M_P2P_LISTEN_COMPLETE",  payload: 0}
+    - {code: "0x24", decimal: 36,  name: "APPLE80211_M_P2P_SCAN_COMPLETE",    payload: 0}
+    - {code: "0x27", decimal: 39,  name: "APPLE80211_M_P2P_INTERFACE_CREATED", payload: "0x1DC"}
+    - {code: "0x29", decimal: 41,  name: "(AWDL event)",                       payload: "0x24"}
+    - {code: "0x2B", decimal: 43,  name: "AWDL_AVAILABILITY_WINDOW_EXTENSIONS_END", payload: "0x28"}
+    - {code: "0x2E", decimal: 46,  name: "APPLE80211_M_AWDL_SYNC_STATE_CHANGED", payload: "0x10"}
+    - {code: "0x31", decimal: 49,  name: "APPLE80211_M_RESET_INTERFACE",       payload: 4}
+    - {code: "0x3C", decimal: 60,  name: "(LQM related)",                      payload: "0x1C"}
+    - {code: "0x3F", decimal: 63,  name: "APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE", payload: "var"}
+    - {code: "0x45", decimal: 69,  name: "(AWDL)",                             payload: 7}
+    - {code: "0x49", decimal: 73,  name: "(Reassoc event)",                    payload: 8}
+    - {code: "0x4A", decimal: 74,  name: "(Auth event)",                       payload: "0x68"}
+    - {code: "0x4B", decimal: 75,  name: "(Assoc event)",                      payload: "0x10"}
+    - {code: "0x4C", decimal: 76,  name: "(CSA event)",                        payload: "0x28"}
+    - {code: "0x4E", decimal: 78,  name: "(Assoc/auth indication)",            payload: 8}
+    - {code: "0x50", decimal: 80,  name: "(LQM DPS stats)",                    payload: "0xA8 / 4"}
+    - {code: "0x53", decimal: 83,  name: "APPLE80211_M_RANGING_MEASUREMENT_DONE", payload: "0xC"}
+    - {code: "0x55", decimal: 85,  name: "(Channel switch / DFS)",             payload: "0x1C0"}
+    - {code: "0x6D", decimal: 109, name: "(NAN related)",                      payload: 8}
+    - {code: "0x76", decimal: 118, name: "(NAN related)",                      payload: "0x1C"}
+    - {code: "0x7E", decimal: 126, name: "(AWDL scan done)",                   payload: 2}
+    - {code: "0x80", decimal: 128, name: "(NAN event)",                        payload: 8}
+    - {code: "0x88", decimal: 136, name: "(NAN event)",                        payload: 4}
+    - {code: "0x89", decimal: 137, name: "(Auth indication)",                  payload: "0xC / 0"}
+    - {code: "0x8B", decimal: 139, name: "(Disassoc indication)",              payload: "0xC / 0"}
+    - {code: "0x8D", decimal: 141, name: "(LQM)",                              payload: 4}
+    - {code: "0x8F", decimal: 143, name: "APPLE80211_M_ACTION_FRAME",          payload: "var"}
+    - {code: "0x91", decimal: 145, name: "(LQM/TCPKA)",                        payload: "0x10"}
+    - {code: "0x99", decimal: 153, name: "(Extended LQM stats)",               payload: "0x38"}
+    - {code: "0xB1", decimal: 177, name: "(NEW 26.x)",                         payload: 4}
+    - {code: "0xBD", decimal: 189, name: "(NEW 26.x)",                         payload: 2}
+    - {code: "0xC1", decimal: 193, name: "(firmware event status)",            payload: 4}
+    - {code: "0xC2", decimal: 194, name: "(NEW 26.x)",                         payload: 4}
+    - {code: "0xCB", decimal: 203, name: "DEAUTH_DISASSOC",                    payload: "0x14"}
+    - {code: "0xCF", decimal: 207, name: "(status notification)",              payload: 4}
+    - {code: "0xD1", decimal: 209, name: "CSA_RECEIVED",                       payload: 0}
+    - {code: "0xD6", decimal: 214, name: "DRIVER_RESET",                       payload: 0}
+    - {code: "0xD8", decimal: 216, name: "LINK_CHANGED",                       payload: "0x10"}
+    - {code: "0xDB", decimal: 219, name: "GAS_FRAGMENT_RX",                    payload: "var (0x14+)"}
+    - {code: "0xDC", decimal: 220, name: "GAS_COMPLETE",                       payload: 4}
+    - {code: "0xED", decimal: 237, name: "(scan adapter)",                     payload: 4}
+    - {code: "0xEF", decimal: 239, name: "(SPMI reset indication)",            payload: "0x30"}
+    - {code: "0xF0", decimal: 240, name: "(NEW 26.x)",                         payload: "0x40"}
+    - {code: "0xF5", decimal: 245, name: "(extended stats)",                   payload: "0x34"}
+
+  string_table_location: "DAT_ffffff80023fe7c0 — 246 * 8 bytes, maps code to name"
+  string_table_status: "FULLY EXTRACTED — see 89_remaining_gaps_closed.yaml section 1"
+
+# ═══════════════════════════════════════════════════════════════
+# wl_event_msg_t (BCM firmware event, cross-referenced)
+# ═══════════════════════════════════════════════════════════════
+
+wl_event_msg_t:
+  notes: "Broadcom-specific, consistent across all BCM handlers"
+  recovered_fields:
+    - {offset: "0x00", size: 2, type: uint16, name: version}
+    - {offset: "0x02", size: 2, type: uint16, name: flags}
+    - {offset: "0x04", size: 4, type: uint32, name: event_type}
+    - {offset: "0x08", size: 4, type: uint32, name: status}
+    - {offset: "0x0C", size: 4, type: uint32, name: reason}
+    - {offset: "0x10", size: 4, type: uint32, name: auth_type}
+    - {offset: "0x14", size: 4, type: uint32, name: datalen}
+    - {offset: "0x18", size: 6, type: "uint8[6]", name: addr}
+    - {offset: "0x1E", size: 16, type: padding, name: padding}
+    - {offset: "0x2E", size: 1, type: uint8, name: flags2, notes: "checked in handleLinkEvent"}
+    - {offset: "0x30", size: 2, type: int16, name: additional_type, notes: "checked in SPMI handler"}
+  gap: "Fields at +0x38..+0x5C used by SPMI handler need dedicated pass"
+
+# ═══════════════════════════════════════════════════════════════
+# GAPS REQUIRING FRESH GHIDRA PASSES
+# ═══════════════════════════════════════════════════════════════
+
+gaps:
+  - target: "AppleBCMWLANJoinAdapter::sendConnectComplete() at 0xffffff800157d472"
+    status: "CLOSED — see 89_remaining_gaps_closed.yaml section 2"
+
+  - target: "DAT_ffffff80023fe7c0"
+    status: "CLOSED — see 89_remaining_gaps_closed.yaml section 1"
+
+  - target: "UNK_ffffff80022e101c"
+    reason: "reportDataPathEvents jump table, 50*4=200 bytes"
+    priority: low
+    notes: "Minor gap — only affects datapath event routing, not connection lifecycle"
+
+  - target: "Event codes 0xE0-0xE9 handlers"
+    reason: "New 26.x channel mgmt / 11ax events with validated payload sizes 0x30/0x14/0x18/0xC/6/6/6"
+    priority: low
+    notes: "Names now known (see 89_), but handler internals not yet decompiled"
+
+  - target: "IO80211GASFsm::handleGAS_REQUEST_IOC at 0xffffff800225b714"
+    reason: "apple80211_gas_query_t full 1812-byte struct recovery"
+    priority: low
+
+  - target: "wl_event_msg_t +0x38..+0x5C"
+    reason: "SPMI handler fields — full struct completion"
+    priority: low

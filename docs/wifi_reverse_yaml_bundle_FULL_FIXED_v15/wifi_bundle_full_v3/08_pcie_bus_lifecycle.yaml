@@ -1,0 +1,27 @@
+document_type: pcie_bus_lifecycle_v2
+object: AppleBCMWLANBusInterfacePCIe
+confirmed_lifecycle:
+  - start
+  - deferredStart
+  - chip/backplane configuration
+  - ring/queue/datapath bring-up
+  - runtime notifications and callbacks
+  - prepareForWoW / deep-sleep interactions
+  - stop
+  - free
+confirmed_subsystems:
+  - chip manager factory by chip ID/revision
+  - BAR/backplane register windows
+  - bus accessibility and APB accessibility gates
+  - PCIe error/AER diagnostics
+  - submission/completion/flow rings
+  - Skywalk-related interfaces/queues
+  - centralized init-failure reporting
+notable_runtime_hooks:
+  - configureTimeSyncCapability() discovers AppleOLYHAL and creates AppleBCMWLANTimeSyncEngine.
+  - Bus may write/read chip backplane registers as part of fault/AER collection and recovery.
+  - severe failures can lead to power-cycle style recovery.
+recovery_paths:
+  - reportInitFailure(...)
+  - ring event source suppression / callback shutdown
+  - transport-level reset or gated power-cycle

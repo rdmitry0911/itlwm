@@ -1,0 +1,39 @@
+document:
+  title: WCLScanManager as first fully symbolic FSM target
+  version: v10
+  status: highest_priority_owner
+  confirmed_owner_behaviour:
+    manager_is_self_or_base:
+      evidence: "WCLScanManager methods call CommonFsmManager::processEvent(param_1, ...)"
+      implication: "WCLScanManager embeds or subclasses CommonFsmManager and directly exposes runtime state."
+    current_state_read:
+      expression: "*(u8 *)(*(long *)(param_1 + 0x10) + 0x10)"
+      meaning: "state byte read for ignore-path logging"
+    numeric_events:
+      event_1:
+        source: "handleScanRequest"
+        trigger: "request precheck failure path"
+        call: "CommonFsmManager::processEvent(this, 1, 0)"
+      event_2:
+        source: "handleScanRequest"
+        trigger: "path where scan request object is forwarded into FSM"
+        call: "CommonFsmManager::processEvent(this, 2, request)"
+    stuck_state_guard:
+      panic_string: "Invalid scan state, avoid state machine being stuck"
+      implication: "FSM owner enforces narrow legal-state set around incoming scan requests"
+    ignore_path:
+      return_code: 0xe00002bc
+      log_template: "[wcl] ... WCLScanManager ignoring in state %d"
+  semi_symbolic_overlay:
+    event_1:
+      candidate_role: "rollback/recover/precheck-failed edge"
+      confidence: medium
+      basis: "issued after precheck path returns error and before log/exit"
+    event_2:
+      candidate_role: "new_scan_request / enqueue_request"
+      confidence: medium_high
+      basis: "issued with request pointer payload"
+  remaining_gap:
+    - "Find runtime->descriptor_ptr assignment for this owner."
+    - "Lift state_name_vector and event_name_vector adjacent to descriptor."
+    - "Bind action callbacks from action table to WCLScanManager local methods."
