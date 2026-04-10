@@ -16,6 +16,59 @@
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
 
+// ── Skywalk buflet struct definitions ──────────────────────────────
+// The kernel-internal structs __buflet, skmem_bufctl, and __kern_buflet
+// are defined in SDK headers but guarded by BSD_KERNEL_PRIVATE, which is
+// never defined for third-party AuxKC kexts.  os_packet.h forward-declares
+// `struct __kern_buflet` (via `typedef struct __kern_buflet *kern_buflet_t`)
+// but never provides the body.  We complete that forward declaration here
+// with the identical layout from the SDK headers so the inline _buflet_*
+// accessors below can resolve struct member references at compile time.
+//
+// Source headers (all in MacKernelSDK/Headers/skywalk/):
+//   __buflet       — packet/os_packet_private.h:242  (PRIVATE guard)
+//   __kern_buflet  — packet/packet_var.h:47          (BSD_KERNEL_PRIVATE)
+//   skmem_bufctl   — mem/skmem_cache_var.h:40        (BSD_KERNEL_PRIVATE)
+// Field offsets verified against Xcode 26.2 / macOS Sequoia 26.3 SDK.
+//
+// These are stable kernel ABI — Skywalk packet processing depends on them.
+// If Apple changes the layout, the kern_buflet_* C KPI would also break,
+// so every Skywalk nexus provider (including Apple's own) relies on this.
+
+struct __buflet {
+    union {
+        uint64_t            __buflet_next;
+        const uint64_t      __nbft_addr;    // mach_vm_address_t
+    };
+    const uint64_t          __baddr;        // buffer data address
+    const uint32_t          __bft_idx;      // obj_idx_t — buflet index in region
+    const uint32_t          __bidx;         // obj_idx_t — buffer object index
+    const uint32_t          __nbft_idx;     // obj_idx_t — next buflet index
+    const uint16_t          __dlim;         // maximum data length
+    uint16_t                __dlen;         // current data length
+    uint16_t                __doff;         // current data offset
+    const uint16_t          __flag;
+} __attribute__((packed));
+
+struct skmem_bufctl {
+    struct { struct skmem_bufctl *sle_next; } bc_link;  // SLIST_ENTRY
+    void                    *bc_addr;       // buffer object address
+    void                    *bc_addrm;      // mirrored buffer obj addr
+    void                    *bc_slab;       // struct skmem_slab *
+    uint32_t                bc_lim;         // buffer object limit
+    uint32_t                bc_flags;
+    uint32_t                bc_idx;
+    volatile uint32_t       bc_usecnt;
+};
+
+struct __kern_buflet {
+    struct __buflet                     buf_com;
+    const struct skmem_bufctl          *buf_ctl;
+#if !defined(__LP64__)
+    uint32_t __kern_buflet_padding;
+#endif
+};
+
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
@@ -31,6 +84,48 @@ IOCommandGate *_fCommandGate;
 RuntimeDiag sRT = {};
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
+// Must match poolOpts.bufferSize in AirportItlwm::start() pool creation.
+#define SKYWALK_BUF_SIZE 2048
+
+// Inline replacements for kern_buflet_* C KPI functions.
+// The kernel exports these symbols (T in BootKC), but no KPI re-exports
+// them for third-party kexts linked into the AuxKC.  These helpers access
+// the identical struct fields directly, compiling as inline loads/stores
+// with no symbol dependency.  Field layouts come from the SDK headers:
+//   __buflet        (skywalk/packet/os_packet_private.h)
+//   __kern_buflet   (skywalk/packet/packet_var.h)
+//   skmem_bufctl    (skywalk/mem/skmem_cache_var.h)
+static inline void *
+_buflet_get_object_address(kern_buflet_t buf)
+{
+    return buf->buf_ctl->bc_addr;  // == kern_buflet_get_object_address
+}
+static inline uint32_t
+_buflet_get_object_limit(kern_buflet_t buf)
+{
+    return buf->buf_ctl->bc_lim;   // == kern_buflet_get_object_limit
+}
+static inline uint16_t
+_buflet_get_data_offset(kern_buflet_t buf)
+{
+    return buf->buf_com.__doff;    // == kern_buflet_get_data_offset
+}
+static inline uint16_t
+_buflet_get_data_length(kern_buflet_t buf)
+{
+    return buf->buf_com.__dlen;    // == kern_buflet_get_data_length
+}
+static inline void
+_buflet_set_data_offset(kern_buflet_t buf, uint16_t off)
+{
+    buf->buf_com.__doff = off;     // == kern_buflet_set_data_offset
+}
+static inline void
+_buflet_set_data_length(kern_buflet_t buf, uint16_t len)
+{
+    buf->buf_com.__dlen = len;     // == kern_buflet_set_data_length
+}
+
 // The Skywalk nexus delivers packets from the BSD ifnet TX path as
 // IOSkywalkPacket objects. We extract the frame data from each packet's
 // buflet, copy it into an mbuf, and send it through the existing
@@ -65,9 +160,11 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         kern_buflet_t buflet = bufs[0]->mBufletHandle;
         if (!buflet) { sRT.txPktDrop++; continue; }
 
-        void *objAddr = kern_buflet_get_object_address(buflet);
-        uint16_t dataOff = kern_buflet_get_data_offset(buflet);
-        uint16_t dataLen = kern_buflet_get_data_length(buflet);
+        // Use inline struct accessors (_buflet_*) instead of kern_buflet_*
+        // C KPI — see comment above for why.
+        void *objAddr = _buflet_get_object_address(buflet);
+        uint16_t dataOff = _buflet_get_data_offset(buflet);
+        uint16_t dataLen = _buflet_get_data_length(buflet);
 
         if (!objAddr || dataLen == 0) { sRT.txPktDrop++; continue; }
 
@@ -148,9 +245,11 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         return ENOMEM;
     }
 
+    // Use inline struct accessors (_buflet_*) instead of kern_buflet_*
+    // C KPI — see comment at top of file for why.
     kern_buflet_t buflet = bufs[0]->mBufletHandle;
-    void *objAddr = kern_buflet_get_object_address(buflet);
-    uint32_t bufSize = kern_buflet_get_object_limit(buflet);
+    void *objAddr = _buflet_get_object_address(buflet);
+    uint32_t bufSize = _buflet_get_object_limit(buflet);
     if (!objAddr || len > bufSize) {
         that->fRxPool->deallocatePacket(rxPkt);
         mbuf_freem(m);
@@ -159,8 +258,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     // Copy the mbuf data into the Skywalk packet buffer
     mbuf_copydata(m, 0, len, objAddr);
-    kern_buflet_set_data_offset(buflet, 0);
-    kern_buflet_set_data_length(buflet, (uint16_t)len);
+    _buflet_set_data_offset(buflet, 0);
+    _buflet_set_data_length(buflet, (uint16_t)len);
     rxPkt->setDataLength((UInt32)len);
 
     // Enqueue the packet to the RX completion queue
@@ -958,7 +1057,7 @@ bool AirportItlwm::start(IOService *provider)
         IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
         poolOpts.packetCount = 256;
         poolOpts.bufferCount = 256;
-        poolOpts.bufferSize  = 2048;
+        poolOpts.bufferSize  = SKYWALK_BUF_SIZE;
         poolOpts.maxBuffersPerPacket = 1;
 
         fTxPool = IOSkywalkPacketBufferPool::withName("AirportItlwm-TX", fNetIf, 0, &poolOpts);
