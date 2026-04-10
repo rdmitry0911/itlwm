@@ -800,18 +800,15 @@ bool AirportItlwm::start(IOService *provider)
               p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
     }
 
-    // Populate mExpansionData for framework compatibility
-    if (!fNetIf->mExpansionData) {
-        fNetIf->mExpansionData = (IOSkywalkNetworkInterface::ExpansionData *)IOMallocZero(256);
-    }
-    if (!fNetIf->mExpansionData2) {
-        fNetIf->mExpansionData2 = (IOSkywalkEthernetInterface::ExpansionData *)IOMallocZero(256);
-    }
-    fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
-    fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
-    memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
-    memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
-    RT3_SET(1); // mExpansionData populated
+    // mExpansionData / mExpansionData2 are managed by the framework's
+    // initRegistrationInfo (called above at STEP 8).  Manual allocation
+    // was removed because it wrote to the WRONG offsets when our class
+    // size was 0x10 too small (0xD0 vs real 0xE0), corrupting framework state.
+    // See plan: "Fix Skywalk Class Layout Mismatch (S1-S4 Architecture)".
+    XYLog("DEBUG %s [STEP 8-post] mExpansionData=%p mExpansionData2=%p "
+          "(should be non-NULL if framework initialized them)\n",
+          __FUNCTION__, fNetIf->mExpansionData, fNetIf->mExpansionData2);
+    RT3_SET(1); // post-initRegistrationInfo check
 
     // Create Skywalk packet buffer pools for TX and RX
     sRT.startStep = 81;
@@ -861,6 +858,34 @@ bool AirportItlwm::start(IOService *provider)
     // and calls registerNetworkInterfaceWithLogicalLink, populating fVars[0] and
     // setting up the nexus provider for IOSkywalkNetworkBSDClient matching.
     sRT.startStep = 82;
+
+    // Pre-registration diagnostics: dump critical kernel-side fields at the
+    // offsets the framework expects.  These offsets come from Ghidra analysis
+    // of IOSkywalkFamily.kext 26.3:
+    //   +0xC0 = NIF_Context (ExpansionData for IOSkywalkNetworkInterface)
+    //   +0xC8 = nexusProvider (must be non-NULL for core registration at FUN_0xa37640)
+    //   +0xD0 = nexus arena
+    //   +0x118 = mExpansionData2 (EthernetRegistrationContext, read by registerEthernetInterface)
+    {
+        uint8_t *raw = (uint8_t *)fNetIf;
+        void *nifCtx      = *(void **)(raw + 0xC0);
+        void *nexusProv   = *(void **)(raw + 0xC8);
+        void *nexusArena  = *(void **)(raw + 0xD0);
+        void *ethRegCtx   = *(void **)(raw + 0x118);
+        XYLog("DEBUG %s [PRE-REG] fNetIf=%p raw offsets:\n"
+              "  +0xC0 (NIF_Context)=%p\n"
+              "  +0xC8 (nexusProvider)=%p\n"
+              "  +0xD0 (nexusArena)=%p\n"
+              "  +0x118 (mExpansionData2/EthRegCtx)=%p\n",
+              __FUNCTION__, fNetIf, nifCtx, nexusProv, nexusArena, ethRegCtx);
+        if (ethRegCtx) {
+            // First field of EthernetRegistrationContext is fRegistrationInfo pointer
+            void *regInfoPtr = *(void **)ethRegCtx;
+            XYLog("DEBUG %s [PRE-REG] *(+0x118)->fRegistrationInfo=%p\n",
+                  __FUNCTION__, regInfoPtr);
+        }
+    }
+
     {
         IOSkywalkPacketQueue *queues[] = {
             (IOSkywalkPacketQueue *)fTxQueue,

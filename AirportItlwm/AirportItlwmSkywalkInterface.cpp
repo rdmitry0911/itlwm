@@ -317,41 +317,12 @@ free()
     clock_interval_to_deadline(30, kSecondScale, &skFreeDeadline);
     thread_call_enter_delayed(skFreeTimer, skFreeDeadline);
 
-    // Free registration info and expansion data we allocated in the
-    // controller's start().  Must run before super::free() so parent
-    // destructors don't encounter stale pointers in zero-filled blocks.
+    // mExpansionData, mExpansionData2, and fVars->registrationInfo are
+    // managed by the framework (allocated in initRegistrationInfo, freed
+    // in IOSkywalkNetworkInterface::free / IOSkywalkEthernetInterface::free).
+    // Manual IOFree was removed — it was freeing at wrong offsets when our
+    // class size was 0x10 too small.  super::free() handles cleanup.
     sRT.skFreeStep = 2;
-    if (mExpansionData) {
-        if (mExpansionData->fRegistrationInfo) {
-            IOFree(mExpansionData->fRegistrationInfo,
-                   sizeof(IOSkywalkNetworkInterface::RegistrationInfo));
-            mExpansionData->fRegistrationInfo = NULL;
-        }
-        IOFree(mExpansionData, 256);
-        mExpansionData = NULL;
-    }
-    sRT.skFreeStep = 3;
-    if (mExpansionData2) {
-        if (mExpansionData2->fRegistrationInfo) {
-            IOFree(mExpansionData2->fRegistrationInfo,
-                   sizeof(IOSkywalkEthernetInterface::RegistrationInfo));
-            mExpansionData2->fRegistrationInfo = NULL;
-        }
-        IOFree(mExpansionData2, 256);
-        mExpansionData2 = NULL;
-    }
-    sRT.skFreeStep = 4;
-    // Clean up fVars->registrationInfo we populated in start().
-    // Must NULL it before super::free() → IOSkywalkNetworkInterface::free()
-    // to prevent the framework from double-freeing our IOMalloc'd buffer.
-    {
-        void **fVars = *(void ***)((uint8_t *)this + 0xC0);
-        if (fVars && fVars[0]) {
-            XYLog("DEBUG %s freeing fVars->registrationInfo=%p\n", __FUNCTION__, fVars[0]);
-            IOFree(fVars[0], 0x108);
-            fVars[0] = NULL;
-        }
-    }
     instance = NULL;
     fHalService = NULL;
     scanSource = NULL;

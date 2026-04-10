@@ -83,8 +83,15 @@ public:
     ExpansionData *mExpansionData2;
 };
 
-static_assert(__offsetof(IOSkywalkEthernetInterface, mExpansionData2) == 0x108, "Invalid class size");
+// mExpansionData2 must be at absolute offset 0x118: the kernel's
+// registerEthernetInterface reads **(self+0x118) to get the
+// EthernetRegistrationContext.  Ghidra cleanup at FUN_0xa3d76e
+// clears *(self+0x118).  Was 0x108 when base was 0x10 too small.
+static_assert(__offsetof(IOSkywalkEthernetInterface, mExpansionData2) == 0x118, "mExpansionData2 must be at kernel offset 0x118");
 
-static_assert(sizeof(IOSkywalkEthernetInterface) == 0x110, "Invalid class size");
+// Ghidra metaclass constructor at FUN_0xa3d540 passes 0x120 as instance size.
+// IOSkywalkEthernetInterface-specific data is 0x40 bytes (unchanged),
+// but base IOSkywalkNetworkInterface grew from 0xD0 to 0xE0.
+static_assert(sizeof(IOSkywalkEthernetInterface) == 0x120, "IOSkywalkEthernetInterface must match kernel metaclass size 0x120");
 
 #endif /* IOSkywalkEthernetInterface_h */

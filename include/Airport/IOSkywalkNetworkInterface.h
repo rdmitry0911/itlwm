@@ -137,9 +137,13 @@ public:
         ifnet_t fBSDInterface;
     };
     ExpansionData *mExpansionData;
-    uint8_t pad[2 * 8];
+    // Ghidra metaclass constructor at FUN_0xa36bc2 passes 0xE0 as instance size.
+    // Real kernel fields at +0xC0..+0xDF include NIF_Context (+0xC0),
+    // nexusProvider (+0xC8), and nexus arena (+0xD0).
+    // Previous pad was 2*8=16 bytes (class=0xD0), but real class is 0xE0.
+    uint8_t pad[4 * 8];
 };
 
-static_assert(sizeof(IOSkywalkNetworkInterface) == 0xD0, "Invalid class size");
+static_assert(sizeof(IOSkywalkNetworkInterface) == 0xE0, "IOSkywalkNetworkInterface must match kernel metaclass size 0xE0");
 
 #endif /* IOSkywalkNetworkInterface_h */

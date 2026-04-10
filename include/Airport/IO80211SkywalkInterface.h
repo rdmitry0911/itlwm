@@ -311,7 +311,11 @@ public:
     int getInterfaceRole();
 
 public:
-    char _data[0x118];
+    // Apple-internal ivars for IO80211SkywalkInterface.
+    // Reduced from 0x118 to 0x108 because the base class
+    // IOSkywalkEthernetInterface grew by 0x10 (from 0x110 to 0x120).
+    // Total IO80211SkywalkInterface = 0x120 + 0x108 = 0x228.
+    char _data[0x108];
 };
 
 #endif /* _IO80211SKYWALK_H */
