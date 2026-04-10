@@ -109,8 +109,8 @@ enum {
 // 10  0x0400  fNetIf->start() entered
 // 11  0x0800  fNetIf->start() returned
 // 12  0x1000  SkywalkInterface::init OK
-// 13  0x2000  SkywalkInterface::start entered
-// 14  0x4000  SkywalkInterface::stop entered
+// 13  0x2000  (reserved — SkywalkInterface has no start() override)
+// 14  0x4000  (reserved — SkywalkInterface has no stop() override)
 // 15  0x8000  IONetworkController::detachInterface entered
 // ---------------------------------------------------------------
 struct RuntimeDiag {
@@ -149,6 +149,10 @@ struct RuntimeDiag {
     volatile uint32_t enableCnt;    // enable() call count
     volatile uint32_t disableCnt;   // disable() call count
     volatile uint32_t startStep;    // fine-grained start() progress
+    volatile uint32_t bsdIfFlags;   // last seen ifnet_flags on BSD interface
+    volatile uint32_t bsdIfMtu;     // last seen ifnet_mtu on BSD interface
+    volatile uint32_t lastEnableRet;// last enableAdapter return code
+    volatile uint32_t lastPmReq;    // last setPowerState requested state
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)

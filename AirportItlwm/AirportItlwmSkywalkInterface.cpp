@@ -288,17 +288,19 @@ free()
                       "skFreeStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                       "stopStep=%u freeStep=%u ss=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
-                      "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
+                      "evt=%u pm=%u(req=%u) wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x "
                       "ls=%d lsCnt=%u scan=%u pmCnt=%u | "
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
-                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
+                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
+                      "bsdFl=0x%x bsdMtu=%u",
                       sRT.skFreeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                       sRT.stopStep, sRT.freeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
-                      sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
+                      sRT.evtCount, sRT.postMsgCount, sRT.lastPmReq,
+                      sRT.wdCount,
                       sRT.ioctlCount, sRT.lastIoctl,
                       sRT.scanDoneCount, sRT.ifType,
                       sRT.lastLinkState, sRT.linkSetCount,
@@ -308,7 +310,8 @@ free()
                       sRT.nodeCount, sRT.matchFail,
                       (void *)(uintptr_t)sRT.fVarsPtr,
                       (void *)(uintptr_t)sRT.bsdIfPtr,
-                      sRT.enableCnt, sRT.disableCnt);
+                      sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
+                      sRT.bsdIfFlags, sRT.bsdIfMtu);
         }, NULL);
     uint64_t skFreeDeadline;
     clock_interval_to_deadline(30, kSecondScale, &skFreeDeadline);

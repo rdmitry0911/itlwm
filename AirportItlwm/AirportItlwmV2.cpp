@@ -168,6 +168,17 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     if (fNetIf) {
         ifnet_t bif = fNetIf->getBSDInterface();
         sRT.bsdIfPtr = (uint64_t)(uintptr_t)bif;
+        if (bif) {
+            sRT.bsdIfFlags = ifnet_flags(bif);
+            sRT.bsdIfMtu = ifnet_mtu(bif);
+        }
+    }
+    // Count scan tree nodes — useful for diagnosing association failures
+    {
+        uint32_t cnt = 0;
+        struct ieee80211_node *ni;
+        RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) cnt++;
+        sRT.nodeCount = cnt;
     }
     static int wd_count = 0;
     static int wd_last_state = -1;
@@ -506,12 +517,13 @@ bool AirportItlwm::start(IOService *provider)
                       "rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                       "self=%p log=%p fault=%p wl=%p nif=%p bsd=%p | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x "
-                      "evt=%u(last=%d) pm=%u wd=%u | "
+                      "evt=%u(last=%d) pm=%u(req=%u) wd=%u | "
                       "ioctl=%u lastIo=%d lastPM=0x%x "
                       "ls=%d lsCnt=%u scan=%u pmCnt=%u | "
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
-                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
+                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
+                      "bsdFl=0x%x bsdMtu=%u",
                       d->mask, d->step, sRT.startStep,
                       sRT.rtMask, sRT.rtMask2, sRT.rtMask3, d->self,
                       d->logStream, d->faultReporter,
@@ -519,7 +531,7 @@ bool AirportItlwm::start(IOService *provider)
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
                       sRT.evtCount, sRT.lastEvtCode,
-                      sRT.postMsgCount, sRT.wdCount,
+                      sRT.postMsgCount, sRT.lastPmReq, sRT.wdCount,
                       sRT.ioctlCount, sRT.lastIoctl,
                       sRT.lastPostMsg, sRT.lastLinkState,
                       sRT.linkSetCount, sRT.scanCount,
@@ -529,7 +541,8 @@ bool AirportItlwm::start(IOService *provider)
                       sRT.nodeCount, sRT.matchFail,
                       (void *)(uintptr_t)sRT.fVarsPtr,
                       (void *)(uintptr_t)sRT.bsdIfPtr,
-                      sRT.enableCnt, sRT.disableCnt);
+                      sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
+                      sRT.bsdIfFlags, sRT.bsdIfMtu);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -853,17 +866,18 @@ void AirportItlwm::stop(IOService *provider)
             panic("AirportItlwm::stop hung  "
                   "stopStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                   "ic=%d fl=0x%x pwr=%u link=0x%x | "
-                  "evt=%u(last=%d) pm=%u wd=%u ioctl=%u(last=%d) "
+                  "evt=%u(last=%d) pm=%u(req=%u) wd=%u ioctl=%u(last=%d) "
                   "scanDone=%u scan=%u pmCnt=%u ls=%d lsCnt=%u "
                   "ifType=0x%x skFree=%u free=%u ss=%u | "
                   "scanReq=%u assoc=%u scanRes=%u "
                   "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
-                  "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
+                  "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
+                  "bsdFl=0x%x bsdMtu=%u",
                   sRT.stopStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
                   sRT.evtCount, sRT.lastEvtCode,
-                  sRT.postMsgCount, sRT.wdCount,
+                  sRT.postMsgCount, sRT.lastPmReq, sRT.wdCount,
                   sRT.ioctlCount, sRT.lastIoctl,
                   sRT.scanDoneCount, sRT.scanCount, sRT.pmCount,
                   sRT.lastLinkState, sRT.linkSetCount,
@@ -874,7 +888,8 @@ void AirportItlwm::stop(IOService *provider)
                   sRT.nodeCount, sRT.matchFail,
                   (void *)(uintptr_t)sRT.fVarsPtr,
                   (void *)(uintptr_t)sRT.bsdIfPtr,
-                  sRT.enableCnt, sRT.disableCnt);
+                  sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
+                  sRT.bsdIfFlags, sRT.bsdIfMtu);
         }, NULL);
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
@@ -928,16 +943,18 @@ void AirportItlwm::free()
                       "freeStep=%u rtMask=0x%07x rt2=0x%04x rt3=0x%04x | "
                       "stopStep=%u skFree=%u ss=%u | "
                       "ic=%d fl=0x%x pwr=%u link=0x%x | "
-                      "evt=%u pm=%u wd=%u ioctl=%u(last=%d) "
+                      "evt=%u pm=%u(req=%u) wd=%u ioctl=%u(last=%d) "
                       "scanDone=%u ifType=0x%x | "
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
-                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u",
+                      "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
+                      "bsdFl=0x%x bsdMtu=%u",
                       sRT.freeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                       sRT.stopStep, sRT.skFreeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
                       sRT.linkStatus,
-                      sRT.evtCount, sRT.postMsgCount, sRT.wdCount,
+                      sRT.evtCount, sRT.postMsgCount, sRT.lastPmReq,
+                      sRT.wdCount,
                       sRT.ioctlCount, sRT.lastIoctl,
                       sRT.scanDoneCount, sRT.ifType,
                       sRT.scanReqCount, sRT.assocCount, sRT.scanResCount,
@@ -945,7 +962,8 @@ void AirportItlwm::free()
                       sRT.nodeCount, sRT.matchFail,
                       (void *)(uintptr_t)sRT.fVarsPtr,
                       (void *)(uintptr_t)sRT.bsdIfPtr,
-                      sRT.enableCnt, sRT.disableCnt);
+                      sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
+                      sRT.bsdIfFlags, sRT.bsdIfMtu);
         }, NULL);
     uint64_t freeDeadline;
     clock_interval_to_deadline(60, kSecondScale, &freeDeadline);
@@ -1161,6 +1179,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
 #endif
     if (ret == kIOReturnSuccess) RT_SET(14);
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
+    RT2_SET(13);
     that->fNetIf->setRunningState((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp);
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
@@ -1577,6 +1596,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
     }
+    sRT.lastEnableRet = kIOReturnSuccess;
     return kIOReturnSuccess;
 }
 
@@ -1720,6 +1740,7 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
 {
     RT_SET(12);
     sRT.pmCount++;
+    sRT.lastPmReq = (uint32_t)powerStateOrdinal;
     IOReturn result = IOPMAckImplied;
     XYLog("DEBUG %s ordinal=%lu pmPowerState=%u power_state=%u\n", __FUNCTION__, powerStateOrdinal, pmPowerState, power_state);
     if (pmPowerState == powerStateOrdinal) {

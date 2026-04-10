@@ -231,6 +231,7 @@ getSSID(OSObject *object,
 IOReturn AirportItlwm::
 setSSID(OSObject *object, struct apple80211_ssid_data *sd)
 {
+    RT2_SET(5);
     return kIOReturnSuccess;
 }
 
