@@ -1182,6 +1182,29 @@ bool AirportItlwm::start(IOService *provider)
     RT3_SET(4); // registerEthernetInterface OK
     SD_SET(14);
 
+    // Post-registration diagnostics: verify kernel populated nexusProvider
+    // during registerEthernetInterface (via kernel Skywalk dispatcher
+    // FUN_ffffff8000a6be70 → FUN_0xa37640 core registration body).
+    // nexusProvider (+0xC8) must be non-NULL for BSDClient nexus creation.
+    {
+        uint8_t *raw = (uint8_t *)fNetIf;
+        void *nexusProv  = *(void **)(raw + 0xC8);
+        void *nexusArena = *(void **)(raw + 0xD0);
+        void *asyncSent  = *(void **)(raw + 0xB8);
+        void *regObj90   = *(void **)(raw + 0x90);
+        sRT.nexusProvPtr  = (uint64_t)(uintptr_t)nexusProv;
+        sRT.nexusArenaPtr = (uint64_t)(uintptr_t)nexusArena;
+        sRT.asyncSentinel = (uint64_t)(uintptr_t)asyncSent;
+        XYLog("DEBUG %s [POST-REG] nexusProvider=%p nexusArena=%p "
+              "asyncSentinel=%p queueSet=%p\n",
+              __FUNCTION__, nexusProv, nexusArena, asyncSent, regObj90);
+        if (!nexusProv) {
+            XYLog("DEBUG %s [POST-REG] WARNING: nexusProvider still NULL "
+                  "after registerEthernetInterface — BSDClient nexus "
+                  "creation will fail\n", __FUNCTION__);
+        }
+    }
+
     // Start the Skywalk interface
     sDiag.step = 81;
     RT3_SET(10); // entering fNetIf->start
@@ -1204,6 +1227,22 @@ bool AirportItlwm::start(IOService *provider)
         if (bsdName && bsdName[0]) RT2_SET(1);
         XYLog("DEBUG %s [STEP 8f] deferBSDAttach done, bsdName=%s bsdIf=%p rt2=0x%04x rt3=0x%04x\n",
               __FUNCTION__, bsdName ? bsdName : "(null)", bsdIf, sRT.rtMask2, sRT.rtMask3);
+        // NOTE: bsdName may be empty here — the BSD ifnet is created
+        // ASYNCHRONOUSLY via the nexus callback chain:
+        //   deferBSDAttach(false) → registerService on fNetIf
+        //     → IOSkywalkNetworkBSDClient matches and starts
+        //     → BSDClient::start creates nexus registration (FUN_0x987c40)
+        //     → kernel calls prepareNexusCallback (async)
+        //     → gatedPrepareNexus → registerBSDInterface → setBSDName
+        //     → BSD ifnet (en0) appears
+        // (Ghidra: YAML 88, bsd_ifnet_creation_sequence phase_2_nexus_ready)
+        //
+        // Previous diagnosis (now corrected):
+        //   Old code treated registerEthernetInterface IOReturn 0 (success)
+        //   as bool false → aborted at STEP 8d → never reached here.
+        //   nexusProvider was NULL only BEFORE registration; the kernel
+        //   populates it during registerEthernetInterface via the Skywalk
+        //   dispatcher (FUN_ffffff8000a6be70).
     }
 
     sDiag.step = 9;
@@ -1223,6 +1262,11 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(16); // enableAdapter OK
     sDiag.step = 10;
+    // registerService() makes the IO80211Controller visible to airportd.
+    // The BSD ifnet (en0) is created asynchronously via the nexus callback
+    // chain triggered by deferBSDAttach(false) at STEP 8f.  If the callback
+    // hasn't fired yet, airportd will initially see an empty BSD name and
+    // should update when the ifnet appears.  See STEP 8f comment.
     registerService();
     RT_SET(18);
     XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
