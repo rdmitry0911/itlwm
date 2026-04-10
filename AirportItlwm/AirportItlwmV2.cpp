@@ -523,7 +523,9 @@ bool AirportItlwm::start(IOService *provider)
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
-                      "bsdFl=0x%x bsdMtu=%u",
+                      "bsdFl=0x%x bsdMtu=%u | "
+                      "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
+                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
                       d->mask, d->step, sRT.startStep,
                       sRT.rtMask, sRT.rtMask2, sRT.rtMask3, d->self,
                       d->logStream, d->faultReporter,
@@ -542,7 +544,12 @@ bool AirportItlwm::start(IOService *provider)
                       (void *)(uintptr_t)sRT.fVarsPtr,
                       (void *)(uintptr_t)sRT.bsdIfPtr,
                       sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
-                      sRT.bsdIfFlags, sRT.bsdIfMtu);
+                      sRT.bsdIfFlags, sRT.bsdIfMtu,
+                      (void *)(uintptr_t)sRT.pmPolicyPtr,
+                      sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                      sRT.outputDropPwr,
+                      sRT.pmOffGateNull, sRT.pmOnGateNull,
+                      sRT.pmAckOffCnt, sRT.pmAckOnCnt);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -872,7 +879,9 @@ void AirportItlwm::stop(IOService *provider)
                   "scanReq=%u assoc=%u scanRes=%u "
                   "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                   "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
-                  "bsdFl=0x%x bsdMtu=%u",
+                  "bsdFl=0x%x bsdMtu=%u | "
+                  "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
+                  "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
                   sRT.stopStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
@@ -889,7 +898,12 @@ void AirportItlwm::stop(IOService *provider)
                   (void *)(uintptr_t)sRT.fVarsPtr,
                   (void *)(uintptr_t)sRT.bsdIfPtr,
                   sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
-                  sRT.bsdIfFlags, sRT.bsdIfMtu);
+                  sRT.bsdIfFlags, sRT.bsdIfMtu,
+                  (void *)(uintptr_t)sRT.pmPolicyPtr,
+                  sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                  sRT.outputDropPwr,
+                  sRT.pmOffGateNull, sRT.pmOnGateNull,
+                  sRT.pmAckOffCnt, sRT.pmAckOnCnt);
         }, NULL);
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
@@ -948,7 +962,9 @@ void AirportItlwm::free()
                       "scanReq=%u assoc=%u scanRes=%u "
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
-                      "bsdFl=0x%x bsdMtu=%u",
+                      "bsdFl=0x%x bsdMtu=%u | "
+                      "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
+                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u",
                       sRT.freeStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                       sRT.stopStep, sRT.skFreeStep, sRT.startStep,
                       sRT.ic_state, sRT.if_flags, sRT.power_state,
@@ -963,7 +979,12 @@ void AirportItlwm::free()
                       (void *)(uintptr_t)sRT.fVarsPtr,
                       (void *)(uintptr_t)sRT.bsdIfPtr,
                       sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
-                      sRT.bsdIfFlags, sRT.bsdIfMtu);
+                      sRT.bsdIfFlags, sRT.bsdIfMtu,
+                      (void *)(uintptr_t)sRT.pmPolicyPtr,
+                      sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                      sRT.outputDropPwr,
+                      sRT.pmOffGateNull, sRT.pmOnGateNull,
+                      sRT.pmAckOffCnt, sRT.pmAckOnCnt);
         }, NULL);
     uint64_t freeDeadline;
     clock_interval_to_deadline(60, kSecondScale, &freeDeadline);
@@ -1232,6 +1253,7 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
     IOReturn ret = kIOReturnOutputSuccess;
 
     if (pmPowerState != kPowerStateOn) {
+        sRT.outputDropPwr++;
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
         return kIOReturnOutputDropped;
@@ -1735,12 +1757,12 @@ static IOPMPowerState powerStateArray[kPowerStateCount] =
 void AirportItlwm::unregistPM()
 {
     if (powerOffThreadCall) {
-        thread_call_cancel(powerOffThreadCall);
+        sRT.pmOffCancelRet = thread_call_cancel(powerOffThreadCall);
         thread_call_free(powerOffThreadCall);
         powerOffThreadCall = NULL;
     }
     if (powerOnThreadCall) {
-        thread_call_cancel(powerOnThreadCall);
+        sRT.pmOnCancelRet = thread_call_cancel(powerOnThreadCall);
         thread_call_free(powerOnThreadCall);
         powerOnThreadCall = NULL;
     }
@@ -1820,6 +1842,7 @@ static void handleSetPowerStateOff(thread_call_param_t param0,
                             handleSetPowerStateOff,
                             (void *) 1);
         } else {
+            sRT.pmOffGateNull++;
             XYLog("DEBUG handleSetPowerStateOff: gate=NULL, calling directly\n");
             self->setPowerStateOff();
             self->release();
@@ -1846,6 +1869,7 @@ static void handleSetPowerStateOn(thread_call_param_t param0,
                             handleSetPowerStateOn,
                             (void *) 1);
         } else {
+            sRT.pmOnGateNull++;
             XYLog("DEBUG handleSetPowerStateOn: gate=NULL, calling directly\n");
             self->setPowerStateOn();
             self->release();
@@ -1865,6 +1889,7 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
     XYLog("DEBUG %s entry policyMaker=%p\n", __FUNCTION__, policyMaker);
     pmPowerState = kPowerStateOn;
     pmPolicyMaker = policyMaker;
+    sRT.pmPolicyPtr = (uint64_t)(uintptr_t)policyMaker;
 
     powerOffThreadCall = thread_call_allocate(
                                             (thread_call_func_t)handleSetPowerStateOff,
@@ -1892,8 +1917,10 @@ void AirportItlwm::setPowerStateOff()
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
     disableAdapter(bsdInterface);
-    if (pmPolicyMaker)
+    if (pmPolicyMaker) {
+        sRT.pmAckOffCnt++;
         pmPolicyMaker->acknowledgeSetPowerState();
+    }
 }
 
 void AirportItlwm::setPowerStateOn()
@@ -1904,6 +1931,8 @@ void AirportItlwm::setPowerStateOn()
         enableAdapter(bsdInterface);
     else
         XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
-    if (pmPolicyMaker)
+    if (pmPolicyMaker) {
+        sRT.pmAckOnCnt++;
         pmPolicyMaker->acknowledgeSetPowerState();
+    }
 }

@@ -153,6 +153,15 @@ struct RuntimeDiag {
     volatile uint32_t bsdIfMtu;     // last seen ifnet_mtu on BSD interface
     volatile uint32_t lastEnableRet;// last enableAdapter return code
     volatile uint32_t lastPmReq;    // last setPowerState requested state
+    // --- PM diagnostics (thread_call / power path) ---
+    volatile uint64_t pmPolicyPtr;  // raw pmPolicyMaker pointer
+    volatile uint32_t pmOffCancelRet;// thread_call_cancel result for powerOff
+    volatile uint32_t pmOnCancelRet; // thread_call_cancel result for powerOn
+    volatile uint32_t outputDropPwr; // packets dropped in outputPacket (power off)
+    volatile uint32_t pmOffGateNull; // handleSetPowerStateOff gate==NULL count
+    volatile uint32_t pmOnGateNull;  // handleSetPowerStateOn gate==NULL count
+    volatile uint32_t pmAckOffCnt;   // acknowledgeSetPowerState calls from Off path
+    volatile uint32_t pmAckOnCnt;    // acknowledgeSetPowerState calls from On path
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)
