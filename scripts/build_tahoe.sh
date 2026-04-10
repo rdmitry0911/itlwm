@@ -57,11 +57,13 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
 patch_mackernelsdk
 
 # ── Step 2: Build ────────────────────────────────────────────────────
+GIT_HASH=$(cd "$PROJECT_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo ""
-echo "Building $TARGET ($CONFIGURATION)..."
+echo "Building $TARGET ($CONFIGURATION) commit=$GIT_HASH..."
 xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -target "$TARGET" \
     -configuration "$CONFIGURATION" \
+    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH" \
     2>&1 | tail -5
 
 if [ ! -f "$KEXT_BINARY" ]; then

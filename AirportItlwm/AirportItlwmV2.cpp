@@ -12,6 +12,14 @@
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_var.h>
 
+// Build identification — injected by build_tahoe.sh via -DITLWM_COMMIT_HASH=...
+// Falls back to compile date/time for Xcode IDE builds.
+#ifndef ITLWM_COMMIT_HASH
+#define ITLWM_COMMIT_HASH __DATE__ " " __TIME__
+#endif
+#define ITLWM_XSTR(s) ITLWM_STR(s)
+#define ITLWM_STR(s) #s
+
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
@@ -425,13 +433,12 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
             sRT.bsdIfMtu = ifnet_mtu(bif);
         }
     }
-    // Count scan tree nodes — useful for diagnosing association failures
-    {
-        uint32_t cnt = 0;
-        struct ieee80211_node *ni;
-        RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) cnt++;
-        sRT.nodeCount = cnt;
-    }
+    // Read node count — ic_nnodes is maintained by ieee80211_alloc_node/free_node.
+    // RB_FOREACH was here previously but watchdogAction runs on fWatchdogWorkLoop
+    // (separate from _fWorkloop that serializes 80211 node operations), so iterating
+    // ic_tree without the command gate is a data race — panic13 CR2=0xc800000000.
+    // Reading a single int is safe without locking.
+    sRT.nodeCount = (uint32_t)ic->ic_nnodes;
     static int wd_count = 0;
     static int wd_last_state = -1;
     wd_count++;
@@ -711,7 +718,8 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
-    XYLog("DEBUG %s [STEP 0] entry provider=%p\n", __PRETTY_FUNCTION__, provider);
+    XYLog("AirportItlwm build=" ITLWM_XSTR(ITLWM_COMMIT_HASH) " entry provider=%p\n",
+          provider);
 
     // boot-arg "itlwm_delay=N" — pause N seconds so verbose boot output
     // stays on screen long enough to read/photograph.
