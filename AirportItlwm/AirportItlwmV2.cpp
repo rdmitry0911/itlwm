@@ -29,6 +29,24 @@ IOCommandGate *_fCommandGate;
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
 RuntimeDiag sRT = {};
 
+// Skywalk TX submission callback — called when BSD stack has packets to transmit.
+// Phase 1 stub: acknowledge without transmitting. Data path wired in Phase 2.
+static IOReturn
+skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
+                const IOSkywalkPacket **packets, UInt32 count, void *refCon)
+{
+    return kIOReturnSuccess;
+}
+
+// Skywalk RX completion callback — called when driver enqueues received packets.
+// Phase 1 stub: no-op. Data path wired in Phase 2.
+static IOReturn
+skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
+                IOSkywalkPacket **packets, UInt32 count, void *refCon)
+{
+    return kIOReturnSuccess;
+}
+
 void AirportItlwm::releaseAll()
 {
     XYLog("DEBUG %s [1] logStream=%p(rc=%d) logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
@@ -218,6 +236,10 @@ bool AirportItlwm::init(OSDictionary *properties)
     awdlSyncEnable = true;
     power_state = 0;
     driverLogStream = nullptr;
+    fTxPool = NULL;
+    fRxPool = NULL;
+    fTxQueue = NULL;
+    fRxQueue = NULL;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
     RT_SET(15);
     XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
@@ -727,15 +749,19 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     SD_SET(13); // attachInterface OK
-    // Populate fVars->registrationInfo BEFORE IONetworkController::attachInterface,
-    // because attachInterface triggers attachToDataLinkLayer which calls
-    // prepareBSDInterface, and that reads fVars[0]->mtu at offset 0x4c.
+
+    // --- Skywalk registration: proper Sequoia path ---
     //
-    // IOSkywalkNetworkInterface::prepareBSDInterface disassembly (confirmed via Ghidra):
-    //   mov rax, [rdi + 0xC0]      ; rax = this->fVars
-    //   mov [rax + 0x08], rsi      ; fVars[1] = ifnet_t
-    //   mov rax, [rax]             ; rax = fVars[0] = registrationInfo
-    //   mov esi, [rax + 0x4c]      ; registrationInfo->mtu  ← crashes if NULL
+    // On macOS Sequoia (26.x), IONetworkStack no longer matches IOEthernetInterface
+    // for WiFi controllers.  BSD ifnet creation goes through:
+    //   registerEthernetInterface → creates LogicalLink + nexus provider
+    //   deferBSDAttach(false) → registerService on interface
+    //   IOSkywalkNetworkBSDClient matches → creates BSD ifnet via nexus
+    //
+    // Reference: Apple BCM WiFi driver calls registerInfraEthernetInterface
+    // (IO80211InfraInterface non-virtual) which internally calls
+    // registerEthernetInterface on IOSkywalkEthernetInterface.
+
     sRT.startStep = 80;
     memset(&registInfo, 0, sizeof(registInfo));
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
@@ -748,11 +774,8 @@ bool AirportItlwm::start(IOService *provider)
     RT3_SET(0); // initRegistrationInfo OK
     {
         uint8_t *p = (uint8_t *)&registInfo;
-        bool allZero = true;
-        for (int i = 0; i < 64 && i < (int)sizeof(registInfo); i++)
-            if (p[i]) { allZero = false; break; }
-        XYLog("DEBUG %s [STEP 8] initRegistrationInfo OK, size=%lu, allZero=%d\n",
-              __FUNCTION__, sizeof(registInfo), allZero);
+        XYLog("DEBUG %s [STEP 8] initRegistrationInfo OK, size=%lu\n",
+              __FUNCTION__, sizeof(registInfo));
         XYLog("DEBUG %s [STEP 8] regInfo[0-31]: %02x %02x %02x %02x %02x %02x %02x %02x "
               "%02x %02x %02x %02x %02x %02x %02x %02x "
               "%02x %02x %02x %02x %02x %02x %02x %02x "
@@ -763,12 +786,12 @@ bool AirportItlwm::start(IOService *provider)
               p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
               p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
     }
+
+    // Populate mExpansionData for framework compatibility
     if (!fNetIf->mExpansionData) {
-        XYLog("DEBUG %s mExpansionData is NULL — allocating\n", __FUNCTION__);
         fNetIf->mExpansionData = (IOSkywalkNetworkInterface::ExpansionData *)IOMallocZero(256);
     }
     if (!fNetIf->mExpansionData2) {
-        XYLog("DEBUG %s mExpansionData2 is NULL — allocating\n", __FUNCTION__);
         fNetIf->mExpansionData2 = (IOSkywalkEthernetInterface::ExpansionData *)IOMallocZero(256);
     }
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
@@ -776,61 +799,93 @@ bool AirportItlwm::start(IOService *provider)
     memcpy(fNetIf->mExpansionData->fRegistrationInfo, &registInfo, sizeof(registInfo));
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
     RT3_SET(1); // mExpansionData populated
-    // IOSkywalkNetworkInterface keeps a private fVars ptr at this+0xC0
-    // (allocated in init(), 0x68 bytes).  prepareBSDInterface reads
-    // registrationInfo from fVars+0x0 — NOT from mExpansionData.
-    //
-    // In the Apple driver this field is set by registerNetworkInterface()
-    // which we cannot call (requires real Skywalk LogicalLink/BufferPool).
-    // Direct write into fVars is the minimally invasive approach.
+
+    // Create Skywalk packet buffer pools for TX and RX
+    sRT.startStep = 81;
     {
-        void **fVars = *(void ***)((uint8_t *)fNetIf + 0xC0);
-        sRT.fVarsPtr = (uint64_t)(uintptr_t)fVars;
-        if (fVars) RT2_SET(8);
-        if (fVars && !fVars[0]) {
-            void *regCopy = IOMallocZero(0x108);
-            memcpy(regCopy, &registInfo, 0x108);
-            fVars[0] = regCopy;
-            RT2_SET(9);
-            XYLog("DEBUG %s [STEP 8b] fVars=%p regInfo=%p (populated)\n",
-                  __FUNCTION__, fVars, regCopy);
-            RT3_SET(2); // fVars[0] written
-        } else {
-            XYLog("DEBUG %s [STEP 8b] fVars=%p regInfo=%p (already set or fVars NULL)\n",
-                  __FUNCTION__, fVars, fVars ? fVars[0] : NULL);
+        IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
+        poolOpts.packetCount = 256;
+        poolOpts.bufferCount = 256;
+        poolOpts.bufferSize  = 2048;
+        poolOpts.maxBuffersPerPacket = 1;
+
+        fTxPool = IOSkywalkPacketBufferPool::withName("AirportItlwm-TX", fNetIf, 0, &poolOpts);
+        fRxPool = IOSkywalkPacketBufferPool::withName("AirportItlwm-RX", fNetIf, 0, &poolOpts);
+        XYLog("DEBUG %s [STEP 8b] pools: TX=%p RX=%p\n", __FUNCTION__, fTxPool, fRxPool);
+        if (!fTxPool || !fRxPool) {
+            XYLog("DEBUG %s [STEP 8b] FAIL: pool creation (TX=%p RX=%p)\n",
+                  __FUNCTION__, fTxPool, fRxPool);
+            super::stop(provider);
+            releaseAll();
+            DISARM_PANIC_TIMER();
+            return false;
         }
     }
-    sRT.startStep = 81;
-    RT3_SET(3); // entering IONetworkController::attachInterface
-    XYLog("DEBUG %s [STEP 8c] IONetworkController::attachInterface (fVars[0] ready)\n", __FUNCTION__);
-    if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface, true)) {
-        XYLog("DEBUG %s [STEP 8] FAIL: IONetworkController attachInterface\n", __FUNCTION__);
+    RT3_SET(2); // pools created
+
+    // Create Skywalk TX submission and RX completion queues
+    fTxQueue = IOSkywalkTxSubmissionQueue::withPool(fTxPool, 256, 0, this,
+                                                    skywalkTxAction, NULL, 0);
+    fRxQueue = IOSkywalkRxCompletionQueue::withPool(fRxPool, 256, 0, this,
+                                                    skywalkRxAction, NULL, 0);
+    XYLog("DEBUG %s [STEP 8c] queues: TX=%p RX=%p\n", __FUNCTION__, fTxQueue, fRxQueue);
+    if (!fTxQueue || !fRxQueue) {
+        XYLog("DEBUG %s [STEP 8c] FAIL: queue creation (TX=%p RX=%p)\n",
+              __FUNCTION__, fTxQueue, fRxQueue);
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
-    RT3_SET(4); // IONetworkController::attachInterface OK
-    SD_SET(14); // bsdInterface OK
-    sDiag.bsdIf = bsdInterface;
-    XYLog("DEBUG %s [STEP 8] bsdInterface=%p\n", __FUNCTION__, bsdInterface);
-    XYLog("DEBUG %s [STEP 8b] fNetIf=%p role=%d, starting\n",
-          __FUNCTION__, fNetIf, fNetIf->getInterfaceRole());
+    RT3_SET(3); // queues created
+
+    // Register the interface through the proper Skywalk path.
+    // registerEthernetInterface internally creates a LogicalLink from the queues
+    // and calls registerNetworkInterfaceWithLogicalLink, populating fVars[0] and
+    // setting up the nexus provider for IOSkywalkNetworkBSDClient matching.
     sRT.startStep = 82;
+    {
+        IOSkywalkPacketQueue *queues[] = {
+            (IOSkywalkPacketQueue *)fTxQueue,
+            (IOSkywalkPacketQueue *)fRxQueue
+        };
+        bool regOK = fNetIf->registerEthernetInterface(
+            (const IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
+            queues, 2, fTxPool, fRxPool, 0);
+        XYLog("DEBUG %s [STEP 8d] registerEthernetInterface=%d\n", __FUNCTION__, regOK);
+        if (!regOK) {
+            XYLog("DEBUG %s [STEP 8d] FAIL: registerEthernetInterface\n", __FUNCTION__);
+            super::stop(provider);
+            releaseAll();
+            DISARM_PANIC_TIMER();
+            return false;
+        }
+    }
+    RT3_SET(4); // registerEthernetInterface OK
+    SD_SET(14);
+
+    // Start the Skywalk interface
     sDiag.step = 81;
     RT3_SET(10); // entering fNetIf->start
-    XYLog("DEBUG %s [STEP 8d] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
+    XYLog("DEBUG %s [STEP 8e] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
     fNetIf->start(this);
     RT3_SET(11); // fNetIf->start returned
     SD_SET(15); // fNetIf->start OK
+
+    // Trigger IOSkywalkNetworkBSDClient matching.
+    // deferBSDAttach(false) removes IODeferBSDAttach property and calls
+    // registerService() on fNetIf, causing IOKit to match BSDClient.
+    // BSDClient::start creates the nexus channel and BSD ifnet.
+    XYLog("DEBUG %s [STEP 8f] calling deferBSDAttach(false)\n", __FUNCTION__);
+    fNetIf->deferBSDAttach(false);
     {
         const char *bsdName = fNetIf->getBSDName();
         ifnet_t bsdIf = fNetIf->getBSDInterface();
         sRT.bsdIfPtr = (uint64_t)(uintptr_t)bsdIf;
         if (bsdIf) RT2_SET(0);
-        if (bsdName) RT2_SET(1);
-        XYLog("DEBUG %s [STEP 8d] fNetIf->start OK, bsdName=%s bsdIf=%p rt2=0x%04x\n",
-              __FUNCTION__, bsdName ? bsdName : "(null)", bsdIf, sRT.rtMask2);
+        if (bsdName && bsdName[0]) RT2_SET(1);
+        XYLog("DEBUG %s [STEP 8f] deferBSDAttach done, bsdName=%s bsdIf=%p rt2=0x%04x rt3=0x%04x\n",
+              __FUNCTION__, bsdName ? bsdName : "(null)", bsdIf, sRT.rtMask2, sRT.rtMask3);
     }
 
     sDiag.step = 9;
@@ -840,8 +895,8 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     _fCommandGate->enable();
     power_state = kWiFiPowerOn;
-    XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u bsdInterface=%p\n", __FUNCTION__, power_state, bsdInterface);
-    enableAdapter(bsdInterface);
+    XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
+    enableAdapter(NULL);
     {
         struct ieee80211com *ic_dbg = fHalService->get80211Controller();
         struct _ifnet *ifp_dbg = &ic_dbg->ic_ac.ac_if;
@@ -911,8 +966,8 @@ void AirportItlwm::stop(IOService *provider)
 
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     sRT.stopStep = 2;
-    XYLog("DEBUG %s [2] disableAdapter bsdInterface=%p\n", __FUNCTION__, bsdInterface);
-    disableAdapter(bsdInterface);
+    XYLog("DEBUG %s [2] disableAdapter\n", __FUNCTION__);
+    disableAdapter(NULL);
     sRT.stopStep = 3;
     XYLog("DEBUG %s [3] setLinkStatus\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
@@ -923,8 +978,15 @@ void AirportItlwm::stop(IOService *provider)
     XYLog("DEBUG %s [5] ether_ifdetach ifp=%p\n", __FUNCTION__, ifp);
     ether_ifdetach(ifp);
     sRT.stopStep = 6;
+    // Release Skywalk queues and pools
+    XYLog("DEBUG %s [6] releasing Skywalk queues/pools\n", __FUNCTION__);
+    OSSafeReleaseNULL(fTxQueue);
+    OSSafeReleaseNULL(fRxQueue);
+    OSSafeReleaseNULL(fTxPool);
+    OSSafeReleaseNULL(fRxPool);
+    sRT.stopStep = 61;
     RT3_SET(15); // detachInterface entered
-    XYLog("DEBUG %s [6] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
+    XYLog("DEBUG %s [6b] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
     detachInterface(fNetIf, true);
     sRT.stopStep = 7;
     XYLog("DEBUG %s [7] release fNetIf\n", __FUNCTION__);
@@ -1211,8 +1273,10 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     } else {
         that->fNetIf->reportLinkStatus(1, 0);
     }
-    XYLog("DEBUG %s calling bsdInterface->setLinkState bsdInterface=%p\n", __FUNCTION__, that->bsdInterface);
-    that->bsdInterface->setLinkState((IO80211LinkState)(uint64_t)arg0);
+    if (that->bsdInterface) {
+        XYLog("DEBUG %s calling bsdInterface->setLinkState bsdInterface=%p\n", __FUNCTION__, that->bsdInterface);
+        that->bsdInterface->setLinkState((IO80211LinkState)(uint64_t)arg0);
+    }
     XYLog("DEBUG %s DONE ret=0x%x\n", __FUNCTION__, ret);
     return ret;
 }

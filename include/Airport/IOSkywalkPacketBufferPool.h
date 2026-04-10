@@ -8,6 +8,7 @@
 
 #ifndef IOSkywalkPacketBufferPool_h
 #define IOSkywalkPacketBufferPool_h
+#define _IOSKYWALKPACKETBUFFERPOOL_H
 
 #include <IOKit/IOService.h>
 

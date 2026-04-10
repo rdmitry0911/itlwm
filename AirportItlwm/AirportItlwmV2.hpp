@@ -26,6 +26,9 @@
 
 #include "AirportItlwmEthernetInterface.hpp"
 #include "Airport/IO80211FaultReporter.h"
+#include <skywalk/packet/os_packet.h>
+#include <IOKit/skywalk/IOSkywalkTxSubmissionQueue.h>
+#include <IOKit/skywalk/IOSkywalkRxCompletionQueue.h>
 
 enum
 {
@@ -98,9 +101,9 @@ enum {
 // rtMask3 bits (registration / BSD attach / interface bring-up):
 //  0  0x0001  initRegistrationInfo completed
 //  1  0x0002  mExpansionData populated
-//  2  0x0004  fVars[0] written (pre-attachInterface)
-//  3  0x0008  IONetworkController::attachInterface entered
-//  4  0x0010  IONetworkController::attachInterface OK
+//  2  0x0004  Skywalk pools created
+//  3  0x0008  Skywalk queues created
+//  4  0x0010  registerEthernetInterface OK
 //  5  0x0020  attachToDataLinkLayer entered
 //  6  0x0040  attachToDataLinkLayer completed
 //  7  0x0080  prepareBSDInterface entered (from attachToDataLinkLayer)
@@ -370,6 +373,12 @@ public:
     IO80211SkywalkInterface *fNetIf;
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
+
+    // Skywalk packet pools and queues for proper Sequoia registration
+    IOSkywalkPacketBufferPool *fTxPool;
+    IOSkywalkPacketBufferPool *fRxPool;
+    IOSkywalkTxSubmissionQueue *fTxQueue;
+    IOSkywalkRxCompletionQueue *fRxQueue;
     
     //IO80211
     uint8_t power_state;
