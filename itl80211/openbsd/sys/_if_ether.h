@@ -160,6 +160,11 @@ struct ether_multi {
 struct _ifnet {                /* and the entries */
     IOEthernetInterface *iface;
     IOEthernetController* controller;
+    // Skywalk RX delivery callback (macOS 26.x+).  When non-NULL, _if_input
+    // calls this instead of iface->inputPacket().  The handler copies mbuf
+    // data into an IOSkywalkPacket, enqueues to the RX completion queue,
+    // and frees the mbuf.
+    int (*if_skywalk_rx)(struct _ifnet *, mbuf_t);
     int if_link_state;
     void *if_softc;
 //    struct    refcnt if_refcnt;

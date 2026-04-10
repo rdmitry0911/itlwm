@@ -221,6 +221,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
+    ifp->if_skywalk_rx = NULL;
     ifq_init(&ifp->if_snd, ifp, 2048);
     memcpy(((struct arpcom *)ifp)->ac_enaddr, ic->ic_myaddr,
            ETHER_ADDR_LEN);

@@ -33,28 +33,31 @@ struct network_header {
 
 static IOReturn _if_input(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
-    mbuf_t m;
+    mbuf_t m, next;
     bool isEmpty = true;
     struct _ifnet *ifq = (struct _ifnet *)arg0;
     struct mbuf_list *ml = (struct mbuf_list *)arg1;
-    
-    MBUF_LIST_FOREACH(ml, m) {
-        if (ifq->iface == NULL) {
-            panic("%s ifq->iface == NULL!!!\n", __FUNCTION__);
+
+    // Save next pointer before calling the handler, since the handler
+    // may free the mbuf (Skywalk path) or take ownership (legacy path).
+    for (m = MBUF_LIST_FIRST(ml); m != NULL; m = next) {
+        next = MBUF_LIST_NEXT(m);
+        isEmpty = false;
+        if (ifq->if_skywalk_rx) {
+            // Skywalk path (macOS 26.x+): copy mbuf into IOSkywalkPacket,
+            // enqueue to RX completion queue, free the mbuf.
+            ifq->if_skywalk_rx(ifq, m);
+        } else if (ifq->iface != NULL) {
+            ifq->iface->inputPacket(m, 0, IONetworkInterface::kInputOptionQueuePacket);
+        } else {
+            panic("%s ifq->iface == NULL and if_skywalk_rx == NULL!!!\n", __FUNCTION__);
             break;
         }
-        if (m == NULL) {
-            XYLog("%s m == NULL!!!\n", __FUNCTION__);
-            continue;
-        }
-        //        XYLog("%s %d 啊啊啊啊 ifq->iface->inputPacket(m) hdr_len=%d len=%d\n", __FUNCTION__, __LINE__, mbuf_pkthdr_len(m), mbuf_len(m));
-        isEmpty = false;
-        ifq->iface->inputPacket(m, 0, IONetworkInterface::kInputOptionQueuePacket);
         if (ifq->netStat != NULL) {
             ifq->netStat->inputPackets++;
         }
     }
-    if (!isEmpty) {
+    if (!isEmpty && ifq->iface && !ifq->if_skywalk_rx) {
         ifq->iface->flushInputQueue();
     }
     return kIOReturnSuccess;

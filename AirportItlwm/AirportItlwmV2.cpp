@@ -14,6 +14,7 @@
 
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "IOPCIEDeviceWrapper.hpp"
+#include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
 
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
@@ -30,7 +31,10 @@ IOCommandGate *_fCommandGate;
 RuntimeDiag sRT = {};
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
-// Phase 1 stub: acknowledge without transmitting. Data path wired in Phase 2.
+// The Skywalk nexus delivers packets from the BSD ifnet TX path as
+// IOSkywalkPacket objects. We extract the frame data from each packet's
+// buflet, copy it into an mbuf, and send it through the existing
+// outputPacket path which enqueues to the hardware via if_snd.
 //
 // Return type is unsigned int (not IOReturn/int) to match kernel ABI.
 // Kernel symbol uses mangled 'j' (unsigned int), not 'i' (int).
@@ -40,18 +44,135 @@ static unsigned int
 skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                 IOSkywalkPacket * const *packets, UInt32 count, void *refCon)
 {
-    return 0;
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (!that) return 0;
+
+    static int sTxLog = 0;
+    UInt32 sent = 0;
+    for (UInt32 i = 0; i < count; i++) {
+        IOSkywalkPacket *pkt = packets[i];
+
+        // Get the first packet buffer to access the underlying buflet
+        IOSkywalkPacketBuffer *bufs[1] = { NULL };
+        UInt32 nBufs = pkt->getPacketBuffers(bufs, 1);
+        if (nBufs == 0 || !bufs[0]) {
+            if (++sTxLog <= 3)
+                XYLog("skywalkTxAction: pkt %u/%u no buffers\n", i, count);
+            continue;
+        }
+
+        kern_buflet_t buflet = bufs[0]->mBufletHandle;
+        if (!buflet) continue;
+
+        void *objAddr = kern_buflet_get_object_address(buflet);
+        uint16_t dataOff = kern_buflet_get_data_offset(buflet);
+        uint16_t dataLen = kern_buflet_get_data_length(buflet);
+
+        if (!objAddr || dataLen == 0) continue;
+
+        // Allocate an mbuf with packet header and copy the Ethernet frame
+        mbuf_t m = NULL;
+        if (mbuf_allocpacket(MBUF_DONTWAIT, dataLen, NULL, &m) != 0)
+            continue;
+
+        if (mbuf_copyback(m, 0, dataLen, (uint8_t *)objAddr + dataOff, MBUF_DONTWAIT) != 0) {
+            mbuf_freem(m);
+            continue;
+        }
+
+        that->outputPacket(m, NULL);
+        sent++;
+    }
+
+    if (sTxLog <= 3 && count > 0) {
+        sTxLog++;
+        XYLog("skywalkTxAction: count=%u sent=%u\n", count, sent);
+    }
+    return sent;
 }
 
-// Skywalk RX completion callback — called when driver enqueues received packets.
-// Phase 1 stub: no-op. Data path wired in Phase 2.
+// Skywalk RX completion callback — notification from the Skywalk subsystem
+// after it has consumed packets that the driver enqueued to the RX queue.
+// This is a completion notification, not a receive path — the actual RX
+// injection happens in skywalkRxInput() called from _if_input().
 // Return type is unsigned int to match kernel ABI (see TX callback comment).
 static unsigned int
 skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
                 IOSkywalkPacket **packets, UInt32 count, void *refCon)
 {
+    return count;
+}
+
+#if __IO80211_TARGET >= __MAC_26_0
+// Skywalk RX input handler — called from _if_input() on the Sequoia path.
+// Converts an mbuf (received from the 802.11 stack) into an IOSkywalkPacket
+// and enqueues it to the RX completion queue for delivery to the BSD stack
+// through the Skywalk nexus.
+static int
+skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, ifp->controller);
+    if (!that || !that->fRxPool || !that->fRxQueue) {
+        mbuf_freem(m);
+        return ENXIO;
+    }
+
+    size_t len = mbuf_pkthdr_len(m);
+    if (len == 0) {
+        mbuf_freem(m);
+        return EINVAL;
+    }
+
+    // Allocate an IOSkywalkPacket from the RX pool
+    IOSkywalkPacket *rxPkt = NULL;
+    if (that->fRxPool->allocatePacket(1, &rxPkt, 0) != kIOReturnSuccess || !rxPkt) {
+        static int sRxAllocFail = 0;
+        if (++sRxAllocFail <= 5)
+            XYLog("skywalkRxInput: allocatePacket failed (drop #%d)\n", sRxAllocFail);
+        mbuf_freem(m);
+        return ENOMEM;
+    }
+
+    // Get the packet buffer to access the underlying buflet
+    IOSkywalkPacketBuffer *bufs[1] = { NULL };
+    UInt32 nBufs = rxPkt->getPacketBuffers(bufs, 1);
+    if (nBufs == 0 || !bufs[0]) {
+        that->fRxPool->deallocatePacket(rxPkt);
+        mbuf_freem(m);
+        return ENOMEM;
+    }
+
+    kern_buflet_t buflet = bufs[0]->mBufletHandle;
+    void *objAddr = kern_buflet_get_object_address(buflet);
+    uint32_t bufSize = kern_buflet_get_object_limit(buflet);
+    if (!objAddr || len > bufSize) {
+        that->fRxPool->deallocatePacket(rxPkt);
+        mbuf_freem(m);
+        return EMSGSIZE;
+    }
+
+    // Copy the mbuf data into the Skywalk packet buffer
+    mbuf_copydata(m, 0, len, objAddr);
+    kern_buflet_set_data_offset(buflet, 0);
+    kern_buflet_set_data_length(buflet, (uint16_t)len);
+    rxPkt->setDataLength((UInt32)len);
+
+    // Enqueue the packet to the RX completion queue
+    const IOSkywalkPacket *pktArray[] = { rxPkt };
+    IOReturn ret = that->fRxQueue->enqueuePackets(pktArray, 1, 0);
+
+    mbuf_freem(m);
+
+    if (ret != kIOReturnSuccess) {
+        static int sRxEnqFail = 0;
+        if (++sRxEnqFail <= 5)
+            XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%d)\n", ret, sRxEnqFail);
+        return EIO;
+    }
+
     return 0;
 }
+#endif /* __IO80211_TARGET >= __MAC_26_0 */
 
 void AirportItlwm::releaseAll()
 {
@@ -853,6 +974,18 @@ bool AirportItlwm::start(IOService *provider)
     sRT.fTxQueuePtr = (uint64_t)(uintptr_t)fTxQueue;
     sRT.fRxQueuePtr = (uint64_t)(uintptr_t)fRxQueue;
 
+    // Wire up Skywalk RX input handler on the internal ifnet before
+    // registration, so received frames go through the Skywalk path
+    // instead of the legacy IOEthernetInterface::inputPacket path.
+#if __IO80211_TARGET >= __MAC_26_0
+    {
+        struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+        ifp->if_skywalk_rx = skywalkRxInput;
+        XYLog("DEBUG %s [STEP 8c-rx] wired if_skywalk_rx=%p on ifp=%p\n",
+              __FUNCTION__, (void *)(uintptr_t)skywalkRxInput, ifp);
+    }
+#endif
+
     // Register the interface through the proper Skywalk path.
     // registerEthernetInterface internally creates a LogicalLink from the queues
     // and calls registerNetworkInterfaceWithLogicalLink, populating fVars[0] and
@@ -1024,6 +1157,9 @@ void AirportItlwm::stop(IOService *provider)
     fHalService->detach(pciNub);
     sRT.stopStep = 5;
     XYLog("DEBUG %s [5] ether_ifdetach ifp=%p\n", __FUNCTION__, ifp);
+#if __IO80211_TARGET >= __MAC_26_0
+    ifp->if_skywalk_rx = NULL;
+#endif
     ether_ifdetach(ifp);
     sRT.stopStep = 6;
     // Release Skywalk queues and pools
