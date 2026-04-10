@@ -1,0 +1,176 @@
+version: 2
+topic: nexusProvider role and binding
+status: expanded_provider_binding_contract
+purpose: >-
+  Clarify what nexusProvider is, where it sits in the registration path,
+  what fields surround it, what methods it services, and how it participates
+  in attach/detach for Skywalk-based Wi-Fi networking.
+
+nexus_provider_summary:
+  definition: >-
+    nexusProvider is the provider-side registration anchor used by
+    IOSkywalkNetworkInterface during logical-link registration and teardown.
+    It is not just a generic parent IOService; it is the object through which
+    Skywalk/nexus registration and deregistration calls are performed.
+  location:
+    object: IOSkywalkNetworkInterface
+    field_offset: "self+0xc8"
+    type: "IOService* / nexus-facing provider"
+
+surrounding_field_map:
+  self_plus_0x90: "retained queue-set or related object, released on deregister"
+  self_plus_0x98: "retained queue-related object, released on deregister"
+  self_plus_0xa0: "retained queue manager, released on deregister"
+  self_plus_0xb8: "async result sentinel (0xe00002c7 = pending)"
+  self_plus_0xc0: "NIF_Context*"
+  self_plus_0xc8: "nexusProvider"
+  self_plus_0xd0: "nexus registration / arena object"
+
+what_nexus_provider_does:
+  registration_side:
+    - "Checked for non-NULL during registerNetworkInterface(logicalLink)"
+    - "Handles logical-link registration via vtable+0x1c8"
+    - "Participates before queue configuration command dispatch completes"
+  deregistration_side:
+    - "Handles logical-link deregistration via vtable+0x1d8"
+    - "Used during deregisterNetworkInterface teardown before queue-related object release"
+
+binding_chain:
+  conceptual_chain:
+    - "AppleBCMWLANSkywalkInterface / concrete interface object"
+    - "IOSkywalkNetworkInterface common registration machinery"
+    - "nexusProvider"
+    - "IOSkywalkLogicalLink"
+    - "TX/RX queues + pools"
+    - "later BSD/nexus callback path and ifnet exposure"
+  practical_meaning: >-
+    nexusProvider is the provider-side endpoint that accepts the logical link
+    representing the concrete queue topology of the interface. Only after this
+    relationship is established does later BSD exposure make sense.
+
+attach_sequence_role:
+  before_nexus_provider_use:
+    - "TX/RX pools created"
+    - "TX/RX queues created"
+    - "logical link constructed"
+  at_nexus_provider_use:
+    - "registerNetworkInterfaceWithLogicalLink dispatches into registration path"
+    - "registration path validates logicalLink and nexusProvider"
+    - "nexusProvider vtable+0x1c8 invoked"
+  after_nexus_provider_use:
+    - "queue configuration continues"
+    - "deferBSDAttach(false) later exposes BSD client matching path"
+
+teardown_sequence_role:
+  sequence:
+    - "super::stop reaches IOSkywalkNetworkInterface::stop"
+    - "deregisterNetworkInterface path entered"
+    - "nexusProvider vtable+0x1d8 performs logical-link deregistration"
+    - "only after that are queue-related retained objects released"
+  implication: >-
+    nexusProvider sits at the symmetry point of attach and detach. It is
+    central to safe teardown and should be considered the authoritative owner
+    of nexus registration state.
+
+registration_method_contract:
+  vtable_plus_0x1c8:
+    currently_known_role: "logical-link registration entry on provider side"
+    known_preconditions:
+      - "logicalLink != NULL"
+      - "nexusProvider != NULL"
+    known_effects:
+      - "provider accepts/logically registers the link"
+      - "queue configuration can proceed afterward"
+    not_yet_recovered:
+      - "exact symbol name"
+      - "full concrete C signature"
+      - "precise return-code matrix"
+  vtable_plus_0x1d8:
+    currently_known_role: "logical-link deregistration entry on provider side"
+    known_effects:
+      - "provider tears down the registered nexus/logical-link relationship"
+      - "queue-related retained objects are released only after this"
+    not_yet_recovered:
+      - "exact symbol name"
+      - "full concrete C signature"
+      - "detailed failure behavior"
+
+provider_binding_moment:
+  what_is_known:
+    - "nexusProvider must already be installed by the time registerNetworkInterface(logicalLink) runs."
+    - "BSD ifnet is exposed only later through BSD client/nexus callback path."
+  what_is_missing:
+    - "exact assignment site for self+0xc8"
+    - "whether it is set in init/start/registration helper path"
+    - "whether binding differs across interface roles"
+  practical_interpretation:
+    - "Treat provider binding as an earlier prerequisite than BSD attach."
+
+relationship_to_bsd_ifnet:
+  note: >-
+    nexusProvider participates before BSD ifnet becomes visible. The BSD client
+    path and prepareBSDInterface happen later through nexus callback / BSD
+    registration flow. Therefore ifnet visibility depends on successful prior
+    nexus-side registration.
+  expanded_chain:
+    - "interface object created"
+    - "queues/pools built"
+    - "logical link built"
+    - "provider-side registration through nexusProvider"
+    - "deferred BSD exposure released"
+    - "BSD client matching / prepareNexusCallback"
+    - "prepareBSDInterface / finalizeBSDInterface / setBSDName"
+    - "ifnet visible and usable"
+
+concrete_class_gap:
+  status: partial
+  what_is_known:
+    - "nexusProvider is provider-side registration infrastructure, not incidental IOService ancestry."
+  what_is_missing:
+    - "exact concrete dynamic class for STA path"
+    - "exact concrete dynamic class for AWDL path"
+    - "exact concrete dynamic class for NAN path"
+    - "exact concrete dynamic class for P2P path"
+
+role_specific_difference_gap:
+  status: partial
+  likely_axes:
+    - "STA vs AWDL"
+    - "NAN"
+    - "P2P / AP-like variants"
+  why_it_matters:
+    - "naming/prefix policy"
+    - "unit-number policy"
+    - "provider binding differences"
+    - "possible different registration helpers"
+
+provider_side_resource_ownership:
+  registration_related_objects:
+    - "self+0x90"
+    - "self+0x98"
+    - "self+0xa0"
+    - "self+0xd0"
+  rule:
+    - "These objects belong to the registration/queue side and must not be released before deregistration through nexusProvider."
+  implication:
+    - "Provider-side logical-link acceptance and queue resource ownership are tightly coupled."
+
+error_behavior:
+  on_registration:
+    - "If logicalLink is NULL -> bad argument failure"
+    - "If nexusProvider is NULL -> registration fails"
+  implication_for_porting:
+    - "A replacement driver must provide an equivalent provider-side object or registration path"
+    - "Stubbing interface object creation alone is insufficient without provider-side logical-link acceptance"
+
+practical_porting_rules:
+  - "Model nexusProvider as mandatory registration infrastructure, not incidental plumbing."
+  - "Keep provider-side logical-link acceptance separate from later LINK_UP usability."
+  - "Do not release queue-related registration objects before deregistration through nexusProvider."
+  - "If replicating Apple-like architecture, preserve attach/detach symmetry through a provider-side registration owner."
+
+remaining_gaps:
+  - "Exact concrete dynamic class of nexusProvider in every Wi-Fi mode/role"
+  - "All role-specific differences across STA/AWDL/NAN/P2P paths"
+  - "Complete internal implementation behind vtable+0x1c8 / +0x1d8"
+  - "Exact assignment site of self+0xc8"

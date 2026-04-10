@@ -1,0 +1,298 @@
+version: 2
+topic: Skywalk TX/RX runtime contracts
+status: expanded_runtime_contract
+purpose: >-
+  Practical runtime-oriented contract document for Skywalk TX/RX data path.
+  Complements registration/attach docs by describing what must remain true
+  after queues, pools, logical link, and BSD interface are already up.
+
+scope:
+  includes:
+    - TX submission queue runtime semantics
+    - RX completion queue runtime semantics
+    - packet/pool ownership rules
+    - queue/pool lifetime across attach, runtime, sleep, reset, stop
+    - queue callback semantics
+    - batch handling model
+    - queue mini-state-machine
+    - stop/reset race rules
+    - minimal emulation rules for non-Apple adapters
+  excludes:
+    - precise per-packet descriptor binary layouts
+    - full steady-state implementation of every Apple-specific queue callback
+
+core_objects:
+  - name: IOSkywalkPacketBufferPool
+    role: "Backing storage pool for TX/RX packet buffers."
+    created_in: "pre-registration path before registerEthernetInterface"
+    lifetime_rule: >-
+      Must outlive queue registration and survive until stop()/teardown.
+      Releasing pools too early breaks queue teardown and logical-link cleanup.
+
+  - name: IOSkywalkTxSubmissionQueue
+    role: "TX submission path from interface/client into datapath."
+    factory_signature: >-
+      unsigned int (*)(OSObject*, IOSkywalkTxSubmissionQueue*,
+      const IOSkywalkPacket**, UInt32, void*)
+    critical_note: >-
+      Callback return type is unsigned int, not int. Wrong type breaks symbol
+      binding / ABI compatibility.
+
+  - name: IOSkywalkRxCompletionQueue
+    role: "RX completion path delivering completed packets upward."
+    factory_signature: >-
+      unsigned int (*)(OSObject*, IOSkywalkRxCompletionQueue*,
+      IOSkywalkPacket**, UInt32, void*)
+    critical_note: >-
+      Callback return type is unsigned int, not int. Wrong type breaks symbol
+      binding / ABI compatibility.
+
+  - name: IOSkywalkLogicalLink
+    role: >-
+      Runtime aggregation object binding queue set(s) to the registered
+      network interface through nexus registration.
+    lifetime_rule: >-
+      Exists after queue creation and before BSD visibility; destroyed during
+      deregisterNetworkInterface / deregisterLogicalLink path.
+
+  - name: AppleBCMWLANSkywalkInterface
+    role: >-
+      Wi-Fi interface wrapper exposing packetSpace(), queue removal,
+      unit identity, and power callbacks while brokering datapath state.
+
+runtime_contracts:
+  tx_submission:
+    entry_conditions:
+      - "Interface object exists and has live ivars block."
+      - "TX pool exists."
+      - "TX submission queue created from pool."
+      - "Logical link already registered."
+    contract:
+      - "Submission callback receives packet array and count."
+      - "Callback must either consume/accept, reject, or defer packets in a way consistent with returned unsigned int."
+      - "Queue existence is subordinate to interface existence; queue may be flushed or rebuilt without recreating the interface identity."
+    invariants:
+      - "No TX submission before queue/pool registration succeeds."
+      - "No pool destruction while queue can still flush during stop()."
+      - "Queue flush happens before logical-link deregistration on stop path."
+    porting_guidance:
+      must_emulate:
+        - "Single working TX submission queue"
+        - "Stable callback ABI"
+        - "Graceful flush on stop/reset"
+      may_stub_initially:
+        - "Multi-queue distribution"
+        - "Advanced queue classes"
+        - "Fine-grained offload metadata"
+      danger_if_wrong:
+        - "Packets accepted but never completed"
+        - "Queue freed before stop()"
+        - "Wrong callback ABI causing load or runtime failures"
+
+  rx_completion:
+    entry_conditions:
+      - "RX pool exists."
+      - "RX completion queue created from pool."
+      - "Logical link already registered."
+      - "BSD interface may or may not yet be operationally LINK_UP, but interface object exists."
+    contract:
+      - "Completion callback receives packet array and count."
+      - "RX path must preserve ownership semantics until packets are either handed upward or returned to pool."
+      - "RX completion may exist before operational IP link is up; do not tie RX queue existence to NET_MANAGER LINK_UP."
+    invariants:
+      - "No completion callback after queue destruction."
+      - "No premature pool free while completion queue may still drain."
+      - "During stop(), queue flush/stop precedes pool release."
+    porting_guidance:
+      must_emulate:
+        - "Single working RX completion queue"
+        - "Packet-to-upper-layer delivery or safe drop"
+        - "Drain-safe teardown"
+      may_stub_initially:
+        - "Advanced checksum/offload metadata"
+        - "High-rate batching optimization"
+      danger_if_wrong:
+        - "Packets leak because pool ownership never returns"
+        - "Packets delivered after teardown"
+        - "RX completion treated as ifnet creation event"
+
+queue_callback_semantics:
+  current_confidence: medium
+  known_hard_facts:
+    - "TX and RX queue factory callback ABIs use unsigned int return type."
+    - "Callbacks operate on packet arrays plus count."
+    - "Queue registration precedes BSD visibility."
+  inferred_runtime_model:
+    - "Return value is batch-related rather than boolean-only."
+    - "Partial consumption is likely supported or at least ABI-compatible."
+    - "A safe driver should treat the callback result as progress information, not mere success/failure."
+  implementation_safe_subset:
+    - "Consume all packets in the batch or reject none."
+    - "Avoid partial-batch semantics until callback return contract is fully pinned down."
+    - "Do not report success if ownership was not actually transferred."
+  what_is_not_yet_pinned_down:
+    - "Exact meaning of every non-zero / partial return value."
+    - "Whether Apple uses count-consumed, status flags, or mixed encoding."
+
+packet_ownership_and_transfer:
+  before_tx_callback:
+    owner: "pool/queue runtime"
+    note: "Driver may inspect packet content but should not assume long-term ownership until it accepts submission."
+  after_tx_accept:
+    owner: "driver/hardware path until completion or drop accounting returns ownership"
+  after_tx_reject:
+    owner: "queue/pool runtime"
+  before_rx_callback:
+    owner: "queue/pool runtime with packet already materialized for completion delivery"
+  after_rx_handoff_upward:
+    owner: "upper network input path / completion adapter"
+  after_rx_drop:
+    owner: "queue/pool runtime once packet is released back"
+  strict_rules:
+    - "Never free packet backing memory directly if pool owns it."
+    - "Never treat ifnet visibility as packet ownership transfer."
+    - "On reset/stop, packets still in queue context must be drainable or releasable without use-after-free."
+
+batch_handling_model:
+  recommended_safe_mode:
+    - "Treat each callback batch as all-or-nothing during early bring-up."
+    - "Only add partial-batch handling after stable submit/complete behavior is observed."
+  hazards:
+    - "Partial consume without clear return semantics"
+    - "Leaving holes in a batch"
+    - "Returning ownership inconsistently for only some packets"
+  eventual_advanced_support:
+    - "Partial batch completion"
+    - "Backpressure-aware batching"
+    - "Out-of-order completion accounting if underlying ABI permits it"
+
+queue_mini_state_machine:
+  states:
+    - CREATED
+    - REGISTERED
+    - ENABLED
+    - QUIESCED
+    - DRAINING
+    - STOPPED
+    - DETACHED
+    - RELEASED
+  transitions:
+    - "CREATED -> REGISTERED after logical-link registration"
+    - "REGISTERED -> ENABLED when runtime/ifnet path is ready"
+    - "ENABLED -> QUIESCED on sleep/quiesce/reset pre-stop"
+    - "QUIESCED -> DRAINING on stop/reset teardown"
+    - "DRAINING -> STOPPED after callbacks can no longer fire"
+    - "STOPPED -> DETACHED when logical-link/queue detach completes"
+    - "DETACHED -> RELEASED when pool/queue objects are finally released"
+  invariants:
+    - "No callback entry after STOPPED."
+    - "No pool release before DETACHED."
+    - "RELEASED is terminal."
+
+rx_upward_delivery_boundary:
+  what_is_known:
+    - "RX completion queue feeds packets upward before or independent of operational NET_MANAGER LINK_UP semantics."
+    - "BSD interface visibility is not created by RX callback itself."
+  practical_boundary:
+    - "RX completion should be treated as datapath delivery into an already-existing interface/BSD world."
+    - "Upper-layer handoff and drop accounting should sit above queue ownership, not inside pool lifetime rules."
+  still_unknown:
+    - "Exact Apple internal handoff point from IOSkywalkPacket to final ifnet/net input object."
+
+stop_reset_race_rules:
+  stop:
+    - "Assume callback entry can race with stop initiation unless queue is explicitly quiesced first."
+    - "Flush/quiesce before deregisterLogicalLink."
+    - "After STOPPED, callbacks must not touch interface-owned freed state."
+  reset:
+    - "Reset may force logical-link teardown while the interface object still conceptually exists."
+    - "A driver must not reuse destroyed queue/pool state across reset without re-registration."
+  sleep:
+    - "Sleep should quiesce datapath, not destroy interface identity."
+  wake:
+    - "Wake should restore runtime readiness without pretending the interface was newly created."
+
+ownership_and_lifetime:
+  packet_ownership_model:
+    rule_1: "Pools own backing memory."
+    rule_2: "Queues mediate access to packet objects."
+    rule_3: "Logical link registration makes queues active for the interface."
+    rule_4: "BSD ifnet visibility does not transfer ownership of packet backing memory."
+    rule_5: "Interface object may survive queue flush/rebuild events."
+  practical_interpretation:
+    - "Do not treat IOSkywalkPacket lifetime as equivalent to ifnet lifetime."
+    - "Do not destroy pools just because operational link dropped."
+    - "Stop/free path must drain/flush first, release later."
+
+state_vs_datapath:
+  key_distinction:
+    - "Datapath creation/registration is earlier than NET_MANAGER operational LINK_UP."
+    - "JOIN/NET/ROAM FSMs govern usability, not the initial existence of queues/pools/ifnet."
+  consequences:
+    - "An adapter can have valid queues and ifnet while still waiting for CONNECT_COMPLETE/IPV4_STATUS."
+    - "A reset can tear down logical link and queues without meaning the interface object concept never existed."
+
+sleep_reset_stop_invariants:
+  sleep:
+    - "Interface identity should survive."
+    - "Queues may be quiesced or left idle."
+    - "Do not destroy pools merely on sleep entry."
+  wake:
+    - "Wake restores datapath readiness before or alongside higher-plane event replay."
+    - "ifnet identity should not be recreated solely due to wake."
+  reset:
+    - "Force link-down and logical-link teardown may occur."
+    - "Queues may be rebuilt."
+    - "Pool cleanup must still respect stop/deregister ordering."
+  stop:
+    ordered_requirements:
+      - "flush packet queues"
+      - "stop/release monitor-ish helpers"
+      - "super::stop triggers deregisterLogicalLink/deregisterNetworkInterface"
+      - "release pools only after queue teardown path is complete"
+
+minimal_emulation_profile_for_new_driver:
+  phase_1:
+    objective: "One TX queue + one RX queue + one logical link + successful BSD attach"
+    required:
+      - "correct queue callback ABI"
+      - "basic packet submit/receive"
+      - "safe stop() flush"
+      - "all-or-nothing batch handling"
+  phase_2:
+    objective: "Operational connect/link lifecycle"
+    required:
+      - "CONNECT_COMPLETE / IPV4_STATUS path stable"
+      - "RX delivery to upper layers"
+  phase_3:
+    objective: "Sleep/reset correctness"
+    required:
+      - "queue quiesce/drain"
+      - "rebuild or re-enable after wake/reset"
+  phase_4:
+    objective: "Optimization"
+    optional:
+      - "multi-queue"
+      - "advanced offloads"
+      - "batching"
+
+minimal_validation_checklist:
+  - "TX callback invoked with one-packet batch"
+  - "RX callback invoked with one-packet batch"
+  - "TX and RX survive queue registration and BSD attach"
+  - "batch >1 does not corrupt ownership"
+  - "stop() flushes without packet leaks or UAF"
+  - "sleep/wake preserves interface identity"
+  - "reset tears down and rebuilds queues without dangling packets"
+
+known_evidence_points:
+  - "registerEthernetInterface creates logical link from queues and dispatches to registerNetworkInterfaceWithLogicalLink"
+  - "nexus registration occurs before BSD exposure"
+  - "deferBSDAttach(false) later triggers service exposure"
+  - "IO80211SkywalkInterface::stop flushes packet queues first"
+  - "TX/RX pools in core expansion data must survive until stop()"
+
+remaining_runtime_gaps:
+  - "Exact steady-state ownership transfer semantics for every IOSkywalkPacket path"
+  - "Exact per-packet descriptor metadata formats in TX/RX callbacks"
+  - "Complete callback body semantics for Apple’s concrete TX/RX queue handlers"
