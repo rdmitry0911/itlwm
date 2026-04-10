@@ -1064,12 +1064,16 @@ bool AirportItlwm::start(IOService *provider)
             (IOSkywalkPacketQueue *)fTxQueue,
             (IOSkywalkPacketQueue *)fRxQueue
         };
-        bool regOK = fNetIf->registerEthernetInterface(
+        // registerEthernetInterface returns IOReturn: 0 = kIOReturnSuccess.
+        // Was incorrectly declared bool — 0 (success) was misread as false.
+        // Ghidra FUN_0xa3d994: validates regInfo, builds LogicalLink from
+        // queues via registerNetworkInterface(0xa36fd2), returns 0 on success.
+        IOReturn regRet = fNetIf->registerEthernetInterface(
             (const IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
             queues, 2, fTxPool, fRxPool, 0);
-        XYLog("DEBUG %s [STEP 8d] registerEthernetInterface=%d\n", __FUNCTION__, regOK);
-        if (!regOK) {
-            XYLog("DEBUG %s [STEP 8d] FAIL: registerEthernetInterface\n", __FUNCTION__);
+        XYLog("DEBUG %s [STEP 8d] registerEthernetInterface=0x%x\n", __FUNCTION__, regRet);
+        if (regRet != kIOReturnSuccess) {
+            XYLog("DEBUG %s [STEP 8d] FAIL: registerEthernetInterface ret=0x%x\n", __FUNCTION__, regRet);
             super::stop(provider);
             releaseAll();
             DISARM_PANIC_TIMER();

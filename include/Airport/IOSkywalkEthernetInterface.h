@@ -70,7 +70,11 @@ public:
     
 public:
     bool initRegistrationInfo(IOSkywalkEthernetInterface::RegistrationInfo*, unsigned int, unsigned long);
-    bool registerEthernetInterface(IOSkywalkEthernetInterface::RegistrationInfo const*, IOSkywalkPacketQueue**, unsigned int, IOSkywalkPacketBufferPool*, IOSkywalkPacketBufferPool*, unsigned int);
+    // Return type is IOReturn (0 = kIOReturnSuccess), NOT bool.
+    // Ghidra FUN_0xa3d994 returns ulong: 0 on success, IOReturn error code on failure.
+    // C++ name mangling (Itanium ABI) does not include return type for
+    // non-template functions, so the linker resolves to the same kernel symbol.
+    IOReturn registerEthernetInterface(IOSkywalkEthernetInterface::RegistrationInfo const*, IOSkywalkPacketQueue**, unsigned int, IOSkywalkPacketBufferPool*, IOSkywalkPacketBufferPool*, unsigned int);
     
 public:
     void *vptr;

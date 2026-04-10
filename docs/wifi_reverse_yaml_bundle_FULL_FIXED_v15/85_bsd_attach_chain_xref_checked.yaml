@@ -82,6 +82,13 @@ bsd_attach_sequence:
       call: "registerEthernetInterface(&registInfo, queues, 2, txPool, rxPool, 0)"
       type: non_virtual
       class: IOSkywalkEthernetInterface
+      return_type: >-
+        IOReturn (NOT bool). Returns 0 = kIOReturnSuccess on success,
+        non-zero IOReturn error code on failure (e.g. 0xe00002c2).
+        Ghidra FUN_0xa3d994 confirms ulong return. C++ name mangling
+        (Itanium ABI) excludes return type for non-template functions,
+        so a bool declaration links to the same symbol but inverts the
+        success check: IOReturn 0 → bool false → misinterpreted as failure.
       internal_call_chain: >-
         registerEthernetInterface (non-virtual, in IOSkywalkFamily)
           → creates IOSkywalkLogicalLink from provided queues
