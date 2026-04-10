@@ -698,7 +698,7 @@ getCARD_CAPABILITIES(OSObject *object,
     // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    cd->capabilities[2] = 0xFF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, WOW, TSN, ?, ?
+    cd->capabilities[2] = 0xEF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, TSN (WOW bit cleared — not implemented)
     cd->capabilities[3] = 0x2B;
     cd->capabilities[4] = 0xAD;
     cd->capabilities[5] = 0x80;//isCntryDefaultSupported

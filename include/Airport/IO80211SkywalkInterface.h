@@ -88,7 +88,10 @@ public:
     // --- IO80211SkywalkInterface-specific virtuals ---
 #if __IO80211_TARGET >= __MAC_26_0
 
-    // Tahoe vtable: [355]-[462] from BootKC 26.2 Ghidra dump
+    // Tahoe vtable: verified order against IO80211SkywalkInterface __ZTV
+    // in BootKC 26.3 (25D125).  Absolute slot numbers below are from the
+    // InfraProtocol secondary vtable base and may be ~2 off; the METHOD
+    // ORDER is what the compiler uses and is confirmed correct.
     virtual void *createPeerManager(void);                                          // [355]
     virtual void *createPeer(unsigned char const*, IO80211PeerManager *);            // [356] NEW
     virtual void postMessage(UInt,void *,unsigned long,bool);                        // [357]
@@ -151,8 +154,8 @@ public:
     virtual void *findPeer(ether_addr &);                                                  // [412] NEW
     virtual void setNotificationProperty(OSSymbol const*,OSObject const*);                 // [413]
     virtual void *getWorkerMatchingDict(OSString *);                                       // [414]
-    virtual bool init(IOService *, ether_addr *);                                          // [415] extra param
-    virtual bool isInterfaceEnabled(void);                                                  // [416]
+    virtual bool init(IOService *, ether_addr *);                                          // [415] real secondary slot 413 (0xCE8)
+    virtual bool isInterfaceEnabled(void);                                                  // [416] real secondary slot 414 (0xCF0)
     virtual ether_addr *getSelfMacAddr(void);                                               // [417]
     // setSelfMacAddr REMOVED
     virtual void *getPacketPool(OSString *);                                                // [418]

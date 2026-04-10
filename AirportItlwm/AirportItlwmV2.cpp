@@ -1041,6 +1041,7 @@ IOReturn AirportItlwm::enable(IO80211SkywalkInterface *netif)
 IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 {
     XYLog("DEBUG %s power_state=%u\n", __PRETTY_FUNCTION__, power_state);
+    disableAdapter(bsdInterface);
     super::disable(netif);
     setLinkStatus(kIONetworkLinkValid);
     return kIOReturnSuccess;
@@ -1229,8 +1230,15 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         XYLog("DEBUG %s #%d m=%p param=%p ic_state=%d\n", __FUNCTION__, sOutputCount, m, param,
               fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
+
+    if (pmPowerState != kPowerStateOn) {
+        if (m && mbuf_type(m) != MBUF_TYPE_FREE)
+            freePacket(m);
+        return kIOReturnOutputDropped;
+    }
+
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    
+
     if (fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN || ifp->if_snd.queue == NULL) {
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
@@ -1425,7 +1433,7 @@ getCARD_CAPABILITIES(OSObject *object,
     // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    cd->capabilities[2] = 0xFF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, WOW, TSN, ?, ?
+    cd->capabilities[2] = 0xEF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, TSN (WOW bit cleared — not implemented)
     cd->capabilities[3] = 0x2B;
     cd->capabilities[5] = 0x40;
     cd->capabilities[6] = (
@@ -1727,10 +1735,12 @@ static IOPMPowerState powerStateArray[kPowerStateCount] =
 void AirportItlwm::unregistPM()
 {
     if (powerOffThreadCall) {
+        thread_call_cancel(powerOffThreadCall);
         thread_call_free(powerOffThreadCall);
         powerOffThreadCall = NULL;
     }
     if (powerOnThreadCall) {
+        thread_call_cancel(powerOnThreadCall);
         thread_call_free(powerOnThreadCall);
         powerOnThreadCall = NULL;
     }
@@ -1773,14 +1783,19 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
 
 unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domainState)
 {
+    // kIOPMDeviceUsable (bit 9) = parent can supply usable power → ON
+    // kIOPMPowerOn (bit 1) = parent has power → ON
+    // Neither → OFF
     unsigned long ret;
-    if ((domainState >> 9) & 1)
-        ret = kPowerStateOff;
+    if (domainState & kIOPMDeviceUsable)
+        ret = kPowerStateOn;
+    else if (domainState & kIOPMPowerOn)
+        ret = kPowerStateOn;
     else
-        ret = (domainState >> 1) & 1;
+        ret = kPowerStateOff;
     XYLog("DEBUG %s domainState=0x%lx (DeviceUsable=%d PowerOn=%d) -> %lu power_state=%u pmPowerState=%u\n",
           __FUNCTION__, (unsigned long)domainState,
-          (int)((domainState >> 9) & 1), (int)((domainState >> 1) & 1),
+          (int)((domainState & kIOPMDeviceUsable) != 0), (int)((domainState & kIOPMPowerOn) != 0),
           ret, power_state, pmPowerState);
     return ret;
 }
@@ -1795,40 +1810,52 @@ static void handleSetPowerStateOff(thread_call_param_t param0,
                              thread_call_param_t param1)
 {
     AirportItlwm *self = (AirportItlwm *)param0;
-    XYLog("DEBUG handleSetPowerStateOff param1=%p gate=%p\n", param1, self->getCommandGate());
+    if (!self) return;
 
     if (param1 == 0)
     {
-        self->getCommandGate()->runAction((IOCommandGate::Action)
-                                           handleSetPowerStateOff,
-                                           (void *) 1);
+        IOCommandGate *gate = self->getCommandGate();
+        if (gate) {
+            gate->runAction((IOCommandGate::Action)
+                            handleSetPowerStateOff,
+                            (void *) 1);
+        } else {
+            XYLog("DEBUG handleSetPowerStateOff: gate=NULL, calling directly\n");
+            self->setPowerStateOff();
+            self->release();
+        }
     }
     else
     {
         self->setPowerStateOff();
         self->release();
     }
-    XYLog("DEBUG handleSetPowerStateOff DONE\n");
 }
 
 static void handleSetPowerStateOn(thread_call_param_t param0,
                             thread_call_param_t param1)
 {
-    AirportItlwm *self = (AirportItlwm *) param0;
-    XYLog("DEBUG handleSetPowerStateOn param1=%p gate=%p\n", param1, self->getCommandGate());
+    AirportItlwm *self = (AirportItlwm *)param0;
+    if (!self) return;
 
     if (param1 == 0)
     {
-        self->getCommandGate()->runAction((IOCommandGate::Action)
-                                           handleSetPowerStateOn,
-                                           (void *) 1);
+        IOCommandGate *gate = self->getCommandGate();
+        if (gate) {
+            gate->runAction((IOCommandGate::Action)
+                            handleSetPowerStateOn,
+                            (void *) 1);
+        } else {
+            XYLog("DEBUG handleSetPowerStateOn: gate=NULL, calling directly\n");
+            self->setPowerStateOn();
+            self->release();
+        }
     }
     else
     {
         self->setPowerStateOn();
         self->release();
     }
-    XYLog("DEBUG handleSetPowerStateOn DONE\n");
 }
 
 IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
@@ -1865,7 +1892,8 @@ void AirportItlwm::setPowerStateOff()
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
     disableAdapter(bsdInterface);
-    pmPolicyMaker->acknowledgeSetPowerState();
+    if (pmPolicyMaker)
+        pmPolicyMaker->acknowledgeSetPowerState();
 }
 
 void AirportItlwm::setPowerStateOn()
@@ -1876,5 +1904,6 @@ void AirportItlwm::setPowerStateOn()
         enableAdapter(bsdInterface);
     else
         XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
-    pmPolicyMaker->acknowledgeSetPowerState();
+    if (pmPolicyMaker)
+        pmPolicyMaker->acknowledgeSetPowerState();
 }

@@ -35,7 +35,18 @@ public:
     virtual void *getInterfaceSubFamily(void) APPLE_KEXT_OVERRIDE;
     virtual UInt getInitialMedia(void) APPLE_KEXT_OVERRIDE;
     virtual const char *getBSDNamePrefix(void) APPLE_KEXT_OVERRIDE;
-    virtual IOReturn registerNetworkInterfaceWithLogicalLink(IOSkywalkEthernetInterface::RegistrationInfo const*, IOSkywalkLogicalLink*, IOSkywalkPacketBufferPool*, IOSkywalkPacketBufferPool*, UInt);
+    // registerNetworkInterfaceWithLogicalLink is NOT declared here:
+    // IOSkywalkEthernetInterface in the real kernel OVERRIDES the parent
+    // IOSkywalkNetworkInterface::registerNetworkInterfaceWithLogicalLink
+    // (same vtable slot).  Declaring it here with a different RegistrationInfo
+    // type makes the C++ compiler treat it as a NEW virtual method, adding
+    // an extra vtable slot that shifts every subsequent slot by +1.
+    // Verified against IOSkywalkFamily.kext 26.3 (25D125):
+    //   - IO80211SkywalkInterface vtable at __ZTV23IO80211SkywalkInterface
+    //   - init(IOService*,ether_addr*) is at secondary slot 413 (offset 0xCE8)
+    //   - isInterfaceEnabled() is at secondary slot 414 (offset 0xCF0)
+    //   With the extra slot, our init lands at slot 414 → framework's call
+    //   to isInterfaceEnabled (0xCF0) dispatches to init with wrong args → panic.
     virtual void getHardwareAddress(ether_addr *);
     virtual void setHardwareAddress(ether_addr *);
     virtual void setLinkLayerAddress(ether_addr *);

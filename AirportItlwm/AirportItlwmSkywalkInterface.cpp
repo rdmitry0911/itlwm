@@ -369,13 +369,18 @@ bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
     XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
-    // AppleBCMWLAN reference (BootKC disassembly):
-    //   FUN_ffffff800155c6ac allocates the interface, then calls the no-arg
-    //   init() via vtable → AppleBCMWLANSkywalkInterface::init() →
-    //   IO80211InfraInterface::init() → IO80211SkywalkInterface::init() →
-    //   IOSkywalkEthernetInterface::init(NULL) + initIvars().
-    //   The two-arg init(IOService*, ether_addr*) is never called.
-    //   MAC address is handled by getHardwareAddress(), not by init.
+    // init(IOService*, ether_addr*) is at IO80211SkywalkInterface vtable
+    // secondary slot 413 (offset 0xCE8).  Called from AirportItlwm::start()
+    // with provider=AirportItlwm*, addr=&hardwareAddress.
+    //
+    // IMPORTANT: the framework does NOT call this method.  The adjacent slot
+    // isInterfaceEnabled() (slot 414, offset 0xCF0) IS called by
+    // IO80211MacAddressAgent::updateMacAddress during IO80211SkywalkInterface::start.
+    // A vtable misalignment (extra slot in IOSkywalkEthernetInterface) previously
+    // caused the framework's isInterfaceEnabled call to dispatch here instead,
+    // with ether_addr* as provider → crash in OSDynamicCast.  Fixed by removing
+    // the spurious registerNetworkInterfaceWithLogicalLink from
+    // IOSkywalkEthernetInterface.h (see comment there).
     if (!IO80211InfraInterface::init()) {
         XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
