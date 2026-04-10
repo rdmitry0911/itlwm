@@ -24,7 +24,9 @@
 #include "ItlIwx.hpp"
 #include "ItlIwn.hpp"
 
+#if __IO80211_TARGET < __MAC_26_0
 #include "AirportItlwmEthernetInterface.hpp"
+#endif
 #include "Airport/IO80211FaultReporter.h"
 #include <skywalk/packet/os_packet.h>
 #include <IOKit/skywalk/IOSkywalkTxSubmissionQueue.h>
@@ -227,7 +229,9 @@ public:
     virtual const OSString * newModelString() const override;
     virtual IOReturn selectMedium(const IONetworkMedium *medium) override;
     virtual bool createWorkQueue() override;
+#if __IO80211_TARGET < __MAC_26_0
     virtual IONetworkInterface * createInterface() override;
+#endif
     virtual bool configureInterface(IONetworkInterface *netif) override;
     virtual UInt32 outputPacket(mbuf_t, void * param) override;
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
@@ -375,7 +379,11 @@ public:
     IOTimerEventSource *watchdogTimer;
     IOPCIDevice *pciNub;
     IONetworkStats *fpNetStats;
+    // On Sequoia (26.x), BSD ifnet is created by IOSkywalkNetworkBSDClient
+    // after deferBSDAttach(false). The legacy IOEthernetInterface shim is dead.
+#if __IO80211_TARGET < __MAC_26_0
     AirportItlwmEthernetInterface *bsdInterface;
+#endif
     IO80211SkywalkInterface *fNetIf;
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;

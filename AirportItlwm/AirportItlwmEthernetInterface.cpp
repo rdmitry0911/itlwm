@@ -6,6 +6,10 @@
 //  Copyright © 2023 钟先耀. All rights reserved.
 //
 
+// On Sequoia (26.x), BSD ifnet is created by IOSkywalkNetworkBSDClient
+// after deferBSDAttach(false). This legacy IOEthernetInterface shim is dead.
+#if __IO80211_TARGET < __MAC_26_0
+
 #include "AirportItlwmEthernetInterface.hpp"
 #include "AirportItlwmV2.hpp"
 
@@ -129,3 +133,5 @@ inputPacket(mbuf_t packet, UInt32 length, IOOptionBits options, void *param)
     }
     return IOEthernetInterface::inputPacket(packet, length, options, param);
 }
+
+#endif /* __IO80211_TARGET < __MAC_26_0 */

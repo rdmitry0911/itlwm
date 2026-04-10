@@ -1216,6 +1216,10 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     return true;
 }
 
+// On Sequoia (26.x), createInterface is not called by the Skywalk
+// attachInterface(IOSkywalkInterface*, IOService*) path. BSD ifnet is
+// created by IOSkywalkNetworkBSDClient after deferBSDAttach(false).
+#if __IO80211_TARGET < __MAC_26_0
 IONetworkInterface *AirportItlwm::createInterface()
 {
     RT_SET(24);
@@ -1233,6 +1237,7 @@ IONetworkInterface *AirportItlwm::createInterface()
     XYLog("DEBUG %s OK: netif=%p\n", __FUNCTION__, netif);
     return netif;
 }
+#endif
 
 bool AirportItlwm::createMediumTables(const IONetworkMedium **primary)
 {
@@ -1327,10 +1332,12 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     } else {
         that->fNetIf->reportLinkStatus(1, 0);
     }
+#if __IO80211_TARGET < __MAC_26_0
     if (that->bsdInterface) {
         XYLog("DEBUG %s calling bsdInterface->setLinkState bsdInterface=%p\n", __FUNCTION__, that->bsdInterface);
         that->bsdInterface->setLinkState((IO80211LinkState)(uint64_t)arg0);
     }
+#endif
     XYLog("DEBUG %s DONE ret=0x%x\n", __FUNCTION__, ret);
     return ret;
 }
@@ -1442,8 +1449,13 @@ IOReturn AirportItlwm::setHardwareAddress(const void *addrP, UInt32 addrBytes)
         return kIOReturnError;
     if_setlladdr(&fHalService->get80211Controller()->ic_ac.ac_if, (const UInt8 *)addrP);
     if (fHalService->get80211Controller()->ic_state > IEEE80211_S_INIT) {
+#if __IO80211_TARGET >= __MAC_26_0
+        fHalService->disable(NULL);
+        fHalService->enable(NULL);
+#else
         fHalService->disable(bsdInterface);
         fHalService->enable(bsdInterface);
+#endif
     }
     return kIOReturnSuccess;
 }
@@ -1698,7 +1710,11 @@ setPOWER(OSObject *object,
           __FUNCTION__, pd->num_radios,
           pd->num_radios > 0 ? pd->power_state[0] : 0, power_state, pmPowerState);
     if (pd->num_radios > 0)
+#if __IO80211_TARGET >= __MAC_26_0
+        handlePowerStateChange(pd->power_state[0], NULL);
+#else
         handlePowerStateChange(pd->power_state[0], bsdInterface);
+#endif
     return kIOReturnSuccess;
 }
 
@@ -2034,7 +2050,11 @@ void AirportItlwm::setPowerStateOff()
 {
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
+#if __IO80211_TARGET >= __MAC_26_0
+    disableAdapter(NULL);
+#else
     disableAdapter(bsdInterface);
+#endif
     if (pmPolicyMaker) {
         sRT.pmAckOffCnt++;
         pmPolicyMaker->acknowledgeSetPowerState();
@@ -2046,7 +2066,11 @@ void AirportItlwm::setPowerStateOn()
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOn;
     if (power_state)
+#if __IO80211_TARGET >= __MAC_26_0
+        enableAdapter(NULL);
+#else
         enableAdapter(bsdInterface);
+#endif
     else
         XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     if (pmPolicyMaker) {
