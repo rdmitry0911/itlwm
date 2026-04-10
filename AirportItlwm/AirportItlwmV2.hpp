@@ -173,6 +173,23 @@ struct RuntimeDiag {
     volatile uint64_t fRxPoolPtr;    // raw fRxPool pointer
     volatile uint64_t fTxQueuePtr;   // raw fTxQueue pointer
     volatile uint64_t fRxQueuePtr;   // raw fRxQueue pointer
+    // --- TX/RX Skywalk data path counters ---
+    volatile uint32_t txCbCnt;       // skywalkTxAction invocations
+    volatile uint32_t txPktSent;     // packets sent through outputPacket via TX
+    volatile uint32_t txPktDrop;     // packets dropped in TX callback
+    volatile uint32_t rxInputCnt;    // skywalkRxInput invocations
+    volatile uint32_t rxPktOK;       // packets enqueued to fRxQueue
+    volatile uint32_t rxAllocFail;   // fRxPool->allocatePacket failures
+    volatile uint32_t rxEnqFail;     // fRxQueue->enqueuePackets failures
+    volatile uint32_t rxCbCnt;       // skywalkRxAction invocations
+    // --- nexusProvider diagnostics (raw fNetIf field offsets per YAML 91) ---
+    volatile uint64_t nexusProvPtr;  // fNetIf+0xC8 (nexusProvider, must be non-NULL)
+    volatile uint64_t nifCtxPtr;     // fNetIf+0xC0 (NIF_Context / ExpansionData)
+    volatile uint64_t nexusArenaPtr; // fNetIf+0xD0 (nexus arena object)
+    volatile uint64_t asyncSentinel; // fNetIf+0xB8 (0xe00002c7 = pending)
+    volatile uint64_t regObj90;      // fNetIf+0x90 (queue-set object)
+    volatile uint64_t regObj98;      // fNetIf+0x98 (queue-related object)
+    volatile uint64_t regObjA0;      // fNetIf+0xA0 (queue manager object)
 };
 extern RuntimeDiag sRT;
 #define RT_SET(bit)  do { sRT.rtMask  |= (1u << (bit)); } while(0)

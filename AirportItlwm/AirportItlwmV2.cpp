@@ -47,7 +47,7 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
     if (!that) return 0;
 
-    static int sTxLog = 0;
+    sRT.txCbCnt++;
     UInt32 sent = 0;
     for (UInt32 i = 0; i < count; i++) {
         IOSkywalkPacket *pkt = packets[i];
@@ -56,27 +56,31 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         IOSkywalkPacketBuffer *bufs[1] = { NULL };
         UInt32 nBufs = pkt->getPacketBuffers(bufs, 1);
         if (nBufs == 0 || !bufs[0]) {
-            if (++sTxLog <= 3)
+            sRT.txPktDrop++;
+            if (sRT.txCbCnt <= 3)
                 XYLog("skywalkTxAction: pkt %u/%u no buffers\n", i, count);
             continue;
         }
 
         kern_buflet_t buflet = bufs[0]->mBufletHandle;
-        if (!buflet) continue;
+        if (!buflet) { sRT.txPktDrop++; continue; }
 
         void *objAddr = kern_buflet_get_object_address(buflet);
         uint16_t dataOff = kern_buflet_get_data_offset(buflet);
         uint16_t dataLen = kern_buflet_get_data_length(buflet);
 
-        if (!objAddr || dataLen == 0) continue;
+        if (!objAddr || dataLen == 0) { sRT.txPktDrop++; continue; }
 
         // Allocate an mbuf with packet header and copy the Ethernet frame
         mbuf_t m = NULL;
-        if (mbuf_allocpacket(MBUF_DONTWAIT, dataLen, NULL, &m) != 0)
+        if (mbuf_allocpacket(MBUF_DONTWAIT, dataLen, NULL, &m) != 0) {
+            sRT.txPktDrop++;
             continue;
+        }
 
         if (mbuf_copyback(m, 0, dataLen, (uint8_t *)objAddr + dataOff, MBUF_DONTWAIT) != 0) {
             mbuf_freem(m);
+            sRT.txPktDrop++;
             continue;
         }
 
@@ -84,10 +88,9 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         sent++;
     }
 
-    if (sTxLog <= 3 && count > 0) {
-        sTxLog++;
-        XYLog("skywalkTxAction: count=%u sent=%u\n", count, sent);
-    }
+    sRT.txPktSent += sent;
+    if (sRT.txCbCnt <= 3 && count > 0)
+        XYLog("skywalkTxAction: count=%u sent=%u (total tx=%u)\n", count, sent, sRT.txPktSent);
     return sent;
 }
 
@@ -100,6 +103,7 @@ static unsigned int
 skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
                 IOSkywalkPacket **packets, UInt32 count, void *refCon)
 {
+    sRT.rxCbCnt++;
     return count;
 }
 
@@ -117,6 +121,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         return ENXIO;
     }
 
+    sRT.rxInputCnt++;
+
     size_t len = mbuf_pkthdr_len(m);
     if (len == 0) {
         mbuf_freem(m);
@@ -126,9 +132,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     // Allocate an IOSkywalkPacket from the RX pool
     IOSkywalkPacket *rxPkt = NULL;
     if (that->fRxPool->allocatePacket(1, &rxPkt, 0) != kIOReturnSuccess || !rxPkt) {
-        static int sRxAllocFail = 0;
-        if (++sRxAllocFail <= 5)
-            XYLog("skywalkRxInput: allocatePacket failed (drop #%d)\n", sRxAllocFail);
+        sRT.rxAllocFail++;
+        if (sRT.rxAllocFail <= 5)
+            XYLog("skywalkRxInput: allocatePacket failed (drop #%u)\n", sRT.rxAllocFail);
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -164,11 +170,13 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     mbuf_freem(m);
 
     if (ret != kIOReturnSuccess) {
-        static int sRxEnqFail = 0;
-        if (++sRxEnqFail <= 5)
-            XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%d)\n", ret, sRxEnqFail);
+        sRT.rxEnqFail++;
+        if (sRT.rxEnqFail <= 5)
+            XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%u)\n", ret, sRT.rxEnqFail);
         return EIO;
     }
+
+    sRT.rxPktOK++;
 
     return 0;
 }
@@ -675,7 +683,10 @@ bool AirportItlwm::start(IOService *provider)
                       "bsdFl=0x%x bsdMtu=%u | "
                       "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
                       "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
-                      "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p",
+                      "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p | "
+                      "txCb=%u txS=%u txD=%u rxIn=%u rxOK=%u rxAF=%u rxEF=%u rxCb=%u | "
+                      "nxProv=%p nifCtx=%p nxArena=%p async=%p "
+                      "r90=%p r98=%p rA0=%p",
                       d->mask, d->step, sRT.startStep,
                       sRT.rtMask, sRT.rtMask2, sRT.rtMask3, d->self,
                       d->logStream, d->faultReporter,
@@ -704,7 +715,17 @@ bool AirportItlwm::start(IOService *provider)
                       (void *)(uintptr_t)sRT.fTxPoolPtr,
                       (void *)(uintptr_t)sRT.fRxPoolPtr,
                       (void *)(uintptr_t)sRT.fTxQueuePtr,
-                      (void *)(uintptr_t)sRT.fRxQueuePtr);
+                      (void *)(uintptr_t)sRT.fRxQueuePtr,
+                      sRT.txCbCnt, sRT.txPktSent, sRT.txPktDrop,
+                      sRT.rxInputCnt, sRT.rxPktOK, sRT.rxAllocFail,
+                      sRT.rxEnqFail, sRT.rxCbCnt,
+                      (void *)(uintptr_t)sRT.nexusProvPtr,
+                      (void *)(uintptr_t)sRT.nifCtxPtr,
+                      (void *)(uintptr_t)sRT.nexusArenaPtr,
+                      (void *)(uintptr_t)sRT.asyncSentinel,
+                      (void *)(uintptr_t)sRT.regObj90,
+                      (void *)(uintptr_t)sRT.regObj98,
+                      (void *)(uintptr_t)sRT.regObjA0);
         }, &sDiag);
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
@@ -999,20 +1020,39 @@ bool AirportItlwm::start(IOService *provider)
     //   +0xC8 = nexusProvider (must be non-NULL for core registration at FUN_0xa37640)
     //   +0xD0 = nexus arena
     //   +0x118 = mExpansionData2 (EthernetRegistrationContext, read by registerEthernetInterface)
+    // Dump nexusProvider and surrounding fields (per YAML 91).
+    // These offsets are critical for understanding registration success/failure.
     {
         uint8_t *raw = (uint8_t *)fNetIf;
         void *nifCtx      = *(void **)(raw + 0xC0);
         void *nexusProv   = *(void **)(raw + 0xC8);
         void *nexusArena  = *(void **)(raw + 0xD0);
         void *ethRegCtx   = *(void **)(raw + 0x118);
+        void *asyncSent   = *(void **)(raw + 0xB8);
+        void *regObj90    = *(void **)(raw + 0x90);
+        void *regObj98    = *(void **)(raw + 0x98);
+        void *regObjA0    = *(void **)(raw + 0xA0);
+
+        // Persist in RuntimeDiag for panic timer visibility
+        sRT.nifCtxPtr     = (uint64_t)(uintptr_t)nifCtx;
+        sRT.nexusProvPtr  = (uint64_t)(uintptr_t)nexusProv;
+        sRT.nexusArenaPtr = (uint64_t)(uintptr_t)nexusArena;
+        sRT.asyncSentinel = (uint64_t)(uintptr_t)asyncSent;
+        sRT.regObj90      = (uint64_t)(uintptr_t)regObj90;
+        sRT.regObj98      = (uint64_t)(uintptr_t)regObj98;
+        sRT.regObjA0      = (uint64_t)(uintptr_t)regObjA0;
+
         XYLog("DEBUG %s [PRE-REG] fNetIf=%p raw offsets:\n"
+              "  +0x90 (queueSet)=%p  +0x98 (queueObj)=%p  +0xA0 (queueMgr)=%p\n"
+              "  +0xB8 (asyncSentinel)=%p\n"
               "  +0xC0 (NIF_Context)=%p\n"
               "  +0xC8 (nexusProvider)=%p\n"
               "  +0xD0 (nexusArena)=%p\n"
               "  +0x118 (mExpansionData2/EthRegCtx)=%p\n",
-              __FUNCTION__, fNetIf, nifCtx, nexusProv, nexusArena, ethRegCtx);
+              __FUNCTION__, fNetIf,
+              regObj90, regObj98, regObjA0,
+              asyncSent, nifCtx, nexusProv, nexusArena, ethRegCtx);
         if (ethRegCtx) {
-            // First field of EthernetRegistrationContext is fRegistrationInfo pointer
             void *regInfoPtr = *(void **)ethRegCtx;
             XYLog("DEBUG %s [PRE-REG] *(+0x118)->fRegistrationInfo=%p\n",
                   __FUNCTION__, regInfoPtr);
@@ -1112,7 +1152,10 @@ void AirportItlwm::stop(IOService *provider)
                   "bsdFl=0x%x bsdMtu=%u | "
                   "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
                   "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
-                  "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p",
+                  "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p | "
+                  "txCb=%u txS=%u txD=%u rxIn=%u rxOK=%u rxAF=%u rxEF=%u rxCb=%u | "
+                  "nxProv=%p nifCtx=%p nxArena=%p async=%p "
+                  "r90=%p r98=%p rA0=%p",
                   sRT.stopStep, sRT.rtMask, sRT.rtMask2, sRT.rtMask3,
                   sRT.ic_state, sRT.if_flags, sRT.power_state,
                   sRT.linkStatus,
@@ -1139,7 +1182,17 @@ void AirportItlwm::stop(IOService *provider)
                   (void *)(uintptr_t)sRT.fTxPoolPtr,
                   (void *)(uintptr_t)sRT.fRxPoolPtr,
                   (void *)(uintptr_t)sRT.fTxQueuePtr,
-                  (void *)(uintptr_t)sRT.fRxQueuePtr);
+                  (void *)(uintptr_t)sRT.fRxQueuePtr,
+                  sRT.txCbCnt, sRT.txPktSent, sRT.txPktDrop,
+                  sRT.rxInputCnt, sRT.rxPktOK, sRT.rxAllocFail,
+                  sRT.rxEnqFail, sRT.rxCbCnt,
+                  (void *)(uintptr_t)sRT.nexusProvPtr,
+                  (void *)(uintptr_t)sRT.nifCtxPtr,
+                  (void *)(uintptr_t)sRT.nexusArenaPtr,
+                  (void *)(uintptr_t)sRT.asyncSentinel,
+                  (void *)(uintptr_t)sRT.regObj90,
+                  (void *)(uintptr_t)sRT.regObj98,
+                  (void *)(uintptr_t)sRT.regObjA0);
         }, NULL);
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
