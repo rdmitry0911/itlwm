@@ -30,42 +30,31 @@ public:
 #endif
     virtual void free() override;
 
-    // Override getInterfaceSubFamily — kept for forward compatibility in case
-    // a future macOS version adds a call to it from initBSDInterfaceParameters.
-    // On 25C56/25D125 this vtable method is NOT called during BSD interface
-    // creation; see initBSDInterfaceParameters override below for the actual fix.
+    // Override getInterfaceSubFamily — returns IFNET_SUBFAMILY_WIFI (3).
+    //
+    // This is the correct Apple mechanism for setting if_subfamily.
+    // IOSkywalkFamily has a separate function (vmaddr 0xffffff8002a3dae8,
+    // missed by Ghidra decompiler) that calls getInterfaceSubFamily() via
+    // vtable slot 0x9A8 and stores the result at eparams+0x140 (subfamily).
+    // Verified by opcode search in BootKernelExtensions.kc 25D125:
+    //   0xffffff8002a3dc02: callq *0x9a0(%rax)  → getInterfaceFamily()
+    //   0xffffff8002a3dc11: callq *0x9a8(%rax)  → getInterfaceSubFamily()
+    //   0xffffff8002a3dc17: mov [%rbx+0x140],%eax → stores subfamily
+    //
+    // Apple's AppleBCMWLANIO80211APSTAInterface::getInterfaceSubFamily()
+    // (0xffffff8001686a5e) does exactly this: validateDispatchQueue(), return 3.
+    //
+    // Note: initBSDInterfaceParameters itself does NOT call getInterfaceSubFamily
+    // (confirmed — only calls getHardwareAssists 0x990, getFeatureFlags 0x9B8,
+    // getTSOOptions 0xA10). The subfamily is set by the separate IOSkywalkFamily
+    // function above, which fills eparams callbacks (demux/proto/framer) AND
+    // identity fields (family/subfamily).
+    //
+    // Without subfamily=3, airportd's _getIfListCopy Path B (ioctl 0xC020699F)
+    // does not recognize the interface as Wi-Fi → no IOCTLs → no ASSOCIATE.
     virtual void *getInterfaceSubFamily(void) override {
+        XYLog("getInterfaceSubFamily: returning 3 (IFNET_SUBFAMILY_WIFI)\n");
         return (void *)3;  // IFNET_SUBFAMILY_WIFI
-    }
-
-    // Override initBSDInterfaceParameters to force if_subfamily = IFNET_SUBFAMILY_WIFI (3).
-    //
-    // Root cause: airportd's _getIfListCopy (IO80211.framework, Tahoe Path B)
-    // calls ioctl SIOCGIFTYPE (0xC020699F) on every en* interface and requires
-    // if_subfamily == 3 (IFNET_SUBFAMILY_WIFI) to recognize it as Wi-Fi.
-    // Without this, Apple80211GetIfListCopy returns 0 interfaces → no IOCTLs,
-    // no ASSOCIATE, and the driver loops forever in SCAN → SCAN.
-    //
-    // The parent chain (IO80211InfraInterface → IO80211SkywalkInterface →
-    // IOSkywalkEthernetInterface) fills ifnet_init_eparams but leaves
-    // subfamily at 0 (IFNET_SUBFAMILY_ANY). Verified via Ghidra decompile of
-    // IOSkywalkFamily.kext 25C56: initBSDInterfaceParameters calls
-    // getHardwareAssists() (0x990) and getFeatureFlags() (0x9B8) but NOT
-    // getInterfaceSubFamily() (0x9A8) — the subfamily field at eparams+0x140
-    // stays zero. Apple's AppleBCMWLAN sets it through its own override chain.
-    //
-    // Fix: call super, then patch eparams+0x140 = 3 directly.
-    virtual SInt32 initBSDInterfaceParameters(ifnet_init_eparams *eparams,
-                                              sockaddr_dl **sdl) override {
-        SInt32 ret = IO80211InfraInterface::initBSDInterfaceParameters(eparams, sdl);
-        if (ret == 0 && eparams) {
-            // ifnet_init_eparams.subfamily is at offset 0x140 (uint32_t).
-            // Verified against xnu-12377.81.4 ifnet_init_eparams layout and
-            // IOSkywalkFamily disassembly (eparams+0x140 stores subfamily).
-            *(uint32_t *)((char *)eparams + 0x140) = 3;  // IFNET_SUBFAMILY_WIFI
-            XYLog("initBSDInterfaceParameters: forced subfamily=3 (IFNET_SUBFAMILY_WIFI)\n");
-        }
-        return ret;
     }
 
     void associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index);
