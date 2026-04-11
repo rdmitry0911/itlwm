@@ -68,20 +68,25 @@ contract_buckets:
       - captureInterfaceState
       - restoreInterfaceState
     critical_note_subfamily: >-
-      initBSDInterfaceParameters (not getInterfaceSubFamily) is the
-      MANDATORY override for setting Wi-Fi subfamily. On macOS 25C56/25D125,
+      getInterfaceSubFamily (not initBSDInterfaceParameters) is the
+      MANDATORY override for setting Wi-Fi subfamily. Although
       IOSkywalkEthernetInterface::initBSDInterfaceParameters does NOT call
-      getInterfaceSubFamily() (vtable 0x9A8) — confirmed via Ghidra decompile.
-      It calls getHardwareAssists() (0x990) and getFeatureFlags() (0x9B8),
-      but leaves ifnet_init_eparams.subfamily (offset 0x140) at 0
-      (IFNET_SUBFAMILY_ANY). The fix is to override initBSDInterfaceParameters:
-      call super, then write eparams+0x140 = 3 (IFNET_SUBFAMILY_WIFI).
-      Also keep a getInterfaceSubFamily() override returning 3 for forward
-      compatibility. airportd's _getIfListCopy uses ioctl 0xC020699F to
-      read if_subfamily and requires it to be 3 to recognize the interface
-      as Wi-Fi. Without the initBSDInterfaceParameters override,
-      Apple80211GetIfListCopy returns 0 interfaces and no IOCTLs are sent.
-      Confirmed: AppleBCMWLAN sets subfamily through its own override chain.
+      getInterfaceSubFamily(), a SEPARATE IOSkywalkFamily function (vmaddr
+      0xffffff8002a3dae8, 368 bytes, missed by Ghidra decompiler) DOES call
+      getInterfaceSubFamily() via vtable slot 0x9A8 and stores the result
+      at eparams+0x140 (subfamily). Confirmed by opcode search in
+      BootKernelExtensions.kc 25D125:
+        0xffffff8002a3dc02: callq *0x9a0(%rax) → getInterfaceFamily()
+        0xffffff8002a3dc11: callq *0x9a8(%rax) → getInterfaceSubFamily()
+        0xffffff8002a3dc17: mov [%rbx+0x140],%eax → stores subfamily
+      The fix is to override getInterfaceSubFamily() to return 3
+      (IFNET_SUBFAMILY_WIFI). This matches Apple's reference implementation:
+      AppleBCMWLANIO80211APSTAInterface::getInterfaceSubFamily() returns 3;
+      Apple does NOT override initBSDInterfaceParameters for subfamily.
+      airportd's _getIfListCopy uses ioctl 0xC020699F to read if_subfamily
+      and requires it to be 3 to recognize the interface as Wi-Fi. Without
+      the getInterfaceSubFamily() override, Apple80211GetIfListCopy returns
+      0 interfaces and no IOCTLs are sent.
 
 apple_wifi_specific_anchors:
   AppleBCMWLANSkywalkInterface:

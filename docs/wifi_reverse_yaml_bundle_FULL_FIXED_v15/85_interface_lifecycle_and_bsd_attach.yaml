@@ -151,15 +151,15 @@ detailed_lifecycle:
     critical_subfamily_requirement: >-
       IOSkywalkEthernetInterface::initBSDInterfaceParameters does NOT call
       getInterfaceSubFamily() on macOS 25C56/25D125 (confirmed via Ghidra
-      decompile of IOSkywalkFamily.kext x86_64). It calls getHardwareAssists()
-      (vtable 0x990) and getFeatureFlags() (0x9B8), but the subfamily field
-      at ifnet_init_eparams+0x140 is left at 0 (IFNET_SUBFAMILY_ANY).
-      Apple's AppleBCMWLAN sets subfamily through its own initBSDInterfaceParameters
-      override chain. The fix for third-party drivers is to override
-      initBSDInterfaceParameters, call super, then write eparams+0x140 = 3
-      (IFNET_SUBFAMILY_WIFI) directly. A getInterfaceSubFamily() override
-      returning 3 should be kept for forward compatibility in case a future
-      macOS version adds a call to it.
+      decompile). However, a SEPARATE IOSkywalkFamily function (vmaddr
+      0xffffff8002a3dae8, 368 bytes, missed by Ghidra decompiler) DOES call
+      getInterfaceSubFamily() via vtable slot 0x9A8 and stores the result
+      at eparams+0x140. Confirmed by opcode search in BootKernelExtensions.kc.
+      Therefore the CORRECT fix is to override getInterfaceSubFamily() to
+      return 3 (IFNET_SUBFAMILY_WIFI). This matches Apple's reference
+      implementation exactly: AppleBCMWLANIO80211APSTAInterface overrides
+      getInterfaceSubFamily() to return 3 and does NOT override
+      initBSDInterfaceParameters.
       airportd's _getIfListCopy (Apple80211GetIfListCopy) Path B calls
       ioctl 0xC020699F on every en* interface and requires if_subfamily == 3
       (IFNET_SUBFAMILY_WIFI) to recognize it as Wi-Fi. If subfamily is 0,
@@ -173,7 +173,7 @@ detailed_lifecycle:
       - logical link registration
     minimum_emulation_for_new_driver:
       - construct a BSD-facing interface object before operational link-up
-      - override initBSDInterfaceParameters to call super then write eparams+0x140 = 3 (IFNET_SUBFAMILY_WIFI); also override getInterfaceSubFamily() for forward compatibility
+      - override getInterfaceSubFamily() to return 3 (IFNET_SUBFAMILY_WIFI) — this is the Apple-standard mechanism; a separate IOSkywalkFamily function calls it via vtable and stores the result in eparams+0x140
       - make prepareBSDInterface-equivalent succeed
       - expose a valid ifnet handle/path for lower consumers
       - attach to packet tap/BPF equivalent if the host stack expects one
@@ -222,4 +222,4 @@ driver_porting_recipe:
     - "Destroying and recreating the BSD identity on each sleep/wake"
     - "Treating queue attach as equivalent to interface creation"
     - "Skipping packet tap/BPF attach in an environment that expects it"
-    - "Not overriding initBSDInterfaceParameters to force subfamily=3 — on 25C56/25D125 initBSDInterfaceParameters does NOT call getInterfaceSubFamily(), so a getInterfaceSubFamily() override alone is insufficient; must write eparams+0x140 = 3 directly"
+    - "Not overriding getInterfaceSubFamily() to return 3 (IFNET_SUBFAMILY_WIFI) — a separate IOSkywalkFamily function (0xffffff8002a3dae8) calls getInterfaceSubFamily() via vtable 0x9A8 and stores the result in eparams+0x140; without this override, subfamily stays 0 and airportd ignores the interface"

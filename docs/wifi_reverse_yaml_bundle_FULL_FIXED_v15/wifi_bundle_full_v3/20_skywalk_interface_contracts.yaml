@@ -38,8 +38,8 @@ ioskywalknetworkinterface_vtable:
     - {offset: 0x988, name: getMinPacketSize}
     - {offset: 0x990, name: getHardwareAssists}
     - {offset: 0x998, name: setHardwareAssists}
-    - {offset: 0x9A0, name: getInterfaceFamily, notes: "called by IOSkywalkEthernetInterface::initBSDInterfaceParameters → stores result in ifnet_init_eparams.family (offset 0x2C)"}
-    - {offset: 0x9A8, name: getInterfaceSubFamily, notes: "NOT called by initBSDInterfaceParameters on 25C56/25D125 (confirmed via Ghidra decompile). Base returns 0 (IFNET_SUBFAMILY_ANY). airportd _getIfListCopy Path B requires if_subfamily == 3 (IFNET_SUBFAMILY_WIFI) via ioctl 0xC020699F. Fix: override initBSDInterfaceParameters and write eparams+0x140 = 3 directly."}
+    - {offset: 0x9A0, name: getInterfaceFamily, notes: "called by a separate IOSkywalkFamily function (0xffffff8002a3dae8) via vtable → stores result in ifnet_init_eparams.family (offset 0x2C). Also called by initBSDInterfaceParameters (confirmed at 0x990 in that function)."}
+    - {offset: 0x9A8, name: getInterfaceSubFamily, notes: "called by a separate IOSkywalkFamily function (0xffffff8002a3dae8, missed by Ghidra decompiler) via vtable slot 0x9A8 → stores result at eparams+0x140 (subfamily). NOT called by initBSDInterfaceParameters itself. Base returns 0 (IFNET_SUBFAMILY_ANY). Wi-Fi drivers MUST override to return 3 (IFNET_SUBFAMILY_WIFI). Apple's AppleBCMWLANIO80211APSTAInterface does exactly this. airportd _getIfListCopy Path B requires if_subfamily == 3 via ioctl 0xC020699F."}
     - {offset: 0x9B0, name: getInitialMedia}
     - {offset: 0x9B8, name: getFeatureFlags}
     - {offset: 0x9C0, name: getTxDataOffset}

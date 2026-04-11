@@ -172,14 +172,43 @@ IOSkywalkEthernetInterface_initBSDInterfaceParameters:
     (IFNET_SUBFAMILY_ANY). Does call getInterfaceFamily() (0x9A0) and
     stores result in eparams+0x2C.
   critical_note: >-
-    Since initBSDInterfaceParameters does NOT call getInterfaceSubFamily()
-    on 25C56/25D125, a getInterfaceSubFamily() override alone cannot set
-    if_subfamily. Wi-Fi drivers must override initBSDInterfaceParameters
-    itself: call super, then write *(uint32_t*)((char*)eparams + 0x140) = 3
-    (IFNET_SUBFAMILY_WIFI). Apple's AppleBCMWLAN does this through its own
-    override chain. Without if_subfamily == 3, airportd's _getIfListCopy
-    Path B (ioctl 0xC020699F) does not recognize the interface as Wi-Fi.
-  verified_by: "Ghidra decompile of IOSkywalkFamily.kext 26.3 (25D125) x86_64 — confirmed getHardwareAssists and getFeatureFlags calls present, getInterfaceSubFamily call absent"
+    Although initBSDInterfaceParameters itself does NOT call
+    getInterfaceSubFamily(), a SEPARATE IOSkywalkFamily function
+    (vmaddr 0xffffff8002a3dae8, 368 bytes, missed by Ghidra decompiler)
+    DOES call getInterfaceSubFamily() via vtable slot 0x9A8 and stores
+    the result at eparams+0x140 (subfamily). This function also calls
+    getInterfaceFamily() (0x9A0) and fills eparams demux/proto/framer
+    callbacks. Confirmed by opcode search in BootKernelExtensions.kc 25D125:
+      0xffffff8002a3dc02: callq *0x9a0(%rax) → getInterfaceFamily()
+      0xffffff8002a3dc11: callq *0x9a8(%rax) → getInterfaceSubFamily()
+      0xffffff8002a3dc17: mov [%rbx+0x140],%eax → stores subfamily
+    Therefore the CORRECT fix is to override getInterfaceSubFamily() to
+    return 3 (IFNET_SUBFAMILY_WIFI) — exactly as Apple does. Apple's
+    AppleBCMWLANIO80211APSTAInterface::getInterfaceSubFamily()
+    (0xffffff8001686a5e) calls validateDispatchQueue() and returns 3.
+    Apple does NOT override initBSDInterfaceParameters in AppleBCMWLAN.
+    Without if_subfamily == 3, airportd's _getIfListCopy Path B
+    (ioctl 0xC020699F) does not recognize the interface as Wi-Fi.
+  verified_by: "Ghidra decompile + opcode search in BootKernelExtensions.kc 25D125 x86_64 — initBSDInterfaceParameters confirmed: getHardwareAssists/getFeatureFlags calls present, getInterfaceSubFamily call absent. Separate IOSkywalkFamily function at 0xffffff8002a3dae8 confirmed: calls getInterfaceSubFamily via vtable 0x9A8 and stores to eparams+0x140."
+
+  IOSkywalkFamily_eparams_identity_filler:
+    address: "0xffffff8002a3dae8"
+    size: "368 bytes (0x170)"
+    class: "IOSkywalkFamily (not a method of IOSkywalkEthernetInterface)"
+    status: "missed by Ghidra decompiler — discovered via opcode search"
+    behavior: >-
+      Fills ifnet_init_eparams identity and callback fields. Calls:
+        callq *0x9a0(%rax) → getInterfaceFamily() → stores to eparams+0x2C
+        callq *0x9a8(%rax) → getInterfaceSubFamily() → stores to eparams+0x140
+      Also fills demux, proto attach/detach, and framer callbacks in eparams.
+      This is the function responsible for propagating the getInterfaceSubFamily()
+      return value into the ifnet_init_eparams struct, which is then copied to
+      ifp->if_subfamily by ifnet_allocate_extended() (xnu kpi_interface.c:334).
+    practical_implication: >-
+      Wi-Fi drivers MUST override getInterfaceSubFamily() to return 3
+      (IFNET_SUBFAMILY_WIFI). This is the Apple-standard mechanism — no need
+      to override initBSDInterfaceParameters for subfamily. Apple's
+      AppleBCMWLAN uses exactly this approach.
 
 prepareBSDInterface:
   address: "0xffffff8002a379de"
