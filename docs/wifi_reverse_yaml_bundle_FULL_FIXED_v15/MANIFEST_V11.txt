@@ -132,6 +132,7 @@ All items from V10 remaining gaps list are now fully documented.
 V12 additions are supplementary (incident-driven findings, not gap closures).
 V13 additions document the IO80211 IOCTL caching layer and airportd auto-join flow.
 V14 additions document the PostOffice event delivery chain and scan pipeline fixes.
+V16 updates section 9: complete Apple-model scan pipeline (no filtering, no auto-join).
 
 ─────────────────────────────────────────────────────────────
 
@@ -187,8 +188,12 @@ investigation of "no networks visible" after driver loads without panic.
          processPendingEventQueue → sendEventAndFilter → airportd
        - Three failure points identified with symptoms and diagnosis
 
-    9. OpenBSD ieee80211_match_bss AUTO_JOIN fix
-       - Original check: AUTO_JOIN && des_esslen==0 → reject all BSS
-       - Problem: creates infinite SCAN→SCAN loop, starves workloop
-       - Fix: removed check, airportd handles BSS selection via ASSOCIATE
-       - Rejection flag bitmask reference (0x01-0x40)
+    9. OpenBSD ieee80211_match_bss / ieee80211_end_scan — Apple-model scan pipeline
+       - Architectural difference: Apple BCM does NO filtering at scan time;
+         OpenBSD filters by channel/privacy/rate/ESSID/BSSID/RSN then auto-joins
+       - V14: removed ESSID rejection (fail=0x10) — infinite SCAN→SCAN loop
+       - V15: removed PRIVACY rejection (fail=0x04) — same loop, all encrypted APs
+       - V16: skip ieee80211_match_bss entirely when AUTO_JOIN && des_esslen==0
+         (matches Apple 1:1); ieee80211_end_scan returns after SCAN_DONE without
+         calling ieee80211_node_choose_bss / ieee80211_node_join_bss
+       - Rejection flag bitmask reference (0x01-0x80)

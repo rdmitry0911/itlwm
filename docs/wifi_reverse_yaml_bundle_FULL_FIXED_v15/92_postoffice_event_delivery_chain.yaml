@@ -479,38 +479,57 @@ event_delivery_chain:
 # ═══════════════════════════════════════════════════════════════
 
 match_bss_auto_join_fix:
-  title: "ieee80211_match_bss — removal of counterproductive ESSID rejection"
+  title: "ieee80211_match_bss / ieee80211_end_scan — Apple-model scan pipeline (no filtering, no auto-join)"
 
-  original_code:
-    file: "itl80211/openbsd/net80211/ieee80211_node.c"
-    function: "ieee80211_match_bss()"
-    location: "~line 1086"
-    code: |
-      if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-          ic->ic_des_esslen == 0)
-          fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
+  architectural_difference:
+    apple_model: >-
+      Apple's BCM driver (AppleBCMWLAN) performs NO filtering at scan collection
+      time.  Firmware results pass unfiltered through
+      AppleBCMWLANScanAdapter::eventScanComplete() → AppleBCMWLANCore::scanComplete()
+      → postMessage(APPLE80211_M_SCAN_DONE).  No privacy, rate, ESSID, or
+      capability checks.  airportd reads all candidates via getSCAN_RESULT
+      and decides which BSS to join via APPLE80211_IOC_ASSOCIATE.
+      scanComplete() posts SCAN_DONE and returns — no BSS selection or auto-join.
+      Confirmed via disassembly of BootKernelExtensions.kc 25D125.
 
-  problem: >-
-    In the OpenBSD model, this check prevents the driver from blindly joining
-    a random network when no desired ESSID is configured. But in the Apple/macOS
-    model, network selection is performed by airportd in userspace — it reads
-    scan results via APPLE80211_IOC_SCAN_RESULT and tells the driver which BSS
-    to join via APPLE80211_IOC_ASSOCIATE.
+    openbsd_model: >-
+      OpenBSD ieee80211_end_scan() runs ieee80211_match_bss() on every node,
+      filtering by channel, ESS/IBSS, privacy, rate, ESSID, BSSID, and RSN
+      parameters.  Nodes that pass are ranked by RSSI, and the winner is
+      auto-joined via ieee80211_node_join_bss().  This is correct for native
+      OpenBSD where the kernel controls network selection, but catastrophic
+      in the Apple model where airportd is in charge.
 
-    With AUTO_JOIN flag set and des_esslen==0 (no target ESSID configured — the
-    normal state before association), ALL scanned BSS nodes are rejected with
-    fail=0x14 (ESSID|PRIVACY). This creates an infinite SCAN→SCAN loop:
-      1. ieee80211_end_scan → ieee80211_node_choose_bss
-      2. All 48 nodes rejected (fail=0x14)
-      3. ic_state stays in SCAN
-      4. Workloop starved — fakeScanDone timer delayed by 57 seconds
-      5. airportd never receives SCAN_DONE, never sees networks
+  problem_history:
+    V14_essid_rejection: >-
+      Original OpenBSD code: AUTO_JOIN && des_esslen==0 → fail |= 0x10 (ESSID).
+      Rejected ALL nodes because no target SSID was configured.  Created infinite
+      SCAN→SCAN loop.  Fix: removed the check entirely.
+    V15_privacy_rejection: >-
+      After ESSID fix, PRIVACY check alone (fail=0x04) still rejected all 35
+      encrypted APs.  Driver has no IEEE80211_F_WEPON/RSNON before ASSOCIATE,
+      so every AP with CAPINFO_PRIVACY=1 was rejected.  Same SCAN→SCAN loop.
+      Fix: guarded PRIVACY check with AUTO_JOIN && des_esslen==0.
+    V16_complete_bypass: >-
+      Recognized that individual check fixes were whack-a-mole.  The remaining
+      rate check (ieee80211_fix_rate) could also cause rejections AND had the
+      side effect of mutating ni_rates during scan iteration.  Solution: skip
+      ieee80211_match_bss entirely when AUTO_JOIN && des_esslen==0 (return 0
+      immediately), matching Apple 1:1.  Additionally, ieee80211_end_scan now
+      returns after firing SCAN_DONE without calling ieee80211_node_choose_bss
+      or ieee80211_node_join_bss — the driver no longer auto-joins a random AP.
 
-  fix: >-
-    Removed the AUTO_JOIN+des_esslen==0 check entirely. The remaining ESSID check
-    (des_esslen != 0 && essid mismatch) still correctly filters when airportd has
-    explicitly set a target ESSID via ASSOCIATE. The PRIVACY check below still
-    prevents association with encrypted networks when no credentials are configured.
+  current_fix:
+    match_bss: >-
+      ieee80211_match_bss() returns 0 (pass) immediately when
+      ISSET(ic_flags, IEEE80211_F_AUTO_JOIN) && des_esslen==0.
+      All OpenBSD checks remain active when des_esslen != 0
+      (airportd issued ASSOCIATE with target configured).
+    end_scan: >-
+      ieee80211_end_scan() returns early after ieee80211_switch_ess()
+      when AUTO_JOIN && des_esslen==0.  SCAN_DONE event is already
+      delivered (fired at top of function).  ic_tree retains all nodes
+      for getSCAN_RESULT.  No BSS selection, no auto-join.
 
   rejection_flags:
     - { flag: "IEEE80211_NODE_ASSOCFAIL_CHAN",       value: "0x01" }
@@ -521,9 +540,7 @@ match_bss_auto_join_fix:
     - { flag: "IEEE80211_NODE_ASSOCFAIL_BSSID",      value: "0x20" }
     - { flag: "IEEE80211_NODE_ASSOCFAIL_WPA_PROTO",  value: "0x40" }
 
-  common_failure_bitmask: >-
-    fail=0x14 = ESSID(0x10) | PRIVACY(0x04): the ESSID flag came from the removed
-    AUTO_JOIN check; the PRIVACY flag came from mismatch between ic_flags and
-    ni_capinfo (driver has no security configured, APs have WPA2).
-    After removing the ESSID check, PRIVACY alone (0x04) still prevents
-    auto-association with encrypted APs — the correct safety net.
+  observed_failure_bitmasks:
+    "0x14": "ESSID(0x10) | PRIVACY(0x04) — before V14: AUTO_JOIN ESSID check + no encryption configured"
+    "0x04": "PRIVACY(0x04) alone — after V14/before V15: all encrypted APs rejected"
+    "0x00": "no rejection — V16: ieee80211_match_bss skipped entirely in Apple mode"

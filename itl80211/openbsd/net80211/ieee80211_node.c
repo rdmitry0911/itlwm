@@ -1056,6 +1056,37 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
     int fail;
     
     fail = 0;
+
+    /*
+     * Apple/macOS: skip ALL BSS filtering when AUTO_JOIN && des_esslen==0.
+     *
+     * In the Apple model, network selection is done entirely by airportd
+     * in userspace.  The driver's job is to collect scan results and
+     * report them unfiltered via getSCAN_RESULT.  airportd reads all
+     * candidates and decides which BSS to join by issuing
+     * APPLE80211_IOC_ASSOCIATE (which sets des_essid, des_bssid, and
+     * the encryption flags).
+     *
+     * Apple's BCM driver (AppleBCMWLAN) performs NO filtering at scan
+     * collection time — all firmware results pass unfiltered through
+     * AppleBCMWLANScanAdapter::eventScanComplete() to airportd via
+     * WCLScanManager::serveScanResult().  No privacy, rate, ESSID,
+     * or capability checks.  Confirmed via disassembly of
+     * BootKernelExtensions.kc 25D125.
+     *
+     * The OpenBSD checks below remain active when des_esslen != 0
+     * (airportd issued a targeted ASSOCIATE and configured encryption).
+     *
+     * History: V14 removed the ESSID rejection that blocked all nodes
+     * (fail |= 0x10).  V15 removed the PRIVACY rejection that blocked
+     * all encrypted APs (fail |= 0x04).  V16 skips the entire function
+     * to match Apple 1:1 and also prevents ieee80211_fix_rate from
+     * mutating ni_rates during scan-time iteration.
+     */
+    if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+        ic->ic_des_esslen == 0)
+        return 0;
+
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) == 0 &&
         isclr(ic->ic_chan_active, ieee80211_chan2ieee(ic, ni->ni_chan)))
         fail |= IEEE80211_NODE_ASSOCFAIL_CHAN;
@@ -1072,62 +1103,17 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         if ((ni->ni_capinfo & IEEE80211_CAPINFO_ESS) == 0)
             fail |= IEEE80211_NODE_ASSOCFAIL_IBSS;
     }
-    /*
-     * Apple/macOS: do NOT reject BSS on PRIVACY mismatch when
-     * AUTO_JOIN && des_esslen==0.
-     *
-     * In the OpenBSD model this check prevents the driver from joining
-     * a network with mismatched encryption.  In the Apple model, airportd
-     * configures encryption when it sends APPLE80211_IOC_ASSOCIATE with
-     * credentials.  Before that point the driver has neither
-     * IEEE80211_F_WEPON nor IEEE80211_F_RSNON set, so every encrypted AP
-     * (CAPINFO_PRIVACY=1) is rejected.  This creates the same infinite
-     * SCAN→SCAN loop that the ESSID fix above resolved — all 35 nodes
-     * fail=0x4, ieee80211_node_choose_bss selects nothing, and the scan
-     * restarts immediately, starving the workloop and blocking airportd
-     * from receiving scan results.
-     *
-     * Apple's BCM driver (AppleBCMWLAN) performs NO privacy/capability
-     * filtering at scan collection time — all firmware results are passed
-     * unfiltered to airportd via WCLScanManager::serveScanResult().
-     * Confirmed via disassembly of BootKernelExtensions.kc 25D125.
-     *
-     * When des_esslen != 0 (airportd issued a targeted ASSOCIATE), the
-     * check still applies — the driver already has encryption configured.
-     */
-    if (!(ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-          ic->ic_des_esslen == 0)) {
-        if (ic->ic_flags & (IEEE80211_F_WEPON | IEEE80211_F_RSNON)) {
-            if ((ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) == 0)
-                fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
-        } else {
-            if (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY)
-                fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
-        }
+    if (ic->ic_flags & (IEEE80211_F_WEPON | IEEE80211_F_RSNON)) {
+        if ((ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) == 0)
+            fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
+    } else {
+        if (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY)
+            fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
     }
-    
+
     rate = ieee80211_fix_rate(ic, ni, IEEE80211_F_DONEGO);
     if (rate & IEEE80211_RATE_BASIC)
         fail |= IEEE80211_NODE_ASSOCFAIL_BASIC_RATE;
-    /*
-     * Apple/macOS: do NOT reject BSS when AUTO_JOIN && des_esslen==0.
-     *
-     * In the OpenBSD model this check prevents the driver from blindly
-     * joining a random network.  In the Apple model, network selection
-     * is done by airportd in userspace — it reads scan results via
-     * APPLE80211_IOC_SCAN_RESULT and tells the driver which BSS to
-     * join via APPLE80211_IOC_ASSOCIATE.  Rejecting all candidates here
-     * creates an infinite SCAN→SCAN loop that starves the workloop,
-     * prevents fakeScanDone from firing, and blocks airportd from ever
-     * receiving scan results.  The PRIVACY check below still prevents
-     * actual association with encrypted networks when no credentials
-     * are configured, which is the correct safety net.
-     *
-     * Original OpenBSD check (removed):
-     *   if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-     *       ic->ic_des_esslen == 0)
-     *       fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
-     */
     if (ic->ic_des_esslen != 0 &&
         (ni->ni_esslen != ic->ic_des_esslen ||
          memcmp(ni->ni_essid, ic->ic_des_essid, ic->ic_des_esslen) != 0))
@@ -1533,7 +1519,30 @@ ieee80211_end_scan(struct _ifnet *ifp)
     /* Possibly switch which ssid we are associated with */
     if (!bgscan && ic->ic_opmode == IEEE80211_M_STA)
         ieee80211_switch_ess(ic);
-    
+
+    /*
+     * Apple/macOS: do NOT auto-select or join a BSS when
+     * AUTO_JOIN && des_esslen==0.
+     *
+     * In the Apple model, airportd handles network selection.  The scan
+     * populates ic_tree, IEEE80211_EVT_SCAN_DONE was delivered above,
+     * and the driver must now wait for airportd to read results via
+     * getSCAN_RESULT and issue APPLE80211_IOC_ASSOCIATE.
+     *
+     * Without this early return, the OpenBSD path below calls
+     * ieee80211_node_choose_bss → ieee80211_node_join_bss, which sends
+     * AUTH frames to the highest-RSSI AP without any credentials.
+     * For encrypted APs this causes a pointless AUTH→ASSOC→4-way-fail→
+     * SCAN cycle; for open APs the driver would auto-associate with a
+     * random network.  Either way it's wrong in the Apple model.
+     *
+     * Apple's BCM scanComplete() posts APPLE80211_M_SCAN_DONE and
+     * returns — no BSS selection or auto-join at the driver level.
+     */
+    if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+        ic->ic_des_esslen == 0)
+        return;
+
     selbs = ieee80211_node_choose_bss(ic, bgscan, &curbs);
     if (bgscan) {
         struct ieee80211_node_switch_bss_arg *arg;
