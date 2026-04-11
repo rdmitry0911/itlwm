@@ -359,11 +359,11 @@ init(IOService *provider, ether_addr *addr)
     // Reference docs:
     //   docs/.../85_bsd_attach_chain_xref_checked.yaml
     //   docs/.../92_postoffice_event_delivery_chain.yaml
-    if (!IO80211SkywalkInterface::init(provider, addr)) {
-        XYLog("%s IO80211SkywalkInterface::init(provider, addr) failed\n", __PRETTY_FUNCTION__);
+    if (!IO80211InfraInterface::init(provider, addr)) {
+        XYLog("%s IO80211InfraInterface::init(provider, addr) failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211SkywalkInterface::init(provider, addr) OK mExpansionData=%p mExpansionData2=%p\n",
+    XYLog("DEBUG %s IO80211InfraInterface::init(provider, addr) OK mExpansionData=%p mExpansionData2=%p\n",
           __FUNCTION__, mExpansionData, mExpansionData2);
 #else
 bool AirportItlwmSkywalkInterface::

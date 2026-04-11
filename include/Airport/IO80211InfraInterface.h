@@ -18,6 +18,12 @@ class IO80211InfraInterface : public IO80211SkywalkInterface {
     
 public:
     virtual bool init() APPLE_KEXT_OVERRIDE;
+#if __IO80211_TARGET >= __MAC_26_0
+    // Tahoe bring-up path: allocates self+0x120 block and sets infra-specific
+    // state; must be called instead of the SkywalkInterface overload so that
+    // BSD attach, PostOffice/Glue event delivery and WCL scan completion work.
+    virtual bool init(IOService *, ether_addr *) APPLE_KEXT_OVERRIDE;
+#endif
     virtual void free() APPLE_KEXT_OVERRIDE;
     virtual IOReturn configureReport(IOReportChannelList *,UInt,void *,void *) APPLE_KEXT_OVERRIDE;
     virtual IOReturn updateReport(IOReportChannelList *,UInt,void *,void *) APPLE_KEXT_OVERRIDE;
