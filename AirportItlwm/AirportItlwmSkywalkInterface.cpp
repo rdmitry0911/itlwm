@@ -352,19 +352,20 @@ init(IOService *provider, ether_addr *addr)
     // with ether_addr* as provider → crash in OSDynamicCast.  Fixed by removing
     // the spurious registerNetworkInterfaceWithLogicalLink from
     // IOSkywalkEthernetInterface.h (see comment there).
-    // Tahoe/Sequoia reference path: the controller+MAC overload must be used.
-    // The 0-arg init() only builds a generic Skywalk object; it does not bind
-    // the controller / self MAC path that the Wi-Fi stack expects before
-    // BSD attach, PostOffice/Glue event delivery, and WCL scan completion.
-    // Reference docs:
-    //   docs/.../85_bsd_attach_chain_xref_checked.yaml
-    //   docs/.../92_postoffice_event_delivery_chain.yaml
-    if (!IO80211InfraInterface::init(provider, addr)) {
-        XYLog("%s IO80211InfraInterface::init(provider, addr) failed\n", __PRETTY_FUNCTION__);
+    // V16→V18 history: V17 switched to IO80211SkywalkInterface::init(provider,addr)
+    // and V18 to IO80211InfraInterface::init(provider,addr), both trying to bind
+    // the controller/MAC path earlier.  V18 caused a kernel panic:
+    //   IO80211InfraInterface::linkState() + 0xb, CR2=0x18
+    // because this+0x128 (InfraInterface ivars, allocated during start()) was NULL
+    // when vlogDebug() called linkState() inside PeerManager::initWithInterface().
+    // The 2-arg overloads do NOT allocate this+0x128 — only start() does.
+    // V16 used 0-arg IO80211InfraInterface::init() and worked correctly (no panic,
+    // networks visible). Reverted to V16 approach.
+    if (!IO80211InfraInterface::init()) {
+        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211InfraInterface::init(provider, addr) OK mExpansionData=%p mExpansionData2=%p\n",
-          __FUNCTION__, mExpansionData, mExpansionData2);
+    XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
