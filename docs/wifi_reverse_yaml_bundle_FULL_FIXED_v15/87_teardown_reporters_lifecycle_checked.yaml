@@ -95,6 +95,39 @@ teardown:
       - "free() runs when retain count hits 0, after detach"
       - "Reporters/monitors released in free(), NOT in stop()"
 
+    timer_teardown_rules:
+      description: >-
+        IOTimerEventSource objects that run on a SEPARATE workloop from the
+        main teardown path must be fully stopped BEFORE any resources they
+        access in their callbacks are released.  This prevents use-after-free
+        race conditions between the timer's workloop thread and the teardown
+        thread.  Confirmed by panic14 in itlwm (commit ec2f7f9).
+      correct_timer_shutdown_sequence:
+        - "1. timer->cancelTimeout()           — disarm pending callout"
+        - "2. timer->disable()                 — prevent re-arm from other threads"
+        - "3. workloop->removeEventSource(timer) — detach from workloop event queue"
+        - "4. timer->release()                 — drop retain count"
+        - "5. timer = NULL                     — prevent stale pointer use"
+        - "6. (if dedicated workloop) workloop->release(); workloop = NULL"
+      why_disable_is_needed: >-
+        cancelTimeout() only disarms the current pending callout.  Without
+        disable(), another thread can call setTimeoutMS() between cancel
+        and removeEventSource, re-arming the timer.  disable() atomically
+        prevents this.
+      multi_workloop_rule: >-
+        If timer T runs on workloop W_timer and its callback accesses
+        resource R owned by workloop W_main, then T must be fully shut
+        down (steps 1-5) BEFORE R is released on W_main.  Otherwise
+        T's callback can fire on W_timer's thread concurrently with
+        R being freed on W_main's thread.
+      itlwm_example: >-
+        watchdogTimer runs on fWatchdogWorkLoop.  watchdogAction accesses
+        fHalService (owned by _fWorkloop context).  releaseAll() on the
+        main thread must cancel+disable+remove+release watchdogTimer
+        BEFORE calling fHalService->release().  The original code freed
+        fHalService first, causing panic14 (RIP=0x0 from NULL if_watchdog
+        in freed memory).
+
   # ─────────────────────────────────────────
   # SCENARIO 2: FREE (after retain count → 0)
   # ─────────────────────────────────────────

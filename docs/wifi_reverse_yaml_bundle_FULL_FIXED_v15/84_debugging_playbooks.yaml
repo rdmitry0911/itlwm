@@ -384,6 +384,67 @@ playbooks:
       - "Start with timer plane disabled or coarse"
       - "Enable only after stable connect/disconnect"
 
+  - symptom: "panic in IOTimerEventSource::timeoutSignaled with RIP=0x0 or garbage RIP during driver teardown"
+    likely_broken_planes:
+      - timer_teardown_plane
+      - workloop_plane
+    likely_missing_events:
+      - "(none — this is a lifecycle/ordering bug, not an event bug)"
+    first_checks:
+      - "Check if the timer callback accesses resources (fHalService, controller, ifp) that may be freed on a different workloop."
+      - "Check if releaseAll() / stop() cancels timers BEFORE releasing the resources those timer callbacks depend on."
+      - "Check if the timer runs on a separate IOWorkLoop (e.g. fWatchdogWorkLoop) from the main _fWorkloop where resources are freed."
+      - "Inspect RDI in the panic log — a garbage RDI (not in any kernel zone) indicates a use-after-free pointer chain."
+      - "Inspect RAX — RAX=0x0 with RIP=0x0 means the callback dereferenced freed/zeroed memory to get a NULL function pointer."
+    root_cause_chain: >-
+      IOTimerEventSource::timeoutSignaled calls invokeAction helper which
+      calls the action callback (e.g. watchdogAction) via `call r12`.
+      If the callback dereferences a freed object (e.g. fHalService already
+      released), the pointer chain reads freed/zeroed memory.  When the freed
+      memory returns a NULL function pointer (e.g. if_watchdog), the CPU
+      executes CALL 0x0 → page fault at RIP=0x0, CR2=0x0.
+    panic_log_signature:
+      RIP: "0x0000000000000000"
+      CR2: "0x0000000000000000"
+      RAX: "0x0000000000000000 (NULL fn pointer from freed memory)"
+      RDI: "garbage value (use-after-free pointer, not in any kernel zone)"
+      backtrace_contains: "IOTimerEventSource::timeoutSignaled"
+      uptime: "typically short (< 60s) — during driver attach/probe/teardown cycle"
+    iotimer_lifecycle_correct_teardown_sequence:
+      - "1. timer->cancelTimeout()    — disarm pending callout"
+      - "2. timer->disable()          — prevent re-arm from other threads"
+      - "3. workloop->removeEventSource(timer)  — detach from workloop"
+      - "4. timer->release()          — drop retain count"
+      - "5. timer = NULL              — prevent double-free"
+      - "6. workloop->release()       — if workloop is dedicated (e.g. fWatchdogWorkLoop)"
+      - "7. workloop = NULL"
+    multi_workloop_ordering_rule: >-
+      When a timer runs on workloop A but accesses resources owned by workloop B,
+      the timer on A MUST be fully torn down (steps 1-5 above) BEFORE any
+      resources it accesses are released on B.  Otherwise the timer callback
+      can execute concurrently on A's thread after the resource is freed on B's
+      thread — a classic use-after-free race condition.
+    common_root_causes:
+      - "releaseAll() frees fHalService before cancelling watchdogTimer on fWatchdogWorkLoop"
+      - "cancelTimeout() called without disable() — timer can be re-armed by another thread between cancel and remove"
+      - "timer torn down AFTER the resource it dereferences in its callback"
+      - "no NULL guard in timer callback for the resource being accessed"
+    minimal_fix_strategy:
+      - "Reorder releaseAll()/stop() to cancel+disable+remove+release ALL timers FIRST, before releasing dependent resources (fHalService, controller, etc.)"
+      - "Add NULL guard at top of every timer callback: if (!fHalService) return;"
+      - "Always call disable() after cancelTimeout() to prevent re-arm races"
+    verified_in_itlwm:
+      panic: "panic14"
+      commit: "ec2f7f9"
+      files_fixed: ["AirportItlwmV2.cpp", "AirportItlwm.cpp"]
+      description: >-
+        watchdogTimer on fWatchdogWorkLoop called watchdogAction after
+        fHalService was freed in releaseAll() on _fWorkloop.  The chain
+        fHalService→get80211Controller()→ic_ac.ac_if→if_watchdog read
+        freed/zeroed memory producing NULL if_watchdog → CALL 0x0.
+        Fixed by moving all timer teardown before fHalService release
+        and adding fHalService NULL guard in watchdogAction.
+
 global_rules:
   - "Always stabilize SCAN -> JOIN -> NET first before enabling roam, GAS, bg/offload, or 11ax extras."
   - "Treat SSM and notification replay as infrastructure, not optional polish."

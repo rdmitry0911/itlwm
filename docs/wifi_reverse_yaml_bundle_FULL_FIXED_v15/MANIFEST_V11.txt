@@ -57,5 +57,33 @@ IO80211Family_decompiled.c / AppleBCMWLAN_Core_decompiled.c.
        - getBSDUnitNumber: base=0, APSTA hardcoded to 1
        - itlwm guidance: base return 0 is correct for primary STA
 
+─────────────────────────────────────────────────────────────
+
+Added in V12 (2026-04-11):
+
+Documents findings from panic14 investigation (commit ec2f7f9): IOTimerEventSource
+teardown lifecycle, multi-workloop race conditions, and use-after-free debugging.
+
+- 84_debugging_playbooks.yaml  (UPDATED)
+    New playbook: "panic in IOTimerEventSource::timeoutSignaled with RIP=0x0 during
+    driver teardown"
+      - Full panic log signature (RIP=0x0, CR2=0x0, RAX=0x0, garbage RDI)
+      - Root cause chain: timer callback fires after resource freed on different workloop
+      - IOTimerEventSource correct teardown sequence:
+        cancelTimeout → disable → removeEventSource → release → NULL
+      - Multi-workloop ordering rule: timers on workloop A accessing resources on
+        workloop B must be torn down BEFORE resources on B are released
+      - Common root causes and fix strategy
+      - Verified against panic14 in itlwm (watchdogTimer on fWatchdogWorkLoop
+        vs fHalService on _fWorkloop)
+
+- 87_teardown_reporters_lifecycle_checked.yaml  (UPDATED)
+    New section: timer_teardown_rules
+      - Correct 6-step IOTimerEventSource shutdown sequence
+      - Why disable() is needed (prevents re-arm race between cancel and remove)
+      - Multi-workloop ordering rule with concrete itlwm example
+      - Cross-reference to panic14 root cause analysis
+
 Remaining gaps: NONE
 All items from V10 remaining gaps list are now fully documented.
+V12 additions are supplementary (incident-driven findings, not gap closures).
