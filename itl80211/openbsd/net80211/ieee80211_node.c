@@ -1072,12 +1072,38 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         if ((ni->ni_capinfo & IEEE80211_CAPINFO_ESS) == 0)
             fail |= IEEE80211_NODE_ASSOCFAIL_IBSS;
     }
-    if (ic->ic_flags & (IEEE80211_F_WEPON | IEEE80211_F_RSNON)) {
-        if ((ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) == 0)
-            fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
-    } else {
-        if (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY)
-            fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
+    /*
+     * Apple/macOS: do NOT reject BSS on PRIVACY mismatch when
+     * AUTO_JOIN && des_esslen==0.
+     *
+     * In the OpenBSD model this check prevents the driver from joining
+     * a network with mismatched encryption.  In the Apple model, airportd
+     * configures encryption when it sends APPLE80211_IOC_ASSOCIATE with
+     * credentials.  Before that point the driver has neither
+     * IEEE80211_F_WEPON nor IEEE80211_F_RSNON set, so every encrypted AP
+     * (CAPINFO_PRIVACY=1) is rejected.  This creates the same infinite
+     * SCAN→SCAN loop that the ESSID fix above resolved — all 35 nodes
+     * fail=0x4, ieee80211_node_choose_bss selects nothing, and the scan
+     * restarts immediately, starving the workloop and blocking airportd
+     * from receiving scan results.
+     *
+     * Apple's BCM driver (AppleBCMWLAN) performs NO privacy/capability
+     * filtering at scan collection time — all firmware results are passed
+     * unfiltered to airportd via WCLScanManager::serveScanResult().
+     * Confirmed via disassembly of BootKernelExtensions.kc 25D125.
+     *
+     * When des_esslen != 0 (airportd issued a targeted ASSOCIATE), the
+     * check still applies — the driver already has encryption configured.
+     */
+    if (!(ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+          ic->ic_des_esslen == 0)) {
+        if (ic->ic_flags & (IEEE80211_F_WEPON | IEEE80211_F_RSNON)) {
+            if ((ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) == 0)
+                fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
+        } else {
+            if (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY)
+                fail |= IEEE80211_NODE_ASSOCFAIL_PRIVACY;
+        }
     }
     
     rate = ieee80211_fix_rate(ic, ni, IEEE80211_F_DONEGO);
