@@ -84,6 +84,50 @@ teardown lifecycle, multi-workloop race conditions, and use-after-free debugging
       - Multi-workloop ordering rule with concrete itlwm example
       - Cross-reference to panic14 root cause analysis
 
+─────────────────────────────────────────────────────────────
+
+Added in V13 (2026-04-11):
+
+Documents findings from airportd auto-join failure investigation (commit 4a5480e):
+IO80211 framework IOCTL caching layer, airportd discovery timeline, and IOCTL
+criticality tiers.  Source: live airportd log analysis + Ghidra decompile of
+IO80211Family_decompiled.c (25D125).
+
+- 84_debugging_playbooks.yaml  (UPDATED)
+    Two new playbooks:
+    1. "CoreWiFi auto-join aborts with error 37 'driver not available'"
+       - Root cause: getSSID/getBSSID/getCHANNEL returning error pre-association
+       - IOCTL criticality tiers: must-succeed vs safe-to-fail vs non-critical
+       - Error code reference (0xe0822403, -3903, raw 6)
+       - Verified fix: commit 4a5480e
+
+    2. "airportd discovers interface but auto-join never triggers"
+       - Full airportd discovery timeline (KEV_DL_IF_ATTACHED → IOServiceMatched
+         → Apple80211GetIfListCopy → Apple80211BindToInterfaceWithParams →
+         _initInterface → auto-join trigger)
+       - Temporal sequence: airportd boots ~20s before kext loads
+       - Common root causes: if_subfamily != 3, IOCTL errors, missing events
+
+- 85_interface_lifecycle_and_bsd_attach.yaml  (UPDATED)
+    New top-level section: airportd_auto_join_flow
+      - Complete temporal sequence from airportd boot through auto-join trigger
+      - Critical IOCTL behavior requirements pre-association
+      - IO80211 framework cache layer references (getSSIDData, BSSID cache)
+      - IOCTL categorization: must_return_success vs safe_to_fail
+    New anti-pattern added to driver_porting_recipe:
+      - Returning errors from getSSID/getBSSID/getCHANNEL when not associated
+
+- 89_remaining_gaps_closed_checked.yaml  (UPDATED)
+    New section 8: IO80211 Framework IOCTL Cache / Interposition Layer
+      - IO80211Controller::getSSIDData (0xffffff8002261b42): pre-zeros, never fails
+      - BSSID cache (FUN_ffffff8002215524): pre-zeros, returns bool
+      - IO80211BssManager low-level: getCurrentSSID/BSSID/Channel return 0xe0822403
+      - WCLConfigManager getSSID/getBSSID: fallback chain documented
+      - IOCTL dispatch (FUN_ffffff80022eb5e8): WCL-then-driver-vtable pattern
+      - Complete error code reference table
+      - itlwm fix documentation (commit 4a5480e)
+
 Remaining gaps: NONE
 All items from V10 remaining gaps list are now fully documented.
 V12 additions are supplementary (incident-driven findings, not gap closures).
+V13 additions document the IO80211 IOCTL caching layer and airportd auto-join flow.

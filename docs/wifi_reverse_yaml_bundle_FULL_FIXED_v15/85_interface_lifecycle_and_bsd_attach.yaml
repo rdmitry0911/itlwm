@@ -223,3 +223,89 @@ driver_porting_recipe:
     - "Treating queue attach as equivalent to interface creation"
     - "Skipping packet tap/BPF attach in an environment that expects it"
     - "Not overriding getInterfaceSubFamily() to return 3 (IFNET_SUBFAMILY_WIFI) — a separate IOSkywalkFamily function (0xffffff8002a3dae8) calls getInterfaceSubFamily() via vtable 0x9A8 and stores the result in eparams+0x140; without this override, subfamily stays 0 and airportd ignores the interface"
+    - "Returning errors from getSSID/getBSSID/getCHANNEL when not associated — Apple's IO80211Controller framework cache layer (getSSIDData at 0xffffff8002261b42, BSSID cache at FUN_ffffff8002215524) always pre-zeroes and returns success; returning error 6 causes airportd auto-join to abort with 'driver not available' (error 37)"
+
+# ═══════════════════════════════════════════════════════════════
+# AIRPORTD DISCOVERY AND AUTO-JOIN FLOW
+# Observed from system logs on macOS Sequoia 26.x (25D125)
+# with AirportItlwm kext — verified 2026-04-11 (commit 4a5480e)
+# ═══════════════════════════════════════════════════════════════
+
+airportd_auto_join_flow:
+  overview: >-
+    On macOS Sequoia, airportd boots before the WiFi kext loads.
+    Interface discovery is event-driven: KEV_DL_IF_ATTACHED from the
+    kernel and IOServiceMatched from IOKit trigger airportd to re-scan.
+    After discovery, airportd binds to the interface, runs _initInterface
+    (which queries critical IOCTLs), and then triggers auto-join.
+
+  temporal_sequence:
+    - phase: "airportd_boot"
+      time: "T+0s (boot+27s typically)"
+      description: >-
+        airportd starts, calls Apple80211GetIfListCopy.
+        Finds 0 WiFi interfaces (ifCount=0, error -3903/0xfffff0c1).
+        Logs "no user logged in" — auto-join deferred.
+    - phase: "kext_load"
+      time: "T+20s (boot+47s typically)"
+      description: >-
+        AirportItlwm kext loads, runs start(), creates Skywalk interface,
+        calls registerEthernetInterface, enables adapter.  Kernel sends
+        KEV_DL_IF_ATTACHED for the new en0 interface.
+    - phase: "interface_discovery"
+      time: "T+20s (immediately after kext_load)"
+      description: >-
+        airportd receives KEV_DL_IF_ATTACHED event and IOServiceMatched
+        notification.  CWFKernelEventMonitor logs "(en0) eventCode[0x9]/(if_attached)".
+        Calls Apple80211GetIfListCopy → ifCount=1.
+    - phase: "bind"
+      time: "T+20s"
+      description: >-
+        Apple80211BindToInterfaceWithParams creates Apple80211 handle for en0.
+        Logs "Sanity test passed. Version" and "useIOUCWhenPossible TRUE".
+    - phase: "_initInterface"
+      time: "T+20s"
+      description: >-
+        airportd's _initInterface queries critical IOCTLs:
+        POWERSAVE (set, type 5), SSID (get, type 1), BSSID (get, type 9),
+        CHANNEL (get, type 4), VIRTUAL_IF_ROLE (get, type 96).
+        All IOCTLs that query connection state (SSID/BSSID/CHANNEL)
+        MUST return kIOReturnSuccess with zeroed data when not associated.
+        Returning error aborts the entire flow.
+    - phase: "auto_join_trigger"
+      time: "T+20s"
+      description: >-
+        If _initInterface succeeds, CoreWiFi triggers auto-join with
+        trigger=iff_up.  Auto-join scans known networks from the System
+        keychain, sends APPLE80211_IOC_SCAN_REQ, waits for scan results,
+        matches against keychain entries, then sends APPLE80211_IOC_SSID
+        and APPLE80211_IOC_ASSOCIATE for the best match.
+
+  critical_ioctl_behavior_pre_association:
+    notes: >-
+      Apple's IO80211Controller framework has a cache layer that intercepts
+      IOCTL responses.  IO80211Controller::getSSIDData (at 0xffffff8002261b42
+      in 25D125 decompile, line 143689) always pre-zeroes the data structure
+      and copies from cached state — it never returns an error.  Similarly,
+      the BSSID cache function (FUN_ffffff8002215524, line 143719) pre-zeroes
+      and returns success.  The low-level IO80211BssManager may return
+      0xe0822403 ("not associated") but the framework cache absorbs this.
+      Third-party drivers must replicate this cache-layer behavior.
+    must_return_success:
+      - ioctl: "APPLE80211_IOC_SSID (1)"
+        behavior: "kIOReturnSuccess, ssid_len=0, ssid_bytes zeroed"
+      - ioctl: "APPLE80211_IOC_BSSID (9)"
+        behavior: "kIOReturnSuccess, bssid.octet all-zero"
+      - ioctl: "APPLE80211_IOC_CHANNEL (4)"
+        behavior: "kIOReturnSuccess, channel=0, flags=0"
+      - ioctl: "APPLE80211_IOC_STATE (19)"
+        behavior: "kIOReturnSuccess, current ic_state value"
+      - ioctl: "APPLE80211_IOC_POWER (12)"
+        behavior: "kIOReturnSuccess, current power state"
+    safe_to_fail:
+      - ioctl: "APPLE80211_IOC_VIRTUAL_IF_ROLE (96)"
+        behavior: "-3903 is expected for non-virtual interfaces"
+      - ioctl: "APPLE80211_IOC_VIRTUAL_IF_PARENT (97)"
+        behavior: "-3903 is expected"
+      - ioctl: "APPLE80211_IOC_CHANNELS_INFO (207)"
+        behavior: "kIOReturnUnsupported tolerated"

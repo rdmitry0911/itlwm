@@ -447,6 +447,100 @@ playbooks:
         Fixed by moving all timer teardown before fHalService release
         and adding fHalService NULL guard in watchdogAction.
 
+  - symptom: "CoreWiFi auto-join aborts with error 37 'driver not available'"
+    likely_broken_planes:
+      - join_assoc_plane
+      - interface_identity_plane
+    likely_missing_events:
+      - "APPLE80211_IOC_SSID (1) GET must return kIOReturnSuccess pre-association"
+      - "APPLE80211_IOC_BSSID (9) GET must return kIOReturnSuccess pre-association"
+      - "APPLE80211_IOC_CHANNEL (4) GET must return kIOReturnSuccess pre-association"
+    first_checks:
+      - "sudo log show --predicate 'process == \"airportd\"' --last boot | grep 'driver not available'"
+      - "sudo log show --predicate 'process == \"airportd\"' --last boot | grep 'IOCTL.*return' | grep -v 'return 0/'"
+      - "Verify getSSID/getBSSID/getCHANNEL return kIOReturnSuccess with zeroed data when ic_state != IEEE80211_S_RUN"
+    root_cause_chain: >-
+      airportd discovers the interface (KEV_DL_IF_ATTACHED + IOServiceMatched),
+      binds via Apple80211BindToInterfaceWithParams, then calls _initInterface
+      which queries SSID/BSSID/CHANNEL IOCTLs.  If any of these return error,
+      CoreWiFi treats the driver as unavailable and aborts auto-join.
+      The driver returns raw error 6 when not in RUN state, which gets encoded
+      as 0xe0822403 (SSID/BSSID) or -3903/0xfffff0c1 (CHANNEL) by the IO80211
+      framework.  airportd interprets these as hard failures.
+    common_root_causes:
+      - "getSSID/getBSSID/getCHANNEL returning error (e.g. 'return 6') when ic_state != IEEE80211_S_RUN"
+      - "Apple's IO80211Controller framework has a cache layer (getSSIDData at 0xffffff8002261b42) that pre-zeroes and always returns success; third-party drivers must replicate this behavior"
+    minimal_fix_strategy:
+      - "Return kIOReturnSuccess with zeroed data when not associated (memset + version = APPLE80211_VERSION)"
+      - "Only populate actual data when ic_state == IEEE80211_S_RUN"
+      - "Never return raw POSIX errors (like 6/ENXIO) from Apple80211 IOCTL handlers"
+    ioctl_criticality_tiers:
+      must_succeed_pre_association:
+        - "APPLE80211_IOC_SSID (1) — return success, ssid_len=0"
+        - "APPLE80211_IOC_CHANNEL (4) — return success, channel=0, flags=0"
+        - "APPLE80211_IOC_BSSID (9) — return success, bssid=00:00:00:00:00:00"
+        - "APPLE80211_IOC_STATE (19) — return success, current ic_state"
+        - "APPLE80211_IOC_POWER (12) — return success, current power state"
+      safe_to_fail:
+        - "APPLE80211_IOC_VIRTUAL_IF_ROLE (96) — -3903 OK, not a virtual interface"
+        - "APPLE80211_IOC_VIRTUAL_IF_PARENT (97) — -3903 OK"
+        - "APPLE80211_IOC_CHANNELS_INFO (207) — kIOReturnUnsupported OK for now"
+      non_critical_but_logged:
+        - "APPLE80211_IOC_POWERSAVE (5) — kIOReturnUnsupported tolerated but logged as warning"
+    verified_in_itlwm:
+      commit: "4a5480e"
+      files_fixed: ["AirportItlwmSkywalkInterface.cpp", "AirportSTAIOCTL.cpp"]
+      description: >-
+        getSSID, getBSSID, getCHANNEL all returned 'return 6' when
+        ic_state != IEEE80211_S_RUN.  airportd's _initInterface called
+        getSSID 12+ times during init, all failing.  CoreWiFi auto-join
+        triggered (trigger=iff_up) but immediately aborted with error 37
+        'driver not available'.  Fixed by returning kIOReturnSuccess with
+        zeroed structures pre-association, matching Apple IO80211Controller
+        framework cache-layer behavior.
+
+  - symptom: "airportd discovers interface but auto-join never triggers (no SCAN_REQ, no ASSOCIATE)"
+    likely_broken_planes:
+      - interface_identity_plane
+      - join_assoc_plane
+    likely_missing_events:
+      - "KEV_DL_IF_ATTACHED from kernel"
+      - "IOServiceMatched from IOKit"
+      - "Apple80211GetIfListCopy returning ifCount > 0"
+    first_checks:
+      - "sudo log show --predicate 'process == \"airportd\"' --last boot | grep 'Apple80211GetIfListCopy'"
+      - "sudo log show --predicate 'process == \"airportd\"' --last boot | grep 'iflist'"
+      - "Check if if_subfamily == 3 (getInterfaceSubFamily returns IFNET_SUBFAMILY_WIFI)"
+      - "Check for 'is a valid network interface, but was not a valid 80211 interface' in airportd logs"
+    root_cause_chain: >-
+      airportd boots before the kext loads (~20s gap on typical systems).
+      Initial Apple80211GetIfListCopy calls find 0 WiFi interfaces (ifCount=0).
+      When the kext loads and registers its interface, the kernel sends
+      KEV_DL_IF_ATTACHED, and IOKit sends IOServiceMatched.  airportd
+      handles these events, calls Apple80211GetIfListCopy again, and
+      if ifCount > 0, proceeds with Apple80211BindToInterfaceWithParams.
+      After successful bind, airportd calls _initInterface which queries
+      POWERSAVE, SSID, BSSID, CHANNEL, VIRTUAL_IF_ROLE.  If _initInterface
+      succeeds, auto-join is triggered with trigger=iff_up.  If any critical
+      IOCTL fails, auto-join aborts.
+    airportd_discovery_timeline:
+      - "T+0s: airportd starts, calls Apple80211GetIfListCopy → ifCount=0"
+      - "T+20s: kext loads, registers interface, kernel sends KEV_DL_IF_ATTACHED"
+      - "T+20s: IOKit sends IOServiceMatched notification"
+      - "T+20s: airportd re-calls Apple80211GetIfListCopy → ifCount=1"
+      - "T+20s: Apple80211BindToInterfaceWithParams binds to en0"
+      - "T+20s: _initInterface: queries POWERSAVE, SSID, BSSID, CHANNEL"
+      - "T+20s: If critical IOCTLs succeed → auto-join triggered (trigger=iff_up)"
+      - "T+20s: auto-join scans + matches known network from keychain → ASSOCIATE"
+    common_root_causes:
+      - "if_subfamily != 3 — interface not recognized as WiFi by Apple80211GetIfListCopy Path B"
+      - "getSSID/getBSSID/getCHANNEL returning error pre-association — driver marked 'not available'"
+      - "Missing KEV_DL_IF_ATTACHED event — airportd never re-scans for new interfaces"
+    minimal_fix_strategy:
+      - "Ensure getInterfaceSubFamily() returns 3 (IFNET_SUBFAMILY_WIFI)"
+      - "Ensure getSSID/getBSSID/getCHANNEL return kIOReturnSuccess with zeroed data pre-association"
+      - "Verify interface registration triggers KEV_DL_IF_ATTACHED kernel event"
+
 global_rules:
   - "Always stabilize SCAN -> JOIN -> NET first before enabling roam, GAS, bg/offload, or 11ax extras."
   - "Treat SSM and notification replay as infrastructure, not optional polish."

@@ -720,3 +720,93 @@ getBSDUnitNumber_implementations:
     For itlwm, the base getBSDUnitNumber returning 0 is correct — itlwm is the
     primary STA interface (en0 or en1 depending on system). The unit number can
     also be overridden by IOKit matching via IONetworkInterfaceUnitNumber property.
+
+# ═══════════════════════════════════════════════════════════════
+# 8. IO80211 FRAMEWORK IOCTL CACHE / INTERPOSITION LAYER
+#    Discovered via Ghidra decompile of IO80211Family.kext (25D125)
+#    and live airportd log analysis — 2026-04-11
+# ═══════════════════════════════════════════════════════════════
+
+io80211_framework_caching_layer:
+  notes: >-
+    The IO80211Family framework interposes between airportd and the
+    driver-level IOCTL implementations.  For connection-state IOCTLs
+    (SSID, BSSID, CHANNEL), the framework maintains a cache layer that
+    pre-zeroes output structures and returns success even when the
+    low-level driver (IO80211BssManager) returns "not associated" errors.
+    This ensures airportd always receives valid (if empty) responses
+    during _initInterface, which is critical for the auto-join flow.
+
+  getSSIDData:
+    class: "IO80211Controller"
+    addr: "0xffffff8002261b42"
+    decompile_line: 143689
+    behavior: >-
+      Always pre-zeroes the apple80211_ssid_data structure, sets version=1,
+      then copies from the cached SSID state at IO80211Interface+0x188.
+      When not associated, the cached data is already zeroed, so the caller
+      gets ssid_len=0 with all-zero ssid_bytes.  This function is void —
+      it NEVER returns an error.
+
+  getBSSID_cache:
+    function: "FUN_ffffff8002215524"
+    decompile_line: 143719
+    behavior: >-
+      Pre-zeroes the apple80211_bssid_data structure and sets version=1
+      BEFORE attempting the underlying IOCTL dispatch.  Returns bool
+      (1=success, 0=fail).  Even on failure, the caller gets a valid
+      zeroed structure.
+
+  bssManager_low_level:
+    class: "IO80211BssManager"
+    getCurrentSSID_addr: "FUN_ffffff800226640c"
+    getCurrentBSSID_addr: "0xffffff8002266600 (line 196953)"
+    getCurrentChannel_addr: "0xffffff8002266700 (line 197002)"
+    behavior: >-
+      These low-level functions return 0xe0822403 when no current BSS
+      exists (**(long **)(param_1 + 0x10) == 0).  This error code is
+      an Apple80211-subsystem error (system=0xe0, sub=0x82, code=0x2403)
+      meaning "not associated".  The framework cache layer above absorbs
+      this error and presents success+zeroed data to airportd.
+
+  wcl_config_manager:
+    class: "WCLConfigManager"
+    getSSID_line: 15262
+    getBSSID_line: 15330
+    behavior: >-
+      WCLConfigManager::getSSID calls getCurrentSSID (FUN_ffffff800226640c).
+      If it returns 0xe0822403 (not associated), WCL falls back to
+      FUN_ffffff8002122c90 which also returns 0xe0822403.  The framework
+      cache layer above absorbs both failures.
+
+  ioctl_dispatch:
+    function: "FUN_ffffff80022eb5e8"
+    decompile_line: 272699
+    behavior: >-
+      The main IOCTL dispatch function.  For SSID (IOCTL 1), the handler
+      at line 127740 first tries WCL dispatch; if that returns 0xe082280f
+      (not implemented), falls back to the driver's virtual getSSID
+      (vtable+0xcc8).  For BSSID (IOCTL 9), pre-initializes local data
+      to zero at line 127998 before dispatch.
+
+  error_code_reference:
+    "0xe0822403": "IO80211BssManager 'not associated' — absorbed by cache layer"
+    "0xe082280f": "WCL 'not implemented' — triggers fallback to driver vtable"
+    "0xe00002c7": "kIOReturnUnsupported — from IOKit, non-fatal"
+    "-3903 (0xfffff0c1)": "Apple80211 general error — unimplemented IOCTL"
+    "6": "Raw POSIX ENXIO — NEVER use from Apple80211 IOCTL handlers; airportd treats as hard failure"
+
+  itlwm_fix:
+    commit: "4a5480e"
+    problem: >-
+      getSSID, getBSSID, getCHANNEL in both AirportItlwmSkywalkInterface.cpp
+      and AirportSTAIOCTL.cpp returned raw 'return 6' when ic_state != RUN.
+      This was encoded as 0xe0822403 (SSID/BSSID) or -3903 (CHANNEL) and
+      caused airportd _initInterface to fail, leading to CoreWiFi auto-join
+      aborting with error 37 "driver not available".
+    fix: >-
+      Changed all three functions to always return kIOReturnSuccess with
+      pre-zeroed data structures.  When ic_state == IEEE80211_S_RUN,
+      actual connection data is populated; otherwise zeroed defaults
+      (ssid_len=0, channel=0, bssid=00:00:00:00:00:00).  This matches
+      Apple IO80211Controller framework cache-layer behavior exactly.
