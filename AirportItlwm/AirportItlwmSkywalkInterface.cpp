@@ -352,11 +352,19 @@ init(IOService *provider, ether_addr *addr)
     // with ether_addr* as provider → crash in OSDynamicCast.  Fixed by removing
     // the spurious registerNetworkInterfaceWithLogicalLink from
     // IOSkywalkEthernetInterface.h (see comment there).
-    if (!IO80211InfraInterface::init()) {
-        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
+    // Tahoe/Sequoia reference path: the controller+MAC overload must be used.
+    // The 0-arg init() only builds a generic Skywalk object; it does not bind
+    // the controller / self MAC path that the Wi-Fi stack expects before
+    // BSD attach, PostOffice/Glue event delivery, and WCL scan completion.
+    // Reference docs:
+    //   docs/.../85_bsd_attach_chain_xref_checked.yaml
+    //   docs/.../92_postoffice_event_delivery_chain.yaml
+    if (!IO80211SkywalkInterface::init(provider, addr)) {
+        XYLog("%s IO80211SkywalkInterface::init(provider, addr) failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
+    XYLog("DEBUG %s IO80211SkywalkInterface::init(provider, addr) OK mExpansionData=%p mExpansionData2=%p\n",
+          __FUNCTION__, mExpansionData, mExpansionData2);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
