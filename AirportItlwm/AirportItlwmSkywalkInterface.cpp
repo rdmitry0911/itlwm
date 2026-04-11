@@ -394,16 +394,16 @@ IOReturn AirportItlwmSkywalkInterface::
 getSSID(struct apple80211_ssid_data *sd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
+    // Apple's IO80211Controller::getSSIDData always pre-zeroes and returns success.
+    // When not associated, the cached SSID data is zeroed (ssid_len=0).
+    // Returning error here causes airportd to abort auto-join with "driver not available".
+    memset(sd, 0, sizeof(*sd));
+    sd->version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(sd, 0, sizeof(*sd));
-        sd->version = APPLE80211_VERSION;
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
-        XYLog("DEBUG %s ssid=%s len=%u\n", __FUNCTION__, ic->ic_des_essid, sd->ssid_len);
-        return kIOReturnSuccess;
     }
-    XYLog("DEBUG %s ic_state=%d (not RUN) → 6\n", __FUNCTION__, ic->ic_state);
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -551,16 +551,17 @@ IOReturn AirportItlwmSkywalkInterface::
 getCHANNEL(struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
-    XYLog("DEBUG VTABLE [471] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+    // Apple's IO80211 framework pre-zeroes channel data and returns success.
+    // When not associated, channel=0 / flags=0.
+    // Returning error here causes airportd getCHANNEL queries to fail during init.
+    memset(cd, 0, sizeof(apple80211_channel_data));
+    cd->version = APPLE80211_VERSION;
+    cd->channel.version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(cd, 0, sizeof(apple80211_channel_data));
-        cd->version = APPLE80211_VERSION;
-        cd->channel.version = APPLE80211_VERSION;
         cd->channel.channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
         cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags, ic->ic_bss->ni_chw);
-        return kIOReturnSuccess;
     }
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -737,17 +738,15 @@ IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    // Apple's IO80211 framework (FUN_ffffff8002215524) pre-zeroes BSSID and returns success.
+    // When not associated, BSSID is all-zero.
+    // Returning error here causes airportd to fail during init and abort auto-join.
+    memset(bd, 0, sizeof(*bd));
+    bd->version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(bd, 0, sizeof(*bd));
-        bd->version = APPLE80211_VERSION;
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
-        XYLog("DEBUG %s %02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
-              bd->bssid.octet[0], bd->bssid.octet[1], bd->bssid.octet[2],
-              bd->bssid.octet[3], bd->bssid.octet[4], bd->bssid.octet[5]);
-        return kIOReturnSuccess;
     }
-    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

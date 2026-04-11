@@ -218,14 +218,15 @@ getSSID(OSObject *object,
                         struct apple80211_ssid_data *sd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
+    // Apple's IO80211Controller::getSSIDData always pre-zeroes and returns success.
+    // When not associated, ssid_len=0. Returning error causes airportd "driver not available".
+    memset(sd, 0, sizeof(*sd));
+    sd->version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(sd, 0, sizeof(*sd));
-        sd->version = APPLE80211_VERSION;
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
-        return kIOReturnSuccess;
     }
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -384,15 +385,16 @@ getCHANNEL(OSObject *object,
                            struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
+    // Apple's IO80211 framework pre-zeroes channel data and returns success.
+    // When not associated, channel=0 / flags=0.
+    memset(cd, 0, sizeof(apple80211_channel_data));
+    cd->version = APPLE80211_VERSION;
+    cd->channel.version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(cd, 0, sizeof(apple80211_channel_data));
-        cd->version = APPLE80211_VERSION;
-        cd->channel.version = APPLE80211_VERSION;
         cd->channel.channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
         cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags, ic->ic_bss->ni_chw);
-        return kIOReturnSuccess;
     }
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -648,13 +650,14 @@ getBSSID(OSObject *object,
                          struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    // Apple's IO80211 framework pre-zeroes BSSID and returns success.
+    // When not associated, BSSID is all-zero.
+    memset(bd, 0, sizeof(*bd));
+    bd->version = APPLE80211_VERSION;
     if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(bd, 0, sizeof(*bd));
-        bd->version = APPLE80211_VERSION;
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
-        return kIOReturnSuccess;
     }
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
