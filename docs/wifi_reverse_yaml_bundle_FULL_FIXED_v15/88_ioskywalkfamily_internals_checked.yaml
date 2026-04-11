@@ -164,17 +164,22 @@ IOSkywalkEthernetInterface_initBSDInterfaceParameters:
   behavior: >-
     Sets up ifnet_init_eparams with Ethernet defaults: type=6 (IFT_ETHER),
     addr_len=6, hdr_len=0xe, broadcast address, demux/framer callbacks.
-    Near the end calls two virtuals to populate identity fields:
-      callq *0x9a0(%rax)  → getInterfaceFamily()  → stores in eparams+0x2C (family)
-      callq *0x9a8(%rax)  → getInterfaceSubFamily() → stores in eparams+0x140 (subfamily)
+    Calls two virtuals via vtable:
+      callq *0x990(%rax)  → getHardwareAssists()
+      callq *0x9b8(%rax)  → getFeatureFlags()
+    IMPORTANT: does NOT call getInterfaceSubFamily() (vtable 0x9A8) on
+    25C56/25D125. The subfamily field at eparams+0x140 is left at 0
+    (IFNET_SUBFAMILY_ANY). Does call getInterfaceFamily() (0x9A0) and
+    stores result in eparams+0x2C.
   critical_note: >-
-    This is the mechanism by which the BSD ifnet gets its if_subfamily.
-    For Wi-Fi, getInterfaceSubFamily() MUST return IFNET_SUBFAMILY_WIFI (3).
-    Base IOSkywalkEthernetInterface::getInterfaceSubFamily() returns 0
-    (IFNET_SUBFAMILY_ANY). Apple's AppleBCMWLANIO80211APSTAInterface
-    overrides to return 3. Without this, airportd's _getIfListCopy
+    Since initBSDInterfaceParameters does NOT call getInterfaceSubFamily()
+    on 25C56/25D125, a getInterfaceSubFamily() override alone cannot set
+    if_subfamily. Wi-Fi drivers must override initBSDInterfaceParameters
+    itself: call super, then write *(uint32_t*)((char*)eparams + 0x140) = 3
+    (IFNET_SUBFAMILY_WIFI). Apple's AppleBCMWLAN does this through its own
+    override chain. Without if_subfamily == 3, airportd's _getIfListCopy
     Path B (ioctl 0xC020699F) does not recognize the interface as Wi-Fi.
-  verified_by: "x86_64 disassembly of IOSkywalkFamily.kext 26.3 (25D125)"
+  verified_by: "Ghidra decompile of IOSkywalkFamily.kext 26.3 (25D125) x86_64 — confirmed getHardwareAssists and getFeatureFlags calls present, getInterfaceSubFamily call absent"
 
 prepareBSDInterface:
   address: "0xffffff8002a379de"

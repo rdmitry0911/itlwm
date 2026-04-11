@@ -18,7 +18,7 @@ playbooks:
     first_checks:
       - "Run: python3 -c 'import ctypes; lib=ctypes.cdll.LoadLibrary(\"/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN\"); ...' to call Apple80211GetIfListCopy and check if it returns any interfaces."
       - "Check if_subfamily via ioctl 0xC020699F on the BSD interface (en0). Expected: 3 (IFNET_SUBFAMILY_WIFI). If 0: root cause confirmed."
-      - "Verify getInterfaceSubFamily() override exists in the driver's interface class and returns 3."
+      - "Verify initBSDInterfaceParameters override exists in the driver's interface class and writes eparams+0x140 = 3 (IFNET_SUBFAMILY_WIFI). A getInterfaceSubFamily() override alone is NOT sufficient on 25C56/25D125."
       - "Check SIOCGIFMEDIA returns IFM_IEEE80211 (0x80) — this confirms Path A would work, but airportd uses Path B on Tahoe."
     root_cause_chain: >-
       airportd calls Apple80211GetIfListCopy → _getIfListCopy → Path B
@@ -29,21 +29,24 @@ playbooks:
       skipped. With 0 recognized Wi-Fi interfaces, airportd never sends
       any IOCTLs to the driver — no scans, no associations, nothing.
     fix: >-
-      Override getInterfaceSubFamily() (vtable slot 0x9A8) in the
-      driver's Skywalk interface class to return (void*)3
-      (IFNET_SUBFAMILY_WIFI). IOSkywalkEthernetInterface::initBSDInterfaceParameters
-      calls this virtual and stores the result in ifnet_init_eparams.subfamily
-      (offset 0x140). Apple's AppleBCMWLANIO80211APSTAInterface does the same.
+      Override initBSDInterfaceParameters in the driver's Skywalk interface
+      class: call super, then write *(uint32_t*)((char*)eparams + 0x140) = 3
+      (IFNET_SUBFAMILY_WIFI). On macOS 25C56/25D125, initBSDInterfaceParameters
+      does NOT call getInterfaceSubFamily() (confirmed via Ghidra decompile) —
+      the subfamily field stays 0 unless patched directly. Also keep a
+      getInterfaceSubFamily() override returning 3 for forward compatibility.
+      Apple's AppleBCMWLAN sets subfamily through its own override chain.
     what_to_log_minimally:
       - "Apple80211GetIfListCopy return value and interface count"
       - "ioctl 0xC020699F result: if_type, if_family, if_subfamily"
       - "SIOCGIFMEDIA result: ifm_current media type"
     common_root_causes:
-      - "getInterfaceSubFamily() not overridden — base returns 0 (IFNET_SUBFAMILY_ANY)"
-      - "Override returns wrong value (not 3)"
-      - "initBSDInterfaceParameters not calling through to base class"
+      - "initBSDInterfaceParameters not overridden to force subfamily=3 — on 25C56/25D125 it does NOT call getInterfaceSubFamily(), so a vtable override alone leaves subfamily at 0"
+      - "Override writes wrong offset or wrong value"
+      - "initBSDInterfaceParameters override does not call super first"
     minimal_fix_strategy:
-      - "Add getInterfaceSubFamily() override returning IFNET_SUBFAMILY_WIFI (3)"
+      - "Override initBSDInterfaceParameters: call super, then write eparams+0x140 = 3 (IFNET_SUBFAMILY_WIFI)"
+      - "Also add getInterfaceSubFamily() override returning 3 for forward compatibility"
       - "Verify via ioctl 0xC020699F after reboot"
 
   - symptom: "scan results exist, but join never starts"
