@@ -443,6 +443,10 @@ bool AirportItlwm::start(IOService *provider)
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
+    // Guard: fHalService may be freed during releaseAll() on another
+    // thread while this fires on fWatchdogWorkLoop (see panic14 fix).
+    if (!fHalService)
+        return;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
@@ -565,6 +569,27 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
 
 void AirportItlwm::releaseAll()
 {
+    // CRITICAL: Stop all timers FIRST, before releasing fHalService.
+    // watchdogTimer runs on fWatchdogWorkLoop (a separate thread).
+    // If fHalService is freed while watchdogAction is in flight,
+    // the use-after-free chain fHalService→get80211Controller()→
+    // ic_ac.ac_if→if_watchdog dereferences freed memory (panic14).
+    if (fWatchdogWorkLoop && watchdogTimer) {
+        watchdogTimer->cancelTimeout();
+        watchdogTimer->disable();
+        fWatchdogWorkLoop->removeEventSource(watchdogTimer);
+        watchdogTimer->release();
+        watchdogTimer = NULL;
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
+    if (_fWorkloop && scanSource) {
+        scanSource->cancelTimeout();
+        scanSource->disable();
+        _fWorkloop->removeEventSource(scanSource);
+        scanSource->release();
+        scanSource = NULL;
+    }
     if (fHalService) {
         fHalService->release();
         fHalService = NULL;
@@ -575,21 +600,6 @@ void AirportItlwm::releaseAll()
             _fWorkloop->removeEventSource(_fCommandGate);
             _fCommandGate->release();
             _fCommandGate = NULL;
-        }
-        if (scanSource) {
-            scanSource->cancelTimeout();
-            scanSource->disable();
-            _fWorkloop->removeEventSource(scanSource);
-            scanSource->release();
-            scanSource = NULL;
-        }
-        if (fWatchdogWorkLoop && watchdogTimer) {
-            watchdogTimer->cancelTimeout();
-            fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-            watchdogTimer->release();
-            watchdogTimer = NULL;
-            fWatchdogWorkLoop->release();
-            fWatchdogWorkLoop = NULL;
         }
         _fWorkloop->release();
         _fWorkloop = NULL;

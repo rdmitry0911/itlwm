@@ -294,6 +294,33 @@ void AirportItlwm::releaseAll()
     XYLog("DEBUG %s [1] logStream=%p(rc=%d) logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
           __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1,
           driverLogPipe, driverDataPathPipe, driverSnapshotsPipe, driverFaultReporter);
+
+    // CRITICAL: Stop all timers FIRST, before releasing fHalService.
+    // watchdogTimer runs on fWatchdogWorkLoop (a separate thread).
+    // If fHalService is freed while watchdogAction is in flight,
+    // the use-after-free chain fHalService→get80211Controller()→
+    // ic_ac.ac_if→if_watchdog dereferences freed memory → panic14
+    // (RIP=0x0 via IOTimerEventSource::timeoutSignaled).
+    if (fWatchdogWorkLoop && watchdogTimer) {
+        XYLog("DEBUG %s [1a] stopping watchdogTimer=%p on fWatchdogWorkLoop=%p\n",
+              __FUNCTION__, watchdogTimer, fWatchdogWorkLoop);
+        watchdogTimer->cancelTimeout();
+        watchdogTimer->disable();
+        fWatchdogWorkLoop->removeEventSource(watchdogTimer);
+        watchdogTimer->release();
+        watchdogTimer = NULL;
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
+    if (_fWorkloop && scanSource) {
+        XYLog("DEBUG %s [1b] stopping scanSource=%p\n", __FUNCTION__, scanSource);
+        scanSource->cancelTimeout();
+        scanSource->disable();
+        _fWorkloop->removeEventSource(scanSource);
+        scanSource->release();
+        scanSource = NULL;
+    }
+
     OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
     OSSafeReleaseNULL(driverDataPathPipe);
@@ -314,23 +341,6 @@ void AirportItlwm::releaseAll()
             _fWorkloop->removeEventSource(_fCommandGate);
             _fCommandGate->release();
             _fCommandGate = NULL;
-        }
-        if (scanSource) {
-            XYLog("DEBUG %s [4] removing scanSource=%p\n", __FUNCTION__, scanSource);
-            scanSource->cancelTimeout();
-            scanSource->disable();
-            _fWorkloop->removeEventSource(scanSource);
-            scanSource->release();
-            scanSource = NULL;
-        }
-        if (fWatchdogWorkLoop && watchdogTimer) {
-            XYLog("DEBUG %s [5] removing watchdogTimer=%p from fWatchdogWorkLoop=%p\n", __FUNCTION__, watchdogTimer, fWatchdogWorkLoop);
-            watchdogTimer->cancelTimeout();
-            fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-            watchdogTimer->release();
-            watchdogTimer = NULL;
-            fWatchdogWorkLoop->release();
-            fWatchdogWorkLoop = NULL;
         }
         XYLog("DEBUG %s [6] releasing _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
         _fWorkloop->release();
@@ -415,6 +425,13 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
+    // Guard: watchdogAction runs on fWatchdogWorkLoop (separate thread).
+    // During releaseAll(), fHalService may be freed before the timer is
+    // fully cancelled.  Dereferencing freed fHalService causes a
+    // use-after-free chain that ends in calling a NULL if_watchdog
+    // function pointer (panic14: RIP=0x0, CR2=0x0).
+    if (!fHalService)
+        return;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     struct ieee80211com *ic = fHalService->get80211Controller();
     RT_SET(8);
