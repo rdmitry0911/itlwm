@@ -30,6 +30,18 @@ public:
 #endif
     virtual void free() override;
 
+    // IOSkywalkNetworkInterface override — vtable slot 0x9A8.
+    // IOSkywalkEthernetInterface::initBSDInterfaceParameters calls
+    // this->getInterfaceSubFamily() and stores the result in
+    // ifnet_init_eparams.subfamily (offset 0x140).
+    // Base returns 0 (IFNET_SUBFAMILY_ANY) → airportd's _getIfListCopy
+    // Path B checks if_subfamily == 3 (IFNET_SUBFAMILY_WIFI) and skips
+    // our interface → Apple80211GetIfListCopy returns no WiFi interfaces.
+    // Apple's AppleBCMWLANIO80211APSTAInterface overrides this to return 3.
+    virtual void *getInterfaceSubFamily(void) override {
+        return (void *)3;  // IFNET_SUBFAMILY_WIFI
+    }
+
     void associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index);
     void setPTK(const u_int8_t *key, size_t key_len);
     void setGTK(const u_int8_t *key, size_t key_len, u_int8_t kid, u_int8_t *rsc);

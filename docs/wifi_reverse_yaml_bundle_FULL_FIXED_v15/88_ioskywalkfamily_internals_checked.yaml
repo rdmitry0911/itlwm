@@ -157,6 +157,25 @@ deregisterLogicalLink:
 #   PART 2 — BSD INTERFACE CREATION METHODS
 # ═══════════════════════════════════════════════════════════════
 
+IOSkywalkEthernetInterface_initBSDInterfaceParameters:
+  address: "0xffffff8002a3f5ace (offset 0x15ace in kext)"
+  class: "IOSkywalkEthernetInterface"
+  signature: "SInt32 initBSDInterfaceParameters(ifnet_init_eparams *, sockaddr_dl **)"
+  behavior: >-
+    Sets up ifnet_init_eparams with Ethernet defaults: type=6 (IFT_ETHER),
+    addr_len=6, hdr_len=0xe, broadcast address, demux/framer callbacks.
+    Near the end calls two virtuals to populate identity fields:
+      callq *0x9a0(%rax)  → getInterfaceFamily()  → stores in eparams+0x2C (family)
+      callq *0x9a8(%rax)  → getInterfaceSubFamily() → stores in eparams+0x140 (subfamily)
+  critical_note: >-
+    This is the mechanism by which the BSD ifnet gets its if_subfamily.
+    For Wi-Fi, getInterfaceSubFamily() MUST return IFNET_SUBFAMILY_WIFI (3).
+    Base IOSkywalkEthernetInterface::getInterfaceSubFamily() returns 0
+    (IFNET_SUBFAMILY_ANY). Apple's AppleBCMWLANIO80211APSTAInterface
+    overrides to return 3. Without this, airportd's _getIfListCopy
+    Path B (ioctl 0xC020699F) does not recognize the interface as Wi-Fi.
+  verified_by: "x86_64 disassembly of IOSkywalkFamily.kext 26.3 (25D125)"
+
 prepareBSDInterface:
   address: "0xffffff8002a379de"
   lines: "10996–11026"

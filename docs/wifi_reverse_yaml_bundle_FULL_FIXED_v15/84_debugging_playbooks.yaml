@@ -9,6 +9,43 @@ purpose: >-
   FSM/state/action checks to perform.
 
 playbooks:
+  - symptom: "BSD interface (en0) exists but airportd does not recognize it as Wi-Fi"
+    likely_broken_planes:
+      - bsd_attach_plane
+      - interface_identity_plane
+    likely_missing_events:
+      - "(none — this is pre-event: the control plane never starts)"
+    first_checks:
+      - "Run: python3 -c 'import ctypes; lib=ctypes.cdll.LoadLibrary(\"/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN\"); ...' to call Apple80211GetIfListCopy and check if it returns any interfaces."
+      - "Check if_subfamily via ioctl 0xC020699F on the BSD interface (en0). Expected: 3 (IFNET_SUBFAMILY_WIFI). If 0: root cause confirmed."
+      - "Verify getInterfaceSubFamily() override exists in the driver's interface class and returns 3."
+      - "Check SIOCGIFMEDIA returns IFM_IEEE80211 (0x80) — this confirms Path A would work, but airportd uses Path B on Tahoe."
+    root_cause_chain: >-
+      airportd calls Apple80211GetIfListCopy → _getIfListCopy → Path B
+      (because apple80211Ref->field_0x240 == 1, non-zero on Tahoe) →
+      ioctl(socket, 0xC020699F, &ifreq) on each en* interface →
+      checks if_type == 6 (IFT_ETHER) AND if_subfamily == 3
+      (IFNET_SUBFAMILY_WIFI). If if_subfamily != 3, the interface is
+      skipped. With 0 recognized Wi-Fi interfaces, airportd never sends
+      any IOCTLs to the driver — no scans, no associations, nothing.
+    fix: >-
+      Override getInterfaceSubFamily() (vtable slot 0x9A8) in the
+      driver's Skywalk interface class to return (void*)3
+      (IFNET_SUBFAMILY_WIFI). IOSkywalkEthernetInterface::initBSDInterfaceParameters
+      calls this virtual and stores the result in ifnet_init_eparams.subfamily
+      (offset 0x140). Apple's AppleBCMWLANIO80211APSTAInterface does the same.
+    what_to_log_minimally:
+      - "Apple80211GetIfListCopy return value and interface count"
+      - "ioctl 0xC020699F result: if_type, if_family, if_subfamily"
+      - "SIOCGIFMEDIA result: ifm_current media type"
+    common_root_causes:
+      - "getInterfaceSubFamily() not overridden — base returns 0 (IFNET_SUBFAMILY_ANY)"
+      - "Override returns wrong value (not 3)"
+      - "initBSDInterfaceParameters not calling through to base class"
+    minimal_fix_strategy:
+      - "Add getInterfaceSubFamily() override returning IFNET_SUBFAMILY_WIFI (3)"
+      - "Verify via ioctl 0xC020699F after reboot"
+
   - symptom: "scan results exist, but join never starts"
     likely_broken_planes:
       - scan_plane
@@ -354,6 +391,7 @@ global_rules:
   - "Prefer explicit synthetic events over implicit state polling during early bring-up."
 
 recommended_debug_order:
+  - "interface_identity_plane (if_subfamily, airportd recognition — check FIRST)"
   - "net_link_plane"
   - "join_assoc_plane"
   - "scan_plane"

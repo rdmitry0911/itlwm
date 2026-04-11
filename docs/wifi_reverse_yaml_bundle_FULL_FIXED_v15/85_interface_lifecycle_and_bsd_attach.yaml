@@ -148,12 +148,27 @@ detailed_lifecycle:
       - initBSDInterfaceParameters must succeed
       - prepareBSDInterface performs internal setup and then BPF attach
       - if BPF attach fails, BSD interface bring-up is considered failed
+    critical_subfamily_requirement: >-
+      IOSkywalkEthernetInterface::initBSDInterfaceParameters calls
+      this->getInterfaceFamily() and this->getInterfaceSubFamily() via
+      vtable slots 0x9A0 and 0x9A8 respectively, storing results in
+      ifnet_init_eparams.family (offset 0x2C) and .subfamily (offset 0x140).
+      For Wi-Fi interfaces, getInterfaceSubFamily() MUST return
+      IFNET_SUBFAMILY_WIFI (3). Without this, airportd's _getIfListCopy
+      (Apple80211GetIfListCopy) does not recognize the interface as Wi-Fi:
+      it calls ioctl 0xC020699F which returns if_type/if_family/if_subfamily,
+      and requires if_subfamily == 3. If subfamily is 0 (base default),
+      Apple80211GetIfListCopy returns count=0, no IOCTLs are ever sent to
+      the driver, and Wi-Fi is completely non-functional despite en0 existing.
+      This was confirmed via direct Apple80211 API calls and disassembly
+      of _getIfListCopy in IO80211.framework (dyld shared cache).
     likely_associated_steps:
       - set/get BSD name and unit
       - optional deferred BSD attach
       - logical link registration
     minimum_emulation_for_new_driver:
       - construct a BSD-facing interface object before operational link-up
+      - override getInterfaceSubFamily() to return IFNET_SUBFAMILY_WIFI (3)
       - make prepareBSDInterface-equivalent succeed
       - expose a valid ifnet handle/path for lower consumers
       - attach to packet tap/BPF equivalent if the host stack expects one
@@ -202,3 +217,4 @@ driver_porting_recipe:
     - "Destroying and recreating the BSD identity on each sleep/wake"
     - "Treating queue attach as equivalent to interface creation"
     - "Skipping packet tap/BPF attach in an environment that expects it"
+    - "Not overriding getInterfaceSubFamily() — base returns 0 (IFNET_SUBFAMILY_ANY), airportd requires 3 (IFNET_SUBFAMILY_WIFI) to recognize the interface as Wi-Fi"

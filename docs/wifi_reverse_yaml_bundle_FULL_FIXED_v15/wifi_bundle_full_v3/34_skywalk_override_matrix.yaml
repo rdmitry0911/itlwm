@@ -67,6 +67,17 @@ contract_buckets:
       - getFeatureFlags
       - captureInterfaceState
       - restoreInterfaceState
+    critical_note_subfamily: >-
+      getInterfaceSubFamily (slot 0x9A8) is a MANDATORY override for Wi-Fi
+      drivers. IOSkywalkEthernetInterface::initBSDInterfaceParameters calls
+      this->getInterfaceSubFamily() and stores the result in
+      ifnet_init_eparams.subfamily (offset 0x140). Base implementation
+      returns 0 (IFNET_SUBFAMILY_ANY). airportd's _getIfListCopy uses
+      ioctl 0xC020699F to read if_subfamily and requires it to be 3
+      (IFNET_SUBFAMILY_WIFI) to recognize the interface as Wi-Fi.
+      Without this override Apple80211GetIfListCopy returns 0 interfaces
+      and no IOCTLs are ever sent to the driver.
+      Confirmed: AppleBCMWLANIO80211APSTAInterface overrides to return 3.
 
 apple_wifi_specific_anchors:
   AppleBCMWLANSkywalkInterface:

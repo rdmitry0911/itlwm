@@ -38,8 +38,8 @@ ioskywalknetworkinterface_vtable:
     - {offset: 0x988, name: getMinPacketSize}
     - {offset: 0x990, name: getHardwareAssists}
     - {offset: 0x998, name: setHardwareAssists}
-    - {offset: 0x9A0, name: getInterfaceFamily}
-    - {offset: 0x9A8, name: getInterfaceSubFamily}
+    - {offset: 0x9A0, name: getInterfaceFamily, notes: "called by IOSkywalkEthernetInterface::initBSDInterfaceParameters → stores result in ifnet_init_eparams.family (offset 0x2C)"}
+    - {offset: 0x9A8, name: getInterfaceSubFamily, notes: "called by IOSkywalkEthernetInterface::initBSDInterfaceParameters → stores result in ifnet_init_eparams.subfamily (offset 0x140). MUST return IFNET_SUBFAMILY_WIFI (3) for Wi-Fi interfaces — airportd _getIfListCopy Path B checks if_subfamily == 3 via ioctl 0xC020699F; base returns 0 (IFNET_SUBFAMILY_ANY). Apple's AppleBCMWLANIO80211APSTAInterface overrides to return 3."}
     - {offset: 0x9B0, name: getInitialMedia}
     - {offset: 0x9B8, name: getFeatureFlags}
     - {offset: 0x9C0, name: getTxDataOffset}
