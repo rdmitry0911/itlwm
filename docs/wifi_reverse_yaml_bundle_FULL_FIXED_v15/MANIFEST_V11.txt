@@ -131,3 +131,64 @@ Remaining gaps: NONE
 All items from V10 remaining gaps list are now fully documented.
 V12 additions are supplementary (incident-driven findings, not gap closures).
 V13 additions document the IO80211 IOCTL caching layer and airportd auto-join flow.
+V14 additions document the PostOffice event delivery chain and scan pipeline fixes.
+
+─────────────────────────────────────────────────────────────
+
+Added in V14 (2026-04-11):
+
+Documents the complete IO80211 event delivery chain from driver to airportd,
+discovered via manual x86_64 disassembly and Ghidra decompilation during
+investigation of "no networks visible" after driver loads without panic.
+
+- 92_postoffice_event_delivery_chain.yaml  (NEW)
+    Nine sections documenting the full event path:
+
+    1. IO80211Controller::postMessage dispatch chain
+       - Raw x86_64 disassembly of postMessage @ 0xffffff8002219ffe (32 bytes)
+       - Thin trampoline pattern: reads PostOffice from expansion+0xb10, tail-calls
+         PostOffice::sendMail (vtable slot 36, offset 0x120)
+       - postMessageSync @ 0xffffff800221a01e: same pattern, vtable slot 37 (0x128)
+       - getPostOffice() = expansion+0xb10 (NOT getControllerMonitor = expansion+0x30)
+
+    2. IO80211PostOffice — message queue and delivery
+       - Class creation: CreatePostOffice → allocWithParams(IO80211WorkQueue*)
+       - sendMail (async): enqueues, arms outForDeliveryTimer
+       - sendMailSync: immediate dispatch to interface vtable[0xb18/8]
+       - deliverMessage: final step, calls postMessageInternal
+
+    3. IO80211SkywalkInterface::postMessageInternal — Glue dispatch
+       - Critical check: *(*(this+0x120)+0xd8) = IO80211Glue object
+       - If Glue != NULL && async == true → event delivered via Glue
+       - If Glue == NULL → postMessageSync fallback = NO-OP for events
+       - Events silently dropped when Glue is missing
+
+    4. IO80211Glue — userspace event delivery
+       - Created by IO80211Glue::withOptions(IO80211SkywalkInterface*)
+       - Stored at interface expansionData+0xd8
+       - Event queue: enqueueEvent → processPendingEventQueue → sendEventAndFilter
+       - sendEventAndFilter delivers to IOUserClient notification port → airportd
+
+    5. IO80211SkywalkInterface expansion data layout
+       - Complete field map: +0x28 PeerManager, +0x58 interfaceRole,
+         +0x5c interfaceId, +0xa8 event pipe, +0xb8 role string,
+         +0xd8 IO80211Glue, +0xe0 powerState
+
+    6. IO80211Controller expansion data — relevant offsets
+       - +0x30 ControllerMonitor, +0xb10 PostOffice
+
+    7. AppleBCMWLAN scanComplete reference implementation
+       - scanComplete @ 0xffffff80015b50f2 calls postMessage(iface, 10, &status, 4, 1)
+       - Interface at ivars+0x2c20, same call signature as itlwm
+
+    8. End-to-end event delivery chain diagram
+       - 9-step chain: driver → postMessage trampoline → PostOffice::sendMail →
+         outForDelivery → deliverMessage → postMessageInternal → IO80211Glue →
+         processPendingEventQueue → sendEventAndFilter → airportd
+       - Three failure points identified with symptoms and diagnosis
+
+    9. OpenBSD ieee80211_match_bss AUTO_JOIN fix
+       - Original check: AUTO_JOIN && des_esslen==0 → reject all BSS
+       - Problem: creates infinite SCAN→SCAN loop, starves workloop
+       - Fix: removed check, airportd handles BSS selection via ASSOCIATE
+       - Rejection flag bitmask reference (0x01-0x40)

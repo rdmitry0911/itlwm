@@ -1,0 +1,529 @@
+version: 1
+topic: "IO80211 PostOffice event delivery chain — postMessage dispatch, IO80211Glue, scan pipeline"
+status: verified_from_disassembly
+purpose: >-
+  Documents the complete event delivery chain from IO80211Controller::postMessage
+  through IO80211PostOffice to IO80211Glue and into userspace (airportd).
+  Includes SkywalkInterface expansion data layout, AppleBCMWLAN scanComplete
+  reference implementation, and the OpenBSD ieee80211_match_bss AUTO_JOIN fix.
+  All data extracted from BootKernelExtensions.kc (macOS 26.3, 25D125, x86_64)
+  via direct disassembly and Ghidra decompilation.
+
+source:
+  kernel: "macOS 26.3 (25D125), x86_64"
+  binary: "BootKernelExtensions.kc"
+  decompilation: "ghidra_output/ — IO80211Family_decompiled.c, AppleBCMWLAN_Core_decompiled.c"
+  disassembly: "manual x86_64 decode of postMessage/postMessageSync at 0xffffff8002219ffe/0xffffff800221a01e"
+
+# ═══════════════════════════════════════════════════════════════
+# 1. IO80211Controller::postMessage — DISPATCH CHAIN
+# ═══════════════════════════════════════════════════════════════
+
+postMessage_dispatch:
+  title: "IO80211Controller::postMessage dispatch through PostOffice"
+
+  controller_postMessage:
+    symbol: "IO80211Controller::postMessage(IO80211SkywalkInterface*, unsigned int, void*, unsigned long, bool)"
+    address: "0xffffff8002219ffe"
+    size: "0x20 bytes (thin trampoline)"
+    disassembly: |
+      push rbp
+      mov rbp, rsp
+      mov rax, [rdi+0x120]       ; rax = controller->expansionData
+      mov rdi, [rax+0xb10]       ; rdi = PostOffice object (expansion+0xb10)
+      mov rax, [rdi]             ; rax = PostOffice vtable
+      mov rax, [rax+0x120]       ; rax = vtable slot 36 = PostOffice::sendMail
+      pop rbp
+      jmp rax                    ; tail call — preserves rsi(iface), edx(msg), rcx(data), r8(len), r9/stack(async)
+    raw_bytes: "55 48 89 e5 48 8b 87 20 01 00 00 48 8b b8 10 0b 00 00 48 8b 07 48 8b 80 20 01 00 00 5d ff e0"
+    notes: >-
+      This is a THIN TRAMPOLINE — does no validation, just dispatches.
+      rdi on entry = IO80211Controller (this).
+      After the trampoline, rdi = PostOffice, rsi = IO80211SkywalkInterface.
+      If PostOffice (expansion+0xb10) is NULL, this will crash with NULL deref.
+
+  controller_postMessageSync:
+    symbol: "IO80211Controller::postMessageSync(IO80211SkywalkInterface*, unsigned int, void*, unsigned long, bool)"
+    address: "0xffffff800221a01e"
+    size: "0x20 bytes (thin trampoline)"
+    disassembly: |
+      push rbp
+      mov rbp, rsp
+      mov rax, [rdi+0x120]       ; rax = controller->expansionData
+      mov rdi, [rax+0xb10]       ; rdi = PostOffice object
+      mov rax, [rdi]             ; rax = PostOffice vtable
+      mov rax, [rax+0x128]       ; rax = vtable slot 37 = PostOffice::sendMailSync
+      pop rbp
+      jmp rax                    ; tail call
+    raw_bytes: "55 48 89 e5 48 8b 87 20 01 00 00 48 8b b8 10 0b 00 00 48 8b 07 48 8b 80 28 01 00 00 5d ff e0"
+    notes: >-
+      Same pattern as postMessage but dispatches to vtable slot 37 (sendMailSync)
+      instead of slot 36 (sendMail).
+
+  getPostOffice:
+    symbol: "IO80211Controller::getPostOffice()"
+    address: "0xffffff800221a212"
+    decompile: "return *(long*)(*(long*)(this + 0x120) + 0xb10);"
+    notes: "Confirms PostOffice is at controller expansionData+0xb10."
+
+  getControllerMonitor:
+    symbol: "IO80211Controller::getControllerMonitor()"
+    address: "0xffffff8002219f1e"
+    decompile: "return *(long*)(*(long*)(this + 0x120) + 0x30);"
+    notes: >-
+      ControllerMonitor is at expansion+0x30, NOT 0xb10.
+      These are different objects — PostOffice handles event delivery,
+      ControllerMonitor handles statistics/reporting.
+
+# ═══════════════════════════════════════════════════════════════
+# 2. IO80211PostOffice — MESSAGE QUEUE AND DELIVERY
+# ═══════════════════════════════════════════════════════════════
+
+postoffice:
+  title: "IO80211PostOffice — event queueing and delivery"
+
+  class_info:
+    metaclass_size: "0x18"
+    metaclass_address: "0xffffff8002408770"
+
+  creation:
+    function: "IO80211Controller::CreatePostOffice()"
+    address: "0xffffff800221a1fc"
+    decompile: |
+      void CreatePostOffice() {
+          IO80211WorkQueue* wq = this->getWorkQueue();  // vtable[0xc68/8]
+          IO80211PostOffice::allocWithParams(wq);
+      }
+    notes: >-
+      Called during IO80211Controller::start().
+      PostOffice is backed by the controller's IO80211WorkQueue.
+
+  allocWithParams:
+    symbol: "IO80211PostOffice::allocWithParams(IO80211WorkQueue*)"
+    address: "0xffffff80022bd22a"
+
+  initWithParams:
+    symbol: "IO80211PostOffice::initWithParams(IO80211WorkQueue*)"
+    address: "0xffffff80022bd29c"
+
+  methods:
+    sendMail:
+      symbol: "IO80211PostOffice::sendMail(IO80211SkywalkInterface*, unsigned int, void*, unsigned long, bool)"
+      address: "0xffffff80022bd386"
+      vtable_offset: "0x120 (slot 36)"
+      notes: >-
+        Async path — enqueues the message for later delivery via outForDelivery timer.
+        Called by IO80211Controller::postMessage when bool=true (most common case).
+
+    sendMailSync:
+      symbol: "IO80211PostOffice::sendMailSync(IO80211SkywalkInterface*, unsigned int, void*, unsigned long, bool)"
+      address: "0xffffff80022bd320"
+      vtable_offset: "0x128 (slot 37)"
+      decompile: |
+        void sendMailSync(IO80211SkywalkInterface* iface, UInt32 msg, void* data, unsigned long len, bool async) {
+            this->lock();  // vtable[0x138/8]
+            if (iface != NULL) {
+                iface->vtable[0xb18/8](iface, msg, data, len, async);
+                // dispatches to IO80211SkywalkInterface internal method
+            }
+        }
+      notes: >-
+        Synchronous path — immediately dispatches to interface.
+        Called by IO80211Controller::postMessageSync.
+
+    deliverMessage:
+      symbol: "IO80211PostOffice::deliverMessage(IO80211SkywalkInterface*, unsigned int, void*, unsigned long, bool)"
+      address: "0xffffff80022bd4ec"
+      notes: "Final delivery step — calls interface postMessageInternal."
+
+    outForDelivery:
+      symbol: "IO80211PostOffice::outForDelivery()"
+      address: "0xffffff80022bd50c"
+
+    outForDeliveryTimer:
+      symbol: "IO80211PostOffice::outForDeliveryTimer(IO80211TimerSource*)"
+      address: "0xffffff80022bd312"
+
+# ═══════════════════════════════════════════════════════════════
+# 3. IO80211SkywalkInterface::postMessageInternal — GLUE DISPATCH
+# ═══════════════════════════════════════════════════════════════
+
+postMessageInternal:
+  title: "IO80211SkywalkInterface::postMessageInternal — Glue-based event delivery"
+
+  postMessage:
+    symbol: "IO80211SkywalkInterface::postMessage(unsigned int, void*, unsigned long, bool)"
+    address: "0xffffff80022772a8"
+    decompile: |
+      void postMessage(UInt32 msg, void* data, unsigned long len, bool async) {
+          postMessageInternal(msg, data, len, async);  // direct tail call
+      }
+
+  postMessageInternal:
+    symbol: "IO80211SkywalkInterface::postMessageInternal(unsigned int, void*, unsigned long, bool)"
+    address: "0xffffff80022772b2"
+    decompile: |
+      IOReturn postMessageInternal(UInt32 msg, void* data, unsigned long len, bool async) {
+          void* glue = *(void**)(*(void**)(this + 0x120) + 0xd8);
+          if (glue != NULL && async == true) {
+              // Async path: queue event in IO80211Glue for delivery to userspace
+              return IO80211Glue::enqueueEvent(glue, msg, data, len);
+              // FUN_ffffff8002117e80 — sets pending flag, signals work source
+          }
+          // Sync path: falls through to postMessageSync — effectively a no-op for event delivery
+          postMessageSync(msg, data, len);
+          return 0;
+      }
+    critical_check: >-
+      *(*(this+0x120) + 0xd8) is the IO80211Glue object.
+      If NULL, ALL async events (SCAN_DONE, ASSOC_DONE, etc.) are silently dropped.
+      The sync fallback (postMessageSync) does NOT deliver events to userspace.
+    notes: >-
+      in_R8B is the bool (5th param) passed via register R8 in x86_64 ABI.
+      When called from PostOffice::sendMail with async=true, this takes the Glue path.
+
+  postMessageSync:
+    symbol: "IO80211SkywalkInterface::postMessageSync(unsigned int, void*, unsigned long)"
+    address: "0xffffff800227776e"
+    decompile: |
+      IOReturn postMessageSync() {
+          if (this->vtable[0xde0/8]()) {  // some check, possibly isOnWorkQueue
+              getBSDName();  // log or assertion
+          }
+          return 0;
+      }
+    notes: >-
+      This is NOT a delivery mechanism — it's a diagnostic/logging path.
+      Events that fall through here are lost and never reach airportd.
+
+  reportDataPathEventsGated:
+    symbol: "IO80211SkywalkInterface (internal gated wrapper)"
+    address: "0xffffff80022779cc"
+    decompile: |
+      IOReturn reportDataPathEventsGated(IO80211SkywalkInterface* iface,
+                                          UInt32* msgPtr, void* data,
+                                          unsigned long* lenPtr, byte* asyncPtr) {
+          assert(msgPtr != NULL);
+          unsigned long len = lenPtr ? *lenPtr : 0;
+          bool async = asyncPtr ? (*asyncPtr & 1) : false;
+          if (iface != NULL) {
+              // Check PeerManager filter first
+              IO80211PeerManager* pm = *(IO80211PeerManager**)(*(this+0x120) + 0x28);
+              if (pm != NULL && pm->filterEvent(pm, *msgPtr, data, len) == false) {
+                  return 0;  // event filtered out
+              }
+              postMessageInternal(iface, *msgPtr, data, len, async);
+          }
+          return 0;
+      }
+    notes: >-
+      Alternative path via reportDataPathEvents (FUN_ffffff8002277a7a) which
+      runs through the command gate. Also ends up at postMessageInternal.
+
+# ═══════════════════════════════════════════════════════════════
+# 4. IO80211Glue — USERSPACE EVENT DELIVERY
+# ═══════════════════════════════════════════════════════════════
+
+io80211glue:
+  title: "IO80211Glue — event filter and userspace delivery"
+
+  class_info:
+    metaclass_size: "0x20"
+    metaclass_name: "IO80211Glue"
+    location_in_interface: "IO80211SkywalkInterface expansionData + 0xd8"
+
+  creation:
+    withOptions:
+      symbol: "IO80211Glue::withOptions(IO80211SkywalkInterface*)"
+      address: "0xffffff8002116dba"
+      notes: "Factory method — creates and initializes Glue for the given interface."
+    initWithOptions:
+      symbol: "IO80211Glue::initWithOptions(IO80211SkywalkInterface*)"
+      address: "0xffffff8002116e28"
+
+  lifecycle:
+    creation_point: >-
+      Created during IO80211SkywalkInterface::start() lifecycle.
+      Stored at interface expansionData+0xd8.
+    teardown: >-
+      IO80211SkywalkInterface::stop() checks if (*(expansionData + 0xd8) != 0)
+      and calls IO80211Glue::stop(). See doc 89, section 6.
+    stop:
+      symbol: "IO80211Glue::stop()"
+      address: "0xffffff8002117696"
+
+  event_processing:
+    enqueueEvent:
+      symbol: "IO80211Glue (enqueue via postMessageInternal)"
+      address: "0xffffff8002117e80"
+      decompile: |
+        IOReturn enqueueEvent(void* glueIvars) {
+            FUN_ffffff8002117d62();  // allocate postMessageQueueEntry
+            void* queue = *(void**)(glueIvars + 0x18);
+            if ((*(byte*)(queue + 0x30) & 1) == 0) {
+                *(byte*)(queue + 0x30) = 1;  // mark pending
+                void* workSource = *(void**)(queue + 0x60);
+                signalWorkSource(1, *(void**)(workSource + 0x48) + 0x10);
+                wakeWorkQueue(workSource);
+            }
+            return 0;
+        }
+
+    processPendingEventQueue:
+      symbol: "IO80211Glue::processPendingEventQueue()"
+      address: "0xffffff8002117cce"
+      notes: >-
+        Dequeues pending events from linked list at glueIvars+0x18+0x20.
+        Calls sendEventAndFilter for each entry.
+        Clears pending flag when queue is empty.
+
+    sendEventAndFilter:
+      symbol: "IO80211Glue::sendEventAndFilter(postMessageQueueEntry*)"
+      address: "0xffffff8002117a36"
+      notes: >-
+        Final delivery step — applies event filter and delivers to userspace
+        via IOUserClient notification port. This is how airportd receives
+        SCAN_DONE, ASSOC_DONE, LINK_CHANGED, etc.
+
+# ═══════════════════════════════════════════════════════════════
+# 5. IO80211SkywalkInterface EXPANSION DATA LAYOUT
+# ═══════════════════════════════════════════════════════════════
+
+skywalk_interface_expansion:
+  title: "IO80211SkywalkInterface expansionData field map"
+  base_offset: "this + 0x120 → pointer to expansionData struct"
+  notes: >-
+    The expansionData is allocated during initIvars() and zeroed via
+    FUN_ffffff800221379e. It stores all internal IO80211 framework objects
+    associated with the interface.
+
+  fields:
+    - offset: "0x28"
+      type: "IO80211PeerManager*"
+      accessor: "getPeerManager() @ 0xffffff8002274c7c"
+      notes: "Used by reportDataPathEventsGated for event filtering."
+
+    - offset: "0x30"
+      type: "unknown (NOT ControllerMonitor)"
+      notes: >-
+        getControllerMonitor() uses controller expansion+0x30,
+        NOT interface expansion+0x30. This is a different field.
+
+    - offset: "0x58"
+      type: "uint32_t interfaceRole"
+      accessor: "getInterfaceRole() @ 0xffffff8002274bac"
+
+    - offset: "0x5c"
+      type: "uint32_t interfaceId"
+      accessor: "getInterfaceId() @ 0xffffff8002274c8e"
+
+    - offset: "0xa8"
+      type: "event pipe related object"
+      notes: >-
+        Used by postMessageIOUC (0xffffff8002275376) and
+        createEventPipe (0xffffff800227589e).
+        postMessageIOUC calls vtable[0x130/8] on this object to check count,
+        then vtable[0x1e8/8] for delivery.
+
+    - offset: "0xb8"
+      type: "role string object*"
+      accessor: "getInterfaceRoleStr() @ 0xffffff8002274bbc"
+      notes: "Calls vtable[0x148/8] on the object to get the string."
+
+    - offset: "0xd8"
+      type: "IO80211Glue*"
+      accessor: "(no public accessor — read directly in postMessageInternal)"
+      notes: >-
+        THE critical field for event delivery. If NULL, all async events
+        (SCAN_DONE, ASSOC_DONE, etc.) are silently dropped.
+        Created during start(), destroyed during stop().
+
+    - offset: "0xe0"
+      type: "uint32_t powerState"
+      notes: "0=sleep, 2=awake. Documented in doc 89, section 3."
+
+# ═══════════════════════════════════════════════════════════════
+# 6. IO80211Controller EXPANSION DATA — RELEVANT OFFSETS
+# ═══════════════════════════════════════════════════════════════
+
+controller_expansion:
+  title: "IO80211Controller expansionData — PostOffice and ControllerMonitor"
+  base_offset: "this + 0x120 → pointer to expansionData struct"
+
+  fields:
+    - offset: "0x30"
+      type: "IO80211ControllerMonitor*"
+      accessor: "getControllerMonitor() @ 0xffffff8002219f1e"
+
+    - offset: "0xb10"
+      type: "IO80211PostOffice*"
+      accessor: "getPostOffice() @ 0xffffff800221a212"
+      notes: >-
+        Used by postMessage/postMessageSync trampolines.
+        If NULL at the time postMessage is called, the driver will crash.
+
+# ═══════════════════════════════════════════════════════════════
+# 7. AppleBCMWLAN scanComplete — REFERENCE IMPLEMENTATION
+# ═══════════════════════════════════════════════════════════════
+
+bcm_scan_complete:
+  title: "AppleBCMWLANCore::scanComplete — reference for SCAN_DONE delivery"
+
+  function:
+    symbol: "AppleBCMWLANCore::scanComplete(int)"
+    address: "0xffffff80015b50f2"
+    source_path: >-
+      /AppleInternal/Library/BuildRoots/.../AppleBCMWLANV3_DriversMac/AppleBCMWLANCore.cpp
+
+  postMessage_call:
+    decompile_line: 60066
+    code: |
+      if (*(long *)(param_1[0x25] + 0x2c20) != 0) {
+          IO80211Controller::postMessage(
+              this,
+              *(IO80211SkywalkInterface**)(ivars + 0x2c20),  // primary STA interface
+              10,        // APPLE80211_M_SCAN_DONE
+              &status,   // 4-byte scan status
+              4,         // data length
+              true       // async=true
+          );
+      }
+    notes: >-
+      Key observations:
+      1. Interface pointer stored at ivars+0x2c20 (BCM-specific layout).
+      2. NULL-checked before calling postMessage.
+      3. SCAN_DONE = 10 = 0x0A, data = &status (4 bytes), async = true.
+      4. This is EXACTLY the same call signature used in itlwm's fakeScanDone
+         and eventHandler (SCAN_DONE path).
+      5. BCM logs "post APPLE80211_M_SCAN_DONE with 0x%x" before calling.
+
+  itlwm_equivalent: >-
+    In itlwm AirportItlwmV2.cpp, fakeScanDone and eventHandler both call:
+      this->postMessage(fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
+    This matches BCM's signature exactly.
+
+# ═══════════════════════════════════════════════════════════════
+# 8. COMPLETE EVENT DELIVERY CHAIN — END-TO-END
+# ═══════════════════════════════════════════════════════════════
+
+event_delivery_chain:
+  title: "End-to-end event delivery: driver → airportd"
+
+  chain: |
+    1. Driver calls:
+       controller->postMessage(skywalkInterface, APPLE80211_M_SCAN_DONE, &status, 4, true)
+
+    2. IO80211Controller::postMessage (0xffffff8002219ffe) — thin trampoline:
+       - Reads PostOffice from controller->expansion[0xb10]
+       - Tail-calls PostOffice::sendMail (vtable slot 36)
+
+    3. IO80211PostOffice::sendMail (0xffffff80022bd386):
+       - Allocates postMessageQueueEntry
+       - Enqueues onto PostOffice internal queue
+       - Arms outForDeliveryTimer
+
+    4. IO80211PostOffice::outForDelivery (0xffffff80022bd50c) — timer fires:
+       - Dequeues entry
+       - Calls deliverMessage
+
+    5. IO80211PostOffice::deliverMessage (0xffffff80022bd4ec):
+       - Calls IO80211SkywalkInterface::postMessageInternal
+
+    6. IO80211SkywalkInterface::postMessageInternal (0xffffff80022772b2):
+       - Reads IO80211Glue from interface->expansion[0xd8]
+       - IF Glue != NULL AND async == true:
+           → IO80211Glue event path (step 7)
+       - ELSE:
+           → postMessageSync — NO-OP for event delivery (events LOST)
+
+    7. IO80211Glue::enqueueEvent (0xffffff8002117e80):
+       - Adds event to Glue's pending queue
+       - Sets pending flag at queue+0x30
+       - Signals work source to wake processing
+
+    8. IO80211Glue::processPendingEventQueue (0xffffff8002117cce):
+       - Dequeues event from linked list
+       - Calls sendEventAndFilter
+
+    9. IO80211Glue::sendEventAndFilter (0xffffff8002117a36):
+       - Applies event filter
+       - Delivers to IOUserClient notification port
+       - airportd receives the event
+
+  failure_points:
+    - point: "PostOffice NULL (controller expansion+0xb10)"
+      symptom: "Kernel panic — NULL pointer dereference in postMessage trampoline"
+      diagnosis: "IO80211Controller::start() failed to create PostOffice"
+
+    - point: "IO80211Glue NULL (interface expansion+0xd8)"
+      symptom: "Events silently dropped — airportd never sees SCAN_DONE, ASSOC_DONE, etc."
+      diagnosis: >-
+        IO80211SkywalkInterface::start() failed to create Glue, or it was
+        never called. The sync fallback path is a no-op. This is the most
+        likely cause of 'no networks visible' when scans complete successfully.
+
+    - point: "Interface pointer NULL"
+      symptom: "postMessageGated returns kIOReturnNotReady, events not sent"
+      diagnosis: "fNetIf not yet initialized — timing issue in driver startup"
+
+  itlwm_diagnostic:
+    description: >-
+      itlwm's postMessageGated logs these framework internals:
+        postOffice=<ptr>  — controller expansion+0xb10 (must be non-NULL)
+        ifExpansion=<ptr>  — interface expansion data (must be non-NULL)
+        glue=<ptr>         — interface expansion+0xd8 (must be non-NULL for events)
+      If any of these are 0x0, that identifies the exact failure point in the chain.
+
+# ═══════════════════════════════════════════════════════════════
+# 9. OpenBSD ieee80211_match_bss AUTO_JOIN FIX
+# ═══════════════════════════════════════════════════════════════
+
+match_bss_auto_join_fix:
+  title: "ieee80211_match_bss — removal of counterproductive ESSID rejection"
+
+  original_code:
+    file: "itl80211/openbsd/net80211/ieee80211_node.c"
+    function: "ieee80211_match_bss()"
+    location: "~line 1086"
+    code: |
+      if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+          ic->ic_des_esslen == 0)
+          fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
+
+  problem: >-
+    In the OpenBSD model, this check prevents the driver from blindly joining
+    a random network when no desired ESSID is configured. But in the Apple/macOS
+    model, network selection is performed by airportd in userspace — it reads
+    scan results via APPLE80211_IOC_SCAN_RESULT and tells the driver which BSS
+    to join via APPLE80211_IOC_ASSOCIATE.
+
+    With AUTO_JOIN flag set and des_esslen==0 (no target ESSID configured — the
+    normal state before association), ALL scanned BSS nodes are rejected with
+    fail=0x14 (ESSID|PRIVACY). This creates an infinite SCAN→SCAN loop:
+      1. ieee80211_end_scan → ieee80211_node_choose_bss
+      2. All 48 nodes rejected (fail=0x14)
+      3. ic_state stays in SCAN
+      4. Workloop starved — fakeScanDone timer delayed by 57 seconds
+      5. airportd never receives SCAN_DONE, never sees networks
+
+  fix: >-
+    Removed the AUTO_JOIN+des_esslen==0 check entirely. The remaining ESSID check
+    (des_esslen != 0 && essid mismatch) still correctly filters when airportd has
+    explicitly set a target ESSID via ASSOCIATE. The PRIVACY check below still
+    prevents association with encrypted networks when no credentials are configured.
+
+  rejection_flags:
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_CHAN",       value: "0x01" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_IBSS",       value: "0x02" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_PRIVACY",    value: "0x04" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_BASIC_RATE", value: "0x08" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_ESSID",      value: "0x10" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_BSSID",      value: "0x20" }
+    - { flag: "IEEE80211_NODE_ASSOCFAIL_WPA_PROTO",  value: "0x40" }
+
+  common_failure_bitmask: >-
+    fail=0x14 = ESSID(0x10) | PRIVACY(0x04): the ESSID flag came from the removed
+    AUTO_JOIN check; the PRIVACY flag came from mismatch between ic_flags and
+    ni_capinfo (driver has no security configured, APs have WPA2).
+    After removing the ESSID check, PRIVACY alone (0x04) still prevents
+    auto-association with encrypted APs — the correct safety net.

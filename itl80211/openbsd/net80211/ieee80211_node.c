@@ -1083,9 +1083,25 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
     rate = ieee80211_fix_rate(ic, ni, IEEE80211_F_DONEGO);
     if (rate & IEEE80211_RATE_BASIC)
         fail |= IEEE80211_NODE_ASSOCFAIL_BASIC_RATE;
-    if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-        ic->ic_des_esslen == 0)
-        fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
+    /*
+     * Apple/macOS: do NOT reject BSS when AUTO_JOIN && des_esslen==0.
+     *
+     * In the OpenBSD model this check prevents the driver from blindly
+     * joining a random network.  In the Apple model, network selection
+     * is done by airportd in userspace — it reads scan results via
+     * APPLE80211_IOC_SCAN_RESULT and tells the driver which BSS to
+     * join via APPLE80211_IOC_ASSOCIATE.  Rejecting all candidates here
+     * creates an infinite SCAN→SCAN loop that starves the workloop,
+     * prevents fakeScanDone from firing, and blocks airportd from ever
+     * receiving scan results.  The PRIVACY check below still prevents
+     * actual association with encrypted networks when no credentials
+     * are configured, which is the correct safety net.
+     *
+     * Original OpenBSD check (removed):
+     *   if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+     *       ic->ic_des_esslen == 0)
+     *       fail |= IEEE80211_NODE_ASSOCFAIL_ESSID;
+     */
     if (ic->ic_des_esslen != 0 &&
         (ni->ni_esslen != ic->ic_des_esslen ||
          memcmp(ni->ni_essid, ic->ic_des_essid, ic->ic_des_esslen) != 0))

@@ -1070,6 +1070,18 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
         return 22;
     if (ic->ic_state <= IEEE80211_S_INIT)
         return 22;
+
+    /*
+     * Reset SCAN_RESULT iterator — airportd/IO80211 framework reads
+     * SCAN_RESULT immediately after SCAN_REQ returns success.  If
+     * ic_tree already has nodes from the internal scan, the framework
+     * can iterate them right away.  Without this reset, a stale
+     * fScanResultWrapping=true from a previous cycle causes SCAN_RESULT
+     * to return 5 ("end") before returning any nodes.
+     */
+    fNextNodeToSend = NULL;
+    fScanResultWrapping = false;
+
     if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST || sd->scan_type == APPLE80211_SCAN_TYPE_PASSIVE) {
         if (scanSource) {
             scanSource->setTimeoutMS(100);

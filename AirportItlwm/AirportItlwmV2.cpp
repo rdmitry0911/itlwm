@@ -358,7 +358,11 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     RT2_SET(15);
     sRT.postMsgCount++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
-    if (!that || !that->fNetIf) return kIOReturnNotReady;
+    if (!that || !that->fNetIf) {
+        XYLog("DEBUG %s SKIP: that=%p fNetIf=%p\n", __FUNCTION__, that,
+              that ? that->fNetIf : NULL);
+        return kIOReturnNotReady;
+    }
     UInt32 msg = (UInt32)(uintptr_t)arg0;
     sRT.lastPostMsg = msg;
     // Use controller-level postMessage — routes through IO80211Controller
@@ -367,6 +371,31 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     // updateCountryCodeProperty → sendIOUCToWcl (panics on workloop).
     // arg1 = optional data pointer, arg2 = optional data length
     // (reference: scanComplete passes &status/4, others pass NULL/0).
+    /*
+     * Diagnose IO80211 framework internal state:
+     *
+     * IO80211Controller::postMessage dispatches through PostOffice:
+     *   controller->expansion[0xb10]->vtable[36](iface, msg, data, len, async)
+     * The PostOffice then calls IO80211SkywalkInterface::postMessageInternal
+     * which checks *(iface+0x120)+0xd8 — the IO80211Glue event filter object.
+     *
+     * If PostOffice is NULL → crash (NULL deref in controller dispatch).
+     * If IO80211Glue is NULL → async events silently fall through to
+     *   postMessageSync which is a no-op for event delivery.
+     *
+     * See disassembly: IO80211Controller::postMessage @ 0xffffff8002219ffe
+     *   mov rax,[rdi+0x120]; mov rdi,[rax+0xb10]; jmp [vtable+0x120]
+     * See decompile: FUN_ffffff80022772b2 (postMessageInternal)
+     */
+    uint8_t *ctrlBase = (uint8_t *)that;
+    void *ctrlExpansion = *(void **)(ctrlBase + 0x120);
+    void *postOffice = ctrlExpansion ? *(void **)((uint8_t *)ctrlExpansion + 0xb10) : NULL;
+    uint8_t *ifBase = (uint8_t *)that->fNetIf;
+    void *ifExpansion = *(void **)(ifBase + 0x120);
+    void *glueObj = ifExpansion ? *(void **)((uint8_t *)ifExpansion + 0xd8) : NULL;
+    XYLog("DEBUG %s msg=%u fNetIf=%p postOffice=%p ifExpansion=%p glue=%p dataLen=%u\n",
+          __FUNCTION__, msg, that->fNetIf, postOffice, ifExpansion, glueObj,
+          (unsigned int)(uintptr_t)arg2);
     that->postMessage(that->fNetIf, msg, arg1, (unsigned int)(uintptr_t)arg2, true);
     RT_SET(5);
     return kIOReturnSuccess;
@@ -472,10 +501,33 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
     RT_SET(13);
     sRT.scanCount++;
-    UInt32 msg = 0;
     AirportItlwm *that = (AirportItlwm *)owner;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_state=%d posting SCAN_DONE + BGSCAN_CACHED_NETWORK_AVAILABLE\n", __FUNCTION__, ic->ic_state);
+
+    /*
+     * Only post SCAN_DONE when ic_tree has nodes — airportd reads
+     * SCAN_RESULT immediately after receiving SCAN_DONE, so posting
+     * with an empty tree causes "0 results" and the framework marks
+     * the scan as completed.  If the tree is still empty (scan not
+     * finished yet), reschedule for 500ms to retry.  This avoids
+     * the race where the original 100ms timer fired before the first
+     * scan cycle populated ic_tree.
+     */
+    struct ieee80211_node *first = RB_MIN(ieee80211_tree, &ic->ic_tree);
+    if (first == NULL) {
+        XYLog("DEBUG %s ic_state=%d tree empty — rescheduling 500ms\n",
+              __FUNCTION__, ic->ic_state);
+        sender->setTimeoutMS(500);
+        return;
+    }
+
+    static UInt32 msg;
+    msg = 0;
+    /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
+    that->fNextNodeToSend = NULL;
+    that->fScanResultWrapping = false;
+    XYLog("DEBUG %s ic_state=%d posting SCAN_DONE + BGSCAN_CACHED (first_ssid=%s)\n",
+          __FUNCTION__, ic->ic_state, first->ni_essid);
     that->postMessage(that->fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
     that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
 }
