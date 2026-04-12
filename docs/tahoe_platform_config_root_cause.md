@@ -221,3 +221,52 @@ For these two payload-less IOCs, the Tahoe BSD bridge must:
 Only after those explicit payload-less cases are handled is it correct to apply
 the generic `req_data != NULL` requirement for the remaining IOCs that do carry
 typed request buffers.
+
+## Next Confirmed Divergence After VIRTUAL_IF_*
+
+On live build `b4e9aa8`, the early `VIRTUAL_IF_ROLE/PARENT -> 6` failures no
+longer appear.  But Tahoe still does not leave the unavailable state:
+
+- `isDriverAvailable` remains `0`
+- external `SSID/BSSID` still fail with `0xe0822403`
+- external `SCAN_RESULT` now fails immediately after every `fakeScanDone`
+  with `0xe0820445`
+
+At the same time, our own driver logs prove that the underlying scan path is
+alive:
+
+- `setWCL_SCAN_REQ -> scan triggered OK`
+- `fakeScanDone ... nodes=28 posting SCAN_DONE + BGSCAN_CACHED`
+
+So the next root cause is not "scan never ran".  The next root cause is that
+the framework still does not accept the driver as available after scan
+completion.
+
+## DRIVER_AVAILABLE Transport Root Cause
+
+The remaining producer-side delta is in how we publish
+`APPLE80211_M_DRIVER_AVAILABLE`.
+
+Reference material in `92_postoffice_event_delivery_chain.yaml` and
+`86_concrete_event_payload_maps_checked.yaml` shows the Apple event path using
+the controller-level producer call:
+
+- `IO80211Controller::postMessage(controller, iface, code, payload, len, true)`
+
+That route goes through controller `PostOffice` and the same event-delivery
+machinery used by Apple scan-complete delivery.
+
+Our Tahoe code was still different in exactly one place:
+
+- `SCAN_DONE`, `BGSCAN_CACHED`, `POWER_CHANGED`, and other working events use
+  controller `postMessage(...)`
+- `DRIVER_AVAILABLE` alone used direct
+  `IO80211SkywalkInterface::postMessage(...)`
+
+That means the availability bulletin was bypassing the same producer route used
+by the reference stack and by our already-working scan-complete path.
+
+Given the live state (`isDriverAvailable` never flips despite repeated scans)
+and the recovered controller/PostOffice producer contract, the correct next
+fix is to publish `APPLE80211_M_DRIVER_AVAILABLE` through controller
+`postMessage(fNetIf, ...)`, not through direct interface `postMessage(...)`.

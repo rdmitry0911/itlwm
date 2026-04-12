@@ -105,9 +105,9 @@ RuntimeDiag sRT = {};
 #define SKYWALK_BUF_SIZE 2048
 
 static void
-publishDriverAvailable(IO80211SkywalkInterface *netif)
+publishDriverAvailable(AirportItlwm *controller)
 {
-    if (netif == NULL)
+    if (controller == NULL || controller->fNetIf == NULL)
         return;
 
     apple80211_driver_available_data msg;
@@ -131,10 +131,22 @@ publishDriverAvailable(IO80211SkywalkInterface *netif)
     //   which would fail the family-side *(int *)(payload + 8) == 0 check.
     //   Reusing that blob here would fabricate the wrong ABI contract.
     //
+    // Live b4e9aa8 evidence tightened the transport requirement further:
+    // scans really run and fakeScanDone really posts, yet isDriverAvailable
+    // never flips from 0.  The remaining producer delta was that this was the
+    // only Tahoe bulletin still sent via IO80211SkywalkInterface::postMessage,
+    // while Apple's recovered producer docs route events through
+    // IO80211Controller::postMessage(controller, iface, ...), i.e. the
+    // controller/PostOffice path used by SCAN_DONE and our other working
+    // notifications.  Publish DRIVER_AVAILABLE through that same route so the
+    // bulletin follows the Apple producer chain instead of bypassing it.
+    //
     // So for initial Tahoe bring-up we publish the exact family-accepted
-    // "driver ready / status == success" shape: a zeroed 0xf8 bulletin body.
-    // Additional capability bits belong in other messages/IOCTLs, not here.
-    netif->postMessage(APPLE80211_M_DRIVER_AVAILABLE, &msg, sizeof(msg), true);
+    // "driver ready / status == success" shape: a zeroed 0xf8 bulletin body,
+    // through controller PostOffice delivery. Additional capability bits belong
+    // in other messages/IOCTLs, not here.
+    controller->postMessage(controller->fNetIf, APPLE80211_M_DRIVER_AVAILABLE,
+                            &msg, sizeof(msg), true);
 }
 
 static bool
@@ -1468,7 +1480,7 @@ bool AirportItlwm::start(IOService *provider)
     // The Tahoe stack does not infer availability from POWER_CHANGED alone.
     // Without the dedicated DRIVER_AVAILABLE bulletin, WCL stays in deferred
     // mode and external SSID/BSSID IOCTLs never reach our bridge.
-    publishDriverAvailable(fNetIf);
+    publishDriverAvailable(this);
     // POWER_CHANGED is one of the documented sticky bring-up events on 26.x.
     // Without it, dependent IO80211/WCL managers can keep the interface in the
     // "driver unavailable" state even though the controller and Skywalk
@@ -2461,7 +2473,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     }
     else if (fNetIf) {
         if (newState == kWiFiPowerOn)
-            publishDriverAvailable(fNetIf);
+            publishDriverAvailable(this);
         // Apple's 26.x event map lists POWER_CHANGED as mandatory on power
         // transitions. Keep this in the real transition path too, not only in
         // start(), so WCL/IO80211 availability state follows the controller.
