@@ -401,6 +401,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     if (req == NULL || req->req_data == NULL)
         return kIOReturnUnsupported;
 
+    // Tahoe's non-virtual interface path still queries VIRTUAL_IF_ROLE/PARENT
+    // during airportd/CoreWiFi _initInterface.  Reverse docs record Apple's
+    // expected behavior here: non-virtual interfaces do NOT return raw POSIX
+    // ENXIO/6, they return the Apple80211-specific -3903 (0xe082280e) code.
+    //
+    // Our Tahoe BSD bridge originally omitted these IOCTLs entirely, so the
+    // request escaped our reconstructed cache/fallback layer and surfaced `6`
+    // in live logs.  That diverges from the reference contract even though the
+    // interface is correctly not virtual.
+    static const IOReturn kApple80211NotVirtualInterface =
+        static_cast<IOReturn>(0xe082280e);
+
     switch (req->req_type) {
         case APPLE80211_IOC_SSID:
             return (cmd == SIOCGA80211) ? getSSID((apple80211_ssid_data *)req->req_data)
@@ -475,6 +487,10 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+            return kApple80211NotVirtualInterface;
+        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
+            return kApple80211NotVirtualInterface;
         default:
             return kIOReturnUnsupported;
     }

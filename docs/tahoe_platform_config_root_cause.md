@@ -126,3 +126,55 @@ The minimal `1:1`-compatible behavior here is:
 
 The current code now does exactly that, with comments tied back to the Tahoe
 live logs and the recovered Apple `getPOWERSAVE` behavior.
+
+## Next Confirmed Divergence After POWERSAVE
+
+Once the Tahoe `POWERSAVE` contract was fixed in source, the next early
+Apple80211 mismatch remained in the Tahoe BSD ioctl bridge:
+
+- `APPLE80211_IOC_VIRTUAL_IF_ROLE (96)`
+- `APPLE80211_IOC_VIRTUAL_IF_PARENT (97)`
+
+Live logs on the older loaded build still showed:
+
+- `APPLE80211_IOC_VIRTUAL_IF_ROLE -> 6`
+- `APPLE80211_IOC_VIRTUAL_IF_PARENT -> 6`
+
+Those requests arrive during `_initInterface`, before the user-visible scan
+path settles, so they must follow the Apple contract even on a plain
+infrastructure interface.
+
+## Tahoe VIRTUAL_IF_* Contract
+
+The reverse docs in `84_debugging_playbooks.yaml` and
+`85_interface_lifecycle_and_bsd_attach.yaml` record the Apple expectation for a
+non-virtual interface:
+
+- `APPLE80211_IOC_VIRTUAL_IF_ROLE (96)` -> `-3903` / `0xe082280e` is expected
+- `APPLE80211_IOC_VIRTUAL_IF_PARENT (97)` -> `-3903` / `0xe082280e` is expected
+
+That is important because these are explicitly *safe-to-fail* Apple80211 IOCTLs
+with a specific Apple failure code.  Returning a raw POSIX-style `6` diverges
+from the framework contract and is called out in the reverse docs as the wrong
+shape of failure.
+
+## VIRTUAL_IF_* Root Cause
+
+Our Tahoe-specific `processApple80211Ioctl()` bridge did not cover either IOC
+at all.  As a result, the requests escaped our reconstructed Tahoe cache/fallback
+layer and fell through to a different path that surfaced `6` instead of the
+Apple-specific `0xe082280e`.
+
+So the bug here is not "missing virtual interface support".  The bug is failing
+to reproduce the correct non-virtual-interface failure contract.
+
+## VIRTUAL_IF_* Fix Direction
+
+The Tahoe BSD bridge must intercept both requests and return:
+
+- `0xe082280e` for `APPLE80211_IOC_VIRTUAL_IF_ROLE`
+- `0xe082280e` for `APPLE80211_IOC_VIRTUAL_IF_PARENT`
+
+That matches the documented Apple behavior for a regular infrastructure
+interface and keeps `_initInterface` on the same contract as the reference
+stack.
