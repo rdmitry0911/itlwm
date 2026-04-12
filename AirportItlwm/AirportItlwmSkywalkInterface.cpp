@@ -398,20 +398,39 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
-    if (req == NULL || req->req_data == NULL)
-        return kIOReturnUnsupported;
-
     // Tahoe's non-virtual interface path still queries VIRTUAL_IF_ROLE/PARENT
     // during airportd/CoreWiFi _initInterface.  Reverse docs record Apple's
     // expected behavior here: non-virtual interfaces do NOT return raw POSIX
     // ENXIO/6, they return the Apple80211-specific -3903 (0xe082280e) code.
     //
-    // Our Tahoe BSD bridge originally omitted these IOCTLs entirely, so the
-    // request escaped our reconstructed cache/fallback layer and surfaced `6`
-    // in live logs.  That diverges from the reference contract even though the
-    // interface is correctly not virtual.
+    // Important Tahoe-specific detail from the live 853f68e logs:
+    // our earlier source already had these switch cases, yet the framework
+    // still logged raw `6` for both IOCTLs.  The reason is that these Apple
+    // wrappers are payload-less safe-to-fail requests, while our bridge used
+    // to reject *all* req_data == NULL requests before the switch.  That sent
+    // VIRTUAL_IF_ROLE/PARENT straight back into the framework fallback path,
+    // which is exactly where the raw POSIX-style ENXIO/6 surfaced.
+    //
+    // So the real 1:1 fix is not "add cases somewhere in the switch".  The
+    // fix is to intercept these payload-less Tahoe IOCTLs *before* the generic
+    // req_data validation and return the Apple-specific not-a-virtual-interface
+    // contract directly.
     static const IOReturn kApple80211NotVirtualInterface =
         static_cast<IOReturn>(0xe082280e);
+
+    if (req == NULL)
+        return kIOReturnUnsupported;
+
+    switch (req->req_type) {
+        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
+            return kApple80211NotVirtualInterface;
+        default:
+            break;
+    }
+
+    if (req->req_data == NULL)
+        return kIOReturnUnsupported;
 
     switch (req->req_type) {
         case APPLE80211_IOC_SSID:
@@ -487,10 +506,6 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
-        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
-            return kApple80211NotVirtualInterface;
-        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
-            return kApple80211NotVirtualInterface;
         default:
             return kIOReturnUnsupported;
     }

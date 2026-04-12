@@ -178,3 +178,46 @@ The Tahoe BSD bridge must intercept both requests and return:
 That matches the documented Apple behavior for a regular infrastructure
 interface and keeps `_initInterface` on the same contract as the reference
 stack.
+
+## VIRTUAL_IF_* Live Root Cause Correction
+
+The earlier fix direction above was still incomplete in one important way.
+
+Live logs on build `853f68e` continued to show:
+
+- `APPLE80211_IOC_VIRTUAL_IF_ROLE -> 6`
+- `APPLE80211_IOC_VIRTUAL_IF_PARENT -> 6`
+
+even though the Tahoe BSD bridge source already contained explicit cases for
+both IOCs.
+
+That meant the bug was no longer "missing switch cases".  The bug was that the
+bridge rejected these requests before it ever reached those cases.
+
+## Why The Earlier Bridge Fix Never Fired
+
+Our Tahoe helper started with:
+
+- `if (req == NULL || req->req_data == NULL) return kIOReturnUnsupported;`
+
+But the reference contract for `VIRTUAL_IF_ROLE` / `VIRTUAL_IF_PARENT` does not
+depend on a caller-supplied payload.  The Apple wrapper for a normal
+infrastructure interface returns the constant Apple-specific "not a virtual
+interface" code directly, which is consistent with the reverse docs that record
+these as safe-to-fail IOCs.
+
+So on Tahoe, these requests can legitimately arrive with no useful payload
+buffer.  Our early `req_data == NULL` guard therefore forced them back into the
+framework fallback path, which is exactly where the live logs showed the raw
+POSIX-style `6`.
+
+## Correct Tahoe Fix Direction
+
+For these two payload-less IOCs, the Tahoe BSD bridge must:
+
+1. intercept them before any generic `req_data == NULL` rejection
+2. return `0xe082280e` directly
+
+Only after those explicit payload-less cases are handled is it correct to apply
+the generic `req_data != NULL` requirement for the remaining IOCs that do carry
+typed request buffers.
