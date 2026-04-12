@@ -489,6 +489,23 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     if (req->req_data == NULL)
         return kIOReturnUnsupported;
 
+    // Tahoe architectural gap fixed here:
+    // the Skywalk-only BSD bridge originally forwarded just a small hand-picked
+    // subset of Apple80211 IOCTLs.  That diverged from the legacy STA IOCTL
+    // plane, where APPLE80211_IOC_POWERSAVE and several other state-carrier /
+    // bring-up requests were already wired to real handlers.
+    //
+    // Live proof on 4973c4d:
+    // - WCL logged `setPOWERSAVE ... not supported` during early init even
+    //   though this class already implemented setPOWERSAVE/getPOWERSAVE.
+    // - The failure was not inside the handler.  The BSD bridge simply never
+    //   routed APPLE80211_IOC_POWERSAVE to it, so Tahoe fell back to
+    //   unsupported before the recovered handler could run.
+    //
+    // Restore those routes here instead of papering over each symptom higher
+    // up.  This keeps the Tahoe Skywalk path architecturally aligned with the
+    // legacy IOCTL plane: if a real handler exists in AirportItlwm /
+    // AirportItlwmSkywalkInterface, the BSD bridge must make it reachable.
     switch (req->req_type) {
         case APPLE80211_IOC_SSID:
             return (cmd == SIOCGA80211) ? getSSID((apple80211_ssid_data *)req->req_data)
@@ -502,6 +519,20 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_CHANNEL:
             if (cmd == SIOCGA80211)
                 return getCHANNEL((apple80211_channel_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_POWER:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCGA80211)
+                return instance->getPOWER(this, (apple80211_power_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return instance->setPOWER(this, (apple80211_power_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_POWERSAVE:
+            if (cmd == SIOCGA80211)
+                return getPOWERSAVE((apple80211_powersave_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setPOWERSAVE((apple80211_powersave_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_BSSID:
             return (cmd == SIOCGA80211) ? getBSSID((apple80211_bssid_data *)req->req_data)
@@ -518,11 +549,27 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_NOISE:
             return (cmd == SIOCGA80211) ? getNOISE((apple80211_noise_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_RSSI:
+            return (cmd == SIOCGA80211) ? getRSSI((apple80211_rssi_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_ASSOCIATE:
             return (cmd == SIOCSA80211) ? setASSOCIATE((apple80211_assoc_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_DISASSOCIATE:
             return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RATE:
+            return (cmd == SIOCGA80211) ? getRATE((apple80211_rate_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_TXPOWER:
+            return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_OP_MODE:
+            return (cmd == SIOCGA80211) ? getOP_MODE((apple80211_opmode_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_SUPPORTED_CHANNELS:
+        case APPLE80211_IOC_HW_SUPPORTED_CHANNELS:
+            return (cmd == SIOCGA80211) ? getSUPPORTED_CHANNELS((apple80211_sup_channel_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_LOCALE:
             return (cmd == SIOCGA80211) ? getLOCALE((apple80211_locale_data *)req->req_data)
@@ -545,14 +592,43 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_AP_IE_LIST:
             return (cmd == SIOCGA80211) ? getAP_IE_LIST((apple80211_ap_ie_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_CIPHER_KEY:
+            return (cmd == SIOCSA80211) ? setCIPHER_KEY((apple80211_key *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_ASSOCIATION_STATUS:
             return (cmd == SIOCGA80211) ? getASSOCIATION_STATUS((apple80211_assoc_status_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_COUNTRY_CODE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCGA80211)
+                return instance->getCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return instance->setCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_DRIVER_VERSION:
+            if (instance == NULL || cmd != SIOCGA80211)
+                return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
+            return instance->getDRIVER_VERSION(this, (apple80211_version_data *)req->req_data);
+        case APPLE80211_IOC_HARDWARE_VERSION:
+            if (instance == NULL || cmd != SIOCGA80211)
+                return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
+            return instance->getHARDWARE_VERSION(this, (apple80211_version_data *)req->req_data);
+        case APPLE80211_IOC_MCS:
+            return (cmd == SIOCGA80211) ? getMCS((apple80211_mcs_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getMCS_INDEX_SET((apple80211_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_MCS_VHT:
+            if (cmd == SIOCGA80211)
+                return getMCS_VHT((apple80211_mcs_vht_data *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_REQ:
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_NSS:
+            return (cmd == SIOCGA80211) ? getNSS((apple80211_nss_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_CURRENT_NETWORK:
             return (cmd == SIOCGA80211) ? getCURRENT_NETWORK((apple80211_scan_result *)req->req_data)

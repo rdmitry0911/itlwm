@@ -182,3 +182,70 @@ For those slots the Apple producer delegates into roam/net/bgscan/join/power
 subsystems. The correct next step is not another ack-only patch, but lifting the
 missing adapter-plane behavior from the reference decompiles and wiring it into
 our Tahoe path.
+
+## Root Cause After Live `4973c4d`
+
+The next architectural mismatch was not another bad payload or wrong timer edge.
+It was a missing reachability layer in the Tahoe Skywalk BSD bridge.
+
+Live proof from the rebooted `4973c4d` system:
+
+- WCL logged `setPOWERSAVE@1551: arg->powersave_level = 7 not supported`
+- the source tree already contained real Tahoe `getPOWERSAVE` /
+  `setPOWERSAVE` handlers in `AirportItlwmSkywalkInterface`
+- therefore the failure could not be "handler absent" or "handler still
+  returns unsupported"
+
+The real divergence was that `AirportItlwmSkywalkInterface::processApple80211Ioctl`
+forwarded only a small subset of Apple80211 BSD IOCTLs, while the legacy
+`AirportSTAIOCTL.cpp` dispatcher still routed a much larger set of already
+implemented handlers.
+
+So on Tahoe we had a class of false-negative failures:
+
+- the handler existed
+- the semantics were already recovered and implemented
+- but the Skywalk BSD bridge never made that handler reachable
+- the framework therefore fell back to `unsupported` before our code could run
+
+`APPLE80211_IOC_POWERSAVE` was the first live-confirmed member of that missing
+bridge cluster, but the audit showed it was not alone.
+
+## Missing Skywalk Bridge Cluster
+
+Comparing the legacy dispatcher against the Tahoe Skywalk bridge showed that
+the Skywalk path was missing routes for already implemented or controller-backed
+handlers, including:
+
+- `APPLE80211_IOC_POWER`
+- `APPLE80211_IOC_POWERSAVE`
+- `APPLE80211_IOC_RSSI`
+- `APPLE80211_IOC_RATE`
+- `APPLE80211_IOC_TXPOWER`
+- `APPLE80211_IOC_OP_MODE`
+- `APPLE80211_IOC_SUPPORTED_CHANNELS`
+- `APPLE80211_IOC_HW_SUPPORTED_CHANNELS`
+- `APPLE80211_IOC_CIPHER_KEY`
+- `APPLE80211_IOC_COUNTRY_CODE`
+- `APPLE80211_IOC_DRIVER_VERSION`
+- `APPLE80211_IOC_HARDWARE_VERSION`
+- `APPLE80211_IOC_MCS`
+- `APPLE80211_IOC_MCS_VHT`
+- `APPLE80211_IOC_NSS`
+
+This is an architectural defect, not a cosmetic cleanup item.  Apple/Tahoe's
+Skywalk path still depends on the BSD IOCTL bridge reaching the same producer
+logic that the older STA path already exposed.
+
+## Fix Direction After `4973c4d`
+
+Do not patch around each resulting runtime symptom separately.
+
+The correct fix is to restore the missing BSD-bridge reachability:
+
+- if Tahoe already has a real Skywalk handler, route the IOCTL to it
+- if the implementation is controller-owned in `AirportItlwm`, route the IOCTL
+  there through `instance`
+- keep comments tying the bridge restoration to the live `setPOWERSAVE ...
+  not supported` proof, so this does not regress into another "handler exists
+  but Tahoe can never reach it" failure
