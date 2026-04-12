@@ -442,23 +442,11 @@ public:
     // [610]
     virtual IOReturn setGAS_ABORT(void *) override { XYLog("DEBUG VTABLE [610] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [611] — AppleBCMWLAN: stores flags, applies DynSAR/KVR/6G feature configuration
-    virtual IOReturn setOS_FEATURE_FLAGS(apple80211_feature_flags *data) override {
-        XYLog("WCL [611] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setOS_FEATURE_FLAGS(apple80211_feature_flags *data) override;
     // [612]
-    virtual IOReturn setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data) override {
-        XYLog("WCL [612] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data) override;
     // [613]
-    virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override {
-        XYLog("WCL [613] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override;
     // [614]
     virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override { XYLog("DEBUG VTABLE [614] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [615] — AppleBCMWLAN: delegates to BGScanAdapter
@@ -486,11 +474,7 @@ public:
         return kIOReturnSuccess;
     }
     // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
-    virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override {
-        XYLog("WCL [619] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override;
     // [620] — Not found in AppleBCMWLAN
     virtual IOReturn setHEARTBEAT(void *) override {
         XYLog("WCL [620] %s\n", __FUNCTION__);
@@ -507,11 +491,7 @@ public:
     // [623]
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override { XYLog("DEBUG VTABLE [623] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
-    virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override {
-        XYLog("WCL [624] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
     // [625]
     virtual IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *) override { XYLog("DEBUG VTABLE [625] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [626]
@@ -535,17 +515,9 @@ public:
     // [635]
     virtual IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state *) override { XYLog("DEBUG VTABLE [635] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [636] — AppleBCMWLAN: stores up to 10 IPv6 addresses, notifies InfraInterface
-    virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *data) override {
-        XYLog("WCL [636] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *data) override;
     // [637] — AppleBCMWLAN: validates param, returns success (minimal stub)
-    virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override {
-        XYLog("WCL [637] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override;
     // [638]
     virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override { XYLog("DEBUG VTABLE [638] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [639]
@@ -608,6 +580,19 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
+    uint64_t cachedOSFeatureFlags;
+    bool cachedDhcpRenewalData;
+    uint32_t cachedBatteryPowerSaveMode;
+    uint32_t cachedPowerProfile;
+    uint32_t cachedIPv4Address;
+    uint32_t cachedIPv4Netmask;
+    uint32_t cachedIPv4Reserved;
+    uint32_t cachedIPv4Gateway;
+    uint16_t cachedIPv4GatewayTail;
+    uint32_t cachedIPv6Count;
+    uint8_t cachedIPv6Addresses[10][16];
+    uint8_t cachedIPv6LinkLocalAddress[16];
+    bool cachedInfraEnumerated;
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;

@@ -102,6 +102,24 @@ struct triggerCCSnapshot
 static_assert(sizeof(triggerCCSnapshot) == 0x20,
               "triggerCCSnapshot must match the first four qwords cached by Apple");
 
+struct tahoeIPv4ParamsContract
+{
+    uint32_t address;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint16_t gatewayTail;
+} __attribute__((packed));
+static_assert(sizeof(tahoeIPv4ParamsContract) == 0x0E,
+              "tahoeIPv4ParamsContract must match recovered Apple field coverage");
+
+struct tahoeIPv6ParamsHeader
+{
+    uint32_t count;
+    uint8_t addresses[10][16];
+} __attribute__((packed));
+static_assert(sizeof(tahoeIPv6ParamsHeader) == 0xA4,
+              "tahoeIPv6ParamsHeader must match recovered Apple count+address coverage");
+
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
@@ -574,6 +592,19 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    this->cachedOSFeatureFlags = 0;
+    this->cachedDhcpRenewalData = false;
+    this->cachedBatteryPowerSaveMode = 0;
+    this->cachedPowerProfile = 0;
+    this->cachedIPv4Address = 0;
+    this->cachedIPv4Netmask = 0;
+    this->cachedIPv4Reserved = 0;
+    this->cachedIPv4Gateway = 0;
+    this->cachedIPv4GatewayTail = 0;
+    this->cachedIPv6Count = 0;
+    memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
+    memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
+    this->cachedInfraEnumerated = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -1348,6 +1379,143 @@ setWCL_TRIGGER_CC(triggerCC *data)
     if (mode == 0 || mode == 1)
         return kIOReturnSuccess;
     return kIOReturnBadArgumentTahoe;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setOS_FEATURE_FLAGS(apple80211_feature_flags *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint64_t flags = *reinterpret_cast<const uint64_t *>(data);
+
+    // AppleBCMWLANCore::setOS_FEATURE_FLAGS is not an ack-only slot. It first
+    // persists the incoming 64-bit word, then derives multiple cached booleans
+    // and fans out follow-up configuration (DynSAR, 6G, KVR, AOP scan-forward,
+    // adaptive 11r). We do not collapse that producer path back into an inline
+    // success stub; the raw feature word must remain driver-owned state.
+    cachedOSFeatureFlags = flags;
+
+    XYLog("WCL [611] %s flags=0x%llx dynsar=%u six_ghz=%u adaptive11r=%u\n",
+          __FUNCTION__,
+          static_cast<unsigned long long>(flags),
+          static_cast<unsigned int>((flags >> 6) & 1ULL),
+          static_cast<unsigned int>((flags >> 7) & 1ULL),
+          static_cast<unsigned int>((flags >> 28) & 1ULL));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple caches the first byte as a persistent bool instead of treating the
+    // IOC as disposable. Carry the same state locally so later keepalive / PM
+    // work does not lose the DHCP-renewal edge.
+    cachedDhcpRenewalData = *reinterpret_cast<const uint8_t *>(data) != 0;
+    XYLog("WCL [612] %s enabled=%u\n", __FUNCTION__,
+          static_cast<unsigned int>(cachedDhcpRenewalData));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple stores the first dword and hands it into the battery-save path.
+    // Even before the deeper power manager parity is finished, this IOC must
+    // remain a state carrier rather than a blind success stub.
+    cachedBatteryPowerSaveMode = *reinterpret_cast<const uint32_t *>(data);
+    XYLog("WCL [613] %s mode=%u\n", __FUNCTION__, cachedBatteryPowerSaveMode);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setPOWER_PROFILE(apple80211_power_profile *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    // AppleBCMWLANCore caches the first power-profile dword at +0x29f0 before
+    // dispatching into its power-policy vtable. Preserve the same cached owner
+    // state here instead of dropping the profile on the floor.
+    cachedPowerProfile = *reinterpret_cast<const uint32_t *>(data);
+    XYLog("WCL [619] %s profile=%u\n", __FUNCTION__, cachedPowerProfile);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setIPV4_PARAMS(apple80211_ipv4_params *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    const auto *ipv4 = reinterpret_cast<const tahoeIPv4ParamsContract *>(data);
+
+    // The Apple producer persists IPv4/mask/router fields in core state,
+    // triggers IPv4 notifications, and only then decides whether keepalive data
+    // needs refreshing. Returning success without carrying the values breaks the
+    // producer/consumer contract even if user-visible network behavior has not
+    // reached that path yet.
+    cachedIPv4Address = ipv4->address;
+    cachedIPv4Netmask = ipv4->netmask;
+    cachedIPv4Reserved = 0;
+    cachedIPv4Gateway = ipv4->gateway;
+    cachedIPv4GatewayTail = ipv4->gatewayTail;
+
+    XYLog("WCL [624] %s addr=0x%08x mask=0x%08x gw=0x%08x tail=0x%04x keepalive=%u\n",
+          __FUNCTION__, cachedIPv4Address, cachedIPv4Netmask, cachedIPv4Gateway,
+          cachedIPv4GatewayTail,
+          static_cast<unsigned int>(cachedIPv4Address != 0 && cachedIPv4Netmask != 0));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setIPV6_PARAMS(apple80211_ipv6_params *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    const auto *ipv6 = reinterpret_cast<const tahoeIPv6ParamsHeader *>(data);
+    cachedIPv6Count = MIN(ipv6->count, static_cast<uint32_t>(10));
+    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
+    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
+    if (cachedIPv6Count != 0)
+        memcpy(cachedIPv6Addresses, ipv6->addresses, cachedIPv6Count * sizeof(cachedIPv6Addresses[0]));
+
+    // Apple seeds a dedicated link-local fe80:: prefix after refreshing the
+    // cached IPv6 table. Keep that exact state edge so later consumers do not
+    // observe "success" with no link-local cache behind it.
+    cachedIPv6LinkLocalAddress[0] = 0xfe;
+    cachedIPv6LinkLocalAddress[1] = 0x80;
+    if (cachedIPv6Count != 0)
+        memcpy(&cachedIPv6LinkLocalAddress[8], &cachedIPv6Addresses[0][8], 8);
+
+    XYLog("WCL [636] %s count=%u first=%02x:%02x:%02x:%02x ll=%02x%02x::\n",
+          __FUNCTION__, cachedIPv6Count,
+          cachedIPv6Count ? cachedIPv6Addresses[0][0] : 0,
+          cachedIPv6Count ? cachedIPv6Addresses[0][1] : 0,
+          cachedIPv6Count ? cachedIPv6Addresses[0][2] : 0,
+          cachedIPv6Count ? cachedIPv6Addresses[0][3] : 0,
+          cachedIPv6LinkLocalAddress[0], cachedIPv6LinkLocalAddress[1]);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
+{
+    if (!data)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple's contract here really is minimal: validate non-null and succeed.
+    // Our old kIOReturnError path still diverged from that producer shape.
+    cachedInfraEnumerated = true;
+    XYLog("WCL [637] %s enumerated=1\n", __FUNCTION__);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
