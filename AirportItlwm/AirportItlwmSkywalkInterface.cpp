@@ -1272,9 +1272,14 @@ static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_
         result->asr_ie_len = 0;
     }
     result->asr_beacon_int = fNextNodeToSend->ni_intval;
-    for (int i = 0; i < result->asr_nrates; i++ )
+    // Tahoe airportd candidate ingestion is sensitive to scan-result shape.
+    // V16 left asr_rates empty because the loop iterated result->asr_nrates
+    // immediately after bzero(), so nrates stayed 0 until after the copy.
+    // That produces a malformed candidate even when the BSS is present in ic_tree.
+    result->asr_nrates = MIN((uint8_t)fNextNodeToSend->ni_rates.rs_nrates,
+                             (uint8_t)APPLE80211_MAX_RATES);
+    for (uint8_t i = 0; i < result->asr_nrates; i++)
         result->asr_rates[i] = fNextNodeToSend->ni_rates.rs_rates[i];
-    result->asr_nrates = fNextNodeToSend->ni_rates.rs_nrates;
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);
     result->asr_cap = fNextNodeToSend->ni_capinfo;
     result->asr_channel.version = APPLE80211_VERSION;
@@ -1282,6 +1287,7 @@ static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_
     result->asr_channel.flags = ieeeChanFlag2appleScanFlagVentura(fNextNodeToSend->ni_chan->ic_flags);
     result->asr_noise = -fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
+    result->asr_snr = result->asr_rssi - result->asr_noise;
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
     result->asr_ssid_len = fNextNodeToSend->ni_esslen;
     if (result->asr_ssid_len != 0)
