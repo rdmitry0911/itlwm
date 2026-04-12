@@ -74,3 +74,55 @@ That was wrong in two different ways:
 
 This is why the current fix reads Tahoe platform bits from `IOService`
 properties instead of returning a fabricated zero-only blob.
+
+## Next Confirmed Divergence After PLATFORM_CONFIG
+
+After fixing `APPLE80211_IOC_PLATFORM_CONFIG`, Tahoe bring-up moved forward:
+
+- live logs switched to `APPLE80211_IOC_PLATFORM_CONFIG -> 0x0`
+- WCL started issuing scan requests
+- the next early mandatory IOC mismatch became `APPLE80211_IOC_POWERSAVE`
+
+Observed live sequence on `AirportItlwm build=0dd2d3c`:
+
+- `[wcl] setPOWERSAVE@1551: arg->powersave_level = 7 not supported`
+- `APPLE80211_IOC_POWERSAVE -> 0xe00002c7`
+
+This matters because the failure happens before the later watchdog-driven
+`APPLE80211_IOC_WCL_TRIGGER_CC` path, so `setWCL_TRIGGER_CC` is not the first
+bring-up divergence after the platform-config fix.
+
+## Tahoe POWERSAVE Contract
+
+Recovered Apple behavior from the reference decompiles:
+
+- `AppleBCMWLANCore::getPOWERSAVE(apple80211_powersave_data *)` returns success
+- it reads back a cached 32-bit power-save level from core state
+- Tahoe WCL sets power-save level `7`
+  (`APPLE80211_POWERSAVE_MODE_MAX_THROUGHPUT`) during early bring-up and
+  expects this IOC to succeed
+
+That means Tahoe does not treat `POWERSAVE` as an optional or unsupported IOC
+in the minimal boot path.
+
+## POWERSAVE Root Cause
+
+Our Tahoe Skywalk vtable still returned `kIOReturnUnsupported` from
+`setPOWERSAVE(...)`, while `getPOWERSAVE(...)` always synthesized
+`APPLE80211_POWERSAVE_MODE_DISABLED`.
+
+That diverged from the Apple contract in two ways:
+
+1. upper layers could not apply the requested WCL startup policy
+2. subsequent reads could never reflect the last accepted level
+
+## POWERSAVE Fix Direction
+
+The minimal `1:1`-compatible behavior here is:
+
+- accept `setPOWERSAVE(...)` instead of returning unsupported
+- cache the requested level
+- return the same cached level from `getPOWERSAVE(...)`
+
+The current code now does exactly that, with comments tied back to the Tahoe
+live logs and the recovered Apple `getPOWERSAVE` behavior.

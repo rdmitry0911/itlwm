@@ -267,7 +267,7 @@ public:
     // [546]
     virtual IOReturn setCHANNEL(apple80211_channel_data *) override { XYLog("DEBUG VTABLE [546] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [547]
-    virtual IOReturn setPOWERSAVE(apple80211_powersave_data *) override { XYLog("DEBUG VTABLE [547] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setPOWERSAVE(apple80211_powersave_data *) override;
     // [548]
     virtual IOReturn setTXPOWER(apple80211_txpower_data *) override { XYLog("DEBUG VTABLE [548] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [549]
@@ -607,6 +607,7 @@ private:
     struct ieee80211_node *fNextNodeToSend;
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
+    uint32_t cachedPowersaveLevel;
 
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;

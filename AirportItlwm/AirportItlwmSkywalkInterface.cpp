@@ -530,6 +530,7 @@ init(IOService *provider)
     }
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
+    this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     RT3_SET(12); // SkywalkInterface::init OK
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
@@ -998,7 +999,29 @@ getPOWERSAVE(struct apple80211_powersave_data *pd)
 {
     XYLog("DEBUG VTABLE [472] %s\n", __FUNCTION__);
     pd->version = APPLE80211_VERSION;
-    pd->powersave_level = APPLE80211_POWERSAVE_MODE_DISABLED;
+    // AppleBCMWLANCore::getPOWERSAVE on Tahoe reads back a cached power-save
+    // mode from core state instead of reporting the IOC as unsupported.  Live
+    // 26.3 logs showed WCL sending APPLE80211_IOC_POWERSAVE with level 7 very
+    // early during bring-up; our old kIOReturnUnsupported path made WCL log
+    // "arg->powersave_level = 7 not supported" and diverged from the reference
+    // contract before scan-complete delivery even mattered.
+    pd->powersave_level = cachedPowersaveLevel;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setPOWERSAVE(struct apple80211_powersave_data *pd)
+{
+    XYLog("DEBUG VTABLE [547] %s level=%u\n", __FUNCTION__, pd ? pd->powersave_level : 0);
+    if (pd == NULL)
+        return kIOReturnBadArgument;
+
+    // Recovered Apple contract:
+    // - Tahoe WCL expects APPLE80211_IOC_POWERSAVE to succeed during startup.
+    // - AppleBCMWLANCore::getPOWERSAVE returns the last accepted 32-bit level.
+    // Mirroring that 1:1 externally means accepting the requested policy here
+    // and returning the same cached value from getPOWERSAVE later.
+    cachedPowersaveLevel = pd->powersave_level;
     return kIOReturnSuccess;
 }
 
