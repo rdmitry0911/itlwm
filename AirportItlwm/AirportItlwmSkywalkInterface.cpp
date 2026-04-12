@@ -1495,10 +1495,34 @@ setWCL_SCAN_ABORT(void *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
+    // AppleBCMWLANCore::setWCL_SCAN_ABORT is not a no-op: it dispatches into
+    // scan-adapter-owned abort work.  The recovered WCLScanManager FSM shows
+    // why that matters: SCAN_ABORT_REQ moves IN_PROGRESS -> ABORTED, and the
+    // owner only returns ABORTED -> IDLE when it later receives SCAN_COMPLETE.
+    //
+    // Our old Tahoe path only cleared net80211 flags and returned success, so
+    // WCL stayed stuck in SCAN_MANAGER_STATE_ABORTED / IN_PROGRESS and every
+    // later external SCAN_REQ hit the family ignore path (0xe00002bc / 16).
+    // Cancel the local fake-scan timer and synthesize the single SCAN_DONE edge
+    // that our backend otherwise never emits for abort completion.
+    if (scanSource) {
+        scanSource->cancelTimeout();
+        scanSource->disable();
+    }
+
     if (ic->ic_flags & IEEE80211_F_BGSCAN)
         ic->ic_flags &= ~IEEE80211_F_BGSCAN;
     if (ic->ic_flags & IEEE80211_F_ASCAN)
         ic->ic_flags &= ~IEEE80211_F_ASCAN;
+
+    fNextNodeToSend = NULL;
+    fScanResultWrapping = false;
+
+    if (instance && instance->fNetIf) {
+        static UInt32 abortScanStatus = 0;
+        instance->postMessage(instance->fNetIf, APPLE80211_M_SCAN_DONE,
+                              &abortScanStatus, sizeof(abortScanStatus), true);
+    }
 
     return kIOReturnSuccess;
 }

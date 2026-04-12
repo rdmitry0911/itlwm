@@ -369,3 +369,82 @@ The minimal compatible behavior is:
 This reproduces the reference request-shape contract closely enough to remove
 the current `unsupported` failure without inventing a fabricated Tahoe-only
 policy.
+
+## Runtime Status After `5097f30`
+
+Live logs on `AirportItlwm build=5097f30` close the previous `WCL_TRIGGER_CC`
+issue:
+
+- internal `APPLE80211_IOC_WCL_TRIGGER_CC -> 0x0`
+- our own driver log confirms `setWCL_TRIGGER_CC mode=0 ...`
+
+So `WCL_TRIGGER_CC` is no longer the open blocker.
+
+The next root cause appears immediately after that fix:
+
+- `WCLScanManager` enters `SCAN_MANAGER_STATE_IN_PROGRESS`
+- internal `APPLE80211_IOC_WCL_SCAN_ABORT -> 0x0`
+- internal `APPLE80211_IOC_WCL_TRIGGER_CC -> 0x0`
+- then WCL moves to `SCAN_MANAGER_STATE_ABORTED`
+- every following external `APPLE80211_IOC_SCAN_REQ` fails with
+  `0xe00002bc`
+
+That is the exact family ignore-path signature for a scan FSM that never got
+its completion edge after an abort.
+
+## Tahoe `SCAN_ABORT_REQ` Contract
+
+The recovered WCL docs already describe the required scan-plane invariant:
+
+- `IN_PROGRESS + SCAN_ABORT_REQ -> ABORTED`
+- `ABORTED + SCAN_COMPLETE -> IDLE`
+
+Reference material:
+
+- `83_driver_porting_profiles.yaml`
+- `69_WCLScanManager_fully_symbolic_FSM_corrected.yaml`
+
+The practical implication is explicit in the porting profile:
+
+- the backend must support abort with stable completion semantics
+- otherwise scan gets stuck in `IN_PROGRESS` or `ABORTED`
+
+Apple's vendor producer matches that contract:
+
+- `AppleBCMWLANCore::setWCL_SCAN_ABORT(void*)` is not a no-op
+- it dispatches abort work into scan-adapter-owned machinery instead of merely
+  acknowledging the IOC
+
+## `WCL_SCAN_ABORT` Root Cause
+
+Our Tahoe implementation still did only this:
+
+- clear `IEEE80211_F_BGSCAN`
+- clear `IEEE80211_F_ASCAN`
+- return success
+
+That means the IOC itself succeeded, but our backend never emitted the scan
+completion edge that WCL needs after entering `ABORTED`.
+
+This matches the live logs exactly:
+
+- WCL transitions into `SCAN_MANAGER_STATE_ABORTED`
+- external `SCAN_REQ` then hits the family ignore path and returns
+  `0xe00002bc`
+
+So the bug is no longer "scan request rejected too early".  The bug is
+"abort acknowledged without the completion semantics that release the scan FSM
+back to IDLE".
+
+## `WCL_SCAN_ABORT` Fix Direction
+
+The minimal compatible behavior for our fake-scan backend is:
+
+- cancel any pending local scan timer
+- clear the cached scan iteration state
+- after accepting `WCL_SCAN_ABORT`, emit the same single `SCAN_DONE` edge that
+  the family uses to drive `ABORTED -> IDLE`
+
+That is not a Tahoe-specific hack.  It is the minimum required completion
+semantic implied by the recovered Apple scan-plane FSM and by the fact that the
+real Apple abort path is asynchronous producer work rather than a pure no-op.
