@@ -578,3 +578,76 @@ If this is the real root cause, the next boot should stop showing:
 - `_initInterface: Failed to query current SSID`
 - `AUTO-JOIN: ... error=(37 'driver not available')`
 - IOC DEBUG `isDriverAvailable=<0>` during early external SSID/BSSID queries
+
+## Corrected Tahoe IOC Routing For `SSID/BSSID/CHANNEL`
+
+The earlier assumption that Tahoe was routing the visible pre-association
+failures through selectors `0x31` / `0x6a` was wrong.
+
+Recovered `IO80211Family` decompile from the remote Ghidra host shows the real
+external path:
+
+- `APPLE80211_IOC_SSID (1)`:
+  `sendIOUCToWcl(..., selector=1, len=0x28)` then fallback to
+  `apple80211getSSID(...)`
+- `APPLE80211_IOC_CHANNEL (4)`:
+  `sendIOUCToWcl(..., selector=4, len=0x10)` then fallback to
+  `apple80211getCHANNEL(...)`
+- `APPLE80211_IOC_BSSID (9)`:
+  `sendIOUCToWcl(..., selector=9, len=0x10)` then fallback to
+  `apple80211getBSSID(...)`
+
+The fallback is reached only when the WCL/IOUC route returns
+`0xe082280f` / "not implemented":
+
+- `IO80211SkywalkInterface::routeIoctlToWcl(...)`
+  returns `0xe082280f` when there is no handled IOUC result.
+- `apple80211getSSID/BSSID/CHANNEL(...)` then dispatch into the protocol vtable
+  (`IO80211InfraProtocol` / `IO80211NoneProtocol` / `IO80211AWDLProtocol`)
+  where our zero-success pre-association handlers live.
+
+So the real architectural mismatch was never "our protocol handlers are still
+wrong". The active IOUC-facing path was remaining visible to late consumers
+before they received a usable sticky `DRIVER_AVAILABLE` replay.
+
+## Root Cause After `6ac8ac0`
+
+Live boot state after the earlier availability replays made the remaining gap
+clearer:
+
+- `ioreg` already shows `AirportItlwmSkywalkInterface`, BSD `en0`, and multiple
+  `IO80211APIUserClient` instances owned by `airportd`
+- external `POWER`, `OP_MODE`, `SUPPORTED_CHANNELS` already succeed
+- external `SSID` still fails with `0xe0822403`
+- kernel IOC DEBUG still reports `isDriverAvailable=<0>`
+
+This means:
+
+1. the interface/BSD attach stage is no longer the last missing milestone;
+2. the active IOUC query path is alive;
+3. but the sticky availability notification still does not reach the late
+   IOUC consumers that appear after driver `start()`.
+
+Recovered `IO80211Family` transport details explain why timing at
+`createEventPipe` matters:
+
+- `IO80211SkywalkInterface::postMessageInternal(...)` only reaches userspace
+  when the Glue object exists and async delivery is used;
+- `IO80211SkywalkInterface::postMessageIOUC(...)` fans out only to currently
+  opened IOUC event pipes;
+- `createEventPipe(...)` is the point where those consumers become real.
+
+So an early `DRIVER_AVAILABLE` publish from `start()` or even from
+`ether_ifattach()` can still be too early for Tahoe's actual IOUC consumers.
+
+## Fix Direction After `6ac8ac0`
+
+Do not change the `DRIVER_AVAILABLE` payload shape again.
+
+The remaining delta is replay timing:
+
+- keep the existing early publish for initial Apple-style bring-up;
+- keep the existing attach-time replay;
+- replay the same sticky `APPLE80211_M_DRIVER_AVAILABLE` once more after
+  `IO80211SkywalkInterface::createEventPipe(...)`, i.e. when the IOUC event
+  pipe is opened and late userspace consumers can actually observe the event.

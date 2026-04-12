@@ -33,6 +33,7 @@ public:
 #endif
     virtual void free() override;
     virtual IOReturn processBSDCommand(ifnet_t, UInt, void *) override;
+    virtual UInt64 createEventPipe(IO80211APIUserClient *) override;
 
     // Override getInterfaceSubFamily — returns IFNET_SUBFAMILY_WIFI (3).
     //

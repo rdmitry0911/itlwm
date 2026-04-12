@@ -149,6 +149,30 @@ publishDriverAvailable(AirportItlwm *controller)
                             &msg, sizeof(msg), true);
 }
 
+void AirportItlwm::replayDriverAvailableAfterIOUCReady()
+{
+    // Tahoe 26.x routes external SSID/BSSID/CHANNEL queries through
+    // IO80211SkywalkInterface::routeIoctlToWcl(selector 1/9/4) first.
+    // The wrapper only falls back to our protocol handlers when WCL reports
+    // 0xe082280f / "not implemented".  Live boots kept returning
+    // 0xe0822403 with isDriverAvailable=0 even though the interface and BSD
+    // layer already existed, which means the missing edge is no longer in the
+    // protocol fallback itself but in the sticky DRIVER_AVAILABLE replay seen
+    // by late IOUC consumers.
+    //
+    // Reference anchor:
+    // - IO80211SkywalkInterface::routeIoctlToWcl returns 0xe082280f only when
+    //   IOUC did not handle the request.
+    // - IO80211SkywalkInterface::postMessageIOUC writes directly into opened
+    //   event pipes; before createEventPipe there may simply be no consumer.
+    // - SSM requires DRIVER_AVAILABLE replay semantics after unavailable /
+    //   deferred phases, not just a single early publish during start().
+    //
+    // So keep the bulletin shape unchanged and replay the same Apple-shaped
+    // DRIVER_AVAILABLE only once the IOUC event pipe is alive.
+    publishDriverAvailable(this);
+}
+
 static bool
 copyBoolProperty(IORegistryEntry *entry, const char *name, bool *value)
 {
