@@ -335,6 +335,115 @@ free()
     thread_call_free(skFreeTimer);
 }
 
+IOReturn AirportItlwmSkywalkInterface::
+processBSDCommand(ifnet_t interface, UInt cmd, void *data)
+{
+    // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the
+    // IO80211InfraProtocol vtable. Our driver still implements those semantics
+    // as helper methods below, but without an explicit BSD-command bridge they
+    // never get called on 26.x.
+    //
+    // Evidence kept here so the reason for this bridge is not lost:
+    // - airportd repeatedly queried APPLE80211_IOC_SSID and received
+    //   0xe0822403 / "driver not available", aborting auto-join.
+    // - docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/89_remaining_gaps_closed_checked.yaml
+    //   shows Tahoe first tries WCL and then expects driver fallback behavior
+    //   matching IO80211Controller cache semantics (success + zeroed data).
+    // - Our Tahoe target does not build AirportSTAIOCTL.cpp, so the old ioctl
+    //   dispatcher never runs here; the BSD path must forward these requests.
+    if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
+        IOReturn ret = processApple80211Ioctl(cmd, (apple80211req *)data);
+        if (ret != kIOReturnUnsupported)
+            return ret;
+    }
+    return super::processBSDCommand(interface, cmd, data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+processApple80211Ioctl(UInt cmd, apple80211req *req)
+{
+    if (req == NULL || req->req_data == NULL)
+        return kIOReturnUnsupported;
+
+    switch (req->req_type) {
+        case APPLE80211_IOC_SSID:
+            return (cmd == SIOCGA80211) ? getSSID((apple80211_ssid_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_AUTH_TYPE:
+            if (cmd == SIOCGA80211)
+                return getAUTH_TYPE((apple80211_authtype_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_CHANNEL:
+            if (cmd == SIOCGA80211)
+                return getCHANNEL((apple80211_channel_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_BSSID:
+            return (cmd == SIOCGA80211) ? getBSSID((apple80211_bssid_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_SCAN_RESULT:
+            return (cmd == SIOCGA80211) ? getSCAN_RESULT((apple80211_scan_result *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_STATE:
+            return (cmd == SIOCGA80211) ? getSTATE((apple80211_state_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_PHY_MODE:
+            return (cmd == SIOCGA80211) ? getPHY_MODE((apple80211_phymode_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_NOISE:
+            return (cmd == SIOCGA80211) ? getNOISE((apple80211_noise_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_ASSOCIATE:
+            return (cmd == SIOCSA80211) ? setASSOCIATE((apple80211_assoc_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_DISASSOCIATE:
+            return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_LOCALE:
+            return (cmd == SIOCGA80211) ? getLOCALE((apple80211_locale_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_DEAUTH:
+            if (cmd == SIOCGA80211)
+                return getDEAUTH((apple80211_deauth_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setDEAUTH((apple80211_deauth_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_RATE_SET:
+            return (cmd == SIOCGA80211) ? getRATE_SET((apple80211_rate_set_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RSN_IE:
+            if (cmd == SIOCGA80211)
+                return getRSN_IE((apple80211_rsn_ie_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setRSN_IE((apple80211_rsn_ie_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_AP_IE_LIST:
+            return (cmd == SIOCGA80211) ? getAP_IE_LIST((apple80211_ap_ie_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_ASSOCIATION_STATUS:
+            return (cmd == SIOCGA80211) ? getASSOCIATION_STATUS((apple80211_assoc_status_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_MCS_INDEX_SET:
+            return (cmd == SIOCGA80211) ? getMCS_INDEX_SET((apple80211_mcs_index_set_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_SCAN_REQ:
+            return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_CURRENT_NETWORK:
+            return (cmd == SIOCGA80211) ? getCURRENT_NETWORK((apple80211_scan_result *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_LINK_CHANGED_EVENT_DATA:
+            return (cmd == SIOCGA80211) ? getLINK_CHANGED_EVENT_DATA((apple80211_link_changed_event_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_VHT_MCS_INDEX_SET:
+            return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        default:
+            return kIOReturnUnsupported;
+    }
+}
+
 #if __IO80211_TARGET >= __MAC_26_0
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
@@ -1309,7 +1418,19 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
 {
     if (!as)
         return kIOReturnBadArgument;
-    as->version = APPLE80211_VERSION;
+
+    // Apple/WCL expects a 0x30-byte buffer here, not the 12-byte stub we had
+    // before.  WCLConfigManager validates bulletinBoardMessage length == 0x30
+    // before calling into the driver.  The old declaration kept the trailing
+    // bytes uninitialized and made our Tahoe ABI diverge from Apple.
+    //
+    // AppleBCMWLAN sets version=1 (not APPLE80211_VERSION), then fills two
+    // IDs via a lower helper when colocated-scope state exists.  We do not
+    // have that lower scope provider yet, so the correct non-fabricated state
+    // is a zeroed payload with version=1 and zero IDs.
+    bzero(as, sizeof(*as));
+    as->version = 1;
+    XYLog("%s version=%u id1=%u id2=%u\n", __FUNCTION__, as->version, as->id1, as->id2);
     return kIOReturnSuccess;
 }
 

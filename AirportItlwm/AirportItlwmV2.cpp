@@ -12,13 +12,22 @@
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_var.h>
 
-// Build identification — injected by build_tahoe.sh via -DITLWM_COMMIT_HASH=...
-// Falls back to compile date/time for Xcode IDE builds.
+// Build identification must print the actual source revision in load logs so the
+// running kext can be matched 1:1 against the workspace and installed binary.
+// Tahoe originally relied on an external script-only ITLWM_COMMIT_HASH define,
+// which made plain Xcode/xcodebuild builds silently fall back to __DATE__/__TIME__.
+// The project already injects GIT_COMMIT in GCC_PREPROCESSOR_DEFINITIONS, so use
+// that canonical build setting before falling back to timestamps.
 #ifndef ITLWM_COMMIT_HASH
+#ifdef GIT_COMMIT
+#define ITLWM_COMMIT_HASH GIT_COMMIT
+#else
 #define ITLWM_COMMIT_HASH __DATE__ " " __TIME__
+#endif
 #endif
 #define ITLWM_XSTR(s) ITLWM_STR(s)
 #define ITLWM_STR(s) #s
+#define ITLWM_COMMIT_SUFFIX " (" ITLWM_XSTR(ITLWM_COMMIT_HASH) ")"
 
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "IOPCIEDeviceWrapper.hpp"
@@ -94,6 +103,39 @@ RuntimeDiag sRT = {};
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
 // Must match poolOpts.bufferSize in AirportItlwm::start() pool creation.
 #define SKYWALK_BUF_SIZE 2048
+
+static void
+publishDriverAvailable(IO80211SkywalkInterface *netif)
+{
+    if (netif == NULL)
+        return;
+
+    apple80211_driver_available_data msg;
+    bzero(&msg, sizeof(msg));
+
+    // Tahoe family gates driver availability on a dedicated
+    // APPLE80211_M_DRIVER_AVAILABLE message with a 0xf8-byte payload.
+    //
+    // Evidence from the 26.3 references:
+    // - WCLSystemStateManager only exits DEFER_SENDING_NOTIFICATION after the
+    //   DRIVER_AVAILABLE event is observed (docs/78_SSM_fully_symbolic_checked.yaml).
+    // - External SSID/BSSID IOC debug stayed at isDriverAvailable=0 even after
+    //   setInterfaceEnable(true), POWER_CHANGED and registerService() all ran.
+    // - IO80211Family's APPLE80211_M_DRIVER_AVAILABLE consumer accepts the
+    //   event only when payload length is exactly 0xf8 and the dword at +0x8
+    //   is zero (IO80211Family_decompiled.c around 0xffffff80021cd7f0).
+    //
+    // Important negative evidence:
+    // - The large Broadcom feature-bitmask builder at 0xffffff80015e4c66 is
+    //   NOT this payload. It sets non-zero bytes inside the 0x8..0xB range,
+    //   which would fail the family-side *(int *)(payload + 8) == 0 check.
+    //   Reusing that blob here would fabricate the wrong ABI contract.
+    //
+    // So for initial Tahoe bring-up we publish the exact family-accepted
+    // "driver ready / status == success" shape: a zeroed 0xf8 bulletin body.
+    // Additional capability bits belong in other messages/IOCTLs, not here.
+    netif->postMessage(APPLE80211_M_DRIVER_AVAILABLE, &msg, sizeof(msg), true);
+}
 
 // Inline replacements for kern_buflet_* C KPI functions.
 // The kernel exports these symbols (T in BootKC), but no KPI re-exports
@@ -503,33 +545,30 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     sRT.scanCount++;
     AirportItlwm *that = (AirportItlwm *)owner;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
-
-    /*
-     * Only post SCAN_DONE when ic_tree has nodes — airportd reads
-     * SCAN_RESULT immediately after receiving SCAN_DONE, so posting
-     * with an empty tree causes "0 results" and the framework marks
-     * the scan as completed.  If the tree is still empty (scan not
-     * finished yet), reschedule for 500ms to retry.  This avoids
-     * the race where the original 100ms timer fired before the first
-     * scan cycle populated ic_tree.
-     */
     struct ieee80211_node *first = RB_MIN(ieee80211_tree, &ic->ic_tree);
-    if (first == NULL) {
-        XYLog("DEBUG %s ic_state=%d tree empty — rescheduling 500ms\n",
-              __FUNCTION__, ic->ic_state);
-        sender->setTimeoutMS(500);
-        return;
-    }
-
     static UInt32 msg;
     msg = 0;
     /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
     that->fNextNodeToSend = NULL;
     that->fScanResultWrapping = false;
-    XYLog("DEBUG %s ic_state=%d posting SCAN_DONE + BGSCAN_CACHED (first_ssid=%s)\n",
-          __FUNCTION__, ic->ic_state, first->ni_essid);
+
+    /*
+     * Apple scanComplete posts APPLE80211_M_SCAN_DONE exactly once per scan
+     * lifecycle even when the result set is empty.  WCL SCAN_MANAGER relies
+     * on that completion edge to leave IN_PROGRESS; delaying SCAN_DONE until
+     * ic_tree becomes non-empty can strand the manager until timeout/abort.
+     *
+     * The earlier "wait for at least one node" heuristic looked attractive
+     * for classic airportd polling, but it is a shim-specific workaround and
+     * diverges from the Apple contract documented in the Tahoe references.
+     */
+    XYLog("DEBUG %s ic_state=%d nodes=%u posting SCAN_DONE%s%s\n",
+          __FUNCTION__, ic->ic_state, ic->ic_nnodes,
+          first ? " + BGSCAN_CACHED" : "",
+          first ? " (results available)" : " (zero-result completion)");
     that->postMessage(that->fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
-    that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
+    if (first != NULL)
+        that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
@@ -1329,6 +1368,16 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     _fCommandGate->enable();
     power_state = kWiFiPowerOn;
+    // Tahoe driver-availability bring-up:
+    // - Kernel IOC debug showed APPLE80211_IOC_SCAN_RESULT arriving with
+    //   isDriverAvailable=0 immediately after our SCAN_DONE delivery.
+    // - At that point getSCAN_RESULT is rejected inside IO80211Family before
+    //   it reaches our driver, so the bug is in interface availability, not
+    //   in scan result conversion.
+    // - Classic AirportItlwm registered the interface service directly.
+    // Matching that contract here keeps the primary STA interface visible to
+    // the BSD/IO80211 clients before airportd begins scan/result IOCTLs.
+    fNetIf->registerService();
     XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
     enableAdapter(NULL);
     {
@@ -1337,6 +1386,16 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 9a] post-enable: ic_state=%d if_flags=0x%x ic_caps=0x%x ic_opmode=%d\n",
               __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags, ic_dbg->ic_caps, ic_dbg->ic_opmode);
     }
+    // The Tahoe stack does not infer availability from POWER_CHANGED alone.
+    // Without the dedicated DRIVER_AVAILABLE bulletin, WCL stays in deferred
+    // mode and external SSID/BSSID IOCTLs never reach our bridge.
+    publishDriverAvailable(fNetIf);
+    // POWER_CHANGED is one of the documented sticky bring-up events on 26.x.
+    // Without it, dependent IO80211/WCL managers can keep the interface in the
+    // "driver unavailable" state even though the controller and Skywalk
+    // interface are alive. That exact symptom was observed in kernel logs:
+    // external APPLE80211_IOC_SCAN_RESULT with isDriverAvailable=0.
+    postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     SD_SET(16); // enableAdapter OK
     sDiag.step = 10;
     // registerService() makes the IO80211Controller visible to airportd.
@@ -2049,7 +2108,13 @@ getDRIVER_VERSION(OSObject *object,
     if (!hv)
         return kIOReturnError;
     hv->version = APPLE80211_VERSION;
-    snprintf(hv->string, sizeof(hv->string), "itlwm: %s%s fw: %s", ITLWM_VERSION, GIT_COMMIT, fHalService->getDriverInfo()->getFirmwareVersion());
+    // Tahoe builds inject ITLWM_COMMIT_HASH via scripts/build_tahoe.sh.
+    // Use that value here instead of the legacy GIT_COMMIT project setting:
+    // the latter is empty in current Tahoe builds, which made ioreg/logs
+    // indistinguishable across rebuilds while debugging bring-up.
+    snprintf(hv->string, sizeof(hv->string), "itlwm: %s%s fw: %s",
+             ITLWM_VERSION, ITLWM_COMMIT_SUFFIX,
+             fHalService->getDriverInfo()->getFirmwareVersion());
     hv->string_len = strlen(hv->string);
     return kIOReturnSuccess;
 }
@@ -2243,6 +2308,14 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     if (err) {
         XYLog("DEBUG %s FAILED, rollback %u → %u\n", __FUNCTION__, power_state, prevState);
         power_state = prevState;
+    }
+    else if (fNetIf) {
+        if (newState == kWiFiPowerOn)
+            publishDriverAvailable(fNetIf);
+        // Apple's 26.x event map lists POWER_CHANGED as mandatory on power
+        // transitions. Keep this in the real transition path too, not only in
+        // start(), so WCL/IO80211 availability state follows the controller.
+        postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     }
 
     return err;

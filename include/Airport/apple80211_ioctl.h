@@ -1396,10 +1396,13 @@ struct apple80211_driver_available_data {
     uint64_t avaliable;
     uint32_t reason;
     uint32_t sub_reason;
-    char pad[160];
+    // Tahoe/26.x IO80211Family validates APPLE80211_M_DRIVER_AVAILABLE payload
+    // length against 0xf8 before marking the controller available.  Our older
+    // local header stopped at 0xb8, which matched pre-Tahoe observations but no
+    // longer matches the 26.x family-side ABI.
+    char pad[224];
 } __attribute__((packed));
 
-static_assert(sizeof(struct apple80211_driver_available_data) == 0xB8, "invalid struct apple80211_driver_available_data");
+static_assert(sizeof(struct apple80211_driver_available_data) == 0xF8, "invalid struct apple80211_driver_available_data");
 
 #endif // _APPLE80211_IOCTL_H_
-

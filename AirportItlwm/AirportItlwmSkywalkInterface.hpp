@@ -17,7 +17,10 @@ struct apple80211_colocated_network_scope_id
     uint32_t version;
     uint32_t id1;
     uint32_t id2;
-};
+    uint8_t  reserved[0x24];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_colocated_network_scope_id) == 0x30,
+              "apple80211_colocated_network_scope_id must match Tahoe WCL ABI");
 
 class AirportItlwmSkywalkInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AirportItlwmSkywalkInterface)
@@ -29,6 +32,7 @@ public:
     virtual bool init(IOService *) override;
 #endif
     virtual void free() override;
+    virtual IOReturn processBSDCommand(ifnet_t, UInt, void *) override;
 
     // Override getInterfaceSubFamily — returns IFNET_SUBFAMILY_WIFI (3).
     //
@@ -52,6 +56,10 @@ public:
     //
     // Without subfamily=3, airportd's _getIfListCopy Path B (ioctl 0xC020699F)
     // does not recognize the interface as Wi-Fi → no IOCTLs → no ASSOCIATE.
+    //
+    // Future bring-up note: verify that the BSD name being inspected really
+    // belongs to AirportItlwm before reasoning from its ioctl results.  en*
+    // numbering is not stable and may point at unrelated USB Ethernet devices.
     virtual void *getInterfaceSubFamily(void) override {
         XYLog("getInterfaceSubFamily: returning 3 (IFNET_SUBFAMILY_WIFI)\n");
         return (void *)3;  // IFNET_SUBFAMILY_WIFI
@@ -88,6 +96,7 @@ public:
     IOReturn setSCAN_REQ(apple80211_scan_data *);
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
+    IOReturn processApple80211Ioctl(UInt, apple80211req *);
 
 public:
     //
