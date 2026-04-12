@@ -1405,4 +1405,21 @@ struct apple80211_driver_available_data {
 
 static_assert(sizeof(struct apple80211_driver_available_data) == 0xF8, "invalid struct apple80211_driver_available_data");
 
+struct apple80211_platform_config {
+    // Tahoe WCL bring-up now calls APPLE80211_IOC_PLATFORM_CONFIG before the
+    // interface is considered driver-available.  IO80211Family 26.x stores only
+    // the first 7 bytes of this payload in WCLDeviceConfiguration
+    // (u32 @ +0, u16 @ +4, u8 @ +6; see setPlatformConfig in the decompile),
+    // so the ABI we must satisfy is a tightly packed 7-byte blob.
+    //
+    // The local headers previously had only a forward declaration, which left
+    // AirportItlwm with no producer-side contract to implement and the live
+    // path fell through to kIOReturnUnsupported (0xe00002c7) during boot.
+    uint32_t flags;
+    uint16_t value_4;
+    uint8_t value_6;
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_platform_config) == 0x7, "invalid struct apple80211_platform_config");
+
 #endif // _APPLE80211_IOCTL_H_

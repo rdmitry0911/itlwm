@@ -137,6 +137,67 @@ publishDriverAvailable(IO80211SkywalkInterface *netif)
     netif->postMessage(APPLE80211_M_DRIVER_AVAILABLE, &msg, sizeof(msg), true);
 }
 
+static bool
+copyBoolProperty(IORegistryEntry *entry, const char *name, bool *value)
+{
+    if (entry == NULL || name == NULL || value == NULL)
+        return false;
+
+    OSObject *obj = entry->copyProperty(name);
+    if (obj == NULL)
+        return false;
+
+    bool found = false;
+    if (OSBoolean *b = OSDynamicCast(OSBoolean, obj)) {
+        *value = b->isTrue();
+        found = true;
+    } else if (OSNumber *n = OSDynamicCast(OSNumber, obj)) {
+        *value = n->unsigned32BitValue() != 0;
+        found = true;
+    }
+
+    obj->release();
+    return found;
+}
+
+static bool
+copyPresenceProperty(IORegistryEntry *entry, const char *name)
+{
+    if (entry == NULL || name == NULL)
+        return false;
+
+    OSObject *obj = entry->copyProperty(name);
+    if (obj == NULL)
+        return false;
+
+    bool present = true;
+    obj->release();
+    return present;
+}
+
+static bool
+copyUInt32Property(IORegistryEntry *entry, const char *name, uint32_t *value)
+{
+    if (entry == NULL || name == NULL || value == NULL)
+        return false;
+
+    OSObject *obj = entry->copyProperty(name);
+    if (obj == NULL)
+        return false;
+
+    bool found = false;
+    if (OSNumber *n = OSDynamicCast(OSNumber, obj)) {
+        *value = n->unsigned32BitValue();
+        found = true;
+    } else if (OSBoolean *b = OSDynamicCast(OSBoolean, obj)) {
+        *value = b->isTrue() ? 1u : 0u;
+        found = true;
+    }
+
+    obj->release();
+    return found;
+}
+
 // Inline replacements for kern_buflet_* C KPI functions.
 // The kernel exports these symbols (T in BootKC), but no KPI re-exports
 // them for third-party kexts linked into the AuxKC.  These helpers access
@@ -2163,6 +2224,77 @@ getCOUNTRY_CODE(OSObject *object,
     PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
     /* user_override_cc > firmware_cc > geo_location_cc */
     strncpy((char*)cd->cc, user_override_cc[0] ? user_override_cc : ((cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0]) ? geo_location_cc : cc_fw), sizeof(cd->cc));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+getPLATFORM_CONFIG(OSObject *object,
+                   struct apple80211_platform_config *data)
+{
+    if (!data)
+        return kIOReturnError;
+
+    bzero(data, sizeof(*data));
+
+    // AppleBCMWLAN's Tahoe producer path for APPLE80211_IOC_PLATFORM_CONFIG is
+    // not a generic base-class stub. The real vendor implementation populates a
+    // packed 7-byte feature bitmap from IOService properties and cached config:
+    //
+    //   byte0 = wlan.6GHz.supported
+    //   byte1 = wlan.ant-inefficiency-mitigation.enabled
+    //   byte2 = wlan.externallypowered
+    //   byte3 = wlan.adaptiveroaming.enabled
+    //   byte4 = wlan.dfrts (property presence)
+    //   byte5 = bcom.feature.pmmcast after loading wlan.ignore.mcast
+    //   byte6 = wlan.ocl.enabled
+    //
+    // References recovered from the Apple 26.3 producer path on the remote
+    // Ghidra host:
+    // - real handler body at 0xffffff8001638544 in AppleBCMWLANCore
+    // - consumer copy in WCLDeviceConfiguration::setPlatformConfig only reads
+    //   these first seven bytes
+    // - live Tahoe logs on our side proved that leaving this IOC unsupported
+    //   keeps WCL in DRIVER_UNAVAILABLE
+    //
+    // We do not fabricate Broadcom-private cached objects here. Instead we
+    // mirror the Apple fallback path: read the same property names from the
+    // controller service (and provider as fallback) and leave bytes zero when a
+    // property is absent. That matches the no-override semantics of the Apple
+    // producer path much more closely than our previous zero-only stub.
+    IORegistryEntry *sources[2] = { this, getProvider() };
+    bool boolValue = false;
+    uint32_t u32 = 0;
+
+    for (IORegistryEntry *source : sources) {
+        if (source == NULL)
+            continue;
+
+        if (!data->flags && copyBoolProperty(source, "wlan.6GHz.supported", &boolValue) && boolValue)
+            data->flags |= 0x00000001u;
+        if (!(data->flags & 0x00000100u) &&
+            copyBoolProperty(source, "wlan.ant-inefficiency-mitigation.enabled", &boolValue) &&
+            boolValue)
+            data->flags |= 0x00000100u;
+        if (!(data->flags & 0x00010000u) &&
+            copyPresenceProperty(source, "wlan.externallypowered"))
+            data->flags |= 0x00010000u;
+        if (!(data->flags & 0x01000000u) &&
+            copyBoolProperty(source, "wlan.adaptiveroaming.enabled", &boolValue) &&
+            boolValue)
+            data->flags |= 0x01000000u;
+        if (!(data->value_4 & 0x0001u) &&
+            copyPresenceProperty(source, "wlan.dfrts"))
+            data->value_4 |= 0x0001u;
+        if (!(data->value_4 & 0x0100u) &&
+            copyUInt32Property(source, "wlan.ignore.mcast", &u32) &&
+            u32 != 0)
+            data->value_4 |= 0x0100u;
+        if (!data->value_6 &&
+            copyBoolProperty(source, "wlan.ocl.enabled", &boolValue) &&
+            boolValue)
+            data->value_6 = 1;
+    }
+
     return kIOReturnSuccess;
 }
 

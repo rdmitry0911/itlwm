@@ -344,18 +344,21 @@ public:
     virtual IOReturn setCOUNTRY_CODE(IO80211SkywalkInterface *interface,apple80211_country_code_data *data) override {
         return setCOUNTRY_CODE((OSObject *)interface, data);
     }
+    virtual IOReturn getPLATFORM_CONFIG(IO80211SkywalkInterface *interface,apple80211_platform_config *data) override {
+        return getPLATFORM_CONFIG((OSObject *)interface, data);
+    }
     virtual IOReturn setGET_DEBUG_INFO(IO80211SkywalkInterface *interface,apple80211_debug_command *data) override {
         XYLog("%s\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
 #if __IO80211_TARGET >= __MAC_26_0
-    // Tahoe adds several new control-plane virtuals with base IO80211Controller
-    // implementations.  Returning kIOReturnUnsupported here is not equivalent to
-    // the Apple path: WCL issues APPLE80211_IOC_PLATFORM_CONFIG during bring-up,
-    // and our override forced the family into the explicit 0xe00002c7 failure
-    // path seen in the live logs.  Until we have an exact vendor-side producer
-    // implementation from the reference driver, the closest 1:1 behavior is to
-    // inherit the family defaults instead of shadowing them with unsupported.
+    // Tahoe adds several new control-plane virtuals.  Live 26.x logs showed
+    // APPLE80211_IOC_PLATFORM_CONFIG still resolving to 0xe00002c7 even after
+    // removing the explicit unsupported override, so the effective runtime
+    // contract here is not "inherit and hope" but "provide a concrete producer".
+    //
+    // We therefore implement getPLATFORM_CONFIG explicitly and keep the other
+    // Tahoe additions inherited until logs show they are on the critical path.
 #endif
     
     //scan
@@ -379,6 +382,7 @@ public:
     FUNC_IOCTL_GET(DRIVER_VERSION, apple80211_version_data)
     FUNC_IOCTL_GET(HARDWARE_VERSION, apple80211_version_data)
     FUNC_IOCTL(COUNTRY_CODE, apple80211_country_code_data)
+    IOReturn getPLATFORM_CONFIG(OSObject *object, struct apple80211_platform_config *data);
     
 public:
     IOInterruptEventSource* fInterrupt;
