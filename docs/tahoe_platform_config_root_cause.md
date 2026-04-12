@@ -448,3 +448,79 @@ The minimal compatible behavior for our fake-scan backend is:
 That is not a Tahoe-specific hack.  It is the minimum required completion
 semantic implied by the recovered Apple scan-plane FSM and by the fact that the
 real Apple abort path is asynchronous producer work rather than a pure no-op.
+
+## Runtime Status After `1537d1b`
+
+Live logs on `AirportItlwm build=1537d1b` close the previous abort-stuck issue:
+
+- `SCAN_MANAGER_STATE_ABORTED` now returns to `IDLE`
+- the timeout/abort wedge is no longer the earliest open blocker
+
+But the scan-complete path is still not `1:1` with Apple during a normal scan:
+
+- `SCAN_MANAGER_STATE_IDLE -> IN_PROGRESS` on every scan request
+- `fakeScanDone` fires with real nodes present
+- immediately after that, external `APPLE80211_IOC_SCAN_RESULT` fails with
+  `0xe0820445`
+- WCL does not log `SCAN_MANAGER_EVENT_SCAN_COMPLETE` for that normal
+  completion
+
+So the next root cause is no longer "scan never finishes".  The next root cause
+is "our normal completion bulletin does not match the Apple scan-adapter
+producer contract".
+
+## Tahoe Normal Scan-Complete Producer Contract
+
+Reference recovery from
+`ghidra_output/AppleBCMWLAN_Core_decompiled.c` shows two distinct Apple
+producer paths:
+
+- `AppleBCMWLANCore::scanComplete(int)` posts generic
+  `APPLE80211_M_SCAN_DONE (0x0A)` with a 4-byte status
+- `AppleBCMWLANScanAdapter::scanComplete(wl_event_msg_t*)` posts
+  `APPLE80211_M_WCL_SCAN_DONE (0xED)` with a 4-byte status
+
+The second path is the Tahoe-relevant one for the WCL-owned scan adapter.  The
+decompile is explicit:
+
+- `FUN_ffffff8002219ffe(..., 0xed, &status, 4, 1)`
+
+Additional negative finding:
+
+- our old synthetic `APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE (0x3F)` does
+  not match this producer path
+- reverse docs classify `0x3F` as a variable-payload BG-scan cache event, not
+  as a zero-length active-scan completion bulletin
+
+## Normal Scan-Complete Root Cause
+
+Our Tahoe fake completion path still synthesized:
+
+- `APPLE80211_M_SCAN_DONE (0x0A)`
+- followed by zero-length `APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE (0x3F)`
+
+That diverges from the Apple scan-adapter producer in two ways:
+
+1. it uses the generic core bulletin instead of the scan-adapter-owned
+   `APPLE80211_M_WCL_SCAN_DONE (0xED)`
+2. it emits an extra fabricated `0x3F` bulletin with the wrong shape
+
+This explains the live behavior:
+
+- the timer callback proves the scan result set exists
+- but WCL never consumes a normal `SCAN_COMPLETE` edge from that producer path
+- external `SCAN_RESULT` keeps failing with `0xe0820445` until the later
+  timeout/abort recovery path fires
+
+## Fix Direction After `1537d1b`
+
+The `1:1` fix direction is to make the fake Tahoe scan completion follow the
+Apple scan-adapter contract:
+
+- post `APPLE80211_M_WCL_SCAN_DONE (0xED)` with a 4-byte status payload
+- stop fabricating zero-length `APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE`
+  from the active scan-complete path
+
+If this is correct, Tahoe should finally synthesize the normal
+`SCAN_MANAGER_EVENT_SCAN_COMPLETE` edge during the first completion, instead of
+reaching `IDLE` only after watchdog-driven abort cleanup.

@@ -727,6 +727,10 @@ struct apple80211_status_msg_hdr
 #define APPLE80211_M_ACTION_FRAME            143
 #define APPLE80211_M_AWDL_APP_SPECIFIC_INFO  144
 #define APPLE80211_M_WSEC_NOTIFICATION       146
+// Tahoe/26.x adds scan-adapter-owned completion bulletins above the historic
+// APPLE80211_M_MAX range in these legacy headers. AppleBCMWLANScanAdapter::
+// scanComplete(wl_event_msg_t*) posts 0xED with a 4-byte status payload.
+#define APPLE80211_M_WCL_SCAN_DONE           237
 
 
 #define APPLE80211_M_MAX                     170
@@ -755,4 +759,3 @@ struct apple80211_status_msg_hdr
 #define APPLE80211_M_RSN_MSG_MAX                 2
 
 #endif // _APPLE80211_VAR_H_
-

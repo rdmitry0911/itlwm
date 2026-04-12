@@ -618,7 +618,6 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     sRT.scanCount++;
     AirportItlwm *that = (AirportItlwm *)owner;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
-    struct ieee80211_node *first = RB_MIN(ieee80211_tree, &ic->ic_tree);
     static UInt32 msg;
     msg = 0;
     /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
@@ -626,40 +625,32 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     that->fScanResultWrapping = false;
 
     /*
-     * Apple scanComplete posts APPLE80211_M_SCAN_DONE exactly once per scan
-     * lifecycle even when the result set is empty.  WCL SCAN_MANAGER relies
-     * on that completion edge to leave IN_PROGRESS; delaying SCAN_DONE until
-     * ic_tree becomes non-empty can strand the manager until timeout/abort.
+     * Tahoe WCL scans do not complete through the generic Core::scanComplete()
+     * bulletin. The Apple reference path for scan-adapter-owned completion is
+     * AppleBCMWLANScanAdapter::scanComplete(wl_event_msg_t*), and that code
+     * posts APPLE80211_M_WCL_SCAN_DONE (0xED) with a 4-byte status payload.
      *
-     * The earlier "wait for at least one node" heuristic looked attractive
-     * for classic airportd polling, but it is a shim-specific workaround and
-     * diverges from the Apple contract documented in the Tahoe references.
+     * Our previous Tahoe shim synthesized generic APPLE80211_M_SCAN_DONE plus
+     * APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE. Live logs showed that this
+     * never drove WCL out of IN_PROGRESS, while the Apple decompile proves the
+     * producer for this path is the scan-adapter-owned 0xED bulletin instead.
+     * 0x3F is also wrong here: the reference marks it as a variable-payload
+     * BG-scan cache notification, not a zero-length active-scan completion.
      */
-    XYLog("DEBUG %s ic_state=%d nodes=%u posting SCAN_DONE%s%s\n",
-          __FUNCTION__, ic->ic_state, ic->ic_nnodes,
-          first ? " + BGSCAN_CACHED" : "",
-          first ? " (results available)" : " (zero-result completion)");
+    XYLog("DEBUG %s ic_state=%d nodes=%u posting WCL_SCAN_DONE (0xED)\n",
+          __FUNCTION__, ic->ic_state, ic->ic_nnodes);
 
-    // Keep timer-synthesized completions on the same gated delivery path as
-    // real firmware events.  The live Tahoe logs already prove fakeScanDone
-    // fires and that results are present, yet WCL never leaves IN_PROGRESS.
-    // The remaining delivery-path delta was that this timer callback bypassed
-    // postMessageGated while eventHandler(IEEE80211_EVT_SCAN_DONE) does not.
+    // Keep timer-synthesized completion on the same controller/PostOffice
+    // route as Apple scan-adapter events, but use the Apple scan-adapter
+    // message code instead of the generic SCAN_DONE shim.
     if (that->getCommandGate() != nullptr) {
         that->getCommandGate()->runAction(postMessageGated,
-            (void *)(uintptr_t)APPLE80211_M_SCAN_DONE, &msg,
+            (void *)(uintptr_t)APPLE80211_M_WCL_SCAN_DONE, &msg,
             (void *)(uintptr_t)sizeof(msg), nullptr);
-        if (first != NULL) {
-            that->getCommandGate()->runAction(postMessageGated,
-                (void *)(uintptr_t)APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE,
-                nullptr, (void *)(uintptr_t)0, nullptr);
-        }
         return;
     }
 
-    that->postMessage(that->fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
-    if (first != NULL)
-        that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);
+    that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_DONE, &msg, 4, true);
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
