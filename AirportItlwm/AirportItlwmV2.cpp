@@ -566,6 +566,24 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
           __FUNCTION__, ic->ic_state, ic->ic_nnodes,
           first ? " + BGSCAN_CACHED" : "",
           first ? " (results available)" : " (zero-result completion)");
+
+    // Keep timer-synthesized completions on the same gated delivery path as
+    // real firmware events.  The live Tahoe logs already prove fakeScanDone
+    // fires and that results are present, yet WCL never leaves IN_PROGRESS.
+    // The remaining delivery-path delta was that this timer callback bypassed
+    // postMessageGated while eventHandler(IEEE80211_EVT_SCAN_DONE) does not.
+    if (that->getCommandGate() != nullptr) {
+        that->getCommandGate()->runAction(postMessageGated,
+            (void *)(uintptr_t)APPLE80211_M_SCAN_DONE, &msg,
+            (void *)(uintptr_t)sizeof(msg), nullptr);
+        if (first != NULL) {
+            that->getCommandGate()->runAction(postMessageGated,
+                (void *)(uintptr_t)APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE,
+                nullptr, (void *)(uintptr_t)0, nullptr);
+        }
+        return;
+    }
+
     that->postMessage(that->fNetIf, APPLE80211_M_SCAN_DONE, &msg, 4, true);
     if (first != NULL)
         that->postMessage(that->fNetIf, APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE, NULL, 0, true);

@@ -336,6 +336,42 @@ free()
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getCHANNELS_INFO(apple80211_channels_info *data)
+{
+    if (!data)
+        return kIOReturnBadArgument;
+
+    // Tahoe's UI path still queries legacy APPLE80211_IOC_CHANNELS_INFO.
+    // Live 26.x IOC DEBUG traces showed slot [483] returning 0xe00002c7 from
+    // this Skywalk vtable.  The older AirportVirtualIOCTL path already proved
+    // that a simple channel inventory satisfies the family contract here, so
+    // keep the Skywalk slot on that same ABI instead of shadowing it with
+    // unsupported.
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (!ic)
+        return kIOReturnNotReady;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
+        struct ieee80211_channel *channel = &ic->ic_channels[i];
+        if (channel->ic_freq == 0)
+            continue;
+
+        int slot = data->num_chan_specs;
+        int chanNum = ieee80211_chan2ieee(ic, channel);
+        data->chan_num[slot] = chanNum;
+        data->support_80Mhz[slot] = IEEE80211_IS_CHAN_VHT80(channel);
+        data->support_40Mhz[slot] =
+            IEEE80211_IS_CHAN_HT40(channel) || IEEE80211_IS_CHAN_VHT40(channel);
+        data->num_chan_specs++;
+        if (data->num_chan_specs >= APPLE80211_MAX_CHANNELS)
+            break;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 {
     // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the

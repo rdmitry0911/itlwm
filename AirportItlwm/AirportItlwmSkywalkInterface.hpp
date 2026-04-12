@@ -130,7 +130,11 @@ public:
     // [482]
     virtual IOReturn getMCS_VHT(apple80211_mcs_vht_data *) override;
     // [483]
-    virtual IOReturn getCHANNELS_INFO(apple80211_channels_info *) override { XYLog("DEBUG VTABLE [483] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // Tahoe/26.x still issues legacy APPLE80211_IOC_CHANNELS_INFO from the UI
+    // scan/status path.  Leaving slot [483] unsupported causes repeated
+    // 0xe00002c7 failures in live IOC DEBUG logs even though the older
+    // AirportItlwm controller already has a working CHANNELS_INFO producer.
+    virtual IOReturn getCHANNELS_INFO(apple80211_channels_info *) override;
     // [484]
     virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override { XYLog("DEBUG VTABLE [484] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [485]

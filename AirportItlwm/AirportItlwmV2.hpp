@@ -349,24 +349,13 @@ public:
         return kIOReturnSuccess;
     }
 #if __IO80211_TARGET >= __MAC_26_0
-    virtual IOReturn getPLATFORM_CONFIG(IO80211SkywalkInterface *interface, apple80211_platform_config *data) override {
-        return kIOReturnUnsupported;
-    }
-    virtual IOReturn getDEVICE_ORIENTATION(IO80211SkywalkInterface *interface, apple80211_device_orientation *data) override {
-        return kIOReturnUnsupported;
-    }
-    virtual IOReturn setDEVICE_ORIENTATION(IO80211SkywalkInterface *interface, apple80211_device_orientation *data) override {
-        return kIOReturnUnsupported;
-    }
-    virtual IOReturn getACCESSORY_STATE(IO80211SkywalkInterface *interface, apple80211_device_accessory_info *data) override {
-        return kIOReturnUnsupported;
-    }
-    virtual IOReturn setACCESSORY_STATE(IO80211SkywalkInterface *interface, apple80211_device_accessory_info *data) override {
-        return kIOReturnUnsupported;
-    }
-    virtual IOReturn getPOWERTABLE_VERSION(IO80211SkywalkInterface *interface, apple80211_powertable_version_data *data) override {
-        return kIOReturnUnsupported;
-    }
+    // Tahoe adds several new control-plane virtuals with base IO80211Controller
+    // implementations.  Returning kIOReturnUnsupported here is not equivalent to
+    // the Apple path: WCL issues APPLE80211_IOC_PLATFORM_CONFIG during bring-up,
+    // and our override forced the family into the explicit 0xe00002c7 failure
+    // path seen in the live logs.  Until we have an exact vendor-side producer
+    // implementation from the reference driver, the closest 1:1 behavior is to
+    // inherit the family defaults instead of shadowing them with unsupported.
 #endif
     
     //scan
