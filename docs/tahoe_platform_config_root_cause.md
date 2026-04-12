@@ -524,3 +524,57 @@ Apple scan-adapter contract:
 If this is correct, Tahoe should finally synthesize the normal
 `SCAN_MANAGER_EVENT_SCAN_COMPLETE` edge during the first completion, instead of
 reaching `IDLE` only after watchdog-driven abort cleanup.
+
+## Next Confirmed Root Cause After `5e32ebb`
+
+Live boot `5e32ebb` finally proved that WCL scan completion is no longer the
+blocking stage:
+
+- `fakeScanDone ... posting WCL_SCAN_DONE (0xED)`
+- `SCAN_MANAGER_STATE_IN_PROGRESS got event: SCAN_MANAGER_EVENT_SCAN_COMPLETE`
+- `SCAN_MANAGER_STATE_IDLE`
+
+But the interface still never leaves the unavailable bring-up path:
+
+- `airportd` logs `_initInterface: en0 is down`
+- immediately afterwards `_initInterface: Failed to query current SSID`
+- later auto-join attempts abort with `error=(37 'driver not available')`
+- kernel IOC DEBUG keeps showing `isDriverAvailable=<0>`
+
+That combination means the next real blocker is no longer scan completion or
+candidate delivery.  The blocker is that Tahoe still never observes a usable
+post-attach `DRIVER_AVAILABLE` edge.
+
+The live ordering makes the timing issue explicit:
+
+1. The driver publishes `APPLE80211_M_DRIVER_AVAILABLE` from
+   `AirportItlwm::start()` right after `enableAdapter()`.
+2. Only later does the system create and announce the Apple-visible interface:
+   `KEV_DL_IF_ATTACHED`, `IOServiceMatched`, `Apple80211GetIfListCopy ifCount=1`,
+   then `airportd` begins `_initInterface` on `en0`.
+3. No later `DRIVER_AVAILABLE` replay happens after the BSD/Apple80211 attach,
+   so `_initInterface` still runs with `isDriverAvailable=0`.
+
+This matches the observed failure mode exactly: the interface exists and scan
+machinery already works, but the notification broker never sees a usable
+availability transition at the point when the interface becomes consumable by
+CoreWiFi/airportd.
+
+## Fix Direction After `5e32ebb`
+
+Do not invent new availability payloads again.  The payload shape and
+controller/PostOffice route are already fixed.
+
+The remaining delta is timing:
+
+- keep the existing early `DRIVER_AVAILABLE` publish for parity with initial
+  bring-up;
+- replay the same Apple-shaped `APPLE80211_M_DRIVER_AVAILABLE` after BSD
+  interface attach / `configureInterface()`, i.e. when `en0` actually becomes
+  visible to `airportd`.
+
+If this is the real root cause, the next boot should stop showing:
+
+- `_initInterface: Failed to query current SSID`
+- `AUTO-JOIN: ... error=(37 'driver not available')`
+- IOC DEBUG `isDriverAvailable=<0>` during early external SSID/BSSID queries

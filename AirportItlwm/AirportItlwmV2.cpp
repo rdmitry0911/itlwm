@@ -1761,6 +1761,21 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
     RT_SET(26);
     fpNetStats->collisions = 0;
+
+    // Tahoe live ordering showed the original DRIVER_AVAILABLE publish from
+    // start() happens before airportd can even discover en0.  The observed
+    // sequence on 2026-04-12 was:
+    //   - driver start() already ran enableAdapter() + DRIVER_AVAILABLE
+    //   - only later airportd received KEV_DL_IF_ATTACHED / IOServiceMatched
+    //   - _initInterface then still queried SSID with isDriverAvailable=0 and
+    //     aborted auto-join with error 37 "driver not available"
+    //
+    // Replaying the same Apple-shaped DRIVER_AVAILABLE bulletin after
+    // ether_ifattach() keeps the payload/transport contract unchanged while
+    // moving one availability edge onto the first point where en0 is actually
+    // consumable by Apple80211/airportd.
+    publishDriverAvailable(this);
+
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);
 #else
