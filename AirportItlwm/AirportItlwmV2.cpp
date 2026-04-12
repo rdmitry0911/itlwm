@@ -105,72 +105,31 @@ RuntimeDiag sRT = {};
 #define SKYWALK_BUF_SIZE 2048
 
 static void
-publishDriverAvailable(AirportItlwm *controller)
+setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
 {
     if (controller == NULL || controller->fNetIf == NULL)
         return;
 
-    apple80211_driver_available_data msg;
-    bzero(&msg, sizeof(msg));
-
-    // Tahoe family gates driver availability on a dedicated
-    // APPLE80211_M_DRIVER_AVAILABLE message with a 0xf8-byte payload.
+    // AppleBCMWLANCore::signalDriverReady() does not synthesize readiness by
+    // fabricating an APPLE80211_M_DRIVER_AVAILABLE payload. The recovered
+    // producer path publishes CoreWiFiDriverReadyKey="true"/"false" on the
+    // hidden interface-side object stored at core-state +0x1510.
     //
-    // Evidence from the 26.3 references:
-    // - WCLSystemStateManager only exits DEFER_SENDING_NOTIFICATION after the
-    //   DRIVER_AVAILABLE event is observed (docs/78_SSM_fully_symbolic_checked.yaml).
-    // - External SSID/BSSID IOC debug stayed at isDriverAvailable=0 even after
-    //   setInterfaceEnable(true), POWER_CHANGED and registerService() all ran.
-    // - IO80211Family's APPLE80211_M_DRIVER_AVAILABLE consumer accepts the
-    //   event only when payload length is exactly 0xf8 and the dword at +0x8
-    //   is zero (IO80211Family_decompiled.c around 0xffffff80021cd7f0).
-    //
-    // Important negative evidence:
-    // - The large Broadcom feature-bitmask builder at 0xffffff80015e4c66 is
-    //   NOT this payload. It sets non-zero bytes inside the 0x8..0xB range,
-    //   which would fail the family-side *(int *)(payload + 8) == 0 check.
-    //   Reusing that blob here would fabricate the wrong ABI contract.
-    //
-    // Live b4e9aa8 evidence tightened the transport requirement further:
-    // scans really run and fakeScanDone really posts, yet isDriverAvailable
-    // never flips from 0.  The remaining producer delta was that this was the
-    // only Tahoe bulletin still sent via IO80211SkywalkInterface::postMessage,
-    // while Apple's recovered producer docs route events through
-    // IO80211Controller::postMessage(controller, iface, ...), i.e. the
-    // controller/PostOffice path used by SCAN_DONE and our other working
-    // notifications.  Publish DRIVER_AVAILABLE through that same route so the
-    // bulletin follows the Apple producer chain instead of bypassing it.
-    //
-    // So for initial Tahoe bring-up we publish the exact family-accepted
-    // "driver ready / status == success" shape: a zeroed 0xf8 bulletin body,
-    // through controller PostOffice delivery. Additional capability bits belong
-    // in other messages/IOCTLs, not here.
-    controller->postMessage(controller->fNetIf, APPLE80211_M_DRIVER_AVAILABLE,
-                            &msg, sizeof(msg), true);
+    // Live d7318b6 proof showed the earlier synthetic bulletin path was wrong:
+    // DRIVER_AVAILABLE/55 appeared in logs, yet isDriverAvailable stayed 0 and
+    // ioreg exposed no CoreWiFiDriverReadyKey on AirportItlwmSkywalkInterface.
+    controller->fNetIf->setProperty("CoreWiFiDriverReadyKey",
+                                    ready ? kOSBooleanTrue : kOSBooleanFalse);
+    XYLog("DEBUG %s ready=%d fNetIf=%p\n", __FUNCTION__, ready ? 1 : 0,
+          controller->fNetIf);
 }
 
 void AirportItlwm::replayDriverAvailableAfterIOUCReady()
 {
-    // Tahoe 26.x routes external SSID/BSSID/CHANNEL queries through
-    // IO80211SkywalkInterface::routeIoctlToWcl(selector 1/9/4) first.
-    // The wrapper only falls back to our protocol handlers when WCL reports
-    // 0xe082280f / "not implemented".  Live boots kept returning
-    // 0xe0822403 with isDriverAvailable=0 even though the interface and BSD
-    // layer already existed, which means the missing edge is no longer in the
-    // protocol fallback itself but in the sticky DRIVER_AVAILABLE replay seen
-    // by late IOUC consumers.
-    //
-    // Reference anchor:
-    // - IO80211SkywalkInterface::routeIoctlToWcl returns 0xe082280f only when
-    //   IOUC did not handle the request.
-    // - IO80211SkywalkInterface::postMessageIOUC writes directly into opened
-    //   event pipes; before createEventPipe there may simply be no consumer.
-    // - SSM requires DRIVER_AVAILABLE replay semantics after unavailable /
-    //   deferred phases, not just a single early publish during start().
-    //
-    // So keep the bulletin shape unchanged and replay the same Apple-shaped
-    // DRIVER_AVAILABLE only once the IOUC event pipe is alive.
-    publishDriverAvailable(this);
+    // Apple keeps readiness as sticky interface-side state. Late IOUC/WCL
+    // consumers only appear after createEventPipe(), so re-assert the same
+    // CoreWiFiDriverReadyKey state once the event pipe is alive.
+    setCoreWiFiDriverReadyProperty(this, true);
 }
 
 static bool
@@ -1492,10 +1451,9 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("DEBUG %s [STEP 9a] post-enable: ic_state=%d if_flags=0x%x ic_caps=0x%x ic_opmode=%d\n",
               __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags, ic_dbg->ic_caps, ic_dbg->ic_opmode);
     }
-    // The Tahoe stack does not infer availability from POWER_CHANGED alone.
-    // Without the dedicated DRIVER_AVAILABLE bulletin, WCL stays in deferred
-    // mode and external SSID/BSSID IOCTLs never reach our bridge.
-    publishDriverAvailable(this);
+    // Apple publishes readiness as CoreWiFiDriverReadyKey on the interface-side
+    // object once the adapter is actually enabled.
+    setCoreWiFiDriverReadyProperty(this, true);
     // POWER_CHANGED is one of the documented sticky bring-up events on 26.x.
     // Without it, dependent IO80211/WCL managers can keep the interface in the
     // "driver unavailable" state even though the controller and Skywalk
@@ -1786,19 +1744,18 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     RT_SET(26);
     fpNetStats->collisions = 0;
 
-    // Tahoe live ordering showed the original DRIVER_AVAILABLE publish from
+    // Tahoe live ordering showed the original ready-state publication from
     // start() happens before airportd can even discover en0.  The observed
     // sequence on 2026-04-12 was:
-    //   - driver start() already ran enableAdapter() + DRIVER_AVAILABLE
+    //   - driver start() already ran enableAdapter() + CoreWiFiDriverReadyKey
     //   - only later airportd received KEV_DL_IF_ATTACHED / IOServiceMatched
     //   - _initInterface then still queried SSID with isDriverAvailable=0 and
     //     aborted auto-join with error 37 "driver not available"
     //
-    // Replaying the same Apple-shaped DRIVER_AVAILABLE bulletin after
-    // ether_ifattach() keeps the payload/transport contract unchanged while
-    // moving one availability edge onto the first point where en0 is actually
-    // consumable by Apple80211/airportd.
-    publishDriverAvailable(this);
+    // Re-assert the same sticky CoreWiFiDriverReadyKey after ether_ifattach(),
+    // i.e. at the first point where en0 is actually consumable by
+    // Apple80211/airportd.
+    setCoreWiFiDriverReadyProperty(this, true);
 
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);
@@ -2445,6 +2402,7 @@ void AirportItlwm::disableAdapter(IONetworkInterface *netif)
     }
     if (fHalService)
         fHalService->disable(netif);
+    setCoreWiFiDriverReadyProperty(this, false);
 }
 
 //
@@ -2502,8 +2460,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         power_state = prevState;
     }
     else if (fNetIf) {
-        if (newState == kWiFiPowerOn)
-            publishDriverAvailable(this);
+        setCoreWiFiDriverReadyProperty(this, newState == kWiFiPowerOn);
         // Apple's 26.x event map lists POWER_CHANGED as mandatory on power
         // transitions. Keep this in the real transition path too, not only in
         // start(), so WCL/IO80211 availability state follows the controller.

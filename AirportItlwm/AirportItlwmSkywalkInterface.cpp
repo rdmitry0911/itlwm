@@ -414,13 +414,13 @@ UInt64 AirportItlwmSkywalkInterface::createEventPipe(IO80211APIUserClient *clien
     // - IO80211SkywalkInterface::postMessageIOUC is the first place where the
     //   newly opened IOUC event pipes become available to userspace clients.
     //
-    // Replaying DRIVER_AVAILABLE here preserves the existing Apple payload and
-    // controller/PostOffice transport while moving one replay edge onto the
-    // first point where late IOUC consumers can actually observe it.
+    // Apple carries readiness as CoreWiFiDriverReadyKey on the interface-side
+    // state object. Reassert that sticky state here so late IOUC consumers can
+    // observe the same ready edge once the event pipe exists.
     AirportItlwm *controller =
         OSDynamicCast(AirportItlwm, reinterpret_cast<OSObject *>(getController()));
     if (controller != NULL) {
-        XYLog("DEBUG %s ret=0x%llx replay DRIVER_AVAILABLE after IOUC pipe open\n",
+        XYLog("DEBUG %s ret=0x%llx replay CoreWiFiDriverReadyKey after IOUC pipe open\n",
               __FUNCTION__, ret);
         controller->replayDriverAvailableAfterIOUCReady();
     }

@@ -249,3 +249,39 @@ The correct fix is to restore the missing BSD-bridge reachability:
 - keep comments tying the bridge restoration to the live `setPOWERSAVE ...
   not supported` proof, so this does not regress into another "handler exists
   but Tahoe can never reach it" failure
+
+## Root Cause After Live `d7318b6`
+
+The next architectural mismatch was not another WCL timer bug or another BSD
+bridge omission. It was that the Tahoe port still lacked the real Apple
+driver-ready producer.
+
+Recovered Apple producer path:
+
+- `AppleBCMWLANCore::signalDriverReady()`
+- creates `OSSymbol("CoreWiFiDriverReadyKey")`
+- creates `OSString("true")` or `OSString("false")`
+- publishes that key/value pair through the hidden interface-side object stored
+  at core-state `+0x1510` via vtable slot `+0x9f8`
+
+Live proof on rebooted `d7318b6` matched that missing producer exactly:
+
+- our synthetic `DRIVER_AVAILABLE/55` bulletins were visible in kernel logs
+- `airportd` and WCL still kept `isDriverAvailable=0`
+- `ioreg -l -r -n AirportItlwmSkywalkInterface` exposed no
+  `CoreWiFiDriverReadyKey`
+
+So the older theory that Tahoe only needed a family-accepted `0xf8`
+`APPLE80211_M_DRIVER_AVAILABLE` payload is disproven. That was a consumer-side
+guess, not the reference producer path.
+
+## Correct Ready-State Carrier
+
+For Tahoe parity, readiness must be carried through the same producer state that
+Apple uses:
+
+- publish `CoreWiFiDriverReadyKey=true/false` on the interface-side object
+- update it at the same readiness boundaries (`enable`, `disable`, power
+  transitions, teardown/failure)
+- keep the decompile references in code so the port does not regress back to
+  treating readiness as an arbitrary bulletin-payload problem
