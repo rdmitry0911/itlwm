@@ -270,3 +270,102 @@ Given the live state (`isDriverAvailable` never flips despite repeated scans)
 and the recovered controller/PostOffice producer contract, the correct next
 fix is to publish `APPLE80211_M_DRIVER_AVAILABLE` through controller
 `postMessage(fNetIf, ...)`, not through direct interface `postMessage(...)`.
+
+## Runtime Status After The Two Latest Fixes
+
+Two important live conclusions are now established and should not be re-opened
+later as if they were still hypotheses:
+
+1. After the payload-less `VIRTUAL_IF_*` fix (`b4e9aa8`), the early
+   `APPLE80211_IOC_VIRTUAL_IF_ROLE/PARENT -> 6` failures stopped appearing in
+   Tahoe bring-up logs.  So that specific `_initInterface` contract mismatch is
+   considered closed.
+
+2. The next committed fix (`3325ce7`) moved `APPLE80211_M_DRIVER_AVAILABLE`
+   onto the same controller/PostOffice producer route that Apple uses for its
+   other notifications and that our own Tahoe `SCAN_DONE` path already uses.
+
+That leaves one clear runtime validation target after `3325ce7`:
+
+- whether `isDriverAvailable` finally leaves `0`
+- whether `APPLE80211_IOC_SCAN_RESULT` stops failing with `0xe0820445`
+  immediately after `fakeScanDone`
+
+If those two symptoms persist on `3325ce7`, then the remaining Tahoe blocker is
+no longer "wrong transport path for DRIVER_AVAILABLE".  At that point the next
+root cause must be in the remaining availability contract itself or in a
+separate WCL-facing producer path that still diverges from the reference stack.
+
+## Runtime Status After `3325ce7`
+
+Live logs on the first reboot with `AirportItlwm build=3325ce7` closed one
+question and opened the next one:
+
+- `APPLE80211_M_DRIVER_AVAILABLE` no longer stands out as the first unresolved
+  producer delta worth fixing blindly
+- the first new mandatory Tahoe IOC failure is now
+  `APPLE80211_IOC_WCL_TRIGGER_CC -> 0xe00002c7`
+
+The relevant live sequence is:
+
+- internal `APPLE80211_IOC_WCL_SCAN_ABORT -> 0x0`
+- internal `APPLE80211_IOC_WCL_TRIGGER_CC -> 0xe00002c7`
+- later external `APPLE80211_IOC_SCAN_REQ -> 0xe00002bc`
+- when a scan does launch, `fakeScanDone` posts successfully but
+  `APPLE80211_IOC_SCAN_RESULT` still comes back `0xe0820445`
+
+So at this stage Tahoe is no longer blocked by an obviously missing scan start.
+It is blocked by a WCL-side contract mismatch that happens immediately after the
+framework enters its internal scan-control path.
+
+## Tahoe `WCL_TRIGGER_CC` Contract
+
+Reference recovery from
+`/Volumes/macos-750/Users/bob/Projects/Декомпилы/ghidra_output/AppleBCMWLAN_Core_decompiled.c`
+shows the vendor producer path:
+
+- `AppleBCMWLANCore::setWCL_TRIGGER_CC(triggerCC*)`
+- `AppleBCMWLANJoinAdapter::triggerCC(triggerCC*)`
+
+The recovered Apple behavior is:
+
+- the producer reads a 32-bit mode from offset `+0x8`
+- for mode `1`, it delegates to `JoinAdapter::triggerCC(...)`
+- for mode `0`, it copies the first four qwords (`0x20` bytes) of the request
+  into scan-adapter-owned state and continues through the scan-adapter helper
+  path
+- only any other mode returns `0xe00002bc`
+
+Important shape detail:
+
+- both Apple branches cache the same first four qwords before doing any
+  adapter-specific work
+- this IOC is therefore not optional on Tahoe and must not return
+  `kIOReturnUnsupported`
+
+## `WCL_TRIGGER_CC` Root Cause
+
+Our Tahoe skywalk vtable still implemented slot `[599]` as:
+
+- `return kIOReturnUnsupported`
+
+That maps exactly to the live failure:
+
+- `APPLE80211_IOC_WCL_TRIGGER_CC -> 0xe00002c7`
+
+So the current root cause is a direct producer-side contract violation: the
+driver rejects a mandatory internal WCL IOC that the Apple reference accepts
+for the valid mode values used during Tahoe bring-up.
+
+## `WCL_TRIGGER_CC` Fix Direction
+
+The minimal compatible behavior is:
+
+- accept a non-null `triggerCC` request
+- cache the first `0x20` bytes of the request, matching the first Apple action
+- return success for mode `0` and mode `1`
+- return `0xe00002bc` for any other mode
+
+This reproduces the reference request-shape contract closely enough to remove
+the current `unsupported` failure without inventing a fabricated Tahoe-only
+policy.

@@ -92,6 +92,18 @@ static int ieeeChanFlag2apple(int flags, int bw)
     return ret;
 }
 
+struct triggerCCSnapshot
+{
+    uint64_t qword0;
+    uint64_t qword1;
+    uint64_t qword2;
+    uint64_t qword3;
+} __attribute__((packed));
+static_assert(sizeof(triggerCCSnapshot) == 0x20,
+              "triggerCCSnapshot must match the first four qwords cached by Apple");
+
+static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
+
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -562,6 +574,9 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
+    this->cachedTriggerCCMode = 0;
+    this->hasCachedTriggerCC = false;
     RT3_SET(12); // SkywalkInterface::init OK
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
@@ -1303,6 +1318,36 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
         scanSource->enable();
     }
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_TRIGGER_CC(triggerCC *data)
+{
+    if (!data)
+        return kIOReturnBadArgument;
+
+    const auto *snapshot = reinterpret_cast<const triggerCCSnapshot *>(data);
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    const uint32_t mode = *reinterpret_cast<const uint32_t *>(raw + 0x8);
+    const uint32_t trigger = *reinterpret_cast<const uint32_t *>(raw + 0x4);
+    const uint32_t channelMetric = *reinterpret_cast<const uint32_t *>(raw + 0x10);
+
+    // Tahoe 26.x calls APPLE80211_IOC_WCL_TRIGGER_CC during the scan manager
+    // bring-up path.  The Apple producer does not treat it as optional:
+    // AppleBCMWLANCore::setWCL_TRIGGER_CC first copies the first four qwords of
+    // the request into adapter-owned state, then accepts mode 0/1 and returns
+    // 0xe00002bc only for any other mode.  Returning unsupported here is what
+    // produced the live INTERNAL WCL_TRIGGER_CC -> 0xe00002c7 failure.
+    memcpy(cachedTriggerCC, snapshot, sizeof(*snapshot));
+    cachedTriggerCCMode = mode;
+    hasCachedTriggerCC = true;
+
+    XYLog("DEBUG %s mode=%u trigger=%u channel_metric=%u\n",
+          __FUNCTION__, mode, trigger, channelMetric);
+
+    if (mode == 0 || mode == 1)
+        return kIOReturnSuccess;
+    return kIOReturnBadArgumentTahoe;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

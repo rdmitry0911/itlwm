@@ -403,7 +403,7 @@ public:
         return kIOReturnSuccess;
     }
     // [599]
-    virtual IOReturn setWCL_TRIGGER_CC(triggerCC *) override { XYLog("DEBUG VTABLE [599] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_TRIGGER_CC(triggerCC *) override;
     // [600]
     virtual IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *) override;
     // [601]
@@ -608,6 +608,9 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
+    uint8_t cachedTriggerCC[0x20];
+    uint32_t cachedTriggerCCMode;
+    bool hasCachedTriggerCC;
 
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;
