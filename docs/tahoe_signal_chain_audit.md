@@ -1011,3 +1011,33 @@ changes here is the architectural surface:
 - Tahoe now preserves the same caller-visible carriers Apple exposes
 - the remaining hidden-owner exactness stays open under the residual `Q13`
   hidden-helper zone instead of being conflated with missing selector bodies
+
+## Q13 Batch: simple getter carriers continue to leave the unsupported tail
+
+The next `Q13` zone was the getter subset where Apple already exposes narrow
+producer bodies without requiring the unrecovered hidden `+0x1510` object map.
+
+Recovered Apple producer contracts:
+
+- `AppleBCMWLANCore::getHE_CAPABILITY(...)`
+  returns `0x2d` when the HE capability gate rejects the request and otherwise
+  writes only three sparse fields into a 0x24-byte opaque carrier:
+  `+0xc = 0x0b00`, `+0xe = 0x26`, `+0x1a = 0xfffafffafffafffa`
+- `AppleBCMWLANCore::getP2P_DEVICE_CAPABILITY(...)`
+  zeroes the first byte of a one-byte carrier and only delegates into the NAN
+  owner when that owner exists
+
+That is strong enough to move both selectors out of the generic unsupported
+bucket:
+
+- `getHE_CAPABILITY`
+- `getP2P_DEVICE_CAPABILITY`
+
+The important architectural correction is not that Tahoe suddenly claims full
+11ax or NAN feature parity. The correction is narrower and producer-shaped:
+
+- `HE_CAPABILITY` now follows the Apple reject-vs-payload split instead of a
+  dead `kIOReturnUnsupported` slot
+- `P2P_DEVICE_CAPABILITY` now exposes the Apple zeroed fast-path when no NAN
+  owner exists, which matches the current local architecture better than a
+  fake unsupported return

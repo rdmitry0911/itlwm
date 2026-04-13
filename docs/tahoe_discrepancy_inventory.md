@@ -79,9 +79,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 134 unsupported overrides and 0 ack-only
+  raw header surface now carries 128 unsupported overrides and 0 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  98 unsupported-return slots still remain open discrepancies
+  96 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -199,6 +199,16 @@ This inventory is intentionally split into:
   `setCONGESTION_CTRL_IND`, `setLMTPC_CONFIG`, and `setLE_SCAN_PARAM` now
   preserve the recovered caller-visible carriers and Apple null gates instead
   of returning `kIOReturnUnsupported`.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 mini-batch: HE capability / P2P device capability getter lift`:
+  `getHE_CAPABILITY` and `getP2P_DEVICE_CAPABILITY` no longer belong in the
+  generic unsupported bucket. `AppleBCMWLANCore::getHE_CAPABILITY(...)` is a
+  real producer with a feature gate (`0x2d` on reject) and a sparse 0x24-byte
+  carrier body, while `getP2P_DEVICE_CAPABILITY(...)` zeroes a one-byte
+  carrier and only defers into the NAN owner when such an owner exists.
+  The local Tahoe port currently has no NAN object at all, so the Apple-shaped
+  fast path is the zeroed carrier, not `kIOReturnUnsupported`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 ## Superseded
@@ -370,11 +380,11 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `134` raw overrides still return `kIOReturnUnsupported`
-- `98` of those still remain open unsupported discrepancies after the first
+- `128` raw overrides still return `kIOReturnUnsupported`
+- `96` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
-  batch, and the simple setter-carrier zone
+  batch, the simple setter-carrier zone, and the HE/P2P getter mini-batch
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -419,8 +429,6 @@ Unsupported getter slots still present:
 - `534 getWCL_LOW_LATENCY_INFO_STATS`
 - `537 getWIFI_NOISE_PER_ANT`
 - `540 getSYSTEM_SLEEP_CONFIG`
-- `543 getHE_CAPABILITY`
-- `544 getP2P_DEVICE_CAPABILITY`
 
 Unsupported setter slots still present:
 

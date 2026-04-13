@@ -270,9 +270,9 @@ public:
     // [542]
     virtual IOReturn getLQM_STATISTICS(apple80211_lqm_statistics *) override { XYLog("DEBUG VTABLE [542] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [543]
-    virtual IOReturn getHE_CAPABILITY(apple80211_he_capability *) override { XYLog("DEBUG VTABLE [543] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getHE_CAPABILITY(apple80211_he_capability *) override;
     // [544]
-    virtual IOReturn getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *) override { XYLog("DEBUG VTABLE [544] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *) override;
 
     //
     // SET methods — vtable slots [545]-[663] (119 methods)

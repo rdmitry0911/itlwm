@@ -744,6 +744,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_HT_CAPABILITY:
             return (cmd == SIOCGA80211) ? getHT_CAPABILITY((apple80211_ht_capability *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_HE_CAPABILITY:
+            return (cmd == SIOCGA80211) ? getHE_CAPABILITY((apple80211_he_capability *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_TXPOWER:
             return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1521,6 +1524,29 @@ getHT_CAPABILITY(struct apple80211_ht_capability *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getHE_CAPABILITY(struct apple80211_he_capability *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // AppleBCMWLANCore::getHE_CAPABILITY is not an unsupported slot. It
+    // returns 0x2d when the PHY/capability gate rejects HE and otherwise
+    // writes only three discontiguous fields inside a 0x24-byte opaque
+    // carrier. Keep that shape intact instead of inventing a semantic HE IE
+    // schema that the local headers never recovered.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    if ((ic->ic_flags & IEEE80211_F_HEON) == 0)
+        return 45;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->capability_word = 0x0b00;
+    data->capability_byte = 0x26;
+    data->capability_tail = 0xfffafffafffafffaULL;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getGUARD_INTERVAL(apple80211_guard_interval_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -1562,6 +1588,20 @@ getGUARD_INTERVAL(apple80211_guard_interval_data *data)
             break;
     }
 
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *data)
+{
+    // AppleBCMWLANCore::getP2P_DEVICE_CAPABILITY zeroes the one-byte carrier
+    // and only defers into AppleBCMWLANNANInterface when a NAN owner exists.
+    // This port currently has no NAN object at all, so the Apple-shaped path
+    // is the zeroed fast-path, not generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    data->capability = 0;
     return kIOReturnSuccess;
 }
 

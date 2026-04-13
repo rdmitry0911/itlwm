@@ -418,6 +418,31 @@ struct apple80211_vht_capability {
     uint16_t    tx_highest;
 } __attribute__((packed));
 
+struct apple80211_he_capability {
+    uint32_t    version;
+    uint8_t     reserved04[8];
+    // AppleBCMWLANCore::getHE_CAPABILITY(...) touches only +0xc, +0xe and
+    // +0x1a in the returned carrier. IO80211PeerManager later snapshots 0x24
+    // bytes of that payload, so keep the ABI offset-accurate and opaque
+    // instead of inventing semantic field names for the untouched gaps.
+    uint16_t    capability_word;
+    uint8_t     capability_byte;
+    uint8_t     reserved0f[0x0b];
+    uint64_t    capability_tail;
+    uint16_t    reserved22;
+} __attribute__((packed));
+static_assert(sizeof(struct apple80211_he_capability) == 0x24,
+              "apple80211_he_capability must preserve the recovered Tahoe layout");
+
+struct apple80211_p2p_device_capability {
+    // AppleBCMWLANCore::getP2P_DEVICE_CAPABILITY(...) zeroes the first byte and
+    // only defers to the NAN owner when one exists. The Tahoe ABI here is a
+    // one-byte carrier, not a versioned struct.
+    uint8_t     capability;
+} __attribute__((packed));
+static_assert(sizeof(struct apple80211_p2p_device_capability) == 0x1,
+              "apple80211_p2p_device_capability must remain a 1-byte carrier");
+
 struct apple80211_private_mac_data {
     uint32_t    version;
     uint32_t    enabled;
