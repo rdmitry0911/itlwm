@@ -2097,6 +2097,53 @@ setWCL_SCAN_ABORT(void *data)
     return kIOReturnSuccess;
 }
 
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const bool requestCompletion = data != nullptr &&
+                                   *reinterpret_cast<const uint32_t *>(data) != 0;
+
+    XYLog("WCL [598] %s ic_state=%d completion=%u\n",
+          __FUNCTION__, ic->ic_state,
+          static_cast<unsigned int>(requestCompletion));
+
+    // AppleBCMWLANCore::setWCL_JOIN_ABORT does not reject NULL. It maps NULL to
+    // `false`, delegates into JoinAdapter::abortFirmwareJoinSync(bool), and
+    // when the incoming bool is true it publishes APPLE80211_M_WCL_JOIN_ABORT_COMPLETE
+    // (0xD6). The WCLJoinManager symbolic FSM confirms why this matters:
+    // JOIN_ABORT_REQ moves active join states into ABORTED and the manager only
+    // returns ABORTED -> IDLE after the matching JOIN_ABORT_COMPLETE edge.
+    //
+    // Our local architecture does not have a separate JoinAdapter object, so
+    // the closest 1:1 owner action is to tear down any in-flight auth/assoc
+    // state in the same net80211 controller that `setASSOCIATE(...)` drives,
+    // then emit the same completion bulletin. Leaving slot [598] as inline
+    // success kept the consumer side permanently missing that completion edge.
+    if (ic->ic_state >= IEEE80211_S_SCAN) {
+        if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
+            IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH,
+                                IEEE80211_REASON_AUTH_LEAVE);
+
+        disassocIsVoluntary = true;
+        ieee80211_del_ess(ic, nullptr, 0, 1);
+        ieee80211_deselect_ess(ic);
+#ifdef USE_APPLE_SUPPLICANT
+        ic->ic_rsn_ie_override[1] = 0;
+#endif
+        ic->ic_assoc_status = APPLE80211_STATUS_UNAVAILABLE;
+        ic->ic_deauth_reason = APPLE80211_REASON_ASSOC_LEAVING;
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+    }
+
+    if (requestCompletion && instance && instance->fNetIf)
+        instance->postMessage(instance->fNetIf,
+                              APPLE80211_M_WCL_JOIN_ABORT_COMPLETE,
+                              nullptr, 0, true);
+
+    return kIOReturnSuccess;
+}
+
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);
 
 static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_node *fNextNodeToSend, apple80211_scan_result *result)

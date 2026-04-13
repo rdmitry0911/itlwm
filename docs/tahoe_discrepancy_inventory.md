@@ -57,9 +57,9 @@ This inventory is intentionally split into:
   but scan-adjacent WCL config producers remain open through `Q7`
 
 - `Q9 Join / Assoc Plane`:
-  open
-  join-adjacent WCL producers such as `JOIN_ABORT` and reassoc paths are still
-  only ack-only placeholders
+  closed
+  `JOIN_ABORT` now follows the recovered Apple abort/completion contract;
+  remaining reassoc/roam-driven join work lives under `Q7`
 
 - `Q10 Net-Link / IP Plane`:
   early state-carrier portion closed
@@ -76,9 +76,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 147 unsupported overrides and 17 ack-only
+  raw header surface now carries 144 unsupported overrides and 16 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  121 unsupported-return slots still remain open discrepancies
+  114 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -494,7 +494,6 @@ Ack-only inline stubs still present in the Tahoe header:
 - `594 setWCL_ROAM_USER_CACHE`
 - `596 setWCL_REAL_TIME_MODE`
 - `597 setWCL_ARP_MODE`
-- `598 setWCL_JOIN_ABORT`
 - `602 setWCL_QOS_PARAMS`
 - `603 setWCL_LINK_UP_DONE`
 - `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
@@ -514,7 +513,6 @@ Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tah
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_REAL_TIME_MODE`
 - `setWCL_ARP_MODE`
-- `setWCL_JOIN_ABORT`
 - `setWCL_QOS_PARAMS`
 - `setWCL_LINK_UP_DONE`
 - `setWCL_CONFIG_BG_MOTIONPROFILE`

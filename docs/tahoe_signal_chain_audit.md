@@ -170,13 +170,43 @@ carriers:
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_REAL_TIME_MODE`
 - `setWCL_ARP_MODE`
-- `setWCL_JOIN_ABORT`
 - `setWCL_QOS_PARAMS`
 - `setWCL_LINK_UP_DONE`
 - `setWCL_CONFIG_BG_MOTIONPROFILE`
 - `setWCL_CONFIG_BG_NETWORK`
 - `setWCL_CONFIG_BGSCAN`
 - `setWCL_CONFIG_BG_PARAMS`
+
+## Q9 Closure: JOIN_ABORT now follows the Apple abort-complete contract
+
+`setWCL_JOIN_ABORT` was the first join-plane WCL producer that could be closed
+without guessing at a deeper roam/net/bgscan owner.
+
+Recovered Apple path:
+
+- `AppleBCMWLANCore::setWCL_JOIN_ABORT(apple80211_wcl_abort_join*)`
+- delegates into `AppleBCMWLANJoinAdapter::abortFirmwareJoinSync(bool)`
+- treats `NULL` as boolean `false` rather than returning an error
+- when the incoming bool is true, publishes `APPLE80211_M_WCL_JOIN_ABORT_COMPLETE`
+  (`0xD6`)
+
+The checked `WCLJoinManager` symbolic FSM confirms the consumer side:
+
+- `JOIN_ABORT_REQ` moves active states into `ABORTED`
+- the manager only returns `ABORTED -> IDLE` after `JOIN_ABORT_COMPLETE`
+
+So the real architectural bug in our Tahoe port was not just "slot [598] is a
+stub"; it was that the join plane never emitted the completion edge the Apple
+consumer waits for. The local fix therefore had two parts:
+
+- remove the inline ack-only stub
+- abort the same in-flight net80211 auth/assoc owner state that our
+  `setASSOCIATE(...)` path drives, then publish `APPLE80211_M_WCL_JOIN_ABORT_COMPLETE`
+
+This closes the standalone `Q9` join-abort discrepancy. Remaining reassoc and
+roam-driven join behavior stays under `Q7`, because those paths still delegate
+into unrecovered Apple roam/net adapter owners rather than the simple join
+abort owner.
 
 For those slots the Apple producer delegates into roam/net/bgscan/join/power
 subsystems. The correct next step is not another ack-only patch, but lifting the

@@ -402,11 +402,7 @@ public:
         return kIOReturnSuccess;
     }
     // [598]
-    virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override {
-        XYLog("WCL [598] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override;
     // [599]
     virtual IOReturn setWCL_TRIGGER_CC(triggerCC *) override;
     // [600]
