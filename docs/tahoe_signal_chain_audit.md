@@ -1143,6 +1143,40 @@ That means the remaining open work is no longer a standalone ready-state queue.
 What remains open is the exact concrete class / full method map for the hidden
 `+0x1510` object. That broader hidden-surface lift now belongs to `Q13`.
 
+## Tahoe BSD Bridge vs Apple IOUC Route
+
+Live `471f6f1` proved that Tahoe attach/discovery is no longer the blocker:
+
+- the loaded kext matches the latest installed build
+- `en0` reports `if_type=6`, `if_subfamily=3`
+- `airportd` sees the interface and issues scan traffic
+- `WCLScanManager` reaches `IDLE`
+
+The remaining mismatch is lower and more architectural: the local Tahoe BSD
+bridge still short-circuits external selectors that Apple routes through the
+Skywalk IOUC path first.
+
+Recovered `IO80211Family` wrappers show the Apple route for these GET paths:
+
+- `SSID`   → `sendIOUCToWcl(..., 1,    0x28)`
+- `CHANNEL`→ `sendIOUCToWcl(..., 4,    0x10)`
+- `BSSID`  → `sendIOUCToWcl(..., 9,    0x0c)`
+- `SCAN_RESULT` → `sendIOUCToWcl(..., 0x16, 0x0c)`
+
+Only if that WCL route reports "not implemented" does Apple fall back to the
+protocol implementation.
+
+Our Tahoe bridge had already grown local helpers for those selectors, but by
+handling them directly inside `AirportItlwmSkywalkInterface::processApple80211Ioctl()`
+it bypassed `IO80211SkywalkInterface`'s own WCL/IOUC route.  That explains why
+live `SSID/BSSID` still returned `0xe0822403` and `SCAN_RESULT` returned raw
+`5` even after attach, scan-trigger, and `WCL_SCAN_DONE` were working: the
+external consumers were not walking the same route as the Apple reference.
+
+The correct parity fix is therefore not another readiness payload or scan-cache
+workaround.  It is to leave those selectors unsupported in the local Tahoe BSD
+bridge so that `super::processBSDCommand()` preserves the Apple IOUC-first path.
+
 ## Q7 Closure: adapter-plane WCL producers no longer collapse into inline success
 
 The remaining `Q7` gap was the roam/bgscan half of the WCL plane:

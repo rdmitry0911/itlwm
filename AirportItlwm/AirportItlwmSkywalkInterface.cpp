@@ -918,19 +918,39 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     // AirportItlwmSkywalkInterface, the BSD bridge must make it reachable.
     switch (req->req_type) {
         case APPLE80211_IOC_SSID:
-            return (cmd == SIOCGA80211) ? getSSID((apple80211_ssid_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_SCAN_RESULT:
+            // Apple does not dispatch these external Tahoe BSD queries straight
+            // into the protocol implementation.  IO80211Family first routes
+            // them through IOUC/WCL:
+            //   SSID        -> sendIOUCToWcl(..., selector=1,    len=0x28)
+            //   BSSID       -> sendIOUCToWcl(..., selector=9,    len=0x0c)
+            //   SCAN_RESULT -> sendIOUCToWcl(..., selector=0x16, len=0x0c)
+            // and only falls back to the protocol path if that WCL route says
+            // "not implemented".  Our local Tahoe bridge had been
+            // short-circuiting all four selectors here, which bypassed the
+            // Apple Skywalk route and matched the live failure exactly:
+            // external SSID/BSSID kept returning 0xe0822403 and external
+            // SCAN_RESULT returned raw 5 even though attach, SCAN_REQ, and
+            // WCL_SCAN_DONE were already working.  Leave these selectors
+            // unsupported here so super::processBSDCommand() preserves the
+            // Apple IOUC-first producer/consumer path.
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_CHANNEL:
+            if (cmd == SIOCGA80211) {
+                // Same Apple IOUC-first rule as SSID/BSSID: external Tahoe
+                // GET CHANNEL must route through sendIOUCToWcl(..., 4, 0x10)
+                // before any fallback.  Keep only the setter locally wired.
+                return kIOReturnUnsupported;
+            }
+            if (cmd == SIOCSA80211)
+                return setCHANNEL((apple80211_channel_data *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_AUTH_TYPE:
             if (cmd == SIOCGA80211)
                 return getAUTH_TYPE((apple80211_authtype_data *)req->req_data);
             if (cmd == SIOCSA80211)
                 return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);
-            return kIOReturnUnsupported;
-        case APPLE80211_IOC_CHANNEL:
-            if (cmd == SIOCGA80211)
-                return getCHANNEL((apple80211_channel_data *)req->req_data);
-            if (cmd == SIOCSA80211)
-                return setCHANNEL((apple80211_channel_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
@@ -946,12 +966,6 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setPOWERSAVE((apple80211_powersave_data *)req->req_data);
             return kIOReturnUnsupported;
-        case APPLE80211_IOC_BSSID:
-            return (cmd == SIOCGA80211) ? getBSSID((apple80211_bssid_data *)req->req_data)
-                                        : kIOReturnUnsupported;
-        case APPLE80211_IOC_SCAN_RESULT:
-            return (cmd == SIOCGA80211) ? getSCAN_RESULT((apple80211_scan_result *)req->req_data)
-                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_STATE:
             return (cmd == SIOCGA80211) ? getSTATE((apple80211_state_data *)req->req_data)
                                         : kIOReturnUnsupported;

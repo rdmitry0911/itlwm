@@ -610,6 +610,60 @@ So the real architectural mismatch was never "our protocol handlers are still
 wrong". The active IOUC-facing path was remaining visible to late consumers
 before they received a usable sticky `DRIVER_AVAILABLE` replay.
 
+## Next Confirmed Root Cause After Live `471f6f1`
+
+Live state on `471f6f1` disproved the older attach/discovery theories:
+
+- `kmutil showloaded` confirms the running kext is `AirportItlwm build=471f6f1`
+- `SIOCIFTYPE` on `en0` reports `if_type=6`, `if_subfamily=3`, which matches
+  the Tahoe Path-B contract in the debug playbooks
+- `getInterfaceSubFamily: returning 3` appears in the kernel log
+- `airportd` already sees `en0`, starts scans, and `WCLScanManager` reaches
+  `SCAN_MANAGER_STATE_IDLE`
+
+But the same boot still shows:
+
+- external `APPLE80211_IOC_SSID/BSSID -> 0xe0822403`
+- external `APPLE80211_IOC_SCAN_RESULT -> 5`
+- IOC debug still printing `isDriverAvailable=<0>`
+
+The new decompile pass pinpoints the missing architectural detail: our Tahoe
+BSD bridge still intercepts several external IOCTLs too early.
+
+Recovered `IO80211Family` wrappers show that Apple does **not** call the
+protocol methods for these selectors first.  It first routes them through
+Skywalk/WCL IOUC and only falls back when the WCL route is absent:
+
+- `SSID`: `sendIOUCToWcl(..., selector=1, len=0x28)`
+- `CHANNEL`: `sendIOUCToWcl(..., selector=4, len=0x10)`
+- `BSSID`: `sendIOUCToWcl(..., selector=9, len=0x0c)`
+- `SCAN_RESULT`: `sendIOUCToWcl(..., selector=0x16, len=0x0c)`
+
+Our local Tahoe bridge in `AirportItlwmSkywalkInterface::processBSDCommand()`
+still forwards all four directly into `getSSID/getBSSID/getCHANNEL/getSCAN_RESULT`
+from `processApple80211Ioctl()`, which bypasses the Apple `IO80211SkywalkInterface`
+route entirely.  That is a true producer/consumer mismatch, not a cache issue.
+
+## Fix Direction After `471f6f1`
+
+For strict parity, the Tahoe local BSD bridge must stop short-circuiting these
+four selectors:
+
+- `APPLE80211_IOC_SSID`
+- `APPLE80211_IOC_CHANNEL`
+- `APPLE80211_IOC_BSSID`
+- `APPLE80211_IOC_SCAN_RESULT`
+
+They must be left `kIOReturnUnsupported` in the local bridge so that
+`super::processBSDCommand()` keeps the Apple Skywalk path alive:
+
+1. WCL/IOUC route first
+2. protocol fallback only if the Apple route reports "not implemented"
+
+If this is the real root cause, the next boot should stop showing the direct
+external `SCAN_RESULT -> 5` and the driver-available state should be observed
+through the same late IOUC-facing path as the Apple reference.
+
 ## Root Cause After `6ac8ac0`
 
 Live boot state after the earlier availability replays made the remaining gap

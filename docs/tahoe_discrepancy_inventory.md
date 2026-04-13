@@ -932,6 +932,34 @@ reference owner-family decompile.
 
 - `setOFFLOAD_NDP` no longer invents a dependency on local `fNetIf`
   attachment; the recovered Apple-visible gate is only `NULL -> 0x16`
+
+## New Open Runtime Root Cause After `471f6f1`
+
+- queue: runtime post-closeout
+- status: open_confirmed
+- producer: `IO80211SkywalkInterface::processBSDCommand`
+- consumer: external `airportd` / Apple80211 BSD IOCTL callers
+- reference behavior:
+  Apple routes external `SSID`, `CHANNEL`, `BSSID`, and `SCAN_RESULT` through
+  `sendIOUCToWcl(...)` first, then falls back to the protocol path only when
+  the WCL route reports "not implemented"
+- current behavior:
+  local Tahoe bridge handles those selectors directly inside
+  `AirportItlwmSkywalkInterface::processApple80211Ioctl()`, bypassing the
+  Skywalk/WCL route
+- evidence:
+  `IO80211Family_decompiled.c` shows selectors `1`, `4`, `9`, `0x16`
+  dispatched via `sendIOUCToWcl`
+  live `471f6f1` still shows external `SSID/BSSID -> 0xe0822403` and
+  external `SCAN_RESULT -> 5`
+- files:
+  `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+- next action:
+  stop intercepting those selectors locally and let `super::processBSDCommand()`
+  keep the Apple IOUC-first route alive
+- close condition:
+  local Tahoe BSD bridge no longer short-circuits selectors `SSID`, `CHANNEL`,
+  `BSSID`, `SCAN_RESULT`
   before the hidden IPv6/NDP owner takes over
 - `setWCL_ACTION_FRAME` now preserves the same oversized-request fail gate
   (`0xe00002bc`) that both recovered Apple action-frame send paths expose
