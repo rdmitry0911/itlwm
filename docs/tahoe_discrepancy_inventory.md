@@ -386,11 +386,11 @@ Initial classification buckets for the next pass:
 Current census from the Tahoe header:
 
 - `125` raw overrides still return `kIOReturnUnsupported`
-- `93` of those still remain open unsupported discrepancies after the first
+- `78` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
-  LQM carrier zone
+  LQM carrier zone, and the closed 15-slot Apple-unsupported setter zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -496,6 +496,25 @@ Unsupported setter slots still present:
 - `658 setNDD_REQ`
 - `659 setDBRG_ENTROPY`
 - `662 setOS_ELIGIBILITY`
+
+Closed as a dedicated Apple-unsupported setter zone and therefore no longer
+part of the open setter list above:
+
+- `561 setROAM_PROFILE`
+- `583 setROAM_CACHE_UPDATE`
+- `585 setSET_WIFI_ASSERTION_STATE`
+- `607 setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH`
+- `630 setWOW_LOW_POWER_MODE`
+- `635 setSTAND_ALONE_MODE_STATE`
+- `641 setTIMESYNC_GPIO`
+- `643 setFW_CLOCK_SOURCE`
+- `644 setTIMESYNC_TX_POLICY`
+- `645 setTIMESYNC_RX_POLICY`
+- `646 setTIMESTAMPING_EN`
+- `648 setMWS_TIME_SHARING_WIFI_ENH`
+- `660 setSDB_ENABLE`
+- `661 setBTCOEX_EXT_PROFILE`
+- `663 setTX_MODE_CONFIG`
 
 Ack-only inline stubs still present in the Tahoe header:
 

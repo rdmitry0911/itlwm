@@ -681,6 +681,30 @@ One adjacent slot was a real port bug, not just a classification issue:
 - that falsely advertised a producer path Apple does not provide, so the slot
   must be moved back to `kIOReturnUnsupported`
 
+This setter zone is now closed as a zone-sized classification batch. The
+following 15 setter slots are no longer carried as open producer debt inside
+`Q13`:
+
+- `[561] setROAM_PROFILE`
+- `[583] setROAM_CACHE_UPDATE`
+- `[585] setSET_WIFI_ASSERTION_STATE`
+- `[607] setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH`
+- `[630] setWOW_LOW_POWER_MODE`
+- `[635] setSTAND_ALONE_MODE_STATE`
+- `[641] setTIMESYNC_GPIO`
+- `[643] setFW_CLOCK_SOURCE`
+- `[644] setTIMESYNC_TX_POLICY`
+- `[645] setTIMESYNC_RX_POLICY`
+- `[646] setTIMESTAMPING_EN`
+- `[648] setMWS_TIME_SHARING_WIFI_ENH`
+- `[660] setSDB_ENABLE`
+- `[661] setBTCOEX_EXT_PROFILE`
+- `[663] setTX_MODE_CONFIG`
+
+They remain `kIOReturnUnsupported` in the local header, but that is now an
+intentional 1:1 Apple match with explicit slot comments rather than an
+unclassified unsupported tail.
+
 As with the getter batch, this does **not** generalize to neighboring WCL or
 timesync setters. For example `setWCL_WNM_OFFLOAD(...)` and
 `setWCL_WNM_OPS(...)` are real Apple producer paths and must not be collapsed
