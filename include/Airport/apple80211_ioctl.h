@@ -752,6 +752,15 @@ struct apple80211_country_code_data
     u_int8_t     cc[APPLE80211_MAX_CC_LEN];
 };
 
+struct apple80211_hw_mac_address
+{
+    u_int32_t    version;
+    u_int8_t     hw_addr[IEEE80211_ADDR_LEN];
+} __attribute__((packed));
+
+static_assert(sizeof(apple80211_hw_mac_address) == 0x0A,
+              "apple80211_hw_mac_address must match Apple version + 6-byte MAC ABI");
+
 struct apple80211_last_rx_pkt_data
 {
     u_int32_t         version;

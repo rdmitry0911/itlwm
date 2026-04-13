@@ -191,7 +191,7 @@ public:
     // [510]
     virtual IOReturn getNSS(apple80211_nss_data *) override;
     // [511]
-    virtual IOReturn getHW_ADDR(apple80211_hw_mac_address *) override { XYLog("DEBUG VTABLE [511] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getHW_ADDR(apple80211_hw_mac_address *) override;
     // [512]
     virtual IOReturn getCHIP_DIAGS(appl80211_chip_diags_data *) override { XYLog("DEBUG VTABLE [512] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [513]

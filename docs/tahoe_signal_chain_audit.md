@@ -464,3 +464,33 @@ So the strict-parity rule for this batch is:
 - explicitly leave the rest open in the discrepancy inventory
 - do not replace remaining raw `6` sites with lookalike zeros or generic
   success paths
+
+## Q13 First Confirmed Mini-Batch: `getHW_ADDR`
+
+The next unsupported slot with enough evidence to lift cleanly is
+`getHW_ADDR`.
+
+Recovered Apple producer contract:
+
+- `AppleBCMWLANCore::getHW_ADDR(apple80211_hw_mac_address*)`
+  writes `version=1`
+- then copies six bytes from core state offsets `+0x1614..+0x1619`
+- and returns success
+
+Recovered family-side consumer contract:
+
+- `WCLDeviceConfiguration::setHwMacAddr(apple80211_hw_mac_address&)`
+  copies `*(u32 *)(arg+4)` plus `*(u16 *)(arg+8)` into its cached state
+- so the ABI is confirmed as:
+  `u32 version` + `u8 hw_addr[6]`
+
+That is enough to make one narrow Q13 correction without guessing:
+
+- add the missing `apple80211_hw_mac_address` ABI locally
+- implement `getHW_ADDR` as `version=1` plus the controller hardware address
+- remove generic `kIOReturnUnsupported` from slot `[511]`
+
+This batch does **not** generalize to nearby slots like
+`getTHERMAL_INDEX`, `getPOWER_BUDGET`, or `getOFFLOAD_TCPKA_ENABLE`.
+Those still depend on unrecovered core-state/config-manager carriers and remain
+open in the discrepancy inventory.

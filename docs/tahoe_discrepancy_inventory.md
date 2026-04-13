@@ -20,6 +20,64 @@ This inventory is intentionally split into:
   clear stub/unsupported surface that must not be "filled in" before the Apple
   producer/consumer contract is lifted far enough
 
+## Queue Coverage Snapshot
+
+- `Q1 Interface Construction`:
+  open
+  constructor/start exactness still incomplete after the panic-backed rollback
+  from the wrong 2-argument init path
+
+- `Q2 BSD Attach / Identity`:
+  no currently open confirmed discrepancy beyond the constructor/hidden-object
+  dependency carried by `Q1` / `Q3`
+
+- `Q3 Ready-State / Hidden Producer`:
+  open
+  visible key/value shape recovered, hidden interface-side producer object not
+  yet modeled 1:1
+
+- `Q4 Early IOC Bring-up`:
+  the currently known mandatory Tahoe bring-up IOC blockers are closed
+
+- `Q5 Getter Cluster`:
+  partially closed
+  `RATE / RATE_SET / RSSI` recovered, `MCS_INDEX_SET / NOISE / TXPOWER / MCS`
+  still open
+
+- `Q6 State-Carriers`:
+  first confirmed carrier batch closed
+  remaining carrier-like slots are now part of the `Q13` unsupported census
+
+- `Q7 WCL Adapter Plane`:
+  open
+  adapter-owned roam/bgscan/join/net methods still sit on ack-only stubs
+
+- `Q8 Scan Plane`:
+  the currently confirmed scan-abort / completion bulletin issues are closed
+  but scan-adjacent WCL config producers remain open through `Q7`
+
+- `Q9 Join / Assoc Plane`:
+  open
+  join-adjacent WCL producers such as `JOIN_ABORT` and reassoc paths are still
+  only ack-only placeholders
+
+- `Q10 Net-Link / IP Plane`:
+  early state-carrier portion closed
+  link/QoS/ARP adjunct producers remain open through `Q7`
+
+- `Q11 Skywalk Datapath / Queue Surface`:
+  open
+  large unsupported override surface still unclassified slot-by-slot
+
+- `Q12 Sleep / Wake / Reset / Teardown`:
+  open
+  reset/crash/wow/system-sleep policy slots are still unsupported and require
+  Apple-path classification before touching
+
+- `Q13 Unsupported Skywalk Surface`:
+  open
+  147 unsupported overrides and 18 ack-only stubs remain in the Tahoe header
+
 ## Closed
 
 - `PLATFORM_CONFIG`:
@@ -57,6 +115,12 @@ This inventory is intentionally split into:
   `RATE` now follows the Apple `0xe0822403` not-associated contract,
   `RATE_SET` follows the BSS-manager `0xe0822403` / `0xe00002f0` split, and
   `RSSI` follows the BSS-manager current-BSS contract instead of `if RUN else 6`.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 mini-batch: HW_ADDR ABI and producer path`:
+  `getHW_ADDR` is no longer allowed to sit on generic `kIOReturnUnsupported`.
+  Apple core populates `version + 6-byte hardware MAC`, and the family-side
+  consumer `WCLDeviceConfiguration::setHwMacAddr(...)` confirms the same ABI.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 ## Superseded
@@ -231,6 +295,185 @@ Initial classification buckets for the next pass:
   examples:
   `setRESET_CHIP`, `setCRASH`, `setPOWER_BUDGET`, `setWOW_LOW_POWER_MODE`
 
+Current census from the Tahoe header:
+
+- `147` overrides still return `kIOReturnUnsupported`
+- `18` overrides still return success from inline ack-only placeholder bodies
+
+Unsupported getter slots still present:
+
+- `470 getAWDL_PEER_TRAFFIC_STATS`
+- `478 getGUARD_INTERVAL`
+- `480 getPOWER_DEBUG_INFO`
+- `481 getHT_CAPABILITY`
+- `484 getVHT_CAPABILITY`
+- `485 getROAM_PROFILE`
+- `486 getCHIP_COUNTER_STATS`
+- `487 getDBG_GUARD_TIME_PARAMS`
+- `488 getLEAKY_AP_STATS_MODE`
+- `489 getCOUNTRY_CHANNELS`
+- `490 getPRIVATE_MAC`
+- `491 getRANGING_ENABLE`
+- `492 getRANGING_START`
+- `493 getAWDL_RSDB_CAPS`
+- `494 getTKO_PARAMS`
+- `495 getTKO_DUMP`
+- `496 getHW_SUPPORTED_CHANNELS`
+- `497 getBTCOEX_PROFILE`
+- `498 getBTCOEX_PROFILE_ACTIVE`
+- `499 getTRAP_INFO`
+- `500 getTHERMAL_INDEX`
+- `501 getMAX_NSS_FOR_AP`
+- `502 getBTCOEX_2G_CHAIN_DISABLE`
+- `503 getPOWER_BUDGET`
+- `504 getOFFLOAD_TCPKA_ENABLE`
+- `505 getRANGING_CAPS`
+- `506 getLQM_CONFIG`
+- `507 getTRAP_CRASHTRACER_MINI_DUMP`
+- `508 getBEACON_INFO`
+- `509 getCHIP_POWER_RANGE`
+- `511 getHW_ADDR`
+- `512 getCHIP_DIAGS`
+- `513 getHP2P_CTRL`
+- `514 getBSS_BLACKLIST`
+- `515 getTXRX_CHAIN_INFO`
+- `516 getMIMO_STATUS`
+- `517 getCUR_PMK`
+- `518 getDYNSAR_DETAIL`
+- `519 getCOUNTRY_CHANNELS_INFO`
+- `520 getLQM_SUMMARY`
+- `521 getSLOW_WIFI_FEATURE_ENABLED`
+- `522 getTIMESYNC_INFO`
+- `523 getSENSING_DATA`
+- `524 getWCL_FW_HOT_CHANNELS`
+- `525 getWCL_LOW_LATENCY_INFO`
+- `527 getWCL_TRAFFIC_COUNTERS`
+- `528 getWCL_GET_TX_BLANKING_STATUS`
+- `529 getHE_COUNTERS`
+- `531 getRSN_XE`
+- `532 getSIB_COEX_STATUS`
+- `533 getWCL_EXTENDED_BSS_INFO`
+- `534 getWCL_LOW_LATENCY_INFO_STATS`
+- `536 getWCL_WNM_OFFLOAD`
+- `537 getWIFI_NOISE_PER_ANT`
+- `538 getFW_CLOCK_INFO`
+- `539 getTIMESYNC_STATS`
+- `540 getSYSTEM_SLEEP_CONFIG`
+- `541 getSMARTCCA_OPMODE`
+- `542 getLQM_STATISTICS`
+- `543 getHE_CAPABILITY`
+- `544 getP2P_DEVICE_CAPABILITY`
+
+Unsupported setter slots still present:
+
+- `546 setCHANNEL`
+- `548 setTXPOWER`
+- `549 setRATE`
+- `550 setIBSS_MODE`
+- `551 setAP_MODE`
+- `552 setIE`
+- `553 setWOW_TEST`
+- `555 setVIRTUAL_IF_CREATE`
+- `556 setHT_CAPABILITY`
+- `557 setOFFLOAD_ARP`
+- `558 setOFFLOAD_NDP`
+- `559 setGAS_REQ`
+- `560 setVHT_CAPABILITY`
+- `561 setROAM_PROFILE`
+- `562 setDBG_GUARD_TIME_PARAMS`
+- `563 setLEAKY_AP_STATS_MODE`
+- `564 setPRIVATE_MAC`
+- `565 setRESET_CHIP`
+- `566 setCRASH`
+- `567 setRANGING_ENABLE`
+- `568 setRANGING_START`
+- `569 setRANGING_AUTHENTICATE`
+- `570 setTKO_PARAMS`
+- `571 setBTCOEX_PROFILE`
+- `572 setBTCOEX_PROFILE_ACTIVE`
+- `573 setTHERMAL_INDEX`
+- `574 setBTCOEX_2G_CHAIN_DISABLE`
+- `575 setPOWER_BUDGET`
+- `576 setOFFLOAD_TCPKA_ENABLE`
+- `577 setLQM_CONFIG`
+- `578 setDYNAMIC_RSSI_WINDOW_CONFIG`
+- `579 setUSB_HOST_NOTIFICATION`
+- `580 setHP2P_CTRL`
+- `581 setBSS_BLACKLIST`
+- `582 setSET_PROPERTY`
+- `583 setROAM_CACHE_UPDATE`
+- `584 setPM_MODE`
+- `585 setSET_WIFI_ASSERTION_STATE`
+- `586 setREALTIME_QOS_MSCS`
+- `587 setSENSING_ENABLE`
+- `588 setSENSING_DISABLE`
+- `606 setRSN_XE`
+- `607 setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH`
+- `608 setWCL_ULOFDMA_STATE`
+- `609 setWCL_ACTION_FRAME`
+- `610 setGAS_ABORT`
+- `614 setMIMO_CONFIG`
+- `622 setBYPASS_TX_POWER_CAP`
+- `623 setFACETIME_WIFICALLING_PARAMS`
+- `625 setWCL_WNM_OPS`
+- `626 setWCL_WNM_OFFLOAD`
+- `627 setWCL_LIMITED_AGGREGATION`
+- `628 setWCL_BCN_MUTE_CONFIG`
+- `629 setEAP_FILTER_CONFIG`
+- `630 setWOW_LOW_POWER_MODE`
+- `631 setDUAL_POWER_MODE`
+- `632 setWCL_UPDATE_FAST_LANE`
+- `633 setWCL_ASSOCIATED_SLEEP`
+- `634 setCONGESTION_CTRL_IND`
+- `635 setSTAND_ALONE_MODE_STATE`
+- `638 setLMTPC_CONFIG`
+- `639 setTRAFFIC_ENG_PARAMS`
+- `640 setLE_SCAN_PARAM`
+- `641 setTIMESYNC_GPIO`
+- `642 setHOST_CLOCK_INFO`
+- `643 setFW_CLOCK_SOURCE`
+- `644 setTIMESYNC_TX_POLICY`
+- `645 setTIMESYNC_RX_POLICY`
+- `646 setTIMESTAMPING_EN`
+- `647 setWCL_SOI_CONFIG`
+- `648 setMWS_TIME_SHARING_WIFI_ENH`
+- `649 setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH`
+- `650 setMWS_COEX_BITMAP_WIFI_ENH`
+- `651 setMWS_DISABLE_OCL_BITMAP_WIFI_ENH`
+- `652 setMWS_RFEM_CONFIG_WIFI_ENH`
+- `653 setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH`
+- `654 setMWS_SCAN_FREQ_WIFI_ENH`
+- `655 setMWS_SCAN_FREQ_MODE_WIFI_ENH`
+- `656 setMWS_CONDITION_ID_BITMAP_WIFI_ENH`
+- `657 setMWS_ANTENNA_SELECTION_WIFI_ENH`
+- `658 setNDD_REQ`
+- `659 setDBRG_ENTROPY`
+- `660 setSDB_ENABLE`
+- `661 setBTCOEX_EXT_PROFILE`
+- `662 setOS_ELIGIBILITY`
+- `663 setTX_MODE_CONFIG`
+
+Ack-only inline stubs still present in the Tahoe header:
+
+- `590 setWCL_REASSOC`
+- `591 setWCL_SET_ROAM_LOCK`
+- `592 setWCL_LEGACY_ROAM_PROFILE_CONFIG`
+- `593 setWCL_ROAM_PROFILE_CONFIG`
+- `594 setWCL_ROAM_USER_CACHE`
+- `596 setWCL_REAL_TIME_MODE`
+- `597 setWCL_ARP_MODE`
+- `598 setWCL_JOIN_ABORT`
+- `602 setWCL_QOS_PARAMS`
+- `603 setWCL_LINK_UP_DONE`
+- `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
+- `605 setVOICE_IND_STATE`
+- `615 setWCL_CONFIG_BG_MOTIONPROFILE`
+- `616 setWCL_CONFIG_BG_NETWORK`
+- `617 setWCL_CONFIG_BGSCAN`
+- `618 setWCL_CONFIG_BG_PARAMS`
+- `620 setHEARTBEAT`
+- `621 setINTERFACE_SETTING`
+
 ### 3. Adapter-plane WCL cluster still not lifted from the reference producers
 
 Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md):
@@ -285,6 +528,35 @@ not the recovered Apple producer routes.
 This does not automatically mean they are wrong in all cases, but it is a real
 architectural discrepancy and needs a dedicated lift.
 
+### 6. Legacy STA dispatcher still carries a shadow mismatch surface
+
+Files:
+
+- [AirportSTAIOCTL.cpp](/Users/bob/Projects/itlwm/AirportItlwm/AirportSTAIOCTL.cpp)
+
+Even though Tahoe UI traffic now goes through the Skywalk path, the legacy STA
+dispatcher remains part of the codebase contract and still contains unresolved
+Apple mismatches.
+
+Remaining raw-`6` legacy getters:
+
+- `getPROTMODE`
+- `getTXPOWER`
+- `getMCS_INDEX_SET`
+- `getNOISE`
+- `getMCS`
+
+Remaining legacy unsupported/gated surfaces needing classification:
+
+- `getRSN_IE`
+- `setRSN_IE`
+- `getAP_IE_LIST`
+- `setVIRTUAL_IF_CREATE`
+
+These must stay in the inventory because they mirror producer semantics that
+may still be reused, and they are a common source of regressions when Tahoe and
+legacy paths drift apart.
+
 ## Open Needs Decompile
 
 ### 6. Full producer contract for the hidden interface-side object at `+0x1510`
@@ -322,6 +594,28 @@ Need:
 
 Until that classification exists, touching the remaining unsupported vtable
 surface would be guesswork.
+
+### 9. WCL ack-only stub cluster still needs producer lifting
+
+The Tahoe header still contains `18` inline success stubs in the WCL and
+adjacent control-plane cluster. They now have exact slot numbers and method
+names captured above, but they still need one-by-one producer lifting before
+they can be removed from the queue.
+
+The highest-priority members remain:
+
+- `setWCL_REASSOC`
+- `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
+- `setWCL_ROAM_PROFILE_CONFIG`
+- `setWCL_REAL_TIME_MODE`
+- `setWCL_ARP_MODE`
+- `setWCL_JOIN_ABORT`
+- `setWCL_QOS_PARAMS`
+- `setWCL_LINK_UP_DONE`
+- `setWCL_CONFIG_BG_MOTIONPROFILE`
+- `setWCL_CONFIG_BG_NETWORK`
+- `setWCL_CONFIG_BGSCAN`
+- `setWCL_CONFIG_BG_PARAMS`
 
 ## Next Execution Order
 

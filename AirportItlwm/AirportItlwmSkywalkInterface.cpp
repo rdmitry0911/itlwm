@@ -1073,6 +1073,21 @@ getBSSID(struct apple80211_bssid_data *bd)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getHW_ADDR(struct apple80211_hw_mac_address *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    // AppleBCMWLANCore::getHW_ADDR writes version=1 followed by the six-byte
+    // hardware address, and IO80211Family's
+    // WCLDeviceConfiguration::setHwMacAddr(...) consumes the same packed
+    // `u32 version + u8[6]` layout. Leaving slot [511] unsupported was
+    // therefore an architectural mismatch, not an optional capability.
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    IEEE80211_ADDR_COPY(data->hw_addr, ic->ic_myaddr);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
