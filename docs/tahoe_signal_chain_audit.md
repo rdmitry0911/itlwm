@@ -409,3 +409,58 @@ So the strict-parity cleanup is:
 - remove consumer-side replay hooks (`createEventPipe`, `ether_ifattach`)
 - remove the duplicate `fNetIf->registerService()` after
   `deferBSDAttach(false)`
+
+## Q5 Getter Audit: First Strictly-Recovered Subset
+
+The next queue after the panic-path cleanup was the raw-`6` getter cluster.
+This could not be treated as one blob because the Apple evidence recovered so
+far is uneven across the getters.
+
+Recovered contracts from the new `AppleBCMWLAN_Core_decompiled.c` and
+`IO80211Family_decompiled.c` are strong enough to close only this subset:
+
+- `AppleBCMWLANCore::getRATE()`:
+  returns `0xe0822403` when not associated, success otherwise
+- `IO80211BssManager::getCurrentRateSet()`:
+  no current BSS → `0xe0822403`
+  empty cached set → `0xe00002f0`
+  else copies the cached rate-set blob and returns success
+- `IO80211BssManager::getCurrentRSSI(int&)`:
+  no current BSS → `0xe0822403`
+  else returns the cached RSSI
+
+That is enough to eliminate raw POSIX `6` from:
+
+- `getRATE`
+- `getRATE_SET`
+- `getRSSI`
+
+both in the Tahoe Skywalk path and in the legacy STA dispatcher, because those
+paths expose the same producer semantics to Apple80211 consumers.
+
+It is **not** enough yet to claim parity for the remaining raw-`6` getters:
+
+- `getMCS_INDEX_SET`
+- `getNOISE`
+- `getTXPOWER`
+- `getMCS`
+
+For those, Apple still depends on additional helper or config-manager state
+that is not mapped 1:1 in the current port:
+
+- `getMCS_INDEX_SET` uses a dedicated validity flag before returning the cached
+  MCS blob; our current local state does not yet expose that carrier cleanly
+- `getNOISE` returns `0x66` when the current-noise sample-valid bit is absent;
+  our HAL currently exposes only a scalar noise value, not the corresponding
+  validity bit
+- `getTXPOWER` uses the `"qtxpower"` config query path, not the local
+  `ic_txpower` field
+- `getMCS` still needs its exact Apple helper/body lifted before its fallback
+  can be corrected without guessing
+
+So the strict-parity rule for this batch is:
+
+- close only the getter subset with complete Apple helper evidence
+- explicitly leave the rest open in the discrepancy inventory
+- do not replace remaining raw `6` sites with lookalike zeros or generic
+  success paths

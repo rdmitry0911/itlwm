@@ -39,6 +39,9 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
     return ret;
 }
 
+static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
+static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
+
 static int ieeeChanFlag2apple(int flags, int bw)
 {
     int ret = 0;
@@ -948,19 +951,29 @@ IOReturn AirportItlwmSkywalkInterface::
 getRATE_SET(struct apple80211_rate_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(ad, 0, sizeof(*ad));
-        ad->version = APPLE80211_VERSION;
-        ad->num_rates = ic->ic_bss->ni_rates.rs_nrates;
-        size_t size = min(ic->ic_bss->ni_rates.rs_nrates, ARRAY_SIZE(ad->rates));
-        for (int i=0; i < size; i++) {
-            ad->rates[i].version = APPLE80211_VERSION;
-            ad->rates[i].rate = ic->ic_bss->ni_rates.rs_rates[i];
-            ad->rates[i].flags = 0;
-        }
-        return kIOReturnSuccess;
+    if (ic->ic_bss == NULL) {
+        // AppleBCMWLANCore::getRATE_SET delegates to
+        // IO80211BssManager::getCurrentRateSet(), which returns 0xe0822403
+        // when there is no current BSS. Tahoe previously leaked raw POSIX 6
+        // here, which is not architecturally equivalent to the reference
+        // producer/consumer contract.
+        return kApple80211ErrDriverNotAvailable;
     }
-    return 6;
+    if (ic->ic_bss->ni_rates.rs_nrates == 0) {
+        // The Apple helper splits "current BSS exists" from "cached rate-set
+        // exists": an empty cached set returns 0xe00002f0 rather than success.
+        return kApple80211ErrNoCachedValue;
+    }
+    memset(ad, 0, sizeof(*ad));
+    ad->version = APPLE80211_VERSION;
+    ad->num_rates = ic->ic_bss->ni_rates.rs_nrates;
+    size_t size = min(ic->ic_bss->ni_rates.rs_nrates, ARRAY_SIZE(ad->rates));
+    for (size_t i = 0; i < size; i++) {
+        ad->rates[i].version = APPLE80211_VERSION;
+        ad->rates[i].rate = ic->ic_bss->ni_rates.rs_rates[i];
+        ad->rates[i].flags = 0;
+    }
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -990,55 +1003,58 @@ IOReturn AirportItlwmSkywalkInterface::
 getRATE(struct apple80211_rate_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL) {
-        XYLog("DEBUG %s ic_bss=NULL → 6\n", __FUNCTION__);
-        return 6;
+    if (ic->ic_bss == NULL || ic->ic_state != IEEE80211_S_RUN) {
+        // AppleBCMWLANCore::getRATE() returns 0xe0822403 until the BSS manager
+        // reports an associated current network. Returning raw 6 here was a
+        // local shortcut and confused Tahoe consumers that key off the Apple
+        // error code.
+        XYLog("DEBUG %s ic_bss=%p ic_state=%d → 0xe0822403\n",
+              __FUNCTION__, ic->ic_bss, ic->ic_state);
+        return kApple80211ErrDriverNotAvailable;
     }
     int nss;
     int sgi;
     int index = 0;
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(rd, 0, sizeof(*rd));
-        rd->version = APPLE80211_VERSION;
-        rd->num_radios = 1;
-        sgi = ieee80211_node_supports_sgi(ic->ic_bss);
-        if (ic->ic_curmode == IEEE80211_MODE_11AC) {
-            if (sgi)
-                index += 1;
-            nss = fHalService->getDriverInfo()->getTxNSS();
-            switch (ic->ic_bss->ni_chw) {
-                case IEEE80211_CHAN_WIDTH_40:
-                    index += 4;
-                    break;
-                case IEEE80211_CHAN_WIDTH_80:
-                    index += 8;
-                    break;
-                case IEEE80211_CHAN_WIDTH_80P80:
-                case IEEE80211_CHAN_WIDTH_160:
-                    index += 12;
-                    break;
+    memset(rd, 0, sizeof(*rd));
+    rd->version = APPLE80211_VERSION;
+    rd->num_radios = 1;
+    sgi = ieee80211_node_supports_sgi(ic->ic_bss);
+    if (ic->ic_curmode == IEEE80211_MODE_11AC) {
+        if (sgi)
+            index += 1;
+        nss = fHalService->getDriverInfo()->getTxNSS();
+        switch (ic->ic_bss->ni_chw) {
+            case IEEE80211_CHAN_WIDTH_40:
+                index += 4;
+                break;
+            case IEEE80211_CHAN_WIDTH_80:
+                index += 8;
+                break;
+            case IEEE80211_CHAN_WIDTH_80P80:
+            case IEEE80211_CHAN_WIDTH_160:
+                index += 12;
+                break;
 
-                default:
-                    break;
-            }
-            index += 2 * (nss - 1);
-            const struct ieee80211_vht_rateset *rs = &ieee80211_std_ratesets_11ac[index];
-            rd->rate[0] = rs->rates[ic->ic_bss->ni_txmcs % rs->nrates] / 2;
-        } else if (ic->ic_curmode == IEEE80211_MODE_11N) {
-            int is_40mhz = ic->ic_bss->ni_chw == IEEE80211_CHAN_WIDTH_40;
-            if (sgi)
-                index += 1;
-            if (is_40mhz)
-                index += (IEEE80211_HT_RATESET_MIMO4_SGI + 1);
-            index += (ic->ic_bss->ni_txmcs / 16);
-            nss = ic->ic_bss->ni_txmcs / 8 + 1;
-            index += 2 * (nss - 1);
-            rd->rate[0] = ieee80211_std_ratesets_11n[index].rates[ic->ic_bss->ni_txmcs % 8] / 2;
-        } else
-            rd->rate[0] = ic->ic_bss->ni_rates.rs_rates[ic->ic_bss->ni_txrate];
-        return kIOReturnSuccess;
+            default:
+                break;
+        }
+        index += 2 * (nss - 1);
+        const struct ieee80211_vht_rateset *rs = &ieee80211_std_ratesets_11ac[index];
+        rd->rate[0] = rs->rates[ic->ic_bss->ni_txmcs % rs->nrates] / 2;
+    } else if (ic->ic_curmode == IEEE80211_MODE_11N) {
+        int is_40mhz = ic->ic_bss->ni_chw == IEEE80211_CHAN_WIDTH_40;
+        if (sgi)
+            index += 1;
+        if (is_40mhz)
+            index += (IEEE80211_HT_RATESET_MIMO4_SGI + 1);
+        index += (ic->ic_bss->ni_txmcs / 16);
+        nss = ic->ic_bss->ni_txmcs / 8 + 1;
+        index += 2 * (nss - 1);
+        rd->rate[0] = ieee80211_std_ratesets_11n[index].rates[ic->ic_bss->ni_txmcs % 8] / 2;
+    } else {
+        rd->rate[0] = ic->ic_bss->ni_rates.rs_rates[ic->ic_bss->ni_txrate];
     }
-    return 6;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -1060,18 +1076,23 @@ IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG VTABLE [476] %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(rd, 0, sizeof(*rd));
-        rd->num_radios = 1;
-        rd->rssi_unit = APPLE80211_UNIT_DBM;
-        rd->rssi[0] = rd->aggregate_rssi
-        = rd->rssi_ext[0]
-        = rd->aggregate_rssi_ext
-        = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
-        return kIOReturnSuccess;
+    XYLog("DEBUG VTABLE [476] %s ic_state=%d ic_bss=%p\n",
+          __FUNCTION__, ic->ic_state, ic->ic_bss);
+    if (ic->ic_bss == NULL) {
+        // Apple delegates RSSI reads to IO80211BssManager::getCurrentRSSI(),
+        // which returns 0xe0822403 when there is no current BSS. Tahoe should
+        // not collapse that state into raw POSIX 6.
+        return kApple80211ErrDriverNotAvailable;
     }
-    return 6;
+    memset(rd, 0, sizeof(*rd));
+    rd->version = APPLE80211_VERSION;
+    rd->num_radios = 1;
+    rd->rssi_unit = APPLE80211_UNIT_DBM;
+    rd->rssi[0] = rd->aggregate_rssi
+    = rd->rssi_ext[0]
+    = rd->aggregate_rssi_ext
+    = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
