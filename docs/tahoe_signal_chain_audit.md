@@ -200,9 +200,9 @@ consumer waits for. The local fix therefore had two parts:
   `setASSOCIATE(...)` path drives, then publish `APPLE80211_M_WCL_JOIN_ABORT_COMPLETE`
 
 This closes the standalone `Q9` join-abort discrepancy. Remaining reassoc and
-roam-driven join behavior stays under `Q7`, because those paths still delegate
-into unrecovered Apple roam/net adapter owners rather than the simple join
-abort owner.
+roam-driven join hidden-owner exactness now stays under `Q13`, because those
+paths still delegate into unrecovered Apple roam/net adapter owners rather than
+the simple join-abort owner.
 
 ## Q10 Closure: net-link adjunct producers no longer sit on blind stubs
 
@@ -240,14 +240,8 @@ that do exist today:
   getters
 
 That closes `Q10` as a standalone queue: the net-link plane no longer has
-blind adjunct stubs of its own. The still-open adapter-plane remainder
-(`REASSOC`, roam-profile config, BGScan config, exact `ARP_MODE` orchestration)
-stays under `Q7` and `Q13`.
-
-For those slots the Apple producer delegates into roam/net/bgscan/join/power
-subsystems. The correct next step is not another ack-only patch, but lifting the
-missing adapter-plane behavior from the reference decompiles and wiring it into
-our Tahoe path.
+blind adjunct stubs of its own. The remaining exact helper choreography for
+those adapter-owned producers now stays under `Q13`.
 
 ## Root Cause After Live `4973c4d`
 
@@ -871,3 +865,37 @@ That means the remaining open work is no longer a standalone ready-state queue.
 
 What remains open is the exact concrete class / full method map for the hidden
 `+0x1510` object. That broader hidden-surface lift now belongs to `Q13`.
+
+## Q7 Closure: adapter-plane WCL producers no longer collapse into inline success
+
+The remaining `Q7` gap was the roam/bgscan half of the WCL plane:
+
+- `setWCL_REASSOC`
+- `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
+- `setWCL_ROAM_PROFILE_CONFIG`
+- `setWCL_ARP_MODE`
+- `setWCL_CONFIG_BG_MOTIONPROFILE`
+- `setWCL_CONFIG_BG_NETWORK`
+- `setWCL_CONFIG_BGSCAN`
+- `setWCL_CONFIG_BG_PARAMS`
+
+Recovered Apple paths show these are not disposable validate-and-ack slots.
+They either:
+
+- persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`, `0x14`,
+  `0x12c0`, `0x20`), or
+- delegate into local-owner-equivalent actions we already have
+  (`REASSOC_REQ`, cache-bgscan preparation, bgscan start/stop)
+
+The port still lacks Apple's hidden roam/bgscan/keepalive helper objects, so
+full helper choreography remains part of the broader hidden-owner surface. But
+the concrete architectural mismatch that defined `Q7` is now removed:
+
+- the remaining WCL adapter methods are out-of-line implementations, not inline
+  success stubs
+- null requests return Apple `0xe00002bc`
+- recovered payloads are persisted in driver-owned state
+- available local owner actions are exercised instead of being skipped
+
+That closes `Q7` as a standalone queue. Any still-missing hidden helper
+exactness now belongs under `Q13`, not under the old WCL adapter-stub bucket.

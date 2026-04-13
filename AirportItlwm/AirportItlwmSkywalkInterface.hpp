@@ -357,30 +357,19 @@ public:
     virtual IOReturn setSENSING_DISABLE(apple80211_sensing_disable_t *) override { XYLog("DEBUG VTABLE [588] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [589] — AppleBCMWLAN: validates param, delegates to network leave handler
     virtual IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network *) override;
-    // [590] — AppleBCMWLAN: validates param, sends reassoc command
-    virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override {
-        if (!data) return kIOReturnError;
-        XYLog("%s\n", __FUNCTION__);
-        return kIOReturnSuccess;
-    }
+    // [590] — AppleBCMWLAN: validates param, snapshots reassoc parameters,
+    // and delegates into NetAdapter reassoc send path.
+    virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override;
     // [591] — Not found in AppleBCMWLAN, validate + ack
     virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override {
         XYLog("WCL [591] %s\n", __FUNCTION__);
         if (!data) return kIOReturnError;
         return kIOReturnSuccess;
     }
-    // [592] — AppleBCMWLAN: delegates to RoamAdapter
-    virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override {
-        XYLog("WCL [592] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
-    // [593] — AppleBCMWLAN: delegates to RoamAdapter
-    virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override {
-        XYLog("WCL [593] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [592] — AppleBCMWLAN: delegates to RoamAdapter legacy profile path.
+    virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
+    // [593] — AppleBCMWLAN: delegates to RoamAdapter modern profile path.
+    virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override;
     // [594]
     virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data) override {
         XYLog("WCL [594] %s\n", __FUNCTION__);
@@ -391,12 +380,8 @@ public:
     virtual IOReturn setWCL_SCAN_ABORT(void *) override;
     // [596] — AppleBCMWLAN: sets real-time vs default mode
     virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data) override;
-    // [597] — AppleBCMWLAN: configures ARP keepalive/GARP mode
-    virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override {
-        XYLog("WCL [597] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [597] — AppleBCMWLAN: configures ARP keepalive/GARP mode.
+    virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override;
     // [598]
     virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override;
     // [599]
@@ -438,30 +423,14 @@ public:
     virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override;
     // [614]
     virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override { XYLog("DEBUG VTABLE [614] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [615] — AppleBCMWLAN: delegates to BGScanAdapter
-    virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data) override {
-        XYLog("WCL [615] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
-    // [616] — AppleBCMWLAN: delegates to BGScanAdapter
-    virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data) override {
-        XYLog("WCL [616] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
-    // [617] — AppleBCMWLAN: handles enable/disable/periodic scan config
-    virtual IOReturn setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data) override {
-        XYLog("WCL [617] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
-    // [618] — AppleBCMWLAN: delegates to BGScanAdapter
-    virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override {
-        XYLog("WCL [618] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [615] — AppleBCMWLAN: delegates to BGScanAdapter.
+    virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data) override;
+    // [616] — AppleBCMWLAN: delegates to BGScanAdapter.
+    virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data) override;
+    // [617] — AppleBCMWLAN: handles enable/disable/periodic scan config.
+    virtual IOReturn setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data) override;
+    // [618] — AppleBCMWLAN: delegates to BGScanAdapter.
+    virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override;
     // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
     virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override;
     // [620] — Not found in AppleBCMWLAN
@@ -597,6 +566,22 @@ private:
     uint8_t cachedIPv6Addresses[10][16];
     uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
+    uint8_t cachedReassocRequest[0x9c];
+    bool hasCachedReassocRequest;
+    uint8_t cachedLegacyRoamProfileConfig[0x60];
+    bool hasCachedLegacyRoamProfileConfig;
+    uint8_t cachedRoamProfileConfig[0x23c];
+    bool hasCachedRoamProfileConfig;
+    uint8_t cachedWclArpMode[0x14];
+    bool hasCachedWclArpMode;
+    uint8_t cachedBgMotionProfile[0x40];
+    bool hasCachedBgMotionProfile;
+    uint8_t cachedBgNetwork[0x12c0];
+    bool hasCachedBgNetwork;
+    uint8_t cachedBgScanConfig[8];
+    bool hasCachedBgScanConfig;
+    uint8_t cachedBgParams[0x20];
+    bool hasCachedBgParams;
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;

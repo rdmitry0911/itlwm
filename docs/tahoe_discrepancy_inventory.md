@@ -49,23 +49,24 @@ This inventory is intentionally split into:
   remaining carrier-like slots are now part of the `Q13` unsupported census
 
 - `Q7 WCL Adapter Plane`:
-  open
-  adapter-owned roam/bgscan and remaining keepalive/roam owner paths still
-  need exact Apple lifts
+  closed
+  the former ack-only roam/bgscan/ARP producer cluster now preserves recovered
+  payloads and drives the available local owners; remaining hidden helper
+  exactness moved under `Q13`
 
 - `Q8 Scan Plane`:
   the currently confirmed scan-abort / completion bulletin issues are closed
-  but scan-adjacent WCL config producers remain open through `Q7`
+  but scan-adjacent hidden-helper exactness remains open through `Q13`
 
 - `Q9 Join / Assoc Plane`:
   closed
   `JOIN_ABORT` now follows the recovered Apple abort/completion contract;
-  remaining reassoc/roam-driven join work lives under `Q7`
+  remaining reassoc/roam-driven hidden-owner exactness lives under `Q13`
 
 - `Q10 Net-Link / IP Plane`:
   closed
   net-link adjunct producers now follow recovered owner-backed carrier paths;
-  remaining adapter-owner exactness is tracked under `Q7` / `Q13`
+  remaining adapter-owner exactness is tracked under `Q13`
 
 - `Q11 Skywalk Datapath / Queue Surface`:
   open
@@ -78,7 +79,7 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 142 unsupported overrides and 13 ack-only
+  raw header surface now carries 142 unsupported overrides and 5 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
   112 unsupported-return slots still remain open discrepancies
 
@@ -365,7 +366,7 @@ Current census from the Tahoe header:
   confirmed Apple-unsupported classification batches and the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch
-- `17` overrides still return success from inline ack-only placeholder bodies
+- `5` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
@@ -489,23 +490,15 @@ Unsupported setter slots still present:
 
 Ack-only inline stubs still present in the Tahoe header:
 
-- `590 setWCL_REASSOC`
 - `591 setWCL_SET_ROAM_LOCK`
-- `592 setWCL_LEGACY_ROAM_PROFILE_CONFIG`
-- `593 setWCL_ROAM_PROFILE_CONFIG`
 - `594 setWCL_ROAM_USER_CACHE`
-- `597 setWCL_ARP_MODE`
 - `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
-- `615 setWCL_CONFIG_BG_MOTIONPROFILE`
-- `616 setWCL_CONFIG_BG_NETWORK`
-- `617 setWCL_CONFIG_BGSCAN`
-- `618 setWCL_CONFIG_BG_PARAMS`
 - `620 setHEARTBEAT`
 - `621 setINTERFACE_SETTING`
 
-### 3. Adapter-plane WCL cluster still not lifted from the reference producers
+### 3. Former WCL adapter-plane stub cluster is closed as a queue
 
-Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md):
+Closed in the latest batch:
 
 - `setWCL_REASSOC`
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
@@ -516,8 +509,8 @@ Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tah
 - `setWCL_CONFIG_BGSCAN`
 - `setWCL_CONFIG_BG_PARAMS`
 
-These must not be converted into ack-only stubs. Apple delegates them into
-roam/net/bgscan/join/power subsystems.
+The exact hidden helper choreography behind roam/bgscan/keepalive owners still
+belongs to `Q13`, but these slots no longer remain as inline success stubs.
 
 ### 4. Hidden `+0x1510` object method surface is still only partially lifted
 
@@ -618,31 +611,20 @@ Need:
 Until that classification exists, touching the remaining unsupported vtable
 surface would be guesswork.
 
-### 9. WCL ack-only stub cluster still needs producer lifting
+### 9. Remaining ack-only stub cluster is now narrow and non-WCL
 
-The Tahoe header still contains `18` inline success stubs in the WCL and
-adjacent control-plane cluster. They now have exact slot numbers and method
-names captured above, but they still need one-by-one producer lifting before
-they can be removed from the queue.
+The earlier WCL producer cluster is closed. The remaining inline success stubs
+are the sideband control leftovers listed above:
 
-The highest-priority members remain:
-
-- `setWCL_REASSOC`
-- `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
-- `setWCL_ROAM_PROFILE_CONFIG`
-- `setWCL_REAL_TIME_MODE`
-- `setWCL_ARP_MODE`
-- `setWCL_JOIN_ABORT`
-- `setWCL_QOS_PARAMS`
-- `setWCL_LINK_UP_DONE`
-- `setWCL_CONFIG_BG_MOTIONPROFILE`
-- `setWCL_CONFIG_BG_NETWORK`
-- `setWCL_CONFIG_BGSCAN`
-- `setWCL_CONFIG_BG_PARAMS`
+- `setWCL_SET_ROAM_LOCK`
+- `setWCL_ROAM_USER_CACHE`
+- `setWCL_SET_SCAN_HOME_AWAY_TIME`
+- `setHEARTBEAT`
+- `setINTERFACE_SETTING`
 
 ## Next Execution Order
 
-1. Finish the helper-level recovery for the raw-`6` getter cluster.
-2. Bucket the unsupported Skywalk vtable surface into Apple contract classes.
-3. Lift the next smallest confirmed batch from `open_confirmed`.
+1. Continue shrinking the unsupported Skywalk vtable surface under `Q13`.
+2. Lift the next owner-backed batch from `Q11` / `Q12`.
+3. Re-run the inventory after each batch so the queue stays honest.
 4. Re-run the same inventory after each batch so the queue stays honest.

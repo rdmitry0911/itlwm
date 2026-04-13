@@ -157,6 +157,78 @@ struct tahoeWclQosParams
 static_assert(sizeof(tahoeWclQosParams) == 0x18,
               "tahoeWclQosParams must match Apple dword fields + tail bytes");
 
+struct apple80211_reassoc
+{
+    uint8_t reserved00[0x68];
+    uint16_t channels[7];
+    uint32_t channel_scores[7];
+    uint32_t channel_count;
+    uint32_t score_count;
+    uint8_t feature_flags;
+    int8_t roam_reason;
+} __attribute__((packed));
+static_assert(sizeof(apple80211_reassoc) == 0x9c,
+              "apple80211_reassoc must cover the Apple offsets used by sendReassocCommand");
+
+struct apple80211_legacy_roam_profile_config
+{
+    uint8_t raw[0x60];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_legacy_roam_profile_config) == 0x60,
+              "legacy roam profile config must match WCLRoamProfile payload size");
+
+struct apple80211_roam_profile_config
+{
+    uint8_t raw[0x23c];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_roam_profile_config) == 0x23c,
+              "roam profile config must match WCLRoamProfile payload size");
+
+struct apple80211_wcl_arp_mode
+{
+    uint16_t wnm_interval_a;
+    uint16_t wnm_interval_b;
+    uint8_t wnm_enabled_a;
+    uint8_t wnm_enabled_b;
+    uint16_t reserved06;
+    uint32_t mode;
+    uint32_t interval;
+    uint8_t enabled;
+    uint8_t reserved11[3];
+} __attribute__((packed));
+static_assert(offsetof(apple80211_wcl_arp_mode, mode) == 0x08,
+              "apple80211_wcl_arp_mode::mode must match Apple offset +0x8");
+static_assert(offsetof(apple80211_wcl_arp_mode, interval) == 0x0c,
+              "apple80211_wcl_arp_mode::interval must match Apple offset +0xc");
+static_assert(offsetof(apple80211_wcl_arp_mode, enabled) == 0x10,
+              "apple80211_wcl_arp_mode::enabled must match Apple offset +0x10");
+static_assert(sizeof(apple80211_wcl_arp_mode) == 0x14,
+              "apple80211_wcl_arp_mode must preserve the recovered Tahoe offsets");
+
+struct apple80211_bg_motion_profile
+{
+    uint8_t raw[0x40];
+} __attribute__((packed));
+
+struct apple80211_bg_network
+{
+    uint8_t raw[0x12c0];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_bg_network) == 0x12c0,
+              "apple80211_bg_network must preserve the full Apple copy range");
+
+struct apple80211_bg_scan
+{
+    uint8_t raw[8];
+} __attribute__((packed));
+
+struct apple80211_bg_params
+{
+    uint8_t raw[0x20];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_bg_params) == 0x20,
+              "apple80211_bg_params must preserve the recovered 0x20 payload");
+
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
@@ -725,6 +797,22 @@ init()
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
+    memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
+    hasCachedReassocRequest = false;
+    memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
+    hasCachedLegacyRoamProfileConfig = false;
+    memset(cachedRoamProfileConfig, 0, sizeof(cachedRoamProfileConfig));
+    hasCachedRoamProfileConfig = false;
+    memset(cachedWclArpMode, 0, sizeof(cachedWclArpMode));
+    hasCachedWclArpMode = false;
+    memset(cachedBgMotionProfile, 0, sizeof(cachedBgMotionProfile));
+    hasCachedBgMotionProfile = false;
+    memset(cachedBgNetwork, 0, sizeof(cachedBgNetwork));
+    hasCachedBgNetwork = false;
+    memset(cachedBgScanConfig, 0, sizeof(cachedBgScanConfig));
+    hasCachedBgScanConfig = false;
+    memset(cachedBgParams, 0, sizeof(cachedBgParams));
+    hasCachedBgParams = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -811,6 +899,22 @@ init(IOService *provider)
     memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
     memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
+    memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
+    this->hasCachedReassocRequest = false;
+    memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
+    this->hasCachedLegacyRoamProfileConfig = false;
+    memset(this->cachedRoamProfileConfig, 0, sizeof(this->cachedRoamProfileConfig));
+    this->hasCachedRoamProfileConfig = false;
+    memset(this->cachedWclArpMode, 0, sizeof(this->cachedWclArpMode));
+    this->hasCachedWclArpMode = false;
+    memset(this->cachedBgMotionProfile, 0, sizeof(this->cachedBgMotionProfile));
+    this->hasCachedBgMotionProfile = false;
+    memset(this->cachedBgNetwork, 0, sizeof(this->cachedBgNetwork));
+    this->hasCachedBgNetwork = false;
+    memset(this->cachedBgScanConfig, 0, sizeof(this->cachedBgScanConfig));
+    this->hasCachedBgScanConfig = false;
+    memset(this->cachedBgParams, 0, sizeof(this->cachedBgParams));
+    this->hasCachedBgParams = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -2199,6 +2303,231 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
     cachedRealTimeMode = mode->enabled != 0;
     XYLog("WCL [596] %s realtime=%u\n", __FUNCTION__,
           static_cast<unsigned int>(cachedRealTimeMode));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_REASSOC(apple80211_reassoc *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // AppleBCMWLANCore::setWCL_REASSOC is not an ack-only stub: it snapshots
+    // the recovered reassoc request, refuses NULL with 0xe00002bc, and bails
+    // out with the same code when the interface is not associated. The actual
+    // producer then delegates to NetAdapter::sendReassocCommand(...).
+    //
+    // The local port does not carry Apple's firmware command owner, but the
+    // net80211 STA stack already owns reassociation frame generation via
+    // `ieee80211_send_mgmt(..., REASSOC_REQ, ...)`. Preserve the same request
+    // coverage and association gate instead of leaving slot [590] as inline
+    // success.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedReassocRequest, data, sizeof(*data));
+    hasCachedReassocRequest = true;
+
+    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const int rc = ieee80211_send_mgmt(ic, ic->ic_bss,
+                                       IEEE80211_FC0_SUBTYPE_REASSOC_REQ,
+                                       0, 0);
+    XYLog("WCL [590] %s channels=%u scores=%u reason=%d flags=0x%02x rc=%d\n",
+          __FUNCTION__, data->channel_count, data->score_count,
+          static_cast<int>(data->roam_reason), data->feature_flags, rc);
+    return rc == 0 ? kIOReturnSuccess : static_cast<IOReturn>(rc);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
+{
+    // WCLRoamProfile::setRoamingProfile(legacy) consumes exactly 0x60 bytes,
+    // and AppleBCMWLANRoamAdapter stores that profile before it reconfigures
+    // join preferences / Multi-AP state. The local port does not have the
+    // hidden roam owner object yet, but dropping the payload on the floor was
+    // still an architectural mismatch because later roam decisions had no
+    // stable source of truth at all.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedLegacyRoamProfileConfig, data, sizeof(*data));
+    hasCachedLegacyRoamProfileConfig = true;
+    XYLog("WCL [592] %s cached=%u size=0x%zx\n",
+          __FUNCTION__, static_cast<unsigned int>(hasCachedLegacyRoamProfileConfig),
+          sizeof(*data));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
+{
+    // WCLRoamProfile::setRoamingProfile(modern) ships a 0x23c payload into the
+    // roam adapter. Apple's downstream helper fans this out into join
+    // preference and per-band policy programming. Persist the exact carrier so
+    // the local port no longer acknowledges this producer and immediately loses
+    // the only recovered roam configuration state.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedRoamProfileConfig, data, sizeof(*data));
+    hasCachedRoamProfileConfig = true;
+    XYLog("WCL [593] %s cached=%u size=0x%zx\n",
+          __FUNCTION__, static_cast<unsigned int>(hasCachedRoamProfileConfig),
+          sizeof(*data));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
+{
+    // AppleBCMWLANCore::setWCL_ARP_MODE has three distinct pieces:
+    // - NULL -> 0xe00002bc
+    // - mode 0/1 choose the keepalive/GARP owner path, anything else -> 0xe00002bc
+    // - optional WNM sideband update consumes the two u16s at offsets +0/+2
+    //
+    // We still lack Apple's hidden keepalive and WNM owners, but the local
+    // port now preserves the exact recovered carrier and reuses the lifted
+    // OFFLOAD_ARP path so the same IPv4/keepalive state is available to later
+    // consumer paths instead of vanishing in an inline success stub.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+    if (data->mode > 1)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedWclArpMode, data, sizeof(*data));
+    hasCachedWclArpMode = true;
+
+    apple80211_offload_arp_data arp{};
+    arp.version = APPLE80211_VERSION;
+    arp.has_ipv4_address = cachedIPv4Address != 0 ? 1U : 0U;
+    arp.ipv4_address = cachedIPv4Address;
+    arp.keepalive_enabled = data->enabled != 0 ? 1U : 0U;
+    arp.gateway = cachedIPv4Gateway;
+    arp.gateway_tail = cachedIPv4GatewayTail;
+
+    const IOReturn carrierRc = setOFFLOAD_ARP(&arp);
+    if (carrierRc != kIOReturnSuccess && carrierRc != kApple80211ErrInvalidArgumentRaw)
+        return carrierRc;
+
+    XYLog("WCL [597] %s mode=%u interval=%u enabled=%u wnm=%u/%u\n",
+          __FUNCTION__, data->mode, data->interval, data->enabled,
+          data->wnm_enabled_a, data->wnm_enabled_b);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
+{
+    // AppleBGScanAdapter first validates its internal motion-profile mapping,
+    // then programs PNO/EPNO from the incoming blob. The recovered helper
+    // rejects a zero PNO-count byte with a generic error, so keep that gate
+    // instead of advertising unconditional success.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+    if (data->raw[1] == 0)
+        return kIOReturnError;
+
+    memcpy(cachedBgMotionProfile, data, sizeof(cachedBgMotionProfile));
+    hasCachedBgMotionProfile = true;
+    XYLog("WCL [615] %s pno_count=%u epno_count=%u multi=%u\n",
+          __FUNCTION__, data->raw[1], data->raw[0x1a], data->raw[0]);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // Apple clears PFN state, resets its internal "cached network available"
+    // flags, and only then copies the full 0x12c0 request into adapter-owned
+    // storage. The local port has no PFN engine, but it does have the same
+    // bgscan cache owner in net80211. Preserve the full request and clear the
+    // current cache iterator so later BGSCAN_CACHE_RESULT consumers observe the
+    // new network set instead of stale cached nodes.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedBgNetwork, data, sizeof(*data));
+    hasCachedBgNetwork = true;
+    fNextNodeToSend = nullptr;
+    fScanResultWrapping = false;
+    if (ic->ic_state == IEEE80211_S_RUN)
+        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+
+    const uint32_t whitelistCount = *reinterpret_cast<const uint32_t *>(&data->raw[0x18]);
+    const uint32_t epnoCount = *reinterpret_cast<const uint32_t *>(&data->raw[0x39c]);
+    const uint8_t anyConfig = data->raw[0];
+    XYLog("WCL [616] %s any=%u list=%u epno=%u marker=0x%08x\n",
+          __FUNCTION__, anyConfig, whitelistCount, epnoCount,
+          *reinterpret_cast<const uint32_t *>(&data->raw[0x88c]));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // AppleBCMWLANCore::setWCL_CONFIG_BGSCAN is a tiny command multiplexer:
+    // byte 0 resets PFN mode, byte 1 rewrites scan_nprobes using byte 2, and
+    // byte 3 toggles suspend/resume using byte 4. Mirror that split locally so
+    // the request is preserved and the available bgscan owner is exercised.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedBgScanConfig, data, sizeof(*data));
+    hasCachedBgScanConfig = true;
+
+    if (data->raw[0] != 0) {
+        if (ic->ic_flags & IEEE80211_F_BGSCAN)
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+        if (ic->ic_flags & IEEE80211_F_ASCAN)
+            ic->ic_flags &= ~IEEE80211_F_ASCAN;
+    }
+
+    IOReturn rc = kIOReturnSuccess;
+    if (data->raw[3] != 0) {
+        if (data->raw[4] != 0) {
+            if (ic->ic_bgscan_start != nullptr && ic->ic_state == IEEE80211_S_RUN) {
+                const int bgscanRc = ic->ic_bgscan_start(ic);
+                if (bgscanRc != 0)
+                    rc = static_cast<IOReturn>(bgscanRc);
+            }
+        } else {
+            if (ic->ic_flags & IEEE80211_F_BGSCAN)
+                ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+        }
+    }
+
+    XYLog("WCL [617] %s reset=%u nprobes=%u/%u suspend=%u/%u rc=0x%x\n",
+          __FUNCTION__, data->raw[0], data->raw[1], data->raw[2],
+          data->raw[3], data->raw[4], rc);
+    return rc;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // AppleBGScanAdapter::setWCL_CONFIG_BG_PARAMS carries two independent
+    // sub-commands out of a 0x20 blob. The local bgscan engine does not expose
+    // those hidden helper entrypoints, but preserving the exact payload and
+    // re-arming cache bgscan when the request is non-empty keeps the owner-side
+    // state reachable instead of acknowledging and discarding it.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedBgParams, data, sizeof(*data));
+    hasCachedBgParams = true;
+    if ((data->raw[0] != 0 || data->raw[0x18] != 0) && ic->ic_state == IEEE80211_S_RUN)
+        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+
+    XYLog("WCL [618] %s pno=%u mode=%u epno=%u action=%u dwell=%u\n",
+          __FUNCTION__, data->raw[0], data->raw[1], data->raw[0x18],
+          data->raw[0x19], *reinterpret_cast<const uint32_t *>(&data->raw[0x1c]));
     return kIOReturnSuccess;
 }
 
