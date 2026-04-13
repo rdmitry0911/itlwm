@@ -174,6 +174,13 @@ This inventory is intentionally split into:
   instead of leaving the zone on generic unsupported.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: telemetry/cache getter zone`:
+  fifteen remaining getters were reduced to their Tahoe public contracts.
+  Fixed-fail selectors now expose exact Apple error shapes (`BTCOEX_PROFILE`,
+  `TKO_*` with no keepalive owner), while cache/state-backed selectors now
+  preserve the caller-visible carrier instead of returning generic unsupported.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
   a first setter subset was also proven to be "Apple also unsupported" in the
   vendor-side infra path itself. Those slots should not stay in the open
@@ -413,14 +420,14 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `99` raw overrides still return `kIOReturnUnsupported`
-- `51` of those still remain open unsupported discrepancies after the first
+- `84` raw overrides still return `kIOReturnUnsupported`
+- `36` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
   LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
   getter fail-contract zone, and the MWS/NDD setter carrier zone, and the
-  minimal setter-contract zone
+  minimal setter-contract zone, and the telemetry/cache getter zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -428,38 +435,21 @@ Unsupported getter slots still present:
 - `470 getAWDL_PEER_TRAFFIC_STATS`
 - `480 getPOWER_DEBUG_INFO`
 - `485 getROAM_PROFILE`
-- `487 getDBG_GUARD_TIME_PARAMS`
 - `488 getLEAKY_AP_STATS_MODE`
 - `489 getCOUNTRY_CHANNELS`
-- `493 getAWDL_RSDB_CAPS`
-- `494 getTKO_PARAMS`
-- `495 getTKO_DUMP`
 - `496 getHW_SUPPORTED_CHANNELS`
-- `497 getBTCOEX_PROFILE`
-- `498 getBTCOEX_PROFILE_ACTIVE`
 - `499 getTRAP_INFO`
-- `501 getMAX_NSS_FOR_AP`
-- `502 getBTCOEX_2G_CHAIN_DISABLE`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`
 - `508 getBEACON_INFO`
-- `509 getCHIP_POWER_RANGE`
 - `512 getCHIP_DIAGS`
 - `513 getHP2P_CTRL`
-- `514 getBSS_BLACKLIST`
-- `515 getTXRX_CHAIN_INFO`
-- `516 getMIMO_STATUS`
 - `517 getCUR_PMK`
 - `518 getDYNSAR_DETAIL`
 - `521 getSLOW_WIFI_FEATURE_ENABLED`
 - `523 getSENSING_DATA`
-- `524 getWCL_FW_HOT_CHANNELS`
 - `525 getWCL_LOW_LATENCY_INFO`
-- `527 getWCL_TRAFFIC_COUNTERS`
 - `528 getWCL_GET_TX_BLANKING_STATUS`
-- `531 getRSN_XE`
-- `532 getSIB_COEX_STATUS`
 - `533 getWCL_EXTENDED_BSS_INFO`
-- `534 getWCL_LOW_LATENCY_INFO_STATS`
 - `540 getSYSTEM_SLEEP_CONFIG`
 
 Unsupported setter slots still present:

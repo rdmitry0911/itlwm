@@ -759,6 +759,49 @@ That closes the zone at the public Apple80211 surface:
   core state
 - fixed Tahoe fail codes are now explicit where Apple exposes them
 
+## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
+
+The next `Q13` zone closes fifteen getter slots that already expose a stable
+Tahoe public contract even when the deeper Broadcom owner is still hidden.
+
+Closed in this zone:
+
+- `getDBG_GUARD_TIME_PARAMS(...)`
+- `getAWDL_RSDB_CAPS(...)`
+- `getTKO_PARAMS(...)`
+- `getTKO_DUMP(...)`
+- `getBTCOEX_PROFILE(...)`
+- `getBTCOEX_PROFILE_ACTIVE(...)`
+- `getMAX_NSS_FOR_AP(...)`
+- `getBTCOEX_2G_CHAIN_DISABLE(...)`
+- `getBSS_BLACKLIST(...)`
+- `getTXRX_CHAIN_INFO(...)`
+- `getMIMO_STATUS(...)`
+- `getWCL_FW_HOT_CHANNELS(...)`
+- `getWCL_TRAFFIC_COUNTERS(...)`
+- `getRSN_XE(...)`
+- `getWCL_LOW_LATENCY_INFO_STATS(...)`
+
+Recovered Apple behavior splits into three public buckets:
+
+- fixed-fail selectors:
+  `getBTCOEX_PROFILE -> 0xe00002c2`,
+  `getTKO_PARAMS/getTKO_DUMP -> 0xe00002bc` when the keepalive owner is absent
+- compact cache-backed carriers:
+  `getDBG_GUARD_TIME_PARAMS`, `getRSN_XE`, `getBSS_BLACKLIST`
+- state-backed telemetry carriers:
+  `getAWDL_RSDB_CAPS`, `getBTCOEX_PROFILE_ACTIVE`,
+  `getMAX_NSS_FOR_AP`, `getBTCOEX_2G_CHAIN_DISABLE`,
+  `getTXRX_CHAIN_INFO`, `getMIMO_STATUS`, `getWCL_FW_HOT_CHANNELS`,
+  `getWCL_TRAFFIC_COUNTERS`, `getWCL_LOW_LATENCY_INFO_STATS`
+
+This batch intentionally stops at the public Apple80211 boundary:
+
+- unsupported headers are removed for these fifteen selectors
+- exact Tahoe fail codes are preserved where Apple exposes failure directly
+- caller-visible carriers are preserved from local cache/runtime state where
+  Apple reads them from hidden owners or core-state fields
+
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 
 The same pattern exists on a narrow setter subset: Apple does not expose a

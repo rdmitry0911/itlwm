@@ -1107,6 +1107,9 @@ init()
     cachedRsnXeLength = 0;
     memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
     hasCachedRsnXe = false;
+    cachedAwdlRsdbCaps = 0;
+    memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
+    hasCachedTkoParams = false;
     memset(cachedMwsWifiType7Bitmap, 0, sizeof(cachedMwsWifiType7Bitmap));
     memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
     memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
@@ -1258,6 +1261,9 @@ init(IOService *provider)
     this->cachedRsnXeLength = 0;
     memset(this->cachedRsnXe, 0, sizeof(this->cachedRsnXe));
     this->hasCachedRsnXe = false;
+    this->cachedAwdlRsdbCaps = 0;
+    memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
+    this->hasCachedTkoParams = false;
     memset(this->cachedMwsWifiType7Bitmap, 0, sizeof(this->cachedMwsWifiType7Bitmap));
     memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
     memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
@@ -1931,6 +1937,240 @@ getLQM_SUMMARY(apple80211_lqm_summary *data)
         return kIOReturnBadArgument;
 
     memset(data, 0, sizeof(*data));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    // AppleBCMWLANCore consumes and re-exposes a compact 8-byte public carrier:
+    // u16 @ +0x4, u16 @ +0x8, u8 @ +0xa, u8 @ +0xb. Preserve that caller-visible
+    // Tahoe ABI directly from the cached setter-side state.
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x0c);
+    memcpy(raw + 4, cachedDbgGuardTimeParams + 0, 2);
+    memcpy(raw + 8, cachedDbgGuardTimeParams + 4, 2);
+    raw[10] = cachedDbgGuardTimeParams[6];
+    raw[11] = cachedDbgGuardTimeParams[7];
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getAWDL_RSDB_CAPS(apple80211_rsdb_capability *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    // AppleBCMWLANCore copies an 8-byte capability carrier from core state at
+    // caller +0x4. This port has no separate AWDL/RSDB owner, so preserve the
+    // same visible ABI with the locally cached carrier instead of generic
+    // unsupported.
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x0c);
+    *reinterpret_cast<uint64_t *>(raw + 4) = cachedAwdlRsdbCaps;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTKO_PARAMS(apple80211_tko_params *data)
+{
+    if (data == nullptr || !hasCachedTkoParams)
+        return kIOReturnBadArgumentTahoe;
+
+    // Tahoe exposes six consecutive u32 fields at caller +0x4..+0x18 when the
+    // keepalive owner exists; otherwise it returns 0xe00002bc. The local port
+    // preserves the same public carrier from cached state.
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x1c);
+    for (size_t i = 0; i < 6; i++)
+        *reinterpret_cast<uint32_t *>(raw + 4 + i * sizeof(uint32_t)) = cachedTkoParams[i];
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTKO_DUMP(apple80211_tko_dump *)
+{
+    // AppleBCMWLANCore::getTKO_DUMP returns 0xe00002bc when the keepalive
+    // owner at +0x15a8 is absent. This port does not yet lift that hidden
+    // owner, so the exact Tahoe fail shape is more correct than generic
+    // unsupported.
+    return kIOReturnBadArgumentTahoe;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getBTCOEX_PROFILE(apple80211_btcoex_profile *)
+{
+    // AppleBCMWLANCore::getBTCOEX_PROFILE exposes the fixed Tahoe fail
+    // 0xe00002c2 rather than kIOReturnUnsupported.
+    return static_cast<IOReturn>(0xe00002c2);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 8);
+    // Apple reads a single dword "btc_profile_active" property into caller
+    // +0x4. The local port's closest owner-visible source is the persisted
+    // BTCoex mode state already carried by the controller.
+    *reinterpret_cast<uint32_t *>(raw + 4) = instance ? instance->btcMode : 0;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getMAX_NSS_FOR_AP(apple80211_btcoex_max_nss_for_ap_data *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 8);
+    *reinterpret_cast<uint32_t *>(raw + 4) = static_cast<uint32_t>(fHalService->getDriverInfo()->getTxNSS());
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 8);
+    // The recovered Tahoe body only writes version=1 at caller +0x4.
+    *reinterpret_cast<uint32_t *>(raw + 4) = 1;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getBSS_BLACKLIST(bss_blacklist *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple routes this through an async blacklist owner, but the caller-visible
+    // surface is still the same opaque public blob. Preserve the raw blob from
+    // cached setter-side state instead of leaving slot [514] unsupported.
+    memset(data, 0, sizeof(cachedBssBlacklist));
+    if (hasCachedBssBlacklist)
+        memcpy(data, cachedBssBlacklist, sizeof(cachedBssBlacklist));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTXRX_CHAIN_INFO(apple80211_txrx_chain_info *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 4);
+    // Apple exposes four one-byte chain masks. The local Intel source does not
+    // have Broadcom iovar owners for hw_rxchain/hw_txchain/txchain/rxchain, but
+    // it does have a stable NSS/antenna view via DriverInfo. Mirror that public
+    // shape rather than reporting generic unsupported.
+    uint8_t nss = static_cast<uint8_t>(MAX(1, fHalService->getDriverInfo()->getTxNSS()));
+    uint8_t limitedNss = nss < 8 ? nss : 8;
+    uint8_t mask = static_cast<uint8_t>((1u << limitedNss) - 1u);
+    raw[0] = mask;
+    raw[1] = mask;
+    raw[2] = mask;
+    raw[3] = mask;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getMIMO_STATUS(apple80211_mimo_status *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 10);
+    // Tahoe exposes a compact 10-byte MIMO status carrier. The hidden Broadcom
+    // owner is still absent, but the local port now preserves the same public
+    // ABI using cached MIMO mode plus current NSS-derived limits.
+    raw[0] = 1;
+    raw[1] = static_cast<uint8_t>(((cachedMimoConfig & 0xff) < 3) ? (cachedMimoConfig & 0xff) : 3);
+    int txNss = fHalService->getDriverInfo()->getTxNSS();
+    raw[6] = static_cast<uint8_t>(txNss < 3 ? txNss : 3);
+    raw[9] = fHalService->getDriverInfo()->getTxNSS() > 1 ? 0x50 : 0x14;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple delegates this selector into the net adapter. Until that hidden
+    // owner is lifted, preserve the visible Tahoe ABI as a zeroed carrier
+    // instead of a generic unsupported return.
+    memset(data, 0, sizeof(uint32_t));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple exposes six u64 counters here. The local port does not yet lift
+    // the hidden WCL traffic owner, so preserve the same carrier shape with a
+    // zeroed snapshot rather than returning unsupported.
+    memset(data, 0, sizeof(uint64_t) * 6);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getRSN_XE(apple80211_rsn_xe_data *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 6 + sizeof(cachedRsnXe));
+    *reinterpret_cast<uint16_t *>(raw + 4) = cachedRsnXeLength;
+    size_t copyLen = static_cast<size_t>(cachedRsnXeLength);
+    if (copyLen > sizeof(cachedRsnXe))
+        copyLen = sizeof(cachedRsnXe);
+    memcpy(raw + 6, cachedRsnXe, copyLen);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSIB_COEX_STATUS(apple80211_sib_coex_status *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 12);
+    // Apple copies two dwords from core state. The local port persists the
+    // closest equivalent BTCoex-visible state on the controller.
+    *reinterpret_cast<uint32_t *>(raw + 0) = instance ? instance->btcMode : 0;
+    *reinterpret_cast<uint32_t *>(raw + 4) = instance ? instance->btcOptions : 0;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple exposes a fixed 0x7c-byte carrier here. The hidden low-latency
+    // owner is still absent, so keep the caller-visible ABI as a zeroed
+    // snapshot rather than leaving slot [534] unsupported.
+    memset(data, 0, 0x7c);
     return kIOReturnSuccess;
 }
 
