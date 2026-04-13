@@ -552,6 +552,32 @@ following owner-level subqueues:
 This closes `Q11-A/B/C` the same way `Q11` itself was closed: the mixed queues
 are gone, and only owner-level subqueues remain open.
 
+Final `Q11` exhaustion:
+
+- `Q11-A1` is no longer tracked as a queue.
+  It is now a cross-branch controller reconciliation item:
+  `setIE`
+- `Q11-A2` is no longer tracked as a queue.
+  It is now a dedicated net-adapter frame-injection owner item:
+  `setWCL_ACTION_FRAME`
+- `Q11-B1/B2/B3` are no longer tracked as queues.
+  They are now grouped under radio capability / coexistence / tx-power policy
+  ownership:
+  `setHT_CAPABILITY`, `setVHT_CAPABILITY`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setBYPASS_TX_POWER_CAP`
+- `Q11-C1/C2/C3` are no longer tracked as queues.
+  They are now grouped under hidden proximity / low-latency / nearby policy
+  ownership:
+  `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
+  `setOFFLOAD_NDP`, `setRANGING_AUTHENTICATE`,
+  `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS`
+
+With that regrouping, `Q11` is exhausted completely: no `Q11-*` queue remains
+open. What remains is only owner-specific implementation debt outside the queue
+system.
+
 Closed as the mixed setter control/programming zone and therefore no longer
 part of the open setter list above:
 

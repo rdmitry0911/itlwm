@@ -1538,3 +1538,19 @@ explicitly marked internal-only.
 
 So `Q11-A/B/C` are closed as queues. What remains open is only owner-level
 subqueue work.
+
+Final `Q11` exhaustion:
+
+- `Q11-A1` is reduced to a controller-branch split:
+  Tahoe Skywalk sits on `AirportItlwmV2.hpp`, while the existing IE owner lives
+  on the legacy controller branch in `AirportItlwm.hpp`
+- `Q11-A2` is reduced to the dedicated net-adapter frame injector already
+  visible in `AppleBCMWLANCore::setWCL_ACTION_FRAME(...)`
+- `Q11-B1/B2/B3` are reduced to one radio-policy owner family:
+  capability programming, coexistence programming, and tx-power policy
+- `Q11-C1/C2/C3` are reduced to one hidden proximity/low-latency owner family:
+  HP2P/DynSAR helpers, slow-wifi / tx-blanking state, and nearby/ranging
+  traffic policy
+
+Therefore `Q11` is exhausted fully as a queue hierarchy. Remaining work is
+tracked only as owner-specific implementation debt, not as open `Q11` queues.
