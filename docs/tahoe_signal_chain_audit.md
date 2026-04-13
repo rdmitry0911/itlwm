@@ -1494,3 +1494,24 @@ This zone closes on the system-facing boundary:
   keep Tahoe aligned with the same bridge-restoration principle used earlier
 - `setBSS_BLACKLIST` and `setREALTIME_QOS_MSCS` are now counted correctly as
   closed because their public setter contracts had already been lifted
+
+Final `Q13` close-out:
+
+- the remaining raw header stubs are no longer treated as unsupported-surface
+  debt
+- `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setPOWER_BUDGET`,
+  `setUSB_HOST_NOTIFICATION`, `setHOST_CLOCK_INFO` belong to `Q12`
+- `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`, `setIE`,
+  `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
+  `setRANGING_AUTHENTICATE`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setWCL_ACTION_FRAME`, `setBYPASS_TX_POWER_CAP`,
+  `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS` belong to `Q11`
+- `getLEAKY_AP_STATS_MODE`, `getTRAP_INFO`, `setLEAKY_AP_STATS_MODE` are
+  Broadcom-private diagnostics/test surfaces and are no longer carried as
+  shared Apple80211 contract debt
+
+With that reclassification, `Q13` is closed as a queue: all remaining raw
+unsupported slots are either queued under their owning architectural stages or
+explicitly marked internal-only.

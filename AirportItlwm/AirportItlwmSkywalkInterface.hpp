@@ -154,7 +154,10 @@ public:
     // [487] — AppleBCMWLANCore exposes a compact 8-byte public carrier for the
     // forced_pm/guard-time path instead of leaving the selector unsupported.
     virtual IOReturn getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *) override;
-    // [488]
+    // [488] — Broadcom-private leaky-AP diagnostics surface. This is no
+    // longer carried as Q13 system-contract debt; it stays on the internal
+    // diagnostics queue instead of pretending to be a missing Apple80211
+    // public producer.
     virtual IOReturn getLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override { XYLog("DEBUG VTABLE [488] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [489]
     virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override;
@@ -184,7 +187,9 @@ public:
     // [498] — Tahoe public contract is `NULL -> 0xe00002c2`, else a single
     // dword activity carrier at +0x4.
     virtual IOReturn getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override;
-    // [499]
+    // [499] — trap/debug diagnostics surface, not a shared Apple80211 runtime
+    // producer contract. Keep it classified as internal-only instead of open
+    // Q13 debt.
     virtual IOReturn getTRAP_INFO(apple80211_trap_info_data *) override { XYLog("DEBUG VTABLE [499] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [500]
     virtual IOReturn getTHERMAL_INDEX(apple80211_thermal_index_t *) override;
@@ -218,7 +223,9 @@ public:
     virtual IOReturn getHW_ADDR(apple80211_hw_mac_address *) override;
     // [512]
     virtual IOReturn getCHIP_DIAGS(appl80211_chip_diags_data *) override;
-    // [513]
+    // [513] — HP2P adjunct state belongs to the hidden proximity/datapath
+    // queue rather than the generic unsupported-surface queue. It is tracked
+    // under Q11, not Q13.
     virtual IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl *) override { XYLog("DEBUG VTABLE [513] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [514] — AppleBCMWLANCore delegates to an async blacklist getter rather
     // than a direct unsupported stub. Preserve the caller-visible raw blob.
@@ -231,7 +238,8 @@ public:
     virtual IOReturn getMIMO_STATUS(apple80211_mimo_status *) override;
     // [517]
     virtual IOReturn getCUR_PMK(apple80211_pmk *) override;
-    // [518]
+    // [518] — DynSAR detail is a hidden RF/policy owner surface and is now
+    // tracked with the Q11 radio/datapath adjunct queue instead of Q13.
     virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override { XYLog("DEBUG VTABLE [518] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [519]
     // [519] — AppleBCMWLANInfraProtocol returns `0xe00002c7` directly for this
@@ -239,7 +247,8 @@ public:
     virtual IOReturn getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *) override;
     // [520]
     virtual IOReturn getLQM_SUMMARY(apple80211_lqm_summary *) override;
-    // [521]
+    // [521] — hidden slow-wifi policy surface; reclassified to the Q11
+    // datapath/policy queue rather than generic unsupported debt.
     virtual IOReturn getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *) override { XYLog("DEBUG VTABLE [521] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [522]
     virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override;
@@ -248,14 +257,16 @@ public:
     // [524] — AppleBCMWLANCore delegates to the net adapter instead of leaving
     // the slot unsupported.
     virtual IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *) override;
-    // [525]
+    // [525] — low-latency runtime state belongs to the Q11 datapath/traffic
+    // queue. It is not left in Q13 as a generic unsupported mismatch.
     virtual IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *) override { XYLog("DEBUG VTABLE [525] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [526]
     virtual IOReturn getWCL_BSS_INFO(apple80211_beacon_msg *) override;
     // [527] — Tahoe public contract is `NULL -> 0xe00002bc`, else six u64
     // counters.
     virtual IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *) override;
-    // [528]
+    // [528] — tx-blanking status belongs to the Q11 RF/datapath adjunct
+    // queue, not the generic unsupported-surface queue.
     virtual IOReturn getWCL_GET_TX_BLANKING_STATUS(uint *) override { XYLog("DEBUG VTABLE [528] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [529] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
@@ -288,7 +299,8 @@ public:
     // [539] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getTIMESYNC_STATS(apple80211_timesync_stats *) override { XYLog("DEBUG VTABLE [539] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [540]
+    // [540] — system sleep config is owned by the Q12 sleep/wake queue, not
+    // Q13 unsupported-surface debt.
     virtual IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *) override { XYLog("DEBUG VTABLE [540] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [541] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
@@ -328,9 +340,12 @@ public:
     // non-AP path still resolves to `0xe00002c7`. Keep the fixed fail shape
     // instead of generic unsupported.
     virtual IOReturn setAP_MODE(apple80211_apmode_data *) override;
-    // [552]
+    // [552] — management-IE injection belongs to the Q11 management/datapath
+    // adjunct queue. Legacy non-Skywalk IE handling already exists outside
+    // this vtable.
     virtual IOReturn setIE(apple80211_ie_data *) override { XYLog("DEBUG VTABLE [552] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [553]
+    // [553] — wake-on-wireless test/debug surface. Classified to Q12/internal
+    // test coverage, not Q13.
     virtual IOReturn setWOW_TEST(apple80211_wow_test_data *) override { XYLog("DEBUG VTABLE [553] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [554]
     virtual IOReturn setCLEAR_PMKSA_CACHE(void *) override;
@@ -338,16 +353,19 @@ public:
     // [555] — Tahoe exposes role-dependent public failures here before the
     // private proximity/AWDL/NAN owner path takes over.
     virtual IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *) override;
-    // [556]
+    // [556] — capability programming surface; tracked with Q11 radio/datapath
+    // adjunct work rather than generic Q13 unsupported debt.
     virtual IOReturn setHT_CAPABILITY(apple80211_ht_capability *) override { XYLog("DEBUG VTABLE [556] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [557]
     virtual IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data *) override;
-    // [558]
+    // [558] — NDP offload setup is a nearby/datapath adjunct surface. It now
+    // belongs to Q11, not Q13.
     virtual IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data *) override { XYLog("DEBUG VTABLE [558] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [559] — AppleBCMWLANCore rejects NULL with 0xe00002c2 and otherwise
     // delegates into the GAS owner path.
     virtual IOReturn setGAS_REQ(apple80211_gas_query_t *) override;
-    // [560]
+    // [560] — capability programming surface; tracked with Q11 radio/datapath
+    // adjunct work rather than generic Q13 unsupported debt.
     virtual IOReturn setVHT_CAPABILITY(apple80211_vht_capability *) override { XYLog("DEBUG VTABLE [560] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [561] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe. This slot was already counted out of the open mismatch
@@ -357,7 +375,8 @@ public:
     // [562] — AppleBCMWLANCore consumes a compact 8-byte carrier and writes it
     // through the "forced_pm" property path.
     virtual IOReturn setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *) override;
-    // [563]
+    // [563] — Broadcom-private leaky-AP diagnostics setter. Reclassified to
+    // internal diagnostics coverage rather than Q13.
     virtual IOReturn setLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override { XYLog("DEBUG VTABLE [563] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [564] — AppleBCMWLANCore preserves timeout/MAC state and returns the
     // raw Tahoe code `0x16`, not generic unsupported.
@@ -374,21 +393,23 @@ public:
     // [568] — Tahoe exposes a bad-argument gate before switching into a hidden
     // ranging start owner path.
     virtual IOReturn setRANGING_START(apple80211_ranging_start_request_t *) override;
-    // [569]
+    // [569] — feature-gated ranging/authentication path. It belongs to the
+    // adjunct/ranging queue rather than the generic unsupported-surface queue.
     virtual IOReturn setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *) override { XYLog("DEBUG VTABLE [569] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [570] — AppleBCMWLANCore copies six public dwords into the keepalive
     // owner when it exists, otherwise returns 0xe00002bc.
     virtual IOReturn setTKO_PARAMS(apple80211_tko_params *) override;
-    // [571]
+    // [571] — RF coexistence programming belongs to the Q11 radio/coex queue,
+    // not Q13.
     virtual IOReturn setBTCOEX_PROFILE(apple80211_btcoex_profile *) override { XYLog("DEBUG VTABLE [571] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [572]
+    // [572] — RF coexistence programming belongs to the Q11 radio/coex queue.
     virtual IOReturn setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override { XYLog("DEBUG VTABLE [572] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [573] — Tahoe validates the public carrier and returns the fixed fail
     // `0xe00002bc` from the visible path rather than generic unsupported.
     virtual IOReturn setTHERMAL_INDEX(apple80211_thermal_index_t *) override;
-    // [574]
+    // [574] — RF coexistence/radio-programming surface; tracked with Q11.
     virtual IOReturn setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override { XYLog("DEBUG VTABLE [574] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [575]
+    // [575] — power-budget policy belongs to Q12 power/sleep work, not Q13.
     virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override { XYLog("DEBUG VTABLE [575] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [576]
     virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
@@ -396,7 +417,8 @@ public:
     virtual IOReturn setLQM_CONFIG(apple80211_lqm_config_t *) override;
     // [578] — AppleBCMWLANCore consumes the first dword as the public carrier.
     virtual IOReturn setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *) override;
-    // [579]
+    // [579] — host USB power-state notification belongs to Q12 sleep/power
+    // orchestration, not Q13.
     virtual IOReturn setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *) override { XYLog("DEBUG VTABLE [579] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [580] — decompile shows an internal trap-only selector, not a normal
     // public producer.
@@ -479,7 +501,8 @@ public:
     virtual IOReturn setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(apple80211_mws_accessory_power_limit *) override { XYLog("DEBUG VTABLE [607] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [608]
     virtual IOReturn setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *) override;
-    // [609]
+    // [609] — action-frame injection belongs to Q11 management/datapath
+    // adjunct work. Decompile already confirms a dedicated core producer.
     virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override { XYLog("DEBUG VTABLE [609] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [610]
     // [610] — AppleBCMWLANCore delegates to GASAdapter with no payload.
@@ -506,7 +529,7 @@ public:
     virtual IOReturn setHEARTBEAT(void *) override { XYLog("DEBUG VTABLE [620] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [621] — No Apple producer was recovered for this selector on Tahoe.
     virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *data) override { XYLog("DEBUG VTABLE [621] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [622]
+    // [622] — tx-power-cap bypass is Q11 radio/datapath policy work, not Q13.
     virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override { XYLog("DEBUG VTABLE [622] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [623]
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
@@ -530,7 +553,8 @@ public:
     virtual IOReturn setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *) override { XYLog("DEBUG VTABLE [630] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [631]
     virtual IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params *) override;
-    // [632]
+    // [632] — fast-lane/low-latency steering belongs to Q11 datapath policy
+    // work rather than Q13 unsupported-surface debt.
     virtual IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *) override { XYLog("DEBUG VTABLE [632] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [633] — AppleBCMWLANCore consumes a larger opaque sleep-management blob
     // and feeds it into the power-state adapter.
@@ -547,7 +571,7 @@ public:
     virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override;
     // [638]
     virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override;
-    // [639]
+    // [639] — traffic-engine parameters belong to Q11 queue/datapath policy.
     virtual IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *) override { XYLog("DEBUG VTABLE [639] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [640]
     virtual IOReturn setLE_SCAN_PARAM(apple80211_le_scan_params *) override;
@@ -555,7 +579,8 @@ public:
     // [641] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setTIMESYNC_GPIO(apple80211_timesync_gpio *) override { XYLog("DEBUG VTABLE [641] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [642]
+    // [642] — host-clock/timesync setup belongs to Q12 sleep/timing work, not
+    // Q13 generic unsupported-surface debt.
     virtual IOReturn setHOST_CLOCK_INFO(apple80211_host_clock_info *) override { XYLog("DEBUG VTABLE [642] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [643] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.

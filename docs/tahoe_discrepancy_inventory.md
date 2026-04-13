@@ -450,17 +450,11 @@ Initial classification buckets for the next pass:
 Current census from the Tahoe header:
 
 - `56` raw overrides still return `kIOReturnUnsupported`
-- `25` of those still remain open unsupported discrepancies after the first
-  confirmed Apple-unsupported classification batches, the lifted thermal /
-  power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
-  batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
-  LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
-  getter fail-contract zone, and the MWS/NDD setter carrier zone, and the
-  minimal setter-contract zone, and the telemetry/cache getter zone, and the
-  mixed setter control/programming zone, and the diagnostic / roam getter zone
+- `0` now remain as open unsupported discrepancies inside `Q13`
 - `0` overrides still return success from inline ack-only placeholder bodies
 
-Unsupported getter slots still present:
+Raw unsupported getters still present in the header, but no longer carried as
+`Q13` debt:
 
 - `488 getLEAKY_AP_STATS_MODE`
 - `499 getTRAP_INFO`
@@ -471,7 +465,8 @@ Unsupported getter slots still present:
 - `528 getWCL_GET_TX_BLANKING_STATUS`
 - `540 getSYSTEM_SLEEP_CONFIG`
 
-Unsupported setter slots still present:
+Raw unsupported setters still present in the header, but no longer carried as
+`Q13` debt:
 
 - `552 setIE`
 - `553 setWOW_TEST`
@@ -490,6 +485,27 @@ Unsupported setter slots still present:
 - `632 setWCL_UPDATE_FAST_LANE`
 - `639 setTRAFFIC_ENG_PARAMS`
 - `642 setHOST_CLOCK_INFO`
+
+These selectors are now classified into owning zones instead of staying in the
+generic unsupported-surface queue:
+
+- `Q11 Skywalk Datapath / Queue Surface`
+  `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`, `setIE`,
+  `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
+  `setRANGING_AUTHENTICATE`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setWCL_ACTION_FRAME`, `setBYPASS_TX_POWER_CAP`,
+  `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS`
+- `Q12 Sleep / Wake / Reset / Teardown`
+  `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setPOWER_BUDGET`,
+  `setUSB_HOST_NOTIFICATION`, `setHOST_CLOCK_INFO`
+- `Broadcom-private diagnostics / test surface`
+  `getLEAKY_AP_STATS_MODE`, `getTRAP_INFO`, `setLEAKY_AP_STATS_MODE`
+
+This closes `Q13` as a queue: the remaining raw unsupported slots are no longer
+generic unsupported-surface mismatches, but either owner-specific `Q11/Q12`
+work or explicitly reclassified internal-only surfaces.
 
 Closed as the mixed setter control/programming zone and therefore no longer
 part of the open setter list above:
