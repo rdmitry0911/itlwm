@@ -1667,3 +1667,47 @@ contract level:
 
 That leaves no remaining top-level queue debt after `Q12`; only runtime
 verification remains.
+
+## Owner-Family Batch Tooling And Post-Q12 Tightening
+
+To stop doing one-off targeted Ghidra passes manually, the repo now carries a
+single batch launcher:
+
+- [scripts/decompile_owner_family_batch.sh](/Users/bob/Projects/itlwm/scripts/decompile_owner_family_batch.sh)
+- [scripts/ghidra/DecompileOwnerFamilyBatch.py](/Users/bob/Projects/itlwm/scripts/ghidra/DecompileOwnerFamilyBatch.py)
+
+It lifts the 13 owner families in one run against the remote host and writes:
+
+- one file per family under `core/`
+- one file per family under `io80211/`
+- one shared `manifest.txt` with exact symbol matches
+
+This does not by itself close hidden backend parity, but it removes the last
+manual/repetition excuse for the remaining owner-side work.
+
+The first immediate tightening pass after adding that tooling closed a few
+still-visible state drifts without inventing hidden commander behavior:
+
+- `getBTCOEX_PROFILE_ACTIVE(...)` now returns the dedicated
+  `btc_profile_active` cache instead of reusing coarse `btcMode`
+- `setBTCOEX_PROFILE(...)` now stores the full Apple-shaped per-profile table
+  entry by `profileIndex` instead of collapsing everything into one last-seen
+  blob
+- `setWOW_TEST(...)` now mirrors Apple's externally visible retry/enable
+  semantics more closely by treating success as a WoW-enabled state transition,
+  not just a scalar cache write
+
+The deeper hidden owner bodies behind `USB_HOST_NOTIFICATION`, `OFFLOAD_NDP`,
+`BTCOEX_*` commander traffic, ranging auth, and tx-power-cap bypass still
+remain backend-parity work, not queue debt.
+
+Two more public-path mismatches also fell out of the batch bodies and are now
+closed:
+
+- `setOFFLOAD_NDP(...)` must not depend on local BSD/`fNetIf` attachment; the
+  recovered Apple gate is only `NULL -> 0x16`, then the owner-specific path
+  hangs off the hidden IPv6/NDP owner at core `+0x2c20`
+- `setWCL_ACTION_FRAME(...)` must reject oversized payloads with the same
+  Tahoe `0xe00002bc` visible fail shape that both
+  `AppleBCMWLANNetAdapter::sendActionFrame(...)` and `sendActionFrameV2(...)`
+  expose before adapter injection

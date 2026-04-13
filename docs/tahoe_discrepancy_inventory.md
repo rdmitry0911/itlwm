@@ -872,3 +872,44 @@ behavior.
    `setHOST_CLOCK_INFO` was confirmed as a direct Apple `0xe00002c7` stub and
    the other four Q12 slots were already aligned to their recovered contracts.
 5. Re-run the inventory after each batch so the queue stays honest.
+
+### 10. Batch owner-family decompile is now scripted
+
+The repo now has a reproducible one-shot launcher for the 13 hidden owner
+families:
+
+- [scripts/decompile_owner_family_batch.sh](/Users/bob/Projects/itlwm/scripts/decompile_owner_family_batch.sh)
+- [scripts/ghidra/DecompileOwnerFamilyBatch.py](/Users/bob/Projects/itlwm/scripts/ghidra/DecompileOwnerFamilyBatch.py)
+
+It runs headless against the remote Ghidra host, imports temporary single-kext
+projects from `/srv/project/ghidra_output/wifi_kexts/`, and writes:
+
+- `core/<family>.c`
+- `io80211/<family>.c`
+- `manifest.txt`
+
+This makes the remaining owner-body lift reproducible instead of depending on
+ad hoc shell history.
+
+### 11. Immediate post-batch tightening that is now closed
+
+- `BTCOEX_PROFILE_ACTIVE` no longer aliases `btcMode`; it uses its own cached
+  active-profile state, matching the Apple-visible property split
+- `BTCOEX_PROFILE` no longer keeps only one blob; it preserves the ten-entry
+  per-profile table indexed by `profileIndex`, matching the recovered Apple
+  core-state layout
+- `WOW_TEST` no longer behaves as a scalar-only cache write; it now mirrors the
+  visible success side effect of entering WoW-enabled state after accepted test
+  setup
+
+These are no longer counted as drift between local public behavior and the
+reference owner-family decompile.
+
+### 12. Additional post-batch public-path corrections
+
+- `setOFFLOAD_NDP` no longer invents a dependency on local `fNetIf`
+  attachment; the recovered Apple-visible gate is only `NULL -> 0x16`
+  before the hidden IPv6/NDP owner takes over
+- `setWCL_ACTION_FRAME` now preserves the same oversized-request fail gate
+  (`0xe00002bc`) that both recovered Apple action-frame send paths expose
+  before they enter the adapter injector

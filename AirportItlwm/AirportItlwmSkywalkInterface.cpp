@@ -1288,8 +1288,8 @@ init()
     cachedVendorIeLen = 0;
     cachedVendorIeFlags = 0;
     hasCachedVendorIe = false;
-    memset(cachedBtcoexProfile, 0, sizeof(cachedBtcoexProfile));
-    hasCachedBtcoexProfile = false;
+    memset(cachedBtcoexProfiles, 0, sizeof(cachedBtcoexProfiles));
+    cachedBtcoexProfileValidMask = 0;
     cachedBtcoexProfileActive = 0;
     cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
@@ -1305,6 +1305,7 @@ init()
     hasCachedBcnMuteConfig = false;
     cachedEapFilterConfig = 0;
     cachedBypassTxPowerCapEnabled = false;
+    cachedWowEnabled = false;
     memset(cachedAssociatedSleepConfig, 0, sizeof(cachedAssociatedSleepConfig));
     hasCachedAssociatedSleepConfig = false;
     memset(cachedSoiConfig, 0, sizeof(cachedSoiConfig));
@@ -1488,8 +1489,8 @@ init(IOService *provider)
     this->cachedVendorIeLen = 0;
     this->cachedVendorIeFlags = 0;
     this->hasCachedVendorIe = false;
-    memset(this->cachedBtcoexProfile, 0, sizeof(this->cachedBtcoexProfile));
-    this->hasCachedBtcoexProfile = false;
+    memset(this->cachedBtcoexProfiles, 0, sizeof(this->cachedBtcoexProfiles));
+    this->cachedBtcoexProfileValidMask = 0;
     this->cachedBtcoexProfileActive = 0;
     this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
@@ -1505,6 +1506,7 @@ init(IOService *provider)
     this->hasCachedBcnMuteConfig = false;
     this->cachedEapFilterConfig = 0;
     this->cachedBypassTxPowerCapEnabled = false;
+    this->cachedWowEnabled = false;
     memset(this->cachedAssociatedSleepConfig, 0, sizeof(this->cachedAssociatedSleepConfig));
     this->hasCachedAssociatedSleepConfig = false;
     memset(this->cachedSoiConfig, 0, sizeof(this->cachedSoiConfig));
@@ -2430,10 +2432,10 @@ getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
 
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
     memset(raw, 0, 8);
-    // Apple reads a single dword "btc_profile_active" property into caller
-    // +0x4. The local port's closest owner-visible source is the persisted
-    // BTCoex mode state already carried by the controller.
-    *reinterpret_cast<uint32_t *>(raw + 4) = instance ? instance->btcMode : 0;
+    // Apple reads the dedicated "btc_profile_active" property here. Using the
+    // coarse controller-wide btcMode conflates two different selectors and
+    // loses the exact value that setBTCOEX_PROFILE_ACTIVE previously accepted.
+    *reinterpret_cast<uint32_t *>(raw + 4) = cachedBtcoexProfileActive;
     return kIOReturnSuccess;
 }
 
@@ -2671,14 +2673,21 @@ setWOW_TEST(apple80211_wow_test_data *data)
 
     uint32_t mode = *reinterpret_cast<uint32_t *>(raw + 4);
     // The recovered Apple path retries configureWoWTestModeEntry() up to five
-    // times, but the public gate is still strict: only test modes 1..600 are
-    // valid. Preserve that gate and carry the accepted mode locally until the
-    // deeper WoW owner is lifted.
+    // times around the `wake_event` IOVAR and leaves WoW enabled after a
+    // successful setup. The local Tahoe port still lacks Apple's commander
+    // backend, but it can still mirror those externally visible side effects
+    // instead of behaving like a one-shot scalar cache.
     if (mode < 1 || mode > 600)
         return static_cast<IOReturn>(0xe00002c2);
 
-    cachedWowTestMode = mode;
-    return kIOReturnSuccess;
+    for (int retries = 0; retries < 5; retries++) {
+        cachedWowTestMode = mode;
+        cachedWowEnabled = true;
+        if (instance && instance->fNetIf != nullptr)
+            instance->fNetIf->setWoWEnabled(true);
+        return kIOReturnSuccess;
+    }
+    return static_cast<IOReturn>(0xe00002c2);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -2768,8 +2777,8 @@ setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *data)
 
     // Apple only accepts this selector when an internal feature bit at core
     // +0x7584 is set; otherwise the public contract is a direct 0xe00002c7.
-    // That hidden feature owner is not lifted yet, so keep the same visible
-    // fail shape instead of inventing a fake success path.
+    // That hidden feature owner is still not recovered locally, so keep the
+    // exact visible fail shape instead of inventing a bogus feature probe.
     return static_cast<IOReturn>(0xe00002c7);
 }
 
@@ -3667,14 +3676,16 @@ IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
 {
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr || instance == nullptr || instance->fNetIf == nullptr)
+    if (raw == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
     // AppleBCMWLANCore::setOFFLOAD_NDP rejects NULL / missing infra owner with
     // raw 0x16, clamps the IPv6 address count to 4, copies contiguous 16-byte
     // addresses starting at +0x8 into cached owner state, then seeds a link-
-    // local fe80:: address from the first entry. Preserve that public carrier
-    // and state edge here until the deeper keepalive owner is lifted.
+    // local fe80:: address from the first entry. The public path does not gate
+    // on BSD/IO80211 interface attachment, so do not invent an unrelated
+    // `fNetIf` dependency here while the deeper keepalive owner is still
+    // unrecovered.
     uint32_t count = *reinterpret_cast<const uint32_t *>(raw + 4);
     if (count > 4)
         count = 4;
@@ -3743,11 +3754,12 @@ setBTCOEX_PROFILE(apple80211_btcoex_profile *data)
     if (band >= 5 || (mode < 1 || mode > 4) || profileIndex >= 10)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // Apple copies one 0x38-byte profile entry into core state, then programs
-    // the coexistence owner through the commander path. Keep the same public
-    // validation and retain the last profile blob until that owner is lifted.
-    memcpy(cachedBtcoexProfile, raw, sizeof(cachedBtcoexProfile));
-    hasCachedBtcoexProfile = true;
+    // Apple indexes a ten-entry table by profileIndex and stores the full
+    // 0x38-byte entry before it talks to the commander path. Keeping only the
+    // last seen profile blob loses the same per-slot state that Apple exposes
+    // later through its coexistence owner.
+    memcpy(cachedBtcoexProfiles[profileIndex], raw, sizeof(cachedBtcoexProfiles[profileIndex]));
+    cachedBtcoexProfileValidMask |= static_cast<uint16_t>(1U << profileIndex);
     return kIOReturnSuccess;
 }
 
@@ -3974,14 +3986,19 @@ setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
     if (raw == nullptr)
         return kIOReturnBadArgumentTahoe;
 
+    const uint16_t frameLen = *reinterpret_cast<const uint16_t *>(raw + 0xe);
+    if (frameLen >= 0x708)
+        return kIOReturnBadArgumentTahoe;
+
     // AppleBCMWLANCore::setWCL_ACTION_FRAME is a concrete NetAdapter injector
     // that switches between sendActionFrame and sendActionFrameV2 based on the
-    // firmware generation gate at core +0x30c. The local port still lacks that
-    // exact hidden adapter owner, so preserve the visible request carrier
-    // instead of advertising the slot as unsupported.
+    // firmware generation gate at core +0x30c. Both Apple send paths reject
+    // oversized request bodies with 0xe00002bc before they touch the adapter
+    // owner, so keep that visible size gate even though the exact hidden
+    // injector body is still unrecovered locally.
     cachedLastActionFrameCategory = raw[0];
     cachedLastActionFrameChannel = *reinterpret_cast<const uint32_t *>(raw + 4);
-    cachedLastActionFrameLen = *reinterpret_cast<const uint16_t *>(raw + 0xe);
+    cachedLastActionFrameLen = frameLen;
     if (cachedLastActionFrameLen > sizeof(cachedLastActionFrame))
         cachedLastActionFrameLen = sizeof(cachedLastActionFrame);
     memcpy(cachedLastActionFrame, raw + 0x10, cachedLastActionFrameLen);

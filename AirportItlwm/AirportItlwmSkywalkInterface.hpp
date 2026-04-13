@@ -770,8 +770,8 @@ private:
     uint32_t cachedVendorIeLen;
     uint32_t cachedVendorIeFlags;
     bool hasCachedVendorIe;
-    uint8_t cachedBtcoexProfile[0x38];
-    bool hasCachedBtcoexProfile;
+    uint8_t cachedBtcoexProfiles[10][0x38];
+    uint16_t cachedBtcoexProfileValidMask;
     uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[0x200];
@@ -787,6 +787,7 @@ private:
     bool hasCachedBcnMuteConfig;
     uint32_t cachedEapFilterConfig;
     bool cachedBypassTxPowerCapEnabled;
+    bool cachedWowEnabled;
     uint8_t cachedAssociatedSleepConfig[0x58];
     bool hasCachedAssociatedSleepConfig;
     uint8_t cachedSoiConfig[0x40];
