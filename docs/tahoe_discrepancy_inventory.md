@@ -851,7 +851,9 @@ now split into:
 - the still-open top-level `Q12` sleep/wake family
 
 The next passes therefore stopped doing broad unsupported-surface work and
-closed the direct public owner batch body-by-body.
+closed the direct public owner batch body-by-body, then lifted the
+adapter/commander/join-backed public contracts without inventing hidden owner
+behavior.
 
 ## Next Execution Order
 
@@ -862,9 +864,11 @@ closed the direct public owner batch body-by-body.
    `setHT_CAPABILITY`, `setVHT_CAPABILITY`, `setPOWER_BUDGET`,
    `setUSB_HOST_NOTIFICATION`, `setBYPASS_TX_POWER_CAP`,
    `setTRAFFIC_ENG_PARAMS`
-2. Remaining owner-specific work is the adapter/commander/join-backed batch:
+2. Lifted the adapter/commander/join-backed public contract batch:
    `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
    `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
    `setWCL_ACTION_FRAME`, `setRANGING_AUTHENTICATE`
-3. After the remaining owner-specific debt is exhausted, move to `Q12`.
-4. Re-run the inventory after each batch so the queue stays honest.
+3. Remaining owner-specific debt is now the exact hidden-owner body lift for
+   those same families, plus `getHP2P_CTRL`.
+4. After that owner-specific debt is exhausted, move to `Q12`.
+5. Re-run the inventory after each batch so the queue stays honest.

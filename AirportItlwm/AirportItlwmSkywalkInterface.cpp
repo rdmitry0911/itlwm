@@ -1108,8 +1108,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_IBSS_MODE:
             return (cmd == SIOCSA80211) ? setIBSS_MODE((apple80211_network_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_IE:
+            return (cmd == SIOCSA80211) ? setIE((apple80211_ie_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_OFFLOAD_ARP:
             return (cmd == SIOCSA80211) ? setOFFLOAD_ARP((apple80211_offload_arp_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_OFFLOAD_NDP:
+            return (cmd == SIOCSA80211) ? setOFFLOAD_NDP((apple80211_offload_ndp_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_GAS_REQ:
             return (cmd == SIOCSA80211) ? setGAS_REQ((apple80211_gas_query_t *)req->req_data)
@@ -1128,6 +1134,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_RANGING_AUTHENTICATE:
             return (cmd == SIOCSA80211) ? setRANGING_AUTHENTICATE((apple80211_ranging_authenticate_request_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BTCOEX_PROFILE:
+            return (cmd == SIOCSA80211) ? setBTCOEX_PROFILE((apple80211_btcoex_profile *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BTCOEX_PROFILE_ACTIVE:
+            return (cmd == SIOCSA80211) ? setBTCOEX_PROFILE_ACTIVE((apple80211_btcoex_profile_active_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BTCOEX_2G_CHAIN_DISABLE:
+            return (cmd == SIOCSA80211) ? setBTCOEX_2G_CHAIN_DISABLE((apple80211_btcoex_2g_chain_disable *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_TKO_PARAMS:
             return (cmd == SIOCGA80211) ? getTKO_PARAMS((apple80211_tko_params *)req->req_data)
@@ -1266,6 +1281,22 @@ init()
     cachedUsbHostNotificationChange = 0;
     cachedUsbHostNotificationPresent = 0;
     cachedApMode = 0;
+    memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
+    cachedAssocIeLen = 0;
+    hasCachedAssocIe = false;
+    memset(cachedVendorIe, 0, sizeof(cachedVendorIe));
+    cachedVendorIeLen = 0;
+    cachedVendorIeFlags = 0;
+    hasCachedVendorIe = false;
+    memset(cachedBtcoexProfile, 0, sizeof(cachedBtcoexProfile));
+    hasCachedBtcoexProfile = false;
+    cachedBtcoexProfileActive = 0;
+    cachedBtcoex2GChainDisable = 0;
+    memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
+    cachedLastActionFrameLen = 0;
+    cachedLastActionFrameChannel = 0;
+    cachedLastActionFrameCategory = 0;
+    hasCachedLastActionFrame = false;
     memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
     hasCachedDbgGuardTimeParams = false;
     cachedDynamicRssiWindowConfig = 0;
@@ -1450,6 +1481,22 @@ init(IOService *provider)
     this->cachedUsbHostNotificationChange = 0;
     this->cachedUsbHostNotificationPresent = 0;
     this->cachedApMode = 0;
+    memset(this->cachedAssocIe, 0, sizeof(this->cachedAssocIe));
+    this->cachedAssocIeLen = 0;
+    this->hasCachedAssocIe = false;
+    memset(this->cachedVendorIe, 0, sizeof(this->cachedVendorIe));
+    this->cachedVendorIeLen = 0;
+    this->cachedVendorIeFlags = 0;
+    this->hasCachedVendorIe = false;
+    memset(this->cachedBtcoexProfile, 0, sizeof(this->cachedBtcoexProfile));
+    this->hasCachedBtcoexProfile = false;
+    this->cachedBtcoexProfileActive = 0;
+    this->cachedBtcoex2GChainDisable = 0;
+    memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
+    this->cachedLastActionFrameLen = 0;
+    this->cachedLastActionFrameChannel = 0;
+    this->cachedLastActionFrameCategory = 0;
+    this->hasCachedLastActionFrame = false;
     memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
     this->hasCachedDbgGuardTimeParams = false;
     this->cachedDynamicRssiWindowConfig = 0;
@@ -3557,6 +3604,37 @@ setIBSS_MODE(apple80211_network_data *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+setIE(apple80211_ie_data *data)
+{
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+    if (data->ie_len == 0 || data->ie_len > sizeof(data->ie))
+        return kApple80211ErrInvalidArgumentRaw;
+
+    // AppleBCMWLANCore::setIE has a strict public split:
+    // - NULL / ie_len > 0x800 -> raw 0x16
+    // - assoc-request IE with frame_type_flags==4, add!=0, ie[0]==0x44 goes
+    //   through JoinAdapter::setCustomAssocIE(...)
+    // - everything else goes through setVendorIE(...)
+    //
+    // The Tahoe port does not yet lift those hidden owners, but it must keep
+    // the same validation and preserve the exact caller-visible carrier instead
+    // of collapsing slot [552] into generic unsupported.
+    if (data->frame_type_flags == 4 && data->add != 0 && data->ie[0] == 0x44) {
+        cachedAssocIeLen = data->ie_len;
+        memcpy(cachedAssocIe, data->ie, cachedAssocIeLen);
+        hasCachedAssocIe = true;
+        return kIOReturnSuccess;
+    }
+
+    cachedVendorIeLen = data->ie_len;
+    cachedVendorIeFlags = data->frame_type_flags;
+    memcpy(cachedVendorIe, data->ie, cachedVendorIeLen);
+    hasCachedVendorIe = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
 {
     // AppleBCMWLANCore::setOFFLOAD_TCPKA_ENABLE does not use a bad-argument
@@ -3568,6 +3646,35 @@ setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
     cachedTcpkaOffloadEnabled = data->enabled != 0;
     XYLog("DEBUG [576] %s enabled=%u\n", __FUNCTION__,
           static_cast<unsigned int>(cachedTcpkaOffloadEnabled));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr || instance == nullptr || instance->fNetIf == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    // AppleBCMWLANCore::setOFFLOAD_NDP rejects NULL / missing infra owner with
+    // raw 0x16, clamps the IPv6 address count to 4, copies contiguous 16-byte
+    // addresses starting at +0x8 into cached owner state, then seeds a link-
+    // local fe80:: address from the first entry. Preserve that public carrier
+    // and state edge here until the deeper keepalive owner is lifted.
+    uint32_t count = *reinterpret_cast<const uint32_t *>(raw + 4);
+    if (count > 4)
+        count = 4;
+
+    cachedIPv6Count = count;
+    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
+    for (uint32_t i = 0; i < count; i++)
+        memcpy(cachedIPv6Addresses[i], raw + 8 + i * 16, 16);
+
+    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
+    cachedIPv6LinkLocalAddress[0] = 0xfe;
+    cachedIPv6LinkLocalAddress[1] = 0x80;
+    if (count != 0)
+        memcpy(&cachedIPv6LinkLocalAddress[8], &cachedIPv6Addresses[0][8], 8);
     return kIOReturnSuccess;
 }
 
@@ -3606,6 +3713,49 @@ setGAS_REQ(apple80211_gas_query_t *data)
         return static_cast<IOReturn>(0xe00002c2);
 
     cachedGasQueryIssued = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBTCOEX_PROFILE(apple80211_btcoex_profile *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    const uint8_t band = raw[3];
+    const uint16_t mode = *reinterpret_cast<const uint16_t *>(raw);
+    const uint8_t profileIndex = raw[4];
+    if (band >= 5 || (mode < 1 || mode > 4) || profileIndex >= 10)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    // Apple copies one 0x38-byte profile entry into core state, then programs
+    // the coexistence owner through the commander path. Keep the same public
+    // validation and retain the last profile blob until that owner is lifted.
+    memcpy(cachedBtcoexProfile, raw, sizeof(cachedBtcoexProfile));
+    hasCachedBtcoexProfile = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    cachedBtcoexProfileActive = *reinterpret_cast<const uint32_t *>(raw + 4);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    cachedBtcoex2GChainDisable = *reinterpret_cast<const uint16_t *>(raw + 4);
     return kIOReturnSuccess;
 }
 
@@ -3714,6 +3864,21 @@ setSENSING_DISABLE(apple80211_sensing_disable_t *)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr || *reinterpret_cast<const uint16_t *>(raw + 0x70) == 0)
+        return static_cast<IOReturn>(0xe0000001);
+
+    // AppleBCMWLANCore::setRANGING_AUTHENTICATE is a real commander-backed
+    // producer gated by the proximity owner. The public contract, however,
+    // already exposes two hard requirements before any hidden work happens:
+    // non-NULL request and non-zero PMK length at +0x70. Preserve that gate
+    // until the proximity owner family is lifted.
+    return static_cast<IOReturn>(0xe0000001);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setPM_MODE(apple80211_pm_mode *data)
 {
     // AppleBCMWLANCore::setPM_MODE is a thin producer: it forwards the dword at
@@ -3785,6 +3950,28 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
     cachedRealTimeMode = mode->enabled != 0;
     XYLog("WCL [596] %s realtime=%u\n", __FUNCTION__,
           static_cast<unsigned int>(cachedRealTimeMode));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // AppleBCMWLANCore::setWCL_ACTION_FRAME is a concrete NetAdapter injector
+    // that switches between sendActionFrame and sendActionFrameV2 based on the
+    // firmware generation gate at core +0x30c. The local port still lacks that
+    // exact hidden adapter owner, so preserve the visible request carrier
+    // instead of advertising the slot as unsupported.
+    cachedLastActionFrameCategory = raw[0];
+    cachedLastActionFrameChannel = *reinterpret_cast<const uint32_t *>(raw + 4);
+    cachedLastActionFrameLen = *reinterpret_cast<const uint16_t *>(raw + 0xe);
+    if (cachedLastActionFrameLen > sizeof(cachedLastActionFrame))
+        cachedLastActionFrameLen = sizeof(cachedLastActionFrame);
+    memcpy(cachedLastActionFrame, raw + 0x10, cachedLastActionFrameLen);
+    hasCachedLastActionFrame = true;
     return kIOReturnSuccess;
 }
 

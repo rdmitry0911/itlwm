@@ -346,7 +346,7 @@ public:
     // lives on the non-Tahoe controller branch (`AirportItlwm.hpp`), so the
     // former Q11-A umbrella queue is closed but this exact owner mismatch
     // remains isolated here.
-    virtual IOReturn setIE(apple80211_ie_data *) override { XYLog("DEBUG VTABLE [552] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setIE(apple80211_ie_data *) override;
     // [553] — wake-on-wireless test/debug surface. Classified to Q12/internal
     // test coverage, not Q13.
     virtual IOReturn setWOW_TEST(apple80211_wow_test_data *) override;
@@ -363,7 +363,7 @@ public:
     virtual IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data *) override;
     // [558] — NDP offload setup now sits in Q11-C3 nearby/NDP ownership after
     // closing the broader Q11-C umbrella queue.
-    virtual IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data *) override { XYLog("DEBUG VTABLE [558] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data *) override;
     // [559] — AppleBCMWLANCore rejects NULL with 0xe00002c2 and otherwise
     // delegates into the GAS owner path.
     virtual IOReturn setGAS_REQ(apple80211_gas_query_t *) override;
@@ -398,22 +398,22 @@ public:
     virtual IOReturn setRANGING_START(apple80211_ranging_start_request_t *) override;
     // [569] — feature-gated ranging/authentication path now sits in Q11-C3
     // nearby/ranging ownership after closing the broader Q11-C umbrella queue.
-    virtual IOReturn setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *) override { XYLog("DEBUG VTABLE [569] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *) override;
     // [570] — AppleBCMWLANCore copies six public dwords into the keepalive
     // owner when it exists, otherwise returns 0xe00002bc.
     virtual IOReturn setTKO_PARAMS(apple80211_tko_params *) override;
     // [571] — RF coexistence programming now sits in Q11-B2 coexistence owner
     // work after closing the broader Q11-B umbrella queue.
-    virtual IOReturn setBTCOEX_PROFILE(apple80211_btcoex_profile *) override { XYLog("DEBUG VTABLE [571] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setBTCOEX_PROFILE(apple80211_btcoex_profile *) override;
     // [572] — RF coexistence programming now sits in Q11-B2 coexistence owner
     // work after closing the broader Q11-B umbrella queue.
-    virtual IOReturn setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override { XYLog("DEBUG VTABLE [572] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override;
     // [573] — Tahoe validates the public carrier and returns the fixed fail
     // `0xe00002bc` from the visible path rather than generic unsupported.
     virtual IOReturn setTHERMAL_INDEX(apple80211_thermal_index_t *) override;
     // [574] — RF coexistence/radio programming now sits in Q11-B2 after
     // closing the broader Q11-B umbrella queue.
-    virtual IOReturn setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override { XYLog("DEBUG VTABLE [574] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override;
     // [575] — power-budget policy belongs to Q12 power/sleep work, not Q13.
     virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [576]
@@ -508,7 +508,7 @@ public:
     virtual IOReturn setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *) override;
     // [609] — action-frame injection now sits in Q11-A2 net-adapter frame
     // injection ownership after closing the broader Q11-A umbrella queue.
-    virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override { XYLog("DEBUG VTABLE [609] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override;
     // [610]
     // [610] — AppleBCMWLANCore delegates to GASAdapter with no payload.
     virtual IOReturn setGAS_ABORT(void *) override;
@@ -762,6 +762,22 @@ private:
     uint32_t cachedUsbHostNotificationChange;
     uint32_t cachedUsbHostNotificationPresent;
     uint32_t cachedApMode;
+    uint8_t cachedAssocIe[2048];
+    uint32_t cachedAssocIeLen;
+    bool hasCachedAssocIe;
+    uint8_t cachedVendorIe[2048];
+    uint32_t cachedVendorIeLen;
+    uint32_t cachedVendorIeFlags;
+    bool hasCachedVendorIe;
+    uint8_t cachedBtcoexProfile[0x38];
+    bool hasCachedBtcoexProfile;
+    uint32_t cachedBtcoexProfileActive;
+    uint16_t cachedBtcoex2GChainDisable;
+    uint8_t cachedLastActionFrame[0x200];
+    uint16_t cachedLastActionFrameLen;
+    uint32_t cachedLastActionFrameChannel;
+    uint8_t cachedLastActionFrameCategory;
+    bool hasCachedLastActionFrame;
     uint8_t cachedDbgGuardTimeParams[8];
     bool hasCachedDbgGuardTimeParams;
     uint32_t cachedDynamicRssiWindowConfig;

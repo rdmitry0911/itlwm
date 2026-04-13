@@ -1634,6 +1634,12 @@ Specific recovered Apple contracts that materially narrow the remaining work:
 - `AppleBCMWLANCore::setWCL_ACTION_FRAME(...)` is a concrete net-adapter path,
   not a placeholder: it chooses `sendActionFrame` vs `sendActionFrameV2`
   from core state `+0x30c`
+- the local Tahoe port now mirrors the recovered public contracts for
+  `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setWCL_ACTION_FRAME`, and the visible gate for
+  `setRANGING_AUTHENTICATE`; what remains is the exact hidden owner body
+  behind those wrappers, not generic unsupported surface
 - `AppleBCMWLANCore::setTRAFFIC_ENG_PARAMS(...)` is a feature-gated public
   contract, not a deep owner body: `NULL -> 0xe00002bc`, feature bit
   `+0x7584` set -> success, else `0xe00002c7`
