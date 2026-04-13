@@ -31,6 +31,31 @@ for these selectors is now centralized:
 - owner-targeted state block
 - selector-tagged command context
 
+## Commander V2 First Engineering Batch
+
+The first implementation batch for the remaining backend layer now replaces the
+single monolithic commander header with a split internal architecture:
+
+- `TahoeOwnerBase`
+- `TahoeCommandRouter`
+- `TahoeOwners`
+- `TahoeCommanderV2`
+
+This batch only moves the first four owner families into explicit owner
+objects:
+
+- `USB_HOST_NOTIFICATION`
+- `BTCOEX_PROFILE_ACTIVE`
+- `BTCOEX_2G_CHAIN_DISABLE`
+- `BYPASS_TX_POWER_CAP`
+
+`setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`, `setWCL_ACTION_FRAME`, and
+`setRANGING_AUTHENTICATE` still enter `TahoeCommanderV2`, but their owner
+bodies remain inline in the commander until the async/virtual-target batches
+arrive. The important engineering change is that the layer boundary is now in
+place: future lifts can move family-by-family into owners without rewriting the
+Skywalk entrypoints again.
+
 ## Goal
 
 Stop treating Tahoe bring-up failures as isolated symptom fixes. Audit each

@@ -97,6 +97,14 @@ This inventory is intentionally split into:
   much more closely and removes the remaining pre-`Q12` implementation debt
   outside the queue system.
 
+- `Commander V2 first engineering batch`:
+  the internal layer is now split into router/base/owner components, and the
+  first four owner families (`USB_HOST_NOTIFICATION`,
+  `BTCOEX_PROFILE_ACTIVE`, `BTCOEX_2G_CHAIN_DISABLE`,
+  `BYPASS_TX_POWER_CAP`) no longer live as monolithic commander branches.
+  Remaining families still need to move into dedicated owners, but the
+  implementation boundary is now stable.
+
 - `PLATFORM_CONFIG`:
   Tahoe 7-byte packed producer path recovered and implemented.
   See [tahoe_platform_config_root_cause.md](/Users/bob/Projects/itlwm/docs/tahoe_platform_config_root_cause.md).
