@@ -69,8 +69,9 @@ This inventory is intentionally split into:
   remaining adapter-owner exactness is tracked under `Q13`
 
 - `Q11 Skywalk Datapath / Queue Surface`:
-  open
-  large unsupported override surface still unclassified slot-by-slot
+  closed
+  queue hierarchy exhausted earlier; only owner/runtime parity remained after
+  that and is no longer tracked as queue debt
 
 - `Q12 Sleep / Wake / Reset / Teardown`:
   closed
@@ -104,6 +105,12 @@ This inventory is intentionally split into:
   `BYPASS_TX_POWER_CAP`) no longer live as monolithic commander branches.
   Remaining families still need to move into dedicated owners, but the
   implementation boundary is now stable.
+
+- `Commander V2 transport/completion batch`:
+  the remaining pre-`Q12` families now also live behind owner classes and
+  `TahoeCommanderV2` carries explicit transport/completion state rather than
+  only state-carrier shims. What remains after this batch is runtime proof on a
+  live system, not another missing architectural split in the local backend.
 
 - `PLATFORM_CONFIG`:
   Tahoe 7-byte packed producer path recovered and implemented.

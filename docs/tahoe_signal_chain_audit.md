@@ -56,6 +56,36 @@ arrive. The important engineering change is that the layer boundary is now in
 place: future lifts can move family-by-family into owners without rewriting the
 Skywalk entrypoints again.
 
+## Commander V2 Completion / Transport Batch
+
+The remaining families now also live in dedicated owner classes:
+
+- `TahoeJoinIeOwner`
+- `TahoeNdpOwner`
+- `TahoeActionFrameOwner`
+- `TahoeRangingOwner`
+
+And `TahoeCommanderV2` now carries an explicit internal dispatch fabric:
+
+- `dispatchIOVarSet`
+- `dispatchVirtualIOVarSet`
+- `dispatchVirtualIOCtlSet`
+- `dispatchIssueCommand`
+- `dispatchHiddenCallback`
+
+`TahoeAsyncCommandContext` was extended with:
+
+- token
+- transport kind
+- request/response sizes
+- step count
+- timeout/completion state
+
+This still does not speak real Broadcom firmware, but it removes the last
+monolithic "cache then success" shape from the remaining pre-`Q12` backend
+families. The unresolved part after this batch is runtime parity on a live
+system, not another missing internal split.
+
 ## Goal
 
 Stop treating Tahoe bring-up failures as isolated symptom fixes. Audit each

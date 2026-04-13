@@ -7,6 +7,7 @@
 #define TahoeOwnerBase_hpp
 
 #include "TahoeAsyncCommandContext.hpp"
+#include "TahoeCompletion.hpp"
 
 class TahoeOwnerBase {
 public:
