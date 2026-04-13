@@ -43,6 +43,26 @@ static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
 
+static bool isInvalidTahoeLqmThresholdByte(uint8_t value)
+{
+    // AppleBCMWLANCore::setLQM_CONFIG rejects any byte in the inclusive range
+    // [0x0b, 0x9b] for the seven-byte threshold subfield starting at +0x11.
+    return static_cast<uint8_t>(value - 0x0bU) < 0x91U;
+}
+
+static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
+{
+    memset(config, 0, sizeof(*config));
+    config->version = APPLE80211_VERSION;
+    // IO80211LQMData mirrors one interval across the first three dwords of the
+    // public carrier. Tahoe family-side validation only accepts 1000 or 5000
+    // in that role; initialize the local cache to the lower valid interval
+    // instead of inventing a non-Apple default.
+    config->sample_period_ms = 1000;
+    config->tx_per_interval_ms = 1000;
+    config->rx_loss_interval_ms = 1000;
+}
+
 static int ieeeChanFlag2apple(int flags, int bw)
 {
     int ret = 0;
@@ -756,6 +776,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_POWER_BUDGET:
             return (cmd == SIOCGA80211) ? getPOWER_BUDGET((apple80211_power_budget_t *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_LQM_CONFIG:
+            if (cmd == SIOCGA80211)
+                return getLQM_CONFIG((apple80211_lqm_config_t *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setLQM_CONFIG((apple80211_lqm_config_t *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_PRIVATE_MAC:
             return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -902,6 +928,8 @@ init()
     memset(cachedUserRoamCache, 0, sizeof(cachedUserRoamCache));
     hasCachedUserRoamCache = false;
     cachedPmMode = 0;
+    initializeTahoeLqmConfig(&cachedLqmConfig);
+    hasCachedLqmConfig = false;
     cachedScanHomeAwayTime = 0;
     memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
     hasCachedWnmConfig = false;
@@ -1022,6 +1050,8 @@ init(IOService *provider)
     memset(this->cachedUserRoamCache, 0, sizeof(this->cachedUserRoamCache));
     this->hasCachedUserRoamCache = false;
     this->cachedPmMode = 0;
+    initializeTahoeLqmConfig(&this->cachedLqmConfig);
+    this->hasCachedLqmConfig = false;
     this->cachedScanHomeAwayTime = 0;
     memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
     this->hasCachedWnmConfig = false;
@@ -1681,6 +1711,38 @@ getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->enabled = cachedTcpkaOffloadEnabled ? 1U : 0U;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getLQM_CONFIG(apple80211_lqm_config_t *data)
+{
+    // The Tahoe LQM getter is a real producer, not an unsupported slot.
+    // IO80211LQMData exposes a stable 0x24-byte carrier and AppleBCMWLANCore
+    // forwards the same public ABI from its own owner state. The local port
+    // does not have the hidden Broadcom LQM owner, but it can still preserve
+    // the exact caller-visible carrier and validation contract.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    if (!hasCachedLqmConfig)
+        initializeTahoeLqmConfig(&cachedLqmConfig);
+
+    memcpy(data, &cachedLqmConfig, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getLQM_SUMMARY(apple80211_lqm_summary *data)
+{
+    // IO80211LQMData::getLQM_SUMMARY simply zeroes a fixed 0x15a0-byte caller
+    // buffer. Tahoe should therefore export the same summary blob ABI instead
+    // of leaving slot [520] on generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    memset(data, 0, sizeof(*data));
     return kIOReturnSuccess;
 }
 
@@ -2471,6 +2533,41 @@ setPM_MODE(apple80211_pm_mode *data)
     const IOReturn rc = setPOWERSAVE(&pd);
     XYLog("DEBUG [584] %s mode=%u rc=0x%x\n", __FUNCTION__, data->mode, rc);
     return rc;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setLQM_CONFIG(apple80211_lqm_config_t *data)
+{
+    // AppleBCMWLANCore::setLQM_CONFIG is not a blind setter. Tahoe validates
+    // the public 0x24-byte carrier before forwarding it into the LQM owner.
+    // Reproduce those exact caller-visible checks so the port no longer
+    // advertises slot [577] as unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    if (data->sample_period_ms < 1000 || data->tx_per_interval_ms < 1000 ||
+        data->rx_loss_interval_ms < 1000)
+        return static_cast<IOReturn>(0x2d);
+
+    const uint8_t *thresholdBytes =
+        reinterpret_cast<const uint8_t *>(data) + 0x11;
+    for (size_t i = 0; i < 7; i++) {
+        if (isInvalidTahoeLqmThresholdByte(thresholdBytes[i]))
+            return static_cast<IOReturn>(0x16);
+    }
+    for (size_t i = 0; i < sizeof(data->opaque_tail_19); i++) {
+        if (data->opaque_tail_19[i] > 99)
+            return static_cast<IOReturn>(0x16);
+    }
+
+    memcpy(&cachedLqmConfig, data, sizeof(cachedLqmConfig));
+    cachedLqmConfig.version = APPLE80211_VERSION;
+    hasCachedLqmConfig = true;
+    XYLog("DEBUG [577] %s sample=%u tx_per=%u rx_loss=%u enabled=%u\n",
+          __FUNCTION__, cachedLqmConfig.sample_period_ms,
+          cachedLqmConfig.tx_per_interval_ms,
+          cachedLqmConfig.rx_loss_interval_ms,
+          static_cast<unsigned int>(cachedLqmConfig.enabled));
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

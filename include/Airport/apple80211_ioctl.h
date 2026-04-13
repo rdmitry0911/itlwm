@@ -467,6 +467,36 @@ struct apple80211_offload_tcpka_enable_t {
 static_assert(sizeof(struct apple80211_offload_tcpka_enable_t) == 0x08,
               "apple80211_offload_tcpka_enable_t must match Apple version + u32 ABI");
 
+struct apple80211_lqm_config_t {
+    uint32_t    version;
+    uint32_t    sample_period_ms;
+    uint32_t    tx_per_interval_ms;
+    uint32_t    rx_loss_interval_ms;
+    // Apple writes the rest of this carrier through unaligned offsets
+    // (+0x11/+0x15/+0x17/+0x18/+0x19), so keep the ABI offset-accurate and
+    // avoid inventing semantic field names that are not yet fully recovered.
+    uint8_t     reserved10;
+    uint32_t    opaque_word_11;
+    uint16_t    opaque_word_15;
+    uint8_t     opaque_byte_17;
+    uint8_t     enabled;
+    uint8_t     opaque_tail_19[8];
+    uint8_t     reserved21[3];
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_lqm_config_t) == 0x24,
+              "apple80211_lqm_config_t must preserve the recovered 0x24 Tahoe ABI");
+
+struct apple80211_lqm_summary {
+    // IO80211LQMData::getLQM_SUMMARY zeroes a fixed 0x15a0-byte caller blob.
+    // The internal field map is not required for the consumer contract yet,
+    // but the ABI size must stay exact for Tahoe callers.
+    uint8_t     opaque[0x15a0];
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_lqm_summary) == 0x15a0,
+              "apple80211_lqm_summary must match the fixed Tahoe summary blob");
+
 struct apple80211_channel_data
 {
     u_int32_t                    version;

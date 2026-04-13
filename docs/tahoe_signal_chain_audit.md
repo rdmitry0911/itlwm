@@ -1094,3 +1094,45 @@ So the hidden `+0x1510` object is now closed as a queue:
 - the system-visible producer/consumer obligations are modeled
 - the remaining named xrefs are explicitly classified as Broadcom-private
   internal surface and no longer kept as unresolved system-contract debt
+
+## Q13 Batch: LQM carrier zone leaves the unsupported tail
+
+The next clean `Q13` zone was the LQM carrier surface:
+
+- `getLQM_CONFIG`
+- `setLQM_CONFIG`
+- `getLQM_SUMMARY`
+- `getLQM_STATISTICS`
+
+This zone no longer depended on the hidden Broadcom producer transport. The
+recovered Apple evidence was already strong enough at the family/core boundary:
+
+- `IO80211LQMData::getLQM_CONFIG(...)` exposes a fixed `0x24` carrier and
+  mirrors one interval value into the first three dwords
+- `IO80211LQMData::setLQM_CONFIG(...)` validates only two legal primary
+  intervals (`1000` / `5000`) and keeps the caller-visible ABI fixed
+- `IO80211LQMData::getLQM_SUMMARY(...)` zeroes a fixed `0x15a0` summary blob
+- `AppleBCMWLANCore::getLQM_CONFIG(...)` / `setLQM_CONFIG(...)` preserve the
+  same public carrier shape while sourcing state from the vendor owner
+- `AppleBCMWLANInfraProtocol::getLQM_STATISTICS(...)` is a direct
+  `return 0xe00002c7;` stub on Tahoe
+
+That is enough to make a narrow lift without guessing:
+
+- `getLQM_CONFIG` now exposes the recovered `0x24` carrier instead of generic
+  unsupported
+- `setLQM_CONFIG` now follows the recovered Tahoe validation ranges before
+  caching the public blob
+- `getLQM_SUMMARY` now returns the fixed zeroed summary payload rather than an
+  unsupported error
+- `getLQM_STATISTICS` is no longer treated as an "unknown missing producer":
+  it is explicitly classified as Apple-unsupported on Tahoe
+
+This does not claim that the full hidden Broadcom LQM owner is lifted. The
+architectural correction is narrower and system-facing:
+
+- the public Apple80211 ABI for the LQM config/summary selectors now matches
+  the recovered family/core contract, and the known BSD IOC reachability is
+  restored for `LQM_CONFIG`
+- the one selector that Apple does not implement (`getLQM_STATISTICS`) stays
+  explicitly unsupported instead of being kept in the generic open bucket

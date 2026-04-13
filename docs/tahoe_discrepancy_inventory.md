@@ -380,11 +380,12 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `128` raw overrides still return `kIOReturnUnsupported`
-- `96` of those still remain open unsupported discrepancies after the first
+- `125` raw overrides still return `kIOReturnUnsupported`
+- `93` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
-  batch, the simple setter-carrier zone, and the HE/P2P getter mini-batch
+  batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
+  LQM carrier zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -405,7 +406,6 @@ Unsupported getter slots still present:
 - `499 getTRAP_INFO`
 - `501 getMAX_NSS_FOR_AP`
 - `502 getBTCOEX_2G_CHAIN_DISABLE`
-- `506 getLQM_CONFIG`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`
 - `508 getBEACON_INFO`
 - `509 getCHIP_POWER_RANGE`
@@ -416,7 +416,6 @@ Unsupported getter slots still present:
 - `516 getMIMO_STATUS`
 - `517 getCUR_PMK`
 - `518 getDYNSAR_DETAIL`
-- `520 getLQM_SUMMARY`
 - `521 getSLOW_WIFI_FEATURE_ENABLED`
 - `523 getSENSING_DATA`
 - `524 getWCL_FW_HOT_CHANNELS`
@@ -460,7 +459,6 @@ Unsupported setter slots still present:
 - `574 setBTCOEX_2G_CHAIN_DISABLE`
 - `575 setPOWER_BUDGET`
 - `576 setOFFLOAD_TCPKA_ENABLE`
-- `577 setLQM_CONFIG`
 - `578 setDYNAMIC_RSSI_WINDOW_CONFIG`
 - `579 setUSB_HOST_NOTIFICATION`
 - `580 setHP2P_CTRL`
@@ -558,6 +556,25 @@ not the recovered Apple producer routes.
 
 This does not automatically mean they are wrong in all cases, but it is a real
 architectural discrepancy and needs a dedicated lift.
+
+### 5a. LQM config / summary public ABI is no longer part of the open tail
+
+Recovered Apple evidence was strong enough to remove the public LQM carrier
+surface from the generic unsupported bucket:
+
+- `IO80211LQMData::getLQM_CONFIG(...)` uses a fixed `0x24` carrier
+- `IO80211LQMData::setLQM_CONFIG(...)` validates the public carrier before
+  updating internal state
+- `IO80211LQMData::getLQM_SUMMARY(...)` zeroes a fixed `0x15a0` summary blob
+- `AppleBCMWLANInfraProtocol::getLQM_STATISTICS(...)` is a direct
+  `0xe00002c7` stub on Tahoe
+
+Status:
+
+- `getLQM_CONFIG`: closed
+- `setLQM_CONFIG`: closed
+- `getLQM_SUMMARY`: closed
+- `getLQM_STATISTICS`: closed as `Apple also unsupported`
 
 ### 6. Legacy STA dispatcher still carries a shadow mismatch surface
 

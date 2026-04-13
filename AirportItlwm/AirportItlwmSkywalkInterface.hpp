@@ -191,7 +191,7 @@ public:
     // stub on Tahoe.
     virtual IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t *) override { XYLog("DEBUG VTABLE [505] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [506]
-    virtual IOReturn getLQM_CONFIG(apple80211_lqm_config_t *) override { XYLog("DEBUG VTABLE [506] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getLQM_CONFIG(apple80211_lqm_config_t *) override;
     // [507]
     virtual IOReturn getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *) override { XYLog("DEBUG VTABLE [507] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [508]
@@ -221,7 +221,7 @@ public:
     // selector on Tahoe.
     virtual IOReturn getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *) override { XYLog("DEBUG VTABLE [519] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [520]
-    virtual IOReturn getLQM_SUMMARY(apple80211_lqm_summary *) override { XYLog("DEBUG VTABLE [520] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getLQM_SUMMARY(apple80211_lqm_summary *) override;
     // [521]
     virtual IOReturn getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *) override { XYLog("DEBUG VTABLE [521] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [522]
@@ -268,6 +268,10 @@ public:
     // [541]
     virtual IOReturn getSMARTCCA_OPMODE(apple80211_smartcca_opmode *) override { XYLog("DEBUG VTABLE [541] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [542]
+    // [542] — AppleBCMWLANInfraProtocol::getLQM_STATISTICS is a direct
+    // `return 0xe00002c7;` stub on Tahoe. Keep it explicitly unsupported
+    // instead of advertising a producer path that the reference driver does
+    // not expose.
     virtual IOReturn getLQM_STATISTICS(apple80211_lqm_statistics *) override { XYLog("DEBUG VTABLE [542] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [543]
     virtual IOReturn getHE_CAPABILITY(apple80211_he_capability *) override;
@@ -343,7 +347,7 @@ public:
     // [576]
     virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
     // [577]
-    virtual IOReturn setLQM_CONFIG(apple80211_lqm_config_t *) override { XYLog("DEBUG VTABLE [577] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setLQM_CONFIG(apple80211_lqm_config_t *) override;
     // [578]
     virtual IOReturn setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *) override { XYLog("DEBUG VTABLE [578] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [579]
@@ -573,6 +577,8 @@ private:
     uint8_t cachedUserRoamCache[0x7c];
     bool hasCachedUserRoamCache;
     uint32_t cachedPmMode;
+    apple80211_lqm_config_t cachedLqmConfig;
+    bool hasCachedLqmConfig;
     uint32_t cachedScanHomeAwayTime;
     uint8_t cachedWnmConfig[0x338];
     bool hasCachedWnmConfig;
