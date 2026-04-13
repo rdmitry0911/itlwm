@@ -649,32 +649,32 @@ bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
     XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
-    // init(IOService*, ether_addr*) is at IO80211SkywalkInterface vtable
-    // secondary slot 413 (offset 0xCE8).  Called from AirportItlwm::start()
-    // with provider=AirportItlwm*, addr=&hardwareAddress.
+    // Tahoe attach-chain recovery closed the earlier ambiguity here.
     //
-    // IMPORTANT: the framework does NOT call this method.  The adjacent slot
-    // isInterfaceEnabled() (slot 414, offset 0xCF0) IS called by
-    // IO80211MacAddressAgent::updateMacAddress during IO80211SkywalkInterface::start.
-    // A vtable misalignment (extra slot in IOSkywalkEthernetInterface) previously
-    // caused the framework's isInterfaceEnabled call to dispatch here instead,
-    // with ether_addr* as provider → crash in OSDynamicCast.  Fixed by removing
-    // the spurious registerNetworkInterfaceWithLogicalLink from
-    // IOSkywalkEthernetInterface.h (see comment there).
-    // V16→V18 history: V17 switched to IO80211SkywalkInterface::init(provider,addr)
-    // and V18 to IO80211InfraInterface::init(provider,addr), both trying to bind
-    // the controller/MAC path earlier.  V18 caused a kernel panic:
-    //   IO80211InfraInterface::linkState() + 0xb, CR2=0x18
-    // because this+0x128 (InfraInterface ivars, allocated during start()) was NULL
-    // when vlogDebug() called linkState() inside PeerManager::initWithInterface().
-    // The 2-arg overloads do NOT allocate this+0x128 — only start() does.
-    // V16 used 0-arg IO80211InfraInterface::init() and worked correctly (no panic,
-    // networks visible). Reverted to V16 approach.
-    if (!IO80211InfraInterface::init()) {
-        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
+    // docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml
+    // shows that the real 26.x step 1 is:
+    //   IO80211InfraInterface::init(IOService *controller, ether_addr *macAddr)
+    // not the older V16-style no-arg init().
+    //
+    // That 2-arg path is part of the producer-side interface construction
+    // contract before registerEthernetInterface -> start() -> deferBSDAttach.
+    // Keeping Tahoe on the no-arg init left the port on a non-Apple
+    // initialization path before any later readiness / role / scan consumers
+    // ran.  The old local comment claiming V16 was the correct architecture is
+    // disproven by the recovered xref-level attach chain, so use the real
+    // Tahoe init path here.
+    //
+    // The earlier crash that motivated the V16 shortcut came from an older
+    // port state while the Tahoe vtable surface was still drifting. The
+    // interface/vtable layout has since been corrected; keeping the shortcut
+    // now would preserve a known architectural mismatch.
+    if (!IO80211InfraInterface::init(provider, addr)) {
+        XYLog("%s IO80211InfraInterface::init(provider, addr) failed\n",
+              __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
+    XYLog("DEBUG %s IO80211InfraInterface::init(provider, addr) OK\n",
+          __FUNCTION__);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)

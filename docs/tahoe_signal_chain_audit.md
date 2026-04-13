@@ -321,3 +321,52 @@ For strict parity, the ready-state producer must publish:
 
 Anything else, including `OSBoolean true/false`, is only a lookalike ioreg
 surface and does not satisfy the recovered Apple contract.
+
+## Root Cause After Live `08aa5ec`
+
+The next architectural mismatch was earlier than any individual IOC handler.
+The Tahoe port was still constructing the primary interface through the old
+V16-style `IO80211InfraInterface::init()` path instead of the real 26.x attach
+contract.
+
+Recovered attach chain from
+`docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml`
+is explicit:
+
+- step 1 on Tahoe is `IO80211InfraInterface::init(IOService*, ether_addr*)`
+- that path allocates the Skywalk/Infra internal state block and prepares the
+  later BSD attach chain before `registerEthernetInterface`, `start()`,
+  `deferBSDAttach(false)`, and the BSDClient callbacks
+
+Our local source still did the opposite:
+
+- `AirportItlwmSkywalkInterface::init(IOService*, ether_addr*)`
+- intentionally bypassed the 2-argument Tahoe init
+- called plain `IO80211InfraInterface::init()`
+- kept an old comment claiming the Tahoe overload was wrong and that V16 was
+  the "working" architecture
+
+That source comment is no longer defensible against the recovered xref-level
+attach chain. It means the port was constructing the interface with the wrong
+producer-side initialization sequence before any of the later readiness, role,
+or scan consumers even ran.
+
+Why this matters for the live failure:
+
+- the Apple core-side object at `+0x1510` is used immediately for producer-side
+  state and property publication (`CoreWiFiDriverReadyKey`, platform/ring
+  property acquisition, init failure reporting, boot checkpoints)
+- on our Tahoe path, `CoreWiFiDriverReadyKey="true"` became visible in `ioreg`
+  only after we manually pushed it there, yet family-side
+  `isDriverAvailable` still remained `0`
+- that is consistent with building the interface via a non-equivalent init path:
+  we reproduced a surface property, but not the same internal interface-side
+  state carrier chain that Apple establishes during `init(provider, addr)`
+
+So the next strict-parity fix is not another IOC special-case. The fix is to
+restore the Tahoe init path itself:
+
+- call `IO80211InfraInterface::init(provider, addr)` on 26.x
+- stop treating the old no-arg init as authoritative for Tahoe
+- keep the reasoning in source comments so the port does not regress back to
+  the V16 shortcut
