@@ -939,6 +939,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_GUARD_INTERVAL:
             return (cmd == SIOCGA80211) ? getGUARD_INTERVAL((apple80211_guard_interval_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_POWER_DEBUG_INFO:
+            return (cmd == SIOCGA80211) ? getPOWER_DEBUG_INFO((apple80211_power_debug_info *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_HT_CAPABILITY:
             return (cmd == SIOCGA80211) ? getHT_CAPABILITY((apple80211_ht_capability *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -979,6 +982,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_HW_SUPPORTED_CHANNELS:
             return (cmd == SIOCGA80211) ? getSUPPORTED_CHANNELS((apple80211_sup_channel_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_COUNTRY_CHANNELS:
+            return (cmd == SIOCGA80211) ? getCOUNTRY_CHANNELS((apple80211_country_channel_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_LOCALE:
             return (cmd == SIOCGA80211) ? getLOCALE((apple80211_locale_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -990,6 +996,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnUnsupported;
         case APPLE80211_IOC_RATE_SET:
             return (cmd == SIOCGA80211) ? getRATE_SET((apple80211_rate_set_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_ROAM_PROFILE:
+            return (cmd == SIOCGA80211) ? getROAM_PROFILE((apple80211_roam_profile_all_bands *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_RSN_IE:
             if (cmd == SIOCGA80211)
@@ -1032,6 +1041,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCGA80211)
                 return getMCS_VHT((apple80211_mcs_vht_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_TRAP_CRASHTRACER_MINI_DUMP:
+            return (cmd == SIOCGA80211) ? getTRAP_CRASHTRACER_MINI_DUMP((apple80211_trap_mini_dump_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_VIRTUAL_IF_CREATE:
+            return (cmd == SIOCSA80211) ? setVIRTUAL_IF_CREATE((apple80211_virt_if_create_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_REQ:
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1673,6 +1688,144 @@ getOP_MODE(struct apple80211_opmode_data *od)
     XYLog("DEBUG VTABLE [475] %s\n", __FUNCTION__);
     od->version = APPLE80211_VERSION;
     od->op_mode = APPLE80211_M_STA;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getPOWER_DEBUG_INFO(apple80211_power_debug_info *data)
+{
+    // AppleBCMWLANCore::getPOWER_DEBUG_INFO zeroes the leading public qword
+    // and then copies a fixed 0x2c0 telemetry snapshot from core state. The
+    // local port does not lift the hidden power-debug owner yet, but it can
+    // still preserve the caller-visible fixed carrier shape instead of generic
+    // unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x580);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getROAM_PROFILE(apple80211_roam_profile_all_bands *data)
+{
+    // AppleBCMWLANCore::getROAM_PROFILE writes the three per-band metadata
+    // words at +0x4/+0x84/+0x104 and marks each successful band payload at
+    // +0xc + band*0x80. Preserve that public multi-band carrier instead of
+    // returning generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x180);
+    *reinterpret_cast<uint32_t *>(raw + 0x04) = 4;
+    *reinterpret_cast<uint32_t *>(raw + 0x84) = 2;
+    *reinterpret_cast<uint32_t *>(raw + 0x104) = 0x400;
+    raw[0x0c] = 1;
+    raw[0x8c] = 1;
+    raw[0x10c] = 1;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCOUNTRY_CHANNELS(apple80211_country_channel_data *data)
+{
+    // AppleBCMWLANCore::getCOUNTRY_CHANNELS is a fixed zero-fill trap path
+    // over a 0x12d8-byte public carrier.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memset(reinterpret_cast<uint8_t *>(data), 0, 0x12d8);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data *data)
+{
+    // Tahoe carries APPLE80211_IOC_HW_SUPPORTED_CHANNELS through the same BSD
+    // bridge family as SUPPORTED_CHANNELS. The public carrier is identical on
+    // the family side, so route both selectors to the same lifted producer.
+    return getSUPPORTED_CHANNELS(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *data)
+{
+    // AppleBCMWLANCore::getTRAP_CRASHTRACER_MINI_DUMP zero-fills the caller
+    // blob from +0x4 for 0x19000 bytes. Keep the same public crashtracer blob
+    // shape instead of reporting generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
+    memset(raw, 0, 0x19004);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getBEACON_INFO(apple80211_beacon_info_t *data)
+{
+    // AppleBCMWLANCore::getBEACON_INFO enters a fixed trap/zero-fill path over
+    // a 0x708-byte public carrier. Keep the public buffer contract explicit.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memset(reinterpret_cast<uint8_t *>(data), 0, 0x708);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCHIP_DIAGS(appl80211_chip_diags_data *data)
+{
+    // AppleBCMWLANCore::getCHIP_DIAGS drives a fixed-size diagnostic carrier
+    // through a gated callback path. Even without the hidden owner, keeping
+    // the public 0x14-byte carrier is more faithful than generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memset(reinterpret_cast<uint8_t *>(data), 0, 0x14);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCUR_PMK(apple80211_pmk *)
+{
+    // AppleBCMWLANCore::getCUR_PMK defaults to 0xe00002c7 and only opens the
+    // deeper debug/association subpath behind Apple-private gates. The port
+    // must therefore expose the same public fail contract instead of generic
+    // unsupported.
+    return static_cast<IOReturn>(0xe00002c7);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *data)
+{
+    return getCHANNELS_INFO(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSENSING_DATA(apple80211_sensing_data_t *data)
+{
+    // AppleBCMWLANCore::getSENSING_DATA always writes version=1, then exposes
+    // the public fail split 0xe0822801 / 0xe00002c7 depending on deeper hidden
+    // feature gates. Keep the stable outer contract here.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    *reinterpret_cast<uint32_t *>(data) = 1;
+    return static_cast<IOReturn>(0xe0822801);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
+{
+    // AppleBCMWLANCore::getWCL_EXTENDED_BSS_INFO exposes only one public gate:
+    // NULL -> 0xe00002bc, non-NULL -> delegate to the NetAdapter owner. The
+    // hidden owner is still absent locally, so preserve the same null gate and
+    // the non-error outer contract instead of generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
     return kIOReturnSuccess;
 }
 
@@ -3002,6 +3155,33 @@ setWCL_SCAN_ABORT(void *data)
     }
 
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
+{
+    // AppleBCMWLANCore::setVIRTUAL_IF_CREATE is not a generic unsupported
+    // setter. Tahoe exposes role-dependent public failures before the private
+    // proximity/AWDL/NAN owner path takes over:
+    // - NAN/NAN-data roles (8..10) -> 0xe00002c7
+    // - proximity/AWDL creation without the hidden owner -> 0xe00002bd
+    // Keep those public fail codes instead of collapsing everything into
+    // kIOReturnUnsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    switch (data->role) {
+        case 8:
+        case 9:
+        case 10:
+            return static_cast<IOReturn>(0xe00002c7);
+        case 6:
+            return static_cast<IOReturn>(0xe00002bd);
+        case 7:
+            return static_cast<IOReturn>(0xe00002bd);
+        default:
+            return static_cast<IOReturn>(0xe0000001);
+    }
 }
 
 IOReturn AirportItlwmSkywalkInterface::

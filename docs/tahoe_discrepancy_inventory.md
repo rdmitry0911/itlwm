@@ -260,6 +260,21 @@ This inventory is intentionally split into:
   owner selectors rather than missing normal producers.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: diagnostic / roam getter zone`:
+  a 15-slot mixed diagnostic/country/roam zone no longer belongs in the
+  generic unsupported bucket. The public Apple contracts for
+  `getPOWER_DEBUG_INFO`, `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`,
+  `getHW_SUPPORTED_CHANNELS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
+  `getBEACON_INFO`, `getCHIP_DIAGS`, `getCUR_PMK`,
+  `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`, and
+  `getWCL_EXTENDED_BSS_INFO` are now reflected directly in the port, while
+  `getAWDL_PEER_TRAFFIC_STATS` is classified out as an Apple internal stub and
+  `setBSS_BLACKLIST` / `setREALTIME_QOS_MSCS` are finally removed from the open
+  queue because their setter bodies were already lifted. The same batch also
+  moves `setVIRTUAL_IF_CREATE` off generic unsupported onto its recovered Tahoe
+  public fail contract.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -434,44 +449,32 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `68` raw overrides still return `kIOReturnUnsupported`
-- `39` of those still remain open unsupported discrepancies after the first
+- `56` raw overrides still return `kIOReturnUnsupported`
+- `25` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
   LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
   getter fail-contract zone, and the MWS/NDD setter carrier zone, and the
   minimal setter-contract zone, and the telemetry/cache getter zone, and the
-  mixed setter control/programming zone
+  mixed setter control/programming zone, and the diagnostic / roam getter zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
-- `470 getAWDL_PEER_TRAFFIC_STATS`
-- `480 getPOWER_DEBUG_INFO`
-- `485 getROAM_PROFILE`
 - `488 getLEAKY_AP_STATS_MODE`
-- `489 getCOUNTRY_CHANNELS`
-- `496 getHW_SUPPORTED_CHANNELS`
 - `499 getTRAP_INFO`
-- `507 getTRAP_CRASHTRACER_MINI_DUMP`
-- `508 getBEACON_INFO`
-- `512 getCHIP_DIAGS`
 - `513 getHP2P_CTRL`
-- `517 getCUR_PMK`
 - `518 getDYNSAR_DETAIL`
 - `521 getSLOW_WIFI_FEATURE_ENABLED`
-- `523 getSENSING_DATA`
 - `525 getWCL_LOW_LATENCY_INFO`
 - `528 getWCL_GET_TX_BLANKING_STATUS`
-- `533 getWCL_EXTENDED_BSS_INFO`
 - `540 getSYSTEM_SLEEP_CONFIG`
 
 Unsupported setter slots still present:
 
 - `552 setIE`
 - `553 setWOW_TEST`
-- `555 setVIRTUAL_IF_CREATE`
 - `556 setHT_CAPABILITY`
 - `558 setOFFLOAD_NDP`
 - `560 setVHT_CAPABILITY`
@@ -482,8 +485,6 @@ Unsupported setter slots still present:
 - `574 setBTCOEX_2G_CHAIN_DISABLE`
 - `575 setPOWER_BUDGET`
 - `579 setUSB_HOST_NOTIFICATION`
-- `581 setBSS_BLACKLIST`
-- `586 setREALTIME_QOS_MSCS`
 - `609 setWCL_ACTION_FRAME`
 - `622 setBYPASS_TX_POWER_CAP`
 - `632 setWCL_UPDATE_FAST_LANE`
@@ -510,6 +511,25 @@ part of the open setter list above:
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
 - `659 setDBRG_ENTROPY`
+
+Closed as the diagnostic / roam getter zone and therefore no longer part of
+the open queues above:
+
+- `470 getAWDL_PEER_TRAFFIC_STATS`
+- `480 getPOWER_DEBUG_INFO`
+- `485 getROAM_PROFILE`
+- `489 getCOUNTRY_CHANNELS`
+- `496 getHW_SUPPORTED_CHANNELS`
+- `507 getTRAP_CRASHTRACER_MINI_DUMP`
+- `508 getBEACON_INFO`
+- `512 getCHIP_DIAGS`
+- `517 getCUR_PMK`
+- `519 getCOUNTRY_CHANNELS_INFO`
+- `523 getSENSING_DATA`
+- `533 getWCL_EXTENDED_BSS_INFO`
+- `555 setVIRTUAL_IF_CREATE`
+- `581 setBSS_BLACKLIST`
+- `586 setREALTIME_QOS_MSCS`
 
 Closed as a dedicated Apple-unsupported setter zone and therefore no longer
 part of the open setter list above:

@@ -109,6 +109,8 @@ public:
     // Order MUST match IO80211InfraProtocol.h exactly.
     //
     // [470] AWDL internal
+    // [470] — the recovered Tahoe vtable matrix marks this as an AWDL internal
+    // stub, not a shared Apple80211 producer contract.
     virtual IOReturn getAWDL_PEER_TRAFFIC_STATS(void *, unsigned int) override { XYLog("DEBUG VTABLE [470] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [471]
     virtual IOReturn getCHANNEL(apple80211_channel_data *) override;
@@ -129,7 +131,7 @@ public:
     // [479]
     virtual IOReturn getMCS(apple80211_mcs_data *) override;
     // [480]
-    virtual IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info *) override { XYLog("DEBUG VTABLE [480] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info *) override;
     // [481]
     virtual IOReturn getHT_CAPABILITY(apple80211_ht_capability *) override;
     // [482]
@@ -143,7 +145,7 @@ public:
     // [484]
     virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override;
     // [485]
-    virtual IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands *) override { XYLog("DEBUG VTABLE [485] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands *) override;
     // [486] — AppleBCMWLANCore does not expose a normal producer on Tahoe.
     // Newer chips trap through a private stats path, while the visible public
     // contract returns the fixed Apple failure 0xe00002e6 rather than generic
@@ -155,7 +157,7 @@ public:
     // [488]
     virtual IOReturn getLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override { XYLog("DEBUG VTABLE [488] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [489]
-    virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override { XYLog("DEBUG VTABLE [489] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override;
     // [490]
     virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [491]
@@ -175,7 +177,7 @@ public:
     // [495] — missing keepalive owner -> 0xe00002bc.
     virtual IOReturn getTKO_DUMP(apple80211_tko_dump *) override;
     // [496]
-    virtual IOReturn getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data *) override { XYLog("DEBUG VTABLE [496] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data *) override;
     // [497] — AppleBCMWLANCore exposes the fixed Tahoe fail 0xe00002c2 here,
     // not generic unsupported.
     virtual IOReturn getBTCOEX_PROFILE(apple80211_btcoex_profile *) override;
@@ -205,9 +207,9 @@ public:
     // [507] — AppleBCMWLANCore zero-fills the mini-dump body from +0x4 rather
     // than using a generic unsupported stub, so this remains open producer
     // work and should not be misclassified as Apple-unsupported.
-    virtual IOReturn getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *) override { XYLog("DEBUG VTABLE [507] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *) override;
     // [508]
-    virtual IOReturn getBEACON_INFO(apple80211_beacon_info_t *) override { XYLog("DEBUG VTABLE [508] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getBEACON_INFO(apple80211_beacon_info_t *) override;
     // [509]
     virtual IOReturn getCHIP_POWER_RANGE(apple80211_chip_power_limit *) override { XYLog("DEBUG VTABLE [509] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [510]
@@ -215,7 +217,7 @@ public:
     // [511]
     virtual IOReturn getHW_ADDR(apple80211_hw_mac_address *) override;
     // [512]
-    virtual IOReturn getCHIP_DIAGS(appl80211_chip_diags_data *) override { XYLog("DEBUG VTABLE [512] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getCHIP_DIAGS(appl80211_chip_diags_data *) override;
     // [513]
     virtual IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl *) override { XYLog("DEBUG VTABLE [513] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [514] — AppleBCMWLANCore delegates to an async blacklist getter rather
@@ -228,13 +230,13 @@ public:
     // gated by the MIMO owner.
     virtual IOReturn getMIMO_STATUS(apple80211_mimo_status *) override;
     // [517]
-    virtual IOReturn getCUR_PMK(apple80211_pmk *) override { XYLog("DEBUG VTABLE [517] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getCUR_PMK(apple80211_pmk *) override;
     // [518]
     virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override { XYLog("DEBUG VTABLE [518] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [519]
     // [519] — AppleBCMWLANInfraProtocol returns `0xe00002c7` directly for this
     // selector on Tahoe.
-    virtual IOReturn getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *) override { XYLog("DEBUG VTABLE [519] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *) override;
     // [520]
     virtual IOReturn getLQM_SUMMARY(apple80211_lqm_summary *) override;
     // [521]
@@ -242,7 +244,7 @@ public:
     // [522]
     virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override;
     // [523]
-    virtual IOReturn getSENSING_DATA(apple80211_sensing_data_t *) override { XYLog("DEBUG VTABLE [523] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getSENSING_DATA(apple80211_sensing_data_t *) override;
     // [524] — AppleBCMWLANCore delegates to the net adapter instead of leaving
     // the slot unsupported.
     virtual IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *) override;
@@ -267,7 +269,7 @@ public:
     // from core state.
     virtual IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status *) override;
     // [533]
-    virtual IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *) override { XYLog("DEBUG VTABLE [533] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *) override;
     // [534] — Tahoe public contract is `NULL -> 0xe00002bc`, else a fixed
     // low-latency stats carrier.
     virtual IOReturn getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *) override;
@@ -333,7 +335,9 @@ public:
     // [554]
     virtual IOReturn setCLEAR_PMKSA_CACHE(void *) override;
     // [555]
-    virtual IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *) override { XYLog("DEBUG VTABLE [555] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [555] — Tahoe exposes role-dependent public failures here before the
+    // private proximity/AWDL/NAN owner path takes over.
+    virtual IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *) override;
     // [556]
     virtual IOReturn setHT_CAPABILITY(apple80211_ht_capability *) override { XYLog("DEBUG VTABLE [556] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [557]

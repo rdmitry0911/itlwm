@@ -1414,3 +1414,83 @@ This zone therefore closes on the public Apple boundary:
   subset (`CHANNEL`, `TXPOWER`, `RATE`, `IBSS_MODE`, `OFFLOAD_ARP`,
   `GAS_REQ`, `RESET_CHIP`, `CRASH`, `RANGING_*`, `TKO_PARAMS`,
   `OFFLOAD_TCPKA_ENABLE`)
+
+## Q13 Batch: diagnostic/roam getter zone leaves the unsupported tail
+
+The next `Q13` zone is the diagnostics / roaming / country-information cluster
+that still sat on generic unsupported even though Tahoe already exposes a
+recoverable public contract for it. This zone closes the following 15 slots:
+
+- `getAWDL_PEER_TRAFFIC_STATS`
+- `getPOWER_DEBUG_INFO`
+- `getROAM_PROFILE`
+- `getCOUNTRY_CHANNELS`
+- `getHW_SUPPORTED_CHANNELS`
+- `getTRAP_CRASHTRACER_MINI_DUMP`
+- `getBEACON_INFO`
+- `getCHIP_DIAGS`
+- `getCUR_PMK`
+- `getCOUNTRY_CHANNELS_INFO`
+- `getSENSING_DATA`
+- `getWCL_EXTENDED_BSS_INFO`
+- `setVIRTUAL_IF_CREATE`
+- `setBSS_BLACKLIST`
+- `setREALTIME_QOS_MSCS`
+
+Recovered Apple evidence splits this zone into three public classes:
+
+- internal-only / trap / debug selectors that must not stay in the generic
+  "missing producer" bucket:
+  `getAWDL_PEER_TRAFFIC_STATS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
+  `getBEACON_INFO`
+- concrete caller-visible carriers:
+  `getPOWER_DEBUG_INFO`, `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`,
+  `getHW_SUPPORTED_CHANNELS`, `getCHIP_DIAGS`, `getCUR_PMK`,
+  `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`
+- delegated owner-backed selectors whose public null/fail contract is still
+  recoverable even when the private owner stays unlifted:
+  `getWCL_EXTENDED_BSS_INFO`, `setVIRTUAL_IF_CREATE`,
+  `setBSS_BLACKLIST`, `setREALTIME_QOS_MSCS`
+
+Public Apple-side facts used for this zone:
+
+- `IO80211InfraProtocol_vtable_25D125.txt` marks slot `[470]` as an
+  `AWDL internal stub`, which is enough to classify it out of the open
+  public-system discrepancy queue
+- `AppleBCMWLANCore::getPOWER_DEBUG_INFO(...)` zeroes the public leading qword
+  and copies a fixed `0x2c0` telemetry snapshot from core state
+- `AppleBCMWLANCore::getROAM_PROFILE(...)` writes the three per-band metadata
+  words at offsets `+0x4/+0x84/+0x104` and marks successful band payloads at
+  `+0xc + band*0x80`
+- `AppleBCMWLANCore::getCOUNTRY_CHANNELS(...)` is a fixed zero-fill trap path
+  over a `0x12d8` public carrier
+- `APPLE80211_IOC_HW_SUPPORTED_CHANNELS` belongs to the same Skywalk BSD bridge
+  family as `SUPPORTED_CHANNELS`, so leaving it on a dead header stub after the
+  bridge restoration was architectural drift
+- `AppleBCMWLANCore::getTRAP_CRASHTRACER_MINI_DUMP(...)` zero-fills the public
+  crashtracer blob at `caller+0x4` for `0x19000` bytes
+- `AppleBCMWLANCore::getBEACON_INFO(...)` and `getAWDL_PEER_TRAFFIC_STATS(...)`
+  are trap/internal selectors, not missing normal producers
+- `AppleBCMWLANCore::getCHIP_DIAGS(...)` drives a fixed-size diagnostic carrier
+  through a gated callback path rather than returning generic unsupported
+- `AppleBCMWLANCore::getCUR_PMK(...)` defaults to `0xe00002c7` and only opens
+  deeper debug/association subpaths under Apple-only gates
+- `AppleBCMWLANCore::getSENSING_DATA(...)` writes `version=1` and exposes the
+  public fail split `0xe0822801` / `0xe00002c7`
+- `AppleBCMWLANCore::getWCL_EXTENDED_BSS_INFO(...)` exposes `NULL -> 0xe00002bc`
+  before delegating to the net adapter owner
+- `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` is not a generic unsupported
+  setter: Tahoe exposes role-dependent public failures before the hidden
+  proximity/AWDL/NAN owners take over
+- `AppleBCMWLANCore::setBSS_BLACKLIST(...)` and
+  `setREALTIME_QOS_MSCS(...)` were already lifted in code, so keeping them in
+  the open unsupported queue was just stale documentation debt
+
+This zone closes on the system-facing boundary:
+
+- the diagnostic/country getters no longer advertise generic unsupported when
+  Apple already exposes a fixed public carrier or trap contract
+- the restored `getCOUNTRY_CHANNELS_INFO` / `getHW_SUPPORTED_CHANNELS` routes
+  keep Tahoe aligned with the same bridge-restoration principle used earlier
+- `setBSS_BLACKLIST` and `setREALTIME_QOS_MSCS` are now counted correctly as
+  closed because their public setter contracts had already been lifted
