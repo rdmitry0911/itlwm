@@ -38,6 +38,7 @@ public:
     virtual void free() override;
     virtual IOReturn processBSDCommand(ifnet_t, UInt, void *) override;
     virtual UInt64 createEventPipe(IO80211APIUserClient *) override;
+    virtual SInt32 setInterfaceEnable(bool) override;
 
     // Override getInterfaceSubFamily — returns IFNET_SUBFAMILY_WIFI (3).
     //

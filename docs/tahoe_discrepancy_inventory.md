@@ -101,7 +101,12 @@ This inventory is intentionally split into:
   `setInterfaceEnable(true)` first, then `signalDriverReady()` on the up path,
   and hidden `interfaceAdvisoryEnable(...)` first, then `signalDriverReady()`
   on the down/error path. The local drift was therefore the missing hidden
-  interface lifecycle edge, not merely "missing bulletin".
+  interface lifecycle edge, not merely "missing bulletin". Live reboot on
+  `d2953c9` then narrowed this further: the local port did call
+  `setInterfaceEnable(true)`, but still left `isDriverAvailable=0`, which
+  proves the missing piece is the recovered subclass body behind the hidden
+  slot: base `setInterfaceEnable(bool)`, then `reportLinkStatus(3, 0x80)`, then
+  `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`.
 
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,

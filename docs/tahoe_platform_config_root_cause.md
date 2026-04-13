@@ -744,3 +744,18 @@ So the real local drift was not just "missing property" or "missing bulletin".
 It was that the Tahoe port skipped the interface lifecycle edge that Apple
 fires before `signalDriverReady()`.  That explains the contradictory live state
 "ready key present, scan path alive, but isDriverAvailable still 0".
+
+Live reboot on `d2953c9` then narrowed the remaining delta one level deeper:
+the local port did call hidden `setInterfaceEnable(true)`, and IO80211Family
+logged that call, but `isDriverAvailable` still stayed `0`.  The missing piece
+was the recovered Apple subclass body itself.
+
+`AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)` does not stop at
+the base `IO80211InfraInterface::setInterfaceEnable(bool)`.  On the enable
+edge it also does:
+
+1. `reportLinkStatus(3, 0x80)`
+2. `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`
+
+So the local hidden-object fix has to reproduce that exact subclass-side effect
+chain, not merely the caller's `+0x930` dispatch.

@@ -1381,6 +1381,31 @@ bindController(AirportItlwm *provider)
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
     return true;
+}
+
+SInt32 AirportItlwmSkywalkInterface::
+setInterfaceEnable(bool enable)
+{
+    // Live build d2953c9 proved that merely calling the hidden +0x930 slot is
+    // not enough on the local port: IO80211Family logs show
+    // `IO80211InfraInterface::setInterfaceEnable ... isEnable 1`, yet Tahoe
+    // still leaves `isDriverAvailable=0`.  The Apple hidden object here is not
+    // a plain IO80211InfraInterface; the recovered subclass body is
+    // AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool):
+    //   1) call IO80211InfraInterface::setInterfaceEnable(bool)
+    //   2) reportLinkStatus(3, 0x80)
+    //   3) setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)
+    //
+    // Reproducing those side effects on the local hidden interface object is
+    // required to match the Apple producer body rather than only its caller.
+    SInt32 ret = IO80211InfraInterface::setInterfaceEnable(enable);
+    if (enable && ret == kIOReturnSuccess) {
+        reportLinkStatus(3, 0x80);
+        IO80211InfraInterface::setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0);
+    }
+    XYLog("DEBUG %s enable=%d ret=0x%x instance=%p\n",
+          __FUNCTION__, enable ? 1 : 0, ret, instance);
+    return ret;
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)

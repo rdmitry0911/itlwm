@@ -34,6 +34,21 @@ the ready property publication.  Skipping that hidden interface-enable edge can
 leave the system in the contradictory state "ready key visible, interface
 attached, scan runs, but isDriverAvailable=0".
 
+Live reboot on `d2953c9` proved that the caller-order fix alone is still not
+enough on the local port. IO80211Family logs show hidden
+`setInterfaceEnable(true)` running on `AirportItlwmSkywalkInterface`, yet Tahoe
+still leaves `isDriverAvailable=0`.
+
+The remaining delta is the subclass body behind that hidden slot.
+Recovered `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)` does:
+
+1. base `IO80211InfraInterface::setInterfaceEnable(bool)`
+2. `reportLinkStatus(3, 0x80)`
+3. `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`
+
+So the exact producer lift must happen on the hidden interface object itself,
+not by adding more controller-side ready-state publication.
+
 ## Owner-Family Backend Batch
 
 The remaining pre-`Q12` owner-family setters now route through the local
