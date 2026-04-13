@@ -627,32 +627,26 @@ bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
     XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
-    // Tahoe attach-chain recovery closed the earlier ambiguity here.
+    // The previous switch to IO80211InfraInterface::init(provider, addr)
+    // panicked immediately on boot:
+    //   IO80211InfraInterface::linkState() + 0xb, CR2=0x18
+    // inside IO80211PeerManager::initWithInterface() during
+    // IO80211SkywalkInterface::start().
     //
-    // docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml
-    // shows that the real 26.x step 1 is:
-    //   IO80211InfraInterface::init(IOService *controller, ether_addr *macAddr)
-    // not the older V16-style no-arg init().
+    // New 26.3 decompile from
+    // /Volumes/macos-750/Users/bob/Projects/Декомпилы/ghidra_output/IO80211Family_decompiled.c
+    // confirms why: IO80211InfraInterface::linkState() dereferences
+    // *(this + 0x128) + 0x18, so the 2-arg path still left the infra ivar
+    // block unavailable at start() for the current port state.
     //
-    // That 2-arg path is part of the producer-side interface construction
-    // contract before registerEthernetInterface -> start() -> deferBSDAttach.
-    // Keeping Tahoe on the no-arg init left the port on a non-Apple
-    // initialization path before any later readiness / role / scan consumers
-    // ran.  The old local comment claiming V16 was the correct architecture is
-    // disproven by the recovered xref-level attach chain, so use the real
-    // Tahoe init path here.
-    //
-    // The earlier crash that motivated the V16 shortcut came from an older
-    // port state while the Tahoe vtable surface was still drifting. The
-    // interface/vtable layout has since been corrected; keeping the shortcut
-    // now would preserve a known architectural mismatch.
-    if (!IO80211InfraInterface::init(provider, addr)) {
-        XYLog("%s IO80211InfraInterface::init(provider, addr) failed\n",
-              __PRETTY_FUNCTION__);
+    // Until the missing constructor/ivar path is fully recovered 1:1, the
+    // only crash-free contract backed by both live runtime and decompile is
+    // the no-arg IO80211InfraInterface::init() path.
+    if (!IO80211InfraInterface::init()) {
+        XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211InfraInterface::init(provider, addr) OK\n",
-          __FUNCTION__);
+    XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)

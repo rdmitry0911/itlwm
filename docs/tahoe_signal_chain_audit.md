@@ -322,54 +322,55 @@ For strict parity, the ready-state producer must publish:
 Anything else, including `OSBoolean true/false`, is only a lookalike ioreg
 surface and does not satisfy the recovered Apple contract.
 
-## Root Cause After Live `08aa5ec`
+## Panic Root Cause After Live `573356c`
 
-The next architectural mismatch was earlier than any individual IOC handler.
-The Tahoe port was still constructing the primary interface through the old
-V16-style `IO80211InfraInterface::init()` path instead of the real 26.x attach
-contract.
+The previous conclusion about Tahoe interface construction was wrong and was
+disproven by a direct boot panic on the rebuilt driver.
 
-Recovered attach chain from
-`docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml`
-is explicit:
+Live panic from `/Library/Extensions/panic16.txt`:
 
-- step 1 on Tahoe is `IO80211InfraInterface::init(IOService*, ether_addr*)`
-- that path allocates the Skywalk/Infra internal state block and prepares the
-  later BSD attach chain before `registerEthernetInterface`, `start()`,
-  `deferBSDAttach(false)`, and the BSDClient callbacks
+- `IO80211InfraInterface::linkState() + 0xb`
+- page fault at `CR2=0x18`
+- call chain:
+  `IO80211PeerManager::initWithInterface()`
+  → `IO80211SkywalkInterface::start()`
+  → `IO80211InfraInterface::start()`
+  → `AirportItlwm::start()`
 
-Our local source still did the opposite:
+New decompile from
+`/Volumes/macos-750/Users/bob/Projects/Декомпилы/ghidra_output/IO80211Family_decompiled.c`
+shows why that panic is definitive:
 
-- `AirportItlwmSkywalkInterface::init(IOService*, ether_addr*)`
-- intentionally bypassed the 2-argument Tahoe init
-- called plain `IO80211InfraInterface::init()`
-- kept an old comment claiming the Tahoe overload was wrong and that V16 was
-  the "working" architecture
+- `IO80211InfraInterface::linkState()` returns
+  `*(uint32_t *)(*(long *)(this + 0x128) + 0x18)`
+- so a null `this+0x128` produces exactly the observed `CR2=0x18` fault
+- `IO80211InfraInterface::start()` immediately enters
+  `IO80211SkywalkInterface::start()`, where `PeerManager::initWithInterface()`
+  logs through `linkState()` before the interface can survive with a null
+  infra-state block
 
-That source comment is no longer defensible against the recovered xref-level
-attach chain. It means the port was constructing the interface with the wrong
-producer-side initialization sequence before any of the later readiness, role,
-or scan consumers even ran.
+That means our switch to `IO80211InfraInterface::init(provider, addr)` was not
+just unverified. It was wrong for the current port state: the object reached
+`start()` without a valid infra ivar block at `this+0x128`.
 
-Why this matters for the live failure:
+The same new decompile also materially weakens the earlier assumption that the
+2-argument Tahoe overload was the authoritative init entry:
 
-- the Apple core-side object at `+0x1510` is used immediately for producer-side
-  state and property publication (`CoreWiFiDriverReadyKey`, platform/ring
-  property acquisition, init failure reporting, boot checkpoints)
-- on our Tahoe path, `CoreWiFiDriverReadyKey="true"` became visible in `ioreg`
-  only after we manually pushed it there, yet family-side
-  `isDriverAvailable` still remained `0`
-- that is consistent with building the interface via a non-equivalent init path:
-  we reproduced a surface property, but not the same internal interface-side
-  state carrier chain that Apple establishes during `init(provider, addr)`
+- the recovered `IO80211Family_decompiled.c` includes
+  `IO80211SkywalkInterface::init()` and `IO80211InfraInterface::init()`
+- it does **not** recover a concrete `IO80211InfraInterface::init(IOService*,
+  ether_addr*)` body
+- so the earlier xref doc was not enough to justify overriding the live,
+  crash-backed constructor contract
 
-So the next strict-parity fix is not another IOC special-case. The fix is to
-restore the Tahoe init path itself:
+Strict-parity correction from this point:
 
-- call `IO80211InfraInterface::init(provider, addr)` on 26.x
-- stop treating the old no-arg init as authoritative for Tahoe
-- keep the reasoning in source comments so the port does not regress back to
-  the V16 shortcut
+- treat the live panic + decompile-backed `linkState()` dependency as the hard
+  contract
+- restore the no-arg `IO80211InfraInterface::init()` path that leaves the
+  object in the non-panicking state for `start()`
+- mark the earlier 2-arg-init conclusion as superseded, so the port does not
+  regress back into the same `linkState()+0xb / CR2=0x18` panic
 
 ## Ready-State Replay Audit After `78f162d`
 
