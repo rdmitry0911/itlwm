@@ -229,6 +229,28 @@ struct apple80211_bg_params
 static_assert(sizeof(apple80211_bg_params) == 0x20,
               "apple80211_bg_params must preserve the recovered 0x20 payload");
 
+struct apple80211_pm_mode
+{
+    uint32_t version;
+    uint32_t mode;
+} __attribute__((packed));
+static_assert(sizeof(apple80211_pm_mode) == 0x8,
+              "apple80211_pm_mode must preserve the recovered version+mode layout");
+
+struct apple80211_user_roam_cache
+{
+    uint8_t raw[0x7c];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_user_roam_cache) == 0x7c,
+              "apple80211_user_roam_cache must cover the recovered count/override tail");
+
+struct scanHomeAndAwayTime
+{
+    uint32_t milliseconds;
+} __attribute__((packed));
+static_assert(sizeof(scanHomeAndAwayTime) == 0x4,
+              "scanHomeAndAwayTime must match the single dword consumed by Apple");
+
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
@@ -797,6 +819,10 @@ init()
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
+    memset(cachedUserRoamCache, 0, sizeof(cachedUserRoamCache));
+    hasCachedUserRoamCache = false;
+    cachedPmMode = 0;
+    cachedScanHomeAwayTime = 0;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
     memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
@@ -899,6 +925,10 @@ init(IOService *provider)
     memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
     memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
+    memset(this->cachedUserRoamCache, 0, sizeof(this->cachedUserRoamCache));
+    this->hasCachedUserRoamCache = false;
+    this->cachedPmMode = 0;
+    this->cachedScanHomeAwayTime = 0;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
     memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
@@ -2288,6 +2318,27 @@ setOFFLOAD_ARP(apple80211_offload_arp_data *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+setPM_MODE(apple80211_pm_mode *data)
+{
+    // AppleBCMWLANCore::setPM_MODE is a thin producer: it forwards the dword at
+    // caller +0x4 into NetAdapter::configurePM(...). The recovered helper maps
+    // any non-zero mode onto the same PM request bit family-side consumers use
+    // when they later query powersave state. Re-enter the lifted POWERSAVE path
+    // instead of leaving slot [584] unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedPmMode = data->mode;
+
+    apple80211_powersave_data pd{};
+    pd.version = APPLE80211_VERSION;
+    pd.powersave_level = data->mode;
+    const IOReturn rc = setPOWERSAVE(&pd);
+    XYLog("DEBUG [584] %s mode=%u rc=0x%x\n", __FUNCTION__, data->mode, rc);
+    return rc;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 {
     const auto *mode = reinterpret_cast<const tahoeWclRealTimeMode *>(data);
@@ -2303,6 +2354,28 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
     cachedRealTimeMode = mode->enabled != 0;
     XYLog("WCL [596] %s realtime=%u\n", __FUNCTION__,
           static_cast<unsigned int>(cachedRealTimeMode));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
+{
+    // AppleBCMWLANCore::setWCL_ROAM_USER_CACHE delegates into the roam adapter
+    // `cmdROAM_USER_CACHE(...)`. The recovered helper family shows that the
+    // caller-visible payload carries channel entries from offset 0x0 in 0x0c
+    // strides, a channel count at +0x78, and an override byte at +0x7a.
+    // Persist that exact 0x7c blob so later roam-owner lifts retain the same
+    // request state instead of losing it behind an inline success stub.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedUserRoamCache, data, sizeof(*data));
+    hasCachedUserRoamCache = true;
+    const auto count = *reinterpret_cast<const uint16_t *>(data->raw + 0x78);
+    const auto overrideState = data->raw[0x7a];
+    XYLog("WCL [594] %s count=%u override=%u cached=%u\n",
+          __FUNCTION__, count, overrideState,
+          static_cast<unsigned int>(hasCachedUserRoamCache));
     return kIOReturnSuccess;
 }
 
@@ -2649,6 +2722,20 @@ setWCL_LINK_UP_DONE(void *data)
           static_cast<unsigned int>(ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr),
           static_cast<unsigned int>(cachedRealTimeMode),
           cachedPowersaveLevel);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
+{
+    // AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME consumes a single dword
+    // and forwards it into the scan-adapter owner. Preserve the same carrier
+    // instead of acknowledging slot [604] and discarding the timing request.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedScanHomeAwayTime = data->milliseconds;
+    XYLog("WCL [604] %s ms=%u\n", __FUNCTION__, cachedScanHomeAwayTime);
     return kIOReturnSuccess;
 }
 

@@ -899,3 +899,30 @@ the concrete architectural mismatch that defined `Q7` is now removed:
 
 That closes `Q7` as a standalone queue. Any still-missing hidden helper
 exactness now belongs under `Q13`, not under the old WCL adapter-stub bucket.
+
+## Q13 Batch: sideband carriers continue to leave the unsupported/stub tail
+
+The next `Q13` reduction pass was intentionally narrow: only recovered producer
+paths with simple caller-visible carriers were lifted.
+
+Recovered Apple evidence:
+
+- `AppleBCMWLANCore::setPM_MODE(apple80211_pm_mode*)`
+  forwards the dword at caller `+0x4` into
+  `AppleBCMWLANNetAdapter::configurePM(...)`
+- `AppleBCMWLANCore::setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache*)`
+  delegates into the roam adapter `cmdROAM_USER_CACHE(...)`; helper xrefs prove
+  the caller-visible cache carries channel entries from `+0x0`, count at
+  `+0x78`, and override state at `+0x7a`
+- `AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime*)`
+  consumes a single dword and forwards it to the scan adapter owner
+
+Those slots were previously either unsupported or inline success. They now:
+
+- reject `NULL` with Apple `0xe00002bc`
+- preserve the recovered caller-visible carrier state locally
+- reuse already-lifted local owners where available (`setPOWERSAVE(...)` for
+  `PM_MODE`)
+
+This does not close `Q13`, but it removes another class of simple
+state-carrier mismatches from its tail.

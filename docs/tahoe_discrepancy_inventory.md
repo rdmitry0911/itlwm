@@ -79,9 +79,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 142 unsupported overrides and 5 ack-only
+  raw header surface now carries 141 unsupported overrides and 3 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  112 unsupported-return slots still remain open discrepancies
+  111 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -361,12 +361,12 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `144` raw overrides still return `kIOReturnUnsupported`
-- `114` of those still remain open unsupported discrepancies after the first
+- `141` raw overrides still return `kIOReturnUnsupported`
+- `111` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches and the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch
-- `5` overrides still return success from inline ack-only placeholder bodies
+- `3` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
@@ -450,7 +450,6 @@ Unsupported setter slots still present:
 - `580 setHP2P_CTRL`
 - `581 setBSS_BLACKLIST`
 - `582 setSET_PROPERTY`
-- `584 setPM_MODE`
 - `586 setREALTIME_QOS_MSCS`
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
@@ -491,8 +490,6 @@ Unsupported setter slots still present:
 Ack-only inline stubs still present in the Tahoe header:
 
 - `591 setWCL_SET_ROAM_LOCK`
-- `594 setWCL_ROAM_USER_CACHE`
-- `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
 - `620 setHEARTBEAT`
 - `621 setINTERFACE_SETTING`
 

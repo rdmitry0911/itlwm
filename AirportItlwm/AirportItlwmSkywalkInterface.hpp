@@ -346,7 +346,7 @@ public:
     // [583]
     virtual IOReturn setROAM_CACHE_UPDATE(apple80211_roam_cache_data *) override { XYLog("DEBUG VTABLE [583] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [584]
-    virtual IOReturn setPM_MODE(apple80211_pm_mode *) override { XYLog("DEBUG VTABLE [584] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setPM_MODE(apple80211_pm_mode *) override;
     // [585]
     virtual IOReturn setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *) override { XYLog("DEBUG VTABLE [585] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [586]
@@ -371,11 +371,7 @@ public:
     // [593] — AppleBCMWLAN: delegates to RoamAdapter modern profile path.
     virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override;
     // [594]
-    virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data) override {
-        XYLog("WCL [594] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data) override;
     // [595] — AppleBCMWLAN: aborts ongoing scan
     virtual IOReturn setWCL_SCAN_ABORT(void *) override;
     // [596] — AppleBCMWLAN: sets real-time vs default mode
@@ -395,11 +391,7 @@ public:
     // [603] — AppleBCMWLAN: calls PowerManager::handleLinkUpConfiguration
     virtual IOReturn setWCL_LINK_UP_DONE(void *) override;
     // [604]
-    virtual IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data) override {
-        XYLog("WCL [604] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data) override;
     // [605] — AppleBCMWLANInfraProtocol::setVOICE_IND_STATE is a direct
     // `return 0xe00002c7;` stub. Our old validate+ack body was a real
     // semantic mismatch because it advertised a producer path Apple does not
@@ -566,6 +558,10 @@ private:
     uint8_t cachedIPv6Addresses[10][16];
     uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
+    uint8_t cachedUserRoamCache[0x7c];
+    bool hasCachedUserRoamCache;
+    uint32_t cachedPmMode;
+    uint32_t cachedScanHomeAwayTime;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
     uint8_t cachedLegacyRoamProfileConfig[0x60];
