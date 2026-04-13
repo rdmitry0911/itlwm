@@ -94,10 +94,14 @@ This inventory is intentionally split into:
   `ioreg` is not enough to make Tahoe external consumers treat the interface as
   available. The new decompile of
   `WCLSystemStateManager::driverAvailableEventHandler(...)` proves the family
-  also requires `APPLE80211_M_DRIVER_AVAILABLE (0x37)` with an exact `0xf8`
-  payload and zero at payload `+0x8` for the available edge. The local port
-  therefore must publish both the property and the bulletin; property-only
-  publication leaves `isDriverAvailable` stuck at `0`.
+  accepts `APPLE80211_M_DRIVER_AVAILABLE (0x37)` only with the exact `0xf8`
+  consumer ABI, but `AppleBCMWLANCoreMac` also disproves the earlier producer
+  reconstruction: Apple does not fabricate that bulletin directly from
+  `signalDriverReady()`. The recovered caller order is hidden
+  `setInterfaceEnable(true)` first, then `signalDriverReady()` on the up path,
+  and hidden `interfaceAdvisoryEnable(...)` first, then `signalDriverReady()`
+  on the down/error path. The local drift was therefore the missing hidden
+  interface lifecycle edge, not merely "missing bulletin".
 
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,

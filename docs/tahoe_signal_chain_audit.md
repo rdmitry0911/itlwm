@@ -2,29 +2,37 @@
 
 Date: 2026-04-12
 
-## Tahoe Driver-Available Consumer Correction
+## Tahoe Driver-Available Producer Correction
 
-Live runtime on build `2820901` and the new Tahoe decompile establish one
-consumer-side fact that overrides the earlier property-only theory:
+Live runtime on build `2820901` and the newer Tahoe decompile establish one
+producer-side fact that overrides the earlier "property + synthetic bulletin"
+theory:
 
 - `CoreWiFiDriverReadyKey = "true"` can already be present in `ioreg`
 - yet kernel IOC DEBUG still reports `isDriverAvailable=<0>`
 
 Recovered `WCLSystemStateManager::driverAvailableEventHandler(...)` explains
-why. The Tahoe consumer does not flip availability from the property alone. It
-expects `APPLE80211_M_DRIVER_AVAILABLE (0x37)` with a bulletin payload that:
+why the consumer can stay at `isDriverAvailable=0`, but the producer-side
+Apple chain matters just as much. The consumer accepts
+`APPLE80211_M_DRIVER_AVAILABLE (0x37)` only when the bulletin payload:
 
 - has exact length `0xf8`
 - carries the "available" edge as zero at payload `+0x8`
 
-So the strict Tahoe contract is two-part:
+The new `AppleBCMWLANCoreMac` decompile then corrects the producer theory:
 
-1. interface-side `CoreWiFiDriverReadyKey = "true"/"false"`
-2. `APPLE80211_M_DRIVER_AVAILABLE` bulletin with the 0xf8 Apple ABI
+1. Apple calls hidden interface-side `+0x930` (`setInterfaceEnable(true)`)
+   first
+2. only then does `AppleBCMWLANCore::signalDriverReady()` publish
+   `CoreWiFiDriverReadyKey = "true"/"false"`
+3. on down/error paths Apple uses hidden `+0x920`
+   (`interfaceAdvisoryEnable(...)`) before repeating `signalDriverReady()`
 
-That is why a property-only producer left the system in the contradictory live
-state "ready key visible, interface attached, scan runs, but
-isDriverAvailable=0".
+So the bug is no longer modeled as "core must fabricate the bulletin itself".
+The Apple-shaped producer edge is an interface lifecycle callback first, then
+the ready property publication.  Skipping that hidden interface-enable edge can
+leave the system in the contradictory state "ready key visible, interface
+attached, scan runs, but isDriverAvailable=0".
 
 ## Owner-Family Backend Batch
 

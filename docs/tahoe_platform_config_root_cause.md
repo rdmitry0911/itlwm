@@ -719,19 +719,28 @@ Observed live state:
   `wifip2pd`, `sharingd`)
 - kernel IOC DEBUG still shows `isDriverAvailable=<0>`
 
-The new Tahoe decompile closes the gap. `WCLSystemStateManager` has an explicit
+The new Tahoe decompile closes the gap, but not in the way the first
+availability fix assumed. `WCLSystemStateManager` does have an explicit
 `driverAvailableEventHandler(...)` for `APPLE80211_M_DRIVER_AVAILABLE (0x37)`,
 and it only accepts the event when:
 
 - bulletin payload length is exactly `0xf8`
 - dword at payload `+0x8` is zero for the available edge
 
-So the strict Tahoe producer contract is:
+But the producer-side Apple call chain is different from "core emits the
+bulletin directly".  New `AppleBCMWLANCoreMac` decompile shows:
 
-1. publish `CoreWiFiDriverReadyKey = "true"/"false"` on the interface-side
-   object
-2. also publish `APPLE80211_M_DRIVER_AVAILABLE` with the Apple `0xf8` payload
+1. hidden interface-side object `+0x1510 -> +0x930` (`setInterfaceEnable(true)`)
+2. `AppleBCMWLANCore::signalDriverReady()` publishes
+   `CoreWiFiDriverReadyKey = "true"/"false"`
 
-The local port had drifted to property-only publication, which explains the
-contradictory live state "ready key present, scan path alive, but
-isDriverAvailable still 0".
+and on down/error paths:
+
+1. hidden interface-side object `+0x1510 -> +0x920`
+   (`interfaceAdvisoryEnable(...)`)
+2. `AppleBCMWLANCore::signalDriverReady()`
+
+So the real local drift was not just "missing property" or "missing bulletin".
+It was that the Tahoe port skipped the interface lifecycle edge that Apple
+fires before `signalDriverReady()`.  That explains the contradictory live state
+"ready key present, scan path alive, but isDriverAvailable still 0".
