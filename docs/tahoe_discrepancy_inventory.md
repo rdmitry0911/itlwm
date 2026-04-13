@@ -124,6 +124,15 @@ This inventory is intentionally split into:
   request. The Tahoe local path must therefore defer bootstrap `setPOWER(...)`
   instead of treating it as an immediate OFF edge.
 
+- `Tahoe POWER_CHANGED producer scope`:
+  live build `36e4cc3` proved that fixing bootstrap `setPOWER(...)` alone is
+  not enough. The local port still posted `APPLE80211_M_POWER_CHANGED` from
+  `start()` and from no-op `handlePowerStateChange(cur=1, req=1)`, which fed
+  false `SSM_EVENT_SYSTEM_POWER_OFF/ON` edges into WCL before availability
+  settled. Reverse event maps mark `POWER_CHANGED` as mandatory only for real
+  `setPowerState transitions`. The Tahoe local path must therefore stop posting
+  it on bootstrap and on no-op requests.
+
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
   `setWCL_ACTION_FRAME`, and `setRANGING_AUTHENTICATE` no longer preserve

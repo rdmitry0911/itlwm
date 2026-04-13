@@ -1572,12 +1572,6 @@ bool AirportItlwm::start(IOService *provider)
     // Apple publishes readiness as CoreWiFiDriverReadyKey on the interface-side
     // object once the adapter is actually enabled.
     publishTahoeDriverReadyState(this, true);
-    // POWER_CHANGED is one of the documented sticky bring-up events on 26.x.
-    // Without it, dependent IO80211/WCL managers can keep the interface in the
-    // "driver unavailable" state even though the controller and Skywalk
-    // interface are alive. That exact symptom was observed in kernel logs:
-    // external APPLE80211_IOC_SCAN_RESULT with isDriverAvailable=0.
-    postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     SD_SET(16); // enableAdapter OK
     sDiag.step = 10;
     // registerService() makes the IO80211Controller visible to airportd.
@@ -2591,11 +2585,19 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         power_state = prevState;
     }
     else if (fNetIf) {
-        publishTahoeDriverReadyState(this, newState == kWiFiPowerOn);
-        // Apple's 26.x event map lists POWER_CHANGED as mandatory on power
-        // transitions. Keep this in the real transition path too, not only in
-        // start(), so WCL/IO80211 availability state follows the controller.
-        postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
+        if (newState != prevState) {
+            publishTahoeDriverReadyState(this, newState == kWiFiPowerOn);
+            // The recovered event maps mark POWER_CHANGED as mandatory for real
+            // setPowerState transitions, not as a bootstrap sticky event and
+            // not for no-op req==cur calls. Live build 36e4cc3 proved the
+            // earlier local behavior was wrong: posting POWER_CHANGED from
+            // start() and from no-op 1->1 requests fed false
+            // SSM_EVENT_SYSTEM_POWER_OFF/ON edges into WCL.
+            postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
+        } else {
+            XYLog("DEBUG %s no state change (%u), suppressing ready/power notifications\n",
+                  __FUNCTION__, newState);
+        }
     }
 
     return err;

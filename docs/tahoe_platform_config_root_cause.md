@@ -30,6 +30,32 @@ Recovered Apple code shows a different contract:
 
 So the local bug is executing bootstrap `setPOWER(...)` too early.
 
+## POWER_CHANGED Producer Drift After Bootstrap Deferral
+
+After deferring bootstrap `setPOWER(...)`, live build `36e4cc3` showed that the
+false OFF edge disappeared: `power_state` stayed at `1` and no early
+`disableAdapter(...)` ran.
+
+But Tahoe still did not leave `isDriverAvailable=0`.
+
+The next live sequence was:
+
+- `setInterfaceEnable(true)` runs
+- `APPLE80211_M_DRIVER_AVAILABLE` is posted
+- yet WCL logs `SSM_EVENT_SYSTEM_POWER_OFF`, then `SSM_EVENT_SYSTEM_POWER_ON`
+- then `SSM_EVENT_DRIVER_UNAVAILABLE`
+
+This matches another local producer drift:
+
+- the Tahoe port still posted `APPLE80211_M_POWER_CHANGED` unconditionally from
+  `start()`
+- and also posted it from `handlePowerStateChange(...)` even for no-op
+  `req == cur` calls
+
+The reverse event maps mark `POWER_CHANGED` as mandatory only for real power
+transitions. So posting it on bootstrap and on no-op `1 -> 1` requests is not
+`1:1` with the Apple producer path and feeds false system-power edges into SSM.
+
 ## Symptom
 
 On Tahoe/26.x the driver loaded and appeared in the system, but WCL stayed in

@@ -31,6 +31,26 @@ That exact difference matches the live failure:
 So the remaining bug is not "missing another ready bulletin". The remaining bug
 is applying bootstrap `setPOWER(...)` transitions too early.
 
+Live runtime on build `36e4cc3` then exposed the next exact producer drift on
+the same path:
+
+- the transient bootstrap OFF edge is gone
+- `power_state` stays at `1`
+- but `WCLSystemStateManager` still receives
+  `SSM_EVENT_SYSTEM_POWER_OFF` / `SSM_EVENT_SYSTEM_POWER_ON` before the
+  availability decision
+- then immediately receives `SSM_EVENT_DRIVER_UNAVAILABLE`
+
+The local cause is that Tahoe still posts `APPLE80211_M_POWER_CHANGED` in two
+places where Apple does not:
+
+1. unconditionally from `start()`
+2. from `handlePowerStateChange(...)` even on no-op `req == cur`
+
+The reverse event map marks `POWER_CHANGED` as mandatory only for real
+`setPowerState transitions`, not as a sticky bring-up bulletin. So the local
+port must stop publishing it on bootstrap and on no-op `1 -> 1` requests.
+
 ## Tahoe Driver-Available Producer Correction
 
 Live runtime on build `2820901` and the newer Tahoe decompile establish one
