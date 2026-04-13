@@ -1941,6 +1941,20 @@ getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getHP2P_CTRL(apple80211_hp2p_ctrl *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // AppleBCMWLANCore::getHP2P_CTRL is a commander-backed HP2P/LLW query, but
+    // its public fail path is explicit: when the hidden support gate at
+    // +0x1510/+0xbf0 says LLW is unsupported, the visible return is
+    // 0xe00002c7. The local Tahoe port has no HP2P/LLW owner at all, so that
+    // support-missing path is the correct Apple-visible contract here.
+    return static_cast<IOReturn>(0xe00002c7);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getSENSING_DATA(apple80211_sensing_data_t *data)
 {
     // AppleBCMWLANCore::getSENSING_DATA always writes version=1, then exposes

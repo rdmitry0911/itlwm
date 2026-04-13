@@ -226,7 +226,7 @@ public:
     // [513] — HP2P adjunct state belongs to the hidden proximity/datapath
     // owner path. The former Q11-C umbrella queue is closed; this slot now
     // lives in the narrower Q11-C1 HP2P/DynSAR helper subqueue.
-    virtual IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl *) override { XYLog("DEBUG VTABLE [513] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl *) override;
     // [514] — AppleBCMWLANCore delegates to an async blacklist getter rather
     // than a direct unsupported stub. Preserve the caller-visible raw blob.
     virtual IOReturn getBSS_BLACKLIST(bss_blacklist *) override;

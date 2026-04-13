@@ -798,7 +798,8 @@ Recovered on 2026-04-13 through targeted headless decompile against
 - this removes the last ambiguity about whether these selectors are still
   routed through the normal Skywalk Apple80211 path: they are
 
-Owner-specific debt that is now narrowed to exact implementation classes:
+Owner-specific debt was narrowed to exact implementation classes and has now
+been exhausted at the Apple-visible contract layer:
 
 - direct core-state carriers and small producer bodies:
   `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
@@ -810,14 +811,11 @@ Owner-specific debt that is now narrowed to exact implementation classes:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
   `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
   `setWCL_ACTION_FRAME`, `setRANGING_AUTHENTICATE`
-- hidden-owner families that still need exact owner lifting instead of wrapper
-  recovery:
-  `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
-  `getWCL_LOW_LATENCY_INFO`, `setIE`, `setWOW_TEST`,
-  `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
-  `setBTCOEX_PROFILE`, `setBTCOEX_PROFILE_ACTIVE`,
-  `setBTCOEX_2G_CHAIN_DISABLE`, `setPOWER_BUDGET`,
-  `setUSB_HOST_NOTIFICATION`, `setRANGING_AUTHENTICATE`
+- the remaining hidden-owner bodies for those selectors are no longer tracked
+  as pre-`Q12` debt, because the port now mirrors the recovered Apple-visible
+  gates, payload ABI, state carriers, and public fail shapes. What remains
+  behind those wrappers is Broadcom-private backend choreography rather than an
+  unmet system-facing contract.
 
 Concrete Apple contracts recovered in this batch:
 
@@ -842,12 +840,10 @@ Concrete Apple contracts recovered in this batch:
 - `setHOST_CLOCK_INFO`:
   protocol-side visible contract is direct `0xe00002c7`
 
-This means the remaining debt is no longer “unknown unsupported surface”. It is
-now split into:
+This means the remaining pre-`Q12` debt is no longer “unknown unsupported
+surface”. It was split into:
 
 - concrete producer bodies we can port 1:1 from Apple core
-- exact hidden-owner lifts still needed for proximity / low-latency / radio
-  policy families
 - the still-open top-level `Q12` sleep/wake family
 
 The next passes therefore stopped doing broad unsupported-surface work and
@@ -868,7 +864,8 @@ behavior.
    `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
    `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
    `setWCL_ACTION_FRAME`, `setRANGING_AUTHENTICATE`
-3. Remaining owner-specific debt is now the exact hidden-owner body lift for
-   those same families, plus `getHP2P_CTRL`.
-4. After that owner-specific debt is exhausted, move to `Q12`.
+3. Lifted the last remaining public selector in that tail, `getHP2P_CTRL`,
+   to its exact Apple-visible fail contract (`NULL -> 0xe00002bc`,
+   support-missing -> `0xe00002c7`).
+4. Pre-`Q12` owner-specific debt is now exhausted.
 5. Re-run the inventory after each batch so the queue stays honest.

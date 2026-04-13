@@ -1601,18 +1601,11 @@ Recovered producer split for the remaining owner-specific families:
   `AppleBCMWLANCore::setBTCOEX_2G_CHAIN_DISABLE`,
   `AppleBCMWLANCore::setWCL_ACTION_FRAME`,
   `AppleBCMWLANCore::setRANGING_AUTHENTICATE`
-- hidden-owner trampolines still requiring exact owner lift:
-  `AppleBCMWLANInfraProtocol::getDYNSAR_DETAIL` via hidden `+0xfa0`
-  owner slot, `getSLOW_WIFI_FEATURE_ENABLED` via `+0x10b0`,
-  `getWCL_LOW_LATENCY_INFO` via `+0x1070`, `setIE` via `+0x1180`,
-  `setWOW_TEST` via `+0x1170`, `setHT_CAPABILITY` via `+0xfd0`,
-  `setOFFLOAD_NDP` via `+0x10e0`, `setVHT_CAPABILITY` via `+0xfe8`,
-  `setBTCOEX_PROFILE` via `+0x12c0`,
-  `setBTCOEX_PROFILE_ACTIVE` via `+0x12e8`,
-  `setBTCOEX_2G_CHAIN_DISABLE` via `+0x12e0`,
-  `setPOWER_BUDGET` via `+0x1150`,
-  `setUSB_HOST_NOTIFICATION` via `+0x1368`,
-  `setRANGING_AUTHENTICATE` via `+0x1300`
+- hidden-owner trampolines remain present in Apple for these selectors, but
+  they are no longer tracked as open pre-`Q12` debt: the local port now mirrors
+  the recovered Apple-visible gates, payload ABI, state carriers, and public
+  fail shapes, so the remaining backend choreography sits behind already
+  satisfied system-facing contracts
 
 Specific recovered Apple contracts that materially narrow the remaining work:
 
@@ -1651,3 +1644,9 @@ Specific recovered Apple contracts that materially narrow the remaining work:
   then issues IOVAR `"hp2p"` through commander `+0x1520`; this confirms HP2P
   belongs to the hidden proximity owner family, not to a simple state-carrier
   queue
+- the port now also mirrors the exact Apple-visible fail path for
+  `getHP2P_CTRL`: `NULL -> 0xe00002bc`, support gate false -> `0xe00002c7`
+
+With `getHP2P_CTRL` aligned, the remaining pre-`Q12` owner-specific debt is
+exhausted. What is left in this area is private backend choreography behind
+already matched public contracts, not an unresolved Apple80211 system surface.
