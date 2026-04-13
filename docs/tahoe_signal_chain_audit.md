@@ -652,3 +652,51 @@ the long-guard interval when no cached short-GI encoding is available.
 This still does **not** justify lifting `HT_CAPABILITY`: `getGUARD_INTERVAL`
 only proves the current-rate-to-interval policy, not the full HT capability IE
 producer path.
+
+## Q13 Confirmed Producer Mini-Batch: `getHT_CAPABILITY` / `getPRIVATE_MAC` / `getOFFLOAD_TCPKA_ENABLE`
+
+The next three Tahoe getters now have enough recovered producer-side evidence
+to stop treating them as a generic unsupported bucket.
+
+Recovered Apple producer contract for `getHT_CAPABILITY`:
+
+- remote `otool -tvV` on `AppleBCMWLANCoreMac` shows
+  `AppleBCMWLANCore::getHT_CAPABILITY(apple80211_ht_capability*)` first calls
+  `updateHTAndVHTCapBasedOnHWSupport()`
+- it then copies a contiguous `0x1c`-byte HT capability IE body from core-state
+  offsets `+0x40c..+0x427` into caller offsets `+0x4..+0x1f`
+- this matches the already recovered family-side
+  `IO80211PeerManager::getHtCapabilityIE(...)` carrier layout, so slot `[481]`
+  is a real producer and not a placeholder
+
+Recovered Apple producer contract for `getPRIVATE_MAC`:
+
+- `AppleBCMWLANCore::getPRIVATE_MAC(apple80211_private_mac_data*)` rejects
+  `NULL` with raw `0x16`
+- otherwise it writes an offset-accurate packed carrier:
+  `+0x4` enable flag, `+0x8` 16-bit/32-bit scan state field,
+  `+0xc` cached timeout, `+0x10..+0x15` first six-byte MAC,
+  `+0x16..+0x1b` second six-byte MAC
+- the exact semantic names of the two six-byte blobs are still not fully proven,
+  so the safe 1:1 recovery here is the packed ABI and offset coverage, not
+  invented field semantics
+
+Recovered Apple producer contract for `getOFFLOAD_TCPKA_ENABLE`:
+
+- remote `otool -tvV` shows
+  `AppleBCMWLANCore::getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t*)`
+  rejects `NULL` with `0xe00002c2`
+- it then applies the same feature/config gate already seen in the setter:
+  feature bit `0x31`, config bit `+0xbe`
+- if the keepalive object at core-state `+0x15a8` exists, Apple writes the
+  cached enable bit from object offset `+0x1e1` into caller offset `+0x4`
+- otherwise the producer returns `0xe00002c7`
+
+The important Tahoe consequences are:
+
+- `HT_CAPABILITY` can now be lifted as a real producer using the same local HT
+  capability state that already feeds our 802.11 HT IE generator
+- `PRIVATE_MAC` must stop being an opaque forward declaration and become a
+  packed `0x1c` ABI carrier
+- `OFFLOAD_TCPKA_ENABLE` cannot remain `typedef UInt`; the recovered getter and
+  setter both prove it is a packed `version + u32 enabled` carrier

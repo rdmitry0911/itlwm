@@ -418,6 +418,30 @@ struct apple80211_vht_capability {
     uint16_t    tx_highest;
 } __attribute__((packed));
 
+struct apple80211_private_mac_data {
+    uint32_t    version;
+    uint32_t    enabled;
+    // AppleBCMWLANCore::getPRIVATE_MAC(...) writes the next 24 bytes as an
+    // opaque packed carrier returned from the "scanmac" command path. The
+    // exact semantic names of these fields are not fully recovered yet, so keep
+    // the ABI offset-accurate instead of inventing labels Apple never used.
+    uint32_t    scanmac_state;
+    uint32_t    timeout_seconds;
+    uint8_t     primary_mac[6];
+    uint8_t     secondary_mac[6];
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_private_mac_data) == 0x1c,
+              "apple80211_private_mac_data must match Apple 0x1c carrier ABI");
+
+struct apple80211_offload_tcpka_enable_t {
+    uint32_t    version;
+    uint32_t    enabled;
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_offload_tcpka_enable_t) == 0x08,
+              "apple80211_offload_tcpka_enable_t must match Apple version + u32 ABI");
+
 struct apple80211_channel_data
 {
     u_int32_t                    version;

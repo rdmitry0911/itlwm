@@ -159,8 +159,6 @@ struct apple80211_btcoex_ext_profile;
 struct apple80211_os_eligibility;
 struct apple80211_tx_mode_config;
 
-typedef UInt apple80211_offload_tcpka_enable_t;
-
 class IO80211InfraProtocol : public IO80211InfraInterface {
     OSDeclareAbstractStructors(IO80211InfraProtocol)
 

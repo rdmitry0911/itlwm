@@ -41,6 +41,7 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
+static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
 
 static int ieeeChanFlag2apple(int flags, int bw)
 {
@@ -545,6 +546,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_GUARD_INTERVAL:
             return (cmd == SIOCGA80211) ? getGUARD_INTERVAL((apple80211_guard_interval_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_HT_CAPABILITY:
+            return (cmd == SIOCGA80211) ? getHT_CAPABILITY((apple80211_ht_capability *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_TXPOWER:
             return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -553,6 +557,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_POWER_BUDGET:
             return (cmd == SIOCGA80211) ? getPOWER_BUDGET((apple80211_power_budget_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_PRIVATE_MAC:
+            return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_OFFLOAD_TCPKA_ENABLE:
+            return (cmd == SIOCGA80211) ? getOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_OP_MODE:
             return (cmd == SIOCGA80211) ? getOP_MODE((apple80211_opmode_data *)req->req_data)
@@ -681,6 +691,12 @@ init(IOService *provider)
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     this->cachedThermalIndex = 0;
     this->cachedPowerBudget = 0;
+    this->cachedPrivateMacState = 0;
+    this->cachedPrivateMacTimeoutSeconds = 0;
+    memset(this->cachedPrivateMacPrimary, 0, sizeof(this->cachedPrivateMacPrimary));
+    memset(this->cachedPrivateMacSecondary, 0, sizeof(this->cachedPrivateMacSecondary));
+    this->cachedTcpkaOffloadSupported = false;
+    this->cachedTcpkaOffloadEnabled = false;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
     this->cachedBatteryPowerSaveMode = 0;
@@ -1126,6 +1142,36 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getHT_CAPABILITY(struct apple80211_ht_capability *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    // Remote otool on AppleBCMWLANCoreMac shows getHT_CAPABILITY is a real
+    // producer: it first refreshes cached HT/VHT capability state and then
+    // copies a contiguous 0x1c-byte HT capability IE body into caller
+    // offsets +0x4..+0x1f. Our 802.11 stack already carries the same source
+    // fields in `ieee80211com`, and the local `ieee80211_add_htcaps()`
+    // generator writes them in the same order, so slot [481] must expose that
+    // packed carrier instead of generic unsupported.
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->hc_id = IEEE80211_ELEMID_HTCAPS;
+    data->hc_len = sizeof(struct ieee80211_ie_htcap) - 2;
+    data->hc_cap = ic->ic_htcaps;
+    data->hc_param = ic->ic_ampdu_params;
+    memcpy(data->hc_mcsset, ic->ic_sup_mcs, sizeof(ic->ic_sup_mcs));
+    LE_WRITE_2(data->hc_mcsset + 10, ic->ic_max_rxrate & IEEE80211_MCS_RX_RATE_HIGH);
+    data->hc_mcsset[12] = ic->ic_tx_mcs_set;
+    data->hc_extcap = ic->ic_htxcaps;
+    data->hc_txbf = ic->ic_txbfcaps;
+    data->hc_antenna = ic->ic_aselcaps;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getGUARD_INTERVAL(apple80211_guard_interval_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -1171,6 +1217,28 @@ getGUARD_INTERVAL(apple80211_guard_interval_data *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getPRIVATE_MAC(apple80211_private_mac_data *data)
+{
+    // AppleBCMWLANCore::getPRIVATE_MAC does not use kIOReturnUnsupported. It
+    // rejects NULL with raw 0x16 and otherwise writes a packed 0x1c carrier
+    // covering offsets +0x4..+0x1b. The exact semantic names of the trailing
+    // "scanmac" fields are still only partially recovered, so keep the ABI
+    // offset-accurate and state-backed instead of inventing names or collapsing
+    // the slot into a generic unsupported path.
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->enabled = 0;
+    data->scanmac_state = cachedPrivateMacState;
+    data->timeout_seconds = cachedPrivateMacTimeoutSeconds;
+    memcpy(data->primary_mac, cachedPrivateMacPrimary, sizeof(data->primary_mac));
+    memcpy(data->secondary_mac, cachedPrivateMacSecondary, sizeof(data->secondary_mac));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getTHERMAL_INDEX(apple80211_thermal_index_t *data)
 {
     // AppleBCMWLANCore::getTHERMAL_INDEX is a plain core-state carrier getter:
@@ -1200,6 +1268,30 @@ getPOWER_BUDGET(apple80211_power_budget_t *data)
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->power_budget = cachedPowerBudget;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
+{
+    // Remote otool recovered the full getter body:
+    // - NULL -> 0xe00002c2
+    // - feature/config gate failure -> 0xe00002c7
+    // - keepalive object present -> write enabled flag at caller +0x4
+    //
+    // Tahoe therefore needs the exact carrier ABI here even before the deeper
+    // keepalive object path is fully lifted. Returning the Apple unsupported
+    // code when the local keepalive producer is absent is still materially more
+    // correct than leaving slot [504] on generic kIOReturnUnsupported with the
+    // wrong payload type.
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+    if (!cachedTcpkaOffloadSupported)
+        return static_cast<IOReturn>(0xe00002c7);
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->enabled = cachedTcpkaOffloadEnabled ? 1U : 0U;
     return kIOReturnSuccess;
 }
 

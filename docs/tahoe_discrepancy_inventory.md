@@ -174,6 +174,14 @@ This inventory is intentionally split into:
   `800` ns when no recognized short-GI encoding is present.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: HT capability / private-mac / TCPKA getter-side ABI lift`:
+  `getHT_CAPABILITY`, `getPRIVATE_MAC`, and `getOFFLOAD_TCPKA_ENABLE` no longer
+  belong in the generic unsupported bucket. The remote AppleBCMWLANCoreMach-O
+  recovered a real `getHT_CAPABILITY(...)` producer body, while
+  `getPRIVATE_MAC(...)` and `getOFFLOAD_TCPKA_ENABLE(...)` proved that the
+  local Tahoe headers were still missing their packed carrier ABIs.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -348,23 +356,22 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `147` raw overrides still return `kIOReturnUnsupported`
-- `117` of those still remain open unsupported discrepancies after the first
+- `144` raw overrides still return `kIOReturnUnsupported`
+- `114` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches and the lifted thermal /
-  power-budget / guard-interval getter batch
+  power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
+  batch
 - `17` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
 - `470 getAWDL_PEER_TRAFFIC_STATS`
 - `480 getPOWER_DEBUG_INFO`
-- `481 getHT_CAPABILITY`
 - `485 getROAM_PROFILE`
 - `486 getCHIP_COUNTER_STATS`
 - `487 getDBG_GUARD_TIME_PARAMS`
 - `488 getLEAKY_AP_STATS_MODE`
 - `489 getCOUNTRY_CHANNELS`
-- `490 getPRIVATE_MAC`
 - `493 getAWDL_RSDB_CAPS`
 - `494 getTKO_PARAMS`
 - `495 getTKO_DUMP`
@@ -374,7 +381,6 @@ Unsupported getter slots still present:
 - `499 getTRAP_INFO`
 - `501 getMAX_NSS_FOR_AP`
 - `502 getBTCOEX_2G_CHAIN_DISABLE`
-- `504 getOFFLOAD_TCPKA_ENABLE`
 - `506 getLQM_CONFIG`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`
 - `508 getBEACON_INFO`

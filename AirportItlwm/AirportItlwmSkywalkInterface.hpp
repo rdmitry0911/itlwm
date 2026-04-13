@@ -127,7 +127,7 @@ public:
     // [480]
     virtual IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info *) override { XYLog("DEBUG VTABLE [480] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [481]
-    virtual IOReturn getHT_CAPABILITY(apple80211_ht_capability *) override { XYLog("DEBUG VTABLE [481] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getHT_CAPABILITY(apple80211_ht_capability *) override;
     // [482]
     virtual IOReturn getMCS_VHT(apple80211_mcs_vht_data *) override;
     // [483]
@@ -149,7 +149,7 @@ public:
     // [489]
     virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override { XYLog("DEBUG VTABLE [489] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [490]
-    virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override { XYLog("DEBUG VTABLE [490] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [491]
     virtual IOReturn getRANGING_ENABLE(apple80211_ranging_enable_request_t *) override { XYLog("DEBUG VTABLE [491] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [492]
@@ -177,7 +177,7 @@ public:
     // [503]
     virtual IOReturn getPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [504]
-    virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override { XYLog("DEBUG VTABLE [504] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
     // [505]
     virtual IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t *) override { XYLog("DEBUG VTABLE [505] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [506]
@@ -582,6 +582,12 @@ private:
     uint32_t cachedPowersaveLevel;
     uint32_t cachedThermalIndex;
     uint32_t cachedPowerBudget;
+    uint32_t cachedPrivateMacState;
+    uint32_t cachedPrivateMacTimeoutSeconds;
+    uint8_t cachedPrivateMacPrimary[6];
+    uint8_t cachedPrivateMacSecondary[6];
+    bool cachedTcpkaOffloadSupported;
+    bool cachedTcpkaOffloadEnabled;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
     uint32_t cachedBatteryPowerSaveMode;
