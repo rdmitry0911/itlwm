@@ -3631,20 +3631,23 @@ setIE(apple80211_ie_data *data)
 {
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
-    if (data->ie_len == 0 || data->ie_len > sizeof(data->ie))
+    if (data->ie_len > sizeof(data->ie))
         return kApple80211ErrInvalidArgumentRaw;
 
     // AppleBCMWLANCore::setIE has a strict public split:
     // - NULL / ie_len > 0x800 -> raw 0x16
-    // - assoc-request IE with frame_type_flags==4, add!=0, ie[0]==0x44 goes
+    // - assoc-request IE with frame_type_flags==4, add!=0, ie_len!=0,
+    //   ie[0]==0x44 goes
     //   through JoinAdapter::setCustomAssocIE(...)
     // - everything else goes through setVendorIE(...)
     //
     // The Tahoe port does not yet lift those hidden owners, but it must keep
     // the same validation and preserve the exact caller-visible carrier instead
     // of collapsing slot [552] into generic unsupported.
-    if (data->frame_type_flags == 4 && data->add != 0 && data->ie[0] == 0x44) {
+    if (data->frame_type_flags == 4 && data->add != 0 &&
+        data->ie_len != 0 && data->ie[0] == 0x44) {
         cachedAssocIeLen = data->ie_len;
+        memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
         memcpy(cachedAssocIe, data->ie, cachedAssocIeLen);
         hasCachedAssocIe = true;
         return kIOReturnSuccess;
@@ -3652,7 +3655,9 @@ setIE(apple80211_ie_data *data)
 
     cachedVendorIeLen = data->ie_len;
     cachedVendorIeFlags = data->frame_type_flags;
-    memcpy(cachedVendorIe, data->ie, cachedVendorIeLen);
+    memset(cachedVendorIe, 0, sizeof(cachedVendorIe));
+    if (cachedVendorIeLen != 0)
+        memcpy(cachedVendorIe, data->ie, cachedVendorIeLen);
     hasCachedVendorIe = true;
     return kIOReturnSuccess;
 }

@@ -1711,3 +1711,9 @@ closed:
   Tahoe `0xe00002bc` visible fail shape that both
   `AppleBCMWLANNetAdapter::sendActionFrame(...)` and `sendActionFrameV2(...)`
   expose before adapter injection
+
+One more owner-family public-path mismatch is now closed:
+
+- `setIE(...)` must not reject `ie_len == 0`; the recovered Apple producer only
+  rejects `NULL` and `ie_len > 0x800`, and the assoc-request/WAPI branch is
+  taken only when `ie_len != 0` and `ie[0] == 0x44`

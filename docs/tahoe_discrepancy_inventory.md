@@ -913,3 +913,6 @@ reference owner-family decompile.
 - `setWCL_ACTION_FRAME` now preserves the same oversized-request fail gate
   (`0xe00002bc`) that both recovered Apple action-frame send paths expose
   before they enter the adapter injector
+- `setIE` no longer rejects `ie_len == 0`; the recovered Apple producer only
+  rejects `NULL` and `ie_len > 0x800`, while the WAPI/custom-assoc branch is
+  taken only when `ie_len != 0` and the first byte is `0x44`
