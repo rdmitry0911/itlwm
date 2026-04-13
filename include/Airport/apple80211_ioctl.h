@@ -755,7 +755,7 @@ struct apple80211_country_code_data
 struct apple80211_hw_mac_address
 {
     u_int32_t    version;
-    u_int8_t     hw_addr[IEEE80211_ADDR_LEN];
+    u_int8_t     hw_addr[6];
 } __attribute__((packed));
 
 static_assert(sizeof(apple80211_hw_mac_address) == 0x0A,
