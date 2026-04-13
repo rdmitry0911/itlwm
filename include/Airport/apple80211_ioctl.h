@@ -409,13 +409,13 @@ struct apple80211_ht_capability {
 
 struct apple80211_vht_capability {
     uint32_t    version;
-    uint16_t    cap;        // 4
-    uint32_t    unk1;       // 6
-    uint16_t    unk2;       // 10
-    uint16_t    unk3;       // 12
-    uint16_t    unk4;       // 14
-    uint16_t    unk5;       // 16
-    uint16_t    unk6;       // 18
+    uint8_t     ie;
+    uint8_t     len;
+    uint32_t    vht_cap_info;
+    uint16_t    rx_mcs_map;
+    uint16_t    rx_highest;
+    uint16_t    tx_mcs_map;
+    uint16_t    tx_highest;
 } __attribute__((packed));
 
 struct apple80211_channel_data

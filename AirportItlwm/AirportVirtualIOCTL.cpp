@@ -255,7 +255,9 @@ getAWDL_VHT_CAPABILITY(OSObject *object, struct apple80211_vht_capability *data)
 {
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
-    data->cap = 3263;
+    data->ie = IEEE80211_ELEMID_VHT_CAP;
+    data->len = sizeof(struct ieee80211_ie_vhtcap) - 2;
+    data->vht_cap_info = 3263;
 
     return kIOReturnSuccess;
 }

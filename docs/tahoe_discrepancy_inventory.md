@@ -151,6 +151,15 @@ This inventory is intentionally split into:
   returns `0xe00002c7`, while the port had a false validate+ack success path.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: VHT capability producer path`:
+  `getVHT_CAPABILITY` no longer belongs in the generic unsupported bucket.
+  `AppleBCMWLANCore::getVHT_CAPABILITY(...)` is a real producer that returns
+  `0x2d` only when the PHY-capability gate fails, and otherwise copies a
+  14-byte VHT capability IE payload from core state into the
+  `apple80211_vht_capability` body. This also corrects the local ABI: the
+  payload after `version` is `0x0e` bytes, not `0x10`.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -326,7 +335,7 @@ Initial classification buckets for the next pass:
 Current census from the Tahoe header:
 
 - `147` raw overrides still return `kIOReturnUnsupported`
-- `121` of those still remain open unsupported discrepancies after the first
+- `120` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches
 - `17` overrides still return success from inline ack-only placeholder bodies
 
@@ -336,7 +345,6 @@ Unsupported getter slots still present:
 - `478 getGUARD_INTERVAL`
 - `480 getPOWER_DEBUG_INFO`
 - `481 getHT_CAPABILITY`
-- `484 getVHT_CAPABILITY`
 - `485 getROAM_PROFILE`
 - `486 getCHIP_COUNTER_STATS`
 - `487 getDBG_GUARD_TIME_PARAMS`

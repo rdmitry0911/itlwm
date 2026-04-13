@@ -568,3 +568,34 @@ As with the getter batch, this does **not** generalize to neighboring WCL or
 timesync setters. For example `setWCL_WNM_OFFLOAD(...)` and
 `setWCL_WNM_OPS(...)` are real Apple producer paths and must not be collapsed
 into unsupported just because nearby slots are.
+
+## Q13 Confirmed Producer Mini-Batch: `getVHT_CAPABILITY`
+
+`getVHT_CAPABILITY` is the next unsupported Tahoe getter with a complete
+recoverable producer body.
+
+Recovered Apple producer contract:
+
+- `AppleBCMWLANCore::getVHT_CAPABILITY(apple80211_vht_capability*)`
+  returns `0x2d` while the PHY capability gate at core-state `+0x400`
+  is below `0x80`
+- otherwise it copies a contiguous 14-byte payload from core-state
+  `+0x428..+0x435` into the caller buffer starting at offset `+4`
+- that means the local ABI must model a 14-byte VHT capability IE body after
+  `version`, not a 16-byte synthetic layout:
+  `u8 ie`, `u8 len`, `u32 vht_cap_info`,
+  `u16 rx_mcs_map`, `u16 rx_highest`, `u16 tx_mcs_map`, `u16 tx_highest`
+
+This is strong enough to lift the slot without guessing the whole adjacent
+cluster:
+
+- remove generic `kIOReturnUnsupported` from slot `[484]`
+- keep the Apple-style unsupported return `0x2d` when VHT capability is not
+  present
+- fill the struct from locally available VHT capability state instead of
+  leaving the IOC on the generic unsupported path
+
+This batch does **not** automatically justify lifting `getHT_CAPABILITY`.
+For HT, the currently recovered evidence is still only on the family-side
+`IO80211PeerManager::getHtCapabilityIE(...)` consumer/helper path, not a clean
+Apple vendor-side producer body.

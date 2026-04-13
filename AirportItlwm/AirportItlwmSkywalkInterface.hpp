@@ -137,7 +137,7 @@ public:
     // AirportItlwm controller already has a working CHANNELS_INFO producer.
     virtual IOReturn getCHANNELS_INFO(apple80211_channels_info *) override;
     // [484]
-    virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override { XYLog("DEBUG VTABLE [484] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override;
     // [485]
     virtual IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands *) override { XYLog("DEBUG VTABLE [485] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [486]

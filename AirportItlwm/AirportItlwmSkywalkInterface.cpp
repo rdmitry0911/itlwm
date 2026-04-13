@@ -1088,6 +1088,33 @@ getHW_ADDR(struct apple80211_hw_mac_address *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getVHT_CAPABILITY(struct apple80211_vht_capability *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    // AppleBCMWLANCore::getVHT_CAPABILITY does not use a generic unsupported
+    // path. It returns 0x2d when the PHY gate rejects VHT, and otherwise
+    // copies a 14-byte VHT capability IE body into the packed
+    // apple80211_vht_capability payload after `version`. Our local ABI now
+    // mirrors that recovered contract, so Tahoe should expose the same IE
+    // shape instead of leaving slot [484] on kIOReturnUnsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    if ((ic->ic_flags & IEEE80211_F_VHTON) == 0 || ic->ic_vhtcaps == 0)
+        return 45;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->ie = IEEE80211_ELEMID_VHT_CAP;
+    data->len = sizeof(struct ieee80211_ie_vhtcap) - 2;
+    data->vht_cap_info = ic->ic_vhtcaps;
+    data->rx_mcs_map = ic->ic_vht_rx_mcs_map;
+    data->rx_highest = ic->ic_vht_rx_highest;
+    data->tx_mcs_map = ic->ic_vht_tx_mcs_map;
+    data->tx_highest = ic->ic_vht_tx_highest;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
