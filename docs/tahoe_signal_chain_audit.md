@@ -926,3 +926,18 @@ Those slots were previously either unsupported or inline success. They now:
 
 This does not close `Q13`, but it removes another class of simple
 state-carrier mismatches from its tail.
+
+## Q13 Classification: non-Apple sideband selectors must not advertise success
+
+The remaining inline-success tail was checked against both the local Tahoe
+decompile corpus and the remote Ghidra output. No producer symbols were found
+for:
+
+- `setWCL_SET_ROAM_LOCK`
+- `setHEARTBEAT`
+- `setINTERFACE_SETTING`
+
+That matters because `success` on those slots was strictly worse than explicit
+unsupported: it advertised producer paths that the recovered Apple stack does
+not expose. Those selectors are now classified out of the ack-only bucket and
+return `kIOReturnUnsupported` until real Apple implementations are recovered.

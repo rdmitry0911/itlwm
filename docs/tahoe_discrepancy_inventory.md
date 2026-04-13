@@ -79,9 +79,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 141 unsupported overrides and 3 ack-only
+  raw header surface now carries 144 unsupported overrides and 0 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  111 unsupported-return slots still remain open discrepancies
+  108 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -361,12 +361,12 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `141` raw overrides still return `kIOReturnUnsupported`
-- `111` of those still remain open unsupported discrepancies after the first
+- `144` raw overrides still return `kIOReturnUnsupported`
+- `108` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches and the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch
-- `3` overrides still return success from inline ack-only placeholder bodies
+- `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
@@ -489,9 +489,7 @@ Unsupported setter slots still present:
 
 Ack-only inline stubs still present in the Tahoe header:
 
-- `591 setWCL_SET_ROAM_LOCK`
-- `620 setHEARTBEAT`
-- `621 setINTERFACE_SETTING`
+- none
 
 ### 3. Former WCL adapter-plane stub cluster is closed as a queue
 

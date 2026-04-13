@@ -360,12 +360,11 @@ public:
     // [590] — AppleBCMWLAN: validates param, snapshots reassoc parameters,
     // and delegates into NetAdapter reassoc send path.
     virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override;
-    // [591] — Not found in AppleBCMWLAN, validate + ack
-    virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override {
-        XYLog("WCL [591] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [591] — No AppleBCMWLAN / IO80211Family producer was found for this slot
+    // in the current Tahoe decompile corpus. Returning success here would
+    // advertise a non-existent producer path; keep it explicitly unsupported
+    // until a real Apple implementation is recovered.
+    virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override { XYLog("DEBUG VTABLE [591] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [592] — AppleBCMWLAN: delegates to RoamAdapter legacy profile path.
     virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
     // [593] — AppleBCMWLAN: delegates to RoamAdapter modern profile path.
@@ -425,17 +424,10 @@ public:
     virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override;
     // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
     virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override;
-    // [620] — Not found in AppleBCMWLAN
-    virtual IOReturn setHEARTBEAT(void *) override {
-        XYLog("WCL [620] %s\n", __FUNCTION__);
-        return kIOReturnSuccess;
-    }
-    // [621] — Not found in AppleBCMWLAN
-    virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *data) override {
-        XYLog("WCL [621] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [620] — No Apple producer was recovered for this selector on Tahoe.
+    virtual IOReturn setHEARTBEAT(void *) override { XYLog("DEBUG VTABLE [620] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [621] — No Apple producer was recovered for this selector on Tahoe.
+    virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *data) override { XYLog("DEBUG VTABLE [621] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [622]
     virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override { XYLog("DEBUG VTABLE [622] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [623]
