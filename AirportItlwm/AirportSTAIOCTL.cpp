@@ -278,6 +278,24 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
         case APPLE80211_IOC_VIRTUAL_IF_DELETE:
             IOCTL_SET(request_type, VIRTUAL_IF_DELETE, apple80211_virt_if_delete_data);
             break;
+        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
+            // Tahoe airportd/CoreWiFi _initInterface issues these payload-less
+            // selectors on the controller-owned EXTERNAL Apple80211 request
+            // path.  Live build 5cb2a53 proved the earlier interface-side fix
+            // in AirportItlwmSkywalkInterface::processApple80211Ioctl() was
+            // not enough: IO80211Family still logged raw FAIL:6 because this
+            // dispatcher had no cases for 96/97 at all, so the request fell
+            // into the generic unhandled path before the Tahoe bridge could
+            // matter.
+            //
+            // The recovered Apple contract for a normal infrastructure
+            // interface is not ENXIO/6 here.  Both selectors must return the
+            // Apple-specific "not a virtual interface" code:
+            //   APPLE80211_IOC_VIRTUAL_IF_ROLE   -> 0xe082280e
+            //   APPLE80211_IOC_VIRTUAL_IF_PARENT -> 0xe082280e
+            ret = static_cast<IOReturn>(0xe082280e);
+            break;
         case APPLE80211_IOC_ROAM_THRESH:
             IOCTL_GET(request_type, ROAM_THRESH, apple80211_roam_threshold_data);
             break;

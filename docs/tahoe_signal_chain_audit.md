@@ -287,8 +287,12 @@ The following mismatches were already confirmed and fixed in earlier commits:
   of following the Apple 7-byte packed producer contract.
 - `APPLE80211_IOC_POWERSAVE` returned unsupported instead of accepting and
   caching the requested level.
-- payload-less `VIRTUAL_IF_ROLE/PARENT` fell through to raw POSIX `6` instead
-  of returning Apple `0xe082280e`.
+- payload-less `VIRTUAL_IF_ROLE/PARENT` initially fell through to raw POSIX
+  `6` instead of returning Apple `0xe082280e`.
+  Live build `5cb2a53` later proved the remaining raw `6` came from the
+  controller-side `AirportItlwm::apple80211Request(...)` dispatcher still
+  lacking explicit cases for request numbers `96/97`, not from the Tahoe
+  interface-side BSD bridge anymore.
 - `APPLE80211_IOC_WCL_TRIGGER_CC` returned unsupported instead of accepting the
   Apple mode contract and caching the first `0x20` bytes.
 - `SCAN_ABORT` and scan-complete delivery diverged from the Tahoe WCL path.

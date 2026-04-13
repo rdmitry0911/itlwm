@@ -391,6 +391,39 @@ no longer "wrong transport path for DRIVER_AVAILABLE".  At that point the next
 root cause must be in the remaining availability contract itself or in a
 separate WCL-facing producer path that still diverges from the reference stack.
 
+## External VIRTUAL_IF_* Residual Root Cause
+
+Live build `5cb2a53` later showed that the interface-side Tahoe fix was only a
+partial repair.
+
+Observed sequence:
+
+- the interface-side source already contained the payload-less fast-path
+  returning `0xe082280e`
+- yet `IO80211Family` still logged
+  `APPLE80211_IOC_VIRTUAL_IF_ROLE -> FAIL:6:0x6`
+- and
+  `APPLE80211_IOC_VIRTUAL_IF_PARENT -> FAIL:6:0x6`
+- both failures were on `EXTERNAL` requests from the normal user/client path
+
+That narrowed the remaining source to the controller dispatcher rather than the
+interface-side bridge.
+
+`AirportItlwm::apple80211Request(...)` still had no explicit cases for request
+numbers `96` and `97`, so Tahoe external requests fell into the generic
+unhandled path before the already-fixed interface-side bridge could matter.
+
+The strict 1:1 fix direction is therefore two-sided:
+
+1. keep the payload-less Tahoe interface-side fast-path returning
+   `0xe082280e`
+2. also return `0xe082280e` from the controller-side external dispatcher for
+   `APPLE80211_IOC_VIRTUAL_IF_ROLE` and `APPLE80211_IOC_VIRTUAL_IF_PARENT`
+
+Without both sides, Tahoe still leaks raw POSIX `6` into `_initInterface`,
+which prevents the upper Apple80211 stack from following the same non-virtual
+interface contract as the reference system.
+
 ## Runtime Status After `3325ce7`
 
 Live logs on the first reboot with `AirportItlwm build=3325ce7` closed one

@@ -176,6 +176,10 @@ This inventory is intentionally split into:
 
 - `payload-less VIRTUAL_IF_ROLE/PARENT`:
   no longer allowed to fall into raw POSIX `6`.
+  Live build `5cb2a53` proved the real remaining source was the controller
+  dispatcher `AirportItlwm::apple80211Request(...)`: Tahoe external requests
+  still missed explicit cases for IOCTLs `96/97`, so the already-fixed
+  interface-side bridge never saw the request.
   See [tahoe_platform_config_root_cause.md](/Users/bob/Projects/itlwm/docs/tahoe_platform_config_root_cause.md).
 
 - `WCL_TRIGGER_CC`:
