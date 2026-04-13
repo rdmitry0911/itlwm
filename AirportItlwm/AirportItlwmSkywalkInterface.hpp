@@ -144,8 +144,11 @@ public:
     virtual IOReturn getVHT_CAPABILITY(apple80211_vht_capability *) override;
     // [485]
     virtual IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands *) override { XYLog("DEBUG VTABLE [485] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [486]
-    virtual IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats *) override { XYLog("DEBUG VTABLE [486] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [486] — AppleBCMWLANCore does not expose a normal producer on Tahoe.
+    // Newer chips trap through a private stats path, while the visible public
+    // contract returns the fixed Apple failure 0xe00002e6 rather than generic
+    // unsupported. Keep the slot explicit so the mismatch does not regress.
+    virtual IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats *) override;
     // [487]
     virtual IOReturn getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *) override { XYLog("DEBUG VTABLE [487] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [488]
@@ -192,7 +195,9 @@ public:
     virtual IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t *) override { XYLog("DEBUG VTABLE [505] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [506]
     virtual IOReturn getLQM_CONFIG(apple80211_lqm_config_t *) override;
-    // [507]
+    // [507] — AppleBCMWLANCore zero-fills the mini-dump body from +0x4 rather
+    // than using a generic unsupported stub, so this remains open producer
+    // work and should not be misclassified as Apple-unsupported.
     virtual IOReturn getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *) override { XYLog("DEBUG VTABLE [507] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [508]
     virtual IOReturn getBEACON_INFO(apple80211_beacon_info_t *) override { XYLog("DEBUG VTABLE [508] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -238,7 +243,8 @@ public:
     virtual IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *) override { XYLog("DEBUG VTABLE [527] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [528]
     virtual IOReturn getWCL_GET_TX_BLANKING_STATUS(uint *) override { XYLog("DEBUG VTABLE [528] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [529]
+    // [529] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getHE_COUNTERS(apple80211_he_counters_ctl *) override { XYLog("DEBUG VTABLE [529] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [530]
     virtual IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo *) override;
@@ -252,9 +258,11 @@ public:
     virtual IOReturn getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *) override { XYLog("DEBUG VTABLE [534] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [535]
     virtual IOReturn getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *) override;
-    // [536]
+    // [536] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *) override { XYLog("DEBUG VTABLE [536] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [537]
+    // [537] — AppleBCMWLANCore::getWIFI_NOISE_PER_ANT is a direct
+    // `return 0xe00002c7;` stub on Tahoe.
     virtual IOReturn getWIFI_NOISE_PER_ANT(apple80211_noise_per_ant_t *) override { XYLog("DEBUG VTABLE [537] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [538]
     // [538] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -265,7 +273,8 @@ public:
     virtual IOReturn getTIMESYNC_STATS(apple80211_timesync_stats *) override { XYLog("DEBUG VTABLE [539] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [540]
     virtual IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *) override { XYLog("DEBUG VTABLE [540] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [541]
+    // [541] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getSMARTCCA_OPMODE(apple80211_smartcca_opmode *) override { XYLog("DEBUG VTABLE [541] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [542]
     // [542] — AppleBCMWLANInfraProtocol::getLQM_STATISTICS is a direct

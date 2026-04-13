@@ -648,6 +648,40 @@ This classification does **not** generalize to adjacent slots. For example:
 - `getWCL_WNM_OFFLOAD` is explicit unsupported, but nearby WCL slots are not
   automatically safe to classify the same way
 
+## Q13 Getter Fail-Contract Zone: Tahoe fixed-fail selectors stay out of the open tail
+
+The next safe `Q13` reduction pass is another getter-only zone, but this time
+it is about fixed fail contracts rather than hidden producers.
+
+Recovered Tahoe fail-contract selectors:
+
+- `AppleBCMWLANInfraProtocol::getCOUNTRY_CHANNELS_INFO(...)`
+- `AppleBCMWLANInfraProtocol::getRANGING_ENABLE(...)`
+- `AppleBCMWLANInfraProtocol::getRANGING_START(...)`
+- `AppleBCMWLANInfraProtocol::getRANGING_CAPS(...)`
+- `AppleBCMWLANInfraProtocol::getWCL_WNM_OFFLOAD(...)`
+- `AppleBCMWLANInfraProtocol::getFW_CLOCK_INFO(...)`
+- `AppleBCMWLANInfraProtocol::getTIMESYNC_STATS(...)`
+- `AppleBCMWLANInfraProtocol::getHE_COUNTERS(...)`
+- `AppleBCMWLANInfraProtocol::getSMARTCCA_OPMODE(...)`
+- `AppleBCMWLANCore::getWIFI_NOISE_PER_ANT(...)`
+- `AppleBCMWLANCore::getCHIP_COUNTER_STATS(...)`
+
+The first nine selectors stay on direct Apple fail paths, so they belong in
+slot-level classification comments, not in the open "missing producer" tail.
+`getCHIP_COUNTER_STATS(...)` is slightly different: Tahoe does not expose a
+normal producer there either, but its visible public contract is the fixed
+Apple error `0xe00002e6`, not generic `kIOReturnUnsupported`.
+
+That closes this zone as follows:
+
+- the direct-`0xe00002c7` selectors are now documented at slot level so they
+  do not drift back into the unsupported census
+- `getWIFI_NOISE_PER_ANT(...)` leaves the open discrepancy queue because Apple
+  itself is a direct unsupported stub there
+- `getCHIP_COUNTER_STATS(...)` leaves the open queue because the port now
+  returns the same fixed Tahoe fail code that the reference driver exposes
+
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 
 The same pattern exists on a narrow setter subset: Apple does not expose a

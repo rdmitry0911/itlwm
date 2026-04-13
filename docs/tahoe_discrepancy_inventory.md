@@ -146,6 +146,15 @@ This inventory is intentionally split into:
   `getLQM_STATISTICS`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: getter fail-contract zone`:
+  the next Tahoe getter zone proved that the remaining open tail still mixed
+  true missing producers with selectors that already have a fixed Apple-visible
+  fail contract. `getWIFI_NOISE_PER_ANT` is a direct Apple `0xe00002c7` stub,
+  while `getCHIP_COUNTER_STATS` returns the fixed Apple error `0xe00002e6`
+  rather than generic unsupported. These slots therefore leave the open
+  discrepancy queue without inventing new producer paths.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
   a first setter subset was also proven to be "Apple also unsupported" in the
   vendor-side infra path itself. Those slots should not stay in the open
@@ -385,12 +394,13 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `125` raw overrides still return `kIOReturnUnsupported`
-- `78` of those still remain open unsupported discrepancies after the first
+- `124` raw overrides still return `kIOReturnUnsupported`
+- `76` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
-  LQM carrier zone, and the closed 15-slot Apple-unsupported setter zone
+  LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
+  getter fail-contract zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -398,7 +408,6 @@ Unsupported getter slots still present:
 - `470 getAWDL_PEER_TRAFFIC_STATS`
 - `480 getPOWER_DEBUG_INFO`
 - `485 getROAM_PROFILE`
-- `486 getCHIP_COUNTER_STATS`
 - `487 getDBG_GUARD_TIME_PARAMS`
 - `488 getLEAKY_AP_STATS_MODE`
 - `489 getCOUNTRY_CHANNELS`
@@ -431,7 +440,6 @@ Unsupported getter slots still present:
 - `532 getSIB_COEX_STATUS`
 - `533 getWCL_EXTENDED_BSS_INFO`
 - `534 getWCL_LOW_LATENCY_INFO_STATS`
-- `537 getWIFI_NOISE_PER_ANT`
 - `540 getSYSTEM_SLEEP_CONFIG`
 
 Unsupported setter slots still present:

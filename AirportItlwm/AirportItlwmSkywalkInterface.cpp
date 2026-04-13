@@ -1616,6 +1616,17 @@ getHW_ADDR(struct apple80211_hw_mac_address *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getCHIP_COUNTER_STATS(apple80211_chip_stats *)
+{
+    // AppleBCMWLANCore::getCHIP_COUNTER_STATS does not fall back to the generic
+    // Tahoe unsupported path. The recovered public contract returns the fixed
+    // Apple error 0xe00002e6 after a chip-generation gate, so leaving slot
+    // [486] on kIOReturnUnsupported would advertise the wrong failure shape to
+    // the caller even when no Broadcom-private stats producer is present.
+    return static_cast<IOReturn>(0xe00002e6);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getVHT_CAPABILITY(struct apple80211_vht_capability *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
