@@ -2,6 +2,44 @@
 
 Date: 2026-04-12
 
+## Tahoe External Bootstrap Path Uses `getPrimarySkywalkInterface()`
+
+Live build `0707196` corrects one earlier assumption in the audit.
+
+The loaded Tahoe binary already contains:
+
+- `AirportItlwmSkywalkInterface::processBSDCommand(...)`
+- `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+- `AirportItlwmSkywalkInterface::getSSID(...)`
+- `AirportItlwmSkywalkInterface::getBSSID(...)`
+- `AirportItlwmSkywalkInterface::getCHANNEL(...)`
+
+Yet the live external bootstrap path still returns:
+
+- `SSID/BSSID -> 0xe0822403`
+- `VIRTUAL_IF_ROLE/PARENT -> 6`
+
+So the active bootstrap getters are not using the already-lifted Skywalk
+helpers directly.
+
+The earlier `apple80211Request(...)` conclusion was wrong for Tahoe V3.
+`IO80211ControllerV3` does not declare that virtual at all. The actual common
+Tahoe path goes through controller slot `+0xc80`
+(`IO80211Controller::getPrimarySkywalkInterface()`), and family getter bodies
+then consult:
+
+- controller primary-interface cache `controller+0x120+0x188`
+- peer-manager interface refs `+0x550/+0x558`
+
+That matches live `0707196` better than the failed V3 request-override idea:
+the interface already exists (`en0`, `CoreWiFiDriverReadyKey="true"`,
+`fakeScanDone` posted), but the family bootstrap getters still see an empty
+primary-interface source and return `0xe0822403` / raw `6`.
+
+The next fix therefore belongs in controller-side primary-interface exposure
+(`getPrimarySkywalkInterface()` / attach bookkeeping), not in another request
+bridge.
+
 ## Tahoe Bootstrap POWER Contract Correction
 
 Live runtime on build `5da9d59` disproves the earlier local assumption about

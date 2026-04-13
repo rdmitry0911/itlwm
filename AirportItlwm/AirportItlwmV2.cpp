@@ -100,6 +100,59 @@ IOCommandGate *_fCommandGate;
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
 RuntimeDiag sRT = {};
 
+static int ieeeChanFlag2apple(int flags, int bw)
+{
+    int ret = 0;
+    if (flags & IEEE80211_CHAN_2GHZ)
+        ret |= APPLE80211_C_FLAG_2GHZ;
+    if (flags & IEEE80211_CHAN_5GHZ)
+        ret |= APPLE80211_C_FLAG_5GHZ;
+    if (!(flags & IEEE80211_CHAN_PASSIVE))
+        ret |= APPLE80211_C_FLAG_ACTIVE;
+    if (flags & IEEE80211_CHAN_DFS)
+        ret |= APPLE80211_C_FLAG_DFS;
+    if (bw == -1) {
+        if (flags & IEEE80211_CHAN_VHT) {
+            if ((flags & IEEE80211_CHAN_VHT160) || (flags & IEEE80211_CHAN_VHT80_80))
+                ret |= APPLE80211_C_FLAG_160MHZ;
+            if (flags & IEEE80211_CHAN_VHT80)
+                ret |= APPLE80211_C_FLAG_80MHZ;
+        } else if ((flags & IEEE80211_CHAN_HT40) && (flags & IEEE80211_CHAN_HT)) {
+            ret |= APPLE80211_C_FLAG_40MHZ;
+            if (flags & IEEE80211_CHAN_HT40U)
+                ret |= APPLE80211_C_FLAG_EXT_ABV;
+        } else if (flags & IEEE80211_CHAN_HT20)
+            ret |= APPLE80211_C_FLAG_20MHZ;
+        else if ((flags & IEEE80211_CHAN_CCK) || (flags & IEEE80211_CHAN_OFDM))
+            ret |= APPLE80211_C_FLAG_10MHZ;
+    } else {
+        switch (bw) {
+            case IEEE80211_CHAN_WIDTH_80P80:
+            case IEEE80211_CHAN_WIDTH_160:
+                ret |= APPLE80211_C_FLAG_160MHZ;
+                break;
+            case IEEE80211_CHAN_WIDTH_80:
+                ret |= APPLE80211_C_FLAG_80MHZ;
+                break;
+            case IEEE80211_CHAN_WIDTH_40:
+                ret |= APPLE80211_C_FLAG_40MHZ;
+                if (flags & IEEE80211_CHAN_HT40U)
+                    ret |= APPLE80211_C_FLAG_EXT_ABV;
+                break;
+            case IEEE80211_CHAN_WIDTH_20:
+                ret |= APPLE80211_C_FLAG_20MHZ;
+                break;
+            default:
+                if (flags & IEEE80211_CHAN_HT20)
+                    ret |= APPLE80211_C_FLAG_20MHZ;
+                else if ((flags & IEEE80211_CHAN_CCK) || (flags & IEEE80211_CHAN_OFDM))
+                    ret |= APPLE80211_C_FLAG_10MHZ;
+                break;
+        }
+    }
+    return ret;
+}
+
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
 // Must match poolOpts.bufferSize in AirportItlwm::start() pool creation.
 #define SKYWALK_BUF_SIZE 2048
@@ -2415,6 +2468,89 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
         memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
         postMessage(fNetIf, APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, true);
     }
+    return kIOReturnSuccess;
+}
+
+IO80211SkywalkInterface *AirportItlwm::
+getPrimarySkywalkInterface(void)
+{
+    // Tahoe family call sites for bootstrap getters (SSID / BSSID /
+    // CURRENT_NETWORK / scan-manager lookups) dispatch through controller slot
+    // +0xc80 (`getPrimarySkywalkInterface()`). The base implementation reads a
+    // controller cache pointer at `controller+0x120+0x188`; on the local port
+    // that cache stayed empty, so family-side getters kept returning
+    // driver-unavailable even though `fNetIf` already existed and was bound.
+    //
+    // Live 0707196 proof:
+    // - `en0` existed, `CoreWiFiDriverReadyKey="true"`, scan reached
+    //   `fakeScanDone`
+    // - yet external SSID/BSSID/CURRENT_NETWORK still failed
+    // - the broken V3 `apple80211Request(...)` hypothesis did not compile and
+    //   was wrong: Tahoe V3 does not declare that virtual at all
+    //
+    // Returning the actual bound Skywalk interface here matches the family's
+    // expected primary-interface source without inventing raw offset writes.
+    return OSDynamicCast(IO80211SkywalkInterface, fNetIf);
+}
+
+IOReturn AirportItlwm::
+getSSID(OSObject *object, struct apple80211_ssid_data *sd)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    memset(sd, 0, sizeof(*sd));
+    sd->version = APPLE80211_VERSION;
+    if (ic->ic_state == IEEE80211_S_RUN) {
+        memcpy(sd->ssid_bytes, ic->ic_des_essid,
+               strlen((const char *)ic->ic_des_essid));
+        sd->ssid_len = (uint32_t)strlen((const char *)ic->ic_des_essid);
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+setSSID(OSObject *object, struct apple80211_ssid_data *sd)
+{
+    RT2_SET(5);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+getCHANNEL(OSObject *object, struct apple80211_channel_data *cd)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    memset(cd, 0, sizeof(*cd));
+    cd->version = APPLE80211_VERSION;
+    cd->channel.version = APPLE80211_VERSION;
+    if (ic->ic_state == IEEE80211_S_RUN) {
+        cd->channel.channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+        cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags,
+                                               ic->ic_bss->ni_chw);
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+setCHANNEL(OSObject *object, struct apple80211_channel_data *data)
+{
+    XYLog("%s channel=%d\n", __FUNCTION__, data->channel.channel);
+    return kIOReturnError;
+}
+
+IOReturn AirportItlwm::
+getBSSID(OSObject *object, struct apple80211_bssid_data *bd)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    memset(bd, 0, sizeof(*bd));
+    bd->version = APPLE80211_VERSION;
+    if (ic->ic_state == IEEE80211_S_RUN)
+        memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+setBSSID(OSObject *object, struct apple80211_bssid_data *data)
+{
+    XYLog("%s bssid=%s\n", __FUNCTION__, ether_sprintf(data->bssid.octet));
     return kIOReturnSuccess;
 }
 

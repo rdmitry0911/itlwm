@@ -2,6 +2,42 @@
 
 Date: 2026-04-12
 
+## Tahoe Primary Interface Bootstrap Root Cause
+
+Live runtime on build `0707196` proves the current bootstrap failure is not in
+the Tahoe Skywalk helper bodies themselves.
+
+Observed facts:
+
+- the loaded binary already contains
+  `AirportItlwmSkywalkInterface::processBSDCommand(...)`
+- the loaded binary already contains
+  `AirportItlwmSkywalkInterface::getSSID/getBSSID/getCHANNEL`
+- those helpers already implement Apple cache semantics
+  (success + zeroed carrier before association)
+- yet the live external bootstrap path still returns
+  `SSID/BSSID -> 0xe0822403` and `VIRTUAL_IF_ROLE/PARENT -> 6`
+
+That means the active external Apple80211 path is not consuming the already
+lifted helper bodies through the expected primary-interface source.
+
+The earlier `apple80211Request(...)` interpretation was wrong for Tahoe V3.
+`IO80211ControllerV3.h` does not declare that virtual. The family decompile
+shows the common Tahoe getter path instead dispatching through controller slot
+`+0xc80` (`getPrimarySkywalkInterface()`), after which controller and
+peer-manager caches feed:
+
+- `controller+0x120+0x188` for `getSSIDData(...)`, `getInfraChannel(...)`,
+  `getPrimarySkywalkInterface(...)`
+- `peerManager+0x550/+0x558` for bootstrap interface selection in
+  `getBSSIDData(...)`, role lookups, and related cache consumers
+
+So the exact missing contract is not a synthetic controller request bridge, but
+controller-side exposure of the real primary Tahoe Skywalk interface.
+
+Those selectors must be forwarded from the controller request plane into the
+existing Tahoe helper bodies instead of surfacing generic failure.
+
 ## Bootstrap POWER Root Cause
 
 The live reboot on build `5da9d59` narrowed the remaining Tahoe failure to the

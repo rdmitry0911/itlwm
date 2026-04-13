@@ -89,6 +89,18 @@ This inventory is intentionally split into:
 
 ## Closed
 
+- `Tahoe primary interface exposure gap`:
+  live build `0707196` proves the active external bootstrap getters do not
+  consume the already-fixed helper bodies through the expected controller /
+  peer-manager primary-interface sources. The earlier
+  `apple80211Request(...)` conclusion was wrong for Tahoe V3:
+  `IO80211ControllerV3` does not declare that virtual at all. The family
+  decompile instead routes the common bootstrap getter plane through
+  controller slot `+0xc80` (`getPrimarySkywalkInterface()`), then reads
+  controller cache `+0x188` and peer-manager refs `+0x550/+0x558`. That is
+  the real Tahoe bootstrap exposure gap for
+  `SSID/BSSID/CHANNEL/VIRTUAL_IF_ROLE/VIRTUAL_IF_PARENT`.
+
 - `Tahoe driver-available producer contract`:
   live build `2820901` showed that `CoreWiFiDriverReadyKey = "true"` in
   `ioreg` is not enough to make Tahoe external consumers treat the interface as

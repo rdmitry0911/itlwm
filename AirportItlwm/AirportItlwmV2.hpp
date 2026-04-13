@@ -293,6 +293,15 @@ public:
         return kIOReturnSuccess;
     }
 
+    // Tahoe/26.x routes many bootstrap getters through controller slot +0xc80
+    // (`getPrimarySkywalkInterface()`), not through the legacy pre-Tahoe
+    // `apple80211Request(...)` fallback. Live build 0707196 proved that SSID /
+    // BSSID / CURRENT_NETWORK failures persisted even with Skywalk-side helper
+    // fixes, and the V3 target does not declare `apple80211Request` at all.
+    // Provide the real primary-interface object here so family caches stop
+    // reading the empty base-controller pointer (`controller+0x120+0x188`).
+    virtual IO80211SkywalkInterface *getPrimarySkywalkInterface(void) override;
+
 #if __IO80211_TARGET >= __MAC_26_0
     // dump[429] = releaseFlowQueue at vptr+0xD58.  Not called during start().
     virtual void *releaseFlowQueue(IO80211FlowQueue *) override;
@@ -383,6 +392,12 @@ public:
     FUNC_IOCTL_GET(DRIVER_VERSION, apple80211_version_data)
     FUNC_IOCTL_GET(HARDWARE_VERSION, apple80211_version_data)
     FUNC_IOCTL(COUNTRY_CODE, apple80211_country_code_data)
+    IOReturn getSSID(OSObject *object, struct apple80211_ssid_data *data);
+    IOReturn setSSID(OSObject *object, struct apple80211_ssid_data *data);
+    IOReturn getBSSID(OSObject *object, struct apple80211_bssid_data *data);
+    IOReturn setBSSID(OSObject *object, struct apple80211_bssid_data *data);
+    IOReturn getCHANNEL(OSObject *object, struct apple80211_channel_data *data);
+    IOReturn setCHANNEL(OSObject *object, struct apple80211_channel_data *data);
     IOReturn getPLATFORM_CONFIG(OSObject *object, struct apple80211_platform_config *data);
     
 public:
