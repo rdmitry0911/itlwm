@@ -155,6 +155,16 @@ This inventory is intentionally split into:
   discrepancy queue without inventing new producer paths.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: MWS/NDD setter carrier zone`:
+  the next Tahoe setter zone closes ten sideband selectors together. The nine
+  `MWS_*_WIFI_ENH` slots are public carriers in Apple rather than generic
+  unsupported stubs: Tahoe copies raw caller payloads into cached core state
+  before dispatching into Broadcom-private notifiers. `setNDD_REQ(...)` is
+  feature-gated and falls back to `0xe00002c7` when no nearby-discovery owner
+  exists. The port now mirrors that public surface instead of leaving the
+  whole zone on generic unsupported.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
   a first setter subset was also proven to be "Apple also unsupported" in the
   vendor-side infra path itself. Those slots should not stay in the open
@@ -394,13 +404,13 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `124` raw overrides still return `kIOReturnUnsupported`
-- `76` of those still remain open unsupported discrepancies after the first
+- `114` raw overrides still return `kIOReturnUnsupported`
+- `66` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
   LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
-  getter fail-contract zone
+  getter fail-contract zone, and the MWS/NDD setter carrier zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -492,16 +502,6 @@ Unsupported setter slots still present:
 - `639 setTRAFFIC_ENG_PARAMS`
 - `642 setHOST_CLOCK_INFO`
 - `647 setWCL_SOI_CONFIG`
-- `649 setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH`
-- `650 setMWS_COEX_BITMAP_WIFI_ENH`
-- `651 setMWS_DISABLE_OCL_BITMAP_WIFI_ENH`
-- `652 setMWS_RFEM_CONFIG_WIFI_ENH`
-- `653 setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH`
-- `654 setMWS_SCAN_FREQ_WIFI_ENH`
-- `655 setMWS_SCAN_FREQ_MODE_WIFI_ENH`
-- `656 setMWS_CONDITION_ID_BITMAP_WIFI_ENH`
-- `657 setMWS_ANTENNA_SELECTION_WIFI_ENH`
-- `658 setNDD_REQ`
 - `659 setDBRG_ENTROPY`
 - `662 setOS_ELIGIBILITY`
 

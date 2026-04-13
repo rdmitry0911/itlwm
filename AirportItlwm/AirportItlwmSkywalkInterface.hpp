@@ -527,26 +527,37 @@ public:
     // [648] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setMWS_TIME_SHARING_WIFI_ENH(apple80211_mws_time_sharing *) override { XYLog("DEBUG VTABLE [648] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [649]
-    virtual IOReturn setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override { XYLog("DEBUG VTABLE [649] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [650]
-    virtual IOReturn setMWS_COEX_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override { XYLog("DEBUG VTABLE [650] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [651]
-    virtual IOReturn setMWS_DISABLE_OCL_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override { XYLog("DEBUG VTABLE [651] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [652]
-    virtual IOReturn setMWS_RFEM_CONFIG_WIFI_ENH(apple80211_mws_rfem_config *) override { XYLog("DEBUG VTABLE [652] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [653]
-    virtual IOReturn setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override { XYLog("DEBUG VTABLE [653] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [654]
-    virtual IOReturn setMWS_SCAN_FREQ_WIFI_ENH(apple80211_mws_scan_freq *) override { XYLog("DEBUG VTABLE [654] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [655]
-    virtual IOReturn setMWS_SCAN_FREQ_MODE_WIFI_ENH(apple80211_mws_scan_freq_mode *) override { XYLog("DEBUG VTABLE [655] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [656]
-    virtual IOReturn setMWS_CONDITION_ID_BITMAP_WIFI_ENH(apple80211_mws_condition_id_config *) override { XYLog("DEBUG VTABLE [656] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [657]
-    virtual IOReturn setMWS_ANTENNA_SELECTION_WIFI_ENH(apple80211_mws_antenna_selection *) override { XYLog("DEBUG VTABLE [657] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [658]
-    virtual IOReturn setNDD_REQ(apple80211_ndd_data *) override { XYLog("DEBUG VTABLE [658] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [649] — AppleBCMWLANCore copies a 9-dword bitmap into cached core state
+    // and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override;
+    // [650] — AppleBCMWLANCore copies a 9-dword bitmap into cached core state
+    // and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_COEX_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override;
+    // [651] — AppleBCMWLANCore copies a 9-dword bitmap into cached core state
+    // and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_DISABLE_OCL_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override;
+    // [652] — AppleBCMWLANCore copies a 10-dword RFEM carrier into cached
+    // core state and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_RFEM_CONFIG_WIFI_ENH(apple80211_mws_rfem_config *) override;
+    // [653] — AppleBCMWLANCore copies a 9-dword bitmap into cached core state
+    // and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *) override;
+    // [654] — AppleBCMWLANCore copies a 10-dword scan-frequency carrier into
+    // cached core state and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_SCAN_FREQ_WIFI_ENH(apple80211_mws_scan_freq *) override;
+    // [655] — AppleBCMWLANCore reorders four dwords from the public carrier
+    // into cached core state before invoking a Broadcom-private notifier.
+    virtual IOReturn setMWS_SCAN_FREQ_MODE_WIFI_ENH(apple80211_mws_scan_freq_mode *) override;
+    // [656] — AppleBCMWLANCore iterates an opaque 0x28-byte condition record
+    // list and replays the same notifier for each entry.
+    virtual IOReturn setMWS_CONDITION_ID_BITMAP_WIFI_ENH(apple80211_mws_condition_id_config *) override;
+    // [657] — AppleBCMWLANCore copies nine 16-bit antenna selectors into
+    // cached core state and then fans out to a Broadcom-private notifier.
+    virtual IOReturn setMWS_ANTENNA_SELECTION_WIFI_ENH(apple80211_mws_antenna_selection *) override;
+    // [658] — AppleBCMWLANCore only succeeds when a NearbyDeviceDiscoveryAdapter
+    // owner exists at +0x7c90; otherwise the public Tahoe contract is the
+    // fixed feature-gated fail `0xe00002c7`.
+    virtual IOReturn setNDD_REQ(apple80211_ndd_data *) override;
     // [659]
     virtual IOReturn setDBRG_ENTROPY(apple80211_drbg_entropy *) override { XYLog("DEBUG VTABLE [659] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [660]
@@ -637,6 +648,17 @@ private:
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;
+    uint32_t cachedMwsWifiType7Bitmap[9];
+    uint32_t cachedMwsCoexBitmap[9];
+    uint32_t cachedMwsDisableOclBitmap[9];
+    uint32_t cachedMwsRfemConfig[10];
+    uint32_t cachedMwsAssocProtectionBitmap[9];
+    uint32_t cachedMwsScanFreq[10];
+    uint32_t cachedMwsScanFreqMode[4];
+    uint8_t cachedMwsConditionIdConfig[0x168];
+    uint8_t cachedMwsConditionIdCount;
+    bool hasCachedMwsConditionIdConfig;
+    uint16_t cachedMwsAntennaSelection[9];
 
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;

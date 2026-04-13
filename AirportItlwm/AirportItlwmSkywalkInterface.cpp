@@ -1089,6 +1089,17 @@ init()
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
+    memset(cachedMwsWifiType7Bitmap, 0, sizeof(cachedMwsWifiType7Bitmap));
+    memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
+    memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
+    memset(cachedMwsRfemConfig, 0, sizeof(cachedMwsRfemConfig));
+    memset(cachedMwsAssocProtectionBitmap, 0, sizeof(cachedMwsAssocProtectionBitmap));
+    memset(cachedMwsScanFreq, 0, sizeof(cachedMwsScanFreq));
+    memset(cachedMwsScanFreqMode, 0, sizeof(cachedMwsScanFreqMode));
+    memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
+    cachedMwsConditionIdCount = 0;
+    hasCachedMwsConditionIdConfig = false;
+    memset(cachedMwsAntennaSelection, 0, sizeof(cachedMwsAntennaSelection));
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
 }
@@ -1211,6 +1222,17 @@ init(IOService *provider)
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
+    memset(this->cachedMwsWifiType7Bitmap, 0, sizeof(this->cachedMwsWifiType7Bitmap));
+    memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
+    memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
+    memset(this->cachedMwsRfemConfig, 0, sizeof(this->cachedMwsRfemConfig));
+    memset(this->cachedMwsAssocProtectionBitmap, 0, sizeof(this->cachedMwsAssocProtectionBitmap));
+    memset(this->cachedMwsScanFreq, 0, sizeof(this->cachedMwsScanFreq));
+    memset(this->cachedMwsScanFreqMode, 0, sizeof(this->cachedMwsScanFreqMode));
+    memset(this->cachedMwsConditionIdConfig, 0, sizeof(this->cachedMwsConditionIdConfig));
+    this->cachedMwsConditionIdCount = 0;
+    this->hasCachedMwsConditionIdConfig = false;
+    memset(this->cachedMwsAntennaSelection, 0, sizeof(this->cachedMwsAntennaSelection));
     RT3_SET(12); // SkywalkInterface::init OK
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
@@ -3226,6 +3248,130 @@ setLE_SCAN_PARAM(apple80211_le_scan_params *data)
           __FUNCTION__, params->disconnected, params->connectedEvents,
           params->disconnectedEvents, params->bucket);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsWifiType7Bitmap, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsWifiType7Bitmap));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_COEX_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsCoexBitmap, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsCoexBitmap));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_DISABLE_OCL_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsDisableOclBitmap, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsDisableOclBitmap));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_RFEM_CONFIG_WIFI_ENH(apple80211_mws_rfem_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsRfemConfig, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsRfemConfig));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsAssocProtectionBitmap, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsAssocProtectionBitmap));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_SCAN_FREQ_WIFI_ENH(apple80211_mws_scan_freq *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedMwsScanFreq, reinterpret_cast<const uint32_t *>(data),
+           sizeof(cachedMwsScanFreq));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_SCAN_FREQ_MODE_WIFI_ENH(apple80211_mws_scan_freq_mode *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    // AppleBCMWLANCore reorders the public carrier before caching it:
+    // +0x24 -> slot0, then +0x04/+0x08/+0x0c.
+    cachedMwsScanFreqMode[0] = *reinterpret_cast<const uint32_t *>(raw + 0x24);
+    cachedMwsScanFreqMode[1] = *reinterpret_cast<const uint32_t *>(raw + 0x04);
+    cachedMwsScanFreqMode[2] = *reinterpret_cast<const uint32_t *>(raw + 0x08);
+    cachedMwsScanFreqMode[3] = *reinterpret_cast<const uint32_t *>(raw + 0x0c);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_CONDITION_ID_BITMAP_WIFI_ENH(apple80211_mws_condition_id_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw[2] == 0)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedMwsConditionIdCount = raw[2];
+    size_t bytesToCopy = static_cast<size_t>(cachedMwsConditionIdCount) * 0x28;
+    if (bytesToCopy > sizeof(cachedMwsConditionIdConfig))
+        bytesToCopy = sizeof(cachedMwsConditionIdConfig);
+
+    memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
+    memcpy(cachedMwsConditionIdConfig, raw + 0x28, bytesToCopy);
+    hasCachedMwsConditionIdConfig = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_ANTENNA_SELECTION_WIFI_ENH(apple80211_mws_antenna_selection *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    memcpy(cachedMwsAntennaSelection, raw, 8 * sizeof(uint16_t));
+    cachedMwsAntennaSelection[8] = *reinterpret_cast<const uint16_t *>(raw + 0x10);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setNDD_REQ(apple80211_ndd_data *)
+{
+    // AppleBCMWLANCore::setNDD_REQ only succeeds when the NearbyDeviceDiscovery
+    // owner at +0x7c90 exists. The current port does not lift that owner, so
+    // the exact public-facing contract is the feature-gated Apple fail path.
+    return static_cast<IOReturn>(0xe00002c7);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

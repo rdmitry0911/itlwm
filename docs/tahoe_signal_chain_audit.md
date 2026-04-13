@@ -682,6 +682,36 @@ That closes this zone as follows:
 - `getCHIP_COUNTER_STATS(...)` leaves the open queue because the port now
   returns the same fixed Tahoe fail code that the reference driver exposes
 
+## Q13 Setter Carrier Zone: `MWS_*_WIFI_ENH` plus `NDD_REQ`
+
+The next `Q13` zone closes ten Tahoe sideband setters at once:
+
+- `setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH(...)`
+- `setMWS_COEX_BITMAP_WIFI_ENH(...)`
+- `setMWS_DISABLE_OCL_BITMAP_WIFI_ENH(...)`
+- `setMWS_RFEM_CONFIG_WIFI_ENH(...)`
+- `setMWS_ASSOC_PROTECTION_BITMAP_WIFI_ENH(...)`
+- `setMWS_SCAN_FREQ_WIFI_ENH(...)`
+- `setMWS_SCAN_FREQ_MODE_WIFI_ENH(...)`
+- `setMWS_CONDITION_ID_BITMAP_WIFI_ENH(...)`
+- `setMWS_ANTENNA_SELECTION_WIFI_ENH(...)`
+- `setNDD_REQ(...)`
+
+Recovered Apple behavior is split but still clean at the public contract layer:
+
+- the nine `MWS_*_WIFI_ENH` selectors copy raw caller carriers into cached
+  core-state fields and only then dispatch into Broadcom-private notifiers
+- `setNDD_REQ(...)` is feature-gated and returns `0xe00002c7` whenever the
+  `NearbyDeviceDiscoveryAdapter` owner is absent
+
+That is enough to close the system-facing zone without guessing the private
+notifier graph:
+
+- the port now preserves the full caller-visible `MWS_*` carriers instead of
+  dropping the selectors on generic unsupported
+- `setNDD_REQ(...)` now exposes the recovered Tahoe fail path rather than a
+  generic placeholder
+
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 
 The same pattern exists on a narrow setter subset: Apple does not expose a
