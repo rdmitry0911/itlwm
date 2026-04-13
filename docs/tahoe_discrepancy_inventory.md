@@ -246,6 +246,20 @@ This inventory is intentionally split into:
   fast path is the zeroed carrier, not `kIOReturnUnsupported`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: mixed setter control/programming zone`:
+  a 17-slot setter zone no longer belongs in the generic unsupported bucket.
+  The zone splits into real public producers/carriers
+  (`setCHANNEL`, `setTXPOWER`, `setRATE`, `setIBSS_MODE`, `setOFFLOAD_ARP`,
+  `setGAS_REQ`, `setTKO_PARAMS`, `setOFFLOAD_TCPKA_ENABLE`,
+  `setSET_PROPERTY`, `setSENSING_DISABLE`) and internal-only Apple control
+  selectors (`setRESET_CHIP`, `setCRASH`, `setRANGING_ENABLE`,
+  `setRANGING_START`, `setHP2P_CTRL`, `setSENSING_ENABLE`,
+  `setDBRG_ENTROPY`). The first group now exposes recovered public gates
+  instead of generic unsupported; the second group is classified out of the
+  open discrepancy queue because the decompile proves they are trap/debug/hidden
+  owner selectors rather than missing normal producers.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -420,14 +434,15 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `84` raw overrides still return `kIOReturnUnsupported`
-- `36` of those still remain open unsupported discrepancies after the first
+- `68` raw overrides still return `kIOReturnUnsupported`
+- `39` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
   LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
   getter fail-contract zone, and the MWS/NDD setter carrier zone, and the
-  minimal setter-contract zone, and the telemetry/cache getter zone
+  minimal setter-contract zone, and the telemetry/cache getter zone, and the
+  mixed setter control/programming zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -454,42 +469,46 @@ Unsupported getter slots still present:
 
 Unsupported setter slots still present:
 
-- `546 setCHANNEL`
-- `548 setTXPOWER`
-- `549 setRATE`
-- `550 setIBSS_MODE`
 - `552 setIE`
 - `553 setWOW_TEST`
 - `555 setVIRTUAL_IF_CREATE`
 - `556 setHT_CAPABILITY`
-- `557 setOFFLOAD_ARP`
 - `558 setOFFLOAD_NDP`
-- `559 setGAS_REQ`
 - `560 setVHT_CAPABILITY`
 - `563 setLEAKY_AP_STATS_MODE`
-- `565 setRESET_CHIP`
-- `566 setCRASH`
-- `567 setRANGING_ENABLE`
-- `568 setRANGING_START`
 - `569 setRANGING_AUTHENTICATE`
-- `570 setTKO_PARAMS`
 - `571 setBTCOEX_PROFILE`
 - `572 setBTCOEX_PROFILE_ACTIVE`
 - `574 setBTCOEX_2G_CHAIN_DISABLE`
 - `575 setPOWER_BUDGET`
-- `576 setOFFLOAD_TCPKA_ENABLE`
 - `579 setUSB_HOST_NOTIFICATION`
-- `580 setHP2P_CTRL`
 - `581 setBSS_BLACKLIST`
-- `582 setSET_PROPERTY`
 - `586 setREALTIME_QOS_MSCS`
-- `587 setSENSING_ENABLE`
-- `588 setSENSING_DISABLE`
 - `609 setWCL_ACTION_FRAME`
 - `622 setBYPASS_TX_POWER_CAP`
 - `632 setWCL_UPDATE_FAST_LANE`
 - `639 setTRAFFIC_ENG_PARAMS`
 - `642 setHOST_CLOCK_INFO`
+
+Closed as the mixed setter control/programming zone and therefore no longer
+part of the open setter list above:
+
+- `546 setCHANNEL`
+- `548 setTXPOWER`
+- `549 setRATE`
+- `550 setIBSS_MODE`
+- `557 setOFFLOAD_ARP`
+- `559 setGAS_REQ`
+- `565 setRESET_CHIP`
+- `566 setCRASH`
+- `567 setRANGING_ENABLE`
+- `568 setRANGING_START`
+- `570 setTKO_PARAMS`
+- `576 setOFFLOAD_TCPKA_ENABLE`
+- `580 setHP2P_CTRL`
+- `582 setSET_PROPERTY`
+- `587 setSENSING_ENABLE`
+- `588 setSENSING_DISABLE`
 - `659 setDBRG_ENTROPY`
 
 Closed as a dedicated Apple-unsupported setter zone and therefore no longer

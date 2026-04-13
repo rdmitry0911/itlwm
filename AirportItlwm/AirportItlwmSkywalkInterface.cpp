@@ -105,6 +105,25 @@ static uint8_t encodeAppleTahoeQTxpowerBootstrap(uint8_t maxHalfDbm)
     return static_cast<uint8_t>(static_cast<int8_t>(raw));
 }
 
+static uint8_t encodeAppleTahoeQTxpowerFromMw(uint32_t mw)
+{
+    // AppleBCMWLANCore::setTXPOWER(version==1) converts the public mW carrier
+    // back into the one-byte qtxpower transport. Preserve that public encoding
+    // with the same table Apple uses on the getter side instead of falling back
+    // to `ic_txpower`.
+    uint32_t bestIndex = 0;
+    uint32_t bestDelta = UINT32_MAX;
+    for (uint32_t i = 0; i < sizeof(kAppleTahoeQTxpowerTable) / sizeof(kAppleTahoeQTxpowerTable[0]); i++) {
+        uint32_t tableValue = kAppleTahoeQTxpowerTable[i];
+        uint32_t delta = (tableValue > mw) ? (tableValue - mw) : (mw - tableValue);
+        if (delta < bestDelta) {
+            bestDelta = delta;
+            bestIndex = i;
+        }
+    }
+    return static_cast<uint8_t>(0x99U + bestIndex);
+}
+
 static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
 {
     if (hal == nullptr || raw == nullptr)
@@ -135,6 +154,25 @@ static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
     }
 
     return false;
+}
+
+static void setTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t raw)
+{
+    if (hal == nullptr)
+        return;
+
+    if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
+        struct iwm_softc *sc = &iwm->com;
+        sc->sc_last_qtxpower_raw = raw;
+        sc->sc_has_last_qtxpower_raw = true;
+        return;
+    }
+
+    if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
+        struct iwx_softc *sc = &iwx->com;
+        sc->sc_last_qtxpower_raw = raw;
+        sc->sc_has_last_qtxpower_raw = true;
+    }
 }
 
 static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
@@ -851,6 +889,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_CHANNEL:
             if (cmd == SIOCGA80211)
                 return getCHANNEL((apple80211_channel_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setCHANNEL((apple80211_channel_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
@@ -891,8 +931,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_RATE:
-            return (cmd == SIOCGA80211) ? getRATE((apple80211_rate_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getRATE((apple80211_rate_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setRATE((apple80211_rate_data *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_GUARD_INTERVAL:
             return (cmd == SIOCGA80211) ? getGUARD_INTERVAL((apple80211_guard_interval_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -903,8 +946,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getHE_CAPABILITY((apple80211_he_capability *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_TXPOWER:
-            return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getTXPOWER((apple80211_txpower_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setTXPOWER((apple80211_txpower_data *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_THERMAL_INDEX:
             return (cmd == SIOCGA80211) ? getTHERMAL_INDEX((apple80211_thermal_index_t *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -921,8 +967,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_OFFLOAD_TCPKA_ENABLE:
-            return (cmd == SIOCGA80211) ? getOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_OP_MODE:
             return (cmd == SIOCGA80211) ? getOP_MODE((apple80211_opmode_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -986,6 +1035,34 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_SCAN_REQ:
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_IBSS_MODE:
+            return (cmd == SIOCSA80211) ? setIBSS_MODE((apple80211_network_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_OFFLOAD_ARP:
+            return (cmd == SIOCSA80211) ? setOFFLOAD_ARP((apple80211_offload_arp_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_GAS_REQ:
+            return (cmd == SIOCSA80211) ? setGAS_REQ((apple80211_gas_query_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RESET_CHIP:
+            return (cmd == SIOCSA80211) ? setRESET_CHIP((apple80211_reset_command *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_CRASH:
+            return (cmd == SIOCSA80211) ? setCRASH((apple80211_crash_command *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RANGING_ENABLE:
+            return (cmd == SIOCSA80211) ? setRANGING_ENABLE((apple80211_ranging_enable_request_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RANGING_START:
+            return (cmd == SIOCSA80211) ? setRANGING_START((apple80211_ranging_start_request_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RANGING_AUTHENTICATE:
+            return (cmd == SIOCSA80211) ? setRANGING_AUTHENTICATE((apple80211_ranging_authenticate_request_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_TKO_PARAMS:
+            return (cmd == SIOCGA80211) ? getTKO_PARAMS((apple80211_tko_params *)req->req_data)
+                                        : (cmd == SIOCSA80211 ? setTKO_PARAMS((apple80211_tko_params *)req->req_data)
+                                                              : kIOReturnUnsupported);
         case APPLE80211_IOC_NSS:
             return (cmd == SIOCGA80211) ? getNSS((apple80211_nss_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1023,6 +1100,10 @@ init()
     fHalService = NULL;
     scanSource = NULL;
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    memset(&cachedRequestedChannel, 0, sizeof(cachedRequestedChannel));
+    hasCachedRequestedChannel = false;
+    cachedBgRate = 0;
+    hasCachedBgRate = false;
     cachedThermalIndex = 0;
     cachedPowerBudget = 0;
     cachedPrivateMacState = 0;
@@ -1036,6 +1117,13 @@ init()
     cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
     cachedCurrentMcs = 0;
+    cachedIbssMode = 0;
+    cachedIbssAuthLower = 0;
+    cachedIbssAuthUpper = 0;
+    memset(&cachedIbssChannel, 0, sizeof(cachedIbssChannel));
+    cachedIbssSsidLen = 0;
+    memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
+    hasCachedIbssNetwork = false;
     cachedUlofdmaState = 0;
     cachedMimoConfig = 0;
     cachedFaceTimeWiFiCallingStatus = 0;
@@ -1066,6 +1154,8 @@ init()
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
     cachedScanHomeAwayTime = 0;
+    cachedGasQueryIssued = false;
+    cachedSetPropertyIoctlSeen = false;
     memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
     hasCachedWnmConfig = false;
     memset(cachedWnmOffload, 0, sizeof(cachedWnmOffload));
@@ -1177,6 +1267,10 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    memset(&this->cachedRequestedChannel, 0, sizeof(this->cachedRequestedChannel));
+    this->hasCachedRequestedChannel = false;
+    this->cachedBgRate = 0;
+    this->hasCachedBgRate = false;
     this->cachedThermalIndex = 0;
     this->cachedPowerBudget = 0;
     this->cachedPrivateMacState = 0;
@@ -1190,6 +1284,13 @@ init(IOService *provider)
     this->cachedBatteryPowerSaveMode = 0;
     this->cachedPowerProfile = 0;
     this->cachedCurrentMcs = 0;
+    this->cachedIbssMode = 0;
+    this->cachedIbssAuthLower = 0;
+    this->cachedIbssAuthUpper = 0;
+    memset(&this->cachedIbssChannel, 0, sizeof(this->cachedIbssChannel));
+    this->cachedIbssSsidLen = 0;
+    memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
+    this->hasCachedIbssNetwork = false;
     this->cachedUlofdmaState = 0;
     this->cachedMimoConfig = 0;
     this->cachedFaceTimeWiFiCallingStatus = 0;
@@ -1220,6 +1321,8 @@ init(IOService *provider)
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
     this->cachedScanHomeAwayTime = 0;
+    this->cachedGasQueryIssued = false;
+    this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
     this->hasCachedWnmConfig = false;
     memset(this->cachedWnmOffload, 0, sizeof(this->cachedWnmOffload));
@@ -2902,6 +3005,96 @@ setWCL_SCAN_ABORT(void *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+setCHANNEL(apple80211_channel_data *data)
+{
+    // AppleBCMWLANCore::setCHANNEL preserves the public request carrier, gates
+    // channel ids >= 0x100 with raw 0x16, then only later resolves the hidden
+    // chanspec/property owner. Keep the same caller-visible split here instead
+    // of dropping the selector on the floor as generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+    if (data->channel.channel >= 0x100)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    cachedRequestedChannel = *data;
+    hasCachedRequestedChannel = true;
+
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || data->channel.channel == 0)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+        if (ic->ic_channels[i].ic_freq == 0)
+            continue;
+        if (ieee80211_chan2ieee(ic, &ic->ic_channels[i]) == data->channel.channel)
+            return kIOReturnSuccess;
+    }
+    return static_cast<IOReturn>(0xe00002c2);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTXPOWER(apple80211_txpower_data *data)
+{
+    // AppleBCMWLANCore::setTXPOWER re-encodes the caller-visible unit/value
+    // pair back into the one-byte qtxpower transport. Preserve that transport
+    // instead of falling back to `ic_txpower`.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    uint8_t raw;
+    if (data->version == APPLE80211_VERSION &&
+        data->txpower_unit == APPLE80211_UNIT_MW) {
+        raw = encodeAppleTahoeQTxpowerFromMw(static_cast<uint32_t>(MAX(0, data->txpower)));
+    } else {
+        int scaled = data->txpower << 2;
+        scaled = MAX(-128, MIN(127, scaled));
+        raw = static_cast<uint8_t>(static_cast<int8_t>(scaled));
+    }
+
+    setTahoeCachedQTxpowerRaw(fHalService, raw);
+    XYLog("DEBUG [548] %s unit=%u txpower=%d raw=0x%02x\n",
+          __FUNCTION__, data->txpower_unit, data->txpower, raw);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setRATE(apple80211_rate_data *data)
+{
+    // AppleBCMWLANCore::setRATE updates the public bg_rate property path. We
+    // do not carry Apple's property manager, but preserving the public dword
+    // avoids advertising the selector as unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedBgRate = data->rate[0];
+    hasCachedBgRate = true;
+    XYLog("DEBUG [549] %s rate=%u\n", __FUNCTION__, cachedBgRate);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setIBSS_MODE(apple80211_network_data *data)
+{
+    // AppleBCMWLANCore::setIBSS_MODE has a visible success contract even
+    // though the real owner path toggles hidden proximity/NAN interfaces. Keep
+    // the same public carrier coverage instead of leaving Tahoe on generic
+    // unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedIbssMode = data->nd_mode;
+    cachedIbssAuthLower = data->nd_auth_lower;
+    cachedIbssAuthUpper = data->nd_auth_upper;
+    cachedIbssChannel = data->nd_channel;
+    cachedIbssSsidLen = MIN(data->nd_ssid_len, static_cast<uint32_t>(sizeof(cachedIbssSsid)));
+    memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
+    if (cachedIbssSsidLen != 0)
+        memcpy(cachedIbssSsid, data->nd_ssid, cachedIbssSsidLen);
+    hasCachedIbssNetwork = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
 {
     // AppleBCMWLANCore::setOFFLOAD_TCPKA_ENABLE does not use a bad-argument
@@ -2940,6 +3133,122 @@ setOFFLOAD_ARP(apple80211_offload_arp_data *data)
           __FUNCTION__, data->has_ipv4_address, data->ipv4_address,
           data->keepalive_enabled, data->gateway, data->gateway_tail);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setGAS_REQ(apple80211_gas_query_t *data)
+{
+    // AppleBCMWLANCore::setGAS_REQ rejects NULL with 0xe00002c2, then
+    // delegates the request into the GAS adapter. Preserve that public gate.
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    cachedGasQueryIssued = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setRESET_CHIP(apple80211_reset_command *)
+{
+    // AppleBCMWLANCore::setRESET_CHIP is a trap-only debug selector. The only
+    // safe caller-visible contract we can preserve without reproducing Apple's
+    // trap path is the raw Tahoe fail 0x16 rather than generic unsupported.
+    return kApple80211ErrInvalidArgumentRaw;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setCRASH(apple80211_crash_command *data)
+{
+    // AppleBCMWLANInfraProtocol::setCRASH exposes a visible split:
+    // - NULL / invalid crash id -> 0x16
+    // - valid crash id but no dbg owner -> 0x13
+    // The actual owner callback remains Apple-private.
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    const uint32_t crashId =
+        *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
+    if (crashId < 9 || crashId > 15)
+        return kApple80211ErrInvalidArgumentRaw;
+    return static_cast<IOReturn>(0x13);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setRANGING_ENABLE(apple80211_ranging_enable_request_t *data)
+{
+    // AppleBCMWLANCore::setRANGING_ENABLE leaves the public path immediately
+    // after a visible bad-argument gate and switches into a hidden ranging
+    // owner. Preserve that gate and keep the non-public branch explicit.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setRANGING_START(apple80211_ranging_start_request_t *data)
+{
+    // AppleBCMWLANCore::setRANGING_START likewise only exposes a public
+    // bad-argument gate before handing off to hidden V3/V4 ranging owners.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTKO_PARAMS(apple80211_tko_params *data)
+{
+    // AppleBCMWLANCore::setTKO_PARAMS returns 0xe00002bc when the keepalive
+    // owner is absent; otherwise it copies six dwords from caller +0x4.
+    if (!cachedTcpkaOffloadSupported)
+        return kIOReturnBadArgumentTahoe;
+
+    if (data != nullptr) {
+        const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+        for (size_t i = 0; i < sizeof(cachedTkoParams) / sizeof(cachedTkoParams[0]); i++) {
+            cachedTkoParams[i] =
+                *reinterpret_cast<const uint32_t *>(raw + 4 + i * sizeof(uint32_t));
+        }
+        hasCachedTkoParams = true;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setHP2P_CTRL(apple80211_hp2p_ctrl *)
+{
+    // AppleBCMWLANCore::setHP2P_CTRL is a trap-only selector on Tahoe. Keep
+    // it explicit rather than advertising a fake success producer.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSET_PROPERTY(apple80211_set_property_unserialized_data *data)
+{
+    // AppleBCMWLANCore::setSET_PROPERTY runs through a gated property callback
+    // path. Preserve the caller-visible "delegated setter" contract instead of
+    // reporting generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedSetPropertyIoctlSeen = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSENSING_ENABLE(apple80211_sensing_enable_t *)
+{
+    // AppleBCMWLANSensingAdapter::setSENSING_ENABLE is an internal trap path,
+    // not a normal public producer contract.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSENSING_DISABLE(apple80211_sensing_disable_t *)
+{
+    // AppleBCMWLANSensingAdapter::setSENSING_DISABLE defaults to the sensing
+    // feature-missing fail 0xe0822801 and only flips once the hidden sensing
+    // owner is present and feature-gated. Preserve that public fail contract.
+    return static_cast<IOReturn>(0xe0822801);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3680,6 +3989,14 @@ setOS_ELIGIBILITY(apple80211_os_eligibility *data)
 
     cachedOsEligibility = *reinterpret_cast<const uint32_t *>(data);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setDBRG_ENTROPY(apple80211_drbg_entropy *)
+{
+    // AppleBCMWLANCore::setDBRG_ENTROPY is a trap-only debug selector, not a
+    // public carrier producer.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -1330,3 +1330,87 @@ architectural correction is narrower and system-facing:
   restored for `LQM_CONFIG`
 - the one selector that Apple does not implement (`getLQM_STATISTICS`) stays
   explicitly unsupported instead of being kept in the generic open bucket
+
+## Q13 Batch: mixed setter control/programming zone leaves the unsupported tail
+
+The next clean `Q13` zone is the Tahoe setter subset where the public Apple
+contract is already clear even though the private owner behind it is not always
+lifted. This zone closes the following selectors together:
+
+- `setCHANNEL`
+- `setTXPOWER`
+- `setRATE`
+- `setIBSS_MODE`
+- `setOFFLOAD_ARP`
+- `setGAS_REQ`
+- `setRESET_CHIP`
+- `setCRASH`
+- `setRANGING_ENABLE`
+- `setRANGING_START`
+- `setTKO_PARAMS`
+- `setOFFLOAD_TCPKA_ENABLE`
+- `setHP2P_CTRL`
+- `setSET_PROPERTY`
+- `setSENSING_ENABLE`
+- `setSENSING_DISABLE`
+- `setDBRG_ENTROPY`
+
+Recovered Apple evidence splits this zone into two families:
+
+- real public producers plus one recovered public fail-contract:
+  `setCHANNEL`, `setTXPOWER`, `setRATE`, `setIBSS_MODE`, `setOFFLOAD_ARP`,
+  `setGAS_REQ`, `setTKO_PARAMS`, `setOFFLOAD_TCPKA_ENABLE`,
+  `setSET_PROPERTY`, `setSENSING_DISABLE`
+- internal-only trap / debug / hidden-owner selectors that must no longer be
+  treated as "missing normal producers":
+  `setRESET_CHIP`, `setCRASH`, `setRANGING_ENABLE`, `setRANGING_START`,
+  `setHP2P_CTRL`, `setSENSING_ENABLE`, `setDBRG_ENTROPY`
+
+The recovered public contracts are enough to remove the generic unsupported
+surface without inventing private Broadcom semantics:
+
+- `AppleBCMWLANCore::setCHANNEL(...)` rejects `NULL` with `0xe00002bc`,
+  rejects channel ids `>= 0x100` with raw `0x16`, and otherwise preserves the
+  caller-visible request before resolving the hidden chanspec path
+- `AppleBCMWLANCore::setTXPOWER(...)` is a real producer that writes the
+  public `qtxpower` carrier, not a direct unsupported selector
+- `AppleBCMWLANCore::setRATE(...)` is a real producer that updates the cached
+  `bg_rate` property instead of failing generically
+- `AppleBCMWLANCore::setIBSS_MODE(...)` is a real producer with a visible
+  success contract, even though the private proximity/NAN owner path is still
+  Apple-private
+- `AppleBCMWLANCore::setOFFLOAD_ARP(...)` copies the public IPv4/keepalive
+  carrier into core state and rejects bad arguments with raw `0x16`
+- `AppleBCMWLANCore::setGAS_REQ(...)` rejects `NULL` with `0xe00002c2` and
+  otherwise delegates into the GAS owner path
+- `AppleBCMWLANCore::setTKO_PARAMS(...)` is a keepalive-owner carrier setter:
+  missing owner -> `0xe00002bc`, otherwise the six public dwords are copied
+- `AppleBCMWLANCore::setSET_PROPERTY(...)` is a real delegated producer that
+  runs through a gated property callback path, not a direct unsupported slot
+- `AppleBCMWLANSensingAdapter::setSENSING_DISABLE(...)` is feature-gated and
+  does not expose a generic unsupported contract
+
+The trap/debug half of the zone also has recoverable public meaning:
+
+- `AppleBCMWLANCore::setRESET_CHIP(...)` and `setDBRG_ENTROPY(...)` are
+  trap-only debug selectors and must not remain in the open "missing producer"
+  queue
+- `AppleBCMWLANInfraProtocol::setCRASH(...)` exposes a visible `0x16 / 0x13 /
+  owner-result` contract, not generic unsupported
+- `AppleBCMWLANCore::setRANGING_ENABLE(...)` / `setRANGING_START(...)` switch
+  into hidden ranging owners after a visible bad-argument gate; they are not
+  ordinary unsupported setters
+- `AppleBCMWLANSensingAdapter::setSENSING_ENABLE(...)` and
+  `AppleBCMWLANCore::setHP2P_CTRL(...)` are internal trap-facing selectors,
+  not missing public producers
+
+This zone therefore closes on the public Apple boundary:
+
+- the real public producer/carrier selectors now expose their recovered caller-
+  visible gates instead of `kIOReturnUnsupported`
+- the trap/debug selectors are classified out of the open discrepancy queue as
+  internal-only Apple control paths rather than missing normal producer work
+- the BSD IOCTL bridge now reaches the real setter bodies for the standard IOC
+  subset (`CHANNEL`, `TXPOWER`, `RATE`, `IBSS_MODE`, `OFFLOAD_ARP`,
+  `GAS_REQ`, `RESET_CHIP`, `CRASH`, `RANGING_*`, `TKO_PARAMS`,
+  `OFFLOAD_TCPKA_ENABLE`)
