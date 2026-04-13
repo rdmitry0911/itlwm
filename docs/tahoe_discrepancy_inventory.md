@@ -133,6 +133,16 @@ This inventory is intentionally split into:
   `setPowerState transitions`. The Tahoe local path must therefore stop posting
   it on bootstrap and on no-op requests.
 
+- `Tahoe driver-available payload polarity`:
+  live build `eea599b` proves the restored `APPLE80211_M_DRIVER_AVAILABLE`
+  bulletin still feeds the wrong SSM edge. The local port currently logs
+  `postTahoeDriverAvailableBulletin ready=1 ... available=0`, but recovered
+  `WCLSystemStateManager::driverAvailableEventHandler(...)` sends
+  `*(payload + 8) == 0` into `processEvent(..., 4, ...)`, and the recovered SSM
+  matrix defines `4 = DRIVER_UNAVAILABLE`, `5 = DRIVER_AVAILABLE`. So the local
+  producer inverted the Tahoe availability polarity. The ready edge must carry
+  a non-zero dword at payload `+0x8`; zero is the unavailable edge.
+
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
   `setWCL_ACTION_FRAME`, and `setRANGING_AUTHENTICATE` no longer preserve

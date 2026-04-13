@@ -152,7 +152,14 @@ postTahoeDriverAvailableBulletin(AirportItlwm *controller, bool ready)
     // bulletin only when:
     // - message code is APPLE80211_M_DRIVER_AVAILABLE (0x37)
     // - payload length is exactly 0xf8
-    // - the dword at payload +0x8 is zero for the available edge
+    // - the dword at payload +0x8 is NON-zero for the available edge
+    // - the dword at payload +0x8 is zero for the unavailable edge
+    //
+    // The earlier local port inverted this polarity (`ready=true` published
+    // `available=0`). The family-side handler then called processEvent(...,4),
+    // and the recovered SSM matrix defines event 4 as DRIVER_UNAVAILABLE and
+    // event 5 as DRIVER_AVAILABLE. So the old local bulletin was explicitly
+    // feeding the opposite edge into WCL.
     //
     // AppleBCMWLANCore::signalDriverReady() itself only publishes
     // CoreWiFiDriverReadyKey, so the separate availability bulletin must still
@@ -161,7 +168,7 @@ postTahoeDriverAvailableBulletin(AirportItlwm *controller, bool ready)
     // IO80211Controller/PostOffice instead of bypassing the framework.
     apple80211_driver_available_data data = {};
     data.event = APPLE80211_M_DRIVER_AVAILABLE;
-    data.avaliable = ready ? 0 : 1;
+    data.avaliable = ready ? 1 : 0;
     data.reason = 0;
     data.sub_reason = 0;
 

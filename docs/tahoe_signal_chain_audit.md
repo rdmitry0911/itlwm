@@ -132,6 +132,39 @@ Without step 3, the live system reaches the contradictory state:
 - but `isDriverAvailable` never leaves `0`
 - external `SSID/BSSID/CURRENT_NETWORK` stay at `0xe0822403`
 
+## Driver-Available Payload Polarity Correction
+
+Live runtime on build `eea599b` proves the restored `0x37` bulletin is still
+locally wrong even though the message now appears in the kernel log:
+
+- `setInterfaceEnable(true)` runs
+- `CoreWiFiDriverReadyKey = "true"` is visible in `ioreg`
+- `postTahoeDriverAvailableBulletin ready=1 len=0xf8 available=0` is logged
+- but external `SSID/BSSID/CURRENT_NETWORK` remain at `0xe0822403`
+- and `isDriverAvailable` stays `0`
+
+The recovered family-side consumer makes the polarity mistake explicit.
+`WCLSystemStateManager::driverAvailableEventHandler(...)` does:
+
+1. validate payload size `0xf8`
+2. read `reason` from payload `+0x10`
+3. if `*(int *)(payload + 8) == 0` call `processEvent(..., 4, ...)`
+4. else, unless `reason == -0x1f7dd7fd`, call `processEvent(..., 5, ...)`
+
+The recovered SSM matrix gives those event ids concrete meaning:
+
+- `4 = DRIVER_UNAVAILABLE`
+- `5 = DRIVER_AVAILABLE`
+
+So the local Tahoe bulletin polarity was inverted. Posting `available=0` on
+the ready edge does not mean "driver available"; it explicitly feeds the
+`DRIVER_UNAVAILABLE` event into SSM. The strict Apple-visible contract is:
+
+- ready edge: non-zero dword at payload `+0x8`
+- unavailable edge: zero dword at payload `+0x8`
+
+The local port must therefore stop publishing `available=0` when `ready=true`.
+
 ## Owner-Family Backend Batch
 
 The remaining pre-`Q12` owner-family setters now route through the local

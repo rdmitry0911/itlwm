@@ -30,6 +30,47 @@ Recovered Apple code shows a different contract:
 
 So the local bug is executing bootstrap `setPOWER(...)` too early.
 
+## DRIVER_AVAILABLE Payload Polarity Root Cause
+
+Live build `eea599b` narrowed the remaining Tahoe failure one step further.
+
+Observed sequence:
+
+- hidden `setInterfaceEnable(true)` runs
+- `CoreWiFiDriverReadyKey="true"` is visible in `ioreg`
+- `postTahoeDriverAvailableBulletin ready=1 len=0xf8 available=0` is logged
+- but external `SSID/BSSID/CURRENT_NETWORK` still fail with `0xe0822403`
+- `isDriverAvailable` stays `0`
+
+Recovered `WCLSystemStateManager::driverAvailableEventHandler(...)` explains
+why. The family-side consumer does:
+
+- if payload size is not `0xf8` -> reject
+- if `*(int *)(payload + 8) == 0` -> process event `4`
+- else -> process event `5` unless `reason == -0x1f7dd7fd`
+
+The recovered SSM event matrix defines:
+
+- event `4` = `DRIVER_UNAVAILABLE`
+- event `5` = `DRIVER_AVAILABLE`
+
+So the local Tahoe port inverted the Apple-visible availability polarity. A
+ready-edge bulletin with `available=0` does not advertise readiness; it tells
+WCL that the driver is unavailable.
+
+## DRIVER_AVAILABLE Fix Direction
+
+The strict Tahoe producer contract must publish:
+
+- `payload + 0x8 != 0` for the ready edge
+- `payload + 0x8 == 0` for the unavailable edge
+
+The rest of the already recovered contract stays the same:
+
+- message code `APPLE80211_M_DRIVER_AVAILABLE`
+- payload size `0xf8`
+- controller/PostOffice delivery path
+
 ## POWER_CHANGED Producer Drift After Bootstrap Deferral
 
 After deferring bootstrap `setPOWER(...)`, live build `36e4cc3` showed that the
