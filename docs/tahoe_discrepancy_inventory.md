@@ -76,7 +76,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  147 unsupported overrides and 18 ack-only stubs remain in the Tahoe header
+  raw header surface now carries 147 unsupported overrides and 17 ack-only
+  stubs; after the first confirmed Apple-unsupported classification batches,
+  121 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -121,6 +123,32 @@ This inventory is intentionally split into:
   `getHW_ADDR` is no longer allowed to sit on generic `kIOReturnUnsupported`.
   Apple core populates `version + 6-byte hardware MAC`, and the family-side
   consumer `WCLDeviceConfiguration::setHwMacAddr(...)` confirms the same ABI.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 mini-batch: explicit Apple-unsupported getter classification`:
+  a first Tahoe subset was proven to be "Apple also unsupported", not missing
+  producers. These slots stay on `0xe00002c7` in the reference
+  `AppleBCMWLANInfraProtocol` path itself and therefore should be removed from
+  the open unsupported census rather than "implemented":
+  `getRANGING_ENABLE`, `getRANGING_START`, `getRANGING_CAPS`,
+  `getCOUNTRY_CHANNELS_INFO`, `getWCL_WNM_OFFLOAD`, `getFW_CLOCK_INFO`,
+  `getTIMESYNC_STATS`, `getHE_COUNTERS`, `getSMARTCCA_OPMODE`,
+  `getLQM_STATISTICS`.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 mini-batch: explicit Apple-unsupported setter classification`:
+  a first setter subset was also proven to be "Apple also unsupported" in the
+  vendor-side infra path itself. Those slots should not stay in the open
+  discrepancy queue just because the local header still returns
+  `kIOReturnUnsupported`:
+  `setROAM_PROFILE`, `setROAM_CACHE_UPDATE`, `setSET_WIFI_ASSERTION_STATE`,
+  `setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH`, `setWOW_LOW_POWER_MODE`,
+  `setSTAND_ALONE_MODE_STATE`, `setTIMESYNC_GPIO`, `setFW_CLOCK_SOURCE`,
+  `setTIMESYNC_TX_POLICY`, `setTIMESYNC_RX_POLICY`, `setTIMESTAMPING_EN`,
+  `setMWS_TIME_SHARING_WIFI_ENH`, `setSDB_ENABLE`, `setBTCOEX_EXT_PROFILE`,
+  `setTX_MODE_CONFIG`.
+  `setVOICE_IND_STATE` was the one real mismatch in that cluster: Apple
+  returns `0xe00002c7`, while the port had a false validate+ack success path.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 ## Superseded
@@ -297,8 +325,10 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `147` overrides still return `kIOReturnUnsupported`
-- `18` overrides still return success from inline ack-only placeholder bodies
+- `147` raw overrides still return `kIOReturnUnsupported`
+- `121` of those still remain open unsupported discrepancies after the first
+  confirmed Apple-unsupported classification batches
+- `17` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
@@ -313,8 +343,6 @@ Unsupported getter slots still present:
 - `488 getLEAKY_AP_STATS_MODE`
 - `489 getCOUNTRY_CHANNELS`
 - `490 getPRIVATE_MAC`
-- `491 getRANGING_ENABLE`
-- `492 getRANGING_START`
 - `493 getAWDL_RSDB_CAPS`
 - `494 getTKO_PARAMS`
 - `495 getTKO_DUMP`
@@ -327,12 +355,10 @@ Unsupported getter slots still present:
 - `502 getBTCOEX_2G_CHAIN_DISABLE`
 - `503 getPOWER_BUDGET`
 - `504 getOFFLOAD_TCPKA_ENABLE`
-- `505 getRANGING_CAPS`
 - `506 getLQM_CONFIG`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`
 - `508 getBEACON_INFO`
 - `509 getCHIP_POWER_RANGE`
-- `511 getHW_ADDR`
 - `512 getCHIP_DIAGS`
 - `513 getHP2P_CTRL`
 - `514 getBSS_BLACKLIST`
@@ -340,7 +366,6 @@ Unsupported getter slots still present:
 - `516 getMIMO_STATUS`
 - `517 getCUR_PMK`
 - `518 getDYNSAR_DETAIL`
-- `519 getCOUNTRY_CHANNELS_INFO`
 - `520 getLQM_SUMMARY`
 - `521 getSLOW_WIFI_FEATURE_ENABLED`
 - `522 getTIMESYNC_INFO`
@@ -349,18 +374,12 @@ Unsupported getter slots still present:
 - `525 getWCL_LOW_LATENCY_INFO`
 - `527 getWCL_TRAFFIC_COUNTERS`
 - `528 getWCL_GET_TX_BLANKING_STATUS`
-- `529 getHE_COUNTERS`
 - `531 getRSN_XE`
 - `532 getSIB_COEX_STATUS`
 - `533 getWCL_EXTENDED_BSS_INFO`
 - `534 getWCL_LOW_LATENCY_INFO_STATS`
-- `536 getWCL_WNM_OFFLOAD`
 - `537 getWIFI_NOISE_PER_ANT`
-- `538 getFW_CLOCK_INFO`
-- `539 getTIMESYNC_STATS`
 - `540 getSYSTEM_SLEEP_CONFIG`
-- `541 getSMARTCCA_OPMODE`
-- `542 getLQM_STATISTICS`
 - `543 getHE_CAPABILITY`
 - `544 getP2P_DEVICE_CAPABILITY`
 
@@ -379,7 +398,6 @@ Unsupported setter slots still present:
 - `558 setOFFLOAD_NDP`
 - `559 setGAS_REQ`
 - `560 setVHT_CAPABILITY`
-- `561 setROAM_PROFILE`
 - `562 setDBG_GUARD_TIME_PARAMS`
 - `563 setLEAKY_AP_STATS_MODE`
 - `564 setPRIVATE_MAC`
@@ -401,14 +419,11 @@ Unsupported setter slots still present:
 - `580 setHP2P_CTRL`
 - `581 setBSS_BLACKLIST`
 - `582 setSET_PROPERTY`
-- `583 setROAM_CACHE_UPDATE`
 - `584 setPM_MODE`
-- `585 setSET_WIFI_ASSERTION_STATE`
 - `586 setREALTIME_QOS_MSCS`
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
 - `606 setRSN_XE`
-- `607 setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH`
 - `608 setWCL_ULOFDMA_STATE`
 - `609 setWCL_ACTION_FRAME`
 - `610 setGAS_ABORT`
@@ -420,23 +435,15 @@ Unsupported setter slots still present:
 - `627 setWCL_LIMITED_AGGREGATION`
 - `628 setWCL_BCN_MUTE_CONFIG`
 - `629 setEAP_FILTER_CONFIG`
-- `630 setWOW_LOW_POWER_MODE`
 - `631 setDUAL_POWER_MODE`
 - `632 setWCL_UPDATE_FAST_LANE`
 - `633 setWCL_ASSOCIATED_SLEEP`
 - `634 setCONGESTION_CTRL_IND`
-- `635 setSTAND_ALONE_MODE_STATE`
 - `638 setLMTPC_CONFIG`
 - `639 setTRAFFIC_ENG_PARAMS`
 - `640 setLE_SCAN_PARAM`
-- `641 setTIMESYNC_GPIO`
 - `642 setHOST_CLOCK_INFO`
-- `643 setFW_CLOCK_SOURCE`
-- `644 setTIMESYNC_TX_POLICY`
-- `645 setTIMESYNC_RX_POLICY`
-- `646 setTIMESTAMPING_EN`
 - `647 setWCL_SOI_CONFIG`
-- `648 setMWS_TIME_SHARING_WIFI_ENH`
 - `649 setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH`
 - `650 setMWS_COEX_BITMAP_WIFI_ENH`
 - `651 setMWS_DISABLE_OCL_BITMAP_WIFI_ENH`
@@ -448,10 +455,7 @@ Unsupported setter slots still present:
 - `657 setMWS_ANTENNA_SELECTION_WIFI_ENH`
 - `658 setNDD_REQ`
 - `659 setDBRG_ENTROPY`
-- `660 setSDB_ENABLE`
-- `661 setBTCOEX_EXT_PROFILE`
 - `662 setOS_ELIGIBILITY`
-- `663 setTX_MODE_CONFIG`
 
 Ack-only inline stubs still present in the Tahoe header:
 
@@ -466,7 +470,6 @@ Ack-only inline stubs still present in the Tahoe header:
 - `602 setWCL_QOS_PARAMS`
 - `603 setWCL_LINK_UP_DONE`
 - `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
-- `605 setVOICE_IND_STATE`
 - `615 setWCL_CONFIG_BG_MOTIONPROFILE`
 - `616 setWCL_CONFIG_BG_NETWORK`
 - `617 setWCL_CONFIG_BGSCAN`

@@ -494,3 +494,77 @@ This batch does **not** generalize to nearby slots like
 `getTHERMAL_INDEX`, `getPOWER_BUDGET`, or `getOFFLOAD_TCPKA_ENABLE`.
 Those still depend on unrecovered core-state/config-manager carriers and remain
 open in the discrepancy inventory.
+
+## Q13 First Confirmed Apple-Unsupported Getter Batch
+
+The next safe way to reduce the Tahoe unsupported surface is not to invent
+producer paths, but to classify the slots where Apple already returns
+`0xe00002c7` from `AppleBCMWLANInfraProtocol` itself.
+
+Recovered explicit unsupported getters:
+
+- `AppleBCMWLANInfraProtocol::getRANGING_ENABLE(...)`
+- `AppleBCMWLANInfraProtocol::getRANGING_START(...)`
+- `AppleBCMWLANInfraProtocol::getRANGING_CAPS(...)`
+- `AppleBCMWLANInfraProtocol::getCOUNTRY_CHANNELS_INFO(...)`
+- `AppleBCMWLANInfraProtocol::getWCL_WNM_OFFLOAD(...)`
+- `AppleBCMWLANInfraProtocol::getFW_CLOCK_INFO(...)`
+- `AppleBCMWLANInfraProtocol::getTIMESYNC_STATS(...)`
+- `AppleBCMWLANInfraProtocol::getHE_COUNTERS(...)`
+- `AppleBCMWLANInfraProtocol::getSMARTCCA_OPMODE(...)`
+- `AppleBCMWLANInfraProtocol::getLQM_STATISTICS(...)`
+
+Each decompiles to a direct `return 0xe00002c7;` stub in the Apple vendor-side
+infra path, with no hidden helper, carrier, or stateful producer behind it.
+
+That matters for the audit because these slots are no longer evidence of
+"missing implementation" in the port. They should be removed from the open
+unsupported discrepancy census and tracked as "Apple also unsupported".
+
+This classification does **not** generalize to adjacent slots. For example:
+
+- `getRANGING_ENABLE` and `getRANGING_START` are explicit unsupported
+  in Apple, but `setRANGING_ENABLE` still dispatches through a separate
+  producer path
+- `getCOUNTRY_CHANNELS_INFO` is explicit unsupported, but
+  `getCOUNTRY_CHANNELS` is still a real Apple core path
+- `getWCL_WNM_OFFLOAD` is explicit unsupported, but nearby WCL slots are not
+  automatically safe to classify the same way
+
+## Q13 First Confirmed Apple-Unsupported Setter Batch
+
+The same pattern exists on a narrow setter subset: Apple does not expose a
+producer there either, and the vendor-side infra method itself returns
+`0xe00002c7`.
+
+Recovered explicit unsupported setters:
+
+- `AppleBCMWLANInfraProtocol::setROAM_PROFILE(...)`
+- `AppleBCMWLANInfraProtocol::setROAM_CACHE_UPDATE(...)`
+- `AppleBCMWLANInfraProtocol::setSET_WIFI_ASSERTION_STATE(...)`
+- `AppleBCMWLANInfraProtocol::setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(...)`
+- `AppleBCMWLANInfraProtocol::setWOW_LOW_POWER_MODE(...)`
+- `AppleBCMWLANInfraProtocol::setSTAND_ALONE_MODE_STATE(...)`
+- `AppleBCMWLANInfraProtocol::setTIMESYNC_GPIO(...)`
+- `AppleBCMWLANInfraProtocol::setFW_CLOCK_SOURCE(...)`
+- `AppleBCMWLANInfraProtocol::setTIMESYNC_TX_POLICY(...)`
+- `AppleBCMWLANInfraProtocol::setTIMESYNC_RX_POLICY(...)`
+- `AppleBCMWLANInfraProtocol::setTIMESTAMPING_EN(...)`
+- `AppleBCMWLANInfraProtocol::setMWS_TIME_SHARING_WIFI_ENH(...)`
+- `AppleBCMWLANInfraProtocol::setSDB_ENABLE(...)`
+- `AppleBCMWLANInfraProtocol::setBTCOEX_EXT_PROFILE(...)`
+- `AppleBCMWLANInfraProtocol::setTX_MODE_CONFIG(...)`
+
+One adjacent slot was a real port bug, not just a classification issue:
+
+- `AppleBCMWLANInfraProtocol::setVOICE_IND_STATE(...)` is also a direct
+  `return 0xe00002c7;`
+- the Tahoe port had kept `[605] setVOICE_IND_STATE` as a validate+ack success
+  stub
+- that falsely advertised a producer path Apple does not provide, so the slot
+  must be moved back to `kIOReturnUnsupported`
+
+As with the getter batch, this does **not** generalize to neighboring WCL or
+timesync setters. For example `setWCL_WNM_OFFLOAD(...)` and
+`setWCL_WNM_OPS(...)` are real Apple producer paths and must not be collapsed
+into unsupported just because nearby slots are.

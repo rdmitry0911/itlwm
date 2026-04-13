@@ -426,12 +426,11 @@ public:
         if (!data) return kIOReturnError;
         return kIOReturnSuccess;
     }
-    // [605]
-    virtual IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state *data) override {
-        XYLog("WCL [605] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    // [605] — AppleBCMWLANInfraProtocol::setVOICE_IND_STATE is a direct
+    // `return 0xe00002c7;` stub. Our old validate+ack body was a real
+    // semantic mismatch because it advertised a producer path Apple does not
+    // expose on Tahoe.
+    virtual IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state *data) override { XYLog("DEBUG VTABLE [605] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [606]
     virtual IOReturn setRSN_XE(apple80211_rsn_xe_data *) override { XYLog("DEBUG VTABLE [606] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [607]
