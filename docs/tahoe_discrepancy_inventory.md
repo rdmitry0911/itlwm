@@ -167,6 +167,13 @@ This inventory is intentionally split into:
   offsets `+0x0` and `+0x4` inside the core-state block.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: guard-interval producer path`:
+  `getGUARD_INTERVAL` no longer belongs in the generic unsupported bucket.
+  `AppleBCMWLANCore::getGUARD_INTERVAL(...)` is a real producer: it rejects
+  `NULL` with `0xe00002c2`, queries cached `"nrate"` state, and falls back to
+  `800` ns when no recognized short-GI encoding is present.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -342,15 +349,14 @@ Initial classification buckets for the next pass:
 Current census from the Tahoe header:
 
 - `147` raw overrides still return `kIOReturnUnsupported`
-- `118` of those still remain open unsupported discrepancies after the first
+- `117` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches and the lifted thermal /
-  power-budget getter batch
+  power-budget / guard-interval getter batch
 - `17` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
 
 - `470 getAWDL_PEER_TRAFFIC_STATS`
-- `478 getGUARD_INTERVAL`
 - `480 getPOWER_DEBUG_INFO`
 - `481 getHT_CAPABILITY`
 - `485 getROAM_PROFILE`

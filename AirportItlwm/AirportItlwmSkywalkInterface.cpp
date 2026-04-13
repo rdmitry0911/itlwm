@@ -542,6 +542,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_RATE:
             return (cmd == SIOCGA80211) ? getRATE((apple80211_rate_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_GUARD_INTERVAL:
+            return (cmd == SIOCGA80211) ? getGUARD_INTERVAL((apple80211_guard_interval_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_TXPOWER:
             return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1119,6 +1122,51 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
     data->rx_highest = ic->ic_vht_rx_highest;
     data->tx_mcs_map = ic->ic_vht_tx_mcs_map;
     data->tx_highest = ic->ic_vht_tx_highest;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getGUARD_INTERVAL(apple80211_guard_interval_data *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    struct ieee80211_node *ni = ic->ic_bss;
+
+    // AppleBCMWLANCore::getGUARD_INTERVAL is a real producer, not a generic
+    // unsupported slot: NULL returns 0xe00002c2, and the normal path derives
+    // the interval from cached "nrate" state with a deterministic fallback to
+    // long GI (800 ns) when no recognized short-GI encoding is available.
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->interval = APPLE80211_GI_LONG;
+
+    if (ni == nullptr)
+        return kIOReturnSuccess;
+
+    switch (ni->ni_chw) {
+        case IEEE80211_CHAN_WIDTH_40:
+            if (ieee80211_node_supports_ht_sgi40(ni))
+                data->interval = APPLE80211_GI_SHORT;
+            break;
+        case IEEE80211_CHAN_WIDTH_80:
+            if (ieee80211_node_supports_vht_sgi80(ni))
+                data->interval = APPLE80211_GI_SHORT;
+            break;
+        case IEEE80211_CHAN_WIDTH_80P80:
+        case IEEE80211_CHAN_WIDTH_160:
+            if (ieee80211_node_supports_vht_sgi160(ni))
+                data->interval = APPLE80211_GI_SHORT;
+            break;
+        case IEEE80211_CHAN_WIDTH_20:
+        case IEEE80211_CHAN_WIDTH_20_NOHT:
+        default:
+            if (ieee80211_node_supports_ht_sgi20(ni))
+                data->interval = APPLE80211_GI_SHORT;
+            break;
+    }
+
     return kIOReturnSuccess;
 }
 

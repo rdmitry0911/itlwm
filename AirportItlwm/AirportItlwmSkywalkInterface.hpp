@@ -121,7 +121,7 @@ public:
     // [477]
     virtual IOReturn getSUPPORTED_CHANNELS(apple80211_sup_channel_data *) override;
     // [478]
-    virtual IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data *) override { XYLog("DEBUG VTABLE [478] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data *) override;
     // [479]
     virtual IOReturn getMCS(apple80211_mcs_data *) override;
     // [480]

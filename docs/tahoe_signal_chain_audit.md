@@ -630,3 +630,25 @@ This batch still does **not** justify lifting the setter side:
 - no clean `setPOWER_BUDGET(...)` producer body has been recovered yet
 - `getOFFLOAD_TCPKA_ENABLE(...)` remains unresolved because only the setter
   body is currently present in the vendor decompile
+
+## Q13 Confirmed Producer Mini-Batch: `getGUARD_INTERVAL`
+
+`getGUARD_INTERVAL` is also a recoverable Tahoe getter.
+
+Recovered Apple producer contract:
+
+- `AppleBCMWLANCore::getGUARD_INTERVAL(apple80211_guard_interval_data*)`
+  rejects `NULL` with `0xe00002c2`
+- otherwise it queries `"nrate"` from the commander/config path
+- if that query returns success or `0xe00002e3`, Apple still completes the IOC
+  and derives the output interval from the cached rate word
+- when the cached rate word does not describe a recognized short-GI mode, the
+  producer falls back to `800`
+
+The important architectural point for Tahoe is that slot `[478]` is not a
+generic unsupported IOC. It is a real producer with a deterministic fallback to
+the long-guard interval when no cached short-GI encoding is available.
+
+This still does **not** justify lifting `HT_CAPABILITY`: `getGUARD_INTERVAL`
+only proves the current-rate-to-interval policy, not the full HT capability IE
+producer path.
