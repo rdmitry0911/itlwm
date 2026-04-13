@@ -142,6 +142,13 @@ struct tahoeWclRealTimeMode
     uint8_t enabled;
 } __attribute__((packed));
 
+struct tahoeWclUlofdmaState
+{
+    uint32_t mode;
+} __attribute__((packed));
+static_assert(sizeof(tahoeWclUlofdmaState) == 0x4,
+              "tahoeWclUlofdmaState must match the Apple dword carrier");
+
 struct tahoeWclQosParams
 {
     uint32_t long_retry_limit;
@@ -156,6 +163,46 @@ struct tahoeWclQosParams
 } __attribute__((packed));
 static_assert(sizeof(tahoeWclQosParams) == 0x18,
               "tahoeWclQosParams must match Apple dword fields + tail bytes");
+
+struct tahoeFaceTimeWiFiCallingParams
+{
+    uint32_t status;
+} __attribute__((packed));
+static_assert(sizeof(tahoeFaceTimeWiFiCallingParams) == 0x4,
+              "tahoeFaceTimeWiFiCallingParams must match Apple status dword");
+
+struct tahoeDualPowerModeParams
+{
+    int32_t primary;
+    int32_t secondary;
+} __attribute__((packed));
+static_assert(sizeof(tahoeDualPowerModeParams) == 0x8,
+              "tahoeDualPowerModeParams must match two Apple mode dwords");
+
+struct tahoeCongestionControlIndication
+{
+    uint8_t enabled;
+} __attribute__((packed));
+static_assert(sizeof(tahoeCongestionControlIndication) == 0x1,
+              "tahoeCongestionControlIndication must match Apple bool carrier");
+
+struct tahoeLmtpcConfig
+{
+    uint8_t value;
+} __attribute__((packed));
+static_assert(sizeof(tahoeLmtpcConfig) == 0x1,
+              "tahoeLmtpcConfig must match Apple byte carrier");
+
+struct tahoeLeScanParams
+{
+    uint8_t disconnected;
+    uint8_t reserved01[3];
+    uint32_t connectedEvents;
+    uint32_t disconnectedEvents;
+    uint32_t bucket;
+} __attribute__((packed));
+static_assert(sizeof(tahoeLeScanParams) == 0x10,
+              "tahoeLeScanParams must match the recovered Apple 0x10 payload");
 
 struct apple80211_reassoc
 {
@@ -825,6 +872,15 @@ init()
     cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
     cachedCurrentMcs = 0;
+    cachedUlofdmaState = 0;
+    cachedMimoConfig = 0;
+    cachedFaceTimeWiFiCallingStatus = 0;
+    cachedDualPowerModePrimary = -1;
+    cachedDualPowerModeSecondary = -1;
+    cachedCongestionControlEnabled = false;
+    cachedLmtpcValue = 0;
+    memset(cachedLeScanParams, 0, sizeof(cachedLeScanParams));
+    hasCachedLeScanParams = false;
     cachedRealTimeMode = false;
     cachedQosLongRetryLimit = 0;
     cachedQosRtsThreshold = 0;
@@ -935,6 +991,16 @@ init(IOService *provider)
     this->cachedDhcpRenewalData = false;
     this->cachedBatteryPowerSaveMode = 0;
     this->cachedPowerProfile = 0;
+    this->cachedCurrentMcs = 0;
+    this->cachedUlofdmaState = 0;
+    this->cachedMimoConfig = 0;
+    this->cachedFaceTimeWiFiCallingStatus = 0;
+    this->cachedDualPowerModePrimary = -1;
+    this->cachedDualPowerModeSecondary = -1;
+    this->cachedCongestionControlEnabled = false;
+    this->cachedLmtpcValue = 0;
+    memset(this->cachedLeScanParams, 0, sizeof(this->cachedLeScanParams));
+    this->hasCachedLeScanParams = false;
     this->cachedRealTimeMode = false;
     this->cachedQosLongRetryLimit = 0;
     this->cachedQosRtsThreshold = 0;
@@ -2765,6 +2831,133 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 
     cachedScanHomeAwayTime = data->milliseconds;
     XYLog("WCL [604] %s ms=%u\n", __FUNCTION__, cachedScanHomeAwayTime);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
+{
+    const auto *state = reinterpret_cast<const tahoeWclUlofdmaState *>(data);
+
+    // AppleBCMWLANCore::setWCL_ULOFDMA_STATE is a plain 11ax-adapter producer:
+    // NULL -> 0xe00002bc, otherwise forward the first dword to the owner at
+    // core +0x15c8. Even before that hidden owner is lifted 1:1, slot [608]
+    // must preserve the exact dword carrier instead of sitting on generic
+    // kIOReturnUnsupported.
+    if (state == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedUlofdmaState = state->mode;
+    XYLog("WCL [608] %s mode=%u\n", __FUNCTION__, cachedUlofdmaState);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMIMO_CONFIG(apple80211_mimo_config *data)
+{
+    const auto *config = reinterpret_cast<const uint32_t *>(data);
+
+    // AppleBCMWLANCore::setMIMO_CONFIG rejects NULL with 0xe00002bc, reads the
+    // first dword as the caller-visible mode, and then pushes that mode into
+    // the MIMO power-save owner. The hidden owner is still outside this batch,
+    // but acknowledging slot [614] without caching the selected mode was still
+    // a producer mismatch.
+    if (config == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedMimoConfig = *config;
+    XYLog("WCL [614] %s mimo_ps=%u\n", __FUNCTION__, cachedMimoConfig);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *data)
+{
+    const auto *params = reinterpret_cast<const tahoeFaceTimeWiFiCallingParams *>(data);
+
+    // Apple stores a single FaceTime/WiFi-calling status dword and hands it to
+    // setWiFiCallPolicies(...). Preserve that status verbatim so slot [623] no
+    // longer drops an Apple-owned carrier behind kIOReturnUnsupported.
+    if (params == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedFaceTimeWiFiCallingStatus = params->status;
+    XYLog("WCL [623] %s status=%u\n", __FUNCTION__, cachedFaceTimeWiFiCallingStatus);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setDUAL_POWER_MODE(apple80211_dual_power_mode_params *data)
+{
+    const auto *params = reinterpret_cast<const tahoeDualPowerModeParams *>(data);
+
+    // AppleBCMWLANCore::setDUAL_POWER_MODE persists two signed dwords at core
+    // offsets +0x4d3c/+0x4d40, conditionally arms a one-byte "type-2 present"
+    // flag at +0x4d44, and always re-enters tx-power-cap state handling. The
+    // local port still lacks that config-owner choreography, but it must stop
+    // advertising slot [631] as entirely unsupported.
+    if (params == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedDualPowerModePrimary = params->primary;
+    cachedDualPowerModeSecondary = params->secondary;
+    XYLog("WCL [631] %s primary=%d secondary=%d\n",
+          __FUNCTION__, cachedDualPowerModePrimary, cachedDualPowerModeSecondary);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *data)
+{
+    const auto *ind = reinterpret_cast<const tahoeCongestionControlIndication *>(data);
+
+    // AppleBCMWLANCore::setCONGESTION_CTRL_IND is a tiny core-state write:
+    // log gate, then a bool at core +0x79d2. There is no extra hidden helper
+    // to wait for, so slot [634] should behave as a real bool carrier here.
+    if (ind == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedCongestionControlEnabled = ind->enabled != 0;
+    XYLog("WCL [634] %s enabled=%u\n", __FUNCTION__,
+          static_cast<unsigned int>(cachedCongestionControlEnabled));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setLMTPC_CONFIG(apple80211_lmtpc_config *data)
+{
+    const auto *config = reinterpret_cast<const tahoeLmtpcConfig *>(data);
+
+    // AppleBCMWLANCore::setLMTPC_CONFIG rejects NULL, copies one byte into the
+    // core-owned cache at +0x4594, and then re-enters setLMTPC(). Preserve the
+    // same byte carrier so slot [638] no longer diverges at the producer ABI.
+    if (config == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedLmtpcValue = config->value;
+    XYLog("WCL [638] %s value=%u\n", __FUNCTION__, cachedLmtpcValue);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setLE_SCAN_PARAM(apple80211_le_scan_params *data)
+{
+    const auto *params = reinterpret_cast<const tahoeLeScanParams *>(data);
+
+    // AppleBCMWLANCore::setLE_SCAN_PARAM consumes a fixed 0x10 carrier:
+    // byte 0 selects disconnect-vs-connect accounting, dwords +4/+8 feed the
+    // per-event counters, and dword +0xc indexes one of seven histogram
+    // buckets. The local port has no BTLE reporting owner yet, but it still
+    // needs to retain the exact request blob instead of leaving slot [640]
+    // unreachable.
+    if (params == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedLeScanParams, params, sizeof(*params));
+    hasCachedLeScanParams = true;
+    XYLog("WCL [640] %s disconnected=%u connect=%u disconnect=%u bucket=%u\n",
+          __FUNCTION__, params->disconnected, params->connectedEvents,
+          params->disconnectedEvents, params->bucket);
     return kIOReturnSuccess;
 }
 

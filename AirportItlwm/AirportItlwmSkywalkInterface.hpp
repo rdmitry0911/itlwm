@@ -155,8 +155,12 @@ public:
     // [490]
     virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [491]
+    // [491] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe. Keep it explicitly unsupported until a different family
+    // path is recovered.
     virtual IOReturn getRANGING_ENABLE(apple80211_ranging_enable_request_t *) override { XYLog("DEBUG VTABLE [491] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [492]
+    // [492] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getRANGING_START(apple80211_ranging_start_request_t *) override { XYLog("DEBUG VTABLE [492] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [493]
     virtual IOReturn getAWDL_RSDB_CAPS(apple80211_rsdb_capability *) override { XYLog("DEBUG VTABLE [493] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -183,6 +187,8 @@ public:
     // [504]
     virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
     // [505]
+    // [505] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t *) override { XYLog("DEBUG VTABLE [505] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [506]
     virtual IOReturn getLQM_CONFIG(apple80211_lqm_config_t *) override { XYLog("DEBUG VTABLE [506] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -211,6 +217,8 @@ public:
     // [518]
     virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override { XYLog("DEBUG VTABLE [518] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [519]
+    // [519] — AppleBCMWLANInfraProtocol returns `0xe00002c7` directly for this
+    // selector on Tahoe.
     virtual IOReturn getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *) override { XYLog("DEBUG VTABLE [519] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [520]
     virtual IOReturn getLQM_SUMMARY(apple80211_lqm_summary *) override { XYLog("DEBUG VTABLE [520] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -249,8 +257,11 @@ public:
     // [537]
     virtual IOReturn getWIFI_NOISE_PER_ANT(apple80211_noise_per_ant_t *) override { XYLog("DEBUG VTABLE [537] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [538]
+    // [538] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getFW_CLOCK_INFO(apple80211_fw_clock_info *) override { XYLog("DEBUG VTABLE [538] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [539]
+    // [539] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
+    // stub on Tahoe.
     virtual IOReturn getTIMESYNC_STATS(apple80211_timesync_stats *) override { XYLog("DEBUG VTABLE [539] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [540]
     virtual IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *) override { XYLog("DEBUG VTABLE [540] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -401,7 +412,7 @@ public:
     // [607]
     virtual IOReturn setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(apple80211_mws_accessory_power_limit *) override { XYLog("DEBUG VTABLE [607] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [608]
-    virtual IOReturn setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *) override { XYLog("DEBUG VTABLE [608] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *) override;
     // [609]
     virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override { XYLog("DEBUG VTABLE [609] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [610]
@@ -413,7 +424,7 @@ public:
     // [613]
     virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override;
     // [614]
-    virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override { XYLog("DEBUG VTABLE [614] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override;
     // [615] — AppleBCMWLAN: delegates to BGScanAdapter.
     virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data) override;
     // [616] — AppleBCMWLAN: delegates to BGScanAdapter.
@@ -431,7 +442,7 @@ public:
     // [622]
     virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override { XYLog("DEBUG VTABLE [622] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [623]
-    virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override { XYLog("DEBUG VTABLE [623] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
     virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
     // [625] — AppleBCMWLAN: delegates to WnmAdapter.
@@ -447,13 +458,13 @@ public:
     // [630]
     virtual IOReturn setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *) override { XYLog("DEBUG VTABLE [630] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [631]
-    virtual IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params *) override { XYLog("DEBUG VTABLE [631] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params *) override;
     // [632]
     virtual IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *) override { XYLog("DEBUG VTABLE [632] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [633]
     virtual IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *) override { XYLog("DEBUG VTABLE [633] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [634]
-    virtual IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *) override { XYLog("DEBUG VTABLE [634] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *) override;
     // [635]
     virtual IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state *) override { XYLog("DEBUG VTABLE [635] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [636] — AppleBCMWLAN: stores up to 10 IPv6 addresses, notifies InfraInterface
@@ -461,11 +472,11 @@ public:
     // [637] — AppleBCMWLAN: validates param, returns success (minimal stub)
     virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override;
     // [638]
-    virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override { XYLog("DEBUG VTABLE [638] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override;
     // [639]
     virtual IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *) override { XYLog("DEBUG VTABLE [639] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [640]
-    virtual IOReturn setLE_SCAN_PARAM(apple80211_le_scan_params *) override { XYLog("DEBUG VTABLE [640] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setLE_SCAN_PARAM(apple80211_le_scan_params *) override;
     // [641]
     virtual IOReturn setTIMESYNC_GPIO(apple80211_timesync_gpio *) override { XYLog("DEBUG VTABLE [641] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [642]
@@ -535,6 +546,15 @@ private:
     uint32_t cachedBatteryPowerSaveMode;
     uint32_t cachedPowerProfile;
     uint32_t cachedCurrentMcs;
+    uint32_t cachedUlofdmaState;
+    uint32_t cachedMimoConfig;
+    uint32_t cachedFaceTimeWiFiCallingStatus;
+    int32_t cachedDualPowerModePrimary;
+    int32_t cachedDualPowerModeSecondary;
+    bool cachedCongestionControlEnabled;
+    uint32_t cachedLmtpcValue;
+    uint8_t cachedLeScanParams[0x10];
+    bool hasCachedLeScanParams;
     bool cachedRealTimeMode;
     uint32_t cachedQosLongRetryLimit;
     uint32_t cachedQosRtsThreshold;

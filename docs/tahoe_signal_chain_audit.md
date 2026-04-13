@@ -963,3 +963,51 @@ The local port now follows that split:
 
 This closes the timesync-facing `+0xad8` hidden-object subpath. The broader
 hidden `+0x1510` object method map still remains a separate `Q13` task.
+
+## Q13 Batch: simple core-owned setter carriers leave the unsupported tail
+
+The next `Q13` zone is the setter subset where Apple already exposes concrete
+core producers and the caller-visible ABI is narrow enough to lift without
+guessing hidden owner internals.
+
+Recovered Apple producer contracts:
+
+- `AppleBCMWLANCore::setWCL_ULOFDMA_STATE(...)`
+  rejects `NULL` with `0xe00002bc` and forwards the first dword into the 11ax
+  adapter at core `+0x15c8`
+- `AppleBCMWLANCore::setMIMO_CONFIG(...)`
+  rejects `NULL`, reads a single mode dword, and hands it to the MIMO-PS owner
+- `AppleBCMWLANCore::setFACETIME_WIFICALLING_PARAMS(...)`
+  rejects `NULL`, reads a single status dword, and forwards it into the
+  WiFi-call policy owner
+- `AppleBCMWLANCore::setDUAL_POWER_MODE(...)`
+  rejects `NULL`, persists two signed dwords at core `+0x4d3c/+0x4d40`, and
+  then re-enters tx-power-cap state handling
+- `AppleBCMWLANCore::setCONGESTION_CTRL_IND(...)`
+  is a pure bool carrier into core `+0x79d2`
+- `AppleBCMWLANCore::setLMTPC_CONFIG(...)`
+  rejects `NULL`, stores a single byte at core `+0x4594`, and then re-enters
+  the LMTPC owner
+- `AppleBCMWLANCore::setLE_SCAN_PARAM(...)`
+  consumes a fixed `0x10` payload:
+  byte `+0x0`, dwords `+0x4/+0x8/+0xc`
+
+That is strong enough to move these slots out of the generic
+`kIOReturnUnsupported` bucket:
+
+- `setWCL_ULOFDMA_STATE`
+- `setMIMO_CONFIG`
+- `setFACETIME_WIFICALLING_PARAMS`
+- `setDUAL_POWER_MODE`
+- `setCONGESTION_CTRL_IND`
+- `setLMTPC_CONFIG`
+- `setLE_SCAN_PARAM`
+
+The port still does not claim the deeper hidden owner choreography for 11ax,
+WiFi-calling policy, tx-power-cap recalculation, or BTLE reporting. What
+changes here is the architectural surface:
+
+- these selectors are no longer dead unsupported slots
+- Tahoe now preserves the same caller-visible carriers Apple exposes
+- the remaining hidden-owner exactness stays open under the residual `Q13`
+  hidden-helper zone instead of being conflated with missing selector bodies

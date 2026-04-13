@@ -79,9 +79,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 141 unsupported overrides and 0 ack-only
+  raw header surface now carries 134 unsupported overrides and 0 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  105 unsupported-return slots still remain open discrepancies
+  98 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -190,6 +190,15 @@ This inventory is intentionally split into:
   recovered a real `getHT_CAPABILITY(...)` producer body, while
   `getPRIVATE_MAC(...)` and `getOFFLOAD_TCPKA_ENABLE(...)` proved that the
   local Tahoe headers were still missing their packed carrier ABIs.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 mini-batch: simple core-owned setter carriers`:
+  the next setter zone proved to be concrete Apple producer surface, not
+  generic unsupported tail. `setWCL_ULOFDMA_STATE`, `setMIMO_CONFIG`,
+  `setFACETIME_WIFICALLING_PARAMS`, `setDUAL_POWER_MODE`,
+  `setCONGESTION_CTRL_IND`, `setLMTPC_CONFIG`, and `setLE_SCAN_PARAM` now
+  preserve the recovered caller-visible carriers and Apple null gates instead
+  of returning `kIOReturnUnsupported`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 ## Superseded
@@ -361,11 +370,11 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `141` raw overrides still return `kIOReturnUnsupported`
-- `105` of those still remain open unsupported discrepancies after the first
-  confirmed Apple-unsupported classification batches and the lifted thermal /
+- `134` raw overrides still return `kIOReturnUnsupported`
+- `98` of those still remain open unsupported discrepancies after the first
+  confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
-  batch
+  batch, and the simple setter-carrier zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -453,22 +462,15 @@ Unsupported setter slots still present:
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
 - `606 setRSN_XE`
-- `608 setWCL_ULOFDMA_STATE`
 - `609 setWCL_ACTION_FRAME`
 - `610 setGAS_ABORT`
-- `614 setMIMO_CONFIG`
 - `622 setBYPASS_TX_POWER_CAP`
-- `623 setFACETIME_WIFICALLING_PARAMS`
 - `627 setWCL_LIMITED_AGGREGATION`
 - `628 setWCL_BCN_MUTE_CONFIG`
 - `629 setEAP_FILTER_CONFIG`
-- `631 setDUAL_POWER_MODE`
 - `632 setWCL_UPDATE_FAST_LANE`
 - `633 setWCL_ASSOCIATED_SLEEP`
-- `634 setCONGESTION_CTRL_IND`
-- `638 setLMTPC_CONFIG`
 - `639 setTRAFFIC_ENG_PARAMS`
-- `640 setLE_SCAN_PARAM`
 - `642 setHOST_CLOCK_INFO`
 - `647 setWCL_SOI_CONFIG`
 - `649 setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH`
@@ -604,16 +606,18 @@ Need:
 Until that classification exists, touching the remaining unsupported vtable
 surface would be guesswork.
 
-### 9. Remaining ack-only stub cluster is now narrow and non-WCL
+### 9. Remaining `Q13` tail is no longer about inline success stubs
 
-The earlier WCL producer cluster is closed. The remaining inline success stubs
-are the sideband control leftovers listed above:
+The earlier WCL producer cluster is closed, and the former sideband inline
+success tail is gone as well:
 
-- `setWCL_SET_ROAM_LOCK`
-- `setWCL_ROAM_USER_CACHE`
-- `setWCL_SET_SCAN_HOME_AWAY_TIME`
-- `setHEARTBEAT`
-- `setINTERFACE_SETTING`
+- `0` overrides still return success from inline placeholder bodies
+
+What remains is the harder part of `Q13`:
+
+- hidden `+0x1510` object method coverage
+- config-backed nvram/helper producers such as `qtxpower`
+- remaining unsupported selectors that still need slot-by-slot classification
 
 ## Next Execution Order
 
