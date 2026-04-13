@@ -166,6 +166,18 @@ This inventory is intentionally split into:
   only state-carrier shims. What remains after this batch is runtime proof on a
   live system, not another missing architectural split in the local backend.
 
+- `Tahoe external bootstrap query cache contract`:
+  live build `db546d2` proves that the still-active blocker is the external
+  bootstrap query surface used by `airportd _initInterface`: after
+  `ifCount[1]` and `Apple80211BindToInterfaceWithService ... useIOUCWhenPossible TRUE`,
+  the next external `APPLE80211_IOC_SSID` still returns `0xe0822403` and
+  aborts `_initInterface` with `Failed to query current SSID`. The reverse docs
+  already require third-party drivers to expose success+zeroed data for
+  `SSID/BSSID/CHANNEL` pre-association, because Apple's framework cache layer
+  absorbs the low-level `0xe0822403` internally. The local Tahoe BSD bridge
+  must therefore route those three selectors to the local zero-success helpers
+  instead of leaking the low-level failure to `airportd`.
+
 - `PLATFORM_CONFIG`:
   Tahoe 7-byte packed producer path recovered and implemented.
   See [tahoe_platform_config_root_cause.md](/Users/bob/Projects/itlwm/docs/tahoe_platform_config_root_cause.md).

@@ -918,30 +918,49 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     // AirportItlwmSkywalkInterface, the BSD bridge must make it reachable.
     switch (req->req_type) {
         case APPLE80211_IOC_SSID:
+            // Live Tahoe runtime on build db546d2 disproves the earlier
+            // "always preserve IOUC-first routing here" theory for the
+            // bootstrap path. airportd reaches _initInterface only after the
+            // interface is bound, then immediately issues external GET SSID.
+            // The active IOUC/WCL route on our port returns 0xe0822403
+            // ("not associated") instead of the framework cache semantics,
+            // and _initInterface aborts right there:
+            //   APPLE80211_IOC_SSID -> 0xe0822403
+            //   _initInterface: Failed to query current SSID
+            //
+            // Reverse docs for 25D125 are explicit that third-party ports must
+            // replicate IO80211Controller cache behavior here: pre-zero the
+            // public SSID carrier and return success before association. Apple
+            // can rely on its internal cache layer to absorb the low-level
+            // 0xe0822403; our Tahoe bridge cannot leak that low-level status
+            // to airportd during bootstrap.
+            return (cmd == SIOCGA80211)
+                       ? getSSID((apple80211_ssid_data *)req->req_data)
+                       : kIOReturnUnsupported;
         case APPLE80211_IOC_BSSID:
+            // Same bootstrap contract as SSID: airportd queries BSSID during
+            // _initInterface and expects success with an all-zero BSSID before
+            // association. Letting the active WCL path leak 0xe0822403 keeps
+            // the interface in "driver not available" state even though the
+            // interface itself is already attached as Wi-Fi en0.
+            return (cmd == SIOCGA80211)
+                       ? getBSSID((apple80211_bssid_data *)req->req_data)
+                       : kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_RESULT:
-            // Apple does not dispatch these external Tahoe BSD queries straight
-            // into the protocol implementation.  IO80211Family first routes
-            // them through IOUC/WCL:
-            //   SSID        -> sendIOUCToWcl(..., selector=1,    len=0x28)
-            //   BSSID       -> sendIOUCToWcl(..., selector=9,    len=0x0c)
-            //   SCAN_RESULT -> sendIOUCToWcl(..., selector=0x16, len=0x0c)
-            // and only falls back to the protocol path if that WCL route says
-            // "not implemented".  Our local Tahoe bridge had been
-            // short-circuiting all four selectors here, which bypassed the
-            // Apple Skywalk route and matched the live failure exactly:
-            // external SSID/BSSID kept returning 0xe0822403 and external
-            // SCAN_RESULT returned raw 5 even though attach, SCAN_REQ, and
-            // WCL_SCAN_DONE were already working.  Leave these selectors
-            // unsupported here so super::processBSDCommand() preserves the
-            // Apple IOUC-first producer/consumer path.
+            // Keep SCAN_RESULT on the family's IOUC/WCL path for now. The live
+            // db546d2 failure happens earlier at _initInterface on SSID/BSSID,
+            // and Apple scan-result consumption is coupled to WCL state. Do
+            // not short-circuit this selector until the bootstrap query path
+            // is no longer the blocker.
             return kIOReturnUnsupported;
         case APPLE80211_IOC_CHANNEL:
             if (cmd == SIOCGA80211) {
-                // Same Apple IOUC-first rule as SSID/BSSID: external Tahoe
-                // GET CHANNEL must route through sendIOUCToWcl(..., 4, 0x10)
-                // before any fallback.  Keep only the setter locally wired.
-                return kIOReturnUnsupported;
+                // Same pre-association cache contract as SSID/BSSID. Reverse
+                // docs show airportd queries CHANNEL during _initInterface and
+                // expects success with zeroed channel data before association.
+                // Returning the low-level -3903/driver-not-available shape
+                // here aborts the bootstrap bind just as surely as SSID.
+                return getCHANNEL((apple80211_channel_data *)req->req_data);
             }
             if (cmd == SIOCSA80211)
                 return setCHANNEL((apple80211_channel_data *)req->req_data);

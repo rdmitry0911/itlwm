@@ -738,6 +738,35 @@ So the real architectural mismatch was never "our protocol handlers are still
 wrong". The active IOUC-facing path was remaining visible to late consumers
 before they received a usable sticky `DRIVER_AVAILABLE` replay.
 
+## Live `db546d2` Correction For External Bootstrap Queries
+
+Live runtime on build `db546d2` disproves the stronger version of the earlier
+"always preserve IOUC-first routing" conclusion for Tahoe bootstrap.
+
+Observed sequence:
+
+- `airportd` reaches `_initInterface` after `ifCount[1]`
+- `Apple80211BindToInterfaceWithService ... useIOUCWhenPossible TRUE` is
+  already logged
+- the very next external `APPLE80211_IOC_SSID` returns `0xe0822403`
+- `_initInterface` immediately logs `Failed to query current SSID`
+- external `BSSID` follows with the same `0xe0822403`
+
+That means the currently active Tahoe IOUC/WCL route on the local port is not
+providing the Apple cache semantics that the framework has internally. Apple
+can let low-level BSS-manager/WCL calls return `0xe0822403` because
+`IO80211Controller::getSSIDData()` / the BSSID cache pre-zero and still return
+success to `airportd`. A third-party Tahoe bridge that exposes the low-level
+failure directly is not 1:1 with the visible bootstrap contract.
+
+So for the active bootstrap path the strict requirement is:
+
+- `SSID` GET must return success with `ssid_len=0` before association
+- `BSSID` GET must return success with all-zero BSSID before association
+- `CHANNEL` GET must return success with `channel=0 flags=0` before association
+
+even if the internal IOUC/WCL route is still returning `0xe0822403`.
+
 ## Next Confirmed Root Cause After Live `471f6f1`
 
 Live state on `471f6f1` disproved the older attach/discovery theories:

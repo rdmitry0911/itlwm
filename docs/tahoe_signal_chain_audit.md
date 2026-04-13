@@ -165,6 +165,37 @@ the ready edge does not mean "driver available"; it explicitly feeds the
 
 The local port must therefore stop publishing `available=0` when `ready=true`.
 
+## Tahoe Bootstrap Query Cache Correction
+
+Live runtime on build `db546d2` narrows the still-active bring-up blocker to
+the external bootstrap query path, not to scan completion.
+
+Observed order:
+
+1. Tahoe interface attaches as Wi-Fi `en0`
+2. `airportd` binds with `useIOUCWhenPossible TRUE`
+3. `_initInterface` queries `APPLE80211_IOC_SSID`
+4. the external query returns `0xe0822403`
+5. `_initInterface` aborts with `Failed to query current SSID`
+
+This matters because the earlier "keep SSID/BSSID/CHANNEL unsupported locally
+so super::processBSDCommand() preserves IOUC-first routing" conclusion is too
+strong for the visible bootstrap contract. The reverse docs are explicit that
+Apple's framework cache layer pre-zeroes SSID/BSSID/CHANNEL and still returns
+success before association. Our local port cannot leak the low-level
+`0xe0822403` to airportd during `_initInterface`, regardless of whether the
+internal IOUC/WCL path exists.
+
+So the exact visible Tahoe contract for third-party bootstrap is:
+
+- `getSSID()` -> success + zeroed SSID pre-association
+- `getBSSID()` -> success + zeroed BSSID pre-association
+- `getCHANNEL()` -> success + zeroed channel pre-association
+
+The active compiled Tahoe bridge must therefore route those three external GETs
+to the local cache-shaped helpers until the internal WCL route itself reaches
+the same visible semantics.
+
 ## Owner-Family Backend Batch
 
 The remaining pre-`Q12` owner-family setters now route through the local
