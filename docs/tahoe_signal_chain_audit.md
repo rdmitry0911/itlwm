@@ -285,3 +285,39 @@ Apple uses:
   transitions, teardown/failure)
 - keep the decompile references in code so the port does not regress back to
   treating readiness as an arbitrary bulletin-payload problem
+
+## Root Cause After Live `5e5d8da`
+
+The first implementation of that recovered producer still diverged from Apple
+in one important detail: the value type.
+
+Live proof on rebooted `5e5d8da`:
+
+- `ioreg -l -r -n AirportItlwmSkywalkInterface` finally showed
+  `CoreWiFiDriverReadyKey`
+- but it appeared as `Yes`, meaning our port had published an `OSBoolean`
+- kernel IOC debug still printed `isDriverAvailable=<0>` for the same boot
+- `APPLE80211_IOC_SSID/BSSID` continued to fail through the WCL path with
+  `0xe0822403`
+
+That matches the decompile exactly:
+
+- `AppleBCMWLANCore::signalDriverReady()` creates
+  `OSString("true")` or `OSString("false")`
+- the hidden interface-side object at `+0x1510` receives that string object,
+  not an `OSBoolean`
+
+So the bug was no longer "missing CoreWiFiDriverReadyKey".  The bug was that
+the Tahoe port published the right key with the wrong value type, which is not
+architecturally equivalent to the Apple producer.
+
+## Correct Ready-State Value Contract
+
+For strict parity, the ready-state producer must publish:
+
+- key: `OSSymbol("CoreWiFiDriverReadyKey")`
+- value: `OSString("true")` or `OSString("false")`
+- target: the same interface-side object used by the reference producer
+
+Anything else, including `OSBoolean true/false`, is only a lookalike ioreg
+surface and does not satisfy the recovered Apple contract.

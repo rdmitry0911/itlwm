@@ -118,8 +118,18 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
     // Live d7318b6 proof showed the earlier synthetic bulletin path was wrong:
     // DRIVER_AVAILABLE/55 appeared in logs, yet isDriverAvailable stayed 0 and
     // ioreg exposed no CoreWiFiDriverReadyKey on AirportItlwmSkywalkInterface.
-    controller->fNetIf->setProperty("CoreWiFiDriverReadyKey",
-                                    ready ? kOSBooleanTrue : kOSBooleanFalse);
+    //
+    // Live 5e5d8da then proved a second, subtler divergence in our first
+    // attempt at that producer: the property existed in ioreg, but as
+    // `CoreWiFiDriverReadyKey = Yes` (OSBoolean) instead of Apple's
+    // OSString("true"/"false").  isDriverAvailable still remained 0, so the
+    // type is part of the contract, not just the key name.
+    const OSSymbol *key = OSSymbol::withCString("CoreWiFiDriverReadyKey");
+    OSString *value = OSString::withCString(ready ? "true" : "false");
+    if (key != NULL && value != NULL)
+        controller->fNetIf->setProperty(key, value);
+    OSSafeReleaseNULL(value);
+    OSSafeReleaseNULL(key);
     XYLog("DEBUG %s ready=%d fNetIf=%p\n", __FUNCTION__, ready ? 1 : 0,
           controller->fNetIf);
 }
