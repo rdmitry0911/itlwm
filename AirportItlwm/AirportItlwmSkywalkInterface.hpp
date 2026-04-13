@@ -217,7 +217,7 @@ public:
     // [521]
     virtual IOReturn getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *) override { XYLog("DEBUG VTABLE [521] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [522]
-    virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override { XYLog("DEBUG VTABLE [522] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override;
     // [523]
     virtual IOReturn getSENSING_DATA(apple80211_sensing_data_t *) override { XYLog("DEBUG VTABLE [523] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [524]
@@ -434,10 +434,10 @@ public:
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override { XYLog("DEBUG VTABLE [623] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
     virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
-    // [625]
-    virtual IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *) override { XYLog("DEBUG VTABLE [625] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [626]
-    virtual IOReturn setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *) override { XYLog("DEBUG VTABLE [626] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    // [625] — AppleBCMWLAN: delegates to WnmAdapter.
+    virtual IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *) override;
+    // [626] — AppleBCMWLAN: delegates to WnmAdapter.
+    virtual IOReturn setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *) override;
     // [627]
     virtual IOReturn setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config *) override { XYLog("DEBUG VTABLE [627] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [628]
@@ -554,6 +554,10 @@ private:
     bool hasCachedUserRoamCache;
     uint32_t cachedPmMode;
     uint32_t cachedScanHomeAwayTime;
+    uint8_t cachedWnmConfig[0x338];
+    bool hasCachedWnmConfig;
+    uint8_t cachedWnmOffload[0x30];
+    bool hasCachedWnmOffload;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
     uint8_t cachedLegacyRoamProfileConfig[0x60];

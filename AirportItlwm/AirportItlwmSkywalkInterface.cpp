@@ -251,6 +251,27 @@ struct scanHomeAndAwayTime
 static_assert(sizeof(scanHomeAndAwayTime) == 0x4,
               "scanHomeAndAwayTime must match the single dword consumed by Apple");
 
+struct apple80211_timesync_info
+{
+    char text[0x100];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_timesync_info) == 0x100,
+              "apple80211_timesync_info must preserve the recovered 0x100 text buffer");
+
+struct apple80211_wcl_wnm_config_t
+{
+    uint8_t raw[0x338];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_wcl_wnm_config_t) == 0x338,
+              "apple80211_wcl_wnm_config_t must cover the recovered WnmAgent field range");
+
+struct apple80211_wcl_wnm_offload_t
+{
+    uint8_t raw[0x30];
+} __attribute__((packed));
+static_assert(sizeof(apple80211_wcl_wnm_offload_t) == 0x30,
+              "apple80211_wcl_wnm_offload_t must cover the recovered DMS offload field range");
+
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
@@ -823,6 +844,10 @@ init()
     hasCachedUserRoamCache = false;
     cachedPmMode = 0;
     cachedScanHomeAwayTime = 0;
+    memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
+    hasCachedWnmConfig = false;
+    memset(cachedWnmOffload, 0, sizeof(cachedWnmOffload));
+    hasCachedWnmOffload = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
     memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
@@ -929,6 +954,10 @@ init(IOService *provider)
     this->hasCachedUserRoamCache = false;
     this->cachedPmMode = 0;
     this->cachedScanHomeAwayTime = 0;
+    memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
+    this->hasCachedWnmConfig = false;
+    memset(this->cachedWnmOffload, 0, sizeof(this->cachedWnmOffload));
+    this->hasCachedWnmOffload = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
     memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
@@ -2739,6 +2768,43 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
     return kIOReturnSuccess;
 }
 
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
+{
+    // AppleBCMWLANCore::setWCL_WNM_OPS is a real producer with only one gate
+    // visible at the core layer: NULL -> 0xe00002bc, otherwise delegate into
+    // WnmAdapter::configureWnmFeatures(...). The WCL-side consumer mutates a
+    // large opaque blob up to offsets 0x334+, so preserve the recovered full
+    // carrier instead of keeping slot [625] unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedWnmConfig, data, sizeof(*data));
+    hasCachedWnmConfig = true;
+    XYLog("DEBUG [625] %s flags0=0x%02x flags8=0x%02x beacon=0x%02x cached=%u\n",
+          __FUNCTION__, data->raw[0], data->raw[8], data->raw[0x32c],
+          static_cast<unsigned int>(hasCachedWnmConfig));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
+{
+    // AppleBCMWLANCore::setWCL_WNM_OFFLOAD has the same core-layer contract:
+    // NULL -> 0xe00002bc, otherwise delegate into WnmAdapter
+    // configureWnmOffloadFeatures(...). Recovered WCLWnmAgent helpers mutate
+    // the caller blob up to offset 0x2c, so keep the full opaque carrier.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedWnmOffload, data, sizeof(*data));
+    hasCachedWnmOffload = true;
+    XYLog("DEBUG [626] %s flags0=0x%02x flags4=0x%02x cached=%u\n",
+          __FUNCTION__, data->raw[0], data->raw[4],
+          static_cast<unsigned int>(hasCachedWnmOffload));
+    return kIOReturnSuccess;
+}
+
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);
 
 static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_node *fNextNodeToSend, apple80211_scan_result *result)
@@ -2781,6 +2847,30 @@ getCURRENT_NETWORK(apple80211_scan_result *sr)
     if (fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN || fHalService->get80211Controller()->ic_bss == NULL)
         return kIOReturnError;
     convertNodeToScanResult(fHalService, fHalService->get80211Controller()->ic_bss, sr);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTIMESYNC_INFO(apple80211_timesync_info *data)
+{
+    // AppleBCMWLANCore::getTIMESYNC_INFO routes through the hidden +0x1510
+    // object into a 0x100-byte text producer. The recovered bus/time-sync
+    // engine path always appends capability text first and then either:
+    // - calls TimeSyncEngine::getTimeSyncInfo(...)
+    // - or prints "TimeSync Engine not-instantiated"
+    //
+    // The local port has no timesync engine object, so the exact Apple-shaped
+    // behavior for the "engine missing" case is a deterministic text report,
+    // not generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    bzero(data->text, sizeof(data->text));
+    strlcat(data->text,
+            "TimeSync Capability:\n\tFirmware: HW Timestamping Not capable\n\tHost: Timestamping NOT capable\n",
+            sizeof(data->text));
+    strlcat(data->text, "TimeSync Engine not-instantiated\n", sizeof(data->text));
+    XYLog("DEBUG [522] %s produced timesync report without engine\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 

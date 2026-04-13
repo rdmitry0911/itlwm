@@ -79,9 +79,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 144 unsupported overrides and 0 ack-only
+  raw header surface now carries 141 unsupported overrides and 0 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  108 unsupported-return slots still remain open discrepancies
+  105 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -361,8 +361,8 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `144` raw overrides still return `kIOReturnUnsupported`
-- `108` of those still remain open unsupported discrepancies after the first
+- `141` raw overrides still return `kIOReturnUnsupported`
+- `105` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches and the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch
@@ -399,7 +399,6 @@ Unsupported getter slots still present:
 - `518 getDYNSAR_DETAIL`
 - `520 getLQM_SUMMARY`
 - `521 getSLOW_WIFI_FEATURE_ENABLED`
-- `522 getTIMESYNC_INFO`
 - `523 getSENSING_DATA`
 - `524 getWCL_FW_HOT_CHANNELS`
 - `525 getWCL_LOW_LATENCY_INFO`
@@ -460,8 +459,6 @@ Unsupported setter slots still present:
 - `614 setMIMO_CONFIG`
 - `622 setBYPASS_TX_POWER_CAP`
 - `623 setFACETIME_WIFICALLING_PARAMS`
-- `625 setWCL_WNM_OPS`
-- `626 setWCL_WNM_OFFLOAD`
 - `627 setWCL_LIMITED_AGGREGATION`
 - `628 setWCL_BCN_MUTE_CONFIG`
 - `629 setEAP_FILTER_CONFIG`
@@ -513,6 +510,7 @@ The standalone ready-state queue is closed, but the concrete hidden object
 behind the `+0x1510` pointer remains open as a larger infrastructure surface:
 
 - ready-state publication (`+0x9f8`)
+- timesync-info publication (`+0xad8`) is now closed
 - boot-state / analytics calls
 - platform/ring property acquisition
 - failure reporting callbacks

@@ -941,3 +941,25 @@ That matters because `success` on those slots was strictly worse than explicit
 unsupported: it advertised producer paths that the recovered Apple stack does
 not expose. Those selectors are now classified out of the ack-only bucket and
 return `kIOReturnUnsupported` until real Apple implementations are recovered.
+
+## Q13 Batch: TIMESYNC and WNM no longer sit in the raw unsupported surface
+
+Recovered Apple evidence now cleanly splits these selectors:
+
+- `getTIMESYNC_INFO` is not a generic unsupported slot; Core routes it through
+  the hidden `+0x1510` object at vtable offset `+0xad8`, and the recovered bus
+  path shows the visible result is a 0x100-byte text report
+- `getWCL_WNM_OFFLOAD` is a direct Apple `0xe00002c7` stub
+- `setWCL_WNM_OPS` and `setWCL_WNM_OFFLOAD` are real producers with only one
+  core-layer gate: `NULL -> 0xe00002bc`, otherwise delegate into WnmAdapter
+
+The local port now follows that split:
+
+- `getTIMESYNC_INFO` produces the same "engine not instantiated" style text
+  report instead of returning generic unsupported
+- `getWCL_WNM_OFFLOAD` remains explicit unsupported, matching Apple
+- `setWCL_WNM_OPS` / `setWCL_WNM_OFFLOAD` preserve the recovered opaque caller
+  blobs instead of leaving the slots unsupported
+
+This closes the timesync-facing `+0xad8` hidden-object subpath. The broader
+hidden `+0x1510` object method map still remains a separate `Q13` task.
