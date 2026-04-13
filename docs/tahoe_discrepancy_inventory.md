@@ -165,6 +165,15 @@ This inventory is intentionally split into:
   whole zone on generic unsupported.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: minimal setter-contract zone`:
+  fifteen remaining setters were narrowed to the public contract they actually
+  expose on Tahoe. Some are fixed-fail selectors (`AP_MODE`, `PRIVATE_MAC`,
+  `THERMAL_INDEX`), some are feature-gated (`OFFLOAD_TCPKA_ENABLE`), and the
+  rest are opaque or narrow carriers whose caller-visible state Apple stores
+  before delegating to private owners. The port now mirrors that public layer
+  instead of leaving the zone on generic unsupported.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
   a first setter subset was also proven to be "Apple also unsupported" in the
   vendor-side infra path itself. Those slots should not stay in the open
@@ -404,13 +413,14 @@ Initial classification buckets for the next pass:
 
 Current census from the Tahoe header:
 
-- `114` raw overrides still return `kIOReturnUnsupported`
-- `66` of those still remain open unsupported discrepancies after the first
+- `99` raw overrides still return `kIOReturnUnsupported`
+- `51` of those still remain open unsupported discrepancies after the first
   confirmed Apple-unsupported classification batches, the lifted thermal /
   power-budget / guard-interval / HT-capability / private-mac / TCPKA getter
   batch, the simple setter-carrier zone, the HE/P2P getter mini-batch, and the
   LQM carrier zone, the closed 15-slot Apple-unsupported setter zone, and the
-  getter fail-contract zone, and the MWS/NDD setter carrier zone
+  getter fail-contract zone, and the MWS/NDD setter carrier zone, and the
+  minimal setter-contract zone
 - `0` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -458,7 +468,6 @@ Unsupported setter slots still present:
 - `548 setTXPOWER`
 - `549 setRATE`
 - `550 setIBSS_MODE`
-- `551 setAP_MODE`
 - `552 setIE`
 - `553 setWOW_TEST`
 - `555 setVIRTUAL_IF_CREATE`
@@ -467,9 +476,7 @@ Unsupported setter slots still present:
 - `558 setOFFLOAD_NDP`
 - `559 setGAS_REQ`
 - `560 setVHT_CAPABILITY`
-- `562 setDBG_GUARD_TIME_PARAMS`
 - `563 setLEAKY_AP_STATS_MODE`
-- `564 setPRIVATE_MAC`
 - `565 setRESET_CHIP`
 - `566 setCRASH`
 - `567 setRANGING_ENABLE`
@@ -478,11 +485,9 @@ Unsupported setter slots still present:
 - `570 setTKO_PARAMS`
 - `571 setBTCOEX_PROFILE`
 - `572 setBTCOEX_PROFILE_ACTIVE`
-- `573 setTHERMAL_INDEX`
 - `574 setBTCOEX_2G_CHAIN_DISABLE`
 - `575 setPOWER_BUDGET`
 - `576 setOFFLOAD_TCPKA_ENABLE`
-- `578 setDYNAMIC_RSSI_WINDOW_CONFIG`
 - `579 setUSB_HOST_NOTIFICATION`
 - `580 setHP2P_CTRL`
 - `581 setBSS_BLACKLIST`
@@ -490,20 +495,12 @@ Unsupported setter slots still present:
 - `586 setREALTIME_QOS_MSCS`
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
-- `606 setRSN_XE`
 - `609 setWCL_ACTION_FRAME`
-- `610 setGAS_ABORT`
 - `622 setBYPASS_TX_POWER_CAP`
-- `627 setWCL_LIMITED_AGGREGATION`
-- `628 setWCL_BCN_MUTE_CONFIG`
-- `629 setEAP_FILTER_CONFIG`
 - `632 setWCL_UPDATE_FAST_LANE`
-- `633 setWCL_ASSOCIATED_SLEEP`
 - `639 setTRAFFIC_ENG_PARAMS`
 - `642 setHOST_CLOCK_INFO`
-- `647 setWCL_SOI_CONFIG`
 - `659 setDBRG_ENTROPY`
-- `662 setOS_ELIGIBILITY`
 
 Closed as a dedicated Apple-unsupported setter zone and therefore no longer
 part of the open setter list above:

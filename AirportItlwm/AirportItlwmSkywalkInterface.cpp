@@ -1089,6 +1089,24 @@ init()
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
+    cachedApMode = 0;
+    memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
+    hasCachedDbgGuardTimeParams = false;
+    cachedDynamicRssiWindowConfig = 0;
+    cachedRealTimeQosMscs = 0;
+    memset(cachedBcnMuteConfig, 0, sizeof(cachedBcnMuteConfig));
+    hasCachedBcnMuteConfig = false;
+    cachedEapFilterConfig = 0;
+    memset(cachedAssociatedSleepConfig, 0, sizeof(cachedAssociatedSleepConfig));
+    hasCachedAssociatedSleepConfig = false;
+    memset(cachedSoiConfig, 0, sizeof(cachedSoiConfig));
+    hasCachedSoiConfig = false;
+    cachedOsEligibility = 0;
+    memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
+    hasCachedBssBlacklist = false;
+    cachedRsnXeLength = 0;
+    memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
+    hasCachedRsnXe = false;
     memset(cachedMwsWifiType7Bitmap, 0, sizeof(cachedMwsWifiType7Bitmap));
     memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
     memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
@@ -1222,6 +1240,24 @@ init(IOService *provider)
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
+    this->cachedApMode = 0;
+    memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
+    this->hasCachedDbgGuardTimeParams = false;
+    this->cachedDynamicRssiWindowConfig = 0;
+    this->cachedRealTimeQosMscs = 0;
+    memset(this->cachedBcnMuteConfig, 0, sizeof(this->cachedBcnMuteConfig));
+    this->hasCachedBcnMuteConfig = false;
+    this->cachedEapFilterConfig = 0;
+    memset(this->cachedAssociatedSleepConfig, 0, sizeof(this->cachedAssociatedSleepConfig));
+    this->hasCachedAssociatedSleepConfig = false;
+    memset(this->cachedSoiConfig, 0, sizeof(this->cachedSoiConfig));
+    this->hasCachedSoiConfig = false;
+    this->cachedOsEligibility = 0;
+    memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
+    this->hasCachedBssBlacklist = false;
+    this->cachedRsnXeLength = 0;
+    memset(this->cachedRsnXe, 0, sizeof(this->cachedRsnXe));
+    this->hasCachedRsnXe = false;
     memset(this->cachedMwsWifiType7Bitmap, 0, sizeof(this->cachedMwsWifiType7Bitmap));
     memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
     memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
@@ -3247,6 +3283,174 @@ setLE_SCAN_PARAM(apple80211_le_scan_params *data)
     XYLog("WCL [640] %s disconnected=%u connect=%u disconnect=%u bucket=%u\n",
           __FUNCTION__, params->disconnected, params->connectedEvents,
           params->disconnectedEvents, params->bucket);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setAP_MODE(apple80211_apmode_data *data)
+{
+    if (data != nullptr)
+        cachedApMode = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
+
+    // AppleBCMWLANCore::setAP_MODE returns the fixed Tahoe fail code
+    // 0xe00002c7 on the normal non-AP path; the success edge is hidden behind
+    // feature/debug gates that this port does not expose.
+    return static_cast<IOReturn>(0xe00002c7);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
+    memcpy(cachedDbgGuardTimeParams + 0, raw + 4, 2);
+    memcpy(cachedDbgGuardTimeParams + 4, raw + 8, 2);
+    cachedDbgGuardTimeParams[6] = raw[10];
+    cachedDbgGuardTimeParams[7] = raw[11];
+    hasCachedDbgGuardTimeParams = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setPRIVATE_MAC(apple80211_private_mac_data *data)
+{
+    if (data != nullptr) {
+        const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+        cachedPrivateMacTimeoutSeconds = *reinterpret_cast<const uint32_t *>(raw + 0x0c);
+        memcpy(cachedPrivateMacPrimary, raw + 0x10, sizeof(cachedPrivateMacPrimary));
+    }
+
+    // AppleBCMWLANCore::setPRIVATE_MAC returns the raw Tahoe code 0x16 even on
+    // the visible success-looking path, so match that public contract instead
+    // of generic unsupported.
+    return static_cast<IOReturn>(0x16);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTHERMAL_INDEX(apple80211_thermal_index_t *data)
+{
+    if (data != nullptr)
+        cachedThermalIndex = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
+
+    return kIOReturnBadArgumentTahoe;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedDynamicRssiWindowConfig = *reinterpret_cast<const uint32_t *>(data);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setREALTIME_QOS_MSCS(apple80211_state_data *data)
+{
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    cachedRealTimeQosMscs = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setRSN_XE(apple80211_rsn_xe_data *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    cachedRsnXeLength = *reinterpret_cast<const uint16_t *>(raw + 4);
+    size_t copyLen = MIN(static_cast<size_t>(cachedRsnXeLength), sizeof(cachedRsnXe));
+    memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
+    memcpy(cachedRsnXe, raw + 6, copyLen);
+    hasCachedRsnXe = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setGAS_ABORT(void *)
+{
+    // AppleBCMWLANCore forwards this selector to the GAS adapter and exposes no
+    // public payload. Match the visible success contract instead of generic
+    // unsupported.
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config *data)
+{
+    return data == nullptr ? kIOReturnBadArgumentTahoe : kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedBcnMuteConfig, data, sizeof(cachedBcnMuteConfig));
+    hasCachedBcnMuteConfig = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setEAP_FILTER_CONFIG(apple80211_eap_filter_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedEapFilterConfig = *reinterpret_cast<const uint32_t *>(data);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memcpy(cachedAssociatedSleepConfig, data, sizeof(cachedAssociatedSleepConfig));
+    hasCachedAssociatedSleepConfig = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_SOI_CONFIG(appl80211_sleep_on_inactivity_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    memcpy(cachedSoiConfig, raw, sizeof(cachedSoiConfig));
+    hasCachedSoiConfig = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setOS_ELIGIBILITY(apple80211_os_eligibility *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedOsEligibility = *reinterpret_cast<const uint32_t *>(data);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBSS_BLACKLIST(bss_blacklist *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
+    memcpy(cachedBssBlacklist, data, sizeof(cachedBssBlacklist));
+    hasCachedBssBlacklist = true;
     return kIOReturnSuccess;
 }
 

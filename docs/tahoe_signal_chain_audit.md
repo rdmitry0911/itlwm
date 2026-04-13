@@ -712,6 +712,53 @@ notifier graph:
 - `setNDD_REQ(...)` now exposes the recovered Tahoe fail path rather than a
   generic placeholder
 
+## Q13 Minimal Setter-Contract Zone: mixed opaque carriers and fixed fail shapes
+
+The next `Q13` zone closes fifteen setter slots that all share the same
+pragmatic boundary: Tahoe already exposes a stable public contract for them,
+but the hidden owner choreography is either feature-gated or still private.
+
+Closed in this zone:
+
+- `setAP_MODE(...)`
+- `setDBG_GUARD_TIME_PARAMS(...)`
+- `setPRIVATE_MAC(...)`
+- `setTHERMAL_INDEX(...)`
+- `setDYNAMIC_RSSI_WINDOW_CONFIG(...)`
+- `setBSS_BLACKLIST(...)`
+- `setREALTIME_QOS_MSCS(...)`
+- `setRSN_XE(...)`
+- `setGAS_ABORT(...)`
+- `setWCL_LIMITED_AGGREGATION(...)`
+- `setWCL_BCN_MUTE_CONFIG(...)`
+- `setEAP_FILTER_CONFIG(...)`
+- `setWCL_ASSOCIATED_SLEEP(...)`
+- `setWCL_SOI_CONFIG(...)`
+- `setOS_ELIGIBILITY(...)`
+
+Recovered Apple behavior is consistent enough to lift this as one zone:
+
+- several selectors are pure minimal contracts:
+  `setGAS_ABORT`, `setWCL_LIMITED_AGGREGATION`
+- several are opaque state carriers with only a null gate or a small public
+  field split:
+  `setDBG_GUARD_TIME_PARAMS`, `setDYNAMIC_RSSI_WINDOW_CONFIG`,
+  `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setEAP_FILTER_CONFIG`,
+  `setWCL_ASSOCIATED_SLEEP`, `setWCL_SOI_CONFIG`, `setRSN_XE`,
+  `setOS_ELIGIBILITY`
+- several expose fixed Tahoe fail shapes rather than generic unsupported:
+  `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
+  `setTHERMAL_INDEX -> 0xe00002bc`
+- `setOFFLOAD_TCPKA_ENABLE(...)` remains feature-gated and uses the same
+  visible fail/success split as the getter-side path
+
+That closes the zone at the public Apple80211 surface:
+
+- generic unsupported is removed from these fifteen setters
+- caller-visible carriers are preserved locally where Apple preserves them in
+  core state
+- fixed Tahoe fail codes are now explicit where Apple exposes them
+
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 
 The same pattern exists on a narrow setter subset: Apple does not expose a
