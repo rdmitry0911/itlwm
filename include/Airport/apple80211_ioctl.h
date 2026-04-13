@@ -782,6 +782,22 @@ struct apple80211_guard_interval_data
     u_int32_t    interval;    // apple80211_guard_interval
 };
 
+struct apple80211_thermal_index_t
+{
+    u_int32_t    version;
+    u_int32_t    thermal_index;
+};
+static_assert(sizeof(apple80211_thermal_index_t) == 0x08,
+              "apple80211_thermal_index_t must match Apple version + u32 carrier ABI");
+
+struct apple80211_power_budget_t
+{
+    u_int32_t    version;
+    u_int32_t    power_budget;
+};
+static_assert(sizeof(apple80211_power_budget_t) == 0x08,
+              "apple80211_power_budget_t must match Apple version + u32 carrier ABI");
+
 struct apple80211_mcs_data
 {
     u_int32_t    version;

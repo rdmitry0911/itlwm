@@ -599,3 +599,34 @@ This batch does **not** automatically justify lifting `getHT_CAPABILITY`.
 For HT, the currently recovered evidence is still only on the family-side
 `IO80211PeerManager::getHtCapabilityIE(...)` consumer/helper path, not a clean
 Apple vendor-side producer body.
+
+## Q13 Confirmed Producer Mini-Batch: `getTHERMAL_INDEX` / `getPOWER_BUDGET`
+
+`getTHERMAL_INDEX` and `getPOWER_BUDGET` are the next Tahoe getters with
+recoverable Apple producer bodies that do not depend on the unresolved hidden
+object path.
+
+Recovered Apple producer contract:
+
+- `AppleBCMWLANCore::getTHERMAL_INDEX(apple80211_thermal_index_t*)`
+  writes a 32-bit scalar at caller offset `+4` from core-state base
+  `*(param_1 + 0x128) + 0x0`
+- `AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)`
+  writes a 32-bit scalar at caller offset `+4` from core-state base
+  `*(param_1 + 0x128) + 0x4`
+- both producers return success directly; there is no hidden helper, WCL
+  bulletin, or additional transport layer in between
+
+That gives a sufficiently strong ABI recovery for the getter side:
+
+- both payloads are 8-byte carriers
+- offset `+0` is the standard `version`
+- offset `+4` is the 32-bit payload value
+
+This batch still does **not** justify lifting the setter side:
+
+- `setTHERMAL_INDEX(...)` exists, but the recovered body is validation-heavy
+  and ends on the Apple bad-argument path rather than a simple carrier write
+- no clean `setPOWER_BUDGET(...)` producer body has been recovered yet
+- `getOFFLOAD_TCPKA_ENABLE(...)` remains unresolved because only the setter
+  body is currently present in the vendor decompile

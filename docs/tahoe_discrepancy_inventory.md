@@ -160,6 +160,13 @@ This inventory is intentionally split into:
   payload after `version` is `0x0e` bytes, not `0x10`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 mini-batch: thermal / power-budget carrier getters`:
+  `getTHERMAL_INDEX` and `getPOWER_BUDGET` no longer belong in the generic
+  unsupported bucket. The Apple vendor producers are direct core-state scalar
+  carriers that write a 32-bit value at caller offset `+4`, sourced from
+  offsets `+0x0` and `+0x4` inside the core-state block.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
 ## Superseded
 
 - `Tahoe must use IO80211InfraInterface::init(provider, addr)`:
@@ -335,8 +342,9 @@ Initial classification buckets for the next pass:
 Current census from the Tahoe header:
 
 - `147` raw overrides still return `kIOReturnUnsupported`
-- `120` of those still remain open unsupported discrepancies after the first
-  confirmed Apple-unsupported classification batches
+- `118` of those still remain open unsupported discrepancies after the first
+  confirmed Apple-unsupported classification batches and the lifted thermal /
+  power-budget getter batch
 - `17` overrides still return success from inline ack-only placeholder bodies
 
 Unsupported getter slots still present:
@@ -358,10 +366,8 @@ Unsupported getter slots still present:
 - `497 getBTCOEX_PROFILE`
 - `498 getBTCOEX_PROFILE_ACTIVE`
 - `499 getTRAP_INFO`
-- `500 getTHERMAL_INDEX`
 - `501 getMAX_NSS_FOR_AP`
 - `502 getBTCOEX_2G_CHAIN_DISABLE`
-- `503 getPOWER_BUDGET`
 - `504 getOFFLOAD_TCPKA_ENABLE`
 - `506 getLQM_CONFIG`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`

@@ -169,13 +169,13 @@ public:
     // [499]
     virtual IOReturn getTRAP_INFO(apple80211_trap_info_data *) override { XYLog("DEBUG VTABLE [499] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [500]
-    virtual IOReturn getTHERMAL_INDEX(apple80211_thermal_index_t *) override { XYLog("DEBUG VTABLE [500] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getTHERMAL_INDEX(apple80211_thermal_index_t *) override;
     // [501]
     virtual IOReturn getMAX_NSS_FOR_AP(apple80211_btcoex_max_nss_for_ap_data *) override { XYLog("DEBUG VTABLE [501] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [502]
     virtual IOReturn getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override { XYLog("DEBUG VTABLE [502] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [503]
-    virtual IOReturn getPOWER_BUDGET(apple80211_power_budget_t *) override { XYLog("DEBUG VTABLE [503] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [504]
     virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override { XYLog("DEBUG VTABLE [504] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [505]
@@ -580,6 +580,8 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
+    uint32_t cachedThermalIndex;
+    uint32_t cachedPowerBudget;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
     uint32_t cachedBatteryPowerSaveMode;

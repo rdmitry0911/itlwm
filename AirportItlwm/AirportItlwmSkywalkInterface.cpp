@@ -545,6 +545,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_TXPOWER:
             return (cmd == SIOCGA80211) ? getTXPOWER((apple80211_txpower_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_THERMAL_INDEX:
+            return (cmd == SIOCGA80211) ? getTHERMAL_INDEX((apple80211_thermal_index_t *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_POWER_BUDGET:
+            return (cmd == SIOCGA80211) ? getPOWER_BUDGET((apple80211_power_budget_t *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_OP_MODE:
             return (cmd == SIOCGA80211) ? getOP_MODE((apple80211_opmode_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -670,6 +676,8 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    this->cachedThermalIndex = 0;
+    this->cachedPowerBudget = 0;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
     this->cachedBatteryPowerSaveMode = 0;
@@ -1111,6 +1119,39 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
     data->rx_highest = ic->ic_vht_rx_highest;
     data->tx_mcs_map = ic->ic_vht_tx_mcs_map;
     data->tx_highest = ic->ic_vht_tx_highest;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTHERMAL_INDEX(apple80211_thermal_index_t *data)
+{
+    // AppleBCMWLANCore::getTHERMAL_INDEX is a plain core-state carrier getter:
+    // it writes a 32-bit scalar at caller offset +4 from core-state base +0x0.
+    // Tahoe should therefore expose a real `version + u32` payload here rather
+    // than leaving slot [500] on kIOReturnUnsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->thermal_index = cachedThermalIndex;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getPOWER_BUDGET(apple80211_power_budget_t *data)
+{
+    // AppleBCMWLANCore::getPOWER_BUDGET is the neighboring scalar carrier:
+    // it writes a 32-bit value at caller offset +4 from core-state base +0x4.
+    // The important Tahoe mismatch was architectural reachability/ABI, not a
+    // complex helper path, so slot [503] must return the same 8-byte carrier
+    // shape instead of generic unsupported.
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->power_budget = cachedPowerBudget;
     return kIOReturnSuccess;
 }
 
