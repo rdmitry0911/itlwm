@@ -507,6 +507,25 @@ This closes `Q13` as a queue: the remaining raw unsupported slots are no longer
 generic unsupported-surface mismatches, but either owner-specific `Q11/Q12`
 work or explicitly reclassified internal-only surfaces.
 
+`Q11` is no longer carried as one broad catch-all queue either. It is now
+split into owner-based subqueues:
+
+- `Q11-A management / frame injection`
+  `setIE`, `setWCL_ACTION_FRAME`
+- `Q11-B radio / coexistence / capability programming`
+  `setHT_CAPABILITY`, `setVHT_CAPABILITY`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setBYPASS_TX_POWER_CAP`
+- `Q11-C nearby / low-latency / traffic policy`
+  `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
+  `setOFFLOAD_NDP`, `setRANGING_AUTHENTICATE`, `setWCL_UPDATE_FAST_LANE`,
+  `setTRAFFIC_ENG_PARAMS`
+
+This decomposition is intentionally documentation-first: it closes the broad
+`Q11` umbrella queue by replacing it with owner-based subqueues, but it does
+not claim that the remaining subqueue members are already lifted.
+
 Closed as the mixed setter control/programming zone and therefore no longer
 part of the open setter list above:
 

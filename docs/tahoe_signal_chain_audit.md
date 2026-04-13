@@ -1515,3 +1515,11 @@ Final `Q13` close-out:
 With that reclassification, `Q13` is closed as a queue: all remaining raw
 unsupported slots are either queued under their owning architectural stages or
 explicitly marked internal-only.
+
+`Q11` broad queue close-out:
+
+- the old umbrella `Q11 Skywalk Datapath / Queue Surface` was too wide and was
+  masking three distinct owner families: management/frame injection, radio/coex
+  programming, and nearby/low-latency traffic policy
+- the remaining `Q11` debt is now tracked only through those owner-based
+  subqueues, not through a single broad unsupported bucket

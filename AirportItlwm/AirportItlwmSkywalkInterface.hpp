@@ -340,9 +340,10 @@ public:
     // non-AP path still resolves to `0xe00002c7`. Keep the fixed fail shape
     // instead of generic unsupported.
     virtual IOReturn setAP_MODE(apple80211_apmode_data *) override;
-    // [552] — management-IE injection belongs to the Q11 management/datapath
-    // adjunct queue. Legacy non-Skywalk IE handling already exists outside
-    // this vtable.
+    // [552] — management-IE injection belongs to the Q11-A management/frame
+    // injection subqueue. The legacy owner lives on a different controller
+    // branch (`AirportItlwm.hpp`), so the Tahoe Skywalk path must not fake a
+    // direct lift here without first reconciling the controller split.
     virtual IOReturn setIE(apple80211_ie_data *) override { XYLog("DEBUG VTABLE [552] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [553] — wake-on-wireless test/debug surface. Classified to Q12/internal
     // test coverage, not Q13.
