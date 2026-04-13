@@ -292,7 +292,7 @@ public:
     // [556]
     virtual IOReturn setHT_CAPABILITY(apple80211_ht_capability *) override { XYLog("DEBUG VTABLE [556] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [557]
-    virtual IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data *) override { XYLog("DEBUG VTABLE [557] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data *) override;
     // [558]
     virtual IOReturn setOFFLOAD_NDP(apple80211_offload_ndp_data *) override { XYLog("DEBUG VTABLE [558] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [559]
@@ -330,7 +330,7 @@ public:
     // [575]
     virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override { XYLog("DEBUG VTABLE [575] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [576]
-    virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override { XYLog("DEBUG VTABLE [576] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
     // [577]
     virtual IOReturn setLQM_CONFIG(apple80211_lqm_config_t *) override { XYLog("DEBUG VTABLE [577] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [578]
@@ -390,11 +390,7 @@ public:
     // [595] — AppleBCMWLAN: aborts ongoing scan
     virtual IOReturn setWCL_SCAN_ABORT(void *) override;
     // [596] — AppleBCMWLAN: sets real-time vs default mode
-    virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data) override {
-        XYLog("WCL [596] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data) override;
     // [597] — AppleBCMWLAN: configures ARP keepalive/GARP mode
     virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override {
         XYLog("WCL [597] %s\n", __FUNCTION__);
@@ -410,16 +406,9 @@ public:
     // [601]
     virtual IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates *) override;
     // [602] — AppleBCMWLAN: delegates to NetAdapter::setQosParams
-    virtual IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data) override {
-        XYLog("WCL [602] %s\n", __FUNCTION__);
-        if (!data) return kIOReturnError;
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data) override;
     // [603] — AppleBCMWLAN: calls PowerManager::handleLinkUpConfiguration
-    virtual IOReturn setWCL_LINK_UP_DONE(void *) override {
-        XYLog("WCL [603] %s\n", __FUNCTION__);
-        return kIOReturnSuccess;
-    }
+    virtual IOReturn setWCL_LINK_UP_DONE(void *) override;
     // [604]
     virtual IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data) override {
         XYLog("WCL [604] %s\n", __FUNCTION__);
@@ -593,6 +582,12 @@ private:
     uint32_t cachedBatteryPowerSaveMode;
     uint32_t cachedPowerProfile;
     uint32_t cachedCurrentMcs;
+    bool cachedRealTimeMode;
+    uint32_t cachedQosLongRetryLimit;
+    uint32_t cachedQosRtsThreshold;
+    uint32_t cachedQosLifetimeAc3;
+    uint32_t cachedQosLifetimeAc2;
+    uint8_t cachedQosFlags;
     uint32_t cachedIPv4Address;
     uint32_t cachedIPv4Netmask;
     uint32_t cachedIPv4Reserved;

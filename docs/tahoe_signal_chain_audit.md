@@ -168,10 +168,6 @@ carriers:
 - `setWCL_REASSOC`
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
-- `setWCL_REAL_TIME_MODE`
-- `setWCL_ARP_MODE`
-- `setWCL_QOS_PARAMS`
-- `setWCL_LINK_UP_DONE`
 - `setWCL_CONFIG_BG_MOTIONPROFILE`
 - `setWCL_CONFIG_BG_NETWORK`
 - `setWCL_CONFIG_BGSCAN`
@@ -207,6 +203,46 @@ This closes the standalone `Q9` join-abort discrepancy. Remaining reassoc and
 roam-driven join behavior stays under `Q7`, because those paths still delegate
 into unrecovered Apple roam/net adapter owners rather than the simple join
 abort owner.
+
+## Q10 Closure: net-link adjunct producers no longer sit on blind stubs
+
+The remaining open `Q10` note was never about the whole link/IP plane. It was
+about a narrow set of WCL-owned adjunct producers that Apple routes through
+NetAdapter / PowerManager owners:
+
+- `setWCL_REAL_TIME_MODE`
+- `setWCL_QOS_PARAMS`
+- `setWCL_LINK_UP_DONE`
+- `setOFFLOAD_ARP`
+- `setOFFLOAD_TCPKA_ENABLE`
+
+Recovered Apple contracts show these are not generic unsupported slots:
+
+- `setWCL_REAL_TIME_MODE`: NULL -> `0xe00002bc`, otherwise select real-time vs
+  default mode from the first byte
+- `setWCL_QOS_PARAMS`: decode a flagged carrier covering long retry limit, RTS
+  threshold, two lifetime buckets, and powersave mode
+- `setWCL_LINK_UP_DONE`: call `PowerManager::handleLinkUpConfiguration()`
+- `setOFFLOAD_TCPKA_ENABLE`: default `0xe00002c7`, flip the keepalive enable
+  byte only when the feature gate and owner object exist
+- `setOFFLOAD_ARP`: reject NULL / no infra owner with raw `0x16`, then carry
+  IPv4 + keepalive fields into core-owned state
+
+The local Tahoe port still lacks Apple's hidden PowerManager / KeepAlive owner
+objects, but these slots no longer disappear into inline success stubs. They
+now preserve the recovered carrier fields and apply the local owner actions
+that do exist today:
+
+- powersave re-entry through the lifted Tahoe `setPOWERSAVE(...)` path
+- RTS threshold through `ieee80211com::ic_rtsthreshold`
+- post-link MAC-context refresh through `ic_updateedca`
+- persistent keepalive / IPv4 carrier state for the already-lifted IPv4/TCPKA
+  getters
+
+That closes `Q10` as a standalone queue: the net-link plane no longer has
+blind adjunct stubs of its own. The still-open adapter-plane remainder
+(`REASSOC`, roam-profile config, BGScan config, exact `ARP_MODE` orchestration)
+stays under `Q7` and `Q13`.
 
 For those slots the Apple producer delegates into roam/net/bgscan/join/power
 subsystems. The correct next step is not another ack-only patch, but lifting the

@@ -50,7 +50,8 @@ This inventory is intentionally split into:
 
 - `Q7 WCL Adapter Plane`:
   open
-  adapter-owned roam/bgscan/join/net methods still sit on ack-only stubs
+  adapter-owned roam/bgscan and remaining keepalive/roam owner paths still
+  need exact Apple lifts
 
 - `Q8 Scan Plane`:
   the currently confirmed scan-abort / completion bulletin issues are closed
@@ -62,8 +63,9 @@ This inventory is intentionally split into:
   remaining reassoc/roam-driven join work lives under `Q7`
 
 - `Q10 Net-Link / IP Plane`:
-  early state-carrier portion closed
-  link/QoS/ARP adjunct producers remain open through `Q7`
+  closed
+  net-link adjunct producers now follow recovered owner-backed carrier paths;
+  remaining adapter-owner exactness is tracked under `Q7` / `Q13`
 
 - `Q11 Skywalk Datapath / Queue Surface`:
   open
@@ -76,9 +78,9 @@ This inventory is intentionally split into:
 
 - `Q13 Unsupported Skywalk Surface`:
   open
-  raw header surface now carries 144 unsupported overrides and 16 ack-only
+  raw header surface now carries 142 unsupported overrides and 13 ack-only
   stubs; after the first confirmed Apple-unsupported classification batches,
-  114 unsupported-return slots still remain open discrepancies
+  112 unsupported-return slots still remain open discrepancies
 
 ## Closed
 
@@ -492,10 +494,7 @@ Ack-only inline stubs still present in the Tahoe header:
 - `592 setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `593 setWCL_ROAM_PROFILE_CONFIG`
 - `594 setWCL_ROAM_USER_CACHE`
-- `596 setWCL_REAL_TIME_MODE`
 - `597 setWCL_ARP_MODE`
-- `602 setWCL_QOS_PARAMS`
-- `603 setWCL_LINK_UP_DONE`
 - `604 setWCL_SET_SCAN_HOME_AWAY_TIME`
 - `615 setWCL_CONFIG_BG_MOTIONPROFILE`
 - `616 setWCL_CONFIG_BG_NETWORK`
@@ -511,10 +510,7 @@ Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tah
 - `setWCL_REASSOC`
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
-- `setWCL_REAL_TIME_MODE`
 - `setWCL_ARP_MODE`
-- `setWCL_QOS_PARAMS`
-- `setWCL_LINK_UP_DONE`
 - `setWCL_CONFIG_BG_MOTIONPROFILE`
 - `setWCL_CONFIG_BG_NETWORK`
 - `setWCL_CONFIG_BGSCAN`

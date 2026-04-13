@@ -124,6 +124,39 @@ struct tahoeIPv6ParamsHeader
 static_assert(sizeof(tahoeIPv6ParamsHeader) == 0xA4,
               "tahoeIPv6ParamsHeader must match recovered Apple count+address coverage");
 
+struct apple80211_offload_arp_data
+{
+    uint32_t version;
+    uint32_t has_ipv4_address;
+    uint32_t ipv4_address;
+    uint32_t keepalive_enabled;
+    uint32_t gateway;
+    uint16_t gateway_tail;
+    uint16_t reserved;
+} __attribute__((packed));
+static_assert(sizeof(apple80211_offload_arp_data) == 0x18,
+              "apple80211_offload_arp_data must preserve the recovered 0x18 Apple offsets");
+
+struct tahoeWclRealTimeMode
+{
+    uint8_t enabled;
+} __attribute__((packed));
+
+struct tahoeWclQosParams
+{
+    uint32_t long_retry_limit;
+    uint32_t rts_threshold;
+    uint32_t lifetime_ac3;
+    uint32_t lifetime_ac2;
+    uint32_t powersave_mode;
+    uint8_t  low_latency_policy;
+    uint8_t  realtime_mlo;
+    uint8_t  reserved16;
+    uint8_t  flags;
+} __attribute__((packed));
+static_assert(sizeof(tahoeWclQosParams) == 0x18,
+              "tahoeWclQosParams must match Apple dword fields + tail bytes");
+
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
@@ -677,6 +710,12 @@ init()
     cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
     cachedCurrentMcs = 0;
+    cachedRealTimeMode = false;
+    cachedQosLongRetryLimit = 0;
+    cachedQosRtsThreshold = 0;
+    cachedQosLifetimeAc3 = 0;
+    cachedQosLifetimeAc2 = 0;
+    cachedQosFlags = 0;
     cachedIPv4Address = 0;
     cachedIPv4Netmask = 0;
     cachedIPv4Reserved = 0;
@@ -757,6 +796,12 @@ init(IOService *provider)
     this->cachedDhcpRenewalData = false;
     this->cachedBatteryPowerSaveMode = 0;
     this->cachedPowerProfile = 0;
+    this->cachedRealTimeMode = false;
+    this->cachedQosLongRetryLimit = 0;
+    this->cachedQosRtsThreshold = 0;
+    this->cachedQosLifetimeAc3 = 0;
+    this->cachedQosLifetimeAc2 = 0;
+    this->cachedQosFlags = 0;
     this->cachedIPv4Address = 0;
     this->cachedIPv4Netmask = 0;
     this->cachedIPv4Reserved = 0;
@@ -2098,6 +2143,66 @@ setWCL_SCAN_ABORT(void *data)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
+{
+    // AppleBCMWLANCore::setOFFLOAD_TCPKA_ENABLE does not use a bad-argument
+    // code here. The slot defaults to 0xe00002c7 and only flips to success
+    // once both the feature gate and keepalive owner object exist.
+    if (data == nullptr || !cachedTcpkaOffloadSupported)
+        return kIOReturnUnsupported;
+
+    cachedTcpkaOffloadEnabled = data->enabled != 0;
+    XYLog("DEBUG [576] %s enabled=%u\n", __FUNCTION__,
+          static_cast<unsigned int>(cachedTcpkaOffloadEnabled));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setOFFLOAD_ARP(apple80211_offload_arp_data *data)
+{
+    // AppleBCMWLANCore::setOFFLOAD_ARP rejects NULL and "no Infra owner" with
+    // raw 0x16, then copies the IPv4 / keepalive carrier into core-owned state
+    // before running the hidden IPv4 / keepalive notification hooks. We do not
+    // have those hidden gated callbacks yet, but the same cached IPv4 fields
+    // already back our lifted `setIPV4_PARAMS(...)` path, so keep the exact
+    // field coverage instead of dropping this producer on the floor.
+    if (data == nullptr || instance == nullptr || instance->fNetIf == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    cachedDhcpRenewalData = data->keepalive_enabled != 0;
+    if (data->has_ipv4_address != 0) {
+        cachedIPv4Address = data->ipv4_address;
+        cachedIPv4Reserved = 0;
+    }
+    cachedIPv4Gateway = data->gateway;
+    cachedIPv4GatewayTail = data->gateway_tail;
+
+    XYLog("DEBUG [557] %s has_ipv4=%u addr=0x%08x keepalive=%u gw=0x%08x tail=0x%04x\n",
+          __FUNCTION__, data->has_ipv4_address, data->ipv4_address,
+          data->keepalive_enabled, data->gateway, data->gateway_tail);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
+{
+    const auto *mode = reinterpret_cast<const tahoeWclRealTimeMode *>(data);
+
+    // AppleBCMWLANCore::setWCL_REAL_TIME_MODE is a real producer with two
+    // branches only: NULL -> 0xe00002bc, nonzero first byte -> NetAdapter
+    // real-time mode, zero -> NetAdapter default mode. Keep the same gate and
+    // preserve the selected mode in driver-owned state rather than leaving the
+    // slot as inline success.
+    if (mode == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedRealTimeMode = mode->enabled != 0;
+    XYLog("WCL [596] %s realtime=%u\n", __FUNCTION__,
+          static_cast<unsigned int>(cachedRealTimeMode));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -2141,6 +2246,80 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
                               APPLE80211_M_WCL_JOIN_ABORT_COMPLETE,
                               nullptr, 0, true);
 
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const auto *qos = reinterpret_cast<const tahoeWclQosParams *>(data);
+
+    // AppleBCMWLANCore::setWCL_QOS_PARAMS is not one monolithic blob. The
+    // recovered NetAdapter helper applies independent knobs under a flag byte:
+    // long retry limit, RTS threshold, powersave mode, and two "lifetime"
+    // buckets. We only claim parity where the local port has a real owner:
+    // RTS threshold lives in `ieee80211com`, powersave already has a lifted
+    // Tahoe IOC path, and the remaining Apple-configured words are preserved
+    // as driver-owned state instead of being acknowledged and discarded.
+    if (qos == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedQosFlags = qos->flags;
+    if ((qos->flags & 0x01) != 0)
+        cachedQosLongRetryLimit = qos->long_retry_limit;
+    if ((qos->flags & 0x02) != 0)
+        cachedQosRtsThreshold = qos->rts_threshold;
+    if ((qos->flags & 0x04) != 0)
+        cachedQosLifetimeAc3 = qos->lifetime_ac3;
+    if ((qos->flags & 0x08) != 0)
+        cachedQosLifetimeAc2 = qos->lifetime_ac2;
+
+    if ((qos->flags & 0x02) != 0) {
+        ic->ic_rtsthreshold = MIN(static_cast<uint32_t>(IEEE80211_RTS_MAX),
+                                  cachedQosRtsThreshold);
+    }
+
+    if ((qos->flags & 0x10) != 0) {
+        apple80211_powersave_data pd{};
+        pd.version = APPLE80211_VERSION;
+        pd.powersave_level = qos->powersave_mode;
+        setPOWERSAVE(&pd);
+    }
+
+    XYLog("WCL [602] %s flags=0x%02x retry=%u rts=%u life3=%u life2=%u ps=%u\n",
+          __FUNCTION__, qos->flags, cachedQosLongRetryLimit, cachedQosRtsThreshold,
+          cachedQosLifetimeAc3, cachedQosLifetimeAc2, cachedPowersaveLevel);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_LINK_UP_DONE(void *data)
+{
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    (void)data;
+
+    // Apple routes LINK_UP_DONE into PowerManager::handleLinkUpConfiguration().
+    // The local port has no separate Apple power-manager object, but it does
+    // have the same two owner-side knobs that materially change post-link
+    // runtime behavior: re-applying the current powersave mode and pushing a
+    // MAC-context refresh through `ic_updateedca`. Leaving slot [603] as a
+    // blind success stub meant neither happened on the Tahoe WCL path.
+    if (cachedPowersaveLevel != APPLE80211_POWERSAVE_MODE_DISABLED) {
+        apple80211_powersave_data pd{};
+        pd.version = APPLE80211_VERSION;
+        pd.powersave_level = cachedPowersaveLevel;
+        setPOWERSAVE(&pd);
+    }
+    if (ic->ic_updateedca != nullptr)
+        ic->ic_updateedca(ic);
+
+    XYLog("WCL [603] %s link_active=%u assoc=%u realtime=%u ps=%u\n",
+          __FUNCTION__,
+          static_cast<unsigned int>((instance->currentStatus & kIONetworkLinkActive) != 0),
+          static_cast<unsigned int>(ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr),
+          static_cast<unsigned int>(cachedRealTimeMode),
+          cachedPowersaveLevel);
     return kIOReturnSuccess;
 }
 
