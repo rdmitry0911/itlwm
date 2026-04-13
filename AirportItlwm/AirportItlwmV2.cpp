@@ -134,6 +134,43 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
           controller->fNetIf);
 }
 
+static IORegistryEntry *
+getTahoeHiddenInterfaceObject(AirportItlwm *controller)
+{
+    if (controller == NULL)
+        return NULL;
+
+    // The recovered +0x1510 object behaves as an interface-side registry
+    // facade for every system-visible path we have lifted so far:
+    // - CoreWiFiDriverReadyKey publication (+0x9f8)
+    // - provider-backed property acquisition used by PLATFORM_CONFIG (+0x970
+    //   plus property fetch helpers)
+    // - timesync text publication (+0xad8) already modeled in the Skywalk
+    //   interface as an engine-missing report
+    //
+    // On the local Tahoe port the only interface-side object with that same
+    // system-facing contract is `fNetIf`. Using the controller itself here
+    // would skip the Apple-shaped interface registry surface and regress the
+    // recovered producer target back into a controller-local shortcut.
+    if (controller->fNetIf != NULL)
+        return controller->fNetIf;
+    return controller;
+}
+
+static IORegistryEntry *
+getTahoeHiddenInterfaceProvider(AirportItlwm *controller)
+{
+    IORegistryEntry *entry = getTahoeHiddenInterfaceObject(controller);
+    if (IOService *service = OSDynamicCast(IOService, entry)) {
+        IORegistryEntry *provider = service->getProvider();
+        if (provider != NULL)
+            return provider;
+    }
+    if (controller != NULL)
+        return controller->getProvider();
+    return NULL;
+}
+
 static bool
 copyBoolProperty(IORegistryEntry *entry, const char *name, bool *value)
 {
@@ -2244,12 +2281,16 @@ getPLATFORM_CONFIG(OSObject *object,
     // - live Tahoe logs on our side proved that leaving this IOC unsupported
     //   keeps WCL in DRIVER_UNAVAILABLE
     //
-    // We do not fabricate Broadcom-private cached objects here. Instead we
-    // mirror the Apple fallback path: read the same property names from the
-    // controller service (and provider as fallback) and leave bytes zero when a
-    // property is absent. That matches the no-override semantics of the Apple
-    // producer path much more closely than our previous zero-only stub.
-    IORegistryEntry *sources[2] = { this, getProvider() };
+    // The recovered producer does not query controller-local state first. It
+    // routes through the hidden +0x1510 interface-side object and then consults
+    // that object's provider when properties are published under "IOService".
+    // Mirror that topology here instead of reading directly from the
+    // controller, which would make Tahoe property resolution depend on a
+    // non-Apple source object.
+    IORegistryEntry *sources[2] = {
+        getTahoeHiddenInterfaceObject(this),
+        getTahoeHiddenInterfaceProvider(this)
+    };
     bool boolValue = false;
     uint32_t u32 = 0;
 

@@ -525,12 +525,24 @@ behind the `+0x1510` pointer remains open as a larger infrastructure surface:
 - platform/ring property acquisition
 - failure reporting callbacks
 
-Why this remains open:
+Status:
 
-- we matched the visible ready-state contract already
-- we have **not** yet recovered or recreated the full hidden object contract
-- until that object is identified/modeled more precisely, the broader hidden
-  method surface remains a `Q13` lift/classification task
+- closed as a system-facing queue
+
+What is now considered closed:
+
+- ready-state publication (`+0x9f8`) through the interface-side registry object
+- provider acquisition (`+0x970`) for platform/property fetches
+- property-driven platform-config lookups through that same object/provider
+- timesync-info publication (`+0xad8`) as the recovered engine-missing text path
+
+What was reclassified out of the queue:
+
+- the remaining named `+0x1510` xrefs are Broadcom-private boot/debug/factory
+  helpers, not shared Apple80211 system-facing producer obligations on our
+  port
+
+So this is no longer carried as open discrepancy debt inside `Q13`.
 
 ### 5. `getRATE`/`getTXPOWER` nvram-backed query contracts are not yet Apple-shaped
 
@@ -578,19 +590,7 @@ legacy paths drift apart.
 
 ## Open Needs Decompile
 
-### 6. Full producer contract for the hidden interface-side object at `+0x1510`
-
-Need:
-
-- exact concrete class identity
-- method map for the slots used by Apple core
-- constructor/assignment site
-- relationship between that object and our `fNetIf`
-
-Without this, producer-side parity for ready-state, boot-state, analytics, and
-several property/reporting flows remains incomplete.
-
-### 7. IOSkywalk / IO80211 constructor path exactness on Tahoe
+### 6. IOSkywalk / IO80211 constructor path exactness on Tahoe
 
 Need:
 
@@ -601,7 +601,7 @@ Need:
 The panic proved the previous conclusion was wrong, but the full Apple
 constructor sequence is still not closed.
 
-### 8. Full open-slot classification for the remaining unsupported Skywalk getters/setters
+### 7. Full open-slot classification for the remaining unsupported Skywalk getters/setters
 
 Need:
 
@@ -614,7 +614,7 @@ Need:
 Until that classification exists, touching the remaining unsupported vtable
 surface would be guesswork.
 
-### 9. Remaining `Q13` tail is no longer about inline success stubs
+### 8. Remaining `Q13` tail is no longer about inline success stubs
 
 The earlier WCL producer cluster is closed, and the former sideband inline
 success tail is gone as well:
@@ -623,7 +623,6 @@ success tail is gone as well:
 
 What remains is the harder part of `Q13`:
 
-- hidden `+0x1510` object method coverage
 - config-backed nvram/helper producers such as `qtxpower`
 - remaining unsupported selectors that still need slot-by-slot classification
 

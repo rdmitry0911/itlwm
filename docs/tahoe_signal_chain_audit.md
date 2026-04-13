@@ -1041,3 +1041,56 @@ The important architectural correction is not that Tahoe suddenly claims full
 - `P2P_DEVICE_CAPABILITY` now exposes the Apple zeroed fast-path when no NAN
   owner exists, which matches the current local architecture better than a
   fake unsupported return
+
+## Q13 Closure: hidden `+0x1510` object surface is closed as a system-facing zone
+
+The remaining hidden-object note was re-audited method-by-method instead of
+being kept as a generic "unknown helper" bucket.
+
+Recovered `+0x1510` uses split cleanly into two classes:
+
+1. system-facing registry/property producers
+2. Broadcom-internal boot/debug/factory helpers
+
+The system-facing class is now fully modeled on the local Tahoe port:
+
+- `+0x9f8`
+  `AppleBCMWLANCore::signalDriverReady()` publishes
+  `CoreWiFiDriverReadyKey = OSString(\"true\"/\"false\")`
+- `+0x970`
+  provider acquisition used by platform/ring/property fetch paths
+- property fetch helpers reached through that object for:
+  `wlan.6GHz.supported`,
+  `wlan.ant-inefficiency-mitigation.enabled`,
+  `wlan.externallypowered`,
+  `wlan.adaptiveroaming.enabled`,
+  `wlan.dfrts`,
+  `wlan.ignore.mcast`,
+  `wlan.ocl.enabled`
+- `+0xad8`
+  `getTIMESYNC_INFO` publication path, already closed earlier as the
+  deterministic "engine not-instantiated" text report
+
+The key correction in code is that these paths now route through the
+interface-side registry facade (`fNetIf`) and its provider, rather than through
+the controller object directly.
+
+The remaining `+0x1510` methods that still appear in decompile xrefs do not
+form part of the system-facing Apple80211 contract on our port. Their named
+callers are Broadcom-private bring-up/debug infrastructure such as:
+
+- chip-image allocation / validation / completion (`+0x880/+0x888/+0x890/+0x8a0/+0x8a8`)
+- boot-failure / boot-state / halt reporting (`+0x940/+0x9f0/+0xaf8`)
+- chip identity / secure-boot / internal-provider helpers (`+0xa30/+0xa38/+0xa40/+0xa58`)
+- factory / test / timesync tooling (`+0x9a8/+0x9c0/+0x9c8/+0xa20/+0xac8/+0xad0`)
+
+Those are real Apple methods, but they are Broadcom-internal owner surfaces,
+not shared system expectations that Tahoe/WCL/airportd consume from our port.
+Keeping them in the open queue was therefore mixing "missing Apple80211
+producer contract" with "vendor-private firmware/debug implementation".
+
+So the hidden `+0x1510` object is now closed as a queue:
+
+- the system-visible producer/consumer obligations are modeled
+- the remaining named xrefs are explicitly classified as Broadcom-private
+  internal surface and no longer kept as unresolved system-contract debt
