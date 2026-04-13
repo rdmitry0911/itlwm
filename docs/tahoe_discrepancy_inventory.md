@@ -23,9 +23,9 @@ This inventory is intentionally split into:
 ## Queue Coverage Snapshot
 
 - `Q1 Interface Construction`:
-  open
-  constructor/start exactness still incomplete after the panic-backed rollback
-  from the wrong 2-argument init path
+  closed
+  Tahoe now uses the Apple-shaped split constructor path: subclass no-arg
+  init followed by local controller/role binding before attach/start
 
 - `Q2 BSD Attach / Identity`:
   no currently open confirmed discrepancy beyond the constructor/hidden-object
@@ -104,6 +104,13 @@ This inventory is intentionally split into:
 
 - `Skywalk BSD bridge reachability`:
   existing handlers were unreachable on Tahoe until the BSD bridge was expanded.
+  See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q1 constructor path closure`:
+  Tahoe no longer advertises or routes controller construction through a fake
+  2-argument interface init override. The port now follows the recovered Apple
+  APSTA shape: subclass no-arg init first, then controller/role binding on a
+  separate local follow-up path before `attach(this)` and `start()`.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `state-carrier IOC batch`:

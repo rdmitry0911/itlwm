@@ -22,12 +22,16 @@ struct apple80211_colocated_network_scope_id
 static_assert(sizeof(apple80211_colocated_network_scope_id) == 0x30,
               "apple80211_colocated_network_scope_id must match Tahoe WCL ABI");
 
+class AirportItlwm;
+
 class AirportItlwmSkywalkInterface : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AirportItlwmSkywalkInterface)
 
 public:
 #if __IO80211_TARGET >= __MAC_26_0
+    virtual bool init() override;
     virtual bool init(IOService *, ether_addr *) override;
+    bool bindController(AirportItlwm *);
 #else
     virtual bool init(IOService *) override;
 #endif

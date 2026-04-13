@@ -372,6 +372,63 @@ Strict-parity correction from this point:
 - mark the earlier 2-arg-init conclusion as superseded, so the port does not
   regress back into the same `linkState()+0xb / CR2=0x18` panic
 
+## Q1 Constructor Path Closure: APSTA-style no-arg init plus parameter binding
+
+The remaining constructor mismatch was not inside `start()` itself, but in how
+the Tahoe port entered interface construction.
+
+New evidence now makes the Apple pattern clear enough to close `Q1`:
+
+- `AppleBCMWLANCoreMac` imports both `IO80211InfraInterface::init()` and
+  `IO80211SkywalkInterface::init(IOService*, ether_addr*)`
+- Apple infra subclasses do **not** expose the two-argument skywalk init as
+  their public constructor surface
+- recovered Apple subclass bodies show a split pattern:
+  - `AppleBCMWLANIO80211APSTAInterface::init()` is the subclass init entry
+  - separate hidden wrapper paths perform provider/parameter binding afterwards
+  - Apple proximity/NAN interfaces follow the same overall pattern
+
+That means the Tahoe port still had one constructor-level drift left:
+
+- controller code called `fNetIf->init(this, addr)` directly on Tahoe
+- the local override then ignored the two arguments and internally fell back to
+  no-arg `IO80211InfraInterface::init()`
+- this was crash-free, but it was not architecturally 1:1 with the recovered
+  Apple APSTA construction model
+
+Strict-parity correction:
+
+- make Tahoe interface construction enter through no-arg `init()`
+- move provider/local-parameter binding into a separate local wrapper, mirroring
+  Apple’s split between subclass init and parameterized follow-up init paths
+- keep `attach(this)` as the provider exposure step after init/binding, not as
+  an implicit side effect of a misleading two-argument init override
+
+With that split, the port no longer advertises a fake Tahoe "2-arg infra init"
+contract. The constructor/start sequence now matches the recovered Apple shape
+as closely as the current decompile allows:
+
+- subclass no-arg init
+- local controller/role binding
+- attach(provider)
+- registerEthernetInterface
+- `fNetIf->start(provider)`
+- `deferBSDAttach(false)`
+
+Implementation closure for `Q1`:
+
+- Tahoe `AirportItlwmSkywalkInterface` now overrides no-arg `init()` instead
+  of exposing a fake local `init(provider, addr)` surface
+- controller start now calls `fNetIf->init()` followed by a dedicated
+  `bindController(this)` helper
+- provider-owned state (`instance`, `fHalService`, `scanSource`) and interface
+  identity (`role/id`) now move through that explicit follow-up binding path,
+  which keeps the constructor contract aligned with recovered Apple APSTA
+  structure
+- the secondary 2-arg Tahoe vtable slot is still shadowed locally only because
+  the kernel does not export `IO80211InfraInterface::init(provider, addr)`;
+  the port no longer uses that slot as its controller construction entry
+
 ## Ready-State Replay Audit After `78f162d`
 
 Once the Tahoe init path was restored, the next audit target was the pile of

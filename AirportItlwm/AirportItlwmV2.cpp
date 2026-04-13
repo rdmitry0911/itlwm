@@ -1141,9 +1141,17 @@ bool AirportItlwm::start(IOService *provider)
     XYLog("DEBUG %s [STEP 7] Skywalk interface init + attach\n", __FUNCTION__);
     fNetIf = new AirportItlwmSkywalkInterface;
 #if __IO80211_TARGET >= __MAC_26_0
-    IOEthernetAddress addr;
-    getHardwareAddress(&addr);
-    if (!fNetIf->init(this, (ether_addr *)&addr)) {
+    if (!fNetIf->init()) {
+        XYLog("DEBUG %s [STEP 7] FAIL: Skywalk interface no-arg init\n", __FUNCTION__);
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    // Apple APSTA construction splits subclass init() from the later
+    // provider/role binding path. Keep the Tahoe port on the same shape
+    // instead of routing controller construction through a fake 2-arg init.
+    if (!static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->bindController(this)) {
 #else
     if (!fNetIf->init(this)) {
 #endif
@@ -1156,8 +1164,10 @@ bool AirportItlwm::start(IOService *provider)
     SD_SET(11); // fNetIf init OK
     sDiag.netIf = fNetIf;
     sRT.fNetIfPtr = (uint64_t)(uintptr_t)fNetIf;
+#if __IO80211_TARGET < __MAC_26_0
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
+#endif
 
 #if __IO80211_TARGET < __MAC_26_0
     if (!initCCLogs()) {

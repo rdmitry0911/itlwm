@@ -646,29 +646,85 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 
 #if __IO80211_TARGET >= __MAC_26_0
 bool AirportItlwmSkywalkInterface::
-init(IOService *provider, ether_addr *addr)
+init()
 {
-    XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
-    // The previous switch to IO80211InfraInterface::init(provider, addr)
-    // panicked immediately on boot:
-    //   IO80211InfraInterface::linkState() + 0xb, CR2=0x18
-    // inside IO80211PeerManager::initWithInterface() during
-    // IO80211SkywalkInterface::start().
-    //
-    // New 26.3 decompile from
-    // /Volumes/macos-750/Users/bob/Projects/Декомпилы/ghidra_output/IO80211Family_decompiled.c
-    // confirms why: IO80211InfraInterface::linkState() dereferences
-    // *(this + 0x128) + 0x18, so the 2-arg path still left the infra ivar
-    // block unavailable at start() for the current port state.
-    //
-    // Until the missing constructor/ivar path is fully recovered 1:1, the
-    // only crash-free contract backed by both live runtime and decompile is
-    // the no-arg IO80211InfraInterface::init() path.
+    XYLog("DEBUG %s entry\n", __PRETTY_FUNCTION__);
+    // Apple's Tahoe APSTA surface enters construction through subclass
+    // no-arg init(), then performs provider/role/address binding on a
+    // separate follow-up path. Advertising a local 2-arg init override here
+    // was misleading: the port ignored those arguments anyway and the true
+    // Apple-recovered crash-free constructor contract is still the no-arg
+    // IO80211InfraInterface::init() path.
     if (!IO80211InfraInterface::init()) {
         XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
     XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
+    instance = NULL;
+    fHalService = NULL;
+    scanSource = NULL;
+    cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
+    cachedThermalIndex = 0;
+    cachedPowerBudget = 0;
+    cachedPrivateMacState = 0;
+    cachedPrivateMacTimeoutSeconds = 0;
+    memset(cachedPrivateMacPrimary, 0, sizeof(cachedPrivateMacPrimary));
+    memset(cachedPrivateMacSecondary, 0, sizeof(cachedPrivateMacSecondary));
+    cachedTcpkaOffloadSupported = false;
+    cachedTcpkaOffloadEnabled = false;
+    cachedOSFeatureFlags = 0;
+    cachedDhcpRenewalData = false;
+    cachedBatteryPowerSaveMode = 0;
+    cachedPowerProfile = 0;
+    cachedIPv4Address = 0;
+    cachedIPv4Netmask = 0;
+    cachedIPv4Reserved = 0;
+    cachedIPv4Gateway = 0;
+    cachedIPv4GatewayTail = 0;
+    cachedIPv6Count = 0;
+    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
+    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
+    cachedInfraEnumerated = false;
+    memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
+    cachedTriggerCCMode = 0;
+    hasCachedTriggerCC = false;
+    RT3_SET(12); // SkywalkInterface::init OK
+    return true;
+}
+
+bool AirportItlwmSkywalkInterface::
+init(IOService *provider, ether_addr *addr)
+{
+    XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
+    // Tahoe still carries the secondary 2-arg vtable slot, but the kernel does
+    // not export IO80211InfraInterface::init(provider, addr), so dropping the
+    // local override makes the kext bind against a non-exported symbol and fail
+    // BootKC verification. Keep this as a local shadow only; the real
+    // constructor path is the no-arg init() + bindController() sequence above.
+    return init();
+}
+
+bool AirportItlwmSkywalkInterface::
+bindController(AirportItlwm *provider)
+{
+    XYLog("DEBUG %s entry provider=%p\n", __FUNCTION__, provider);
+    // Recovered Apple APSTA construction uses a split contract: subclass
+    // no-arg init first, then a separate parameter-binding path wires the
+    // interface to controller-owned state before attach/start. Keep the local
+    // port on the same shape instead of pretending the constructor itself is
+    // the provider-binding entry.
+    instance = provider;
+    if (!instance) {
+        XYLog("DEBUG %s FAIL: provider is NULL\n", __FUNCTION__);
+        return false;
+    }
+    fHalService = instance->fHalService;
+    scanSource = instance->scanSource;
+    setInterfaceRole(1);
+    setInterfaceId(1);
+    XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
+          __FUNCTION__, instance, fHalService, scanSource);
+    return true;
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
@@ -680,7 +736,6 @@ init(IOService *provider)
         return false;
     }
     XYLog("DEBUG %s super::init OK\n", __FUNCTION__);
-#endif
     instance = OSDynamicCast(AirportItlwm, provider);
     if (!instance) {
         XYLog("DEBUG %s FAIL: provider is not AirportItlwm\n", __FUNCTION__);
@@ -717,6 +772,7 @@ init(IOService *provider)
     XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
           __FUNCTION__, instance, fHalService, scanSource);
     return true;
+#endif
 }
 
 //ifnet_t AirportItlwmSkywalkInterface::
