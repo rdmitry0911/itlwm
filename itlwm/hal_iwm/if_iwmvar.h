@@ -657,6 +657,8 @@ struct iwm_softc {
 
 	struct iwm_notif_statistics sc_stats;
 	int sc_noise;
+    uint8_t sc_last_qtxpower_raw;
+    bool sc_has_last_qtxpower_raw;
 
 	int host_interrupt_operation_mode;
     int sc_ltr_enabled;

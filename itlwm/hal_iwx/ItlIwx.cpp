@@ -5914,6 +5914,13 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
     if (!le16toh(ba_res->tfd_cnt))
         return;
 
+    // AppleBCMWLANCore::getTXPOWER terminates in a cached one-byte qtxpower
+    // carrier. Intel exposes the closest runtime producer as BA actual
+    // reduced_txp, so cache that byte here instead of reconstructing from the
+    // unrelated net80211 txpower scalar later in Tahoe getters.
+    sc->sc_last_qtxpower_raw = ba_res->reduced_txp;
+    sc->sc_has_last_qtxpower_raw = true;
+
     /* Free per TID */
     for (i = 0; i < le16toh(ba_res->tfd_cnt); i++) {
         struct iwx_compressed_ba_tfd *ba_tfd = &ba_res->tfd[i];
@@ -9125,6 +9132,12 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
                                  rate_n_flags);
     }
     XYLog("%s new rate: %s\n", __FUNCTION__, pretty_rate);
+    // AppleBCMWLANCore::getMCS_VHT reads the cached "nrate" config carrier.
+    // The firmware TLC update is the Intel-side producer for the same runtime
+    // notion of current transmit rate, so preserve the normalized v2 bitfield
+    // here instead of rebuilding MCS_VHT from ni_txmcs/ni_chw later.
+    sc->sc_last_rate_n_flags = rate_n_flags;
+    sc->sc_has_last_rate_n_flags = true;
     format = rate_n_flags & IWX_RATE_MCS_MOD_TYPE_MSK;
     if (format == IWX_RATE_MCS_VHT_MSK ||
         format == IWX_RATE_MCS_HE_MSK ||

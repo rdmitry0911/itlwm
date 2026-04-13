@@ -840,10 +840,26 @@ That is enough to close the raw-fallback queue itself:
 now stop leaking raw POSIX `6` in both the Tahoe Skywalk path and the legacy
 STA dispatcher.
 
-`getTXPOWER` also leaves the raw-`6` queue in this batch, but its remaining
-Apple mismatch is no longer a `Q5` item. The exact reference producer still
-uses the config-backed `"qtxpower"` transport, so the source-transport
-exactness remains open under `Q13`, not under the old raw-getter queue.
+`getTXPOWER` left the raw-`6` queue earlier, but at that point the exact
+reference producer was still open under `Q13`. That source lift is now closed:
+
+- `getTXPOWER` consumes a HAL-backed cached qtxpower byte instead of
+  `ic_txpower`
+- the public carrier now uses Apple unit/value semantics:
+  `APPLE80211_UNIT_MW` plus the fixed lookup table from
+  `0xffffff80016f3760`
+- `getMCS_VHT` consumes cached `nrate` transport state instead of rebuilding
+  from `ni_txmcs`, `ni_chw`, and NSS helpers
+
+Intel-side source mapping used for this closure:
+
+- `iwm`: `lq_sta.rs_drv.last_rate_n_flags` for `nrate`,
+  `iwm_ba_notif::reduced_txp` for qtxpower
+- `iwx`: `iwx_rs_update(...)` cache for `nrate`,
+  `iwx_compressed_ba_notif::reduced_txp` for qtxpower
+
+The legacy STA shadow path was updated in the same batch, so Tahoe and legacy
+no longer drift on either getter.
 
 ## Q3 Closure: ready-state queue closed, hidden object exactness moved to Q13
 

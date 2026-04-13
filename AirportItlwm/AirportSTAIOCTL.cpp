@@ -16,6 +16,134 @@ const char* hexdump(uint8_t *buf, size_t len);
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 
+static constexpr uint16_t kAppleTahoeQTxpowerTable[40] = {
+    0x1a1b, 0x1ba7, 0x1d4b, 0x1f07, 0x20de, 0x22d1, 0x24e1, 0x2710,
+    0x2961, 0x2bd4, 0x2e6d, 0x312d, 0x3417, 0x372d, 0x3a72, 0x3de9,
+    0x4194, 0x4577, 0x4994, 0x4df1, 0x528f, 0x5773, 0x5ca2, 0x621f,
+    0x67ef, 0x6e18, 0x749e, 0x7b87, 0x82d9, 0x8a99, 0x92d0, 0x9b83,
+    0xa4ba, 0xae7c, 0xb8d3, 0xc3c7, 0xcf60, 0xdbaa, 0xe8ae, 0xf678,
+};
+
+static uint32_t decodeAppleTahoeQTxpowerRaw(uint8_t raw)
+{
+    uint32_t scale = 0xffff;
+    if (raw < 0xc1) {
+        uint32_t tableIndex;
+        if (raw < 0x99) {
+            int current = static_cast<int>(raw) - 0xc1;
+            int last = current;
+            scale = 1;
+            do {
+                last = current;
+                scale *= 10;
+                current = last + 0x28;
+            } while (current < -0x28);
+            tableIndex = static_cast<uint32_t>(last + 0x50);
+        } else {
+            tableIndex = static_cast<uint32_t>(raw - 0x99);
+            scale = 1;
+        }
+        scale = (((scale >> 1) + kAppleTahoeQTxpowerTable[tableIndex]) / scale) & 0xffff;
+    }
+    return scale;
+}
+
+static uint8_t encodeAppleTahoeQTxpowerBootstrap(uint8_t maxHalfDbm)
+{
+    int raw = static_cast<int>(maxHalfDbm) * 2 - 136;
+    raw = MAX(-128, MIN(127, raw));
+    return static_cast<uint8_t>(static_cast<int8_t>(raw));
+}
+
+static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
+{
+    if (hal == nullptr || raw == nullptr)
+        return false;
+
+    if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
+        struct iwm_softc *sc = &iwm->com;
+        if (sc->sc_has_last_qtxpower_raw) {
+            *raw = sc->sc_last_qtxpower_raw;
+            return true;
+        }
+        *raw = encodeAppleTahoeQTxpowerBootstrap(sc->sc_nvm.max_tx_pwr_half_dbm);
+        return true;
+    }
+
+    if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
+        struct iwx_softc *sc = &iwx->com;
+        if (sc->sc_has_last_qtxpower_raw) {
+            *raw = sc->sc_last_qtxpower_raw;
+            return true;
+        }
+        *raw = 0xaa;
+        return true;
+    }
+
+    return false;
+}
+
+static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+{
+    if (hal == nullptr || data == nullptr)
+        return;
+
+    if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
+        struct iwm_softc *sc = &iwm->com;
+        uint32_t rate = sc->lq_sta.rs_drv.last_rate_n_flags;
+        if ((rate & 0x07000000U) != 0x02000000U)
+            return;
+        data->index = rate & 0xf;
+        data->nss = (rate >> 4) & 0xf;
+        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
+        switch (rate & 0x00070000U) {
+            case 0x00010000U:
+                data->bw = 20;
+                break;
+            case 0x00020000U:
+                data->bw = 40;
+                break;
+            case 0x00030000U:
+                data->bw = 80;
+                break;
+            case 0x00040000U:
+                data->bw = 160;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
+        struct iwx_softc *sc = &iwx->com;
+        if (!sc->sc_has_last_rate_n_flags)
+            return;
+        uint32_t rate = sc->sc_last_rate_n_flags;
+        if ((rate & 0x07000000U) != 0x02000000U)
+            return;
+        data->index = rate & 0xf;
+        data->nss = (rate >> 4) & 0xf;
+        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
+        switch (rate & 0x00070000U) {
+            case 0x00010000U:
+                data->bw = 20;
+                break;
+            case 0x00020000U:
+                data->bw = 40;
+                break;
+            case 0x00030000U:
+                data->bw = 80;
+                break;
+            case 0x00040000U:
+                data->bw = 160;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
                                        int request_number,
                                        IO80211Interface *interface,
@@ -431,13 +559,14 @@ IOReturn AirportItlwm::
 getTXPOWER(OSObject *object,
                            struct apple80211_txpower_data *txd)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
     if (txd == NULL)
         return kIOReturnBadArgument;
     memset(txd, 0, sizeof(*txd));
     txd->version = APPLE80211_VERSION;
-    txd->txpower = ic->ic_txpower;
-    txd->txpower_unit = APPLE80211_UNIT_PERCENT;
+    txd->txpower_unit = APPLE80211_UNIT_MW;
+    uint8_t raw = 0;
+    if (getTahoeCachedQTxpowerRaw(fHalService, &raw))
+        txd->txpower = static_cast<int32_t>(decodeAppleTahoeQTxpowerRaw(raw));
     return kIOReturnSuccess;
 }
 
@@ -767,31 +896,11 @@ getVHT_MCS_INDEX_SET(OSObject *object, struct apple80211_vht_mcs_index_set_data 
 IOReturn AirportItlwm::
 getMCS_VHT(OSObject *object, struct apple80211_mcs_vht_data *data)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
-        return kIOReturnError;
-    }
+    if (data == nullptr)
+        return kIOReturnBadArgument;
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
     data->version = APPLE80211_VERSION;
-    data->guard_interval = (ieee80211_node_supports_vht_sgi80(ic->ic_bss) || ieee80211_node_supports_vht_sgi160(ic->ic_bss)) ? APPLE80211_GI_SHORT : APPLE80211_GI_LONG;
-    data->index = ic->ic_bss->ni_txmcs;
-    data->nss = fHalService->getDriverInfo()->getTxNSS();
-    switch (ic->ic_bss->ni_chw) {
-        case IEEE80211_CHAN_WIDTH_40:
-            data->bw = 40;
-            break;
-        case IEEE80211_CHAN_WIDTH_80:
-            data->bw = 80;
-            break;
-        case IEEE80211_CHAN_WIDTH_80P80:
-        case IEEE80211_CHAN_WIDTH_160:
-            data->bw = 160;
-            break;
-            
-        default:
-            data->bw = 20;
-            break;
-    }
+    fillTahoeMcsVhtFromCachedNrate(fHalService, data);
     return kIOReturnSuccess;
 }
 

@@ -730,6 +730,10 @@ struct iwx_softc {
 	struct iwx_phy_ctxt sc_phyctxt[IWX_NUM_PHY_CTX];
 
 	int sc_noise;
+    uint32_t sc_last_rate_n_flags;
+    uint8_t sc_last_qtxpower_raw;
+    bool sc_has_last_rate_n_flags;
+    bool sc_has_last_qtxpower_raw;
 
     int sc_pm_support;
 	int sc_ltr_enabled;

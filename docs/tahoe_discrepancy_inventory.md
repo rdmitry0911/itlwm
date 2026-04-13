@@ -229,7 +229,7 @@ This inventory is intentionally split into:
 
 ## Open Confirmed
 
-### 1. Exact `qtxpower` source route is still not lifted 1:1
+### 1. `qtxpower` / `nrate` source lift is closed
 
 Files:
 
@@ -239,15 +239,11 @@ Files:
 Current state:
 
 - `getMCS_INDEX_SET`, `getNOISE`, and `getMCS` no longer leak raw POSIX `6`
-- `getTXPOWER` also no longer leaks raw `6`
-- the remaining discrepancy is now the exact producer source, not the
-  user-visible error-code shape
-
-Why this stays open:
-
-- Apple still queries `"qtxpower"` through the core config transport
-- the port does not yet expose that exact config source 1:1
-- this mismatch now belongs to `Q13`, not to the closed `Q5` queue
+- `getTXPOWER` now consumes HAL-backed cached qtxpower state and publishes the
+  Apple unit/value pair
+- `getMCS_VHT` now consumes HAL-backed cached `nrate` state instead of
+  rebuilding from association-side fields
+- the legacy STA shadow path was updated in the same batch
 
 Recovered Apple helper semantics now available:
 
@@ -264,10 +260,19 @@ Recovered Apple helper semantics now available:
   no current BSS → `0xe0822403`, missing valid noise sample → `0x66`, else
   success
 - `AppleBCMWLANCore::getTXPOWER()`:
-  config-backed query through `"qtxpower"`, returns underlying query status
+  config-backed query through `"qtxpower"`, publishes
+  `APPLE80211_UNIT_MW`, and translates the one-byte carrier through the fixed
+  lookup table at `0xffffff80016f3760`
+- `AppleBCMWLANCore::getMCS_VHT()`:
+  config-backed query through `"nrate"`, zero-success on the non-VHT cached
+  path, no `ic_bss` / opmode gate
 
-So the next code batch for `Q5` must not replace raw `6` with ad hoc zeros.
-It must align each getter with one of these Apple helper-level contracts.
+Closure notes:
+
+- `qtxpower` now terminates in BA actual-txpower producers with deterministic
+  bootstrap before the first runtime update lands (`iwm`: NVM half-dBm ceiling,
+  `iwx`: Apple-shaped scratch sentinel)
+- `nrate` now terminates in firmware TLC/current-rate producers
 
 Concrete sub-items:
 
@@ -303,9 +308,9 @@ Concrete sub-items:
 
 - `Q5-TXPOWER-006`
   file: `AirportItlwmSkywalkInterface.cpp::getTXPOWER`
-  current: raw-`6` portion closed; exact source remains under `Q13`
+  current: closed
   reference: `"qtxpower"` config query path
-  status: `closed` as `Q5`, `open_needs_decompile` as `Q13`
+  status: `closed`
 
 - `Q5-MCS-007`
   file: `AirportItlwmSkywalkInterface.cpp::getMCS`
@@ -542,17 +547,15 @@ What was reclassified out of the queue:
 
 So this is no longer carried as open discrepancy debt inside `Q13`.
 
-### 5. `getRATE`/`getTXPOWER` nvram-backed query contracts are not yet Apple-shaped
+### 5. `getRATE` nvram-backed query contract is not yet Apple-shaped
 
 Apple decompile indicates:
 
 - `getRATE` checks association and returns `0xe0822403` if not associated
-- `getTXPOWER` queries `"qtxpower"` through the core config path and returns the
-  underlying query status
-- `getMCS_VHT` queries `"nrate"` through the same config path
 
-Our current local implementations are local ieee80211-state reconstructions,
-not the recovered Apple producer routes.
+The `getTXPOWER` / `getMCS_VHT` config-backed source lift is closed in the
+current batch. `getRATE` remains here because it still terminates in the local
+association helper rather than a lifted Apple config/helper producer route.
 
 This does not automatically mean they are wrong in all cases, but it is a real
 architectural discrepancy and needs a dedicated lift.
@@ -589,7 +592,6 @@ Apple mismatches.
 Remaining raw-`6` legacy getters:
 
 - `getPROTMODE`
-- `getTXPOWER`
 - `getMCS_INDEX_SET`
 - `getNOISE`
 - `getMCS`
@@ -640,7 +642,8 @@ success tail is gone as well:
 
 What remains is the harder part of `Q13`:
 
-- config-backed nvram/helper producers such as `qtxpower`
+- remaining config-backed nvram/helper producers beyond the now-closed
+  `qtxpower` / `nrate` pair
 - remaining unsupported selectors that still need slot-by-slot classification
 
 ## Next Execution Order

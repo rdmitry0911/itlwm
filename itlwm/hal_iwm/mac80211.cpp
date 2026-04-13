@@ -1180,6 +1180,12 @@ iwm_rx_tx_ba_notif(struct iwm_softc *sc, struct iwm_rx_packet *pkt, struct iwm_r
         return;
     
     sc->sc_tx_timer[qid] = 0;
+    // AppleBCMWLANCore::getTXPOWER reads a one-byte qtxpower carrier from the
+    // config path. Intel only surfaces the matching runtime byte on BA actual
+    // txpower notifications, so cache it here and let Tahoe getters consume
+    // that transport-backed state instead of the synthetic ic_txpower field.
+    sc->sc_last_qtxpower_raw = ba_notif->reduced_txp;
+    sc->sc_has_last_qtxpower_raw = true;
     
     ba = &ni->ni_tx_ba[ba_notif->tid];
     if (ba->ba_state != IEEE80211_BA_AGREED)
