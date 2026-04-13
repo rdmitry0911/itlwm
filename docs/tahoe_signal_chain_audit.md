@@ -1499,7 +1499,8 @@ Final `Q13` close-out:
 - the remaining raw header stubs are no longer treated as unsupported-surface
   debt
 - `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setPOWER_BUDGET`,
-  `setUSB_HOST_NOTIFICATION`, `setHOST_CLOCK_INFO` belong to `Q12`
+  `setUSB_HOST_NOTIFICATION`, `setHOST_CLOCK_INFO` belonged to `Q12` and are
+  now closed as a batch
 - `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
   `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`, `setIE`,
   `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
@@ -1650,3 +1651,19 @@ Specific recovered Apple contracts that materially narrow the remaining work:
 With `getHP2P_CTRL` aligned, the remaining pre-`Q12` owner-specific debt is
 exhausted. What is left in this area is private backend choreography behind
 already matched public contracts, not an unresolved Apple80211 system surface.
+
+## Q12 Close-Out
+
+`Q12 Sleep / Wake / Reset / Teardown` is now closed at the Apple-visible
+contract level:
+
+- `getSYSTEM_SLEEP_CONFIG` already matched the recovered owner-missing fail
+  shape `0xe00002bc`
+- `setWOW_TEST` already matched the recovered public 1..600 gate
+- `setPOWER_BUDGET` already matched the recovered feature/range gate
+- `setUSB_HOST_NOTIFICATION` already preserved the public dword carrier
+- `setHOST_CLOCK_INFO` is confirmed by decompile as a direct
+  `AppleBCMWLANInfraProtocol::setHOST_CLOCK_INFO -> 0xe00002c7` stub
+
+That leaves no remaining top-level queue debt after `Q12`; only runtime
+verification remains.

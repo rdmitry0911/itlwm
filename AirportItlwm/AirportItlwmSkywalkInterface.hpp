@@ -586,8 +586,9 @@ public:
     // [641] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setTIMESYNC_GPIO(apple80211_timesync_gpio *) override { XYLog("DEBUG VTABLE [641] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
-    // [642] — host-clock/timesync setup belongs to Q12 sleep/timing work, not
-    // Q13 generic unsupported-surface debt.
+    // [642] — AppleBCMWLANInfraProtocol::setHOST_CLOCK_INFO is a direct
+    // `return 0xe00002c7;` stub on Tahoe. Q12 therefore closes on the same
+    // explicit fixed fail-contract instead of treating this as a missing owner.
     virtual IOReturn setHOST_CLOCK_INFO(apple80211_host_clock_info *) override { XYLog("DEBUG VTABLE [642] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [643] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.

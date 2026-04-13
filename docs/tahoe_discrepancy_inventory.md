@@ -73,9 +73,13 @@ This inventory is intentionally split into:
   large unsupported override surface still unclassified slot-by-slot
 
 - `Q12 Sleep / Wake / Reset / Teardown`:
-  open
-  reset/crash/wow/system-sleep policy slots are still unsupported and require
-  Apple-path classification before touching
+  closed
+  the Apple-visible sleep/power/timing contract is now exhausted:
+  `getSYSTEM_SLEEP_CONFIG` mirrors the owner-missing `0xe00002bc` fail shape,
+  `setWOW_TEST` matches the recovered 1..600 gate,
+  `setPOWER_BUDGET` mirrors the feature/range gate,
+  `setUSB_HOST_NOTIFICATION` preserves the public carrier,
+  `setHOST_CLOCK_INFO` is fixed to Apple's direct `0xe00002c7`
 
 - `Q13 Unsupported Skywalk Surface`:
   open
@@ -497,9 +501,6 @@ generic unsupported-surface queue:
   `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
   `setWCL_ACTION_FRAME`, `setBYPASS_TX_POWER_CAP`,
   `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS`
-- `Q12 Sleep / Wake / Reset / Teardown`
-  `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setPOWER_BUDGET`,
-  `setUSB_HOST_NOTIFICATION`, `setHOST_CLOCK_INFO`
 - `Broadcom-private diagnostics / test surface`
   `getLEAKY_AP_STATS_MODE`, `getTRAP_INFO`, `setLEAKY_AP_STATS_MODE`
 
@@ -844,7 +845,7 @@ This means the remaining pre-`Q12` debt is no longer “unknown unsupported
 surface”. It was split into:
 
 - concrete producer bodies we can port 1:1 from Apple core
-- the still-open top-level `Q12` sleep/wake family
+- the then-open top-level `Q12` sleep/wake family
 
 The next passes therefore stopped doing broad unsupported-surface work and
 closed the direct public owner batch body-by-body, then lifted the
@@ -867,5 +868,7 @@ behavior.
 3. Lifted the last remaining public selector in that tail, `getHP2P_CTRL`,
    to its exact Apple-visible fail contract (`NULL -> 0xe00002bc`,
    support-missing -> `0xe00002c7`).
-4. Pre-`Q12` owner-specific debt is now exhausted.
+4. Closed `Q12` itself once the last public sleep/timing selector
+   `setHOST_CLOCK_INFO` was confirmed as a direct Apple `0xe00002c7` stub and
+   the other four Q12 slots were already aligned to their recovered contracts.
 5. Re-run the inventory after each batch so the queue stays honest.
