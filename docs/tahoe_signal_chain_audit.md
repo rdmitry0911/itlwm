@@ -1717,3 +1717,33 @@ One more owner-family public-path mismatch is now closed:
 - `setIE(...)` must not reject `ie_len == 0`; the recovered Apple producer only
   rejects `NULL` and `ie_len > 0x800`, and the assoc-request/WAPI branch is
   taken only when `ie_len != 0` and `ie[0] == 0x44`
+
+## Tahoe Commander Engineering Batch
+
+The first internal compatibility stack is now in-tree:
+
+- [AirportItlwm/TahoeErrorMap.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeErrorMap.hpp)
+- [AirportItlwm/TahoeOwnerRegistry.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeOwnerRegistry.hpp)
+- [AirportItlwm/TahoePayloadBuilders.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoePayloadBuilders.hpp)
+- [AirportItlwm/TahoeAsyncCommandContext.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeAsyncCommandContext.hpp)
+- [AirportItlwm/TahoeCommander.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeCommander.hpp)
+
+This is intentionally sync-only and header-only for the first pass, so the
+Tahoe path can start using an owner-oriented internal layer without waiting on
+project-file/xcodeproj churn.
+
+The first migrated owner families are:
+
+- `setUSB_HOST_NOTIFICATION`
+- `setBTCOEX_PROFILE_ACTIVE`
+- `setBTCOEX_2G_CHAIN_DISABLE`
+- `setBYPASS_TX_POWER_CAP`
+
+`setDUAL_POWER_MODE` now also feeds the new owner registry because Apple
+`sendTxPowerCapBypassToFirmware()` gates on the dual-power state at
+core `+0x4d3c/+0x4d40`.
+
+This does not yet claim full backend parity for those selectors. What it does
+close is the architectural drift where Tahoe Skywalk handlers owned both public
+validation and hidden-owner state themselves. Those four selectors now flow
+through a dedicated commander/registry/payload path.

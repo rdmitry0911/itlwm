@@ -916,3 +916,25 @@ reference owner-family decompile.
 - `setIE` no longer rejects `ie_len == 0`; the recovered Apple producer only
   rejects `NULL` and `ie_len > 0x800`, while the WAPI/custom-assoc branch is
   taken only when `ie_len != 0` and the first byte is `0x44`
+
+### 13. First internal Tahoe commander batch
+
+The repo now has the minimal internal compatibility stack needed to stop
+spreading hidden-owner state through ad hoc Skywalk caches:
+
+- [AirportItlwm/TahoeErrorMap.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeErrorMap.hpp)
+- [AirportItlwm/TahoeOwnerRegistry.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeOwnerRegistry.hpp)
+- [AirportItlwm/TahoePayloadBuilders.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoePayloadBuilders.hpp)
+- [AirportItlwm/TahoeAsyncCommandContext.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeAsyncCommandContext.hpp)
+- [AirportItlwm/TahoeCommander.hpp](/Users/bob/Projects/itlwm/AirportItlwm/TahoeCommander.hpp)
+
+The first selectors moved onto that layer are:
+
+- `setUSB_HOST_NOTIFICATION`
+- `setBTCOEX_PROFILE_ACTIVE`
+- `setBTCOEX_2G_CHAIN_DISABLE`
+- `setBYPASS_TX_POWER_CAP`
+
+`setDUAL_POWER_MODE` now also synchronizes the new owner registry so the
+tx-power-cap bypass path can use the same Apple-visible dual-power gate as the
+reference producer.

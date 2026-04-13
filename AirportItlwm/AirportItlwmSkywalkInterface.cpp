@@ -2740,33 +2740,49 @@ setPOWER_BUDGET(apple80211_power_budget_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *data)
 {
-    auto *raw = reinterpret_cast<tahoeUsbHostNotification *>(data);
-    if (raw == nullptr)
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
+
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetUSBHostNotification(data, &asyncContext)
+            : kIOReturnBadArgumentTahoe;
+    if (rc != kIOReturnSuccess)
+        return rc;
 
     // The recovered Apple producer first routes through the hidden +0x1510
     // owner and then programs commander IOVARs. That hidden type gate is still
-    // unrecovered here, but the public carrier is just three dwords at
-    // +0x4/+0x8/+0xc. Preserve that caller-visible state instead of leaving the
-    // selector on generic unsupported.
-    cachedUsbHostNotificationSeq = raw->sequence_number;
-    cachedUsbHostNotificationChange = raw->change;
-    cachedUsbHostNotificationPresent = raw->present;
-    return kIOReturnSuccess;
+    // unrecovered here, so the new TahoeCommander layer mirrors the Apple-
+    // visible command split and preserves the two IOVAR payloads separately.
+    const auto &owner = instance->getTahoeOwnerRegistry().usbHostNotification;
+    cachedUsbHostNotificationSeq = owner.sequenceNumber;
+    cachedUsbHostNotificationChange = owner.change;
+    cachedUsbHostNotificationPresent = owner.present;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *data)
 {
-    auto *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
     // Apple stores the first byte as a bool and immediately pushes the new
-    // policy to firmware. The firmware push owner is still separate here, but
-    // the public contract is the cached one-byte enable.
-    cachedBypassTxPowerCapEnabled = raw[0] != 0;
-    return kIOReturnSuccess;
+    // policy to firmware. The sync-only TahoeCommander layer now owns that
+    // internal state and send-eligibility decision instead of leaving this as
+    // a freestanding interface-side bool cache.
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetBypassTxPowerCap(data, &asyncContext)
+            : kIOReturnBadArgumentTahoe;
+    if (rc != kIOReturnSuccess)
+        return rc;
+
+    cachedBypassTxPowerCapEnabled =
+        instance->getTahoeOwnerRegistry().txPowerCapBypass.enabled;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3771,23 +3787,31 @@ setBTCOEX_PROFILE(apple80211_btcoex_profile *data)
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
-        return static_cast<IOReturn>(0xe00002c2);
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetBTCOEXProfileActive(data, &asyncContext)
+            : static_cast<IOReturn>(0xe00002c2);
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    cachedBtcoexProfileActive = *reinterpret_cast<const uint32_t *>(raw + 4);
-    return kIOReturnSuccess;
+    cachedBtcoexProfileActive = instance->getTahoeOwnerRegistry().btcoex.activeProfile;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
-        return static_cast<IOReturn>(0xe00002c2);
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetBTCOEX2GChainDisable(data, &asyncContext)
+            : static_cast<IOReturn>(0xe00002c2);
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    cachedBtcoex2GChainDisable = *reinterpret_cast<const uint16_t *>(raw + 4);
-    return kIOReturnSuccess;
+    cachedBtcoex2GChainDisable = instance->getTahoeOwnerRegistry().btcoex.chainDisable;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4460,6 +4484,8 @@ setDUAL_POWER_MODE(apple80211_dual_power_mode_params *data)
 
     cachedDualPowerModePrimary = params->primary;
     cachedDualPowerModeSecondary = params->secondary;
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().syncDualPowerMode(params->primary, params->secondary);
     XYLog("WCL [631] %s primary=%d secondary=%d\n",
           __FUNCTION__, cachedDualPowerModePrimary, cachedDualPowerModeSecondary);
     return kIOReturnSuccess;

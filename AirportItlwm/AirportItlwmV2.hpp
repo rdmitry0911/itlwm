@@ -10,6 +10,7 @@
 #define AirportItlwmV2_hpp
 
 #include "Apple80211.h"
+#include "TahoeCommander.hpp"
 
 #include "IOKit/network/IOGatedOutputQueue.h"
 #include <libkern/c++/OSString.h>
@@ -448,8 +449,14 @@ public:
 
     CCLogStream *driverLogStream;
     CCStream *driverFaultReporter;
+    TahoeOwnerRegistry &getTahoeOwnerRegistry() { return tahoeOwnerRegistry; }
+    TahoeCommander &getTahoeCommander() { return tahoeCommander; }
 
     IO80211FaultReporter *io80211FaultReporter;
+
+private:
+    TahoeOwnerRegistry tahoeOwnerRegistry;
+    TahoeCommander tahoeCommander{&tahoeOwnerRegistry};
 };
 
 #endif /* AirportItlwmV2_hpp */
