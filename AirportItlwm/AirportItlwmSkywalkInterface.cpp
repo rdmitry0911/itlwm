@@ -397,6 +397,46 @@ struct tahoeLeScanParams
 static_assert(sizeof(tahoeLeScanParams) == 0x10,
               "tahoeLeScanParams must match the recovered Apple 0x10 payload");
 
+struct tahoeDynsarDetailRequest
+{
+    uint32_t version;
+    uint32_t bank_selector;
+    uint32_t entry_index;
+    uint32_t header0;
+    uint32_t header1;
+    uint32_t reserved14;
+    uint8_t payload[0x2d00];
+} __attribute__((packed));
+static_assert(sizeof(tahoeDynsarDetailRequest) == 0x2d18,
+              "tahoeDynsarDetailRequest must match the recovered Apple offsets");
+
+struct tahoeSlowWifiFeatureEnabled
+{
+    uint32_t version;
+    uint32_t enabled;
+} __attribute__((packed));
+static_assert(sizeof(tahoeSlowWifiFeatureEnabled) == 0x8,
+              "tahoeSlowWifiFeatureEnabled must match the recovered Apple carrier");
+
+struct tahoeLowLatencyInfo
+{
+    uint8_t enabled;
+    uint8_t power_save;
+    uint16_t window;
+} __attribute__((packed));
+static_assert(sizeof(tahoeLowLatencyInfo) == 0x4,
+              "tahoeLowLatencyInfo must match the recovered Apple carrier");
+
+struct tahoeUsbHostNotification
+{
+    uint32_t version;
+    uint32_t sequence_number;
+    uint32_t change;
+    uint32_t present;
+} __attribute__((packed));
+static_assert(sizeof(tahoeUsbHostNotification) == 0x10,
+              "tahoeUsbHostNotification must match the recovered Apple dword offsets");
+
 struct apple80211_reassoc
 {
     uint8_t reserved00[0x68];
@@ -943,8 +983,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getPOWER_DEBUG_INFO((apple80211_power_debug_info *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_HT_CAPABILITY:
-            return (cmd == SIOCGA80211) ? getHT_CAPABILITY((apple80211_ht_capability *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getHT_CAPABILITY((apple80211_ht_capability *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setHT_CAPABILITY((apple80211_ht_capability *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_HE_CAPABILITY:
             return (cmd == SIOCGA80211) ? getHE_CAPABILITY((apple80211_he_capability *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -958,8 +1001,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getTHERMAL_INDEX((apple80211_thermal_index_t *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_POWER_BUDGET:
-            return (cmd == SIOCGA80211) ? getPOWER_BUDGET((apple80211_power_budget_t *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getPOWER_BUDGET((apple80211_power_budget_t *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setPOWER_BUDGET((apple80211_power_budget_t *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_LQM_CONFIG:
             if (cmd == SIOCGA80211)
                 return getLQM_CONFIG((apple80211_lqm_config_t *)req->req_data);
@@ -1041,6 +1087,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCGA80211)
                 return getMCS_VHT((apple80211_mcs_vht_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_VHT_CAPABILITY:
+            if (cmd == SIOCGA80211)
+                return getVHT_CAPABILITY((apple80211_vht_capability *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setVHT_CAPABILITY((apple80211_vht_capability *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_WOW_TEST:
+            return (cmd == SIOCSA80211) ? setWOW_TEST((apple80211_wow_test_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_TRAP_CRASHTRACER_MINI_DUMP:
             return (cmd == SIOCGA80211) ? getTRAP_CRASHTRACER_MINI_DUMP((apple80211_trap_mini_dump_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1121,16 +1176,27 @@ init()
     hasCachedBgRate = false;
     cachedThermalIndex = 0;
     cachedPowerBudget = 0;
+    memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
+    memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
+    memset(cachedDynsarPayload, 0, sizeof(cachedDynsarPayload));
+    cachedSlowWifiFeatureEnabled = false;
+    cachedLowLatencyEnabled = 0;
+    cachedLowLatencyPowerSave = 0;
+    cachedLowLatencyWindow = 0;
+    cachedTxBlankingStatus = false;
     cachedPrivateMacState = 0;
     cachedPrivateMacTimeoutSeconds = 0;
     memset(cachedPrivateMacPrimary, 0, sizeof(cachedPrivateMacPrimary));
     memset(cachedPrivateMacSecondary, 0, sizeof(cachedPrivateMacSecondary));
     cachedTcpkaOffloadSupported = false;
     cachedTcpkaOffloadEnabled = false;
+    cachedWowTestMode = 0;
     cachedOSFeatureFlags = 0;
     cachedDhcpRenewalData = false;
     cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
+    memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
+    hasCachedHtCapability = false;
     cachedCurrentMcs = 0;
     cachedIbssMode = 0;
     cachedIbssAuthLower = 0;
@@ -1168,6 +1234,8 @@ init()
     cachedPmMode = 0;
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
+    memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
+    hasCachedVhtCapability = false;
     cachedScanHomeAwayTime = 0;
     cachedGasQueryIssued = false;
     cachedSetPropertyIoctlSeen = false;
@@ -1194,6 +1262,9 @@ init()
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
+    cachedUsbHostNotificationSeq = 0;
+    cachedUsbHostNotificationChange = 0;
+    cachedUsbHostNotificationPresent = 0;
     cachedApMode = 0;
     memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
     hasCachedDbgGuardTimeParams = false;
@@ -1202,6 +1273,7 @@ init()
     memset(cachedBcnMuteConfig, 0, sizeof(cachedBcnMuteConfig));
     hasCachedBcnMuteConfig = false;
     cachedEapFilterConfig = 0;
+    cachedBypassTxPowerCapEnabled = false;
     memset(cachedAssociatedSleepConfig, 0, sizeof(cachedAssociatedSleepConfig));
     hasCachedAssociatedSleepConfig = false;
     memset(cachedSoiConfig, 0, sizeof(cachedSoiConfig));
@@ -1288,16 +1360,27 @@ init(IOService *provider)
     this->hasCachedBgRate = false;
     this->cachedThermalIndex = 0;
     this->cachedPowerBudget = 0;
+    memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
+    memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
+    memset(this->cachedDynsarPayload, 0, sizeof(this->cachedDynsarPayload));
+    this->cachedSlowWifiFeatureEnabled = false;
+    this->cachedLowLatencyEnabled = 0;
+    this->cachedLowLatencyPowerSave = 0;
+    this->cachedLowLatencyWindow = 0;
+    this->cachedTxBlankingStatus = false;
     this->cachedPrivateMacState = 0;
     this->cachedPrivateMacTimeoutSeconds = 0;
     memset(this->cachedPrivateMacPrimary, 0, sizeof(this->cachedPrivateMacPrimary));
     memset(this->cachedPrivateMacSecondary, 0, sizeof(this->cachedPrivateMacSecondary));
     this->cachedTcpkaOffloadSupported = false;
     this->cachedTcpkaOffloadEnabled = false;
+    this->cachedWowTestMode = 0;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
     this->cachedBatteryPowerSaveMode = 0;
     this->cachedPowerProfile = 0;
+    memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
+    this->hasCachedHtCapability = false;
     this->cachedCurrentMcs = 0;
     this->cachedIbssMode = 0;
     this->cachedIbssAuthLower = 0;
@@ -1335,6 +1418,8 @@ init(IOService *provider)
     this->cachedPmMode = 0;
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
+    memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
+    this->hasCachedVhtCapability = false;
     this->cachedScanHomeAwayTime = 0;
     this->cachedGasQueryIssued = false;
     this->cachedSetPropertyIoctlSeen = false;
@@ -1361,6 +1446,9 @@ init(IOService *provider)
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
+    this->cachedUsbHostNotificationSeq = 0;
+    this->cachedUsbHostNotificationChange = 0;
+    this->cachedUsbHostNotificationPresent = 0;
     this->cachedApMode = 0;
     memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
     this->hasCachedDbgGuardTimeParams = false;
@@ -1369,6 +1457,7 @@ init(IOService *provider)
     memset(this->cachedBcnMuteConfig, 0, sizeof(this->cachedBcnMuteConfig));
     this->hasCachedBcnMuteConfig = false;
     this->cachedEapFilterConfig = 0;
+    this->cachedBypassTxPowerCapEnabled = false;
     memset(this->cachedAssociatedSleepConfig, 0, sizeof(this->cachedAssociatedSleepConfig));
     this->hasCachedAssociatedSleepConfig = false;
     memset(this->cachedSoiConfig, 0, sizeof(this->cachedSoiConfig));
@@ -1958,6 +2047,10 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
     // shape instead of leaving slot [484] on kIOReturnUnsupported.
     if (data == nullptr)
         return kIOReturnBadArgument;
+    if (hasCachedVhtCapability) {
+        memcpy(data, &cachedVhtCapability, sizeof(*data));
+        return kIOReturnSuccess;
+    }
     if ((ic->ic_flags & IEEE80211_F_VHTON) == 0 || ic->ic_vhtcaps == 0)
         return 45;
 
@@ -1987,6 +2080,10 @@ getHT_CAPABILITY(struct apple80211_ht_capability *data)
     // packed carrier instead of generic unsupported.
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
+    if (hasCachedHtCapability) {
+        memcpy(data, &cachedHtCapability, sizeof(*data));
+        return kIOReturnSuccess;
+    }
 
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -2428,6 +2525,191 @@ getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *data)
     // snapshot rather than leaving slot [534] unsupported.
     memset(data, 0, 0x7c);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getDYNSAR_DETAIL(apple80211_dynsar_detail *data)
+{
+    auto *raw = reinterpret_cast<tahoeDynsarDetailRequest *>(data);
+    if (raw == nullptr || raw->entry_index >= 4)
+        return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
+
+    // AppleBCMWLANCore::getDYNSAR_DETAIL is a strict versioned carrier: NULL or
+    // entry_index>=4 returns raw 0x16, otherwise version=1 plus two bank-local
+    // headers and a fixed 0x2d00 payload copy. Preserve that visible contract
+    // from local cache instead of turning the slot into a generic unsupported
+    // or inventing semantic field names that are still unrecovered.
+    raw->version = APPLE80211_VERSION;
+    const uint32_t bank = raw->bank_selector != 0 ? 1U : 0U;
+    raw->header0 = cachedDynsarHeader0[bank];
+    raw->header1 = cachedDynsarHeader1[bank];
+    memcpy(raw->payload, cachedDynsarPayload[raw->entry_index], sizeof(raw->payload));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *data)
+{
+    auto *raw = reinterpret_cast<tahoeSlowWifiFeatureEnabled *>(data);
+    if (raw == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    // AppleBCMWLANCore writes a compact `version + u32 enabled` carrier here.
+    // Keep that exact public shape from local state instead of exposing the
+    // selector as unsupported while the deeper hidden policy owner remains
+    // unrecovered.
+    raw->version = APPLE80211_VERSION;
+    raw->enabled = cachedSlowWifiFeatureEnabled ? 1U : 0U;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *data)
+{
+    auto *raw = reinterpret_cast<tahoeLowLatencyInfo *>(data);
+    if (raw == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple returns zeros with success when the low-latency owner is absent,
+    // and otherwise exposes exactly `u8 enabled, u8 powersave, u16 window`.
+    raw->enabled = cachedLowLatencyEnabled;
+    raw->power_save = cachedLowLatencyPowerSave;
+    raw->window = cachedLowLatencyWindow;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_GET_TX_BLANKING_STATUS(uint *data)
+{
+    // Apple accepts NULL and simply skips the store. Preserve that visible
+    // contract instead of forcing an argument error.
+    if (data != nullptr)
+        *data = cachedTxBlankingStatus ? 1U : 0U;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple only succeeds when the Bonjour-offload owner exists, then augments
+    // the result via the hidden +0x1510 callback at slot +0x850. The local
+    // port still has no Bonjour-offload owner at all, so the exact visible
+    // Tahoe contract here is the owner-missing fail 0xe00002bc.
+    return kIOReturnBadArgumentTahoe;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWOW_TEST(apple80211_wow_test_data *data)
+{
+    auto *raw = reinterpret_cast<uint8_t *>(data);
+    if (raw == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint32_t mode = *reinterpret_cast<uint32_t *>(raw + 4);
+    // The recovered Apple path retries configureWoWTestModeEntry() up to five
+    // times, but the public gate is still strict: only test modes 1..600 are
+    // valid. Preserve that gate and carry the accepted mode locally until the
+    // deeper WoW owner is lifted.
+    if (mode < 1 || mode > 600)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    cachedWowTestMode = mode;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setHT_CAPABILITY(apple80211_ht_capability *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
+
+    // AppleBCMWLANCore copies the contiguous 0x1c-byte HT capability IE body
+    // into core state. Keep the same cached public carrier so later getter
+    // reads can observe the last programmed payload.
+    memcpy(&cachedHtCapability, data, sizeof(cachedHtCapability));
+    hasCachedHtCapability = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setVHT_CAPABILITY(apple80211_vht_capability *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
+
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || (ic->ic_vhtcaps & 0x80) == 0)
+        return 45;
+
+    memcpy(&cachedVhtCapability, data, sizeof(cachedVhtCapability));
+    hasCachedVhtCapability = true;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setPOWER_BUDGET(apple80211_power_budget_t *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple gates TVPM by feature bit 0x3b before validating the caller's PPM
+    // index. The visible range check is intentionally non-intuitive: values
+    // 1..100 reject with 0xe00002bc, while 0 and >=101 are accepted.
+    if (((cachedOSFeatureFlags >> 0x3b) & 1ULL) == 0)
+        return kIOReturnBadArgumentTahoe;
+    if (data->power_budget >= 1 && data->power_budget <= 100)
+        return kIOReturnBadArgumentTahoe;
+
+    cachedPowerBudget = data->power_budget;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *data)
+{
+    auto *raw = reinterpret_cast<tahoeUsbHostNotification *>(data);
+    if (raw == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // The recovered Apple producer first routes through the hidden +0x1510
+    // owner and then programs commander IOVARs. That hidden type gate is still
+    // unrecovered here, but the public carrier is just three dwords at
+    // +0x4/+0x8/+0xc. Preserve that caller-visible state instead of leaving the
+    // selector on generic unsupported.
+    cachedUsbHostNotificationSeq = raw->sequence_number;
+    cachedUsbHostNotificationChange = raw->change;
+    cachedUsbHostNotificationPresent = raw->present;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *data)
+{
+    auto *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple stores the first byte as a bool and immediately pushes the new
+    // policy to firmware. The firmware push owner is still separate here, but
+    // the public contract is the cached one-byte enable.
+    cachedBypassTxPowerCapEnabled = raw[0] != 0;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    // Apple only accepts this selector when an internal feature bit at core
+    // +0x7584 is set; otherwise the public contract is a direct 0xe00002c7.
+    // That hidden feature owner is not lifted yet, so keep the same visible
+    // fail shape instead of inventing a fake success path.
+    return static_cast<IOReturn>(0xe00002c7);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

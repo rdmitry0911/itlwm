@@ -241,7 +241,7 @@ public:
     // [518] — DynSAR detail is a hidden RF/policy owner surface. The former
     // Q11-C umbrella queue is closed; this slot now lives in Q11-C1 with
     // HP2P helper ownership.
-    virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override { XYLog("DEBUG VTABLE [518] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override;
     // [519]
     // [519] — AppleBCMWLANInfraProtocol returns `0xe00002c7` directly for this
     // selector on Tahoe.
@@ -251,7 +251,7 @@ public:
     // [521] — hidden slow-wifi policy surface. The former Q11-C umbrella
     // queue is closed; this slot now lives in Q11-C2 low-latency / slow-wifi
     // policy ownership.
-    virtual IOReturn getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *) override { XYLog("DEBUG VTABLE [521] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *) override;
     // [522]
     virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override;
     // [523]
@@ -261,7 +261,7 @@ public:
     virtual IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *) override;
     // [525] — low-latency runtime state belongs to the dedicated Q11-C2
     // low-latency / slow-wifi owner path, not the former umbrella queue.
-    virtual IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *) override { XYLog("DEBUG VTABLE [525] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *) override;
     // [526]
     virtual IOReturn getWCL_BSS_INFO(apple80211_beacon_msg *) override;
     // [527] — Tahoe public contract is `NULL -> 0xe00002bc`, else six u64
@@ -269,7 +269,7 @@ public:
     virtual IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *) override;
     // [528] — tx-blanking status belongs to the dedicated Q11-C2
     // low-latency/tx-blanking owner path, not the former umbrella queue.
-    virtual IOReturn getWCL_GET_TX_BLANKING_STATUS(uint *) override { XYLog("DEBUG VTABLE [528] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getWCL_GET_TX_BLANKING_STATUS(uint *) override;
     // [529] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getHE_COUNTERS(apple80211_he_counters_ctl *) override { XYLog("DEBUG VTABLE [529] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -303,7 +303,7 @@ public:
     virtual IOReturn getTIMESYNC_STATS(apple80211_timesync_stats *) override { XYLog("DEBUG VTABLE [539] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [540] — system sleep config is owned by the Q12 sleep/wake queue, not
     // Q13 unsupported-surface debt.
-    virtual IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *) override { XYLog("DEBUG VTABLE [540] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn getSYSTEM_SLEEP_CONFIG(apple80211_system_sleep_config *) override;
     // [541] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getSMARTCCA_OPMODE(apple80211_smartcca_opmode *) override { XYLog("DEBUG VTABLE [541] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
@@ -349,7 +349,7 @@ public:
     virtual IOReturn setIE(apple80211_ie_data *) override { XYLog("DEBUG VTABLE [552] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [553] — wake-on-wireless test/debug surface. Classified to Q12/internal
     // test coverage, not Q13.
-    virtual IOReturn setWOW_TEST(apple80211_wow_test_data *) override { XYLog("DEBUG VTABLE [553] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setWOW_TEST(apple80211_wow_test_data *) override;
     // [554]
     virtual IOReturn setCLEAR_PMKSA_CACHE(void *) override;
     // [555]
@@ -358,7 +358,7 @@ public:
     virtual IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *) override;
     // [556] — capability programming surface now sits in Q11-B1 capability
     // programming ownership after closing the broader Q11-B umbrella queue.
-    virtual IOReturn setHT_CAPABILITY(apple80211_ht_capability *) override { XYLog("DEBUG VTABLE [556] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setHT_CAPABILITY(apple80211_ht_capability *) override;
     // [557]
     virtual IOReturn setOFFLOAD_ARP(apple80211_offload_arp_data *) override;
     // [558] — NDP offload setup now sits in Q11-C3 nearby/NDP ownership after
@@ -369,7 +369,7 @@ public:
     virtual IOReturn setGAS_REQ(apple80211_gas_query_t *) override;
     // [560] — capability programming surface now sits in Q11-B1 capability
     // programming ownership after closing the broader Q11-B umbrella queue.
-    virtual IOReturn setVHT_CAPABILITY(apple80211_vht_capability *) override { XYLog("DEBUG VTABLE [560] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setVHT_CAPABILITY(apple80211_vht_capability *) override;
     // [561] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe. This slot was already counted out of the open mismatch
     // queue in the audit; keep the header on the same explicit unsupported
@@ -415,7 +415,7 @@ public:
     // closing the broader Q11-B umbrella queue.
     virtual IOReturn setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override { XYLog("DEBUG VTABLE [574] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [575] — power-budget policy belongs to Q12 power/sleep work, not Q13.
-    virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override { XYLog("DEBUG VTABLE [575] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [576]
     virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
     // [577]
@@ -424,7 +424,7 @@ public:
     virtual IOReturn setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *) override;
     // [579] — host USB power-state notification belongs to Q12 sleep/power
     // orchestration, not Q13.
-    virtual IOReturn setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *) override { XYLog("DEBUG VTABLE [579] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *) override;
     // [580] — decompile shows an internal trap-only selector, not a normal
     // public producer.
     virtual IOReturn setHP2P_CTRL(apple80211_hp2p_ctrl *) override;
@@ -536,7 +536,7 @@ public:
     virtual IOReturn setINTERFACE_SETTING(apple80211_interface_setting *data) override { XYLog("DEBUG VTABLE [621] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
     // [622] — tx-power-cap bypass now sits in Q11-B3 tx-power policy
     // ownership after closing the broader Q11-B umbrella queue.
-    virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override { XYLog("DEBUG VTABLE [622] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override;
     // [623]
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
@@ -579,7 +579,7 @@ public:
     virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override;
     // [639] — traffic-engine parameters now sit in Q11-C3 traffic-policy
     // ownership after closing the broader Q11-C umbrella queue.
-    virtual IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *) override { XYLog("DEBUG VTABLE [639] %s\n", __FUNCTION__); return kIOReturnUnsupported; }
+    virtual IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *) override;
     // [640]
     virtual IOReturn setLE_SCAN_PARAM(apple80211_le_scan_params *) override;
     // [641]
@@ -672,16 +672,27 @@ private:
     bool hasCachedBgRate;
     uint32_t cachedThermalIndex;
     uint32_t cachedPowerBudget;
+    uint32_t cachedDynsarHeader0[4];
+    uint32_t cachedDynsarHeader1[4];
+    uint8_t cachedDynsarPayload[4][0x2d00];
+    bool cachedSlowWifiFeatureEnabled;
+    uint8_t cachedLowLatencyEnabled;
+    uint8_t cachedLowLatencyPowerSave;
+    uint16_t cachedLowLatencyWindow;
+    bool cachedTxBlankingStatus;
     uint32_t cachedPrivateMacState;
     uint32_t cachedPrivateMacTimeoutSeconds;
     uint8_t cachedPrivateMacPrimary[6];
     uint8_t cachedPrivateMacSecondary[6];
     bool cachedTcpkaOffloadSupported;
     bool cachedTcpkaOffloadEnabled;
+    uint32_t cachedWowTestMode;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
     uint32_t cachedBatteryPowerSaveMode;
     uint32_t cachedPowerProfile;
+    apple80211_ht_capability cachedHtCapability;
+    bool hasCachedHtCapability;
     uint32_t cachedCurrentMcs;
     uint16_t cachedIbssMode;
     uint16_t cachedIbssAuthLower;
@@ -719,6 +730,8 @@ private:
     uint32_t cachedPmMode;
     apple80211_lqm_config_t cachedLqmConfig;
     bool hasCachedLqmConfig;
+    apple80211_vht_capability cachedVhtCapability;
+    bool hasCachedVhtCapability;
     uint32_t cachedScanHomeAwayTime;
     bool cachedGasQueryIssued;
     bool cachedSetPropertyIoctlSeen;
@@ -745,6 +758,9 @@ private:
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;
+    uint32_t cachedUsbHostNotificationSeq;
+    uint32_t cachedUsbHostNotificationChange;
+    uint32_t cachedUsbHostNotificationPresent;
     uint32_t cachedApMode;
     uint8_t cachedDbgGuardTimeParams[8];
     bool hasCachedDbgGuardTimeParams;
@@ -753,6 +769,7 @@ private:
     uint8_t cachedBcnMuteConfig[4];
     bool hasCachedBcnMuteConfig;
     uint32_t cachedEapFilterConfig;
+    bool cachedBypassTxPowerCapEnabled;
     uint8_t cachedAssociatedSleepConfig[0x58];
     bool hasCachedAssociatedSleepConfig;
     uint8_t cachedSoiConfig[0x40];

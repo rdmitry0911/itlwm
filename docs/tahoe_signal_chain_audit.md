@@ -922,7 +922,6 @@ This batch still does **not** justify lifting the setter side:
 
 - `setTHERMAL_INDEX(...)` exists, but the recovered body is validation-heavy
   and ends on the Apple bad-argument path rather than a simple carrier write
-- no clean `setPOWER_BUDGET(...)` producer body has been recovered yet
 - `getOFFLOAD_TCPKA_ENABLE(...)` remains unresolved because only the setter
   body is currently present in the vendor decompile
 
@@ -1554,3 +1553,95 @@ Final `Q11` exhaustion:
 
 Therefore `Q11` is exhausted fully as a queue hierarchy. Remaining work is
 tracked only as owner-specific implementation debt, not as open `Q11` queues.
+
+Targeted owner-family decompile findings (2026-04-13):
+
+- producer/consumer wrappers are now recovered end-to-end for the remaining
+  owner-specific families:
+  `apple80211* -> AppleBCMWLANInfraProtocol::* -> AppleBCMWLANCore::*`
+- the `IO80211Family` side is structurally uniform for this batch:
+  `apple80211getHP2P_CTRL`, `apple80211getDYNSAR_DETAIL`,
+  `apple80211getSLOW_WIFI_FEATURE_ENABLED`,
+  `apple80211getWCL_LOW_LATENCY_INFO`,
+  `apple80211getWCL_GET_TX_BLANKING_STATUS`,
+  `apple80211getSYSTEM_SLEEP_CONFIG`, `apple80211setIE`,
+  `apple80211setWOW_TEST`, `apple80211setHT_CAPABILITY`,
+  `apple80211setOFFLOAD_NDP`, `apple80211setVHT_CAPABILITY`,
+  `apple80211setRANGING_AUTHENTICATE`, `apple80211setBTCOEX_PROFILE`,
+  `apple80211setBTCOEX_PROFILE_ACTIVE`,
+  `apple80211setBTCOEX_2G_CHAIN_DISABLE`, `apple80211setPOWER_BUDGET`,
+  `apple80211setUSB_HOST_NOTIFICATION`, `apple80211setWCL_ACTION_FRAME`,
+  `apple80211setBYPASS_TX_POWER_CAP`
+- these family wrappers first run the selector gate through vtable slot
+  `+0xcc8`; if that succeeds and the interface is `IO80211InfraProtocol`,
+  they dispatch to the corresponding InfraProtocol slot; otherwise they return
+  `0xe082280e`
+
+Recovered producer split for the remaining owner-specific families:
+
+- direct public carriers already recoverable without hidden owners:
+  `AppleBCMWLANCore::getDYNSAR_DETAIL`,
+  `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED`,
+  `AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO`,
+  `AppleBCMWLANCore::getWCL_GET_TX_BLANKING_STATUS`,
+  `AppleBCMWLANCore::getSYSTEM_SLEEP_CONFIG`,
+  `AppleBCMWLANCore::setWOW_TEST`,
+  `AppleBCMWLANCore::setHT_CAPABILITY`,
+  `AppleBCMWLANCore::setVHT_CAPABILITY`,
+  `AppleBCMWLANCore::setPOWER_BUDGET`,
+  `AppleBCMWLANCore::setUSB_HOST_NOTIFICATION`,
+  `AppleBCMWLANCore::setBYPASS_TX_POWER_CAP`,
+  `AppleBCMWLANCore::setTRAFFIC_ENG_PARAMS`
+- net-adapter / join-adapter / commander-backed producers with concrete Apple
+  owner bodies now visible:
+  `AppleBCMWLANCore::setIE`,
+  `AppleBCMWLANCore::setOFFLOAD_NDP`,
+  `AppleBCMWLANCore::setBTCOEX_PROFILE`,
+  `AppleBCMWLANCore::setBTCOEX_PROFILE_ACTIVE`,
+  `AppleBCMWLANCore::setBTCOEX_2G_CHAIN_DISABLE`,
+  `AppleBCMWLANCore::setWCL_ACTION_FRAME`,
+  `AppleBCMWLANCore::setRANGING_AUTHENTICATE`
+- hidden-owner trampolines still requiring exact owner lift:
+  `AppleBCMWLANInfraProtocol::getDYNSAR_DETAIL` via hidden `+0xfa0`
+  owner slot, `getSLOW_WIFI_FEATURE_ENABLED` via `+0x10b0`,
+  `getWCL_LOW_LATENCY_INFO` via `+0x1070`, `setIE` via `+0x1180`,
+  `setWOW_TEST` via `+0x1170`, `setHT_CAPABILITY` via `+0xfd0`,
+  `setOFFLOAD_NDP` via `+0x10e0`, `setVHT_CAPABILITY` via `+0xfe8`,
+  `setBTCOEX_PROFILE` via `+0x12c0`,
+  `setBTCOEX_PROFILE_ACTIVE` via `+0x12e8`,
+  `setBTCOEX_2G_CHAIN_DISABLE` via `+0x12e0`,
+  `setPOWER_BUDGET` via `+0x1150`,
+  `setUSB_HOST_NOTIFICATION` via `+0x1368`,
+  `setRANGING_AUTHENTICATE` via `+0x1300`
+
+Specific recovered Apple contracts that materially narrow the remaining work:
+
+- `AppleBCMWLANCore::getDYNSAR_DETAIL(...)` is not a generic hidden getter:
+  it is a caller-visible versioned carrier with
+  `NULL/out-of-range -> 0x16`, `version=1`, bank selection by `param_1[4]`,
+  and a fixed `0x2d00` copy per bank
+- `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED(...)` is a trivial
+  `NULL -> 0xe00002c2`, success writes `enabled` from core `+0x7569`
+- `AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO(...)` is a trivial
+  `NULL -> 0xe00002bc`, success reads three fields from owner `+0x2c28`
+- `AppleBCMWLANCore::getWCL_GET_TX_BLANKING_STATUS(...)` is a trivial carrier:
+  it exposes bit `+0x4ce8 & 1`
+- `AppleBCMWLANCore::getSYSTEM_SLEEP_CONFIG(...)` is no longer opaque:
+  it combines Bonjour offload state with a hidden `+0x1510` callback at
+  slot `+0x850`
+- `AppleBCMWLANCore::setIE(...)` already contains the real Apple split between
+  `JoinAdapter::setCustomAssocIE(...)` and generic `setVendorIE(...)`
+- `AppleBCMWLANCore::setWCL_ACTION_FRAME(...)` is a concrete net-adapter path,
+  not a placeholder: it chooses `sendActionFrame` vs `sendActionFrameV2`
+  from core state `+0x30c`
+- `AppleBCMWLANCore::setTRAFFIC_ENG_PARAMS(...)` is a feature-gated public
+  contract, not a deep owner body: `NULL -> 0xe00002bc`, feature bit
+  `+0x7584` set -> success, else `0xe00002c7`
+- `AppleBCMWLANCore::setHOST_CLOCK_INFO(...)` did not recover as a real core
+  producer in this batch; on the protocol side the visible Apple contract is a
+  direct `0xe00002c7`
+- `AppleBCMWLANCore::getHP2P_CTRL(...)` is not a normal scalar getter:
+  it allocates command/response buffers, checks hidden `+0x1510` slot `+0xbf0`,
+  then issues IOVAR `"hp2p"` through commander `+0x1520`; this confirms HP2P
+  belongs to the hidden proximity owner family, not to a simple state-carrier
+  queue

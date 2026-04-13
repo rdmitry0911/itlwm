@@ -786,9 +786,85 @@ What remains is the harder part of `Q13`:
   `qtxpower` / `nrate` pair
 - remaining unsupported selectors that still need slot-by-slot classification
 
+### 9. Targeted decompile narrowed the remaining owner-specific debt
+
+Recovered on 2026-04-13 through targeted headless decompile against
+`com.apple.driver.AppleBCMWLANCoreMac` and `com.apple.iokit.IO80211Family`:
+
+- the consumer side for the remaining owner families is now explicit:
+  each `apple80211get*` / `apple80211set*` wrapper first runs the selector gate
+  through vtable slot `+0xcc8`, then requires `IO80211InfraProtocol`, then
+  dispatches to the corresponding protocol slot, else returns `0xe082280e`
+- this removes the last ambiguity about whether these selectors are still
+  routed through the normal Skywalk Apple80211 path: they are
+
+Owner-specific debt that is now narrowed to exact implementation classes:
+
+- direct core-state carriers and small producer bodies:
+  `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
+  `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setHT_CAPABILITY`,
+  `setVHT_CAPABILITY`, `setPOWER_BUDGET`, `setUSB_HOST_NOTIFICATION`,
+  `setBYPASS_TX_POWER_CAP`, `setTRAFFIC_ENG_PARAMS`
+- adapter/commander/join-backed real producers:
+  `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
+  `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+  `setWCL_ACTION_FRAME`, `setRANGING_AUTHENTICATE`
+- hidden-owner families that still need exact owner lifting instead of wrapper
+  recovery:
+  `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getWCL_LOW_LATENCY_INFO`, `setIE`, `setWOW_TEST`,
+  `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
+  `setBTCOEX_PROFILE`, `setBTCOEX_PROFILE_ACTIVE`,
+  `setBTCOEX_2G_CHAIN_DISABLE`, `setPOWER_BUDGET`,
+  `setUSB_HOST_NOTIFICATION`, `setRANGING_AUTHENTICATE`
+
+Concrete Apple contracts recovered in this batch:
+
+- `getDYNSAR_DETAIL`:
+  versioned public carrier, `NULL/out-of-range -> 0x16`, `version=1`,
+  fixed `0x2d00` copy per bank
+- `getSLOW_WIFI_FEATURE_ENABLED`:
+  `NULL -> 0xe00002c2`, success writes one enabled bit from core `+0x7569`
+- `getWCL_LOW_LATENCY_INFO`:
+  `NULL -> 0xe00002bc`, success reads state from owner `+0x2c28`
+- `getWCL_GET_TX_BLANKING_STATUS`:
+  exposes bit `+0x4ce8 & 1`
+- `getSYSTEM_SLEEP_CONFIG`:
+  combines Bonjour-offload state with hidden `+0x1510` callback slot `+0x850`
+- `setIE`:
+  real split between `JoinAdapter::setCustomAssocIE(...)` and `setVendorIE(...)`
+- `setWCL_ACTION_FRAME`:
+  real net-adapter injector choosing `sendActionFrame` vs `sendActionFrameV2`
+- `setTRAFFIC_ENG_PARAMS`:
+  `NULL -> 0xe00002bc`, feature bit `+0x7584` set -> success, else
+  `0xe00002c7`
+- `setHOST_CLOCK_INFO`:
+  protocol-side visible contract is direct `0xe00002c7`
+
+This means the remaining debt is no longer “unknown unsupported surface”. It is
+now split into:
+
+- concrete producer bodies we can port 1:1 from Apple core
+- exact hidden-owner lifts still needed for proximity / low-latency / radio
+  policy families
+- the still-open top-level `Q12` sleep/wake family
+
+The next passes therefore stopped doing broad unsupported-surface work and
+closed the direct public owner batch body-by-body.
+
 ## Next Execution Order
 
-1. Continue shrinking the unsupported Skywalk vtable surface under `Q13`.
-2. Lift the next owner-backed batch from `Q11` / `Q12`.
-3. Re-run the inventory after each batch so the queue stays honest.
-4. Re-run the same inventory after each batch so the queue stays honest.
+1. Lifted the direct core-state owner batch from the targeted decompile:
+   `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+   `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
+   `getSYSTEM_SLEEP_CONFIG` fail-contract, `setWOW_TEST`,
+   `setHT_CAPABILITY`, `setVHT_CAPABILITY`, `setPOWER_BUDGET`,
+   `setUSB_HOST_NOTIFICATION`, `setBYPASS_TX_POWER_CAP`,
+   `setTRAFFIC_ENG_PARAMS`
+2. Remaining owner-specific work is the adapter/commander/join-backed batch:
+   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
+   `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
+   `setWCL_ACTION_FRAME`, `setRANGING_AUTHENTICATE`
+3. After the remaining owner-specific debt is exhausted, move to `Q12`.
+4. Re-run the inventory after each batch so the queue stays honest.
