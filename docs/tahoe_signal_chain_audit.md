@@ -370,3 +370,41 @@ restore the Tahoe init path itself:
 - stop treating the old no-arg init as authoritative for Tahoe
 - keep the reasoning in source comments so the port does not regress back to
   the V16 shortcut
+
+## Ready-State Replay Audit After `78f162d`
+
+Once the Tahoe init path was restored, the next audit target was the pile of
+ready-state replay hooks that had accumulated while the port was still on the
+wrong interface-construction path.
+
+Recovered Apple producer evidence does **not** support those replays:
+
+- `AppleBCMWLANCore::signalDriverReady()` is called from core boot/load paths
+  (for example around `loadAndSetup` in the decompile at
+  `AppleBCMWLANCoreMac_decompiled.c:41741` / `:41771`)
+- the reference attach-chain doc says `deferBSDAttach(false)` itself performs
+  the interface `registerService()` exposure step on Tahoe
+- there is no corresponding Apple call site that republishes readiness from
+  `createEventPipe()`, from `ether_ifattach()`, or from an extra post-defer
+  manual `fNetIf->registerService()`
+
+That means the following local paths were architectural drift, not reference
+behavior:
+
+- replaying `CoreWiFiDriverReadyKey` inside `createEventPipe()`
+- replaying `CoreWiFiDriverReadyKey` after `ether_ifattach()`
+- manually calling `fNetIf->registerService()` again after
+  `deferBSDAttach(false)` already exposed the interface
+
+Those changes were symptom-driven attempts to compensate for the previously
+wrong Tahoe init path. Once the init contract is corrected, keeping those extra
+replay/exposure hooks would preserve non-Apple producer timing and duplicate
+service exposure that the reference attach chain does not perform.
+
+So the strict-parity cleanup is:
+
+- keep readiness publication on real producer boundaries (`enableAdapter`,
+  disable/power transitions)
+- remove consumer-side replay hooks (`createEventPipe`, `ether_ifattach`)
+- remove the duplicate `fNetIf->registerService()` after
+  `deferBSDAttach(false)`

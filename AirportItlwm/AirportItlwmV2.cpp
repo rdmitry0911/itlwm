@@ -134,14 +134,6 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
           controller->fNetIf);
 }
 
-void AirportItlwm::replayDriverAvailableAfterIOUCReady()
-{
-    // Apple keeps readiness as sticky interface-side state. Late IOUC/WCL
-    // consumers only appear after createEventPipe(), so re-assert the same
-    // CoreWiFiDriverReadyKey state once the event pipe is alive.
-    setCoreWiFiDriverReadyProperty(this, true);
-}
-
 static bool
 copyBoolProperty(IORegistryEntry *entry, const char *name, bool *value)
 {
@@ -1443,16 +1435,6 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     _fCommandGate->enable();
     power_state = kWiFiPowerOn;
-    // Tahoe driver-availability bring-up:
-    // - Kernel IOC debug showed APPLE80211_IOC_SCAN_RESULT arriving with
-    //   isDriverAvailable=0 immediately after our SCAN_DONE delivery.
-    // - At that point getSCAN_RESULT is rejected inside IO80211Family before
-    //   it reaches our driver, so the bug is in interface availability, not
-    //   in scan result conversion.
-    // - Classic AirportItlwm registered the interface service directly.
-    // Matching that contract here keeps the primary STA interface visible to
-    // the BSD/IO80211 clients before airportd begins scan/result IOCTLs.
-    fNetIf->registerService();
     XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
     enableAdapter(NULL);
     {
@@ -1753,19 +1735,6 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
     RT_SET(26);
     fpNetStats->collisions = 0;
-
-    // Tahoe live ordering showed the original ready-state publication from
-    // start() happens before airportd can even discover en0.  The observed
-    // sequence on 2026-04-12 was:
-    //   - driver start() already ran enableAdapter() + CoreWiFiDriverReadyKey
-    //   - only later airportd received KEV_DL_IF_ATTACHED / IOServiceMatched
-    //   - _initInterface then still queried SSID with isDriverAvailable=0 and
-    //     aborted auto-join with error 37 "driver not available"
-    //
-    // Re-assert the same sticky CoreWiFiDriverReadyKey after ether_ifattach(),
-    // i.e. at the first point where en0 is actually consumable by
-    // Apple80211/airportd.
-    setCoreWiFiDriverReadyProperty(this, true);
 
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);

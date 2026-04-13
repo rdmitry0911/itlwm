@@ -403,29 +403,7 @@ getCHANNELS_INFO(apple80211_channels_info *data)
 
 UInt64 AirportItlwmSkywalkInterface::createEventPipe(IO80211APIUserClient *client)
 {
-    UInt64 ret = super::createEventPipe(client);
-
-    // Tahoe bring-up detail recovered from IO80211Family + live logs:
-    // - External APPLE80211_IOC_SSID/BSSID/CHANNEL use routeIoctlToWcl first.
-    // - The wrapper falls back to our protocol handlers only on
-    //   0xe082280f / "not implemented".
-    // - On live boots the interface/BSD side already existed, but
-    //   isDriverAvailable remained 0 and WCL kept returning 0xe0822403.
-    // - IO80211SkywalkInterface::postMessageIOUC is the first place where the
-    //   newly opened IOUC event pipes become available to userspace clients.
-    //
-    // Apple carries readiness as CoreWiFiDriverReadyKey on the interface-side
-    // state object. Reassert that sticky state here so late IOUC consumers can
-    // observe the same ready edge once the event pipe exists.
-    AirportItlwm *controller =
-        OSDynamicCast(AirportItlwm, reinterpret_cast<OSObject *>(getController()));
-    if (controller != NULL) {
-        XYLog("DEBUG %s ret=0x%llx replay CoreWiFiDriverReadyKey after IOUC pipe open\n",
-              __FUNCTION__, ret);
-        controller->replayDriverAvailableAfterIOUCReady();
-    }
-
-    return ret;
+    return super::createEventPipe(client);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
