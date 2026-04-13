@@ -135,6 +135,44 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
 }
 
 static void
+postTahoeDriverAvailableBulletin(AirportItlwm *controller, bool ready)
+{
+    if (controller == NULL || controller->fNetIf == NULL)
+        return;
+
+    // Live 43bf34f runtime proved that the hidden interface-enable subclass
+    // body plus CoreWiFiDriverReadyKey still do not flip Tahoe availability
+    // locally: `setInterfaceEnable(true)` runs, `CoreWiFiDriverReadyKey` is
+    // visible in ioreg, scan reaches WCL_SCAN_DONE, yet IO80211Family keeps
+    // reporting isDriverAvailable=<0> and no APPLE80211_M_DRIVER_AVAILABLE
+    // posts appear in the current-boot kernel log.
+    //
+    // That matches the recovered family-side consumer contract exactly.
+    // WCLSystemStateManager::driverAvailableEventHandler(...) accepts the
+    // bulletin only when:
+    // - message code is APPLE80211_M_DRIVER_AVAILABLE (0x37)
+    // - payload length is exactly 0xf8
+    // - the dword at payload +0x8 is zero for the available edge
+    //
+    // AppleBCMWLANCore::signalDriverReady() itself only publishes
+    // CoreWiFiDriverReadyKey, so the separate availability bulletin must still
+    // be reproduced at the same ready transition boundary. Deliver it through
+    // controller->postMessage(..., true) so the event flows through
+    // IO80211Controller/PostOffice instead of bypassing the framework.
+    apple80211_driver_available_data data = {};
+    data.event = APPLE80211_M_DRIVER_AVAILABLE;
+    data.avaliable = ready ? 0 : 1;
+    data.reason = 0;
+    data.sub_reason = 0;
+
+    controller->postMessage(controller->fNetIf, APPLE80211_M_DRIVER_AVAILABLE,
+                            &data, sizeof(data), true);
+    XYLog("DEBUG %s ready=%d len=0x%zx available=%llu fNetIf=%p\n",
+          __FUNCTION__, ready ? 1 : 0, sizeof(data), data.avaliable,
+          controller->fNetIf);
+}
+
+static void
 applyTahoeInterfaceReadyEdge(AirportItlwm *controller, bool ready)
 {
     if (controller == NULL || controller->fNetIf == NULL)
@@ -169,6 +207,7 @@ publishTahoeDriverReadyState(AirportItlwm *controller, bool ready)
 {
     applyTahoeInterfaceReadyEdge(controller, ready);
     setCoreWiFiDriverReadyProperty(controller, ready);
+    postTahoeDriverAvailableBulletin(controller, ready);
 }
 
 static IORegistryEntry *

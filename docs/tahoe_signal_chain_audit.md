@@ -49,6 +49,40 @@ Recovered `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)` does:
 So the exact producer lift must happen on the hidden interface object itself,
 not by adding more controller-side ready-state publication.
 
+## Driver-Available Bulletin Regression Correction
+
+Live runtime on build `43bf34f` adds one more producer-side fact that narrows
+the remaining gap further:
+
+- the hidden `setInterfaceEnable(true)` subclass body now runs
+- `CoreWiFiDriverReadyKey = "true"` is visible in `ioreg`
+- but there are no current-boot kernel log entries for
+  `APPLE80211_M_DRIVER_AVAILABLE (0x37)`
+- and `WCLSystemStateManager` keeps `isDriverAvailable=0`
+
+That is enough to reject the newer local implementation which only published
+the ready property after the hidden interface-enable edge.  The family-side
+consumer still requires the `0x37` bulletin with the exact Tahoe payload ABI:
+
+- message code `APPLE80211_M_DRIVER_AVAILABLE`
+- payload length `0xf8`
+- dword at payload `+0x8` equal to zero for the available edge
+
+So the remaining local producer contract is not "property only".  It is the
+combination:
+
+1. hidden `setInterfaceEnable(true)` lifecycle edge
+2. `CoreWiFiDriverReadyKey = \"true\"/\"false\"`
+3. `APPLE80211_M_DRIVER_AVAILABLE` delivered through controller/PostOffice
+
+Without step 3, the live system reaches the contradictory state:
+
+- interface attached as `en0`
+- link state raised
+- scan runs and posts `WCL_SCAN_DONE`
+- but `isDriverAvailable` never leaves `0`
+- external `SSID/BSSID/CURRENT_NETWORK` stay at `0xe0822403`
+
 ## Owner-Family Backend Batch
 
 The remaining pre-`Q12` owner-family setters now route through the local

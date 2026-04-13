@@ -106,7 +106,12 @@ This inventory is intentionally split into:
   `setInterfaceEnable(true)`, but still left `isDriverAvailable=0`, which
   proves the missing piece is the recovered subclass body behind the hidden
   slot: base `setInterfaceEnable(bool)`, then `reportLinkStatus(3, 0x80)`, then
-  `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`.
+  `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`. Live build `43bf34f`
+  proves one final producer-side gap remains after that subclass lift:
+  current-boot logs contain no `APPLE80211_M_DRIVER_AVAILABLE` posts at all.
+  The family-side consumer still requires the exact `0x37` / `0xf8` bulletin,
+  so the local ready path must reproduce that PostOffice-visible edge in
+  addition to the hidden interface-enable body and `CoreWiFiDriverReadyKey`.
 
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,

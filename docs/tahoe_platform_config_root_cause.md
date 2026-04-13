@@ -759,3 +759,32 @@ edge it also does:
 
 So the local hidden-object fix has to reproduce that exact subclass-side effect
 chain, not merely the caller's `+0x930` dispatch.
+
+Live runtime on build `43bf34f` then narrowed the remaining gap one step
+further:
+
+- the hidden subclass body now runs
+- `CoreWiFiDriverReadyKey = "true"` is visible in `ioreg`
+- the interface is attached as `en0`
+- scan reaches `fakeScanDone` and posts `WCL_SCAN_DONE`
+- but `isDriverAvailable` still remains `0`
+
+The missing producer edge is explicit in the current-boot kernel log: there
+are no `APPLE80211_M_DRIVER_AVAILABLE (0x37)` posts at all.
+
+That matches the recovered family-side consumer contract in
+`WCLSystemStateManager::driverAvailableEventHandler(...)`, which still
+requires:
+
+- message code `0x37`
+- payload length `0xf8`
+- dword at payload `+0x8` equal to zero for the available edge
+
+So the current Tahoe ready chain must be treated as the full sequence:
+
+1. hidden `setInterfaceEnable(true)` lifecycle edge
+2. `CoreWiFiDriverReadyKey = "true"/"false"`
+3. `APPLE80211_M_DRIVER_AVAILABLE` through controller/PostOffice delivery
+
+Without step 3, the port reaches the contradictory state "interface alive and
+scanning, but driver unavailable to external CoreWiFi consumers".
