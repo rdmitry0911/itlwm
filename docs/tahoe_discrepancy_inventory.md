@@ -89,6 +89,16 @@ This inventory is intentionally split into:
 
 ## Closed
 
+- `Tahoe driver-available producer contract`:
+  live build `2820901` showed that `CoreWiFiDriverReadyKey = "true"` in
+  `ioreg` is not enough to make Tahoe external consumers treat the interface as
+  available. The new decompile of
+  `WCLSystemStateManager::driverAvailableEventHandler(...)` proves the family
+  also requires `APPLE80211_M_DRIVER_AVAILABLE (0x37)` with an exact `0xf8`
+  payload and zero at payload `+0x8` for the available edge. The local port
+  therefore must publish both the property and the bulletin; property-only
+  publication leaves `isDriverAvailable` stuck at `0`.
+
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
   `setWCL_ACTION_FRAME`, and `setRANGING_AUTHENTICATE` no longer preserve

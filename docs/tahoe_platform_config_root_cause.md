@@ -705,3 +705,33 @@ The remaining delta is replay timing:
 - replay the same sticky `APPLE80211_M_DRIVER_AVAILABLE` once more after
   `IO80211SkywalkInterface::createEventPipe(...)`, i.e. when the IOUC event
   pipe is opened and late userspace consumers can actually observe the event.
+
+## Runtime Correction After `2820901`
+
+Live reboot on `AirportItlwm build=2820901` proved that the remaining
+availability mismatch is not explained by `CoreWiFiDriverReadyKey` alone.
+
+Observed live state:
+
+- `AirportItlwmSkywalkInterface` is present in `ioreg`
+- `CoreWiFiDriverReadyKey = "true"` is visible on the interface
+- multiple `IO80211APIUserClient` instances are attached (`airportd`,
+  `wifip2pd`, `sharingd`)
+- kernel IOC DEBUG still shows `isDriverAvailable=<0>`
+
+The new Tahoe decompile closes the gap. `WCLSystemStateManager` has an explicit
+`driverAvailableEventHandler(...)` for `APPLE80211_M_DRIVER_AVAILABLE (0x37)`,
+and it only accepts the event when:
+
+- bulletin payload length is exactly `0xf8`
+- dword at payload `+0x8` is zero for the available edge
+
+So the strict Tahoe producer contract is:
+
+1. publish `CoreWiFiDriverReadyKey = "true"/"false"` on the interface-side
+   object
+2. also publish `APPLE80211_M_DRIVER_AVAILABLE` with the Apple `0xf8` payload
+
+The local port had drifted to property-only publication, which explains the
+contradictory live state "ready key present, scan path alive, but
+isDriverAvailable still 0".

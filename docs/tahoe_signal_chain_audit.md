@@ -2,6 +2,30 @@
 
 Date: 2026-04-12
 
+## Tahoe Driver-Available Consumer Correction
+
+Live runtime on build `2820901` and the new Tahoe decompile establish one
+consumer-side fact that overrides the earlier property-only theory:
+
+- `CoreWiFiDriverReadyKey = "true"` can already be present in `ioreg`
+- yet kernel IOC DEBUG still reports `isDriverAvailable=<0>`
+
+Recovered `WCLSystemStateManager::driverAvailableEventHandler(...)` explains
+why. The Tahoe consumer does not flip availability from the property alone. It
+expects `APPLE80211_M_DRIVER_AVAILABLE (0x37)` with a bulletin payload that:
+
+- has exact length `0xf8`
+- carries the "available" edge as zero at payload `+0x8`
+
+So the strict Tahoe contract is two-part:
+
+1. interface-side `CoreWiFiDriverReadyKey = "true"/"false"`
+2. `APPLE80211_M_DRIVER_AVAILABLE` bulletin with the 0xf8 Apple ABI
+
+That is why a property-only producer left the system in the contradictory live
+state "ready key visible, interface attached, scan runs, but
+isDriverAvailable=0".
+
 ## Owner-Family Backend Batch
 
 The remaining pre-`Q12` owner-family setters now route through the local
