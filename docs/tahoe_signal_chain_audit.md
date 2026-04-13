@@ -1523,3 +1523,18 @@ explicitly marked internal-only.
   programming, and nearby/low-latency traffic policy
 - the remaining `Q11` debt is now tracked only through those owner-based
   subqueues, not through a single broad unsupported bucket
+
+`Q11-A/B/C` close-out:
+
+- `Q11-A` is no longer tracked as one mixed management bucket; it is split into
+  the controller-branch IE owner mismatch (`Q11-A1`) and the net-adapter
+  action-frame injector (`Q11-A2`)
+- `Q11-B` is no longer tracked as one mixed radio bucket; it is split into
+  capability programming (`Q11-B1`), coexistence programming (`Q11-B2`), and
+  tx-power policy (`Q11-B3`)
+- `Q11-C` is no longer tracked as one mixed nearby/traffic bucket; it is split
+  into HP2P/DynSAR helpers (`Q11-C1`), low-latency/slow-wifi status (`Q11-C2`),
+  and nearby/ranging/traffic policy (`Q11-C3`)
+
+So `Q11-A/B/C` are closed as queues. What remains open is only owner-level
+subqueue work.

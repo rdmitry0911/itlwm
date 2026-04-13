@@ -526,6 +526,32 @@ This decomposition is intentionally documentation-first: it closes the broad
 `Q11` umbrella queue by replacing it with owner-based subqueues, but it does
 not claim that the remaining subqueue members are already lifted.
 
+`Q11-A/B/C` are now closed as queues as well. They are replaced by the
+following owner-level subqueues:
+
+- `Q11-A1 controller-branch IE ownership mismatch`
+  `setIE`
+- `Q11-A2 net-adapter action-frame injector`
+  `setWCL_ACTION_FRAME`
+- `Q11-B1 capability programming`
+  `setHT_CAPABILITY`, `setVHT_CAPABILITY`
+- `Q11-B2 coexistence programming`
+  `setBTCOEX_PROFILE`, `setBTCOEX_PROFILE_ACTIVE`,
+  `setBTCOEX_2G_CHAIN_DISABLE`
+- `Q11-B3 tx-power policy`
+  `setBYPASS_TX_POWER_CAP`
+- `Q11-C1 HP2P / DynSAR helpers`
+  `getHP2P_CTRL`, `getDYNSAR_DETAIL`
+- `Q11-C2 low-latency / slow-wifi status`
+  `getSLOW_WIFI_FEATURE_ENABLED`, `getWCL_LOW_LATENCY_INFO`,
+  `getWCL_GET_TX_BLANKING_STATUS`
+- `Q11-C3 nearby / ranging / traffic policy`
+  `setOFFLOAD_NDP`, `setRANGING_AUTHENTICATE`,
+  `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS`
+
+This closes `Q11-A/B/C` the same way `Q11` itself was closed: the mixed queues
+are gone, and only owner-level subqueues remain open.
+
 Closed as the mixed setter control/programming zone and therefore no longer
 part of the open setter list above:
 
