@@ -2,6 +2,35 @@
 
 Date: 2026-04-12
 
+## Owner-Family Backend Batch
+
+The remaining pre-`Q12` owner-family setters now route through the local
+`TahoeCommander` compatibility layer instead of hand-written per-selector cache
+updates in `AirportItlwmSkywalkInterface`.
+
+This batch lifts the Apple-visible hidden-owner bodies for:
+
+- `setIE`
+- `setOFFLOAD_NDP`
+- `setBTCOEX_PROFILE`
+- `setWCL_ACTION_FRAME`
+- `setRANGING_AUTHENTICATE`
+
+The important architectural change is not "more cache writes". It is that the
+owner-targeted state now lives in `TahoeOwnerRegistry`, is built through
+`TahoePayloadBuilders`, and is entered through a single commander path with
+selector/owner tagging. That matches the recovered Apple shape much more
+closely than letting each Skywalk setter carry its own ad hoc reconstruction.
+
+The local port still lacks Broadcom firmware/commander internals, so this is
+not a firmware-faithful `runIOVarSet` backend. But the Apple-visible body shape
+for these selectors is now centralized:
+
+- exact public gate
+- exact carrier split
+- owner-targeted state block
+- selector-tagged command context
+
 ## Goal
 
 Stop treating Tahoe bring-up failures as isolated symptom fixes. Audit each

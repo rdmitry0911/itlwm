@@ -82,12 +82,20 @@ This inventory is intentionally split into:
   `setHOST_CLOCK_INFO` is fixed to Apple's direct `0xe00002c7`
 
 - `Q13 Unsupported Skywalk Surface`:
-  open
-  raw header surface now carries 128 unsupported overrides and 0 ack-only
-  stubs; after the first confirmed Apple-unsupported classification batches,
-  96 unsupported-return slots still remain open discrepancies
+  closed
+  remaining pre-`Q12` owner-family selectors now enter a centralized
+  owner-targeted commander layer rather than per-selector ad hoc shims
 
 ## Closed
+
+- `pre-Q12 owner-family backend batch`:
+  `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
+  `setWCL_ACTION_FRAME`, and `setRANGING_AUTHENTICATE` no longer preserve
+  Apple-visible state through one-off local branches. They now route through
+  `TahoeCommander` with `TahoeOwnerRegistry` state blocks and
+  `TahoePayloadBuilders`, which matches the recovered Apple owner-family shape
+  much more closely and removes the remaining pre-`Q12` implementation debt
+  outside the queue system.
 
 - `PLATFORM_CONFIG`:
   Tahoe 7-byte packed producer path recovered and implemented.

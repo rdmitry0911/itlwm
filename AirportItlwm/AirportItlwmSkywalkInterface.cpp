@@ -3645,37 +3645,28 @@ setIBSS_MODE(apple80211_network_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIE(apple80211_ie_data *data)
 {
-    if (data == nullptr)
-        return kApple80211ErrInvalidArgumentRaw;
-    if (data->ie_len > sizeof(data->ie))
-        return kApple80211ErrInvalidArgumentRaw;
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetIE(data, &asyncContext)
+            : kApple80211ErrInvalidArgumentRaw;
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    // AppleBCMWLANCore::setIE has a strict public split:
-    // - NULL / ie_len > 0x800 -> raw 0x16
-    // - assoc-request IE with frame_type_flags==4, add!=0, ie_len!=0,
-    //   ie[0]==0x44 goes
-    //   through JoinAdapter::setCustomAssocIE(...)
-    // - everything else goes through setVendorIE(...)
-    //
-    // The Tahoe port does not yet lift those hidden owners, but it must keep
-    // the same validation and preserve the exact caller-visible carrier instead
-    // of collapsing slot [552] into generic unsupported.
-    if (data->frame_type_flags == 4 && data->add != 0 &&
-        data->ie_len != 0 && data->ie[0] == 0x44) {
-        cachedAssocIeLen = data->ie_len;
-        memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
-        memcpy(cachedAssocIe, data->ie, cachedAssocIeLen);
-        hasCachedAssocIe = true;
-        return kIOReturnSuccess;
-    }
+    const auto &owner = instance->getTahoeOwnerRegistry().ie;
+    cachedAssocIeLen = owner.assocIeLen;
+    memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
+    if (cachedAssocIeLen != 0)
+        memcpy(cachedAssocIe, owner.assocIe, cachedAssocIeLen);
+    hasCachedAssocIe = owner.hasAssocIe;
 
-    cachedVendorIeLen = data->ie_len;
-    cachedVendorIeFlags = data->frame_type_flags;
+    cachedVendorIeLen = owner.vendorIeLen;
+    cachedVendorIeFlags = owner.vendorIeFlags;
     memset(cachedVendorIe, 0, sizeof(cachedVendorIe));
     if (cachedVendorIeLen != 0)
-        memcpy(cachedVendorIe, data->ie, cachedVendorIeLen);
-    hasCachedVendorIe = true;
-    return kIOReturnSuccess;
+        memcpy(cachedVendorIe, owner.vendorIe, cachedVendorIeLen);
+    hasCachedVendorIe = owner.hasVendorIe;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3696,32 +3687,21 @@ setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
-        return kApple80211ErrInvalidArgumentRaw;
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetOFFLOADNDP(data, &asyncContext)
+            : kApple80211ErrInvalidArgumentRaw;
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    // AppleBCMWLANCore::setOFFLOAD_NDP rejects NULL / missing infra owner with
-    // raw 0x16, clamps the IPv6 address count to 4, copies contiguous 16-byte
-    // addresses starting at +0x8 into cached owner state, then seeds a link-
-    // local fe80:: address from the first entry. The public path does not gate
-    // on BSD/IO80211 interface attachment, so do not invent an unrelated
-    // `fNetIf` dependency here while the deeper keepalive owner is still
-    // unrecovered.
-    uint32_t count = *reinterpret_cast<const uint32_t *>(raw + 4);
-    if (count > 4)
-        count = 4;
-
-    cachedIPv6Count = count;
+    const auto &owner = instance->getTahoeOwnerRegistry().ndp;
+    cachedIPv6Count = owner.count;
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
-    for (uint32_t i = 0; i < count; i++)
-        memcpy(cachedIPv6Addresses[i], raw + 8 + i * 16, 16);
-
+    memcpy(cachedIPv6Addresses, owner.addresses, sizeof(owner.addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
-    cachedIPv6LinkLocalAddress[0] = 0xfe;
-    cachedIPv6LinkLocalAddress[1] = 0x80;
-    if (count != 0)
-        memcpy(&cachedIPv6LinkLocalAddress[8], &cachedIPv6Addresses[0][8], 8);
-    return kIOReturnSuccess;
+    memcpy(cachedIPv6LinkLocalAddress, owner.linkLocalSeed, sizeof(owner.linkLocalSeed));
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3765,23 +3745,18 @@ setGAS_REQ(apple80211_gas_query_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_PROFILE(apple80211_btcoex_profile *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
-        return static_cast<IOReturn>(0xe00002c2);
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetBTCOEXProfile(data, &asyncContext)
+            : static_cast<IOReturn>(0xe00002c2);
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    const uint8_t band = raw[3];
-    const uint16_t mode = *reinterpret_cast<const uint16_t *>(raw);
-    const uint8_t profileIndex = raw[4];
-    if (band >= 5 || (mode < 1 || mode > 4) || profileIndex >= 10)
-        return static_cast<IOReturn>(0xe00002c2);
-
-    // Apple indexes a ten-entry table by profileIndex and stores the full
-    // 0x38-byte entry before it talks to the commander path. Keeping only the
-    // last seen profile blob loses the same per-slot state that Apple exposes
-    // later through its coexistence owner.
-    memcpy(cachedBtcoexProfiles[profileIndex], raw, sizeof(cachedBtcoexProfiles[profileIndex]));
-    cachedBtcoexProfileValidMask |= static_cast<uint16_t>(1U << profileIndex);
-    return kIOReturnSuccess;
+    const auto &owner = instance->getTahoeOwnerRegistry().btcoex;
+    memcpy(cachedBtcoexProfiles, owner.profileTable, sizeof(cachedBtcoexProfiles));
+    cachedBtcoexProfileValidMask = owner.profileValidMask;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3921,16 +3896,16 @@ setSENSING_DISABLE(apple80211_sensing_disable_t *)
 IOReturn AirportItlwmSkywalkInterface::
 setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr || *reinterpret_cast<const uint16_t *>(raw + 0x70) == 0)
-        return static_cast<IOReturn>(0xe0000001);
-
-    // AppleBCMWLANCore::setRANGING_AUTHENTICATE is a real commander-backed
-    // producer gated by the proximity owner. The public contract, however,
-    // already exposes two hard requirements before any hidden work happens:
-    // non-NULL request and non-zero PMK length at +0x70. Preserve that gate
-    // until the proximity owner family is lifted.
-    return static_cast<IOReturn>(0xe0000001);
+    // Apple routes this through the proximity owner family after validating
+    // PMK length and role. The local commander layer now keeps the same public
+    // state transition and owner-targeted callback decision instead of
+    // collapsing the selector into an unconditional failure.
+    constexpr uint32_t kLocalTahoeProximityOwnerId = 1;
+    TahoeAsyncCommandContext asyncContext{};
+    return (instance != nullptr)
+               ? instance->getTahoeCommander().runSetRangingAuthenticate(
+                     data, kLocalTahoeProximityOwnerId, &asyncContext)
+               : static_cast<IOReturn>(0xe0000001);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4011,28 +3986,32 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 {
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    if (raw == nullptr)
-        return kIOReturnBadArgumentTahoe;
+    constexpr uint32_t kTahoeActionFrameV2Threshold = 0x15;
+    const uint32_t firmwareGeneration =
+        (instance != nullptr && instance->fNetIf != nullptr)
+            ? kTahoeActionFrameV2Threshold
+            : 0;
 
-    const uint16_t frameLen = *reinterpret_cast<const uint16_t *>(raw + 0xe);
-    if (frameLen >= 0x708)
-        return kIOReturnBadArgumentTahoe;
+    TahoeAsyncCommandContext asyncContext{};
+    const IOReturn rc =
+        (instance != nullptr)
+            ? instance->getTahoeCommander().runSetWCLActionFrame(
+                  data, firmwareGeneration, &asyncContext)
+            : kIOReturnBadArgumentTahoe;
+    if (rc != kIOReturnSuccess)
+        return rc;
 
-    // AppleBCMWLANCore::setWCL_ACTION_FRAME is a concrete NetAdapter injector
-    // that switches between sendActionFrame and sendActionFrameV2 based on the
-    // firmware generation gate at core +0x30c. Both Apple send paths reject
-    // oversized request bodies with 0xe00002bc before they touch the adapter
-    // owner, so keep that visible size gate even though the exact hidden
-    // injector body is still unrecovered locally.
-    cachedLastActionFrameCategory = raw[0];
-    cachedLastActionFrameChannel = *reinterpret_cast<const uint32_t *>(raw + 4);
-    cachedLastActionFrameLen = frameLen;
+    const auto &owner = instance->getTahoeOwnerRegistry().actionFrame;
+    cachedLastActionFrameCategory = owner.category;
+    cachedLastActionFrameChannel = owner.channel;
+    cachedLastActionFrameLen = owner.frameLen;
     if (cachedLastActionFrameLen > sizeof(cachedLastActionFrame))
         cachedLastActionFrameLen = sizeof(cachedLastActionFrame);
-    memcpy(cachedLastActionFrame, raw + 0x10, cachedLastActionFrameLen);
-    hasCachedLastActionFrame = true;
-    return kIOReturnSuccess;
+    memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
+    if (cachedLastActionFrameLen != 0)
+        memcpy(cachedLastActionFrame, owner.frame, cachedLastActionFrameLen);
+    hasCachedLastActionFrame = owner.hasFrame;
+    return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

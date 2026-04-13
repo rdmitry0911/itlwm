@@ -27,6 +27,68 @@ public:
         return registry;
     }
 
+    IOReturn runSetIE(const apple80211_ie_data *data,
+                      TahoeAsyncCommandContext *asyncContext = nullptr)
+    {
+        if (data == nullptr || registry == nullptr)
+            return TahoeErrorMap::kAppleInvalidArgumentRaw;
+
+        TahoePayloadBuilders::IEPayloads payload;
+        if (!TahoePayloadBuilders::buildIE(data, &payload))
+            return TahoeErrorMap::kAppleInvalidArgumentRaw;
+
+        if (payload.customAssoc) {
+            memset(registry->ie.assocIe, 0, sizeof(registry->ie.assocIe));
+            if (payload.ieLen != 0)
+                memcpy(registry->ie.assocIe, payload.ie, payload.ieLen);
+            registry->ie.assocIeLen = payload.ieLen;
+            registry->ie.hasAssocIe = true;
+        } else {
+            memset(registry->ie.vendorIe, 0, sizeof(registry->ie.vendorIe));
+            if (payload.ieLen != 0)
+                memcpy(registry->ie.vendorIe, payload.ie, payload.ieLen);
+            registry->ie.vendorIeLen = payload.ieLen;
+            registry->ie.vendorIeFlags = payload.frameTypeFlags;
+            registry->ie.hasVendorIe = true;
+        }
+
+        if (asyncContext != nullptr) {
+            asyncContext->selector = 552;
+            asyncContext->owner = payload.customAssoc ? 0x1528 : 0x1520;
+            asyncContext->status = 0;
+            asyncContext->async = false;
+            asyncContext->completed = true;
+        }
+        return kIOReturnSuccess;
+    }
+
+    IOReturn runSetOFFLOADNDP(const apple80211_offload_ndp_data *data,
+                              TahoeAsyncCommandContext *asyncContext = nullptr)
+    {
+        if (data == nullptr || registry == nullptr)
+            return TahoeErrorMap::kAppleInvalidArgumentRaw;
+
+        TahoePayloadBuilders::NdpPayload payload;
+        if (!TahoePayloadBuilders::buildOffloadNdp(data, &payload))
+            return TahoeErrorMap::kAppleInvalidArgumentRaw;
+
+        registry->ndp.count = payload.count;
+        memset(registry->ndp.addresses, 0, sizeof(registry->ndp.addresses));
+        memcpy(registry->ndp.addresses, payload.addresses, sizeof(payload.addresses));
+        memcpy(registry->ndp.linkLocalSeed, payload.linkLocalSeed, sizeof(payload.linkLocalSeed));
+        registry->ndp.hasCarrier = true;
+        registry->ndp.hiddenNotifyQueued = true;
+
+        if (asyncContext != nullptr) {
+            asyncContext->selector = 554;
+            asyncContext->owner = 0x2c20;
+            asyncContext->status = 0;
+            asyncContext->async = false;
+            asyncContext->completed = true;
+        }
+        return kIOReturnSuccess;
+    }
+
     IOReturn runSetUSBHostNotification(const apple80211_usb_host_notification_data *data,
                                        TahoeAsyncCommandContext *asyncContext = nullptr)
     {
@@ -79,6 +141,36 @@ public:
         return kIOReturnSuccess;
     }
 
+    IOReturn runSetBTCOEXProfile(const apple80211_btcoex_profile *data,
+                                 TahoeAsyncCommandContext *asyncContext = nullptr)
+    {
+        if (data == nullptr || registry == nullptr)
+            return TahoeErrorMap::kAppleInvalidArgument;
+
+        TahoePayloadBuilders::BtcoexProfilePayload payload;
+        if (!TahoePayloadBuilders::buildBtcoexProfile(data, &payload))
+            return TahoeErrorMap::kAppleInvalidArgument;
+        if (payload.band >= 5 || payload.mode < 1 || payload.mode > 4 || payload.profileIndex >= 10)
+            return TahoeErrorMap::kAppleInvalidArgument;
+
+        memcpy(registry->btcoex.profileTable[payload.profileIndex],
+               payload.profileEntry,
+               sizeof(registry->btcoex.profileTable[payload.profileIndex]));
+        registry->btcoex.profileValidMask |= static_cast<uint16_t>(1U << payload.profileIndex);
+        registry->btcoex.profileCommandMode = payload.mode;
+        registry->btcoex.profileCommandBand = payload.band;
+        registry->btcoex.profileCommandIndex = payload.profileIndex;
+
+        if (asyncContext != nullptr) {
+            asyncContext->selector = 571;
+            asyncContext->owner = 0x1520;
+            asyncContext->status = 0;
+            asyncContext->async = false;
+            asyncContext->completed = true;
+        }
+        return kIOReturnSuccess;
+    }
+
     IOReturn runSetBTCOEX2GChainDisable(const apple80211_btcoex_2g_chain_disable *data,
                                         TahoeAsyncCommandContext *asyncContext = nullptr)
     {
@@ -121,6 +213,63 @@ public:
             // Tahoe slot [622] setBYPASS_TX_POWER_CAP.
             asyncContext->selector = 622;
             asyncContext->owner = 0x1520;
+            asyncContext->status = 0;
+            asyncContext->async = false;
+            asyncContext->completed = true;
+        }
+        return kIOReturnSuccess;
+    }
+
+    IOReturn runSetWCLActionFrame(const apple80211_wcl_action_frame *data,
+                                  uint32_t firmwareGeneration,
+                                  TahoeAsyncCommandContext *asyncContext = nullptr)
+    {
+        if (data == nullptr || registry == nullptr)
+            return TahoeErrorMap::kAppleBadArgumentTahoe;
+
+        TahoePayloadBuilders::ActionFramePayload payload;
+        if (!TahoePayloadBuilders::buildActionFrame(data, firmwareGeneration, &payload))
+            return TahoeErrorMap::kAppleBadArgumentTahoe;
+
+        registry->actionFrame.category = payload.category;
+        registry->actionFrame.channel = payload.channel;
+        registry->actionFrame.frameLen = payload.frameLen;
+        memset(registry->actionFrame.frame, 0, sizeof(registry->actionFrame.frame));
+        if (payload.frameLen != 0)
+            memcpy(registry->actionFrame.frame, payload.frame, payload.frameLen);
+        registry->actionFrame.useV2 = payload.useV2;
+        registry->actionFrame.hasFrame = true;
+
+        if (asyncContext != nullptr) {
+            asyncContext->selector = 620;
+            asyncContext->owner = 0x15e0;
+            asyncContext->status = 0;
+            asyncContext->async = false;
+            asyncContext->completed = true;
+        }
+        return kIOReturnSuccess;
+    }
+
+    IOReturn runSetRangingAuthenticate(const apple80211_ranging_authenticate_request_t *data,
+                                       uint32_t proximityOwnerId,
+                                       TahoeAsyncCommandContext *asyncContext = nullptr)
+    {
+        if (data == nullptr || registry == nullptr)
+            return TahoeErrorMap::kAppleRangingInvalid;
+
+        TahoePayloadBuilders::RangingAuthenticatePayload payload;
+        if (!TahoePayloadBuilders::buildRangingAuthenticate(data, proximityOwnerId, &payload))
+            return TahoeErrorMap::kAppleRangingInvalid;
+
+        registry->ranging.pmkLen = payload.pmkLen;
+        registry->ranging.role = payload.role;
+        registry->ranging.proximityOwnerId = proximityOwnerId;
+        registry->ranging.postedCallback = payload.shouldPostCallback;
+        registry->ranging.hasCarrier = true;
+
+        if (asyncContext != nullptr) {
+            asyncContext->selector = 567;
+            asyncContext->owner = 0x2c28;
             asyncContext->status = 0;
             asyncContext->async = false;
             asyncContext->completed = true;
