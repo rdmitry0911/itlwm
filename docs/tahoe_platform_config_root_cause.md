@@ -2,6 +2,34 @@
 
 Date: 2026-04-12
 
+## Bootstrap POWER Root Cause
+
+The live reboot on build `5da9d59` narrowed the remaining Tahoe failure to the
+bootstrap `APPLE80211_IOC_POWER` path.
+
+Observed sequence:
+
+- `CoreWiFiDriverReadyKey="true"` is visible in `ioreg`
+- hidden `setInterfaceEnable(true)` runs
+- `APPLE80211_M_DRIVER_AVAILABLE` is posted
+- but an early Tahoe `APPLE80211_IOC_POWER` request with `req=0` is applied
+  immediately by the local port
+- that immediate OFF edge drives `disableAdapter(...)`
+- the local port then posts `DRIVER_UNAVAILABLE`
+- `WCLSystemStateManager` moves back to
+  `SSM_STATE_DEFER_SENDING_NOTIFICATION`
+- `isDriverAvailable` stays `0`
+
+Recovered Apple code shows a different contract:
+
+- `AppleBCMWLANCore::setPOWER(...)` caches the requested state into `+0x289c`
+- it sets sticky deferred-power bit `0x1000`
+- it does **not** call `handlePowerStateChange(...)` directly on this path
+- `AppleBCMWLANCore::setupDriver()` later consumes that cached state and only
+  then calls `handlePowerStateChange(cachedState)`
+
+So the local bug is executing bootstrap `setPOWER(...)` too early.
+
 ## Symptom
 
 On Tahoe/26.x the driver loaded and appeared in the system, but WCL stayed in

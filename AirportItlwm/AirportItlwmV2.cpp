@@ -764,6 +764,9 @@ bool AirportItlwm::init(OSDictionary *properties)
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     power_state = 0;
+    tahoeRequestedPowerState = kWiFiPowerOff;
+    tahoeBootstrapPowerPending = false;
+    tahoeBootstrapPowerWindowOpen = true;
     driverLogStream = nullptr;
     fTxPool = NULL;
     fRxPool = NULL;
@@ -2442,12 +2445,34 @@ setPOWER(OSObject *object,
     XYLog("%s num_radios=%d req=%u cur=%u pmPowerState=%u\n",
           __FUNCTION__, pd->num_radios,
           pd->num_radios > 0 ? pd->power_state[0] : 0, power_state, pmPowerState);
-    if (pd->num_radios > 0)
+    if (pd->num_radios > 0) {
+        const uint32_t requestedState = pd->power_state[0];
+
+        // AppleBCMWLANCore::setPOWER(...) does not call
+        // handlePowerStateChange(...) directly during bootstrap. The recovered
+        // producer caches the requested state into +0x289c and lets
+        // setupDriver() consume it later. Applying the transient early OFF
+        // request immediately was the exact local bug that drove
+        // DRIVER_UNAVAILABLE and kept isDriverAvailable=0 on build 5da9d59.
+        tahoeRequestedPowerState = (uint8_t)requestedState;
+        if (tahoeBootstrapPowerWindowOpen) {
+            tahoeBootstrapPowerPending = true;
+            XYLog("DEBUG %s deferred bootstrap power req=%u cur=%u pending=%d\n",
+                  __FUNCTION__, requestedState, power_state, tahoeBootstrapPowerPending);
+            if (requestedState == power_state) {
+                tahoeBootstrapPowerPending = false;
+                tahoeBootstrapPowerWindowOpen = false;
+                XYLog("DEBUG %s bootstrap power converged on live state=%u; closing deferred path\n",
+                      __FUNCTION__, requestedState);
+            }
+            return kIOReturnSuccess;
+        }
 #if __IO80211_TARGET >= __MAC_26_0
-        handlePowerStateChange(pd->power_state[0], NULL);
+        handlePowerStateChange(requestedState, NULL);
 #else
-        handlePowerStateChange(pd->power_state[0], bsdInterface);
+        handlePowerStateChange(requestedState, bsdInterface);
 #endif
+    }
     return kIOReturnSuccess;
 }
 

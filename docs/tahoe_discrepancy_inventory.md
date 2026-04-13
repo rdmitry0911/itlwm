@@ -113,6 +113,17 @@ This inventory is intentionally split into:
   so the local ready path must reproduce that PostOffice-visible edge in
   addition to the hidden interface-enable body and `CoreWiFiDriverReadyKey`.
 
+- `Tahoe bootstrap POWER contract`:
+  live build `5da9d59` showed early Tahoe `APPLE80211_IOC_POWER` traffic
+  issuing a transient `req=0`, then returning to `1`. The local port executed
+  that request immediately through `handlePowerStateChange(...)`, which drove
+  `disableAdapter(...)`, emitted `DRIVER_UNAVAILABLE`, and forced
+  `WCLSystemStateManager` back into deferred state. Recovered Apple
+  `setPOWER(...)` does not do that: it caches the request into `+0x289c` and
+  sets sticky bit `0x1000`, while `setupDriver()` later consumes the cached
+  request. The Tahoe local path must therefore defer bootstrap `setPOWER(...)`
+  instead of treating it as an immediate OFF edge.
+
 - `pre-Q12 owner-family backend batch`:
   `setIE`, `setOFFLOAD_NDP`, `setBTCOEX_PROFILE`,
   `setWCL_ACTION_FRAME`, and `setRANGING_AUTHENTICATE` no longer preserve

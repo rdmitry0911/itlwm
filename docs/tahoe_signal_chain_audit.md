@@ -2,6 +2,35 @@
 
 Date: 2026-04-12
 
+## Tahoe Bootstrap POWER Contract Correction
+
+Live runtime on build `5da9d59` disproves the earlier local assumption about
+Tahoe `APPLE80211_IOC_POWER`.
+
+The local port was doing this on every request:
+
+1. call `handlePowerStateChange(...)` immediately
+2. drive `disableAdapter(...)` on `req=0`
+3. publish `DRIVER_UNAVAILABLE`
+
+The recovered Apple producer does not do that during bootstrap.
+
+`AppleBCMWLANCore::setPOWER(...)` caches the requested state into core field
+`+0x289c` and sets sticky bit `0x1000`; it does **not** call
+`handlePowerStateChange(...)` directly on this path. Later
+`AppleBCMWLANCore::setupDriver()` consumes that cached state and only then calls
+`handlePowerStateChange(cachedState)`.
+
+That exact difference matches the live failure:
+
+- early Tahoe power traffic briefly requested `0`, then returned to `1`
+- the local port treated that as a real OFF edge
+- `WCLSystemStateManager` saw `DRIVER_UNAVAILABLE`
+- external `SSID/BSSID/CURRENT_NETWORK` stayed at `0xe0822403`
+
+So the remaining bug is not "missing another ready bulletin". The remaining bug
+is applying bootstrap `setPOWER(...)` transitions too early.
+
 ## Tahoe Driver-Available Producer Correction
 
 Live runtime on build `2820901` and the newer Tahoe decompile establish one

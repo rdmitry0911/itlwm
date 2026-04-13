@@ -407,6 +407,9 @@ public:
     
     //IO80211
     uint8_t power_state;
+    uint8_t tahoeRequestedPowerState;
+    bool tahoeBootstrapPowerPending;
+    bool tahoeBootstrapPowerWindowOpen;
     struct ieee80211_node *fNextNodeToSend;
     bool fScanResultWrapping;
     IOTimerEventSource *scanSource;
