@@ -757,3 +757,51 @@ The important Tahoe consequences are:
   packed `0x1c` ABI carrier
 - `OFFLOAD_TCPKA_ENABLE` cannot remain `typedef UInt`; the recovered getter and
   setter both prove it is a packed `version + u32 enabled` carrier
+
+## Q5 Closure: remaining raw-6 getter paths removed
+
+The next pass closes the remainder of the raw-`6` getter queue.
+
+Recovered Apple evidence now covers the remaining helper split strongly enough:
+
+- `AppleBCMWLANCore::getMCS_INDEX_SET(...)` delegates to
+  `IO80211BssManager::getCurrentMCSSet(...)`
+- `WCLConfigManager::getNOISE(...)` delegates to
+  `IO80211BssManager::getCurrentNoise(short&)`
+- recovered `AppleBCMWLANCore::getMCS(...)` is a cached scalar carrier, not an
+  association-gated helper
+
+That is enough to close the raw-fallback queue itself:
+
+- `getMCS_INDEX_SET`
+- `getNOISE`
+- `getMCS`
+
+now stop leaking raw POSIX `6` in both the Tahoe Skywalk path and the legacy
+STA dispatcher.
+
+`getTXPOWER` also leaves the raw-`6` queue in this batch, but its remaining
+Apple mismatch is no longer a `Q5` item. The exact reference producer still
+uses the config-backed `"qtxpower"` transport, so the source-transport
+exactness remains open under `Q13`, not under the old raw-getter queue.
+
+## Q3 Closure: ready-state queue closed, hidden object exactness moved to Q13
+
+The latest `+0x1510` xref pass shows that the hidden object is broader than the
+original ready-state bug:
+
+- slot `+0x9f8` carries `CoreWiFiDriverReadyKey`
+- but the same object also services platform/ring property fetches (`+0x970`),
+  board/chip identity queries (`+0xa30`), boot/fault paths, analytics, and
+  failure reporting
+
+That means the remaining open work is no longer a standalone ready-state queue.
+`Q3` is closed at the observable producer/consumer boundary:
+
+- key/value shape is recovered
+- value type is corrected to `OSString("true"/"false")`
+- publication stays on the interface-side IOService property surface that Tahoe
+  consumers actually read
+
+What remains open is the exact concrete class / full method map for the hidden
+`+0x1510` object. That broader hidden-surface lift now belongs to `Q13`.

@@ -432,14 +432,13 @@ getTXPOWER(OSObject *object,
                            struct apple80211_txpower_data *txd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(txd, 0, sizeof(*txd));
-        txd->version = APPLE80211_VERSION;
-        txd->txpower = ic->ic_txpower;
-        txd->txpower_unit = APPLE80211_UNIT_PERCENT;
-        return kIOReturnSuccess;
-    }
-    return 6;
+    if (txd == NULL)
+        return kIOReturnBadArgument;
+    memset(txd, 0, sizeof(*txd));
+    txd->version = APPLE80211_VERSION;
+    txd->txpower = ic->ic_txpower;
+    txd->txpower_unit = APPLE80211_UNIT_PERCENT;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -736,15 +735,20 @@ IOReturn AirportItlwm::
 getMCS_INDEX_SET(OSObject *object, struct apple80211_mcs_index_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(ad, 0, sizeof(*ad));
-        ad->version = APPLE80211_VERSION;
-        size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
-        for (int i = 0; i < size; i++)
-            ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
-        return kIOReturnSuccess;
+    if (ad == NULL)
+        return kIOReturnBadArgument;
+    if (ic->ic_bss == NULL)
+        return static_cast<IOReturn>(0xe0822403);
+
+    memset(ad, 0, sizeof(*ad));
+    ad->version = APPLE80211_VERSION;
+    size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
+    bool hasAnyMcsBit = false;
+    for (size_t i = 0; i < size; i++) {
+        ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
+        hasAnyMcsBit |= ad->mcs_set_map[i] != 0;
     }
-    return 6;
+    return hasAnyMcsBit ? kIOReturnSuccess : static_cast<IOReturn>(0xe00002f0);
 }
 
 IOReturn AirportItlwm::
@@ -963,16 +967,21 @@ getNOISE(OSObject *object,
                          struct apple80211_noise_data *nd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(nd, 0, sizeof(*nd));
-        nd->version = APPLE80211_VERSION;
-        nd->num_radios = 1;
-        nd->noise[0]
-        = nd->aggregate_noise = -fHalService->getDriverInfo()->getBSSNoise();
-        nd->noise_unit = APPLE80211_UNIT_DBM;
-        return kIOReturnSuccess;
-    }
-    return 6;
+    if (nd == NULL)
+        return kIOReturnBadArgument;
+    if (ic->ic_bss == NULL)
+        return static_cast<IOReturn>(0xe0822403);
+
+    int32_t noise = -fHalService->getDriverInfo()->getBSSNoise();
+    if (noise == 0)
+        return 0x66;
+
+    memset(nd, 0, sizeof(*nd));
+    nd->version = APPLE80211_VERSION;
+    nd->num_radios = 1;
+    nd->noise[0] = nd->aggregate_noise = noise;
+    nd->noise_unit = APPLE80211_UNIT_DBM;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -1308,10 +1317,10 @@ IOReturn AirportItlwm::
 getMCS(OSObject *object, struct apple80211_mcs_data* md)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN ||  ic->ic_bss == NULL || !md)
-        return 6;
+    if (md == NULL)
+        return kIOReturnBadArgument;
     md->version = APPLE80211_VERSION;
-    md->index = ic->ic_bss->ni_txmcs;
+    md->index = (ic->ic_bss != NULL) ? static_cast<uint32_t>(ic->ic_bss->ni_txmcs) : 0;
     return kIOReturnSuccess;
 }
 

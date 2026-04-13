@@ -596,6 +596,7 @@ private:
     bool cachedDhcpRenewalData;
     uint32_t cachedBatteryPowerSaveMode;
     uint32_t cachedPowerProfile;
+    uint32_t cachedCurrentMcs;
     uint32_t cachedIPv4Address;
     uint32_t cachedIPv4Netmask;
     uint32_t cachedIPv4Reserved;

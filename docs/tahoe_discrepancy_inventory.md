@@ -29,20 +29,20 @@ This inventory is intentionally split into:
 
 - `Q2 BSD Attach / Identity`:
   no currently open confirmed discrepancy beyond the constructor/hidden-object
-  dependency carried by `Q1` / `Q3`
+  dependency carried by `Q1` / `Q13`
 
 - `Q3 Ready-State / Hidden Producer`:
-  open
-  visible key/value shape recovered, hidden interface-side producer object not
-  yet modeled 1:1
+  closed
+  visible ready-state contract is matched; remaining hidden-object exactness is
+  now tracked under `Q13`
 
 - `Q4 Early IOC Bring-up`:
   the currently known mandatory Tahoe bring-up IOC blockers are closed
 
 - `Q5 Getter Cluster`:
-  partially closed
-  `RATE / RATE_SET / RSSI` recovered, `MCS_INDEX_SET / NOISE / TXPOWER / MCS`
-  still open
+  closed
+  raw-`6` getter surface removed; remaining `qtxpower` source exactness moved
+  under `Q13`
 
 - `Q6 State-Carriers`:
   first confirmed carrier batch closed
@@ -207,30 +207,25 @@ This inventory is intentionally split into:
 
 ## Open Confirmed
 
-### 1. Raw `return 6` getter cluster still present in live-hit Tahoe paths
+### 1. Exact `qtxpower` source route is still not lifted 1:1
 
 Files:
 
 - [AirportItlwmSkywalkInterface.cpp](/Users/bob/Projects/itlwm/AirportItlwm/AirportItlwmSkywalkInterface.cpp)
 - [AirportSTAIOCTL.cpp](/Users/bob/Projects/itlwm/AirportItlwm/AirportSTAIOCTL.cpp)
 
-Current raw `6` return sites still exist in getter paths including:
+Current state:
 
-- `getMCS_INDEX_SET`
-- `getTXPOWER`
-- `getNOISE`
-- `getMCS`
+- `getMCS_INDEX_SET`, `getNOISE`, and `getMCS` no longer leak raw POSIX `6`
+- `getTXPOWER` also no longer leaks raw `6`
+- the remaining discrepancy is now the exact producer source, not the
+  user-visible error-code shape
 
 Why this stays open:
 
-- live Tahoe IOC logs previously showed raw `6` for several of these selectors
-- the remaining open items still depend on helper/body recovery that has not
-  yet been matched to trustworthy local carrier/state sources
-
-Next required evidence:
-
-- recover helper-level return semantics for the not-associated path of the
-  BSS-manager-backed getters before touching them
+- Apple still queries `"qtxpower"` through the core config transport
+- the port does not yet expose that exact config source 1:1
+- this mismatch now belongs to `Q13`, not to the closed `Q5` queue
 
 Recovered Apple helper semantics now available:
 
@@ -268,9 +263,9 @@ Concrete sub-items:
 
 - `Q5-MCSSET-003`
   file: `AirportItlwmSkywalkInterface.cpp::getMCS_INDEX_SET`
-  current: `if RUN else 6`
+  current: closed
   reference: BSS-manager current-MCS-set contract
-  status: `open_needs_decompile`
+  status: `closed`
 
 - `Q5-RSSI-004`
   file: `AirportItlwmSkywalkInterface.cpp::getRSSI`
@@ -280,21 +275,21 @@ Concrete sub-items:
 
 - `Q5-NOISE-005`
   file: `AirportItlwmSkywalkInterface.cpp::getNOISE`
-  current: local `if RUN else 6` still diverges
+  current: closed
   reference: BSS-manager current-noise contract
-  status: `open_needs_decompile`
+  status: `closed`
 
 - `Q5-TXPOWER-006`
   file: `AirportItlwmSkywalkInterface.cpp::getTXPOWER`
-  current: local ieee80211-state reconstruction, else `6`
+  current: raw-`6` portion closed; exact source remains under `Q13`
   reference: `"qtxpower"` config query path
-  status: `open_needs_decompile`
+  status: `closed` as `Q5`, `open_needs_decompile` as `Q13`
 
 - `Q5-MCS-007`
   file: `AirportItlwmSkywalkInterface.cpp::getMCS`
-  current: local reconstruction with raw `6` fallback
-  reference: still needs exact Apple helper/body recovery
-  status: `open_needs_decompile`
+  current: closed
+  reference: cached scalar carrier
+  status: `closed`
 
 ### 2. Large Tahoe Skywalk vtable surface still hardcoded to `kIOReturnUnsupported`
 
@@ -530,12 +525,10 @@ Still open from [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tah
 These must not be converted into ack-only stubs. Apple delegates them into
 roam/net/bgscan/join/power subsystems.
 
-### 4. Ready-state producer target object is still only surface-matched
+### 4. Hidden `+0x1510` object method surface is still only partially lifted
 
-Current code publishes `CoreWiFiDriverReadyKey` through `fNetIf->setProperty`.
-
-Apple evidence says the producer target is the hidden interface-side object at
-core-state `+0x1510`, which services more than registry-like property writes:
+The standalone ready-state queue is closed, but the concrete hidden object
+behind the `+0x1510` pointer remains open as a larger infrastructure surface:
 
 - ready-state publication (`+0x9f8`)
 - boot-state / analytics calls
@@ -544,10 +537,10 @@ core-state `+0x1510`, which services more than registry-like property writes:
 
 Why this remains open:
 
-- we matched the visible key/value shape
+- we matched the visible ready-state contract already
 - we have **not** yet recovered or recreated the full hidden object contract
-- until that object is identified/modeled more precisely, ready-state remains
-  only partially lifted
+- until that object is identified/modeled more precisely, the broader hidden
+  method surface remains a `Q13` lift/classification task
 
 ### 5. `getRATE`/`getTXPOWER` nvram-backed query contracts are not yet Apple-shaped
 

@@ -676,6 +676,7 @@ init()
     cachedDhcpRenewalData = false;
     cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
+    cachedCurrentMcs = 0;
     cachedIPv4Address = 0;
     cachedIPv4Netmask = 0;
     cachedIPv4Reserved = 0;
@@ -971,17 +972,31 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(ad, 0, sizeof(*ad));
-        ad->version = APPLE80211_VERSION;
-        size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
-        for (int i = 0; i < size; i++)
-            ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
-        XYLog("DEBUG %s OK\n", __FUNCTION__);
-        return kIOReturnSuccess;
+    if (ad == NULL)
+        return kIOReturnBadArgument;
+    if (ic->ic_bss == NULL)
+        return kApple80211ErrDriverNotAvailable;
+
+    memset(ad, 0, sizeof(*ad));
+    ad->version = APPLE80211_VERSION;
+    size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
+    bool hasAnyMcsBit = false;
+    for (size_t i = 0; i < size; i++) {
+        ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
+        hasAnyMcsBit |= ad->mcs_set_map[i] != 0;
     }
-    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
-    return 6;
+
+    // AppleBCMWLANCore::getMCS_INDEX_SET delegates to
+    // IO80211BssManager::getCurrentMCSSet(). That helper returns 0xe0822403
+    // when there is no current BSS and 0xe00002f0 when the cached MCS set is
+    // not marked valid. The port does not expose Apple's dedicated validity
+    // bit, so the closest trustworthy local carrier is "current BSS exists but
+    // the copied MCS map is still empty" -> no cached value.
+    if (!hasAnyMcsBit)
+        return kApple80211ErrNoCachedValue;
+
+    XYLog("DEBUG %s OK\n", __FUNCTION__);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -1072,14 +1087,18 @@ IOReturn AirportItlwmSkywalkInterface::
 getTXPOWER(struct apple80211_txpower_data *txd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(txd, 0, sizeof(*txd));
-        txd->version = APPLE80211_VERSION;
-        txd->txpower = ic->ic_txpower;
-        txd->txpower_unit = APPLE80211_UNIT_PERCENT;
-        return kIOReturnSuccess;
-    }
-    return 6;
+    if (txd == NULL)
+        return kIOReturnBadArgument;
+    memset(txd, 0, sizeof(*txd));
+    txd->version = APPLE80211_VERSION;
+    txd->txpower = ic->ic_txpower;
+    txd->txpower_unit = APPLE80211_UNIT_PERCENT;
+    // AppleBCMWLANCore::getTXPOWER runs through the config-backed "qtxpower"
+    // transport, not through an association-gated raw state check. Until the
+    // exact config query route is lifted, stop leaking raw POSIX 6 to Tahoe
+    // consumers and expose the current cached txpower scalar instead. The
+    // remaining producer-source mismatch stays tracked separately in Q13.
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -1432,18 +1451,22 @@ IOReturn AirportItlwmSkywalkInterface::
 getNOISE(struct apple80211_noise_data *nd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(nd, 0, sizeof(*nd));
-        nd->version = APPLE80211_VERSION;
-        nd->num_radios = 1;
-        nd->noise[0]
-        = nd->aggregate_noise = -fHalService->getDriverInfo()->getBSSNoise();
-        nd->noise_unit = APPLE80211_UNIT_DBM;
-        XYLog("DEBUG %s noise=%d\n", __FUNCTION__, nd->noise[0]);
-        return kIOReturnSuccess;
-    }
-    XYLog("DEBUG %s ic_state=%d → 6\n", __FUNCTION__, ic->ic_state);
-    return 6;
+    if (nd == NULL)
+        return kIOReturnBadArgument;
+    if (ic->ic_bss == NULL)
+        return kApple80211ErrDriverNotAvailable;
+
+    int32_t noise = -fHalService->getDriverInfo()->getBSSNoise();
+    if (noise == 0)
+        return 0x66;
+
+    memset(nd, 0, sizeof(*nd));
+    nd->version = APPLE80211_VERSION;
+    nd->num_radios = 1;
+    nd->noise[0] = nd->aggregate_noise = noise;
+    nd->noise_unit = APPLE80211_UNIT_DBM;
+    XYLog("DEBUG %s noise=%d\n", __FUNCTION__, nd->noise[0]);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -1651,13 +1674,17 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS(struct apple80211_mcs_data* md)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN ||  ic->ic_bss == NULL || !md) {
-        XYLog("DEBUG %s ic_state=%d ic_bss=%p → 6\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
-        return 6;
-    }
+    if (md == NULL)
+        return kIOReturnBadArgument;
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        cachedCurrentMcs = static_cast<uint32_t>(ic->ic_bss->ni_txmcs);
+
+    // The recovered Apple getMCS producer is a cached scalar carrier, not the
+    // old "associated or raw 6" branch that Tahoe was accidentally exposing.
     md->version = APPLE80211_VERSION;
-    md->index = ic->ic_bss->ni_txmcs;
-    XYLog("DEBUG %s mcs=%d\n", __FUNCTION__, md->index);
+    md->index = cachedCurrentMcs;
+    XYLog("DEBUG %s mcs=%u ic_state=%d ic_bss=%p\n",
+          __FUNCTION__, md->index, ic->ic_state, ic->ic_bss);
     return kIOReturnSuccess;
 }
 
