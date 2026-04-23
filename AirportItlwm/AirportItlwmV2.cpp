@@ -2715,22 +2715,10 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 IO80211SkywalkInterface *AirportItlwm::
 getPrimarySkywalkInterface(void)
 {
-    // Tahoe family call sites for bootstrap getters (SSID / BSSID /
-    // CURRENT_NETWORK / scan-manager lookups) dispatch through controller slot
-    // +0xc80 (`getPrimarySkywalkInterface()`). The base implementation reads a
-    // controller cache pointer at `controller+0x120+0x188`; on the local port
-    // that cache stayed empty, so family-side getters kept returning
-    // driver-unavailable even though `fNetIf` already existed and was bound.
-    //
-    // Live 0707196 proof:
-    // - `en0` existed, `CoreWiFiDriverReadyKey="true"`, scan reached
-    //   `fakeScanDone`
-    // - yet external SSID/BSSID/CURRENT_NETWORK still failed
-    // - the broken V3 `apple80211Request(...)` hypothesis did not compile and
-    //   was wrong: Tahoe V3 does not declare that virtual at all
-    //
-    // Returning the actual bound Skywalk interface here matches the family's
-    // expected primary-interface source without inventing raw offset writes.
+    // Tahoe family bootstrap/current-link paths still consult controller slot
+    // `+0xc80` for the bound Skywalk interface before deeper request routing.
+    // Returning `fNetIf` here keeps that family-visible primary-interface seam
+    // aligned with the already created infrastructure interface.
     return OSDynamicCast(IO80211SkywalkInterface, fNetIf);
 }
 
@@ -2870,21 +2858,12 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
               __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
               isSet, interface, data);
 
-    // Tahoe V3 still exposes the controller-side `handleCardSpecific(...,isSet)`
-    // seam even though the older `apple80211Request(...)` override no longer
-    // exists in the public ABI. The active external current-link failures on
-    // the loaded `CR-044` runtime prove that the visible `ifname['en0']`
-    // bootstrap plane is not reaching the already instrumented Skywalk BSD
-    // bridge or per-selector helper bodies at all:
-    // - `Apple80211GetWithIOCTL ... SSID/BSSID -> 0xe0822403`
-    // - `Apple80211IOCTLSetWrapper ... ROAM_PROFILE -> 0xe0822403`
-    // - no matching `processBSDCommand/processApple80211Ioctl/getSSID/getBSSID`
-    //   hits appear in the same boot window
-    //
-    // Route only the proven bootstrap/current-link GET cluster plus the
-    // already-recovered visible SET selectors, including set-side
-    // ROAM_PROFILE, through the same whitelisted Skywalk helper plane.
-    // Everything else stays on inherited controller behavior.
+    // Keep the carried Tahoe card-specific bridge for the visible set-side and
+    // hidden-association selectors that arrive on this controller seam.
+    // Public request-number fallback is now tracked separately on interface
+    // slot `[411] isCommandProhibited(int)`, so `handleCardSpecific(...)`
+    // remains only the supplementary ingress for selectors that never use that
+    // public request gate.
     if (data != nullptr && interface != nullptr) {
         apple80211req req;
         bzero(&req, sizeof(req));

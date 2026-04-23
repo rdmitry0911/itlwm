@@ -22,23 +22,24 @@ Yet the live external bootstrap path still returns:
 So the active bootstrap getters are not using the already-lifted Skywalk
 helpers directly.
 
-The earlier `apple80211Request(...)` conclusion was wrong for Tahoe V3.
-`IO80211ControllerV3` does not declare that virtual at all. The actual common
-Tahoe path goes through controller slot `+0xc80`
-(`IO80211Controller::getPrimarySkywalkInterface()`), and family getter bodies
-then consult:
+The earlier "only `getPrimarySkywalkInterface()` matters" conclusion was too
+narrow. Tahoe does use controller slot `+0xc80`
+(`IO80211Controller::getPrimarySkywalkInterface()`) as one bootstrap seam, and
+family getter bodies then consult:
 
 - controller primary-interface cache `controller+0x120+0x188`
 - peer-manager interface refs `+0x550/+0x558`
 
-That matches live `0707196` better than the failed V3 request-override idea:
-the interface already exists (`en0`, `CoreWiFiDriverReadyKey="true"`,
+That explains the early `0707196` state better than a missing helper-body
+theory: the interface already exists (`en0`, `CoreWiFiDriverReadyKey="true"`,
 `fakeScanDone` posted), but the family bootstrap getters still see an empty
 primary-interface source and return `0xe0822403` / raw `6`.
 
-The next fix therefore belongs in controller-side primary-interface exposure
-(`getPrimarySkywalkInterface()` / attach bookkeeping), not in another request
-bridge.
+Later decomp and binary checks showed this is not the whole story: public
+`SSID/BSSID/CHANNEL/CURRENT_NETWORK/ROAM_PROFILE` fallback also consults
+interface slot `[411] isCommandProhibited(int)` with those same request
+numbers after IOUC/WCL miss, so Tahoe needs both the primary-interface seam and
+the public request gate to be correctly bound.
 
 ## Tahoe Bootstrap POWER Contract Correction
 
@@ -2857,3 +2858,61 @@ This is the narrowest causally supported correction for the current boot:
 complete Tahoe V3 controller-side GET/SET dispatch into the already recovered
 local Skywalk helper bodies, instead of leaking raw `0xe0822403` before those
 helpers are entered.
+
+The next reboot into the approved `CR-048` runtime disproved that controller
+claim as the active seam for this boot. The visible failures remained:
+
+- `2026-04-21 11:00:03.117` `APPLE80211_IOC_SSID -> 0xe0822403`
+- `2026-04-21 11:00:03.118` `APPLE80211_IOC_BSSID -> 0xe0822403`
+- `2026-04-21 11:00:03.125` `APPLE80211_IOC_ROAM_PROFILE -> 0xe0822403`
+- `2026-04-21 11:00:04.962` `AUTO-JOIN ... driver not available`
+
+But the stronger local proof is not another hidden command family. It is the
+public request-number fallback itself.
+
+Primary-source `IO80211Family` decomp already shows the active public wrappers
+for the failing selectors:
+
+- `FUN_ffffff80022a2910` sends `sendIOUCToWcl(..., 1, ..., 0x28)` and falls
+  back to `FUN_ffffff80021e28b2`
+- `FUN_ffffff8002215524` sends `sendIOUCToWcl(..., 9, ..., 0xc)` and falls
+  back to `FUN_ffffff80021e2b46`
+- `FUN_ffffff80021e29a7` falls back with request number `4`
+- `FUN_ffffff80021e3912` falls back with request number `0x67`
+- `FUN_ffffff80021e465f` falls back directly with request number `0xd8`
+- `FUN_ffffff80021e94fa` falls back directly with request number `0xd8`
+- the visible wrapper-side producer for the same selector sends
+  `sendIOUCToWcl(..., 0xd8, ..., 0x180)` before those fallback helpers
+
+And those fallback helpers all do the same controller call:
+
+- `(**(code **)(*param_1 + 0xcc8))(param_1, request_number)`
+
+with public request numbers `1`, `4`, `9`, `0x67`, and `0xd8`.
+
+`IO80211_vtables_BootKC_26.2_25C56.txt` maps that `+0xcc8` slot to
+`IO80211SkywalkInterface::isCommandProhibited(int)`. That makes `CR-049`'s
+hidden `0x103/0x104/0x15e` theory unnecessary and, after review, wrong to keep
+carrying. The tighter 1:1 mismatch is on the local Tahoe interface gate:
+
+- the active local helper owners for `SSID/BSSID/CHANNEL/CURRENT_NETWORK/
+  ROAM_PROFILE` already exist in `processApple80211Ioctl(...)`
+- but `AirportItlwmSkywalkInterface::isCommandProhibited(int)` still admitted
+  only the carried hidden association commands `0x45/0x46`
+- the public fallback request numbers `1/4/9/0x67/0xd8` were therefore still
+  left on inherited family filtering
+
+So the current boot is still dying before the already recovered local helper
+plane because the public interface request-number gate itself is too narrow.
+The narrow correction is:
+
+- keep `isCommandProhibited(...)` narrow to proven selectors only
+- retain the already approved hidden association commands `0x45/0x46`
+- additionally admit only the proven public fallback request numbers:
+  `1`, `4`, `9`, `0x67`, `0xd8`
+- continue delegating those admitted selectors to the already permissive local
+  controller policy:
+  `instance != nullptr ? instance->isCommandProhibited(command) : false`
+
+That is the new active root:
+`TAHOE-INTERFACE-PUBLIC-REQUEST-GATE-023`.

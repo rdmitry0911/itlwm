@@ -93,13 +93,16 @@ This inventory is intentionally split into:
   live build `0707196` proves the active external bootstrap getters do not
   consume the already-fixed helper bodies through the expected controller /
   peer-manager primary-interface sources. The earlier
-  `apple80211Request(...)` conclusion was wrong for Tahoe V3:
-  `IO80211ControllerV3` does not declare that virtual at all. The family
-  decompile instead routes the common bootstrap getter plane through
+  "only `getPrimarySkywalkInterface()` matters" conclusion was incomplete.
+  The family decompile does route one common bootstrap getter plane through
   controller slot `+0xc80` (`getPrimarySkywalkInterface()`), then reads
   controller cache `+0x188` and peer-manager refs `+0x550/+0x558`. That is
-  the real Tahoe bootstrap exposure gap for
+  one real Tahoe bootstrap exposure gap for
   `SSID/BSSID/CHANNEL/VIRTUAL_IF_ROLE/VIRTUAL_IF_PARENT`.
+  Later decomp/runtime work proved Tahoe public selector fallback also still
+  uses interface slot `[411] isCommandProhibited(int)` with the same request
+  numbers after IOUC/WCL miss, so both the primary-interface seam and the
+  public request gate matter on 26.x.
 
 - `Tahoe driver-available producer contract`:
   live build `2820901` showed that `CoreWiFiDriverReadyKey = "true"` in
@@ -1920,3 +1923,61 @@ reference producer.
     `handleCardSpecific(..., isSet)`
   so the narrowest live mismatch is incomplete controller-side GET/SET routing,
   not BSD attach identity and not guessed current-AP cache seeding.
+
+### 30. Active bootstrap/current-link failures now prove a public interface request-gate mismatch
+
+- anomaly_id: `TAHOE-INTERFACE-PUBLIC-REQUEST-GATE-023`
+- class: `SYSTEM_CONTRACT_FIX`
+- current symptom on loaded runtime `82508171-BB7E-3B30-89D7-4B3D1D625879`:
+  - `2026-04-21 11:00:03.117`
+    `ifname['en0'] APPLE80211_IOC_SSID -> 0xe0822403`
+  - `2026-04-21 11:00:03.118`
+    `ifname['en0'] APPLE80211_IOC_BSSID -> 0xe0822403`
+  - `2026-04-21 11:00:03.125`
+    `ifname['en0'] APPLE80211_IOC_ROAM_PROFILE -> 0xe0822403`
+  - `2026-04-21 11:00:04.962`
+    `AUTO-JOIN ... error=(37 'driver not available')`
+- decisive narrowing:
+  - current `system_profiler SPAirPortDataType` still shows `en0` with visible
+    2.4 GHz / 5 GHz candidates, so this is not another startup-visibility
+    regression
+  - `CR-049` was rejected because the proposed hidden `0x103/0x104/0x15e`
+    mapping is contradicted by Apple-side command naming already present in the
+    repo
+  - the stronger decomp path is the public request-number fallback itself:
+    - `FUN_ffffff80022a2910` sends `sendIOUCToWcl(..., 1, ..., 0x28)` then
+      falls back to `FUN_ffffff80021e28b2`
+    - `FUN_ffffff8002215524` sends `sendIOUCToWcl(..., 9, ..., 0xc)` then
+      falls back to `FUN_ffffff80021e2b46`
+    - `FUN_ffffff80021e29a7` falls back with request number `4`
+    - `FUN_ffffff80021e3912` falls back with request number `0x67`
+    - `FUN_ffffff80021e465f` falls back directly with request number `0xd8`
+    - `FUN_ffffff80021e94fa` falls back directly with request number `0xd8`
+    - the visible wrapper-side producer for the same selector also uses
+      `sendIOUCToWcl(..., 0xd8, ..., 0x180)` before those fallback helpers
+- Apple/decomp contract that now matters:
+  - `IO80211Family` public fallback helpers call interface slot
+    `*param_1 + 0xcc8` with the public request numbers
+    `1`, `4`, `9`, `0x67`, and `0xd8`
+  - `IO80211_vtables_BootKC_26.2_25C56.txt` maps that slot to
+    `[411] IO80211SkywalkInterface::isCommandProhibited(int)`
+- local mismatch before fix:
+  - the local Skywalk helper owners already existed for
+    `SSID/BSSID/CHANNEL/CURRENT_NETWORK/ROAM_PROFILE`
+  - but `AirportItlwmSkywalkInterface::isCommandProhibited(int)` still admitted
+    only the carried hidden association commands `0x45/0x46`
+  - the public fallback request numbers were therefore still left on inherited
+    family filtering before the helper plane
+- exact correction:
+  - keep `isCommandProhibited(...)` narrow to proven selectors only
+  - retain the already approved hidden association commands `0x45/0x46`
+  - additionally admit only the proven public fallback request numbers:
+    `1`, `4`, `9`, `0x67`, `0xd8`
+  - continue delegating those admitted selectors to the already permissive
+    controller policy
+- why this is narrower and more provable than `CR-049`:
+  - it follows the exact public request-number seam already shown in family
+    decomp
+  - it removes the contradicted hidden `0x103/0x104/0x15e` classification from
+    the runtime diff
+  - it restores the exact interface gate Apple already uses for that fallback

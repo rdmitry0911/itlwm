@@ -52,6 +52,35 @@ static const char *tahoeApple80211ReqName(int reqType)
     return "UNKNOWN";
 }
 
+static bool isTahoeHiddenAssocCommand(int command)
+{
+    switch (command) {
+        case 0x45:
+        case 0x46:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool isTahoePublicFallbackRequest(int command)
+{
+    // Keep the local public enum for the fifth selector: the header defines
+    // `APPLE80211_IOC_ROAM_PROFILE` as decimal 216, i.e. hex 0xd8. Tahoe
+    // family fallback wrappers also consult slot [411] with 0xd8 for that
+    // selector, so use the enum constant here instead of spelling a raw hex.
+    switch (command) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_CHANNEL:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+        case APPLE80211_IOC_ROAM_PROFILE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool isTahoeCurrentLinkProbeReq(int reqType)
 {
     switch (reqType) {
@@ -930,14 +959,13 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // Keep the explicit Tahoe interface seam for hidden 0x45/0x46, but do not
-    // add any extra side effects on ordinary startup commands. Post-CR-033
-    // runtime logs already showed `isCommandProhibited(0xc)=0` immediately
-    // before `APPLE80211_IOC_CARD_CAPABILITIES failed`, which means the policy
-    // bit itself did not change on the failing bootstrap path. The only extra
-    // behavior introduced there was per-command logging inside this gate.
-    if (command == 0x45 || command == 0x46)
-        return false;
+    // Family public fallback for `SSID`/`CHANNEL`/`BSSID`/`CURRENT_NETWORK`/
+    // `ROAM_PROFILE` and the carried hidden association path both consult
+    // interface slot `[411] isCommandProhibited(int)` after IOUC/WCL miss.
+    // Keep that gate narrow but admit the proven public request numbers plus
+    // the already approved hidden `0x45/0x46` association carrier.
+    if (isTahoeHiddenAssocCommand(command) || isTahoePublicFallbackRequest(command))
+        return instance != nullptr ? instance->isCommandProhibited(command) : false;
 
     return super::isCommandProhibited(command);
 }
