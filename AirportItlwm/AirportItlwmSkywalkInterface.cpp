@@ -6,6 +6,7 @@
 //  Copyright © 2023 钟先耀. All rights reserved.
 //
 #include "AirportItlwmV2.hpp"
+#include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
@@ -1806,6 +1807,15 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
     // unsupported from this hidden fallback. Non-association callers keep the
     // prior unsupported contract.
     if (data != nullptr && length == 0x3ad8) {
+        if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockHiddenAssoc)) {
+            airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockHiddenAssoc,
+                                           kAirportItlwmRegDiagPathHiddenAssoc,
+                                           length);
+            airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                           nullptr, 0, nullptr, 0, 0, 0,
+                                           kIOReturnUnsupported);
+            return kIOReturnUnsupported;
+        }
         XYLog("DEBUG %s routing hidden-assoc carrier len=0x%x into setWCL_ASSOCIATE\n",
               __FUNCTION__, length);
         return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
@@ -3303,6 +3313,20 @@ IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
     RT2_SET(3); sRT.assocCount++;
+    if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
+                                       kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad != nullptr ? ad->ad_ssid_len : 0);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad != nullptr ? ad->ad_ssid : nullptr,
+                                       ad != nullptr ? ad->ad_ssid_len : 0,
+                                       ad != nullptr ? reinterpret_cast<const uint8_t *>(&ad->ad_bssid) : nullptr,
+                                       ad != nullptr ? ad->ad_auth_lower : 0,
+                                       ad != nullptr ? ad->ad_auth_upper : 0,
+                                       ad != nullptr ? ad->ad_rsn_ie_len : 0,
+                                       kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
     XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
           (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
           (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
@@ -3316,17 +3340,31 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
 
-    if (!ad)
+    if (!ad) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       nullptr, 0, nullptr, 0, 0, 0,
+                                       kIOReturnError);
         return kIOReturnError;
+    }
     
     XYLog("DEBUG %s ic_state=%d ic_opmode=%d\n", __FUNCTION__, ic->ic_state, ic->ic_opmode);
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad->ad_ssid, ad->ad_ssid_len,
+                                       reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                       ad->ad_auth_lower, ad->ad_auth_upper,
+                                       ad->ad_rsn_ie_len, kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
         XYLog("DEBUG %s SKIP: ic_state=%d (already in ASSOC/AUTH)\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad->ad_ssid, ad->ad_ssid_len,
+                                       reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                       ad->ad_auth_lower, ad->ad_auth_upper,
+                                       ad->ad_rsn_ie_len, kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
@@ -3343,6 +3381,11 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 
         associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index);
     }
+    airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                   ad->ad_ssid, ad->ad_ssid_len,
+                                   reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                   ad->ad_auth_lower, ad->ad_auth_upper,
+                                   ad->ad_rsn_ie_len, kIOReturnSuccess);
     return kIOReturnSuccess;
 }
 
@@ -3762,8 +3805,12 @@ IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
     RT2_SET(3); sRT.assocCount++;
-    if (!candidates)
+    if (!candidates) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       nullptr, 0, nullptr, 0, 0, 0,
+                                       kIOReturnBadArgument);
         return kIOReturnBadArgument;
+    }
 
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
@@ -3781,6 +3828,18 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
 
+    if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockHiddenAssoc)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockHiddenAssoc,
+                                       kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid_len);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid, ssid_len,
+                                       reinterpret_cast<const uint8_t *>(bssid),
+                                       auth_lower, auth_upper, rsn_ie_len,
+                                       kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
+
     char ssid_str[APPLE80211_MAX_SSID_LEN + 1];
     memcpy(ssid_str, ssid, ssid_len);
     ssid_str[ssid_len] = '\0';
@@ -3797,11 +3856,21 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid, ssid_len,
+                                       reinterpret_cast<const uint8_t *>(bssid),
+                                       auth_lower, auth_upper, rsn_ie_len,
+                                       kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
         XYLog("DEBUG %s SKIP: already in ASSOC/AUTH ic_state=%d\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid, ssid_len,
+                                       reinterpret_cast<const uint8_t *>(bssid),
+                                       auth_lower, auth_upper, rsn_ie_len,
+                                       kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
@@ -3825,6 +3894,11 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         associateSSID(const_cast<uint8_t *>(ssid), ssid_len, *bssid,
                       auth_lower, auth_upper, NULL, 0, 0);
     }
+    airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                   ssid, ssid_len,
+                                   reinterpret_cast<const uint8_t *>(bssid),
+                                   auth_lower, auth_upper, rsn_ie_len,
+                                   kIOReturnSuccess);
     return kIOReturnSuccess;
 }
 

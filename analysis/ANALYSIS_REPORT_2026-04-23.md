@@ -1,0 +1,71 @@
+# ANALYSIS REPORT 2026-04-23
+
+## ANOMALY
+- id: A-REGDIAG-BOOT-BIND-001
+- status: CORRELATED
+- symptom: после добавления прежнего диагностического слоя драйвер переставал быть видимым в Wi-Fi UI либо зависал в конце инициализации.
+- first visible manifestation: новый драйвер после перезагрузки не появлялся в UI; в другой попытке загрузка зависала в фазе драйвера.
+- expected system behavior: состояние CR-052 остается видимым в UI и показывает сети; диагностический слой не меняет system-facing topology, ordering, payload, return semantics или ownership.
+- actual behavior: прежняя диагностика добавляла отдельную IOKit/userclient поверхность и меняла код на чувствительных путях, после чего UI binding регрессировал.
+- divergence point: диагностическая поверхность была заведена через отдельный service/userclient и через изменения, затрагивающие boot/control path.
+- evidence:
+  - panic logs: runtime от пользователя: зависание при инициализации после установки диагностической сборки.
+  - runtime logs: runtime от пользователя: драйвер не виден в UI после установки диагностической сборки.
+  - ioreg: требуется новый after-fix снимок для текущего патча.
+  - packet traces: отсутствуют.
+  - firmware traces: отсутствуют.
+  - decomp: для текущей diagnostic-only задачи не используется как fixing evidence; патч не заявляет исправление Tahoe contract.
+  - docs: AGENT_EXECUTION_PROTOCOL_ITLWM допускает только behavior-neutral `DIAGNOSTIC_INSTRUMENTATION`.
+- candidate causes:
+  - подтверждена корреляция с изменением IOKit topology/userclient surface.
+  - подтверждена корреляция с инструментированием чувствительных control-path методов.
+  - недостаточно данных для утверждения единственной root cause.
+- rejected causes:
+  - CR-052 как база не отвергнута: пользователь подтвердил, что CR-052 виден в UI и показывает сети.
+- confirmed deviation: нет, это не фикс behavior; это замена способа сбора runtime evidence.
+- root cause: не подтверждена.
+- fix: не применяется; вносится только диагностическое инструментирование.
+- verification: сборка Tahoe, проверка отсутствия `IOUserClient`/новых diagnostic service/class строк, runtime пользователя: драйвер должен остаться видимым в UI, затем `airport_itlwm_regdiag get snapshot/trace` после попытки подключения.
+- notes: рабочий пример `../VoodooHDA` использует runtime flags и telemetry, но его IOUserClient-подход не переносится на AirportItlwm из-за уже наблюдавшейся чувствительности Wi-Fi binding surface.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-REGDIAG-BOOT-BIND-001
+- symptom: нужен диагностический слой для поиска причины, почему видимые в UI сети не подключаются, но прежний способ диагностики ломал загрузку/UI binding.
+- expected system behavior: без явного runtime-включения диагностика не меняет загрузку, IOKit matching, userclient negotiation, Wi-Fi control return path, packet ownership или event ordering.
+- actual behavior: прежний диагностический слой был небезопасен для boot/UI path.
+- exact divergence point: диагностический способ, а не CR-052 networking logic: отдельный service/userclient и изменения на contested control path.
+- evidence from runtime: пользователь подтвердил, что CR-052 виден в UI и показывает сети; диагностические сборки после этого не видны в UI или зависают.
+- evidence from decomp: не заявляется `REFERENCE_ALIGNMENT_FIX`; это `DIAGNOSTIC_INSTRUMENTATION`.
+- exact semantic mismatch between reference and our code: не применяется, патч не исправляет system contract.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- exact hypotheses being disambiguated:
+  - H1: framework вызывает hidden WCL associate carrier, а не public `setASSOCIATE`.
+  - H2: public/hidden associate доходит до драйвера, но net80211 state/auth/RSN/BSSID параметры не приводят к переходу в RUN.
+  - H3: link state меняется, но TX/RX/EAPOL path не проходит после association.
+  - H4: TX или RX Skywalk path теряет EAPOL/data после association.
+- exact probe points:
+  - `getAWDL_PEER_TRAFFIC_STATS` только как hidden-assoc carrier seam.
+  - `setASSOCIATE` и `setWCL_ASSOCIATE` на входе/выходе.
+  - `setLinkStateGated` после существующего `setLinkState`.
+  - `outputPacket` и `skywalkRxInput` только счетчики/результаты пакетов и EAPOL marker.
+  - `watchdogAction` только публикация registry snapshot/trace после явного enable.
+- why these probe points are sufficient: они покрывают переход от UI-visible network selection к public/hidden associate, затем link notification, затем TX/RX/EAPOL data path.
+- why instrumentation is behavior-neutral: по умолчанию все flags равны нулю; нет новых IOKit class/service/userclient/personality; нет новых полей в `AirportItlwm`; `get` из userspace читает только IORegistry свойства; `set` пишет только строковое свойство, применяемое существующим watchdog раз в секунду; без `Intervention` block flags не меняют return path.
+- what exact runtime evidence must be collected: `AirportItlwmDiagSnapshot`, `AirportItlwmDiagTrace`, kext log around one connection attempt, and optional packet-level counters with EAPOL markers.
+- why this is root cause and not just correlation: root cause не заявляется; патч предназначен для сбора missing runtime-evidence.
+- why proposed fix is 1:1 with reference architecture and semantics: не заявляется; diagnostic path deliberately out-of-band and system-invisible until manually enabled.
+- files/functions to modify:
+  - `include/ClientKit/AirportItlwmRegDiag.h`
+  - `AirportItlwm/AirportItlwmRegDiag.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwmRegDiag/airport_itlwm_regdiag.c`
+  - `scripts/build_regdiag.sh`
+- forbidden alternative fixes considered and rejected:
+  - новый `IOUserClient`: отвергнут, уже коррелировал с UI binding regression.
+  - новый diagnostic `IOService`/`registerService`: отвергнут, меняет IOKit topology.
+  - добавление member field в `AirportItlwm`: отвергнуто, меняет object layout.
+  - инструментирование `processApple80211Ioctl`/`isCommandProhibited`: отвергнуто как contested control seam.
+  - принудительный success/retry/replay/reorder: запрещено протоколом.
+- verification plan: `git diff --check`, сборка CLI, сборка Tahoe kext с BootKC symbol check, строковая проверка отсутствия старых diagnostic service/userclient поверхностей.

@@ -7,10 +7,13 @@
 //
 
 #include "AirportItlwmV2.hpp"
+#include "AirportItlwmRegDiag.hpp"
 #include <sys/_netstat.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_var.h>
+#include <libkern/c++/OSData.h>
+#include <libkern/c++/OSString.h>
 
 // Build identification must print the actual source revision in load logs so the
 // running kext can be matched 1:1 against the workspace and installed binary.
@@ -100,6 +103,510 @@ IOCommandGate *_fCommandGate;
 
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
 RuntimeDiag sRT = {};
+
+struct AirportItlwmRegDiagState {
+    uint32_t modeFlags;
+    uint32_t blockMask;
+    uint32_t lastControlSequence;
+    uint32_t snapshotSequence;
+    AirportItlwmRegDiagSnapshot snapshot;
+    AirportItlwmRegDiagTraceBuffer trace;
+};
+
+static AirportItlwmRegDiagState sRegDiag = {};
+
+static bool
+airportItlwmRegDiagEnabled(uint32_t modeMask)
+{
+    return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
+           (sRegDiag.modeFlags & modeMask) != 0;
+}
+
+static bool
+airportItlwmRegDiagLogEnabled()
+{
+    return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
+           (sRegDiag.modeFlags & kAirportItlwmRegDiagModeLog) != 0;
+}
+
+static void
+airportItlwmRegDiagInitTrace()
+{
+    sRegDiag.trace.version = AIRPORT_ITLWM_REGDIAG_ABI_VERSION;
+}
+
+static uint32_t
+airportItlwmRegDiagMinU32(uint32_t a, uint32_t b)
+{
+    return a < b ? a : b;
+}
+
+static void
+airportItlwmRegDiagCopyBytes(uint8_t *dst, uint32_t dstLen,
+                             const uint8_t *src, uint32_t srcLen)
+{
+    if (dst == nullptr || dstLen == 0)
+        return;
+    memset(dst, 0, dstLen);
+    if (src == nullptr || srcLen == 0)
+        return;
+    memcpy(dst, src, airportItlwmRegDiagMinU32(dstLen, srcLen));
+}
+
+static void
+airportItlwmRegDiagCopyCString(char *dst, uint32_t dstLen, const char *src)
+{
+    if (dst == nullptr || dstLen == 0)
+        return;
+    memset(dst, 0, dstLen);
+    if (src == nullptr)
+        return;
+    strlcpy(dst, src, dstLen);
+}
+
+static bool
+airportItlwmRegDiagParseU32Value(const char *value, uint32_t *out)
+{
+    if (value == nullptr || out == nullptr)
+        return false;
+
+    uint32_t base = 10;
+    if (value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
+        base = 16;
+        value += 2;
+    }
+
+    uint32_t result = 0;
+    bool seen = false;
+    for (const char *p = value; *p != '\0'; p++) {
+        uint32_t digit;
+        if (*p >= '0' && *p <= '9') {
+            digit = static_cast<uint32_t>(*p - '0');
+        } else if (base == 16 && *p >= 'a' && *p <= 'f') {
+            digit = static_cast<uint32_t>(*p - 'a' + 10);
+        } else if (base == 16 && *p >= 'A' && *p <= 'F') {
+            digit = static_cast<uint32_t>(*p - 'A' + 10);
+        } else {
+            break;
+        }
+        if (digit >= base)
+            break;
+        result = result * base + digit;
+        seen = true;
+    }
+
+    if (!seen)
+        return false;
+    *out = result;
+    return true;
+}
+
+static bool
+airportItlwmRegDiagReadU32Key(const char *command, const char *key, uint32_t *out)
+{
+    if (command == nullptr || key == nullptr || out == nullptr)
+        return false;
+
+    const size_t keyLen = strlen(key);
+    const char *p = command;
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ';' || *p == ',')
+            p++;
+        if (strncmp(p, key, keyLen) == 0 && p[keyLen] == '=')
+            return airportItlwmRegDiagParseU32Value(p + keyLen + 1, out);
+        while (*p != '\0' && *p != ';' && *p != ',' && *p != ' ' && *p != '\t')
+            p++;
+    }
+    return false;
+}
+
+static void
+airportItlwmRegDiagSetFlagFromControl(const char *command, const char *key,
+                                      uint32_t flag, uint32_t *modeFlags)
+{
+    uint32_t value = 0;
+    if (!airportItlwmRegDiagReadU32Key(command, key, &value))
+        return;
+    if (value != 0)
+        *modeFlags |= flag;
+    else
+        *modeFlags &= ~flag;
+}
+
+static void
+airportItlwmRegDiagPublishString(AirportItlwm *driver, const char *name,
+                                 const char *value)
+{
+    if (driver == nullptr || name == nullptr || value == nullptr)
+        return;
+    OSString *string = OSString::withCString(value);
+    if (string != nullptr) {
+        driver->setProperty(name, string);
+        string->release();
+    }
+}
+
+static void
+airportItlwmRegDiagPublishData(AirportItlwm *driver, const char *name,
+                               const void *bytes, uint32_t size)
+{
+    if (driver == nullptr || name == nullptr || bytes == nullptr || size == 0)
+        return;
+    OSData *data = OSData::withBytes(bytes, size);
+    if (data != nullptr) {
+        driver->setProperty(name, data);
+        data->release();
+    }
+}
+
+static void
+airportItlwmRegDiagClearPreservingControl(uint32_t modeFlags, uint32_t blockMask,
+                                          uint32_t controlSequence)
+{
+    memset(&sRegDiag, 0, sizeof(sRegDiag));
+    sRegDiag.modeFlags = modeFlags;
+    sRegDiag.blockMask = blockMask;
+    sRegDiag.lastControlSequence = controlSequence;
+    airportItlwmRegDiagInitTrace();
+}
+
+static void
+airportItlwmRegDiagApplyControl(AirportItlwm *driver, const char *command)
+{
+    uint32_t sequence = 0;
+    if (!airportItlwmRegDiagReadU32Key(command, "seq", &sequence)) {
+        airportItlwmRegDiagPublishString(driver,
+                                         AIRPORT_ITLWM_REGDIAG_CONTROL_ACK_PROPERTY,
+                                         "seq=0 applied=0 error=missing-seq");
+        return;
+    }
+
+    if (sequence == 0 || sequence == sRegDiag.lastControlSequence)
+        return;
+
+    uint32_t modeFlags = sRegDiag.modeFlags;
+    uint32_t blockMask = sRegDiag.blockMask;
+    uint32_t parsed = 0;
+    if (airportItlwmRegDiagReadU32Key(command, "mode", &parsed))
+        modeFlags = parsed;
+    if (airportItlwmRegDiagReadU32Key(command, "block", &parsed))
+        blockMask = parsed;
+
+    airportItlwmRegDiagSetFlagFromControl(command, "enable",
+                                          kAirportItlwmRegDiagModeEnabled,
+                                          &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "log",
+                                          kAirportItlwmRegDiagModeLog,
+                                          &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "assoc",
+                                          kAirportItlwmRegDiagModeAssoc,
+                                          &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "data",
+                                          kAirportItlwmRegDiagModeData,
+                                          &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "control",
+                                          kAirportItlwmRegDiagModeControl,
+                                          &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "intervention",
+                                          kAirportItlwmRegDiagModeIntervention,
+                                          &modeFlags);
+
+    uint32_t clear = 0;
+    if (airportItlwmRegDiagReadU32Key(command, "clear", &clear) && clear != 0)
+        airportItlwmRegDiagClearPreservingControl(modeFlags, blockMask, sequence);
+    else
+        sRegDiag.lastControlSequence = sequence;
+
+    sRegDiag.modeFlags = modeFlags;
+    sRegDiag.blockMask = blockMask;
+    airportItlwmRegDiagInitTrace();
+
+    char ack[128];
+    snprintf(ack, sizeof(ack), "seq=%u applied=1 mode=0x%x block=0x%x",
+             sequence, modeFlags, blockMask);
+    airportItlwmRegDiagPublishString(driver,
+                                     AIRPORT_ITLWM_REGDIAG_CONTROL_ACK_PROPERTY,
+                                     ack);
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceControl,
+                             kAirportItlwmRegDiagPathUnknown,
+                             kIOReturnSuccess, 0, modeFlags, blockMask);
+}
+
+static void
+airportItlwmRegDiagFillSnapshot(AirportItlwm *driver)
+{
+    AirportItlwmRegDiagSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    snap.version = AIRPORT_ITLWM_REGDIAG_ABI_VERSION;
+    snap.size = sizeof(snap);
+    snap.sequence = ++sRegDiag.snapshotSequence;
+    snap.lastControlSequence = sRegDiag.lastControlSequence;
+    snap.modeFlags = sRegDiag.modeFlags;
+    snap.blockMask = sRegDiag.blockMask;
+
+    snap.rtMask = sRT.rtMask;
+    snap.rtMask2 = sRT.rtMask2;
+    snap.rtMask3 = sRT.rtMask3;
+    snap.powerState = driver != nullptr ? driver->power_state : 0;
+    snap.pmPowerState = driver != nullptr ? driver->pmPowerState : 0;
+    snap.currentStatus = driver != nullptr ? driver->currentStatus : 0;
+    snap.currentSpeed = driver != nullptr ? driver->currentSpeed : 0;
+
+    if (driver != nullptr) {
+        snap.hasHalService = driver->fHalService != nullptr ? 1 : 0;
+        snap.hasNetIf = driver->fNetIf != nullptr ? 1 : 0;
+        snap.fNetIfPtr = reinterpret_cast<uint64_t>(driver->fNetIf);
+        snap.fTxQueuePtr = reinterpret_cast<uint64_t>(driver->fTxQueue);
+        snap.fRxQueuePtr = reinterpret_cast<uint64_t>(driver->fRxQueue);
+
+        if (driver->fNetIf != nullptr) {
+            ifnet_t bif = driver->fNetIf->getBSDInterface();
+            snap.bsdIfPtr = reinterpret_cast<uint64_t>(bif);
+            snap.hasBSDInterface = bif != nullptr ? 1 : 0;
+            if (bif != nullptr)
+                snap.ifFlags = ifnet_flags(bif);
+        }
+
+        if (driver->fHalService != nullptr) {
+            struct ieee80211com *ic = driver->fHalService->get80211Controller();
+            struct _ifnet *ifp = &ic->ic_ac.ac_if;
+            snap.icState = ic->ic_state;
+            snap.icFlags = ic->ic_flags;
+            if (snap.ifFlags == 0)
+                snap.ifFlags = ifp->if_flags;
+            snap.nodeCount = ic->ic_nnodes;
+            snap.desiredEssLen = airportItlwmRegDiagMinU32(ic->ic_des_esslen,
+                                                           AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN);
+            airportItlwmRegDiagCopyBytes(snap.desiredSsid,
+                                         AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN,
+                                         ic->ic_des_essid,
+                                         snap.desiredEssLen);
+            airportItlwmRegDiagCopyCString(snap.bsdName,
+                                           AIRPORT_ITLWM_REGDIAG_MAX_NAME_LEN,
+                                           ifp->if_xname);
+            if (ic->ic_bss != nullptr) {
+                snap.hasBss = 1;
+                snap.currentSsidLen =
+                    airportItlwmRegDiagMinU32(ic->ic_bss->ni_esslen,
+                                              AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN);
+                airportItlwmRegDiagCopyBytes(snap.currentSsid,
+                                             AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN,
+                                             ic->ic_bss->ni_essid,
+                                             snap.currentSsidLen);
+                airportItlwmRegDiagCopyBytes(snap.currentBssid,
+                                             sizeof(snap.currentBssid),
+                                             ic->ic_bss->ni_bssid,
+                                             sizeof(snap.currentBssid));
+            }
+        }
+    }
+
+    snap.publicAssocCount = sRegDiag.snapshot.publicAssocCount;
+    snap.hiddenAssocCount = sRegDiag.snapshot.hiddenAssocCount;
+    snap.linkStateCount = sRegDiag.snapshot.linkStateCount;
+    snap.txCount = sRegDiag.snapshot.txCount;
+    snap.rxCount = sRegDiag.snapshot.rxCount;
+    snap.eapolTxCount = sRegDiag.snapshot.eapolTxCount;
+    snap.eapolRxCount = sRegDiag.snapshot.eapolRxCount;
+    snap.txDropCount = sRegDiag.snapshot.txDropCount;
+    snap.rxDropCount = sRegDiag.snapshot.rxDropCount;
+    snap.blockHitCount = sRegDiag.snapshot.blockHitCount;
+    snap.lastPublicAssocResult = sRegDiag.snapshot.lastPublicAssocResult;
+    snap.lastHiddenAssocResult = sRegDiag.snapshot.lastHiddenAssocResult;
+    snap.lastLinkStateResult = sRegDiag.snapshot.lastLinkStateResult;
+    snap.lastTxResult = sRegDiag.snapshot.lastTxResult;
+    snap.lastRxResult = sRegDiag.snapshot.lastRxResult;
+    snap.lastLinkState = sRegDiag.snapshot.lastLinkState;
+    snap.lastAssocAuthLower = sRegDiag.snapshot.lastAssocAuthLower;
+    snap.lastAssocAuthUpper = sRegDiag.snapshot.lastAssocAuthUpper;
+    snap.lastAssocRsnIeLen = sRegDiag.snapshot.lastAssocRsnIeLen;
+    snap.lastTxLength = sRegDiag.snapshot.lastTxLength;
+    snap.lastRxLength = sRegDiag.snapshot.lastRxLength;
+    snap.lastBlockMask = sRegDiag.snapshot.lastBlockMask;
+    snap.lastAssocSsidLen = sRegDiag.snapshot.lastAssocSsidLen;
+    airportItlwmRegDiagCopyBytes(snap.lastAssocSsid,
+                                 AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN,
+                                 sRegDiag.snapshot.lastAssocSsid,
+                                 snap.lastAssocSsidLen);
+    airportItlwmRegDiagCopyBytes(snap.lastAssocBssid,
+                                 sizeof(snap.lastAssocBssid),
+                                 sRegDiag.snapshot.lastAssocBssid,
+                                 sizeof(snap.lastAssocBssid));
+
+    sRegDiag.snapshot = snap;
+}
+
+static bool
+airportItlwmRegDiagMbufIsEapol(mbuf_t m, uint32_t *length)
+{
+    if (length != nullptr)
+        *length = 0;
+    if (m == nullptr || mbuf_type(m) == MBUF_TYPE_FREE)
+        return false;
+
+    const size_t len = mbuf_len(m);
+    if (length != nullptr)
+        *length = static_cast<uint32_t>(len);
+    if (len < sizeof(ether_header_t) || mbuf_data(m) == nullptr)
+        return false;
+
+    ether_header_t *eh = reinterpret_cast<ether_header_t *>(mbuf_data(m));
+    return eh->ether_type == htons(ETHERTYPE_PAE);
+}
+
+void
+airportItlwmRegDiagTrace(uint32_t kind, uint32_t path, IOReturn result,
+                         int32_t arg0, uint64_t arg1, uint64_t arg2)
+{
+    if ((sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) == 0)
+        return;
+
+    airportItlwmRegDiagInitTrace();
+    const uint32_t sequence = sRegDiag.trace.nextSequence++;
+    const uint32_t index = sequence % AIRPORT_ITLWM_REGDIAG_MAX_TRACE_ENTRIES;
+    AirportItlwmRegDiagTraceEntry *entry = &sRegDiag.trace.entries[index];
+    entry->version = AIRPORT_ITLWM_REGDIAG_ABI_VERSION;
+    entry->sequence = sequence;
+    entry->kind = kind;
+    entry->path = path;
+    entry->result = static_cast<int32_t>(result);
+    entry->arg0 = arg0;
+    entry->arg1 = arg1;
+    entry->arg2 = arg2;
+    if (sRegDiag.trace.entryCount < AIRPORT_ITLWM_REGDIAG_MAX_TRACE_ENTRIES)
+        sRegDiag.trace.entryCount++;
+    else
+        sRegDiag.trace.droppedEntries++;
+
+    if (airportItlwmRegDiagLogEnabled()) {
+        XYLog("ITLWM_REGDIAG trace seq=%u kind=%u path=%u result=0x%x arg0=%d arg1=0x%llx arg2=0x%llx\n",
+              sequence, kind, path, result, arg0, arg1, arg2);
+    }
+}
+
+void
+airportItlwmRegDiagRecordAssoc(uint32_t path, const uint8_t *ssid,
+                               uint32_t ssidLen, const uint8_t *bssid,
+                               uint32_t authLower, uint32_t authUpper,
+                               uint32_t rsnIeLen, IOReturn result)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeAssoc))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    if (path == kAirportItlwmRegDiagPathHiddenAssoc) {
+        snap->hiddenAssocCount++;
+        snap->lastHiddenAssocResult = static_cast<int32_t>(result);
+    } else {
+        snap->publicAssocCount++;
+        snap->lastPublicAssocResult = static_cast<int32_t>(result);
+    }
+    snap->lastAssocAuthLower = authLower;
+    snap->lastAssocAuthUpper = authUpper;
+    snap->lastAssocRsnIeLen = rsnIeLen;
+    snap->lastAssocSsidLen =
+        airportItlwmRegDiagMinU32(ssidLen, AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN);
+    airportItlwmRegDiagCopyBytes(snap->lastAssocSsid,
+                                 AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN,
+                                 ssid, snap->lastAssocSsidLen);
+    airportItlwmRegDiagCopyBytes(snap->lastAssocBssid,
+                                 sizeof(snap->lastAssocBssid),
+                                 bssid, sizeof(snap->lastAssocBssid));
+
+    airportItlwmRegDiagTrace(path == kAirportItlwmRegDiagPathHiddenAssoc ?
+                             kAirportItlwmRegDiagTraceHiddenAssoc :
+                             kAirportItlwmRegDiagTracePublicAssoc,
+                             path, result, static_cast<int32_t>(ssidLen),
+                             (static_cast<uint64_t>(authUpper) << 32) | authLower,
+                             rsnIeLen);
+}
+
+void
+airportItlwmRegDiagRecordData(uint32_t path, uint32_t length, bool eapol,
+                              IOReturn result)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeData))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    if (path == kAirportItlwmRegDiagPathRx) {
+        snap->rxCount++;
+        snap->lastRxResult = static_cast<int32_t>(result);
+        snap->lastRxLength = length;
+        if (result != kIOReturnSuccess)
+            snap->rxDropCount++;
+        if (eapol)
+            snap->eapolRxCount++;
+    } else {
+        snap->txCount++;
+        snap->lastTxResult = static_cast<int32_t>(result);
+        snap->lastTxLength = length;
+        if (result != kIOReturnOutputSuccess && result != kIOReturnSuccess)
+            snap->txDropCount++;
+        if (eapol)
+            snap->eapolTxCount++;
+    }
+
+    airportItlwmRegDiagTrace(path == kAirportItlwmRegDiagPathRx ?
+                             kAirportItlwmRegDiagTraceRx :
+                             kAirportItlwmRegDiagTraceTx,
+                             path, result, eapol ? 1 : 0, length, 0);
+}
+
+bool
+airportItlwmRegDiagShouldBlock(uint32_t blockMask)
+{
+    return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
+           (sRegDiag.modeFlags & kAirportItlwmRegDiagModeIntervention) != 0 &&
+           (sRegDiag.blockMask & blockMask) != 0;
+}
+
+void
+airportItlwmRegDiagRecordBlock(uint32_t blockMask, uint32_t path,
+                               uint32_t length)
+{
+    if ((sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) == 0)
+        return;
+    sRegDiag.snapshot.blockHitCount++;
+    sRegDiag.snapshot.lastBlockMask = blockMask;
+    if (path == kAirportItlwmRegDiagPathRx)
+        sRegDiag.snapshot.rxDropCount++;
+    if (path == kAirportItlwmRegDiagPathTx)
+        sRegDiag.snapshot.txDropCount++;
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceBlock, path,
+                             kIOReturnAborted,
+                             static_cast<int32_t>(blockMask), length, 0);
+    XYLog("ITLWM_REGDIAG block mask=0x%x path=%u length=%u\n",
+          blockMask, path, length);
+}
+
+void
+airportItlwmRegDiagPoll(AirportItlwm *driver)
+{
+    if (driver == nullptr)
+        return;
+
+    OSObject *control = driver->copyProperty(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY);
+    if (control != nullptr) {
+        if (OSString *command = OSDynamicCast(OSString, control))
+            airportItlwmRegDiagApplyControl(driver, command->getCStringNoCopy());
+        control->release();
+    }
+
+    if ((sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) == 0)
+        return;
+
+    airportItlwmRegDiagFillSnapshot(driver);
+    airportItlwmRegDiagPublishData(driver,
+                                   AIRPORT_ITLWM_REGDIAG_SNAPSHOT_PROPERTY,
+                                   &sRegDiag.snapshot,
+                                   sizeof(sRegDiag.snapshot));
+    airportItlwmRegDiagPublishData(driver,
+                                   AIRPORT_ITLWM_REGDIAG_TRACE_PROPERTY,
+                                   &sRegDiag.trace,
+                                   sizeof(sRegDiag.trace));
+}
 
 static int ieeeChanFlag2apple(int flags, int bw)
 {
@@ -705,8 +1212,28 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     size_t len = mbuf_pkthdr_len(m);
     if (len == 0) {
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, 0, false,
+                                      static_cast<IOReturn>(EINVAL));
         mbuf_freem(m);
         return EINVAL;
+    }
+    uint32_t diagLength = static_cast<uint32_t>(len);
+    const bool diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
+    if (diagEapol && airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockEapolRx)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockEapolRx,
+                                       kAirportItlwmRegDiagPathRx, diagLength);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      true, static_cast<IOReturn>(EIO));
+        mbuf_freem(m);
+        return 0;
+    }
+    if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockRx)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockRx,
+                                       kAirportItlwmRegDiagPathRx, diagLength);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, static_cast<IOReturn>(EIO));
+        mbuf_freem(m);
+        return 0;
     }
 
     // Allocate an IOSkywalkPacket from the RX pool
@@ -715,6 +1242,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         sRT.rxAllocFail++;
         if (sRT.rxAllocFail <= 5)
             XYLog("skywalkRxInput: allocatePacket failed (drop #%u)\n", sRT.rxAllocFail);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -724,6 +1253,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     UInt32 nBufs = rxPkt->getPacketBuffers(bufs, 1);
     if (nBufs == 0 || !bufs[0]) {
         that->fRxPool->deallocatePacket(rxPkt);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -735,6 +1266,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     uint32_t bufSize = _buflet_get_object_limit(buflet);
     if (!objAddr || len > bufSize) {
         that->fRxPool->deallocatePacket(rxPkt);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, static_cast<IOReturn>(EMSGSIZE));
         mbuf_freem(m);
         return EMSGSIZE;
     }
@@ -755,10 +1288,14 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         sRT.rxEnqFail++;
         if (sRT.rxEnqFail <= 5)
             XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%u)\n", ret, sRT.rxEnqFail);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, ret);
         return EIO;
     }
 
     sRT.rxPktOK++;
+    airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                  diagEapol, kIOReturnSuccess);
 
     return 0;
 }
@@ -1003,6 +1540,7 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
               __FUNCTION__, wd_count, ic->ic_state, ifp->if_flags, power_state, pmPowerState, currentStatus);
         wd_last_state = ic->ic_state;
     }
+    airportItlwmRegDiagPoll(this);
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
 }
@@ -2261,6 +2799,15 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     IOReturn ret = that->fNetIf->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1);
 #endif
     if (ret == kIOReturnSuccess) RT_SET(14);
+    if (airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl)) {
+        sRegDiag.snapshot.linkStateCount++;
+        sRegDiag.snapshot.lastLinkStateResult = static_cast<int32_t>(ret);
+        sRegDiag.snapshot.lastLinkState = static_cast<int32_t>((uint64_t)arg0);
+        airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceLinkState,
+                                 kAirportItlwmRegDiagPathLink, ret,
+                                 static_cast<int32_t>((uint64_t)arg0),
+                                 static_cast<uint64_t>((uint64_t)arg1), 0);
+    }
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     RT2_SET(13);
     that->fNetIf->setRunningState((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp);
@@ -2316,9 +2863,13 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         XYLog("DEBUG %s #%d m=%p param=%p ic_state=%d\n", __FUNCTION__, sOutputCount, m, param,
               fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
+    uint32_t diagLength = 0;
+    const bool diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
 
     if (pmPowerState != kPowerStateOn) {
         sRT.outputDropPwr++;
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
+                                      diagEapol, kIOReturnOutputDropped);
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
         return kIOReturnOutputDropped;
@@ -2327,6 +2878,26 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
 
     if (fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN || ifp->if_snd.queue == NULL) {
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
+                                      diagEapol, kIOReturnOutputDropped);
+        if (m && mbuf_type(m) != MBUF_TYPE_FREE)
+            freePacket(m);
+        return kIOReturnOutputDropped;
+    }
+    if (diagEapol && airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockEapolTx)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockEapolTx,
+                                       kAirportItlwmRegDiagPathTx, diagLength);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
+                                      true, kIOReturnOutputDropped);
+        if (m && mbuf_type(m) != MBUF_TYPE_FREE)
+            freePacket(m);
+        return kIOReturnOutputDropped;
+    }
+    if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockTx)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockTx,
+                                       kAirportItlwmRegDiagPathTx, diagLength);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
+                                      diagEapol, kIOReturnOutputDropped);
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
         return kIOReturnOutputDropped;
@@ -2360,6 +2931,8 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         ret = kIOReturnOutputDropped;
     }
     (*ifp->if_start)(ifp);
+    airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
+                                  diagEapol, ret);
     return ret;
 }
 
