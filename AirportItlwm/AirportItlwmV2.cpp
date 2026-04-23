@@ -210,13 +210,6 @@ static bool airportItlwmDiagMbufIsEapol(mbuf_t m)
     return eh != nullptr && eh->ether_type == htons(ETHERTYPE_PAE);
 }
 
-static bool airportItlwmDiagUserClientBootArgEnabled(void)
-{
-    int enabled = 0;
-    return PE_parse_boot_argn("itlwm_diag_uc", &enabled, sizeof(enabled)) &&
-           enabled != 0;
-}
-
 static void airportItlwmDiagFillSnapshot(AirportItlwm *driver,
                                          AirportItlwmDiagSnapshot *snapshot)
 {
@@ -464,12 +457,6 @@ void airportItlwmDiagRecordAssoc(uint32_t path, const uint8_t *ssid,
                               ssid, sDiagRT.lastAssocSsidLen);
     airportItlwmDiagCopyBytes(sDiagRT.lastAssocBssid, sizeof(sDiagRT.lastAssocBssid),
                               bssid, sizeof(sDiagRT.lastAssocBssid));
-    XYLog("ITLWM_DIAG assoc path=%u ret=0x%x ssid_len=%u auth_lower=0x%x "
-          "auth_upper=0x%x rsn_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-          path, result, ssidLen, authLower, authUpper, rsnIeLen,
-          sDiagRT.lastAssocBssid[0], sDiagRT.lastAssocBssid[1],
-          sDiagRT.lastAssocBssid[2], sDiagRT.lastAssocBssid[3],
-          sDiagRT.lastAssocBssid[4], sDiagRT.lastAssocBssid[5]);
     airportItlwmDiagTrace(path == kAirportItlwmDiagPathHiddenAssoc ?
                               kAirportItlwmDiagTraceHiddenAssoc :
                               kAirportItlwmDiagTracePublicAssoc,
@@ -500,14 +487,6 @@ void airportItlwmDiagRecordData(uint32_t path, uint32_t length, bool eapol,
             sDiagRT.txDropCount++;
         if (eapol)
             sDiagRT.eapolTxCount++;
-    }
-
-    if (eapol || result != kIOReturnSuccess) {
-        XYLog("ITLWM_DIAG data path=%u len=%u eapol=%u ret=0x%x "
-              "tx=%u rx=%u eapolTx=%u eapolRx=%u txDrop=%u rxDrop=%u\n",
-              path, length, eapol ? 1 : 0, result, sDiagRT.txCount,
-              sDiagRT.rxCount, sDiagRT.eapolTxCount, sDiagRT.eapolRxCount,
-              sDiagRT.txDropCount, sDiagRT.rxDropCount);
     }
 
     airportItlwmDiagTrace(path == kAirportItlwmDiagPathRx ?
@@ -725,8 +704,6 @@ bool airportItlwmDiagPublishService(AirportItlwm *driver)
 {
     if (driver == nullptr)
         return false;
-    if (!airportItlwmDiagUserClientBootArgEnabled())
-        return false;
     airportItlwmDiagEnsureConfig();
     if (driver->diagnosticsService != nullptr)
         return true;
@@ -749,7 +726,6 @@ bool airportItlwmDiagPublishService(AirportItlwm *driver)
     }
     driver->diagnosticsService = service;
     service->registerService();
-    XYLog("ITLWM_DIAG userclient service published by explicit itlwm_diag_uc=1\n");
     return true;
 }
 
@@ -1717,21 +1693,13 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     XYLog("DEBUG %s ic_state=%d nodes=%u posting WCL_SCAN_RESULT (0xC9) + WCL_SCAN_DONE (0xED)\n",
           __FUNCTION__, ic->ic_state, ic->ic_nnodes);
 
-    IOReturn postRet;
     if (that->getCommandGate() != nullptr) {
-        postRet = that->getCommandGate()->runAction(postWclScanResultsGated,
+        that->getCommandGate()->runAction(postWclScanResultsGated,
             nullptr, nullptr, nullptr, nullptr);
-    } else {
-        postRet = postWclScanResultsGated(that, nullptr, nullptr, nullptr, nullptr);
+        return;
     }
 
-    if (airportItlwmDiagUserClientBootArgEnabled() &&
-        that->diagnosticsService == nullptr) {
-        if (!airportItlwmDiagPublishService(that)) {
-            XYLog("ITLWM_DIAG userclient publish requested after scan but failed "
-                  "postRet=0x%x\n", postRet);
-        }
-    }
+    postWclScanResultsGated(that, nullptr, nullptr, nullptr, nullptr);
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
@@ -2560,6 +2528,8 @@ bool AirportItlwm::start(IOService *provider)
     // is created asynchronously via the nexus callback chain triggered by
     // deferBSDAttach(false) at STEP 8f.
     registerService();
+    if (!airportItlwmDiagPublishService(this))
+        XYLog("DEBUG %s diagnostics service publish failed (non-fatal)\n", __FUNCTION__);
     RT_SET(18);
     XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
     DISARM_PANIC_TIMER();
