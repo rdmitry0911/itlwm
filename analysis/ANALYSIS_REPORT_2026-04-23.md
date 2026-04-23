@@ -61,3 +61,19 @@
     personality
   - after reboot: use only `get config`, `get snapshot`, `get trace`,
     `get scan-cache` before any `set block ...` intervention
+
+## REGRESSION UPDATE
+
+- observed after installing `f4dbfcb`:
+  - UI visibility regressed again; the driver was no longer visible in UI.
+- conclusion:
+  - publishing even a separate diagnostic `IOService` in the immediate
+    `AirportItlwm::registerService()` window is not behavior-neutral on Tahoe.
+  - This races or perturbs the CR-052 boot/readiness ordering where controller
+    registration must first let `AirportItlwmBootNub` match and trigger the
+    async boot path.
+- corrective constraint:
+  - no diagnostic user-space service may be published by default during boot.
+  - the userclient endpoint is now allowed only under explicit boot-arg
+    `itlwm_diag_uc=1` and only after natural WCL scan-result publication.
+  - default diagnostics must be passive kernel-log telemetry only.
