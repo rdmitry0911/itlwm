@@ -6,6 +6,7 @@
 //  Copyright © 2023 钟先耀. All rights reserved.
 //
 #include "AirportItlwmV2.hpp"
+#include "AirportItlwmDiagnostics.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
@@ -963,10 +964,23 @@ bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
     // `if (slot411(...) != 0) return;` else the helper falls into the abort
     // path. So the already proven selected commands must return non-zero here
     // to survive the family fallback seam at all.
-    if (isTahoeHiddenAssocCommand(command) || isTahoePublicFallbackRequest(command))
+    if (isTahoeHiddenAssocCommand(command) || isTahoePublicFallbackRequest(command)) {
+        airportItlwmDiagTrace(kAirportItlwmDiagTraceCommandGate,
+                              isTahoeHiddenAssocCommand(command) ?
+                                  kAirportItlwmDiagPathHiddenAssoc :
+                                  kAirportItlwmDiagPathApple80211Ioctl,
+                              command, -1, kIOReturnSuccess, 1, 0, 0,
+                              kAirportItlwmDiagTraceControl);
         return true;
+    }
 
-    return super::isCommandProhibited(command);
+    bool ret = super::isCommandProhibited(command);
+    airportItlwmDiagTrace(kAirportItlwmDiagTraceCommandGate,
+                          kAirportItlwmDiagPathUnknown, command, -1,
+                          ret ? kIOReturnSuccess : kIOReturnUnsupported,
+                          ret ? 1 : 0, 0, 0,
+                          kAirportItlwmDiagTraceControl);
+    return ret;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -993,6 +1007,14 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
                   req->req_type, req->req_data, interface);
         }
         IOReturn ret = processApple80211Ioctl(cmd, req);
+        airportItlwmDiagTrace(kAirportItlwmDiagTraceBSDCommand,
+                              kAirportItlwmDiagPathBSD,
+                              static_cast<int32_t>(cmd),
+                              req != nullptr ? req->req_type : -1,
+                              ret, 0,
+                              reinterpret_cast<uintptr_t>(interface),
+                              reinterpret_cast<uintptr_t>(data),
+                              kAirportItlwmDiagTraceControl);
         if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
             XYLog("DEBUG %s RET cmd=0x%x req=%s(%d) ret=0x%x\n",
                   __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
@@ -1001,7 +1023,14 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
         if (ret != kIOReturnUnsupported)
             return ret;
     }
-    return super::processBSDCommand(interface, cmd, data);
+    IOReturn ret = super::processBSDCommand(interface, cmd, data);
+    airportItlwmDiagTrace(kAirportItlwmDiagTraceBSDCommand,
+                          kAirportItlwmDiagPathBSD,
+                          static_cast<int32_t>(cmd), -1, ret, 1,
+                          reinterpret_cast<uintptr_t>(interface),
+                          reinterpret_cast<uintptr_t>(data),
+                          kAirportItlwmDiagTraceControl);
+    return ret;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -1029,6 +1058,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 
     if (req == NULL)
         return kIOReturnUnsupported;
+
+    airportItlwmDiagTrace(kAirportItlwmDiagTraceApple80211Ioctl,
+                          kAirportItlwmDiagPathApple80211Ioctl,
+                          static_cast<int32_t>(cmd), req->req_type,
+                          kIOReturnSuccess, req->req_data != nullptr ? 1 : 0,
+                          reinterpret_cast<uintptr_t>(req),
+                          reinterpret_cast<uintptr_t>(req->req_data),
+                          kAirportItlwmDiagTraceControl);
 
     if (isTahoeCurrentLinkProbeReq(req->req_type)) {
         XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p\n",
@@ -1806,6 +1843,17 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
     // unsupported from this hidden fallback. Non-association callers keep the
     // prior unsupported contract.
     if (data != nullptr && length == 0x3ad8) {
+        if (airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockHiddenAssoc)) {
+            airportItlwmDiagRecordBlock(kAirportItlwmDiagBlockHiddenAssoc,
+                                        kAirportItlwmDiagPathHiddenAssoc,
+                                        length);
+            return kIOReturnUnsupported;
+        }
+        airportItlwmDiagTrace(kAirportItlwmDiagTraceHiddenAssoc,
+                              kAirportItlwmDiagPathHiddenAssoc, 0x45, -1,
+                              kIOReturnSuccess, static_cast<int32_t>(length),
+                              reinterpret_cast<uintptr_t>(data), 0,
+                              kAirportItlwmDiagTraceAssoc);
         XYLog("DEBUG %s routing hidden-assoc carrier len=0x%x into setWCL_ASSOCIATE\n",
               __FUNCTION__, length);
         return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
@@ -3303,6 +3351,23 @@ IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
     RT2_SET(3); sRT.assocCount++;
+    if (!ad) {
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathPublicAssoc,
+                                    nullptr, 0, nullptr, 0, 0, 0,
+                                    kIOReturnError);
+        return kIOReturnError;
+    }
+    if (airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockPublicAssoc)) {
+        airportItlwmDiagRecordBlock(kAirportItlwmDiagBlockPublicAssoc,
+                                    kAirportItlwmDiagPathPublicAssoc,
+                                    ad->ad_ssid_len);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathPublicAssoc,
+                                    ad->ad_ssid, ad->ad_ssid_len,
+                                    ad->ad_bssid.octet,
+                                    ad->ad_auth_lower, ad->ad_auth_upper,
+                                    ad->ad_rsn_ie_len, kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
     XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
           (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
           (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
@@ -3315,18 +3380,25 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
     struct apple80211_rsn_ie_data rsn_ie_data;
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
-
-    if (!ad)
-        return kIOReturnError;
     
     XYLog("DEBUG %s ic_state=%d ic_opmode=%d\n", __FUNCTION__, ic->ic_state, ic->ic_opmode);
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathPublicAssoc,
+                                    ad->ad_ssid, ad->ad_ssid_len,
+                                    ad->ad_bssid.octet,
+                                    ad->ad_auth_lower, ad->ad_auth_upper,
+                                    ad->ad_rsn_ie_len, kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
         XYLog("DEBUG %s SKIP: ic_state=%d (already in ASSOC/AUTH)\n", __FUNCTION__, ic->ic_state);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathPublicAssoc,
+                                    ad->ad_ssid, ad->ad_ssid_len,
+                                    ad->ad_bssid.octet,
+                                    ad->ad_auth_lower, ad->ad_auth_upper,
+                                    ad->ad_rsn_ie_len, kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
@@ -3343,6 +3415,11 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 
         associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index);
     }
+    airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathPublicAssoc,
+                                ad->ad_ssid, ad->ad_ssid_len,
+                                ad->ad_bssid.octet,
+                                ad->ad_auth_lower, ad->ad_auth_upper,
+                                ad->ad_rsn_ie_len, kIOReturnSuccess);
     return kIOReturnSuccess;
 }
 
@@ -3791,17 +3868,36 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
           bssid->octet[0], bssid->octet[1], bssid->octet[2],
           bssid->octet[3], bssid->octet[4], bssid->octet[5]);
 
+    if (airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockHiddenAssoc)) {
+        airportItlwmDiagRecordBlock(kAirportItlwmDiagBlockHiddenAssoc,
+                                    kAirportItlwmDiagPathHiddenAssoc,
+                                    ssid_len);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathHiddenAssoc,
+                                    ssid, ssid_len, bssid->octet,
+                                    auth_lower, auth_upper, rsn_ie_len,
+                                    kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
+
     // Dump first 64 bytes and BSSID region for offset verification
     XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
     XYLog("DEBUG %s hex[0x1F0-0x21F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x1F0, 48));
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathHiddenAssoc,
+                                    ssid, ssid_len, bssid->octet,
+                                    auth_lower, auth_upper, rsn_ie_len,
+                                    kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
     if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
         XYLog("DEBUG %s SKIP: already in ASSOC/AUTH ic_state=%d\n", __FUNCTION__, ic->ic_state);
+        airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathHiddenAssoc,
+                                    ssid, ssid_len, bssid->octet,
+                                    auth_lower, auth_upper, rsn_ie_len,
+                                    kIOReturnSuccess);
         return kIOReturnSuccess;
     }
 
@@ -3825,6 +3921,10 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         associateSSID(const_cast<uint8_t *>(ssid), ssid_len, *bssid,
                       auth_lower, auth_upper, NULL, 0, 0);
     }
+    airportItlwmDiagRecordAssoc(kAirportItlwmDiagPathHiddenAssoc,
+                                ssid, ssid_len, bssid->octet,
+                                auth_lower, auth_upper, rsn_ie_len,
+                                kIOReturnSuccess);
     return kIOReturnSuccess;
 }
 
@@ -5493,6 +5593,8 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
           fNextNodeToSend->ni_essid, fNextNodeToSend->ni_rssi,
           fNextNodeToSend->ni_chan ? ieee80211_chan2ieee(fHalService->get80211Controller(), fNextNodeToSend->ni_chan) : -1);
     convertNodeToScanResult(fHalService, fNextNodeToSend, sr);
+    airportItlwmDiagRecordScanNode(fHalService->get80211Controller(),
+                                   fNextNodeToSend);
     
     fNextNodeToSend = RB_NEXT(ieee80211_tree, &HalService->get80211Controller()->ic_tree, fNextNodeToSend);
     if (fNextNodeToSend == NULL)
@@ -5528,6 +5630,7 @@ getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
         entry->ssid_crc = ether_crc32_le_update(0xFFFFFFFF,
                             (const u_int8_t *)ni->ni_essid, ni->ni_esslen);
         entry->age_ms = (uint32_t)(now - ni->ni_age_ts);
+        airportItlwmDiagRecordScanNode(ic, ni);
         count++;
     }
 
