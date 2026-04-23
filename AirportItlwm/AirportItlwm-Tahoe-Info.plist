@@ -50,6 +50,17 @@
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
 		</dict>
+		<key>AirportItlwmBootNub</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.zxystd.AirportItlwm</string>
+			<key>IOClass</key>
+			<string>AirportItlwmBootNub</string>
+			<key>IOProviderClass</key>
+			<string>AirportItlwm</string>
+			<key>IOProbeScore</key>
+			<integer>1000</integer>
+		</dict>
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright (c) 2020 钟先耀. All rights reserved.</string>

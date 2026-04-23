@@ -3,8 +3,10 @@
 #  build_tahoe.sh
 #  itlwm
 #
-#  Builds AirportItlwm-Tahoe and verifies all undefined symbols
-#  resolve against the target kernel's BootKernelExtensions.kc.
+#  Builds only AirportItlwm.kext for Tahoe and stages it into:
+#    Build/Debug/Tahoe/AirportItlwm.kext
+#  Then verifies all undefined symbols resolve against the target
+#  kernel's BootKernelExtensions.kc.
 #
 #  Usage:
 #    ./scripts/build_tahoe.sh [BOOTKC_PATH]
@@ -18,7 +20,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TARGET="AirportItlwm-Tahoe"
 CONFIGURATION="Debug"
-KEXT_BINARY="$PROJECT_DIR/build/$CONFIGURATION/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm"
+DERIVED_DATA="$PROJECT_DIR/DerivedData"
+OUTPUT_ROOT="$PROJECT_DIR/Build/$CONFIGURATION/Tahoe"
+OUTPUT_KEXT="$OUTPUT_ROOT/AirportItlwm.kext"
+OUTPUT_BINARY="$OUTPUT_KEXT/Contents/MacOS/AirportItlwm"
+BUILD_KEXT="$DERIVED_DATA/Build/Products/$CONFIGURATION/Tahoe/AirportItlwm.kext"
+BUILD_BINARY="$BUILD_KEXT/Contents/MacOS/AirportItlwm"
 
 BOOTKC="${1:-/Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc}"
 
@@ -58,21 +65,41 @@ patch_mackernelsdk
 
 # ── Step 2: Build ────────────────────────────────────────────────────
 GIT_HASH=$(cd "$PROJECT_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-echo ""
-echo "Building $TARGET ($CONFIGURATION) commit=$GIT_HASH..."
-xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
-    -target "$TARGET" \
+BUILD_SETTINGS=$(xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
+    -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
-    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH" \
-    2>&1 | tail -5
-
-if [ ! -f "$KEXT_BINARY" ]; then
-    echo "ERROR: build output not found at $KEXT_BINARY"
+    -showBuildSettings \
+    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH")
+if ! printf '%s\n' "$BUILD_SETTINGS" | grep -q 'USE_APPLE_SUPPLICANT'; then
+    echo "ERROR: Tahoe target missing USE_APPLE_SUPPLICANT in effective GCC_PREPROCESSOR_DEFINITIONS"
     exit 1
 fi
 
 echo ""
-echo "Build succeeded: $KEXT_BINARY"
+echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION) commit=$GIT_HASH..."
+xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
+    -scheme "$TARGET" \
+    -configuration "$CONFIGURATION" \
+    -derivedDataPath "$DERIVED_DATA" \
+    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH" \
+    2>&1 | tail -5
+
+if [ ! -f "$BUILD_BINARY" ]; then
+    echo "ERROR: build output not found at $BUILD_BINARY"
+    exit 1
+fi
+
+mkdir -p "$OUTPUT_ROOT"
+rm -rf "$OUTPUT_KEXT"
+cp -R "$BUILD_KEXT" "$OUTPUT_KEXT"
+
+if [ ! -f "$OUTPUT_BINARY" ]; then
+    echo "ERROR: staged build output not found at $OUTPUT_BINARY"
+    exit 1
+fi
+
+echo ""
+echo "Build succeeded: $OUTPUT_BINARY"
 
 # ── Step 3: Verify symbols ───────────────────────────────────────────
 echo ""
@@ -88,7 +115,7 @@ fi
 TMPDIR_SYM=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_SYM"' EXIT
 
-nm -u "$KEXT_BINARY" | sort -u > "$TMPDIR_SYM/kext_undef.txt"
+nm -u "$OUTPUT_BINARY" | sort -u > "$TMPDIR_SYM/kext_undef.txt"
 nm -g "$BOOTKC" | awk '{print $3}' | sort -u > "$TMPDIR_SYM/bootkc_exports.txt"
 
 UNRESOLVED=$(comm -23 "$TMPDIR_SYM/kext_undef.txt" "$TMPDIR_SYM/bootkc_exports.txt")

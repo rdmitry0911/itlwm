@@ -2101,3 +2101,759 @@ This does not yet claim full backend parity for those selectors. What it does
 close is the architectural drift where Tahoe Skywalk handlers owned both public
 validation and hidden-owner state themselves. Those four selectors now flow
 through a dedicated commander/registry/payload path.
+
+## New Live Root After Exact Seven-File Probe Runtime
+
+The exact seven-file Tahoe probe diff reviewed in `CR-026` booted successfully
+and moved the remaining live blocker one step deeper than the older
+`current-link getter plane` wording.
+
+Live `2026-04-19 15:20:18 EEST` association evidence now shows:
+
+- `airportd` issues `BEGIN REQ [ASSOC]`
+- kernel logs only hidden family exits:
+  - `(IO80211Family) Exit-setASSOCIATE:153 ret:-536870201`
+  - repeated twice in the same join window
+- the same window contains no local hits for:
+  - `processBSDCommand(...)`
+  - `processApple80211Ioctl(...)`
+  - `setASSOCIATE(...)`
+  - `setWCL_ASSOCIATE(...)`
+  - `setAUTH_TYPE(...)`
+  - `setRSN_IE(...)`
+  - `associateSSID(...)`
+- the same window contains hidden WCL abort activity only:
+  - `leaveNetworkCommand@2345 ... <setDISASSOCIATE> ... reason=<8>`
+  - later `reason=<10>`
+- `airportd` then collapses to:
+  - `Failed to associate ... -536870201`
+  - `driver not available`
+  - downstream `INVALID_AKMS`
+
+Primary-source decomp from the remote host tightens the ownership mismatch:
+
+- `AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)` programs
+  `IO80211BssManager` auth context and SSID, then calls
+  `AppleBCMWLANJoinAdapter::performJoin(...)`
+- the same join owner also controls:
+  - `abortFirmwareJoinSync(bool)`
+  - `getBSSInfoAsync()`
+  - `sendConnectComplete()`
+- `sendConnectComplete()` is the recovered producer for
+  `APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT (0xD5)`
+
+That means the remaining live failure is no longer best described as only a
+getter/fallback leak. The narrower current root is an association-owner
+mismatch:
+
+- Apple Tahoe runs the active family `setASSOCIATE` plane through a
+  controller/core-local `setWCL_ASSOCIATE -> JoinAdapter` owner
+- the local port still implements association only on the
+  interface/net80211 side (`AirportItlwmSkywalkInterface::setASSOCIATE(...)`
+  and `setWCL_ASSOCIATE(...)`)
+- so the real family-visible `setASSOCIATE` path exits with `-536870201`
+  before any local join/auth/RSN path is entered
+
+The next reverse target is therefore not generic `associateSSID()` debugging.
+It is the exact hook between the active family `setASSOCIATE` path and the
+Apple controller/core join owner, plus the completion bridge from that owner
+back into WCL-visible state.
+
+`2026-04-19` narrow system-contract fix after that root:
+
+- Apple’s `AppleBCMWLANSkywalkInterface::getController()` returns the bound
+  controller out of interface-side state
+- inherited `IO80211SkywalkInterface::getController()` in family decomp is only
+  a field read from `*(this + 0x18) + 0xba8`
+- recovered `IO80211Family` notes show slot `[375]` / `0xba8`
+  (`IO80211SkywalkInterface::getController()`) feeding controller-side execute
+  and report paths
+- the local Tahoe port already cached the controller in
+  `AirportItlwmSkywalkInterface::instance` during `bindController(...)`, but it
+  does not populate the inherited family storage path anywhere in the visible
+  Tahoe bring-up; the explicit local binding exists only in `instance`
+- the new narrow runtime diff adds `AirportItlwmSkywalkInterface::getController()`
+  and returns `instance`
+
+This is not claimed as the final closeout for `TAHOE-ASSOC-OWNER-MISMATCH-002`.
+The narrower claim is only that Tahoe’s family-visible controller producer slot
+must return the controller object already bound by the local split
+`init() + bindController(...)` construction path, matching Apple’s explicit
+interface-local controller lookup on the same seam.
+
+After reboot on the exact `CR-029` runtime, that narrower claim is now
+confirmed in live behavior:
+
+- loaded kext UUID is `E8B26773-A881-3B69-BF47-2B113B75BD8C`
+- networks are visible in the UI again
+- `wdutil` shows `en0`, `Power: On`, and non-zero scan cache
+
+But the broader association root is still open. Manual association at
+`2026-04-19 17:40:24 EEST` now reaches a concrete candidate network with
+`hasPassword=1` and RSN auths `{ psk psk_sha256 sae }`, yet still fails with
+`-536870201`, then disassociates with reasons `8` and `10`, and later gets
+policy-labeled `INVALID_AKMS`.
+
+So `getController()` is now best classified as a runtime-confirmed visibility
+and controller-binding seam fix, not as the missing final association closeout.
+The next reverse target is now narrower than that older wording.
+
+Primary-source family decomp identifies the live Tahoe association carrier as a
+hidden large-blob path. This is the new narrower root
+`TAHOE-HIDDEN-ASSOC-CARRIER-004`:
+
+- `IO80211Family::FUN_ffffff80022080ef @ 0xffffff80022080ef`
+  validates `req_len == 0x3ad8`
+- then tries
+  `sendIOUCToWcl(..., 0x802869c8, 0x45, payload, 0x3ad8, ...)`
+- if WCL does not absorb the request, fallback helper
+  `FUN_ffffff80021e82ef @ 0xffffff80021e82ef` does not dispatch to public
+  `IO80211InfraProtocol::setWCL_ASSOCIATE(...)`
+- it only consults interface slot `+0xcc8`, and
+  `IO80211_vtables_BootKC_26.2_25C56.txt` maps that slot to
+  `[411] IO80211SkywalkInterface::isCommandProhibited(int)`
+
+That matches the runtime evidence precisely:
+
+- live post-reboot association still logs `-536870201`
+- the same window still has no local hits for `setASSOCIATE(...)`,
+  `setWCL_ASSOCIATE(...)`, `setAUTH_TYPE(...)`, `setRSN_IE(...)`,
+  `associateSSID(...)`
+
+So the broader root is no longer just "wrong local association owner". The
+exact live Tahoe join is carried by hidden selector `0x45` with payload
+`0x3ad8`, and family fallback does not bridge that carrier into the local
+public owner at all. The next reverse target is therefore the hidden
+`0x45/0x3ad8` association carrier plus the completion/cache bridge above
+`JoinAdapter`, not more debugging inside public `setWCL_ASSOCIATE(...)`.
+
+## Narrower Runtime Root Inside The Hidden Assoc Queue
+
+`2026-04-19` recovered a second, more concrete runtime-bearing mismatch inside
+that still-open Tahoe association queue:
+`TAHOE-CARD-CAP-ABI-MISMATCH-005`.
+
+Apple Tahoe does not use the short post-Sonoma capability blob here. The
+primary-source `AppleBCMWLANCore::getCARD_CAPABILITIES(...)` producer writes the
+public carrier through byte offset `+0x17`, and the same body stores advanced
+capability bits in that tail, including WPA3-related state such as
+feature-flag `0x41 -> *(cap + 0x0d) |= 0x08`.
+
+The local Tahoe port still declared
+`apple80211_capability_data.capabilities[14]` for all `__MAC_14_0+` targets.
+So on Tahoe the local struct was only `0x12` bytes total, while the Apple
+producer-visible carrier is `0x1c`. That means
+`AirportItlwm::getCARD_CAPABILITIES(...)` zeroed only the short prefix and left
+the Apple-visible tail bytes uninitialized.
+
+That matters specifically for the current association failure because the hidden
+join path is still the active owner, and the post-`CR-029` runtime fails on a
+`wpa3-transition` network with downstream policy `INVALID_AKMS`. A truncated
+capability ABI can therefore leak arbitrary advanced AKM / WPA3 support bits
+into the exact hidden path that never re-enters the local `setAUTH_TYPE(...)`
+WPA3-downgrade shim.
+
+The local fix is intentionally narrow:
+
+- Tahoe `apple80211_capability_data` is lifted to the Apple-sized `0x1c`
+  carrier (`version + 24 capability bytes`)
+- `AirportItlwm::getCARD_CAPABILITIES(...)` now enforces that ABI with a Tahoe
+  `static_assert`
+- the existing conservative producer path now zeroes the full Tahoe carrier, so
+  the advanced tail no longer leaks allocator garbage into `IO80211Family/WCL`
+
+This does not replace `TAHOE-HIDDEN-ASSOC-CARRIER-004` as the broader queue.
+It is the first concrete runtime-bearing bug found inside that queue that can be
+fixed without inventing the hidden `0x45/0x3ad8` owner.
+
+After rebooting into the `CR-031` runtime, the capability tail stopped leaking
+allocator garbage, but the same `wpa3-transition` join still failed with
+`-536870201` and downstream policy `INVALID_AKMS`. The next narrower mismatch
+is no longer carrier size but carrier content: the local Tahoe producer still
+hard-coded `cap[2]=0xEF`, `cap[3]=0x2B`, `cap[6]=0x8C`, while the Apple
+producer never sets `cap[2] bit 0x80`, `cap[3] bit 0x08`, or `cap[6] bit 0x80`
+at all. Those are not "optional missing Apple features"; they are Apple-
+impossible bits on those exact indices.
+
+That matters because the hidden association plane is still the active owner and
+still bypasses the local WPA3 downgrade shim in `associateSSID(...)`. Once the
+carrier tail became deterministic, the next remaining way to over-advertise
+unsupported AKM state into the same queue was the hard-coded capability content
+itself. The local fix is correspondingly narrow: sanitize the Tahoe capability
+cluster to the Apple-consistent shape `cap[2]=0x6F`, `cap[3]=0x27`,
+`cap[6]=0x0C` and keep the broader hidden `0x45/0x3ad8` owner recovery out of
+scope for this diff.
+
+After rebooting into the exact `CR-032` runtime, that capability-content fix
+did not change the active failure signature:
+
+- the loaded kext UUID advanced to `51294DB5-F5EB-3926-B4F1-C987D6159662`
+- networks remained visible in UI
+- the same manual join on the `wpa3-transition` network still failed with
+  `-536870201`
+- downstream policy still labeled the disconnect as `INVALID_AKMS`
+
+The next narrower live seam is not another public RSN helper. It is the hidden
+interface command gate directly above the `0x45/0x46` carrier:
+
+- `IO80211Family::FUN_ffffff80022080ef` still routes the active large assoc
+  payload through `sendIOUCToWcl(..., 0x45, ..., 0x3ad8)`
+- if that path is not absorbed, fallback `FUN_ffffff80021e82ef` reaches only
+  interface slot `+0xcc8`
+- `IO80211_vtables_BootKC_26.2_25C56.txt` maps that slot to
+  `[411] IO80211SkywalkInterface::isCommandProhibited(int)`
+- Apple Broadcom bring-up explicitly enables hidden commands `0x45` and `0x46`
+  through `FUN_ffffff800160190a(param_1, 0x45)` and
+  `FUN_ffffff800160190a(param_1, 0x46)`
+- the local Tahoe port had only a controller-side
+  `AirportItlwm::isCommandProhibited(int)` stub; the interface-side slot was
+  left on inherited behavior, and live runtime never hit the controller slot
+
+This is the new narrower root:
+`TAHOE-HIDDEN-ASSOC-CMD-GATE-007`.
+
+The local fix is intentionally tight:
+
+After rebooting into the exact `CR-033` runtime, the interface gate change
+proved directionally correct for hidden `0x45` / `0x46`, but still wrong on
+owner selection for ordinary commands. The loaded kext UUID advanced to
+`33A464B2-FF46-314C-8CC5-4B116DEA3D38`, yet startup regressed before any new
+association evidence appeared:
+
+- `wdutil info` reported `No Wi-Fi hardware installed`
+- `airportd` repeatedly cached `CWFApple80211 ... name=(null)` for `en0`
+- `Apple80211BindToInterfaceWithIOCTL` kept falling back with `err -1`
+- `dmesg` showed interface-side `isCommandProhibited(0x2b)=0` and
+  `isCommandProhibited(0xc)=0`, immediately followed by
+  `Failed ioctl ret[26279936] 'APPLE80211_IOC_CARD_CAPABILITIES'`
+
+That moves the root one notch narrower again. The bug is no longer "interface
+slot [411] stayed on inherited behavior for hidden commands". `CR-033` already
+changed that. The post-fix regression shows that the *non-hidden* side of the
+same interface gate must also remain on the controller-owned policy, not on
+`IO80211InfraProtocol`'s inherited filter:
+
+- on the local Tahoe port, command policy already exists on
+  `AirportItlwm::isCommandProhibited(int)`
+- pre-`CR-033` startup booted far enough to show Wi-Fi networks in UI, so the
+  controller-owned policy was already compatible with startup IOCTLs
+- `CR-033` changed only one runtime-bearing seam:
+  `AirportItlwmSkywalkInterface::isCommandProhibited(int)`
+- once that seam delegated non-hidden commands to the inherited family filter,
+  ordinary startup IOCTLs such as `APPLE80211_IOC_CARD_CAPABILITIES` stopped
+  crossing the same owner path that had previously booted correctly
+
+So the corrected contract is narrower and more precise:
+
+- keep the explicit interface-side override because hidden `0x45` / `0x46`
+  really do cross slot `[411]`
+- but proxy *all* commands through the already-bound controller owner via
+  `instance->isCommandProhibited(command)` instead of bouncing non-hidden
+  commands into `super::isCommandProhibited(command)`
+- this preserves the local Tahoe controller as the single source of command
+  policy while still exposing the hidden association carrier on the interface
+  seam Apple uses
+
+This new post-`CR-033` root is tracked as
+`TAHOE-INTERFACE-CMD-GATE-OWNER-MISMATCH-008`.
+
+`CR-034` then tested the owner hypothesis directly and was rejected for lack of
+causality: the reviewed startup commands were already observed with
+`prohibited=0`, and the proposed controller proxy also returned `false` for all
+commands. That rejection narrows the root again. On the failing startup path,
+the policy bit did not change; the only new behavior introduced by `CR-033` was
+instrumentation inside `AirportItlwmSkywalkInterface::isCommandProhibited(int)`.
+
+The strongest live clue is the startup/telemetry interleave in `dmesg`:
+
+- `Failed to send CoreAnalytics for event com.apple.wifi.ioctlPathUsedByClientitlwm: DEBUG isCommandProhibited command=0xc prohibited=0`
+- immediately followed by
+  `Failed ioctl ret[26279936] 'APPLE80211_IOC_CARD_CAPABILITIES'`
+
+So the next narrower fix is not a new policy owner. It is to preserve the
+hidden `0x45` / `0x46` allow from `CR-033` while removing all extra logging
+from the interface-side command gate and leaving ordinary startup commands on
+the plain inherited path. This root is tracked as
+`TAHOE-INTERFACE-CMD-GATE-INSTRUMENTATION-SIDE-EFFECT-009`.
+
+- add `AirportItlwmSkywalkInterface::isCommandProhibited(int)`
+- return `false` only for hidden Tahoe commands `0x45` and `0x46`
+- leave every other command on the inherited family filter
+
+That does not claim that the full hidden association owner is recovered. The
+claim is only that the live Tahoe carrier must cross the same interface command
+gate seam Apple explicitly opens during core bring-up, instead of dying on the
+local inherited default before any deeper owner can participate.
+
+## Visible Scan RSN AKMs Must Be Sanitized Before The Hidden Tahoe Join Owner
+
+Post-`CR-035` Tahoe runtime narrows the association failure again:
+
+- startup is healthy enough that networks are visible in UI
+- `wdutil` shows `en0`, `Power: On`, and non-zero scan cache
+- manual association still fails with `-536870201`
+- disassociate reasons remain `8` / `10`
+- policy still labels the disconnect as `INVALID_AKMS`
+
+The important part is where the active owner still is not.
+Same-cycle kernel logs still do not enter the local public join/auth path:
+
+- `setASSOCIATE(...)`
+- `setWCL_ASSOCIATE(...)`
+- `setAUTH_TYPE(...)`
+- `setRSN_IE(...)`
+- `associateSSID(...)`
+
+So the already present local WPA3->WPA2 downgrade shim in `associateSSID(...)`
+is not the active owner for this runtime. The next earlier, still-local seam is
+the visible scan / beacon IE payload that CoreWiFi consumes before the hidden
+Tahoe join owner starts.
+
+Live evidence on that visible surface already shows the problem:
+
+- `airportd` chooses the transition candidate with
+  `rsn=(... auths={ psk psk_sha256 sae } ...)`
+- scan-cache telemetry exposes advanced-AKM bitmasks such as
+  `enc=0x8 akm=0x00048080`
+
+That means the visible candidate plane is still telling CoreWiFi that this BSS
+should be attempted through the transition / advanced-AKM route, even though
+the hidden active join path later rejects that choice with `INVALID_AKMS`.
+
+The narrow fix is therefore on the visible producers, not on the hidden owner:
+
+- add shared `copyTahoeClientVisibleIEs(...)`
+- parse RSN IEs
+- if an IE is mixed / transition, keep only legacy-visible AKMs
+  `00:0f:ac:01` and `00:0f:ac:02`
+- if filtering would remove every AKM, keep the original IE unchanged so
+  WPA3-only networks are not downgraded falsely
+
+Those sanitized client-visible IEs now feed all three visible Tahoe scan
+producers:
+
+- `buildTahoeWclScanResultPayload(...)`
+- `convertNodeToScanResult(...)`
+- `getWCL_BSS_INFO(...)`
+
+One extra ABI seam had to be fixed for this to be real on Tahoe builds.
+`MacKernelSDK` still models `apple80211_scan_result::asr_ie_data` as a pointer,
+while the local Tahoe header also has an inline-buffer variant. The sanitizer
+therefore now writes through an ABI-neutral helper:
+
+- inline-buffer scan results receive copied sanitized bytes directly
+- pointer-based scan results receive an interface-owned scratch buffer
+
+This keeps the claim narrow and causal:
+
+- do not claim the hidden join owner is fully lifted
+- do not fabricate legacy support for WPA3-only BSSes
+- only stop over-advertising advanced AKMs on the visible candidate surface
+  that precedes the hidden join path
+
+`CR-036` rejected that visible-plane fix path. The reviewer did not accept
+visible mixed-network RSN suppression as an Apple-backed contract and treated
+it as masking unless the same policy could be proven from reference behavior.
+
+The next narrower root is in Tahoe's build contract, not in the client-visible
+scan surface. Project audit showed that `AirportItlwm-Tahoe` was the only
+Airport target still missing `USE_APPLE_SUPPLICANT` in
+`GCC_PREPROCESSOR_DEFINITIONS`; every other Airport target already built with
+that macro. Effective build settings confirmed the drift directly:
+
+- before the fix:
+  `GCC_PREPROCESSOR_DEFINITIONS = ... AIRPORT __IO80211_TARGET=__MAC_26_0 ...`
+- after the fix:
+  `GCC_PREPROCESSOR_DEFINITIONS = ... AIRPORT USE_APPLE_SUPPLICANT __IO80211_TARGET=__MAC_26_0 ...`
+
+That macro is causally relevant here because it flips the exact Tahoe seams
+still involved in the failing connect path:
+
+- `AirportItlwm::useAppleRSNSupplicant(...)` returns `true`
+- `AirportItlwmSkywalkInterface::getRSN_IE(...)` /
+  `setRSN_IE(...)` expose Apple-managed RSN IE override state
+- `ieee80211_output.c` uses `ic_rsn_ie_override` in association requests
+- `ieee80211_input.c` forwards EAPOL to Apple userspace instead of consuming it
+  locally
+- `ieee80211_crypto_tkip.c` takes the Apple-supplicant MIC-direction branch
+- Tahoe can surface real `ic_assoc_status` instead of collapsing failures to
+  `APPLE80211_STATUS_UNAVAILABLE`
+
+That matches the live post-`CR-035` symptom better than the rejected visible
+sanitizer did: Tahoe already reaches an Apple-facing auth flow
+(`CWEAPOLClient`, `INVALID_AKMS`), but the target was still built without the
+Apple supplicant contract enabled underneath.
+
+So the new exact fix is:
+
+- add `USE_APPLE_SUPPLICANT` to Tahoe Debug and Release target settings
+- make `scripts/build_tahoe.sh` fail if the effective Tahoe build settings do
+  not contain that macro
+- have Tahoe `getASSOCIATION_STATUS(...)` return `ic_assoc_status` while the
+  link is not yet in `RUN`
+- keep scan/beacon IE producers on raw copy and drop the rejected `CR-036`
+  visible-RSN rewrite entirely
+
+After reboot into the `CR-037` runtime, the user-visible symptom split into two
+separate layers:
+
+- rescans are still happening
+- but the fresh visible scan set is incomplete
+
+That split matters because the earlier "rescan does not happen" hypothesis is
+no longer true on the live system. The runtime evidence is now:
+
+- kernel repeatedly logs
+  `setWCL_SCAN_REQ -> scan triggered OK`
+- `fakeScanDone` reports `nodes=15 posting WCL_SCAN_RESULT (0xC9) + WCL_SCAN_DONE (0xED)`
+- `postWclScanResultsGated` reports `posted scanResults=15`
+- `airportd` logs `Scan: Updated scan cache with live scan results`
+- but the same windows often collapse to `scanResultsCount=8`
+
+`system_profiler SPAirPortDataType` on the same runtime matches that collapse:
+only eight nearby networks remain visible, and all eight are 2.4 GHz channels.
+
+That band skew is the crucial clue. The local port is not merely posting "too
+few" results; it is posting fresh `0xC9` scan-result metadata in a format that
+selectively loses part of the set on Apple ingest. The narrowest exact seam is
+the `chanSpec` field inside the Tahoe `0x44` `BeaconMetaData` carrier.
+
+Apple reference behavior is explicit here. In
+`AppleBCMWLANScanAdapter::processScanResults`, the producer does not hand-roll
+a custom scan-result chanspec. It converts the firmware chanspec through
+`AppleBCMWLANChanSpec::getAppleChannelSpec(...)` first, then packages the
+result into the outgoing `0xC9` bulletin. The local Tahoe port diverged by
+publishing:
+
+- `0x1000 | (band << 14) | channel`
+
+from `buildTahoePrimaryChanSpec(...)`.
+
+That value is not Apple-compatible for the FW<2 primary-20
+`AppleChannelSpec_t` carrier used on this path. The Apple mapping is much
+narrower:
+
+- 2.4 GHz primary 20 -> `channel`
+- 5 GHz primary 20 -> `0xc000 | channel`
+
+That exactly matches the live symptom: malformed 5 GHz `chanSpec` values can be
+discarded or misclassified while 2.4 GHz entries still survive, leaving the UI
+with the smaller eight-network subset even though the kernel posted fifteen
+fresh results.
+
+So the next exact fix is limited to the scan-result metadata carrier itself:
+
+- replace `buildTahoePrimaryChanSpec(...)` with Apple-compatible primary-20
+  `AppleChannelSpec_t` emission
+- keep the rest of `buildTahoeWclScanResultPayload(...)` unchanged
+
+This claim is intentionally narrow. It fixes the newly proven scan-surface root
+`TAHOE-WCL-SCAN-CHANSPEC-MISMATCH-012`; it does not claim that the separate
+hidden association failure is already solved.
+
+The connect failure narrowed further in the same runtime window. The decisive
+live signal is no longer just downstream `INVALID_AKMS`; it is the earlier
+controller-side wrapper failure:
+
+- `2026-04-20 17:44:58.510`
+  `Apple80211IOCTLSetWrapper ... ifname['en0'] IOUC type 20/'APPLE80211_IOC_ASSOCIATE', len[908] return -536870201/0xe00002c7`
+- `2026-04-20 17:44:58.720`
+  same second failure on `APPLE80211_IOC_ASSOCIATE`
+
+That matters because the attempted controller-side follow-on through
+`apple80211SkywalkRequest(...)` turned out to be impossible on Tahoe itself:
+`IO80211ControllerV3.h` does not declare either Skywalk-request override, and
+the target fails to compile if those methods are introduced with `override`.
+So the old request-plane hypothesis was not just unverified; it was ABI-wrong.
+
+Tahoe V3 does still expose one generic controller-side card-specific seam:
+
+- `handleCardSpecific(IO80211SkywalkInterface *, unsigned long, void *, bool)`
+
+`APPLE80211_IOC_ASSOCIATE` sits outside the dedicated Tahoe pure-virtual
+getter/setter block, which fits the wrapper-side `0xe00002c7` leak. The narrow
+next fix is therefore to route only selector `20` from
+`handleCardSpecific(...)` into the already implemented interface helper:
+
+- synthesize `apple80211req`
+- set `req_type = APPLE80211_IOC_ASSOCIATE`
+- call
+  `AirportItlwmSkywalkInterface::processApple80211Ioctl(SIOCSA80211, ...)`
+
+This is a connect-root fix, not a scan-root extension. It does not replace
+`TAHOE-WCL-SCAN-CHANSPEC-MISMATCH-012`; it addresses the separate
+`TAHOE-ASSOC-IOCTL-CARDSPECIFIC-ROUTING-013` ingress that currently prevents
+the local `setASSOCIATE(...)` / auth / RSN path from being reached at all.
+
+The next live blocker after reboot into the `CR-039` runtime moved one step
+earlier again. The interface is now visible and scan cache is populated, but
+startup / auto-join still aborts on selector `216` before any join:
+
+- `2026-04-20 19:15:40.549`
+  `Apple80211IOCTLSetWrapper ... ifname['en0'] IOUC type 216/'APPLE80211_IOC_ROAM_PROFILE', len[384] return -528342013/0xe0822403`
+- the same window immediately emits repeated
+  `AUTO-JOIN: Auto-join aborted ... error=(37 'driver not available')`
+
+That fail shape is wrong for Tahoe. The reference contract already recovered in
+the earlier setter audit is:
+
+- `AppleBCMWLANInfraProtocol::setROAM_PROFILE(...) -> 0xe00002c7`
+
+So selector `216` is not supposed to surface a hidden "not associated" carrier
+to `airportd`; it is supposed to fail in the ordinary Apple-unsupported shape.
+The local Tahoe Skywalk target already has that public contract available:
+
+- `setROAM_PROFILE(...)` override exists and returns `kIOReturnUnsupported`
+
+The problem is that the active runtime path still bypasses that local stub and
+leaks the hidden WCL `0xe0822403` instead. The narrow fix is therefore not to
+invent a roam-profile producer. It is to restore the correct fail shape by
+routing selector `216` into the existing local unsupported owner:
+
+- `processApple80211Ioctl(SIOCSA80211, ...) -> setROAM_PROFILE(...)`
+- plus the same Tahoe `handleCardSpecific(...)` ingress family that now carries
+  selector `20`
+
+This is tracked separately as `TAHOE-ROAM-PROFILE-FAIL-SHAPE-014`. It does not
+replace the earlier association-routing root; it removes a newly confirmed
+startup/auto-join blocker that still trips before the join sequence gets that
+far.
+
+The next connect window on the `CR-040` runtime narrowed the active
+association path again. Manual `ASSOCIATE` now fails with the public Apple
+unsupported code instead of the old hidden Tahoe carrier:
+
+- `2026-04-20 22:52:19.129`
+  `Apple80211IOCTLSetWrapper ... APPLE80211_IOC_ASSOCIATE ... return -536870201/0xe00002c7`
+- `2026-04-20 22:52:19.347`
+  same second failure on the retry
+
+But the important same-cycle kernel evidence is what did **not** happen:
+
+- no `handleCardSpecific(...)`
+- no `processApple80211Ioctl(...)`
+- no `setASSOCIATE(...)`
+- no `setWCL_ASSOCIATE(...)`
+- no `associateSSID(...)`
+
+Instead the only exact same-cycle local hit is:
+
+- `DEBUG VTABLE [470] getAWDL_PEER_TRAFFIC_STATS`
+
+That disproves the active `handleCardSpecific(...)` hypothesis for the live
+selector-`20` path. Primary-source family decomp now shows the actual owner:
+
+- `getSetHandler(20)` resolves to `IO80211Family::FUN_ffffff80022080ef`
+- that handler validates `req_len == 0x3ad8`
+- then emits hidden carrier
+  `sendIOUCToWcl(..., 0x802869c8, 0x45, payload, 0x3ad8, ...)`
+- if WCL does not absorb it, fallback `FUN_ffffff80021e82ef` only checks
+  interface slot `+0xcc8` (`isCommandProhibited(0x45)`) and then re-enters the
+  none-protocol side
+
+So the new narrower root is `TAHOE-HIDDEN-ASSOC-SLOT470-BRIDGE-015`: on the
+local port the hidden `0x45/0x3ad8` fallback reaches interface slot `[470]`
+and dies in the generic unsupported stub there, even though a real local
+association owner already exists in `setWCL_ASSOCIATE(...)`.
+
+The narrow runtime fix is therefore:
+
+- keep the hidden `0x45` gate open
+- replace the inline `slot[470]` unsupported stub with a real implementation
+- when that slot receives `len == 0x3ad8`, route the payload straight into
+  `setWCL_ASSOCIATE(...)`
+- preserve `kIOReturnUnsupported` for unrelated callers
+
+This is intentionally smaller than inventing a new hidden owner. It reuses the
+already recovered local `apple80211AssocCandidates` parser exactly at the seam
+the runtime now proves is active.
+
+The same audit pass over the remaining inline Tahoe stubs found one more
+confirmed structural mismatch that is not the current connect blocker but is
+still wrong by reference contract:
+
+- slot `[509]` `getCHIP_POWER_RANGE(apple80211_chip_power_limit*)`
+
+This one is not an Apple-unsupported getter. The recovered reference body is:
+
+- `AppleBCMWLANCore::getCHIP_POWER_RANGE(...)`
+- `version=1`
+- then copy a packed 6x-`u64` duty-cycle table from config-manager state
+
+And the helper body confirms the exact public ABI:
+
+- `AppleBCMWLANConfigManager::copyWlanPwrDutyCycleTable(...)`
+- packed carrier size `0x34`
+- layout `u32 version + u64[6]`
+
+So the local inline `kIOReturnUnsupported` stub at `[509]` was a real
+structural gap, not "Apple also unsupported". The narrow correction is to:
+
+- add the missing `apple80211_chip_power_limit` carrier locally
+- replace the inline stub with a real `getCHIP_POWER_RANGE(...)` producer
+- recover the same Tahoe config source Apple uses:
+  - read `wlan.chip.power.dutycycle` (`0x30` bytes) from the
+    interface/provider IOService path
+  - if that property is absent, copy the exact built-in six-entry fallback
+    table recovered from the Apple config-manager bootstrap path
+
+This audit explicitly did **not** sweep the rest of the inline stubs blindly.
+Nearby slots such as `getWIFI_NOISE_PER_ANT(...)`, `getHE_COUNTERS(...)`,
+`getWCL_WNM_OFFLOAD(...)`, `getFW_CLOCK_INFO(...)`, `getTIMESYNC_STATS(...)`,
+`getSMARTCCA_OPMODE(...)`, and `getLQM_STATISTICS(...)` remain on their proven
+Apple-unsupported contract and were left untouched.
+
+The next pass then closed the remaining inline Tahoe `unsupported` tail itself,
+but still by reference class rather than by mechanical blanket "implement
+everything":
+
+1. direct Apple-unsupported getters:
+   `[491, 492, 505, 529, 536, 537, 538, 539, 541, 542]`
+2. direct Apple-unsupported setters:
+   `[561, 583, 585, 605, 607, 630, 635, 641, 642, 643, 644, 645, 646, 648,
+   660, 661, 663]`
+3. internal-only / no-producer-recovered selectors that must stay explicit
+   unsupported:
+   `[488, 499, 563, 591, 620, 621]`
+4. the one remaining non-stub visible contract in that tail:
+   `[632] setWCL_UPDATE_FAST_LANE`
+
+The important correction is not that all `34` selectors suddenly became public
+producers. They did not. The correction is narrower:
+
+- there are now no inline `return kIOReturnUnsupported;` slot bodies left in
+  `AirportItlwmSkywalkInterface.hpp`
+- each former inline body now lives in `.cpp` with its reference class made
+  explicit
+- `[632] setWCL_UPDATE_FAST_LANE(...)` no longer hides behind generic
+  unsupported; it now follows the recovered public Apple contract
+  `NULL -> 0xe00002bc`, else success
+
+That leaves the Tahoe slot surface easier to audit: direct Apple stubs,
+internal-only selectors, and real public producers are no longer conflated in
+anonymous header placeholders.
+
+After rebooting into `CR-044`, the next active blocker is no longer scan
+visibility or slot `[509]`. The runtime now shows:
+
+- `wdutil`: `en0`, `Power: On`, `Scan Cache Count: 16`
+- `system_profiler`: mixed 2.4 GHz / 5 GHz networks, including WPA2/WPA3
+  candidates
+
+But the same boot still leaks current-link probe failures:
+
+- external `APPLE80211_IOC_SSID -> 0xe0822403`
+- external `APPLE80211_IOC_CURRENT_NETWORK -> 0xe0822403`
+- external `APPLE80211_IOC_VIRTUAL_IF_ROLE -> -3903/0xfffff0c1`
+
+The decisive runtime shape is that same-cycle local logs do show unrelated
+Skywalk getter hits (`getPOWER`, `getOP_MODE`, `getRATE`, `getRSSI`) while
+showing no local hits on:
+
+- `processApple80211Ioctl(...)`
+- `getSSID(...)`
+- `getBSSID(...)`
+- `getCURRENT_NETWORK(...)`
+
+That narrows the next seam to controller-side
+`apple80211SkywalkRequest(...)`: the family is issuing these requests against
+the bound Skywalk interface, but the local controller is still leaving the
+failing current-link selectors on inherited routing instead of dispatching them
+into the already recovered Tahoe Skywalk owner.
+
+The narrow fix candidate is:
+
+- add `AirportItlwm::apple80211SkywalkRequest(...)`
+- bridge only the current-link probe selectors into
+  `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+- keep every other Skywalk selector on inherited controller behavior
+
+That controller-request conclusion did not survive Tahoe V3 ABI validation.
+The staged local `apple80211Request(...)` experiment failed the real target
+shape and was removed: `IO80211ControllerV3.h` does not expose that override on
+the active Tahoe class.
+
+`TAHOE-CURRENT-AP-CACHE-SEED-019` and `TAHOE-BSD-UNIQUEID-CONTRACT-020` are no
+longer the active fix candidates. Both were rejected in review and removed from
+the exact runtime diff:
+
+- `019`: zero-BSSID `setCurrentApAddress(...)` seeding was a guessed
+  current-link cache repair
+- `020`: BSD `uniqueid` proved a real Apple/xnu seam, but not the current
+  `ifname['en0']` failure causality
+
+The current exact root is narrower and matches the live boot directly:
+`TAHOE-CONTROLLER-CARDSPECIFIC-GETSET-ROUTING-021`.
+
+Live `2026-04-21` proof on loaded runtime `377695CB-9BA7-3BB2-ADA2-34A997EA95E8`:
+
+- `11:00:03.117` `ifname['en0'] APPLE80211_IOC_SSID -> 0xe0822403`
+- `11:00:03.118` `ifname['en0'] APPLE80211_IOC_BSSID -> 0xe0822403`
+- `11:00:03.125` `ifname['en0'] APPLE80211_IOC_ROAM_PROFILE -> 0xe0822403`
+- `11:00:04.962` `AUTO-JOIN ... error=(37 'driver not available')`
+- same boot still returns the already-fixed
+  `APPLE80211_IOC_VIRTUAL_IF_ROLE -> -3903`
+
+That combination matters. The external `ifname['en0']` plane is alive, but the
+failing bootstrap/current-link selectors are still bypassing the local Skywalk
+helper plane. The loaded `CR-044` runtime already contains `XYLog(...)` probes
+in:
+
+- `processBSDCommand(...)`
+- `processApple80211Ioctl(...)`
+- `getSSID(...)`
+- `getBSSID(...)`
+- `getCURRENT_NETWORK(...)`
+- `setROAM_PROFILE(...)`
+
+Current `log show` / `dmesg` windows for the same boot show no hits on those
+local probes while `airportd` is logging the external failures above. So the
+remaining mismatch is no longer inside the BSD bridge itself; it is earlier, on
+the Tahoe V3 controller-side dispatch seam that still chooses whether a request
+is treated as `GET` or `SET`.
+
+That surviving public Tahoe seam is:
+
+- `handleCardSpecific(IO80211SkywalkInterface *, unsigned long, void *, bool isSet)`
+
+The local code already had almost the full correction prepared:
+
+- `shouldRouteTahoeSkywalkIoctlReq(...)` already whitelists the failing GET
+  cluster:
+  - `SSID`
+  - `BSSID`
+  - `CHANNEL`
+  - `CURRENT_NETWORK`
+- the same helper already whitelists the visible SET cluster:
+  - `ASSOCIATE`
+  - `DISASSOCIATE`
+  - `AUTH_TYPE`
+  - `RSN_IE`
+- and `ROAM_PROFILE` is a special bidirectional selector because the local
+  interface owner already exposes both:
+  - `getROAM_PROFILE(...)`
+  - `setROAM_PROFILE(...)`
+
+But the local controller bridge was still asymmetric in two ways:
+
+- `handleCardSpecific(...)` left `isSet == false` requests on inherited
+  fallback
+- `shouldRouteTahoeSkywalkIoctlReq(...)` still classified `ROAM_PROFILE` as
+  GET-only, so the same visible set-side failure cited in the live logs could
+  never reach local `setROAM_PROFILE(...)`
+
+The exact local repair is therefore:
+
+- keep `routeTahoeSkywalkIoctl(...)` as the single whitelist-driven bridge
+- make `APPLE80211_IOC_ROAM_PROFILE` explicit bidirectional in
+  `shouldRouteTahoeSkywalkIoctlReq(...)`
+- in `handleCardSpecific(...)`, build one `apple80211req`
+- route with:
+  - `isSet ? SIOCSA80211 : SIOCGA80211`
+- let `shouldRouteTahoeSkywalkIoctlReq(...)` decide the selector surface
+- leave all non-whitelisted selectors on inherited behavior
+
+This is the narrowest causally supported correction for the current boot:
+complete Tahoe V3 controller-side GET/SET dispatch into the already recovered
+local Skywalk helper bodies, instead of leaking raw `0xe0822403` before those
+helpers are entered.

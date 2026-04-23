@@ -509,7 +509,15 @@ struct apple80211_bssid_data
     struct ether_addr    bssid;
 };
 
-#if __IO80211_TARGET >= __MAC_14_0
+#if __IO80211_TARGET >= __MAC_26_0
+struct apple80211_capability_data
+{
+    u_int32_t    version;
+    // Tahoe AppleBCMWLANCore::getCARD_CAPABILITIES() writes through byte
+    // offset +0x17, so the public carrier is 0x1c bytes total.
+    u_int8_t     capabilities[24];
+};
+#elif __IO80211_TARGET >= __MAC_14_0
 struct apple80211_capability_data
 {
     u_int32_t    version;
@@ -839,6 +847,15 @@ struct apple80211_hw_mac_address
 
 static_assert(sizeof(apple80211_hw_mac_address) == 0x0A,
               "apple80211_hw_mac_address must match Apple version + 6-byte MAC ABI");
+
+struct apple80211_chip_power_limit
+{
+    u_int32_t version;
+    u_int64_t wlan_pwr_duty_cycle[6];
+} __attribute__((packed));
+
+static_assert(sizeof(apple80211_chip_power_limit) == 0x34,
+              "apple80211_chip_power_limit must match Apple packed 6x u64 duty-cycle ABI");
 
 struct apple80211_last_rx_pkt_data
 {

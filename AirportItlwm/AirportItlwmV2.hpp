@@ -266,12 +266,15 @@ public:
                                OSData *                data         = 0) override;
     static IOReturn setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
 
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
     IOReturn enableAdapter(IONetworkInterface *netif);
+    void disableAdapterCore(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
     int handlePowerStateChange(uint32_t newState, IONetworkInterface *netif);
+    void handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif);
     bool initCCLogs();
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -293,15 +296,10 @@ public:
         return kIOReturnSuccess;
     }
 
-    // Tahoe/26.x routes many bootstrap getters through controller slot +0xc80
-    // (`getPrimarySkywalkInterface()`), not through the legacy pre-Tahoe
-    // `apple80211Request(...)` fallback. Live build 0707196 proved that SSID /
-    // BSSID / CURRENT_NETWORK failures persisted even with Skywalk-side helper
-    // fixes, and the V3 target does not declare `apple80211Request` at all.
-    // Provide the real primary-interface object here so family caches stop
-    // reading the empty base-controller pointer (`controller+0x120+0x188`).
+    // Tahoe/26.x still uses controller slot +0xc80 for the primary Skywalk
+    // interface cache, so keep exposing the bound infrastructure interface
+    // there for family-side bootstrap consumers.
     virtual IO80211SkywalkInterface *getPrimarySkywalkInterface(void) override;
-
 #if __IO80211_TARGET >= __MAC_26_0
     // dump[429] = releaseFlowQueue at vptr+0xD58.  Not called during start().
     virtual void *releaseFlowQueue(IO80211FlowQueue *) override;
@@ -314,11 +312,8 @@ public:
     virtual bool getLogPipes(CCPipe**, CCPipe**, CCPipe**) override;
 
     virtual void *getFaultReporterFromDriver() override;
-
 #if __IO80211_TARGET < __MAC_26_0
     virtual SInt32 apple80211_ioctl(IO80211SkywalkInterface *,unsigned long,void *, bool, bool) override;
-    virtual SInt32 apple80211SkywalkRequest(UInt,int,IO80211SkywalkInterface *,void *) override;
-    virtual SInt32 apple80211SkywalkRequest(UInt,int,IO80211SkywalkInterface *,void *,void *) override;
 #endif
 
     bool createMediumTables(const IONetworkMedium **primary);
@@ -327,10 +322,7 @@ public:
 
     virtual SInt32 enableFeature(IO80211FeatureCode, void*) override;
     virtual bool isCommandProhibited(int command) override;
-    virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override {
-        XYLog("%s\n", __FUNCTION__);
-        return 0;
-    };
+    virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override;
     virtual IOReturn getDRIVER_VERSION(IO80211SkywalkInterface *interface,apple80211_version_data *data) override {
         XYLog("%s\n", __FUNCTION__);
         return getDRIVER_VERSION((OSObject *)interface, data);
@@ -439,6 +431,7 @@ public:
     //pm
     thread_call_t powerOnThreadCall;
     thread_call_t powerOffThreadCall;
+    thread_call_t tahoeBootThreadCall;
     UInt32 pmPowerState;
     IOService *pmPolicyMaker;
     UInt8 pmPCICapPtr;
@@ -472,9 +465,22 @@ public:
 
     IO80211FaultReporter *io80211FaultReporter;
 
+    void performTahoeBootChipImage();
+
 private:
     TahoeOwnerRegistry tahoeOwnerRegistry;
     TahoeCommanderV2 tahoeCommander{&tahoeOwnerRegistry};
+};
+
+// Boot nub — replicates Apple's AppleBCMWLANUserClient IOKit matching pattern.
+// Apple's bootChipImage is triggered by an IOService (AppleBCMWLANUserClient)
+// that matches against the controller via IOKit matching.  This nub does the same:
+// IOKit starts it after AirportItlwm::registerService(), and its start() triggers
+// the async boot via the pre-allocated thread_call.
+class AirportItlwmBootNub : public IOService {
+    OSDeclareDefaultStructors(AirportItlwmBootNub)
+public:
+    bool start(IOService *provider) override;
 };
 
 #endif /* AirportItlwmV2_hpp */

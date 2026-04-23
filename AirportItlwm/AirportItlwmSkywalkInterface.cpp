@@ -8,6 +8,7 @@
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 #include <sys/CTimeout.hpp>
+#include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_node.h>
@@ -43,6 +44,29 @@ static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
 
+static const char *tahoeApple80211ReqName(int reqType)
+{
+    if (reqType >= 0 &&
+        reqType < static_cast<int>(sizeof(IOCTL_NAMES) / sizeof(IOCTL_NAMES[0])))
+        return IOCTL_NAMES[reqType];
+    return "UNKNOWN";
+}
+
+static bool isTahoeCurrentLinkProbeReq(int reqType)
+{
+    switch (reqType) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_SCAN_RESULT:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool isInvalidTahoeLqmThresholdByte(uint8_t value)
 {
     // AppleBCMWLANCore::setLQM_CONFIG rejects any byte in the inclusive range
@@ -61,6 +85,60 @@ static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
     config->sample_period_ms = 1000;
     config->tx_per_interval_ms = 1000;
     config->rx_loss_interval_ms = 1000;
+}
+
+static constexpr uint64_t kAppleTahoeChipPowerDutyCycleFallback[6] = {
+    0x07c808e50a010b1eULL,
+    0x03560472058f06acULL,
+    0x00000000011d0239ULL,
+    0x00460050005a0064ULL,
+    0x001e00280032003cULL,
+    0x00000000000a0014ULL,
+};
+
+static IORegistryEntry *getTahoeChipPowerRegistryObject(AirportItlwm *controller)
+{
+    if (controller == nullptr)
+        return nullptr;
+
+    if (controller->fNetIf != nullptr)
+        return controller->fNetIf;
+    return controller;
+}
+
+static IORegistryEntry *getTahoeChipPowerRegistryProvider(AirportItlwm *controller)
+{
+    IORegistryEntry *entry = getTahoeChipPowerRegistryObject(controller);
+    if (IOService *service = OSDynamicCast(IOService, entry)) {
+        IORegistryEntry *provider = service->getProvider();
+        if (provider != nullptr)
+            return provider;
+    }
+    if (controller != nullptr)
+        return controller->getProvider();
+    return nullptr;
+}
+
+static bool copyTahoeChipPowerDutyCycle(IORegistryEntry *entry, uint64_t *table)
+{
+    if (entry == nullptr || table == nullptr)
+        return false;
+
+    OSObject *object = entry->copyProperty("wlan.chip.power.dutycycle");
+    if (object == nullptr)
+        return false;
+
+    bool found = false;
+    if (OSData *bytes = OSDynamicCast(OSData, object)) {
+        if (bytes->getLength() == sizeof(kAppleTahoeChipPowerDutyCycleFallback)) {
+            memcpy(table, bytes->getBytesNoCopy(),
+                   sizeof(kAppleTahoeChipPowerDutyCycleFallback));
+            found = true;
+        }
+    }
+
+    object->release();
+    return found;
 }
 
 static constexpr uint16_t kAppleTahoeQTxpowerTable[40] = {
@@ -838,6 +916,32 @@ UInt64 AirportItlwmSkywalkInterface::createEventPipe(IO80211APIUserClient *clien
     return super::createEventPipe(client);
 }
 
+void *AirportItlwmSkywalkInterface::getController(void)
+{
+    // Apple Tahoe does not leave the inherited family slot as an opaque field
+    // lookup. AppleBCMWLANSkywalkInterface::getController() returns the same
+    // controller object that was bound earlier into interface-local state.
+    // The local Tahoe bring-up also binds the controller during
+    // bindController(...), but caches it only in `instance`, so expose that
+    // same object through the family-visible slot instead of relying on an
+    // unrelated inherited storage path.
+    return instance;
+}
+
+bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
+{
+    // Keep the explicit Tahoe interface seam for hidden 0x45/0x46, but do not
+    // add any extra side effects on ordinary startup commands. Post-CR-033
+    // runtime logs already showed `isCommandProhibited(0xc)=0` immediately
+    // before `APPLE80211_IOC_CARD_CAPABILITIES failed`, which means the policy
+    // bit itself did not change on the failing bootstrap path. The only extra
+    // behavior introduced there was per-command logging inside this gate.
+    if (command == 0x45 || command == 0x46)
+        return false;
+
+    return super::isCommandProhibited(command);
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 {
@@ -855,7 +959,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     // - Our Tahoe target does not build AirportSTAIOCTL.cpp, so the old ioctl
     //   dispatcher never runs here; the BSD path must forward these requests.
     if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
-        IOReturn ret = processApple80211Ioctl(cmd, (apple80211req *)data);
+        apple80211req *req = static_cast<apple80211req *>(data);
+        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
+            XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p ifnet=%p\n",
+                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
+                  req->req_type, req->req_data, interface);
+        }
+        IOReturn ret = processApple80211Ioctl(cmd, req);
+        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
+            XYLog("DEBUG %s RET cmd=0x%x req=%s(%d) ret=0x%x\n",
+                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
+                  req->req_type, ret);
+        }
         if (ret != kIOReturnUnsupported)
             return ret;
     }
@@ -887,6 +1002,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 
     if (req == NULL)
         return kIOReturnUnsupported;
+
+    if (isTahoeCurrentLinkProbeReq(req->req_type)) {
+        XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p\n",
+              __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
+              req->req_type, req->req_data);
+    }
 
     switch (req->req_type) {
         case APPLE80211_IOC_VIRTUAL_IF_ROLE:
@@ -947,12 +1068,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                        ? getBSSID((apple80211_bssid_data *)req->req_data)
                        : kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_RESULT:
-            // Keep SCAN_RESULT on the family's IOUC/WCL path for now. The live
-            // db546d2 failure happens earlier at _initInterface on SSID/BSSID,
-            // and Apple scan-result consumption is coupled to WCL state. Do
-            // not short-circuit this selector until the bootstrap query path
-            // is no longer the blocker.
-            return kIOReturnUnsupported;
+            return (cmd == SIOCGA80211)
+                       ? getSCAN_RESULT((struct apple80211_scan_result *)req->req_data)
+                       : kIOReturnUnsupported;
         case APPLE80211_IOC_CHANNEL:
             if (cmd == SIOCGA80211) {
                 // Same pre-association cache contract as SSID/BSSID. Reverse
@@ -1077,8 +1195,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getRATE_SET((apple80211_rate_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_ROAM_PROFILE:
-            return (cmd == SIOCGA80211) ? getROAM_PROFILE((apple80211_roam_profile_all_bands *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getROAM_PROFILE((apple80211_roam_profile_all_bands *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setROAM_PROFILE((apple80211_roam_profile_all_bands *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_RSN_IE:
             if (cmd == SIOCGA80211)
                 return getRSN_IE((apple80211_rsn_ie_data *)req->req_data);
@@ -1402,6 +1523,28 @@ bindController(AirportItlwm *provider)
     return true;
 }
 
+int AirportItlwmSkywalkInterface::
+getAssocState(void)
+{
+    int assocState = IO80211InfraInterface::getAssocState();
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s base=%d ic_state=%d ic_bss=%p linkActive=%u\n",
+          __FUNCTION__, assocState, ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
+          static_cast<unsigned int>(instance != nullptr &&
+                                    (instance->currentStatus & kIONetworkLinkActive) != 0));
+    return assocState;
+}
+
+void AirportItlwmSkywalkInterface::
+setCurrentApAddress(ether_addr *addr)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s addr=%s ic_state=%d ic_bss=%p\n",
+          __FUNCTION__, addr ? ether_sprintf(addr->octet) : "(null)",
+          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
+    IO80211InfraInterface::setCurrentApAddress(addr);
+}
+
 SInt32 AirportItlwmSkywalkInterface::
 setInterfaceEnable(bool enable)
 {
@@ -1608,6 +1751,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getSSID(struct apple80211_ssid_data *sd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
     // Apple's IO80211Controller::getSSIDData always pre-zeroes and returns success.
     // When not associated, the cached SSID data is zeroed (ssid_len=0).
     // Returning error here causes airportd to abort auto-join with "driver not available".
@@ -1617,7 +1761,31 @@ getSSID(struct apple80211_ssid_data *sd)
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
     }
+    XYLog("DEBUG %s ret=0 ssid_len=%u\n", __FUNCTION__, sd->ssid_len);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
+{
+    // Tahoe visible APPLE80211_IOC_ASSOCIATE does not fall into the public
+    // `setASSOCIATE(...)` path. Family `getSetHandler(20)` first emits the
+    // hidden carrier `0x45` with the full `0x3ad8` assoc-candidates blob and,
+    // when WCL does not absorb it, the fallback lands on this slot. Live
+    // runtime proves that exact seam by logging `[470] getAWDL_PEER_TRAFFIC_STATS`
+    // in the same cycle as `Exit-setASSOCIATE:153 ret:-536870201`.
+    //
+    // Reuse the already recovered public owner instead of leaking generic
+    // unsupported from this hidden fallback. Non-association callers keep the
+    // prior unsupported contract.
+    if (data != nullptr && length == 0x3ad8) {
+        XYLog("DEBUG %s routing hidden-assoc carrier len=0x%x into setWCL_ASSOCIATE\n",
+              __FUNCTION__, length);
+        return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
+    }
+
+    XYLog("DEBUG VTABLE [470] %s len=0x%x\n", __FUNCTION__, length);
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -2119,6 +2287,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
     // Apple's IO80211 framework (FUN_ffffff8002215524) pre-zeroes BSSID and returns success.
     // When not associated, BSSID is all-zero.
     // Returning error here causes airportd to fail during init and abort auto-join.
@@ -2127,6 +2296,7 @@ getBSSID(struct apple80211_bssid_data *bd)
     if (ic->ic_state == IEEE80211_S_RUN) {
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     }
+    XYLog("DEBUG %s ret=0 bssid=%s\n", __FUNCTION__, ether_sprintf(bd->bssid.octet));
     return kIOReturnSuccess;
 }
 
@@ -2143,6 +2313,112 @@ getHW_ADDR(struct apple80211_hw_mac_address *data)
     data->version = APPLE80211_VERSION;
     IEEE80211_ADDR_COPY(data->hw_addr, ic->ic_myaddr);
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCHIP_POWER_RANGE(apple80211_chip_power_limit *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    memset(data, 0, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    // AppleBCMWLANCore::getCHIP_POWER_RANGE is backed by
+    // AppleBCMWLANConfigManager::copyWlanPwrDutyCycleTable(...), and that
+    // config-manager does not invent zeros. It first looks up the exact
+    // `wlan.chip.power.dutycycle` 0x30-byte property on the interface/provider
+    // IOService path and, if absent, seeds the same six-entry table from the
+    // built-in Tahoe defaults recovered at 0xffffff8001671920. Mirror that
+    // property-or-default source here instead of returning synthetic success
+    // with an empty payload.
+    IORegistryEntry *sources[2] = {
+        getTahoeChipPowerRegistryObject(instance),
+        getTahoeChipPowerRegistryProvider(instance),
+    };
+    for (IORegistryEntry *source : sources) {
+        if (copyTahoeChipPowerDutyCycle(source, data->wlan_pwr_duty_cycle))
+            return kIOReturnSuccess;
+    }
+    memcpy(data->wlan_pwr_duty_cycle, kAppleTahoeChipPowerDutyCycleFallback,
+           sizeof(kAppleTahoeChipPowerDutyCycleFallback));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *)
+{
+    // Broadcom-private diagnostics surface. Keep it on the explicit
+    // unsupported contract instead of advertising a shared Apple80211
+    // producer that the recovered reference does not expose publicly.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getRANGING_ENABLE(apple80211_ranging_enable_request_t *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getRANGING_START(apple80211_ranging_start_request_t *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTRAP_INFO(apple80211_trap_info_data *)
+{
+    // Trap/debug diagnostics surface. Keep the explicit unsupported contract
+    // until a real public producer is recovered.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getRANGING_CAPS(apple80211_ranging_capabilities_t *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getHE_COUNTERS(apple80211_he_counters_ctl *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getWIFI_NOISE_PER_ANT(apple80211_noise_per_ant_t *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getFW_CLOCK_INFO(apple80211_fw_clock_info *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTIMESYNC_STATS(apple80211_timesync_stats *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSMARTCCA_OPMODE(apple80211_smartcca_opmode *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getLQM_STATISTICS(apple80211_lqm_statistics *)
+{
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3129,10 +3405,21 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
         return kIOReturnError;
     memset(hv, 0, sizeof(*hv));
     hv->version = APPLE80211_VERSION;
-    if (ic->ic_state == IEEE80211_S_RUN)
+    if (ic->ic_state == IEEE80211_S_RUN) {
         hv->status = APPLE80211_STATUS_SUCCESS;
-    else
+#ifdef USE_APPLE_SUPPLICANT
+    } else {
+        // Under the Apple supplicant contract the 802.11 core already tracks
+        // the last auth/assoc status code in ic_assoc_status. Tahoe must not
+        // collapse that back to UNAVAILABLE or CoreWiFi loses the real reason
+        // coming from the association response path.
+        hv->status = ic->ic_assoc_status;
+    }
+#else
+    } else {
         hv->status = APPLE80211_STATUS_UNAVAILABLE;
+    }
+#endif
     XYLog("DEBUG %s status=%d ic_state=%d\n", __FUNCTION__, hv->status, ic->ic_state);
     return kIOReturnSuccess;
 }
@@ -3608,6 +3895,148 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
         default:
             return static_cast<IOReturn>(0xe0000001);
     }
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setROAM_PROFILE(apple80211_roam_profile_all_bands *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *)
+{
+    // Broadcom-private diagnostics setter. Keep the explicit unsupported
+    // contract rather than advertising a normal shared Apple80211 producer.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setROAM_CACHE_UPDATE(apple80211_roam_cache_data *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *)
+{
+    // No Apple producer has been recovered for this selector on Tahoe.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setVOICE_IND_STATE(apple80211_voice_ind_state *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_ACCESSORY_POWER_LIMIT_WIFI_ENH(apple80211_mws_accessory_power_limit *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setHEARTBEAT(void *)
+{
+    // No Apple producer has been recovered for this selector on Tahoe.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setINTERFACE_SETTING(apple80211_interface_setting *)
+{
+    // No Apple producer has been recovered for this selector on Tahoe.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
+{
+    // The recovered Tahoe visible contract is minimal: Apple rejects NULL with
+    // 0xe00002bc and otherwise reports success from the public setter surface
+    // before the deeper traffic-policy owner work.
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002bc);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSTAND_ALONE_MODE_STATE(apple80211_standalone_state *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTIMESYNC_GPIO(apple80211_timesync_gpio *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setHOST_CLOCK_INFO(apple80211_host_clock_info *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setFW_CLOCK_SOURCE(apple80211_fw_clock_source *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTIMESYNC_TX_POLICY(apple80211_timesync_tx_policy *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTIMESYNC_RX_POLICY(apple80211_timesync_rx_policy *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTIMESTAMPING_EN(apple80211_timestamping_en *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setMWS_TIME_SHARING_WIFI_ENH(apple80211_mws_time_sharing *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSDB_ENABLE(apple80211_sdb_enable *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setBTCOEX_EXT_PROFILE(apple80211_btcoex_ext_profile *)
+{
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setTX_MODE_CONFIG(apple80211_tx_mode_config *)
+{
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4922,13 +5351,16 @@ setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);
 
-static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_node *fNextNodeToSend, apple80211_scan_result *result)
+static int convertNodeToScanResult(ItlHalService *fHalService,
+                                   struct ieee80211_node *fNextNodeToSend,
+                                   apple80211_scan_result *result)
 {
     bzero(result, sizeof(*result));
     result->version = APPLE80211_VERSION;
     if (fNextNodeToSend->ni_rsnie_tlv && fNextNodeToSend->ni_rsnie_tlv_len > 0) {
         result->asr_ie_len = fNextNodeToSend->ni_rsnie_tlv_len;
-        memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv, MIN(result->asr_ie_len, sizeof(result->asr_ie_data)));
+        memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv,
+               MIN(result->asr_ie_len, sizeof(result->asr_ie_data)));
     } else {
         result->asr_ie_len = 0;
     }
@@ -4959,9 +5391,12 @@ static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_
 IOReturn AirportItlwmSkywalkInterface::
 getCURRENT_NETWORK(apple80211_scan_result *sr)
 {
-    if (fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN || fHalService->get80211Controller()->ic_bss == NULL)
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
+    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
         return kIOReturnError;
-    convertNodeToScanResult(fHalService, fHalService->get80211Controller()->ic_bss, sr);
+    convertNodeToScanResult(fHalService, ic->ic_bss, sr);
+    XYLog("DEBUG %s ret=0 ssid_len=%u\n", __FUNCTION__, sr->asr_ssid_len);
     return kIOReturnSuccess;
 }
 
@@ -5157,12 +5592,11 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
         memcpy(buf + 0x11, ni->ni_essid, MIN(ni->ni_esslen, 32));
     // +0x7C: IE length (2 bytes LE)
     uint16_t ie_len = 0;
-    if (ni->ni_rsnie_tlv && ni->ni_rsnie_tlv_len > 0)
+    if (ni->ni_rsnie_tlv && ni->ni_rsnie_tlv_len > 0) {
         ie_len = MIN(ni->ni_rsnie_tlv_len, (uint16_t)(0x84 - 0x7E));
-    *(uint16_t *)(buf + 0x7C) = ie_len;
-    // +0x7E: IE data (remaining bytes)
-    if (ie_len > 0)
         memcpy(buf + 0x7E, ni->ni_rsnie_tlv, ie_len);
+    }
+    *(uint16_t *)(buf + 0x7C) = ie_len;
 
     XYLog("WCL [526] %s bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d ssid_len=%u ie_len=%u\n",
           __FUNCTION__,

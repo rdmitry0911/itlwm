@@ -88,6 +88,7 @@ struct __kern_buflet {
 
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
+OSDefineMetaClassAndStructors(AirportItlwmBootNub, IOService)
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
 
 #include "Airport/CCDataStream.h"
@@ -152,6 +153,149 @@ static int ieeeChanFlag2apple(int flags, int bw)
     }
     return ret;
 }
+
+static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet)
+{
+    if (req == nullptr || req->req_data == nullptr)
+        return false;
+
+    switch (req->req_type) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_CHANNEL:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+            return !isSet;
+        case APPLE80211_IOC_ROAM_PROFILE:
+            // Apple exposes both visible GET and SET wrappers for ROAM_PROFILE.
+            // The local interface owner already supports both directions via
+            // processApple80211Ioctl(...), so keep the selector symmetric here.
+            return true;
+        case APPLE80211_IOC_ASSOCIATE:
+        case APPLE80211_IOC_DISASSOCIATE:
+        case APPLE80211_IOC_AUTH_TYPE:
+        case APPLE80211_IOC_RSN_IE:
+            return isSet;
+        default:
+            return false;
+    }
+}
+
+static IOReturn routeTahoeSkywalkIoctl(IO80211SkywalkInterface *interface, void *data, UInt cmd)
+{
+    AirportItlwmSkywalkInterface *sky =
+        OSDynamicCast(AirportItlwmSkywalkInterface, interface);
+    apple80211req *req = static_cast<apple80211req *>(data);
+    if (sky == nullptr || req == nullptr)
+        return kIOReturnUnsupported;
+
+    const bool isSet = (cmd == SIOCSA80211);
+    if (!shouldRouteTahoeSkywalkIoctlReq(req, isSet))
+        return kIOReturnUnsupported;
+
+    return sky->processApple80211Ioctl(cmd, req);
+}
+
+namespace {
+
+constexpr uint32_t kTahoeWclScanResultMaxIELen = 0x800;
+constexpr uint32_t kTahoeWclScanResultHeaderLen = 0x44;
+
+struct TahoeWclBeaconMetaData {
+    uint32_t ieLen;               // 0x00
+    uint16_t chanSpec;            // 0x04
+    uint8_t ssid[32];             // 0x06
+    uint8_t ssidLen;              // 0x26
+    uint8_t primaryChannel;       // 0x27
+    uint8_t reserved28;           // 0x28
+    uint8_t bssid[6];             // 0x29
+    uint8_t reserved2f;           // 0x2f
+    int32_t rssi;                 // 0x30
+    uint16_t reserved34;          // 0x34
+    uint16_t reserved36;          // 0x36
+    uint16_t beaconInterval;      // 0x38
+    uint16_t capability;          // 0x3a
+    uint32_t reserved3c;          // 0x3c
+    uint32_t flags;               // 0x40
+} __attribute__((packed));
+
+static_assert(sizeof(TahoeWclBeaconMetaData) == kTahoeWclScanResultHeaderLen,
+              "TahoeWclBeaconMetaData size must match Apple 0x44 header");
+
+struct TahoeWclScanResultPayload {
+    TahoeWclBeaconMetaData meta;
+    uint8_t ie[kTahoeWclScanResultMaxIELen];
+} __attribute__((packed));
+
+static uint16_t buildTahoePrimaryChanSpec(struct ieee80211com *ic,
+                                          const struct ieee80211_channel *chan)
+{
+    if (ic == nullptr || chan == nullptr || chan == IEEE80211_CHAN_ANYC)
+        return 0;
+
+    const uint16_t primary = static_cast<uint16_t>(ieee80211_chan2ieee(ic, chan) & 0xff);
+    /*
+     * AppleBCMWLANScanAdapter::processScanResults does not synthesize a local
+     * chanspec format for the 0xC9 WCL scan-result carrier. It converts the
+     * firmware chanspec through AppleBCMWLANChanSpec::getAppleChannelSpec()
+     * first, then writes that Apple-visible 16-bit value into the metadata.
+     *
+     * For the FW<2 primary-20 path used by Tahoe scan results, the Apple
+     * encoding is:
+     *   2.4 GHz -> channel number
+     *   5   GHz -> 0xc000 | channel number
+     *
+     * The previous local 0x1000 | (band << 14) | channel encoding is not
+     * Apple-compatible and causes fresh WCL scan ingestion to collapse part of
+     * the candidate set on the client-visible/UI plane.
+     */
+    if ((chan->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
+        return static_cast<uint16_t>(0xc000 | primary);
+    return primary;
+}
+
+static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
+                                           struct ieee80211_node *ni,
+                                           TahoeWclScanResultPayload *payload,
+                                           uint32_t *payloadLen)
+{
+    if (ic == nullptr || ni == nullptr || payload == nullptr || payloadLen == nullptr ||
+        ni->ni_chan == nullptr || ni->ni_chan == IEEE80211_CHAN_ANYC)
+        return false;
+
+    const uint16_t chanSpec = buildTahoePrimaryChanSpec(ic, ni->ni_chan);
+    if (chanSpec == 0)
+        return false;
+
+    bzero(payload, sizeof(*payload));
+
+    uint32_t ieLen = 0;
+    if (ni->ni_rsnie_tlv != nullptr && ni->ni_rsnie_tlv_len != 0) {
+        ieLen = MIN(ni->ni_rsnie_tlv_len,
+                    static_cast<uint32_t>(kTahoeWclScanResultMaxIELen));
+        memcpy(payload->ie, ni->ni_rsnie_tlv, ieLen);
+    }
+    payload->meta.ieLen = ieLen;
+    payload->meta.chanSpec = chanSpec;
+    payload->meta.ssidLen = MIN(static_cast<uint8_t>(sizeof(payload->meta.ssid)), ni->ni_esslen);
+    if (payload->meta.ssidLen != 0) {
+        memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
+        // Consumer-side setBeaconDataFromMsg uses bits 1|2 as the "header SSID
+        // is present" hint before it parses the raw beacon IEs.
+        payload->meta.flags |= 0x6;
+    }
+    const uint16_t primaryChannel =
+        static_cast<uint16_t>(ieee80211_chan2ieee(ic, ni->ni_chan));
+    payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));
+    memcpy(payload->meta.bssid, ni->ni_bssid, sizeof(payload->meta.bssid));
+    payload->meta.rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+    payload->meta.beaconInterval = ni->ni_intval;
+    payload->meta.capability = ni->ni_capinfo;
+
+    *payloadLen = kTahoeWclScanResultHeaderLen + ieLen;
+    return true;
+}
+
+} // namespace
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
 // Must match poolOpts.bufferSize in AirportItlwm::start() pool creation.
@@ -268,6 +412,64 @@ publishTahoeDriverReadyState(AirportItlwm *controller, bool ready)
     applyTahoeInterfaceReadyEdge(controller, ready);
     setCoreWiFiDriverReadyProperty(controller, ready);
     postTahoeDriverAvailableBulletin(controller, ready);
+}
+
+// Apple's bootChipImage is triggered asynchronously by AppleBCMWLANUserClient.
+// The thread_call handler routes through the command gate for serialization,
+// matching the framework's expected execution context.
+static IOReturn
+performTahoeBootChipImageGated(OSObject *owner, void *, void *, void *, void *)
+{
+    static_cast<AirportItlwm *>(owner)->performTahoeBootChipImage();
+    return kIOReturnSuccess;
+}
+
+static void
+handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
+{
+    AirportItlwm *self = (AirportItlwm *)param0;
+    XYLog("DEBUG %s entry\n", __FUNCTION__);
+    IOCommandGate *gate = self->getCommandGate();
+    if (gate) {
+        gate->runAction(performTahoeBootChipImageGated);
+    }
+}
+
+void AirportItlwm::performTahoeBootChipImage()
+{
+    XYLog("DEBUG %s entry power_state=%u\n", __FUNCTION__, power_state);
+    setLinkStatus(kIONetworkLinkValid);
+    if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
+        fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
+    power_state = kWiFiPowerOn;
+    XYLog("DEBUG %s enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
+    enableAdapter(NULL);
+    {
+        struct ieee80211com *ic_dbg = fHalService->get80211Controller();
+        struct _ifnet *ifp_dbg = &ic_dbg->ic_ac.ac_if;
+        XYLog("DEBUG %s post-enable: ic_state=%d if_flags=0x%x\n",
+              __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags);
+    }
+    publishTahoeDriverReadyState(this, true);
+    XYLog("DEBUG %s readiness published\n", __FUNCTION__);
+}
+
+bool AirportItlwmBootNub::start(IOService *provider)
+{
+    if (!IOService::start(provider)) return false;
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, provider);
+    if (!controller) {
+        stop(provider);
+        return false;
+    }
+    // Apple's AppleBCMWLANUserClient triggers bootChipImage after IOKit
+    // matches it against the controller.  This nub replicates that pattern:
+    // IOKit matched us against AirportItlwm, now trigger the async boot.
+    if (controller->tahoeBootThreadCall) {
+        XYLog("AirportItlwmBootNub: triggering async boot\n");
+        thread_call_enter(controller->tahoeBootThreadCall);
+    }
+    return true;
 }
 
 static IORegistryEntry *
@@ -674,6 +876,41 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     return kIOReturnSuccess;
 }
 
+IOReturn AirportItlwm::
+postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (!that || !that->fNetIf || !that->fHalService) {
+        XYLog("DEBUG %s SKIP that=%p fNetIf=%p hal=%p\n", __FUNCTION__, that,
+              that ? that->fNetIf : nullptr, that ? that->fHalService : nullptr);
+        return kIOReturnNotReady;
+    }
+
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+
+    TahoeWclScanResultPayload payload;
+    uint32_t payloadLen = 0;
+    uint32_t posted = 0;
+
+    struct ieee80211_node *ni;
+    RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
+        if (!buildTahoeWclScanResultPayload(ic, ni, &payload, &payloadLen))
+            continue;
+        that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_RESULT,
+                          &payload, payloadLen, true);
+        posted++;
+    }
+
+    UInt32 status = 0;
+    that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_DONE,
+                      &status, sizeof(status), true);
+    XYLog("DEBUG %s posted scanResults=%u scanDone=1 nodes=%u\n",
+          __FUNCTION__, posted, ic->ic_nnodes);
+    return kIOReturnSuccess;
+}
+
 void AirportItlwm::
 eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 {
@@ -776,39 +1013,32 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     sRT.scanCount++;
     AirportItlwm *that = (AirportItlwm *)owner;
     struct ieee80211com *ic = that->fHalService->get80211Controller();
-    static UInt32 msg;
-    msg = 0;
     /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
     that->fNextNodeToSend = NULL;
     that->fScanResultWrapping = false;
 
     /*
      * Tahoe WCL scans do not complete through the generic Core::scanComplete()
-     * bulletin. The Apple reference path for scan-adapter-owned completion is
-     * AppleBCMWLANScanAdapter::scanComplete(wl_event_msg_t*), and that code
-     * posts APPLE80211_M_WCL_SCAN_DONE (0xED) with a 4-byte status payload.
+     * bulletin. The Apple scan-adapter path emits a per-BSS WCL scan-result
+     * bulletin (0xC9, BeaconMetaData + raw tagged IEs) before the scan-owned
+     * completion bulletin (0xED, 4-byte status).  0xED alone leaves the
+     * framework scan cache empty even when ic_tree already has nodes.
      *
-     * Our previous Tahoe shim synthesized generic APPLE80211_M_SCAN_DONE plus
-     * APPLE80211_M_BGSCAN_CACHED_NETWORK_AVAILABLE. Live logs showed that this
-     * never drove WCL out of IN_PROGRESS, while the Apple decompile proves the
-     * producer for this path is the scan-adapter-owned 0xED bulletin instead.
-     * 0x3F is also wrong here: the reference marks it as a variable-payload
-     * BG-scan cache notification, not a zero-length active-scan completion.
+     * The local port already preserves the full tagged-IE tail in
+     * ni_rsnie_tlv. Rebuild the Apple-shaped 0x44 metadata carrier from the
+     * node cache, seed the primary 20 MHz chanSpec, let IO80211 parse the raw
+     * HT/VHT/HE operation IEs, then post the real WCL completion bulletin.
      */
-    XYLog("DEBUG %s ic_state=%d nodes=%u posting WCL_SCAN_DONE (0xED)\n",
+    XYLog("DEBUG %s ic_state=%d nodes=%u posting WCL_SCAN_RESULT (0xC9) + WCL_SCAN_DONE (0xED)\n",
           __FUNCTION__, ic->ic_state, ic->ic_nnodes);
 
-    // Keep timer-synthesized completion on the same controller/PostOffice
-    // route as Apple scan-adapter events, but use the Apple scan-adapter
-    // message code instead of the generic SCAN_DONE shim.
     if (that->getCommandGate() != nullptr) {
-        that->getCommandGate()->runAction(postMessageGated,
-            (void *)(uintptr_t)APPLE80211_M_WCL_SCAN_DONE, &msg,
-            (void *)(uintptr_t)sizeof(msg), nullptr);
+        that->getCommandGate()->runAction(postWclScanResultsGated,
+            nullptr, nullptr, nullptr, nullptr);
         return;
     }
 
-    that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_DONE, &msg, 4, true);
+    postWclScanResultsGated(that, nullptr, nullptr, nullptr, nullptr);
 }
 
 bool AirportItlwm::isCommandProhibited(int command)
@@ -1614,31 +1844,27 @@ bool AirportItlwm::start(IOService *provider)
         //   dispatcher (FUN_ffffff8000a6be70).
     }
 
-    sDiag.step = 9;
-    XYLog("DEBUG %s [STEP 9] enableAdapter\n", __FUNCTION__);
-    setLinkStatus(kIONetworkLinkValid);
-    if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
-        fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
+    // Apple's bootChipImage is triggered by AppleBCMWLANUserClient — an IOService
+    // matched against the controller via IOKit matching.  AirportItlwmBootNub
+    // replicates this pattern: IOKit starts it after registerService(), and its
+    // start() enters the thread_call that runs enableAdapter + readiness publication.
+    //
+    // Do NOT enable the adapter here.  registerService() must happen first so
+    // the framework's WCL/PostOffice/monitor dispatch tables are wired up before
+    // setDataPathState fires.  The gate must be enabled before registerService()
+    // so the boot nub's thread_call can route through it.
     _fCommandGate->enable();
-    power_state = kWiFiPowerOn;
-    XYLog("DEBUG %s [STEP 9] enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
-    enableAdapter(NULL);
-    {
-        struct ieee80211com *ic_dbg = fHalService->get80211Controller();
-        struct _ifnet *ifp_dbg = &ic_dbg->ic_ac.ac_if;
-        XYLog("DEBUG %s [STEP 9a] post-enable: ic_state=%d if_flags=0x%x ic_caps=0x%x ic_opmode=%d\n",
-              __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags, ic_dbg->ic_caps, ic_dbg->ic_opmode);
-    }
-    // Apple publishes readiness as CoreWiFiDriverReadyKey on the interface-side
-    // object once the adapter is actually enabled.
-    publishTahoeDriverReadyState(this, true);
-    SD_SET(16); // enableAdapter OK
+    tahoeBootThreadCall = thread_call_allocate(
+        (thread_call_func_t)handleTahoeBootChipImage,
+        (thread_call_param_t)this);
+    sDiag.step = 9;
+    SD_SET(16);
+    XYLog("DEBUG %s [STEP 9] boot thread_call allocated, waiting for boot nub\n", __FUNCTION__);
     sDiag.step = 10;
-    // registerService() makes the IO80211Controller visible to airportd.
-    // The BSD ifnet (en0) is created asynchronously via the nexus callback
-    // chain triggered by deferBSDAttach(false) at STEP 8f.  If the callback
-    // hasn't fired yet, airportd will initially see an empty BSD name and
-    // should update when the ifnet appears.  See STEP 8f comment.
+    // registerService() makes the IO80211Controller visible to airportd and
+    // triggers IOKit matching for AirportItlwmBootNub.  The BSD ifnet (en0)
+    // is created asynchronously via the nexus callback chain triggered by
+    // deferBSDAttach(false) at STEP 8f.
     registerService();
     RT_SET(18);
     XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
@@ -1719,6 +1945,11 @@ void AirportItlwm::stop(IOService *provider)
 
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     sRT.stopStep = 2;
+    if (tahoeBootThreadCall) {
+        thread_call_cancel(tahoeBootThreadCall);
+        thread_call_free(tahoeBootThreadCall);
+        tahoeBootThreadCall = NULL;
+    }
     XYLog("DEBUG %s [2] disableAdapter\n", __FUNCTION__);
     disableAdapter(NULL);
     sRT.stopStep = 3;
@@ -2264,7 +2495,16 @@ IOReturn AirportItlwm::
 getCARD_CAPABILITIES(OSObject *object,
                                      struct apple80211_capability_data *cd)
 {
+#if __IO80211_TARGET >= __MAC_26_0
+    static_assert(sizeof(struct apple80211_capability_data) == 0x1c,
+                  "Tahoe apple80211_capability_data must be 0x1c bytes");
+#endif
     uint32_t caps = fHalService->get80211Controller()->ic_caps;
+
+    // Tahoe AppleBCMWLANCore writes advanced capability bytes through offset
+    // +0x17. The old short local header only zeroed the prefix and leaked
+    // uninitialized tail bytes into IO80211Family/WCL, which could advertise
+    // arbitrary advanced AKM/capability state on hidden join paths.
     memset(cd, 0, sizeof(struct apple80211_capability_data));
     
     if (caps & IEEE80211_C_WEP)
@@ -2294,15 +2534,16 @@ getCARD_CAPABILITIES(OSObject *object,
     // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    cd->capabilities[2] = 0xEF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, TSN (WOW bit cleared — not implemented)
-    cd->capabilities[3] = 0x2B;
+    // CR-032: after the Tahoe carrier-size fix, the next mismatch was content.
+    // AppleBCMWLANCore::getCARD_CAPABILITIES() never sets cap[2] bit 7,
+    // cap[3] bit 3, or cap[6] bit 7, but the old local constants
+    // 0xEF / 0x2B / 0x8C advertised exactly those impossible bits into the
+    // still-active hidden association path. Sanitize the hard-coded cluster to
+    // the Apple-consistent shape before the hidden join queue consumes it.
+    cd->capabilities[2] = 0x6F;
+    cd->capabilities[3] = 0x27;
     cd->capabilities[5] = 0x40;
-    cd->capabilities[6] = (
-//                           1 |    //MFP capable
-                           0x8 |
-                           0x4 |
-                           0x80
-                           );
+    cd->capabilities[6] = 0x0C;
     *(uint16_t *)&cd->capabilities[8] = 0x201;
 //
 //    cd->capabilities[2] |= 0x10;
@@ -2620,21 +2861,47 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
         XYLog("%s cmd: %s b1: %d b2: %d\n", __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), b1, b2);
     return super::apple80211_ioctl(interface, cmd, data, b1, b2);
 }
-
-SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211SkywalkInterface *interface,void *data)
-{
-    if (!ml_at_interrupt_context())
-        XYLog("%s 1 cmd: %s request: %d\n", __FUNCTION__, convertApple80211IOCTLToString(cmd), request);
-    return kIOReturnUnsupported;
-}
-
-SInt32 AirportItlwm::apple80211SkywalkRequest(UInt request,int cmd,IO80211SkywalkInterface *interface,void *data,void *)
-{
-    if (!ml_at_interrupt_context())
-        XYLog("%s 2 cmd: %s request: %d\n", __FUNCTION__, convertApple80211IOCTLToString(cmd), request);
-    return kIOReturnUnsupported;
-}
 #endif
+
+SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
+{
+    if (!ml_at_interrupt_context())
+        XYLog("DEBUG %s cmd=%s(%lu) isSet=%d interface=%p data=%p\n",
+              __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
+              isSet, interface, data);
+
+    // Tahoe V3 still exposes the controller-side `handleCardSpecific(...,isSet)`
+    // seam even though the older `apple80211Request(...)` override no longer
+    // exists in the public ABI. The active external current-link failures on
+    // the loaded `CR-044` runtime prove that the visible `ifname['en0']`
+    // bootstrap plane is not reaching the already instrumented Skywalk BSD
+    // bridge or per-selector helper bodies at all:
+    // - `Apple80211GetWithIOCTL ... SSID/BSSID -> 0xe0822403`
+    // - `Apple80211IOCTLSetWrapper ... ROAM_PROFILE -> 0xe0822403`
+    // - no matching `processBSDCommand/processApple80211Ioctl/getSSID/getBSSID`
+    //   hits appear in the same boot window
+    //
+    // Route only the proven bootstrap/current-link GET cluster plus the
+    // already-recovered visible SET selectors, including set-side
+    // ROAM_PROFILE, through the same whitelisted Skywalk helper plane.
+    // Everything else stays on inherited controller behavior.
+    if (data != nullptr && interface != nullptr) {
+        apple80211req req;
+        bzero(&req, sizeof(req));
+        req.req_type = (UInt)cmd;
+        req.req_data = data;
+        IOReturn ret = routeTahoeSkywalkIoctl(interface, &req,
+                                              isSet ? SIOCSA80211 : SIOCGA80211);
+        if (!ml_at_interrupt_context()) {
+            XYLog("DEBUG %s local-route cmd=%s(%lu) ret=0x%x\n",
+                  __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd, ret);
+        }
+        if (ret != kIOReturnUnsupported)
+            return ret;
+    }
+
+    return kIOReturnUnsupported;
+}
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
@@ -2659,7 +2926,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
     return kIOReturnSuccess;
 }
 
-void AirportItlwm::disableAdapter(IONetworkInterface *netif)
+void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 {
     RT_SET(10);
     sRT.disableCnt++;
@@ -2670,6 +2937,11 @@ void AirportItlwm::disableAdapter(IONetworkInterface *netif)
     }
     if (fHalService)
         fHalService->disable(netif);
+}
+
+void AirportItlwm::disableAdapter(IONetworkInterface *netif)
+{
+    disableAdapterCore(netif);
     publishTahoeDriverReadyState(this, false);
 }
 
@@ -2695,7 +2967,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         // ON→OFF or STANDBY→OFF: power off
         power_state = kWiFiPowerOff;
         net80211_ifstats(fHalService->get80211Controller());
-        disableAdapter(netif);
+        disableAdapterCore(netif);
     }
     else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
         // OFF→ON or STANDBY→ON: power on
@@ -2711,7 +2983,7 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         // ON→STANDBY: power off (into standby)
         power_state = kWiFiPowerStandby;
         net80211_ifstats(fHalService->get80211Controller());
-        disableAdapter(netif);
+        disableAdapterCore(netif);
     }
     else if (newState == prevState) {
         // Same state — no-op
@@ -2729,7 +3001,9 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     }
     else if (fNetIf) {
         if (newState != prevState) {
-            publishTahoeDriverReadyState(this, newState == kWiFiPowerOn);
+            // Apple separates generic WiFi power transitions from the
+            // signalDriverReady producer. handlePowerStateChange() drives only
+            // powerOn()/powerOff() and the POWER_CHANGED bulletin.
             // The recovered event maps mark POWER_CHANGED as mandatory for real
             // setPowerState transitions, not as a bootstrap sticky event and
             // not for no-op req==cur calls. Live build 36e4cc3 proved the
@@ -2744,6 +3018,31 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     }
 
     return err;
+}
+
+void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)
+{
+    XYLog("DEBUG %s powerOn=%d power_state=%u pmPowerState=%u netif=%p\n",
+          __FUNCTION__, powerOn ? 1 : 0, power_state, pmPowerState, netif);
+
+    // Apple exposes a separate powerOffSystem()/powerOnSystem() path in
+    // addition to handlePowerStateChange(). Preserve the logical WiFi
+    // power_state across sleep/wake and drive only adapter quiesce/resume plus
+    // the system POWER_CHANGED bulletin here.
+    if (powerOn) {
+        if (power_state)
+            enableAdapter(netif);
+        else
+            XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
+    } else {
+        if (power_state)
+            disableAdapterCore(netif);
+        else
+            XYLog("DEBUG %s SKIPPED disableAdapter (power_state=0)\n", __FUNCTION__);
+    }
+
+    if (fNetIf)
+        postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
 }
 
 IOReturn AirportItlwm::
@@ -2962,9 +3261,9 @@ void AirportItlwm::setPowerStateOff()
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
 #if __IO80211_TARGET >= __MAC_26_0
-    disableAdapter(NULL);
+    handleSystemPowerStateChange(false, NULL);
 #else
-    disableAdapter(bsdInterface);
+    handleSystemPowerStateChange(false, bsdInterface);
 #endif
     if (pmPolicyMaker) {
         sRT.pmAckOffCnt++;
@@ -2976,14 +3275,11 @@ void AirportItlwm::setPowerStateOn()
 {
     XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOn;
-    if (power_state)
 #if __IO80211_TARGET >= __MAC_26_0
-        enableAdapter(NULL);
+    handleSystemPowerStateChange(true, NULL);
 #else
-        enableAdapter(bsdInterface);
+    handleSystemPowerStateChange(true, bsdInterface);
 #endif
-    else
-        XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     if (pmPolicyMaker) {
         sRT.pmAckOnCnt++;
         pmPolicyMaker->acknowledgeSetPowerState();
