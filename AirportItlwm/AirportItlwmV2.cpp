@@ -129,6 +129,14 @@ airportItlwmRegDiagLogEnabled()
            (sRegDiag.modeFlags & kAirportItlwmRegDiagModeLog) != 0;
 }
 
+static bool
+airportItlwmRegDiagPacketProbeEnabled()
+{
+    return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
+           ((sRegDiag.modeFlags & kAirportItlwmRegDiagModeData) != 0 ||
+            (sRegDiag.modeFlags & kAirportItlwmRegDiagModeIntervention) != 0);
+}
+
 static void
 airportItlwmRegDiagInitTrace()
 {
@@ -1218,7 +1226,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         return EINVAL;
     }
     uint32_t diagLength = static_cast<uint32_t>(len);
-    const bool diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
+    bool diagEapol = false;
+    if (airportItlwmRegDiagPacketProbeEnabled())
+        diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
     if (diagEapol && airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockEapolRx)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockEapolRx,
                                        kAirportItlwmRegDiagPathRx, diagLength);
@@ -2864,7 +2874,9 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
               fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
     uint32_t diagLength = 0;
-    const bool diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
+    bool diagEapol = false;
+    if (airportItlwmRegDiagPacketProbeEnabled())
+        diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
 
     if (pmPowerState != kPowerStateOn) {
         sRT.outputDropPwr++;
