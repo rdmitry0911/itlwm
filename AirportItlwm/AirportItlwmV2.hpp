@@ -238,6 +238,7 @@ public:
 #endif
     virtual IOReturn setHardwareAddress(const void *addr, UInt32 addrBytes) override;
     virtual IOReturn getHardwareAddress(IOEthernetAddress* addrP) override;
+    virtual IOReturn setProperties(OSObject *properties) override;
     virtual IOReturn getPacketFilters(const OSSymbol *group, UInt32 *filters) const override;
     virtual IOReturn setPromiscuousMode(IOEnetPromiscuousMode mode) override;
     virtual IOReturn setMulticastMode(IOEnetMulticastMode mode) override;

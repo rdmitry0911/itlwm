@@ -616,6 +616,28 @@ airportItlwmRegDiagPoll(AirportItlwm *driver)
                                    sizeof(sRegDiag.trace));
 }
 
+IOReturn
+AirportItlwm::setProperties(OSObject *properties)
+{
+    if (OSDictionary *dict = OSDynamicCast(OSDictionary, properties)) {
+        OSObject *control = dict->getObject(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY);
+        if (OSString *command = OSDynamicCast(OSString, control)) {
+            setProperty(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY, command);
+            airportItlwmRegDiagApplyControl(this, command->getCStringNoCopy());
+            return kIOReturnSuccess;
+        }
+        return super::setProperties(properties);
+    }
+
+    if (OSString *command = OSDynamicCast(OSString, properties)) {
+        setProperty(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY, command);
+        airportItlwmRegDiagApplyControl(this, command->getCStringNoCopy());
+        return kIOReturnSuccess;
+    }
+
+    return super::setProperties(properties);
+}
+
 static int ieeeChanFlag2apple(int flags, int bw)
 {
     int ret = 0;

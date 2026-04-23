@@ -69,3 +69,29 @@
   - инструментирование `processApple80211Ioctl`/`isCommandProhibited`: отвергнуто как contested control seam.
   - принудительный success/retry/replay/reorder: запрещено протоколом.
 - verification plan: `git diff --check`, сборка CLI, сборка Tahoe kext с BootKC symbol check, строковая проверка отсутствия старых diagnostic service/userclient поверхностей.
+
+## ANOMALY
+- id: A-REGDIAG-CONTROL-SET-001
+- status: CONFIRMED_DEVIATION
+- symptom: CLI `set` не включает диагностику в уже загруженном драйвере.
+- first visible manifestation: `airport_itlwm_regdiag on` вернул `IORegistryEntrySetCFProperty failed: 0xe00002c7`.
+- expected system behavior: user-space control write должен доходить до существующего `AirportItlwm` без userclient и без изменения IOKit topology.
+- actual behavior: `IORegistryEntrySetCFProperty` вызывает kernel-side `setProperties`, а inherited implementation возвращает `kIOReturnUnsupported`.
+- divergence point: отсутствовал узкий `AirportItlwm::setProperties(OSObject *)` для диагностического mailbox key.
+- evidence:
+  - panic logs: нет.
+  - runtime logs: нет.
+  - ioreg: `AirportItlwm` active/registered, но `AirportItlwmDiag*` properties отсутствуют после failed set.
+  - packet traces: нет.
+  - firmware traces: нет.
+  - decomp: не требуется; это diagnostic transport bug.
+  - docs: протокол допускает behavior-neutral diagnostic instrumentation.
+- candidate causes:
+  - подтверждено: registry write не применялся из-за отсутствия `setProperties`.
+- rejected causes:
+  - права пользователя/root: `sudo -n` вернул тот же `0xe00002c7`.
+- confirmed deviation: диагностический mailbox не имел kernel-side consumer для user-space `set`.
+- root cause: для control-plane диагностики подтверждена; не является root cause Wi-Fi association failure.
+- fix: добавить override существующего virtual slot `setProperties(OSObject*)`, принять только `AirportItlwmDiagControl`, применить команду и делегировать unknown properties в `super`.
+- verification: build + BootKC symbol check; after reboot `airport_itlwm_regdiag on` должен вернуть control string, а через watchdog должны появиться snapshot/trace.
+- notes: override не добавляет class/service/userclient/personality и не меняет object layout.
