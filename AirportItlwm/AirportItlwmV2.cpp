@@ -7,7 +7,6 @@
 //
 
 #include "AirportItlwmV2.hpp"
-#include "AirportItlwmDiagnostics.hpp"
 #include <sys/_netstat.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
@@ -90,8 +89,6 @@ struct __kern_buflet {
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(AirportItlwmBootNub, IOService)
-OSDefineMetaClassAndStructors(AirportItlwmDiagnosticsService, IOService)
-OSDefineMetaClassAndStructors(AirportItlwmDiagnosticUserClient, IOUserClient)
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
 
 #include "Airport/CCDataStream.h"
@@ -103,641 +100,6 @@ IOCommandGate *_fCommandGate;
 
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
 RuntimeDiag sRT = {};
-
-namespace {
-
-struct AirportItlwmDiagRuntime {
-    AirportItlwmDiagConfig config;
-    AirportItlwmDiagTraceEntry trace[AIRPORT_ITLWM_DIAG_MAX_TRACE_ENTRIES];
-    AirportItlwmDiagScanCache scanCache;
-    uint32_t traceSequence;
-    uint32_t traceDropped;
-    uint32_t scanWriteCursor;
-
-    uint32_t commandGateCount;
-    uint32_t handleCardSpecificCount;
-    uint32_t bsdCommandCount;
-    uint32_t apple80211IoctlCount;
-    uint32_t publicAssocCount;
-    uint32_t hiddenAssocCount;
-    uint32_t linkStateCount;
-    uint32_t txCount;
-    uint32_t rxCount;
-    uint32_t eapolTxCount;
-    uint32_t eapolRxCount;
-    uint32_t txDropCount;
-    uint32_t rxDropCount;
-    uint32_t blockHitCount;
-
-    int32_t lastCommandGateResult;
-    int32_t lastHandleCardSpecificResult;
-    int32_t lastBSDCommandResult;
-    int32_t lastApple80211IoctlResult;
-    int32_t lastPublicAssocResult;
-    int32_t lastHiddenAssocResult;
-    int32_t lastLinkStateResult;
-    int32_t lastTxResult;
-    int32_t lastRxResult;
-    int32_t lastCommand;
-    int32_t lastRequestType;
-    int32_t lastLinkState;
-    uint32_t lastAssocAuthLower;
-    uint32_t lastAssocAuthUpper;
-    uint32_t lastAssocRsnIeLen;
-    uint32_t lastAssocSsidLen;
-    uint32_t lastTxLength;
-    uint32_t lastRxLength;
-    uint32_t lastBlockMask;
-    uint8_t lastAssocBssid[6];
-    uint8_t lastAssocSsid[AIRPORT_ITLWM_DIAG_MAX_SSID_LEN];
-};
-
-static AirportItlwmDiagRuntime sDiagRT;
-
-static void airportItlwmDiagEnsureConfig(void)
-{
-    if (sDiagRT.config.version == AIRPORT_ITLWM_DIAG_ABI_VERSION &&
-        sDiagRT.config.size == sizeof(AirportItlwmDiagConfig))
-        return;
-
-    bzero(&sDiagRT, sizeof(sDiagRT));
-    sDiagRT.config.version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    sDiagRT.config.size = sizeof(AirportItlwmDiagConfig);
-    sDiagRT.config.modeFlags = kAirportItlwmDiagModeEnabled |
-                               kAirportItlwmDiagModeTrace |
-                               kAirportItlwmDiagModeAssoc |
-                               kAirportItlwmDiagModeData;
-    sDiagRT.config.traceMask = kAirportItlwmDiagTraceAll;
-    sDiagRT.config.blockMask = 0;
-    sDiagRT.scanCache.version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-}
-
-static void airportItlwmDiagCopyBytes(uint8_t *dst, uint32_t dstLen,
-                                      const uint8_t *src, uint32_t srcLen)
-{
-    if (dst == nullptr || dstLen == 0)
-        return;
-    bzero(dst, dstLen);
-    if (src == nullptr || srcLen == 0)
-        return;
-    memcpy(dst, src, MIN(dstLen, srcLen));
-}
-
-static void airportItlwmDiagCopyString(char *dst, uint32_t dstLen,
-                                       const char *src)
-{
-    if (dst == nullptr || dstLen == 0)
-        return;
-    bzero(dst, dstLen);
-    if (src == nullptr)
-        return;
-    strlcpy(dst, src, dstLen);
-}
-
-static bool airportItlwmDiagIsEnabled(uint32_t modeBit)
-{
-    airportItlwmDiagEnsureConfig();
-    return (sDiagRT.config.modeFlags & kAirportItlwmDiagModeEnabled) != 0 &&
-           (sDiagRT.config.modeFlags & modeBit) != 0;
-}
-
-static bool airportItlwmDiagMbufIsEapol(mbuf_t m)
-{
-    if (m == NULL || mbuf_len(m) < sizeof(ether_header_t) ||
-        mbuf_type(m) == MBUF_TYPE_FREE)
-        return false;
-    ether_header_t *eh = reinterpret_cast<ether_header_t *>(mbuf_data(m));
-    return eh != nullptr && eh->ether_type == htons(ETHERTYPE_PAE);
-}
-
-static void airportItlwmDiagFillSnapshot(AirportItlwm *driver,
-                                         AirportItlwmDiagSnapshot *snapshot)
-{
-    airportItlwmDiagEnsureConfig();
-    bzero(snapshot, sizeof(*snapshot));
-    snapshot->version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    snapshot->size = sizeof(*snapshot);
-    snapshot->modeFlags = sDiagRT.config.modeFlags;
-    snapshot->traceMask = sDiagRT.config.traceMask;
-    snapshot->blockMask = sDiagRT.config.blockMask;
-
-    snapshot->rtMask = sRT.rtMask;
-    snapshot->rtMask2 = sRT.rtMask2;
-    snapshot->rtMask3 = sRT.rtMask3;
-    snapshot->icState = sRT.ic_state;
-    snapshot->icFlags = sRT.ic_flags;
-    snapshot->ifFlags = sRT.if_flags;
-    snapshot->powerState = sRT.power_state;
-    snapshot->fNetIfPtr = sRT.fNetIfPtr;
-    snapshot->bsdIfPtr = sRT.bsdIfPtr;
-    snapshot->fTxPoolPtr = sRT.fTxPoolPtr;
-    snapshot->fRxPoolPtr = sRT.fRxPoolPtr;
-    snapshot->fTxQueuePtr = sRT.fTxQueuePtr;
-    snapshot->fRxQueuePtr = sRT.fRxQueuePtr;
-
-    snapshot->commandGateCount = sDiagRT.commandGateCount;
-    snapshot->handleCardSpecificCount = sDiagRT.handleCardSpecificCount;
-    snapshot->bsdCommandCount = sDiagRT.bsdCommandCount;
-    snapshot->apple80211IoctlCount = sDiagRT.apple80211IoctlCount;
-    snapshot->publicAssocCount = sDiagRT.publicAssocCount;
-    snapshot->hiddenAssocCount = sDiagRT.hiddenAssocCount;
-    snapshot->linkStateCount = sDiagRT.linkStateCount;
-    snapshot->txCount = sDiagRT.txCount;
-    snapshot->rxCount = sDiagRT.rxCount;
-    snapshot->eapolTxCount = sDiagRT.eapolTxCount;
-    snapshot->eapolRxCount = sDiagRT.eapolRxCount;
-    snapshot->txDropCount = sDiagRT.txDropCount;
-    snapshot->rxDropCount = sDiagRT.rxDropCount;
-    snapshot->blockHitCount = sDiagRT.blockHitCount;
-    snapshot->lastCommandGateResult = sDiagRT.lastCommandGateResult;
-    snapshot->lastHandleCardSpecificResult = sDiagRT.lastHandleCardSpecificResult;
-    snapshot->lastBSDCommandResult = sDiagRT.lastBSDCommandResult;
-    snapshot->lastApple80211IoctlResult = sDiagRT.lastApple80211IoctlResult;
-    snapshot->lastPublicAssocResult = sDiagRT.lastPublicAssocResult;
-    snapshot->lastHiddenAssocResult = sDiagRT.lastHiddenAssocResult;
-    snapshot->lastLinkStateResult = sDiagRT.lastLinkStateResult;
-    snapshot->lastTxResult = sDiagRT.lastTxResult;
-    snapshot->lastRxResult = sDiagRT.lastRxResult;
-    snapshot->lastCommand = sDiagRT.lastCommand;
-    snapshot->lastRequestType = sDiagRT.lastRequestType;
-    snapshot->lastLinkState = sDiagRT.lastLinkState;
-    snapshot->lastAssocAuthLower = sDiagRT.lastAssocAuthLower;
-    snapshot->lastAssocAuthUpper = sDiagRT.lastAssocAuthUpper;
-    snapshot->lastAssocRsnIeLen = sDiagRT.lastAssocRsnIeLen;
-    snapshot->lastAssocSsidLen = sDiagRT.lastAssocSsidLen;
-    snapshot->lastTxLength = sDiagRT.lastTxLength;
-    snapshot->lastRxLength = sDiagRT.lastRxLength;
-    snapshot->lastBlockMask = sDiagRT.lastBlockMask;
-    airportItlwmDiagCopyBytes(snapshot->lastAssocBssid, sizeof(snapshot->lastAssocBssid),
-                              sDiagRT.lastAssocBssid, sizeof(sDiagRT.lastAssocBssid));
-    airportItlwmDiagCopyBytes(snapshot->lastAssocSsid, sizeof(snapshot->lastAssocSsid),
-                              sDiagRT.lastAssocSsid, sDiagRT.lastAssocSsidLen);
-    airportItlwmDiagCopyString(snapshot->driverVersion, sizeof(snapshot->driverVersion),
-                               ITLWM_VERSION ITLWM_COMMIT_SUFFIX);
-
-    if (driver == nullptr)
-        return;
-
-    snapshot->pmPowerState = driver->pmPowerState;
-    snapshot->currentStatus = driver->currentStatus;
-    snapshot->currentSpeed = driver->currentSpeed;
-    snapshot->hasHalService = driver->fHalService != nullptr;
-    snapshot->hasNetIf = driver->fNetIf != nullptr;
-
-    if (driver->fHalService != nullptr) {
-        struct ieee80211com *ic = driver->fHalService->get80211Controller();
-        if (ic != nullptr) {
-            snapshot->icState = ic->ic_state;
-            snapshot->icFlags = ic->ic_flags;
-            snapshot->ifFlags = ic->ic_ac.ac_if.if_flags;
-            snapshot->nodeCount = ic->ic_nnodes;
-            snapshot->desiredEssLen = MIN(static_cast<uint32_t>(ic->ic_des_esslen),
-                                          AIRPORT_ITLWM_DIAG_MAX_SSID_LEN);
-            airportItlwmDiagCopyBytes(snapshot->desiredSsid, sizeof(snapshot->desiredSsid),
-                                      ic->ic_des_essid, snapshot->desiredEssLen);
-            airportItlwmDiagCopyBytes(snapshot->myAddress, sizeof(snapshot->myAddress),
-                                      ic->ic_myaddr, sizeof(snapshot->myAddress));
-            snapshot->hasBss = ic->ic_bss != nullptr;
-            if (ic->ic_bss != nullptr) {
-                snapshot->currentSsidLen = MIN(static_cast<uint32_t>(ic->ic_bss->ni_esslen),
-                                               AIRPORT_ITLWM_DIAG_MAX_SSID_LEN);
-                airportItlwmDiagCopyBytes(snapshot->currentSsid, sizeof(snapshot->currentSsid),
-                                          ic->ic_bss->ni_essid, snapshot->currentSsidLen);
-                airportItlwmDiagCopyBytes(snapshot->currentBssid, sizeof(snapshot->currentBssid),
-                                          ic->ic_bss->ni_bssid, sizeof(snapshot->currentBssid));
-            }
-            if (ic->ic_ac.ac_if.if_xname[0] != '\0') {
-                airportItlwmDiagCopyString(snapshot->bsdName,
-                                           sizeof(snapshot->bsdName),
-                                           ic->ic_ac.ac_if.if_xname);
-                snapshot->hasBSDInterface = true;
-            }
-        }
-        ItlDriverInfo *driverInfo = driver->fHalService->getDriverInfo();
-        if (driverInfo != nullptr) {
-            airportItlwmDiagCopyString(snapshot->firmwareVersion,
-                                       sizeof(snapshot->firmwareVersion),
-                                       driverInfo->getFirmwareVersion());
-        }
-    }
-}
-
-static IOReturn airportItlwmDiagSetConfig(const AirportItlwmDiagConfig *input,
-                                          uint32_t inputSize)
-{
-    airportItlwmDiagEnsureConfig();
-    if (input == nullptr || inputSize < sizeof(AirportItlwmDiagConfig) ||
-        input->version != AIRPORT_ITLWM_DIAG_ABI_VERSION)
-        return kIOReturnBadArgument;
-
-    const uint32_t allowedModes = kAirportItlwmDiagModeEnabled |
-                                  kAirportItlwmDiagModeTrace |
-                                  kAirportItlwmDiagModeAssoc |
-                                  kAirportItlwmDiagModeData |
-                                  kAirportItlwmDiagModeIntervention;
-    const uint32_t allowedBlocks = kAirportItlwmDiagBlockPublicAssoc |
-                                   kAirportItlwmDiagBlockHiddenAssoc |
-                                   kAirportItlwmDiagBlockTx |
-                                   kAirportItlwmDiagBlockRx |
-                                   kAirportItlwmDiagBlockEapolTx |
-                                   kAirportItlwmDiagBlockEapolRx;
-    sDiagRT.config.modeFlags = input->modeFlags & allowedModes;
-    sDiagRT.config.traceMask = input->traceMask;
-    sDiagRT.config.blockMask = input->blockMask & allowedBlocks;
-    sDiagRT.config.version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    sDiagRT.config.size = sizeof(AirportItlwmDiagConfig);
-    return kIOReturnSuccess;
-}
-
-static IOReturn airportItlwmDiagCopyOut(IOExternalMethodArguments *arguments,
-                                        const void *data, uint32_t dataSize)
-{
-    if (arguments == nullptr || arguments->structureOutput == nullptr ||
-        arguments->structureOutputSize < dataSize)
-        return kIOReturnBadArgument;
-    memcpy(arguments->structureOutput, data, dataSize);
-    arguments->structureOutputSize = dataSize;
-    return kIOReturnSuccess;
-}
-
-} // namespace
-
-AirportItlwmDiagConfig airportItlwmDiagCopyConfig(void)
-{
-    airportItlwmDiagEnsureConfig();
-    return sDiagRT.config;
-}
-
-void airportItlwmDiagClear(void)
-{
-    airportItlwmDiagEnsureConfig();
-    AirportItlwmDiagConfig config = sDiagRT.config;
-    bzero(&sDiagRT, sizeof(sDiagRT));
-    sDiagRT.config = config;
-    sDiagRT.scanCache.version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-}
-
-void airportItlwmDiagTrace(uint32_t kind, uint32_t path, int32_t command,
-                           int32_t requestType, IOReturn result, int32_t arg0,
-                           uint64_t arg1, uint64_t arg2, uint32_t requiredMask)
-{
-    airportItlwmDiagEnsureConfig();
-    if ((sDiagRT.config.modeFlags & kAirportItlwmDiagModeEnabled) == 0 ||
-        (sDiagRT.config.modeFlags & kAirportItlwmDiagModeTrace) == 0 ||
-        (sDiagRT.config.traceMask & requiredMask) == 0)
-        return;
-
-    const uint32_t sequence = ++sDiagRT.traceSequence;
-    if (sequence > AIRPORT_ITLWM_DIAG_MAX_TRACE_ENTRIES)
-        sDiagRT.traceDropped++;
-
-    AirportItlwmDiagTraceEntry *entry =
-        &sDiagRT.trace[sequence % AIRPORT_ITLWM_DIAG_MAX_TRACE_ENTRIES];
-    entry->version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    entry->sequence = sequence;
-    entry->kind = kind;
-    entry->path = path;
-    entry->command = command;
-    entry->requestType = requestType;
-    entry->result = static_cast<int32_t>(result);
-    entry->arg0 = arg0;
-    entry->arg1 = arg1;
-    entry->arg2 = arg2;
-
-    switch (kind) {
-        case kAirportItlwmDiagTraceCommandGate:
-            sDiagRT.commandGateCount++;
-            sDiagRT.lastCommandGateResult = static_cast<int32_t>(result);
-            break;
-        case kAirportItlwmDiagTraceHandleCardSpecific:
-            sDiagRT.handleCardSpecificCount++;
-            sDiagRT.lastHandleCardSpecificResult = static_cast<int32_t>(result);
-            break;
-        case kAirportItlwmDiagTraceBSDCommand:
-            sDiagRT.bsdCommandCount++;
-            sDiagRT.lastBSDCommandResult = static_cast<int32_t>(result);
-            break;
-        case kAirportItlwmDiagTraceApple80211Ioctl:
-            sDiagRT.apple80211IoctlCount++;
-            sDiagRT.lastApple80211IoctlResult = static_cast<int32_t>(result);
-            break;
-        case kAirportItlwmDiagTraceLinkState:
-            sDiagRT.linkStateCount++;
-            sDiagRT.lastLinkStateResult = static_cast<int32_t>(result);
-            sDiagRT.lastLinkState = arg0;
-            break;
-        default:
-            break;
-    }
-    sDiagRT.lastCommand = command;
-    sDiagRT.lastRequestType = requestType;
-}
-
-void airportItlwmDiagRecordAssoc(uint32_t path, const uint8_t *ssid,
-                                 uint32_t ssidLen, const uint8_t *bssid,
-                                 uint32_t authLower, uint32_t authUpper,
-                                 uint32_t rsnIeLen, IOReturn result)
-{
-    if (!airportItlwmDiagIsEnabled(kAirportItlwmDiagModeAssoc))
-        return;
-
-    if (path == kAirportItlwmDiagPathHiddenAssoc) {
-        sDiagRT.hiddenAssocCount++;
-        sDiagRT.lastHiddenAssocResult = static_cast<int32_t>(result);
-    } else {
-        sDiagRT.publicAssocCount++;
-        sDiagRT.lastPublicAssocResult = static_cast<int32_t>(result);
-    }
-
-    sDiagRT.lastAssocSsidLen = MIN(ssidLen, AIRPORT_ITLWM_DIAG_MAX_SSID_LEN);
-    sDiagRT.lastAssocAuthLower = authLower;
-    sDiagRT.lastAssocAuthUpper = authUpper;
-    sDiagRT.lastAssocRsnIeLen = rsnIeLen;
-    airportItlwmDiagCopyBytes(sDiagRT.lastAssocSsid, sizeof(sDiagRT.lastAssocSsid),
-                              ssid, sDiagRT.lastAssocSsidLen);
-    airportItlwmDiagCopyBytes(sDiagRT.lastAssocBssid, sizeof(sDiagRT.lastAssocBssid),
-                              bssid, sizeof(sDiagRT.lastAssocBssid));
-    airportItlwmDiagTrace(path == kAirportItlwmDiagPathHiddenAssoc ?
-                              kAirportItlwmDiagTraceHiddenAssoc :
-                              kAirportItlwmDiagTracePublicAssoc,
-                          path, -1, -1, result, static_cast<int32_t>(ssidLen),
-                          (static_cast<uint64_t>(authUpper) << 32) | authLower,
-                          rsnIeLen, kAirportItlwmDiagTraceAssoc);
-}
-
-void airportItlwmDiagRecordData(uint32_t path, uint32_t length, bool eapol,
-                                IOReturn result)
-{
-    if (!airportItlwmDiagIsEnabled(kAirportItlwmDiagModeData))
-        return;
-
-    if (path == kAirportItlwmDiagPathRx) {
-        sDiagRT.rxCount++;
-        sDiagRT.lastRxResult = static_cast<int32_t>(result);
-        sDiagRT.lastRxLength = length;
-        if (result != kIOReturnSuccess)
-            sDiagRT.rxDropCount++;
-        if (eapol)
-            sDiagRT.eapolRxCount++;
-    } else {
-        sDiagRT.txCount++;
-        sDiagRT.lastTxResult = static_cast<int32_t>(result);
-        sDiagRT.lastTxLength = length;
-        if (result != kIOReturnSuccess && result != kIOReturnOutputSuccess)
-            sDiagRT.txDropCount++;
-        if (eapol)
-            sDiagRT.eapolTxCount++;
-    }
-
-    airportItlwmDiagTrace(path == kAirportItlwmDiagPathRx ?
-                              kAirportItlwmDiagTraceRx :
-                              kAirportItlwmDiagTraceTx,
-                          path, -1, -1, result, eapol ? 1 : 0,
-                          length, 0, kAirportItlwmDiagTraceData);
-}
-
-void airportItlwmDiagRecordScanNode(struct ieee80211com *ic,
-                                    struct ieee80211_node *ni)
-{
-    airportItlwmDiagEnsureConfig();
-    if ((sDiagRT.config.modeFlags & kAirportItlwmDiagModeEnabled) == 0 ||
-        ic == nullptr || ni == nullptr)
-        return;
-
-    sDiagRT.scanCache.version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    sDiagRT.scanCache.totalNodeCount = ic->ic_nnodes;
-
-    uint32_t slot = AIRPORT_ITLWM_DIAG_MAX_SCAN_ENTRIES;
-    for (uint32_t i = 0; i < sDiagRT.scanCache.entryCount; i++) {
-        if (memcmp(sDiagRT.scanCache.entries[i].bssid, ni->ni_bssid, 6) == 0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot == AIRPORT_ITLWM_DIAG_MAX_SCAN_ENTRIES) {
-        if (sDiagRT.scanCache.entryCount < AIRPORT_ITLWM_DIAG_MAX_SCAN_ENTRIES)
-            slot = sDiagRT.scanCache.entryCount++;
-        else
-            slot = sDiagRT.scanWriteCursor++ % AIRPORT_ITLWM_DIAG_MAX_SCAN_ENTRIES;
-    }
-
-    AirportItlwmDiagScanEntry *entry = &sDiagRT.scanCache.entries[slot];
-    bzero(entry, sizeof(*entry));
-    entry->version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-    if (ni->ni_chan != nullptr && ni->ni_chan != IEEE80211_CHAN_ANYC)
-        entry->channel = ieee80211_chan2ieee(ic, ni->ni_chan);
-    entry->rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
-    entry->ssidLen = MIN(static_cast<uint32_t>(ni->ni_esslen),
-                         AIRPORT_ITLWM_DIAG_MAX_SSID_LEN);
-    memcpy(entry->bssid, ni->ni_bssid, sizeof(entry->bssid));
-    if (entry->ssidLen != 0)
-        memcpy(entry->ssid, ni->ni_essid, entry->ssidLen);
-    entry->rsnProtos = ni->ni_rsnprotos;
-    entry->supportedRsnProtos = ni->ni_supported_rsnprotos;
-    entry->rsnAkms = ni->ni_rsnakms;
-    entry->supportedRsnAkms = ni->ni_supported_rsnakms;
-    entry->rsnCiphers = ni->ni_rsnciphers;
-    entry->groupCipher = ni->ni_rsngroupcipher;
-    entry->groupMgmtCipher = ni->ni_rsngroupmgmtcipher;
-}
-
-bool airportItlwmDiagShouldBlock(uint32_t blockMask)
-{
-    airportItlwmDiagEnsureConfig();
-    return (sDiagRT.config.modeFlags & kAirportItlwmDiagModeEnabled) != 0 &&
-           (sDiagRT.config.modeFlags & kAirportItlwmDiagModeIntervention) != 0 &&
-           (sDiagRT.config.blockMask & blockMask) != 0;
-}
-
-void airportItlwmDiagRecordBlock(uint32_t blockMask, uint32_t path,
-                                 uint32_t length)
-{
-    sDiagRT.blockHitCount++;
-    sDiagRT.lastBlockMask = blockMask;
-    airportItlwmDiagTrace(kAirportItlwmDiagTraceBlock, path, -1, -1,
-                          kIOReturnAborted, static_cast<int32_t>(blockMask),
-                          length, 0, kAirportItlwmDiagTraceBlocks);
-}
-
-bool AirportItlwmDiagnosticsService::start(IOService *provider)
-{
-    if (!IOService::start(provider))
-        return false;
-    fDriver = OSDynamicCast(AirportItlwm, provider);
-    return fDriver != nullptr;
-}
-
-void AirportItlwmDiagnosticsService::stop(IOService *provider)
-{
-    fDriver = nullptr;
-    IOService::stop(provider);
-}
-
-AirportItlwm *AirportItlwmDiagnosticsService::getDriver() const
-{
-    return fDriver;
-}
-
-IOReturn AirportItlwmDiagnosticsService::newUserClient(task_t owningTask,
-                                                       void *securityID,
-                                                       UInt32 type,
-                                                       OSDictionary *properties,
-                                                       IOUserClient **handler)
-{
-    if (handler == nullptr)
-        return kIOReturnBadArgument;
-    *handler = nullptr;
-
-    AirportItlwmDiagnosticUserClient *client = new AirportItlwmDiagnosticUserClient;
-    if (client == nullptr)
-        return kIOReturnNoMemory;
-    if (!client->initWithTask(owningTask, securityID, type, properties)) {
-        client->release();
-        return kIOReturnError;
-    }
-    if (!client->attach(this)) {
-        client->release();
-        return kIOReturnError;
-    }
-    if (!client->start(this)) {
-        client->detach(this);
-        client->release();
-        return kIOReturnError;
-    }
-    *handler = client;
-    return kIOReturnSuccess;
-}
-
-bool AirportItlwmDiagnosticUserClient::initWithTask(task_t owningTask,
-                                                   void *securityID,
-                                                   UInt32 type,
-                                                   OSDictionary *properties)
-{
-    fTask = owningTask;
-    fDriver = nullptr;
-    return IOUserClient::initWithTask(owningTask, securityID, type, properties);
-}
-
-bool AirportItlwmDiagnosticUserClient::start(IOService *provider)
-{
-    if (!IOUserClient::start(provider))
-        return false;
-    AirportItlwmDiagnosticsService *service =
-        OSDynamicCast(AirportItlwmDiagnosticsService, provider);
-    if (service == nullptr)
-        return false;
-    fDriver = service->getDriver();
-    return fDriver != nullptr;
-}
-
-void AirportItlwmDiagnosticUserClient::stop(IOService *provider)
-{
-    fDriver = nullptr;
-    IOUserClient::stop(provider);
-}
-
-IOReturn AirportItlwmDiagnosticUserClient::clientClose(void)
-{
-    if (!isInactive())
-        terminate();
-    return kIOReturnSuccess;
-}
-
-IOReturn AirportItlwmDiagnosticUserClient::clientDied(void)
-{
-    return IOUserClient::clientDied();
-}
-
-IOReturn AirportItlwmDiagnosticUserClient::externalMethod(
-    uint32_t selector, IOExternalMethodArguments *arguments,
-    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference)
-{
-    airportItlwmDiagEnsureConfig();
-    switch (selector) {
-        case kAirportItlwmDiagGetConfig: {
-            AirportItlwmDiagConfig config = sDiagRT.config;
-            return airportItlwmDiagCopyOut(arguments, &config, sizeof(config));
-        }
-        case kAirportItlwmDiagSetConfig:
-            return airportItlwmDiagSetConfig(
-                reinterpret_cast<const AirportItlwmDiagConfig *>(arguments ? arguments->structureInput : nullptr),
-                arguments ? arguments->structureInputSize : 0);
-        case kAirportItlwmDiagClear:
-            airportItlwmDiagClear();
-            return kIOReturnSuccess;
-        case kAirportItlwmDiagGetSnapshot:
-            if (fDriver == nullptr)
-                return kIOReturnNotReady;
-            if (arguments == nullptr || arguments->structureOutput == nullptr ||
-                arguments->structureOutputSize < sizeof(AirportItlwmDiagSnapshot))
-                return kIOReturnBadArgument;
-            airportItlwmDiagFillSnapshot(
-                fDriver, reinterpret_cast<AirportItlwmDiagSnapshot *>(arguments->structureOutput));
-            arguments->structureOutputSize = sizeof(AirportItlwmDiagSnapshot);
-            return kIOReturnSuccess;
-        case kAirportItlwmDiagGetTrace:
-            if (arguments == nullptr || arguments->structureOutput == nullptr ||
-                arguments->structureOutputSize < sizeof(AirportItlwmDiagTraceBuffer))
-                return kIOReturnBadArgument;
-            bzero(arguments->structureOutput, sizeof(AirportItlwmDiagTraceBuffer));
-            {
-                AirportItlwmDiagTraceBuffer *trace =
-                    reinterpret_cast<AirportItlwmDiagTraceBuffer *>(arguments->structureOutput);
-                trace->version = AIRPORT_ITLWM_DIAG_ABI_VERSION;
-                trace->entryCount = MIN(sDiagRT.traceSequence,
-                                        AIRPORT_ITLWM_DIAG_MAX_TRACE_ENTRIES);
-                trace->nextSequence = sDiagRT.traceSequence + 1;
-                trace->droppedEntries = sDiagRT.traceDropped;
-                memcpy(trace->entries, sDiagRT.trace, sizeof(sDiagRT.trace));
-            }
-            arguments->structureOutputSize = sizeof(AirportItlwmDiagTraceBuffer);
-            return kIOReturnSuccess;
-        case kAirportItlwmDiagGetScanCache:
-            return airportItlwmDiagCopyOut(arguments, &sDiagRT.scanCache,
-                                          sizeof(AirportItlwmDiagScanCache));
-        default:
-            return IOUserClient::externalMethod(selector, arguments, dispatch, target, reference);
-    }
-}
-
-bool airportItlwmDiagPublishService(AirportItlwm *driver)
-{
-    if (driver == nullptr)
-        return false;
-    airportItlwmDiagEnsureConfig();
-    if (driver->diagnosticsService != nullptr)
-        return true;
-
-    AirportItlwmDiagnosticsService *service = new AirportItlwmDiagnosticsService;
-    if (service == nullptr)
-        return false;
-    if (!service->init()) {
-        service->release();
-        return false;
-    }
-    if (!service->attach(driver)) {
-        service->release();
-        return false;
-    }
-    if (!service->start(driver)) {
-        service->detach(driver);
-        service->release();
-        return false;
-    }
-    driver->diagnosticsService = service;
-    service->registerService();
-    return true;
-}
-
-void airportItlwmDiagTerminateService(AirportItlwm *driver)
-{
-    if (driver == nullptr || driver->diagnosticsService == nullptr)
-        return;
-    AirportItlwmDiagnosticsService *service = driver->diagnosticsService;
-    driver->diagnosticsService = nullptr;
-    service->terminate(kIOServiceRequired);
-    service->release();
-}
 
 static int ieeeChanFlag2apple(int flags, int bw)
 {
@@ -1343,20 +705,8 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     size_t len = mbuf_pkthdr_len(m);
     if (len == 0) {
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, 0, false, kIOReturnBadArgument);
         mbuf_freem(m);
         return EINVAL;
-    }
-    bool eapol = airportItlwmDiagMbufIsEapol(m);
-    if (airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockRx) ||
-        (eapol && airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockEapolRx))) {
-        airportItlwmDiagRecordBlock(eapol ? kAirportItlwmDiagBlockEapolRx :
-                                      kAirportItlwmDiagBlockRx,
-                                    kAirportItlwmDiagPathRx, static_cast<uint32_t>(len));
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                                   eapol, kIOReturnAborted);
-        mbuf_freem(m);
-        return 0;
     }
 
     // Allocate an IOSkywalkPacket from the RX pool
@@ -1365,8 +715,6 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         sRT.rxAllocFail++;
         if (sRT.rxAllocFail <= 5)
             XYLog("skywalkRxInput: allocatePacket failed (drop #%u)\n", sRT.rxAllocFail);
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                                   eapol, kIOReturnNoMemory);
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -1376,8 +724,6 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     UInt32 nBufs = rxPkt->getPacketBuffers(bufs, 1);
     if (nBufs == 0 || !bufs[0]) {
         that->fRxPool->deallocatePacket(rxPkt);
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                                   eapol, kIOReturnNoMemory);
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -1389,8 +735,6 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     uint32_t bufSize = _buflet_get_object_limit(buflet);
     if (!objAddr || len > bufSize) {
         that->fRxPool->deallocatePacket(rxPkt);
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                                   eapol, kIOReturnMessageTooLarge);
         mbuf_freem(m);
         return EMSGSIZE;
     }
@@ -1411,14 +755,10 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         sRT.rxEnqFail++;
         if (sRT.rxEnqFail <= 5)
             XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%u)\n", ret, sRT.rxEnqFail);
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                                   eapol, ret);
         return EIO;
     }
 
     sRT.rxPktOK++;
-    airportItlwmDiagRecordData(kAirportItlwmDiagPathRx, static_cast<uint32_t>(len),
-                               eapol, kIOReturnSuccess);
 
     return 0;
 }
@@ -1558,7 +898,6 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
     RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
         if (!buildTahoeWclScanResultPayload(ic, ni, &payload, &payloadLen))
             continue;
-        airportItlwmDiagRecordScanNode(ic, ni);
         that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_RESULT,
                           &payload, payloadLen, true);
         posted++;
@@ -1719,7 +1058,6 @@ bool AirportItlwm::init(OSDictionary *properties)
     tahoeBootstrapPowerPending = false;
     tahoeBootstrapPowerWindowOpen = true;
     driverLogStream = nullptr;
-    diagnosticsService = nullptr;
     fTxPool = NULL;
     fRxPool = NULL;
     fTxQueue = NULL;
@@ -2528,8 +1866,6 @@ bool AirportItlwm::start(IOService *provider)
     // is created asynchronously via the nexus callback chain triggered by
     // deferBSDAttach(false) at STEP 8f.
     registerService();
-    if (!airportItlwmDiagPublishService(this))
-        XYLog("DEBUG %s diagnostics service publish failed (non-fatal)\n", __FUNCTION__);
     RT_SET(18);
     XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
     DISARM_PANIC_TIMER();
@@ -2606,8 +1942,6 @@ void AirportItlwm::stop(IOService *provider)
     uint64_t stopDeadline;
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
     thread_call_enter_delayed(stopTimer, stopDeadline);
-
-    airportItlwmDiagTerminateService(this);
 
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     sRT.stopStep = 2;
@@ -2926,11 +2260,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
 #else
     IOReturn ret = that->fNetIf->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1);
 #endif
-    airportItlwmDiagTrace(kAirportItlwmDiagTraceLinkState,
-                          kAirportItlwmDiagPathUnknown, -1, -1, ret,
-                          static_cast<int32_t>(reinterpret_cast<uintptr_t>(arg0)),
-                          reinterpret_cast<uintptr_t>(arg1), 0,
-                          kAirportItlwmDiagTraceControl);
     if (ret == kIOReturnSuccess) RT_SET(14);
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     RT2_SET(13);
@@ -2987,25 +2316,9 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         XYLog("DEBUG %s #%d m=%p param=%p ic_state=%d\n", __FUNCTION__, sOutputCount, m, param,
               fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
-    uint32_t diagLen = m != NULL ? static_cast<uint32_t>(mbuf_pkthdr_len(m)) : 0;
-    bool diagEapol = airportItlwmDiagMbufIsEapol(m);
-
-    if (airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockTx) ||
-        (diagEapol && airportItlwmDiagShouldBlock(kAirportItlwmDiagBlockEapolTx))) {
-        airportItlwmDiagRecordBlock(diagEapol ? kAirportItlwmDiagBlockEapolTx :
-                                      kAirportItlwmDiagBlockTx,
-                                    kAirportItlwmDiagPathTx, diagLen);
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathTx, diagLen, diagEapol,
-                                   kIOReturnOutputDropped);
-        if (m && mbuf_type(m) != MBUF_TYPE_FREE)
-            freePacket(m);
-        return kIOReturnOutputDropped;
-    }
 
     if (pmPowerState != kPowerStateOn) {
         sRT.outputDropPwr++;
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathTx, diagLen, diagEapol,
-                                   kIOReturnOutputDropped);
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
         return kIOReturnOutputDropped;
@@ -3014,8 +2327,6 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
 
     if (fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN || ifp->if_snd.queue == NULL) {
-        airportItlwmDiagRecordData(kAirportItlwmDiagPathTx, diagLen, diagEapol,
-                                   kIOReturnOutputDropped);
         if (m && mbuf_type(m) != MBUF_TYPE_FREE)
             freePacket(m);
         return kIOReturnOutputDropped;
@@ -3049,7 +2360,6 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         ret = kIOReturnOutputDropped;
     }
     (*ifp->if_start)(ifp);
-    airportItlwmDiagRecordData(kAirportItlwmDiagPathTx, diagLen, diagEapol, ret);
     return ret;
 }
 
@@ -3561,12 +2871,6 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
         req.req_data = data;
         IOReturn ret = routeTahoeSkywalkIoctl(interface, &req,
                                               isSet ? SIOCSA80211 : SIOCGA80211);
-        airportItlwmDiagTrace(kAirportItlwmDiagTraceHandleCardSpecific,
-                              kAirportItlwmDiagPathHandleCardSpecific,
-                              static_cast<int32_t>(cmd), req.req_type, ret,
-                              isSet ? 1 : 0, reinterpret_cast<uintptr_t>(interface),
-                              reinterpret_cast<uintptr_t>(data),
-                              kAirportItlwmDiagTraceControl);
         if (!ml_at_interrupt_context()) {
             XYLog("DEBUG %s local-route cmd=%s(%lu) ret=0x%x\n",
                   __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd, ret);
@@ -3575,12 +2879,6 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
             return ret;
     }
 
-    airportItlwmDiagTrace(kAirportItlwmDiagTraceHandleCardSpecific,
-                          kAirportItlwmDiagPathHandleCardSpecific,
-                          static_cast<int32_t>(cmd), -1, kIOReturnUnsupported,
-                          isSet ? 1 : 0, reinterpret_cast<uintptr_t>(interface),
-                          reinterpret_cast<uintptr_t>(data),
-                          kAirportItlwmDiagTraceControl);
     return kIOReturnUnsupported;
 }
 

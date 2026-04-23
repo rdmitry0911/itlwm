@@ -201,8 +201,6 @@ extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);
 }
 
-class AirportItlwmDiagnosticsService;
-
 class AirportItlwm : public IO80211Controller {
     OSDeclareDefaultStructors(AirportItlwm)
 #define IOCTL(REQ_TYPE, REQ, DATA_TYPE) \
@@ -466,7 +464,6 @@ public:
     TahoeCommanderV2 &getTahoeCommander() { return tahoeCommander; }
 
     IO80211FaultReporter *io80211FaultReporter;
-    AirportItlwmDiagnosticsService *diagnosticsService;
 
     void performTahoeBootChipImage();
 
