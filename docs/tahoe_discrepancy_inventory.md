@@ -1981,3 +1981,43 @@ reference producer.
   - it removes the contradicted hidden `0x103/0x104/0x15e` classification from
     the runtime diff
   - it restores the exact interface gate Apple already uses for that fallback
+
+### 31. Slot `[411]` still returns the aborting polarity for the proven public selector subset
+- anomaly_id: `TAHOE-INTERFACE-REQUEST-GATE-POLARITY-024`
+- symptom after reboot into `CR-051` runtime `B1AFF314-2935-3718-80F7-C440303D13D6`:
+  - networks remain visible in UI
+  - `sudo wdutil info` still shows `SSID: None`, `BSSID: None`,
+    `Security: None`, `Scan Cache Count: 12`
+  - `airportd` still emits unchanged failures:
+    - `APPLE80211_IOC_SSID -> 0xe0822403`
+    - `APPLE80211_IOC_BSSID -> 0xe0822403`
+    - `APPLE80211_IOC_CURRENT_NETWORK -> 0xe0822403`
+    - `APPLE80211_IOC_ROAM_PROFILE -> 0xe0822403`
+    - `AUTO-JOIN ... driver not available`
+- Apple/decomp contract that now matters:
+  - the exact slot `[411]` helpers branch on non-zero as the surviving path:
+    - `FUN_ffffff80021e28b2`: request `1`
+    - `FUN_ffffff80021e2b46`: request `9`
+    - `FUN_ffffff80021e3912`: request `0x67`
+    - `FUN_ffffff80021e465f`: request `0xd8`
+    - `FUN_ffffff80021e94fa`: request `0xd8`
+  - each helper has the same shape:
+    `iVar1 = slot411(...); if (iVar1 != 0) return; else abort`
+- local mismatch before fix:
+  - the selected selector set from `CR-051` was correct
+  - but local `AirportItlwmSkywalkInterface::isCommandProhibited(int)` still
+    delegated those commands to `AirportItlwm::isCommandProhibited(int)`
+  - controller-side `AirportItlwm::isCommandProhibited(int)` returns `false`
+    unconditionally
+  - so the selected commands still reached slot `[411]` as zero and took the
+    family abort path
+- exact correction:
+  - keep the exact selected subset from `CR-051`
+  - return `true` directly from interface slot `[411]` for:
+    - `0x45`, `0x46`
+    - `1`, `4`, `9`, `0x67`, `0xd8`
+  - leave all other commands on inherited family behavior
+- expected effect:
+  - the proven public current-link selectors should finally survive slot
+    `[411]` and either enter the local helper plane or fail deeper than this
+    gate

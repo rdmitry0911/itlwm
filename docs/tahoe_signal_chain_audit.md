@@ -2916,3 +2916,34 @@ The narrow correction is:
 
 That is the new active root:
 `TAHOE-INTERFACE-PUBLIC-REQUEST-GATE-023`.
+
+Post-reboot evidence on runtime `B1AFF314-2935-3718-80F7-C440303D13D6`
+tightened that seam one step further. The selector subset itself was correct,
+but the local gate still returned the aborting polarity.
+
+`IO80211Family` fallback helpers do not use slot `[411]` as a plain
+"prohibited?" boolean. The exact helpers branch the other way:
+
+- `FUN_ffffff80021e28b2`: `if (slot411(...,1) != 0) return;`
+- `FUN_ffffff80021e2b46`: `if (slot411(...,9) != 0) return;`
+- `FUN_ffffff80021e3912`: `if (slot411(...,0x67) != 0) return;`
+- `FUN_ffffff80021e465f`: `if (slot411(...,0xd8) != 0) return;`
+- `FUN_ffffff80021e94fa`: `if (slot411(...,0xd8) != 0) return;`
+
+So zero is still the aborting value on this seam.
+
+That explains why `CR-051` produced no post-reboot change for
+`SSID/BSSID/CURRENT_NETWORK/ROAM_PROFILE`: the local interface gate delegated
+the selected commands to controller-side `AirportItlwm::isCommandProhibited(int)`,
+and that stub returns `false` unconditionally. The selected commands were
+therefore still reaching slot `[411]` as zero and still taking the family abort
+path.
+
+The next exact correction is narrower than a new routing theory:
+
+- keep the same selected command subset
+- return non-zero directly at interface slot `[411]` for those commands
+- keep all unrelated selectors on inherited behavior
+
+That new active root is:
+`TAHOE-INTERFACE-REQUEST-GATE-POLARITY-024`.

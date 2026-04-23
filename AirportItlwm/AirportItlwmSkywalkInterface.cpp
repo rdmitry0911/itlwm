@@ -959,13 +959,12 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // Family public fallback for `SSID`/`CHANNEL`/`BSSID`/`CURRENT_NETWORK`/
-    // `ROAM_PROFILE` and the carried hidden association path both consult
-    // interface slot `[411] isCommandProhibited(int)` after IOUC/WCL miss.
-    // Keep that gate narrow but admit the proven public request numbers plus
-    // the already approved hidden `0x45/0x46` association carrier.
+    // Tahoe family fallback helpers abort only when slot [411] returns zero:
+    // `if (slot411(...) != 0) return;` else the helper falls into the abort
+    // path. So the already proven selected commands must return non-zero here
+    // to survive the family fallback seam at all.
     if (isTahoeHiddenAssocCommand(command) || isTahoePublicFallbackRequest(command))
-        return instance != nullptr ? instance->isCommandProhibited(command) : false;
+        return true;
 
     return super::isCommandProhibited(command);
 }
