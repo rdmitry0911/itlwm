@@ -1551,14 +1551,27 @@ int AirportItlwmSkywalkInterface::
 getAssocState(void)
 {
     int assocState = IO80211InfraInterface::getAssocState();
+    const unsigned int assocStateRaw = static_cast<unsigned int>(assocState);
+    const unsigned int assocStateLow8 = assocStateRaw & 0xffU;
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s base=%d/0x%x ic_state=%d ic_bss=%p linkActive=%u currentStatus=0x%x\n",
-          __FUNCTION__, assocState, static_cast<unsigned int>(assocState),
+    XYLog("DEBUG %s base=%d raw=0x%x low8=0x%02x ic_state=%d ic_bss=%p linkActive=%u currentStatus=0x%x\n",
+          __FUNCTION__, assocState, assocStateRaw, assocStateLow8,
           ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
           static_cast<unsigned int>(instance != nullptr &&
                                     (instance->currentStatus & kIONetworkLinkActive) != 0),
           instance ? instance->currentStatus : 0);
     return assocState;
+}
+
+void AirportItlwmSkywalkInterface::
+setDataPathState(bool state)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s state=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, state ? 1U : 0U, ic ? ic->ic_state : -1,
+          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
+    IO80211InfraInterface::setDataPathState(state);
+    XYLog("DEBUG %s DONE state=%u\n", __FUNCTION__, state ? 1U : 0U);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

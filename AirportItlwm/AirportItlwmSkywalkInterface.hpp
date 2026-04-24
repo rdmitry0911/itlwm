@@ -32,6 +32,7 @@ public:
     virtual bool init() override;
     virtual bool init(IOService *, ether_addr *) override;
     virtual int getAssocState(void) override;
+    virtual void setDataPathState(bool) override;
     virtual IOReturn setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;

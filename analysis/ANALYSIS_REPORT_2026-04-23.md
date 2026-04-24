@@ -885,3 +885,72 @@
   - BootKC ABI check
   - Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
   - after approval, install without unloading, reboot, run one `btn-vno` join attempt, and collect the targeted probe-route logs above.
+
+## ANOMALY
+- id: A-ASSOC-DATAPATH-ASSOC-GATE-013
+- status: CORRELATED
+- symptom: after the real `ASSOC -> RUN` edge, current-link ownership still never becomes associated, and the framework later resets DPS on teardown.
+- first visible manifestation: on `CR-074` / `CR-076` after-fix runtime, the join reaches `ASSOC -> RUN`, `setLinkStatus status=0x3 (prev=0x1)`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, and `setLinkStateInternal state=2`, yet the same window immediately logs `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`; on the later down edge the same window logs `IO80211Family Reseting DPS state... in resetStuckDataPathCheck`.
+- expected system behavior: after a real RUN edge, the framework's internal association/data-path gate should consult `getAssocState()`, enter `setDataPathState(...)`, and continue into the normal post-link data-path/current-link machinery before any current-link getter re-queries state.
+- actual behavior: the real RUN edge clearly reaches local `setLinkStateInternal(state=2)`, but there is no evidence yet that the corresponding framework assoc/data-path gate ever consults `getAssocState()` in the same RUN window or enters `setDataPathState(...)`.
+- divergence point: unresolved framework gate between `IO80211InfraInterface::setLinkState(...)` and downstream `setDataPathState(...)`, with `getAssocState()` as the most likely guard seam.
+- evidence:
+  - runtime logs: `CR-076-afterfix-assoc-window-20260423-231548.log` shows `eventHandler msgCode=1`, `postMessageGated msg=9`, `ASSOC -> RUN`, `setLinkStatus status=0x3 (prev=0x1)`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, `setLinkStateInternal state=2`, immediate `getBSSIDData()` failure, then rollback and `sendWCLJoinDone lastStatusCode=1009 extendedCode=1007`.
+  - runtime logs: `CR-074-afterfix-assoc-window-20260423.log` shows the same RUN edge and later `IO80211Family Reseting DPS state... in resetStuckDataPathCheck` on the down edge, which implies the framework DPS plane stayed unresolved through the failed association.
+  - runtime logs: all observed `getAssocState` logs so far carry a stable low byte of `0x00` despite garbage upper bits in the raw `int` register image, e.g. `0x85240000`, `0x511ae000`, `0x31950000`, while boot/runtime state remains not-associated in those windows.
+  - decomp: `IO80211Family` `FUN_ffffff8002214486` calls interface slot `[429] getAssocState()` and returns early if the returned low byte is zero; only the non-zero path delegates to `FUN_ffffff8002214504(...) -> setDataPathState(...)`.
+  - decomp: `FUN_ffffff80022e673c` is the internal `setDataPathState(bool)` implementation and immediately enters `IO80211SkywalkInterface::reportDataPathEventsGated(...)`, which is the framework-owned datapath/event path absent from current runtime evidence.
+- candidate causes:
+  - hypothesis: on the real RUN edge, `getAssocState()` is consulted but still returns a zero low byte, so the framework gate aborts before `setDataPathState(...)`.
+  - hypothesis: the local `IO80211InfraInterface::setLinkState(...)` call on this Tahoe port never reaches `FUN_ffffff8002214486`, so neither `getAssocState()` nor `setDataPathState(...)` are involved on the failing up edge.
+  - hypothesis: `setDataPathState(...)` actually fires, but the current-BSS/current-link owner still breaks later in a deeper framework seam.
+- rejected causes:
+  - missing real RUN edge: rejected; the runtime clearly shows `ASSOC -> RUN` and `setLinkStateInternal(state=2)`.
+  - missing current AP address publication: rejected; the real BSSID is published via `setCurrentApAddress(...)`.
+  - local Tahoe request-routing ingress: rejected by `CR-077`; the remaining failure is above all Tahoe-active local current-link request handlers.
+- notes:
+  - the raw `getAssocState` integer value is not itself a confirmed bug because the decomp uses only the low byte; the real question is what low byte the framework sees at the real RUN edge.
+  - this anomaly is intentionally narrower than the earlier current-link ingress question and focuses only on the framework assoc/data-path gate.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-DATAPATH-ASSOC-GATE-013
+- symptom: after the corrected real RUN edge, current-BSS ownership still never becomes associated and the framework later resets DPS on teardown.
+- expected system behavior: the post-RUN framework gate must either consult `getAssocState()` and enter `setDataPathState(...)`, or we must prove that this entire gate is bypassed on the active Tahoe path.
+- actual behavior: current runtime proves `setLinkStateInternal(state=2)` at RUN and later DPS reset on teardown, but does not yet prove whether `getAssocState()` / `setDataPathState(...)` ran on the successful up edge.
+- exact divergence point: unresolved framework assoc/data-path gate immediately downstream of `IO80211InfraInterface::setLinkState(...)`.
+- evidence from runtime: `CR-074` / `CR-076` after-fix runtime shows real RUN, real `setLinkStateInternal(state=2)`, immediate `getBSSIDData()` failure, no `setWCL_LINK_STATE_UPDATE(...)`, and later `resetStuckDataPathCheck`.
+- evidence from decomp: `FUN_ffffff8002214486` gates `setDataPathState(...)` on interface `getAssocState() != 0`; `FUN_ffffff80022e673c` shows that `setDataPathState(...)` is the entry into framework datapath event handling.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- if DIAGNOSTIC_INSTRUMENTATION:
+  - exact hypotheses being disambiguated:
+    - H1: the real RUN edge reaches the family assoc gate, but `getAssocState()` still presents low-byte zero, so `setDataPathState(...)` is skipped.
+    - H2: the real RUN edge never reaches the family assoc gate at all, so neither `getAssocState()` nor `setDataPathState(...)` run on the active Tahoe path.
+    - H3: `setDataPathState(...)` does run, and the remaining blocker is deeper than this gate.
+  - exact probe points:
+    - `AirportItlwmSkywalkInterface::getAssocState()`
+    - `AirportItlwmSkywalkInterface::setDataPathState(bool)`
+  - why these probe points are sufficient:
+    - if `getAssocState()` fires at RUN with low-byte `0`, H1 is proven;
+    - if `setDataPathState(...)` fires, H3 is proven and this gate is no longer the blocker;
+    - if neither fires in the same RUN window even though `setLinkStateInternal(state=2)` does, H2 is proven and the missing seam is above or beside this family gate.
+  - why instrumentation is behavior-neutral: both probes are strict logging passthroughs to existing interface implementations; they do not mutate state, arguments, payloads, ordering, or ownership.
+  - what exact runtime evidence must be collected:
+    - one boot-ready window showing the instrumentation does not perturb startup;
+    - one join window showing `ASSOC -> RUN`, `setLinkStateInternal(state=2)`, any `getAssocState()` calls with raw and low-byte values, any `setDataPathState(...)` calls, and the later rollback/DPS reset if the association still fails.
+- why this is root cause and not just correlation: not yet proven; this candidate is diagnostic and is intended to distinguish whether the remaining blocker sits exactly at the family assoc/data-path gate or deeper in framework ownership.
+- why proposed fix is 1:1 with reference architecture and semantics: it does not change semantics; it only reveals whether the active Tahoe path is entering the same framework gate that the reference architecture uses.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - guessed replay of `setDataPathState(true)` from the driver: rejected; bypasses the reference guard and was already disallowed earlier.
+  - another synthetic link/current-BSS replay after RUN: rejected; still state-changing without proving this gate first.
+  - treating the garbage upper bits of `getAssocState` as a confirmed ABI bug: rejected; current decomp only proves low-byte semantics.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
+  - after approval, install without unloading, reboot, run one reproducible join attempt, and collect a filtered sudo log window containing `ASSOC -> RUN`, `setLinkStateInternal`, `getAssocState`, `setDataPathState`, and the later teardown.
