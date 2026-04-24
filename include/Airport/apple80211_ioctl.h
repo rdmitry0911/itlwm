@@ -367,6 +367,7 @@ struct apple80211req
 #define APPLE80211_IOC_AWDL_SIDECAR_DIAGNOSTICS 351
 #define APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE  352
 #define APPLE80211_IOC_NSS  353
+#define APPLE80211_IOC_SET_MAC_ADDRESS 368
 
 #define APPLE80211_IOC_CARD_SPECIFIC            0xffffffff    // req_type
 
@@ -458,6 +459,14 @@ struct apple80211_private_mac_data {
 
 static_assert(sizeof(struct apple80211_private_mac_data) == 0x1c,
               "apple80211_private_mac_data must match Apple 0x1c carrier ABI");
+
+struct apple80211_set_mac_address_data {
+    uint8_t     mac[6];
+    uint8_t     reserved[3];
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_set_mac_address_data) == 0x09,
+              "apple80211_set_mac_address_data must match observed Tahoe 9-byte carrier ABI");
 
 struct apple80211_offload_tcpka_enable_t {
     uint32_t    version;

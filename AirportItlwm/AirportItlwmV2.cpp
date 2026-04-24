@@ -711,7 +711,21 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
         case APPLE80211_IOC_DISASSOCIATE:
         case APPLE80211_IOC_AUTH_TYPE:
         case APPLE80211_IOC_RSN_IE:
+        case APPLE80211_IOC_SET_MAC_ADDRESS:
             return isSet;
+        default:
+            return false;
+    }
+}
+
+static bool isTahoeCurrentLinkProbeSelector(unsigned long cmd)
+{
+    switch (cmd) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_SCAN_RESULT:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+            return true;
         default:
             return false;
     }
@@ -1624,6 +1638,13 @@ bool AirportItlwm::init(OSDictionary *properties)
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     power_state = 0;
+    fpNetStats = NULL;
+#if __IO80211_TARGET >= __MAC_26_0
+    memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));
+    memset(&tahoeCurrentApAddress, 0, sizeof(tahoeCurrentApAddress));
+    tahoeCurrentApKnown = false;
+    tahoeCurrentApValid = false;
+#endif
     tahoeRequestedPowerState = kWiFiPowerOff;
     tahoeBootstrapPowerPending = false;
     tahoeBootstrapPowerWindowOpen = true;
@@ -2073,6 +2094,16 @@ bool AirportItlwm::start(IOService *provider)
     XYLog("DEBUG %s [STEP 5] HAL initWithController + attach\n", __FUNCTION__);
     fHalService->initWithController(this, _fWorkloop, _fCommandGate);
     fHalService->get80211Controller()->ic_event_handler = eventHandler;
+#if __IO80211_TARGET >= __MAC_26_0
+    {
+        struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+        memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));
+        fpNetStats = &tahoeLegacyNetStats;
+        ifp->netStat = fpNetStats;
+        XYLog("DEBUG %s Tahoe legacy netStat fallback ifp=%p netStat=%p\n",
+              __FUNCTION__, ifp, fpNetStats);
+    }
+#endif
 
     if (PE_parse_boot_argn("-novht", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
@@ -2783,6 +2814,57 @@ IOReturn AirportItlwm::selectMedium(const IONetworkMedium *medium) {
     return kIOReturnSuccess;
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwm::syncTahoeCurrentApAddress(bool forceClear, bool allowInitialClear)
+{
+    AirportItlwmSkywalkInterface *skyIf =
+        OSDynamicCast(AirportItlwmSkywalkInterface, fNetIf);
+    if (skyIf == nullptr)
+        return false;
+
+    struct ieee80211com *ic = fHalService != nullptr
+        ? fHalService->get80211Controller()
+        : nullptr;
+    struct ether_addr targetAp;
+    bool targetValid = false;
+    if (!forceClear && ic != nullptr &&
+        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr) {
+        IEEE80211_ADDR_COPY(targetAp.octet, ic->ic_bss->ni_bssid);
+        targetValid = true;
+    }
+
+    if (targetValid) {
+        if (tahoeCurrentApKnown && tahoeCurrentApValid &&
+            IEEE80211_ADDR_EQ(tahoeCurrentApAddress.octet, targetAp.octet)) {
+            return false;
+        }
+
+        XYLog("DEBUG %s addr=%s ic_state=%d ic_bss=%p forceClear=%d\n",
+              __FUNCTION__, ether_sprintf(targetAp.octet),
+              ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr, forceClear);
+        skyIf->setCurrentApAddress(&targetAp);
+        IEEE80211_ADDR_COPY(tahoeCurrentApAddress.octet, targetAp.octet);
+        tahoeCurrentApKnown = true;
+        tahoeCurrentApValid = true;
+        return true;
+    }
+
+    if (tahoeCurrentApKnown && !tahoeCurrentApValid)
+        return false;
+    if (!allowInitialClear && !tahoeCurrentApKnown)
+        return false;
+
+    XYLog("DEBUG %s addr=(null) ic_state=%d ic_bss=%p forceClear=%d\n",
+          __FUNCTION__, ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
+          forceClear);
+    skyIf->setCurrentApAddress(nullptr);
+    memset(&tahoeCurrentApAddress, 0, sizeof(tahoeCurrentApAddress));
+    tahoeCurrentApKnown = true;
+    tahoeCurrentApValid = false;
+    return true;
+}
+#endif
+
 bool AirportItlwm::
 setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed, OSData * data)
 {
@@ -2792,6 +2874,10 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
           __FUNCTION__, status, currentStatus, (status & kIONetworkLinkActive) != 0, speed,
           ifq->if_flags, fHalService->get80211Controller()->ic_state, power_state);
     if (status == currentStatus) {
+#if __IO80211_TARGET >= __MAC_26_0
+        if ((status & kIONetworkLinkActive) != 0)
+            syncTahoeCurrentApAddress(false, false);
+#endif
         return true;
     }
     bool ret = super::setLinkStatus(status, activeMedium, speed, data);
@@ -2825,6 +2911,8 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     XYLog("DEBUG %s linkState=%llu deauthReason=%u power_state=%u\n",
           __FUNCTION__, (uint64_t)arg0, (unsigned int)(uint64_t)arg1, that->power_state);
 #if __IO80211_TARGET >= __MAC_26_0
+    that->syncTahoeCurrentApAddress(
+        (IO80211LinkState)(uint64_t)arg0 != kIO80211NetworkLinkUp, true);
     XYLog("DEBUG %s Tahoe: calling IO80211InfraInterface::setLinkState fNetIf=%p\n", __FUNCTION__, that->fNetIf);
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1, false, 0, 0);
 #else
@@ -3452,6 +3540,13 @@ setPOWER(OSObject *object,
 #if __IO80211_TARGET < __MAC_26_0
 SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigned long cmd,void *data, bool b1, bool b2)
 {
+    if (isTahoeCurrentLinkProbeSelector(cmd)) {
+        XYLog("DEBUG %s probe cmd=%s(%lu) interface=%p data=%p b1=%d b2=%d ic_state=%d interrupt=%d\n",
+              __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
+              interface, data, b1 ? 1 : 0, b2 ? 1 : 0,
+              fHalService ? fHalService->get80211Controller()->ic_state : -1,
+              ml_at_interrupt_context() ? 1 : 0);
+    }
     if (!ml_at_interrupt_context())
         XYLog("%s cmd: %s b1: %d b2: %d\n", __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), b1, b2);
     return super::apple80211_ioctl(interface, cmd, data, b1, b2);
@@ -3460,6 +3555,13 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
 
 SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
 {
+    if (isTahoeCurrentLinkProbeSelector(cmd)) {
+        XYLog("DEBUG %s probe cmd=%s(%lu) isSet=%d interface=%p data=%p ic_state=%d interrupt=%d\n",
+              __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
+              isSet ? 1 : 0, interface, data,
+              fHalService ? fHalService->get80211Controller()->ic_state : -1,
+              ml_at_interrupt_context() ? 1 : 0);
+    }
     if (!ml_at_interrupt_context())
         XYLog("DEBUG %s cmd=%s(%lu) isSet=%d interface=%p data=%p\n",
               __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
@@ -3478,6 +3580,12 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
         req.req_data = data;
         IOReturn ret = routeTahoeSkywalkIoctl(interface, &req,
                                               isSet ? SIOCSA80211 : SIOCGA80211);
+        if (isTahoeCurrentLinkProbeSelector(cmd)) {
+            XYLog("DEBUG %s probe-route cmd=%s(%lu) ret=0x%x ic_state=%d\n",
+                  __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd),
+                  cmd, ret,
+                  fHalService ? fHalService->get80211Controller()->ic_state : -1);
+        }
         if (!ml_at_interrupt_context()) {
             XYLog("DEBUG %s local-route cmd=%s(%lu) ret=0x%x\n",
                   __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd, ret);

@@ -32,7 +32,9 @@ public:
     virtual bool init() override;
     virtual bool init(IOService *, ether_addr *) override;
     virtual int getAssocState(void) override;
+    virtual IOReturn setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
+    virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
     bool bindController(AirportItlwm *);
 #else
     virtual bool init(IOService *) override;
@@ -75,7 +77,7 @@ public:
         return (void *)3;  // IFNET_SUBFAMILY_WIFI
     }
 
-    void associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index);
+    void associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner);
     void setPTK(const u_int8_t *key, size_t key_len);
     void setGTK(const u_int8_t *key, size_t key_len, u_int8_t kid, u_int8_t *rsc);
 
@@ -104,6 +106,7 @@ public:
     IOReturn setDISASSOCIATE(void *);
     IOReturn setDEAUTH(apple80211_deauth_data *);
     IOReturn setSCAN_REQ(apple80211_scan_data *);
+    IOReturn setSET_MAC_ADDRESS(apple80211_set_mac_address_data *);
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
     IOReturn processApple80211Ioctl(UInt, apple80211req *);

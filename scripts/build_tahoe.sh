@@ -32,6 +32,8 @@ BOOTKC="${1:-/Volumes/macos-750/System/Library/KernelCollections/BootKernelExten
 # ── Step 1: Patch MacKernelSDK if needed ─────────────────────────────
 patch_mackernelsdk() {
     local header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/network/IONetworkController.h"
+    local tx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkTxSubmissionQueue.h"
+    local rx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h"
 
     if [ ! -f "$header" ]; then
         echo "WARNING: MacKernelSDK not found, skipping patch"
@@ -59,6 +61,25 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
     else
         echo "IONetworkController.h: slots 6/7 already patched"
     fi
+
+    # Tahoe BootKC exports Skywalk queue callbacks with UInt32 return type.
+    # Some local MacKernelSDK copies declare them as IOReturn, which compiles
+    # but links against non-exported mangled symbols.
+    if [ -f "$tx_header" ] && grep -q 'typedef IOReturn (\*IOSkywalkTxSubmissionQueueAction)' "$tx_header"; then
+        echo "Patching IOSkywalkTxSubmissionQueue.h: callbacks -> BootKC ABI"
+        perl -0pi -e 's|typedef IOReturn \(\*IOSkywalkQueryFreeSpaceHandler\) \( OSObject \* owner, IOSkywalkTxSubmissionQueue \* queue, UInt32 \* outSpace \);|typedef UInt32 (*IOSkywalkQueryFreeSpaceHandler) ( OSObject * owner, IOSkywalkTxSubmissionQueue * queue, UInt32 * outSpace );|g; s|typedef IOReturn \(\*IOSkywalkTxSubmissionQueueAction\)\( OSObject \* owner, IOSkywalkTxSubmissionQueue \* queue, const IOSkywalkPacket \*\*, UInt32, void \* \);|typedef UInt32 (*IOSkywalkTxSubmissionQueueAction)( OSObject * owner, IOSkywalkTxSubmissionQueue * queue, IOSkywalkPacket * const *, UInt32, void * );|g' "$tx_header"
+        echo "  done"
+    elif [ -f "$tx_header" ]; then
+        echo "IOSkywalkTxSubmissionQueue.h: callbacks already patched"
+    fi
+
+    if [ -f "$rx_header" ] && grep -q 'typedef IOReturn (\*IOSkywalkRxCompletionQueueAction)' "$rx_header"; then
+        echo "Patching IOSkywalkRxCompletionQueue.h: callbacks -> BootKC ABI"
+        perl -0pi -e 's|typedef IOReturn \(\*IOSkywalkRxCompletionQueueAction\)\( OSObject \* owner, IOSkywalkRxCompletionQueue \*, IOSkywalkPacket \*\*, UInt32, void \* \);|typedef UInt32 (*IOSkywalkRxCompletionQueueAction)( OSObject * owner, IOSkywalkRxCompletionQueue *, IOSkywalkPacket **, UInt32, void * );|g' "$rx_header"
+        echo "  done"
+    elif [ -f "$rx_header" ]; then
+        echo "IOSkywalkRxCompletionQueue.h: callbacks already patched"
+    fi
 }
 
 patch_mackernelsdk
@@ -70,7 +91,7 @@ BUILD_SETTINGS=$(xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -configuration "$CONFIGURATION" \
     -showBuildSettings \
     GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH")
-if ! printf '%s\n' "$BUILD_SETTINGS" | grep -q 'USE_APPLE_SUPPLICANT'; then
+if [[ "$BUILD_SETTINGS" != *USE_APPLE_SUPPLICANT* ]]; then
     echo "ERROR: Tahoe target missing USE_APPLE_SUPPLICANT in effective GCC_PREPROCESSOR_DEFINITIONS"
     exit 1
 fi

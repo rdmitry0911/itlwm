@@ -95,3 +95,793 @@
 - fix: добавить override существующего virtual slot `setProperties(OSObject*)`, принять только `AirportItlwmDiagControl`, применить команду и делегировать unknown properties в `super`.
 - verification: build + BootKC symbol check; after reboot `airport_itlwm_regdiag on` должен вернуть control string, а через watchdog должны появиться snapshot/trace.
 - notes: override не добавляет class/service/userclient/personality и не меняет object layout.
+
+## ANOMALY
+- id: A-ASSOC-SET-MAC-001
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: сеть видна в UI/scan, но попытка подключения к SSID `btn-vno` завершается до входа в локальные `setASSOCIATE` / `setWCL_ASSOCIATE`.
+- first visible manifestation: `networksetup -setairportnetwork en0 btn-vno ...` печатает `Failed to join network btn-vno` и `tmpErr`.
+- expected system behavior: перед association WCLJoinManager успешно применяет private/link MAC через `APPLE80211_IOC_SET_MAC_ADDRESS`, затем продолжает join path.
+- actual behavior: `APPLE80211_IOC_SET_MAC_ADDRESS` возвращает `0xe00002c7`, после чего WCLJoinManager abort'ит association и IO80211Family возвращает `-536870201`.
+- divergence point: current Tahoe runtime вызывает `APPLE80211_IOC_SET_MAC_ADDRESS(368)` с 9-байтным carrier; на локальном драйвере этот carrier попадает в `getAWDL_PEER_TRAFFIC_STATS(len=0x9)` и возвращает `kIOReturnUnsupported`.
+- evidence:
+  - panic logs: нет.
+  - runtime logs: `cmdIouc@145:Fail to Set cmd=<APPLE80211_IOC_SET_MAC_ADDRESS, 368> res=<unknown Apple80211 ReturnToString, 0xe00002c7>`.
+  - runtime logs: `handleJoinRequest@1215:WCLJoinManager unable to set mac addre rVal[-536870201]`.
+  - runtime logs: `Exit-setASSOCIATE:153 ret:-536870201`.
+  - runtime logs: `itlwm: DEBUG VTABLE [470] getAWDL_PEER_TRAFFIC_STATS len=0x9` immediately before the SET_MAC_ADDRESS failure.
+  - diagnostic snapshot: после join attempt `public_assoc=0 hidden_assoc=0`, значит failure происходит до локальных assoc handlers.
+  - decomp: `IO80211Family_decompiled.c` `setSET_MAC_ADDRESS` rejects NULL, then calls the common MAC helper with mode `2`.
+  - decomp: common MAC helper copies the first six bytes into interface MAC state, calls the link-layer address setter when the interface is enabled, posts message `0x3b` with the 6-byte MAC payload, and updates the MAC registry/property state.
+- candidate causes:
+  - confirmed: missing local handling for the SET_MAC_ADDRESS carrier causes WCLJoinManager to abort before association.
+- rejected causes:
+  - scan/UI visibility: rejected, runtime sees `btn-vno` BSSIDs and UI lists networks.
+  - public/hidden associate body parsing: not reached in this failure; counters remain zero.
+  - diagnostic layer boot regression: rejected for this symptom; current driver is visible and scan works.
+- confirmed deviation: local `len=0x9` SET_MAC_ADDRESS carrier returns unsupported instead of reference MAC-update semantics.
+- root cause: confirmed for the current visible-networks-but-cannot-connect symptom up to the first join gate.
+- fix: route the observed 9-byte carrier into local `setSET_MAC_ADDRESS`, copy the first six bytes to `ic_myaddr`/ifnet link-layer address, publish `APPLE80211_M_LINK_ADDRESS_CHANGED(0x3b)` with a 6-byte payload, update `kIOMACAddress`, and return success.
+- verification: build + BootKC symbol check; after reboot, repeat one join attempt and confirm SET_MAC_ADDRESS no longer returns `0xe00002c7`; next failure, if any, must occur later than WCLJoinManager `unable to set mac`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-SET-MAC-001
+- symptom: UI-visible networks cannot be joined; join aborts before local assoc handlers.
+- expected system behavior: `APPLE80211_IOC_SET_MAC_ADDRESS(368)` accepts the private/link MAC carrier and updates interface/link-layer MAC state before association.
+- actual behavior: the 9-byte carrier is dispatched to the local slot named `getAWDL_PEER_TRAFFIC_STATS` and returns `kIOReturnUnsupported`.
+- exact divergence point: `AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS(data,len=0x9)` currently falls through to unsupported.
+- evidence from runtime: sudo logs show `getAWDL_PEER_TRAFFIC_STATS len=0x9` immediately followed by `Fail to Set cmd=<APPLE80211_IOC_SET_MAC_ADDRESS, 368> res=0xe00002c7`, `WCLJoinManager unable to set mac`, and `Exit-setASSOCIATE ret:-536870201`.
+- evidence from decomp: `IO80211Family_decompiled.c` lines around `203312..203329` identify `setSET_MAC_ADDRESS`; lines around `187715..187756` show the shared MAC helper copies six bytes, updates link-layer state, posts message `0x3b`, and updates MAC property state.
+- exact semantic mismatch between reference and our code: reference treats this as a MAC update operation; local code treats the same carrier as an unsupported AWDL/unknown fallback.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: WCLJoinManager logs the failed SET_MAC_ADDRESS as the immediate reason for aborting handleJoinRequest, and local assoc counters prove association body handling is not reached.
+- why proposed fix is 1:1 with reference architecture and semantics: it implements the same externally visible MAC-state update, message `0x3b`, property update, and success return for the same carrier, without retries/replays/delays or init-path changes.
+- files/functions to modify:
+  - `include/Airport/apple80211_ioctl.h`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+- forbidden alternative fixes considered and rejected:
+  - blind `return kIOReturnSuccess`: rejected, would mask WCL gate without updating MAC/link-layer state.
+  - calling `AirportItlwm::setHardwareAddress`: rejected, it disables/enables the HAL when active and adds non-reference side effects.
+  - changing vtable layout broadly: rejected for this batch, high boot/UI regression risk and not required to satisfy the observed SET_MAC_ADDRESS carrier.
+  - adding userclient/service/plist diagnostics: rejected, unrelated and previously regressed UI binding.
+- verification plan: `git diff --check`; Tahoe build; BootKC undefined-symbol check; confirm artifact contains the current git hash; user runtime should show no `Fail to Set cmd=<APPLE80211_IOC_SET_MAC_ADDRESS, 368>` on the next join attempt.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-BUILD-SKYWALK-CALLBACK-ABI-001
+- symptom: Tahoe build initially fails in `AirportItlwmV2.cpp`; changing local callbacks to match the unpatched SDK then compiles but fails BootKC symbol verification.
+- expected system behavior: local `MacKernelSDK` declarations for Skywalk queue callbacks match symbols exported by the target BootKC.
+- actual behavior: restored CR-052 code matches BootKC (`UInt32` callbacks, TX `IOSkywalkPacket * const *`), but the local SDK headers declare `IOReturn` callbacks and TX `const IOSkywalkPacket **`.
+- exact divergence point: unpatched SDK headers force clang to emit references to non-exported `withPool(... int (*)(...))` symbols instead of exported `withPool(... unsigned int (*)(...))` symbols.
+- evidence from build: clang rejects CR-052 callback signatures against unpatched SDK typedefs.
+- evidence from BootKC symbol check: the `IOReturn` local change produces unresolved `IOSkywalkTxSubmissionQueue::withPool(... int (*)(... const IOSkywalkPacket ** ...))` and `IOSkywalkRxCompletionQueue::withPool(... int (*)(...))`.
+- evidence from system contract: `nm -g /System/Library/KernelCollections/BootKernelExtensions.kc | c++filt` shows exported `withPool` overloads use `unsigned int (*)(...)` and TX `IOSkywalkPacket* const*`.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- fix: keep CR-052 callback signatures in driver code and extend `scripts/build_tahoe.sh` to patch local `MacKernelSDK` Skywalk queue typedefs to BootKC ABI before building.
+- why this is behavior-neutral for the Wi-Fi regression under investigation: it changes only local build declarations; driver runtime topology, IORegistry diagnostics, scan, and association control paths are unchanged.
+- verification plan: rebuild Tahoe target and run BootKC undefined-symbol check; no unresolved `IOSkywalk*Queue::withPool` symbols may remain.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-BUILD-SUPPLICANT-CHECK-PIPEFAIL-001
+- symptom: `scripts/build_tahoe.sh` can stop at `ERROR: Tahoe target missing USE_APPLE_SUPPLICANT` even when `xcodebuild -showBuildSettings` contains `USE_APPLE_SUPPLICANT`.
+- expected system behavior: sanity check only fails when the effective Tahoe target definitions actually lack `USE_APPLE_SUPPLICANT`.
+- actual behavior: with `set -o pipefail`, `printf "$BUILD_SETTINGS" | grep -q USE_APPLE_SUPPLICANT` can return failure after `grep -q` exits early and `printf` receives SIGPIPE.
+- evidence: direct `xcodebuild -showBuildSettings ... | rg USE_APPLE_SUPPLICANT` shows the target definition present; the script still emitted the missing-supplicant error.
+- fix justification path: DIAGNOSTIC_INSTRUMENTATION
+- fix: replace the pipe/`grep -q` check with shell pattern matching against the captured build settings.
+- why this is behavior-neutral: it only corrects a build-script assertion and does not alter driver binary code.
+- verification plan: rerun `scripts/build_tahoe.sh`; it must proceed past the sanity check and complete BootKC symbol verification.
+
+## ANOMALY
+- id: A-ASSOC-SET-MAC-GATE-002
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: после установки exact `CR-064` driver сети видны, но join к `btn-vno` всё ещё падает до association.
+- first visible manifestation: `airportd` возвращает `Apple80211IOCTLSetWrapper ... APPLE80211_IOC_ASSOCIATE ... return 1/0x00000001`.
+- expected system behavior: `APPLE80211_IOC_SET_MAC_ADDRESS(368)` должен попасть в MAC-update path и вернуть success после обновления MAC state.
+- actual behavior: `APPLE80211_IOC_SET_MAC_ADDRESS(368)` возвращает raw `1`; локальные логи `routing set-mac carrier` / `setSET_MAC_ADDRESS` отсутствуют.
+- divergence point: `AirportItlwmSkywalkInterface::isCommandProhibited(int)` short-circuit'ит `APPLE80211_IOC_SET_MAC_ADDRESS` через public fallback gate `[411]`, потому что `isTahoePublicFallbackRequest(...)` ошибочно включал selector `368`.
+- evidence:
+  - panic logs: нет.
+  - runtime logs: loaded driver `AirportItlwm build=fe953b4`.
+  - runtime logs: `cmdIouc@145:Fail to Set cmd=<APPLE80211_IOC_SET_MAC_ADDRESS, 368> res=<unknown Apple80211 ReturnToString, 0x1>`.
+  - runtime logs: `handleJoinRequest@1215:WCLJoinManager unable to set mac addre rVal[1]`.
+  - runtime logs: `Exit-setASSOCIATE:153 ret:1`.
+  - runtime logs: нет `routing set-mac carrier` и нет `setSET_MAC_ADDRESS`, значит handler не достигнут.
+  - decomp: `setSET_MAC_ADDRESS` reference wrapper вызывает common MAC helper with mode `2`, а не public fallback `[411]` raw-return path.
+- candidate causes:
+  - confirmed: inclusion of `APPLE80211_IOC_SET_MAC_ADDRESS` in the public fallback gate returns raw `1` before the set-mac handler can run.
+- rejected causes:
+  - handler body returning `1`: rejected, handler logs are absent and local handler returns `kIOReturnSuccess`.
+  - old unsupported carrier path: rejected for current runtime, error changed from `0xe00002c7` to raw `1`.
+- confirmed deviation: `SET_MAC_ADDRESS` was treated as a public fallback request, but reference treats it as a MAC-update operation.
+- root cause: confirmed for the current post-CR-064 `rVal[1]` join abort.
+- fix: remove `APPLE80211_IOC_SET_MAC_ADDRESS` from `isTahoePublicFallbackRequest(...)`; keep explicit set-side routing and carrier handler.
+- verification: build + BootKC symbol check; after reboot, join attempt must no longer show `SET_MAC_ADDRESS` returning `0x1` and must show either local set-mac handler logs or a later join failure.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-SET-MAC-GATE-002
+- symptom: exact `CR-064` runtime still aborts join before association; WCL reports `SET_MAC_ADDRESS` failure with raw `1`.
+- expected system behavior: the set-mac carrier should execute the reference MAC-update semantics and return success.
+- actual behavior: the public fallback gate returns non-zero raw `1` before the set-mac handler runs.
+- exact divergence point: `AirportItlwmSkywalkInterface::isTahoePublicFallbackRequest(...)` included `APPLE80211_IOC_SET_MAC_ADDRESS`, so `isCommandProhibited(...)` returned `true` at slot `[411]`.
+- evidence from runtime: sudo logs at `2026-04-23 15:53:34` show `Fail to Set cmd=<APPLE80211_IOC_SET_MAC_ADDRESS, 368> res=0x1`, `WCLJoinManager unable to set mac`, and `Exit-setASSOCIATE ret:1`; no local `setSET_MAC_ADDRESS` log appears.
+- evidence from decomp: `IO80211Family_decompiled.c` lines around `203319..203326` show `setSET_MAC_ADDRESS` forwarding non-null carrier to the common MAC helper with mode `2`; lines around `187739..187755` show MAC copy, link-layer update, message `0x3b`, and property update.
+- exact semantic mismatch between reference and our code: reference executes a MAC-update operation; local code short-circuits the selector through a public fallback/prohibition gate and leaks raw `1`.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the error value changed from unsupported `0xe00002c7` to raw `1` exactly after adding the selector to the public fallback set, and absence of handler logs proves the intended MAC-update path is bypassed.
+- why proposed fix is 1:1 with reference architecture and semantics: removing the selector from the fallback gate allows the already implemented set-mac MAC-update path to own this command, matching the reference wrapper/helper split.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - returning `false` for all public fallback requests: rejected, would regress prior UI-visible request gates.
+  - mapping raw `1` to success in WCL path: rejected, would mask failure without MAC update.
+  - forcing success from `isCommandProhibited`: rejected, current bug is exactly a raw gate return.
+  - adding retry/replay/delay: rejected, no reference basis.
+- verification plan: `git diff --check`; Tahoe build; BootKC undefined-symbol check; create new exact-diff request; after approval install/reboot and verify `SET_MAC_ADDRESS` no longer returns `0x1`.
+
+## ANOMALY
+- id: A-ASSOC-HIDDEN-NULL-PSK-003
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: после установки exact CR-065 сети видны, но первая попытка подключения вызывает kernel panic.
+- first visible manifestation: `/Users/bob/Projects/itlwm/crash.txt` показывает `Kernel trap ... type=14 page fault`, `CR2=0`, backtrace в `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...) + 0x782`.
+- expected system behavior: hidden WCL association candidate must not import PSK/PMK bytes from a source that is not present in `apple80211AssocCandidates`; reference programs auth/SSID context and hands the candidate to JoinAdapter.
+- actual behavior: local hidden WCL bridge calls legacy `associateSSID(..., key=NULL, key_len=0)`, then legacy PSK branch executes `memcpy(ic->ic_psk, key, sizeof(ic->ic_psk))`.
+- divergence point: `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...)` reused public `associateSSID(...)` legacy key-import semantics for hidden WCL candidates, although the hidden carrier has no `apple80211_key` field.
+- evidence:
+  - panic logs: `/Users/bob/Projects/itlwm/crash.txt` has `CR2=0`, `RSI=0`, `RDX=0x20`, `RCX=0x20`, `R8=0x20`, matching a 32-byte memcpy from NULL.
+  - runtime logs: user performed one join attempt after reboot; networks were visible before the panic.
+  - ioreg: not required for this crash root; loaded binary UUID is identified by panic.
+  - packet traces: absent.
+  - firmware traces: absent.
+  - decomp: `AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)` sets BSS auth context/SSID and calls `AppleBCMWLANJoinAdapter::performJoin(...)`; it does not copy PSK material out of the candidate.
+  - docs: `docs/tahoe_signal_chain_audit.md` already identifies hidden `0x45/0x3ad8` WCL association as the active owner and says the target is the hidden association carrier, not generic public `associateSSID()` debugging.
+- candidate causes:
+  - confirmed: hidden WCL candidate path calls the legacy PSK import path with `key=NULL`.
+- rejected causes:
+  - boot/UI regression: rejected for this symptom; user confirmed networks are visible.
+  - old `SET_MAC_ADDRESS` abort: rejected for this symptom; flow reached `setWCL_ASSOCIATE`.
+  - generic diagnostic layer boot damage: rejected for this symptom; panic occurs in association after visible scan/UI.
+- confirmed deviation: reference WCL association has no candidate PSK import; local code imports PSK from a NULL hidden-candidate key pointer.
+- root cause: confirmed for the current kernel panic.
+- fix: split Skywalk association PMK ownership explicitly: public `apple80211_assoc_data` keeps importing `ad_key`, while hidden WCL candidates run the same SSID/auth/RSN setup with local PMK import disabled because their carrier has no key field.
+- verification: `git diff --check`; Tahoe build; BootKC symbol check; Stage 1 request; after approved runtime, one join attempt should not panic and should expose the next association/auth failure through logs/diagnostics.
+- notes: this does not claim full association success; it only removes the confirmed hidden-WCL null PMK import divergence and allows the next blocker to be observed.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-HIDDEN-NULL-PSK-003
+- symptom: exact CR-065 runtime panics on the first join attempt after networks are visible.
+- expected system behavior: WCL association must not dereference or import a PSK/PMK buffer unless that exact key material is part of the local association carrier; reference WCL path forwards the candidate to JoinAdapter without extracting PSK from it.
+- actual behavior: local WCL bridge passes `NULL, 0` as key material to `associateSSID`, and `associateSSID` unconditionally copies 32 bytes from the pointer for PSK AKMs.
+- exact divergence point: `AirportItlwmSkywalkInterface::associateSSID(...)` line with `memcpy(ic->ic_psk, key, sizeof(ic->ic_psk))` is reached from `setWCL_ASSOCIATE(...)` with `key == NULL`.
+- evidence from runtime: panic registers in `/Users/bob/Projects/itlwm/crash.txt` show `CR2=0`, `RSI=0`, and 32-byte copy length registers while the return address is inside `setWCL_ASSOCIATE + 0x782`; the built kext UUID matches the loaded panic UUID.
+- evidence from decomp: `AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)` around `docs/reference/AppleBCMWLAN_Core_decompiled.c:116065` sets auth context/SSID and calls `AppleBCMWLANJoinAdapter::performJoin(...)`, with no PSK copy from the candidate payload.
+- exact semantic mismatch between reference and our code: reference WCL association does not synthesize a local PMK source from the candidate; local code treated the hidden candidate as if it were public `apple80211_assoc_data` containing `ad_key`.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the faulting registers are the exact argument pattern of `memcpy(destination, NULL, 32)`, and the only local path passing `NULL,0` into the PSK branch is `setWCL_ASSOCIATE(...)`.
+- why proposed fix is 1:1 with reference architecture and semantics: it removes the non-reference PSK import from hidden WCL candidates by making PMK import an explicit public-carrier-only path, while leaving auth/SSID/RSN setup and public `setASSOCIATE` key import semantics unchanged.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - force success from `setWCL_ASSOCIATE`: rejected, would mask the remaining association state machine.
+  - fabricate zero/default PSK: rejected, guessed secret material and guaranteed wrong handshake.
+  - return early on missing hidden-WCL key: rejected, reference still starts JoinAdapter from the WCL candidate and this would hide the next blocker.
+  - pass the user password from diagnostics/userspace: rejected, secrets are not part of the hidden candidate contract and would create a new side channel.
+  - change broad public `AirportItlwm::associateSSID`: rejected for this batch because the panic is in the Tahoe Skywalk WCL path and non-Skywalk public assoc carries `ad_key`.
+- verification plan: `git diff --check`; Tahoe build; BootKC undefined-symbol check; create CR-066 exact-diff Stage 1 request; after approval install/reboot and confirm the same join attempt no longer panics.
+
+## ANOMALY
+- id: A-ASSOC-HIDDEN-WCL-EXTERNAL-PMK-004
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-066 runtime networks are visible and hidden WCL association no longer panics, but manual join to SSID `btn-vno` fails with `airportd` error `-3905`.
+- first visible manifestation: `airportd` reports `Failed to associate ... returned error code -3905` after the local driver logs repeated `ieee80211_node_choose_bss reject ssid=btn-vno fail=0x40`.
+- expected system behavior: a WCL join request that carries a validated `CIPHER_PMK` owner must be allowed past local PSK-only BSS filtering without importing PMK bytes from a carrier that does not contain them; the Apple supplicant/WCL key owner remains the source of PMK material.
+- actual behavior: the hidden WCL path correctly avoids the CR-066 NULL PMK memcpy, but it also leaves `IEEE80211_F_PSK` clear, so local net80211 rejects every PSK-only BSS before association can start.
+- divergence point: `AirportItlwmSkywalkInterface::associateSSID(... importLocalPmk=false)` handles PSK AKMs by configuring WPA params but neither imports local PMK bytes nor marks the current association as externally PMK-owned for the local BSS selector.
+- evidence:
+  - panic logs: no new panic after CR-066; current failure is non-panic association rejection.
+  - runtime logs: `WCLJoinRequest: lowerAuth = AUTHTYPE_OPEN, upperAuth = AUTHTYPE_SHA256_PSK, key = CIPHER_PMK, Valid Private Mac Addr`.
+  - runtime logs: `setWCL_ASSOCIATE [btn-vno] ... auth_upper=1024 ...`, then `associateSSID ... key_len=0 ...`, then `WCL candidate has no local PMK source key_len=0`.
+  - runtime logs: `ieee80211_node_choose_bss reject ssid=btn-vno fail=0x40 des_esslen=7 auto_join=1`, followed by `airportd ... error code -3905`.
+  - decomp: `IO80211Family` stores the WCL key separately from assoc candidates: `WCLJoinRequest::checkValidationForApple80211Key(...)` returns the pointer at request private offset `+0x18`, while the `0x45/0x3ad8` carrier sent via `sendIOUCToWcl(..., 0x45, payload, 0x3ad8, ...)` is the assoc-candidates payload.
+  - decomp: `AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)` programs auth/SSID context and delegates to `AppleBCMWLANJoinAdapter::performJoin(...)`; it does not copy PMK bytes from `apple80211AssocCandidates`.
+  - local source: `ieee80211_node_choose_bss` sets `IEEE80211_NODE_ASSOCFAIL_WPA_PROTO` (`0x40`) when AP AKMs are PSK-only and `IEEE80211_F_PSK` is clear.
+  - local source: with `USE_APPLE_SUPPLICANT`, EAPOL input is forwarded to Apple user space and PTK/GTK installation remains in `setCIPHER_KEY(...)`; local PMK bytes are not the WCL hidden-candidate source.
+- candidate causes:
+  - confirmed: hidden WCL external-PMK ownership is not represented in the local net80211 PSK capability gate.
+- rejected causes:
+  - wrong scan visibility: rejected; scan cache lists two `btn-vno` BSS entries and UI shows networks.
+  - CR-066 panic: rejected; no new trap, and `setWCL_ASSOCIATE` returns success before the BSS rejection.
+  - missing local `setCIPHER_KEY(CIPHER_PMK)` call before association: rejected for this runtime blocker; logs from boot/join window contain `WCLJoinRequest key=CIPHER_PMK` but no local `setCIPHER_KEY` call, and reference keeps the WCL key outside the assoc-candidates carrier.
+  - copying zero/default/user-provided PMK in the driver: rejected, the hidden carrier does not contain PMK bytes and reference does not synthesize them there.
+- confirmed deviation: reference WCL has an out-of-band key owner for the join request, while the local net80211 compatibility layer treats lack of local PMK bytes as lack of PSK capability and rejects the BSS.
+- root cause: confirmed for the current `fail=0x40` / `-3905` association stop.
+- fix: keep CR-066's no-copy rule for hidden WCL PMK bytes, but explicitly mark the current PSK association as externally PMK-owned for the local BSS selector by setting `IEEE80211_F_PSK` when the hidden WCL path reaches a PSK AKM with Apple-supplicant ownership.
+- verification: `git diff --check`; Tahoe build; BootKC symbol check; Stage 1 request; after approval install/reboot and verify join no longer fails at `ieee80211_node_choose_bss fail=0x40`; subsequent EAPOL/key/data failures, if any, must be captured as later anomalies.
+- notes: this fix does not claim final data path success. It only removes the confirmed local pre-association PSK gate that blocks a WCL request already carrying `CIPHER_PMK`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-HIDDEN-WCL-EXTERNAL-PMK-004
+- symptom: after CR-066, networks remain visible and the hidden WCL association call returns success, but `btn-vno` join fails before association because all PSK-only BSS candidates are rejected with `fail=0x40`.
+- expected system behavior: WCL/Apple-supplicant PMK ownership should satisfy the local pre-association PSK capability gate without requiring PMK bytes to be present inside `apple80211AssocCandidates`.
+- actual behavior: hidden WCL calls `associateSSID(..., key=NULL, key_len=0, importLocalPmk=false)` and therefore leaves `IEEE80211_F_PSK` clear; local net80211 rejects PSK-only APs before association.
+- exact divergence point: `AirportItlwmSkywalkInterface::associateSSID(...)` PSK branch distinguishes public local PMK import from hidden no-import, but lacks a third state for validated external WCL PMK ownership.
+- evidence from runtime: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-067-before-current-failed-join-20260423-172930.log` shows WCL `key = CIPHER_PMK`, local `associateSSID key_len=0`, then `ieee80211_node_choose_bss reject ssid=btn-vno fail=0x40` and `airportd` `-3905`.
+- evidence from decomp: `IO80211Family_decompiled.c` shows `WCLJoinRequest::checkValidationForApple80211Key(...)` returning the request key pointer at private offset `+0x18`; `sendIOUCToWcl(..., 0x45, payload, 0x3ad8, ...)` sends only the assoc-candidates payload; `AppleBCMWLANCore::setWCL_ASSOCIATE(...)` delegates that payload to JoinAdapter without candidate PMK copy.
+- exact semantic mismatch between reference and our code: reference separates WCL key ownership from the assoc-candidates carrier, while local net80211 currently equates "no candidate PMK bytes" with "no PSK capability" and aborts BSS selection.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: hidden `setWCL_ASSOCIATE(...)` return semantics; local `ieee80211_node_choose_bss(...)` PSK capability gate; WCL/Apple-supplicant EAPOL ownership; `setCIPHER_KEY(...)` PTK/GTK installation path; absence of PMK bytes in `apple80211AssocCandidates`.
+  - expected contract at each touchpoint: hidden associate keeps returning success after configuring auth/SSID/RSN; BSS selector must not reject PSK-only AP when WCL has a validated PMK owner; EAPOL remains forwarded to Apple user space under `USE_APPLE_SUPPLICANT`; PTK/GTK keys are installed only through existing `setCIPHER_KEY(...)`; driver must not fabricate or copy PMK bytes from the hidden carrier.
+  - why no relevant touchpoints are missing: the current failure occurs before firmware association and before EAPOL; the runtime contains no local `setCIPHER_KEY` call, no PTK/GTK traffic, and no data-path event before `fail=0x40`.
+  - why proposed path adds no extra system-visible side effects: it changes only the internal net80211 PSK capability flag for the current hidden WCL PSK association after `ieee80211_disable_rsn(...)` cleared prior state; it does not alter return codes, callbacks, ordering, notifications, BSSID/SSID payloads, PMK bytes, or key-install paths.
+- why this is root cause and not just correlation: `fail=0x40` maps directly to `IEEE80211_NODE_ASSOCFAIL_WPA_PROTO`, and the exact local branch sets it for PSK-only AKMs when `IEEE80211_F_PSK` is clear; the runtime proves `btn-vno` reaches that branch after WCL `CIPHER_PMK`.
+- why proposed fix is 1:1 with reference architecture and semantics: it preserves reference separation of WCL key ownership from assoc-candidates PMK bytes, while providing the minimal local compatibility representation needed by our net80211 BSS selector.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - restore hidden WCL `memcpy(ic_psk, NULL, 32)`: rejected, CR-066 proved it panics and reference does not copy candidate PMK bytes.
+  - fabricate zero/default PMK bytes: rejected, guessed secret material and may corrupt handshake.
+  - derive PMK from user password in the driver or diagnostics utility: rejected, password is not part of the WCL driver contract and would add a new secret side channel.
+  - force success from `ieee80211_node_choose_bss` or mask `fail=0x40`: rejected, would bypass the selector rather than representing WCL PMK ownership.
+  - add retry/replay/delay: rejected, the failure is deterministic local state, not timing.
+- verification plan: run `git diff --check`; build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`; create exact-diff Stage 1 request; after approval install without unload, reboot, and verify `btn-vno` no longer produces `ieee80211_node_choose_bss fail=0x40`.
+
+## ANOMALY
+- id: A-TX-LEGACY-NETSTAT-NULL-005
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-067 runtime networks are visible, but the first manual join attempt panics during the association management-frame TX path.
+- first visible manifestation: `/Users/bob/Projects/itlwm/crash.txt` reports `Kernel trap ... type=14 page fault`, `CR2=0x8`, with the top frame `ItlIwm::_iwm_start_task(...) + 0x2c4`.
+- expected system behavior: Tahoe/Skywalk association management-frame TX must not depend on the legacy `IONetworkInterface::configureInterface()` stats buffer, because the active interface is registered through `IOSkywalkNetworkBSDClient` after `deferBSDAttach(false)`.
+- actual behavior: the iwm TX path sends the management frame successfully and then unconditionally increments `ifp->netStat->outputPackets`; `ifp->netStat` is NULL on the Tahoe Skywalk path, causing a page fault at offset `0x8`.
+- divergence point: `AirportItlwm::start(...)` wires the internal `_ifnet` into the Tahoe Skywalk path but does not provide legacy `IONetworkStats` storage for the OpenBSD compatibility layer; `ItlIwm::_iwm_start_task(...)` still assumes that storage exists.
+- evidence:
+  - panic logs: `/Users/bob/Projects/itlwm/crash.txt` shows `CR2=0x8`, kext UUID `D2919320-0693-3B27-8694-0DC35969F679`, and top frame `_iwm_start_task`.
+  - panic logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-067-after-crash-symbolication-20260423-1805.txt` symbolicates the fault to `itlwm/hal_iwm/mac80211.cpp:3596`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-067-after-crash-kernel-airportd-20260423-1758.log` shows Tahoe Skywalk registration (`registerEthernetInterface=0x0`, `deferBSDAttach(false)`) and no `configureInterface`/`network statistics buffer` log before the join crash.
+  - local source: `mac80211.cpp:3596` is `ifp->netStat->outputPackets++`; `IONetworkStats.outputPackets` offset is `0x8`, matching the panic `CR2`.
+  - local source: `AirportItlwmV2.cpp:2698..2719` only assigns `ifp->netStat` inside legacy `configureInterface(IONetworkInterface *)`, while the Tahoe start path comments state that BSD ifnet creation is handled by `IOSkywalkNetworkBSDClient` after `deferBSDAttach(false)`.
+  - decomp: reference Tahoe path uses `IOSkywalkEthernetInterface::registerEthernetInterface`/BSDClient attach and separate IO80211/Skywalk data-path stats virtuals; it does not expose our legacy OpenBSD `_ifnet::netStat` pointer as a required TX contract.
+  - docs: `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml` records that reporters/stats are lazy and not required during start.
+- candidate causes:
+  - confirmed: legacy OpenBSD compatibility counters dereference a NULL `ifp->netStat` on the Tahoe Skywalk path.
+- rejected causes:
+  - CR-067 hidden external PMK flag: rejected for this panic; the crash occurs later, after management TX reaches `_iwm_start_task`.
+  - `ieee80211_node_choose_bss fail=0x40`: rejected for this runtime; the panic stack is TX/newstate, not BSS selection.
+  - NULL mbuf/node in `iwm_tx`: rejected for this panic; the faulting line is after `iwm_tx(...) == 0`.
+  - UI/scan regression: rejected; user confirmed networks are visible and runtime logs contain `btn-vno` scan entries.
+- confirmed deviation: the Tahoe Skywalk start path has no legacy `configureInterface` stats assignment, while the reused OpenBSD iwm TX path treats `ifp->netStat` as mandatory.
+- root cause: confirmed for the CR-067 join panic because the panic address, symbolicated line, and struct offset exactly match `NULL->outputPackets`.
+- fix: provide a Tahoe-only driver-owned `IONetworkStats` backing store for the legacy OpenBSD compatibility `_ifnet` during `AirportItlwm::start(...)`; keep `configureInterface(...)` able to replace it with a real `IONetworkStats` buffer if that legacy path ever runs.
+- verification: `git diff --check`; Tahoe build; BootKC undefined-symbol check; Stage 1 request; after approval install without unloading, reboot, and verify one join attempt no longer panics at `_iwm_start_task:3596`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-TX-LEGACY-NETSTAT-NULL-005
+- symptom: CR-067 runtime panics on the first join attempt after networks are visible.
+- expected system behavior: Tahoe/Skywalk management-frame TX can use the OpenBSD compatibility `_ifnet`, but legacy packet/error counters must have valid storage or be absent from the TX contract; they must not be able to fault the association state machine.
+- actual behavior: `ItlIwm::_iwm_start_task(...)` sends the management frame and then increments `ifp->netStat->outputPackets` while `ifp->netStat == NULL`.
+- exact divergence point: `AirportItlwm::start(...)` initializes the Tahoe Skywalk interface via `registerEthernetInterface(...)`/`deferBSDAttach(false)` but leaves `fHalService->get80211Controller()->ic_ac.ac_if.netStat` unset because legacy `configureInterface(IONetworkInterface *)` is not invoked in this path.
+- evidence from runtime: `/Users/bob/Projects/itlwm/crash.txt` has `CR2=0x8` and `_iwm_start_task + 0x2c4`; `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-067-after-crash-symbolication-20260423-1805.txt` maps the address to `mac80211.cpp:3596`; CR-067 boot logs show Skywalk registration and no `configureInterface` log.
+- evidence from decomp: Tahoe reference registration is the Skywalk/BSDClient path (`registerEthernetInterface` and later BSD ifnet creation), with IO80211/Skywalk stats exposed through dedicated data-path stats/reporting methods rather than our legacy `_ifnet::netStat` pointer.
+- exact semantic mismatch between reference and our code: reference Skywalk TX does not require a legacy IOEthernetInterface stats buffer to exist before association TX; local compatibility code makes that buffer a hard requirement even though Tahoe does not create it through the legacy path.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: Tahoe Skywalk interface registration; OpenBSD compatibility `_ifnet` used by iwm/net80211; management-frame TX return semantics; legacy packet/error counters; optional legacy `configureInterface(...)` stats replacement.
+  - expected contract at each touchpoint: Skywalk registration and UI visibility remain unchanged; `_ifnet` has valid counter storage before any iwm/net80211 TX/RX counter touch; management-frame TX return/order/payload are unchanged; counters are local bookkeeping only; `configureInterface(...)` may still replace the fallback with a real OS-provided stats buffer if invoked.
+  - why no relevant touchpoints are missing: the panic occurs after `iwm_tx(...)` succeeds and before any external association result callback, EAPOL, or data-path key install; the only faulting state is the legacy counter pointer.
+  - why proposed path adds no extra system-visible side effects: it assigns a zeroed fallback `IONetworkStats` struct to the existing local `_ifnet::netStat` pointer and logs the pointer once; it does not change IOCTL routing, association payloads, TX queueing, return codes, notifications, timing gates, key handling, or Skywalk registration.
+- why this is root cause and not just correlation: `IONetworkStats.outputPackets` offset is exactly `0x8`, matching panic `CR2=0x8`, and the symbolicated fault line is the unguarded `outputPackets++` immediately after successful management-frame TX.
+- why proposed fix is 1:1 with reference architecture and semantics: it preserves the Tahoe Skywalk producer path and treats legacy OpenBSD counters as local compatibility storage rather than as a reference-visible association contract.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - guard only `mac80211.cpp:3596`: rejected, would leave the same NULL stats pointer for neighboring TX/RX/error counter paths.
+  - remove all netStat increments: rejected, broader behavior change to shared legacy code and unnecessary for the Tahoe compatibility gap.
+  - force legacy `configureInterface(...)` or recreate `IOEthernetInterface`: rejected, contradicts the established Tahoe Skywalk/BSDClient path and previously caused UI/boot regressions.
+  - suppress management TX or force association success: rejected, would mask the real join path.
+  - add retry/delay/replay: rejected, the panic is a deterministic NULL pointer, not timing.
+- verification plan: run `git diff --check`; build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`; create CR-068 exact-diff Stage 1 request; after approval install without unloading, reboot, and verify the same `btn-vno` join attempt no longer panics in `_iwm_start_task`.
+
+## ANOMALY
+- id: A-ASSOC-CURRENTLINK-CACHE-006
+- status: FIX_IMPLEMENTED
+- symptom: after CR-068 runtime networks are visible and manual join to `btn-vno` no longer panics, but WCL still times out and airportd reports `-3905`.
+- first visible manifestation: after local `ASSOC -> RUN` and `associated with 00:58:28:26:1c:1a`, external `GET SSID`, `GET BSSID`, and `GET CURRENT_NETWORK` continue returning `0xe0822403`; later auto-join reports `driver not available`.
+- expected system behavior: on real Tahoe link edges the Skywalk interface current-AP cache is cleared when not associated and populated with the current AP BSSID when associated, so WCL/CoreWiFi current-link probes observe the same state as the link transition.
+- actual behavior: local code updates link state and posts BSSID/SSID/link notifications, but never drives `AirportItlwmSkywalkInterface::setCurrentApAddress(...)`; the public request gate also still admits disproven `SSID/BSSID/CHANNEL/CURRENT_NETWORK/ROAM_PROFILE` request numbers and leaks raw `1` for channel/roam-profile probes.
+- divergence point: `AirportItlwm::setLinkStateGated(...)` has the only confirmed local RUN/link-down edge but does not call the already recovered `setCurrentApAddress(NULL/BSSID)` producer before publishing the link transition.
+- evidence:
+  - panic logs: no panic in CR-068 runtime; previous `_iwm_start_task` crash is gone.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-068-after-join-filtered-20260423-182800.log` shows `ASSOC -> RUN`, `associated with 00:58:28:26:1c:1a`, `setLinkStatus status=0x3`, and `setLinkStateGated`.
+  - runtime logs: the same log has repeated `APPLE80211_IOC_SSID -> 0xe0822403`, `APPLE80211_IOC_BSSID -> 0xe0822403`, `APPLE80211_IOC_CURRENT_NETWORK -> 0xe0822403`, and no `setCurrentApAddress` line.
+  - runtime logs: `APPLE80211_IOC_CHANNEL` and `APPLE80211_IOC_ROAM_PROFILE` return raw `1`, matching the previously disproven public request-number gate behavior.
+  - runtime logs: WCL aborts after timeout with `sendWCLJoinDone lastStatusCode=1009 extendedCode=1007 joinedBSSID=00:58:28:26:1C:1A`, then airportd reports `-3905`.
+  - ioreg: not yet collected after the proposed fix; current loaded UUID is `E0326944-5F74-3760-AB97-236EB40378F4`.
+  - packet traces: absent.
+  - firmware traces: absent.
+  - decomp: `AppleBCMWLANSkywalkInterface::setCurrentApAddress(ether_addr*)` calls `IO80211InfraInterface::setCurrentApAddress(NULL)` and clears validity for NULL, or calls the base method with a real AP address and sets validity for non-NULL.
+  - decomp: `IO80211Family_decompiled.c` slot `+0xcc8` fallback helpers for public request numbers return on non-zero and abort/route incorrectly on zero; live CR-068 proves widening public request numbers to this gate is not a payload-producing current-link owner.
+  - decomp: `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` while its BSS manager is not associated, so the missing current-link producer explains the persistent low-level not-associated status after local RUN.
+  - docs: `docs/tahoe_discrepancy_inventory.md` and `docs/tahoe_signal_chain_audit.md` record the latest correction: remove public request numbers from slot `[411]`, keep hidden assoc carriers, and drive `setCurrentApAddress(nullptr / real BSSID)` on actual link edges.
+- candidate causes:
+  - confirmed: current-link cache producer is present as an override but never invoked on local link edges.
+  - confirmed: public request-number admission in `isCommandProhibited(...)` is a disproven routing theory that leaks raw `1` and does not populate SSID/BSSID/CURRENT_NETWORK.
+- rejected causes:
+  - CR-067 `fail=0x40`: rejected for this runtime; `btn-vno` reaches AUTH/ASSOC/RUN.
+  - CR-067 `netStat` panic: rejected for this runtime; no panic and management TX completes.
+  - generic missing scan visibility: rejected; scan cache contains both `btn-vno` BSSIDs and UI lists networks.
+  - replaying/duplicating BSSID/SSID notifications: rejected; no producer-side evidence that reference replays notifications after link-up.
+- confirmed deviation: Apple has an explicit Skywalk current-AP producer with NULL/non-NULL validity semantics; local Tahoe link-edge code omits that producer and relies only on link notifications plus stale public request gating.
+- root cause: confirmed for the post-RUN current-link invisibility that causes WCL timeout/airportd `driver not available`; full EAPOL/data success remains outside this claim.
+- fix: implemented: on every Tahoe `setLinkStateGated(...)` edge call `AirportItlwmSkywalkInterface::setCurrentApAddress(real BSSID)` for link-up with `ic_state == IEEE80211_S_RUN` and a valid `ic_bss`, otherwise call `setCurrentApAddress(nullptr)`; narrow `AirportItlwmSkywalkInterface::isCommandProhibited(...)` back to hidden assoc carriers only.
+- verification: `git diff --check` passed; Tahoe build passed; BootKC symbol check passed with `OK: all 856 undefined symbols resolve against BootKC`; after approved install/reboot, one `btn-vno` attempt must show `setCurrentApAddress addr=00:58:28:26:1c:1a` before/at link-up, no raw `CHANNEL/ROAM_PROFILE -> 1` from the old public gate, and current-link probes must no longer keep returning `0xe0822403` after RUN.
+- notes: this does not force join success; if EAPOL/key or data-path issues remain, they must appear after current-link cache becomes visible.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-CURRENTLINK-CACHE-006
+- symptom: CR-068 reaches local RUN for `btn-vno`, but WCL times out because Apple-visible current SSID/BSSID/current-network remain unavailable.
+- expected system behavior: link-up with an associated BSS must publish the current AP address through the Skywalk current-link cache producer; link-down/non-associated state must clear it with NULL.
+- actual behavior: local `setLinkStateGated(...)` calls `setLinkState`, posts BSSID/SSID/link notifications, and reports link status, but never calls `setCurrentApAddress(...)`; public request selectors remain in slot `[411]` despite prior runtime showing they are not the payload owner.
+- exact divergence point: Tahoe branch of `AirportItlwm::setLinkStateGated(...)` and `AirportItlwmSkywalkInterface::isCommandProhibited(int)`.
+- evidence from runtime: CR-068 log shows `ASSOC -> RUN`, `associated with 00:58:28:26:1c:1a`, repeated `SSID/BSSID/CURRENT_NETWORK -> 0xe0822403`, raw `CHANNEL/ROAM_PROFILE -> 1`, no `setCurrentApAddress`, and final WCL timeout `1009/1007`.
+- evidence from decomp: `AppleBCMWLANSkywalkInterface::setCurrentApAddress(ether_addr*)` has exact NULL clear and non-NULL valid-current-AP semantics; `IO80211Family` public request-number helpers consult slot `+0xcc8`, while `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` until its BSS/current-link manager is associated.
+- exact semantic mismatch between reference and our code: reference has a current-AP cache producer separate from generic link-state notification; local code publishes link-state notifications without updating that cache and keeps a disproven request gate as if it were the producer.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: Tahoe Skywalk current-AP cache; link-state edge; BSSID/SSID/link notifications; public request gate slot `[411]`; WCL/airportd current SSID/BSSID/current-network probes.
+  - expected contract at each touchpoint: current-AP cache is NULL when not associated and real BSSID when associated; link-state ordering remains one edge per net80211 transition; notifications remain the existing single publish; public request gate only admits proven hidden assoc carriers; WCL/airportd probes must observe current-link cache rather than raw not-associated status after RUN.
+  - why no relevant touchpoints are missing: the failure appears after local association and before EAPOL/key install; scan, hidden assoc, management TX, and link notification paths already execute, leaving current-link cache as the remaining system-visible state mismatch in this claim.
+  - why proposed path adds no extra system-visible side effects: it does not force success, retry, delay, duplicate notify, alter packets, or change key ownership; it only invokes the recovered Apple cache producer once on the same link edge that already publishes link/BSSID/SSID state, and removes the disproven public selector gate.
+- why this is root cause and not just correlation: the runtime shows local RUN while every Apple-visible current-link query still reports not associated; the only recovered Apple producer for that cache is present but unused locally; the old public gate is directly evidenced by raw `1` returns and cannot produce current-link payloads.
+- why proposed fix is 1:1 with reference architecture and semantics: it uses the reference-named Skywalk interface producer with the exact NULL/non-NULL semantics recovered from decomp and ties it to actual local link edges rather than guessed boot seeding or duplicate event replay.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - zero-BSSID `setCurrentApAddress(...)` seeding during boot: rejected, previously marked guessed; reference distinguishes NULL clear from non-NULL valid AP.
+  - force success from `getSSID/getBSSID/getCURRENT_NETWORK`: rejected, would mask the missing cache producer and may fabricate current state.
+  - replay/duplicate BSSID/SSID/link notifications after RUN: rejected, no producer-side reference evidence.
+  - keep public `SSID/BSSID/CHANNEL/CURRENT_NETWORK/ROAM_PROFILE` in slot `[411]`: rejected by CR-068 raw `1` and persistent `0xe0822403` runtime evidence.
+  - add delay/retry/poll: rejected; current-link state is missing deterministically after RUN.
+- verification plan: `git diff --check`; Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`; create exact-diff Stage 1 request; after approval install without unloading, reboot, perform one `btn-vno` join attempt, and capture sudo logs for `setCurrentApAddress`, current-link probe return codes, WCL timeout/success, `setCIPHER_KEY`, and data-path counters.
+
+## ANOMALY
+- id: A-ASSOC-CURRENTAP-RUN-NONEDGE-007
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-069 загружается без UI regression, сети видны, join к `btn-vno` доходит до локального `ASSOC -> RUN`, но Apple-visible current SSID/BSSID/current-network остаются недоступны и WCL завершает join timeout.
+- first visible manifestation: после `ASSOC -> RUN` в runtime нет `setCurrentApAddress(addr=<BSSID>)`, а `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK` продолжают возвращать `0xe0822403`.
+- expected system behavior: когда net80211 входит в `IEEE80211_S_RUN` с выбранным `ic_bss`, Skywalk current-AP cache должен быть синхронизирован с реальным BSSID; когда association отсутствует, cache должен быть очищен через NULL.
+- actual behavior: CR-069 вызывает `setCurrentApAddress(NULL)` только на раннем driver-ready link-up edge (`ic_state=0`), а реальный `RUN` приходит как `setLinkStatus(status=0x3, prev=0x3)` и выходит через ранний `return` без current-AP публикации.
+- divergence point: `AirportItlwm::setLinkStatus(...)` считает `status == currentStatus` no-op и возвращает до Tahoe current-AP producer path; `AirportItlwm::setLinkStateGated(...)` не вызывается на реальном `RUN`, потому что active status уже был установлен ранним low-latency/driver-ready edge.
+- evidence:
+  - panic logs: нет; текущая сборка не паникует и не ломает UI visibility.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-069-after-join-filtered-20260423-1911.log`, sha256 `8810f22ffbb7e3f7a8a21b29898c14ad1df431a4e6658e57413d0df5da673aeb`.
+  - runtime logs: `19:01:05.720057 setLinkStateGated linkState=2`, затем `setCurrentApAddress addr=(null) ic_state=0`.
+  - runtime logs: `19:05:25.885889 ASSOC -> RUN` и `associated with 00:58:28:26:1c:1a ssid`.
+  - runtime logs: immediately after RUN, `19:05:25.885960 setLinkStatus status=0x3 (prev=0x3) active=1 ... ic_state=4`; there is no `setLinkStateGated linkState=2` and no `setCurrentApAddress addr=00:58:28:26:1c:1a`.
+  - runtime logs: after RUN and deauth window, current-link probes still return `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK -> 0xe0822403`, WCL reports `sendWCLJoinDone lastStatusCode=1009 extendedCode=1007`, and auto-join reports `driver not available`.
+  - runtime logs: `SET_MAC_ADDRESS`, hidden `setWCL_ASSOCIATE`, external PMK marker, BSS selection, AUTH, ASSOC, and RUN all execute, so the current failure is later than CR-064..CR-068 blockers.
+  - decomp: `AppleBCMWLANSkywalkInterface::setCurrentApAddress(ether_addr*)` has exact NULL clear and non-NULL valid-current-AP semantics.
+  - decomp: `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` while the BSS/current-link manager is not associated.
+  - decomp/docs: `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)` calls base enable, `reportLinkStatus(3,0x80)`, then `setLinkState(kIO80211NetworkLinkUp,1,false,0,0)`, proving the early link-up edge can be a driver-ready edge and is not identical to association `RUN`.
+- candidate causes:
+  - confirmed: CR-069 tied the current-AP producer only to `setLinkStateGated(...)`, but real association `RUN` is a same-link-status update and bypasses that path.
+- rejected causes:
+  - missing `SET_MAC_ADDRESS`: rejected for this runtime; local set-mac handler logs success before WCL associate.
+  - hidden WCL null PMK panic: rejected; no panic and WCL path logs external PMK ownership.
+  - local PSK BSS gate `fail=0x40`: rejected; BSS is selected and the state machine reaches AUTH/ASSOC/RUN.
+  - legacy `netStat` NULL panic: rejected; management TX completes and no panic occurs.
+  - public request-number gate raw `CHANNEL/ROAM_PROFILE -> 1`: rejected for CR-069 current logs; channel requests return success and public selector gate was already narrowed.
+  - replaying link-state or BSSID/SSID notifications: rejected; no producer-side evidence and the missing state is current-AP cache ownership, not duplicate notifications.
+- confirmed deviation: the local Tahoe current-AP cache producer is not synchronized to actual association `RUN`; it is synchronized only to an earlier driver-ready link-state edge that can occur with `ic_state=0`.
+- root cause: confirmed for the remaining Apple-visible current-link unavailability after local `RUN`; full EAPOL/key/data success remains outside this claim and must be evaluated after current-AP cache is visible.
+- fix: synchronize Tahoe current-AP cache from the actual net80211 association state as well as link-down edges: publish real BSSID exactly when `ic_state == IEEE80211_S_RUN && ic_bss != nullptr` and the cached current AP is absent/stale; publish NULL when association is cleared; do not replay link-state or notification events.
+- verification: `git diff --check`; Tahoe build; BootKC symbol check; Stage 1 request; after approval install without unloading, reboot, perform one `btn-vno` join attempt, and verify the log contains `setCurrentApAddress addr=00:58:28:26:1c:1a` at/after `ASSOC -> RUN` before WCL completion.
+- notes: this is a correction to the CR-069 placement of the current-AP producer, not a new diagnostic layer and not a forced association success.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-CURRENTAP-RUN-NONEDGE-007
+- symptom: CR-069 reaches `ASSOC -> RUN` for `btn-vno`, but WCL/CoreWiFi still see no current SSID/BSSID/current-network and the join times out.
+- expected system behavior: the Skywalk current-AP cache reflects the real associated AP when net80211 is in `IEEE80211_S_RUN`, and is invalid/NULL outside association.
+- actual behavior: CR-069 publishes NULL during early driver-ready link-up (`ic_state=0`) and never publishes the real BSSID at `RUN` because `status == currentStatus` causes an early return.
+- exact divergence point: `AirportItlwm::setLinkStatus(...)` line with `if (status == currentStatus) return true;` runs at `ic_state=IEEE80211_S_RUN`; `AirportItlwm::setLinkStateGated(...)` remains the only current-AP producer but is not called on this non-edge.
+- evidence from runtime: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-069-after-join-filtered-20260423-1911.log` shows early `setCurrentApAddress addr=(null) ic_state=0`, later `ASSOC -> RUN`, `associated with 00:58:28:26:1c:1a`, `setLinkStatus status=0x3 (prev=0x3) ic_state=4`, no real-BSSID `setCurrentApAddress`, continued `SSID/BSSID/CURRENT_NETWORK -> 0xe0822403`, and WCL `1009/1007`.
+- evidence from decomp: `AppleBCMWLANSkywalkInterface::setCurrentApAddress(ether_addr*)` distinguishes NULL clear from non-NULL valid current AP; `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` when its BSS/current-link manager is not associated; `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)` emits an early link-up independent of association.
+- exact semantic mismatch between reference and our code: reference exposes a current-AP cache producer whose state must track the BSS/current-link manager, while CR-069 wired that producer only to a generic link-active edge that can precede association and then suppresses the real RUN update as a status no-op.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: Tahoe Skywalk current-AP cache; net80211 `IEEE80211_S_RUN`/`ic_bss`; link-down/deauth clearing; existing link-state notification path; WCL/CoreWiFi `SSID/BSSID/CURRENT_NETWORK` probes.
+  - expected contract at each touchpoint: current-AP cache is real BSSID only when `ic_state == RUN` and `ic_bss` is present; current-AP cache is NULL when association is not valid; link-state and BSSID/SSID notifications are not replayed; public getters observe the cache through existing IO80211 paths; WCL/CoreWiFi no longer see stale not-associated current-link state after local RUN.
+  - why no relevant touchpoints are missing: current runtime already passes set-mac, hidden WCL associate, PMK ownership, BSS selection, management TX, AUTH, ASSOC, and RUN; no EAPOL/key/data path begins before WCL times out, and every remaining Apple-visible failure is current-link state.
+  - why proposed path adds no extra system-visible side effects: it invokes only the recovered current-AP cache producer with exact NULL/BSSID payloads, tracks the last published value to avoid duplicate publishes, and does not change return codes, packets, key material, retries, ordering, link-state calls, notifications, or data-path behavior.
+- why this is root cause and not just correlation: the log proves `RUN` occurs while current-link probes continue returning the exact reference not-associated code; the only local reason the recovered producer is not invoked is the same-status early return, and the decomp shows that current-link queries depend on associated current-BSS state.
+- why proposed fix is 1:1 with reference architecture and semantics: it keeps the Apple current-AP producer as the sole owner and synchronizes it to the actual association lifecycle, while preserving the earlier low-latency link-up edge as driver-ready/link state rather than treating it as association.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - call `setLinkStateGated(kIO80211NetworkLinkUp)` again at RUN: rejected as replay/duplicate link-state without producer-side reference evidence.
+  - repost `APPLE80211_M_BSSID_CHANGED` / `APPLE80211_M_SSID_CHANGED`: rejected as duplicate notify; current missing owner is cache state, not notification delivery.
+  - force success or fabricate payloads in `getSSID/getBSSID/getCURRENT_NETWORK`: rejected, would mask cache ownership and can publish stale state.
+  - add delay/retry/poll loop around WCL timeout: rejected, failure is deterministic missing state publication.
+  - alter PMK/EAPOL/key handling in this patch: rejected, current runtime has not reached a verified EAPOL/key blocker after visible current-AP cache.
+- verification plan: `git diff --check`; Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`; BootKC undefined-symbol check; create exact-diff Stage 1 request; after approval install without unloading, reboot, perform one `btn-vno` join attempt, and collect sudo logs for current-AP publish, current-link getter return codes, WCL completion, EAPOL, key install, and data counters.
+
+## ANOMALY
+- id: A-ASSOC-WCL-CURRENTBSS-LINKUP-008
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-070 publishes the real current AP BSSID at local `ASSOC -> RUN`, but WCL/CoreWiFi current SSID/BSSID/current-network remain unavailable and the join still times out.
+- first visible manifestation: after `setCurrentApAddress addr=00:58:28:26:1c:1a ic_state=4`, `APPLE80211_IOC_SSID` still returns `-528342013/0xe0822403` while local `ic_state` is `IEEE80211_S_RUN`.
+- expected system behavior: the association link-up producer must make the IO80211/WCL current-BSS manager associated with the selected BSS before current-link probes are expected to succeed.
+- actual behavior: CR-070 updates only the Skywalk current-AP address cache on the same-status RUN non-edge; it does not drive an association link-state producer after the real BSSID is available, so IO80211/WCL current-BSS state remains not-associated.
+- divergence point: `AirportItlwm::setLinkStatus(...)` same-status active path calls `syncTahoeCurrentApAddress(false, false)` and returns; no association-edge link-state update is sent after current AP becomes non-NULL.
+- evidence:
+  - panic logs: none in CR-070 runtime; no boot hang and no UI regression.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-070-after-join-filtered-20260423-2001.log`, sha256 `d56a2acb731f1fbab7e44dc550aa9d7a45c5a644b09f1f0ff25fe80e96398e5e`.
+  - runtime logs: `20:00:03.763438 ASSOC -> RUN`, `20:00:03.763447 associated with 00:58:28:26:1c:1a ssid`.
+  - runtime logs: `20:00:03.763476 syncTahoeCurrentApAddress addr=00:58:28:26:1c:1a ic_state=4` and `20:00:03.763481 setCurrentApAddress addr=00:58:28:26:1c:1a ic_state=4`.
+  - runtime logs: `20:00:05.573422 APPLE80211_IOC_SSID return -528342013/0xe0822403`, before AP deauth at `20:00:07.765387`.
+  - runtime logs: `GET OP MODE` and `GET POWER` reach local vtable/getter paths immediately before the failing current-link probe, proving the interface is alive and the failure is specific to the current-link/BSS-associated cache.
+  - runtime logs: local `getSSID`, `getBSSID`, and `getCURRENT_NETWORK` logs are absent for the failing public probes, so this is not a local helper return-value bug.
+  - runtime logs: early driver-ready link-up at `19:57:26.591696` calls `IO80211InfraInterface::setLinkState` with current AP still NULL, causing IO80211Family `getBSSIDData()` failure; the real RUN later has current AP valid but no association link-state update.
+  - ioreg: loaded CR-070 UUID `9CE6341E-662A-32FE-B6DC-CD5083B33974`; loaded-state evidence sha256 `7666558b4bc9d64286006563d7f82a44fdcb07be309e66697c49e9f959c74be6`.
+  - packet traces: absent.
+  - firmware traces: absent.
+  - decomp: `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` when `IO80211BssManager::isAssociated(...)` is false.
+  - decomp: `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state*)` on link-up calls `AppleBCMWLANBssManager::setCurrentBSS(...)`, updates MCS/rate state, and resets link-quality state; on link-down it clears current BSS with `setCurrentBSS(..., 0)`.
+  - decomp: `WCLBssManager::setCurrentBSS(...)` writes the current BSS pointer and updates WCL current-BSS state.
+  - decomp: `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)` has a separate early driver-ready `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)` path, proving that the early link-up edge is not the same producer as association/WCL link-state update.
+  - docs: CR-070 intentionally avoided link-state replay because there was not yet producer-side evidence. The CR-070 runtime plus `setWCL_LINK_STATE_UPDATE` decomp now identify the missing association current-BSS producer.
+- candidate causes:
+  - confirmed: current AP address publication alone does not update IO80211/WCL current-BSS associated state; reference link-up producer also updates the current-BSS manager.
+  - confirmed: local actual `RUN` remains a same-status active update after the early driver-ready link-up, so the association link-state producer is skipped.
+- rejected causes:
+  - missing current AP BSSID: rejected by CR-070 runtime; `setCurrentApAddress` publishes `00:58:28:26:1c:1a`.
+  - public getter helper returning error: rejected; local `getSSID/getBSSID/getCURRENT_NETWORK` logs are absent for the failing public probes.
+  - interface not loaded or UI regression: rejected; networks are visible and OP_MODE/POWER getters succeed.
+  - `SET_MAC_ADDRESS`/hidden associate/BSS selection failure: rejected; set-mac, WCL associate, BSS selection, AUTH, ASSOC, and RUN all execute before the blocker.
+  - EAPOL/key install as the first blocker: not yet confirmed; WCL current-link probes fail before any local `setCIPHER_KEY` evidence and before the AP deauth.
+  - guessed `setWCL_LINK_STATE_UPDATE` payload construction: rejected; the local ABI struct layout is not recovered, so fabricating that payload would be guessed state correction.
+- confirmed deviation: reference association link-up updates the current-BSS manager, while local CR-070 publishes only the current AP address and never sends an association-edge link-state update after the real BSSID is known.
+- root cause: confirmed for the persistent `0xe0822403` current-link blocker after CR-070's real-BSSID current-AP publish; later AP deauth/EAPOL/data-path success remains outside this claim.
+- fix: after `syncTahoeCurrentApAddress(false, false)` newly publishes a real BSSID on a same-status active `RUN` update, invoke a narrow Tahoe association-link refresh under the command gate that calls `IO80211InfraInterface::setLinkState(kIO80211NetworkLinkUp, 0, false, 0, 0)` only if `ic_state == IEEE80211_S_RUN && ic_bss != nullptr`; do not repost BSSID/SSID/link messages and do not fabricate WCL payloads.
+- verification: `git diff --check`; Tahoe build; BootKC symbol check; Stage 1 request; after approval install without unloading, reboot, perform one `btn-vno` join attempt, and verify the log shows real-BSSID current-AP publish followed by the new association-link refresh, then current-link probes no longer persistently return `0xe0822403` before any later EAPOL/AP-deauth blocker.
+- notes: this is not a generic duplicate link-state replay. It is the missing association/WCL link-up producer corresponding to reference `setWCL_LINK_STATE_UPDATE`, deliberately separated from the earlier low-latency driver-ready link-up edge and stripped of duplicate user-visible notifications.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-CURRENTBSS-LINKUP-008
+- symptom: CR-070 reaches `ASSOC -> RUN` and publishes `setCurrentApAddress(00:58:28:26:1c:1a)`, but WCL/CoreWiFi current-link probes still return `0xe0822403` and the join times out.
+- expected system behavior: after association link-up, IO80211/WCL current-BSS state is associated with the selected BSS, so current SSID/BSSID/current-network probes can observe the current link.
+- actual behavior: local Tahoe code updates only the current-AP address cache on the real RUN same-status path; the association link-state/current-BSS producer is not run after current AP becomes valid.
+- exact divergence point: `AirportItlwm::setLinkStatus(...)` same-status active branch at `ic_state == IEEE80211_S_RUN`; it calls `syncTahoeCurrentApAddress(false, false)` and returns without any association link-state/current-BSS update.
+- evidence from runtime: CR-070 log shows `ASSOC -> RUN`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, then `APPLE80211_IOC_SSID -> 0xe0822403` during RUN before AP deauth; OP_MODE/POWER getters work and local current-link helper logs are absent.
+- evidence from decomp: `AppleBCMWLANCore::getCURRENT_NETWORK(...)` gates success on `IO80211BssManager::isAssociated(...)`; `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)` link-up calls `AppleBCMWLANBssManager::setCurrentBSS(...)`; `WCLBssManager::setCurrentBSS(...)` writes the current BSS; `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)` is a separate early link-up producer.
+- exact semantic mismatch between reference and our code: reference has both an early driver-ready link-up and an association/WCL link-up producer that updates current BSS; local CR-070 has the early link-up and current-AP address publish, but lacks the association current-BSS/link-state producer after real RUN.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: early low-latency driver-ready link-up; actual net80211 `IEEE80211_S_RUN` with `ic_bss`; Tahoe current-AP address cache; IO80211InfraInterface link-state update; IO80211/WCL current-BSS associated state; current SSID/BSSID/current-network probes; link-down current-AP clearing.
+  - expected contract at each touchpoint: early driver-ready link-up may occur before association; current-AP cache is real BSSID only at valid RUN; association link-up must refresh family current-link/current-BSS state after the real BSSID is available; public current-link probes must not see persistent not-associated state during local RUN; link-down clears current AP and current-BSS state through the existing down edge.
+  - why no relevant touchpoints are missing: CR-070 runtime already proves UI visibility, scan visibility, set-mac, WCL associate, BSS selection, AUTH, ASSOC, RUN, and current-AP BSSID publication; the remaining blocker occurs between RUN/current-AP publication and AP deauth, exactly at the current-BSS/current-link probe layer.
+  - why proposed path adds no extra system-visible side effects: the new gated refresh is invoked only when a real BSSID was newly published at RUN; it does not repost `APPLE80211_M_LINK_CHANGED`, `APPLE80211_M_BSSID_CHANGED`, or `APPLE80211_M_SSID_CHANGED`; it does not force success, retry, delay, poll, change packets, change keys, fabricate getter payloads, or construct guessed WCL structs.
+- why this is root cause and not just correlation: the observed return code is the exact reference not-associated current-network code, the current-AP-only fix succeeded but did not change that code, and the reference link-up producer missing locally is the one that updates current BSS.
+- why proposed fix is 1:1 with reference architecture and semantics: the exact Apple WCL payload ABI is not recovered, so the patch does not fabricate it; instead it uses the already linked IO80211InfraInterface link-state producer as the local system-facing association link-up touchpoint, after publishing the same real BSSID that reference would bind into current BSS.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - call local `getSSID/getBSSID/getCURRENT_NETWORK` directly from public GETs: rejected, previous public-routing attempts leaked raw `1` or bypassed the real current-link owner.
+  - fabricate success/current network payloads: rejected, masks current-BSS ownership and can publish stale state.
+  - construct `apple80211_wcl_update_link_state` by guessing offsets: rejected, exact payload ABI is not recovered.
+  - call full `setLinkStateGated(...)` from RUN: rejected because it would also repost BSSID/SSID/link notifications; the proposed refresh keeps only the needed link-state producer call.
+  - add retries, delays, polls, barriers, or AP-deauth suppression: rejected, the failure is deterministic current-BSS state absence before deauth.
+  - change PMK/EAPOL/key/data path in this patch: rejected, those layers are not the first confirmed blocker in CR-070 runtime.
+- verification plan: `git diff --check`; build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`; BootKC ABI check; create CR-071 exact-diff Stage 1 request; after approval install without unloading, reboot, make one `btn-vno` join attempt, and collect sudo logs for `setCurrentApAddress`, new association-link refresh, `SSID/BSSID/CURRENT_NETWORK` return codes, `setCIPHER_KEY`, WCL completion, AP deauth reason, and data counters.
+
+## ANOMALY
+- id: A-ASSOC-WCL-CURRENTBSS-PRODUCER-009
+- status: CORRELATED
+- symptom: CR-071 Stage 1 request was rejected even though CR-070 runtime proved that real-BSSID current-AP publication alone does not clear the `0xe0822403` current-link blocker.
+- first visible manifestation: reviewer rejected CR-071 because the diff used a state-changing second link-up call without proving that it is the same producer contract as reference `setWCL_LINK_STATE_UPDATE(...) -> setCurrentBSS(...)`.
+- expected system behavior: before any further state-changing patch, the exact Tahoe producer seam for current-BSS ownership must be identified or the remaining uncertainty must be reduced with behavior-neutral runtime evidence.
+- actual behavior: we have narrowed the blocker to the current-BSS producer plane, but still do not know whether the local system ever reaches `setWCL_LINK_STATE_UPDATE(...)`, whether `setLinkStateInternal(...)` runs at real RUN, or whether `getAssocState()` itself is carrying an ABI/contract mismatch.
+- divergence point: unresolved producer seam between local net80211 RUN/current-AP publication and the reference current-BSS owner `setWCL_LINK_STATE_UPDATE(...)`.
+- evidence:
+  - panic logs: none; CR-070 runtime is stable enough for instrumentation.
+  - runtime logs: CR-070 shows `ASSOC -> RUN`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, then `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK -> 0xe0822403`.
+  - runtime logs: existing logs already show `getAssocState base=831823872` on CR-070 and other large build-dependent garbage-like values on CR-067..CR-069, which is not yet explained.
+  - runtime logs: existing corecapture lines show `setLinkStateInternal@604` at early driver-ready link-up and on link-down, but not yet at the real RUN window.
+  - decomp: reference current-BSS producer is `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)`, which updates `AppleBCMWLANBssManager::setCurrentBSS(...)`.
+  - reviewer decision: `/Users/bob/Projects/itlwm/commit-approval/decisions/COMMIT_DECISION_CR-071.md` rejects the previous state-changing refresh as structurally unproven and explicitly allows resubmission as `DIAGNOSTIC_INSTRUMENTATION` if the intent is to gather evidence.
+- candidate causes:
+  - hypothesis: local association path never reaches `setWCL_LINK_STATE_UPDATE(...)`, so the current-BSS producer is absent upstream of the interface.
+  - hypothesis: local system does reach `setWCL_LINK_STATE_UPDATE(...)`, but the base producer returns failure or receives malformed payload.
+  - hypothesis: `getAssocState()` has an ABI/signature/return-contract mismatch and current-link consumers are gated before the current-BSS producer can be observed.
+  - hypothesis: `setLinkStateInternal(...)` already runs on a hidden RUN edge, and we are missing only the evidence for its ordering and arguments.
+- rejected causes:
+  - direct second `setLinkState(kIO80211NetworkLinkUp, ...)` as the next runtime patch: rejected by reviewer as an unproven state-changing refresh.
+  - fabricating `apple80211_wcl_update_link_state`: rejected; exact payload ABI is still unrecovered.
+- confirmed deviation: none yet at the exact producer seam; only the symptom chain is localized.
+- root cause: not yet proven at the exact producer seam.
+- fix: pending exact producer evidence; current allowed next step is behavior-neutral instrumentation only.
+- verification: one post-instrumentation reboot and one `btn-vno` join attempt must reveal whether `setWCL_LINK_STATE_UPDATE(...)` and/or `setLinkStateInternal(...)` are actually invoked around RUN, and whether `getAssocState()` carries a sane contract value on the same window.
+- notes:
+  - CR-071 Stage 1 reviewer verdict: `REJECTED`, `allow_after_fix_runtime: NO`, `allow_commit_now: NO`.
+  - This anomaly exists to justify a narrow diagnostic resubmission, not another guessed state transition.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-CURRENTBSS-PRODUCER-009
+- symptom: the exact current-BSS producer seam remains unresolved after CR-070, and CR-071 was rejected because its replacement producer was not proven.
+- expected system behavior: the next change should gather only the missing runtime evidence needed to distinguish the remaining producer hypotheses without changing system-facing behavior.
+- actual behavior: current evidence proves the symptom and the reference owner, but not which local callback seam owns or misses the producer.
+- exact divergence point: between local `ASSOC -> RUN` / `setCurrentApAddress(...)` and the unseen reference producer `setWCL_LINK_STATE_UPDATE(...)`.
+- evidence from runtime: CR-070 runtime proves real-BSSID current-AP publication plus persistent `0xe0822403`; existing logs also show build-dependent garbage-like `getAssocState base=...` values and `setLinkStateInternal` only on early boot/down edges.
+- evidence from decomp: `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)` is the reference producer; `getCURRENT_NETWORK(...)` depends on associated current-BSS state; reviewer explicitly rejected the previous state-changing substitute and requested either proof of the actual producer or behavior-neutral instrumentation.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- exact hypotheses being disambiguated:
+  - H1: local association path already invokes `setWCL_LINK_STATE_UPDATE(...)`, and the failure is inside or after the base producer.
+  - H2: local association path never invokes `setWCL_LINK_STATE_UPDATE(...)`, so the producer is missing before it reaches the interface.
+  - H3: `getAssocState()` carries an ABI/signature/return-contract mismatch that is itself a current-link contract break.
+  - H4: `setLinkStateInternal(...)` already runs at real RUN with meaningful arguments, and the missing evidence is ordering, not absence.
+- exact probe points:
+  - `AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *)`
+  - `AirportItlwmSkywalkInterface::setLinkStateInternal(IO80211LinkState,uint,bool,uint,uint)`
+  - `AirportItlwmSkywalkInterface::getAssocState(void)` with more explicit raw-value logging
+- why these probe points are sufficient:
+  - if `setWCL_LINK_STATE_UPDATE(...)` is never logged during the join, H1 is rejected and H2 gains support.
+  - if it is logged, the raw bytes, local state, and base return value tell us whether the producer reached the interface and what contract surface it carried.
+  - if `setLinkStateInternal(...)` is or is not logged around RUN, we will know whether a hidden internal link-state seam already exists there.
+  - if `getAssocState()` continues to produce build-dependent garbage-like values, H3 becomes a concrete contract candidate instead of a vague suspicion.
+- why instrumentation is behavior-neutral:
+  - every new override is a strict passthrough to the existing base implementation with identical arguments and identical return value propagation.
+  - no new state transitions, callbacks, retries, delays, polls, payload mutation, cache mutation, packet changes, or notification replays are introduced.
+  - added reads are limited to logging pointer/raw-byte snapshots and already available local state.
+- what exact runtime evidence must be collected:
+  - one reboot with the instrumented driver.
+  - one join attempt to `btn-vno`.
+  - sudo logs covering `setWCL_LINK_STATE_UPDATE`, `setLinkStateInternal`, `getAssocState`, `setCurrentApAddress`, `ASSOC -> RUN`, `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK`, and any subsequent AP deauth/EAPOL/key events.
+- why this is root cause and not just correlation: not applicable yet; this patch is explicitly diagnostic and does not claim to fix root cause.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it does not alter the architecture at all; it only exposes whether the reference-named producer seam is ever reached and what the existing base owner returns.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - keep the CR-071 state-changing refresh: rejected by reviewer.
+  - guess `apple80211_wcl_update_link_state` layout: rejected.
+  - add broader tracing across unrelated getters/setters: rejected as unnecessary scope expansion.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - create CR-072 Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
+  - after approval, install without unloading, reboot, run one `btn-vno` join attempt, and collect the targeted sudo logs above.
+
+## ANOMALY
+- id: A-ASSOC-WCL-LINKSTATE-PRODUCER-010
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: exact CR-072 runtime still shows visible networks and a local successful join to `btn-vno`, but the system never recognizes the interface as associated and tears the link back down.
+- first visible manifestation: with loaded UUID `3F179B5E-0593-3ABB-A293-6F4CF4D27048`, the join reaches `SCAN -> AUTH -> ASSOC -> RUN`, publishes `setCurrentApAddress addr=00:58:28:26:1c:1a`, yet `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK` continue returning `0xe0822403`, after which the interface falls back to `RUN -> AUTH`.
+- expected system behavior: after a successful association to `btn-vno`, the same success path must reach the reference current-BSS producer plane so that IO80211/WCL current-link state becomes associated before CoreWiFi/airportd re-probes SSID/BSSID/current-network.
+- actual behavior: CR-072 proves that neither `setWCL_LINK_STATE_UPDATE(...)` nor any hidden `setLinkStateInternal(...)` link-up edge is reached at the real RUN window; only the early driver-ready path and later link-down path touch `setLinkStateInternal(...)`.
+- divergence point: local success path between hidden/public association acceptance and the reference current-BSS owner `setWCL_LINK_STATE_UPDATE(...)`; the producer is absent upstream of the interface rather than malformed inside the interface override.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-072-after-join-filtered-20260423-2050.log`, 6209 lines.
+  - runtime logs: `20:56:12.341630 WCLJoinRequest Beacon Info ... BSSID=00:58:28:26:1C:1A ssid='btn-vno'`.
+  - runtime logs: `20:56:12.341657 setWCL_ASSOCIATE [btn-vno] ...`, followed by `setWCL_ASSOCIATE BSSID=00:00:00:00:00:00`; the hidden carrier itself is not a trustworthy current-BSS source.
+  - runtime logs: `20:56:27.042260 ieee80211_node_join_bss selbs=btn-vno mac=00:58:28:26:1c:1a`.
+  - runtime logs: `20:56:27.046306 SCAN -> AUTH`, `20:56:27.086843 AUTH -> ASSOC`, `20:56:27.096341 ASSOC -> RUN`.
+  - runtime logs: `20:56:27.096375 syncTahoeCurrentApAddress addr=00:58:28:26:1c:1a` and `20:56:27.096385 setCurrentApAddress addr=00:58:28:26:1c:1a`.
+  - runtime logs: after that RUN edge there are still immediate `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK -> 0xe0822403` failures, for example `20:56:28.136713 APPLE80211_IOC_SSID -> 0xe0822403`.
+  - runtime logs: `20:56:31.105640 RUN -> AUTH`, then `syncTahoeCurrentApAddress addr=(null) forceClear=1`.
+  - runtime logs: `setWCL_LINK_STATE_UPDATE` is absent from the entire CR-072 evidence file.
+  - runtime logs: `setLinkStateInternal state=2` appears only during the early driver-ready enable window (`20:51:08`, `20:51:10`), and `setLinkStateInternal state=1` appears only on the later teardown at `20:56:31`; there is no link-up/internal producer call at the real RUN window.
+  - decomp: `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)` is the reference link-up producer that drives `AppleBCMWLANBssManager::setCurrentBSS(...)`.
+  - decomp: `AppleBCMWLANCore::getCURRENT_NETWORK(...)` returns `0xe0822403` while current-BSS state is not associated.
+- candidate causes:
+  - confirmed: the local join success path reaches RUN/current-AP publication but never reaches the reference-named current-BSS producer.
+  - confirmed: current-AP publication alone is insufficient for CoreWiFi/airportd association visibility.
+  - confirmed: the hidden assoc carrier's logged BSSID bytes are zero and therefore are not the owner of the eventual associated BSSID seen at RUN.
+- rejected causes:
+  - malformed local `setWCL_LINK_STATE_UPDATE(...)` override: rejected for this runtime; the override is never called.
+  - hidden/internal link-up already happening at RUN but missed by logging: rejected; CR-072 added direct passthrough logging and there is no `setLinkStateInternal(...)` call at the RUN window.
+  - `setCurrentApAddress(...)` missing or wrong BSSID: rejected; CR-072 publishes the real `00:58:28:26:1c:1a` immediately at RUN.
+  - hidden-assoc PMK crash path: rejected for this runtime; there is no panic and the join reaches RUN.
+- confirmed deviation: the local driver has no observed association-success producer corresponding to reference `setWCL_LINK_STATE_UPDATE(...) -> setCurrentBSS(...)`, even though the radio-side association itself succeeds.
+- root cause: confirmed for the current "networks visible but connection does not complete in UI" blocker on CR-072; later EAPOL/data-path issues must only be investigated after this producer plane exists.
+- fix: restore the real current-BSS/link-state producer at the local join-success seam; do not reuse the rejected artificial second `setLinkState(...)` refresh and do not source current-BSS identity from the zero-BSSID hidden assoc carrier.
+- verification: after the next fix, one reboot and one `btn-vno` join attempt must show a post-RUN current-BSS producer event before `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK` stop returning `0xe0822403`; `RUN -> AUTH` must no longer be the immediate aftermath of a locally successful join.
+- notes:
+  - CR-072 achieved its intended purpose: it disproved both "the producer already reaches the interface" and "a hidden internal link-up already runs at RUN".
+  - The next state-changing patch must target the missing producer seam itself, not `getSSID/getBSSID/getCURRENT_NETWORK`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-LINKSTATE-PRODUCER-010
+- symptom: CR-072 proves that local association succeeds up to `ASSOC -> RUN`, but the current-BSS producer plane is never invoked and the system falls back to not-associated state.
+- expected system behavior: the exact local join-success seam that corresponds to reference association completion must emit the current-BSS/link-state producer before CoreWiFi/airportd re-evaluate current-link state.
+- actual behavior: the only observed producers are early driver-ready `setLinkStateInternal state=2` and later teardown `state=1`; the successful RUN window publishes only current-AP address and then collapses back to `RUN -> AUTH`.
+- exact divergence point: local success path upstream of `AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(...)`; the interface-level producer override exists and is callable, but no caller reaches it on successful association.
+- evidence from runtime: CR-072 evidence file shows `WCLJoinRequest Beacon Info` with real BSSID, `setWCL_ASSOCIATE` acceptance, `SCAN -> AUTH -> ASSOC -> RUN`, real-BSSID `setCurrentApAddress`, no `setWCL_LINK_STATE_UPDATE`, no `setLinkStateInternal` at RUN, persistent `0xe0822403`, then `RUN -> AUTH`.
+- evidence from decomp: reference uses `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)` as the current-BSS owner; `getCURRENT_NETWORK(...)` depends on associated current-BSS state; the earlier artificial second link-up refresh was correctly rejected because it did not prove ownership.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- if REFERENCE_ALIGNMENT_FIX:
+  - enumerated system-facing touchpoints: hidden/public association acceptance; local join-success callback/seam; IO80211/WCL current-BSS producer; current-AP cache; current SSID/BSSID/current-network probes; teardown/down edge.
+  - expected contract at each touchpoint: hidden/public association setup may remain as-is; the exact success seam must invoke the current-BSS producer once per successful join; current-AP cache continues to mirror the associated BSSID; public probes stop seeing `0xe0822403` during valid RUN; teardown still clears state through the existing down edge.
+  - why no relevant touchpoints are missing: CR-072 already proves that radio-side join, auth, assoc, and RUN succeed; the only missing reference-visible edge before system rollback is the current-BSS producer.
+  - why proposed path adds no extra system-visible side effects: it targets the missing owner once at the real join-success seam and avoids replaying generic link notifications, getter fabrication, retries, delays, or guessed carrier data from the hidden assoc blob.
+- why this is root cause and not just correlation: current-link probes stay at the exact reference not-associated code after a proven local RUN, and CR-072 directly proves that the reference producer plane is never invoked in that window.
+- why proposed fix is 1:1 with reference architecture and semantics: it moves the recovery target from a guessed secondary link refresh to the actual missing producer seam that reference uses to transition current-BSS state after association success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - another synthetic `IO80211InfraInterface::setLinkState(...)` refresh from `setLinkStatus(...)`: rejected by CR-071 review and by CR-072 evidence.
+  - fabricating success/current-network payloads in getters: rejected; masks the missing owner.
+  - sourcing current-BSS identity from logged hidden-assoc carrier BSSID bytes: rejected; the carrier currently shows zero BSSID while the real associated BSSID appears later from scan/join state.
+  - stopping at additional diagnostics: rejected; CR-072 already gave the missing negative proof.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - exact-diff Stage 1 request
+  - after approval, install without unloading, reboot, run one `btn-vno` join attempt, and collect sudo logs for the recovered producer seam, `setCurrentApAddress`, current-link probe return codes, and whether `RUN -> AUTH` still occurs.
+
+## ANOMALY
+- id: A-DRIVER-READY-FALSE-LINKUP-011
+- status: FIX_VERIFIED
+- symptom: the Tahoe driver-ready path marks the main infrastructure interface link-up before any association exists, so the real association-success edge is later discarded as a duplicate and never reaches the current-link producer path.
+- first visible manifestation: during boot at `2026-04-23 20:51:08`, `performTahoeBootChipImage` first logs `setLinkStatus status=0x1 (prev=0x1) active=0`, then `setInterfaceEnable enable=1`, after which `setLinkStateInternal state=2 ... ic_state=0 currentStatus=0x1` immediately flips into `setLinkStatus status=0x3 (prev=0x1) active=1` while still not associated.
+- expected system behavior: driver-ready publication must make the driver visible in UI without placing the main infra interface into active/associated link state; the first real `0x1 -> 0x3` link-active transition must happen only at association success.
+- actual behavior: commit `43bf34f` aliases Apple's hidden low-latency readiness object to `fNetIf`, and its lifted `setInterfaceEnable(bool)` body executes `reportLinkStatus(3, 0x80)` plus `setLinkState(...Up...)` on the same infra interface that later owns association visibility.
+- divergence point: `AirportItlwmSkywalkInterface::setInterfaceEnable(bool)` on the local Tahoe port; the Apple subclass body is being replayed on the wrong object identity.
+- evidence:
+  - runtime logs: `2026-04-23 20:51:08.383 IO80211InfraInterface::setInterfaceEnable AirportItlwmSkywalkInterface isEnable 1`.
+  - runtime logs: immediately after that, `setLinkStateInternal state=2 ... ic_state=0 currentStatus=0x1`.
+  - runtime logs: immediately after that, `setLinkStatus status=0x3 (prev=0x1) active=1 ... ic_state=0`.
+  - runtime logs: the same boot window shows `setInterfaceEnable enable=1 ret=0x0`, then only afterwards `applyTahoeInterfaceReadyEdge ready-edge ret=0x0` and `setCoreWiFiDriverReadyProperty ready=1`.
+  - runtime logs: during the real join at `2026-04-23 20:56:27.089`, `eventHandler msgCode=1` proves `IEEE80211_EVT_STA_ASSOC_DONE` is delivered and `postMessageGated msg=9` proves `APPLE80211_M_ASSOC_DONE` is posted.
+  - runtime logs: at the real success edge `2026-04-23 20:56:27.096`, `ASSOC -> RUN` is followed by `setLinkStatus status=0x3 (prev=0x3) active=1`, so the early-return path suppresses the real link-up transition.
+  - runtime logs: the same RUN window has real-BSSID `syncTahoeCurrentApAddress/setCurrentApAddress`, but no `setLinkStateGated` link-up, no `setLinkStateInternal` link-up, and no `setWCL_LINK_STATE_UPDATE`.
+  - runtime logs: `airportd` then continues to read `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK -> 0xe0822403`, and the AP deauth arrives later with reason `15`; user space then reports failed association request/disassociate reason `10`.
+  - source history: commit `43bf34f75a02bd2e522ee3584f888a6b2eb76ff4` introduced the lifted subclass body with `reportLinkStatus(3, 0x80)` and `IO80211InfraInterface::setLinkState(...Up...)` inside `setInterfaceEnable(bool)`.
+  - after-fix runtime logs: with loaded UUID `E6B5AEC2-BD17-39A4-8833-CEAC86AC7618`, boot at `2026-04-23 21:46:20.335` shows `setInterfaceEnable enable=1 ret=0x0`, `applyTahoeInterfaceReadyEdge ready-edge ret=0x0`, `setCoreWiFiDriverReadyProperty ready=1`, and `postTahoeDriverAvailableBulletin ready=1`, but no boot-time `setLinkStateInternal state=2` and no boot-time `setLinkStatus status=0x3 (prev=0x1)`.
+  - after-fix runtime logs: the first observed `setLinkStatus status=0x3 (prev=0x1)` now occurs at the real association edge `2026-04-23 21:51:04.324 ASSOC -> RUN`, immediately followed by `setLinkStateInternal state=2`, proving the bootstrap poisoning seam is removed.
+- rejected causes:
+  - lost association-complete event: rejected; `IEEE80211_EVT_STA_ASSOC_DONE` and `APPLE80211_M_ASSOC_DONE` are both logged on the successful join.
+  - missing current AP address: rejected; the real BSSID `00:58:28:26:1c:1a` is published at RUN.
+  - getter-only failure: rejected; the producer edge is suppressed before getters are even consulted.
+- root cause: the premature driver-ready link-up poisons `currentStatus` to `0x3` before association, so the real `ASSOC -> RUN` transition never produces the system-facing associated/current-network state.
+- fix: keep Tahoe driver-ready publication (`setInterfaceEnable` base call, ready property, DRIVER_AVAILABLE bulletin), but stop replaying link-up side effects on `fNetIf` from `AirportItlwmSkywalkInterface::setInterfaceEnable(bool)`; if Apple really needs those side effects, they must live on a separate hidden low-latency facade rather than the main infra interface.
+- verification: verified by exact reviewed diff `CR-074` after-fix runtime. Boot no longer drives `currentStatus 0x1 -> 0x3` during `setInterfaceEnable(enable=1)`, driver visibility and scan visibility remain intact, and the first `setLinkStatus status=0x3 (prev=0x1)` moved to the real `ASSOC -> RUN` window together with the recovered `setLinkStateInternal state=2` link-up edge. Remaining failure is now a separate post-RUN blocker.
+- reviewer note: Stage-1 request `CR-073` was rejected as `REFERENCE_ALIGNMENT_FIX` because the local delta removes Apple low-latency side effects from `fNetIf` instead of restoring them on a recovered hidden low-latency object. The same runtime evidence remains valid, but the approval path must be `SYSTEM_CONTRACT_FIX`, and the evidence manifest must use the real sha256 `2be78aa1e0c0dfaad63bb82f757090f2bc4efc3706ff55fe171f44039f278a6f` for `CR-072-after-join-filtered-20260423-2050.log`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DRIVER-READY-FALSE-LINKUP-011
+- symptom: the local Tahoe port reaches real association success, but the main infra interface was already forced into link-up during driver-ready bootstrap, so the real success edge is ignored.
+- expected system behavior: driver-ready and association-success must be distinct state machines; making the driver visible cannot pre-consume the only meaningful link-up transition that current-network publication depends on.
+- actual behavior: `AirportItlwmSkywalkInterface::setInterfaceEnable(bool)` on `fNetIf` replays Apple's low-latency subclass link-up side effects and turns `currentStatus` active before any join.
+- exact divergence point: local `setInterfaceEnable(bool)` side effects on `fNetIf`, not the later association event path.
+- evidence from runtime: boot logs show `setInterfaceEnable -> setLinkStateInternal(link<2>) -> setLinkStatus 0x1->0x3` while `ic_state=0`; join logs later show `ASSOC -> RUN` with `setLinkStatus 0x3->0x3`, no link-up producer, persistent `0xe0822403`, and rollback.
+- evidence from source history: `43bf34f` explicitly added the replayed hidden subclass body; the same file now proves the lifted side effects run on `AirportItlwmSkywalkInterface`, which is the main local infra interface object.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: `fNetIf->setInterfaceEnable(true)` base ready-edge lifecycle callback; `CoreWiFiDriverReadyKey = OSString("true"/"false")`; `APPLE80211_M_DRIVER_AVAILABLE` (`0x37`) bulletin through controller/PostOffice with payload length `0xf8`; scan-result and scan-done publication (`APPLE80211_M_WCL_SCAN_RESULT`, `APPLE80211_M_WCL_SCAN_DONE`, `APPLE80211_M_SCAN_DONE`); boot-time main-interface link state (`currentStatus`); real `ASSOC -> RUN` active edge; Apple-visible current `SSID` / `BSSID` / `CURRENT_NETWORK` probes; existing down/teardown edge.
+  - expected contract at each touchpoint: the base ready-edge lifecycle callback must still run so the interface stays attached/alive; the ready property must remain published as OSString, not OSBoolean; the `DRIVER_AVAILABLE` bulletin must keep its exact message code, transport, payload size, and polarity; scan results and scan completion must continue to post directly through `fNetIf` without requiring associated link state; boot-time `currentStatus` on the main infra interface must remain non-associated until a real join succeeds; the first `0x1 -> 0x3` active transition on that interface must occur only at `ASSOC -> RUN`; current-network probes may stop failing only after that real active edge; teardown must still clear link/current state through the existing down path.
+  - why no relevant touchpoints are missing: every currently proven user-visible behavior in scope enters through one of those seams. Driver visibility is already explained by `publishTahoeDriverReadyState()` (`applyTahoeInterfaceReadyEdge` base enable, `setCoreWiFiDriverReadyProperty`, `postTahoeDriverAvailableBulletin`). Network visibility is already explained by `postWclScanResultsGated(...)` and `eventHandler(... IEEE80211_EVT_SCAN_DONE ...)`, both of which post directly to `fNetIf` and do not consult `currentStatus`. The failing symptom begins only after successful `ASSOC -> RUN`, so no earlier hidden touchpoint remains unaccounted for inside this claim scope.
+  - why proposed path adds no extra system-visible side effects: the fix keeps the ready-edge base lifecycle callback, ready property publication, bulletin payload/transport, scan-result publication, and teardown path unchanged. It only removes the proven-wrong bootstrap `reportLinkStatus(3, 0x80)` plus `setLinkState(...Up...)` side effects from the main infra interface, and it adds no new producer, replay, retry, timing heuristic, getter fabrication, or message mutation.
+- why this is root cause and not just correlation: the same `currentStatus=0x3` written at boot is the exact value that suppresses the only later `ASSOC -> RUN` link-up call by equality short-circuit (`status == currentStatus`), and that suppression directly matches the absence of all downstream producer logs.
+- why proposed fix is 1:1 with reference architecture and semantics: this is not claimed as hidden-object identity replay. It is claimed as exact recovery of the system-facing separation that reference exposes: availability producers remain on the ready path, scan visibility remains independent of association state, and associated/current-network state is no longer pre-consumed before the real join edge. Within the user-visible contract boundary, the resulting semantics match reference without inventing any extra visible producer or state transition.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - add yet another synthetic link-up after `ASSOC -> RUN`: rejected; duplicates the already rejected CR-071 shape.
+  - keep the false boot-time link-up and try to clear it later with another synthetic down/up pair: rejected; adds more state churn on the same wrong object and risks UI regressions.
+  - fabricate associated getters despite poisoned currentStatus: rejected; masks the root seam and leaves airportd/CoreWiFi state machines inconsistent.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - Stage 1 request for the exact diff
+  - after approval, install without unloading, reboot, and verify:
+    - boot no longer flips `currentStatus` to `0x3` during `setInterfaceEnable(enable=1)`
+    - the first `setLinkStatus status=0x3 (prev=0x1)` occurs at `ASSOC -> RUN`
+    - link-up producer logs appear at the real join edge
+    - `APPLE80211_IOC_SSID/BSSID/CURRENT_NETWORK` stop returning `0xe0822403` before any rollback.
+
+## ANOMALY
+- id: A-ASSOC-CURRENTLINK-PROBE-ROUTE-012
+- status: CORRELATED
+- symptom: after `CR-074` restores the real `ASSOC -> RUN` active edge, the association still fails because current-link probes continue returning `0xe0822403` immediately after the corrected link-up.
+- first visible manifestation: on the exact `CR-074` after-fix runtime, `2026-04-23 21:51:04.324 ASSOC -> RUN` is followed by `setLinkStatus status=0x3 (prev=0x1)`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, and `setLinkStateInternal state=2`, yet in that same moment IO80211Family logs `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`, and later airportd logs `GET SSID -> 0xe0822403`.
+- expected system behavior: once the main-interface active edge is correctly moved to the real RUN window, the next current-link probes must either traverse the permissive local SSID/BSSID getters or observe an associated current-BSS owner state; they must not still fail as not-associated in the same RUN window.
+- actual behavior: the corrected real RUN edge now occurs, but the first post-RUN BSSID probe still fails immediately and the link later rolls back to `RUN -> AUTH` with deauth reason `15`.
+- divergence point: unresolved current-link probe route and/or current-BSS association owner between `IO80211Family::getBSSIDData()` and the local permissive SSID/BSSID handler layer after real `setLinkStateInternal(state=2)`.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-074-afterfix-boot-ready-window-20260423.log` sha256 `9217a8210448207108b9ff587b8efeaefff3a67f964397a7c46a06a8b2285a99`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-074-afterfix-assoc-window-20260423.log` sha256 `8ee4d95e54edabed8899aa2518bf649d1fd6bf3c3f19683b1db58d6d6d109737`.
+  - runtime logs: boot at `21:46:20.335` shows `setInterfaceEnable enable=1 ret=0x0`, ready-property/bulletin publication, and no boot-time `setLinkStateInternal state=2`; this confirms anomaly `A-DRIVER-READY-FALSE-LINKUP-011` is no longer the active blocker.
+  - runtime logs: `21:51:04.324 ASSOC -> RUN`, `setLinkStatus status=0x3 (prev=0x1)`, `syncTahoeCurrentApAddress addr=00:58:28:26:1c:1a`, `setCurrentApAddress addr=00:58:28:26:1c:1a`, `setLinkStateInternal state=2 ... ic_state=4 currentStatus=0x3`.
+  - runtime logs: in the same RUN window, `IO80211Family` logs `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`.
+  - runtime logs: `setWCL_LINK_STATE_UPDATE(...)` is still absent from the same association window.
+  - runtime logs: later at `21:51:08.332`, the interface falls back through `RUN -> AUTH`, `deauthReason=15`, `setCurrentApAddress addr=(null)`, and link-down `setLinkStateInternal state=1`.
+  - runtime logs: airportd at `21:51:08.974` logs `BEGIN REQ [GET SSID] ... ifname['en0'] IOCTL type 1/'APPLE80211_IOC_SSID' return -528342013/0xe0822403`.
+  - source code: `AirportItlwmSkywalkInterface::getSSID(...)` and `getBSSID(...)` zero-fill and return success, and `AirportItlwm::getSSID(...)` / `getBSSID(...)` in `AirportSTAIOCTL.cpp` do the same when `ic_state == IEEE80211_S_RUN`.
+  - source code: `processBSDCommand(...)` / `processApple80211Ioctl(...)` already log Tahoe current-link probes, yet those route logs do not appear around the failing `getBSSIDData()` window.
+- candidate causes:
+  - hypothesis: the failing `getBSSIDData()` / `GET SSID` probes are using a controller-side direct ingress (`apple80211Request(...)` and/or `handleCardSpecific(...)`) that is not currently instrumented for current-link probes.
+  - hypothesis: the probe reaches a different family/WCL owner path and fails because current-BSS associated state is still not established, even though `setLinkStateInternal(state=2)` now runs at RUN.
+  - hypothesis: the direct probe happens before or outside the local skywalk BSD bridge, so the permissive skywalk getter contract is never exercised for this exact call site.
+- rejected causes:
+  - bootstrap false link-up still pre-consuming the real RUN edge: rejected by the CR-074 after-fix runtime.
+  - missing real current AP address at RUN: rejected; the real BSSID `00:58:28:26:1c:1a` is published before the first failure.
+  - missing real link-up/internal edge at RUN: rejected; `setLinkStateInternal state=2` now occurs exactly at RUN.
+- notes:
+  - this anomaly is narrower than `A-ASSOC-WCL-LINKSTATE-PRODUCER-010`: the real active edge is restored, so the remaining uncertainty is now the post-RUN probe/owner route.
+  - the next safe step is behavior-neutral instrumentation of the remaining current-link ingress points, not a guessed state-changing fix.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-CURRENTLINK-PROBE-ROUTE-012
+- symptom: after the corrected real RUN edge, `IO80211Family::getBSSIDData()` and later airportd `GET SSID` still fail with `0xe0822403`.
+- expected system behavior: the first current-link probes after a real `ASSOC -> RUN` must either traverse the local permissive SSID/BSSID handlers or show an associated current-BSS owner state; the exact ingress must be observable.
+- actual behavior: the corrected RUN edge now emits `setLinkStateInternal(state=2)`, but the first observed post-RUN BSSID probe still fails before we can attribute the failure to a specific local ingress path.
+- exact divergence point: unresolved direct current-link probe ingress between `IO80211Family` current-link consumers and the remaining local controller/skywalk probe routes after real RUN.
+- evidence from runtime: CR-074 after-fix runtime proves the corrected RUN edge, immediate `getBSSIDData()` failure, later airportd `GET SSID -> 0xe0822403`, no `setWCL_LINK_STATE_UPDATE`, and rollback to `RUN -> AUTH`.
+- evidence from code: Tahoe already logs public current-link probes on the skywalk BSD bridge in `processBSDCommand(...)` / `processApple80211Ioctl(...)`; controller-side `apple80211Request(...)`, `handleCardSpecific(...)`, and leaf `getSSID/getBSSID` were the remaining Tahoe-active local observation points. `AirportItlwm::apple80211_ioctl(...)` exists only under `#if __IO80211_TARGET < __MAC_26_0` in both declaration and implementation, so it is dead code on Tahoe and cannot be part of the active hypothesis set.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- if DIAGNOSTIC_INSTRUMENTATION:
+  - exact hypotheses being disambiguated:
+    - H1: `IO80211Family::getBSSIDData()` uses controller `apple80211Request(...)`, and the controller path is returning or propagating `0xe0822403`.
+    - H2: the failing probe bypasses the already logged skywalk BSD bridge and instead uses controller `handleCardSpecific(...)` before reaching any permissive local leaf handler.
+    - H3: no local ingress handles the probe at all, and the failure occurs inside framework/WCL current-BSS ownership after real `setLinkStateInternal(state=2)`.
+  - exact probe points:
+    - existing Tahoe skywalk bridge logs in `AirportItlwmSkywalkInterface::processBSDCommand(...)` and `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+    - `AirportItlwm::apple80211Request(unsigned int request_type, int request_number, IO80211Interface *interface, void *data)`
+    - `AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface, unsigned long cmd, void *data, bool isSet)`
+    - controller-side `AirportItlwm::getSSID(...)` and `AirportItlwm::getBSSID(...)`
+  - why these probe points are sufficient: `processBSDCommand(...)` / `processApple80211Ioctl(...)` already cover the Tahoe public BSD Apple80211 path; the new controller logs cover the remaining Tahoe-active local controller seams; the leaf `getSSID/getBSSID` logs prove whether the failing probe reaches the permissive local handlers. If none of these Tahoe-active observation points fire in the failing window, the remaining route is upstream of all local Tahoe request handling and the blocker stays in framework/WCL ownership; if any fire, the exact owner path becomes concrete in one reboot.
+  - why instrumentation is behavior-neutral: the proposed change only logs request numbers, ingress choice, `ic_state`, and return codes. It does not alter routing, payloads, state, timing, or ownership.
+  - what exact runtime evidence must be collected:
+    - boot-ready window proving CR-074 behavior remains intact
+    - one join attempt window covering `ASSOC -> RUN`, `setLinkStateInternal(state=2)`, current-link probe ingress logs, `getSSID/getBSSID` controller helper logs if any, `setWCL_LINK_STATE_UPDATE` presence/absence, and the subsequent `RUN -> AUTH` / deauth edge
+- why this is root cause and not just correlation: not yet proven; this candidate is explicitly diagnostic and is intended to turn the remaining route ambiguity into a concrete owner seam.
+- why proposed fix is 1:1 with reference architecture and semantics: it does not change semantics at all; it only reveals which already-existing ingress or framework owner handles the failing current-link probes after the corrected RUN edge.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportSTAIOCTL.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - add another state-changing current-BSS/link-up replay after RUN: rejected; still guessed without proving the active failing ingress.
+  - force success from `getSSID/getBSSID/getCURRENT_NETWORK`: rejected; would mask the unresolved route/owner seam.
+  - infer the ingress from existing logs alone: rejected; the failing window currently lacks controller-side probe-route instrumentation.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
+  - after approval, install without unloading, reboot, run one `btn-vno` join attempt, and collect the targeted probe-route logs above.

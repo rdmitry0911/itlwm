@@ -16,6 +16,19 @@ const char* hexdump(uint8_t *buf, size_t len);
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 
+static bool isTahoeCurrentLinkProbeRequestNumber(int request_number)
+{
+    switch (request_number) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_SCAN_RESULT:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static constexpr uint16_t kAppleTahoeQTxpowerTable[40] = {
     0x1a1b, 0x1ba7, 0x1d4b, 0x1f07, 0x20de, 0x22d1, 0x24e1, 0x2710,
     0x2961, 0x2bd4, 0x2e6d, 0x312d, 0x3417, 0x372d, 0x3a72, 0x3de9,
@@ -152,6 +165,14 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
     if (request_type != SIOCGA80211 && request_type != SIOCSA80211)
         return kIOReturnError;
     IOReturn ret = kIOReturnError;
+
+    if (isTahoeCurrentLinkProbeRequestNumber(request_number)) {
+        XYLog("DEBUG %s type=0x%x req=%s(%d) interface=%p data=%p ic_state=%d\n",
+              __FUNCTION__, request_type,
+              IOCTL_NAMES[request_number >= ARRAY_SIZE(IOCTL_NAMES) ? 0 : request_number],
+              request_number, interface, data,
+              fHalService ? fHalService->get80211Controller()->ic_state : -1);
+    }
     
     switch (request_number) {
         case APPLE80211_IOC_SSID:  // 1
@@ -358,7 +379,15 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
             }
             break;
     }
-    
+
+    if (isTahoeCurrentLinkProbeRequestNumber(request_number)) {
+        XYLog("DEBUG %s RET type=0x%x req=%s(%d) ret=0x%x ic_state=%d\n",
+              __FUNCTION__, request_type,
+              IOCTL_NAMES[request_number >= ARRAY_SIZE(IOCTL_NAMES) ? 0 : request_number],
+              request_number, ret,
+              fHalService ? fHalService->get80211Controller()->ic_state : -1);
+    }
+
     return ret;
 }
 
@@ -375,6 +404,8 @@ getSSID(OSObject *object,
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
     }
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p ret=0 ssid_len=%u\n",
+          __FUNCTION__, ic->ic_state, ic->ic_bss, sd->ssid_len);
     return kIOReturnSuccess;
 }
 
@@ -806,6 +837,9 @@ getBSSID(OSObject *object,
     if (ic->ic_state == IEEE80211_S_RUN) {
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     }
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p ret=0 bssid=%s\n",
+          __FUNCTION__, ic->ic_state, ic->ic_bss,
+          ether_sprintf(bd->bssid.octet));
     return kIOReturnSuccess;
 }
 

@@ -64,24 +64,6 @@ static bool isTahoeHiddenAssocCommand(int command)
     }
 }
 
-static bool isTahoePublicFallbackRequest(int command)
-{
-    // Keep the local public enum for the fifth selector: the header defines
-    // `APPLE80211_IOC_ROAM_PROFILE` as decimal 216, i.e. hex 0xd8. Tahoe
-    // family fallback wrappers also consult slot [411] with 0xd8 for that
-    // selector, so use the enum constant here instead of spelling a raw hex.
-    switch (command) {
-        case APPLE80211_IOC_SSID:
-        case APPLE80211_IOC_CHANNEL:
-        case APPLE80211_IOC_BSSID:
-        case APPLE80211_IOC_CURRENT_NETWORK:
-        case APPLE80211_IOC_ROAM_PROFILE:
-            return true;
-        default:
-            return false;
-    }
-}
-
 static bool isTahoeCurrentLinkProbeReq(int reqType)
 {
     switch (reqType) {
@@ -662,7 +644,7 @@ static_assert(sizeof(apple80211_wcl_wnm_offload_t) == 0x30,
 
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
-void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
+void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("DEBUG %s ssid_len=%u auth_lower=%u auth_upper=%u key_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x ic_state=%d\n",
@@ -716,8 +698,17 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
         XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
-        memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
-        ic->ic_flags |= IEEE80211_F_PSK;
+        if (importLocalPmk) {
+            memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
+            ic->ic_flags |= IEEE80211_F_PSK;
+        } else if (externalPmkOwner) {
+            ic->ic_flags |= IEEE80211_F_PSK;
+            XYLog("DEBUG %s WCL external PMK owner marks PSK without local import key_len=%u\n",
+                  __FUNCTION__, key_len);
+        } else {
+            XYLog("DEBUG %s WCL candidate has no local PMK source key_len=%u\n",
+                  __FUNCTION__, key_len);
+        }
         ieee80211_ioctl_setwpaparms(ic, &wpa);
     }
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_SHA256_8021X)) {
@@ -960,11 +951,12 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // Tahoe family fallback helpers abort only when slot [411] returns zero:
-    // `if (slot411(...) != 0) return;` else the helper falls into the abort
-    // path. So the already proven selected commands must return non-zero here
-    // to survive the family fallback seam at all.
-    if (isTahoeHiddenAssocCommand(command) || isTahoePublicFallbackRequest(command))
+    // Only the hidden association carriers are proven owners for this gate.
+    // CR-068 runtime showed that admitting public request numbers here leaks
+    // raw `1` for CHANNEL/ROAM_PROFILE and still leaves SSID/BSSID/CURRENT_NETWORK
+    // on `0xe0822403`, so public current-link state must be produced by the
+    // recovered setCurrentApAddress(NULL/BSSID) path instead.
+    if (isTahoeHiddenAssocCommand(command))
         return true;
 
     return super::isCommandProhibited(command);
@@ -1194,6 +1186,10 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_PRIVATE_MAC:
             return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_SET_MAC_ADDRESS:
+            return (cmd == SIOCSA80211)
+                       ? setSET_MAC_ADDRESS((apple80211_set_mac_address_data *)req->req_data)
+                       : kIOReturnUnsupported;
         case APPLE80211_IOC_OFFLOAD_TCPKA_ENABLE:
             if (cmd == SIOCGA80211)
                 return getOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data);
@@ -1556,11 +1552,28 @@ getAssocState(void)
 {
     int assocState = IO80211InfraInterface::getAssocState();
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s base=%d ic_state=%d ic_bss=%p linkActive=%u\n",
-          __FUNCTION__, assocState, ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
+    XYLog("DEBUG %s base=%d/0x%x ic_state=%d ic_bss=%p linkActive=%u currentStatus=0x%x\n",
+          __FUNCTION__, assocState, static_cast<unsigned int>(assocState),
+          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
           static_cast<unsigned int>(instance != nullptr &&
-                                    (instance->currentStatus & kIONetworkLinkActive) != 0));
+                                    (instance->currentStatus & kIONetworkLinkActive) != 0),
+          instance ? instance->currentStatus : 0);
     return assocState;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce,
+                     uint code, uint connectionId)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s state=%u debounceTimeout=%u debounce=%u code=%u connectionId=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, static_cast<unsigned int>(state), debounceTimeout,
+          debounce ? 1U : 0U, code, connectionId, ic ? ic->ic_state : -1,
+          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
+    IOReturn ret = IO80211InfraInterface::setLinkStateInternal(
+        state, debounceTimeout, debounce, code, connectionId);
+    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
+    return ret;
 }
 
 void AirportItlwmSkywalkInterface::
@@ -1573,26 +1586,33 @@ setCurrentApAddress(ether_addr *addr)
     IO80211InfraInterface::setCurrentApAddress(addr);
 }
 
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
+{
+    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
+    const unsigned int b6 = raw ? raw[6] : 0xff;
+    const unsigned int b7 = raw ? raw[7] : 0xff;
+    const unsigned int b8 = raw ? raw[8] : 0xff;
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s data=%p b6=0x%02x b7=0x%02x b8=0x%02x ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, data, b6, b7, b8, ic ? ic->ic_state : -1,
+          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
+    IOReturn ret = IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
+    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
+    return ret;
+}
+
 SInt32 AirportItlwmSkywalkInterface::
 setInterfaceEnable(bool enable)
 {
-    // Live build d2953c9 proved that merely calling the hidden +0x930 slot is
-    // not enough on the local port: IO80211Family logs show
-    // `IO80211InfraInterface::setInterfaceEnable ... isEnable 1`, yet Tahoe
-    // still leaves `isDriverAvailable=0`.  The Apple hidden object here is not
-    // a plain IO80211InfraInterface; the recovered subclass body is
-    // AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool):
-    //   1) call IO80211InfraInterface::setInterfaceEnable(bool)
-    //   2) reportLinkStatus(3, 0x80)
-    //   3) setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)
-    //
-    // Reproducing those side effects on the local hidden interface object is
-    // required to match the Apple producer body rather than only its caller.
+    // Apple performs the lifted subclass body on a hidden low-latency object.
+    // The local Tahoe port currently aliases that identity to `fNetIf`, so
+    // replaying the subclass link-up side effects here poisons the main infra
+    // interface before any association exists.  Driver visibility is already
+    // recovered by the surrounding ready-edge property/bulletin publication;
+    // keep only the base enable on `fNetIf` and reserve link-up for the real
+    // association-success path.
     SInt32 ret = IO80211InfraInterface::setInterfaceEnable(enable);
-    if (enable && ret == kIOReturnSuccess) {
-        reportLinkStatus(3, 0x80);
-        IO80211InfraInterface::setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0);
-    }
     XYLog("DEBUG %s enable=%d ret=0x%x instance=%p\n",
           __FUNCTION__, enable ? 1 : 0, ret, instance);
     return ret;
@@ -1819,6 +1839,13 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
         XYLog("DEBUG %s routing hidden-assoc carrier len=0x%x into setWCL_ASSOCIATE\n",
               __FUNCTION__, length);
         return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
+    }
+
+    if (data != nullptr && length == sizeof(apple80211_set_mac_address_data)) {
+        XYLog("DEBUG %s routing set-mac carrier len=0x%x\n",
+              __FUNCTION__, length);
+        return setSET_MAC_ADDRESS(
+            reinterpret_cast<apple80211_set_mac_address_data *>(data));
     }
 
     XYLog("DEBUG VTABLE [470] %s len=0x%x\n", __FUNCTION__, length);
@@ -3379,7 +3406,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         memcpy(rsn_ie_data.ie, ad->ad_rsn_ie, rsn_ie_data.len);
         setRSN_IE(&rsn_ie_data);
 
-        associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index);
+        associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index, true, false);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
                                    ad->ad_ssid, ad->ad_ssid_len,
@@ -3892,7 +3919,7 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         }
 
         associateSSID(const_cast<uint8_t *>(ssid), ssid_len, *bssid,
-                      auth_lower, auth_upper, NULL, 0, 0);
+                      auth_lower, auth_upper, NULL, 0, 0, false, true);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                    ssid, ssid_len,
@@ -5154,6 +5181,26 @@ setPRIVATE_MAC(apple80211_private_mac_data *data)
     // the visible success-looking path, so match that public contract instead
     // of generic unsupported.
     return static_cast<IOReturn>(0x16);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSET_MAC_ADDRESS(apple80211_set_mac_address_data *data)
+{
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *mac = data->mac;
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+
+    IEEE80211_ADDR_COPY(ic->ic_myaddr, mac);
+    if_setlladdr(&ic->ic_ac.ac_if, mac);
+    setProperty(kIOMACAddress, const_cast<uint8_t *>(mac), kIOEthernetAddressSize);
+    postMessage(APPLE80211_M_LINK_ADDRESS_CHANGED, const_cast<uint8_t *>(mac), 6, true);
+
+    XYLog("DEBUG %s mac=%s\n", __FUNCTION__, ether_sprintf(mac));
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
