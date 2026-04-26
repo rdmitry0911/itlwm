@@ -34,6 +34,7 @@ patch_mackernelsdk() {
     local header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/network/IONetworkController.h"
     local tx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkTxSubmissionQueue.h"
     local rx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h"
+    local packet_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h"
 
     if [ ! -f "$header" ]; then
         echo "WARNING: MacKernelSDK not found, skipping patch"
@@ -79,6 +80,35 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
         echo "  done"
     elif [ -f "$rx_header" ]; then
         echo "IOSkywalkRxCompletionQueue.h: callbacks already patched"
+    fi
+
+    # Tahoe 26.x has packet-array enqueue at vtable slot 0x2a0 and direct
+    # packet/chain-head enqueue at slot 0x2a8.  Older local SDK headers model
+    # the second overload as queue_entry*, which can make a packet array call
+    # dispatch to the chain-head overload.
+    if [ -f "$rx_header" ] && ! grep -Fq 'virtual IOReturn enqueuePackets( IOSkywalkPacket * const * packets, UInt32 packetCount, IOOptionBits options );' "$rx_header"; then
+        echo "Patching IOSkywalkRxCompletionQueue.h: enqueuePackets overloads -> Tahoe ABI"
+        perl -0pi -e 's|    virtual IOReturn enqueuePackets\( const IOSkywalkPacket \*\* packets, UInt32 packetCount, IOOptionBits options \);\n    virtual IOReturn enqueuePackets\( const queue_entry \* packets, UInt32 packetCount, IOOptionBits options \);|    virtual IOReturn enqueuePackets( IOSkywalkPacket * const * packets, UInt32 packetCount, IOOptionBits options );\n    virtual IOReturn enqueuePackets( IOSkywalkPacket * packet, UInt32 packetCount, IOOptionBits options );|g; s|    virtual IOReturn enqueuePackets\( const queue_entry \* packets, UInt32 packetCount, IOOptionBits options \);\n    virtual IOReturn enqueuePackets\( const IOSkywalkPacket \*\* packets, UInt32 packetCount, IOOptionBits options \);|    virtual IOReturn enqueuePackets( IOSkywalkPacket * const * packets, UInt32 packetCount, IOOptionBits options );\n    virtual IOReturn enqueuePackets( IOSkywalkPacket * packet, UInt32 packetCount, IOOptionBits options );|g' "$rx_header"
+        if ! grep -Fq 'virtual IOReturn enqueuePackets( IOSkywalkPacket * const * packets, UInt32 packetCount, IOOptionBits options );' "$rx_header" ||
+           ! grep -Fq 'virtual IOReturn enqueuePackets( IOSkywalkPacket * packet, UInt32 packetCount, IOOptionBits options );' "$rx_header"; then
+            echo "ERROR: failed to align IOSkywalkRxCompletionQueue.h enqueuePackets overloads"
+            exit 1
+        fi
+        echo "  done"
+    elif [ -f "$rx_header" ]; then
+        echo "IOSkywalkRxCompletionQueue.h: enqueuePackets overloads already patched"
+    fi
+
+    # Tahoe 26.x has five IOSkywalkPacket virtual methods between
+    # setDataOffsetAndLength(...) and prepareWithQueue(...).  Older
+    # MacKernelSDK headers omit them, so source calls to prepareWithQueue
+    # compile to vtable slot 0x160 instead of Tahoe's real slot 0x188.
+    if [ -f "$packet_header" ] && ! grep -q 'setDataOff( int64_t offset )' "$packet_header"; then
+        echo "Patching IOSkywalkPacket.h: Tahoe packet vtable slots"
+        perl -0pi -e 's|virtual IOReturn setDataOffsetAndLength\( UInt16 offset, UInt32 length \);\n\n    IOSkywalkPacketQueue \* getSourceQueue\(\);|virtual IOReturn setDataOffsetAndLength( UInt16 offset, UInt32 length );\n\n    // Tahoe 26.x packet-data virtual slots required before prepareWithQueue.\n    virtual IOReturn setDataOff( int64_t offset );\n    virtual int64_t getDataOff();\n    virtual IOReturn setDataOffAndLen( int64_t offset, uint64_t length );\n    virtual void * getDataVirtualAddress();\n    virtual void * getDataIOVirtualAddress();\n\n    IOSkywalkPacketQueue * getSourceQueue();|g' "$packet_header"
+        echo "  done"
+    elif [ -f "$packet_header" ]; then
+        echo "IOSkywalkPacket.h: Tahoe packet vtable slots already patched"
     fi
 }
 

@@ -36,59 +36,6 @@
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
 
-// ── Skywalk buflet struct definitions ──────────────────────────────
-// The kernel-internal structs __buflet, skmem_bufctl, and __kern_buflet
-// are defined in SDK headers but guarded by BSD_KERNEL_PRIVATE, which is
-// never defined for third-party AuxKC kexts.  os_packet.h forward-declares
-// `struct __kern_buflet` (via `typedef struct __kern_buflet *kern_buflet_t`)
-// but never provides the body.  We complete that forward declaration here
-// with the identical layout from the SDK headers so the inline _buflet_*
-// accessors below can resolve struct member references at compile time.
-//
-// Source headers (all in MacKernelSDK/Headers/skywalk/):
-//   __buflet       — packet/os_packet_private.h:242  (PRIVATE guard)
-//   __kern_buflet  — packet/packet_var.h:47          (BSD_KERNEL_PRIVATE)
-//   skmem_bufctl   — mem/skmem_cache_var.h:40        (BSD_KERNEL_PRIVATE)
-// Field offsets verified against Xcode 26.2 / macOS Sequoia 26.3 SDK.
-//
-// These are stable kernel ABI — Skywalk packet processing depends on them.
-// If Apple changes the layout, the kern_buflet_* C KPI would also break,
-// so every Skywalk nexus provider (including Apple's own) relies on this.
-
-struct __buflet {
-    union {
-        uint64_t            __buflet_next;
-        const uint64_t      __nbft_addr;    // mach_vm_address_t
-    };
-    const uint64_t          __baddr;        // buffer data address
-    const uint32_t          __bft_idx;      // obj_idx_t — buflet index in region
-    const uint32_t          __bidx;         // obj_idx_t — buffer object index
-    const uint32_t          __nbft_idx;     // obj_idx_t — next buflet index
-    const uint16_t          __dlim;         // maximum data length
-    uint16_t                __dlen;         // current data length
-    uint16_t                __doff;         // current data offset
-    const uint16_t          __flag;
-} __attribute__((packed));
-
-struct skmem_bufctl {
-    struct { struct skmem_bufctl *sle_next; } bc_link;  // SLIST_ENTRY
-    void                    *bc_addr;       // buffer object address
-    void                    *bc_addrm;      // mirrored buffer obj addr
-    void                    *bc_slab;       // struct skmem_slab *
-    uint32_t                bc_lim;         // buffer object limit
-    uint32_t                bc_flags;
-    uint32_t                bc_idx;
-    volatile uint32_t       bc_usecnt;
-};
-
-struct __kern_buflet {
-    struct __buflet                     buf_com;
-    const struct skmem_bufctl          *buf_ctl;
-#if !defined(__LP64__)
-    uint32_t __kern_buflet_padding;
-#endif
-};
-
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(AirportItlwmBootNub, IOService)
@@ -750,6 +697,9 @@ namespace {
 
 constexpr uint32_t kTahoeWclScanResultMaxIELen = 0x800;
 constexpr uint32_t kTahoeWclScanResultHeaderLen = 0x44;
+constexpr UInt32 kTahoeWclLinkChanged = 0xd8;
+constexpr uint8_t kTahoeWclInfraInterfaceType = 1;
+constexpr uint32_t kTahoeWclInvalidLinkReason = 0xff;
 
 struct TahoeWclBeaconMetaData {
     uint32_t ieLen;               // 0x00
@@ -776,6 +726,21 @@ struct TahoeWclScanResultPayload {
     TahoeWclBeaconMetaData meta;
     uint8_t ie[kTahoeWclScanResultMaxIELen];
 } __attribute__((packed));
+
+static_assert(sizeof(apple80211_wcl_connect_complete_event) ==
+              APPLE80211_WCL_CONNECT_COMPLETE_LEN,
+              "Tahoe WCL connect-complete payload must match Apple 0xA4 layout");
+
+struct TahoeWclLinkChangedPayload {
+    uint8_t bssid[IEEE80211_ADDR_LEN]; // 0x00
+    uint8_t linkState;                 // 0x06
+    uint8_t interfaceType;             // 0x07
+    uint32_t reasonCode;               // 0x08
+    uint32_t reserved;                 // 0x0c
+} __attribute__((packed));
+
+static_assert(sizeof(TahoeWclLinkChangedPayload) == 0x10,
+              "Tahoe WCL link-changed payload must match Apple 0x10 layout");
 
 static uint16_t buildTahoePrimaryChanSpec(struct ieee80211com *ic,
                                           const struct ieee80211_channel *chan)
@@ -843,6 +808,85 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
     payload->meta.capability = ni->ni_capinfo;
 
     *payloadLen = kTahoeWclScanResultHeaderLen + ieLen;
+    return true;
+}
+
+static uint32_t buildTahoeWclLinkReason(unsigned int rawReason)
+{
+    if (rawReason == 0)
+        return kTahoeWclInvalidLinkReason;
+
+    const uint32_t mapped = static_cast<uint32_t>(rawReason - 1);
+    return (mapped < 9) ? mapped : kTahoeWclInvalidLinkReason;
+}
+
+static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
+                                  unsigned int rawReason)
+{
+    if (controller == nullptr || controller->fNetIf == nullptr ||
+        controller->fHalService == nullptr)
+        return false;
+
+    struct ieee80211com *ic = controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr) {
+        XYLog("DEBUG %s SKIP ic=%p ic_state=%d ic_bss=%p\n", __FUNCTION__, ic,
+              ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
+        return false;
+    }
+
+    TahoeWclLinkChangedPayload payload;
+    bzero(&payload, sizeof(payload));
+    IEEE80211_ADDR_COPY(payload.bssid, ic->ic_bss->ni_bssid);
+    payload.linkState = 1;
+    payload.interfaceType = kTahoeWclInfraInterfaceType;
+    payload.reasonCode = buildTahoeWclLinkReason(rawReason);
+
+    XYLog("DEBUG %s msg=0x%x bssid=%s linkState=%u interfaceType=%u reason=0x%x\n",
+          __FUNCTION__, kTahoeWclLinkChanged, ether_sprintf(payload.bssid),
+          payload.linkState, payload.interfaceType, payload.reasonCode);
+    controller->postMessage(controller->fNetIf, kTahoeWclLinkChanged,
+                            &payload, sizeof(payload), true);
+    return true;
+}
+
+static bool buildTahoeWclConnectCompletePayload(
+    AirportItlwm *controller,
+    apple80211_wcl_connect_complete_event *payload)
+{
+    if (controller == nullptr || controller->fHalService == nullptr ||
+        payload == nullptr)
+        return false;
+
+    struct ieee80211com *ic = controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr) {
+        XYLog("DEBUG %s SKIP ic=%p ic_state=%d ic_bss=%p\n", __FUNCTION__, ic,
+              ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
+        return false;
+    }
+
+    bzero(payload, sizeof(*payload));
+    IEEE80211_ADDR_COPY(payload->records[0].bssid, ic->ic_bss->ni_bssid);
+    return true;
+}
+
+static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
+{
+    if (controller == nullptr || controller->fNetIf == nullptr)
+        return false;
+
+    apple80211_wcl_connect_complete_event payload;
+    if (!buildTahoeWclConnectCompletePayload(controller, &payload))
+        return false;
+
+    XYLog("DEBUG %s msg=0x%x len=0x%zx status=%u reason=%u bssid=%s\n",
+          __FUNCTION__, APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
+          sizeof(payload), payload.status, payload.reason,
+          ether_sprintf(payload.records[0].bssid));
+    controller->postMessage(controller->fNetIf,
+                            APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
+                            &payload, sizeof(payload), true);
     return true;
 }
 
@@ -963,6 +1007,28 @@ publishTahoeDriverReadyState(AirportItlwm *controller, bool ready)
     applyTahoeInterfaceReadyEdge(controller, ready);
     setCoreWiFiDriverReadyProperty(controller, ready);
     postTahoeDriverAvailableBulletin(controller, ready);
+}
+
+static void
+logTahoeSkywalkLinkCarrier(const char *tag, IO80211SkywalkInterface *interface)
+{
+    if (interface == nullptr) {
+        XYLog("DEBUG %s fNetIf=(null)\n", tag);
+        return;
+    }
+
+    uint8_t *raw = reinterpret_cast<uint8_t *>(interface);
+    void *expansion = *reinterpret_cast<void **>(raw + 0xC0);
+    uint32_t speed = 0;
+    uint32_t linkStatus = 0xffffffffU;
+    if (expansion != nullptr) {
+        uint8_t *ed = reinterpret_cast<uint8_t *>(expansion);
+        speed = *reinterpret_cast<uint32_t *>(ed + 0x30);
+        linkStatus = *reinterpret_cast<uint32_t *>(ed + 0x38);
+    }
+
+    XYLog("DEBUG %s fNetIf=%p expansion=%p speed=0x%x linkStatus=0x%x bsdIf=%p\n",
+          tag, interface, expansion, speed, linkStatus, interface->getBSDInterface());
 }
 
 // Apple's bootChipImage is triggered asynchronously by AppleBCMWLANUserClient.
@@ -1121,48 +1187,9 @@ copyUInt32Property(IORegistryEntry *entry, const char *name, uint32_t *value)
     return found;
 }
 
-// Inline replacements for kern_buflet_* C KPI functions.
-// The kernel exports these symbols (T in BootKC), but no KPI re-exports
-// them for third-party kexts linked into the AuxKC.  These helpers access
-// the identical struct fields directly, compiling as inline loads/stores
-// with no symbol dependency.  Field layouts come from the SDK headers:
-//   __buflet        (skywalk/packet/os_packet_private.h)
-//   __kern_buflet   (skywalk/packet/packet_var.h)
-//   skmem_bufctl    (skywalk/mem/skmem_cache_var.h)
-static inline void *
-_buflet_get_object_address(kern_buflet_t buf)
-{
-    return buf->buf_ctl->bc_addr;  // == kern_buflet_get_object_address
-}
-static inline uint32_t
-_buflet_get_object_limit(kern_buflet_t buf)
-{
-    return buf->buf_ctl->bc_lim;   // == kern_buflet_get_object_limit
-}
-static inline uint16_t
-_buflet_get_data_offset(kern_buflet_t buf)
-{
-    return buf->buf_com.__doff;    // == kern_buflet_get_data_offset
-}
-static inline uint16_t
-_buflet_get_data_length(kern_buflet_t buf)
-{
-    return buf->buf_com.__dlen;    // == kern_buflet_get_data_length
-}
-static inline void
-_buflet_set_data_offset(kern_buflet_t buf, uint16_t off)
-{
-    buf->buf_com.__doff = off;     // == kern_buflet_set_data_offset
-}
-static inline void
-_buflet_set_data_length(kern_buflet_t buf, uint16_t len)
-{
-    buf->buf_com.__dlen = len;     // == kern_buflet_set_data_length
-}
-
 // The Skywalk nexus delivers packets from the BSD ifnet TX path as
 // IOSkywalkPacket objects. We extract the frame data from each packet's
-// buflet, copy it into an mbuf, and send it through the existing
+// packet data API, copy it into an mbuf, and send it through the existing
 // outputPacket path which enqueues to the hardware via if_snd.
 //
 // Return type is unsigned int (not IOReturn/int) to match kernel ABI.
@@ -1174,14 +1201,23 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                 IOSkywalkPacket * const *packets, UInt32 count, void *refCon)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
-    if (!that) return 0;
+    if (!that || !packets) {
+        sRT.txPktDrop += count;
+        return count;
+    }
 
     sRT.txCbCnt++;
-    UInt32 sent = 0;
+    UInt32 consumed = 0;
+    UInt32 delivered = 0;
     for (UInt32 i = 0; i < count; i++) {
+        consumed++;
         IOSkywalkPacket *pkt = packets[i];
+        if (!pkt) {
+            sRT.txPktDrop++;
+            continue;
+        }
 
-        // Get the first packet buffer to access the underlying buflet
+        // Confirm that prepareWithQueue populated at least one packet buffer.
         IOSkywalkPacketBuffer *bufs[1] = { NULL };
         UInt32 nBufs = pkt->getPacketBuffers(bufs, 1);
         if (nBufs == 0 || !bufs[0]) {
@@ -1191,16 +1227,15 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             continue;
         }
 
-        kern_buflet_t buflet = bufs[0]->mBufletHandle;
-        if (!buflet) { sRT.txPktDrop++; continue; }
+        void *objAddr = pkt->getDataVirtualAddress();
+        UInt16 dataOff = pkt->getDataOffset();
+        UInt32 dataLen = pkt->getDataLength();
 
-        // Use inline struct accessors (_buflet_*) instead of kern_buflet_*
-        // C KPI — see comment above for why.
-        void *objAddr = _buflet_get_object_address(buflet);
-        uint16_t dataOff = _buflet_get_data_offset(buflet);
-        uint16_t dataLen = _buflet_get_data_length(buflet);
-
-        if (!objAddr || dataLen == 0) { sRT.txPktDrop++; continue; }
+        if (!objAddr || dataLen == 0 ||
+            dataOff > SKYWALK_BUF_SIZE || dataLen > SKYWALK_BUF_SIZE - dataOff) {
+            sRT.txPktDrop++;
+            continue;
+        }
 
         // Allocate an mbuf with packet header and copy the Ethernet frame
         mbuf_t m = NULL;
@@ -1215,14 +1250,18 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             continue;
         }
 
-        that->outputPacket(m, NULL);
-        sent++;
+        IOReturn outRet = that->outputPacket(m, NULL);
+        if (outRet == kIOReturnOutputSuccess)
+            delivered++;
+        else
+            sRT.txPktDrop++;
     }
 
-    sRT.txPktSent += sent;
+    sRT.txPktSent += delivered;
     if (sRT.txCbCnt <= 3 && count > 0)
-        XYLog("skywalkTxAction: count=%u sent=%u (total tx=%u)\n", count, sent, sRT.txPktSent);
-    return sent;
+        XYLog("skywalkTxAction: count=%u consumed=%u delivered=%u (total tx=%u)\n",
+              count, consumed, delivered, sRT.txPktSent);
+    return consumed;
 }
 
 // Skywalk RX completion callback — notification from the Skywalk subsystem
@@ -1239,6 +1278,13 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
+static void
+skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
+{
+    rxPkt->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
+    that->fRxPool->deallocatePacket(rxPkt);
+}
+
 // Skywalk RX input handler — called from _if_input() on the Sequoia path.
 // Converts an mbuf (received from the 802.11 stack) into an IOSkywalkPacket
 // and enqueues it to the RX completion queue for delivery to the BSD stack
@@ -1284,34 +1330,44 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
     // Allocate an IOSkywalkPacket from the RX pool
     IOSkywalkPacket *rxPkt = NULL;
-    if (that->fRxPool->allocatePacket(1, &rxPkt, 0) != kIOReturnSuccess || !rxPkt) {
+    IOReturn allocRet = that->fRxPool->allocatePacket(1, &rxPkt, 0);
+    if (allocRet != kIOReturnSuccess || !rxPkt) {
         sRT.rxAllocFail++;
         if (sRT.rxAllocFail <= 5)
-            XYLog("skywalkRxInput: allocatePacket failed (drop #%u)\n", sRT.rxAllocFail);
+            XYLog("skywalkRxInput: allocatePacket failed 0x%x (drop #%u)\n",
+                  allocRet, sRT.rxAllocFail);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
-                                      diagEapol, static_cast<IOReturn>(ENOMEM));
+                                      diagEapol,
+                                      allocRet != kIOReturnSuccess ? allocRet :
+                                      static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
 
-    // Get the packet buffer to access the underlying buflet
+    IOReturn prepRet = rxPkt->prepareWithQueue(nullptr,
+                                               kIOSkywalkPacketDirectionRx, 0);
+    if (prepRet != kIOReturnSuccess) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, prepRet);
+        mbuf_freem(m);
+        return EIO;
+    }
+
+    // Confirm that prepareWithQueue populated at least one packet buffer.
     IOSkywalkPacketBuffer *bufs[1] = { NULL };
     UInt32 nBufs = rxPkt->getPacketBuffers(bufs, 1);
     if (nBufs == 0 || !bufs[0]) {
-        that->fRxPool->deallocatePacket(rxPkt);
+        skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
 
-    // Use inline struct accessors (_buflet_*) instead of kern_buflet_*
-    // C KPI — see comment at top of file for why.
-    kern_buflet_t buflet = bufs[0]->mBufletHandle;
-    void *objAddr = _buflet_get_object_address(buflet);
-    uint32_t bufSize = _buflet_get_object_limit(buflet);
-    if (!objAddr || len > bufSize) {
-        that->fRxPool->deallocatePacket(rxPkt);
+    void *objAddr = rxPkt->getDataVirtualAddress();
+    if (!objAddr || len > SKYWALK_BUF_SIZE) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(EMSGSIZE));
         mbuf_freem(m);
@@ -1319,18 +1375,32 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
     }
 
     // Copy the mbuf data into the Skywalk packet buffer
-    mbuf_copydata(m, 0, len, objAddr);
-    _buflet_set_data_offset(buflet, 0);
-    _buflet_set_data_length(buflet, (uint16_t)len);
-    rxPkt->setDataLength((UInt32)len);
+    errno_t copyRet = mbuf_copydata(m, 0, len, objAddr);
+    if (copyRet != 0) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol,
+                                      static_cast<IOReturn>(copyRet));
+        mbuf_freem(m);
+        return EIO;
+    }
+    IOReturn dataRet = rxPkt->setDataOffsetAndLength(0, static_cast<UInt32>(len));
+    if (dataRet != kIOReturnSuccess) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol, dataRet);
+        mbuf_freem(m);
+        return EIO;
+    }
 
     // Enqueue the packet to the RX completion queue
-    const IOSkywalkPacket *pktArray[] = { rxPkt };
+    IOSkywalkPacket * const pktArray[] = { rxPkt };
     IOReturn ret = that->fRxQueue->enqueuePackets(pktArray, 1, 0);
 
     mbuf_freem(m);
 
     if (ret != kIOReturnSuccess) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
         sRT.rxEnqFail++;
         if (sRT.rxEnqFail <= 5)
             XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%u)\n", ret, sRT.rxEnqFail);
@@ -2294,6 +2364,30 @@ bool AirportItlwm::start(IOService *provider)
     sRT.fTxQueuePtr = (uint64_t)(uintptr_t)fTxQueue;
     sRT.fRxQueuePtr = (uint64_t)(uintptr_t)fRxQueue;
 
+    // Skywalk queues are IOEventSource subclasses.  The RX completion queue's
+    // enqueue path requires IOEventSource::workLoop to be set before runtime
+    // packet delivery; register the queues with the same controller workloop
+    // before handing them to the logical-link registration path.
+    IOReturn txQueueWorkloopRet = _fWorkloop->addEventSource(fTxQueue);
+    IOReturn rxQueueWorkloopRet = _fWorkloop->addEventSource(fRxQueue);
+    XYLog("DEBUG %s [STEP 8c-wl] queue addEventSource TX=0x%x RX=0x%x "
+          "TXwl=%p RXwl=%p\n",
+          __FUNCTION__, txQueueWorkloopRet, rxQueueWorkloopRet,
+          fTxQueue->getWorkLoop(), fRxQueue->getWorkLoop());
+    if (txQueueWorkloopRet != kIOReturnSuccess ||
+        rxQueueWorkloopRet != kIOReturnSuccess) {
+        XYLog("DEBUG %s [STEP 8c-wl] FAIL: queue workloop attach TX=0x%x RX=0x%x\n",
+              __FUNCTION__, txQueueWorkloopRet, rxQueueWorkloopRet);
+        if (txQueueWorkloopRet == kIOReturnSuccess)
+            _fWorkloop->removeEventSource(fTxQueue);
+        if (rxQueueWorkloopRet == kIOReturnSuccess)
+            _fWorkloop->removeEventSource(fRxQueue);
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+
     // Wire up Skywalk RX input handler on the internal ifnet before
     // registration, so received frames go through the Skywalk path
     // instead of the legacy IOEthernetInterface::inputPacket path.
@@ -2568,6 +2662,16 @@ void AirportItlwm::stop(IOService *provider)
     sRT.stopStep = 6;
     // Release Skywalk queues and pools
     XYLog("DEBUG %s [6] releasing Skywalk queues/pools\n", __FUNCTION__);
+    if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
+        XYLog("DEBUG %s [6] removing fTxQueue=%p from _fWorkloop=%p\n",
+              __FUNCTION__, fTxQueue, _fWorkloop);
+        _fWorkloop->removeEventSource(fTxQueue);
+    }
+    if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
+        XYLog("DEBUG %s [6] removing fRxQueue=%p from _fWorkloop=%p\n",
+              __FUNCTION__, fRxQueue, _fWorkloop);
+        _fWorkloop->removeEventSource(fRxQueue);
+    }
     OSSafeReleaseNULL(fTxQueue);  sRT.fTxQueuePtr = 0;
     OSSafeReleaseNULL(fRxQueue);  sRT.fRxQueuePtr = 0;
     OSSafeReleaseNULL(fTxPool);   sRT.fTxPoolPtr = 0;
@@ -2905,18 +3009,32 @@ IOReturn AirportItlwm::
 setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
     RT_SET(7);
-    sRT.lastLinkState = (int)(uint64_t)arg0;
+    const IO80211LinkState linkState =
+        static_cast<IO80211LinkState>((uint64_t)arg0);
+    const unsigned int rawCode = static_cast<unsigned int>((uint64_t)arg1);
+    sRT.lastLinkState = static_cast<int>((uint64_t)arg0);
     sRT.linkSetCount++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
-    XYLog("DEBUG %s linkState=%llu deauthReason=%u power_state=%u\n",
-          __FUNCTION__, (uint64_t)arg0, (unsigned int)(uint64_t)arg1, that->power_state);
+    XYLog("DEBUG %s linkState=%u rawCode=%u power_state=%u\n",
+          __FUNCTION__, static_cast<unsigned int>(linkState),
+          rawCode, that->power_state);
 #if __IO80211_TARGET >= __MAC_26_0
+    const unsigned int setLinkCode =
+        (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
     that->syncTahoeCurrentApAddress(
-        (IO80211LinkState)(uint64_t)arg0 != kIO80211NetworkLinkUp, true);
+        linkState != kIO80211NetworkLinkUp, true);
+    if (linkState == kIO80211NetworkLinkUp) {
+        postTahoeWclLinkUpInd(that, rawCode);
+        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-reportLinkStatus", that->fNetIf);
+        that->fNetIf->reportLinkStatus(3, 0x80);
+        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-reportLinkStatus", that->fNetIf);
+    }
+    logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-setLinkState", that->fNetIf);
     XYLog("DEBUG %s Tahoe: calling IO80211InfraInterface::setLinkState fNetIf=%p\n", __FUNCTION__, that->fNetIf);
-    IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1, false, 0, 0);
+    IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
+    logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-setLinkState", that->fNetIf);
 #else
-    IOReturn ret = that->fNetIf->setLinkState((IO80211LinkState)(uint64_t)arg0, (unsigned int)(uint64_t)arg1);
+    IOReturn ret = that->fNetIf->setLinkState(linkState, rawCode);
 #endif
     if (ret == kIOReturnSuccess) RT_SET(14);
     if (airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl)) {
@@ -2930,19 +3048,34 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     RT2_SET(13);
-    that->fNetIf->setRunningState((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp);
+    that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
+#if __IO80211_TARGET >= __MAC_26_0
+    if (linkState == kIO80211NetworkLinkUp)
+        postTahoeWclConnectCompleteEvent(that);
+#endif
+#if __IO80211_TARGET >= __MAC_26_0
+    if (linkState != kIO80211NetworkLinkUp) {
+        that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
+        that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
+        that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
+    } else {
+        XYLog("DEBUG %s Tahoe: skipped legacy up zero-payload 4/3/2 events\n",
+              __FUNCTION__);
+    }
+#else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
-    if ((IO80211LinkState)(uint64_t)arg0 == kIO80211NetworkLinkUp) {
-        that->fNetIf->reportLinkStatus(3, 0x80);
-    } else {
+#endif
+    if (linkState != kIO80211NetworkLinkUp) {
+        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-reportLinkStatus", that->fNetIf);
         that->fNetIf->reportLinkStatus(1, 0);
+        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-reportLinkStatus", that->fNetIf);
     }
 #if __IO80211_TARGET < __MAC_26_0
     if (that->bsdInterface) {
         XYLog("DEBUG %s calling bsdInterface->setLinkState bsdInterface=%p\n", __FUNCTION__, that->bsdInterface);
-        that->bsdInterface->setLinkState((IO80211LinkState)(uint64_t)arg0);
+        that->bsdInterface->setLinkState(linkState);
     }
 #endif
     XYLog("DEBUG %s DONE ret=0x%x\n", __FUNCTION__, ret);

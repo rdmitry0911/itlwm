@@ -99,6 +99,54 @@ static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
     config->rx_loss_interval_ms = 1000;
 }
 
+namespace {
+
+struct TahoeWclCurrentBssMetaData {
+    uint32_t ieLen;               // 0x00
+    uint16_t chanSpec;            // 0x04
+    uint8_t ssid[32];             // 0x06
+    uint8_t ssidLen;              // 0x26
+    uint8_t primaryChannel;       // 0x27
+    uint8_t reserved28;           // 0x28
+    uint8_t bssid[IEEE80211_ADDR_LEN]; // 0x29
+    uint8_t reserved2f;           // 0x2f
+    int32_t rssi;                 // 0x30
+    uint16_t reserved34;          // 0x34
+    uint16_t reserved36;          // 0x36
+    uint16_t beaconInterval;      // 0x38
+    uint16_t capability;          // 0x3a
+    uint32_t reserved3c;          // 0x3c
+    uint32_t flags;               // 0x40
+} __attribute__((packed));
+
+static_assert(sizeof(TahoeWclCurrentBssMetaData) == APPLE80211_WCL_BSS_INFO_HEADER_LEN,
+              "Tahoe WCL current-BSS metadata must match Apple 0x44 header");
+
+struct TahoeWclCurrentBssPayload {
+    TahoeWclCurrentBssMetaData meta;
+    uint8_t ie[APPLE80211_WCL_BSS_INFO_MAX_IE_LEN];
+} __attribute__((packed));
+
+static_assert(sizeof(TahoeWclCurrentBssPayload) == APPLE80211_WCL_BSS_INFO_LEN,
+              "Tahoe WCL current-BSS payload must match Apple 0x844 output");
+
+static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
+                                                const struct ieee80211_channel *chan)
+{
+    if (ic == nullptr || chan == nullptr || chan == IEEE80211_CHAN_ANYC)
+        return 0;
+
+    const uint16_t primary = static_cast<uint16_t>(ieee80211_chan2ieee(ic, chan) & 0xff);
+    if (primary == 0)
+        return 0;
+
+    if ((chan->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
+        return static_cast<uint16_t>(0xc000 | primary);
+    return primary;
+}
+
+}
+
 static constexpr uint64_t kAppleTahoeChipPowerDutyCycleFallback[6] = {
     0x07c808e50a010b1eULL,
     0x03560472058f06acULL,
@@ -1572,6 +1620,53 @@ setDataPathState(bool state)
           ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
     IO80211InfraInterface::setDataPathState(state);
     XYLog("DEBUG %s DONE state=%u\n", __FUNCTION__, state ? 1U : 0U);
+}
+
+void AirportItlwmSkywalkInterface::
+updateLinkStatus(void)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, ic ? ic->ic_state : -1,
+          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
+    IO80211InfraInterface::updateLinkStatus();
+    XYLog("DEBUG %s DONE\n", __FUNCTION__);
+}
+
+void AirportItlwmSkywalkInterface::
+updateLinkStatusGated(void)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, ic ? ic->ic_state : -1,
+          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
+    IO80211InfraInterface::updateLinkStatusGated();
+    XYLog("DEBUG %s DONE\n", __FUNCTION__);
+}
+
+void AirportItlwmSkywalkInterface::
+reportDetailedLinkStatus(if_link_status const *status)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s status=%p linkStatus=0x%x ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, status, status ? status->status : 0U,
+          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
+          instance ? instance->currentStatus : 0);
+    IOSkywalkNetworkInterface::reportDetailedLinkStatus(status);
+    XYLog("DEBUG %s DONE\n", __FUNCTION__);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+reportDataPathEvents(UInt type, void *data, unsigned long dataLen, bool gated)
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    XYLog("DEBUG %s type=0x%x data=%p dataLen=%lu gated=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
+          __FUNCTION__, type, data, dataLen, gated ? 1U : 0U,
+          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
+          instance ? instance->currentStatus : 0);
+    IOReturn ret = IO80211SkywalkInterface::reportDataPathEvents(type, data, dataLen, gated);
+    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
+    return ret;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5728,44 +5823,47 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
     }
 
     struct ieee80211_node *ni = ic->ic_bss;
+    const uint16_t chanSpec = buildTahoeWclCurrentBssChanSpec(ic, ni->ni_chan);
+    if (chanSpec == 0) {
+        XYLog("WCL [526] %s invalid current channel\n", __FUNCTION__);
+        return kIOReturnError;
+    }
+
     bzero(data, sizeof(*data));
 
-    // Populate at known offsets — exact layout is reverse-engineered,
-    // fields may shift. Log raw bytes for verification.
-    uint8_t *buf = data->data;
-
-    // +0x00: BSSID (6 bytes) — most beacon structs start with BSSID
-    memcpy(buf + 0x00, ni->ni_bssid, 6);
-    // +0x06: beacon interval (2 bytes LE)
-    *(uint16_t *)(buf + 0x06) = ni->ni_intval;
-    // +0x08: capability info (2 bytes LE)
-    *(uint16_t *)(buf + 0x08) = ni->ni_capinfo;
-    // +0x0A: channel number (2 bytes LE)
-    *(uint16_t *)(buf + 0x0A) = ieee80211_chan2ieee(ic, ni->ni_chan);
-    // +0x0C: RSSI (2 bytes LE, signed)
-    *(int16_t *)(buf + 0x0C) = -(0 - IWM_MIN_DBM - ni->ni_rssi);
-    // +0x0E: noise (2 bytes LE, signed)
-    *(int16_t *)(buf + 0x0E) = -fHalService->getDriverInfo()->getBSSNoise();
-    // +0x10: SSID length (1 byte)
-    buf[0x10] = ni->ni_esslen;
-    // +0x11: SSID (up to 32 bytes)
-    if (ni->ni_esslen > 0)
-        memcpy(buf + 0x11, ni->ni_essid, MIN(ni->ni_esslen, 32));
-    // +0x7C: IE length (2 bytes LE)
-    uint16_t ie_len = 0;
-    if (ni->ni_rsnie_tlv && ni->ni_rsnie_tlv_len > 0) {
-        ie_len = MIN(ni->ni_rsnie_tlv_len, (uint16_t)(0x84 - 0x7E));
-        memcpy(buf + 0x7E, ni->ni_rsnie_tlv, ie_len);
+    auto *payload = reinterpret_cast<TahoeWclCurrentBssPayload *>(data->data);
+    uint32_t ieLen = 0;
+    if (ni->ni_rsnie_tlv != nullptr && ni->ni_rsnie_tlv_len != 0) {
+        ieLen = ni->ni_rsnie_tlv_len;
+        if (ieLen > APPLE80211_WCL_BSS_INFO_MAX_IE_LEN)
+            ieLen = APPLE80211_WCL_BSS_INFO_MAX_IE_LEN;
+        memcpy(payload->ie, ni->ni_rsnie_tlv, ieLen);
     }
-    *(uint16_t *)(buf + 0x7C) = ie_len;
 
-    XYLog("WCL [526] %s bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d ssid_len=%u ie_len=%u\n",
+    payload->meta.ieLen = ieLen;
+    payload->meta.chanSpec = chanSpec;
+    payload->meta.ssidLen = MIN(static_cast<uint8_t>(sizeof(payload->meta.ssid)), ni->ni_esslen);
+    if (payload->meta.ssidLen != 0) {
+        memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
+        payload->meta.flags |= 0x6;
+    }
+
+    const uint16_t primaryChannel =
+        static_cast<uint16_t>(ieee80211_chan2ieee(ic, ni->ni_chan));
+    payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));
+    memcpy(payload->meta.bssid, ni->ni_bssid, sizeof(payload->meta.bssid));
+    payload->meta.rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
+    payload->meta.beaconInterval = ni->ni_intval;
+    payload->meta.capability = ni->ni_capinfo;
+
+    XYLog("WCL [526] %s bssid=%02x:%02x:%02x:%02x:%02x:%02x chan_spec=0x%04x primary=%u rssi=%d ssid_len=%u ie_len=%u\n",
           __FUNCTION__,
           ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
           ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
-          ieee80211_chan2ieee(ic, ni->ni_chan),
-          -(0 - IWM_MIN_DBM - ni->ni_rssi), ni->ni_esslen, ie_len);
-    // Dump first 32 bytes for offset verification
-    XYLog("WCL [526] hex[0x00-0x1F]: %s\n", hexdump(buf, 32));
+          chanSpec, primaryChannel,
+          payload->meta.rssi, payload->meta.ssidLen, ieLen);
+    XYLog("WCL [526] hex[0x00-0x1F]: %s\n", hexdump(data->data, 32));
+    XYLog("WCL [526] hex[0x20-0x43]: %s\n",
+          hexdump(data->data + 0x20, APPLE80211_WCL_BSS_INFO_HEADER_LEN - 0x20));
     return kIOReturnSuccess;
 }

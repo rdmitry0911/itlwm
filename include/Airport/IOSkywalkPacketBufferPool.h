@@ -37,20 +37,23 @@ public:
     virtual void free() APPLE_KEXT_OVERRIDE;
     virtual bool initWithName(char const*,void *,uint,IOSkywalkPacketBufferPool::PoolOptions const*);
     virtual bool initWithName(char const*,OSObject *,uint,IOSkywalkPacketBufferPool::PoolOptions const*);
-    virtual bool allocatePacket(IOSkywalkPacket **,uint);
-    virtual bool allocatePacket(uint,IOSkywalkPacket **,uint);
-    virtual bool allocatePackets(uint,uint *,IOSkywalkPacket **,uint);
-    virtual void deallocatePacket(IOSkywalkPacket *);
-    virtual void deallocatePackets(IOSkywalkPacket **,uint);
-    virtual void deallocatePacketList(IOSkywalkPacket *);
-    virtual void deallocatePacketChain(unsigned long long);
-    virtual bool allocatePacketBuffer(IOSkywalkPacketBuffer **,uint);
-    virtual bool allocatePacketBuffers(uint *,IOSkywalkPacketBuffer **,uint);
-    virtual void deallocatePacketBuffer(IOSkywalkPacketBuffer *);
-    virtual void deallocatePacketBuffers(IOSkywalkPacketBuffer **,uint);
-    virtual bool newPacket(IOSkywalkPacketDescriptor *,IOSkywalkPacket **);
-    virtual bool newPacketBuffer(IOSkywalkPacketBufferDescriptor *,IOSkywalkPacketBuffer **);
-    virtual bool newMemorySegment(IOSkywalkMemorySegmentDescriptor *,IOSkywalkMemorySegment **);
+    // Tahoe BootKC returns IOReturn for the pool operations below.  Keep the
+    // legacy two-argument allocatePacket slot so the declared vtable order stays
+    // aligned with the system class.
+    virtual IOReturn allocatePacket(IOSkywalkPacket **,uint);
+    virtual IOReturn allocatePacket(uint,IOSkywalkPacket **,uint);
+    virtual IOReturn allocatePackets(uint,uint *,IOSkywalkPacket **,uint);
+    virtual IOReturn deallocatePacket(IOSkywalkPacket *);
+    virtual IOReturn deallocatePackets(IOSkywalkPacket **,uint);
+    virtual IOReturn deallocatePacketList(IOSkywalkPacket *);
+    virtual IOReturn deallocatePacketChain(unsigned long long);
+    virtual IOReturn allocatePacketBuffer(IOSkywalkPacketBuffer **,uint);
+    virtual IOReturn allocatePacketBuffers(uint *,IOSkywalkPacketBuffer **,uint);
+    virtual IOReturn deallocatePacketBuffer(IOSkywalkPacketBuffer *);
+    virtual IOReturn deallocatePacketBuffers(IOSkywalkPacketBuffer **,uint);
+    virtual IOReturn newPacket(IOSkywalkPacketDescriptor *,IOSkywalkPacket **);
+    virtual IOReturn newPacketBuffer(IOSkywalkPacketBufferDescriptor *,IOSkywalkPacketBuffer **);
+    virtual IOReturn newMemorySegment(IOSkywalkMemorySegmentDescriptor *,IOSkywalkMemorySegment **);
     
 public:
     static IOSkywalkPacketBufferPool *withName(char const*,OSObject *,uint,IOSkywalkPacketBufferPool::PoolOptions const*);
@@ -60,4 +63,3 @@ public:
 };
 
 #endif /* IOSkywalkPacketBufferPool_h */
-

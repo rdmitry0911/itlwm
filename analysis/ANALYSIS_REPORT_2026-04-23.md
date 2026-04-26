@@ -72,7 +72,7 @@
 
 ## ANOMALY
 - id: A-REGDIAG-CONTROL-SET-001
-- status: CONFIRMED_DEVIATION
+- status: FIX_IMPLEMENTED
 - symptom: CLI `set` не включает диагностику в уже загруженном драйвере.
 - first visible manifestation: `airport_itlwm_regdiag on` вернул `IORegistryEntrySetCFProperty failed: 0xe00002c7`.
 - expected system behavior: user-space control write должен доходить до существующего `AirportItlwm` без userclient и без изменения IOKit topology.
@@ -98,7 +98,7 @@
 
 ## ANOMALY
 - id: A-ASSOC-SET-MAC-001
-- status: CONFIRMED_ROOT_CAUSE
+- status: FIX_IMPLEMENTED
 - symptom: сеть видна в UI/scan, но попытка подключения к SSID `btn-vno` завершается до входа в локальные `setASSOCIATE` / `setWCL_ASSOCIATE`.
 - first visible manifestation: `networksetup -setairportnetwork en0 btn-vno ...` печатает `Failed to join network btn-vno` и `tmpErr`.
 - expected system behavior: перед association WCLJoinManager успешно применяет private/link MAC через `APPLE80211_IOC_SET_MAC_ADDRESS`, затем продолжает join path.
@@ -178,7 +178,7 @@
 
 ## ANOMALY
 - id: A-ASSOC-SET-MAC-GATE-002
-- status: CONFIRMED_ROOT_CAUSE
+- status: FIX_IMPLEMENTED
 - symptom: после установки exact `CR-064` driver сети видны, но join к `btn-vno` всё ещё падает до association.
 - first visible manifestation: `airportd` возвращает `Apple80211IOCTLSetWrapper ... APPLE80211_IOC_ASSOCIATE ... return 1/0x00000001`.
 - expected system behavior: `APPLE80211_IOC_SET_MAC_ADDRESS(368)` должен попасть в MAC-update path и вернуть success после обновления MAC state.
@@ -227,7 +227,7 @@
 
 ## ANOMALY
 - id: A-ASSOC-HIDDEN-NULL-PSK-003
-- status: CONFIRMED_ROOT_CAUSE
+- status: FIX_IMPLEMENTED
 - symptom: после установки exact CR-065 сети видны, но первая попытка подключения вызывает kernel panic.
 - first visible manifestation: `/Users/bob/Projects/itlwm/crash.txt` показывает `Kernel trap ... type=14 page fault`, `CR2=0`, backtrace в `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...) + 0x782`.
 - expected system behavior: hidden WCL association candidate must not import PSK/PMK bytes from a source that is not present in `apple80211AssocCandidates`; reference programs auth/SSID context and hands the candidate to JoinAdapter.
@@ -954,3 +954,1701 @@
   - BootKC ABI check
   - Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
   - after approval, install without unloading, reboot, run one reproducible join attempt, and collect a filtered sudo log window containing `ASSOC -> RUN`, `setLinkStateInternal`, `getAssocState`, `setDataPathState`, and the later teardown.
+
+## ANOMALY
+- id: A-ASSOC-SKYWALK-LINKEVENT-DISPATCH-014
+- status: CORRELATED
+- symptom: the real Tahoe `ASSOC -> RUN` edge reaches local `setLinkStateInternal(state=2)`, but current-link ownership still collapses before any observed framework association/data-path callback reaches local overridable hooks.
+- first visible manifestation: on `CR-078` after-fix runtime, the failing join window shows `ASSOC -> RUN`, `setLinkStateInternal state=2 debounceTimeout=0 debounce=0 code=0 connectionId=0`, immediate `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`, and only then `setLinkStateInternal ret=0x1`.
+- expected system behavior: the state-2 link-up path should drive the current Tahoe skywalk event chain into the normal system-facing link-status/data-path callbacks before any current-link getter still sees `not associated`.
+- actual behavior: the first public `getBSSIDData()` failure happens inside the active `setLinkStateInternal(state=2)` call before it returns, while previous diagnostics already proved that `getAssocState()` and `setDataPathState(...)` do not run on this up edge.
+- divergence point: unresolved current Tahoe skywalk event-dispatch seam downstream of `IO80211InfraInterface::setLinkStateInternal(state=2)` and upstream of any local overridable link-status/data-path callback.
+- evidence:
+  - runtime logs: `CR-078-afterfix-assoc-gate-window-20260424-073603.log` shows `setLinkStateInternal state=2 ... currentStatus=0x3`, immediate `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`, and only then `setLinkStateInternal ret=0x1`, proving the first failure is born inside the state-2 link-up call and not in our later `postMessage(...)` / extra `reportLinkStatus(...)` tail.
+  - runtime logs: the same `CR-078` evidence contains no `getAssocState()` or `setDataPathState(...)` lines in the RUN window, so the active failure is earlier than the previously instrumented family assoc/data-path gate.
+  - decomp / disassembly: current Tahoe `IO80211Family` x86_64 `IO80211InfraInterface::getAssocState()` at `0x1de742` returns only `(*(self+0x128)+0x180) & 1` in `AL`, so the earlier garbage upper bits in our logs are not a semantic ABI bug; only the low bit matters.
+  - decomp / disassembly: current Tahoe `IO80211Family` x86_64 `IO80211InfraInterface::setLinkStateInternal(state=2)` at `0x1d7edb` calls `IOSkywalkNetworkInterface::reportLinkStatus(3, 0x80)` (relocation `001d7ef0`) and `IOSkywalkNetworkInterface::reportDataBandwidths(...)` (relocation `001d7f13`) before returning.
+  - decomp / disassembly: current Tahoe `IOSkywalkFamily` x86_64 `IOSkywalkNetworkInterface::reportDataBandwidths(...)` at `0x0000fbd0` only normalizes zero inputs and calls `_ifnet_set_bandwidths`, so it is not a plausible current-BSS / association owner.
+  - decomp / disassembly: current Tahoe `IOSkywalkFamily` x86_64 `IOSkywalkNetworkInterface::reportLinkStatus(...)` at `0x000103a4` tail-jumps to `IOSkywalkNetworkInterface::reportEventType(...)` at `0x0000f7b6`; for link event codes `0xe0060100/0xe0060102`, `reportEventType(...)` executes `call *0x20(%rax)` on the interface vtable and `_thread_call_enter1(expansionData+0x28, eventCode)`.
+  - decomp / disassembly: the state-2 `setLinkStateInternal(...)` path does not consult `debounceTimeout`, `code`, or `connectionId` before `reportLinkStatus(...)` / `reportDataBandwidths(...)`, so changing the local association up-call from `..., 0, false, 0, 0` to `..., 1, false, 0, 0` cannot explain the observed first failure.
+- candidate causes:
+  - hypothesis: the active skywalk link-event dispatch never reaches local overridable callbacks such as `reportDetailedLinkStatus(...)`, `updateLinkStatus(...)`, `updateLinkStatusGated(...)`, or `reportDataPathEvents(...)`; the break is earlier, inside the synchronous `reportEventType(...)` callback and/or its queued worker.
+  - hypothesis: the active skywalk link-event dispatch does reach one or more of those local callbacks, and the remaining blocker is later in current-BSS / data-path ownership.
+- rejected causes:
+  - raw upper bits in `getAssocState()` as the blocker: rejected; current Tahoe binary proves only low bit semantics, and the upper bits are just register garbage.
+  - `reportDataBandwidths(...)` as the current-link owner: rejected; exact `IOSkywalkFamily` recovery shows it only reaches `_ifnet_set_bandwidths`.
+  - forcing association up-call argument `1` instead of `0`: rejected as a causal candidate for this failure window; current state-2 path does not read that argument before the failing link-event dispatch.
+- notes:
+  - this anomaly supersedes the weaker earlier theory that the root seam was the old recovered `reportLinkStatus -> vtable[4]` chain alone; the current Tahoe `IOSkywalkFamily` recovery shows the exact producer is `reportLinkStatus -> reportEventType -> {vtable+0x20, thread_call_enter1}`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-SKYWALK-LINKEVENT-DISPATCH-014
+- symptom: the first post-RUN current-link failure happens inside the active state-2 skywalk link-event dispatch before any previously observed family assoc/data-path hook fires.
+- expected system behavior: the current Tahoe `reportLinkStatus -> reportEventType` link-event path should either reach local system-facing link-status/data-path callbacks or we must prove that the break is still earlier than any local override seam.
+- actual behavior: current runtime proves only `setLinkStateInternal(state=2)` plus the immediate internal `getBSSIDData()` failure; current binary recovery proves the active producer path is already inside `IOSkywalkFamily` link-event machinery, but we still do not know whether it ever reaches local overridable callbacks on the live interface object.
+- exact divergence point: unresolved current Tahoe skywalk link-event dispatch between `IOSkywalkNetworkInterface::reportEventType(...)` and any local overridable callback seam.
+- evidence from runtime: `CR-078` after-fix logs show the failure occurs before `setLinkStateInternal(state=2)` returns and after earlier diagnostics already ruled out `getAssocState()/setDataPathState(...)` on the same up edge.
+- evidence from decomp: exact Tahoe 26.3 x86_64 disassembly now proves `setLinkStateInternal(state=2)` internally executes `reportLinkStatus(...)` and `reportDataBandwidths(...)`; `reportLinkStatus(...)` now resolves to `reportEventType(...)`, which synchronously calls `*vtable[0x20]` and queues `_thread_call_enter1(...)`.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- if DIAGNOSTIC_INSTRUMENTATION:
+  - exact hypotheses being disambiguated:
+    - H1: the active skywalk link-event dispatch never reaches local `reportDetailedLinkStatus(...)`, `updateLinkStatus(...)`, `updateLinkStatusGated(...)`, or `reportDataPathEvents(...)`; the break is earlier than any local callback seam.
+    - H2: one or more of those local callbacks does fire on the real RUN edge, and the blocker is later than the skywalk event-dispatch seam.
+    - H3: `reportDataPathEvents(...)` fires, proving the event chain reaches deeper data-path machinery and shifting the blocker beyond this diagnostic window.
+  - exact probe points:
+    - `AirportItlwmSkywalkInterface::reportDetailedLinkStatus(if_link_status const *)`
+    - `AirportItlwmSkywalkInterface::updateLinkStatus()`
+    - `AirportItlwmSkywalkInterface::updateLinkStatusGated()`
+    - `AirportItlwmSkywalkInterface::reportDataPathEvents(UInt, void *, unsigned long, bool)`
+  - why these probe points are sufficient:
+    - if any of these probes fire in the failing RUN window, then the current skywalk link-event dispatch does reach local overridable callbacks and the remaining blocker is later than this seam;
+    - if none of them fires while `setLinkStateInternal(state=2)` and the immediate internal `getBSSIDData()` failure still occur, then the break is proven earlier than any local callback seam, inside `reportEventType(...)` synchronous/queued processing or another non-overridable framework path;
+    - `reportDataPathEvents(...)` firing would additionally prove that the data-path event chain is alive and move the blocker even deeper.
+  - why instrumentation is behavior-neutral: every added hook is a strict logging passthrough to the existing base implementation; no arguments, ordering, callbacks, payloads, or state are changed.
+  - what exact runtime evidence must be collected:
+    - one boot window showing the added hooks do not perturb startup;
+    - one reproducible join window showing `ASSOC -> RUN`, `setLinkStateInternal(state=2)`, any `reportDetailedLinkStatus(...)`, `updateLinkStatus(...)`, `updateLinkStatusGated(...)`, or `reportDataPathEvents(...)` callbacks, the immediate `getBSSIDData()` failure if it persists, and the later rollback.
+- why this is root cause and not just correlation: not yet proven; this candidate is diagnostic and is scoped only to separate the active skywalk event-dispatch seam from the already disproven later assoc/data-path theories.
+- why proposed fix is 1:1 with reference architecture and semantics: no behavior is changed; the patch only exposes whether the live Tahoe path reaches the same local callback layer the system architecture provides.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - reviving the old `reportLinkStatus` ordering theory as a fix: rejected; current Tahoe binary proves `setLinkStateInternal(state=2)` already performs the internal `reportLinkStatus(...)` call and the failure happens before our tail code runs.
+  - forcing the association up-call timeout/code tuple to match the earlier Apple ready-edge example: rejected; exact state-2 disassembly shows those arguments are not consulted before the failing event-dispatch seam.
+  - synthetic current-BSS or data-path replay after RUN: rejected; state-changing and already disallowed without proving the active event-dispatch seam first.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - Stage 1 request as `DIAGNOSTIC_INSTRUMENTATION`
+  - after approval, install without unloading, reboot, reproduce one failed `btn-vno` join attempt, and collect a filtered sudo log window containing `ASSOC -> RUN`, `setLinkStateInternal`, `reportDetailedLinkStatus`, `updateLinkStatus`, `updateLinkStatusGated`, `reportDataPathEvents`, the immediate `getBSSIDData()` failure if present, and the later rollback.
+
+## ANOMALY
+- id: A-ASSOC-LEGACY-EVENT-PAYLOAD-CONTRACT-015
+- status: CONFIRMED_DEVIATION
+- symptom: after the real Tahoe `ASSOC -> RUN` edge, the driver emits legacy `APPLE80211_M_LINK_CHANGED` / `APPLE80211_M_BSSID_CHANGED` / `APPLE80211_M_SSID_CHANGED` events with `NULL, 0` payloads, while current Tahoe consumers expect structured payload lengths.
+- first visible manifestation: in the post-`CR-083` runtime window at `2026-04-24 17:56:55.495`, airportd logs `Driver Event ... LINK_CHANGED/4`, immediately followed by `Unexpected event payload length for APPLE80211_M_LINK_CHANGED (expected=32, actual=0)` and `Unexpected event payload length for APPLE80211_M_BSSID_CHANGED (expected=24, actual=0)`, then continues with `BSSID_CHANGED/3`, `SSID_CHANGED/2`, and repeated `APPLE80211_IOC_BSSID/SSID -> 0xe0822403`.
+- expected system behavior: if the driver emits legacy post-RUN association events, each must carry the Tahoe-compatible payload size/layout the consumer expects; otherwise the event must not be emitted in that malformed form.
+- actual behavior: `AirportItlwm::setLinkStateGated(...)` posts legacy `4/3/2` events with `NULL, 0`, which current Tahoe userspace rejects as malformed.
+- divergence point: local `AirportItlwm::setLinkStateGated(...)` tail path after `setLinkStateInternal(...)` returns.
+- evidence:
+  - local code: `AirportItlwmV2.cpp` posts `APPLE80211_M_LINK_CHANGED`, `APPLE80211_M_BSSID_CHANGED`, and `APPLE80211_M_SSID_CHANGED` with `NULL, 0` in `setLinkStateGated(...)`.
+  - runtime logs: `CR-084-afterfix-airportd-join-window-20260424-175655.log` proves userspace rejects `LINK_CHANGED` with `expected=32, actual=0` and `BSSID_CHANGED` with `expected=24, actual=0`.
+  - decomp: `IO80211Family` `WCLNetManager::getLINK_CHANGED_EVENT_DATA(...)` accepts payload only when message length is exactly `0x20`.
+  - local struct proof: `CR-084-link-changed-contract-proof-20260424.txt` shows the current local `apple80211_link_changed_event_data` layout is `sizeof=20`, not `0x20`.
+  - local ABI sizes: `apple80211_bssid_data` is `sizeof=12`, while the runtime consumer expects `24`; `apple80211_ssid_data` is `sizeof=40`, while the current event catalog records legacy `APPLE80211_M_SSID_CHANGED` payload size `8`.
+- candidate causes:
+  - hypothesis: the legacy post-RUN event tail was carried forward from an older contract and never updated for Tahoe's current userspace payload expectations.
+  - hypothesis: the current local struct definitions were assumed to be event payloads, but Tahoe uses distinct event-specific layouts for legacy `LINK_CHANGED/BSSID_CHANGED/SSID_CHANGED`.
+- rejected causes:
+  - the malformed legacy events as the cause of the very first internal `getBSSIDData()` failure inside `setLinkStateInternal(...)`: rejected; those posts happen later, after `setLinkStateInternal` already returned.
+  - treating the current local `apple80211_link_changed_event_data`, `apple80211_bssid_data`, or `apple80211_ssid_data` as automatically valid event payloads: rejected by exact size mismatch (`20 != 32`, `12 != 24`, `40 != 8`).
+- notes:
+  - this is a proven local system-contract defect independent of the earlier primary internal current-link failure. It likely worsens the join collapse seen by airportd, but it does not yet localize the first failure born inside `setLinkStateInternal(...)`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-LEGACY-EVENT-PAYLOAD-CONTRACT-015
+- symptom: the local tail path emits malformed legacy post-RUN `4/3/2` events.
+- expected system behavior: the driver should either emit Tahoe-compatible payloads for legacy `LINK_CHANGED/BSSID_CHANGED/SSID_CHANGED`, or stop emitting those legacy events in malformed `NULL,0` form.
+- actual behavior: current code emits zero-length payloads that current Tahoe userspace rejects.
+- exact divergence point: `AirportItlwm::setLinkStateGated(...)` after `IO80211InfraInterface::setLinkState(...)` returns.
+- evidence from runtime: airportd rejects the emitted events with exact expected sizes `32` and `24`, then collapses into repeated `driver not available` current-link queries.
+- evidence from source / decomp:
+  - `WCLNetManager::getLINK_CHANGED_EVENT_DATA(...)` requires `0x20`
+  - local `apple80211_link_changed_event_data` is `20` bytes, not `32`
+  - local `apple80211_bssid_data` is `12` bytes, not `24`
+  - local `apple80211_ssid_data` is `40` bytes, while the checked event catalog records legacy `SSID_CHANGED` payload `8`
+- change class: REFERENCE_ALIGNMENT_FIX
+- if REFERENCE_ALIGNMENT_FIX:
+  - exact work still required before code change:
+    - recover or confirm the exact Tahoe legacy payload layouts for `APPLE80211_M_BSSID_CHANGED` and `APPLE80211_M_SSID_CHANGED`
+    - confirm whether current Tahoe still wants legacy `LINK_CHANGED/4` in addition to the newer `LINK_CHANGED (0xd8)` path on the association-up edge
+  - why the fix is not submitted yet:
+    - emitting fabricated payloads without the exact Tahoe layouts would be another contract violation
+    - simply deleting the legacy events is behavior-changing and not yet proven 1:1 with the reference
+  - what exact code must eventually change:
+    - `AirportItlwm/AirportItlwmV2.cpp`
+    - replace the three `postMessage(..., NULL, 0, true)` calls with reference-aligned payload emission or remove them only if reference recovery proves they are not required on Tahoe
+- why this is root cause and not just correlation: not yet claimed as the sole root cause of failed association; it is a separately confirmed local contract defect that can independently break userspace event handling after RUN.
+- why proposed fix must be 1:1 with reference architecture and semantics: the current defect is precisely a contract mismatch, so only exact Tahoe payload recovery or exact reference-backed removal is acceptable.
+- forbidden alternative fixes considered and rejected:
+  - stuffing current `apple80211_link_changed_event_data`, `apple80211_bssid_data`, or `apple80211_ssid_data` directly into the legacy events: rejected; exact size mismatches already disprove that shortcut.
+  - keeping the current `NULL,0` legacy events and relying on polling only: rejected; current Tahoe userspace explicitly rejects those payloads.
+  - deleting the legacy events immediately without reference proof: rejected; could regress compatibility paths that Tahoe still expects.
+
+## ANOMALY
+- id: A-ASSOC-REPORTLINKSTATUS-ORDER-016
+- status: CONFIRMED_DEVIATION
+- symptom: the local Tahoe association-up producer runs `setLinkState(...)` before `reportLinkStatus(...)`, while the recovered Apple low-latency producer body runs `reportLinkStatus(...)` first and only then `setLinkState(...)`.
+- first visible manifestation: in the failing `CR-085` `CONTROL_STA_NETWORK` join window at `2026-04-25 09:22:02.958 +0300`, the driver reaches `ASSOC -> RUN`, `setCurrentApAddress(...)`, `setLinkStateInternal(state=2)`, and then enters the local tail `reportLinkStatus(...)` with `mExpansionData->linkStatus` already at terminal `0x3`.
+- expected system behavior: the recovered Apple low-latency producer body for the up-edge is `super::setInterfaceEnable(true)` followed by `reportLinkStatus(3, 0x80)`, followed by `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`.
+- actual behavior before the fix: `AirportItlwm::setLinkStateGated(...)` called `IO80211InfraInterface::setLinkState(...)` first with the association-up code inherited from the caller (`0` in the observed window), then emitted legacy `4/3/2` postMessage traffic, and only afterwards called `fNetIf->reportLinkStatus(...)`.
+- divergence point: local `AirportItlwm::setLinkStateGated(...)` ordering on the association-up edge.
+- evidence:
+  - decomp: `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)` runs `IO80211InfraInterface::setInterfaceEnable(bool)` then `reportLinkStatus(3, 0x80)` then `setLinkState(2, 1, false, 0, 0)`.
+  - decomp: recovered `IOSkywalkNetworkInterface::reportLinkStatus(...)` updates `mExpansionData->linkStatus` and returns without notification when the requested status already matches the cached `linkStatus`.
+  - local source before the fix: `AirportItlwm::setLinkStateGated(...)` called `setLinkState(...)` first and `reportLinkStatus(...)` later.
+  - runtime: `CR-085-afterfix-kernel-control_sta_network-window-20260425-092140.log` proves:
+    - `pre-setLinkState`: `linkStatus=0x1`
+    - inside `setLinkStateInternal(state=2)`: immediate `AirportItlwm::getBSSIDData(): Get failure: APPLE80211_IOC_BSSID: -528342013`
+    - `post-setLinkState`: `linkStatus=0x3`
+    - `pre-reportLinkStatus`: still `linkStatus=0x3`
+    - `post-reportLinkStatus`: still `linkStatus=0x3`
+  - runtime: the same window still has no `reportDetailedLinkStatus(...)`, `updateLinkStatus(...)`, or `updateLinkStatusGated(...)` callback before the later malformed legacy events.
+- candidate causes:
+  - confirmed: the local reversed order lets `setLinkState(...)` mutate the same skywalk carrier state that `reportLinkStatus(...)` later uses for edge detection, so the later `reportLinkStatus(...)` becomes a no-op and suppresses Apple's notification path.
+  - secondary confirmed deviation: the local extra legacy postMessage tail between `setLinkState(...)` and `reportLinkStatus(...)` further diverges from the recovered Apple producer body and remains a separate userspace-event defect.
+- rejected causes:
+  - the low byte of `getAssocState()` as the blocker here: rejected by `CR-078`; `getAssocState()` does not run in the failing window.
+  - the late malformed legacy `4/3/2` events as the first cause of the internal `getBSSIDData()` failure: rejected; those events are emitted only after `setLinkStateInternal(...)` already returned.
+- notes:
+  - `CR-085` closed the missing proof: the later local `reportLinkStatus(...)` is already entering with cached `linkStatus == 3`.
+  - `CR-089` after-fix runtime rejects this as the active root cause: the reviewed patch moved `reportLinkStatus(3, 0x80)` before `IO80211InfraInterface::setLinkState(...)` and aligned the up-edge code to `1`, but `AirportItlwm::getBSSIDData()` still fails with `APPLE80211_IOC_BSSID -> 0xe0822403` inside `setLinkStateInternal(state=2)`.
+  - this remains a confirmed producer-order deviation, but it is not sufficient to establish WCL current-BSS ownership.
+  - the separate FT/`802.11r` UI observation is not this root cause; current kernel scan logs already prove FT-capable BSS entries reach the scan cache.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-REPORTLINKSTATUS-ORDER-016
+- symptom: the local association-up producer likely suppresses the Apple skywalk notification edge by calling `setLinkState(...)` before `reportLinkStatus(...)`.
+- expected system behavior: the Apple low-latency producer path reaches `reportLinkStatus(3, 0x80)` before `setLinkState(2, 1, false, 0, 0)`.
+- actual behavior before the fix: local code called `setLinkState(...)` first and only later `reportLinkStatus(...)`, with extra legacy event traffic in between.
+- exact divergence point: `AirportItlwm::setLinkStateGated(...)`
+- evidence from runtime:
+  - `CR-083/CR-084` join windows show `setLinkStateInternal(state=2)` is entered and fails inside `getBSSIDData()`, but no `reportDetailedLinkStatus/updateLinkStatus/updateLinkStatusGated` callbacks are observed in that window.
+  - `CR-085-afterfix-kernel-control_sta_network-window-20260425-092140.log` proves the later local `reportLinkStatus(...)` enters with `linkStatus=0x3` and leaves with `linkStatus=0x3`, so the local tail is already a no-op by recovered Tahoe skywalk semantics.
+  - the same `CR-085` window shows `pre-setLinkState linkStatus=0x1`, proving the missing edge existed before the local `setLinkState(...)` call consumed it.
+- evidence from decomp:
+  - `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)` exact order is `reportLinkStatus(...)` then `setLinkState(...)`
+  - `IOSkywalkNetworkInterface::reportLinkStatus(...)` does not emit its notification path when the requested status equals the cached `mExpansionData->linkStatus`
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - exact semantic mismatch between reference and our code:
+    - recovered Apple up-edge producer order is `reportLinkStatus(3, 0x80)` then `setLinkState(2, 1, false, 0, 0)`
+    - local code consumed the same edge inside `setLinkState(...)` first, then called `reportLinkStatus(...)` only after `linkStatus` was already `3`
+    - local code also propagated `0` as the association-up `setLinkState(...)` code, while the recovered Apple producer uses `1`
+  - why this is root cause and not just correlation:
+    - the recovered Tahoe `reportLinkStatus(...)` logic is explicitly edge-triggered on cached `linkStatus`
+    - `CR-085` runtime proves the later local `reportLinkStatus(...)` already sees the terminal cached state and therefore cannot enter its notification path
+    - the only state transition between `pre-setLinkState linkStatus=0x1` and `pre-reportLinkStatus linkStatus=0x3` is the local `setLinkState(...)` call itself
+  - why proposed fix is 1:1 with reference architecture and semantics:
+    - move the association-up `reportLinkStatus(3, 0x80)` call before the local `setLinkState(...)`
+    - align the association-up `setLinkState(...)` code to the recovered Apple `1`
+    - keep the down path and the separate malformed legacy-event defect unchanged in this batch
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - forcing `reportLinkStatus(...)` twice to manufacture an edge: rejected; duplicate publish without reference producer proof is forbidden by protocol.
+  - fixing the malformed legacy `4/3/2` payloads in the same batch: rejected; that is a separate Tahoe contract defect and must not be bundled into the producer-order root-cause fix.
+  - inventing FT/`802.11r` gating changes in the same batch: rejected; current scan evidence proves FT-capable BSS ingestion is a separate problem space.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC ABI check
+  - Stage 1 request as `SYSTEM_CONTRACT_FIX`
+  - after approval, install without unloading, reboot once, reproduce one failed join, and confirm:
+    - the up-edge `reportLinkStatus(...)` now runs before local `setLinkState(...)`
+    - the later skywalk callback chain appears or the first failure moves later than the old internal `getBSSIDData()` seam
+
+## ANOMALY
+- id: A-ASSOC-WCL-LINK-IND-017
+- status: REJECTED
+- symptom: after `CR-089`, networks remain visible and local association reaches `RUN`, but WCL/CoreWiFi still cannot observe the current BSSID/current network, so manual join to `CONTROL_STA_NETWORK` fails and UI waits for delayed password/failure completion.
+- first visible manifestation: `CR-089` after-fix runtime reaches `ASSOC -> RUN`, then `AirportItlwm::getBSSIDData()` returns `APPLE80211_IOC_BSSID -> 0xe0822403` inside `setLinkStateInternal(state=2)`.
+- expected system behavior: the association link event must publish the structured Tahoe `LINK_CHANGED` WCL indication (`0xd8`, 16-byte payload) before WCL/current-link probes depend on current-BSS ownership.
+- actual behavior: local Tahoe association-up code publishes current AP address and calls `reportLinkStatus(...)` / `IO80211InfraInterface::setLinkState(...)`, but it never posts the reference `0xd8` WCL link indication. It later emits legacy `4/3/2` messages with zero payloads.
+- divergence point: local `AirportItlwm::setLinkStateGated(...)` on the real association-up edge lacks the reference `AppleBCMWLANNetAdapter::handleLink(...) -> postMessage(..., 0xd8, payload, 0x10, 1)` producer.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-089-afterfix-control_sta_network-join-edge-20260425-100409.log` shows the corrected CR-089 order (`pre-reportLinkStatus`, `post-reportLinkStatus`, `pre-setLinkState`) followed by the same immediate current-BSSID failure inside `setLinkStateInternal`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-089-afterfix-airportd-currentlink-fail-20260425-100409.log` shows userspace/current-link still sees `APPLE80211_IOC_BSSID -> 0xe0822403`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-089-afterfix-user-control_sta_network-incomplete-ui-20260425-1035.log` (`sha256 ca7362d454fbbe5318ed2cd2311c8ae9480bb9e80577265839f2f2b202971222`) preserves the post-CR-089 visible-driver state and continued idle current-link polling after the failed join report.
+  - decomp: `docs/reference/AppleBCMWLAN_Core_decompiled.c`, `AppleBCMWLANNetAdapter::handleLink(wl_event_msg_t*)`, builds a 16-byte payload from BSSID bytes, link-state bit, interface type, reason code, and zero reserved field, then calls controller `postMessage(..., 0xd8, &payload, 0x10, 1)`.
+  - decomp: `docs/reference/IO80211Family_decompiled.c`, `WCLNetManager::linkUp(void*)`, consumes that payload and calls `WCLNetManager::updateBss(..., *(payload+0x0c), ...)`; this is the current-BSS owner path that must run before WCL current-link probes can succeed.
+  - decomp: `docs/reference/IO80211Family_decompiled.c`, the current BSSID helper calls `IO80211Glue::sendIOUCToWcl(... selector=9 ...)` and only falls back to the local implementation when WCL returns not-implemented; the observed `0xe0822403` therefore means the WCL current-BSS owner is still not associated.
+  - docs: `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml` records `LINK_CHANGED` code `0xd8`, payload size `0x10`, producer `AppleBCMWLANNetAdapter::handleLink`, and consumer `WCLNetManager::linkUp`.
+- candidate causes:
+  - confirmed: the reference WCL link indication producer is missing on the local Tahoe association-up edge.
+  - secondary confirmed deviation: local legacy `APPLE80211_M_LINK_CHANGED/BSSID_CHANGED/SSID_CHANGED` zero-payload posts still violate Tahoe userspace payload contracts and happen after the first current-link failure.
+- rejected causes:
+  - CR-089 `reportLinkStatus` ordering as the active root cause: rejected by after-fix runtime; the order is corrected but the current-BSS owner remains unset.
+  - local public `getBSSID/getSSID` fallback as a fix: rejected because the active helper routes to WCL and returns WCL's `0xe0822403`, not a local fallback miss.
+  - changing scan timers or UI filtering to fix the join failure: rejected for this symptom; the join reaches local `RUN` and fails on current-BSS ownership.
+- confirmed deviation: reference posts structured `0xd8` WCL link indication from the association link event; local code does not.
+- root cause: WCL current-BSS state is never established before `setLinkStateInternal(state=2)` and userspace current-link probes execute, so WCL/CoreWiFi keep reporting driver/current-network unavailable even after radio association succeeds.
+- fix: add the Tahoe association-up `0xd8` WCL link indication using the recovered 16-byte payload, sourced from the real `ic_bss` BSSID after `syncTahoeCurrentApAddress(false, true)` and before `IO80211InfraInterface::setLinkState(...)`; suppress the malformed Tahoe association-up legacy `4/3/2` zero-payload tail for this edge.
+- verification: `git diff --check`; Tahoe build; Stage 1 structural request; after approval install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, and verify that `0xd8` is posted before `setLinkStateInternal`, current BSSID probes stop returning `0xe0822403`, and failure moves to EAPOL/key/data if another blocker remains.
+- notes: CR-090 after-fix runtime rejects this anomaly as the sufficient current join root cause. The `0xd8` producer fires on the real association-up edge and WCL receives it, but WCL immediately calls `cmdIouc(0x1b1)` / `getWCL_BSS_INFO(...)`; the returned object has the BSSID at offset `0x00` while `WCLNetManager::updateBss(...)` checks offset `0x29`, logs `Bssid address is null`, forces link down, and current-network probes keep failing. The missing-`0xd8` deviation was real and structurally corrected, but the remaining CR-090 join blocker is A-ASSOC-WCL-BSS-INFO-LAYOUT-019.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-LINK-IND-017
+- symptom: after real association to `CONTROL_STA_NETWORK`, WCL/CoreWiFi current-link state remains unavailable and join fails after delayed UI/user-space completion.
+- expected system behavior: the reference association link producer posts `LINK_CHANGED` code `0xd8` with a 16-byte payload to the primary infra interface, allowing `WCLNetManager::linkUp(...)` to run `updateBss(...)` and establish current-BSS ownership.
+- actual behavior: local Tahoe code reaches `RUN` and calls `setLinkState(...)`, but never posts the `0xd8` WCL link indication; WCL current-BSS probes still return `0xe0822403`.
+- exact divergence point: `AirportItlwm::setLinkStateGated(...)` on `kIO80211NetworkLinkUp`.
+- evidence from runtime: CR-089 after-fix logs prove the corrected `reportLinkStatus` order and the persistent immediate `getBSSIDData()` failure inside `setLinkStateInternal(state=2)`; no local `0xd8` post exists in source/logs.
+- evidence from decomp: `AppleBCMWLANNetAdapter::handleLink(wl_event_msg_t*)` posts message `0xd8` with payload length `0x10`; `WCLNetManager::linkUp(void*)` consumes that payload and calls `updateBss(...)`; the IO80211 current-BSSID helper asks WCL first and returns the observed `0xe0822403` when WCL has no current BSS.
+- exact semantic mismatch between reference and our code: reference has a structured WCL link indication producer for the association link event; local code substitutes only current-AP cache publication, skywalk link-status/setLinkState calls, and malformed legacy zero-payload events.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the failing getter path is WCL-owned, the reference `0xd8` consumer is the WCL `updateBss(...)` current-BSS owner, and CR-089 proved that correcting the skywalk link-status order alone does not establish WCL current BSS.
+- why proposed fix is 1:1 with reference architecture and semantics: the patch adds the exact recovered postMessage code (`0xd8`), exact payload size (`0x10`), field order, async flag (`1`), and association-up lifecycle boundary from `AppleBCMWLANNetAdapter::handleLink(...)`.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - synthetic current-network getter success: rejected; WCL, not local getters, owns the active current-BSS path.
+  - another delayed/replayed `setLinkState(...)` or `reportLinkStatus(...)`: rejected; CR-089 already proved this path is insufficient and replay without the producer is forbidden.
+  - fabricating `setWCL_LINK_STATE_UPDATE(...)` payload: rejected; that carrier ABI remains unrecovered and was not invoked in runtime.
+  - keeping Tahoe association-up legacy `4/3/2` zero-payload events in the same edge: rejected; the exact reference `handleLink(...)` producer posts `0xd8`, while Tahoe userspace rejects the local zero-payload legacy events.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - create CR-090 Stage 1 request with exact patch artifact and diff hash
+  - after `APPROVED_FOR_AFTER_FIX_RUNTIME`, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs for `postTahoeWclLinkInd`, `setLinkStateInternal`, current-link getter return codes, `setCIPHER_KEY`, EAPOL, and data-path counters.
+
+## ANOMALY
+- id: A-WCL-SCAN-CANDIDATE-REAP-RSSI-018
+- status: CORRELATED
+- symptom: UI scan list is incomplete after CR-089; some `802.11r` networks and some ordinary networks are missing even though the radio scan sees them.
+- first visible manifestation: user reports missing `802.11r` and ordinary SSIDs from the UI list while the driver remains visible and networks are generally visible.
+- expected system behavior: every valid fresh BSS delivered through the WCL scan-result path should remain in the WCL/CoreWiFi candidate cache long enough for UI selection and manual join.
+- actual behavior: runtime/CoreCapture scan logs show `CONTROL_STA_NETWORK`, `CONTROL_STA_NETWORK 802.11r`, `Xirosterni 802.11r`, `wHouse`, `strlnk`, and other BSS entries being added/updated, but later `IO80211ScanCacheStore Reaping` removes candidates at ages around 34-42 seconds; WCL can then report `No such network: "CONTROL_STA_NETWORK"`.
+- divergence point: unresolved WCL scan-result metadata/candidate-cache plane after local `APPLE80211_M_WCL_SCAN_RESULT(0xc9)` publication and before CoreWiFi/UI candidate retention.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-089-afterfix-scan-cache-rich-ui-missing-20260425-100650.log` contains FT-capable and ordinary BSS entries in the scan cache despite UI absence.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-089-afterfix-wcl-control_sta_network-no-such-network-20260425-100616.log` shows WCL later reporting `No such network: "CONTROL_STA_NETWORK"`.
+  - runtime logs: CoreCapture scan rows in CR-089 evidence show `rssi=0 snr=0` for WCL-visible entries, while local BSS selection logs use non-zero `ni_rssi`; this correlates with candidate reaping/filtering.
+  - source: `buildTahoeWclScanResultPayload(...)` currently fabricates Tahoe `0xc9` metadata locally; exact RSSI/SNR/metadata ABI is not yet fully recovered.
+- candidate causes:
+  - hypothesis: the `0xc9` scan-result metadata layout still has an ABI/offset mismatch for signal quality or validity fields, causing WCL/CoreWiFi to ingest entries with `rssi=0 snr=0` and later reap/filter them.
+  - hypothesis: candidate validity flags, not just RSSI/SNR, are incomplete in the local Tahoe scan metadata.
+- rejected causes:
+  - radio scan absence: rejected; the kernel/CoreCapture scan cache contains the missing SSIDs.
+  - `802.11r` itself as a hard local filter: rejected; FT-capable entries reach the scan cache before later consumer-plane loss.
+  - scan timer/retry adjustment as a fix: rejected; the defect is after successful scan-result ingestion, not lack of scan activity.
+- confirmed deviation: not yet confirmed; exact `0xc9` metadata ABI recovery is still required.
+- root cause: not yet established; this remains a separate scan/UI retention issue and must not be bundled with the confirmed association current-BSS fix.
+- fix: none in this batch.
+- verification: recover reference `APPLE80211_M_WCL_SCAN_RESULT(0xc9)` metadata writes from decomp, then compare exact field offsets against `TahoeWclBeaconMetaData` before proposing any scan/UI patch.
+
+## ANOMALY
+- id: A-ASSOC-WCL-BSS-INFO-LAYOUT-019
+- status: FIX_IMPLEMENTED
+- symptom: after CR-090, the driver remains visible and local radio association to `CONTROL_STA_NETWORK` reaches `RUN`, but WCL/CoreWiFi immediately tears the link down; the password prompt and failure message are delayed, and current-network/BSSID probes still fail.
+- first visible manifestation: `2026-04-25 11:05:08.763132+0300` in CR-090 after-fix runtime: `[wcl] updateBss@2491:Bssid address is null` immediately after `postTahoeWclLinkUpInd` and `getWCL_BSS_INFO`.
+- expected system behavior: `WCLNetManager::updateBss(...)` must receive `cmdIouc(0x1b1)` output as a `0x844`-byte `BeaconMetaData + IE` object: metadata header at `0x00..0x43`, BSSID at `0x29`, and IE pointer at `0x44`, so `updateOrAddBeacon(...)` can return a beacon and `setCurrentBSS(...)` can establish WCL current-BSS ownership.
+- actual behavior: local `getWCL_BSS_INFO(...)` zeroes/fills only a `0x84` object with a guessed legacy layout: BSSID at `0x00`, SSID length at `0x10`, SSID at `0x11`, IE length at `0x7c`, and IE bytes capped to six bytes at `0x7e`. Therefore offset `0x29` is zero for `CONTROL_STA_NETWORK`, and WCL treats the current BSS as null.
+- divergence point: `AirportItlwmSkywalkInterface::getWCL_BSS_INFO(apple80211_beacon_msg *)` output layout for WCL IOC `0x1b1`.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-090-afterfix-control_sta_network-boot-join-20260425-1107.log` lines `37148..37178` show `0xd8` posted/delivered, `getWCL_BSS_INFO bssid=50:4f:3b:cd:dd:67`, then `[wcl] updateBss@2491:Bssid address is null` and WCL link-down data.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-090-afterfix-wcl-updatebss-bssinfo-null-20260425-110508.log` (`sha256 1398fcbc83855157171412448951121e0eeac1e5cbedc6e056cdbbc4ebbcf056`) is the focused failure window.
+  - runtime logs: the CR-090 hexdump begins `50 4f 3b cd dd 67 ... 07 4f 70 65 6e 57 72 74 ...`, proving local code placed BSSID at `0x00` and SSID at `0x11`; by the reference check, BSSID must be at `0x29`.
+  - decomp: `/Users/bob/Projects/itlwm/docs/reference/IO80211Family_decompiled.c:6985` shows `WCLNetManager::linkUp(...)` calls `updateBss(..., *(payload+0x0c), ...)`; it does not pass the `0xd8` payload BSSID to `updateBss`.
+  - decomp/disasm: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-091-WCLNetManager-updateBss-disasm-20260425.txt` (`sha256 d177d6164f8244fb93628da98f6763206a63b5f5556fc9cac8402cee8f2167e2`) proves `updateBss(...)` allocates/passes output length `0x844`, checks `memcmp(out+0x29, ether_null, 6)`, calls `WCLScanCacheStore::updateOrAddBeacon(out, out+0x44)`, then calls `setCurrentBSS(...)`.
+  - decomp: `/Users/bob/Projects/itlwm/docs/reference/AppleBCMWLAN_Core_decompiled.c:133313` shows `AppleBCMWLANCore::getWCL_BSS_INFO(apple80211_beacon_msg*)` delegates non-null output to the net-adapter implementation; the consumer ABI is fixed by `WCLNetManager::updateBss(...)`.
+  - source: `AirportItlwm/AirportItlwmV2.cpp` already uses the same recovered `0x44 + 0x800` Tahoe `BeaconMetaData + IE` layout for WCL scan result `0xc9`.
+- candidate causes:
+  - confirmed: local `getWCL_BSS_INFO(...)` uses an incompatible `0x84` guessed layout and cannot satisfy WCL's `0x1b1` current-BSS ABI.
+  - insufficient data for this fix: separate scan/UI retention defect A-WCL-SCAN-CANDIDATE-REAP-RSSI-018 may still make some networks disappear, but it is downstream/separate from the immediate `updateBss` null-BSSID tear-down.
+- rejected causes:
+  - missing `0xd8` producer as the current CR-090 root cause: rejected by CR-090 runtime because `0xd8` is posted and delivered before the failure.
+  - malformed `0xd8` BSSID payload as the cause of `Bssid address is null`: rejected by decomp; `linkUp(...)` passes only `payload+0x0c` reason into `updateBss(...)`, and `updateBss(...)` fetches current BSS through `cmdIouc(0x1b1)`.
+  - radio association failure before WCL: rejected; local logs show `ASSOC -> RUN` and `associated with 50:4f:3b:cd:dd:67 ssid CONTROL_STA_NETWORK channel 100`.
+- confirmed deviation: WCL expects `0x1b1` BSS info as the same `BeaconMetaData + IE` ABI used by WCL scan cache ingestion; local `getWCL_BSS_INFO(...)` publishes a smaller and offset-incompatible layout.
+- root cause: WCL rejects the current-BSS object before `updateOrAddBeacon(...)` / `setCurrentBSS(...)`, so the system tears down the just-associated link and keeps current-network/BSSID unavailable.
+- fix: implemented locally by expanding `apple80211_beacon_msg` to `0x844` and making `AirportItlwmSkywalkInterface::getWCL_BSS_INFO(...)` fill the recovered Tahoe `BeaconMetaData + IE` ABI: IE length `0x00`, Apple channel spec `0x04`, SSID `0x06`, SSID length `0x26`, primary channel `0x27`, BSSID `0x29`, RSSI `0x30`, beacon interval `0x38`, capability `0x3a`, flags `0x40`, raw IE bytes `0x44`.
+- verification: `git diff --check` passed; Tahoe build passed with BootKC symbol verification (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-091-build-20260425-wcl-bss-info-layout.txt`, sha256 `0345abec173c385088fef65a1f6d445f96deba4c485763bf966807292558f9f3`, built binary UUID `773EF963-FDFD-37F2-8CEA-8DE63A5D0ADF`, sha256 `13a3ffdf9750f29aeb5f8e0d439c6bbe103a840a3dcf370451008cfcb4caf244`); CR-091 Stage 1 request pending. After approval install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, and verify the CR-090 failure line `Bssid address is null` disappears, the `getWCL_BSS_INFO` hexdump has non-null BSSID at `0x29`, and any remaining failure moves past WCL current-BSS establishment.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-BSS-INFO-LAYOUT-019
+- symptom: CR-090 reaches local association `RUN`, then WCL immediately logs `updateBss@2491:Bssid address is null`, forces link-down, and join fails with delayed UI completion.
+- expected system behavior: on `cmdIouc(0x1b1)`, `getWCL_BSS_INFO(...)` returns the current BSS as a `0x844` `BeaconMetaData + IE` object with BSSID at `0x29` and IEs at `0x44`.
+- actual behavior: local `getWCL_BSS_INFO(...)` returns a `0x84` guessed object with BSSID at `0x00`, so the reference consumer's `out+0x29` null-BSSID guard fires.
+- exact divergence point: `AirportItlwmSkywalkInterface::getWCL_BSS_INFO(apple80211_beacon_msg *)`, backed by `include/Airport/apple80211_var.h::apple80211_beacon_msg`.
+- evidence from runtime: CR-090 CONTROL_STA_NETWORK runtime posts/delivers `0xd8`, calls local `getWCL_BSS_INFO`, dumps BSSID at `0x00`, then WCL logs `Bssid address is null` and emits link-down state at `11:05:08.763132..11:05:08.763204`.
+- evidence from decomp: `WCLNetManager::updateBss(...)` disassembly allocates/passes `0x844`, checks `memcmp(out+0x29, ether_null, 6)`, passes `out` and `out+0x44` to `WCLScanCacheStore::updateOrAddBeacon(...)`, then calls `setCurrentBSS(...)`.
+- exact semantic mismatch between reference and our code: the reference consumer ABI is `BeaconMetaData + IE`; local code publishes a different legacy layout and too-small buffer definition for the same `0x1b1` output.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the failing WCL log is reached immediately after `cmdIouc(0x1b1)` succeeds; the disassembly shows that exact log is guarded solely by `out+0x29` being all zero; the runtime hexdump proves our BSSID is at `out+0x00`, not `out+0x29`.
+- why proposed fix is 1:1 with reference architecture and semantics: it does not add events, retries, delays, fallback getters, or state forcing; it only makes the existing `getWCL_BSS_INFO` producer satisfy the exact consumer layout, size, and IE pointer offsets recovered from `WCLNetManager::updateBss(...)`.
+- files/functions to modify:
+  - `include/Airport/apple80211_var.h`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - modifying or replaying `0xd8`: rejected; CR-090 proves it already fires, and `linkUp(...)` does not pass the `0xd8` BSSID to `updateBss(...)`.
+  - fabricating current-network getter success: rejected; it would mask WCL current-BSS ownership instead of satisfying `updateBss(...)`.
+  - retrying/delaying join or password UI: rejected; the immediate failure is deterministic ABI rejection.
+  - bundling the scan/UI reaping fix: rejected; A-WCL-SCAN-CANDIDATE-REAP-RSSI-018 is correlated but not yet decomp-confirmed as root cause.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - create CR-091 Stage 1 request with exact diff artifact and hashes
+  - after `APPROVED_FOR_AFTER_FIX_RUNTIME`, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs around `postTahoeWclLinkUpInd`, `getWCL_BSS_INFO`, `updateBss`, `setCurrentBSS`, current-network/BSSID getters, EAPOL/key, and data path.
+
+## ANOMALY
+- id: A-ASSOC-WCL-CONNECT-COMPLETE-020
+- status: FIX_IMPLEMENTED
+- symptom: after CR-091, the driver is visible and the UI scan list is complete, but manual join to `CONTROL_STA_NETWORK` still fails; the password prompt and failure completion are delayed.
+- first visible manifestation: `2026-04-25 11:46:16.256945+0300` in CR-091 after-fix runtime: WCL enters `NET_MANAGER_STATE_WAITING_FOR_CONNECT_COMPLETE` after local `ASSOC -> RUN`, but no WCL connect-complete producer runs before WCL aborts with `1009/1007`.
+- expected system behavior: after successful association and current-BSS establishment, the reference producer `AppleBCMWLANJoinAdapter::sendConnectComplete()` posts `APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT` (`0xd5`) with a `0xa4` payload to the primary infra interface.
+- actual behavior: local Tahoe association-up code posts the recovered link-up/current-BSS path, and `getWCL_BSS_INFO(...)` now satisfies WCL, but it never posts the reference WCL connect-complete event. WCL therefore remains in `WAITING_FOR_CONNECT_COMPLETE` until join abort/timeout.
+- divergence point: local `AirportItlwm::setLinkStateGated(...)` on the real association-up edge lacks the reference connect-complete producer that follows successful current-BSS retrieval in `AppleBCMWLANJoinAdapter`.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-afterfix-control_sta_network-current-boot-window-20260425-1207.log` (`sha256 af347f020ea823eabbf283ebbb6dfa041c5e7906ccb6f1a0a8654b92d1417310`) captures the current boot/join window.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-afterfix-control_sta_network-wcl-connect-complete-concise-20260425-1207.log` (`sha256 3b0ed9136001aad7fe699a2c8a64ac31577e3b339088787209659d8157bd16ad`) shows `ASSOC -> RUN`, `getWCL_BSS_INFO bssid=50:4f:3b:cd:dd:67`, `WCL Joined Bss`, transition to `NET_MANAGER_STATE_WAITING_FOR_CONNECT_COMPLETE`, then `JOIN_ABORT_REQ`, `sendWCLJoinDone lastStatusCode=1009 extendedCode=1007`, and `-3905 tmpErr`.
+  - runtime logs: the same concise artifact shows repeated `CWEAPOLClient ... failed to retrieve 8021X state (2)` and no successful `setCIPHER_KEY` path before WCL aborts.
+  - decomp/disasm: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-AppleBCMWLAN-sendConnectComplete-disasm-20260425.txt` (`sha256 4c88f8b10cbcf8c670aea24726e2e8de14ebdc0792ef0ed54e5e2b8bcf27378`) proves `sendConnectComplete()` gates on pending/not-sent/status-valid state, builds a `0xa4` payload, and calls `IO80211Controller::postMessage(primaryIface, 0xd5, payload, 0xa4, 1)`.
+  - decomp: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-IO80211Family-WCLJoinManager-connectCompleteEventHandler-20260425.txt` (`sha256 8adc410a4f7812465daac8b8df2bdc757b40cabd47e199d05cedfb8cb447c38d`) proves WCLJoinManager's connect-complete handler accepts only payload length `0xa4` and feeds CommonFsm event `5`.
+  - decomp: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-IO80211Family-WCLNetManager-connectComplete-decomp-20260425.txt` (`sha256 96e513d08c83c3c3e6e6ec2c7d263e2aa80cc03da7aca8244079bff918d84b00`) proves `WCLNetManager::connectComplete(...)` updates link-state/protect-IP state and posts the link-up-done IOUC path.
+  - strings: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-IO80211Family-connect-complete-strings-20260425.txt` (`sha256 a4767924d604748803064753909e1385b39306f23b51180ee6d414fbd47d3823`) contains `NET_MANAGER_EVENT_CONNECT_COMPLETE`, `JOIN_MANAGER_EVENT_JOIN_CONNECT_COMPLETE`, and `APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT`.
+  - source absence proof: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-local-absence-connect-complete-producer-20260425.txt` (`sha256 0f6c80c8d279ded0da5785d4ee8e51646e8b27e5e5105ede171c73837bf1e3a8`) shows the restore worktree has no local WCL connect-complete producer.
+- candidate causes:
+  - confirmed: the reference WCL connect-complete event is missing from the local association-up lifecycle after current-BSS establishment.
+  - correlated but not fixed here: WCL scan cache still stores `rssi=0 snr=0` and later reaps entries; user's current report says the UI list is complete, so this is not the active join blocker for this batch.
+  - correlated but not fixed here: WCL external PMK ownership logs `key_len=0`; current runtime fails before any successful EAPOL/key path, so this remains downstream until connect-complete is delivered.
+- rejected causes:
+  - CR-091 BSS-info layout as the remaining blocker: rejected by after-fix runtime; `Bssid address is null` is gone, `getWCL_BSS_INFO` returns BSSID at the WCL-accepted offset, and `WCL Joined Bss` is logged.
+  - scan/UI candidate absence as the current blocker: rejected for this report; the user reports a full UI list, and logs show `CONTROL_STA_NETWORK` candidates delivered.
+  - another retry, timer, delay, or legacy event replay: rejected; protocol requires producer-side reference proof, and the reference producer is the `0xd5/0xa4` connect-complete event.
+- confirmed deviation: reference posts WCL connect-complete `0xd5` with `0xa4` payload after successful BSS-info/current-BSS completion; local code has no such producer.
+- root cause: WCL never receives the connect-complete event required to leave `NET_MANAGER_STATE_WAITING_FOR_CONNECT_COMPLETE`, so it aborts the join and userspace receives `-3905 tmpErr` after the observed delay.
+- fix: implemented locally by adding the recovered `apple80211_wcl_connect_complete_event` `0xa4` payload layout and posting `APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT` (`0xd5`) on the Tahoe association-up edge only when the local radio state is `IEEE80211_S_RUN` and `ic_bss` is present. The payload carries real associated BSSID in the first candidate record and success status/reason zero, matching the reference success-state producer shape.
+- verification: pending Stage 1 build/review. Required checks: `git diff --check`, Tahoe build, BootKC symbol check, CR-093 Stage 1 request. After approval, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then verify `postTahoeWclConnectCompleteEvent msg=0xd5 len=0xa4`, `NET_MANAGER_EVENT_CONNECT_COMPLETE`, absence of `1009/1007` connect-complete timeout, and movement into EAPOL/key or data path.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-CONNECT-COMPLETE-020
+- symptom: CR-091 makes networks visible and establishes WCL current BSS, but manual join still fails with delayed UI completion and `-3905 tmpErr`.
+- expected system behavior: after successful local association/current-BSS retrieval, reference `AppleBCMWLANJoinAdapter::sendConnectComplete()` posts message `0xd5` with payload length `0xa4` and async flag `1`.
+- actual behavior: local code reaches `ASSOC -> RUN`, `getWCL_BSS_INFO` succeeds, and WCL logs `WCL Joined Bss`, but WCL remains in `NET_MANAGER_STATE_WAITING_FOR_CONNECT_COMPLETE` until join abort.
+- exact divergence point: `AirportItlwm::setLinkStateGated(...)` association-up path after the recovered Tahoe link/current-BSS publication.
+- evidence from runtime:
+  - `CR-093-afterfix-control_sta_network-wcl-connect-complete-concise-20260425-1207.log`: `ASSOC -> RUN`, `NET_MANAGER_EVENT_LINK_UP -> WAITING_FOR_CONNECT_COMPLETE`, `getWCL_BSS_INFO bssid=50:4f:3b:cd:dd:67`, then `NET_MANAGER_EVENT_LEAVE_NETWORK`, `JOIN_ABORT_REQ`, `sendWCLJoinDone 1009/1007`, and `-3905 tmpErr`.
+  - `CR-093-local-absence-connect-complete-producer-20260425.txt`: local source has no `APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT`, `WCL_CONNECT_COMPLETE`, `connectComplete`, or `0xd5` WCL producer.
+- evidence from decomp:
+  - `CR-093-AppleBCMWLAN-sendConnectComplete-disasm-20260425.txt`: reference producer posts `0xd5`, length `0xa4`, async `1`.
+  - `CR-093-IO80211Family-WCLJoinManager-connectCompleteEventHandler-20260425.txt`: WCLJoinManager accepts only `0xa4` and processes event `5`.
+  - `CR-093-IO80211Family-WCLNetManager-connectComplete-decomp-20260425.txt`: WCLNetManager's connect-complete action performs the missing state transition and link-up-done path.
+- exact semantic mismatch between reference and our code: reference has a producer-side connect-complete message in the join adapter lifecycle; local code publishes link-up/current-BSS but omits the required join completion message.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation:
+  - runtime shows WCL stuck in the exact state whose name requires connect-complete.
+  - decomp proves the reference producer exists, its message id/size, and the WCL consumer handler.
+  - local source absence proves the required producer cannot fire.
+  - the observed WCL abort has `connectCompleteStatus=0` fields and occurs before any successful EAPOL/key path, so the failure is upstream of password/key programming.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - add the exact message id (`0xd5`), payload length (`0xa4`), header+ten-record payload shape, and async `postMessage` delivery recovered from reference.
+  - gate publication on real local `IEEE80211_S_RUN` and non-null `ic_bss`; no forced success is emitted before radio association.
+  - do not add retries, delays, polling, duplicate legacy events, getter fallbacks, or masking.
+- files/functions to modify:
+  - `include/Airport/apple80211_var.h`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - sending `0xd5` from `getWCL_BSS_INFO(...)`: rejected; reference producer is join-adapter/event producer-side, not a getter side effect.
+  - posting `0xd5` before local `RUN`: rejected; would be forced success and could falsely advance WCL.
+  - retrying/replaying `setLinkState(...)` or `0xd8`: rejected; CR-091 proves current BSS is established and the remaining wait is for connect-complete.
+  - masking airportd `-3905` or fabricating current-network getter success: rejected; would not satisfy the WCL state machine.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - BootKC unresolved-symbol check
+  - create CR-093 Stage 1 request with exact patch artifact and diff hash
+  - after `APPROVED_FOR_AFTER_FIX_RUNTIME`, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs around `postTahoeWclConnectCompleteEvent`, `NET_MANAGER_EVENT_CONNECT_COMPLETE`, `setCIPHER_KEY`, EAPOL, DHCP/link-up-done, and data-path counters.
+
+## ANOMALY
+- id: A-DATA-SKYWALK-RX-PREPARE-021
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-093, the driver is visible and the UI shows the association icon, but `CONTROL_STA_NETWORK` gets no internet, then disconnects. AP deauths with reason 15 after EAPOL M1 retransmissions.
+- first visible manifestation: `2026-04-25 12:51:37..12:51:58 +0300` after CR-093 after-fix runtime: WCL receives connect-complete and moves to `WAITING_FOR_IP`, DHCP starts, but EAPOL never progresses and the AP deauths with `reason 15`.
+- expected system behavior: inbound EAPOL frames from the associated AP must be copied into a prepared Skywalk RX packet with a valid packet-buffer array and enqueued into `IOSkywalkRxCompletionQueue`, allowing the userspace supplicant to send EAPOL M2.
+- actual behavior: runtime diagnostics count `eapol_rx=11`, `rx_drop=11`, `eapol_tx=0`, `tx=0`, and `lastRxResult=0xc`. The RX path sees eleven 113-byte EAPOL frames but locally drops all of them before userspace can respond.
+- divergence point: `skywalkRxInput(...)` calls `rxPkt->getPacketBuffers(...)` immediately after `fRxPool->allocatePacket(...)`, before `rxPkt->prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, ...)` has populated the packet-buffer array.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-093-control_sta_network-partial-nointernet-20260425-131029.log` (`sha256 dee3a9ee5f7668c2af31a83ffd98a654274871faa214ae9166cf833e3de0db51`) captures the user-reported partial connection/no-internet/disconnect window.
+  - runtime diagnostics: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-094-runtime-rx-eapol-drop-20260425.txt` (`sha256 2b5ba80b04386f37bc1eec30973319f65ab8a97f3f7db56ab40527badc3cd34d`) records `mode=0x1d`, `block=0x0`, `current_ssid=CONTROL_STA_NETWORK`, `counts ... tx=0 rx=11 eapol_tx=0 eapol_rx=11 tx_drop=0 rx_drop=11`, and trace rows `kind=rx result=0xc arg0=1 arg1=0x71`.
+  - runtime logs: no `skywalkRxInput: allocatePacket failed` and no `skywalkRxInput: enqueuePackets failed` lines appear in the focused CR-093/CR-094 windows; with `lastRxResult=0xc`, the remaining local drop branch is the `getPacketBuffers(...) == 0` branch.
+  - decomp: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-094-IOSkywalk-prepare-getbuffers-evidence-20260425.txt` (`sha256 a8bf11c53c0b012ae8da0a4178a59ae42554e09fc823eb87002fa59528fa6c8d`) shows `IOSkywalkPacketBufferPool::allocatePacket(UInt32,...)` calls packet `acquireWithPacketHandle(...)` and returns without preparing buffers.
+  - decomp: the same CR-094 evidence shows `IOSkywalkPacket::acquireWithPacketHandle(...)` only records the packet handle/state fields; it does not populate `mPacketBuffers` or the count consumed by `getPacketBuffers(...)`.
+  - decomp: the same CR-094 evidence shows `IOSkywalkPacket::prepareWithQueue(...)` walks kernel buflets, maps them through the pool, writes packet-buffer pointers, and stores the actual buffer count before completion.
+  - decomp/disasm: the same CR-094 evidence shows `IOSkywalkPacket::getPacketBuffers(...)` reads the actual buffer count at object offset `0x64`, returns zero when that count is zero, and only then copies pointers from the `mPacketBuffers` array.
+  - source: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` allocates the packet, immediately calls `getPacketBuffers(...)`, and drops with `ENOMEM` if no buffers are returned.
+  - source/header: `include/Airport/IOSkywalkPacketBufferPool.h` still declares Tahoe `allocatePacket(...)`, `deallocatePacket(...)`, and related packet-buffer pool methods with legacy `bool`/`void` return types, while the Tahoe/KDK header and BootKC ABI return `IOReturn`; this can hide exact Skywalk allocation errors and must be aligned in the same RX contract fix.
+- candidate causes:
+  - confirmed: missing `prepareWithQueue(...)` before `getPacketBuffers(...)` leaves the newly allocated RX packet with no visible packet buffers, so every inbound EAPOL frame drops before enqueue.
+  - confirmed deviation: local `IOSkywalkPacketBufferPool` declarations use stale return types for methods whose Tahoe ABI returns `IOReturn`.
+  - insufficient data for this fix: downstream EAPOL key install, DHCP, and data TX/RX may still contain later blockers after RX delivery starts; they are outside this root-cause claim.
+- rejected causes:
+  - WCL connect-complete still missing: rejected by CR-093 runtime; `postTahoeWclConnectCompleteEvent msg=0xd5 len=0xa4` fires, WCL consumes it, and state advances to `WAITING_FOR_IP`.
+  - diagnostic layer blocking EAPOL: rejected by snapshot `block=0x0` and trace `block=0`.
+  - AP/password failure as the first blocker: rejected for this layer; AP sends eleven EAPOL M1 frames and deauths with reason 15 only after no M2 is returned.
+  - allocate failure as the active branch: rejected by absence of the local `allocatePacket failed` log in the same window; the source logs the first five allocation failures.
+  - enqueue failure as the active branch: rejected by absence of the local `enqueuePackets failed` log and by `lastRxResult=0xc` instead of an `IOReturn` enqueue status.
+- confirmed deviation: local RX code violates the Skywalk packet lifecycle contract by reading packet buffers before `prepareWithQueue(...)`; local pool method declarations also violate the Tahoe `IOReturn` ABI.
+- root cause: inbound EAPOL frames are dropped inside `skywalkRxInput(...)` because the newly allocated `IOSkywalkPacket` has not been prepared against the RX completion queue, so `getPacketBuffers(...)` returns zero and userspace never receives EAPOL M1.
+- fix: implemented locally by aligning `IOSkywalkPacketBufferPool` method return types to `IOReturn` while preserving vtable slot order, then inserting `rxPkt->prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)` immediately after successful allocation and before `getPacketBuffers(...)`.
+- verification: `git diff --check` passed; Tahoe build passed with BootKC symbol verification (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-094-build-20260425-skywalk-rx-prepare.txt`, sha256 `0345abec173c385088fef65a1f6d445f96deba4c485763bf966807292558f9f3`, built binary UUID `3841FB3F-31C8-3158-9C2A-C8450A987FF7`, sha256 `96f5981cec3127013ae49852b6d23ecdae929b515ba1d1a2b8a25ed9e499b790`); built `skywalkRxInput(...)` disassembly (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-094-skywalkRxInput-disasm-20260425.txt`, sha256 `9913ce61f11b57df553c54b946829a53075e40a50c1aa1c92e4fcb35eb963c4c`) shows full `IOReturn` allocation handling, `prepareWithQueue(..., Rx, 0)` before `getPacketBuffers(...)`, and no bool truncation after `allocatePacket(...)`. CR-094 Stage 1 request pending. After approval, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then verify `rx_drop` no longer increments on EAPOL M1, `eapol_tx`/TX path sees M2 or the failure moves to a later key/DHCP/data point.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-PREPARE-021
+- symptom: after CR-093, association reaches UI link-up/`WAITING_FOR_IP`, but `CONTROL_STA_NETWORK` has no internet and disconnects after AP reason 15.
+- expected system behavior: RX mbufs entering `skywalkRxInput(...)` must be converted into prepared `IOSkywalkPacket` objects with valid packet buffers, copied, length-marked, and enqueued into the RX completion queue.
+- actual behavior: local RX allocates a packet and calls `getPacketBuffers(...)` before packet preparation; runtime shows all eleven inbound 113-byte EAPOL frames dropped locally with `rx=0xc`, while no TX/EAPOL response is emitted.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`, between `fRxPool->allocatePacket(1, &rxPkt, 0)` and `rxPkt->getPacketBuffers(bufs, 1)`.
+- evidence from runtime:
+  - `CR-094-runtime-rx-eapol-drop-20260425.txt`: `block=0x0`, `current_ssid=CONTROL_STA_NETWORK`, `eapol_rx=11`, `eapol_tx=0`, `rx_drop=11`, trace rows `rx result=0xc len=0x71`.
+  - `CR-093-control_sta_network-partial-nointernet-20260425-131029.log`: WCL connect-complete has already passed, DHCP starts, then AP deauths with reason 15.
+- evidence from decomp:
+  - `IOSkywalkPacketBufferPool::allocatePacket(UInt32,...)` returns after `acquireWithPacketHandle(...)`; it does not prepare packet buffers.
+  - `IOSkywalkPacket::acquireWithPacketHandle(...)` writes handle/state fields only.
+  - `IOSkywalkPacket::prepareWithQueue(...)` is the function that walks buflets and fills the packet buffer pointer array/count.
+  - `IOSkywalkPacket::getPacketBuffers(...)` returns zero when the actual buffer count is zero and copies pointers only after that count is nonzero.
+- exact semantic mismatch between reference and our code: the Skywalk object contract requires queue preparation before buffer extraction; local code extracts buffers directly after allocation. Local packet-buffer pool declarations also treat `IOReturn` methods as `bool`/`void`.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkPacketBufferPool::allocatePacket(UInt32, IOSkywalkPacket **, IOOptionBits)`
+    - `IOSkywalkPacket::prepareWithQueue(IOSkywalkPacketQueue *, IOSkywalkPacketDirection, IOOptionBits)`
+    - `IOSkywalkPacket::getPacketBuffers(IOSkywalkPacketBuffer **, UInt32)`
+    - `IOSkywalkPacket::setDataLength(UInt32)` and buflet data offset/length fields
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(const IOSkywalkPacket **, UInt32, IOOptionBits)`
+  - expected contract at each touchpoint:
+    - `allocatePacket(...)` returns `IOReturn` and provides an acquired packet handle, not a prepared packet-buffer array.
+    - `prepareWithQueue(..., Rx, ...)` binds the packet to the queue/direction and populates the packet-buffer array/count needed by `getPacketBuffers(...)`.
+    - `getPacketBuffers(...)` may only be used after the packet has a nonzero actual buffer count; otherwise zero is a valid no-buffer result.
+    - data offset/length and packet length are set only after a valid buffer object is available.
+    - `enqueuePackets(...)` receives an already prepared packet and transfers it to the RX completion path; it is not the missing buffer-preparation step for the local producer.
+  - why no relevant touchpoints are missing:
+    - the runtime drop happens before data copy and before enqueue, so TX, key install, DHCP, and userspace supplicant paths cannot be the first failing touchpoint.
+    - decomp covers every Skywalk method invoked between local mbuf input and the observed pre-enqueue drop branch.
+    - header ABI alignment covers the pool method return-value contract used at the first RX touchpoint.
+  - why proposed path adds no extra system-visible side effects:
+    - no new events, retries, timers, polling, forced success, WCL state changes, or packet fabrication are added.
+    - the same inbound mbuf is copied once into the same allocated packet and enqueued once; only the required preparation step is inserted before buffer access.
+    - if preparation fails, the function drops the frame through the existing local error/drop shape and records the real `IOReturn`.
+- why this is root cause and not just correlation:
+  - runtime proves the AP sends EAPOL M1 and the local RX path drops it before any TX response.
+  - source branch analysis leaves only the `getPacketBuffers(...) == 0` branch for `lastRxResult=0xc` in this window.
+  - decomp proves `getPacketBuffers(...)` depends on state populated by `prepareWithQueue(...)`, and local code never calls that before the drop.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it follows the recovered Skywalk packet lifecycle: allocate/acquire -> prepare with queue/direction -> get buffers -> set data -> enqueue.
+  - it aligns local method declarations to the Tahoe BootKC/KDK `IOReturn` ABI without changing vtable slot order.
+- files/functions to modify:
+  - `include/Airport/IOSkywalkPacketBufferPool.h`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - retrying EAPOL, delaying join, or extending WCL timers: rejected; EAPOL is already received and deterministically dropped locally.
+  - fabricating EAPOL success/key state: rejected; would mask the RX delivery contract.
+  - bypassing Skywalk and calling legacy input paths: rejected; Tahoe UI/link path is already on the Skywalk interface and this would add a second data-plane architecture.
+  - adding broad diagnostic logging before fixing the lifecycle order: rejected; runtime plus decomp already identify the exact lifecycle violation.
+  - changing scan list, WCL BSS-info, or connect-complete again: rejected; those earlier blockers have moved and are not the first failing point in this runtime.
+- verification plan:
+  - `git diff --check`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect the built binary for `prepareWithQueue` before `getPacketBuffers` in `skywalkRxInput(...)`
+  - create CR-094 Stage 1 request with diff artifact and hashes
+  - after approval, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs plus `airport_itlwm_regdiag get snapshot/trace` to confirm EAPOL RX frames are no longer dropped before userspace response.
+
+## ANOMALY
+- id: A-DATA-SKYWALK-RX-PREPARE-NOTFOUND-022
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-095, the driver remains visible and the UI scan list is alive, but repeated `CONTROL_STA_NETWORK` join attempts still fail; the UI shows no associated AirPort network after the attempt.
+- first visible manifestation: `2026-04-25 16:17..16:18 +0300` on the CR-095 installed driver: `en0` is `UP,RUNNING` but `status: inactive`, `networksetup -getairportnetwork en0` reports no association, and diagnostics show EAPOL RX frames dropped before any TX response.
+- expected system behavior: after WCL connect-complete and local association, inbound 113-byte EAPOL frames must be delivered through the Skywalk RX completion path so the userspace supplicant can generate EAPOL M2.
+- actual behavior: CR-095 changes the failure from the old `getPacketBuffers(...) == 0` branch (`rx=0xc`) to `IOSkywalkPacket::prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)` returning `0xe00002f0` (`kIOReturnNotFound`). Runtime counters show `eapol_rx=12`, `eapol_tx=0`, `rx_drop=12`, `tx=0`, `block=0x0`.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` lines `1420..1428`, immediately after successful `fRxPool->allocatePacket(1, &rxPkt, 0)` and before `getPacketBuffers(...)`.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-095-afterfix-control_sta_network-repeat-20260425-160323.log` (`sha256 c1e488165fee4affb0a447719eba9e6fc4f1e3c4fc492107fff96156ff7614af`) captures the repeated failed CONTROL_STA_NETWORK attempt on the installed CR-095 binary.
+  - runtime diagnostics: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-095-afterfix-control_sta_network-repeat2-20260425-1617.txt` (`sha256 43356e01d2d3b73a5f7331e85e316affcba37571d59369c09e224c9950c532a0`) records `mode=0x1d`, `block=0x0`, `current_ssid=CONTROL_STA_NETWORK`, `last_assoc_ssid=CONTROL_STA_NETWORK`, `eapol_rx=12`, `eapol_tx=0`, `rx_drop=12`, `tx=0`, `last_result rx=0xe00002f0`, and trace rows `kind=rx path=rx result=0xe00002f0 arg0=1 arg1=0x71`.
+  - runtime state: the same artifact records `ifconfig en0` as active at the interface layer but `status: inactive`, and `networksetup -getairportnetwork en0` as not associated.
+  - source: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` records `prepRet` directly when `prepareWithQueue(...)` fails; the observed `0xe00002f0` therefore originates from that exact pre-`getPacketBuffers(...)` branch.
+  - decomp: `IOSkywalkFamily_decompiled.c` shows `IOSkywalkPacketBufferPool::allocatePacket(UInt32,...)` acquires a packet handle and returns without packet-buffer preparation; `IOSkywalkPacket::prepareWithQueue(...)` walks kernel buflets, maps them through the pool, calls packet-buffer preparation, stores buffer pointers/count, and then invokes the packet queue preparation vtable path.
+  - decomp: `IOSkywalkPacketBuffer::setDataLength(...)`, `setDataOffset(...)`, and related buffer methods return `0xe00002f0` when required buflet/buffer state is not found, showing that `kIOReturnNotFound` is a Skywalk object-state failure, not an association/UI failure.
+  - vtable evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-096-IOSkywalkPacket-vtable-slots-20260425.txt` (`sha256 c095ddcc5c7012a4be2034a28086311c0b44b0227cc5b5b6d5dde9ba29a311d8`) dumps the real Tahoe `IOSkywalkPacket` vtable. It shows `getPacketBuffers(...)` at slot `0x120`, `prepareWithQueue(...)` at slot `0x188`, and slot `0x160` as `FUN_ffffff8002a58a2e`.
+  - disasm evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-094-skywalkRxInput-disasm-20260425.txt` (`sha256 9913ce61f11b57df553c54b946829a53075e40a50c1aa1c92e4fcb35eb963c4c`) shows the CR-095 binary calling `rxPkt` vtable slot `0x160` at the source line that names `prepareWithQueue(...)`, not the real Tahoe `0x188` slot.
+  - decomp/disasm: `FUN_ffffff8002a58a2e` returns `0xe00002f0` when the packet has no actual packet buffers. That exactly matches the CR-095 runtime result and explains why the call fails before `getPacketBuffers(...)`.
+  - header evidence: local `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h` lacks five Tahoe virtual slots between `setDataOffsetAndLength(...)` and `prepareWithQueue(...)`. The real Tahoe vtable has these slots at `0x160..0x180`, shifting `prepareWithQueue(...)` from the local compile-time `0x160` to the real BootKC `0x188`.
+- candidate causes:
+  - confirmed: the Tahoe `IOSkywalkPacket` ABI has five virtual slots missing from the local MacKernelSDK header, so the source call to `prepareWithQueue(...)` is compiled to the stale slot `0x160`; BootKC executes the real function at `0x160`, which returns `kIOReturnNotFound` for an unprepared/no-buffer packet.
+  - insufficient for this fix: queue direction, packet type, base/custom pool, and pool options remain possible later data-plane mismatches, but they are not the first failing call in CR-095 because the named call never reaches real `prepareWithQueue(...)`.
+- rejected causes:
+  - scan/UI publication as the current blocker: rejected for this runtime; UI remains alive, scan list is present, and association proceeds far enough to receive EAPOL M1 frames.
+  - diagnostic blocking: rejected by runtime `block=0x0` and trace rows without block records.
+  - the old `getPacketBuffers(...) == 0` branch as the current blocker: rejected by CR-095 diagnostics; the first failing branch is now `prepareWithQueue(...)` with `0xe00002f0`.
+  - password/AP absence as the first blocker: rejected for this layer; the AP sends EAPOL M1 frames and the driver records them as inbound EAPOL before dropping.
+  - wrong queue/direction as the first CR-095 blocker: rejected for this fix scope; the binary does not call the real `prepareWithQueue(...)` slot, so queue/direction cannot yet be evaluated.
+  - packet type/pool options as the first CR-095 blocker: rejected for this fix scope; the observed `0xe00002f0` is explained by the stale vtable slot before any proven pool-option contract is reached.
+- confirmed deviation: local build headers place `IOSkywalkPacket::prepareWithQueue(...)` at compile-time vtable slot `0x160`, while the Tahoe BootKC vtable places it at `0x188`. Slot `0x160` in Tahoe is a different packet data/buffer method that returns `0xe00002f0` when actual buffers are zero.
+- root cause: the CR-095 source call named `prepareWithQueue(...)` never reaches the BootKC `prepareWithQueue(...)` implementation. It dispatches to the stale `0x160` slot and returns `kIOReturnNotFound`, so every inbound EAPOL frame is dropped before the packet-buffer array can be prepared.
+- fix: implemented locally. `scripts/build_tahoe.sh::patch_mackernelsdk` now aligns the local MacKernelSDK `IOSkywalkPacket` class layout during Tahoe builds by inserting the five missing Tahoe virtual packet-data slots before `prepareWithQueue(...)`, so the same source call dispatches to real slot `0x188`.
+- verification: `git diff --check` passed; Tahoe build passed with BootKC symbol verification (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-096-build-20260425-skywalk-packet-vtable-abi.txt`, sha256 `c02a22528a6f4799cdfdd36aabc15dcdd02ca514784389c2351e2b0f7e257509`, built binary sha256 `a3d35ac64b9b89ee6c207e4180a7563df13597f556fd36f271210257ad1e391d`). Built `skywalkRxInput(...)` disassembly (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-096-skywalkRxInput-disasm-20260425.txt`, sha256 `05fb962d6d1fb1f2373e98af9ce5f8cd9b43d2725e611b604435d70183190140`) shows allocation through `*0x130(%rax)`, the source `prepareWithQueue(...)` call through `*0x188(%rax)`, and `getPacketBuffers(...)` through `*0x120(%rax)`. After approved runtime, one `CONTROL_STA_NETWORK` join must show that EAPOL RX no longer drops at `prepareWithQueue(...) result=0xe00002f0`; if it moves to a later Skywalk, EAPOL TX/key, DHCP, or data stage, that is a new later blocker.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-PREPARE-NOTFOUND-022
+- symptom: CR-095 keeps the driver visible and scan/UI alive, but `CONTROL_STA_NETWORK` join fails because every inbound EAPOL M1 is dropped before userspace can answer.
+- expected system behavior: the source call `rxPkt->prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)` must dispatch to Tahoe `IOSkywalkPacket` vtable slot `0x188`, populate the packet-buffer array, then allow `getPacketBuffers(...)` at slot `0x120` to return the buffer.
+- actual behavior: the CR-095 binary dispatches the source `prepareWithQueue(...)` call to vtable slot `0x160`. In Tahoe slot `0x160` is `FUN_ffffff8002a58a2e`, not `prepareWithQueue(...)`, and it returns `0xe00002f0` for the current unprepared/no-buffer packet state.
+- exact divergence point: local `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h` omits five Tahoe virtual methods between `setDataOffsetAndLength(...)` and `prepareWithQueue(...)`, shifting all later packet virtual calls in local code by `-0x28`.
+- evidence from runtime:
+  - `CR-095-afterfix-control_sta_network-repeat2-20260425-1617.txt`: `block=0x0`, `eapol_rx=12`, `eapol_tx=0`, `rx_drop=12`, `tx=0`, and `last_result rx=0xe00002f0`.
+  - trace rows: `kind=rx path=rx result=0xe00002f0 arg0=1 arg1=0x71`, matching 113-byte EAPOL M1 frames.
+- evidence from decomp:
+  - `CR-096-IOSkywalkPacket-vtable-slots-20260425.txt`: real Tahoe `IOSkywalkPacket` has `getPacketBuffers(...)` at `0x120`, missing packet-data slots at `0x160..0x180`, and `prepareWithQueue(...)` at `0x188`.
+  - `FUN_ffffff8002a58a2e` returns `0xe00002f0` when actual packet-buffer count is zero; this is the exact value seen in CR-095 runtime.
+  - `FUN_ffffff8002a33526` is real `IOSkywalkPacket::prepareWithQueue(...)` and lives at real slot `0x188`.
+- exact semantic mismatch between reference and our code: the source expresses the right Skywalk lifecycle step, but the local build ABI is stale, so BootKC receives a different virtual method call. This is a system-facing ABI mismatch, not a queue/pool behavior choice.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkPacket::getPacketBuffers(...)` vtable slot `0x120`
+    - five Tahoe packet-data virtual slots at `0x160..0x180`
+    - `IOSkywalkPacket::prepareWithQueue(...)` vtable slot `0x188`
+    - `IOSkywalkPacket::completeWithQueue(...)` vtable slot `0x198`
+    - local Tahoe build script patching of the MacKernelSDK header before compilation
+  - expected contract at each touchpoint:
+    - `getPacketBuffers(...)` remains at the already-correct slot `0x120`.
+    - the five Tahoe packet-data virtual slots must be declared so later virtual offsets match BootKC.
+    - `prepareWithQueue(...)` must compile to and dispatch through slot `0x188`.
+    - later packet lifecycle methods must no longer be shifted by the stale header.
+    - the build script must make this SDK header alignment reproducible before every Tahoe build because `MacKernelSDK` itself is not tracked in this repository.
+  - why no relevant touchpoints are missing:
+    - the runtime failure is the returned value from the pre-`getPacketBuffers(...)` source call.
+    - disassembly proves the wrong virtual slot for that exact source call.
+    - vtable evidence identifies both the wrong slot and the correct target slot.
+  - why proposed path adds no extra system-visible side effects:
+    - no driver logic, packet payload, event, queue, timing, retry, filter, or state transition is changed.
+    - the only behavior change is that the existing source call dispatches to the Tahoe ABI-correct virtual method.
+- why this is root cause and not just correlation:
+  - the wrong compiled slot (`0x160`) resolves to a Tahoe method whose failure return (`0xe00002f0`) exactly matches runtime.
+  - the correct `prepareWithQueue(...)` slot is `0x188`, so the current binary cannot execute the method that the source intended.
+  - runtime shows the failure occurs before buffer extraction/enqueue, exactly at the mis-dispatched call.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it aligns the local compile-time Skywalk class ABI to the Tahoe BootKC vtable recovered from decomp/disassembly.
+  - it does not invent a new RX path or alter queue/pool semantics; it makes the already-approved lifecycle call reach the real system implementation.
+- files/functions to modify:
+  - `scripts/build_tahoe.sh::patch_mackernelsdk`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - retrying `prepareWithQueue(...)`: rejected because the call currently targets the wrong method.
+  - changing queue direction or pool type first: rejected because the real `prepareWithQueue(...)` is not reached yet.
+  - manually calling a hard-coded vtable slot from driver code: rejected as a brittle ABI bypass when the header can be aligned.
+  - suppressing `0xe00002f0` or treating it as success: rejected as masking and would leave the packet unprepared.
+  - adding diagnostics instead of fixing the header ABI: rejected because runtime plus vtable proof already identify the exact mismatch.
+- verification plan:
+  - `git diff --check`
+  - run `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and require the source `prepareWithQueue(...)` call to dispatch through `*0x188(%rax)`
+  - create CR-096 Stage 1 request with exact diff artifact and hashes
+  - after `APPROVED_FOR_AFTER_FIX_RUNTIME`, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs and `airport_itlwm_regdiag get snapshot/trace` to verify the `0xe00002f0` prepare-stage drop is gone.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-BUFLET-PACKING-023
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-096, the driver loads and networks are visible, but an `CONTROL_STA_NETWORK` connection attempt panics the kernel.
+- first visible manifestation: `2026-04-25 17:19 +0300` crash report for the installed CR-096 binary `D0CA0B65-4B62-37DE-A63C-4655F5AC2110` / sha256 `a3d35ac64b9b89ee6c207e4180a7563df13597f556fd36f271210257ad1e391d`.
+- expected system behavior: after `getPacketBuffers(...)` returns an `IOSkywalkPacketBuffer`, local inline buflet accessors must read the Tahoe `struct __kern_buflet` fields at the same offsets as the kernel C KPI helpers.
+- actual behavior: `_buflet_get_object_address(kern_buflet_t)` reads `buf_ctl` from offset `0x28` and then dereferences a non-canonical pointer (`RAX=0xffa4f46809700000`), causing a general protection panic before RX enqueue can complete.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp` local `struct __kern_buflet` definition omits `__attribute__((packed))`, while the source SDK contract in `MacKernelSDK/Headers/skywalk/packet/packet_var.h` declares `struct __kern_buflet` as packed and asserts `sizeof(struct __kern_buflet) == 44`.
+- evidence:
+  - crash report: `/Users/bob/Projects/itlwm/crash.txt` (`sha256 f1247c3ee7873b2d17258c312625480468a30229e5b22888da92ca55d5391e14`) shows `Kernel trap ... type = 13=general protection`, `RIP ... _buflet_get_object_address + 0x11`, caller `skywalkRxInput + 0x378`, and kext UUID `D0CA0B65-4B62-37DE-A63C-4655F5AC2110`.
+  - focused evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-buflet-packing-crash-evidence-20260425.txt` (`sha256 bc565c00cdfcb4ca5d3703a8c5cad18884100f02fcf9580990d1bda85cb5eb19`) records the crash excerpt, loaded/on-disk CR-096 identity, local source layout, official SDK layout, and built helper disassembly.
+  - sudo log artifact: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-096-afterfix-crash-log-20260425.txt` (`sha256 ef5b690806b564be68de4b327e72caa2c1719f6e3fe51b4ecf0ead0e81a930fd`) records the post-CR-096 runtime window; current post-reboot diagnostic snapshot/trace attempts report diagnostics are not enabled (`sha256 8e6087332143add782230e14d2de25ec93c6a101a16ff8d27ef5a7715c1153e4`, `sha256 2240416673519a96cb64b01bab8aa7f6cc0c1fd929bff2d03a267d952d87b5e6`).
+  - source: `AirportItlwm/AirportItlwmV2.cpp` local `struct __buflet` is packed, but containing `struct __kern_buflet` is not packed; on LP64 this aligns `buf_ctl` to offset `0x28`.
+  - official SDK: `MacKernelSDK/Headers/skywalk/packet/packet_var.h` lines `47..63` define `struct __kern_buflet { struct __buflet buf_com; const struct skmem_bufctl *buf_ctl; } __attribute((packed));`; lines `174..181` assert `sizeof(struct __kern_buflet) == 44`.
+  - disassembly: CR-096 helper `_buflet_get_object_address` loads `buf_ctl` with `movq 0x28(%rax), %rax`, then loads `bc_addr` with `movq 0x8(%rax), %rax`; the panic happens at that second load with the invalid pointer from the wrong `buf_ctl` offset.
+- candidate causes:
+  - confirmed: local `struct __kern_buflet` packing differs from Tahoe `packet_var.h`, shifting `buf_ctl` from the real packed offset `0x24` to local compile-time offset `0x28`.
+  - insufficient for this fix: after correct packed buflet access, later packet data length, enqueue, EAPOL TX, key install, DHCP, and data transfer may reveal later blockers; they cannot be evaluated while the first buflet dereference panics.
+- rejected causes:
+  - CR-096 packet vtable ABI fix as wrong: rejected as the first explanation; CR-096 moved execution past `prepareWithQueue(...)` and into buflet object access, proving slot `0x188` is reached enough to populate a packet buffer.
+  - null packet buffer: rejected by control flow; `skywalkRxInput(...)` checks `nBufs == 0 || !bufs[0]` before line `1443`.
+  - diagnostic layer causing the panic: rejected; crash is a direct general-protection fault in inline `_buflet_get_object_address` with a register value consistent with an offset/layout error.
+  - queue direction or pool type as first crash cause: rejected for this fix scope; the panic is at local direct struct access before enqueue and before any later queue/pool behavioral return can be inspected.
+  - masking by adding null checks around `buf_ctl`: rejected; the value read from the wrong offset can be non-null but invalid, and a null check would not make the layout contract correct.
+- confirmed deviation: local direct-access replacement for `kern_buflet_get_object_address` uses a compile-time `__kern_buflet` layout that does not match the Tahoe packed kernel layout.
+- root cause: CR-096 reaches the RX packet buffer, but the local inline `__kern_buflet` definition reads `buf_ctl` from offset `0x28` instead of the real packed offset `0x24`, producing an invalid `skmem_bufctl *` and panicking on `bc_addr`.
+- fix: implemented locally. Local `struct __kern_buflet` is now packed and has compile-time assertions that `sizeof(struct __kern_buflet) == 44` and `offsetof(__kern_buflet, buf_ctl) == 36`, matching `packet_var.h`.
+- verification: `git diff --check` passed; `bash -n scripts/build_tahoe.sh` passed; Tahoe build passed with BootKC symbol verification (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-build-20260425-buflet-packing.txt`, sha256 `d30c5a5ac2b78211df1dc9cdda1f3d0ea94211e9d15b10f1219b074f1a33e4a7`, built binary UUID `CEEB2EC1-072B-385B-9BBF-191E77C470C0`, sha256 `2f7e60b15f399c8952258a0c37c154bcbf8eac2ab233de7d1cb3c3127aebb3bb`). Built helper disassembly (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-buflet-helper-disasm-20260425.txt`, sha256 `29706e83a9415a5a402e825dca39916e8c3cc871d279694b6c5a2801f31e991a`) shows `_buflet_get_object_address(...)` and `_buflet_get_object_limit(...)` load `buf_ctl` from `0x24(%rax)`, not `0x28(%rax)`. Built `skywalkRxInput(...)` disassembly (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-skywalkRxInput-disasm-20260425.txt`, sha256 `05fb962d6d1fb1f2373e98af9ce5f8cd9b43d2725e611b604435d70183190140`) keeps `allocatePacket` at `*0x130(%rax)`, `prepareWithQueue` at `*0x188(%rax)`, and `getPacketBuffers` at `*0x120(%rax)`. After approved runtime, one `CONTROL_STA_NETWORK` join must not panic at `_buflet_get_object_address`; if failure moves to object limit/length, enqueue, EAPOL TX, key install, DHCP, or data transfer, that is a new later blocker.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-BUFLET-PACKING-023
+- symptom: CR-096 loads and shows networks, but the first connection attempt panics in `_buflet_get_object_address(...)` from `skywalkRxInput(...)`.
+- expected system behavior: local inline replacements for `kern_buflet_*` must use the exact packed Tahoe `struct __kern_buflet` layout from `packet_var.h`, where the packed structure size is `44` bytes and `buf_ctl` starts at offset `36` (`0x24`).
+- actual behavior: the local source copies the field list but omits packing on `struct __kern_buflet`; the compiler aligns `buf_ctl` to offset `40` (`0x28`). CR-096 disassembly confirms `_buflet_get_object_address(...)` reads `0x28(%rax)`.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp` local `struct __kern_buflet` definition at lines `84..90`.
+- evidence from runtime:
+  - `/Users/bob/Projects/itlwm/crash.txt`: `RIP ... _buflet_get_object_address + 0x11`, caller `skywalkRxInput + 0x378`, kext UUID `D0CA0B65-4B62-37DE-A63C-4655F5AC2110`, `RAX=0xffa4f46809700000`.
+  - `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-buflet-packing-crash-evidence-20260425.txt`: focused crash/layout/disassembly proof.
+- evidence from system headers:
+  - `MacKernelSDK/Headers/skywalk/packet/packet_var.h`: `struct __kern_buflet` is `__attribute((packed))`.
+  - the same header asserts `sizeof(struct __kern_buflet) == 44`, which requires `buf_ctl` at offset `0x24` on LP64 because packed `struct __buflet` is 36 bytes.
+- exact semantic mismatch between system and local code: local inline accessors are intended to be ABI-identical stand-ins for `kern_buflet_get_object_address`, but they are compiled with a different containing-structure layout than the kernel.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `struct __buflet` common layout copied from Skywalk packet headers
+    - `struct __kern_buflet` packed kernel layout from `packet_var.h`
+    - `skmem_bufctl::bc_addr` at offset `0x08`
+    - `skmem_bufctl::bc_lim` at offset `0x20`
+    - local `_buflet_get_object_address`, `_buflet_get_object_limit`, `_buflet_get_data_offset`, `_buflet_get_data_length`, `_buflet_set_data_offset`, and `_buflet_set_data_length`
+  - expected contract at each touchpoint:
+    - `struct __buflet` remains packed.
+    - `struct __kern_buflet` must also be packed and size `44`.
+    - `buf_ctl` must be read from offset `0x24`, then `bc_addr` from `buf_ctl + 0x08` and `bc_lim` from `buf_ctl + 0x20`.
+    - data offset/length fields remain in the packed common `__buflet` region.
+  - why no relevant touchpoints are missing:
+    - the panic happens before data copy, length set, enqueue, EAPOL TX, key install, DHCP, or data transfer.
+    - crash RIP, caller offset, register state, source line, official header, and disassembly all point to the first `buf_ctl` field load.
+  - why proposed path adds no extra system-visible side effects:
+    - no packet flow logic, queue/pool choice, event, retry, timer, fallback, or state transition changes.
+    - only local compile-time layout is corrected to match the system header contract.
+- why this is root cause and not just correlation:
+  - the crash instruction is exactly the second load after reading `buf_ctl`; CR-096 disassembly proves the first load used `0x28`.
+  - official header requires the field to be at `0x24`; using `0x28` reads bytes inside the real pointer/adjacent field, matching the non-canonical panic pointer.
+  - the crash occurs on the first RX packet after CR-096 moved past the previous `prepareWithQueue` failure, matching the new first dereference point.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it mirrors the exact `__attribute((packed))` declaration and size assertion from Apple's Skywalk packet header.
+  - it keeps the existing direct-access architecture but makes its layout identical to the kernel structure it is replacing.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp` local `struct __kern_buflet` declaration and layout assertions.
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - add only pointer/null checks around `buf_ctl`: rejected because the wrong-offset value can be non-null and non-canonical; this would mask the ABI error and may still panic.
+  - change queue direction or packet/pool type first: rejected because the first failure is local struct dereference before enqueue.
+  - revert CR-096: rejected because CR-096 exposed the next blocker and the previous binary could not call the real `prepareWithQueue`.
+  - use hard-coded byte offsets manually in every accessor: rejected because packed struct plus static assertions is the direct header-equivalent representation.
+  - switch to exported `kern_buflet_*` calls without proving AuxKC linkage: rejected for this fix; the current direct-access approach is already used, and the exact bug is its missing packing.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - Tahoe build via `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `_buflet_get_object_address(...)` and `_buflet_get_object_limit(...)`; require `buf_ctl` load from `0x24(%rax)` and no remaining `0x28(%rax)` load in these helpers.
+  - create CR-097 Stage 1 request with exact diff artifact and hashes
+  - after approval, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo crash/log evidence plus regdiag snapshot/trace if diagnostics are enabled.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-PACKET-DATA-API-024
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-097, the driver loads and networks are visible, but the first connection attempt panics the kernel in `skywalkRxInput(...)`.
+- first visible manifestation: `2026-04-25 18:07 +0300` crash report for the installed CR-097 binary `CEEB2EC1-072B-385B-9BBF-191E77C470C0` / sha256 `2f7e60b15f399c8952258a0c37c154bcbf8eac2ab233de7d1cb3c3127aebb3bb`.
+- expected system behavior: driver-level packet data access must use the Tahoe `IOSkywalkPacket` packet-data methods after the packet has been prepared: `getDataVirtualAddress()`, `getDataLength()`, `getDataOffset()`, and `setDataOffsetAndLength(...)`. These methods operate through packet-buffer memory segment state and packet-buffer data length/offset state.
+- actual behavior: local `skywalkRxInput(...)` and `skywalkTxAction(...)` fetch `IOSkywalkPacketBuffer::mBufletHandle` and dereference private `kern_buflet_t` internals directly through local `_buflet_*` helpers. After CR-097 fixed the `buf_ctl` offset to `0x24`, the helper still panics because the `buf_ctl` value read from the live buflet handle is non-canonical (`RAX=0x0fa0000000000000`).
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp` local packet data path bypasses `IOSkywalkPacket` data accessors and directly reads/writes `kern_buflet_t` private fields at lines `1318..1325` and `1448..1462`.
+- evidence:
+  - panic logs: `/Users/bob/Projects/itlwm/crash.txt` (`sha256 4efba9e9f59b6cff45f659e1f6b408b1eb4a2eb1425b2985e45fe37e3ca8bea9`) shows `Kernel trap ... type = 13=general protection`, `RIP ... _buflet_get_object_address + 0x11`, caller `skywalkRxInput + 0x378`, `RAX=0x0fa0000000000000`, and kext UUID `CEEB2EC1-072B-385B-9BBF-191E77C470C0`.
+  - runtime logs: loaded kext and on-disk binary are both CR-097 UUID `CEEB2EC1-072B-385B-9BBF-191E77C470C0`; installed binary sha256 is `2f7e60b15f399c8952258a0c37c154bcbf8eac2ab233de7d1cb3c3127aebb3bb`.
+  - disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-buflet-helper-disasm-20260425.txt` (`sha256 29706e83a9415a5a402e825dca39916e8c3cc871d279694b6c5a2801f31e991a`) shows CR-097 helper now loads `buf_ctl` from `0x24(%rax)` and then dereferences `bc_addr` at `0x8(%rax)`. The new panic at the same `+0x11` is therefore the second load from an invalid `buf_ctl`, not the old wrong-offset load.
+  - disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-097-skywalkRxInput-disasm-20260425.txt` (`sha256 05fb962d6d1fb1f2373e98af9ce5f8cd9b43d2725e611b604435d70183190140`) shows the RX path calls `prepareWithQueue` at `*0x188`, `getPacketBuffers` at `*0x120`, then reads `mBufletHandle` from `0x30(%rax)` and calls local `_buflet_get_object_address(...)`.
+  - decomp: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-skywalk-packet-data-api-evidence-20260425.txt` (`sha256 b972a3e98ad8b43d805c27c1fc9bc5785c88ab527e7a7c567b9236e7d71662cf`) records the Tahoe `IOSkywalkPacket` vtable: `getDataVirtualAddress` slot `0x178`, `getDataIOVirtualAddress` slot `0x180`, `prepareWithQueue` slot `0x188`.
+  - decomp: the same CR-098 evidence records `IOSkywalkPacket::getDataVirtualAddress()` (`FUN_ffffff8002a33468`) deriving the host data pointer from the first `IOSkywalkPacketBuffer` memory segment plus `mMemorySegmentOffset`; it does not dereference `kern_buflet_t::buf_ctl`.
+  - decomp: the same CR-098 evidence records packet data setters (`FUN_ffffff8002a58bbe`, `FUN_ffffff8002a58c06`, `FUN_ffffff8002a58c60`) validating against pool buffer size and writing packet-buffer `mDataLength`/`mDataOffset`, not driver-side private buflet fields.
+  - decomp: AppleBCMWLAN driver reference in `docs/reference/AppleBCMWLAN_Bus_decompiled.c` uses packet virtual address/data length/data offset calls around packet copy and RX completion (`+0x1f0`, `+0x140`, `+0x150` in that IO80211NetworkPacket-derived class), not direct `kern_buflet_t` field dereferences in driver code.
+- candidate causes:
+  - confirmed: local driver bypasses the Tahoe packet data API and dereferences private buflet internals; live CR-097 proves this private dereference is the crash instruction.
+  - insufficient for this fix: the later association failure, EAPOL exchange, key install, DHCP, and data transfer remain unverified until RX/TX packet data access no longer panics.
+- rejected causes:
+  - stale CR-096 vtable slot for `prepareWithQueue`: rejected for this crash; CR-097 disassembly shows the call dispatches through `*0x188`.
+  - old `__kern_buflet` packed-layout bug: rejected as the current first failure; CR-097 disassembly loads `buf_ctl` from the correct `0x24` offset, and the new invalid value appears after that corrected load.
+  - null `IOSkywalkPacketBuffer`: rejected by control flow; `skywalkRxInput(...)` checks `nBufs == 0 || !bufs[0]` before the direct `mBufletHandle` read.
+  - adding pointer guards around `buf_ctl`: rejected as masking; the reference path does not make driver code validate private buflet internals, and non-canonical pointer checks would not establish packet data semantics.
+  - retrying allocation/prepare/enqueue: rejected because the panic occurs in a local data-address accessor, not in a recoverable return path.
+- confirmed deviation: local TX/RX packet data access uses private `kern_buflet_t` internals where Tahoe exposes and Apple driver code uses packet-level virtual data accessors and packet-buffer data state setters.
+- root cause: the local CR-097 RX path reaches a valid prepared `IOSkywalkPacket`, but then leaves the packet API and dereferences `mBufletHandle->buf_ctl` directly. In the live CR-097 crash this private `buf_ctl` is non-canonical, causing a general-protection fault before the RX packet can be copied and enqueued.
+- fix: implemented. Local TX/RX now use Tahoe packet-data methods. RX uses `rxPkt->getDataVirtualAddress()` and `rxPkt->setDataOffsetAndLength(0, len)` after `prepareWithQueue(...)`; TX uses `pkt->getDataVirtualAddress()`, `pkt->getDataOffset()`, and `pkt->getDataLength()`. The local copied `__buflet`/`__kern_buflet`/`skmem_bufctl` definitions and `_buflet_*` helpers were removed from driver-side data flow.
+- verification: structural verification complete, after-fix runtime pending reviewer approval. `git diff --check` passed; `bash -n scripts/build_tahoe.sh` passed; source scan has no `mBufletHandle`, `_buflet_get`, `_buflet_set`, `__kern_buflet`, `skmem_bufctl`, or `__buflet` references in `AirportItlwmV2.cpp`. Tahoe build succeeded and BootKC symbol verification passed (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-build-20260425-packet-data-api.txt`, sha256 `d30c5a5ac2b78211df1dc9cdda1f3d0ea94211e9d15b10f1219b074f1a33e4a7`). Built binary UUID is `0F1CAB30-C052-3D64-9579-3972E7BD7117`, sha256 `e5c6ca9e17175e369f004caddf40b2db3719bae8251fd26d38171f1e0d0bfa36` (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-build-identity-20260425.txt`, sha256 `f99391c035d93e5f932d0b9310fb45e18c6df8ac7cdf9b72a5407cf20f490828`). Built TX/RX disassembly (`/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-skywalk-tx-rx-disasm-20260425.txt`, sha256 `61e0b151f908ecbe1ae65ccf2bfc69131c6a6de15272d886d888be2b261365fd`) shows TX `getDataVirtualAddress` at `*0x178`, TX `getDataOffset` at `*0x150`, TX `getDataLength` at `*0x140`, RX `getDataVirtualAddress` at `*0x178`, RX `setDataOffsetAndLength` at `*0x158`, and no `_buflet_*` helper calls. Verification checklist artifact: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-verification-checks-20260425.txt`, sha256 `8bac2a60f130898968c8a4bc4d33351a4bcc554e1eebf7833212e6216083d8df`.
+- notes: this fix scope is the current crash and the symmetric TX/RX packet data access mismatch. It does not claim that association, key install, DHCP, or data transfer are fixed; those are later scopes after packet data access stops panicking.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-PACKET-DATA-API-024
+- symptom: CR-097 loads and shows networks, but a connection attempt panics in `_buflet_get_object_address(...)` from `skywalkRxInput(...)`.
+- expected system behavior: after `IOSkywalkPacket::prepareWithQueue(...)`, driver packet payload access must go through the Tahoe packet data methods and packet-buffer state: `getDataVirtualAddress()`, `getDataLength()`, `getDataOffset()`, and `setDataOffsetAndLength(...)`.
+- actual behavior: local code reads `IOSkywalkPacketBuffer::mBufletHandle`, dereferences `kern_buflet_t::buf_ctl`, copies through `bc_addr`, and writes `__buflet.__doff/__dlen` directly.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` lines `1448..1462` and `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction(...)` lines `1318..1325`.
+- evidence from runtime:
+  - `/Users/bob/Projects/itlwm/crash.txt`: CR-097 UUID `CEEB2EC1-072B-385B-9BBF-191E77C470C0`, `RIP ... _buflet_get_object_address + 0x11`, caller `skywalkRxInput + 0x378`, `RAX=0x0fa0000000000000`.
+  - `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-skywalk-packet-data-api-evidence-20260425.txt`: loaded/on-disk CR-097 identity, current helper disassembly, current RX disassembly, Tahoe packet vtable, and AppleBCMWLAN packet data reference snippets.
+- evidence from decomp:
+  - Tahoe `IOSkywalkPacket` vtable places packet data methods before `prepareWithQueue`: `getDataVirtualAddress` at slot `0x178`, `getDataIOVirtualAddress` at `0x180`, `prepareWithQueue` at `0x188`.
+  - `IOSkywalkPacket::getDataVirtualAddress()` derives the data pointer from `IOSkywalkPacketBuffer::mMemorySegment` and `mMemorySegmentOffset`, not from `kern_buflet_t::buf_ctl`.
+  - Tahoe packet data setters validate requested offset/length against the packet buffer pool buffer size and update packet-buffer `mDataOffset`/`mDataLength`.
+  - AppleBCMWLAN driver packet copy/RX completion paths use packet virtual address, data length, and data offset methods; no driver-side `kern_buflet_t` field dereference is present in the reference snippets for these data-flow operations.
+- exact semantic mismatch between reference and our code: reference packet data flow treats `kern_buflet_t` as owned by Skywalk internals and exposes data access through packet methods; local code treats `mBufletHandle` as a stable public driver data pointer source and dereferences private `buf_ctl` directly.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - packet preparation with `IOSkywalkPacket::prepareWithQueue(queue, direction, 0)`
+    - packet-buffer discovery with `IOSkywalkPacket::getPacketBuffers(...)`
+    - RX data pointer with `IOSkywalkPacket::getDataVirtualAddress()`
+    - RX packet data state with `IOSkywalkPacket::setDataOffsetAndLength(0, len)`
+    - TX data pointer with `IOSkywalkPacket::getDataVirtualAddress()`
+    - TX data offset and length with `IOSkywalkPacket::getDataOffset()` and `IOSkywalkPacket::getDataLength()`
+    - RX buffer size bound from local pool contract `SKYWALK_BUF_SIZE`, which is the value assigned to `poolOpts.bufferSize`
+    - enqueue of prepared RX packets through `IOSkywalkRxCompletionQueue::enqueuePackets(...)`
+    - TX delivery through existing `outputPacket(...)`
+  - expected contract at each touchpoint:
+    - `prepareWithQueue(...)` must run before packet buffer/data access and remain at Tahoe slot `0x188`.
+    - `getPacketBuffers(...)` must confirm at least one actual buffer before packet data operations.
+    - `getDataVirtualAddress()` must provide the base host pointer for the first packet buffer.
+    - `setDataOffsetAndLength(0, len)` must publish packet-buffer data offset and length and return success only when the requested span fits the pool buffer.
+    - TX reads must use packet-published offset/length rather than private buflet fields.
+    - RX enqueue remains unchanged after the packet data state is set.
+  - why no relevant touchpoints are missing:
+    - the panic occurs before RX copy and before enqueue, exactly at the private data pointer source.
+    - TX has the same private data pointer source and is in the same connection data-plane scope, so it must be corrected with the same packet API to avoid moving the same class of failure to EAPOL TX.
+    - queue creation, pool creation, WCL events, association state, key install, DHCP, and internet reachability are later scopes because they cannot be evaluated while packet data access panics.
+  - why proposed path adds no extra system-visible side effects:
+    - no event replay, callback, retry, timer, forced success, artificial delay, fallback, or state-machine change is added.
+    - packet allocation, preparation, buffer discovery, enqueue, and TX `outputPacket(...)` flow remain unchanged.
+    - the only behavior change is replacing private field dereferences with existing Tahoe packet data methods that expose the same packet payload state.
+- why this is root cause and not just correlation:
+  - the panic instruction is inside the local private helper and is reached only because the RX path reads `mBufletHandle` and dereferences `buf_ctl`.
+  - CR-097 proves the helper now uses the correct `0x24` layout offset, so the remaining panic is not the previous packing bug.
+  - Tahoe decomp provides a packet data API that supplies the data pointer without dereferencing `buf_ctl`, and AppleBCMWLAN driver snippets use packet-level accessors for comparable packet copy/RX operations.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it keeps Skywalk packet ownership inside Skywalk objects and uses their virtual data interface, as the reference driver does.
+  - it removes local driver dependence on private `__kern_buflet` and `skmem_bufctl` internals for data movement.
+  - it preserves the already proven Tahoe vtable alignment from CR-096.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`: remove local private buflet struct/helper block, update `skywalkTxAction(...)`, update `skywalkRxInput(...)`.
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`: record this anomaly and candidate.
+- forbidden alternative fixes considered and rejected:
+  - add non-canonical/null guards around `buf_ctl`: rejected as masking private-state misuse.
+  - keep direct buflet access but use `kern_buflet_*` external functions: rejected because it still uses the same private buflet handle as the data pointer source and does not match Apple driver packet-data semantics.
+  - retry `prepareWithQueue(...)` or `getPacketBuffers(...)`: rejected because both already succeed before the private helper panic.
+  - bypass Skywalk RX back to legacy `_if_input(...)`: rejected because it would undo the Tahoe Skywalk path instead of aligning it.
+  - synthesize success or suppress RX drops: rejected because the failure is a kernel panic in data access, not a status-reporting issue.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and require no calls to `_buflet_get_object_address`, `_buflet_get_object_limit`, `_buflet_set_data_offset`, or `_buflet_set_data_length`
+  - inspect built TX/RX data path and require packet vtable calls to `getDataVirtualAddress` (`*0x178`), RX `setDataOffsetAndLength` (`*0x158`), and no direct `mBufletHandle` read in `skywalkRxInput(...)`
+  - create CR-098 Stage 1 request with exact diff artifact and hashes
+  - after `APPROVED_FOR_AFTER_FIX_RUNTIME`, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo panic/log/regdiag evidence. Pass criterion for this claim: no panic at `_buflet_get_object_address(...)` and no built reference to the removed local helper path.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-ENQUEUE-VTABLE-025
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-098 structurally removes the private `_buflet_*` crash path, but its built RX enqueue call dispatches to the wrong Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(...)` overload and would send an `IOSkywalkPacket **` array through the raw/queue-entry enqueue path.
+- first visible manifestation: CR-098 built disassembly of `skywalkRxInput(...)` shows the RX enqueue call as `callq *0x2a0(%rax)`.
+- expected system behavior: `skywalkRxInput(...)` passes `const IOSkywalkPacket *pktArray[]` to the Tahoe overload that walks `IOSkywalkPacket` objects, calls packet `completeWithQueue(queue, Rx, 0)`, disposes/completes packet state, builds the packet chain, and enqueues it to Skywalk. Tahoe vtable slot for that overload is `0x2a8`.
+- actual behavior: the local SDK declares `enqueuePackets(const IOSkywalkPacket **, ...)` before `enqueuePackets(const queue_entry *, ...)`, so the source call compiles to slot `0x2a0`. Tahoe slot `0x2a0` accepts the raw queue-entry/raw packet path and does not call packet `completeWithQueue(...)` for the supplied packet object array.
+- divergence point: `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h` local declaration order at lines `62..64` is `requestEnqueue`, `IOSkywalkPacket ** enqueuePackets`, `queue_entry * enqueuePackets`; Tahoe vtable/decomp shows `requestEnqueue` at `0x298`, raw/queue-entry enqueue at `0x2a0`, and `IOSkywalkPacket **` enqueue at `0x2a8`.
+- evidence:
+  - disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-098-skywalk-tx-rx-disasm-20260425.txt` (`sha256 61e0b151f908ecbe1ae65ccf2bfc69131c6a6de15272d886d888be2b261365fd`) shows `skywalkRxInput(...)` calls `*0x2a0(%rax)` for enqueue.
+  - focused evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-rx-enqueue-vtable-abi-evidence-20260425.txt` (`sha256 d3153c112e3122a139a3b2aafa773676ce3c328aea02c22928d16bb4a9870c1a`) records the CR-098 call site, local header order, Tahoe vtable slots `0x298/0x2a0/0x2a8`, and decomp of the two overloads.
+  - decomp: Tahoe `FUN_ffffff8002a59cda` at vtable slot `0x2a0` validates count/capacity and calls raw enqueue helpers `FUN_ffffff8002a3c35e` / `FUN_ffffff8002a3c21c`; it does not call packet virtual `completeWithQueue(...)`.
+  - decomp: Tahoe `FUN_ffffff8002a59d84` at vtable slot `0x2a8` treats `param_2` as a packet-object chain/array, calls packet `getDataLength()` via `*0x140`, packet `completeWithQueue(..., 2, 0)` via `*0x198`, packet dispose/completion via `*0x1e0`, and finally enqueues the built chain with `FUN_ffffff80009ca3f0(..., chain, count, 1)`.
+- candidate causes:
+  - confirmed: local `IOSkywalkRxCompletionQueue.h` overload order is stale relative to Tahoe BootKC and compiles the packet-array enqueue call to slot `0x2a0` instead of `0x2a8`.
+- rejected causes:
+  - CR-098 packet data API itself: rejected as the first issue; packet data slots `0x178` and `0x158` are correct, but the later RX queue enqueue slot is wrong.
+  - changing the source call to a raw queue-entry path: rejected because local source has an `IOSkywalkPacket *` object, and Tahoe packet-object enqueue performs required `completeWithQueue(..., Rx, ...)` ownership transfer.
+  - hard-coded vtable call to `0x2a8`: rejected because the header ABI can be aligned and hard-coded calls are brittle.
+  - installing CR-098 anyway: rejected because structural evidence already proves the built enqueue call targets the wrong overload before runtime.
+- confirmed deviation: local RX completion queue vtable declaration order differs from Tahoe BootKC for the two `enqueuePackets(...)` overloads.
+- root cause: CR-098 would remove the buflet panic but then enqueue the prepared RX packet through the raw enqueue overload. That overload is not semantically compatible with `IOSkywalkPacket **` and skips the packet-object `completeWithQueue(..., Rx, ...)` lifecycle path required by Tahoe.
+- fix: implemented locally. `scripts/build_tahoe.sh::patch_mackernelsdk` now reorders the local `IOSkywalkRxCompletionQueue.h` overload declarations so `enqueuePackets(const queue_entry *, ...)` precedes `enqueuePackets(const IOSkywalkPacket **, ...)`. The existing `skywalkRxInput(...)` source call now compiles to Tahoe slot `0x2a8`.
+- verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - build evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-build-20260425-rx-enqueue-vtable.txt` (`sha256 21b19b45851d57a8893abb78fd1dc547815d75d9959da160122157a42070dad3`) shows `** BUILD SUCCEEDED **` and `OK: all 851 undefined symbols resolve against BootKC`.
+  - built binary: `Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm`, UUID `21E25E8B-0BB4-3946-9F0F-F002C5548D3D`, `sha256 9485035f6ced333f203438de63d4614dc74e22d8e7bec5eca1ef27347a55b327`.
+  - header check: patched `IOSkywalkRxCompletionQueue.h` lines `62..64` are `requestEnqueue`, `queue_entry * enqueuePackets`, `IOSkywalkPacket ** enqueuePackets`.
+  - disassembly evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-skywalk-tx-rx-disasm-20260425.txt` shows `skywalkRxInput(...)` dispatching packet-object RX enqueue through `callq *0x2a8(%rax)` and contains no RX enqueue dispatch through `*0x2a0(%rax)`.
+- notes: CR-098 Stage 1 request is superseded by this finding and must not be used for install/runtime. CR-099 must include both CR-098 packet-data API changes and this RX enqueue ABI correction.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-ENQUEUE-VTABLE-025
+- symptom: built CR-098 RX path calls `IOSkywalkRxCompletionQueue` vtable slot `0x2a0` for `enqueuePackets(pktArray, 1, 0)`, but Tahoe slot `0x2a0` is the raw/queue-entry overload, not the `IOSkywalkPacket **` overload.
+- expected system behavior: RX packet-object enqueue must dispatch to Tahoe slot `0x2a8`, where the queue walks the packet object chain, calls packet `completeWithQueue(queue, Rx, 0)`, disposes/completes packet state, builds the kernel packet chain, and enqueues it.
+- actual behavior: local header order maps the `IOSkywalkPacket **` overload to slot `0x2a0`.
+- exact divergence point: `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h` declaration order for the two `enqueuePackets(...)` overloads.
+- evidence from runtime/build:
+  - CR-098 built disassembly shows `skywalkRxInput(...)` enqueue dispatch as `callq *0x2a0(%rax)`.
+  - No after-fix runtime is needed or allowed for this finding because the wrong vtable slot is proven structurally before install.
+- evidence from decomp:
+  - Tahoe `IOSkywalkRxCompletionQueue_vptr`: `0x298` = request enqueue, `0x2a0` = raw/queue-entry enqueue, `0x2a8` = packet-object enqueue.
+  - Tahoe slot `0x2a8` function calls packet `getDataLength()`, packet `completeWithQueue(..., 2, 0)`, and packet completion/dispose before enqueuing the built packet chain.
+  - Tahoe slot `0x2a0` calls raw enqueue helpers directly and does not perform packet-object completion.
+- exact semantic mismatch between reference and our code: our source passes a packet object array but the stale header compiles that source call to the raw enqueue ABI slot, bypassing required packet-object lifecycle semantics.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkRxCompletionQueue::requestEnqueue(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(const queue_entry *, UInt32, IOOptionBits)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(const IOSkywalkPacket **, UInt32, IOOptionBits)`
+    - packet `completeWithQueue(..., kIOSkywalkPacketDirectionRx, 0)` invoked by the packet-object enqueue overload
+    - packet `getDataLength()` and packet completion/dispose invoked before final Skywalk chain enqueue
+  - expected contract at each touchpoint:
+    - request enqueue remains at `0x298`.
+    - raw/queue-entry enqueue remains at `0x2a0`.
+    - packet-object enqueue must be at `0x2a8`.
+    - local `skywalkRxInput(...)` packet-array call must dispatch to `0x2a8`.
+  - why no relevant touchpoints are missing:
+    - the only local source call to RX completion queue `enqueuePackets(...)` passes `const IOSkywalkPacket *pktArray[]`.
+    - decomp identifies exactly which overload performs the required packet-object lifecycle transfer.
+    - TX submission and packet data slots are separate vtables and are already covered by CR-096/CR-098.
+  - why proposed path adds no extra system-visible side effects:
+    - no runtime logic, retry, event, timer, payload, forced state, or fallback is added.
+    - the source call stays identical; only the local SDK declaration order is aligned so the virtual dispatch reaches the Tahoe implementation for that source type.
+- why this is root cause and not just correlation:
+  - the built binary already proves the wrong call target (`*0x2a0`).
+  - Tahoe decomp proves the semantics of `0x2a0` and `0x2a8`.
+  - the local header order directly determines the compiled virtual slot.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it makes the local header vtable order match Tahoe BootKC and sends the packet object array to the reference packet-object enqueue implementation.
+- files/functions to modify:
+  - `scripts/build_tahoe.sh::patch_mackernelsdk`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - hard-code vtable slot `0x2a8` in driver code: rejected; header ABI alignment is the correct structural fix.
+  - cast the packet array to `queue_entry *`: rejected; it would explicitly select the wrong raw path.
+  - ignore the issue and install CR-098: rejected; structural evidence already proves the wrong target.
+  - add retries or fallback enqueue calls: rejected as masking/guessing and would risk duplicate packet delivery.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - run `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect patched `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h` and require raw/queue-entry overload before packet-object overload
+  - inspect built `skywalkRxInput(...)` and require RX enqueue dispatch through `*0x2a8(%rax)`, not `*0x2a0(%rax)`
+  - create CR-099 Stage 1 request superseding CR-098
+  - only after approval, install without unloading, reboot, and collect one connection-attempt runtime.
+- implementation verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - build evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-build-20260425-rx-enqueue-vtable.txt` (`sha256 21b19b45851d57a8893abb78fd1dc547815d75d9959da160122157a42070dad3`).
+  - built binary UUID: `21E25E8B-0BB4-3946-9F0F-F002C5548D3D`.
+  - built binary sha256: `9485035f6ced333f203438de63d4614dc74e22d8e7bec5eca1ef27347a55b327`.
+  - disassembly evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-skywalk-tx-rx-disasm-20260425.txt` confirms RX enqueue uses `callq *0x2a8(%rax)`.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-ENQUEUE-OVERLOAD-SHAPE-026
+- status: CONFIRMED_DEVIATION
+- symptom: CR-099 corrected the RX enqueue call away from slot `0x2a0`, but further structural review shows that this was the wrong correction: the built CR-099 binary passes a stack array of packet pointers to Tahoe slot `0x2a8`, while Tahoe slot `0x2a8` expects a direct packet/chain head pointer.
+- first visible manifestation: CR-099 built `skywalkRxInput(...)` disassembly shows the source call `fRxQueue->enqueuePackets(pktArray, 1, 0)` dispatching through `callq *0x2a8(%rax)`.
+- expected system behavior: when local source passes an array of one packet pointer, the virtual dispatch must target Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, UInt32, IOOptionBits)` at slot `0x2a0`.
+- actual behavior: CR-099 dispatches the same array argument to Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket *, UInt32, IOOptionBits)` at slot `0x2a8`.
+- divergence point: `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h` local declarations and `scripts/build_tahoe.sh::patch_mackernelsdk` CR-099 patch model the second overload as `queue_entry *` and reorder it ahead of the packet-array overload; this makes the packet-array source call compile to the chain/head overload slot.
+- evidence:
+  - structural evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-100-rx-enqueue-overload-shape-evidence-20260425.txt` (`sha256 b49840b174fffc3082507583ccee73984ad91770510bc040b129ae24fc651074`).
+  - Tahoe symbols: `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket* const*, unsigned int, unsigned int)` is at `0xffffff8002a59cda`; `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket*, unsigned int, unsigned int)` is at `0xffffff8002a59d84`.
+  - vtable evidence from CR-099: request enqueue is slot `0x298`; slot `0x2a0` maps to `0xffffff8002a59cda`; slot `0x2a8` maps to `0xffffff8002a59d84`.
+  - CR-099 disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-099-skywalk-tx-rx-disasm-20260425.txt` (`sha256 7d7b0ae6ff4c4876267f6a3db765015e21c5cdb2af883c52ae40af3008598ec1`) shows `callq *0x2a8(%rax)`.
+  - decomp: Tahoe slot `0x2a0` helper walks `*(param_2 + index * 8)` as packet objects, calls packet `getDataLength()` via `*0x140`, packet `completeWithQueue(..., 2, 0)` via `*0x198`, packet dispose via `*0x1e0`, then enqueues the built chain.
+  - decomp: Tahoe slot `0x2a8` treats `param_2` itself as a packet object/chain head, reads packet fields such as `param_2[5]`, and invokes packet vtable methods on `param_2`; it is not compatible with a stack `IOSkywalkPacket *[1]` array.
+- candidate causes:
+  - confirmed: CR-099 mixed up overload order with overload shape. It reached a real Tahoe slot, but not the slot matching the source argument shape.
+- rejected causes:
+  - `0x2a0` as an incompatible raw/queue-entry path: rejected by Tahoe symbols and helper decomp; for the packet-array overload, `0x2a0` is the correct array path.
+  - keeping CR-099 and changing only the source array constness: rejected because the header would still route the source to the chain/head slot.
+  - passing `rxPkt` directly to `0x2a8`: rejected for this batch because the local code currently constructs an array and the array overload has direct Tahoe symbol/decomp support for `IOSkywalkPacket * const *`.
+- confirmed deviation: local RX completion queue header must declare Tahoe overloads as packet-array at `0x2a0` and packet-chain/head at `0x2a8`; CR-099 declares/reorders them incorrectly.
+- root cause: CR-099 would call the direct packet/head overload with the address of a stack packet-pointer array. The Tahoe implementation would interpret that stack address as an `IOSkywalkPacket` object and dereference object fields/vtable through the wrong base pointer.
+- fix: implemented locally for CR-100. `scripts/build_tahoe.sh::patch_mackernelsdk` now rewrites local `IOSkywalkRxCompletionQueue.h` declarations to:
+  - `enqueuePackets(IOSkywalkPacket * const * packets, UInt32 packetCount, IOOptionBits options)` at slot `0x2a0`
+  - `enqueuePackets(IOSkywalkPacket * packet, UInt32 packetCount, IOOptionBits options)` at slot `0x2a8`
+  and `skywalkRxInput(...)` now constructs the local packet array as `IOSkywalkPacket * const pktArray[]`.
+- verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - build evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-100-build-20260425-rx-enqueue-overload-shape.txt` (`sha256 6a87b89c574523897911c6558c5ac8ead23d0fc93527b154112efdd7e709677a`) shows `** BUILD SUCCEEDED **` and `OK: all 851 undefined symbols resolve against BootKC`.
+  - built binary: `Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm`, UUID `0F1CAB30-C052-3D64-9579-3972E7BD7117`, `sha256 e5c6ca9e17175e369f004caddf40b2db3719bae8251fd26d38171f1e0d0bfa36`.
+  - header check: patched `IOSkywalkRxCompletionQueue.h` lines `62..64` are `requestEnqueue`, `IOSkywalkPacket * const * enqueuePackets`, `IOSkywalkPacket * enqueuePackets`.
+  - disassembly evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-100-skywalk-tx-rx-disasm-20260425.txt` (`sha256 b19fa69c45d74d64671693f5235943118efbda38e95d931cb521b5a9465cee5c`) confirms RX packet-array enqueue dispatches through `callq *0x2a0(%rax)`.
+- notes: CR-099 Stage 1 request is superseded by this finding and must not be used for install/runtime.
+- notes: CR-099 Stage 1 request is superseded by this finding and must not be used for install/runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-ENQUEUE-OVERLOAD-SHAPE-026
+- symptom: CR-099 builds `skywalkRxInput(...)` so the RX packet array dispatches to Tahoe slot `0x2a8`, whose implementation expects a direct packet/chain head pointer.
+- expected system behavior: `IOSkywalkPacket * const *` array source calls must dispatch to Tahoe slot `0x2a0`; direct `IOSkywalkPacket *` chain/head source calls must dispatch to Tahoe slot `0x2a8`.
+- actual behavior: CR-099 source passes `const IOSkywalkPacket *pktArray[]`, but the patched header order maps this call to slot `0x2a8`.
+- exact divergence point: `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h` overload declarations generated by `scripts/build_tahoe.sh::patch_mackernelsdk`.
+- evidence from runtime: no after-fix runtime is allowed for CR-099 because structural ABI evidence already proves the argument-shape mismatch before install.
+- evidence from decomp:
+  - Tahoe symbol table names `0xffffff8002a59cda` as `enqueuePackets(IOSkywalkPacket* const*, UInt32, IOOptionBits)` and `0xffffff8002a59d84` as `enqueuePackets(IOSkywalkPacket*, UInt32, IOOptionBits)`.
+  - Tahoe slot `0x2a0` dereferences `param_2 + index * 8`, consistent with an array of packet pointers.
+  - Tahoe slot `0x2a8` treats `param_2` itself as a packet object, reads `param_2[5]`, and calls packet vtable methods on `param_2`.
+- exact semantic mismatch between reference and our code: the reference has two packet overloads, array and direct chain/head; CR-099 models them as raw/queue-entry and packet-array, causing the array argument to select the direct chain/head overload.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkRxCompletionQueue::requestEnqueue(...)` slot `0x298`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, UInt32, IOOptionBits)` slot `0x2a0`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket *, UInt32, IOOptionBits)` slot `0x2a8`
+    - local `skywalkRxInput(...)` packet array argument
+  - expected contract at each touchpoint:
+    - request enqueue remains at `0x298`.
+    - packet-array enqueue must remain at `0x2a0`.
+    - packet-chain/head enqueue must remain at `0x2a8`.
+    - local array source call must have type `IOSkywalkPacket * const *`.
+  - why no relevant touchpoints are missing:
+    - the only local source call to RX completion queue `enqueuePackets(...)` constructs a one-element packet pointer array.
+    - decomp and symbols identify both overloads and their distinct argument shapes.
+    - successful RX payload preparation, packet data slots, and pool allocation slots are separate already-covered touchpoints and are not changed by this fix.
+  - why proposed path adds no extra system-visible side effects:
+    - no runtime logic, retry, fallback, timer, event, state, payload, or ownership transfer is added.
+    - the source continues to enqueue exactly one prepared RX packet; only the header ABI and local array constness are aligned so the virtual dispatch reaches the matching Tahoe overload.
+- why this is root cause and not just correlation:
+  - CR-099 disassembly proves the wrong slot.
+  - Tahoe symbols prove the overload shape of both slots.
+  - Tahoe decomp proves slot `0x2a8` would dereference the stack array pointer as an object pointer.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it declares the same two Tahoe overload shapes and routes the existing packet-array enqueue through the reference packet-array implementation.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `scripts/build_tahoe.sh::patch_mackernelsdk`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - keep CR-099 and install: rejected because it would pass a stack array to the direct packet/head overload.
+  - hard-code vtable slot `0x2a0`: rejected because header ABI alignment is the correct structural fix.
+  - cast the array to the wrong type: rejected because it would hide the ABI mismatch.
+  - switch to direct `rxPkt` chain/head enqueue in this batch: rejected because the current source architecture is packet-array enqueue and the array overload is confirmed.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - run `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect patched `IOSkywalkRxCompletionQueue.h` and require array overload at `0x2a0` before direct packet/head overload at `0x2a8`
+  - inspect built `skywalkRxInput(...)` and require RX enqueue dispatch through `*0x2a0(%rax)`, not `*0x2a8(%rax)`
+  - create CR-100 Stage 1 request superseding CR-099
+  - only after approval, install without unloading, reboot, and collect one connection-attempt runtime.
+- implementation verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - build evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-100-build-20260425-rx-enqueue-overload-shape.txt` (`sha256 6a87b89c574523897911c6558c5ac8ead23d0fc93527b154112efdd7e709677a`).
+  - built binary UUID: `0F1CAB30-C052-3D64-9579-3972E7BD7117`.
+  - built binary sha256: `e5c6ca9e17175e369f004caddf40b2db3719bae8251fd26d38171f1e0d0bfa36`.
+  - disassembly evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-100-skywalk-tx-rx-disasm-20260425.txt` confirms RX packet-array enqueue uses `callq *0x2a0(%rax)`.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-TX-CALLBACK-CONSUMED-027
+- status: CONFIRMED_DEVIATION
+- symptom: the Tahoe TX dequeue path treats the TX action return value as the number of Skywalk packets consumed from the submission queue, but local `skywalkTxAction(...)` returns only the number that reached `outputPacket(...)`. If every packet in a non-empty callback is locally dropped before `outputPacket(...)`, the callback returns `0` and Tahoe enters a non-returning trap path.
+- first visible manifestation: structural audit of Tahoe `IOSkywalkTxSubmissionQueue` after CR-100 found the callback return is used to advance the queue read index and that `uVar4 == 0` from the action enters `FUN_ffffff80004c1af0()`.
+- expected system behavior: for each packet entry consumed from the Skywalk TX submission callback, the driver must return that consumed count even when the packet is locally dropped because data extraction or mbuf allocation failed.
+- actual behavior: local `skywalkTxAction(...)` increments `sent` only after `outputPacket(m, NULL)`, so packet-buffer failures, invalid data spans, `mbuf_allocpacket(...)` failures, and `mbuf_copyback(...)` failures are dropped without contributing to the callback return.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction(...)`, return value and `sent++` placement.
+- evidence:
+  - decomp: Tahoe `FUN_ffffff8002a58dc8` / `FUN_ffffff8002a58eec` call the registered TX action with `(owner, queue, packetArray, availableCount, refCon)`, add the returned value to internal packet counters, and advance the ring by that returned value.
+  - decomp: the same functions enter `FUN_ffffff80004c1af0()` when the action returns `0` for a non-empty available packet span.
+  - local source: `skywalkTxAction(...)` returns `sent`, and `sent` increments only after `outputPacket(...)`, not after consuming a Skywalk packet entry.
+  - local source: pre-output failure branches all `continue` after `sRT.txPktDrop++`, so a non-empty callback can return `0`.
+- candidate causes:
+  - confirmed: local callback return semantics are "delivered to `outputPacket`", while Tahoe's queue contract requires "consumed from Skywalk submission queue".
+- rejected causes:
+  - forcing output success: rejected because `outputPacket(...)` owns mbuf delivery/drop and must still report its real result.
+  - retrying failed mbuf allocation/copy: rejected as retry/fallback not present in the system contract.
+  - returning `count` without processing packet data: rejected for normal packets because it would drop valid traffic; the fix must still try to deliver every packet and only consume/drop when local extraction fails.
+- confirmed deviation: the callback result is a queue-consumption contract, not a hardware-delivery success count.
+- root cause: a future non-empty TX callback where every local packet extraction/copy path fails would deterministically return `0` and trigger Tahoe's non-returning queue assertion path.
+- fix: planned for CR-101. Track `delivered` separately for telemetry, but return the number of packet entries consumed from the callback. Count local extraction/copy/output failures as consumed drops, not as unconsumed queue entries.
+- verification:
+  - inspect source to confirm every non-empty callback with a valid packet array returns the number of consumed entries, not delivered entries.
+  - inspect built `skywalkTxAction(...)` for callback return fed by consumed/count accounting.
+  - build Tahoe binary and verify BootKC symbol resolution.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-TX-CALLBACK-CONSUMED-027
+- symptom: local TX callback can return `0` for a non-empty Skywalk submission span when all packets are dropped before `outputPacket(...)`.
+- expected system behavior: `IOSkywalkTxSubmissionQueue` action return is the number of packet entries consumed from the queue.
+- actual behavior: `skywalkTxAction(...)` returns the number of packets that reached `outputPacket(...)`.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction(...)`.
+- evidence from runtime/build:
+  - CR-100 built disassembly proves the current TX callback uses the packet data API and then returns local `sent` accounting.
+  - no after-fix runtime is required before this structural correction because Tahoe decomp proves the zero-return path enters a non-returning trap.
+- evidence from decomp:
+  - Tahoe `IOSkywalkTxSubmissionQueue` dequeue helpers call the action pointer and use its return value to advance the packet ring/read index.
+  - if the action returns `0` while packet entries were available, Tahoe calls `FUN_ffffff80004c1af0()`.
+- exact semantic mismatch between reference and our code: Tahoe requires callback return to mean consumed queue entries; local code makes it mean successfully handed to the legacy `outputPacket(...)` path.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkTxSubmissionQueueAction` callback return value
+    - Skywalk packet data extraction through `getPacketBuffers(...)`, `getDataVirtualAddress()`, `getDataOffset()`, `getDataLength()`
+    - mbuf allocation/copy from Skywalk packet data
+    - legacy `outputPacket(...)` delivery/drop ownership of the mbuf
+  - expected contract at each touchpoint:
+    - callback return is consumed packet entries, not lower-layer delivery success.
+    - invalid packet data and local allocation/copy failures are local drops after the entry has been inspected/consumed.
+    - `outputPacket(...)` continues to own and free or enqueue the mbuf it receives.
+  - why no relevant touchpoints are missing:
+    - the TX callback receives only a packet array and count and returns only a count; there is no separate per-packet nack/retry surface in the action ABI.
+    - all local pre-output drop branches are inside the same callback and therefore must be represented in the same return count.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, delay, replay, forced link state, payload mutation, or extra callback is added.
+    - valid packets still follow the same `outputPacket(...)` path.
+    - dropped packets were already dropped locally; only the callback return now reports them as consumed so Skywalk does not re-enter/assert on a zero-progress callback.
+- why this is root cause and not just correlation:
+  - the decomp proves the exact non-returning condition on action return `0`.
+  - local source proves every pre-output drop branch can keep `sent == 0`.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it satisfies the Tahoe queue consumption contract while preserving the existing driver-owned TX delivery path.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - return forced success from `outputPacket(...)`: rejected because it masks real lower-layer drops.
+  - panic/abort on invalid packet entries: rejected because Tahoe already requires non-zero progress from the callback.
+  - add retry/poll/backoff around mbuf failures: rejected as unproven fallback behavior.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkTxAction(...)` and confirm local drops no longer make the callback return `0` for non-empty packet spans
+  - create CR-101 Stage 1 request superseding CR-100
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-ERROR-OWNERSHIP-028
+- status: CONFIRMED_DEVIATION
+- symptom: if RX packet-array enqueue fails, local `skywalkRxInput(...)` frees the source mbuf but does not return the prepared `IOSkywalkPacket` to `fRxPool`, leaking a packet/pool entry on a failed ownership-transfer path.
+- first visible manifestation: structural audit of the CR-100 RX path found `ret != kIOReturnSuccess` after `fRxQueue->enqueuePackets(pktArray, 1, 0)` records telemetry and returns `EIO` without `fRxPool->deallocatePacket(rxPkt)`.
+- expected system behavior: the RX packet remains driver/pool-owned until Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)` accepts it and returns success; on pre-transfer failure the producer must deallocate it.
+- actual behavior: local code deallocates `rxPkt` on allocation/prepare/buffer/data setup failures, but not on enqueue failure.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`, `ret != kIOReturnSuccess` branch after RX completion queue enqueue.
+- evidence:
+  - decomp: Tahoe array enqueue `FUN_ffffff8002a59cda` returns non-success before calling the transfer helpers when the queue is missing, disabled, blocked, or the arguments/capacity are invalid.
+  - decomp: on the success path, `FUN_ffffff8002a59cda` calls helper `FUN_ffffff8002a3c21c` / `FUN_ffffff8002a3c35e`; those helpers walk the packet array, call packet `completeWithQueue(..., 2, 0)`, and perform completion/dispose/queue enqueue operations before the top-level function returns `0`.
+  - local source: all earlier RX failure branches call `fRxPool->deallocatePacket(rxPkt)`; the enqueue-failure branch does not.
+- candidate causes:
+  - confirmed: local code treats enqueue failure as if ownership might have transferred, but Tahoe's non-success returns happen before transfer helpers run.
+- rejected causes:
+  - deallocate after successful enqueue: rejected because Tahoe success path has consumed/completed the packet.
+  - retry enqueue on failure: rejected as unproven fallback and potential duplicate delivery.
+  - ignore the leak because the path is rare: rejected because queue disabled/race paths are part of RX lifecycle coverage.
+- confirmed deviation: RX ownership transfer is not balanced on the enqueue failure branch.
+- root cause: an enqueue failure leaves a prepared packet allocated in the RX pool, which can exhaust pool capacity over repeated failures and move the data path to later allocation drops.
+- fix: planned for CR-101. On `ret != kIOReturnSuccess`, deallocate `rxPkt` before returning the error.
+- verification:
+  - source check that every post-allocation pre-success failure branch deallocates `rxPkt`.
+  - disassembly check that the enqueue-failure branch contains the pool `deallocatePacket(...)` call after RX enqueue returns non-success.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-ERROR-OWNERSHIP-028
+- symptom: `skywalkRxInput(...)` leaks a prepared RX packet when `IOSkywalkRxCompletionQueue::enqueuePackets(...)` returns non-success.
+- expected system behavior: packet ownership transfers to Skywalk only on successful enqueue; otherwise the driver must return the packet to the pool.
+- actual behavior: enqueue failure records diagnostics and returns `EIO` without deallocating `rxPkt`.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`, `ret != kIOReturnSuccess` branch.
+- evidence from runtime/build:
+  - CR-100 source/disassembly establishes the current branch shape and that RX enqueue dispatches to the Tahoe packet-array overload.
+  - after-fix runtime is not required before this structural ownership correction because the non-success ownership path is proven by Tahoe decomp.
+- evidence from decomp:
+  - Tahoe `FUN_ffffff8002a59cda` returns `0xe00002c2`, `0xe00002d8`, `0xe00002d7`, or `0xe00002d5` before transfer helpers run.
+  - only the success path calls helpers that complete/dispose/enqueue the packet array and then returns `0`.
+- exact semantic mismatch between reference and our code: local code does not reclaim a packet on a failed ownership-transfer call, while Tahoe only consumes the packet on success.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkPacketBufferPool::allocatePacket(...)`
+    - `IOSkywalkPacket::prepareWithQueue(...)`
+    - `IOSkywalkPacket::setDataOffsetAndLength(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)`
+    - `IOSkywalkPacketBufferPool::deallocatePacket(...)`
+  - expected contract at each touchpoint:
+    - allocation gives the driver a pool packet.
+    - preparation/data setup keeps the driver responsible until enqueue accepts the packet.
+    - successful enqueue consumes/transfers the packet.
+    - failed enqueue leaves the packet with the driver/pool and requires deallocation.
+  - why no relevant touchpoints are missing:
+    - all RX post-allocation branches either fail before enqueue or succeed at enqueue; this fix covers the only missing pre-success deallocation branch.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, extra enqueue, event, payload change, forced state, or callback is added.
+    - the packet is reclaimed only on a path where Tahoe returned non-success before ownership transfer.
+- why this is root cause and not just correlation:
+  - decomp proves non-success returns precede transfer helper invocation.
+  - source proves the local non-success branch omits deallocation.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it keeps ownership with the producer until the reference enqueue implementation accepts the packet.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - deallocate unconditionally after enqueue: rejected because success path transfers ownership.
+  - retry enqueue after failure: rejected as unproven fallback and duplicate-delivery risk.
+  - suppress the enqueue error: rejected because it masks a real queue state failure.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and confirm failed enqueue branches to pool `deallocatePacket(...)`
+  - create CR-101 Stage 1 request superseding CR-100
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-COPYDATA-029
+- status: CONFIRMED_DEVIATION
+- symptom: RX can publish a Skywalk packet whose payload copy from the source mbuf failed, because `skywalkRxInput(...)` ignores the `errno_t` returned by `mbuf_copydata(...)`.
+- first visible manifestation: source audit of the CR-100 RX path found `mbuf_copydata(m, 0, len, objAddr);` followed unconditionally by `rxPkt->setDataOffsetAndLength(...)` and RX enqueue.
+- expected system behavior: RX packet data must be copied successfully into the Skywalk packet buffer before data length is published and the packet is enqueued.
+- actual behavior: local code publishes length/enqueues even if `mbuf_copydata(...)` returns an error.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`, mbuf-to-Skywalk buffer copy step.
+- evidence:
+  - SDK header: `MacKernelSDK/Headers/sys/kpi_mbuf.h` declares `extern errno_t mbuf_copydata(const mbuf_t mbuf, size_t offset, size_t length, void *out_data);`.
+  - local source: the return value is currently discarded.
+  - local RX sequence: `setDataOffsetAndLength(0, len)` and `enqueuePackets(...)` run after the discarded result, so a failed copy can expose invalid payload bytes to the system.
+- candidate causes:
+  - confirmed: RX data publication lacks the required local copy success gate.
+- rejected causes:
+  - retry copy: rejected as unproven fallback.
+  - enqueue zero-length/partial data on copy failure: rejected because the source frame has already failed the payload copy contract.
+  - suppress diagnostics: rejected because the existing regdiag data result should record the failure.
+- confirmed deviation: local RX path does not check a failing system KPI before publishing packet data.
+- root cause: a copy failure would turn a local RX input error into corrupted data delivery instead of a clean drop and packet deallocation.
+- fix: planned for CR-101. Check `mbuf_copydata(...)` return, deallocate `rxPkt`, record diagnostics, free the source mbuf, and return `EIO` before setting data length/enqueue.
+- verification:
+  - source check that RX data length/enqueue are reachable only after `mbuf_copydata(...) == 0`.
+  - build/disassembly check that the copy result is tested before `setDataOffsetAndLength(...)`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-COPYDATA-029
+- symptom: `skywalkRxInput(...)` ignores `mbuf_copydata(...)` failure and can publish invalid RX payload.
+- expected system behavior: only successfully copied mbuf payload is published via `IOSkywalkPacket::setDataOffsetAndLength(...)` and RX enqueue.
+- actual behavior: copy result is ignored.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`.
+- evidence from runtime/build:
+  - CR-100 source/disassembly establishes the current RX copy/publish sequence.
+  - this is a structural RX contract correction; after-fix runtime is only needed after Stage 1 approval with the combined CR-101 build.
+- evidence from decomp:
+  - Tahoe Skywalk packet enqueue consumes the data length already present on the packet; it does not validate that the producer successfully copied the mbuf payload.
+- exact semantic mismatch between reference and our code: the local producer marks/publishes packet data even when the local mbuf copy API reports failure.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `mbuf_copydata(...)`
+    - `IOSkywalkPacket::setDataOffsetAndLength(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(...)`
+    - `IOSkywalkPacketBufferPool::deallocatePacket(...)`
+  - expected contract at each touchpoint:
+    - copy success is required before data length publication.
+    - failed copy leaves the packet driver-owned and must deallocate it.
+    - enqueue is only reached with valid copied data.
+  - why no relevant touchpoints are missing:
+    - the RX payload enters Skywalk only through this copy, length publication, and enqueue sequence.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, fallback, duplicate enqueue, event, or state change is added.
+    - only an error path that already cannot deliver valid payload is converted into a clean drop.
+- why this is root cause and not just correlation:
+  - the source and SDK signature prove a failure result is possible and currently ignored before data publication.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it preserves the same RX producer path and enforces the required local copy-before-publish ordering.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - retry copy: rejected as fallback.
+  - publish empty data: rejected because it would mutate packet payload semantics.
+  - ignore the return because failures are rare: rejected because this is the only gate before publishing bytes to Skywalk.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and confirm `setDataOffsetAndLength(...)` is reachable only after copy success
+  - include this check in CR-101 Stage 1 request
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-101-SKYWALK-RX-TX-LIFECYCLE
+- status: FIX_IMPLEMENTED
+- anomalies covered:
+  - `A-DATA-SKYWALK-TX-CALLBACK-CONSUMED-027`
+  - `A-DATA-SKYWALK-RX-ERROR-OWNERSHIP-028`
+  - `A-DATA-SKYWALK-RX-COPYDATA-029`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction(...)` now tracks `consumed` separately from `delivered` and returns `consumed`.
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` now checks `mbuf_copydata(...)` before `setDataOffsetAndLength(...)`.
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` now deallocates `rxPkt` on `enqueuePackets(...)` failure.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-build-20260425-skywalk-rx-tx-lifecycle.txt`
+  - build log sha256: `7df1a7ada641e489146d8b4ca2715753c1ed4115ff27996abce085393ba1b182`
+  - built binary UUID: `90488F96-8149-393F-B04A-0E8204F6461B`
+  - built binary sha256: `c5d31c455edc43a1f5ec64454b3351c6b4ea96ca8fb213b8c096b8ef615e4333`
+- disassembly verification:
+  - TX disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-skywalkTxAction-disasm-20260425.txt`
+  - TX disassembly sha256: `4d279e0cb0fcd400ffb6aec3ad5ec410b887ab1edaa710b09fca581b519efa91`
+  - TX disassembly shows `getPacketBuffers` at `*0x120`, `getDataVirtualAddress` at `*0x178`, `getDataOffset` at `*0x150`, `getDataLength` at `*0x140`, `mbuf_allocpacket`, `mbuf_copyback`, and final return from the consumed counter.
+  - RX disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-skywalkRxInput-disasm-20260425.txt`
+  - RX disassembly sha256: `a23774ece2b5d697a16430a51d690357e9f7363ddd3beefa19b7d10d909412d9`
+  - RX disassembly shows `allocatePacket` at `*0x130`, `prepareWithQueue` at `*0x188`, `getDataVirtualAddress` at `*0x178`, `mbuf_copydata` checked before `setDataOffsetAndLength` at `*0x158`, packet-array enqueue at `*0x2a0`, and failed enqueue branch calling pool `deallocatePacket` at `*0x140`.
+- diff artifact:
+  - `/Users/bob/Projects/itlwm/commit-approval/artifacts/CR-101-skywalk-rx-tx-lifecycle.diff`
+  - final sha256 and line count are recorded in the CR-101 Stage 1 request to avoid self-referential diff hash churn.
+- notes:
+  - CR-101 supersedes CR-100 Stage 1 request for install/runtime.
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-PREPARED-DEALLOC-PANIC-030
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-101 panics during an association attempt in the RX Skywalk path with `"default packetCompletion()" @IOSkywalkPacketQueue.cpp:321`.
+- first visible manifestation: user-installed CR-101 binary UUID `90488F96-8149-393F-B04A-0E8204F6461B` showed networks, then the first connection attempt crashed; panic file `/Users/bob/Projects/itlwm/crash.txt` reports `IOSkywalkPacketBufferPool::deallocatePacket(...) + 0x4a` called from `skywalkRxInput + 0x4ee`.
+- expected system behavior: once an `IOSkywalkPacket` has successfully passed `prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)`, failure cleanup must first complete the packet with the RX queue semantics before returning it to the pool.
+- actual behavior: CR-101 calls `fRxPool->deallocatePacket(rxPkt)` directly after the packet has entered or attempted to enter the prepared RX queue lifecycle.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)`, all branches after the `prepareWithQueue(...)` call returns and before successful `fRxQueue->enqueuePackets(...)` that directly call `fRxPool->deallocatePacket(rxPkt)`.
+- evidence:
+  - panic logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-aftercrash-panic-20260425.txt`, sha256 `52578ef850b14580bb6b29a2f994cf258a07985c6d5a7a09c5e2f395417db4a5`, shows `IOSkywalkPacketQueue::bufferCompletion(...)` -> `IOSkywalkPacketBufferPool::deallocatePacket(...)` -> `skywalkRxInput + 0x4ee`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-aftercrash-log-20260425.txt`, sha256 `84ae50586719c8e9e50a81fd1e9981fa045d200748f4de263c81026473483e4d`; loaded kext UUID in panic is the CR-101 reviewed runtime UUID.
+  - disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-101-skywalkRxInput-disasm-20260425.txt`, sha256 `a23774ece2b5d697a16430a51d690357e9f7363ddd3beefa19b7d10d909412d9`; `skywalkRxInput + 0x4ee` is immediately after the failed-enqueue branch call to pool vtable slot `*0x140`.
+  - decomp: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-prepared-rx-packet-lifecycle-evidence-20260425.txt`, sha256 `f57b98d42c7460b739474f709f66a7d87c1f9a4619388cd1f0a65bb89c43c2ee`.
+  - decomp: `IOSkywalkPacket::prepareWithQueue` stores the source queue and sets prepared state bit `2`.
+  - decomp: Tahoe RX completion helpers call packet `completeWithQueue(queue, 2, 0)` before packet disposal on the success path.
+  - decomp: `IOSkywalkPacketBufferPool::deallocatePackets` has a special prepared-packet path and then disposes/returns only after the packet state is no longer prepared; direct deallocation of the CR-101 prepared packet reached the queue default completion panic.
+- candidate causes:
+  - confirmed: CR-101 reclaimed a queue-prepared RX packet through the pool without first running the RX `completeWithQueue(...)` transition.
+  - insufficient data: whether association would otherwise reach EAPOL/key/DHCP after the enqueue failure is no longer observable because the cleanup panic terminates the system first.
+- rejected causes:
+  - RX enqueue overload regression: rejected for this panic because CR-101 disassembly still calls packet-array enqueue through `*0x2a0`.
+  - buflet accessor regression: rejected for this panic because CR-101 no longer uses local `_buflet_*` accessors in `skywalkRxInput(...)`.
+  - diagnostics side effect: rejected for this panic because regdiag was not enabled, and the crashing call is unconditional CR-101 cleanup code.
+- confirmed deviation: local CR-101 code treats `deallocatePacket(...)` as valid for a prepared RX packet, while the Tahoe packet lifecycle requires a queue completion transition for prepared RX packets before pool return.
+- root cause: on failed RX enqueue, direct pool deallocation of the prepared packet invokes Skywalk's default completion path and panics before telemetry/logging can run.
+- fix: planned for CR-102. Add a narrow helper used only after the `prepareWithQueue(...)` call has returned that calls `rxPkt->completeWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)` and then `fRxPool->deallocatePacket(rxPkt)`. Replace every post-prepare/pre-success direct `deallocatePacket(rxPkt)` branch with that helper. Leave allocation failure ownership unchanged.
+- verification:
+  - source check: every failure branch after the `prepareWithQueue(...)` call uses the prepared-packet cleanup helper.
+  - build check: Tahoe build succeeds and BootKC unresolved-symbol validation passes.
+  - disassembly check: post-prepare failure branches call packet slot `*0x198` with direction `2` before pool slot `*0x140`.
+  - runtime check after Stage 1 approval: reboot, attempt one join, and verify no `"default packetCompletion()"` panic; if association still fails, collect sudo logs plus regdiag snapshot/trace for the next blocker.
+- notes:
+  - This supersedes the CR-101 failed-enqueue ownership conclusion. Ownership remains local on enqueue failure, but a prepared packet cannot be returned to the pool through direct deallocation.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-PREPARED-DEALLOC-PANIC-030
+- symptom: CR-101 crashes in `IOSkywalkPacketBufferPool::deallocatePacket(...)` from `skywalkRxInput(...)` after a failed RX enqueue.
+- expected system behavior: a packet prepared with `prepareWithQueue(fRxQueue, Rx, 0)` must be completed through the RX queue lifecycle before it is returned to the pool.
+- actual behavior: failure branches after the `prepareWithQueue(...)` call call `fRxPool->deallocatePacket(rxPkt)` directly.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` after the `prepareWithQueue(...)` call, including prepare non-success, no-buffer, invalid data address/size, copy failure, data-length publish failure, and enqueue failure branches.
+- evidence from runtime:
+  - panic file `CR-101-aftercrash-panic-20260425.txt`, sha256 `52578ef850b14580bb6b29a2f994cf258a07985c6d5a7a09c5e2f395417db4a5`, shows `default packetCompletion()` reached through `IOSkywalkPacketBufferPool::deallocatePacket(...)` from `skywalkRxInput + 0x4ee`.
+  - loaded crashing AirportItlwm UUID is `90488F96-8149-393F-B04A-0E8204F6461B`, matching the CR-101 reviewed runtime binary.
+  - CR-101 RX disassembly maps `+0x4ee` to the failed-enqueue cleanup call to pool `deallocatePacket`.
+- evidence from decomp:
+  - `IOSkywalkPacket::prepareWithQueue` records the source queue and sets prepared state bit `2`.
+  - `IOSkywalkPacket::completeWithQueue` walks packet buffers, performs RX queue completion for direction `2`, and clears prepared state bit `2`.
+  - Tahoe RX enqueue success helpers call packet `completeWithQueue(queue, 2, 0)` before dispose/enqueue accounting.
+  - `IOSkywalkPacketBufferPool::deallocatePackets` is the pool return path after the packet is no longer in prepared queue state; direct prepared deallocation in CR-101 reached the default completion panic.
+- exact semantic mismatch between reference and our code: CR-101 returns a queue-prepared packet to the pool without the RX complete transition that Tahoe uses to unwind prepared RX packet state.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkPacketBufferPool::allocatePacket(...)`
+    - `IOSkywalkPacket::prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)`
+    - packet data inspection/copy/publication through `getPacketBuffers(...)`, `getDataVirtualAddress()`, `mbuf_copydata(...)`, `setDataOffsetAndLength(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)`
+    - `IOSkywalkPacket::completeWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)`
+    - `IOSkywalkPacketBufferPool::deallocatePacket(...)`
+  - expected contract at each touchpoint:
+    - allocation gives the driver a pool packet.
+    - successful preparation attaches packet/buffers to the RX queue and marks the packet prepared.
+    - all local data setup failures before enqueue leave ownership with the driver but still require prepared-state unwind.
+    - failed enqueue leaves ownership with the driver and still requires prepared-state unwind.
+    - `completeWithQueue(..., Rx, 0)` clears the prepared queue lifecycle state.
+    - pool deallocation returns the now-unprepared packet to the pool.
+  - why no relevant touchpoints are missing:
+    - `skywalkRxInput(...)` has exactly one `prepareWithQueue(...)` call and a finite set of pre-success failure exits after it; the patch covers every exit after that call and does not touch allocation failures before the call.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, delay, duplicate enqueue, event replay, forced success, state fabrication, payload mutation, or diagnostic intervention is added.
+    - the helper runs only on paths that already drop the mbuf and return an error; it changes only local packet lifecycle unwinding required to avoid the Skywalk default completion panic.
+- why this is root cause and not just correlation:
+  - runtime panic stack lands exactly on the new CR-101 direct deallocation branch.
+  - decomp proves the missing prepared-packet completion transition and the success-path completion sequence.
+  - inserting completion before pool return directly removes the invalid lifecycle edge that calls default completion.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - the prepared packet is unwound with the same RX `completeWithQueue(queue, 2, 0)` transition used by Tahoe RX completion helpers, then returned to the pool only after prepared state has been cleared.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - remove deallocation on enqueue failure: rejected because it reintroduces the CR-100 packet leak.
+  - retry enqueue: rejected as unproven fallback and duplicate-delivery risk.
+  - suppress or ignore the enqueue error: rejected because it masks a real queue state failure.
+  - call `disposePacket()` directly without pool return: rejected because it may drop the packet handle without returning it to the pool.
+  - deallocate after successful enqueue: rejected because success transfers ownership to Tahoe.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and confirm failure branches after `prepareWithQueue(...)` call `completeWithQueue` slot `*0x198` with `edx=2` before pool `deallocatePacket` slot `*0x140`
+  - create CR-102 Stage 1 request; do not install or commit until reviewer allows after-fix runtime
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: `prepareWithQueue`, `completeWithQueue`, RX enqueue success helpers, pool deallocation path, and default completion panic sites are in the IOSkywalkFamily decomp evidence artifact.
+- Есть ли прямое подтверждение по runtime-данным? Да: CR-101 panic stack lands in `IOSkywalkPacketBufferPool::deallocatePacket(...)` from `skywalkRxInput + 0x4ee` on the CR-101 binary UUID.
+- Доказал ли я причинность, а не просто корреляцию? Да: the disassembly offset maps the panic return address to the direct deallocation call that was newly added by CR-101; decomp explains why direct deallocation of prepared packet reaches invalid completion.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Да within the system contract: prepared RX packet state is unwound through the Tahoe RX `completeWithQueue(queue, 2, 0)` lifecycle before pool return.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Нет.
+- Не закрываю ли я симптом вместо причины? Нет: the exact invalid lifecycle edge is removed for every RX cleanup branch after the packet attempts to enter prepared queue lifecycle.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: all are listed above with artifact paths and sha256 values.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-102-PREPARED-RX-PACKET-CLEANUP
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-DATA-SKYWALK-RX-PREPARED-DEALLOC-PANIC-030`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxReturnPreparedPacket(...)` calls `completeWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)` before `fRxPool->deallocatePacket(rxPkt)`.
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` uses this helper for every failure branch after the `prepareWithQueue(...)` call: prepare non-success, no packet buffers, invalid data address/size, copy failure, data-length publication failure, and enqueue failure.
+  - allocation failure remains unchanged because no packet entered the prepared RX queue lifecycle.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-build-20260425-prepared-rx-cleanup.txt`
+  - build log sha256: `0674dd109ee6d9d6ab77b718444787d959287e8699df28b927fa0581dd0c4968`
+  - built binary UUID: `84A26605-1A2A-34D0-927B-3E06707070E1`
+  - built binary sha256: `1f2946562a71e429ae0b6ea239957c1926e7aab704b3a305c4a01c194504ad1a`
+- disassembly verification:
+  - RX disassembly: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-skywalkRxInput-disasm-20260425.txt`
+  - RX disassembly sha256: `f309449724cbf6e57199e6d56b55cd22423ef3bb4d0692aedff805f491a0d636`
+  - `skywalkRxInput(...)` calls `skywalkRxReturnPreparedPacket(...)` on all six failure exits after `prepareWithQueue(...)`.
+  - `skywalkRxReturnPreparedPacket(...)` calls packet slot `*0x198` with `edx=2` and `ecx=0`, then pool slot `*0x140`.
+  - RX enqueue remains packet-array enqueue through slot `*0x2a0`.
+- diff artifact:
+  - final CR-102 diff artifact sha256 and line count are recorded in the CR-102 Stage 1 request to avoid self-referential diff hash churn.
+- notes:
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## POST-CR-104 WATCHLIST
+
+- scope: possible next failures around `_fWorkloop` and Skywalk queue lifecycle after the CR-104 queue workloop attach fix.
+- status: WATCHLIST_ONLY, not a `FIX_CANDIDATE`; none of these may be patched without new runtime/decomp evidence that upgrades a concrete item to `CONFIRMED_DEVIATION` or `CONFIRMED_ROOT_CAUSE`.
+- W-RX-QUEUE-READY-001:
+  - what to watch: if CR-104 runtime no longer shows `skywalkRxInput: enqueuePackets failed 0xe00002d8`, but starts returning `0xe00002d7`, inspect RX queue `enabled` and `mQueueReady` state.
+  - evidence baseline: Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)` first rejects null `IOEventSource::workLoop` as `0xe00002d8`; after passing that check, it returns `0xe00002d7` when the inherited enabled bit or `IOSkywalkPacketQueue::isQueueReady()` is false.
+  - expected runtime check: one post-CR-104 join must record whether RX enqueue reaches success, `0xe00002d7`, `0xe00002d5`, or a later EAPOL/key/DHCP/data stage.
+- W-SCAN-TIMER-NULL-002:
+  - what to watch: `scanSource = IOTimerEventSource::timerEventSource(this, &fakeScanDone)` is used immediately with `_fWorkloop->addEventSource(scanSource)` and `scanSource->enable()` without a local null check.
+  - current risk class: boot/start robustness risk only; no current runtime evidence ties it to the join failure because the driver starts, scans, and publishes networks.
+  - required evidence before fix: boot/start failure or panic/hang with `scanSource == NULL` or failed `addEventSource(scanSource)`.
+- W-WRAPPER-WORKLOOP-OVERWRITE-003:
+  - what to watch: `IOPCIEDeviceWrapper::start()` assigns the global `_fWorkloop = IO80211WorkQueue::workQueue()`, and `AirportItlwm::createWorkQueue()` later assigns the same global again.
+  - current risk class: leak/stale-workloop risk; not current join root cause because the active controller reaches `_fCommandGate`, scanSource, HAL init, queue creation, and post-association RX.
+  - required evidence before fix: logs proving wrapper-created workloop remains externally visible, receives event sources after controller overwrite, or leaks/teardown hangs on reboot/stop.
+- W-SKYWALK-TEARDOWN-ORDER-004:
+  - what to watch: `AirportItlwm::stop(...)` currently removes/releases `fTxQueue`, `fRxQueue`, `fTxPool`, and `fRxPool` before `detachInterface(fNetIf, true)`.
+  - current risk class: stop/reboot teardown risk; not current association root cause.
+  - required evidence before fix: stop/reboot panic/hang, Skywalk logical-link teardown touching released queues/pools, or decomp/reference proof that `detachInterface`/logical-link deregistration must precede queue/pool release in this local lifecycle.
+- W-QUEUE-ENABLE-PRODUCER-005:
+  - what to watch: CR-104 does not explicitly call `fTxQueue->enable()` or `fRxQueue->enable()`. If runtime returns `0xe00002d7`, determine whether `registerEthernetInterface`, BSDClient enable, or interface enable is expected to enable/initialize these queue event sources.
+  - current risk class: unresolved contract question, not patchable yet. An explicit local `enable()` would be a forced state change unless runtime/decomp proves that the expected producer is missing in our lifecycle.
+  - required evidence before fix: decomp of the reference lifecycle or runtime trace proving the queue remains disabled/not-ready because a specific producer-side enable/initialize call is absent locally.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-QUEUE-WORKLOOP-032
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-103 runtime no longer panics, networks remain visible, but joining `CONTROL_STA_NETWORK` only reaches transient link-up and then disconnects without internet.
+- first visible manifestation: after `postTahoeWclConnectCompleteEvent msg=0xd5 status=0`, the first post-association RX frames are dropped by `skywalkRxInput(...)` because `fRxQueue->enqueuePackets(...)` returns `0xe00002d8`.
+- expected system behavior: `IOSkywalkRxCompletionQueue` is an `IOEventSource`; before the driver can enqueue RX completion packets, the queue must be attached to an `IOWorkLoop` so its gate/workloop field is non-null.
+- actual behavior: local code creates `fTxQueue` and `fRxQueue`, passes them to `registerEthernetInterface(...)`, but never calls `_fWorkloop->addEventSource(...)` for either Skywalk packet queue. Runtime enqueue reaches the RX queue with packet array/count valid, then fails before enabled/ready checks because the queue's inherited `IOEventSource::workLoop` field is null.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::start(...)` after `IOSkywalkTxSubmissionQueue::withPool(...)` and `IOSkywalkRxCompletionQueue::withPool(...)`; queue event sources are not added to `_fWorkloop` before `registerEthernetInterface(...)` and later RX enqueue.
+- evidence:
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-runtime-control_sta_network-partial-20260425-2240-kernel-driver.txt`, sha256 `bff7b79cd5969bcf1f442874a6ed2b5b8d802a7d2d6d714bb86e12b210adcff1`, shows:
+    - `22:14:46.279888` `ieee80211_node_join_bss selbs=CONTROL_STA_NETWORK mac=50:4f:3b:cd:dd:67 chan=100`
+    - `22:14:46.327244` `skywalkRxInput: enqueuePackets failed 0xe00002d8 (drop #1)`
+    - `22:14:46.328372` `postTahoeWclLinkUpInd`
+    - `22:14:46.329221` `postTahoeWclConnectCompleteEvent msg=0xd5 len=0xa4 status=0 reason=0`
+    - `22:14:47..22:14:49` more `0xe00002d8` RX enqueue drops
+    - `22:14:50.328515` `Deauth received, reason 15`
+  - airportd/configd logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-runtime-control_sta_network-partial-20260425-2240-wifi.txt`, sha256 `8f44da1bee613eff258d5afd0a588dceb83f375fd10cb97707d735bf576cbe45`, shows `FaultReasonDhcpFailure = 0`, `JoinIpConfigurationLatencyFromDriverAvailability = 0`, `WiFiDisconnectReasonINVALID_AKMS = 1`, `WiFiNetworkDisconnectReason = Internal`, and `WiFiAssociatedDuration = 5`.
+  - ioreg: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-runtime-control_sta_network-partial-20260425-2240-ioreg.txt`, sha256 `dec768d4521712e6b8cdf6d39ca498ad411b75c9c029667d2bd1fa7edec000ff`, shows driver active, `IOInterfaceName = en0`, `IO80211RSNDone = No`, `IOLinkSpeed = 0`, `IOLinkActiveCount = 0`.
+  - decomp: `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, UInt32, IOOptionBits)` at `0xffffff8002a59cda` returns `0xe00002d8` only after valid array/count/capacity checks when `*(this + 0x30) == 0`.
+  - header/system contract: `IOEventSource` declares `workLoop` immediately after `enabled`; with the kernel object layout this is `this + 0x30`. `IOWorkLoop::addEventSource(IOEventSource*)` is the documented API for adding an event source to a workloop and retaining it there.
+  - source: `AirportItlwmV2.cpp::start(...)` adds `_fCommandGate` and `scanSource` to `_fWorkloop`, but does not add `fTxQueue` or `fRxQueue`. `AirportItlwmV2.cpp::stop(...)` releases the queues without removing them from a workloop because they were never attached.
+- candidate causes:
+  - confirmed: `fRxQueue` lacks an `IOEventSource::workLoop` at RX enqueue time; decomp maps the exact runtime return `0xe00002d8` to this null field.
+  - confirmed: the source code never attaches either Skywalk packet queue to `_fWorkloop`.
+  - insufficient data: after this workloop contract is fixed, association may still fail later in EAPOL key install, DHCP, or data; those are beyond this anomaly's claim scope.
+- rejected causes:
+  - CR-103 source-queue panic: rejected for this runtime because no panic occurred and logs reached `enqueuePackets failed 0xe00002d8`.
+  - DHCP/data transfer as first blocker: rejected for this runtime because `IO80211RSNDone = No`, no `setCIPHER_KEY` is observed, and `FaultReasonDhcpFailure = 0`.
+  - bad packet-array overload: rejected for this runtime because the return comes from the packet-array enqueue implementation after valid array/count/capacity checks.
+  - diagnostic side effect: rejected for this edge because the failing code is unconditional RX queue enqueue and the runtime failure code maps to `IOEventSource::workLoop == null`, not to regdiag gating.
+- confirmed deviation: the local driver creates Skywalk packet queues, but omits the required `IOWorkLoop::addEventSource(...)` lifecycle step for those `IOEventSource` objects.
+- root cause: `IOSkywalkRxCompletionQueue` is used for RX delivery while not attached to a workloop, so `enqueuePackets(...)` rejects every post-association RX packet with `0xe00002d8`; this prevents EAPOL/RSN traffic from reaching the Apple supplicant, leaving `IO80211RSNDone = No` and causing AP deauth reason 15.
+- fix: attach `fTxQueue` and `fRxQueue` to `_fWorkloop` immediately after creation and before `registerEthernetInterface(...)`; on stop, remove attached queue event sources from `_fWorkloop` before releasing the queues.
+- verification:
+  - source check: both queues are added with `_fWorkloop->addEventSource(...)` and removed before `OSSafeReleaseNULL(...)`.
+  - build check: Tahoe build succeeds and BootKC unresolved-symbol validation passes.
+  - runtime check after Stage 1 approval: reboot, attempt one join to `CONTROL_STA_NETWORK`, verify no `skywalkRxInput: enqueuePackets failed 0xe00002d8` during the first post-association RX window, and then inspect whether `setCIPHER_KEY`, `IO80211RSNDone`, DHCP/IP, and data progress.
+- notes:
+  - This is a later blocker after CR-103. It does not alter WCL association payloads, link-up reporting, key material, RSN events, scan cache, or diagnostic defaults.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-QUEUE-WORKLOOP-032
+- symptom: join reaches link-up/connect-complete, then RX packets drop with `0xe00002d8`, no `setCIPHER_KEY`, `IO80211RSNDone = No`, AP deauth reason 15.
+- expected system behavior: every `IOSkywalkPacketQueue` used as a runtime queue must be an attached `IOEventSource` with a non-null `IOEventSource::workLoop` before queue operations such as `enqueuePackets(...)`.
+- actual behavior: `fTxQueue` and `fRxQueue` are created and registered but are never added to `_fWorkloop`; `fRxQueue->enqueuePackets(...)` returns `0xe00002d8`.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::start(...)` between queue creation and `registerEthernetInterface(...)`.
+- evidence from runtime:
+  - CR-104 kernel evidence sha256 `bff7b79cd5969bcf1f442874a6ed2b5b8d802a7d2d6d714bb86e12b210adcff1` shows post-association `skywalkRxInput: enqueuePackets failed 0xe00002d8`.
+  - CR-104 airportd/configd evidence sha256 `8f44da1bee613eff258d5afd0a588dceb83f375fd10cb97707d735bf576cbe45` shows no DHCP failure, `WiFiDisconnectReasonINVALID_AKMS = 1`, and no IP configuration latency.
+  - CR-104 ioreg evidence sha256 `dec768d4521712e6b8cdf6d39ca498ad411b75c9c029667d2bd1fa7edec000ff` shows `IO80211RSNDone = No`.
+- evidence from decomp:
+  - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, UInt32, IOOptionBits)` returns `0xe00002d8` exactly when `*(this + 0x30) == 0`.
+  - BootKC symbols map the inherited gate methods to `IOEventSource::closeGate/openGate/signalWorkAvailable`; the field at `+0x30` is the `IOEventSource::workLoop` pointer by kernel header layout.
+  - `IOWorkLoop::addEventSource(IOEventSource*)` is the documented operation that makes an event source part of a workloop and retains it until `removeEventSource(...)`.
+- exact semantic mismatch between reference and our code: our Skywalk packet queues are used as active runtime `IOEventSource` queues without the required workloop membership; the system queue implementation refuses RX enqueue before any packet-content or ready-state handling can occur.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkTxSubmissionQueue::withPool(...)`
+    - `IOSkywalkRxCompletionQueue::withPool(...)`
+    - `IOWorkLoop::addEventSource(IOEventSource*)`
+    - `IOSkywalkEthernetInterface::registerEthernetInterface(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(...)`
+    - stop teardown `IOWorkLoop::removeEventSource(IOEventSource*)`
+  - expected contract at each touchpoint:
+    - queue factories return `IOEventSource` subclasses with owner/action initialized but no workloop membership.
+    - `addEventSource(...)` binds each queue to `_fWorkloop` before registration/enable/runtime queue operations.
+    - `registerEthernetInterface(...)` receives queues that already satisfy `IOEventSource` workloop membership.
+    - RX enqueue sees non-null `IOEventSource::workLoop` and can proceed to enabled/ready checks and packet handoff.
+    - stop removes queue event sources from `_fWorkloop` before releasing queue objects.
+  - why no relevant touchpoints are missing:
+    - the observed failure is entirely at the queue's inherited `IOEventSource::workLoop` precondition in `enqueuePackets(...)`; creation, workloop attachment, registration, enqueue, and teardown are the complete lifecycle edges for that precondition.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, delay, poll, duplicate enqueue, forced callback, forced state, fake key, fake success, packet payload change, WCL replay, or diagnostic intervention is added.
+    - attaching queue event sources is the normal lifecycle operation for the existing objects; it does not alter association payloads, scan results, link events, or RSN state.
+- why this is root cause and not just correlation:
+  - runtime return `0xe00002d8` is produced by one exact branch in the decompiled packet-array enqueue implementation.
+  - that branch tests only `this+0x30 == 0` after packet array/count/capacity have already passed.
+  - kernel header layout identifies `this+0x30` as `IOEventSource::workLoop`.
+  - source audit proves no `addEventSource(...)` call exists for `fRxQueue`.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it satisfies the base `IOEventSource`/`IOWorkLoop` contract that Skywalk queues inherit, using the same kernel API already used by the driver for `_fCommandGate` and `scanSource`.
+  - it preserves the existing one-TX/one-RX queue registration architecture and only completes the missing lifecycle binding.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::start`
+  - `AirportItlwm/AirportItlwmV2.cpp::stop`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - retry `enqueuePackets(...)`: rejected as fallback and duplicate-delivery risk; it cannot make `workLoop` non-null.
+  - force success after enqueue failure: rejected as masking and packet loss.
+  - bypass Skywalk RX queue and call legacy input path: rejected as architecture change and not reference-aligned for Tahoe.
+  - synthesize `setCIPHER_KEY`/RSN done: rejected as fake state and not producer-side proof.
+  - add delays around link-up/connect-complete: rejected because the failure is a static queue lifecycle precondition, not timing.
+  - attach only `fRxQueue`: rejected because `fTxQueue` is the matching TX `IOEventSource` and later data transmission uses the same workloop contract class family.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - create CR-104 Stage 1 request with diff artifact and CR-104 runtime evidence; do not install or commit until reviewer allows after-fix runtime
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: `IOSkywalkRxCompletionQueue::enqueuePackets(...)` maps `0xe00002d8` to `this+0x30 == 0`.
+- Есть ли прямое подтверждение по runtime-данным? Да: CR-104 logs show the exact `0xe00002d8` return immediately after association and before deauth reason 15.
+- Доказал ли я причинность, а не просто корреляцию? Да: the exact runtime return is produced only by the null-workloop precondition branch; source audit proves the missing `addEventSource(...)`.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Это SYSTEM_CONTRACT_FIX: it uses the documented `IOWorkLoop::addEventSource` lifecycle required by the base `IOEventSource` class inherited by the Skywalk queues.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Нет.
+- Не закрываю ли я симптом вместо причины? Нет: the missing queue workloop membership that directly produces the runtime error is added.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: all evidence paths and sha256 values are listed above.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-104-QUEUE-WORKLOOP
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-DATA-SKYWALK-RX-QUEUE-WORKLOOP-032`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::start(...)` now calls `_fWorkloop->addEventSource(fTxQueue)` and `_fWorkloop->addEventSource(fRxQueue)` immediately after queue creation and before `registerEthernetInterface(...)`.
+  - the start path logs both return codes and both queue `getWorkLoop()` values as `[STEP 8c-wl]`.
+  - if either queue workloop attach fails, the already attached queue is removed and start aborts; no fallback, retry, or forced success is introduced.
+  - `AirportItlwm/AirportItlwmV2.cpp::stop(...)` checks each queue's `getWorkLoop()` and removes it from `_fWorkloop` before `OSSafeReleaseNULL(...)`.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-build-20260425-queue-workloop.txt`
+  - build log sha256: `b484fae5f651446dcbab6588964e1c251035eaa2e73a1f1370c7ae9121deeeea`
+  - built binary UUID: `79C5C1BA-FBE3-3630-B6D1-D92234055077`
+  - built binary sha256: `e78dc6e7253baae630d796f15379fd47f957b48556eaf4ec481db5e0912cb513`
+- disassembly verification:
+  - start focus: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-start-queue-workloop-disasm-focus-20260425.txt`
+  - start focus sha256: `e80a8ccbe0be19452684f478974ee48ee720e2f75342691588c9b073882cbd94`
+  - start focus shows two `_fWorkloop` virtual calls through slot `0x140` with `fTxQueue` and `fRxQueue`, matching `IOWorkLoop::addEventSource(IOEventSource*)`.
+  - start focus shows queue `getWorkLoop()` virtual calls through slot `0x168` for both queues before logging.
+  - stop focus: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-104-stop-queue-workloop-disasm-focus-20260425.txt`
+  - stop focus sha256: `1eb7e3db6a0591423dbb6dea79ebb89703f216337bef66e6bae5026aed6bb4f6`
+  - stop focus shows `getWorkLoop()` checks through slot `0x168`, comparison with `_fWorkloop`, and removal calls through `_fWorkloop` slot `0x148`, matching `IOWorkLoop::removeEventSource(IOEventSource*)`, before queue release.
+- diff artifact:
+  - `/Users/bob/Projects/itlwm/commit-approval/artifacts/CR-104-queue-workloop.diff`
+  - diff artifact will be regenerated in the Stage 1 request after this implementation-verification section is included.
+- notes:
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-SOURCEQUEUE-PANIC-031
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: CR-102 panics during an association attempt in the RX Skywalk path with `"default packetCompletion()" @IOSkywalkPacketQueue.cpp:321`.
+- first visible manifestation: user-installed CR-102 binary UUID `84A26605-1A2A-34D0-927B-3E06707070E1` showed networks, then a connection attempt crashed; panic file `/Users/bob/Projects/itlwm/crash.txt` reports `skywalkRxReturnPreparedPacket(AirportItlwm*, IOSkywalkPacket*) + 0x2f` called from `skywalkRxInput + 0x4ac`.
+- expected system behavior: a packet created locally by the RX producer and enqueued to `IOSkywalkRxCompletionQueue` must not record that same completion queue as its source queue, because completion queues do not implement source packet completion.
+- actual behavior: CR-102 calls `rxPkt->prepareWithQueue(fRxQueue, kIOSkywalkPacketDirectionRx, 0)`, which stores `fRxQueue` as the packet source queue; any later RX `completeWithQueue(...)` calls `fRxQueue->packetCompletion(...)`, and that slot resolves to the base default panic.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` at the `prepareWithQueue(fRxQueue, ...)` call, and `skywalkRxReturnPreparedPacket(...)` at `completeWithQueue(fRxQueue, ...)`.
+- evidence:
+  - panic logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-aftercrash-panic-20260425.txt`, sha256 `812d84b2b2027b92a4fbaf62d87c24feecfa11980fe1b7616270aeb4e3dc8627`, shows `default packetCompletion()` reached from `skywalkRxReturnPreparedPacket(...)`.
+  - runtime logs: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-aftercrash-log-20260425.txt`, sha256 `4360340032a34200575c607fae2219b03efc39b4d72782440b6c979a0823e213`; loaded kext UUID matches the CR-102 reviewed runtime binary.
+  - runtime diag: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-102-aftercrash-regdiag-snapshot-20260425.txt`, sha256 `8e6087332143add782230e14d2de25ec93c6a101a16ff8d27ef5a7715c1153e4`, and trace sha256 `2240416673519a96cb64b01bab8aa7f6cc0c1fd929bff2d03a267d952d87b5e6`, show diagnostics were not enabled, so the panic is not a diagnostic side effect.
+  - disassembly: CR-102 `skywalkRxInput + 0x4ac` maps to the failed-enqueue branch call to `skywalkRxReturnPreparedPacket(...)`; helper disassembly calls packet slot `*0x198` with direction `2`, then pool slot `*0x140`.
+  - decomp: `IOSkywalkPacket::prepareWithQueue(queue, direction, options)` stores `param_1[7] = queue`, sets prepared bit `2`, and populates packet buffers.
+  - decomp: `IOSkywalkPacket::completeWithQueue(queue, 2, options)` loads `param_1[7]` and, if non-null, calls `sourceQueue->packetCompletion(packet, queue, 0)` through queue vtable slot `+0x220`.
+  - symbol table: BootKC exports `IOSkywalkRxCompletionQueue` methods but no `IOSkywalkRxCompletionQueue::packetCompletion(...)`; only `IOSkywalkRxSubmissionQueue::packetCompletion(...)`, `IOSkywalkTxSubmissionQueue::packetCompletion(...)`, and user-network submission queues override that source-completion slot. `IOSkywalkPacketQueue::packetCompletion(...)` is the default panic implementation.
+  - decomp: `IOSkywalkRxCompletionQueue::enqueuePacketsForNetworking(...)` and `enqueuePacketsForKPipe(...)` call packet `completeWithQueue(fRxQueue, 2, 0)` during successful ownership transfer; if packet source queue is the same RX completion queue, the same default source-completion panic is reachable on success as well.
+- candidate causes:
+  - confirmed: CR-102 misuses destination `fRxQueue` as packet source queue during preparation.
+  - confirmed: CR-102 cleanup also passes `fRxQueue` to `completeWithQueue(...)`; with the current poisoned source queue this deterministically reaches default `packetCompletion()`.
+  - insufficient data: the next association blocker after RX enqueue is not observable until this source-queue lifecycle panic is removed.
+- rejected causes:
+  - CR-102 cleanup ordering alone: rejected because cleanup now calls `completeWithQueue(...)`, but the panic happens inside the source-queue callback recorded earlier by `prepareWithQueue(fRxQueue, ...)`.
+  - RX pool direct-deallocate alone: rejected for CR-102 because the stack enters packet `completeWithQueue(...)` before pool deallocation.
+  - diagnostics side effect: rejected because regdiag snapshot/trace properties were absent and the crashing path is unconditional RX packet lifecycle code.
+- confirmed deviation: a locally allocated RX packet has no submission/source queue; CR-102 records the RX completion queue as source queue even though that class inherits the default panic `packetCompletion(...)`.
+- root cause: destination queue and source queue are conflated. Tahoe `completeWithQueue(..., Rx, ...)` treats packet `sourceQueue` as an optional producer-side callback target; `IOSkywalkRxCompletionQueue` is a destination queue and cannot be used there.
+- fix: planned for CR-103. Prepare locally allocated RX packets with `sourceQueue=nullptr` while preserving direction `kIOSkywalkPacketDirectionRx`, and unwind failure paths with `completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0)` before pool return.
+- verification:
+  - source check: RX `prepareWithQueue(...)` and prepared cleanup no longer pass `fRxQueue` as source queue.
+  - build check: Tahoe build succeeds and BootKC unresolved-symbol validation passes.
+  - disassembly check: RX prepare call has `rsi=0`, `edx=2`; cleanup helper has `rsi=0`, `edx=2` before pool deallocation.
+  - runtime check after Stage 1 approval: reboot, attempt one join, and verify no `"default packetCompletion()"` panic; then collect sudo logs/regdiag for the next association blocker if join still fails.
+- notes:
+  - This supersedes the CR-102 lifecycle conclusion: completing before pool return is necessary, but the packet source queue must be nullable for locally created RX packets.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-SOURCEQUEUE-PANIC-031
+- symptom: CR-102 crashes with `default packetCompletion()` from `skywalkRxReturnPreparedPacket(...)` during RX path association traffic.
+- expected system behavior: a locally allocated RX packet uses RX direction state for buffer population/completion, but records no producer/source queue unless it actually originated from a queue class that implements `packetCompletion(...)`.
+- actual behavior: local RX packet preparation records `fRxQueue` as source queue, and completion calls the default `IOSkywalkPacketQueue::packetCompletion(...)` panic.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` `rxPkt->prepareWithQueue(that->fRxQueue, kIOSkywalkPacketDirectionRx, 0)` and `skywalkRxReturnPreparedPacket(...)` `completeWithQueue(that->fRxQueue, kIOSkywalkPacketDirectionRx, 0)`.
+- evidence from runtime:
+  - CR-102 panic file sha256 `812d84b2b2027b92a4fbaf62d87c24feecfa11980fe1b7616270aeb4e3dc8627` shows the exact panic and helper stack.
+  - loaded crashing UUID is `84A26605-1A2A-34D0-927B-3E06707070E1`, matching the CR-102 reviewed runtime binary.
+  - CR-102 after-crash log sha256 `4360340032a34200575c607fae2219b03efc39b4d72782440b6c979a0823e213` confirms the same installed/loaded identity.
+- evidence from decomp:
+  - `IOSkywalkPacket::prepareWithQueue` stores the `queue` argument as packet source queue and sets prepared state bit `2`.
+  - `IOSkywalkPacket::completeWithQueue(..., direction=2, ...)` invokes `sourceQueue->packetCompletion(...)` only when the stored source queue is non-null.
+  - `IOSkywalkPacketBuffer::prepareWithQueue` and `completeWithQueue` also guard source callbacks on nullable source queue, proving nullable source queue is a first-class contract.
+  - `IOSkywalkRxCompletionQueue` has no `packetCompletion(...)` override in the BootKC symbol table; the base implementation is the panic site.
+  - `IOSkywalkRxSubmissionQueue` and `IOSkywalkTxSubmissionQueue` do override `packetCompletion(...)`, which proves the callback is reserved for submission/source queues, not completion/destination queues.
+  - `IOSkywalkRxCompletionQueue::enqueuePacketsForNetworking/KPipe` complete packets with the destination queue as the completion queue argument; this is separate from the packet's stored source queue.
+- exact semantic mismatch between reference and our code: local code writes the destination RX completion queue into the packet's source-queue field, causing Tahoe's completion path to call a default-panic source callback on the wrong queue class.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints:
+    - `IOSkywalkPacketBufferPool::allocatePacket(...)`
+    - `IOSkywalkPacket::prepareWithQueue(sourceQueue, kIOSkywalkPacketDirectionRx, 0)`
+    - packet data setup through `getPacketBuffers(...)`, `getDataVirtualAddress()`, `mbuf_copydata(...)`, `setDataOffsetAndLength(...)`
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)`
+    - `IOSkywalkPacket::completeWithQueue(completionQueue, kIOSkywalkPacketDirectionRx, 0)`
+    - `IOSkywalkPacketBufferPool::deallocatePacket(...)`
+  - expected contract at each touchpoint:
+    - allocation gives the driver a local pool packet with no producer/source queue.
+    - preparation with RX direction populates packet buffers and marks the packet prepared.
+    - nullable source queue suppresses source-queue completion callbacks; this is explicitly guarded in packet and packet-buffer completion decomp.
+    - enqueue success lets the RX completion queue run the destination-side `completeWithQueue(fRxQueue, 2, 0)` transfer.
+    - enqueue/setup failure leaves ownership local and requires a local prepared-state unwind without source callback before pool return.
+  - why no relevant touchpoints are missing:
+    - the panic occurs entirely within the prepared packet lifecycle; all producer-side entry, payload setup, destination enqueue, completion, and pool-return edges are covered.
+  - why proposed path adds no extra system-visible side effects:
+    - no retry, duplicate enqueue, forced state, event replay, fallback, delay, or diagnostic intervention is added.
+    - packet direction and payload publication remain unchanged; only the invalid source-queue callback target is removed.
+- why this is root cause and not just correlation:
+  - runtime lands exactly in `packetCompletion()` invoked from CR-102 helper.
+  - decomp proves the only way for `completeWithQueue(..., Rx, ...)` to call `packetCompletion()` is a non-null stored source queue.
+  - source code proves that stored source queue is `fRxQueue`.
+  - symbol table proves `fRxQueue`'s class lacks the required override and therefore resolves to the panic implementation.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it preserves Tahoe's destination RX completion queue path and RX direction semantics while respecting the optional source-queue contract for locally produced packets.
+  - it avoids inventing a fake source queue and avoids calling contested Wi-Fi methods or changing association/control state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxReturnPreparedPacket`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - keep `fRxQueue` and suppress the panic: rejected because it masks a wrong queue-class callback.
+  - use `fTxQueue` as source queue: rejected because it is also unrelated to the local RX producer and would create a false completion callback.
+  - create an `IOSkywalkRxSubmissionQueue`: rejected because the local registered interface path currently uses one TX submission queue and one RX completion queue; adding a third queue changes the system-visible queue set.
+  - direct pool deallocate without completing prepared state: rejected because CR-101 already proved prepared direct deallocation can panic.
+  - retry enqueue on failure: rejected as unproven fallback and duplicate-delivery risk.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect built `skywalkRxInput(...)` and helper disassembly to confirm null source queue and RX direction
+  - create CR-103 Stage 1 request; do not install or commit until reviewer allows after-fix runtime
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: `IOSkywalkPacket::prepareWithQueue` stores the source queue, `IOSkywalkPacket::completeWithQueue(..., direction=2, ...)` calls stored `sourceQueue->packetCompletion(...)` only when non-null, and packet/buffer completion both guard nullable source queues.
+- Есть ли прямое подтверждение по runtime-данным? Да: CR-102 panic stack enters `skywalkRxReturnPreparedPacket(...)` and dies in the default `packetCompletion()` path on binary UUID `84A26605-1A2A-34D0-927B-3E06707070E1`.
+- Доказал ли я причинность, а не просто корреляцию? Да: source code writes `fRxQueue` into the packet source queue, decomp proves that exact field is later called through slot `+0x220`, and BootKC symbols prove `IOSkywalkRxCompletionQueue` has no override for that slot.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Да within the system contract: locally allocated RX packets have no producer/source queue, but still use RX direction and the existing RX completion destination queue for enqueue.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Нет.
+- Не закрываю ли я симптом вместо причины? Нет: the invalid source-queue callback target is removed before both failure cleanup and successful RX completion can reach it.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: all are listed above with artifact paths and sha256 values.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-103-RX-NULL-SOURCEQUEUE
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-DATA-SKYWALK-RX-SOURCEQUEUE-PANIC-031`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` now calls `rxPkt->prepareWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0)`.
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxReturnPreparedPacket(...)` now calls `rxPkt->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0)` before `fRxPool->deallocatePacket(rxPkt)`.
+  - RX enqueue still uses `fRxQueue->enqueuePackets(...)`; destination queue semantics are unchanged.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-103-build-20260425-rx-null-sourcequeue.txt`
+  - build log sha256: `7df1a7ada641e489146d8b4ca2715753c1ed4115ff27996abce085393ba1b182`
+  - built binary UUID: `EED02602-ECF0-3C65-92D2-95F2E3EE0468`
+  - built binary sha256: `45a8230fdd6a06fc900d17e34cc7356f2901484af939534c0a93fca84bf3a27d`
+- disassembly verification:
+  - RX disassembly focus: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-103-skywalkRxInput-disasm-focus-20260425.txt`
+  - RX disassembly focus sha256: `04871376c2a607a3529427fd75992ba623f5fcd92886c2de838875b84b8375c3`
+  - RX prepare call shows `xorl %ecx, %ecx; movl %ecx, %esi` (`sourceQueue=nullptr`), `movl $0x2, %edx` (`direction=Rx`), and packet slot `*0x188`.
+  - RX enqueue remains packet-array enqueue through `fRxQueue` and slot `*0x2a0`.
+  - cleanup helper disassembly focus: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-103-skywalkRxReturnPreparedPacket-disasm-focus-20260425.txt`
+  - cleanup helper disassembly focus sha256: `b661208d1ed39b3a400b5c6a6e663042cedcc4b065c61cc22accd948ddd1a453`
+  - cleanup helper shows `sourceQueue/completionQueue=nullptr` in `esi`, `edx=2`, packet slot `*0x198`, then pool slot `*0x140`.
+- diff artifact:
+  - `/Users/bob/Projects/itlwm/commit-approval/artifacts/CR-103-rx-null-sourcequeue.diff`
+  - final diff sha256 and line count are recorded in the CR-103 Stage 1 request to avoid self-referential diff hash churn.
+- notes:
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.

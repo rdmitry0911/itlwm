@@ -520,11 +520,38 @@ struct apple80211ChannelInfo {
     uint16_t padding;          // 0x0C86
 } __attribute__((packed));     // 0x0C88 total
 
-// WCL BSS info (beacon message) — 0x84 (132) bytes
-// Reverse-engineered from AppleBCMWLAN::getWCL_BSS_INFO (macOS 26.x)
+// WCL BSS info (beacon message) — Tahoe WCL current-BSS ABI.
+// WCLNetManager::updateBss allocates and requests 0x844 bytes via IOC 0x1b1,
+// checks BeaconMetaData.bssid at +0x29, and passes the IE pointer at +0x44.
+#define APPLE80211_WCL_BSS_INFO_HEADER_LEN 0x44
+#define APPLE80211_WCL_BSS_INFO_MAX_IE_LEN 0x800
+#define APPLE80211_WCL_BSS_INFO_LEN \
+    (APPLE80211_WCL_BSS_INFO_HEADER_LEN + APPLE80211_WCL_BSS_INFO_MAX_IE_LEN)
 struct apple80211_beacon_msg {
-    uint8_t  data[0x84];       // opaque — exact layout TBD from boot log analysis
+    uint8_t  data[APPLE80211_WCL_BSS_INFO_LEN];
 } __attribute__((packed));
+
+// WCL connect-complete event — producer ABI recovered from
+// AppleBCMWLANJoinAdapter::sendConnectComplete on Tahoe.
+// Payload layout: 4-byte overall status/reason header plus ten 16-byte
+// per-candidate records. IO80211Family's WCLJoinManager handler accepts only
+// length 0xA4 for APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT.
+#define APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS 10
+#define APPLE80211_WCL_CONNECT_COMPLETE_LEN \
+    (4 + (APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS * 16))
+struct apple80211_wcl_connect_complete_record {
+    uint8_t  bssid[6];        // 0x00
+    uint16_t reserved;        // 0x06
+    uint32_t status;          // 0x08
+    uint32_t reason;          // 0x0C
+} __attribute__((packed));
+
+struct apple80211_wcl_connect_complete_event {
+    uint16_t status;          // 0x00
+    uint16_t reason;          // 0x02
+    struct apple80211_wcl_connect_complete_record
+        records[APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS]; // 0x04
+} __attribute__((packed));    // 0xA4 total
 
 // BGScan cached network entry — 0x14 (20) bytes each
 // Reverse-engineered from IO80211Family/WCLBGScanManager (macOS 26.x)
@@ -733,6 +760,7 @@ struct apple80211_status_msg_hdr
 // BeaconMetaData+IE payload per discovered BSS, and scanComplete(wl_event_msg_t*)
 // then posts 0xED with a 4-byte status payload.
 #define APPLE80211_M_WCL_SCAN_RESULT         201
+#define APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT 213
 #define APPLE80211_M_WCL_JOIN_ABORT_COMPLETE 214
 #define APPLE80211_M_WCL_SCAN_DONE           237
 

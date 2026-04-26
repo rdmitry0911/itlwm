@@ -11,6 +11,8 @@
 
 #include <Airport/Apple80211.h>
 
+struct if_link_status;
+
 // Struct used by non-virtual IOCTL methods (removed from InfraProtocol in Tahoe)
 struct apple80211_colocated_network_scope_id
 {
@@ -33,6 +35,10 @@ public:
     virtual bool init(IOService *, ether_addr *) override;
     virtual int getAssocState(void) override;
     virtual void setDataPathState(bool) override;
+    virtual void updateLinkStatus(void) override;
+    virtual void updateLinkStatusGated(void) override;
+    virtual void reportDetailedLinkStatus(if_link_status const *) override;
+    virtual IOReturn reportDataPathEvents(UInt, void *, unsigned long, bool) override;
     virtual IOReturn setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
