@@ -533,6 +533,21 @@ ieee80211_tx_compressed_bar(struct ieee80211com *ic, struct ieee80211_node *ni,
  *     The convention is ic_bss is not reference counted; the caller must
  *     maintain that.
  */
+// CR-227: per-branch rate-limiters. The encap drop pattern fires once per
+// outbound TX frame, so unbounded XYLog would flood. Cap at 32 emissions
+// per branch — enough to characterize the fail mode without spamming.
+#define ENCAP_LOG_LIMIT 32
+static volatile unsigned int s_encap_pullup_fail_count;
+static volatile unsigned int s_encap_nonode_count;
+static volatile unsigned int s_encap_hostap_notassoc_count;
+static volatile unsigned int s_encap_port_not_valid_count;
+static volatile unsigned int s_encap_prepend_fail_count;
+static volatile unsigned int s_encap_bad_opmode_count;
+#define ENCAP_LOG(counter, fmt, ...) do { \
+    unsigned int _n = ++(counter); \
+    if (_n <= ENCAP_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
 mbuf_t
 ieee80211_encap(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node **pni)
 {
@@ -589,31 +604,65 @@ fallback:
     if (mbuf_len(m) < sizeof(struct ether_header)) {
         mbuf_pullup(&m, sizeof(struct ether_header));
         if (m == NULL) {
+            // CR-227 ENCAP_BR_PULLUP_FAIL: mbuf_pullup returned NULL.
+            ENCAP_LOG(s_encap_pullup_fail_count,
+                "itlwm: ENCAP_BR_PULLUP_FAIL ic_state=0x%x ic_flags=0x%x n=%u\n",
+                (unsigned)ic->ic_state, (unsigned)ic->ic_flags,
+                s_encap_pullup_fail_count);
             ic->ic_stats.is_tx_nombuf++;
             goto bad;
         }
     }
     memcpy(&eh, mtod(m, caddr_t), sizeof(struct ether_header));
-    
+
     ni = ieee80211_find_txnode(ic, eh.ether_dhost);
     if (ni == NULL) {
+        // CR-227 ENCAP_BR_NONODE: ieee80211_find_txnode returned NULL.
+        ENCAP_LOG(s_encap_nonode_count,
+            "itlwm: ENCAP_BR_NONODE ic_state=0x%x dst=%02x:%02x:%02x:%02x:%02x:%02x "
+            "etype=0x%04x bss_set=%d n=%u\n",
+            (unsigned)ic->ic_state,
+            eh.ether_dhost[0], eh.ether_dhost[1], eh.ether_dhost[2],
+            eh.ether_dhost[3], eh.ether_dhost[4], eh.ether_dhost[5],
+            (unsigned)ntohs(eh.ether_type),
+            ic->ic_bss != NULL ? 1 : 0,
+            s_encap_nonode_count);
         DPRINTF(("no node for dst %s, discard frame\n",
                  ether_sprintf(eh.ether_dhost)));
         ic->ic_stats.is_tx_nonode++;
         goto bad;
     }
-    
+
 #ifndef IEEE80211_STA_ONLY
     if (ic->ic_opmode == IEEE80211_M_HOSTAP && ni != ic->ic_bss &&
         ni->ni_state != IEEE80211_STA_ASSOC) {
+        // CR-227 ENCAP_BR_HOSTAP_NOTASSOC: HOSTAP-only path; informational
+        // for completeness even though our local opmode is STA.
+        ENCAP_LOG(s_encap_hostap_notassoc_count,
+            "itlwm: ENCAP_BR_HOSTAP_NOTASSOC ic_state=0x%x ni_state=0x%x n=%u\n",
+            (unsigned)ic->ic_state, (unsigned)ni->ni_state,
+            s_encap_hostap_notassoc_count);
         ic->ic_stats.is_tx_nonode++;
         goto bad;
     }
 #endif
-    
+
     if ((ic->ic_flags & IEEE80211_F_RSNON) &&
         !ni->ni_port_valid &&
         eh.ether_type != htons(ETHERTYPE_PAE)) {
+        // CR-227 ENCAP_BR_PORT_NOT_VALID: RSN active, port not valid, frame
+        // is not EAPOL — drop. This is the *expected* drop pattern for
+        // non-EAPOL traffic during the 4-way handshake; persistent firing
+        // after the handshake should complete points at ni_port_valid
+        // never being set by the EAPOL handler.
+        ENCAP_LOG(s_encap_port_not_valid_count,
+            "itlwm: ENCAP_BR_PORT_NOT_VALID ic_state=0x%x etype=0x%04x "
+            "ni_port_valid=%d ic_flags=0x%x n=%u\n",
+            (unsigned)ic->ic_state,
+            (unsigned)ntohs(eh.ether_type),
+            (unsigned)ni->ni_port_valid,
+            (unsigned)ic->ic_flags,
+            s_encap_port_not_valid_count);
         DPRINTF(("port not valid: %s\n",
                  ether_sprintf(eh.ether_dhost)));
         ic->ic_stats.is_tx_noauth++;
@@ -658,6 +707,12 @@ fallback:
     llc->llc_snap.ether_type = eh.ether_type;
     mbuf_prepend(&m, hdrlen, MBUF_DONTWAIT);
     if (m == NULL) {
+        // CR-227 ENCAP_BR_PREPEND_FAIL: mbuf_prepend returned NULL.
+        ENCAP_LOG(s_encap_prepend_fail_count,
+            "itlwm: ENCAP_BR_PREPEND_FAIL ic_state=0x%x hdrlen=%u etype=0x%04x n=%u\n",
+            (unsigned)ic->ic_state, (unsigned)hdrlen,
+            (unsigned)ntohs(eh.ether_type),
+            s_encap_prepend_fail_count);
         ic->ic_stats.is_tx_nombuf++;
         goto bad;
     }
@@ -708,6 +763,11 @@ fallback:
             break;
 #endif
         default:
+            // CR-227 ENCAP_BR_BAD_OPMODE: opmode neither STA/IBSS/AHDEMO/HOSTAP.
+            ENCAP_LOG(s_encap_bad_opmode_count,
+                "itlwm: ENCAP_BR_BAD_OPMODE ic_state=0x%x ic_opmode=%d n=%u\n",
+                (unsigned)ic->ic_state, (int)ic->ic_opmode,
+                s_encap_bad_opmode_count);
             /* should not get there */
             goto bad;
     }

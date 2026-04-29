@@ -1,0 +1,98 @@
+CR-229 BUILD EVIDENCE — DIAGNOSTIC_INSTRUMENTATION (ieee80211_encap STA-only branch coverage)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : b10b378a432e9bf99a1c827acc24b2e772ab1beb (post-CR-226 commit)
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : 7f94c2f20a188ce90b88969e2899cf7bba6f82bf3994a9bde5ce8b9a1a25d563
+Kext UUID     : EDAC5835-8F4F-3DDE-B9D5-43583017E1CB
+Kext size     : 16299232 bytes
+
+BootKC undef  : 886 (same as CR-226 — no new symbol references)
+Linker check  : OK: all 886 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: 7f94c2f20a188ce90b88969e2899cf7bba6f82bf3994a9bde5ce8b9a1a25d563
+Install UUID  : EDAC5835-8F4F-3DDE-B9D5-43583017E1CB
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)
+
+kmutil load test
+----------------
+    $ sudo kmutil load -p /Library/Extensions/AirportItlwm.kext
+    Extension with identifiers com.zxystd.AirportItlwm not approved to load.
+    Please approve using System Settings.
+
+Passes vtable check; reaches normal Tahoe re-approval gate.
+
+Binary proof — ENCAP_BR_* string tags (post-preprocessor STA-only)
+------------------------------------------------------------------
+$ strings Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm | rg ENCAP_BR_
+%s: itlwm: ENCAP_BR_BAD_OPMODE ic_state=0x%x ic_opmode=%d n=%u
+%s: itlwm: ENCAP_BR_NONODE ic_state=0x%x dst=%02x:%02x:%02x:%02x:%02x:%02x etype=0x%04x bss_set=%d n=%u
+%s: itlwm: ENCAP_BR_PORT_NOT_VALID ic_state=0x%x etype=0x%04x ni_port_valid=%d ic_flags=0x%x n=%u
+%s: itlwm: ENCAP_BR_PREPEND_FAIL ic_state=0x%x hdrlen=%u etype=0x%04x n=%u
+%s: itlwm: ENCAP_BR_PULLUP_FAIL ic_state=0x%x ic_flags=0x%x n=%u
+
+5 tags. `ENCAP_BR_HOSTAP_NOTASSOC` is **absent** — confirms the
+HOSTAP-only emitter is compile-excluded under `IEEE80211_STA_ONLY=1`
+(`itl80211/openbsd/net80211/ieee80211_var.h:59`).
+
+Binary proof — s_encap_* counters
+---------------------------------
+$ nm Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm | rg s_encap_
+0000000000f45190 b __ZL25s_encap_pullup_fail_count
+0000000000f45194 b __ZL20s_encap_nonode_count
+0000000000f45198 b __ZL28s_encap_port_not_valid_count
+0000000000f4519c b __ZL26s_encap_prepend_fail_count
+0000000000f451a0 b __ZL24s_encap_bad_opmode_count
+
+5 counters in BSS (`b` = uninitialized data).
+`s_encap_hostap_notassoc_count` is **absent**.
+
+IEEE80211_STA_ONLY definition (compile-time exclusion proof)
+-----------------------------------------------------------
+$ grep -n 'define IEEE80211_STA_ONLY' itl80211/openbsd/net80211/ieee80211_var.h
+59:#define IEEE80211_STA_ONLY	1
+
+Defined at file scope before `ieee80211_output.c` includes the var.h
+header chain. The HOSTAP-only emitter is excluded by the C preprocessor
+during compile.
+
+Raw-frame `if (0)` dead-code site (compile-excluded `goto bad`)
+---------------------------------------------------------------
+ieee80211_output.c (in CR-229 staged diff):
+
+```c
+551-552:    /*  if (mbuf_tag_find(m, mtag, ...) == 0) { ... } */
+565:    if (0) {
+        ...
+584:            goto bad;     // dead — gated by `if (0)`
+595:            goto bad;     // dead — gated by `if (0)`
+        ...
+```
+
+Compiler dead-code-eliminates the entire block; `goto bad;` at lines
+584 and 595 cannot fire at runtime. Excluded from runtime branch
+inventory.
+
+Branch inventory summary (all 5 reachable in compiled binary)
+-------------------------------------------------------------
+| Branch tag                  | Source path | Compiled? |
+|---|---|---|
+| ENCAP_BR_PULLUP_FAIL        | line ~593  | YES |
+| ENCAP_BR_NONODE             | line ~603  | YES |
+| ENCAP_BR_PORT_NOT_VALID     | line ~621  | YES |
+| ENCAP_BR_PREPEND_FAIL       | line ~663  | YES |
+| ENCAP_BR_BAD_OPMODE         | line ~712  | YES |
+| ENCAP_BR_HOSTAP_NOTASSOC    | (compiled-excluded) | NO — IEEE80211_STA_ONLY=1 |
+| raw-frame `goto bad` ×2     | inside `if (0)` block | NO — dead-code-eliminated |
+
+End-to-end coverage of all 5 reachable branches in one build per
+`feedback_diagnostic_end_to_end_criterion`. Each emitter is rate-limited
+to 32 occurrences via the `ENCAP_LOG()` macro and per-branch volatile
+counter; subsequent fires silently increment the counter (running total
+in the `n=` field of the log line).
