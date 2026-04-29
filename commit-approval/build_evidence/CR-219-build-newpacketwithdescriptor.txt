@@ -1,0 +1,35 @@
+CR-219 build evidence — REFERENCE_ALIGNMENT_FIX: 1:1 with AppleBCMWLAN intermediate newPacket+newPacketWithDescriptor pattern
+date: 2026-04-29T11:39:11Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext sha256: 1118558849d2ee74587bfa25964a49615fa0cc78751af83fb1dea99760e3f9f7
+kext UUID:   A8DB6DFE-E186-329C-9C1C-4F4A1F970627
+kext size:   16294392
+
+BootKC undef-symbol verification: OK: all 884 undefined symbols resolve against BootKC
+  +0 vs CR-217/CR-218 baseline.
+
+Source-side delta vs CR-217:
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. AirportItlwmIO80211PacketPool::newPacket override REWRITTEN
+       to delegate to newPacketWithDescriptor (1:1 with AppleBCMWLAN
+       intermediate's 0x2a-byte newPacket stub at
+       BootKC 0xffffff80016e03b6: vt[54] dispatch pattern).
+    2. NEW virtual 'IOSkywalkPacket *newPacketWithDescriptor
+       (IOSkywalkPacketDescriptor *)' added to subclass.
+    3. newPacketWithDescriptor delegates to IOSkywalkNetworkPacket
+       ::withPool(this, desc, 0) — the framework's exported
+       static factory at BootKC 0xffffff8002a34022, which runs
+       inside IOSkywalkFamily's link unit and uses its own
+       kalloc_type_view (no cross-kext sandbox).
+
+We deliberately do NOT define a same-kext packet subclass:
+subclassing IOSkywalkPacket (or any descendant) would force
+the linker to resolve IOSkywalkPacket's Tahoe-26.x virtual
+surface (getDataOff, getDataLength, getDataOffset,
+getPacketBuffers, setDataOffAndLen, getMemoryDescriptor,
+getPacketBufferCount, getDataVirtualAddress,
+getDataIOVirtualAddress) which is not exported by BootKC,
+SystemKernelExtensions.kc, KDK IOSkywalkFamily.kext, or
+kernel.release.* binaries.

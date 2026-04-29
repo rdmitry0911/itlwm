@@ -1,0 +1,94 @@
+version: 1
+topic: Tahoe IO80211InfraInterface direct-call API surface
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_infra_interface_public_surface
+  follows:
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "108_rx_producer_tag_stats_2026_04_27.yaml"
+    - "112_ioskywalk_network_packet_size_2026_04_27.yaml"
+    - "113_io80211_network_packet_virtual_surface_2026_04_27.yaml"
+    - "114_packet_scratch_field_map_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - infra_interface_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+  use_in_this_batch: "no runtime change yet — CR-175 only widens the locally declared API surface so future caller wiring can link against documented BootKC symbols"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211InfraInterface::getInfraPeer()", addr: "ffffff80022e1148", returns: "IO80211Peer *" }
+      - { sym: "IO80211InfraInterface::getCurrentApAddress()", addr: "ffffff80022e5ef8", returns: "ether_addr *" }
+      - { sym: "IO80211InfraInterface::handleKeyDone(bool, bool)", addr: "ffffff80022e6f9c", returns: "void" }
+      - { sym: "IO80211InfraInterface::bssidChange(void*, unsigned long)", addr: "ffffff80022e116e", returns: "void" }
+
+local_before_cr_175:
+  file: "include/Airport/IO80211InfraInterface.h"
+  mismatch: "Tahoe block declared the new vtable virtuals [463]-[469] but did not declare the four direct-call exported helpers above"
+  consequence: "any future caller wanting to invoke handleKeyDone, getInfraPeer, getCurrentApAddress, or bssidChange would have to add per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_175:
+  supersedes: "CR-174"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211InfraInterface.h"
+  changes:
+    - "add non-virtual declaration `IO80211Peer *getInfraPeer(void)` under `#if __IO80211_TARGET >= __MAC_26_0`"
+    - "add non-virtual declaration `ether_addr *getCurrentApAddress(void)` under `#if __IO80211_TARGET >= __MAC_26_0`"
+    - "add non-virtual declaration `void handleKeyDone(bool, bool)` under `#if __IO80211_TARGET >= __MAC_26_0`"
+    - "add non-virtual declaration `void bssidChange(void *, unsigned long)` under `#if __IO80211_TARGET >= __MAC_26_0`"
+    - "anchor each declaration to its BootKC address in a comment block"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-174 — confirms purely additive structural rename"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call getInfraPeer, getCurrentApAddress, handleKeyDone, or bssidChange from any local code path"
+
+deferred_work:
+  handle_key_done_body:
+    addr: "ffffff80022e6f9c"
+    status: "blocked_on_ghidra_bad_instruction"
+    next: "raw `otool -tV` / `objdump -D` extraction over IO80211Family at this address; tracked as task #8"
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for addPeer / addPeerOperation"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition"
+      - "ordering of setCurrentApAddress vs setLinkState"
+    note: "wired CR will be CR-176+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-175 has no caller wiring, so kext is bit-identical to CR-174"
+    - "pre-existing CR-174 runtime baseline (eapol_rx=8, eapol_tx=0, IO80211RSNDone=No) remains the active blocker for the next CR"

@@ -1,0 +1,48 @@
+CR-226 LOCAL DISASSEMBLY PROOF — actual allocation function reference
+
+Source: AirportItlwm.kext sha256=6390fe6bfee478127e80bc0ad6002df2b9389af4f2a208a60d1ab0b6598cbacf
+        UUID=4DBE481A-E3EE-388B-8535-214A70BE3FA3
+Method: otool -tV on AirportItlwm_newIO80211NetworkPacket function body
+
+`AirportItlwm_newIO80211NetworkPacket(IOSkywalkPacketBufferPool*, IOSkywalkPacketDescriptor*, unsigned int)`
+   internal symbol: __ZL36AirportItlwm_newIO80211NetworkPacketP25IOSkywalkPacketBufferPoolP25IOSkywalkPacketDescriptorj
+   address (file offset within kext): 0x4f3a0
+
+```
+000000000004f3a0  pushq  %rbp
+000000000004f3a1  movq   %rsp, %rbp
+000000000004f3a4  subq   $0x40, %rsp
+000000000004f3a8  movq   %rdi, -0x10(%rbp)            ; pool
+000000000004f3ac  movq   %rsi, -0x18(%rbp)            ; desc
+000000000004f3b0  movl   %edx, -0x1c(%rbp)            ; options
+000000000004f3b3  movl   $0x78, %edi                  ; size = 0x78
+000000000004f3b8  callq  __ZN20IO80211NetworkPacketnwEm   <-- proves operator new is IO80211NetworkPacket-specific (not OSObject)
+000000000004f3bd  movq   %rax, -0x28(%rbp)            ; mem
+000000000004f3c1  cmpq   $0x0, -0x28(%rbp)
+000000000004f3c6  jne    0x4f3d2                      ; if mem != 0 jump to ctor
+000000000004f3c8  movq   $0x0, -0x8(%rbp)
+000000000004f3d0  jmp    0x4f440                      ; return nullptr
+0x4f3d2:
+000000000004f3d2  movq   -0x28(%rbp), %rdi             ; this = mem
+000000000004f3d6  movq   0xeb2c6b(%rip), %rax          ; load &IO80211NetworkPacket::metaClass
+000000000004f3dd  movq   (%rax), %rsi                  ; deref to get OSMetaClass*
+000000000004f3e0  callq  __ZN20IO80211NetworkPacketC1EPK11OSMetaClass   <-- C1 ctor exact 1:1 with reference
+000000000004f3e5..  vt[35] init dispatch via [vptr+0x118]
+0x4f407..0x4f417   load init args (this, pool, desc, options) into rdi/rsi/rdx/ecx
+... vt[35] callq via vtbl[35]
+... on failure: vt[5] dispatch via [vptr+0x28]
+... on success: return p
+```
+
+Symbol-table verification (`nm -u Build/Debug/Tahoe/.../AirportItlwm`):
+  __ZN20IO80211NetworkPacketnwEm                 PRESENT
+  __ZN20IO80211NetworkPacketC1EPK11OSMetaClass   PRESENT
+  __ZN20IO80211NetworkPacket9metaClassE          PRESENT
+
+Symbols NOT present (CR-225 reviewer's failure mode confirmed avoided):
+  __ZN8OSObjectnwEm                              NOT in this function path
+                                                 (other consumers may still
+                                                  reference it elsewhere; the
+                                                  CR-226 allocator does not)
+
+Conclusion: the asm-named extern "C" declaration (`__asm("__ZN20IO80211NetworkPacketnwEm")`) successfully forces the linker to emit the IO80211NetworkPacket-specific operator new symbol reference, addressing the CR-225 reviewer's `claim_scope: FAIL` and `binary_symbol_evidence: FAIL` findings.

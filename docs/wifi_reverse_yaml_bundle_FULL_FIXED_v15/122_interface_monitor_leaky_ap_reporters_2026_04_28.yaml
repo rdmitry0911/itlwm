@@ -1,0 +1,102 @@
+version: 1
+topic: Tahoe IO80211InterfaceMonitor leaky-AP, reporter, and packet-record helpers
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_interface_monitor_leaky_ap_reporter_surface
+  follows:
+    - "115_infrainterface_tahoe_api_2026_04_28.yaml"
+    - "116_peermanager_public_api_2026_04_28.yaml"
+    - "117_peer_public_api_2026_04_28.yaml"
+    - "118_peermanager_datapath_lookup_2026_04_28.yaml"
+    - "119_peermanager_infra_config_2026_04_28.yaml"
+    - "120_interface_monitor_public_api_2026_04_28.yaml"
+    - "121_infrainterface_property_updaters_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - leaky_ap_and_reporter_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..181)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IO80211InterfaceMonitor packet/byte counters never advance for EAPOL TX"
+  use_in_this_batch: "no runtime change yet — CR-182 only widens the locally declared API surface so future caller wiring can drive InterfaceMonitor reporter init/teardown, leaky-AP query, and per-packet record calls"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211InterfaceMonitor::getLeakyApSsid(apple80211_ssid*)", addr: "ffffff80022ef6c8", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::getLeakyApBssid(ether_addr*)", addr: "ffffff80022ef714", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::resetLeakyApStats()", addr: "ffffff80022eefa4", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::setInputPacketRSSI(long long)", addr: "ffffff80022f4f7c", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::recordInputPacket(int, int)", addr: "ffffff80022f784c", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::recordOutputPacket(apple80211_wme_ac, int, int)", addr: "ffffff80022f775c", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::initFrameStats()", addr: "ffffff80022f1e2c", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::initHeFrameStats()", addr: "ffffff80022f281a", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::destroyReporters()", addr: "ffffff80022ef0fc", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::updateAllReports()", addr: "ffffff80022f752e", returns: "void" }
+
+local_before_cr_182:
+  files:
+    - "include/Airport/IO80211InterfaceMonitor.h"
+  mismatch: "CR-180 declared 19 InterfaceMonitor helpers (controller, counters, RSSI/SNR/NF, link/channel); leaky-AP, reporter init/teardown, and per-packet record helpers were missing"
+  consequence: "any future caller wanting to query the leaky-AP cache, init/destroy reporters, push per-packet RSSI, or record per-AC input/output packets would need per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_182:
+  supersedes: "CR-181"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211InterfaceMonitor.h"
+  changes:
+    - "extend `class IO80211InterfaceMonitor` with ten non-virtual public method declarations"
+    - "declare three leaky-AP helpers: `getLeakyApSsid`, `getLeakyApBssid`, `resetLeakyApStats`"
+    - "declare four per-packet helpers: `setInputPacketRSSI`, `recordInputPacket`, `recordOutputPacket`, `initFrameStats`"
+    - "declare three reporter lifecycle helpers: `initHeFrameStats`, `destroyReporters`, `updateAllReports`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+    - "add forward declarations for `apple80211_ssid`, `ether_addr`, and `enum apple80211_wme_ac : unsigned int`"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-181"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the ten new InterfaceMonitor methods from any local code path"
+    - "does not declare IO80211InterfaceMonitor with any base class or data layout beyond what was already in the local header"
+    - "does not include kernel-internal types whose definitions are not yet recovered"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for reporter init/destroy (typically dispatch-queue gated)"
+      - "ordering of recordInputPacket/recordOutputPacket relative to inputPacket/recordOutputPackets"
+      - "leaky-AP cache writer (which path populates the SSID/BSSID slots)"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition (carry-over)"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c (carry-over)"
+    note: "wired CR will be CR-183+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-182 has no caller wiring, so kext is bit-identical to CR-181"

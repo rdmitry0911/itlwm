@@ -1,0 +1,22 @@
+CR-222 BUILD EVIDENCE — ACTIVE_ALLOCATION_PROBE (preserves ALLOC_NULL)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : d3a07c2abccac863e1909aa562051a6ee5687245
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : d2a052d59ebc41d554900109b5ab91bbdd94c90bf8298492f52fba38af762507
+Kext UUID     : B319AED0-95DF-30EC-93CC-227A44725AA7
+Kext size     : 16298920 bytes
+
+BootKC undef  : 887 (same as CR-221; only the comment + return path
+                changed vs CR-221's binary, no symbols added/removed)
+Linker check  : OK: all 887 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: d2a052d59ebc41d554900109b5ab91bbdd94c90bf8298492f52fba38af762507
+Install UUID  : B319AED0-95DF-30EC-93CC-227A44725AA7
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)

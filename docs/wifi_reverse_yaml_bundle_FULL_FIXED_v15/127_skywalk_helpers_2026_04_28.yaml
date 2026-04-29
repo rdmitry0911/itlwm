@@ -1,0 +1,82 @@
+---
+# 127_skywalk_helpers_2026_04_28.yaml
+# Recovered IO80211SkywalkInterface non-virtual helper surface (CR-187).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-187
+date: 2026-04-28
+class: IO80211SkywalkInterface
+header: include/Airport/IO80211SkywalkInterface.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-186
+batch_size: 20
+notes: |
+  All twenty exports are direct-call (non-vtable) methods of
+  IO80211SkywalkInterface and use only already-known primitive types
+  (`bool`, `int`, `unsigned int`, `unsigned long`, `void *`,
+  `char const *`, `IOReturn`, opaque pointers `IO80211PeerManager *`,
+  `IO80211Peer *`, `ether_addr *`, `ether_addr &`).
+
+  Deferred from this batch (would override parent-class virtuals and
+  break bit-identity, requiring an explicit vtable-references CR):
+    - getBSDName()                  // IOSkywalkNetworkInterface virtual
+    - getHardwareAddress(ether_addr*)  // IOSkywalkEthernetInterface virtual
+    - setHardwareAddress(ether_addr*)  // IOSkywalkEthernetInterface virtual
+    - stringFromReturn(int)         // IOService virtual
+    - errnoFromReturn(int)          // IOService virtual
+
+symbols:
+  - addr: '0xffffff800227849c'
+    signature: 'int IO80211SkywalkInterface::pidLockPid()'
+  - addr: '0xffffff80022772e6'
+    signature: 'void IO80211SkywalkInterface::setPidLock(bool)'
+  - addr: '0xffffff8002276fcc'
+    signature: 'void *IO80211SkywalkInterface::getWorkQueue()'
+  - addr: '0xffffff8002274c8e'
+    signature: 'unsigned int IO80211SkywalkInterface::getInterfaceId()'
+  - addr: '0xffffff8002274c7c'
+    signature: 'IO80211PeerManager *IO80211SkywalkInterface::getPeerManager()'
+  - addr: '0xffffff8002276fde'
+    signature: 'void *IO80211SkywalkInterface::getPeerMonitor(IO80211Peer*)'
+  - addr: '0xffffff80022770fa'
+    signature: 'void IO80211SkywalkInterface::setInitMacAddress(ether_addr&)'
+  - addr: '0xffffff8002278916'
+    signature: 'void *IO80211SkywalkInterface::getMacAddressAgent()'
+  - addr: '0xffffff8002278466'
+    signature: 'void *IO80211SkywalkInterface::getParentInterface()'
+  - addr: '0xffffff8002277cb4'
+    signature: 'void *IO80211SkywalkInterface::getInterfaceMonitor()'
+  - addr: '0xffffff8002274bbc'
+    signature: 'char const *IO80211SkywalkInterface::getInterfaceRoleStr()'
+  - addr: '0xffffff800227848a'
+    signature: 'bool IO80211SkywalkInterface::isLowLatencyEnabled()'
+  - addr: '0xffffff80022772b2'
+    signature: 'void IO80211SkywalkInterface::postMessageInternal(unsigned int, void*, unsigned long, bool)'
+  - addr: '0xffffff800227776e'
+    signature: 'IOReturn IO80211SkywalkInterface::postMessageSync(unsigned int, void*, unsigned long)'
+  - addr: '0xffffff80022788a4'
+    signature: 'IOReturn IO80211SkywalkInterface::routeIoctlToWcl(unsigned int, unsigned int, void*, unsigned long)'
+  - addr: '0xffffff8002278414'
+    signature: 'unsigned int IO80211SkywalkInterface::getDeviceType()'
+  - addr: '0xffffff8002278428'
+    signature: 'void IO80211SkywalkInterface::setDeviceType(unsigned int)'
+  - addr: '0xffffff80022771f0'
+    signature: 'unsigned int IO80211SkywalkInterface::getMediumType()'
+  - addr: '0xffffff80022774f2'
+    signature: 'unsigned long IO80211SkywalkInterface::getPowerState()'
+  - addr: '0xffffff80022783cc'
+    signature: 'void *IO80211SkywalkInterface::getPropertyTable()'
+  - addr: '0xffffff8002276868'
+    signature: 'bool IO80211SkywalkInterface::isCommandAllowed()'
+
+local_change:
+  files:
+    - include/Airport/IO80211SkywalkInterface.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

@@ -1,0 +1,103 @@
+version: 1
+topic: Tahoe IO80211PeerManager public direct-call API surface
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_peer_manager_public_surface
+  follows:
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "108_rx_producer_tag_stats_2026_04_27.yaml"
+    - "112_ioskywalk_network_packet_size_2026_04_27.yaml"
+    - "113_io80211_network_packet_virtual_surface_2026_04_27.yaml"
+    - "114_packet_scratch_field_map_2026_04_27.yaml"
+    - "115_infrainterface_tahoe_api_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - peer_manager_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174/175)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+  use_in_this_batch: "no runtime change yet — CR-176 only widens the locally declared API surface so future caller wiring can link against documented BootKC peer-management symbols"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211PeerManager::addPeer(unsigned char*)", addr: "ffffff80021d3f58", returns: "IO80211Peer *", note: "CR-205: corrected from IOReturn to IO80211Peer * based on raw x86_64 disasm; see analysis/cr205_addpeer_disasm.txt" }
+      - { sym: "IO80211PeerManager::addPeerOperation()", addr: "ffffff80021d7ba0", returns: "IOReturn" }
+      - { sym: "IO80211PeerManager::removePeer(IO80211Peer*)", addr: "ffffff80021d4452", returns: "void" }
+      - { sym: "IO80211PeerManager::removePeer(unsigned char*)", addr: "ffffff80021d4806", returns: "IOReturn" }
+      - { sym: "IO80211PeerManager::removePeerOperation()", addr: "ffffff80021d7c7e", returns: "IOReturn" }
+      - { sym: "IO80211PeerManager::getPeerList()", addr: "ffffff80021df2fe", returns: "void *" }
+      - { sym: "IO80211PeerManager::getPeerStats(apple80211_peer_stats*)", addr: "ffffff80021d298e", returns: "IOReturn" }
+
+local_before_cr_176:
+  files:
+    - "include/Airport/*"
+  mismatch: "no canonical IO80211PeerManager header in the local include tree; class only forward-declared in IO80211SkywalkInterface.h, IO80211Interface.h, IO80211VirtualInterface.h, IO80211P2PInterface.h"
+  consequence: "any future caller wanting to invoke peer add/remove/list/stats would have to add per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_176:
+  supersedes: "CR-175"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211PeerManager.h"
+  changes:
+    - "create new header `include/Airport/IO80211PeerManager.h`"
+    - "declare `class IO80211PeerManager` as opaque (no base class, no data, no vtable)"
+    - "declare `IO80211Peer *addPeer(unsigned char *)`  # CR-205 corrected from IOReturn"
+    - "declare `IOReturn addPeerOperation(void)`"
+    - "declare `void removePeer(IO80211Peer *)`"
+    - "declare `IOReturn removePeer(unsigned char *)`"
+    - "declare `IOReturn removePeerOperation(void)`"
+    - "declare `void *getPeerList(void)`"
+    - "declare `IOReturn getPeerStats(apple80211_peer_stats *)`"
+    - "forward-declare `class IO80211Peer` and `struct apple80211_peer_stats`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-175"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the seven peer-management methods from any local code path"
+    - "does not declare IO80211PeerManager with any base class or data layout"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for addPeer / addPeerOperation"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition for setLinkState(state=2)"
+      - "ordering of setCurrentApAddress vs setLinkState"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c"
+    note: "wired CR will be CR-177+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-176 has no caller wiring, so kext is bit-identical to CR-175"
+    - "pre-existing CR-175 runtime baseline (eapol_rx=8, eapol_tx=0, IO80211RSNDone=No) remains the active blocker for the next CR"

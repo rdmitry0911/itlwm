@@ -1,0 +1,86 @@
+CR-224 LOCAL VTABLE-SLOT PROOF
+================================
+Source: AirportItlwm.kext sha256=52999d3d4155b702dadc10fb7a0a8a6fe80a16d62d05bf49d7e2c50fa7151ffc
+        UUID=C41A4394-9FF6-358D-BA5D-3E147ED1742B
+Method: parsed external relocations against vtable __ZTV25AirportItlwmIO80211Packet
+        at file offset 0xf05918, vtable byte size 0x240 (72 slots), 60 ext relocs.
+
+vt[ 0]   <typeinfo offset_to_top>   (0)
+vt[ 1]   <RTTI typeinfo ptr>         (relocation against __ZTI25AirportItlwmIO80211Packet)
+vt[ 2]   __ZNK8OSObject7releaseEi
+vt[ 3]   __ZNK8OSObject14getRetainCountEv
+vt[ 4]   __ZNK8OSObject6retainEv
+vt[ 5]   __ZNK8OSObject7releaseEv                                                <-- vt[5] failure-path destruct slot (matches IOSkywalkNetworkPacket::withPool decomp call qword [rax+0x28])
+vt[ 6]   __ZNK8OSObject9serializeEP11OSSerialize
+vt[ 7]   <getMetaClass slot in our class>
+vt[ 8]   __ZNK15OSMetaClassBase9isEqualToEPKS_
+vt[ 9]   __ZNK8OSObject12taggedRetainEPKv
+vt[10]   __ZNK8OSObject13taggedReleaseEPKv
+vt[11]   __ZNK8OSObject13taggedReleaseEPKvi
+vt[12]   __ZN8OSObject8DispatchE5IORPC
+vt[13]   __ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase4Ev
+vt[14]   __ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase5Ev
+vt[15]   __ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase6Ev
+vt[16]   __ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase7Ev
+vt[17]   __ZN9IOCommand4initEv
+vt[18]   __ZN15IOSkywalkPacket4freeEv
+vt[19..34]  OSObject reserved slots
+vt[35]   __ZN15IOSkywalkPacket12initWithPoolEP25IOSkywalkPacketBufferPoolP25IOSkywalkPacketDescriptorj   <-- vt[35] init slot (matches withPool decomp call qword [rax+0x118])
+vt[36]   __ZNK15IOSkywalkPacket16getPacketBuffersEPP21IOSkywalkPacketBufferj
+vt[37]   __ZNK15IOSkywalkPacket20getPacketBufferCountEv
+vt[38]   __ZNK15IOSkywalkPacket19getMemoryDescriptorEv
+vt[39]   __ZN15IOSkywalkPacket13setDataLengthEj
+vt[40]   __ZNK15IOSkywalkPacket13getDataLengthEv
+vt[41]   __ZN15IOSkywalkPacket13setDataOffsetEt
+vt[42]   __ZNK15IOSkywalkPacket13getDataOffsetEv
+vt[43]   __ZN15IOSkywalkPacket22setDataOffsetAndLengthEtj
+vt[44]   __ZN15IOSkywalkPacket10setDataOffEx
+vt[45]   __ZNK15IOSkywalkPacket10getDataOffEv
+vt[46]   __ZN15IOSkywalkPacket16setDataOffAndLenExm
+vt[47]   __ZNK15IOSkywalkPacket21getDataVirtualAddressEv
+vt[48]   __ZNK15IOSkywalkPacket23getDataIOVirtualAddressEv
+vt[49]   __ZN20IO80211NetworkPacket16prepareWithQueueEP20IOSkywalkPacketQueuejj   <-- IO80211 prepareWithQueue (3-arg)
+vt[50]   __ZN15IOSkywalkPacket7prepareEP20IOSkywalkPacketQueueyj
+vt[51]   __ZN15IOSkywalkPacket17completeWithQueueEP20IOSkywalkPacketQueuejj
+vt[52]   __ZN15IOSkywalkPacket8completeEP20IOSkywalkPacketQueuej
+vt[53]   __ZNK22IOSkywalkNetworkPacket13getPacketTypeEv                            <-- IOSkywalkNetworkPacket::getPacketType const (separate inherited slot)
+vt[54]   __ZN15IOSkywalkPacket23acquireWithPacketHandleEyj
+vt[55]   __ZN15IOSkywalkPacket13disposePacketEv
+vt[56]   __ZN20IO80211NetworkPacket13getPacketTypeEv                               <-- IO80211 content classifier (NON-const, separate slot from vt[53])
+vt[57]   __ZN20IO80211NetworkPacket17getVirtualAddressEv                           <-- IO80211 getVirtualAddress
+vt[58]   __ZN20IO80211NetworkPacket10setPTMModeEb                                  <-- IO80211 PTM
+vt[59]   __ZN20IO80211NetworkPacket25setIngressEgressTimestampEy                   <-- IO80211 timestamp
+vt[60]   __ZNK20IO80211NetworkPacket25getIngressEgressTimestampEv                  <-- IO80211 timestamp
+vt[61]   __ZNK20IO80211NetworkPacket9isPTMModeEv                                   <-- IO80211 PTM
+vt[62]   __ZN20IO80211NetworkPacket17setPktEnqueueTimeEy                           <-- IO80211 timestamp
+vt[63]   __ZNK20IO80211NetworkPacket17getPktEnqueueTimeEv                          <-- IO80211 timestamp
+vt[64]   __ZN20IO80211NetworkPacket22firmwareToHostTxStatusE22IO80211NetworkTXStatus  <-- IO80211 firmware TX
+vt[65]   __ZN20IO80211NetworkPacket19setFirmwareTxStatusE22IO80211NetworkTXStatus     <-- IO80211 firmware TX
+vt[66]   __ZN20IO80211NetworkPacket19getFirmwareTxStatusEv                         <-- IO80211 firmware TX
+vt[67]   __ZN20IO80211NetworkPacket13getBufferSizeEv                               <-- IO80211 getBufferSize
+vt[68]   __ZN20IO80211NetworkPacket16prepareWithQueueEP20IOSkywalkPacketQueuej     <-- IO80211 prepareWithQueue (2-arg)
+
+ALL auditor-required slots present and dispatching to the BootKC-exported
+IO80211NetworkPacket implementations:
+- vt[35] init                ✓
+- vt[5]  failure destruct    ✓
+- vt[47] getDataVirtualAddress (used by getPacketType internals) ✓
+- vt[49] prepareWithQueue (3-arg)  ✓
+- vt[56] getPacketType (IO80211 non-const) ✓
+- vt[57] getVirtualAddress    ✓
+- vt[58] setPTMMode           ✓
+- vt[59] setIngressEgressTimestamp  ✓
+- vt[60] getIngressEgressTimestamp const  ✓
+- vt[61] isPTMMode const      ✓
+- vt[62] setPktEnqueueTime    ✓
+- vt[63] getPktEnqueueTime const  ✓
+- vt[64] firmwareToHostTxStatus  ✓
+- vt[65] setFirmwareTxStatus  ✓
+- vt[66] getFirmwareTxStatus  ✓
+- vt[67] getBufferSize         ✓
+- vt[68] prepareWithQueue (2-arg)  ✓
+
+ZERO local-class overrides — every IO80211 virtual dispatches to the
+IO80211Family-exported implementation by inherited vtable slot. Vtable
+identity matches IO80211NetworkPacket 1:1 modulo the per-class
+gMetaClass/typeinfo header at slots 0/1.

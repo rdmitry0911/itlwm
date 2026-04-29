@@ -1,0 +1,32 @@
+CR-205 — IO80211PeerManager::addPeer return type fix
+date: 2026-04-28
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+== build script ==
+$ ./scripts/build_tahoe.sh
+
+** BUILD SUCCEEDED **
+
+Build succeeded: /Users/bob/Projects/itlwm/Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+
+Verifying symbols...
+OK: all 884 undefined symbols resolve against BootKC
+
+== kext identity ==
+$ shasum -a 256 Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+
+$ /usr/bin/dwarfdump --uuid Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+UUID: BA3D771F-F079-33FF-94E5-C792E66237D8 (x86_64)
+
+$ ls -l Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+size: 16285152 bytes
+
+== bit-identity invariance to CR-201 / CR-204 ==
+The CR-205 fix is a header comment + a single return-type token change in
+include/Airport/IO80211PeerManager.h (`IOReturn addPeer(...)` →
+`IO80211Peer *addPeer(...)`). The symbol is non-virtual and is not called
+from any local source file in AirportItlwm/, so the kext mach-o body is
+byte-identical to the CR-201 / CR-203 / CR-204 builds:
+- kext sha256: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+- kext UUID:   BA3D771F-F079-33FF-94E5-C792E66237D8

@@ -1,0 +1,88 @@
+schema_version: 1
+document_id: hidden_interface_flow_timestamp_2026_04_27
+title: Tahoe hidden interface flow queue, timestamp, log pipe, and virtual-interface contracts
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoeHiddenInterfaceContracts.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "AirportItlwm/AirportItlwmV2.hpp"
+  - local: "AirportItlwm/AirportItlwmV2.cpp"
+  - local: "docs/reference/AppleBCMWLAN_hidden_interface_flow_timestamp_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+
+hidden_interface_contracts:
+  core_private_offset: "0x1510"
+  flow_queue:
+    flowIdSupported:
+      function: "AppleBCMWLANCore::flowIdSupported()"
+      address: "0xffffff80015b7a98"
+      hidden_vtable_offset: "0x0a68"
+    requestFlowQueue:
+      function: "AppleBCMWLANCore::requestFlowQueue(FlowIdMetadata const*)"
+      address: "0xffffff80015b7b10"
+      base_fallback_vtable_offset: "0x0d60"
+      hidden_vtable_offset: "0x0a70"
+      metadata_address_offset: "0x06"
+      metadata_service_class_offset: "0x0c"
+      metadata_flags_offset: "0x10"
+      rejecting_commands_result: "NULL"
+    releaseFlowQueue:
+      function: "AppleBCMWLANCore::releaseFlowQueue(IO80211FlowQueue*)"
+      address: "0xffffff80015b7ab4"
+      base_fallback_vtable_offset: "0x0d68"
+      hidden_vtable_offset: "0x0a78"
+    local_alignment:
+      - "add hidden interface constants and owner witnesses"
+      - "keep flowIdSupported false until a real local flow owner is recovered"
+      - "do not synthesize flow queues"
+      - "remove local debug-log side effect from releaseFlowQueue"
+  packet_timestamping:
+    enable:
+      function: "AppleBCMWLANCore::enablePacketTimestamping()"
+      address: "0xffffff800162da9c"
+      base_vtable_offset: "0x0d90"
+      gated_function: "AppleBCMWLANCore::enablePacketTimestampingGated()"
+      gated_address: "0xffffff800162db4e"
+      hidden_vtable_offset: "0x0aa8"
+    disable:
+      function: "AppleBCMWLANCore::disablePacketTimestamping()"
+      address: "0xffffff800162db6a"
+      base_vtable_offset: "0x0d98"
+      gated_function: "AppleBCMWLANCore::disablePacketTimestampingGated()"
+      gated_address: "0xffffff800162dc1c"
+      hidden_vtable_offset: "0x0ab0"
+    local_alignment:
+      - "record exact slots and owner witnesses"
+      - "do not enable hidden timestamp backend before local owner recovery"
+  log_pipes:
+    function: "AppleBCMWLANCore::getLogPipes(CCPipe**, CCPipe**, CCPipe**)"
+    address: "0xffffff8001634230"
+    hidden_pipe_owner_offset: "0x88"
+    event_pipe_offset: "0x218"
+    log_pipe_offset: "0x220"
+    snapshot_pipe_offset: "0x230"
+  virtual_interface:
+    create:
+      function: "AppleBCMWLANCore::createVirtualInterface(ether_addr*, unsigned int)"
+      address: "0xffffff80015fc952"
+      base_vtable_offset: "0x0e10"
+    enable:
+      function: "AppleBCMWLANCore::enableVirtualInterface(IO80211VirtualInterface*)"
+      address: "0xffffff80015fc964"
+      base_vtable_offset: "0x0d40"
+      null_status: "0xe00002bc"
+    disable:
+      function: "AppleBCMWLANCore::disableVirtualInterface(IO80211VirtualInterface*)"
+      address: "0xffffff80015fcb28"
+      base_vtable_offset: "0x0d48"
+      null_status: "0xe00002bc"
+    proximity_owner_offset: "0x2c28"
+    proximity_role: "0x06"
+    proximity_wake_flag: "0x10000"
+  non_claims:
+    - "does not claim final STA association, DHCP, RSN/EAPOL, or data path success"
+    - "does not enable flow queue backend"
+    - "does not enable hidden packet timestamp backend"
+    - "does not enable APSTA/proximity virtual-interface runtime"
+    - "does not add retry, poll, fallback, forced state, or synthetic owner objects"

@@ -6,3 +6,4 @@ project.xcworkspace
 FwBinary.cpp
 *.pyc
 MacKernelSDK
+commit-approval/decisions/

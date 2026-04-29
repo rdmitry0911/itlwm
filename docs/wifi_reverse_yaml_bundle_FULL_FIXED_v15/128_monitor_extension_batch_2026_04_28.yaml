@@ -1,0 +1,87 @@
+---
+# 128_monitor_extension_batch_2026_04_28.yaml
+# IO80211InterfaceMonitor extended primitive helper batch (CR-188).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-188
+date: 2026-04-28
+class: IO80211InterfaceMonitor
+header: include/Airport/IO80211InterfaceMonitor.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-187
+batch_size: 27
+notes: |
+  All twenty-seven exports are direct-call (non-vtable) methods of
+  IO80211InterfaceMonitor and use only already-known primitive types
+  (`bool`, `int`, `unsigned int`, `unsigned long long`, `unsigned int *`).
+  Verified against the kernel SDK (Kernel.framework/IOService,
+  IOReporter, IOReportingProvider) — no parent-class virtual collides
+  with any of these names, so no implicit override is introduced.
+
+symbols:
+  - addr: '0xffffff80022efe74'
+    signature: 'unsigned long long IO80211InterfaceMonitor::getEffectiveLinkRate()'
+  - addr: '0xffffff80022efe16'
+    signature: 'void IO80211InterfaceMonitor::setEffectiveLinkRate(unsigned long long)'
+  - addr: '0xffffff80022eff00'
+    signature: 'unsigned long long IO80211InterfaceMonitor::getEffectiveDataTransferRate()'
+  - addr: '0xffffff80022efea2'
+    signature: 'void IO80211InterfaceMonitor::setEffectiveDataTransferRate(unsigned long long)'
+  - addr: '0xffffff80022ef2aa'
+    signature: 'void IO80211InterfaceMonitor::setDataTransferRates(unsigned long long)'
+  - addr: '0xffffff80022eff2e'
+    signature: 'void IO80211InterfaceMonitor::setExpectedPeakLatency(unsigned long long)'
+  - addr: '0xffffff80022f0458'
+    signature: 'unsigned long long IO80211InterfaceMonitor::getInterfaceAverageCCA()'
+  - addr: '0xffffff80022f0424'
+    signature: 'bool IO80211InterfaceMonitor::hasInterfaceAverageCCA()'
+  - addr: '0xffffff80022f0122'
+    signature: 'void IO80211InterfaceMonitor::setInterfaceAverageCCA(unsigned long long)'
+  - addr: '0xffffff80022f0044'
+    signature: 'void IO80211InterfaceMonitor::setInterfaceOpenPercent(unsigned long long)'
+  - addr: '0xffffff80022f5abe'
+    signature: 'void IO80211InterfaceMonitor::setInterfaceOFDMDesense(long long)'
+  - addr: '0xffffff80022f7266'
+    signature: 'void IO80211InterfaceMonitor::incrementDPSDetected()'
+  - addr: '0xffffff80022f72a0'
+    signature: 'void IO80211InterfaceMonitor::incrementConsecutiveDPS()'
+  - addr: '0xffffff80022ef414'
+    signature: 'bool IO80211InterfaceMonitor::isBssidMetricsLoaded()'
+  - addr: '0xffffff80022ef73e'
+    signature: 'bool IO80211InterfaceMonitor::isLeakyApSsidBssidValid()'
+  - addr: '0xffffff80022ef39e'
+    signature: 'bool IO80211InterfaceMonitor::isLeakyApSsidMatchesSsidMetrics()'
+  - addr: '0xffffff80022ef370'
+    signature: 'void IO80211InterfaceMonitor::resetLeakyApSsidMetrics()'
+  - addr: '0xffffff80022ef31a'
+    signature: 'void IO80211InterfaceMonitor::resetLeakyApBssidMetrics()'
+  - addr: '0xffffff80022efc82'
+    signature: 'void IO80211InterfaceMonitor::updateLeakyApStatus()'
+  - addr: '0xffffff80022ef4c2'
+    signature: 'void IO80211InterfaceMonitor::updateLeakyApNetwork()'
+  - addr: '0xffffff80022f6fb4'
+    signature: 'void IO80211InterfaceMonitor::setPreviousInterfaceActivity()'
+  - addr: '0xffffff80022f715c'
+    signature: 'void IO80211InterfaceMonitor::setLQM(int)'
+  - addr: '0xffffff80022efc26'
+    signature: 'unsigned int IO80211InterfaceMonitor::getLowRxRatePeriodRange(unsigned int)'
+  - addr: '0xffffff80022f73f2'
+    signature: 'void IO80211InterfaceMonitor::getEffectiveRxBWSinceLastRead(unsigned int*)'
+  - addr: '0xffffff80022f72da'
+    signature: 'void IO80211InterfaceMonitor::getEffectiveTxBWSinceLastRead(unsigned int*)'
+  - addr: '0xffffff80022f65d2'
+    signature: 'void IO80211InterfaceMonitor::aggregatedPeersTxLatency(unsigned int, unsigned long long)'
+  - addr: '0xffffff80022ef7fe'
+    signature: 'void IO80211InterfaceMonitor::loadLeakyApBssidMetricsFromSsidMetrics()'
+
+local_change:
+  files:
+    - include/Airport/IO80211InterfaceMonitor.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

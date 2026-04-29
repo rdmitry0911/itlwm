@@ -1,0 +1,35 @@
+Timestamp               Ty Process[PID:TID]
+2026-04-29 09:55:17.292 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] BEGIN owner=<private> opts=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1
+2026-04-29 09:55:17.302 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] BEGIN owner=<private> opts=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1
+2026-04-29 09:55:17.302 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] new=<private> poolVtable=<private> (size=200 opts=<private> owner=<private> ownerVtable=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1 type=1)
+2026-04-29 09:55:17.314 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] new=<private> poolVtable=<private> (size=200 opts=<private> owner=<private> ownerVtable=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1 type=1)
+2026-04-29 09:55:17.315 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] initWithName=0 (type=1 slot18=<private> slot20=<private>)
+2026-04-29 09:55:17.324 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] initWithName=0 (type=1 slot18=<private> slot20=<private>)
+2026-04-29 09:55:17.324 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FINAL branch=INIT_FALSE preRelease pool=<private> slot18=<private> slot20=<private>
+2026-04-29 09:55:17.334 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FINAL branch=INIT_FALSE preRelease pool=<private> slot18=<private> slot20=<private>
+2026-04-29 09:55:17.334 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FAIL: initWithName returned false; pool released to NULL
+2026-04-29 09:55:17.343 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FAIL: initWithName returned false; pool released to NULL
+2026-04-29 09:55:17.343 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FINAL branch=INIT_FALSE return=0x0
+2026-04-29 09:55:17.352 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-TX] FINAL branch=INIT_FALSE return=0x0
+2026-04-29 09:55:17.352 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] AFTER_TX tx=0x0 rx=0x0
+2026-04-29 09:55:17.360 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] AFTER_TX tx=0x0 rx=0x0
+2026-04-29 09:55:17.360 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] new=<private> poolVtable=<private> (size=200 opts=<private> owner=<private> ownerVtable=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1 type=1)
+2026-04-29 09:55:17.373 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] new=<private> poolVtable=<private> (size=200 opts=<private> owner=<private> ownerVtable=<private> pktCount=256 bufCount=256 bufSize=2048 maxBPP=1 memSegSz=0 poolFlags=0x1 type=1)
+2026-04-29 09:55:17.373 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] initWithName=0 (type=1 slot18=<private> slot20=<private>)
+2026-04-29 09:55:17.383 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] initWithName=0 (type=1 slot18=<private> slot20=<private>)
+2026-04-29 09:55:17.383 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FINAL branch=INIT_FALSE preRelease pool=<private> slot18=<private> slot20=<private>
+2026-04-29 09:55:17.393 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FINAL branch=INIT_FALSE preRelease pool=<private> slot18=<private> slot20=<private>
+2026-04-29 09:55:17.393 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FAIL: initWithName returned false; pool released to NULL
+2026-04-29 09:55:17.404 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FAIL: initWithName returned false; pool released to NULL
+2026-04-29 09:55:17.404 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FINAL branch=INIT_FALSE return=0x0
+2026-04-29 09:55:17.413 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: PACKETPOOL[AirportItlwm-RX] FINAL branch=INIT_FALSE return=0x0
+2026-04-29 09:55:17.413 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] AFTER_RX tx=0x0 rx=0x0
+2026-04-29 09:55:17.422 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] AFTER_RX tx=0x0 rx=0x0
+2026-04-29 09:55:17.422 Df kernel[0:8e8] (AirportItlwm) itlwm: DEBUG start [STEP 8b] pools: TX=0x0 RX=0x0
+2026-04-29 09:55:17.431 Df kernel[0:8e8] (AirportItlwm) itlwm: DEBUG start [STEP 8b] pools: TX=0x0 RX=0x0
+2026-04-29 09:55:17.431 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] FINAL branch=TX_RX failMask=0x3 tx=0x0 rx=0x0 cleanup=super_stop_releaseAll_disarm_return_false
+2026-04-29 09:55:17.442 Df kernel[0:8e8] (AirportItlwm) itlwm: itlwm: POOLTRACE[STEP8b] FINAL branch=TX_RX failMask=0x3 tx=0x0 rx=0x0 cleanup=super_stop_releaseAll_disarm_return_false
+2026-04-29 09:55:17.442 Df kernel[0:8e8] (AirportItlwm) itlwm: DEBUG start [STEP 8b] FAIL: pool creation (TX=0x0 RX=0x0)
+2026-04-29 09:55:17.451 Df kernel[0:8e8] (AirportItlwm) itlwm: DEBUG start [STEP 8b] FAIL: pool creation (TX=0x0 RX=0x0)
+2026-04-29 09:55:17.451 Df kernel[0:8e8] (IO80211Family) IO80211Controller::stop[868] ::stop( 0x8432b307c4e2549e ) this[0x3b2ff3e77d0cf537]
+2026-04-29 09:55:17.462 Df kernel[0:8e8] (IO80211Family) IO80211Controller::stop[939] super::stop( 0x8432b307c4e2549e ) this[0x3b2ff3e77d0cf537]

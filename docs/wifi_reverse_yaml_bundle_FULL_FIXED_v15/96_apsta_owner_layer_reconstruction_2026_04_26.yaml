@@ -1,0 +1,1875 @@
+schema_version: 1
+document_id: apsta_owner_layer_reconstruction_2026_04_26
+title: Tahoe APSTA / SoftAP owner layer reconstruction requirements
+status: active_addendum
+created: "2026-04-26"
+source_files:
+  - remote: "/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c"
+  - remote: "/srv/project/ghidra_output/kdk_symbols.txt"
+  - remote: "/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+  - local: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+  - local: "include/Airport/IO80211SapProtocol.h"
+  - local: "include/Airport/IO80211SkywalkInterface.h"
+  - local: "include/Airport/apple80211_ioctl.h"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_channel_csa_sta_control_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_hostap_control_power_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_public_sap_slots_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_power_offload_datapath_tail_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_monitor_power_stats_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_async_callback_telemetry_2026_04_27.md"
+  - local: "docs/reference/AppleBCMWLAN_APSTA_action_frame_lphs_2026_04_27.md"
+
+apsta_owner_principle:
+  rule: >
+    Missing Apple-required classes, owner objects, state blocks, queues, or
+    carrier structures are reconstruction requirements. They are not permanent
+    exclusions from the port.
+  implication: >
+    APSTA and SoftAP must be restored as a separate SAP/APSTA owner layer. The
+    primary STA interface may keep the interim role-7 no-owner failure shape
+    only until the APSTA owner object and lifecycle are implemented.
+
+virtual_interface_role_7_creation:
+  reference_function: "AppleBCMWLANCore::setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data*)"
+  address: "0xffffff80015fc280"
+  role_field_offset: "data+0x0c"
+  role: 7
+  local_creation_contract_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled carrier/storage witness only; role-7 success remains disabled"
+    carrier_type: "AirportItlwmAPSTAVirtualIfCreateCarrierLayout"
+    registration_info_type: "AirportItlwmAPSTARegistrationInfoLayout"
+    core_expansion_type: "AirportItlwmAPSTACoreExpansionStorageLayout"
+    factory_contract: "AirportItlwmAPSTAFactoryContract(void *core, void *macCarrier, uint32_t role, char *bsdNameCarrier)"
+    static_asserts:
+      carrier_size: "0x20"
+      mac_offset: "0x04"
+      role_offset: "0x0c"
+      bsd_name_offset: "0x10"
+      registration_info_size: "0x130"
+      registration_interface_subfamily_offset: "0x0c"
+      registration_type_offset: "0x14"
+      registration_options_offset: "0x24"
+      registration_bsd_prefix_offset: "0x30"
+      registration_bsd_unit_offset: "0x38"
+      registration_power_flags_offset: "0x40"
+      registration_hardware_address_offset: "0x108"
+      proximity_owner_offset: "0x2c28"
+      apsta_owner_offset: "0x2c30"
+    constants:
+      role: 7
+      feature_gates: ["0x0d", "0x0c"]
+      already_exists_return: "0xe00002d2"
+      create_failed_return: "0xe00002bd"
+      unknown_role_return: "0xe0000001"
+  creation_path:
+    factory: "FUN_ffffff8001685422"
+    factory_address: "0xffffff8001685422"
+    constructor_target: "AppleBCMWLANIO80211APSTAInterface"
+    object_size: "0x138"
+    arguments:
+      - "core"
+      - "data+0x04: MAC/address carrier"
+      - "7: APSTA/SoftAP role"
+      - "data+0x10: output BSD name carrier"
+    core_storage: "core expansion +0x2c30"
+    already_exists_return: "0xe00002d2"
+    create_failed_return: "0xe00002bd"
+  post_create_feature_bits:
+    - feature_gate: "0x0d"
+      write: "(*(apsta+0x130)+0x32a) = 1"
+    - feature_gate: "0x0c"
+      write: "(*(apsta+0x130)+0x32b) = 1"
+  registration_info:
+    source: "AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...) role-7 branch"
+    disassembly_range: "0xffffff80015fc628..0xffffff80015fc73b"
+    local_type: "AirportItlwmAPSTARegistrationInfoLayout"
+    size: "0x130"
+    producer_contract:
+      - "zero 0x130-byte stack RegistrationInfo block"
+      - "call APSTA initRegistrationInfo(info, 1, 0x130)"
+      - "write APSTA-specific fields after initRegistrationInfo succeeds"
+      - "call AppleBCMWLANIO80211APSTAInterface::start(core, info)"
+    constants:
+      init_type: 1
+      registration_type_14: 2
+      interface_subfamily_0c: 3
+      bsd_prefix_30: "ap"
+      bsd_unit_38: 1
+      options_24: "0x8000000080"
+      wake_flag_bit_40: "0x4"
+    fields:
+      - { offset: "0x0c", field: "interfaceSubFamily0c", value: 3 }
+      - { offset: "0x14", field: "registrationType14", value: 2 }
+      - { offset: "0x24", field: "registrationOptions24", value: "0x8000000080" }
+      - { offset: "0x30", field: "bsdNamePrefix30", value: "ap" }
+      - { offset: "0x38", field: "bsdUnitNumber38", value: 1 }
+      - { offset: "0x40", field: "powerFlags40", value: "6 if IOPMResetPowerStateOnWake exists, otherwise old|0x4" }
+      - { offset: "0x108", field: "hardwareAddress108", value: "six bytes from APSTA getHardwareAddress/vtable +0xcf8" }
+    non_claims:
+      - "does not call start locally"
+      - "does not return role-7 success"
+      - "does not publish APSTA"
+
+class_topology:
+  apple_protocol_base: IO80211SapProtocol
+  apple_concrete_class: AppleBCMWLANIO80211APSTAInterface
+  evidence:
+    - "APSTA destructor calls IO80211SapProtocol destructor."
+    - "kdk_symbols exports IO80211SapProtocol metaclass/vtable and APSTA concrete methods."
+    - "resolved vtable dump shows IO80211SapProtocol vtable at 0xffffff80023e8dc0 and APSTA vtable at 0xffffff8001777508."
+  local_requirement:
+    - "recover IO80211SapProtocol header/vtable shape before exposing APSTA selectors"
+    - "implement local AirportItlwm APSTA owner as the APSTA/SAP object, not as primary STA method stubs"
+    - "do not derive APSTA directly from the current primary STA class because the SAP/APSTA vtable has different slots"
+
+vtable_contract:
+  dump_file: "/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt"
+  io80211_sap_protocol_vtable: "0xffffff80023e8dc0"
+  apsta_vtable: "0xffffff8001777508"
+  local_sap_contract_scaffold:
+    file: "include/Airport/IO80211SapProtocol.h"
+    status: "compiled contract header only; no ABI class definition yet"
+    reason_no_class_definition_yet: >
+      The recovered APSTA forwardPacket override occupies a Skywalk/SAP slot
+      whose local primary-STA header is still named for a different carrier.
+      A simple subclass of the current local IO80211SkywalkInterface would
+      therefore be ABI-wrong. The header records the slot contract first; the
+      full SAP class must use a separately recovered exact slot map.
+    slot_ranges:
+      inherited_skywalk_prefix: "280..480 through syncDPSStats"
+      io80211_sap_protocol_base: "280..519"
+      sap_extension: "481..519"
+      apsta_softap_extension: "520..531"
+    concrete_apsta_aliases:
+      vtable: "0xffffff8001777508"
+      recovered_slots: "280..559"
+      last_recovered_public_slot: 531
+      alias_rule: >
+        APSTA concrete dispatch slots are recorded separately from the
+        IO80211SapProtocol base vtable. A future local C++ class must not place
+        APSTA forwardPacket at the base IO80211VirtualInterface forwardPacket
+        slot.
+      forward_packet_collision:
+        base_io80211_sap_protocol_slot: 483
+        base_io80211_sap_protocol_byte_offset: "0x0f18"
+        base_target: "IO80211VirtualInterface::forwardPacket(IO80211NetworkPacket*)"
+        concrete_apsta_slot: 465
+        concrete_apsta_byte_offset: "0x0e88"
+        concrete_target: "AppleBCMWLANIO80211APSTAInterface::forwardPacket(IO80211NetworkPacket*)"
+      byte_offsets:
+        sap_extension_first: "0x0f08"
+        apsta_forward_packet: "0x0e88"
+        apsta_reset: "0x0f08"
+        apsta_set_mac_address: "0x0f40"
+        apsta_get_ssid: "0x0fc8"
+        apsta_get_channel: "0x0fd0"
+        apsta_get_state: "0x0fd8"
+        apsta_get_op_mode: "0x0fe0"
+        apsta_get_station_list: "0x0fe8"
+        apsta_get_sta_ie_list: "0x0ff0"
+        apsta_get_key_rsc: "0x0ff8"
+        apsta_get_sta_stats: "0x1000"
+        apsta_get_peer_cache_maximum_size: "0x1008"
+        apsta_get_host_ap_mode_hidden: "0x1010"
+        apsta_get_softap_params: "0x1018"
+        apsta_get_softap_stats: "0x1020"
+        apsta_set_ssid: "0x1028"
+        apsta_set_cipher_key: "0x1030"
+        apsta_set_channel: "0x1038"
+        apsta_set_host_ap_mode: "0x1040"
+        apsta_set_sta_authorize: "0x1048"
+        apsta_set_sta_disassociate: "0x1050"
+        apsta_set_sta_deauth: "0x1058"
+        apsta_set_rsn_conf: "0x1060"
+        apsta_set_peer_cache_control: "0x1068"
+        apsta_set_host_ap_mode_hidden: "0x1070"
+        apsta_set_softap_params: "0x1078"
+        apsta_set_softap_trigger_csa: "0x1080"
+        apsta_set_softap_wifi_network_info_ie: "0x1088"
+        apsta_set_softap_extended_capabilities_ie: "0x1090"
+        apsta_set_mis_max_sta: "0x1098"
+    typed_contract_slots:
+      - { slot: 465, method: "forwardPacket", signature: "void(IO80211NetworkPacket*)" }
+      - { slot: 488, method: "setMacAddress", signature: "void(ether_addr&)" }
+      - { slot: 505, method: "getSSID", signature: "IOReturn(apple80211_ssid_data*)" }
+      - { slot: 506, method: "getCHANNEL", signature: "IOReturn(apple80211_channel_data*)" }
+      - { slot: 507, method: "getSTATE", signature: "IOReturn(apple80211_state_data*)" }
+      - { slot: 508, method: "getOP_MODE", signature: "IOReturn(apple80211_opmode_data*)" }
+      - { slot: 509, method: "getSTATION_LIST", signature: "IOReturn(apple80211_sta_data*)" }
+      - { slot: 510, method: "getSTA_IE_LIST", signature: "IOReturn(apple80211_sta_ie_data*)" }
+      - { slot: 511, method: "getKEY_RSC", signature: "IOReturn(apple80211_key*)" }
+      - { slot: 512, method: "getSTA_STATS", signature: "IOReturn(apple80211_sta_stats_data*)" }
+      - { slot: 513, method: "getPEER_CACHE_MAXIMUM_SIZE", signature: "IOReturn(apple80211_peer_cache_maximum_size*)" }
+      - { slot: 514, method: "getHOST_AP_MODE_HIDDEN", signature: "IOReturn(apple80211_host_ap_mode_hidden_t*)" }
+      - { slot: 515, method: "getSOFTAP_PARAMS", signature: "IOReturn(apple80211_softap_params*)" }
+      - { slot: 516, method: "getSOFTAP_STATS", signature: "IOReturn(apple80211_softap_stats*)" }
+      - { slot: 517, method: "setSSID", signature: "IOReturn(apple80211_ssid_data*)" }
+      - { slot: 518, method: "setCIPHER_KEY", signature: "IOReturn(apple80211_key*)" }
+      - { slot: 519, method: "setCHANNEL", signature: "IOReturn(apple80211_channel_data*)" }
+      - { slot: 520, method: "setHOST_AP_MODE", signature: "IOReturn(apple80211_network_data*)" }
+      - { slot: 521, method: "setSTA_AUTHORIZE", signature: "IOReturn(apple80211_sta_authorize_data*)" }
+      - { slot: 522, method: "setSTA_DISASSOCIATE", signature: "IOReturn(apple80211_sta_disassoc_data*)" }
+      - { slot: 523, method: "setSTA_DEAUTH", signature: "IOReturn(apple80211_sta_disassoc_data*)" }
+      - { slot: 524, method: "setRSN_CONF", signature: "IOReturn(apple80211_rsn_conf_data*)" }
+      - { slot: 525, method: "setPEER_CACHE_CONTROL", signature: "IOReturn(apple80211_peer_cache_control*)" }
+      - { slot: 526, method: "setHOST_AP_MODE_HIDDEN", signature: "IOReturn(apple80211_host_ap_mode_hidden_t*)" }
+      - { slot: 527, method: "setSOFTAP_PARAMS", signature: "IOReturn(apple80211_softap_params*)" }
+      - { slot: 528, method: "setSOFTAP_TRIGGER_CSA", signature: "IOReturn(apple80211_softap_csa_params*)" }
+      - { slot: 529, method: "setSOFTAP_WIFI_NETWORK_INFO_IE", signature: "IOReturn(apple80211_softap_wifi_network_info*)" }
+      - { slot: 530, method: "setSOFTAP_EXTENDED_CAPABILITIES_IE", signature: "IOReturn(apple80211_softap_extended_capabilities_info*)" }
+      - { slot: 531, method: "setMIS_MAX_STA", signature: "IOReturn(apple80211_mis_max_sta*)" }
+    public_slot_surface:
+      local_header: "include/Airport/IO80211SapProtocol.h"
+      reference_note: "docs/reference/AppleBCMWLAN_APSTA_public_sap_slots_2026_04_27.md"
+      getter_slots:
+        - { slot: 505, byte_offset: "0x0fc8", method: "getSSID" }
+        - { slot: 506, byte_offset: "0x0fd0", method: "getCHANNEL" }
+        - { slot: 507, byte_offset: "0x0fd8", method: "getSTATE" }
+        - { slot: 508, byte_offset: "0x0fe0", method: "getOP_MODE" }
+        - { slot: 509, byte_offset: "0x0fe8", method: "getSTATION_LIST" }
+        - { slot: 510, byte_offset: "0x0ff0", method: "getSTA_IE_LIST" }
+        - { slot: 511, byte_offset: "0x0ff8", method: "getKEY_RSC" }
+        - { slot: 512, byte_offset: "0x1000", method: "getSTA_STATS" }
+        - { slot: 513, byte_offset: "0x1008", method: "getPEER_CACHE_MAXIMUM_SIZE" }
+        - { slot: 514, byte_offset: "0x1010", method: "getHOST_AP_MODE_HIDDEN" }
+        - { slot: 515, byte_offset: "0x1018", method: "getSOFTAP_PARAMS" }
+        - { slot: 516, byte_offset: "0x1020", method: "getSOFTAP_STATS" }
+      setter_slots:
+        - { slot: 517, byte_offset: "0x1028", method: "setSSID" }
+        - { slot: 518, byte_offset: "0x1030", method: "setCIPHER_KEY" }
+        - { slot: 519, byte_offset: "0x1038", method: "setCHANNEL" }
+        - { slot: 520, byte_offset: "0x1040", method: "setHOST_AP_MODE" }
+        - { slot: 521, byte_offset: "0x1048", method: "setSTA_AUTHORIZE" }
+        - { slot: 522, byte_offset: "0x1050", method: "setSTA_DISASSOCIATE" }
+        - { slot: 523, byte_offset: "0x1058", method: "setSTA_DEAUTH" }
+        - { slot: 524, byte_offset: "0x1060", method: "setRSN_CONF" }
+        - { slot: 525, byte_offset: "0x1068", method: "setPEER_CACHE_CONTROL" }
+        - { slot: 526, byte_offset: "0x1070", method: "setHOST_AP_MODE_HIDDEN" }
+        - { slot: 527, byte_offset: "0x1078", method: "setSOFTAP_PARAMS" }
+        - { slot: 528, byte_offset: "0x1080", method: "setSOFTAP_TRIGGER_CSA" }
+        - { slot: 529, byte_offset: "0x1088", method: "setSOFTAP_WIFI_NETWORK_INFO_IE" }
+        - { slot: 530, byte_offset: "0x1090", method: "setSOFTAP_EXTENDED_CAPABILITIES_IE" }
+        - { slot: 531, byte_offset: "0x1098", method: "setMIS_MAX_STA" }
+  apsta_confirmed_slots:
+    class_relation:
+      - { method: "AppleBCMWLANIO80211APSTAInterface::~AppleBCMWLANIO80211APSTAInterface", relation: "calls IO80211SapProtocol::~IO80211SapProtocol" }
+      - { slot: 483, base: "IO80211SapProtocol", method: "IO80211VirtualInterface::forwardPacket", byte_offset: "0x0f18" }
+      - { slot: 465, concrete: "AppleBCMWLANIO80211APSTAInterface", method: "forwardPacket", byte_offset: "0x0e88" }
+    identity:
+      - { slot: 311, method: "getInterfaceSubFamily", address: "0xffffff8001686a5e", returns: 3 }
+      - { slot: 319, method: "getBSDNamePrefix", address: "0xffffff8001686a1a", returns: "ap" }
+      - { slot: 320, method: "getBSDUnitNumber", address: "0xffffff8001686a6e", returns: 1 }
+    datapath:
+      - { slot: 425, method: "getTxQueueDepth", address: "0xffffff8001694126" }
+      - { slot: 426, method: "getRxQueueCapacity", address: "0xffffff800169414e" }
+      - { slot: 428, method: "getMultiCastQueue", address: "0xffffff80016940e2" }
+      - { slot: 431, method: "getTxHeadroom", address: "0xffffff800169411e" }
+      - { slot: 432, method: "getRxCompQueue", address: "0xffffff800169408c" }
+      - { slot: 433, method: "getTxCompQueue", address: "0xffffff80016940a0" }
+      - { slot: 434, method: "getTxSubQueue", address: "0xffffff80016940b4" }
+      - { slot: 435, method: "getTxPacketPool", address: "0xffffff80016940f6" }
+      - { slot: 436, method: "getRxPacketPool", address: "0xffffff800169410a" }
+      - { slot: 437, method: "enableDatapath", address: "0xffffff8001693b82" }
+      - { slot: 438, method: "disableDatapath", address: "0xffffff8001693e80" }
+      - { slot: 439, method: "getNumTxQueues", address: "0xffffff8001694078" }
+      - { slot: 465, method: "forwardPacket", address: "0xffffff8001693940" }
+    softap_and_sap:
+      - { slot: 505, method: "getSSID", address: "0xffffff8001687c84" }
+      - { slot: 506, method: "getCHANNEL", address: "0xffffff8001687cbe" }
+      - { slot: 507, method: "getSTATE", address: "0xffffff8001687dfe" }
+      - { slot: 508, method: "getOP_MODE", address: "0xffffff8001687e0e" }
+      - { slot: 509, method: "getSTATION_LIST", address: "0xffffff8001687e40" }
+      - { slot: 510, method: "getSTA_IE_LIST", address: "0xffffff800168f59c" }
+      - { slot: 511, method: "getKEY_RSC", address: "0xffffff800168f9e6" }
+      - { slot: 512, method: "getSTA_STATS", address: "0xffffff800168f808" }
+      - { slot: 513, method: "getPEER_CACHE_MAXIMUM_SIZE", address: "0xffffff80016882da" }
+      - { slot: 514, method: "getHOST_AP_MODE_HIDDEN", address: "0xffffff80016882ea" }
+      - { slot: 515, method: "getSOFTAP_PARAMS", address: "0xffffff800168e7f4" }
+      - { slot: 516, method: "getSOFTAP_STATS", address: "0xffffff800168e838" }
+      - { slot: 517, method: "setSSID", address: "0xffffff800168dc92" }
+      - { slot: 518, method: "setCIPHER_KEY", address: "0xffffff800168f2b6" }
+      - { slot: 520, method: "setHOST_AP_MODE", address: "0xffffff80016884ae" }
+      - { slot: 521, method: "setSTA_AUTHORIZE", address: "0xffffff800168f016" }
+      - { slot: 522, method: "setSTA_DISASSOCIATE", address: "0xffffff800168f15e" }
+      - { slot: 523, method: "setSTA_DEAUTH", address: "0xffffff800168f14c" }
+      - { slot: 524, method: "setRSN_CONF", address: "0xffffff800168e85c" }
+      - { slot: 525, method: "setPEER_CACHE_CONTROL", address: "0xffffff8001688490" }
+      - { slot: 527, method: "setSOFTAP_PARAMS", address: "0xffffff800168e536" }
+      - { slot: 528, method: "setSOFTAP_TRIGGER_CSA", address: "0xffffff800168e0ae" }
+      - { slot: 529, method: "setSOFTAP_WIFI_NETWORK_INFO_IE", address: "0xffffff800168e602" }
+      - { slot: 530, method: "setSOFTAP_EXTENDED_CAPABILITIES_IE", address: "0xffffff800168e7b8" }
+      - { slot: 531, method: "setMIS_MAX_STA", address: "0xffffff8001693a80" }
+
+identity_contract:
+  bsd_prefix:
+    source: "AppleBCMWLANIO80211APSTAInterface::getBSDNamePrefix()"
+    value: "ap"
+  bsd_unit:
+    source: "AppleBCMWLANIO80211APSTAInterface::getBSDUnitNumber()"
+    value: 1
+  interface_subfamily:
+    source: "AppleBCMWLANIO80211APSTAInterface::getInterfaceSubFamily()"
+    value: 3
+
+state_block_contract:
+  pointer: "self+0x130"
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    state_type: "AirportItlwmAPSTAStateBlock"
+    object_layout_witness: "AirportItlwmAPSTAObjectStorageLayout"
+    status: "compiled offset witness only; role-7 success remains disabled"
+    static_asserts:
+      object_state_pointer_offset: "0x130"
+      object_size_witness: "0x138"
+      exact_state_size: "0x338"
+      softap_params: ["0x00", "0x0c", "0x0d", "0x0e", "0x10", "0x14", "0x16", "0x18", "0x1c", "0x20", "0x24", "0x28", "0x2c", "0x68", "0x6a", "0x80", "0x84", "0x88", "0x90", "0x98", "0xa0", "0xac", "0xb0", "0xb4"]
+      ssid: ["0x274", "0x278"]
+      station_table: ["0xb8", "0xb9", "0xc8", "0xd8", "0xdc", "0xe0", "0x1a9"]
+      softap_stats: ["0x1a8", "0x1b0", "0x1d0", "0x328"]
+      lifecycle_resources: ["0x70", "0x78", "0xb8", "0x1a8", "0x20c", "0x210", "0x218", "0x228", "0x240", "0x248", "0x250", "0x258", "0x260", "0x268", "0x26c", "0x270", "0x329", "0x330"]
+      rsn_control: ["0x29b"]
+      datapath: ["0x2a4", "0x2a8", "0x2b8", "0x2c8", "0x2d0", "0x2d8", "0x2e0", "0x2e8", "0x2f0", "0x2f8", "0x300", "0x320"]
+      feature_bits: ["0x32a", "0x32b"]
+  required_offsets:
+    softap_flags:
+      - { offset: "0x00", value: 0, use: "reset/initSoftAPParameters scalar cleared before AP runtime" }
+      - { offset: "0x0c", use: "AP power assertion held flag written by holdSoftAPPowerAssertion" }
+      - { offset: "0x0d", use: "hidden network flag written by setHOST_AP_MODE_HIDDEN" }
+      - { offset: "0x0e", use: "getSOFTAP_PARAMS hidden/enabled bit source" }
+      - { offset: "0x10", use: "getSOFTAP_PARAMS one-byte mode field" }
+      - { offset: "0x14", value: "0x12c in init", use: "SoftAP beacon interval/default timing field" }
+      - { offset: "0x16", value: 1, use: "DTIM period default written by initSoftAPParameters" }
+      - { offset: "0x18", use: "getSOFTAP_PARAMS u32 field" }
+      - { offset: "0x1c", use: "getSOFTAP_PARAMS u32 field" }
+      - { offset: "0x20", use: "getSOFTAP_PARAMS u32 field" }
+      - { offset: "0x24", use: "getSOFTAP_PARAMS u32 field" }
+      - { offset: "0x28", use: "getSOFTAP_PARAMS one-byte field" }
+      - { offset: "0x2c", use: "setSOFTAP_WIFI_NETWORK_INFO_IE 0x24-byte copy target" }
+      - { offset: "0x68", use: "applied beacon interval; setBeaconInterval success target and getSOFTAP_PARAMS u16 source" }
+      - { offset: "0x6a", use: "applied DTIM period; updated after IOCTL 0x4e succeeds" }
+      - { offset: "0x80", use: "APSTA event association metadata field" }
+      - { offset: "0x84", use: "APSTA event association metadata field" }
+      - { offset: "0x88", use: "APSTA init-cleared runtime pointer/scalar" }
+      - { offset: "0x90", value: 0, use: "runtime qword cleared by reset" }
+      - { offset: "0x98", value: 0, use: "runtime qword cleared by reset" }
+      - { offset: "0xa0", value: 0, use: "runtime qword cleared by reset" }
+      - { offset: "0xac", use: "ARP host IP source for arp_hostip callback chain" }
+      - { offset: "0xb0", value: 0, use: "runtime qword cleared by reset" }
+      - { offset: "0xb4", use: "low-power/AP power state field checked by configureLowPowerModeExit" }
+    ssid:
+      - { offset: "0x274", use: "getSSID length source; values above 0x20 return raw 0x16" }
+      - { offset: "0x278", size: "0x20", use: "getSSID byte copy source" }
+    station_table:
+      - { offset: "0xb8", entries: 5, entry_stride: "0x30", use: "typed APSTA station table base; active byte at entry+0x00" }
+      - { offset: "0xb9", entry_stride: "0x30", mac_size: "0x06", use: "station MAC table search start; entry+0x01" }
+      - { offset: "0xc8", entry_stride: "0x30", use: "station sleep state; add path initializes to 2" }
+      - { offset: "0xd8", entry_stride: "0x30", use: "AIHS flag from Apple instant-hotspot IE bit 0" }
+      - { offset: "0xdc", entry_stride: "0x30", use: "sharing flag from Apple instant-hotspot IE bit 1" }
+      - { offset: "0xe0", entry_stride: "0x30", use: "Apple-station flag set when Apple IE is present" }
+      - { offset: "0x1a9", use: "getSTA_IE_LIST station MAC table search end" }
+    softap_stats:
+      - { offset: "0x1a8", use: "power-state last timestamp updated by softApStatsAccumulatePowerStateDuration" }
+      - { offset: "0x1b0", size: "0x58", use: "getSOFTAP_STATS copy source and reset/initSoftAPParameters clear range" }
+      - { offset: "0x1d0", entry_stride: "0x10", use: "power-state duration bucket base; duration is at bucket+0" }
+      - { offset: "0x328", use: "SoftAP peer-stats enabled state written by handleSoftAPStatsConfigAsyncCallback" }
+    lifecycle_resources:
+      - { offset: "0x70", use: "AP stats timer source released by freeResources" }
+      - { offset: "0x78", use: "AP monitor timer source released by freeResources" }
+      - { offset: "0xb8", size: "0xf0", use: "runtime block zeroed by reset/initSoftAPParameters" }
+      - { offset: "0x1a8", use: "runtime scalar cleared by initSoftAPParameters" }
+      - { offset: "0x20c", value: 0, use: "AP stats/inactivity accumulator initialized by APSTA init" }
+      - { offset: "0x210", use: "bytestream/logger resource returned by APSTA helper and used by SoftAP event callbacks" }
+      - { offset: "0x218", use: "owner/core pointer read by reset and HostAP paths" }
+      - { offset: "0x228", use: "core expansion resource reference captured by APSTA init" }
+      - { offset: "0x240", use: "resource pointer released by freeResources" }
+      - { offset: "0x248", use: "resource pointer released by freeResources" }
+      - { offset: "0x250", use: "resource pointer released by freeResources" }
+      - { offset: "0x258", use: "resource pointer released by freeResources" }
+      - { offset: "0x260", use: "resource pointer released by freeResources" }
+      - { offset: "0x268", value: 2, use: "APSTA init state field" }
+      - { offset: "0x26c", use: "reset/freeResources state flag" }
+      - { offset: "0x270", use: "HostAP transition/in-progress state used by setHostApModeInternal" }
+      - { offset: "0x329", use: "reset clears one-byte APSTA flag" }
+      - { offset: "0x330", use: "work queue captured by APSTA start for queue/work-source registration" }
+    rsn_control:
+      - { offset: "0x29b", bit: "0x10", use: "setRSN_CONF reject gate; set returns 0xe00002d5 instead of parsing RSN_CONF" }
+    datapath:
+      - { offset: "0x2a4", use: "number of TX queues" }
+      - { offset: "0x2a8", use: "start-time TX queue service-class map initialized to 0,1,2,3" }
+      - { offset: "0x2b8", use: "AC to TX queue index map" }
+      - { offset: "0x2c8", use: "bus/provider object used to resolve AppleBCMWLANBusSkywalk datapath owner" }
+      - { offset: "0x2d0", use: "datapath owner/adapter invoked by APSTA enableDatapath and disableDatapath" }
+      - { offset: "0x2d8", use: "TX packet pool" }
+      - { offset: "0x2e0", use: "RX packet pool" }
+      - { offset: "0x2e8", use: "TX completion queue" }
+      - { offset: "0x2f0", use: "RX completion queue" }
+      - { offset: "0x2f8", use: "start-time resource storage passed to datapath owner +0x118" }
+      - { offset: "0x300", use: "TX submission queue array" }
+      - { offset: "0x320", use: "multicast queue" }
+    feature_bits:
+      - { offset: "0x32a", source: "feature gate 0x0d after role-7 create" }
+      - { offset: "0x32b", source: "feature gate 0x0c after role-7 create" }
+  exact_size:
+    source: "AppleBCMWLANIO80211APSTAInterface::free()"
+    value: "0x338"
+    evidence: "free() calls freeResources() and then zeroes/releases *(self+0x130) with size 0x338"
+
+softap_public_carriers:
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled public carrier/constant witnesses only; no APSTA runtime enablement"
+    reference_notes:
+      - "docs/reference/AppleBCMWLAN_APSTA_public_simple_bodies_2026_04_27.md"
+      - "docs/reference/AppleBCMWLAN_APSTA_station_key_bodies_2026_04_27.md"
+      - "docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md"
+    params_output_type: "AirportItlwmAPSTASoftAPParamsOutputLayout"
+    wifi_network_info_type: "AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout"
+    constants:
+      state_value: 4
+      peer_cache_maximum_size: 8
+      host_ap_mode_hidden_value: 1
+      raw_invalid_argument: "0x16"
+      softap_not_ready: 6
+      invalid_softap_info: "0xe00002c2"
+      rsn_conf_rejected: "0xe00002d5"
+      ssid_max_length: "0x20"
+      get_opmode_type: 1
+      get_opmode_ap_up_value: 8
+      get_opmode_ap_down_value: 0
+      wifi_network_info_copy_size: "0x24"
+      wifi_network_info_accepted_length_limit: "0x21"
+      csa_maximum_excluded_channel_spec: "0x10000"
+  getSSID:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSSID(...)"
+    address: "0xffffff8001687c84"
+    contract: >
+      read SSID length from state+0x274; return raw 0x16 when length is
+      greater than 0x20; otherwise write length to output+0x04 and copy bytes
+      from state+0x278 to output+0x08.
+    local_layout: "AirportItlwmAPSTASsidDataLayout"
+    output_offsets:
+      length: "0x04"
+      bytes: "0x08"
+  getSOFTAP_PARAMS:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSOFTAP_PARAMS(...)"
+    address: "0xffffff800168e7f4"
+    contract: "copy fields from APSTA state block; return success"
+    output_layout:
+      local_type: "AirportItlwmAPSTASoftAPParamsOutputLayout"
+      fields:
+        - { output_offset: "0x04", source: "state+0x18" }
+        - { output_offset: "0x08", source: "state+0x1c" }
+        - { output_offset: "0x0c", source: "state+0x20" }
+        - { output_offset: "0x10", source: "state+0x24" }
+        - { output_offset: "0x14", source: "state+0x68" }
+        - { output_offset: "0x16", source: "state+0x10" }
+        - { output_offset: "0x17", source: "state+0x0e & 1" }
+        - { output_offset: "0x18", source: "state+0x28" }
+  getSOFTAP_STATS:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSOFTAP_STATS(...)"
+    address: "0xffffff800168e838"
+    contract: "copy 0x58 bytes from state+0x1b0; return success"
+  getSTATE:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSTATE(...)"
+    address: "0xffffff8001687dfe"
+    contract: "write value 4 at output+0x04; return success"
+    local_layout: "AirportItlwmAPSTAStateDataLayout"
+  getOP_MODE:
+    function: "AppleBCMWLANIO80211APSTAInterface::getOP_MODE(...)"
+    address: "0xffffff8001687e0e"
+    contract: >
+      NULL returns raw 0x16; non-NULL writes type 1 at output+0x00 and writes
+      mode 8 at output+0x04 when state+0x26c is nonzero, otherwise mode 0.
+    local_layout: "AirportItlwmAPSTAOpModeDataLayout"
+  getPEER_CACHE_MAXIMUM_SIZE:
+    function: "AppleBCMWLANIO80211APSTAInterface::getPEER_CACHE_MAXIMUM_SIZE(...)"
+    address: "0xffffff80016882da"
+    contract: "write value 8 at output+0x04; return success"
+    local_layout: "AirportItlwmAPSTAPeerCacheMaximumSizeLayout"
+  getHOST_AP_MODE_HIDDEN:
+    function: "AppleBCMWLANIO80211APSTAInterface::getHOST_AP_MODE_HIDDEN(...)"
+    address: "0xffffff80016882ea"
+    contract: "NULL returns raw 0x16; non-NULL writes value 1 at output base"
+    local_layout: "AirportItlwmAPSTAHostApModeHiddenLayout"
+  setSSID:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSSID(...)"
+    address: "0xffffff800168dc92"
+    contract: "optional logging only; no SSID input/state mutation; return success"
+  setPEER_CACHE_CONTROL:
+    function: "AppleBCMWLANIO80211APSTAInterface::setPEER_CACHE_CONTROL(...)"
+    address: "0xffffff8001688490"
+    contract: "call AppleBCMWLANCore::completePeerCacheControl(input, self) through state+0x218 and return success"
+  setSOFTAP_PARAMS:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_PARAMS(...)"
+    address: "0xffffff800168e536"
+    contract: >
+      no null guard; use input+0x17 and state+0x0e to select power-save
+      transition, optionally call setBeaconInterval for input+0x14 unless it is
+      0xffff, copy input+0x04/+0x08/+0x0c/+0x10/+0x18 into
+      state+0x18/+0x1c/+0x20/+0x24/+0x28, and return success.
+    local_layout: "AirportItlwmAPSTASoftAPParamsInputLayout"
+    power_save_calls:
+      clear_path: "setPowerSaveState(0, 0), clear state+0x0e"
+      hold_path: "setPowerSaveState(1, 0)"
+  setSOFTAP_EXTENDED_CAPABILITIES_IE:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_EXTENDED_CAPABILITIES_IE(...)"
+    address: "0xffffff800168e7b8"
+    contract: >
+      clear state qwords +0x50/+0x58 and word +0x60; copy input+0x00 to
+      state+0x50, qword input+0x01 to state+0x51, qword input+0x09 to
+      state+0x59; return success.
+    local_layout: "AirportItlwmAPSTASoftAPExtCapsInputLayout"
+  setMIS_MAX_STA:
+    function: "AppleBCMWLANIO80211APSTAInterface::setMIS_MAX_STA(...)"
+    address: "0xffffff8001693a80"
+    contract: "if state+0x26c is nonzero, call setMaxAssoc(*(uint32_t *)(input+0x00)); helper result is ignored; return success"
+    local_layout: "AirportItlwmAPSTAMisMaxStaInputLayout"
+  getSTATION_LIST:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSTATION_LIST(...)"
+    address: "0xffffff8001687e40"
+    contract: >
+      NULL returns raw 0x16; AP-down state+0x26c returns 0x39; allocate 0x100
+      byte maclist with initial dword 0x2a; use virtual IOCTL get selector
+      0x9f; async submit failure returns 0xe00002d8; sync success converts the
+      BCM assoc list to apple80211_sta_data and returns success.
+    local_layout: "AirportItlwmAPSTAStationListMacListLayout"
+    selector: "0x9f"
+    tx_payload_size: "0x100"
+  setCIPHER_KEY:
+    function: "AppleBCMWLANIO80211APSTAInterface::setCIPHER_KEY(...)"
+    address: "0xffffff800168f2b6"
+    contract: >
+      AP-down state+0x26c returns 6; no null guard after AP-up passes; input
+      cipher type at +0x08 equal to 0 returns success; only cipher types 3 and
+      5 enter mapAppleKeyToBcomKey and WLC_SET_KEY selector 0x2d with 0xa4 byte
+      wl_wsec_key payload; unsupported nonzero ciphers log and return success.
+    local_layout: "AirportItlwmAPSTAWsecKeyLayout"
+    selector: "0x2d"
+    tx_payload_size: "0xa4"
+  getSTA_IE_LIST:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSTA_IE_LIST(...)"
+    address: "0xffffff800168f59c"
+    contract: >
+      NULL returns raw 0x16; search station table from state+0xb9 to
+      state+0x1a9 with stride 0x30 and 6-byte MAC compare; not found returns 2;
+      found path uses IOVAR wpaie and updates output+0x0c from output+0x11 + 2
+      on success.
+    local_layout: "AirportItlwmAPSTAStaIEDataLayout"
+    iovar: "wpaie"
+  getSTA_STATS:
+    function: "AppleBCMWLANIO80211APSTAInterface::getSTA_STATS(...)"
+    address: "0xffffff800168f808"
+    contract: >
+      AP-down state+0x26c returns 0x39; NULL returns raw 0x16; allocation size
+      is derived from core-private +0x30c with thresholds 7 and 0x0f; TX payload
+      is 6 bytes at input+0x04; IOVAR sta_info fills output+0x0c/+0x10/+0x14/+0x18.
+    local_layout: "AirportItlwmAPSTAStaStatsDataLayout"
+    iovar: "sta_info"
+  getKEY_RSC:
+    function: "AppleBCMWLANIO80211APSTAInterface::getKEY_RSC(...)"
+    address: "0xffffff800168f9e6"
+    contract: >
+      no null guard; read 16-bit key index at input+0x0e; use virtual IOCTL get
+      selector 0xb7 with 8-byte TX payload and RX range 0x0000000800040008;
+      on success write 8-byte RSC to output+0x54 and length 8 to output+0x50.
+    local_layout: "AirportItlwmAPSTAKeyRscDataLayout"
+    selector: "0xb7"
+  event_station_table_layer:
+    reference_note: "docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md"
+    handleEvent:
+      function: "AppleBCMWLANIO80211APSTAInterface::handleEvent(wl_event_msg_t*)"
+      address: "0xffffff800168faa0"
+      event_header_layout: "AirportItlwmAPSTAWlEventMsgLayout"
+      event_offsets:
+        type: "event+0x04"
+        status: "event+0x08"
+        reason: "event+0x0c"
+        auth_type: "event+0x10"
+        data_length: "event+0x14"
+        address: "event+0x18"
+        data: "event+0x30"
+      direct_event_branches:
+        auth_ind: 4
+        deauth: 5
+        deauth_ind: 6
+        assoc_ind: 8
+        reassoc_ind: 10
+        disassoc: 11
+        disassoc_ind: 12
+        link: 16
+        if_event: "0x36"
+        action_frame: "0x4b"
+        psk_auth: "0x96"
+      association_path:
+        status: 0
+        reason: 0
+        metadata_writes:
+          - { source: "event+0x18 dword", target: "state+0x80" }
+          - { source: "event+0x1c word", target: "state+0x84" }
+        calls:
+          - "updateSTAAssocInfo(event)"
+          - "state+0x70 timer vtable +0x218"
+          - "state+0x70 timer vtable +0x1d0"
+          - "parseRSNXE(event+0x30, event+0x14, message+0x10)"
+          - "postMessageForSTA(0x0c, message, 0x114)"
+        message_layout: "AirportItlwmAPSTAStaAssocMessageLayout"
+        message_fields:
+          - { offset: "0x00", source: "event MAC first four bytes" }
+          - { offset: "0x04", source: "event MAC last two bytes" }
+          - { offset: "0x08", source: "state+0x00 associated count" }
+          - { offset: "0x0c", source: "AIHS/sharing/Apple-station flags" }
+          - { offset: "0x10", source: "RSNXE output" }
+      removal_path:
+        events: [5, 6, 11, 12]
+        queue_notify: "for each APSTA TX subqueue state+0x300, call vtable +0x358 with entry MAC pointer"
+        table_clear: "removeStaFromStaTable(index)"
+        message: "postMessageForSTA(0x0d, message, 0x0c)"
+    station_table:
+      local_layout: "AirportItlwmAPSTAStationTableEntryLayout"
+      state_base: "state+0xb8"
+      count: 5
+      stride: "0x30"
+      fields:
+        - { offset: "0x00", field: "active byte" }
+        - { offset: "0x01", field: "six-byte MAC" }
+        - { offset: "0x10", field: "sleep state", add_default: 2, lphs_sleep: 1, lphs_awake: 2 }
+        - { offset: "0x20", field: "AIHS flag" }
+        - { offset: "0x24", field: "sharing flag" }
+        - { offset: "0x28", field: "Apple-station flag" }
+      add_path:
+        function: "AppleBCMWLANIO80211APSTAInterface::updateSTAAssocInfo(wl_event_msg_t*)"
+        address: "0xffffff8001691d6a"
+        contract: >
+          search existing MACs at state+0xb9..state+0x1a9; if absent, find an
+          all-zero MAC slot, write active=1, MAC, sleep-state=2, and increment
+          state+0x00. Apple instant-hotspot IE subtype 0x0b stores bit0 at
+          entry+0x20 and bit1 at entry+0x24.
+      remove_path:
+        function: "AppleBCMWLANIO80211APSTAInterface::removeStaFromStaTable(unsigned char)"
+        address: "0xffffff800169252a"
+        invalid_index_return: "0xe00002bc"
+        clear_qwords: 6
+        clear_offsets: ["0x00", "0x08", "0x10", "0x18", "0x20", "0x28"]
+    action_frame_lphs:
+      reference_note: "docs/reference/AppleBCMWLAN_APSTA_action_frame_lphs_2026_04_27.md"
+      local_scaffold:
+        file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+        status: "compiled constants/layout witnesses only; APSTA runtime remains disabled"
+      dispatch:
+        event_type: "0x4b"
+        event_payload_base: "event+0x30"
+        minimum_payload_length: "0x12"
+        version_offset: "payload+0x00"
+        swapped_version_reject_threshold: 3
+        unknown_category_action_sentinel: "0xaa"
+      version_1_layout:
+        raw_version: "0x0100"
+        category_offset: "payload+0x10 / event+0x40"
+        action_offset: "payload+0x11 / event+0x41"
+      version_2_layout:
+        raw_version: "0x0200"
+        minimum_payload_length: "0x1a"
+        category_offset: "payload+0x18 / event+0x48"
+        action_offset: "payload+0x19 / event+0x49"
+      lphs_actions:
+        category: "0x7f"
+        accepted_actions: [1, 2]
+        station_sleep_state_target: "state+0xb8 + index*0x30 + 0x10"
+        sleep_low_power_action: 1
+        awake_default_action: 2
+        add_station_default: 2
+        all_lpm_blocking_state: 2
+      all_sta_lpm_transition:
+        checker: "checkIfAllStaAreInLPM"
+        table_base: "state+0xb8"
+        entry_count: 5
+        stride: "0x30"
+        active_field: "entry+0x00"
+        sleep_state_field: "entry+0x10"
+        rule: "active entry with sleep-state 2 blocks all-STA LPM"
+        if_no_blocker_and_concurrency_disabled: "setPowerSaveState(3, 0x0b)"
+      log_lines:
+        received: "0x10b2"
+        empty_payload: "0x10b4"
+        invalid_minimum: "0x10b6"
+        invalid_version: "0x10bf"
+        contents: "0x10c9"
+        concurrency: "0x10da"
+        check_all_sta_entry: "0x11cf"
+        run_power_save_state_machine: "0x1422"
+      non_claims:
+        - "does not enable APSTA owner creation"
+        - "does not synthesize LPHS action frames"
+        - "does not force power-save transitions"
+        - "does not alter primary STA association, key, or data paths"
+    postMessageForSTA:
+      function: "AppleBCMWLANIO80211APSTAInterface::postMessageForSTA(unsigned int, void*, unsigned short)"
+      address: "0xffffff8001691bb8"
+      dispatcher_vtable_offset: "0xb18"
+      notify_owner: "state+0x218 -> +0x128 -> +0x2c20"
+      notify_flag: 1
+    checkForAppleIE:
+      function: "AppleBCMWLANIO80211APSTAInterface::checkForAppleIE(unsigned char*, unsigned int)"
+      address: "0xffffff8001691cc6"
+      min_remaining: 6
+      vendor_element_id: "0xdd"
+      oui_offset: "0x02"
+      oui_size: 3
+      recognized_ouis: ["kAPPLE_IE_OUI", "kAPPLE_IE_BS_OUI", "kAPPLE_IE_DEVICE_INFO_OUI"]
+    parseRSNXE:
+      function: "AppleBCMWLANIO80211APSTAInterface::parseRSNXE(unsigned char*, unsigned int, unsigned char*)"
+      address: "0xffffff800169217e"
+      min_remaining: 2
+      element_id: "0xf4"
+      copy_policy: "copy full IE including id and length bytes to supplied output"
+    checkForStationListMismatch:
+      function: "AppleBCMWLANIO80211APSTAInterface::checkForStationListMismatch(apple80211_sta_data*)"
+      address: "0xffffff800169229a"
+      firmware_count_offset: "input+0x04"
+      firmware_mac_list_offset: "input+0x0c"
+      firmware_mac_stride: "0x10"
+      host_count: "state+0x00"
+      missing_host_entry_action: "post removal message 0x0d, notify APSTA TX queues via +0x358, clear table entry"
+  setSOFTAP_WIFI_NETWORK_INFO_IE:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_WIFI_NETWORK_INFO_IE(...)"
+    address: "0xffffff800168e602"
+    contract: >
+      if feature gate 0x46 is disabled, return success; if enabled and input
+      byte at +3 is below 0x21, copy 0x24 bytes into APSTA state+0x2c; otherwise
+      return 0xe00002c2.
+    input_layout:
+      local_type: "AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout"
+      length_offset: "0x03"
+      copy_size: "0x24"
+      accepted_length_rule: "byte+0x03 < 0x21"
+  setSOFTAP_TRIGGER_CSA:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_TRIGGER_CSA(...)"
+    address: "0xffffff800168e0ae"
+    contract: >
+      AP down or reset flag bit 0 clear returns 6; NULL returns raw 0x16;
+      parsed chanspec values below 0x10000 are accepted for IOVAR csa, while
+      parsed chanspec values at or above 0x10000 return raw 0x16.
+  setRSN_CONF:
+    function: "AppleBCMWLANIO80211APSTAInterface::setRSN_CONF(...)"
+    address: "0xffffff800168e85c"
+    gate: "state+0x29b bit 0x10"
+    blocked_return: "0xe00002d5"
+    contract: "if gate bit is clear, parse RSN_CONF arrays; if set, reject without parsing"
+  setSTA_AUTHORIZE:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSTA_AUTHORIZE(...)"
+    address: "0xffffff800168f016"
+    contract: "NULL returns 0xe00002c2; non-NULL enters the inherited/owner path"
+  setSTA_DEAUTH:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSTA_DEAUTH(...)"
+    address: "0xffffff800168f14c"
+    contract: "tailcall existing vtable slot +0x1040"
+  host_ap_mode:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE(...)"
+    address: "0xffffff80016884ae"
+    contract: >
+      owner path delegates to setHostApModeInternal and coordinates proximity
+      and NAN owners; must be implemented on APSTA after exact carrier recovery.
+
+apsta_channel_csa_sta_control:
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled constants/carrier witnesses only; no APSTA runtime enablement"
+    sap_header: "include/Airport/IO80211SapProtocol.h"
+    reference_note: "docs/reference/AppleBCMWLAN_APSTA_channel_csa_sta_control_2026_04_27.md"
+  getCHANNEL:
+    function: "AppleBCMWLANIO80211APSTAInterface::getCHANNEL(apple80211_channel_data*)"
+    address: "0xffffff8001687cbe"
+    vtable_slot: 506
+    vtable_byte_offset: "0x0fd0"
+    commander_field: "state+0x228"
+    selector: "0x1d"
+    rx_payload_size: "0x0c"
+    rx_range_qword: "0x0000000c000c000c"
+    output_number_offset: "output+0x08"
+    output_flags_offset: "output+0x0c"
+    band_flags:
+      threshold: "0x0f"
+      below_threshold_or_flag: "0x08"
+      at_or_above_threshold_or_flag: "0x10"
+  setCHANNEL:
+    function: "AppleBCMWLANIO80211APSTAInterface::setCHANNEL(apple80211_channel_data*)"
+    address: "0xffffff800168dcfa"
+    vtable_slot: 519
+    vtable_byte_offset: "0x1038"
+    null_input_return: "0x16"
+    input_channel_offset: "input+0x08"
+    input_flags_offset: "input+0x0c"
+    invalid_channel_rule: "channel >= 0x100 returns 0x16"
+    default_bandwidth_source: "state+0x218 -> +0x128 -> +0x408"
+    bandwidth_flags:
+      flag_20mhz: "0x02 -> 2"
+      flag_40mhz: "0x04 -> 3"
+      flag_80mhz: "0x400 -> 4"
+    band_arg_rule: "channel < 0x0f uses band arg 0, otherwise 3"
+    chanspec_call: "AppleBCMWLANCore::getChanSpec(channel & 0xff, band, &bandwidth)"
+    zero_chanspec_return: "0xe00002c2"
+    iovar:
+      name: "chanspec"
+      payload_size: 4
+  setSOFTAP_TRIGGER_CSA:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_TRIGGER_CSA(apple80211_softap_csa_params*)"
+    address: "0xffffff800168e0ae"
+    vtable_slot: 528
+    vtable_byte_offset: "0x1080"
+    required_state: "state+0x26c != 0"
+    required_flag: "state+0x329 & 1"
+    not_ready_return: 6
+    null_input_return: "0x16"
+    input_offsets:
+      channel: "input+0x04"
+      mode: "input+0x10"
+      feature_gate: "input+0x14"
+    optional_core_call:
+      condition: "input+0x14 != 0, feature 0x46 enabled, and core private byte +0x4d59 bit 0 set"
+      vtable_offset: "0x1110"
+      arg: 0
+    chanspec_accept_rule: "parsed chanspec < 0x10000 is accepted"
+    chanspec_reject_rule: "parsed chanspec >= 0x10000 returns 0x16"
+    iovar:
+      name: "csa"
+      payload_size: 6
+      fields:
+        - { offset: "0x00", value: 0 }
+        - { offset: "0x01", source: "input+0x10" }
+        - { offset: "0x02", source: "uint16_t parsed chanspec" }
+        - { offset: "0x04", value: 0 }
+  setSTA_AUTHORIZE:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSTA_AUTHORIZE(apple80211_sta_authorize_data*)"
+    address: "0xffffff800168f016"
+    vtable_slot: 521
+    vtable_byte_offset: "0x1048"
+    null_input_return: "0xe00002c2"
+    flag_offset: "input+0x04"
+    mac_offset: "input+0x08"
+    mac_payload_size: 6
+    selector_rule: "flag < 1 selects 0x7a; flag >= 1 selects 0x79"
+  setSTA_DISASSOCIATE:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSTA_DISASSOCIATE(apple80211_sta_disassoc_data*)"
+    address: "0xffffff800168f15e"
+    vtable_slot: 522
+    vtable_byte_offset: "0x1050"
+    null_guard: "none recovered before input reads"
+    selector: "0xc9"
+    tx_payload_size: "0x0c"
+    rx_payload_size: "0x0c"
+    rx_range_qword: "0x0000000c000c000c"
+    payload_fields:
+      - { offset: "0x00", source: "input+0x04 dword" }
+      - { offset: "0x04", source: "input+0x08 dword" }
+      - { offset: "0x08", source: "input+0x0c word" }
+      - { offset: "0x0a", value: "0xaaaa" }
+  setSTA_DEAUTH:
+    function: "AppleBCMWLANIO80211APSTAInterface::setSTA_DEAUTH(apple80211_sta_disassoc_data*)"
+    address: "0xffffff800168f14c"
+    vtable_slot: 523
+    vtable_byte_offset: "0x1058"
+    contract: "tailcall existing APSTA vtable slot at byte offset +0x1040"
+
+datapath_accessors:
+  getNumTxQueues: "return *(uint8_t *)(state+0x2a4)"
+  getRxCompQueue: "return *(void **)(state+0x2f0)"
+  getTxCompQueue: "return *(void **)(state+0x2e8)"
+  getTxSubQueue: "map AC via *(uint32_t *)(state+0x2b8 + ac*4), then state+0x300[index]"
+  getMultiCastQueue: "return *(void **)(state+0x320)"
+  getTxPacketPool: "return *(void **)(state+0x2d8)"
+  getRxPacketPool: "return *(void **)(state+0x2e0)"
+  getTxHeadroom:
+    function: "AppleBCMWLANIO80211APSTAInterface::getTxHeadroom()"
+    address: "0xffffff800169411e"
+    returns: 0
+  getTxQueueDepth:
+    function: "AppleBCMWLANIO80211APSTAInterface::getTxQueueDepth()"
+    address: "0xffffff8001694126"
+    source_queue: "state+0x300"
+    missing_queue_return: 0
+    nested_object_offset: "queue+0x168"
+    metric_offset: "nested+0x28"
+  getRxQueueCapacity:
+    function: "AppleBCMWLANIO80211APSTAInterface::getRxQueueCapacity()"
+    address: "0xffffff800169414e"
+    source_queue: "state+0x2f0"
+    missing_queue_return: 0
+    nested_object_offset: "queue+0x138"
+    metric_offset: "nested+0x10"
+  forwardPacket:
+    function: "AppleBCMWLANIO80211APSTAInterface::forwardPacket(IO80211NetworkPacket*)"
+    address: "0xffffff8001693940"
+    vtable_slot: 465
+    vtable_byte_offset: "0x0e88"
+    local_constants:
+      metadata_shift: 4
+      selector_mask: "0xff8"
+      tx_subqueue_base_offset: "state+0x300"
+      queue_submit_vtable_offset: "0x318"
+    contract: >
+      call packet metadata helper, select `*(state+0x300 + ((metadata >> 4) &
+      0xff8))`, then call the selected TX queue vtable entry `+0x318` with the
+      packet.
+
+datapath_activation:
+  helper_resource:
+    function: "FUN_ffffff8001694064"
+    address: "0xffffff8001694064"
+    contract: "return *(void **)(state+0x210)"
+    local_field: "AirportItlwmAPSTAStateBlock::resource210"
+  bytestream_users:
+    - "handleEvent(wl_event_msg_t*) uses state+0x210 for APSTA/SoftAP event bytestream traces"
+    - "handleSetRpsNoaAsyncCallBack uses state+0x210 for RPSNOA IOVAR rxPayload bytestream"
+    - "handleSetBcnIntervalAsyncCallBack uses state+0x210 for BCNPRD IOCTL rxPayload bytestream"
+  activation_owner:
+    field: "state+0x2d0"
+    local_field: "AirportItlwmAPSTAStateBlock::datapathOwner2d0"
+    enable: "enableDatapath calls vtable +0x120 on state+0x2d0 before starting TX/RX completion queues"
+    disable: "disableDatapath calls vtable +0x128 on state+0x2d0 before stopping RX/TX completion queues"
+    failure_code_for_missing_queue: "0xe00002bc"
+    lifecycle_vtable_offsets:
+      interface_enabled_gate: "0xcf0"
+      owner_enable: "0x120"
+      owner_disable: "0x128"
+      completion_queue_start: "0x150"
+      completion_queue_stop: "0x158"
+      rx_completion_arm: "0x298"
+      rx_completion_arm_args: [0, 0]
+    enable_sequence:
+      - "call interface enabled gate vtable +0xcf0"
+      - "if interface is not enabled, return 0xe00002bc without owner/queue activation"
+      - "call state+0x2d0 owner vtable +0x120"
+      - "start state+0x2e8 TX completion queue with vtable +0x150"
+      - "start state+0x2f0 RX completion queue with vtable +0x150"
+      - "arm state+0x2f0 RX completion queue with vtable +0x298 and args 0,0"
+    disable_sequence:
+      - "call state+0x2d0 owner vtable +0x128"
+      - "stop state+0x2f0 RX completion queue with vtable +0x158"
+      - "stop state+0x2e8 TX completion queue with vtable +0x158"
+  non_claims:
+    - "does not instantiate APSTA"
+    - "does not allocate the datapath owner"
+    - "does not return role-7 success"
+
+init_start_resource_contract:
+  with_options:
+    function: "AppleBCMWLANIO80211APSTAInterface::withOptions(AppleBCMWLANCore*, ether_addr*, uint, char*)"
+    address: "0xffffff8001685422"
+    contract: "allocate APSTA object size 0x138, install APSTA vtable, call init(core, mac, role, bsdName)"
+  init:
+    function: "AppleBCMWLANIO80211APSTAInterface::init(AppleBCMWLANCore*, ether_addr*, uint, char*)"
+    address: "0xffffff80016854ee"
+    writes:
+      - { offset: "state+0x218", source: "AppleBCMWLANCore*", meaning: "owner/core pointer" }
+      - { offset: "state+0x32a", value: 0, meaning: "feature gate bytes cleared as a 16-bit store" }
+      - { offset: "state+0x70", source: "IO80211TimerSource::withOptions(handleAPStatsUpdates)" }
+      - { offset: "state+0x78", source: "IO80211TimerSource::withOptions(monitorAPInterface)" }
+      - { offset: "state+0x240", source: "core expansion +0x1578", meaning: "resource retained by init and released by freeResources" }
+      - { offset: "state+0x248", source: "core expansion +0x1590", meaning: "resource retained by init and released by freeResources" }
+      - { offset: "state+0x228", source: "core expansion +0x1520", meaning: "resource captured by init" }
+      - { offset: "state+0x210", source: "owner/core logger vtable +0xd68", meaning: "APSTA logger/bytestream resource" }
+      - { offset: "state+0x250", source: "core expansion +0x1598", meaning: "resource retained by init and released by freeResources" }
+      - { offset: "state+0x260", source: "core expansion +0x1558", meaning: "resource retained by init and released by freeResources" }
+      - { offset: "state+0x258", source: "core expansion +0x15b0", meaning: "resource retained by init and released by freeResources" }
+      - { offset: "state+0x20c", value: 0 }
+      - { offset: "state+0x88", value: 0 }
+      - { offset: "state+0xb0", value: 0 }
+      - { offset: "state+0x14", value: "0x12c" }
+      - { offset: "state+0x2a4", value: 4, meaning: "number of APSTA TX queues" }
+      - { offset: "state+0x2a8..0x2b4", value: [0, 1, 2, 3], meaning: "start-time TX queue service-class map" }
+    failure_path: "on missing required resource, log exact failure and call freeResources(); no forced success"
+  start:
+    function: "AppleBCMWLANIO80211APSTAInterface::start(AppleBCMWLANCore*, IOSkywalkEthernetInterface::RegistrationInfo*)"
+    address: "0xffffff8001686378"
+    writes:
+      - { offset: "state+0x210", source: "interface logger vtable +0xd18 when available" }
+      - { offset: "state+0x330", source: "core work queue vtable +0xc68" }
+      - { offset: "state+0x2c8", source: "core expansion +0x1510", meaning: "bus/provider object" }
+      - { offset: "state+0x2d0", source: "bus/provider vtable +0xbc0 cast to AppleBCMWLANBusSkywalk", meaning: "datapath owner" }
+    queue_config_layout:
+      local_type: "AirportItlwmAPSTAStartQueueConfigLayout"
+      passed_to: "state+0x2d0 vtable +0x118"
+      datapath_owner_config_vtable_offset: "0x118"
+      fields:
+        - { offset: "0x00", field: "interfaceOwner", value: "self" }
+        - { offset: "0x08", field: "numTxQueues", value: "state+0x2a4" }
+        - { offset: "0x10", field: "txQueueServiceClassMap", value: "&state+0x2a8" }
+        - { offset: "0x18", field: "txSubQueues", value: "&state+0x300" }
+        - { offset: "0x20", field: "resource2f8Storage", value: "&state+0x2f8" }
+        - { offset: "0x28", field: "txCompQueueStorage", value: "&state+0x2e8" }
+        - { offset: "0x30", field: "rxCompQueueStorage", value: "&state+0x2f0" }
+        - { offset: "0x38", field: "multiCastQueueStorage", value: "&state+0x320" }
+        - { offset: "0x40", field: "txPacketPoolStorage", value: "&state+0x2d8" }
+        - { offset: "0x48", field: "rxPacketPoolStorage", value: "&state+0x2e0" }
+        - { offset: "0x58", field: "logger", value: "interface logger" }
+    after_queue_creation:
+      - "if multicast queue exists, add it to state+0x330 work queue"
+      - "register TX queues and completion queues as work sources"
+      - "register Ethernet interface using all queues and packet pools"
+    work_source_registration:
+      source_range: "0xffffff80016865a2..0xffffff800168689d"
+      work_queue: "state+0x330"
+      add_source_vtable_offset: "0x140"
+      remove_source_vtable_offset: "0x148"
+      tx_queue_trap_threshold: 7
+      max_accepted_tx_queues: 6
+      add_order:
+        - "state+0x320 multicast queue when present"
+        - "each TX submission queue from state+0x300, bounded by state+0x2a4"
+        - "state+0x2e8 TX completion queue"
+        - "state+0x2f0 RX completion queue"
+      failure_remove_order:
+        - "each non-null TX submission queue from state+0x300"
+        - "state+0x2e8 TX completion queue when present"
+        - "state+0x2f0 RX completion queue when present"
+        - "state+0x320 multicast queue when present"
+    ethernet_registration_queue_list:
+      local_type: "AirportItlwmAPSTARegisterQueueListLayout"
+      source_range: "0xffffff80016865ca..0xffffff80016867bb"
+      topology: "four TX submission queues plus TX completion and RX completion"
+      effective_queue_count: 6
+      count_expression: "state+0x2a4 + 2"
+      fields:
+        - { offset: "0x00", field: "txSubQueues[0]", value: "state+0x300" }
+        - { offset: "0x08", field: "txSubQueues[1]", value: "state+0x308" }
+        - { offset: "0x10", field: "txSubQueues[2]", value: "state+0x310" }
+        - { offset: "0x18", field: "txSubQueues[3]", value: "state+0x318" }
+        - { offset: "0x20", field: "txCompQueue", value: "state+0x2e8" }
+        - { offset: "0x28", field: "rxCompQueue", value: "state+0x2f0" }
+      register_call:
+        function: "IOSkywalkEthernetInterface::registerEthernetInterface"
+        arguments:
+          - "RegistrationInfo* from setVIRTUAL_IF_CREATE"
+          - "queue list"
+          - "numTxQueues + 2"
+          - "state+0x2d8 TX packet pool"
+          - "state+0x2e0 RX packet pool"
+          - "0 flags"
+        flags: 0
+      failure_cleanup: "remove work sources for TX queues, TX completion, RX completion, and multicast queue"
+    failure_path: "remove previously added work sources for TX queues, TX/RX completion queues, and multicast queue"
+  teardown:
+    freeResources:
+      function: "AppleBCMWLANIO80211APSTAInterface::freeResources()"
+      range: "0xffffff8001685d64..0xffffff8001685e92"
+      timer_cancel_vtable_offset: "0x158"
+      object_release_vtable_offset: "0x28"
+      null_value: 0
+      cleanup_sequence:
+        - { offset: "state+0x70", action: "cancel via vtable +0x158, release via vtable +0x28, clear" }
+        - { offset: "state+0x78", action: "cancel via vtable +0x158, release via vtable +0x28, clear" }
+        - { offset: "state+0x240", action: "release via vtable +0x28 when present, clear" }
+        - { offset: "state+0x248", action: "release via vtable +0x28 when present, clear" }
+        - { offset: "state+0x250", action: "release via vtable +0x28 when present, clear" }
+        - { offset: "state+0x260", action: "release via vtable +0x28 when present, clear" }
+        - { offset: "state+0x258", action: "release via vtable +0x28 when present, clear" }
+    stop:
+      function: "AppleBCMWLANIO80211APSTAInterface::stop(IOService*)"
+      range: "0xffffff8001686a7e..0xffffff8001686c91"
+      queue_stop_vtable_offset: "0x158"
+      work_queue_remove_vtable_offset: "0x148"
+      object_release_vtable_offset: "0x28"
+      super_stop_vtable_offset: "0x5d8"
+      tx_loop_bound: "state+0x2a4"
+      tx_queue_base: "state+0x300"
+      completion_queues:
+        - "state+0x2e8 TX completion queue"
+        - "state+0x2f0 RX completion queue"
+      multicast_queue: "state+0x320"
+      cleanup_order:
+        - "for each non-null TX queue: stop, remove from work queue, release if still present, clear slot"
+        - "TX completion queue: stop, remove from work queue, release if still present, clear"
+        - "RX completion queue: stop, remove from work queue, release if still present, clear"
+        - "multicast queue: stop, remove through work queue vtable +0x148, call direct IO80211WorkQueue::removeWorkSource, release if still present, clear"
+        - "tailcall super stop through vtable +0x5d8"
+  reset_and_softap_defaults:
+    reset:
+      function: "AppleBCMWLANIO80211APSTAInterface::reset()"
+      range: "0xffffff8001686cc6..0xffffff8001686e32"
+      clears:
+        - "state+0x26c"
+        - "state+0x329"
+        - "state+0xb8 for 0xf0 bytes"
+        - "state+0x0"
+        - "state+0xb0"
+        - "state+0x1b0..+0x207 stats block"
+        - "state+0x90/+0x98/+0xa0 runtime qwords"
+      calls:
+        - { function: "AppleBCMWLANCore::setConcurrencyState", args: [4, false] }
+        - { function: "setPowerSaveState", args: [0, "0x0a"] }
+        - { field: "state+0x70 AP stats timer", vtable_offset: "0x218" }
+        - { field: "state+0x78 AP monitor timer", vtable_offset: "0x218" }
+    initSoftAPParameters:
+      function: "AppleBCMWLANIO80211APSTAInterface::initSoftAPParameters()"
+      range: "0xffffff8001687888..0xffffff8001687ade"
+      clears:
+        - "state+0x1b0..+0x207 stats block"
+        - "state+0x1a8"
+        - "state+0xb8 for 0xf0 bytes"
+        - "state+0x0"
+      defaults:
+        - { offset: "state+0x16", value: 1, meaning: "DTIM period" }
+        - { offset: "state+0x18", value: "0x0f" }
+        - { offset: "state+0x1c", value: "0x1e" }
+        - { offset: "state+0x20", value: "0x708" }
+        - { offset: "state+0x24", value: "0x0a" }
+        - { offset: "state+0x28", value: 3 }
+      beacon_interval_call: "setBeaconInterval(state+0x14)"
+      dtim_apply:
+        condition: "state+0x16 != state+0x6a"
+        commander_field: "state+0x228"
+        ioctl: "0x4e"
+        payload_size: 4
+        success_write: "state+0x6a = state+0x16"
+  beacon_dtim_ioctl_carriers:
+    command_payload_head:
+      local_type: "AirportItlwmAPSTACommandPayloadHeadLayout"
+      data_offset: "0x00"
+      length_offset: "0x08"
+      payload_size: 4
+    setBeaconInterval:
+      function: "AppleBCMWLANIO80211APSTAInterface::setBeaconInterval(uint16_t)"
+      range: "0xffffff8001687ae4..0xffffff8001687c7e"
+      request_field: "argument uint16_t"
+      applied_field: "state+0x68"
+      ioctl: "0x4c"
+      commander_field: "state+0x228"
+      async_callback: "handleSetBcnIntervalAsyncCallBack"
+      callback_function_offset: "0x08"
+      callback_cookie_offset: "0x10"
+      success_write: "state+0x68 = requested interval"
+      skip_condition: "requested interval == state+0x68"
+    setBeaconDtimPeriod:
+      producer: "initSoftAPParameters"
+      source_field: "state+0x16"
+      applied_field: "state+0x6a"
+      ioctl: "0x4e"
+      commander_field: "state+0x228"
+      async_callback: "handleSetBcnDTIMPeriodAsyncCallBack"
+      callback_function_offset: "0x08"
+      callback_cookie_offset: "0x10"
+      success_write: "state+0x6a = state+0x16"
+      skip_condition: "state+0x16 == state+0x6a"
+    callbacks:
+      rx_payload_data_offset: "0x00"
+      rx_payload_length_offset: "0x08"
+      telemetry_resource: "state+0x210"
+      status_zero: "return immediately"
+      nonzero_status: "log error if logger allows, then emit rxPayload bytestream telemetry"
+      labels:
+        beacon_interval: "BCNPRD IOCTL rxPayload bytestream:"
+        dtim_period: "DTIMPRD IOCTL rxPayload bytestream:"
+  hostap_assoc_vendor_ie_layer:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...)"
+    range: "0xffffff800168c0bf..0xffffff800168c138"
+    max_assoc_producer:
+      source_chain:
+        - "state+0x218"
+        - "+0x128"
+        - "+0x1558"
+        - "+0x10"
+        - "+0xb4"
+      store_target: "state+0x8"
+      setter_call: "AppleBCMWLANIO80211APSTAInterface::setMaxAssoc(unsigned int)"
+      mis_max_sta_call:
+        vtable_offset: "0xb18"
+        selector: "0x57"
+        payload: "state+0x8"
+        payload_size: 4
+        flags_arg: 0
+    setMaxAssoc:
+      function: "AppleBCMWLANIO80211APSTAInterface::setMaxAssoc(unsigned int)"
+      range: "0xffffff800168c6ac..0xffffff800168c7b5"
+      state_fields:
+        associated_count: "state+0x0"
+        requested_max_assoc: "state+0x4"
+        firmware_limit: "state+0x8"
+      skip_conditions:
+        - "requested == state+0x4"
+        - "state+0x0 + requested > state+0x8"
+      success_write: "state+0x4 = requested"
+      iovar:
+        name: "maxassoc"
+        commander_field: "state+0x228"
+        payload: "state+0x0 + requested"
+        payload_size: 4
+    network_data_vendor_ie_branch:
+      length_offset: "network_data+0x2dc"
+      data_offset: "network_data+0x2e0"
+      nonzero_path: "programVendorIEList(network_data+0x2e0, length)"
+      zero_path: "programAppleVendorIE()"
+    programVendorIEList:
+      function: "AppleBCMWLANIO80211APSTAInterface::programVendorIEList(unsigned char*, unsigned int)"
+      range: "0xffffff800168c7ba..0xffffff800168c9da"
+      loop_min_remaining: 6
+      ie_header_size: 2
+      ie_element_id_offset: "input+0x0"
+      ie_length_offset: "input+0x1"
+      invalid_length_condition: "remaining - 2 < input[1]"
+      carrier:
+        local_type: "AirportItlwmAPSTAVendorIEDataLayout"
+        allocation_size: "0x814"
+        header00_value: "0x1a00000001"
+        header08_value: "0x400000001"
+        payload_length_offset: "0x10"
+        element_id_offset: "0x14"
+        payload_offset: "0x15"
+        payload_length_value: "input[1] + 1"
+      call: "AppleBCMWLANCore::setVendorIE(interfaceId, carrier)"
+      cleanup: "free carrier with size 0x814 after each IE"
+      advance: "input += input[1] + 2; remaining -= input[1] + 2"
+    programAppleVendorIE:
+      function: "AppleBCMWLANIO80211APSTAInterface::programAppleVendorIE()"
+      range: "0xffffff800168c9e0..0xffffff800168d30d"
+      iovar: "vndr_ie"
+      payload_capacity: "min(getMaxCmdTxPayload(), getMaxCmdRxPayload()) - strlen(\"vndr_ie\") - 1"
+      set_buffer:
+        local_type: "AirportItlwmAPSTAAppleVendorIESetBufferLayout"
+        size: "0x52"
+        command_offset: "0x00"
+        header04_offset: "0x04"
+        body_offset: "0x0c"
+      delete_existing_apple_ie:
+        oui_source: "kAPPLE_IE_OUI"
+        oui_length: 3
+        command: "del"
+        command_size: 4
+        header04_dword: 1
+        ie_copy_offset: "0x08"
+        body_length_trap_threshold: "0x45"
+      add_capability_ie:
+        command: "add"
+        command_size: 4
+        header04_qword: "0x700000001"
+        payload_size: "0x18"
+        body_header_qword: "0x10106f217000add"
+        body_header_offset: "0x0c"
+        fields_offset: "0x14"
+      extended_capability_source:
+        feature_flag: "0x46"
+        source_offsets:
+          base: "state+0x2c"
+          field_2e: "state+0x2e"
+          length: "state+0x2f"
+          payload: "state+0x30"
+          extra_flag: "state+0x50"
+          tail_51: "state+0x51"
+          tail_59: "state+0x59"
+        trap_thresholds:
+          length: "0x3e"
+          extra_length_max: "0x39"
+          final_payload: "0x41"
+        fixed_tags:
+          tag_103: "0x103"
+          tag_104: "0x104"
+          tail_type: "0x12"
+          tail_length_contribution: "0x15"
+  hostap_success_tail:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...)"
+    range: "0xffffff800168c138..0xffffff800168c296"
+    state_writes:
+      - { offset: "state+0x26c", value: 1, meaning: "AP up state" }
+      - { offset: "state+0x20c", value: 0, meaning: "AP stats/inactivity accumulator reset" }
+      - { offset: "state+0x88", value: 0, meaning: "AP stats runtime reset" }
+    timer_sequence:
+      - "call handleAPStatsUpdates(state+0x70)"
+      - { field: "state+0x78 AP monitor timer", vtable_offset: "0x1d0", interval: "0x3e8" }
+    beacon_interval_selection:
+      flags_offset: "network_data+0x04"
+      short_beacon_flag_bit: 8
+      closednet_flag_bit: 9
+      normal_value: "0x12c"
+      short_value: "0x64"
+      write_target: "state+0x14"
+    closednet_iovar:
+      condition: "network_data+0x04 bit 9 set"
+      name: "closednet"
+      commander_field: "state+0x228"
+      payload_value: 1
+      payload_size: 4
+      call: "runVirtualIOVarSet"
+      common_tail: "continue to initSoftAPParameters regardless of nonfatal logging path"
+  enable_ap_interface:
+    function: "AppleBCMWLANIO80211APSTAInterface::enableAPInterface()"
+    range: "0xffffff800168d310..0xffffff800168d858"
+    rrm_disable:
+      feature_flag: "0x15"
+      config_source: "state+0x218 -> +0x128 -> +0x1558 -> +0x10 -> +0xe2"
+      payload_value: 0
+      payload_size: 4
+      iovars:
+        - "rrm_bcn_req_thrtl_win"
+        - "rrm_bcn_req_max_off_chan_time"
+      call: "runVirtualIOVarSet"
+      error_policy: "log and continue with initialization"
+    wnm_disable:
+      feature_flag: "0x19"
+      config_source: "state+0x218 -> +0x128 -> +0x1558 -> +0x10 -> +0xe3"
+      iovar: "wnm"
+      payload_value: 0
+      payload_size: 4
+      call: "runVirtualIOVarSet"
+      error_policy: "log and continue with initialization"
+    mpdu_override:
+      boot_arg: "wlan.ap.maxmpdu"
+      boot_arg_size: 4
+      read_failure_value: "0xffffffff"
+      zero_value_policy: "skip configureMPDUSize"
+      nonzero_policy: "configureMPDUSize(value)"
+    core_private_flag:
+      target: "state+0x218 -> +0x128 -> +0x2890"
+      or_value: "0x10000"
+    vtable_call_e70:
+      vtable_offset: "0xe70"
+      args: [2, 1]
+    scb_probe:
+      iovar: "scb_probe"
+      payload:
+        local_type: "AirportItlwmAPSTAScbProbePayloadLayout"
+        size: "0x0c"
+        header00: "0xf0000001e"
+        value08: 5
+      async_path:
+        condition: "commander/transport async capability returns true"
+        call: "sendVirtualIOVarSet"
+        rx_expected: "kNoRxExpected"
+        completion_type: "AirportItlwmAPSTACommandCompletionLayout"
+        owner_offset: "0x00"
+        callback_offset: "0x08"
+        callback: "handleSetScbProbeAsyncCallBack"
+        cookie_offset: "0x10"
+        cookie: 0
+      sync_path:
+        condition: "async capability returns false"
+        call: "runVirtualIOVarSet"
+      error_policy: "log and continue with initialization"
+    core_notify:
+      function: "0xffffff8002219ffe"
+      event_id: "0x1e"
+      interface_name_length_trap_threshold: "0x11"
+      interface_name_max_accepted_length: "0x10"
+      flag: 1
+    final_publication:
+      vtable_offset: "0xb18"
+      selector: 4
+      args: [0, 0, 0]
+      event_bit: 5
+      tailcall: "AppleBCMWLANCore::writeEventBitField()"
+  hidden_power_assertion:
+    setHOST_AP_MODE_HIDDEN:
+      function: "AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE_HIDDEN(apple80211_host_ap_mode_hidden_t*)"
+      range: "0xffffff800168d970..0xffffff800168dbbc"
+      preconditions:
+        ap_up_state: "state+0x26c != 0"
+        not_up_return: 6
+        null_input_return: "0x16"
+      input:
+        hidden_value_offset: "input+0x04"
+        max_accepted_value: 1
+      closednet_iovar:
+        name: "closednet"
+        commander_field: "state+0x228"
+        payload: "input+0x04 hidden value"
+        payload_size: 4
+      success_writes:
+        - { offset: "state+0x0d", value: "hidden != 0" }
+      hidden_clear_tail:
+        condition: "hidden == 0 and state+0x26c != 0"
+        calls:
+          - { function: "setPowerSaveState", args: [0, 9] }
+          - { write: "state+0x0e = 0" }
+          - { function: "holdSoftAPPowerAssertion" }
+    holdSoftAPPowerAssertion:
+      function: "AppleBCMWLANIO80211APSTAInterface::holdSoftAPPowerAssertion()"
+      range: "0xffffff800168dbc2..0xffffff800168dc8c"
+      state_write: { offset: "state+0x0c", value: 1 }
+      notification:
+        function: "0xffffff8002219ffe"
+        resource: "state+0x218 -> +0x128 -> +0x2c20"
+        event_id: "0x8d"
+        payload_value: 1
+        payload_size: 4
+        flag: 1
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled offset/carrier witness only; no runtime role-7 success"
+
+hostap_control_state:
+  set_host_ap_mode:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE(apple80211_network_data*)"
+    address: "0xffffff80016884ae"
+    local_network_data_layout: "AirportItlwmAPSTAHostApModeNetworkDataLayout"
+    input_offsets:
+      flags: "input+0x04"
+      mode: "input+0x1c"
+      vendor_ie_length: "input+0x2dc"
+      vendor_ie_data: "input+0x2e0"
+    contract: >
+      coordinate proximity owner at core expansion +0x2c28 and NAN owners at
+      +0x74f0/+0x74f8 around setHostApModeInternal; feature gate 0x46 controls
+      the bringdown/bringup path.
+    neighbouring_owners:
+      core_private_source: "state+0x218 -> +0x128"
+      proximity_owner: "+0x2c28"
+      nan_owner: "+0x74f0"
+      nan_data_owner: "+0x74f8"
+    enable_path:
+      condition: "input != NULL and *(uint32_t *)(input+0x1c) != 0"
+      feature_gate: "0x46"
+      gate_disabled_side_effects:
+        - "bring down proximity owner when present"
+        - "bring down NAN owner when present"
+        - "bring down NAN data owner when present"
+      tail: "return setHostApModeInternal(input)"
+    disable_or_zero_mode_path:
+      condition: "input == NULL or *(uint32_t *)(input+0x1c) == 0"
+      internal_call: "setHostApModeInternal(input)"
+      feature_gate: "0x46"
+      bringup_gate:
+        private_flag: "+0x2890 & 1"
+        mode_field: "+0x4d8c"
+        accepted_values: [4, 1]
+      side_effects:
+        - "bring up proximity owner when present and gate passes"
+        - "bring up NAN owner when present and gate passes"
+        - "bring up NAN data owner when present and gate passes"
+  internal:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(apple80211_network_data*)"
+    address: "0xffffff8001688bc2"
+    state_operands:
+      - { offset: "state+0x26c", use: "AP-up state; tested before shutdown and set to 1 on successful AP enable" }
+      - { offset: "state+0x270", use: "HostAP transition/in-progress state; tested and written by internal state machine" }
+      - { offset: "state+0x20c", use: "AP stats/inactivity accumulator cleared on enable" }
+      - { offset: "state+0x14", use: "beacon interval/default timing field updated on enable" }
+      - { offset: "state+0xb4", use: "AP low-power/power state consulted by low-power exit path" }
+      - { offset: "state+0x228", use: "commander used for virtual IOVAR sequence" }
+  hidden_mode:
+    function: "AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE_HIDDEN(apple80211_host_ap_mode_hidden_t*)"
+    address: "0xffffff800168d970"
+    contract: "validate interface up, send closednet virtual IOVAR, write state+0x0d, clear state+0x0e on shutdown branch"
+  power_assertion:
+    function: "AppleBCMWLANIO80211APSTAInterface::holdSoftAPPowerAssertion()"
+    address: "0xffffff800168dbc2"
+    contract: "write state+0x0c = 1 and notify core power/assertion path"
+  power_off:
+    function: "AppleBCMWLANIO80211APSTAInterface::hostAPPowerOff()"
+    address: "0xffffff8001692772"
+    contract: "if AP is up, set power-save state, clear state+0x0e, call setHostApModeInternal(NULL), then notify owner/core"
+    default_return: 0
+    ap_up_state: "state+0x26c"
+    associated_count: "state+0x00"
+    no_associated_sta_path:
+      condition: "state+0x26c != 0 and state+0x00 == 0"
+      set_power_save_state_args: [0, "0x0c"]
+      clear: "state+0x0e = 0"
+      internal_call: "setHostApModeInternal(NULL)"
+      notify:
+        function: "0xffffff8002219ffe"
+        event_id: 1
+        payload: NULL
+        payload_size: 0
+        flag: 1
+    associated_sta_path:
+      condition: "state+0x26c != 0 and state+0x00 != 0"
+      if_concurrency_disabled: "setPowerSaveState(3, 3)"
+  softap_concurrency:
+    function: "AppleBCMWLANIO80211APSTAInterface::isSoftAPConcurrencyEnabled()"
+    address: "0xffffff8001692896"
+    feature_gate: "0x46"
+    core_private_byte: "+0x4d59"
+    mask: "0x1b"
+    contract: "true only when feature 0x46 is enabled and core-private +0x4d59 has one of mask bits 0x1b set"
+  low_power_exit:
+    function: "AppleBCMWLANIO80211APSTAInterface::configureLowPowerModeExit()"
+    address: "0xffffff80016928e4"
+    contract: "return early when state+0xb4 is zero; otherwise dispatch low-power exit work"
+    low_power_state: "state+0xb4"
+    workqueue_gate_vtable_offset: "0x130"
+    command_payload_size: 4
+    success_write: "state+0xb4 = 0"
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    fields:
+      - "powerAssertionFlag0c"
+      - "hiddenNetworkFlag0d"
+      - "softapPowerStateB4"
+      - "hostApTransitionState270"
+    layouts:
+      - "AirportItlwmAPSTAHostApModeNetworkDataLayout"
+    status: "compiled offset witness only; HostAP runtime path remains disabled"
+
+apsta_power_offload_datapath_tail:
+  reference_note: "docs/reference/AppleBCMWLAN_APSTA_power_offload_datapath_tail_2026_04_27.md"
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled constants/layout witnesses only; no APSTA runtime enablement"
+    layouts:
+      - "AirportItlwmAPSTARpsNoaDutyCyclePayloadLayout"
+      - "AirportItlwmAPSTARpsNoaDynamicPayloadLayout"
+      - "AirportItlwmAPSTAPowerStatsBucketLayout"
+      - "AirportItlwmAPSTASoftAPPeerStatsPayloadLayout"
+  configure_mpdu_size:
+    function: "AppleBCMWLANIO80211APSTAInterface::configureMPDUSize(uint32_t)"
+    address: "0xffffff80016925f6"
+    iovar: "ampdu_mpdu"
+    command_source: "state+0x228"
+    payload_size: 4
+    gates:
+      - { source: "state+0x218 -> +0x128 -> +0x3fc", required: 2 }
+      - { source: "state+0x218 -> +0x128 -> +0x30c", max_accepted: 4 }
+    success_log_mask: "0x80"
+  low_power_and_arp_offload:
+    lphs_mode:
+      iovar: "lphs_mode"
+      payload_size: 4
+      exit_payload_value: 0
+      enter_payload_value: 1
+      callback: "handleSetLowPowerModeAsyncCallBack"
+      cookie: 0
+      no_rx_expected: true
+    arp_chain:
+      first_success_iovar: "arp_hostip_clear"
+      first_payload: "kNoTxPayload"
+      second_success_iovar: "arp_hostip"
+      second_payload_source: "state+0xac"
+      second_payload_size: 4
+      callbacks:
+        - "handleSetARPHostIPClearAsyncCallBack"
+        - "handleSetARPHostIPAsyncCallBack"
+      cookie: 0
+      no_rx_expected: true
+  rpsnoa_and_beacon_duty_cycle:
+    setBeaconDutyCycle:
+      function: "AppleBCMWLANIO80211APSTAInterface::setBeaconDutyCycle(uint32_t)"
+      address: "0xffffff800169319a"
+      iovar: "rpsnoa"
+      payload_size: "0x10"
+      fields:
+        - { offset: "0x00", qword: "0x100100101" }
+        - { offset: "0x08", dword: 0 }
+        - { offset: "0x0c", word: 2 }
+        - { offset: "0x0e", word: "requested != 0" }
+    configureBeaconDutyCycleParams:
+      function: "AppleBCMWLANIO80211APSTAInterface::configureBeaconDutyCycleParams(apple80211_softap_ps_dynamic_level)"
+      address: "0xffffff80016934a0"
+      iovar: "rpsnoa"
+      payload_size: "0x18"
+      dynamic_params_entry_size: "0x0c"
+      fields:
+        - { offset: "0x00", qword: "0x300180101" }
+        - { offset: "0x08", dword: 0 }
+        - { offset: "0x0c", word: 2 }
+        - { offset: "0x0e", byte: "0x0a - dynamicPSParams[level].byte8" }
+        - { offset: "0x0f", byte: 0 }
+        - { offset: "0x10", qword: "rol64(dynamicPSParams[level].qword0, 0x20)" }
+    callbacks:
+      status_zero: "return immediately"
+      status_nonzero: "log error and emit CommandRxPayload bytestream via state+0x210"
+      bytestream_users:
+        - "handleSetRpsNoaAsyncCallBack"
+        - "handleSetScbProbeAsyncCallBack"
+  power_assertion_and_stats:
+    releaseSoftAPPowerAssertion:
+      function: "AppleBCMWLANIO80211APSTAInterface::releaseSoftAPPowerAssertion()"
+      address: "0xffffff80016937c2"
+      state_write: { offset: "state+0x0c", value: 0 }
+      notify:
+        resource: "state+0x218 -> +0x128 -> +0x2c20"
+        event_id: "0x8d"
+        payload_value: 0
+        payload_size: 4
+        flag: 1
+    softApStatsAccumulatePowerStateDuration:
+      function: "AppleBCMWLANIO80211APSTAInterface::softApStatsAccumulatePowerStateDuration(apple80211_softap_power_state, uint64_t)"
+      address: "0xffffff8001693892"
+      duration_target: "state+0x1d0 + power_state * 0x10"
+      timestamp_target: "state+0x1a8"
+    powerStateChangeReasonToString:
+      max_known_reason: "0x0e"
+      fallback: "Unknown"
+  interface_and_datapath_tail:
+    enable:
+      function: "AppleBCMWLANIO80211APSTAInterface::enable(uint32_t)"
+      address: "0xffffff8001693980"
+      running_gate_vtable_offset: "0xd58"
+      super_enable_vtable_offset: "0x860"
+      not_running_return: "0xe00002d5"
+    disable:
+      function: "AppleBCMWLANIO80211APSTAInterface::disable(uint32_t)"
+      address: "0xffffff8001693aa0"
+      pre_disable_vtable_offset: "0xda0"
+      super_disable_vtable_offset: "0x868"
+    enableDatapath_correction:
+      enabled_gate_vtable_offset: "0xcf0"
+      not_enabled_return: "0xe00002bc"
+      note: "corrects older local YAML text that incorrectly described the not-enabled path as success"
+    accessors:
+      getLogger: "state+0x210"
+      getNumTxQueues: "state+0x2a4"
+      getTxCompQueue: "state+0x2e8"
+      getRxCompQueue: "state+0x2f0"
+      getTxSubQueue: "state+0x2b8 AC map -> state+0x300"
+      getMultiCastQueue: "state+0x320"
+      getTxPacketPool: "state+0x2d8"
+      getRxPacketPool: "state+0x2e0"
+  set_mac_and_peer_stats:
+    setMacAddress:
+      function: "AppleBCMWLANIO80211APSTAInterface::setMacAddress(ether_addr&)"
+      address: "0xffffff8001694464"
+      iovar: "cur_etheraddr"
+      payload_size: 6
+      allowed_condition: "interface id != -1 and state+0x26c == 0"
+      invalid_interface_down_return: 0
+      rejected_return: "0xe00002bc"
+    configureSoftAPPeerStats:
+      function: "AppleBCMWLANIO80211APSTAInterface::configureSoftAPPeerStats(bool)"
+      address: "0xffffff800169456a"
+      feature_gate: "0x7a"
+      iovar: "softap_stats"
+      payload_size: "0x0e"
+      payload_fields:
+        - { offset: "0x00", dword: "0x80002" }
+        - { offset: "0x0a", word: "2 - enabled" }
+      cookie_size: 1
+      callback_success_write: "state+0x328 = cookie & 1"
+      allocation_failure_return: "0xe00002bc"
+  non_claims:
+    - "does not send APSTA IOVARs at runtime"
+    - "does not enable APSTA owner creation"
+    - "does not alter primary STA association, key, or data paths"
+
+apsta_monitor_power_stats_layer:
+  reference_note: "docs/reference/AppleBCMWLAN_APSTA_monitor_power_stats_2026_04_27.md"
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled constants/layout/state-field witnesses only; no APSTA runtime enablement"
+    layouts:
+      - "AirportItlwmAPSTAInactivityKillMessageLayout"
+      - "AirportItlwmAPSTABcmAssocListLayout"
+      - "AirportItlwmAPSTAAppleAssocEntryLayout"
+      - "AirportItlwmAPSTAAppleAssocListLayout"
+      - "AirportItlwmAPSTAPowerStateRecordLayout"
+    split_state_fields:
+      - { field: "lphsVendorIEFlag62", offset: "state+0x62" }
+      - { field: "lowTrafficCounter64", offset: "state+0x64" }
+      - { field: "softapConcurrencyMirror208", offset: "state+0x208" }
+  stats_update_timer:
+    function: "AppleBCMWLANIO80211APSTAInterface::handleAPStatsUpdates(IO80211TimerSource*)"
+    address: "0xffffff8001685a36"
+    timer_argument: "must equal state+0x70"
+    ap_down_path: "timer action vtable +0x218"
+    allocation_size: "0x808"
+    station_list_vtable_offset: "0xfd8"
+    async_submit_failure_return: "0xe00002d8"
+    success_followup: "checkForStationListMismatch"
+    activity_baseline: "state+0x88"
+    optional_counter_source:
+      core_private_byte: "+0x4d59"
+      required_bits: ["0x08", "0x10"]
+      private_enable: "+0x757e bit 1"
+      counter_base: "+0x2a78"
+      counter_count: 4
+      counter_stride: 8
+    inactivity:
+      age_counter: "state+0x20c"
+      poll_increment: "0x1388"
+      kill_compare_threshold: "0x16e361"
+      kill_log_threshold: "0x16e360"
+      reset_threshold: "0x170a71"
+      message_id: "0x0d"
+      message_size: "0x0c"
+      message_payload: "{ qword 0, dword 0xffffffff }"
+    timer_reschedule:
+      vtable_offset: "0x1d0"
+      interval: "0x1388"
+  monitor_timer:
+    function: "AppleBCMWLANIO80211APSTAInterface::monitorAPInterface(IO80211TimerSource*)"
+    address: "0xffffff8001685e94"
+    timer_argument: "must equal state+0x78"
+    ap_down_path: "timer action vtable +0x218"
+    timestamp_source: "state+0x1a8"
+    current_power_state: "state+0x10"
+    core_private_mirror:
+      source_byte: "+0x4d59 bit 0"
+      destination: "state+0x208"
+      vendor_ie_refresh_trigger: "bit change or state+0x62 bit 0"
+    station_scan:
+      table_base: "state+0xb8"
+      entry_stride: "0x30"
+      active_field: "entry+0x00"
+      timestamp_field: "entry+0x08"
+    rx_counters:
+      firmware_activity_source: "same four-qword optional counter source as stats update timer"
+      rx_counter_vtable_offset: "0xc38"
+      firmware_baseline: "state+0x90"
+      interface_baseline: "state+0x98"
+      firmware_delta_stats: "state+0x1b8"
+      interface_delta_stats: "state+0x1c0"
+      update_accumulator: "state+0xa0"
+    low_traffic_counter:
+      offset: "state+0x64"
+      threshold_source: "state+0x24"
+      rule: "increments only when SoftAP concurrency is disabled and RX delta is below threshold"
+    power_state_transitions:
+      gate: "state+0x0e bit 0"
+      reason: 4
+      state_1_to_2_threshold: "state+0x18"
+      state_2_to_3_threshold: "state+0x1c"
+      state_2_or_3_to_1_condition: "low traffic counter returns to zero"
+    timer_reschedule:
+      vtable_offset: "0x1d0"
+      interval: "0x3e8"
+  power_state_machine:
+    function: "AppleBCMWLANIO80211APSTAInterface::setPowerSaveState(...)"
+    address: "0xffffff8001686e62"
+    gate: "state+0x0e bit 0"
+    ignored_reason: { value: 7, name: "Infra scan" }
+    current_state_offset: "state+0x10"
+    timestamp_offset: "state+0x1a8"
+    transition_records: "state+0x1c8 + new_state * 0x10"
+    states:
+      off_0:
+        releases_assertion_for_reasons: ["0x0a", "0x0c"]
+        clears_low_traffic_counter: true
+        ap_up_side_effects: ["configureLowPowerModeExit", "setBeaconDutyCycle(0)"]
+      on_1:
+        side_effects: ["setBeaconDutyCycle(1)", "configureBeaconDutyCycleParams(state+0x28)", "releaseSoftAPPowerAssertion"]
+      beacon_wait_2:
+        side_effects: ["setBeaconDutyCycle(1)", "configureBeaconDutyCycleParams(state+0x28)"]
+        iovars: ["modesw_bcns_wait payload 0x0a", "lphs_mode payload 1"]
+      low_power_3:
+        ap_up_side_effects: ["holdSoftAPPowerAssertion", "configureLowPowerModeExit", "setBeaconDutyCycle(0)"]
+        clears_low_traffic_counter: true
+  assoc_list_callback_and_conversion:
+    callback_function: "AppleBCMWLANIO80211APSTAInterface::getAssocListAsyncCallback(...)"
+    callback_address: "0xffffff80016880fe"
+    converter_function: "AppleBCMWLANIO80211APSTAInterface::convertBCMAssocListToAppleAssocList(...)"
+    converter_address: "0xffffff80016881f6"
+    callback_contract: "status-zero RX payload allocates 0x808, converts BCM maclist, calls checkForStationListMismatch, frees buffer"
+    bcm_maclist:
+      count_offset: "0x00"
+      first_mac_offset: "0x04"
+      mac_stride: 6
+    apple_output:
+      size: "0x808"
+      version: 1
+      count_offset: "0x04"
+      entries_offset: "0x08"
+      entry_stride: "0x10"
+      max_count: "0x80"
+      clamp_threshold: "0x81"
+      valid_value: 1
+      mac_dword_offset: "0x04"
+      mac_tail_offset: "0x08"
+  management_frame_protection:
+    function: "AppleBCMWLANIO80211APSTAInterface::configureManagementFrameProtectionForSoftAP(unsigned int)"
+    address: "0xffffff800168c4fe"
+    feature_gate: "0x26"
+    unsupported_return: 0
+    iovar: "mfp"
+    payload_size: 4
+    failure_semantics: "returns IOVAR error while log says AP initialization should continue"
+  datapath_print_and_rx_counter:
+    print_function: "AppleBCMWLANIO80211APSTAInterface::printDataPath(userPrintCtx*)"
+    print_address: "0xffffff8001694176"
+    user_print_ctx_offsets:
+      buffer: "0x18"
+      remaining: "0x20"
+      printed: "0x24"
+      start: "0x28"
+    print_vtable_offsets:
+      tx_subqueue: "0x338"
+      tx_completion: "0x320"
+      rx_completion: "0x328"
+      super: "0xc68"
+    rx_counter_function: "AppleBCMWLANIO80211APSTAInterface::updateRxCounter(uint64_t)"
+    rx_counter_address: "0xffffff8001694450"
+    rx_counter_target: "state+0xa0"
+  non_claims:
+    - "does not execute APSTA monitor/stats timers at runtime"
+    - "does not enable APSTA owner creation"
+    - "does not alter primary STA association, key, or data paths"
+
+apsta_async_callback_telemetry_layer:
+  reference_note: "docs/reference/AppleBCMWLAN_APSTA_async_callback_telemetry_2026_04_27.md"
+  local_scaffold:
+    file: "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+    status: "compiled constants/string witnesses only; no APSTA runtime enablement"
+    strings:
+      - "pkt_filter_delete"
+      - "BCNPRD IOCTL rxPayload bytestream: "
+      - "DTIMPRD IOCTL rxPayload bytestream: "
+  ipv4_packet_filter_delete:
+    producer_function: "AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...)"
+    producer_range: "0xffffff8001688d12..0xffffff8001688d84"
+    callback_function: "AppleBCMWLANIO80211APSTAInterface::deleteIPv4PktFiltersAsyncCallBack(...)"
+    callback_address: "0xffffff8001692b52"
+    iovar: "pkt_filter_delete"
+    payload_value: "0x6c"
+    payload_size: 4
+    commander_field: "state+0x228"
+    no_rx_expected: true
+    callback_cookie: 0
+    send_failure_log_level: 1
+    callback_nonzero_status_log_level: 2
+    callback_error_line: "0x0ea0"
+    error_decode: "state+0x218 vtable +0x780"
+  beacon_interval_producer:
+    function: "AppleBCMWLANIO80211APSTAInterface::setBeaconInterval(uint16_t)"
+    address: "0xffffff8001687ae4"
+    skip_condition: "requested interval == state+0x68"
+    applied_target: "state+0x68"
+    ioctl: "0x4c"
+    payload_size: 4
+    commander_field: "state+0x228"
+    async_callback: "handleSetBcnIntervalAsyncCallBack"
+    callback_cookie: 0
+    no_rx_expected: true
+    sync_failure_log_level: 1
+    sync_failure_line: "0x106b"
+  beacon_dtim_producer:
+    producer_function: "AppleBCMWLANIO80211APSTAInterface::initSoftAPParameters()"
+    producer_range: "0xffffff800168795f..0xffffff8001687ac2"
+    source_field: "state+0x16"
+    applied_target: "state+0x6a"
+    skip_condition: "state+0x16 == state+0x6a"
+    ioctl: "0x4e"
+    payload_size: 4
+    commander_field: "state+0x228"
+    async_callback: "handleSetBcnDTIMPeriodAsyncCallBack"
+    callback_cookie: 0
+    no_rx_expected: true
+    sync_failure_log_level: 1
+    sync_failure_line: "0x1091"
+  beacon_async_callbacks:
+    interval_callback:
+      function: "AppleBCMWLANIO80211APSTAInterface::handleSetBcnIntervalAsyncCallBack(...)"
+      address: "0xffffff800169365a"
+      nonzero_status_log_level: 1
+      callback_error_line: "0x1079"
+      telemetry_label: "BCNPRD IOCTL rxPayload bytestream: "
+    dtim_callback:
+      function: "AppleBCMWLANIO80211APSTAInterface::handleSetBcnDTIMPeriodAsyncCallBack(...)"
+      address: "0xffffff800169370e"
+      nonzero_status_log_level: 1
+      callback_error_line: "0x109f"
+      telemetry_label: "DTIMPRD IOCTL rxPayload bytestream: "
+    shared_contract:
+      status_zero: "return immediately"
+      telemetry_resource: "state+0x210"
+      rx_payload_data_offset: "0x00"
+      rx_payload_length_offset: "0x08"
+      telemetry_flag: 1
+  non_claims:
+    - "does not execute APSTA callbacks at runtime"
+    - "does not enable APSTA owner creation"
+    - "does not alter primary STA association, key, or data paths"
+
+local_next_code_batch:
+  - "turn the APSTA state-block scaffold into a real APSTA owner member only after every constructor/start/free and class-vtable alias is recovered"
+  - "route VIRTUAL_IF_CREATE role 7 to APSTA owner creation only after constructor/registration contract is recovered"
+  - "keep primary STA AP_MODE fixed-fail path unchanged"
+  - "do not advertise HostAP until role-7 owner creation and APSTA registration are implemented"

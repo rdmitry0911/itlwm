@@ -1,0 +1,45 @@
+CR-223 BUILD EVIDENCE — SYSTEM_CONTRACT_FIX (same-kext IO80211Packet)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : d3a07c2abccac863e1909aa562051a6ee5687245
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : 1971fc16e06fbda9552ed64c6d6f7f5d36978e37b145574a22b4773922d6942b
+Kext UUID     : 76299E20-2B86-3DA4-BAC0-44C7BB12BD74
+Kext size     : 16303096 bytes
+
+BootKC undef  : 908 (delta +21 vs CR-222's 887; expected from new
+                same-kext class AirportItlwmIO80211Packet vtable
+                construction pulling in IOSkywalkNetworkPacket and
+                IOSkywalkPacket inherited virtuals)
+Linker check  : OK: all 908 undefined symbols resolve against BootKC
+
+Override mangling :
+  __ZNK25AirportItlwmIO80211Packet13getPacketTypeEv  (NK = const)
+  Matches BootKC parent slot:
+  __ZNK22IOSkywalkNetworkPacket13getPacketTypeEv     (NK = const)
+  __ZNK15IOSkywalkPacket13getPacketTypeEv             (NK = const)
+  Same vtable slot occupied across the inheritance chain — our override
+  is dispatched on every framework getPacketType call.
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: 1971fc16e06fbda9552ed64c6d6f7f5d36978e37b145574a22b4773922d6942b
+Install UUID  : 76299E20-2B86-3DA4-BAC0-44C7BB12BD74
+Install match : MATCH (sha+UUID)
+
+Header patches (CR-223 prerequisites; needed for vtable slot identity):
+- MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h:
+  - getPacketBuffers, getPacketBufferCount, getMemoryDescriptor,
+    getDataLength, getDataOffset, getDataOff, getDataVirtualAddress,
+    getDataIOVirtualAddress, getPacketType : added `const` qualifier
+    so subclass vtable construction emits __ZNK... mangled refs that
+    match BootKC's exported symbols.
+  - setDataOffAndLen second param : `uint64_t` -> `unsigned long`
+    so mangled signature matches BootKC export
+    (__ZN15IOSkywalkPacket16setDataOffAndLenExm vs prior Exy).
+- include/Airport/IOSkywalkNetworkPacket.h: getPacketType const.
+- include/Airport/IO80211NetworkPacket.h: getPacketType const.
+
+git diff --cached --check : passes (verified post-stage)

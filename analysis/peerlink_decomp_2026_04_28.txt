@@ -1,0 +1,173 @@
+/* FUN_ffffff80021d3f58 @ ffffff80021d3f58 */
+
+long FUN_ffffff80021d3f58(long *param_1,byte *param_2)
+
+{
+  long lVar1;
+  char cVar2;
+  long lVar3;
+  undefined8 uVar4;
+  long *plVar5;
+  ulong uVar6;
+  undefined4 uVar7;
+
+  if (param_2 == (byte *)0x0) {
+    uVar4 = 0x1502;
+  }
+  else {
+    lVar3 = *(long *)(param_1[3] + 0x530);
+    if (lVar3 != 0) {
+      if ((*param_2 & 1) != 0) {
+        return lVar3;
+      }
+      lVar3 = *(long *)(lVar3 + 0x18);
+      uVar7 = *(undefined4 *)param_2;
+      *(undefined2 *)(lVar3 + 0x5c) = *(undefined2 *)(param_2 + 4);
+      *(undefined4 *)(lVar3 + 0x58) = uVar7;
+      return *(long *)(param_1[3] + 0x530);
+    }
+    lVar3 = *(long *)(param_1[3] + 0x538);
+    if (lVar3 != 0) {
+      lVar1 = *(long *)(lVar3 + 0x10);
+      if (((ulong)*(uint *)(lVar1 + 0x20) != 0x1000000) &&
+         (uVar6 = (ulong)*(uint *)(lVar1 + 0x34) * (ulong)*(uint *)(lVar1 + 0x20),
+         uVar6 < *(uint *)(lVar1 + 0x24) || uVar6 - *(uint *)(lVar1 + 0x24) == 0)) {
+        return 0;
+      }
+      lVar3 = FUN_ffffff80021b9f7a(lVar3,&LAB_ffffff80021c64e1,param_1,param_2,0,0xffffffff);
+      if (lVar3 != 0) {
+        uVar4 = (**(code **)(*param_1 + 0x38))(param_1);
+                    /* WARNING: Subroutine does not return */
+        FUN_ffffff80009ff9b0(uVar4);
+      }
+      plVar5 = (long *)FUN_ffffff80021bf64a(param_2,param_1);
+      if (plVar5 != (long *)0x0) {
+        cVar2 = IO80211CommandQueue__lockEnqueue_IO80211QueueDescriptor__
+                          (*(undefined8 *)(param_1[3] + 0x538),plVar5);
+        if (cVar2 == '\0') {
+          (**(code **)(*plVar5 + 0x28))(plVar5);
+        }
+        else {
+          IO80211Peer__createIOReporters_IOService__(plVar5,*(undefined8 *)(param_1[3] + 0x518));
+          if (*(long *)(param_1[3] + 0x538) == 0) {
+            uVar7 = 0;
+          }
+          else {
+            uVar7 = *(undefined4 *)(*(long *)(*(long *)(param_1[3] + 0x538) + 0x10) + 0x24);
+          }
+          FUN_ffffff80021d42a6(param_1,uVar7);
+        }
+      }
+      uVar4 = (**(code **)(*param_1 + 0x38))(param_1);
+                    /* WARNING: Subroutine does not return */
+      FUN_ffffff80009ff9b0(uVar4);
+    }
+    uVar4 = 0x150e;
+  }
+  FUN_ffffff80021c655e
+            (param_1,0x800000000000000,"%s::%s[%u] Error: Assert failure\n",&DAT_ffffff8002372b14,
+             0xffffff8002375625,uVar4);
+  return 0;
+}
+
+
+
+/* IO80211PeerManager::addPeerOperation() @ ffffff80021d7ba0 */
+
+void IO80211PeerManager__addPeerOperation__(long *param_1)
+
+{
+  undefined8 uVar1;
+  long lVar2;
+
+  lVar2 = *(long *)(param_1[3] + 0xbf8);
+  if (lVar2 == 0) {
+    IO80211PeerManager__initInterfaceConfigPeerReporters__(param_1);
+    lVar2 = *(long *)(param_1[3] + 0xbf8);
+    if (lVar2 == 0) {
+      uVar1 = (**(code **)(*param_1 + 0x38))(param_1);
+                    /* WARNING: Subroutine does not return */
+      FUN_ffffff80009ff9b0(uVar1);
+    }
+  }
+  uVar1 = FUN_ffffff80021ce526(param_1,0x4966506565724164);
+                    /* WARNING: Subroutine does not return */
+  FUN_ffffff8000b00f40(lVar2,uVar1,1);
+}
+
+
+
+/* FUN_ffffff80022df28c @ ffffff80022df28c */
+
+void FUN_ffffff80022df28c(long *param_1)
+
+{
+                    /* WARNING: Could not recover jumptable at 0xffffff80022df29b. Too many branches
+                        */
+                    /* WARNING: Treating indirect jump as call */
+  (**(code **)(*param_1 + 0xe70))();
+  return;
+}
+
+
+
+/* IO80211InfraInterface::setCurrentApAddress(ether_addr*) @ ffffff80022e5e40 */
+
+void IO80211InfraInterface__setCurrentApAddress_ether_addr__(long param_1,undefined4 *param_2)
+
+{
+  undefined4 uVar1;
+  CommonFsmManager *this;
+  undefined1 uVar2;
+  long lVar3;
+  long *plVar4;
+  undefined1 uVar5;
+
+  lVar3 = *(long *)(*(long *)(param_1 + 0x128) + 0x178);
+  plVar4 = *(long **)(*(long *)(lVar3 + 0x10) + 0x10);
+  if (param_2 == (undefined4 *)0x0) {
+    if (plVar4 == (long *)0x0) {
+      uVar5 = 0;
+      goto LAB_ffffff80022e5e9e;
+    }
+    (**(code **)(*plVar4 + 0x218))();
+    plVar4 = *(long **)(*(long *)(lVar3 + 0x10) + 0x10);
+    lVar3 = 0x158;
+    uVar2 = 0;
+  }
+  else {
+    lVar3 = 0x150;
+    uVar5 = 1;
+    uVar2 = 1;
+    if (plVar4 == (long *)0x0) goto LAB_ffffff80022e5e9e;
+  }
+  uVar5 = uVar2;
+  (**(code **)(*plVar4 + lVar3))();
+LAB_ffffff80022e5e9e:
+  lVar3 = *(long *)(param_1 + 0x128);
+  *(undefined1 *)(lVar3 + 0x180) = uVar5;
+  this = *(CommonFsmManager **)(lVar3 + 0x160);
+  if (this != (CommonFsmManager *)0x0) {
+    CommonFsmManager::processEvent(this,(param_2 == (undefined4 *)0x0) + '\x01',(void *)0x0);
+  }
+  if (param_2 != (undefined4 *)0x0) {
+    lVar3 = *(long *)(param_1 + 0x128);
+    uVar1 = *param_2;
+    *(undefined2 *)(lVar3 + 0x19c) = *(undefined2 *)(param_2 + 1);
+    *(undefined4 *)(lVar3 + 0x198) = uVar1;
+  }
+  return;
+}
+
+
+
+/* MISSING @ 0xffffff80022e1148 */
+
+/* FUN_ffffff80021bdc4c @ ffffff80021bdc4c */
+
+void FUN_ffffff80021bdc4c(void)
+
+{
+                    /* WARNING: Subroutine does not return */
+  FUN_ffffff8000a016c0(&DAT_ffffff800240e300,0x18);
+}

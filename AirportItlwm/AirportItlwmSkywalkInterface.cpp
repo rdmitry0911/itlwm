@@ -42,8 +42,22 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
 }
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
+static constexpr IOReturn kApple80211ErrConfigNoValue = 0xe00002e3;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
+static constexpr uint32_t kIo80211InputProbeLimit = 64;
+static constexpr int32_t kIo80211InputStageEntry = 1000;
+static constexpr int32_t kIo80211InputStageReturn = 2000;
+static volatile uint32_t sIo80211InputProbeCount = 0;
+
+static uint16_t airportItlwmHostEtherType(const ether_header *eh)
+{
+    if (eh == nullptr)
+        return 0;
+
+    const uint16_t raw = eh->ether_type;
+    return static_cast<uint16_t>((raw << 8) | (raw >> 8));
+}
 
 static const char *tahoeApple80211ReqName(int reqType)
 {
@@ -55,13 +69,7 @@ static const char *tahoeApple80211ReqName(int reqType)
 
 static bool isTahoeHiddenAssocCommand(int command)
 {
-    switch (command) {
-        case 0x45:
-        case 0x46:
-            return true;
-        default:
-            return false;
-    }
+    return TahoeAssociationContracts::isHiddenAssocCommand(command);
 }
 
 static bool isTahoeCurrentLinkProbeReq(int reqType)
@@ -313,64 +321,77 @@ static void setTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t raw)
     }
 }
 
-static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
 {
-    if (hal == nullptr || data == nullptr)
-        return;
+    if (hal == nullptr || rate == nullptr)
+        return kIOReturnError;
+
+    *rate = 0;
 
     if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
         struct iwm_softc *sc = &iwm->com;
-        uint32_t rate = sc->lq_sta.rs_drv.last_rate_n_flags;
-        if ((rate & 0x07000000U) != 0x02000000U)
-            return;
-        data->index = rate & 0xf;
-        data->nss = (rate >> 4) & 0xf;
-        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
-        switch (rate & 0x00070000U) {
-            case 0x00010000U:
-                data->bw = 20;
-                break;
-            case 0x00020000U:
-                data->bw = 40;
-                break;
-            case 0x00030000U:
-                data->bw = 80;
-                break;
-            case 0x00040000U:
-                data->bw = 160;
-                break;
-            default:
-                break;
-        }
-        return;
+        *rate = sc->lq_sta.rs_drv.last_rate_n_flags;
+        return kIOReturnSuccess;
     }
 
     if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
         struct iwx_softc *sc = &iwx->com;
         if (!sc->sc_has_last_rate_n_flags)
-            return;
-        uint32_t rate = sc->sc_last_rate_n_flags;
-        if ((rate & 0x07000000U) != 0x02000000U)
-            return;
-        data->index = rate & 0xf;
-        data->nss = (rate >> 4) & 0xf;
-        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
-        switch (rate & 0x00070000U) {
-            case 0x00010000U:
-                data->bw = 20;
-                break;
-            case 0x00020000U:
-                data->bw = 40;
-                break;
-            case 0x00030000U:
-                data->bw = 80;
-                break;
-            case 0x00040000U:
-                data->bw = 160;
-                break;
-            default:
-                break;
-        }
+            return kApple80211ErrConfigNoValue;
+        *rate = sc->sc_last_rate_n_flags;
+        return kIOReturnSuccess;
+    }
+
+    return kApple80211ErrConfigNoValue;
+}
+
+static bool decodeTahoeMcsIndexFromCachedNrate(uint32_t rate, uint32_t *index)
+{
+    if (index == nullptr)
+        return false;
+
+    switch (rate & 0x07000000U) {
+        case 0x01000000U:
+            *index = rate & 0xff;
+            return true;
+        case 0x02000000U:
+        case 0x03000000U:
+            *index = rate & 0xf;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+{
+    if (data == nullptr)
+        return;
+
+    uint32_t rate = 0;
+    if (getTahoeCachedNrate(hal, &rate) != kIOReturnSuccess)
+        return;
+    if ((rate & 0x07000000U) != 0x02000000U)
+        return;
+
+    data->index = rate & 0xf;
+    data->nss = (rate >> 4) & 0xf;
+    data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
+    switch (rate & 0x00070000U) {
+        case 0x00010000U:
+            data->bw = 20;
+            break;
+        case 0x00020000U:
+            data->bw = 40;
+            break;
+        case 0x00030000U:
+            data->bw = 80;
+            break;
+        case 0x00040000U:
+            data->bw = 160;
+            break;
+        default:
+            break;
     }
 }
 
@@ -587,6 +608,13 @@ struct apple80211_reassoc
 } __attribute__((packed));
 static_assert(sizeof(apple80211_reassoc) == 0x9c,
               "apple80211_reassoc must cover the Apple offsets used by sendReassocCommand");
+
+struct apple80211_set_roam_lock
+{
+    uint8_t roam_off;
+} __attribute__((packed));
+static_assert(sizeof(apple80211_set_roam_lock) == 0x1,
+              "apple80211_set_roam_lock must match the one-byte WCL IOUC payload");
 
 struct apple80211_legacy_roam_profile_config
 {
@@ -944,6 +972,169 @@ free()
     thread_call_free(skFreeTimer);
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+IOReturn AirportItlwmSkywalkInterface::
+inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
+            ether_header *eh, bool *accepted, bool arg)
+{
+    const uint32_t count = ++sIo80211InputProbeCount;
+    const uint16_t etherType = airportItlwmHostEtherType(eh);
+    const bool isEapol = etherType == ETHERTYPE_PAE;
+    const bool shouldLog = count <= kIo80211InputProbeLimit || isEapol;
+    const uint64_t traceArg =
+        (static_cast<uint64_t>(etherType) << 32) | static_cast<uint64_t>(count);
+
+    if (shouldLog) {
+        XYLog("ITLWM_IO80211_INPUT stage=entry count=%u packet=%p tag=%p "
+              "eh=%p type=0x%04x eapol=%u accepted=%p arg=%u\n",
+              count, packet, tag, eh, etherType,
+              static_cast<unsigned int>(isEapol),
+              accepted, static_cast<unsigned int>(arg));
+        airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceRx,
+                                 kAirportItlwmRegDiagPathRx,
+                                 kIOReturnSuccess,
+                                 kIo80211InputStageEntry +
+                                     (isEapol ? 1 : 0),
+                                 traceArg,
+                                 reinterpret_cast<uint64_t>(packet));
+    }
+
+    IOReturn ret = IO80211InfraInterface::inputPacket(packet, tag, eh,
+                                                      accepted, arg);
+
+    if (shouldLog) {
+        XYLog("ITLWM_IO80211_INPUT stage=return count=%u type=0x%04x "
+              "eapol=%u result=0x%x\n",
+              count, etherType, static_cast<unsigned int>(isEapol),
+              static_cast<uint32_t>(ret));
+        airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceRx,
+                                 kAirportItlwmRegDiagPathRx,
+                                 ret,
+                                 kIo80211InputStageReturn +
+                                     (isEapol ? 1 : 0),
+                                 traceArg,
+                                 reinterpret_cast<uint64_t>(packet));
+    }
+
+    return ret;
+}
+
+static IOSkywalkTxSubmissionQueue *
+airportItlwmTxQueueForIndex(AirportItlwm *driver, unsigned char queueId)
+{
+    (void)queueId;
+    if (driver == nullptr || driver->fTxQueue == nullptr)
+        return nullptr;
+    return driver->fTxQueue;
+}
+
+SInt64 AirportItlwmSkywalkInterface::
+pendingPackets(unsigned char queueId)
+{
+    IOSkywalkTxSubmissionQueue *queue =
+        airportItlwmTxQueueForIndex(instance, queueId);
+    return queue != nullptr ? queue->getPacketCount() : 0;
+}
+
+SInt64 AirportItlwmSkywalkInterface::
+packetSpace(unsigned char queueId)
+{
+    IOSkywalkTxSubmissionQueue *queue =
+        airportItlwmTxQueueForIndex(instance, queueId);
+    return queue != nullptr ? queue->getFreeSpace() : 0;
+}
+
+UInt64 AirportItlwmSkywalkInterface::
+getTxQueueDepth(void)
+{
+    return instance != nullptr && instance->fTxQueue != nullptr
+        ? instance->fSkywalkTxQueueDepth
+        : 0;
+}
+
+UInt64 AirportItlwmSkywalkInterface::
+getRxQueueCapacity(void)
+{
+    return instance != nullptr && instance->fRxQueue != nullptr
+        ? instance->fSkywalkRxQueueCapacity
+        : 0;
+}
+
+void *AirportItlwmSkywalkInterface::
+getMultiCastQueue(void)
+{
+    return instance != nullptr ? instance->fMultiCastQueue : nullptr;
+}
+
+void *AirportItlwmSkywalkInterface::
+getRxCompQueue(void)
+{
+    return instance != nullptr ? instance->fRxQueue : nullptr;
+}
+
+void *AirportItlwmSkywalkInterface::
+getTxCompQueue(void)
+{
+    return instance != nullptr ? instance->fTxCompQueue : nullptr;
+}
+
+void *AirportItlwmSkywalkInterface::
+getTxSubQueue(apple80211_wme_ac)
+{
+    return airportItlwmTxQueueForIndex(instance, 0);
+}
+
+void *AirportItlwmSkywalkInterface::
+getTxPacketPool(void)
+{
+    return instance != nullptr ? instance->fTxPool : nullptr;
+}
+
+void *AirportItlwmSkywalkInterface::
+getRxPacketPool(void)
+{
+    return instance != nullptr ? instance->fRxPool : nullptr;
+}
+
+int AirportItlwmSkywalkInterface::
+getNumTxQueues(void)
+{
+    return instance != nullptr && instance->fTxQueue != nullptr ? 1 : 0;
+}
+
+void AirportItlwmSkywalkInterface::
+enableDatapath(void)
+{
+    if (instance == nullptr)
+        return;
+
+    if (instance->fTxCompQueue)
+        instance->fTxCompQueue->enable();
+    if (instance->fRxQueue) {
+        instance->fRxQueue->enable();
+        instance->fRxQueue->requestEnqueue(nullptr, 0);
+    }
+    if (instance->fTxQueue)
+        instance->fTxQueue->enable();
+}
+
+void AirportItlwmSkywalkInterface::
+disableDatapath(void)
+{
+    if (instance == nullptr)
+        return;
+
+    if (instance->fTxQueue)
+        instance->fTxQueue->disable();
+    if (instance->fMultiCastQueue)
+        instance->fMultiCastQueue->disable();
+    if (instance->fRxQueue)
+        instance->fRxQueue->disable();
+    if (instance->fTxCompQueue)
+        instance->fTxCompQueue->disable();
+}
+#endif
+
 IOReturn AirportItlwmSkywalkInterface::
 getCHANNELS_INFO(apple80211_channels_info *data)
 {
@@ -1157,6 +1348,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_AP_MODE:
+            return (cmd == SIOCSA80211) ? setAP_MODE((apple80211_apmode_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
                 return kIOReturnNotReady;
@@ -1438,7 +1632,6 @@ init()
     cachedPowerProfile = 0;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
-    cachedCurrentMcs = 0;
     cachedIbssMode = 0;
     cachedIbssAuthLower = 0;
     cachedIbssAuthUpper = 0;
@@ -1472,6 +1665,8 @@ init()
     cachedInfraEnumerated = false;
     memset(cachedUserRoamCache, 0, sizeof(cachedUserRoamCache));
     hasCachedUserRoamCache = false;
+    cachedWclRoamLocked = false;
+    hasCachedWclRoamLock = false;
     cachedPmMode = 0;
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
@@ -1506,7 +1701,6 @@ init()
     cachedUsbHostNotificationSeq = 0;
     cachedUsbHostNotificationChange = 0;
     cachedUsbHostNotificationPresent = 0;
-    cachedApMode = 0;
     memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
     cachedAssocIeLen = 0;
     hasCachedAssocIe = false;
@@ -1770,7 +1964,6 @@ init(IOService *provider)
     this->cachedPowerProfile = 0;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
-    this->cachedCurrentMcs = 0;
     this->cachedIbssMode = 0;
     this->cachedIbssAuthLower = 0;
     this->cachedIbssAuthUpper = 0;
@@ -1804,6 +1997,8 @@ init(IOService *provider)
     this->cachedInfraEnumerated = false;
     memset(this->cachedUserRoamCache, 0, sizeof(this->cachedUserRoamCache));
     this->hasCachedUserRoamCache = false;
+    this->cachedWclRoamLocked = false;
+    this->hasCachedWclRoamLock = false;
     this->cachedPmMode = 0;
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
@@ -1838,7 +2033,6 @@ init(IOService *provider)
     this->cachedUsbHostNotificationSeq = 0;
     this->cachedUsbHostNotificationChange = 0;
     this->cachedUsbHostNotificationPresent = 0;
-    this->cachedApMode = 0;
     memset(this->cachedAssocIe, 0, sizeof(this->cachedAssocIe));
     this->cachedAssocIeLen = 0;
     this->hasCachedAssocIe = false;
@@ -1934,7 +2128,8 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
     // Reuse the already recovered public owner instead of leaking generic
     // unsupported from this hidden fallback. Non-association callers keep the
     // prior unsupported contract.
-    if (data != nullptr && length == 0x3ad8) {
+    if (data != nullptr &&
+        TahoeAssociationContracts::isAssocCandidatesPayloadLength(length)) {
         if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockHiddenAssoc)) {
             airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockHiddenAssoc,
                                            kAirportItlwmRegDiagPathHiddenAssoc,
@@ -3358,9 +3553,14 @@ setRSN_IE(struct apple80211_rsn_ie_data *data)
     if (!data)
         return kIOReturnError;
     static_assert(sizeof(ic->ic_rsn_ie_override) == APPLE80211_MAX_RSN_IE_LEN, "Max RSN IE length mismatch");
-    memcpy(ic->ic_rsn_ie_override, data->ie, APPLE80211_MAX_RSN_IE_LEN);
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr)
-        ieee80211_save_ie(data->ie, &ic->ic_bss->ni_rsnie);
+    const uint16_t copyLen = TahoeAssociationContracts::boundedRsnIeLength(
+        data->len, APPLE80211_MAX_RSN_IE_LEN);
+    memset(ic->ic_rsn_ie_override, 0, sizeof(ic->ic_rsn_ie_override));
+    if (copyLen > 0)
+        memcpy(ic->ic_rsn_ie_override, data->ie, copyLen);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        copyLen >= 2 && ic->ic_rsn_ie_override[1] > 0)
+        ieee80211_save_ie(ic->ic_rsn_ie_override, &ic->ic_bss->ni_rsnie);
     return kIOReturnSuccess;
 #else
     return kIOReturnUnsupported;
@@ -3373,9 +3573,15 @@ getAP_IE_LIST(struct apple80211_ap_ie_data *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (!data)
         return kIOReturnError;
-    if (ic->ic_bss == NULL || ic->ic_bss->ni_rsnie_tlv == NULL || ic->ic_bss->ni_rsnie_tlv_len == 0 || ic->ic_bss->ni_rsnie_tlv_len > data->len || ic->ic_bss->ni_rsnie_tlv_len > 1024)
-        return kIOReturnError;
+
     data->version = APPLE80211_VERSION;
+    data->len = 0;
+
+    if (ic->ic_bss == NULL || ic->ic_bss->ni_rsnie_tlv == NULL || ic->ic_bss->ni_rsnie_tlv_len == 0)
+        return kIOReturnSuccess;
+    if (ic->ic_bss->ni_rsnie_tlv_len > sizeof(data->ie_data))
+        return kIOReturnError;
+
     data->len = ic->ic_bss->ni_rsnie_tlv_len;
     memcpy(data->ie_data, ic->ic_bss->ni_rsnie_tlv, data->len);
     return kIOReturnSuccess;
@@ -3509,6 +3715,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         auth_type_data.authtype_upper = ad->ad_auth_upper;
         auth_type_data.authtype_lower = ad->ad_auth_lower;
         setAUTH_TYPE(&auth_type_data);
+        memset(&rsn_ie_data, 0, sizeof(rsn_ie_data));
         rsn_ie_data.version = APPLE80211_VERSION;
         rsn_ie_data.len = ad->ad_rsn_ie[1] + 2;
         memcpy(rsn_ie_data.ie, ad->ad_rsn_ie, rsn_ie_data.len);
@@ -3651,19 +3858,23 @@ setDEAUTH(struct apple80211_deauth_data *da)
 IOReturn AirportItlwmSkywalkInterface::
 getMCS(struct apple80211_mcs_data* md)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
     if (md == NULL)
         return kIOReturnBadArgument;
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
-        cachedCurrentMcs = static_cast<uint32_t>(ic->ic_bss->ni_txmcs);
 
-    // The recovered Apple getMCS producer is a cached scalar carrier, not the
-    // old "associated or raw 6" branch that Tahoe was accidentally exposing.
     md->version = APPLE80211_VERSION;
-    md->index = cachedCurrentMcs;
-    XYLog("DEBUG %s mcs=%u ic_state=%d ic_bss=%p\n",
-          __FUNCTION__, md->index, ic->ic_state, ic->ic_bss);
-    return kIOReturnSuccess;
+    md->index = 0;
+
+    uint32_t rate = 0;
+    IOReturn ret = getTahoeCachedNrate(fHalService, &rate);
+    if (ret == kIOReturnSuccess || ret == kApple80211ErrConfigNoValue) {
+        uint32_t index = 0;
+        if (decodeTahoeMcsIndexFromCachedNrate(rate, &index))
+            md->index = index;
+    }
+
+    XYLog("DEBUG %s ret=0x%x nrate=0x%x mcs=%u\n",
+          __FUNCTION__, ret, rate, md->index);
+    return ret;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3950,18 +4161,68 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
 
-    // Extract fields from apple80211AssocCandidates struct (offsets from decompiled AppleBCMWLAN)
-    uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(raw + 0x0C);
-    uint32_t auth_lower = *reinterpret_cast<const uint32_t *>(raw + 0x10);
-    uint32_t auth_upper = *reinterpret_cast<const uint32_t *>(raw + 0x14);
-    uint32_t ssid_len = *reinterpret_cast<const uint32_t *>(raw + 0x1C);
-    const uint8_t *ssid = raw + 0x20;
-    uint16_t rsn_ie_len = *reinterpret_cast<const uint16_t *>(raw + 0xD4);
-    const uint8_t *rsn_ie = raw + 0xD6;
-    const struct ether_addr *bssid = reinterpret_cast<const struct ether_addr *>(raw + 0x1F4);
+    // Extract fields from the apple80211AssocCandidates carrier recovered from IO80211Family.
+    uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(
+        raw + TahoeAssociationContracts::kApModeOffset);
+    uint32_t auth_lower = *reinterpret_cast<const uint32_t *>(
+        raw + TahoeAssociationContracts::kAuthLowerOffset);
+    uint32_t auth_upper = *reinterpret_cast<const uint32_t *>(
+        raw + TahoeAssociationContracts::kAuthUpperOffset);
+    uint32_t auth_flags = *reinterpret_cast<const uint32_t *>(
+        raw + TahoeAssociationContracts::kAuthFlagsOffset);
+    uint32_t ssid_len = *reinterpret_cast<const uint32_t *>(
+        raw + TahoeAssociationContracts::kSsidLengthOffset);
+    const uint8_t *ssid = raw + TahoeAssociationContracts::kSsidOffset;
+    uint16_t rsn_ie_len = *reinterpret_cast<const uint16_t *>(
+        raw + TahoeAssociationContracts::kRsnIeLengthOffset);
+    const uint8_t *rsn_ie = raw + TahoeAssociationContracts::kRsnIeOffset;
+    uint16_t instant_hotspot_flags = *reinterpret_cast<const uint16_t *>(
+        raw + TahoeAssociationContracts::kInstantHotspotFlagsOffset);
+    uint8_t pmf_capability = *(raw + TahoeAssociationContracts::kPmfCapabilityOffset);
+    uint32_t bss_info_flags = *reinterpret_cast<const uint32_t *>(
+        raw + TahoeAssociationContracts::kBssInfoFlagsOffset);
+    uint32_t candidate_count =
+        *reinterpret_cast<const uint32_t *>(
+            raw + TahoeAssociationContracts::kCandidateCountOffset);
+    const struct ether_addr *context_bssid =
+        reinterpret_cast<const struct ether_addr *>(
+            raw + TahoeAssociationContracts::kContextBssidOffset);
+    const struct ether_addr *candidate_bssid =
+        reinterpret_cast<const struct ether_addr *>(
+            raw + TahoeAssociationContracts::kFirstCandidateBssidOffset);
+    const struct ether_addr *bssid = candidate_count > 0 ? candidate_bssid : context_bssid;
+    const char *bssid_source = candidate_count > 0 ? "candidate" : "context";
 
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
+
+    auto &associationOwner = instance->getTahoeOwnerRegistry().association;
+    associationOwner.hasCarrier = true;
+    associationOwner.selectedFromCandidate = candidate_count > 0;
+    associationOwner.apMode = ap_mode;
+    associationOwner.authLower = auth_lower;
+    associationOwner.authUpper = auth_upper;
+    associationOwner.authFlags = auth_flags;
+    associationOwner.ssidLength = ssid_len;
+    associationOwner.rsnIeLength = rsn_ie_len;
+    associationOwner.boundedRsnIeLength =
+        TahoeAssociationContracts::boundedRsnIeLength(
+            rsn_ie_len, APPLE80211_MAX_RSN_IE_LEN);
+    associationOwner.instantHotspotFlags = instant_hotspot_flags;
+    associationOwner.instantHotspotAppleDeviceFlags =
+        TahoeAssociationContracts::instantHotspotAppleDeviceFlags(
+            instant_hotspot_flags);
+    associationOwner.pmfCapabilityField = pmf_capability;
+    associationOwner.bssInfoFlags = bss_info_flags;
+    associationOwner.candidateCount = candidate_count;
+    memset(associationOwner.ssid, 0, sizeof(associationOwner.ssid));
+    memcpy(associationOwner.ssid, ssid, ssid_len);
+    memcpy(associationOwner.selectedBssid, bssid->octet,
+           sizeof(associationOwner.selectedBssid));
+    memcpy(associationOwner.candidateBssid, candidate_bssid->octet,
+           sizeof(associationOwner.candidateBssid));
+    memcpy(associationOwner.contextBssid, context_bssid->octet,
+           sizeof(associationOwner.contextBssid));
 
     if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockHiddenAssoc)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockHiddenAssoc,
@@ -3981,13 +4242,21 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 
     XYLog("DEBUG %s [%s] mode=%d auth_lower=%d auth_upper=%d rsn_ie_len=%d ic_state=%d\n",
           __FUNCTION__, ssid_str, ap_mode, auth_lower, auth_upper, rsn_ie_len, ic->ic_state);
-    XYLog("DEBUG %s BSSID=%02x:%02x:%02x:%02x:%02x:%02x\n", __FUNCTION__,
+    XYLog("DEBUG %s BSSID=%02x:%02x:%02x:%02x:%02x:%02x source=%s candidates=%u "
+          "candidate=%02x:%02x:%02x:%02x:%02x:%02x context=%02x:%02x:%02x:%02x:%02x:%02x\n",
+          __FUNCTION__,
           bssid->octet[0], bssid->octet[1], bssid->octet[2],
-          bssid->octet[3], bssid->octet[4], bssid->octet[5]);
+          bssid->octet[3], bssid->octet[4], bssid->octet[5],
+          bssid_source, candidate_count,
+          candidate_bssid->octet[0], candidate_bssid->octet[1], candidate_bssid->octet[2],
+          candidate_bssid->octet[3], candidate_bssid->octet[4], candidate_bssid->octet[5],
+          context_bssid->octet[0], context_bssid->octet[1], context_bssid->octet[2],
+          context_bssid->octet[3], context_bssid->octet[4], context_bssid->octet[5]);
 
     // Dump first 64 bytes and BSSID region for offset verification
     XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
     XYLog("DEBUG %s hex[0x1F0-0x21F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x1F0, 48));
+    XYLog("DEBUG %s hex[0x210-0x23F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x210, 48));
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
@@ -4018,11 +4287,12 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         auth_type_data.authtype_lower = auth_lower;
         setAUTH_TYPE(&auth_type_data);
 
-        if (rsn_ie_len > 0 && rsn_ie_len <= APPLE80211_MAX_RSN_IE_LEN) {
+        if (rsn_ie_len > 0) {
             struct apple80211_rsn_ie_data rsn_ie_data;
+            memset(&rsn_ie_data, 0, sizeof(rsn_ie_data));
             rsn_ie_data.version = APPLE80211_VERSION;
-            rsn_ie_data.len = rsn_ie[1] + 2;
-            memcpy(rsn_ie_data.ie, rsn_ie, MIN(rsn_ie_data.len, (uint16_t)APPLE80211_MAX_RSN_IE_LEN));
+            rsn_ie_data.len = associationOwner.boundedRsnIeLength;
+            memcpy(rsn_ie_data.ie, rsn_ie, rsn_ie_data.len);
             setRSN_IE(&rsn_ie_data);
         }
 
@@ -4160,10 +4430,21 @@ setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
-setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *)
+setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
 {
-    // No Apple producer has been recovered for this selector on Tahoe.
-    return kIOReturnUnsupported;
+    // WCLRoamManager sends selector 0x1ac with exactly one payload byte.
+    // AppleBCMWLANCore rejects NULL with raw 0x16, then forwards data[0] as
+    // the `roam_off` bool to AppleBCMWLANRoamAdapter::setRoamLock(bool).
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    cachedWclRoamLocked = data->roam_off != 0;
+    hasCachedWclRoamLock = true;
+    XYLog("WCL [591] %s roam_off=%u cached=%u\n",
+          __FUNCTION__,
+          static_cast<unsigned int>(cachedWclRoamLocked),
+          static_cast<unsigned int>(hasCachedWclRoamLock));
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4709,10 +4990,9 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 {
-    constexpr uint32_t kTahoeActionFrameV2Threshold = 0x15;
     const uint32_t firmwareGeneration =
         (instance != nullptr && instance->fNetIf != nullptr)
-            ? kTahoeActionFrameV2Threshold
+            ? TahoePayloadBuilders::kActionFrameV2FirmwareThreshold
             : 0;
 
     TahoeAsyncCommandContext asyncContext{};
@@ -5251,12 +5531,11 @@ setLE_SCAN_PARAM(apple80211_le_scan_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setAP_MODE(apple80211_apmode_data *data)
 {
-    if (data != nullptr)
-        cachedApMode = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
+    (void)data;
 
-    // AppleBCMWLANCore::setAP_MODE returns the fixed Tahoe fail code
-    // 0xe00002c7 on the normal non-AP path; the success edge is hidden behind
-    // feature/debug gates that this port does not expose.
+    // AppleBCMWLANCore::setAP_MODE returns the fixed Tahoe fail code on the
+    // normal STA path without mutating AP state. The success edge is hidden
+    // behind debug/feature gates that this port does not expose.
     return static_cast<IOReturn>(0xe00002c7);
 }
 

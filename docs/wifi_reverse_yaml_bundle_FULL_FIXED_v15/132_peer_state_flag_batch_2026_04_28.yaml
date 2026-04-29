@@ -1,0 +1,93 @@
+---
+# 132_peer_state_flag_batch_2026_04_28.yaml
+# IO80211Peer state-flag and counter accessor helpers (CR-192).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-192
+date: 2026-04-28
+class: IO80211Peer
+header: include/Airport/IO80211Peer.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-191
+batch_size: 30
+notes: |
+  All thirty exports are direct-call methods of IO80211Peer. Each
+  takes only primitive types (`bool`, `unsigned int`,
+  `unsigned long long`). The local IO80211Peer class has no declared
+  base class, so all declarations are non-virtual members; none of
+  the new names match a method already declared in the local class
+  body.
+
+symbols:
+  - addr: '0xffffff80021c37cc'
+    signature: 'bool IO80211Peer::getHtOperationIEPresent()'
+  - addr: '0xffffff80021c37de'
+    signature: 'void IO80211Peer::setHtOperationIEPresent(bool)'
+  - addr: '0xffffff80021c37f0'
+    signature: 'bool IO80211Peer::getVhtOperationIEPresent()'
+  - addr: '0xffffff80021c3802'
+    signature: 'void IO80211Peer::setVhtOperationIEPresent(bool)'
+  - addr: '0xffffff80021c6024'
+    signature: 'bool IO80211Peer::getPeerAddRequestedState()'
+  - addr: '0xffffff80021c6044'
+    signature: 'void IO80211Peer::setPeerAddRequestedState(bool)'
+  - addr: '0xffffff80021c6034'
+    signature: 'bool IO80211Peer::getPeerDeleteRequestedState()'
+  - addr: '0xffffff80021c6052'
+    signature: 'void IO80211Peer::setPeerDeleteRequestedState(bool)'
+  - addr: '0xffffff80021c607c'
+    signature: 'bool IO80211Peer::isPeerAddRequestInProgress()'
+  - addr: '0xffffff80021c6060'
+    signature: 'void IO80211Peer::setPeerAddRequestInProgress(bool)'
+  - addr: '0xffffff80021c608c'
+    signature: 'bool IO80211Peer::isPeerDeleteRequesetInProgress()'
+  - addr: '0xffffff80021c606e'
+    signature: 'void IO80211Peer::setPeerDeleteRequestInProgress(bool)'
+  - addr: '0xffffff80021c5eba'
+    signature: 'void IO80211Peer::setBssSteeringPeerSyncState(bool)'
+  - addr: '0xffffff80021c33f2'
+    signature: 'unsigned int IO80211Peer::getUnicastBonjourRx()'
+  - addr: '0xffffff80021c3402'
+    signature: 'void IO80211Peer::setUnicastBonjourRx(unsigned int)'
+  - addr: '0xffffff80021c3412'
+    signature: 'unsigned int IO80211Peer::getMulticastBonjourRx()'
+  - addr: '0xffffff80021c3422'
+    signature: 'void IO80211Peer::setMulticastBonjourRx(unsigned int)'
+  - addr: '0xffffff80021c61b8'
+    signature: 'unsigned long long IO80211Peer::getBeaconReceivedCount()'
+  - addr: '0xffffff80021c61ca'
+    signature: 'void IO80211Peer::incrementBeaconReceivedCount()'
+  - addr: '0xffffff80021c6132'
+    signature: 'unsigned int IO80211Peer::getTotalDataLinkCount()'
+  - addr: '0xffffff80021c6140'
+    signature: 'void IO80211Peer::incrementTotalDataLinks()'
+  - addr: '0xffffff80021c614e'
+    signature: 'void IO80211Peer::decrementTotalDataLinks()'
+  - addr: '0xffffff80021c610e'
+    signature: 'void IO80211Peer::incrementDataLinks()'
+  - addr: '0xffffff80021c611c'
+    signature: 'void IO80211Peer::decrementDataLinks()'
+  - addr: '0xffffff80021c60ce'
+    signature: 'unsigned int IO80211Peer::getRealTimeDataSessionCount()'
+  - addr: '0xffffff80021c59b6'
+    signature: 'void IO80211Peer::incrementRealTimeDataSession()'
+  - addr: '0xffffff80021c59c4'
+    signature: 'void IO80211Peer::decrementRealTimeDataSession()'
+  - addr: '0xffffff80021c60c0'
+    signature: 'unsigned int IO80211Peer::getLowLatencyDataSessionCount()'
+  - addr: '0xffffff80021c59dc'
+    signature: 'void IO80211Peer::incrementLowLatencyDataSession()'
+  - addr: '0xffffff80021c5a2a'
+    signature: 'void IO80211Peer::decrementLowLatencyDataSession()'
+
+local_change:
+  files:
+    - include/Airport/IO80211Peer.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

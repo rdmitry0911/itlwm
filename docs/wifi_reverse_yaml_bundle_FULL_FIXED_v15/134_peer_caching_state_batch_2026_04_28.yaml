@@ -1,0 +1,99 @@
+---
+# 134_peer_caching_state_batch_2026_04_28.yaml
+# IO80211Peer caching-state and tx-counter helpers (CR-194).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-194
+date: 2026-04-28
+class: IO80211Peer
+header: include/Airport/IO80211Peer.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-193
+batch_size: 33
+notes: |
+  All thirty-three exports are direct-call methods of IO80211Peer.
+  Each takes only primitive types (`bool`, `int`, `unsigned char`,
+  `unsigned int`, `unsigned long long`). The local IO80211Peer class
+  has no declared base class, so all declarations are non-virtual
+  members; none of the new names match a method already declared in
+  the local class body.
+
+symbols:
+  - addr: '0xffffff80021c2b92'
+    signature: 'void IO80211Peer::setStateForCachedPeer()'
+  - addr: '0xffffff80021c2b7a'
+    signature: 'void IO80211Peer::setPreCachingStateForPeer(unsigned long long)'
+  - addr: '0xffffff80021c5b46'
+    signature: 'void IO80211Peer::setPreUnCachingStateForPeer()'
+  - addr: '0xffffff80021c2ccc'
+    signature: 'void IO80211Peer::clearPreUnCachingStateForPeer()'
+  - addr: '0xffffff80021c5d3e'
+    signature: 'bool IO80211Peer::getPreUnCachingStateForPeer()'
+  - addr: '0xffffff80021c6164'
+    signature: 'void IO80211Peer::setReservationEnabled()'
+  - addr: '0xffffff80021c6176'
+    signature: 'void IO80211Peer::clearReservationEnabled()'
+  - addr: '0xffffff80021c6188'
+    signature: 'bool IO80211Peer::ifCacheReservationEnabled()'
+  - addr: '0xffffff80021c5d74'
+    signature: 'bool IO80211Peer::isPeerDeniedCachingForThisSession()'
+  - addr: '0xffffff80021c5d62'
+    signature: 'void IO80211Peer::setPeerDeniedCachingForThisSession()'
+  - addr: '0xffffff80021c60fc'
+    signature: 'bool IO80211Peer::getReceivedSidecarRequest()'
+  - addr: '0xffffff80021c60ea'
+    signature: 'void IO80211Peer::setReceivedSidecarRequest(bool)'
+  - addr: '0xffffff80021c5b38'
+    signature: 'void IO80211Peer::setLowLatencyLinkIdle()'
+  - addr: '0xffffff80021c5b32'
+    signature: 'void IO80211Peer::clearLowLatencyLinkIdle()'
+  - addr: '0xffffff80021c5b2a'
+    signature: 'bool IO80211Peer::isLowLatencyLinkIdle()'
+  - addr: '0xffffff80021c619a'
+    signature: 'bool IO80211Peer::isWaitingToBeCached()'
+  - addr: '0xffffff80021c5dc4'
+    signature: 'void IO80211Peer::setWaitingToBeCached(bool)'
+  - addr: '0xffffff80021c5d2c'
+    signature: 'bool IO80211Peer::isWaitingToBeUnCached()'
+  - addr: '0xffffff80021c0de2'
+    signature: 'void IO80211Peer::updateRequestBitField()'
+  - addr: '0xffffff80021c3848'
+    signature: 'void IO80211Peer::updateNumHostPackets(unsigned int, int)'
+  - addr: '0xffffff80021c4ff2'
+    signature: 'void IO80211Peer::updateAllReports()'
+  - addr: '0xffffff80021c3500'
+    signature: 'void IO80211Peer::updateCumDataStats()'
+  - addr: '0xffffff80021c356e'
+    signature: 'void IO80211Peer::updateIntervalDataStats()'
+  - addr: '0xffffff80021c35c2'
+    signature: 'void IO80211Peer::clearIntervalDataStats()'
+  - addr: '0xffffff80021c5036'
+    signature: 'void IO80211Peer::updateTxPacketStats(int, unsigned int)'
+  - addr: '0xffffff80021c5b6e'
+    signature: 'void IO80211Peer::allocTxLatencyStorage()'
+  - addr: '0xffffff80021bfc60'
+    signature: 'void IO80211Peer::freeTxLatencyStorage()'
+  - addr: '0xffffff80021c5094'
+    signature: 'void IO80211Peer::incrementTxOkCount(unsigned int)'
+  - addr: '0xffffff80021c5064'
+    signature: 'void IO80211Peer::incrementTxQueueCount(unsigned int)'
+  - addr: '0xffffff80021c50c2'
+    signature: 'void IO80211Peer::incrementTxFailNoAckCount()'
+  - addr: '0xffffff80021c50f0'
+    signature: 'void IO80211Peer::incrementTxFailOtherCount()'
+  - addr: '0xffffff80021c61b2'
+    signature: 'void IO80211Peer::llwLoadPacketLifetimeHistogram(unsigned char)'
+  - addr: '0xffffff80021c61ac'
+    signature: 'int IO80211Peer::llwComputeTxConsecutiveErrorCount(int)'
+
+local_change:
+  files:
+    - include/Airport/IO80211Peer.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

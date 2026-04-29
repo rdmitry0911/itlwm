@@ -1,0 +1,12 @@
+CR-208 build evidence — pool poolFlags 1:1 with AppleBCMWLAN
+date: 2026-04-28T20:18:26Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: bc899fc7876b28908124da5e84a4ed8f5c305dd13ad6f911c5899bb7d45fe707
+kext UUID:   D1086C18-A6A7-3C33-AC10-9B9336F533F2
+kext size:   16285152
+
+BootKC undef-symbol verification:
+  scripts/build_tahoe.sh tail emitted: "OK: all 884 undefined symbols resolve against BootKC"

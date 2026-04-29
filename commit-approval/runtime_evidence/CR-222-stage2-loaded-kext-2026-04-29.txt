@@ -1,0 +1,8 @@
+=== kextstat snapshot ===
+  149    0 0xffffff7f96620000 0xf02584   0xf02584   com.zxystd.AirportItlwm (2.4.0) B319AED0-95DF-30EC-93CC-227A44725AA7 <148 147 54 52 19 7 6 3 1>
+
+=== boot timestamp ===
+{ sec = 1777470178, usec = 524489 } Wed Apr 29 16:42:58 2026
+
+=== HEAD ===
+d3a07c2abccac863e1909aa562051a6ee5687245

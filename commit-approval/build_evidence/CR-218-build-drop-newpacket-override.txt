@@ -1,0 +1,23 @@
+CR-218 build evidence — REFERENCE_ALIGNMENT_FIX: drop newPacket vt[50] override
+date: 2026-04-29T11:10:54Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext sha256: cfd5cfe499d45875fb3fa34206569b3ad9b3014e7b31ff857c8726a6dbd23051
+kext UUID:   4B040376-AC61-3C8D-99D1-BFBA4FA4A16B
+kext size:   16294000
+
+BootKC undef-symbol verification: OK: all 884 undefined symbols resolve against BootKC
+
+Source-side delta vs CR-217:
+  AirportItlwm/AirportItlwmV2.cpp:
+    Removed AirportItlwmIO80211PacketPool::newPacket override entirely.
+    The class now inherits the base IOSkywalkPacketBufferPool::newPacket
+    (KDK 0xa766) which dispatches by packetType:
+       type=1 (Network) -> IOSkywalkNetworkPacket::withPool
+    The static withName factory and CR-217 INIT_FALSE_<stage> classifier
+    are preserved verbatim.
+
+Aligns with reference: AppleBCMWLAN's pool subclass also does NOT
+override vt[50]; it has a separate newPacketWithDescriptor helper
+but lets the base class handle the framework's vt[50] dispatch.

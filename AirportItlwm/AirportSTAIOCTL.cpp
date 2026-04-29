@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwm.hpp"
+#include "TahoeAssociationContracts.hpp"
 #include <sys/_netstat.h>
 
 extern IOCommandGate *_fCommandGate;
@@ -14,6 +15,7 @@ extern IOCommandGate *_fCommandGate;
 const char* hexdump(uint8_t *buf, size_t len);
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
+static constexpr IOReturn kApple80211ErrConfigNoValue = 0xe00002e3;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 
 static bool isTahoeCurrentLinkProbeRequestNumber(int request_number)
@@ -96,64 +98,77 @@ static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
     return false;
 }
 
-static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
 {
-    if (hal == nullptr || data == nullptr)
-        return;
+    if (hal == nullptr || rate == nullptr)
+        return kIOReturnError;
+
+    *rate = 0;
 
     if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
         struct iwm_softc *sc = &iwm->com;
-        uint32_t rate = sc->lq_sta.rs_drv.last_rate_n_flags;
-        if ((rate & 0x07000000U) != 0x02000000U)
-            return;
-        data->index = rate & 0xf;
-        data->nss = (rate >> 4) & 0xf;
-        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
-        switch (rate & 0x00070000U) {
-            case 0x00010000U:
-                data->bw = 20;
-                break;
-            case 0x00020000U:
-                data->bw = 40;
-                break;
-            case 0x00030000U:
-                data->bw = 80;
-                break;
-            case 0x00040000U:
-                data->bw = 160;
-                break;
-            default:
-                break;
-        }
-        return;
+        *rate = sc->lq_sta.rs_drv.last_rate_n_flags;
+        return kIOReturnSuccess;
     }
 
     if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
         struct iwx_softc *sc = &iwx->com;
         if (!sc->sc_has_last_rate_n_flags)
-            return;
-        uint32_t rate = sc->sc_last_rate_n_flags;
-        if ((rate & 0x07000000U) != 0x02000000U)
-            return;
-        data->index = rate & 0xf;
-        data->nss = (rate >> 4) & 0xf;
-        data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
-        switch (rate & 0x00070000U) {
-            case 0x00010000U:
-                data->bw = 20;
-                break;
-            case 0x00020000U:
-                data->bw = 40;
-                break;
-            case 0x00030000U:
-                data->bw = 80;
-                break;
-            case 0x00040000U:
-                data->bw = 160;
-                break;
-            default:
-                break;
-        }
+            return kApple80211ErrConfigNoValue;
+        *rate = sc->sc_last_rate_n_flags;
+        return kIOReturnSuccess;
+    }
+
+    return kApple80211ErrConfigNoValue;
+}
+
+static bool decodeTahoeMcsIndexFromCachedNrate(uint32_t rate, uint32_t *index)
+{
+    if (index == nullptr)
+        return false;
+
+    switch (rate & 0x07000000U) {
+        case 0x01000000U:
+            *index = rate & 0xff;
+            return true;
+        case 0x02000000U:
+        case 0x03000000U:
+            *index = rate & 0xf;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+{
+    if (data == nullptr)
+        return;
+
+    uint32_t rate = 0;
+    if (getTahoeCachedNrate(hal, &rate) != kIOReturnSuccess)
+        return;
+    if ((rate & 0x07000000U) != 0x02000000U)
+        return;
+
+    data->index = rate & 0xf;
+    data->nss = (rate >> 4) & 0xf;
+    data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
+    switch (rate & 0x00070000U) {
+        case 0x00010000U:
+            data->bw = 20;
+            break;
+        case 0x00020000U:
+            data->bw = 40;
+            break;
+        case 0x00030000U:
+            data->bw = 80;
+            break;
+        case 0x00040000U:
+            data->bw = 160;
+            break;
+        default:
+            break;
     }
 }
 
@@ -1096,9 +1111,14 @@ setRSN_IE(OSObject *object, struct apple80211_rsn_ie_data *data)
     if (!data)
         return kIOReturnError;
     static_assert(sizeof(ic->ic_rsn_ie_override) == APPLE80211_MAX_RSN_IE_LEN, "Max RSN IE length mismatch");
-    memcpy(ic->ic_rsn_ie_override, data->ie, APPLE80211_MAX_RSN_IE_LEN);
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr)
-        ieee80211_save_ie(data->ie, &ic->ic_bss->ni_rsnie);
+    const uint16_t copyLen = TahoeAssociationContracts::boundedRsnIeLength(
+        data->len, APPLE80211_MAX_RSN_IE_LEN);
+    memset(ic->ic_rsn_ie_override, 0, sizeof(ic->ic_rsn_ie_override));
+    if (copyLen > 0)
+        memcpy(ic->ic_rsn_ie_override, data->ie, copyLen);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        copyLen >= 2 && ic->ic_rsn_ie_override[1] > 0)
+        ieee80211_save_ie(ic->ic_rsn_ie_override, &ic->ic_bss->ni_rsnie);
     return kIOReturnSuccess;
 #else
     return kIOReturnUnsupported;
@@ -1112,9 +1132,15 @@ getAP_IE_LIST(OSObject *object, struct apple80211_ap_ie_data *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (!data)
         return kIOReturnError;
-    if (ic->ic_bss == NULL || ic->ic_bss->ni_rsnie_tlv == NULL || ic->ic_bss->ni_rsnie_tlv_len == 0 || ic->ic_bss->ni_rsnie_tlv_len > data->len || ic->ic_bss->ni_rsnie_tlv_len > 1024)
-        return kIOReturnError;
+
     data->version = APPLE80211_VERSION;
+    data->len = 0;
+
+    if (ic->ic_bss == NULL || ic->ic_bss->ni_rsnie_tlv == NULL || ic->ic_bss->ni_rsnie_tlv_len == 0)
+        return kIOReturnSuccess;
+    if (ic->ic_bss->ni_rsnie_tlv_len > sizeof(data->ie_data))
+        return kIOReturnError;
+
     data->len = ic->ic_bss->ni_rsnie_tlv_len;
     memcpy(data->ie_data, ic->ic_bss->ni_rsnie_tlv, data->len);
     return kIOReturnSuccess;
@@ -1235,6 +1261,7 @@ setASSOCIATE(OSObject *object,
         auth_type_data.authtype_upper = ad->ad_auth_upper;
         auth_type_data.authtype_lower = ad->ad_auth_lower;
         setAUTH_TYPE(object, &auth_type_data);
+        memset(&rsn_ie_data, 0, sizeof(rsn_ie_data));
         rsn_ie_data.version = APPLE80211_VERSION;
         rsn_ie_data.len = ad->ad_rsn_ie[1] + 2;
         memcpy(rsn_ie_data.ie, ad->ad_rsn_ie, rsn_ie_data.len);
@@ -1477,12 +1504,20 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 IOReturn AirportItlwm::
 getMCS(OSObject *object, struct apple80211_mcs_data* md)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
     if (md == NULL)
         return kIOReturnBadArgument;
     md->version = APPLE80211_VERSION;
-    md->index = (ic->ic_bss != NULL) ? static_cast<uint32_t>(ic->ic_bss->ni_txmcs) : 0;
-    return kIOReturnSuccess;
+    md->index = 0;
+
+    uint32_t rate = 0;
+    IOReturn ret = getTahoeCachedNrate(fHalService, &rate);
+    if (ret == kIOReturnSuccess || ret == kApple80211ErrConfigNoValue) {
+        uint32_t index = 0;
+        if (decodeTahoeMcsIndexFromCachedNrate(rate, &index))
+            md->index = index;
+    }
+
+    return ret;
 }
 
 IOReturn AirportItlwm::
@@ -1640,7 +1675,20 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
 {
     // From Ventura, the virtual interface sequence has channged, now temporary disabled the virtual interface creation because it is no functionality. This fix the issue of delaying start time of associating to AP.
 #if __IO80211_TARGET >= __MAC_13_0
-    return kIOReturnUnsupported;
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+
+    switch (data->role) {
+        case 8:
+        case 9:
+        case 10:
+            return static_cast<IOReturn>(0xe00002c7);
+        case APPLE80211_VIF_AWDL:
+        case APPLE80211_VIF_SOFT_AP:
+            return static_cast<IOReturn>(0xe00002bd);
+        default:
+            return static_cast<IOReturn>(0xe0000001);
+    }
 #else
     struct ether_addr addr;
     struct apple80211_channel chann;

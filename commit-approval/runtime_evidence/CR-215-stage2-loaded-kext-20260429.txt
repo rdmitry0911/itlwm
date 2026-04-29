@@ -1,0 +1,11 @@
+CR-215 Stage 2 loaded-kext identity, captured at 2026-04-29 12:32 boot
+
+Loaded kext (kextstat output):
+  144    0 0xffffff7f96620000 0xf00d24   0xf00d24   com.zxystd.AirportItlwm (2.4.0) B2A2AA8A-02DA-31D7-98F6-7437B1F91EEA
+
+kext UUID:   B2A2AA8A-02DA-31D7-98F6-7437B1F91EEA
+kext sha256: fb86f74f13543fac72ffa5cf8eb60e11abd4e7056b951df5036254d36de60f52
+kext size:   16289520
+
+Matches CR-215 Stage 1 build evidence (build evidence file
+commit-approval/build_evidence/CR-214-build-end-to-end-init-false.txt).

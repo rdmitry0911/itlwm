@@ -1,0 +1,54 @@
+schema_version: 1
+document_id: wcl_action_frame_send_2026_04_27
+title: Tahoe WCL action-frame send path reconstruction
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoePayloadBuilders.hpp"
+  - local: "AirportItlwm/TahoeCommanderV2.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
+  - local: "docs/reference/AppleBCMWLAN_WCL_action_frame_send_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+
+wcl_action_frame_send:
+  core_function: "AppleBCMWLANCore::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*)"
+  core_address: "0xffffff8001636ab4"
+  v1_function: "AppleBCMWLANNetAdapter::sendActionFrame(...)"
+  v1_address: "0xffffff8001549050"
+  v2_function: "AppleBCMWLANNetAdapter::sendActionFrameV2(...)"
+  v2_address: "0xffffff8001549322"
+  input_contract:
+    null_return: "0xe00002bc"
+    net_adapter_owner: "core-private +0x15e0"
+    firmware_generation_field: "core-private +0x30c"
+    v2_threshold_rule: "use V2 when +0x30c > 0x14"
+    v2_threshold_value: "0x15"
+    carrier_fields:
+      category: "input+0x00"
+      channel: "input+0x04"
+      peer_address: "input+0x08"
+      frame_length: "input+0x0e"
+      frame_bytes: "input+0x10"
+  v1_send_contract:
+    pData_null_return: "0xe00002bc"
+    max_total_action_frame_bytes: "0x707"
+    backing_buffer_zero_size: "0x718"
+    fixed_tx_payload_size: "0x724"
+    dispatch: "runIOVarSet path"
+  v2_send_contract:
+    reject_total_at_or_above: "0x708"
+    allocation_size: "total + 0x34"
+    request_length_for_setWCL_ACTION_FRAME: "frame_length because prefix length is zero"
+    dispatch: "issueCommand path"
+  local_alignment:
+    payload_capacity_constant: "0x708"
+    maximum_payload_length: "0x707"
+    v1_tx_payload_size: "0x724"
+    v2_threshold: "0x15"
+    cache_capacity: "0x708"
+  non_claims:
+    - "does not implement real Broadcom action-frame adapter injection"
+    - "does not synthesize action frames"
+    - "does not alter primary STA association or APSTA owner creation"

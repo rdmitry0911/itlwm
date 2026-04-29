@@ -1,0 +1,89 @@
+version: 1
+topic: Tahoe Skywalk network packet and RX tag ABI
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_skywalk_rx_input_abi
+  follows:
+    - "103_skywalk_packet_pool_network_type_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - association_attempt_reaches_rx_eapol_enqueue
+    - io80211_input_marker_absent
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+
+reference:
+  rx_completion_producer:
+    binary: "/srv/project/ghidra_output/AppleBCMWLAN_Bus_decompiled.c"
+    function: "AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets"
+    address: "0xffffff80014ca8e4"
+    normal_role_call_shape: "interface_input(interface, packet, packet_scratch, ether_header, false, false)"
+    scratch_reads:
+      tid_offset: "0x18"
+    scratch_writes:
+      service_class_offset: "0x29"
+  io80211_consumer:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    function: "IO80211InterfaceMonitor::logRxCompletionPacket"
+    address: "0xffffff80022f633e"
+    tag_reads:
+      monitor_gate_or_completion_marker: "0x14"
+      tid: "0x18"
+    tid_contract: "value must be <= 7"
+  packet_scratch:
+    pointer_offset_in_packet: "0x78"
+    recovered_size: "0x98"
+    prepare_zeroed_prefix: "0x30"
+
+network_packet_header_reference:
+  source: "MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkNetworkPacket.h"
+  class_contract:
+    base_class: "IOSkywalkPacket"
+    static_factory: "IOSkywalkNetworkPacket::withPool(...)"
+    virtual_override: "getPacketType()"
+    metadata_methods:
+      - "setHeadroom / getHeadroom"
+      - "setLinkHeaderLength / getLinkHeaderLength"
+      - "setLinkHeaderOffset / getLinkHeaderOffset"
+      - "setNetworkHeaderOffset / getNetworkHeaderOffset"
+      - "setDataContainsFCS / getDataContainsFCS"
+      - "getServiceClass"
+      - "setIsLinkBroadcast / isLinkBroadcast"
+      - "setIsLinkMulticast / isLinkMulticast"
+
+local_before_cr_162:
+  ioskywalk_network_packet:
+    file: "include/Airport/IOSkywalkNetworkPacket.h"
+    mismatch: "declared as IOService subclass with generic packet virtuals instead of IOSkywalkPacket subclass"
+  packet_info_tag:
+    file: "include/Airport/apple_private_spi.h"
+    mismatch: "empty struct despite proven IO80211 consumers dereferencing tag offsets"
+
+local_fix_cr_162:
+  type: "REFERENCE_ALIGNMENT_FIX plus SYSTEM_CONTRACT_FIX"
+  files:
+    - "include/Airport/IOSkywalkNetworkPacket.h"
+    - "include/Airport/apple_private_spi.h"
+  changes:
+    - "restore IOSkywalkNetworkPacket class shape to Tahoe Skywalk header contract"
+    - "record packet_info_tag offsets +0x14, +0x18, +0x29 and total size 0x98"
+    - "add compile-time offset and size assertions"
+  field_name_note: "packet_info_tag field names are local names; offsets and uses are decompile-proven"
+  non_claims:
+    - "does not add manual inputPacket callbacks"
+    - "does not force EAPOL TX"
+    - "does not force key install"
+    - "does not force RSN success"
+    - "does not synthesize RX completion delivery without producer-side path restoration"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "verify whether IO80211 input marker appears once RX handoff is restored"
+    - "verify EAPOL TX / key install / RSN completion progression"

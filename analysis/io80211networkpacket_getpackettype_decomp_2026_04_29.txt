@@ -1,0 +1,31 @@
+IO80211NetworkPacket::getPacketType() decomp from BootKC 0xffffff80022c5930 (size 0xd4)
+
+UInt32 IO80211NetworkPacket::getPacketType() const {
+    // vt[0x178/8 = 47] = getVirtualAddress() (this class's own override; for an
+    // IOSkywalkNetworkPacket-derived sibling it dispatches to
+    // IOSkywalkPacket::getDataVirtualAddress)
+    UInt8 *va = (UInt8 *)this->vptr->vt47();
+    // vt[0x150/8 = 42] = getDataOffset()
+    UInt32 off = this->vptr->vt42();
+    // vt[0x140/8 = 40] = getDataLength()
+    UInt32 len = this->vptr->vt40();
+    if (len < 14) return 0;                                     // need Ethernet header
+    UInt16 etype = bswap16(*(UInt16 *)(va + (off & 0xffff) + 12));
+    if (etype == 0x88b4) return 3;                              // (likely 802.1AS / IEEE-1722 AVB)
+    if (etype == 0x888e) return 2;                              // EAPOL
+    if (etype != 0x0800) return 0;                              // not IPv4 → unclassified
+    if (len < 14 + 20) return 0;                                // need IPv4 header
+    if ((va[off + 14] & 0xf0) != 0x40) return 0;                // not IPv4 version
+    if (va[off + 0x17] != 0x11) return 0;                       // not UDP
+    if (len < 14 + 20 + 8) return 0;                            // need UDP header
+    UInt16 sport = bswap16(*(UInt16 *)(va + off + 0x22));
+    if (sport == 67 || sport == 68) return 1;                   // DHCP
+    UInt16 dport = bswap16(*(UInt16 *)(va + off + 0x24));
+    if (dport == 67 || dport == 68) return 1;                   // DHCP
+    return 0;
+}
+
+vt slot mapping (0x118/8 = 35 = init-with-pool from IOSkywalkNetworkPacket::withPool decomp,
+0x140/8 = 40 = getDataLength, 0x150/8 = 42 = getDataOffset, 0x178/8 = 47 = getVirtualAddress
+override; underlying IOSkywalkPacket::getDataVirtualAddress lives at the same slot for
+non-overriding subclasses)

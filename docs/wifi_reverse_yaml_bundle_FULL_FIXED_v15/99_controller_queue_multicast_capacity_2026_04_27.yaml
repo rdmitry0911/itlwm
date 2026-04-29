@@ -1,0 +1,111 @@
+schema_version: 1
+document_id: controller_queue_multicast_capacity_2026_04_27
+title: Tahoe controller queue, capacity, promiscuous, and multicast contracts
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoeControllerContracts.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "AirportItlwm/AirportItlwmV2.hpp"
+  - local: "AirportItlwm/AirportItlwmV2.cpp"
+  - local: "docs/reference/AppleBCMWLAN_controller_queue_multicast_capacity_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+  - binary: "/tmp/IO80211FamilyMachO"
+
+controller_contracts:
+  queue_size_and_timeout:
+    apple_function: "AppleBCMWLANCore::requestQueueSizeAndTimeout(unsigned short*, unsigned short*)"
+    address: "0xffffff8001583018"
+    dt_plane: "IOService"
+    queue_property: "wlan.coalesce.qsize"
+    timeout_property: "wlan.coalesce.timeout"
+    unsupported_status: "0xe00002c7"
+    success_semantics:
+      - "both low 16-bit values must be nonzero"
+      - "write queue size to first output pointer"
+      - "write timeout to second output pointer"
+      - "return 0"
+    local_alignment:
+      - "remove unconditional success"
+      - "return 0xe00002c7 unless both local property values are nonzero"
+      - "cache written values in Tahoe owner registry"
+  data_queue_depth:
+    apple_fetch_function: "AppleBCMWLANCore::fetchAndUpdateRingParameters()"
+    apple_fetch_address: "0xffffff800159418a"
+    apple_get_function: "AppleBCMWLANCore::getDataQueueDepth(OSObject*)"
+    apple_get_address: "0xffffff8001634388"
+    core_private_offset: "0x1154"
+    apple_default: "0x200"
+    io80211_default_function: "IO80211Controller::getDataQueueDepth(OSObject*)"
+    io80211_default_address: "0xffffff8002216c70"
+    io80211_default: "0x400"
+    skywalk_consumer:
+      function: "IO80211SkywalkInterface::getDataQueueDepth()"
+      address: "0xffffff8002276f66"
+      dispatch: "controller vtable getDataQueueDepth(OSObject*)"
+    local_alignment:
+      - "override controller getDataQueueDepth"
+      - "return Tahoe owner registry dataQueueDepth default 0x200"
+  action_frame_pool_capacity:
+    io80211_function: "IO80211Controller::getActionFramePoolCapacity()"
+    address: "0xffffff800221a26e"
+    capacity: "0x100"
+    local_alignment: "explicit Tahoe override returns 0x100"
+  promiscuous_mode:
+    apple_function: "AppleBCMWLANCore::setPromiscuousMode(bool)"
+    address: "0xffffff80015e07cc"
+    core_private_offset: "0x4778"
+    return_status: "0"
+    local_alignment: "cache requested bool in Tahoe controller owner state"
+  multicast_mode:
+    apple_function: "AppleBCMWLANCore::setMulticastMode(bool)"
+    address: "0xffffff80015e07ec"
+    reject_gate_offset: "0x2891"
+    reject_gate_bit: "0x80"
+    reject_status: "0xe0823804"
+    iovar_name: "mcast_list"
+    empty_payload_size: "0x0c"
+    local_alignment:
+      - "cache requested bool in Tahoe controller owner state"
+      - "do not issue unrecovered Broadcom firmware IOVAR in this batch"
+  multicast_list:
+    apple_function: "AppleBCMWLANCore::setMulticastList(ether_addr const*, unsigned int)"
+    address: "0xffffff80015e0930"
+    reject_gate_offset: "0x2891"
+    reject_gate_bit: "0x80"
+    reject_status: "0xe0823804"
+    max_entries: "0x20"
+    too_many_status: "0xe00002bc"
+    count_offset: "0x234"
+    list_offset: "0x238"
+    entry_size: "0x06"
+    payload_fill: "0xaa"
+    payload_capacity: "0xca"
+    payload_length_formula: "4 + count * 6"
+    iovar_name: "mcast_list"
+    apsta_virtual_path: "uses runVirtualIOVarSet when APSTA/proximity owner and virtual id are valid"
+    local_alignment:
+      - "add constants for offsets, limit, payload shape, and statuses"
+      - "cache caller count and address list in Tahoe controller owner state"
+      - "reject caller count above 0x20 with 0xe00002bc"
+      - "preserve existing Intel HAL multicast backend path"
+  base_defaults:
+    hardware_output_queue_depth:
+      function: "IO80211Controller::hardwareOutputQueueDepth()"
+      address: "0xffffff8002219b96"
+      returns: "0"
+    requires_explicit_mbuf_release:
+      function: "IO80211Controller::requiresExplicitMBufRelease()"
+      address: "0xffffff8002219bca"
+      returns: false
+    base_request_queue_size_and_timeout:
+      function: "IO80211Controller::requestQueueSizeAndTimeout(unsigned short*, unsigned short*)"
+      address: "0xffffff8002219cb0"
+      returns: "0xe00002c7"
+    base_promiscuous_multicast_methods:
+      returns: "0xe00002c7"
+  non_claims:
+    - "does not claim final STA association, DHCP, RSN/EAPOL, or data path success"
+    - "does not enable AP/SoftAP runtime"
+    - "does not implement Broadcom multicast IOVAR dispatch"
+    - "does not add retry, poll, fallback, forced state, or synthetic queue parameters"

@@ -1,0 +1,54 @@
+CR-213 build evidence - end-to-end passive pool branch instrumentation
+date: 2026-04-29T06:40:29Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: 9723ec2d7ef333a8e8f4fa1df2080875d26935a508d7c3c3fffeba8a0b2eaaa1
+kext UUID:   3AC188DA-A10C-3541-97FD-861969956A44
+kext size:   16289520
+
+Build command:
+  scripts/build_tahoe.sh
+
+Build result:
+  ** BUILD SUCCEEDED **
+
+BootKC undef-symbol verification:
+  OK: all 884 undefined symbols resolve against BootKC
+
+Source-side delta vs CR-212:
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. The pool factory now emits a FINAL line for every local factory
+       return branch:
+         - NEW_NULL
+         - INIT_FALSE
+         - INIT_TRUE
+    2. STEP 8b now emits a begin line, after-TX boundary, after-RX
+       boundary, and controller-level FINAL line for every pool outcome:
+         - TX_ONLY
+         - RX_ONLY
+         - TX_RX
+         - BOTH_OK handoff to STEP 8c
+    3. The successful pool branch is followed through the next downstream
+       boundaries so the runtime can prove whether the pool error was
+       closed or moved to the next layer:
+         - DOWNSTREAM_QUEUE_FAIL
+         - QUEUES_OK
+         - DOWNSTREAM_WORKLOOP_FAIL
+         - WORKLOOPS_OK handoff to STEP 8d
+
+Diagnostic neutrality checks:
+  - No direct kern_pbufpool_create or kern_pbufpool_destroy calls.
+  - No packetType / PoolOptions / owner / name argument changes.
+  - No retry, fallback, replay, polling, delay, or forced success.
+  - No ownership change: existing OSSafeReleaseNULL path remains unchanged.
+  - Only XYLog output and diagnostic sRT.startStep updates were added.
+  - BootKC undefined-symbol count remains 884.
+
+Static grep:
+  rg -n "PROBE_MATRIX|ProbeCase|kern_pbufpool_create\\(|kern_pbufpool_destroy\\(|kIOSkywalkPacketTypeGeneric|DIFFERENTIAL" AirportItlwm/AirportItlwmV2.cpp
+
+Result:
+  No active pbufpool probe calls, Generic differential path, or CR-211
+  probe matrix remain.

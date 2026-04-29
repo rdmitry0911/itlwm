@@ -1,0 +1,36 @@
+CR-214 build evidence — end-to-end branch coverage for initWithName=0 hypothesis
+date: 2026-04-29T07:11:00Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: fb86f74f13543fac72ffa5cf8eb60e11abd4e7056b951df5036254d36de60f52
+kext UUID:   B2A2AA8A-02DA-31D7-98F6-7437B1F91EEA
+kext size:   16289520
+
+BootKC undef-symbol verification: "OK: all 884 undefined symbols resolve against BootKC"
+
+Source-side delta vs CR-213 (kext bc899fc7… → fb86f74f13543fac72ffa5cf8eb60e11abd4e7056b951df5036254d36de60f52):
+  AirportItlwm/AirportItlwmV2.cpp (factory + STEP 8b/8c):
+    1. Replace narrow CR-213 slot18/slot20 reads with full enumeration
+       of every internal slot the framework's initWithName writes
+       (chronological per KDK 0x9c5f..0x9f24): name(0x98), thCall(0xb0),
+       segStats(0x78), lock1(0x80), lock2(0x88), owner(0x20),
+       pbufpool(0x18), arr1(0x68), arr2(0x60), typeCache(0x3c),
+       flagsCache(0x48), singleSeg(0xb8), disposed(0xba).
+    2. Classify INIT_FALSE into named INIT_FALSE_<stage> branches:
+       PRE_THCALL, PRE_SEGSTATS, PRE_LOCK1, PRE_LOCK2,
+       PRE_OWNER_CACHE, KPBP_REJECT, OSARRAY_FIRST, OSARRAY_SECOND,
+       POST_OSARRAY.
+    3. Cast every pointer through (uintptr_t) and emit as 0x%llx so
+       os_log privacy redaction (which on Tahoe replaces %p with
+       <private>) does not blind the runtime evidence.
+    4. Same 0x%llx unredaction applied to controller-level
+       POOLTRACE[STEP8b] BEGIN/AFTER_TX/AFTER_RX/FINAL/BOTH_OK and
+       POOLTRACE[STEP8c] FINAL/QUEUES_OK pointer outputs.
+
+End-to-end coverage criterion satisfied for the
+'IOSkywalkPacketBufferPool::initWithName returns false' hypothesis:
+every framework-internal stage writes one of the read slots before
+any failure return; the most-progressed non-zero slot pinpoints the
+failure stage exactly.

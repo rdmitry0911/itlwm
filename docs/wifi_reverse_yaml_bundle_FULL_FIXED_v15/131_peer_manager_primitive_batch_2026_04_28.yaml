@@ -1,0 +1,75 @@
+---
+# 131_peer_manager_primitive_batch_2026_04_28.yaml
+# IO80211PeerManager primitive-only direct-call helpers (CR-191).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-191
+date: 2026-04-28
+class: IO80211PeerManager
+header: include/Airport/IO80211PeerManager.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-190
+batch_size: 20
+notes: |
+  All twenty exports are direct-call (non-vtable) methods of
+  IO80211PeerManager. Each takes only primitive types (`bool`,
+  `unsigned int`, `unsigned long long`, `unsigned char`,
+  `unsigned char *`) or the already forward-declared `IO80211Peer *`.
+  None of them collide with a virtual method declared earlier in
+  the same class body, and none match a parent-class virtual
+  (verified — IO80211PeerManager has its own MetaClass; standard
+  OSObject/IOService virtuals do not include any of these names).
+
+symbols:
+  - addr: '0xffffff80021ce526'
+    signature: 'void IO80211PeerManager::modifyChID(unsigned long long)'
+  - addr: '0xffffff80021d9728'
+    signature: 'void IO80211PeerManager::printPeers(unsigned int, unsigned int)'
+  - addr: '0xffffff80021df230'
+    signature: 'bool IO80211PeerManager::getBlockMdns()'
+  - addr: '0xffffff80021df242'
+    signature: 'void IO80211PeerManager::setBlockMdns(bool)'
+  - addr: '0xffffff80021df20c'
+    signature: 'bool IO80211PeerManager::getBlockMdnsTx()'
+  - addr: '0xffffff80021df21e'
+    signature: 'void IO80211PeerManager::setBlockMdnsTx(bool)'
+  - addr: '0xffffff80021df2ba'
+    signature: 'void IO80211PeerManager::setP2PLogging(bool)'
+  - addr: '0xffffff80021d42a6'
+    signature: 'void IO80211PeerManager::setPeersCount(unsigned long long)'
+  - addr: '0xffffff80021df5fe'
+    signature: 'void IO80211PeerManager::setBeaconPeriod(unsigned int)'
+  - addr: '0xffffff80021df60e'
+    signature: 'void IO80211PeerManager::setDTIMPeriod(unsigned int)'
+  - addr: '0xffffff80021df0e8'
+    signature: 'void IO80211PeerManager::setDisplayState(bool)'
+  - addr: '0xffffff80021d4e18'
+    signature: 'void IO80211PeerManager::setScanOn2GOnly(bool)'
+  - addr: '0xffffff80021d4c22'
+    signature: 'bool IO80211PeerManager::is24GOnlyScan()'
+  - addr: '0xffffff80021df7e0'
+    signature: 'unsigned long long IO80211PeerManager::getTxQueueStamp()'
+  - addr: '0xffffff80021df7f2'
+    signature: 'void IO80211PeerManager::setTxQueueStamp(unsigned long long)'
+  - addr: '0xffffff80021e0078'
+    signature: 'void IO80211PeerManager::updateCtlCount(unsigned long long)'
+  - addr: '0xffffff80021e008a'
+    signature: 'void IO80211PeerManager::updateRxPackets(IO80211Peer*, unsigned long long, unsigned long long)'
+  - addr: '0xffffff80021c6482'
+    signature: 'bool IO80211PeerManager::macAddressEqual(IO80211Peer*, unsigned char*)'
+  - addr: '0xffffff80021db786'
+    signature: 'void IO80211PeerManager::saveCountryCode(unsigned char*)'
+  - addr: '0xffffff80021deb10'
+    signature: 'void IO80211PeerManager::reportP2PCCA(unsigned char, unsigned int, unsigned int, unsigned int, unsigned int)'
+
+local_change:
+  files:
+    - include/Airport/IO80211PeerManager.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

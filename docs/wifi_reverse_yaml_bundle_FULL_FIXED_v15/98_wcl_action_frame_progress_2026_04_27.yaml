@@ -1,0 +1,65 @@
+schema_version: 1
+document_id: wcl_action_frame_progress_2026_04_27
+title: Tahoe WCL action-frame progress and scan-overdue contract
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoePayloadBuilders.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "docs/reference/AppleBCMWLAN_WCL_action_frame_progress_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+
+wcl_action_frame_progress:
+  core_private_offsets:
+    progress_flag: "0x4478"
+    progress_start_ms: "0x4480"
+  core_methods:
+    setActionFrameProgress:
+      address: "0xffffff80016344aa"
+      semantics:
+        - "load core-private from this+0x128"
+        - "store bool byte at core-private+0x4478"
+    getActionFrameProgress:
+      address: "0xffffff80016344be"
+      semantics:
+        - "call checkActionFrameCompleteOverdue first"
+        - "return core-private+0x4478 bit 0"
+    checkActionFrameCompleteOverdue:
+      address: "0xffffff80015ba4d2"
+      semantics:
+        - "return if progress bit is clear"
+        - "compare unsigned elapsed milliseconds against 0x12d"
+        - "clear progress bit when overdue"
+        - "log overdue line 0x3b1d"
+        - "emit status 0xe3ff852b through line 0x3b1e"
+  setup_driver:
+    function: "AppleBCMWLANCore::setupDriver()"
+    clear_progress_offset: "0x4478"
+  scan_adapter:
+    function: "AppleBCMWLANScanAdapter::startScan(apple80211ScanRequest*)"
+    address: "0xffffff80016ccc7a"
+    pre_scan_call: "checkActionFrameCompleteOverdue"
+    reject_if_progress_bit_set: true
+    reject_status: "0xe00002d5"
+    reject_log_line: "0x00a5"
+    reject_log_message: "Action frame in progress. Rejecting escan request!"
+  local_alignment:
+    constants:
+      progress_flag_offset: "0x4478"
+      progress_start_ms_offset: "0x4480"
+      overdue_ms: "0x12d"
+      overdue_status: "0xe3ff852b"
+      scan_reject_status: "0xe00002d5"
+      scan_reject_log_line: "0x00a5"
+    owner_state:
+      progress: "uint8_t low-bit progress witness"
+      progress_start_ms: "uint64_t start timestamp witness"
+    helper_semantics:
+      - "setActionFrameProgress writes only the progress byte"
+      - "checkActionFrameCompleteOverdue clears progress after unsigned elapsed >= 0x12d"
+      - "getActionFrameProgress performs overdue check before returning bit 0"
+  non_claims:
+    - "does not enable local scan rejection while action-frame progress is set"
+    - "does not synthesize a progress timestamp"
+    - "does not force action-frame completion"
+    - "does not alter primary STA association, DHCP, RSN/EAPOL, or data paths"

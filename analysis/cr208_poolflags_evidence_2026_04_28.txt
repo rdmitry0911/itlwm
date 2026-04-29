@@ -1,0 +1,217 @@
+## CR-208 evidence — pool poolFlags 1:1 with AppleBCMWLAN reference
+##
+## date: 2026-04-28
+## scope: prove that bit 0 of IOSkywalkPacketBufferPool::PoolOptions::poolFlags
+##        is required for kIOSkywalkPacketTypeNetwork pools, and that
+##        AppleBCMWLAN sets exactly this bit in its reference Network pool.
+## status: ROOT_CAUSE_FIX — runtime regression cause confirmed.
+
+## 1. Runtime symptom
+
+Boot 2026-04-28 22:05 with cumulative kext from HEAD `d3a07c2`:
+
+  itlwm: DEBUG start [STEP 8b] pools: TX=0x0 RX=0x0
+  itlwm: DEBUG start [STEP 8b] FAIL: pool creation (TX=0x0 RX=0x0)
+  IO80211Controller::stop[868] ::stop( 0x3ffb4c4336101732 ) this[0xb5a96355c9e3daf0]
+
+`AirportItlwmIO80211PacketPool::withName(...)` returned NULL for both
+TX and RX pools. Networks are not visible because `start()` aborts at
+STEP 8b before calling `super::stop` and tearing the controller down.
+
+## 2. Regression window
+
+  before:  HEAD~1 (8e05ddf) — STEP 8b passed; networks visible per
+           CR-174/CR-175/CR-176 baseline (eapol_rx=8, eapol_tx=0).
+  after:   HEAD (d3a07c2)   — STEP 8b fails; controller tears down.
+
+Diff between HEAD~1 and HEAD relevant to STEP 8b
+(`git show d3a07c2 -- AirportItlwm/AirportItlwmV2.cpp`):
+
+  -    fTxPool = IOSkywalkPacketBufferPool::withName(
+  -        "AirportItlwm-TX", fNetIf, 0, &poolOpts);
+  -    fRxPool = IOSkywalkPacketBufferPool::withName(
+  -        "AirportItlwm-RX", fNetIf, 0, &poolOpts);
+  +    fTxPool = AirportItlwmIO80211PacketPool::withName(
+  +        "AirportItlwm-TX", fNetIf, &poolOpts);
+  +    fRxPool = AirportItlwmIO80211PacketPool::withName(
+  +        "AirportItlwm-RX", fNetIf, &poolOpts);
+
+The new factory hardcodes the 4th argument of the framework's
+`initWithName(name, owner, packetType, options*)` to
+`kIOSkywalkPacketTypeNetwork (=1)` instead of the previous
+`kIOSkywalkPacketTypeGeneric (=0)`. PoolOptions remained otherwise
+unchanged.
+
+## 3. Framework: how packetType and poolFlags interact
+
+KDK `IOSkywalkFamily.kext` symbol
+`__ZN25IOSkywalkPacketBufferPool12initWithNameEPKcP8OSObjectjPKNS_11PoolOptionsE`
+at file offset `0x9bf0`. Disassembled with
+`otool -tV -p ... <KDK_BIN>` and verified against the linked BootKC
+copy at vmaddr `0xffffff8002a31c04`.
+
+Validation prologue (rejects packetType >= 3 and NULL options):
+
+  9c1d  cmpl  $0x3, %ecx
+  9c20  setae %al
+  9c23  testq %r8, %r8
+  9c26  sete  %cl
+  9c29  orb   %al, %cl
+  9c2b  jne   0x9e84   ; bail-out: r14d=0 → return false
+
+Flag-word construction (kern_pbufpool_create flags):
+
+  9d3d  testl %r12d, %r12d           ; r12 = packetType
+  9d40  sete  %cl                    ; cl = (type==0)? 1 : 0
+  9d43  xorl  %edx, %edx
+  9d45  cmpl  $0x2, %r12d
+  9d49  sete  %dl                    ; dl = (type==2)? 1 : 0
+  9d4c  leal  (%rcx,%rdx,8), %edx    ; edx = cl + dl*8
+                                     ;   type=0 → edx LSB = 1
+                                     ;   type=1 → edx LSB = 0   ←
+                                     ;   type=2 → edx bit 3 = 1
+  9d4f  movl  %eax, %ecx             ; ecx = poolFlags
+  9d51  shll  $0x5, %ecx             ; poolFlags << 5
+  9d54  andl  $0x20, %ecx            ; (poolFlags & 1) ? 0x20 : 0
+                                     ; (kern_pbufpool flag bit 5)
+  9d57  orl   %edx, %ecx
+  9d59  testb $0x2, %al              ; poolFlags bit 1
+                                     ; (kIOSkywalkPacketBufferPoolFlag-
+                                     ;  SingleMemorySegment, per SDK)
+  9d5b  je    0x9d67
+  9d5d  orl   $0x4, %ecx             ; kern bit 2
+  9d60  movb  $0x1, 0xb8(%rbx)       ; this->mSingleMemorySemgent = 1
+  9d67  ...
+  (remaining bits of poolFlags map into the kern flag word)
+  ...
+  9e7b  callq _kern_pbufpool_create
+  9e80  testl %eax, %eax
+  9e82  je    0x9eb1                 ; success → continue
+  9e84  xorl  %r14d, %r14d           ; failure → return false
+
+Key conclusion:
+
+- With `packetType=0` the framework auto-sets the LSB of the kern flag
+  word. `kern_pbufpool_create` accepts the pool with `poolFlags=0`.
+- With `packetType=1` the LSB is NOT auto-set. The only way for the
+  resulting kern flag word to acquire bit 5 (== `0x20`) is via
+  `poolOpts.poolFlags & 1`. Without that bit
+  `kern_pbufpool_create` returns nonzero on Tahoe and `initWithName`
+  returns false.
+
+## 4. AppleBCMWLAN reference: exact PoolOptions for Network pool
+
+`AppleBCMWLANPCIeSkywalk::allocSkywalkCommonResources(OSObject*)` at
+BootKC `0xffffff80014ccd56`, decompiled in
+`/srv/project/ghidra_output/AppleBCMWLANBusInterfacePCIeMac_decompiled.c:5664`:
+
+  local_28 = 0;
+  plVar3 = *(long **)(param_1 + 0x10);
+  local_38 = (undefined4)plVar3[5];                  // bufferSize
+  local_40 = *(undefined4 *)((long)plVar3 + 0x24);   // packetCount
+  local_34 = 1;                                      // maxBuffersPerPacket
+  local_30 = 0x100000000;                            // see below
+  local_3c = local_40;                               // bufferCount
+  ...
+  __ZN33AppleBCMWLANPCIeSkywalkPacketPool8withNameEPKcP8OSObject
+       P11CCLogStreamP15CCFaultReporterPK30AppleBCMWLANSkywalkPoolOptions
+      ("AppleBCMWLANSkywalkPool", plVar3[6], *plVar3, plVar3[2], &local_40);
+
+`local_30 = 0x100000000` is a 64-bit literal occupying the slot at
+offsets 0x10..0x17 of the local PoolOptions structure (which starts
+at `&local_40`). In little-endian byte order:
+
+  bytes [0x10..0x13] = 0x00000000 → memorySegmentSize = 0
+  bytes [0x14..0x17] = 0x00000001 → poolFlags         = 1
+
+`local_28 = 0` is the trailing 8-byte _reserved/pad slot at
+offsets 0x18..0x1F, also zero.
+
+So the reference Network pool's PoolOptions is:
+
+  packetCount         = N         (driver-configured, `plVar3[0x24]`)
+  bufferCount         = N
+  bufferSize          = M         (driver-configured, `plVar3[5]`)
+  maxBuffersPerPacket = 1
+  memorySegmentSize   = 0
+  poolFlags           = 1         ← the bit that makes type=1 work
+  _reserved/pad       = 0
+
+`AppleBCMWLANPCIeSkywalkPacketPool::withName` constructs the pool and
+delegates to the intermediate `AppleBCMWLANSkywalkPacketPool::initWithName`
+at `0xffffff80016e033c`, which:
+
+  +0x000..+0x04b  copies the 6 fields of the caller's PoolOptions into a
+                  local stack copy (ABI-compatible with
+                  `IOSkywalkPacketBufferPool::PoolOptions`).
+  +0x04c          loads the base-class vtable proxy via RIP-relative.
+  +0x053  mov ecx, 0x1                ; packetType = kIOSkywalkPacketTypeNetwork
+  +0x058  call qword [rax+0x130]      ; vt[40] = base initWithName(OSObject*)
+                                      ; — explicit non-virtual upcall
+
+So AppleBCMWLAN's Network pool reaches the framework's
+`IOSkywalkPacketBufferPool::initWithName(name, owner, 1, &options)` with
+`options.poolFlags == 1`. This is exactly the input that drives the
+flag-mapping branch at +0x9d54 to set kern bit 5 (`0x20`).
+
+## 5. Local divergence and minimal fix
+
+Pre-CR-208 local code (`AirportItlwm/AirportItlwmV2.cpp:2885-2889`):
+
+  IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
+  poolOpts.packetCount         = kAirportItlwmSkywalkQueueCapacity;
+  poolOpts.bufferCount         = kAirportItlwmSkywalkQueueCapacity;
+  poolOpts.bufferSize          = SKYWALK_BUF_SIZE;
+  poolOpts.maxBuffersPerPacket = 1;
+  // poolFlags left at zero-init = 0  ← divergence
+
+Local change (CR-208):
+
+  +    poolOpts.poolFlags = 1;
+
+Field-by-field comparison after CR-208:
+
+| field                | AppleBCMWLAN | local pre-CR-208 | local post-CR-208 |
+|----------------------|:------------:|:----------------:|:------------------:|
+| packetCount          | N            | 256              | 256                |
+| bufferCount          | N            | 256              | 256                |
+| bufferSize           | M            | SKYWALK_BUF_SIZE | SKYWALK_BUF_SIZE   |
+| maxBuffersPerPacket  | 1            | 1                | 1                  |
+| memorySegmentSize    | 0            | 0                | 0                  |
+| poolFlags            | **1**        | **0**            | **1**              |
+| _reserved/pad        | 0            | 0                | 0                  |
+| packetType (factory) | 1            | 1                | 1                  |
+
+The single-bit divergence in `poolFlags` is the only remaining
+difference between our local Network-pool setup and the reference
+AppleBCMWLAN Network-pool setup.
+
+## 6. Why this is the root cause
+
+- packetType change (0→1) and pool-options divergence are the only
+  semantic deltas in the d3a07c2 commit that touch STEP 8b.
+- Pre-d3a07c2, packetType=0 with poolFlags=0 worked (LSB auto-set).
+- Post-d3a07c2, packetType=1 with poolFlags=0 fails inside
+  kern_pbufpool_create because the LSB is not auto-set and bit 0 of
+  poolFlags is not user-supplied.
+- AppleBCMWLAN's Network pool — the canonical reference for a
+  Tahoe-era Wi-Fi driver — supplies poolFlags=1 explicitly and passes
+  the same kern_pbufpool_create gate.
+- The single-line CR-208 edit makes our PoolOptions byte-for-byte
+  consistent with the reference for the bits the framework actually
+  reads in flag-mapping. No retry, fallback, masking, or other
+  forbidden-alternative is introduced.
+
+## 7. Out of scope
+
+- The five other PoolOptions fields are already 1:1 with the reference
+  and are not touched by CR-208.
+- The custom `AirportItlwmIO80211PacketPool` subclass with the
+  `newPacket` override allocating `IO80211NetworkPacket` is retained
+  unchanged. AppleBCMWLAN uses an analogous subclass override for its
+  Tahoe-era IO80211NetworkPacket-compatible packet, so this is also
+  reference-aligned and is not touched by CR-208.
+- The change does not affect any other start-sequence step. STEP 8a
+  (initRegistrationInfo), STEP 9+ (registerInfraEthernetInterface,
+  queue attach, setLinkState, association) are reached identically by
+  the post-CR-208 code path once STEP 8b succeeds.

@@ -1,0 +1,26 @@
+CR-220 build evidence — SYSTEM_CONTRACT_FIX with proven downstream packet-class touchpoint coverage
+date: 2026-04-29T12:20:05Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext sha256: 1118558849d2ee74587bfa25964a49615fa0cc78751af83fb1dea99760e3f9f7
+kext UUID:   A8DB6DFE-E186-329C-9C1C-4F4A1F970627
+kext size:   16294392
+
+BootKC undef-symbol verification: OK: all 884 undefined symbols resolve against BootKC
+
+Source-side delta vs CR-219:
+  AirportItlwm/AirportItlwmV2.cpp:
+    Replaced stale CR-219 comment block referencing
+    'AirportItlwmIO80211NetworkPacket' (a same-kext class that
+    cannot compile due to unresolved Tahoe-26.x IOSkywalkPacket
+    virtuals) with the actual SYSTEM_CONTRACT_FIX justification:
+    pre-d3a07c2 baseline used IOSkywalkPacket-typed packets
+    successfully (eapol_rx=8); CR-220 produces
+    IOSkywalkNetworkPacket-typed packets (a strict superset);
+    no local code invokes IO80211NetworkPacket-specific virtuals
+    on the packet.
+
+    No code semantic change vs CR-219; only comment correction
+    plus class re-classification from REFERENCE_ALIGNMENT_FIX
+    to SYSTEM_CONTRACT_FIX.

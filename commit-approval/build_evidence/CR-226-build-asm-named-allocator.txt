@@ -1,0 +1,79 @@
+CR-226 BUILD EVIDENCE — SYSTEM_CONTRACT_FIX (asm-named IO80211NetworkPacket operator new)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : d3a07c2abccac863e1909aa562051a6ee5687245
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : 6390fe6bfee478127e80bc0ad6002df2b9389af4f2a208a60d1ab0b6598cbacf
+Kext UUID     : 4DBE481A-E3EE-388B-8535-214A70BE3FA3
+Kext size     : 16294640 bytes
+
+BootKC undef  : 886 (delta +1 vs CR-225's 885; the new undef is the
+                IO80211NetworkPacket operator new symbol)
+Linker check  : OK: all 886 undefined symbols resolve against BootKC
+
+Key external symbol references (verified by `nm -u`):
+  __ZN20IO80211NetworkPacketnwEm                 (operator new, T global at BootKC 0x...0022c591c)
+  __ZN20IO80211NetworkPacketC1EPK11OSMetaClass   (C1 ctor,    T global at BootKC 0x...0022c5860)
+  __ZN20IO80211NetworkPacket9metaClassE          (metaClass,  S global at BootKC 0x...00023e2928)
+
+Local disassembly proof of actual call targets
+----------------------------------------------
+`otool -tV` on the reviewed binary at the
+`AirportItlwm_newIO80211NetworkPacket(...)` body (file offset 0x4f3a0):
+
+    0x4f3b3  movl  $0x78, %edi
+    0x4f3b8  callq __ZN20IO80211NetworkPacketnwEm    <-- IO80211NetworkPacket-specific
+    0x4f3bd  movq  %rax, -0x28(%rbp)                 ; mem
+    0x4f3c1  cmpq  $0x0, -0x28(%rbp)
+    ...
+    0x4f3d2  movq  -0x28(%rbp), %rdi
+    0x4f3d6  movq  0xeb2c6b(%rip), %rax              ; &IO80211NetworkPacket::metaClass
+    0x4f3dd  movq  (%rax), %rsi
+    0x4f3e0  callq __ZN20IO80211NetworkPacketC1EPK11OSMetaClass
+    ...
+    vt[35] init dispatch via [vptr+0x118]
+    vt[5]  failure-path dispatch via [vptr+0x28]
+
+This is the EXACT 1:1 mirror of `IOSkywalkNetworkPacket::withPool`
+(BootKC 0xffffff800297effa decomp), substituting only:
+  IOSkywalkNetworkPacket-specific kalloc_type_view + ctor
+    -> IO80211NetworkPacket-specific operator new + ctor
+
+Full disasm: `analysis/cr226_disasm_proof_2026_04_29.txt`.
+
+CR-225 vs CR-226 binary delta
+-----------------------------
+CR-225 disasm at the same source position called `__ZN8OSObjectnwEm`
+(generic OSObject zone), which the auditor flagged as a different
+allocation contract from the cited reference. CR-226 fixes this by
+adding an `extern "C" __asm("__ZN20IO80211NetworkPacketnwEm")`
+declaration mirroring the C1-ctor pattern; the C++ call now lowers
+to the correct IO80211NetworkPacket-specific symbol reference.
+
+Stale comments cleanup
+----------------------
+Per CR-225 reviewer's `source_comment_staleness: SUPPORTING_RISK`
+note, the historical CR-220 comment block in front of the `newPacket`
+override and the historical CR-224 comment block in front of
+`newPacketWithDescriptor` have been replaced with concise CR-226
+descriptions that match the actual reviewed code.
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: 6390fe6bfee478127e80bc0ad6002df2b9389af4f2a208a60d1ab0b6598cbacf
+Install UUID  : 4DBE481A-E3EE-388B-8535-214A70BE3FA3
+Install match : MATCH (sha+UUID)
+
+kmutil acceptance
+-----------------
+    $ sudo kmutil load -p /Library/Extensions/AirportItlwm.kext
+    Extension with identifiers com.zxystd.AirportItlwm not approved
+    to load. Please approve using System Settings.
+
+Same as CR-225: structurally accepted (no Malformed-vtable error);
+remaining message is the standard Tahoe re-approval flow triggered
+by the changed kext binary (different sha/UUID).
+
+git diff --cached --check : passes (verified post-stage)

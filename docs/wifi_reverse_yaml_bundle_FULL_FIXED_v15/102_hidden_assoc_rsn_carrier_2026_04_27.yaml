@@ -1,0 +1,74 @@
+schema_version: 1
+document_id: hidden_assoc_rsn_carrier_2026_04_27
+title: Tahoe hidden association and RSN carrier contracts
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoeAssociationContracts.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+  - local: "AirportItlwm/AirportSTAIOCTL.cpp"
+  - local: "docs/reference/AppleBCMWLAN_hidden_assoc_rsn_carrier_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+
+hidden_assoc_rsn_carrier:
+  selectors:
+    hidden_associate: "0x45"
+    hidden_associate_complete: "0x46"
+    assoc_candidates_payload_length: "0x3ad8"
+  apple_functions:
+    setWCL_ASSOCIATE:
+      symbol: "AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)"
+      address: "0xffffff80015fbacc"
+    performJoin:
+      symbol: "AppleBCMWLANJoinAdapter::performJoin(apple80211AssocCandidates*)"
+      address: "0xffffff8001576df8"
+    setAssocRSNIE:
+      symbol: "AppleBCMWLANJoinAdapter::setAssocRSNIE(unsigned char const*, unsigned long long)"
+      address: "0xffffff80015795b8"
+    setRSN_IE:
+      symbol: "AppleBCMWLANCore::setRSN_IE(apple80211_rsn_ie_data*)"
+      address: "0xffffff800160433e"
+      behavior: "return success immediately"
+  carrier_offsets:
+    unassoc_dwell: "0x04"
+    ap_mode: "0x0c"
+    auth_lower: "0x10"
+    auth_upper: "0x14"
+    auth_flags: "0x18"
+    ssid_length: "0x1c"
+    ssid: "0x20"
+    key: "0x40"
+    key_length: "0x48"
+    rsn_ie_length: "0xd4"
+    rsn_ie: "0xd6"
+    instant_hotspot_flags: "0x1e0"
+    instant_hotspot_companion: "0x1e1"
+    wsec_ext_flags: "0x1e8"
+    wsec_mode_flags: "0x1ec"
+    context_bssid: "0x1f4"
+    bss_info_flags: "0x214"
+    pmf_capability: "0x217"
+    candidate_count: "0x218"
+    first_candidate_bssid: "0x220"
+    first_candidate_paired_mac: "0x226"
+    first_candidate_channel: "0x22c"
+    candidate_stride: "0x12"
+  ioctl_selectors:
+    bss_type: "0x14"
+    auth_type: "0x16"
+    assoc: "0x1a"
+    set_assoc_wsec_info: "0x107"
+    final_assoc_wsec_info: "0x10c"
+  local_alignment:
+    - "add TahoeAssociationContracts constants and helper semantics"
+    - "add AssociationOwner witness fields to TahoeOwnerRegistry"
+    - "route only exact assoc-candidates payload length through hidden assoc bridge"
+    - "parse WCL carrier fields through recovered constants"
+    - "copy RSN IE override with bounded caller-provided length after zeroing previous override"
+  non_claims:
+    - "does not claim final RSN/EAPOL/key/DHCP/data success"
+    - "does not force EAPOL TX"
+    - "does not synthesize keys or RSN done"
+    - "does not rewrite AKM/auth bits"
+    - "does not add retry, poll, delay, replay, or synthetic callbacks"

@@ -1,0 +1,83 @@
+=== 0xffffff8002269c9e ===
+  function: IO80211ScanRequest::has6EChannel() @ ffffff8002269c9e, body=[[ffffff8002269c9e, ffffff8002269cd8]]
+  signature: undefined IO80211ScanRequest::has6EChannel()(void)
+  return type: undefined
+    ffffff8002269c9e: PUSH RBP
+    ffffff8002269c9f: MOV RBP,RSP
+    ffffff8002269ca2: MOV RCX,qword ptr [RDI + 0x10]
+    ffffff8002269ca6: MOV EAX,dword ptr [RCX + 0x4c]
+    ffffff8002269ca9: TEST RAX,RAX
+    ffffff8002269cac: JZ 0xffffff8002269cd5
+    ffffff8002269cae: LEA RAX,[RAX + RAX*0x2]
+    ffffff8002269cb2: LEA RDX,[-0xc + RAX*0x4]
+    ffffff8002269cba: XOR ESI,ESI
+    ffffff8002269cbc: MOV AL,byte ptr [RCX + RSI*0x1 + 0x59]
+    ffffff8002269cc0: AND AL,0x20
+    ffffff8002269cc2: SHR AL,0x5
+    ffffff8002269cc5: JNZ 0xffffff8002269cd7
+    ffffff8002269cc7: LEA RDI,[RSI + 0xc]
+    ffffff8002269ccb: CMP RDX,RSI
+    ffffff8002269cce: MOV RSI,RDI
+    ffffff8002269cd1: JNZ 0xffffff8002269cbc
+    ffffff8002269cd3: JMP 0xffffff8002269cd7
+    ffffff8002269cd5: XOR EAX,EAX
+    ffffff8002269cd7: POP RBP
+    ffffff8002269cd8: RET
+
+=== 0xffffff8002269cda ===
+  function: IO80211ScanRequest::is2GScanRequest() @ ffffff8002269cda, body=[[ffffff8002269cda, ffffff8002269d13]]
+  signature: undefined IO80211ScanRequest::is2GScanRequest()(void)
+  return type: undefined
+    ffffff8002269cda: PUSH RBP
+    ffffff8002269cdb: MOV RBP,RSP
+    ffffff8002269cde: MOV RCX,qword ptr [RDI + 0x10]
+    ffffff8002269ce2: MOV EAX,dword ptr [RCX + 0x4c]
+    ffffff8002269ce5: TEST RAX,RAX
+    ffffff8002269ce8: JZ 0xffffff8002269d10
+    ffffff8002269cea: LEA RAX,[RAX + RAX*0x2]
+    ffffff8002269cee: LEA RDX,[-0xc + RAX*0x4]
+    ffffff8002269cf6: XOR ESI,ESI
+    ffffff8002269cf8: CMP dword ptr [RCX + RSI*0x1 + 0x54],0xe
+    ffffff8002269cfd: SETC AL
+    ffffff8002269d00: JC 0xffffff8002269d12
+    ffffff8002269d02: LEA RDI,[RSI + 0xc]
+    ffffff8002269d06: CMP RDX,RSI
+    ffffff8002269d09: MOV RSI,RDI
+    ffffff8002269d0c: JNZ 0xffffff8002269cf8
+    ffffff8002269d0e: JMP 0xffffff8002269d12
+    ffffff8002269d10: XOR EAX,EAX
+    ffffff8002269d12: POP RBP
+    ffffff8002269d13: RET
+
+=== 0xffffff800226a532 ===
+  function: IO80211ScanRequest::getChannels() @ ffffff800226a532, body=[[ffffff800226a532, ffffff800226a53f]]
+  signature: undefined IO80211ScanRequest::getChannels()(void)
+  return type: undefined
+    ffffff800226a532: PUSH RBP
+    ffffff800226a533: MOV RBP,RSP
+    ffffff800226a536: MOV RAX,qword ptr [RDI + 0x10]
+    ffffff800226a53a: ADD RAX,0x50
+    ffffff800226a53e: POP RBP
+    ffffff800226a53f: RET
+
+=== 0xffffff800226a4fa ===
+  function: IO80211ScanRequest::getSSID() @ ffffff800226a4fa, body=[[ffffff800226a4fa, ffffff800226a507]]
+  signature: undefined IO80211ScanRequest::getSSID()(void)
+  return type: undefined
+    ffffff800226a4fa: PUSH RBP
+    ffffff800226a4fb: MOV RBP,RSP
+    ffffff800226a4fe: MOV RAX,qword ptr [RDI + 0x10]
+    ffffff800226a502: ADD RAX,0x1c
+    ffffff800226a506: POP RBP
+    ffffff800226a507: RET
+
+=== 0xffffff800226a540 ===
+  function: IO80211ScanRequest::getScanID() @ ffffff800226a540, body=[[ffffff800226a540, ffffff800226a54e]]
+  signature: undefined IO80211ScanRequest::getScanID()(void)
+  return type: undefined
+    ffffff800226a540: PUSH RBP
+    ffffff800226a541: MOV RBP,RSP
+    ffffff800226a544: MOV EAX,0x1554
+    ffffff800226a549: ADD RAX,qword ptr [RDI + 0x10]
+    ffffff800226a54d: POP RBP
+    ffffff800226a54e: RET

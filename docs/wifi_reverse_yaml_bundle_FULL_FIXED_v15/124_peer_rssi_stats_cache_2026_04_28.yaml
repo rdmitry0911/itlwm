@@ -1,0 +1,127 @@
+version: 1
+topic: Tahoe IO80211Peer RSSI / packet-stats / cache / queue helpers
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_peer_rssi_stats_cache_queue_surface
+  follows:
+    - "117_peer_public_api_2026_04_28.yaml"
+    - "123_peer_cap_credit_counter_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - peer_rssi_stats_cache_queue_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..183)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "Per-Peer RSSI / packet-stats / cache state is opaque to the local kext"
+  use_in_this_batch: "no runtime change yet — CR-184 only widens the locally declared API surface so future caller wiring can drive Peer per-band RSSI accounting, real-time/cumulative packet-stats queries, cache state, and queue/lifetime helpers"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211Peer::getStatsID()", addr: "ffffff80021bfcb8" }
+      - { sym: "IO80211Peer::getStatsIDValid()", addr: "ffffff80021bfca6" }
+      - { sym: "IO80211Peer::reportRssi(int, apple80211_channel)", addr: "ffffff80021c2fb0" }
+      - { sym: "IO80211Peer::reportChainRssi(signed char const*, int)", addr: "ffffff80021c30b6" }
+      - { sym: "IO80211Peer::getAvgRssi24G()", addr: "ffffff80021c5e2a" }
+      - { sym: "IO80211Peer::getAvgRssi5G()", addr: "ffffff80021c5e3a" }
+      - { sym: "IO80211Peer::getAvgRssiAcrossBands()", addr: "ffffff80021c323e" }
+      - { sym: "IO80211Peer::getAvgChainRssi5G()", addr: "ffffff80021c36d6" }
+      - { sym: "IO80211Peer::setPeerAvgRssi24G(signed char)", addr: "ffffff80021c5e6e" }
+      - { sym: "IO80211Peer::setPeerAvgRssi5G(signed char)", addr: "ffffff80021c5e7e" }
+      - { sym: "IO80211Peer::simulateDPS()", addr: "ffffff80021c2f94" }
+      - { sym: "IO80211Peer::freeResources()", addr: "ffffff80021bfbb2" }
+      - { sym: "IO80211Peer::unpauseQueues()", addr: "ffffff80021c2ce8" }
+      - { sym: "IO80211Peer::reclaimPackets()", addr: "ffffff80021bfa80" }
+      - { sym: "IO80211Peer::clearCacheState()", addr: "ffffff80021c29e6" }
+      - { sym: "IO80211Peer::getRxBitField(unsigned int)", addr: "ffffff80021c3432" }
+      - { sym: "IO80211Peer::getRxBitFieldMulticast(unsigned int)", addr: "ffffff80021c344c" }
+      - { sym: "IO80211Peer::incrementRxCount(unsigned int)", addr: "ffffff80021c511e" }
+      - { sym: "IO80211Peer::getPacketStats()", addr: "ffffff80021c32e0" }
+      - { sym: "IO80211Peer::getPacketStatsRealTimeRx()", addr: "ffffff80021c3348" }
+      - { sym: "IO80211Peer::getPacketStatsRealTimeTx()", addr: "ffffff80021c331a" }
+      - { sym: "IO80211Peer::getCumDataStats()", addr: "ffffff80021c348a" }
+      - { sym: "IO80211Peer::hasRealTimeData()", addr: "ffffff80021c60ae" }
+      - { sym: "IO80211Peer::hasLowLatencyData()", addr: "ffffff80021c609c" }
+      - { sym: "IO80211Peer::hasQueuedPackets()", addr: "ffffff80021bfdcc" }
+      - { sym: "IO80211Peer::getDataLinkCount()", addr: "ffffff80021c57e4" }
+      - { sym: "IO80211Peer::logPeerTxLatency(unsigned long long)", addr: "ffffff80021c5bbc" }
+      - { sym: "IO80211Peer::updateQueueState(int)", addr: "ffffff80021c3266" }
+      - { sym: "IO80211Peer::getCacheTimeStamp()", addr: "ffffff80021c37b0" }
+      - { sym: "IO80211Peer::setCacheTimeStamp(unsigned long long)", addr: "ffffff80021c37be" }
+      - { sym: "IO80211Peer::setPacketLifetime(unsigned int)", addr: "ffffff80021c373c" }
+      - { sym: "IO80211Peer::isBssSteeringPeer()", addr: "ffffff80021c5e8e" }
+      - { sym: "IO80211Peer::isBssSteeringPeerSyncState()", addr: "ffffff80021c5eaa" }
+
+local_before_cr_184:
+  files:
+    - "include/Airport/IO80211Peer.h"
+  mismatch: "CR-177/CR-183 declared 31 Peer helpers covering identity, capability, credit, and counter accessors. Per-band RSSI accounting, real-time packet-stats queries, cache-state helpers, and queue/lifetime helpers were missing"
+  consequence: "any future caller wanting to push per-band RSSI, query real-time/cumulative packet stats, manage Peer cache state, or drive queue/lifetime helpers would need per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_184:
+  supersedes: "CR-183"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211Peer.h"
+  changes:
+    - "extend `class IO80211Peer` with thirty-three non-virtual public method declarations"
+    - "declare two stats-id helpers (`getStatsID`, `getStatsIDValid`)"
+    - "declare two RSSI reporters (`reportRssi`, `reportChainRssi`)"
+    - "declare six per-band RSSI getters/setters (24G/5G/AcrossBands/ChainRssi5G plus two setters)"
+    - "declare five resource/queue helpers (`simulateDPS`, `freeResources`, `unpauseQueues`, `reclaimPackets`, `clearCacheState`)"
+    - "declare three RX bit-field/count helpers (`getRxBitField`, `getRxBitFieldMulticast`, `incrementRxCount`)"
+    - "declare four packet-stats accessors (`getPacketStats`, `getPacketStatsRealTimeRx`, `getPacketStatsRealTimeTx`, `getCumDataStats`)"
+    - "declare three predicate helpers (`hasRealTimeData`, `hasLowLatencyData`, `hasQueuedPackets`)"
+    - "declare four queue-state/lifetime helpers (`getDataLinkCount`, `logPeerTxLatency`, `updateQueueState`, `setPacketLifetime`)"
+    - "declare two cache-timestamp helpers (`getCacheTimeStamp`, `setCacheTimeStamp`)"
+    - "declare two BSS-steering predicates (`isBssSteeringPeer`, `isBssSteeringPeerSyncState`)"
+    - "add forward declaration for `apple80211_channel`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-183"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the thirty-three new Peer methods from any local code path"
+    - "does not declare IO80211Peer with any base class or data layout beyond what was already in the local header"
+    - "does not include kernel-internal types whose definitions are not yet recovered"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "Peer constructor / init body recovery (which fields the rssi/stats accessors back onto)"
+      - "thread/gate context for per-band RSSI setters"
+      - "ordering of reportRssi / reportChainRssi vs the RX path that reads them"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition (carry-over)"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c (carry-over)"
+    note: "wired CR will be CR-185+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-184 has no caller wiring, so kext is bit-identical to CR-183"

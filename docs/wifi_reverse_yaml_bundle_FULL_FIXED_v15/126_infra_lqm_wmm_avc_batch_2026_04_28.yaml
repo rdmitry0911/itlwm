@@ -1,0 +1,76 @@
+---
+# 126_infra_lqm_wmm_avc_batch_2026_04_28.yaml
+# Recovered IO80211InfraInterface non-virtual helper surface (CR-186).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-186
+date: 2026-04-28
+class: IO80211InfraInterface
+header: include/Airport/IO80211InfraInterface.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-185
+batch_size: 21
+notes: |
+  All twenty-one exports are direct-call (non-vtable) methods of
+  IO80211InfraInterface and use only already-known primitive types
+  (`bool`, `unsigned int`, `unsigned long`, `unsigned long long`,
+  `void *`). No kernel-internal struct or enum types are referenced.
+  The kext does not call any of these helpers; declarations are
+  added solely so future caller-wiring CRs can reference the BootKC
+  symbols without per-caller extern shims.
+
+symbols:
+  - addr: '0xffffff80022e4446'
+    signature: 'void *IO80211InfraInterface::getLQMData()'
+  - addr: '0xffffff80022e451c'
+    signature: 'void IO80211InfraInterface::setLQMGated(unsigned long long)'
+  - addr: '0xffffff80022e44c4'
+    signature: 'void IO80211InfraInterface::setLQMStatic(void*, void*)'
+  - addr: '0xffffff80022e5d1e'
+    signature: 'unsigned int IO80211InfraInterface::getMonitorMode()'
+  - addr: '0xffffff80022e5ca2'
+    signature: 'bool IO80211InfraInterface::getWMMBWReset()'
+  - addr: '0xffffff80022e5cb8'
+    signature: 'void IO80211InfraInterface::setWMMBWReset(bool)'
+  - addr: '0xffffff80022e14cc'
+    signature: 'void *IO80211InfraInterface::getAVCAdvisory()'
+  - addr: '0xffffff80022e66e0'
+    signature: 'unsigned int IO80211InfraInterface::getBtCoexState()'
+  - addr: '0xffffff80022e190e'
+    signature: 'void IO80211InfraInterface::resetInterface(void*, unsigned long)'
+  - addr: '0xffffff80022e5dce'
+    signature: 'void *IO80211InfraInterface::getTrafficMonitor()'
+  - addr: '0xffffff80022e1386'
+    signature: 'void IO80211InfraInterface::finishSIBCoexTimer()'
+  - addr: '0xffffff80022e3aca'
+    signature: 'void IO80211InfraInterface::resetSIBTurnOnMetrics()'
+  - addr: '0xffffff80022e3a8a'
+    signature: 'unsigned long long IO80211InfraInterface::getCoPTxRTSFailCount()'
+  - addr: '0xffffff80022e3a9e'
+    signature: 'unsigned long long IO80211InfraInterface::getULLALiteDuration()'
+  - addr: '0xffffff80022e39e6'
+    signature: 'unsigned int IO80211InfraInterface::getAwdlMaxBandWidth()'
+  - addr: '0xffffff80022e57fe'
+    signature: 'void IO80211InfraInterface::notifyAWDLStateChange(bool)'
+  - addr: '0xffffff80022e58d6'
+    signature: 'bool IO80211InfraInterface::bpfTapInternal(unsigned int, unsigned int)'
+  - addr: '0xffffff80022e3784'
+    signature: 'void IO80211InfraInterface::setLeakyAPStatsMode(unsigned int)'
+  - addr: '0xffffff80022e12f2'
+    signature: 'void IO80211InfraInterface::UpdateULLADuration(unsigned long long *)'
+  - addr: '0xffffff80022e1e0c'
+    signature: 'void IO80211InfraInterface::handleSupplicantEvent(void*, unsigned long)'
+  - addr: '0xffffff80022e1e3a'
+    signature: 'void IO80211InfraInterface::routeToP2PInterface(unsigned int, void*, unsigned long)'
+
+local_change:
+  files:
+    - include/Airport/IO80211InfraInterface.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

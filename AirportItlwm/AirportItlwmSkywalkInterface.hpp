@@ -10,6 +10,8 @@
 #define AirportItlwmSkywalkInterface_hpp
 
 #include <Airport/Apple80211.h>
+#include "AirportItlwmAPSTAInterface.hpp"
+#include "TahoePayloadBuilders.hpp"
 
 struct if_link_status;
 
@@ -39,6 +41,21 @@ public:
     virtual void updateLinkStatusGated(void) override;
     virtual void reportDetailedLinkStatus(if_link_status const *) override;
     virtual IOReturn reportDataPathEvents(UInt, void *, unsigned long, bool) override;
+    virtual IOReturn inputPacket(IO80211NetworkPacket *, packet_info_tag *,
+                                 ether_header *, bool *, bool) override;
+    virtual SInt64 pendingPackets(unsigned char) override;
+    virtual SInt64 packetSpace(unsigned char) override;
+    virtual UInt64 getTxQueueDepth(void) override;
+    virtual UInt64 getRxQueueCapacity(void) override;
+    virtual void *getMultiCastQueue(void) override;
+    virtual void *getRxCompQueue(void) override;
+    virtual void *getTxCompQueue(void) override;
+    virtual void *getTxSubQueue(apple80211_wme_ac) override;
+    virtual void *getTxPacketPool(void) override;
+    virtual void *getRxPacketPool(void) override;
+    virtual void enableDatapath(void) override;
+    virtual void disableDatapath(void) override;
+    virtual int getNumTxQueues(void) override;
     virtual IOReturn setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
@@ -477,10 +494,8 @@ public:
     // [590] — AppleBCMWLAN: validates param, snapshots reassoc parameters,
     // and delegates into NetAdapter reassoc send path.
     virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override;
-    // [591] — No AppleBCMWLAN / IO80211Family producer was found for this slot
-    // in the current Tahoe decompile corpus. Returning success here would
-    // advertise a non-existent producer path; keep it explicitly unsupported
-    // until a real Apple implementation is recovered.
+    // [591] — WCLRoamManager sends selector 0x1ac with a one-byte roam-off
+    // payload; AppleBCMWLANCore forwards data[0] to RoamAdapter::setRoamLock.
     virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override;
     // [592] — AppleBCMWLAN: delegates to RoamAdapter legacy profile path.
     virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
@@ -711,7 +726,6 @@ private:
     uint32_t cachedPowerProfile;
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;
-    uint32_t cachedCurrentMcs;
     uint16_t cachedIbssMode;
     uint16_t cachedIbssAuthLower;
     uint16_t cachedIbssAuthUpper;
@@ -745,6 +759,8 @@ private:
     bool cachedInfraEnumerated;
     uint8_t cachedUserRoamCache[0x7c];
     bool hasCachedUserRoamCache;
+    bool cachedWclRoamLocked;
+    bool hasCachedWclRoamLock;
     uint32_t cachedPmMode;
     apple80211_lqm_config_t cachedLqmConfig;
     bool hasCachedLqmConfig;
@@ -779,7 +795,6 @@ private:
     uint32_t cachedUsbHostNotificationSeq;
     uint32_t cachedUsbHostNotificationChange;
     uint32_t cachedUsbHostNotificationPresent;
-    uint32_t cachedApMode;
     uint8_t cachedAssocIe[2048];
     uint32_t cachedAssocIeLen;
     bool hasCachedAssocIe;
@@ -791,7 +806,7 @@ private:
     uint16_t cachedBtcoexProfileValidMask;
     uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
-    uint8_t cachedLastActionFrame[0x200];
+    uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];
     uint16_t cachedLastActionFrameLen;
     uint32_t cachedLastActionFrameChannel;
     uint8_t cachedLastActionFrameCategory;

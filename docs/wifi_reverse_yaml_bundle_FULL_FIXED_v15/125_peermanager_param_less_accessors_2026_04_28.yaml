@@ -1,0 +1,130 @@
+---
+# 125_peermanager_param_less_accessors_2026_04_28.yaml
+# Recovered IO80211PeerManager parameterless accessor surface (CR-185).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-185
+date: 2026-04-28
+class: IO80211PeerManager
+header: include/Airport/IO80211PeerManager.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-184
+batch_size: 33
+notes: |
+  All thirty-three exports are direct-call (non-vtable) methods of
+  IO80211PeerManager and take no arguments (or a single primitive).
+  The kext does not subclass, allocate, or take sizeof
+  IO80211PeerManager; only forward-declared pointers are held.
+
+symbols:
+  - addr: '0xffffff80021c90aa'
+    mangled: '_ZN18IO80211PeerManager10getBSDNameEv'
+    signature: 'char const *IO80211PeerManager::getBSDName()'
+  - addr: '0xffffff80021df576'
+    mangled: '_ZN18IO80211PeerManager11GetProviderEv'
+    signature: 'void *IO80211PeerManager::GetProvider()'
+  - addr: '0xffffff80021c6bd2'
+    mangled: '_ZN18IO80211PeerManager13getControllerEv'
+    signature: 'void *IO80211PeerManager::getController()'
+  - addr: '0xffffff80021c8648'
+    mangled: '_ZN18IO80211PeerManager15getInterfaceIdEv'
+    signature: 'unsigned int IO80211PeerManager::getInterfaceId()'
+  - addr: '0xffffff80021df390'
+    mangled: '_ZN18IO80211PeerManager14getCommandGateEv'
+    signature: 'void *IO80211PeerManager::getCommandGate()'
+  - addr: '0xffffff80021cea00'
+    mangled: '_ZN18IO80211PeerManager16interfaceMonitorEv'
+    signature: 'void *IO80211PeerManager::interfaceMonitor()'
+  - addr: '0xffffff80021df8bc'
+    mangled: '_ZN18IO80211PeerManager14getCountryCodeEv'
+    signature: 'unsigned int IO80211PeerManager::getCountryCode()'
+  - addr: '0xffffff80021df5ee'
+    mangled: '_ZN18IO80211PeerManager13getDTIMPeriodEv'
+    signature: 'unsigned int IO80211PeerManager::getDTIMPeriod()'
+  - addr: '0xffffff80021df5de'
+    mangled: '_ZN18IO80211PeerManager15getBeaconPeriodEv'
+    signature: 'unsigned int IO80211PeerManager::getBeaconPeriod()'
+  - addr: '0xffffff80021ccbba'
+    mangled: '_ZN18IO80211PeerManager11getEnablingEv'
+    signature: 'bool IO80211PeerManager::getEnabling()'
+  - addr: '0xffffff80021c9d2c'
+    mangled: '_ZN18IO80211PeerManager12failToEnableEv'
+    signature: 'bool IO80211PeerManager::failToEnable()'
+  - addr: '0xffffff80021df650'
+    mangled: '_ZN18IO80211PeerManager12getHeCapableEv'
+    signature: 'bool IO80211PeerManager::getHeCapable()'
+  - addr: '0xffffff80021df63e'
+    mangled: '_ZN18IO80211PeerManager13getVhtCapableEv'
+    signature: 'bool IO80211PeerManager::getVhtCapable()'
+  - addr: '0xffffff80021df89c'
+    mangled: '_ZN18IO80211PeerManager10getMyHeCapEv'
+    signature: 'unsigned int IO80211PeerManager::getMyHeCap()'
+  - addr: '0xffffff80021df88c'
+    mangled: '_ZN18IO80211PeerManager11getMyVhtCapEv'
+    signature: 'unsigned int IO80211PeerManager::getMyVhtCap()'
+  - addr: '0xffffff80021df8ac'
+    mangled: '_ZN18IO80211PeerManager10getRsdbCapEv'
+    signature: 'unsigned int IO80211PeerManager::getRsdbCap()'
+  - addr: '0xffffff80021df87c'
+    mangled: '_ZN18IO80211PeerManager16getHtCapabilitiesEv'
+    signature: 'unsigned int IO80211PeerManager::getHtCapabilities()'
+  - addr: '0xffffff80021df0ee'
+    mangled: '_ZN18IO80211PeerManager15isRsdbSupportedEv'
+    signature: 'bool IO80211PeerManager::isRsdbSupported()'
+  - addr: '0xffffff80021dfb38'
+    mangled: '_ZN18IO80211PeerManager15onDispatchQueueEv'
+    signature: 'bool IO80211PeerManager::onDispatchQueue()'
+  - addr: '0xffffff80021d4c0c'
+    mangled: '_ZN18IO80211PeerManager15isPeerCacheFullEv'
+    signature: 'bool IO80211PeerManager::isPeerCacheFull()'
+  - addr: '0xffffff80021d4f0c'
+    mangled: '_ZN18IO80211PeerManager14printHashTableEv'
+    signature: 'void IO80211PeerManager::printHashTable()'
+  - addr: '0xffffff80021d46a0'
+    mangled: '_ZN18IO80211PeerManager14removeAllPeersEv'
+    signature: 'void IO80211PeerManager::removeAllPeers()'
+  - addr: '0xffffff80021c93a4'
+    mangled: '_ZN18IO80211PeerManager13freeResourcesEv'
+    signature: 'void IO80211PeerManager::freeResources()'
+  - addr: '0xffffff80021ccf5c'
+    mangled: '_ZN18IO80211PeerManager13awdlChipResetEv'
+    signature: 'void IO80211PeerManager::awdlChipReset()'
+  - addr: '0xffffff80021cc734'
+    mangled: '_ZN18IO80211PeerManager14flushFreeMbufsEv'
+    signature: 'void IO80211PeerManager::flushFreeMbufs()'
+  - addr: '0xffffff80021dba82'
+    mangled: '_ZN18IO80211PeerManager11enablemDNSTxEv'
+    signature: 'void IO80211PeerManager::enablemDNSTx()'
+  - addr: '0xffffff80021c9a56'
+    mangled: '_ZN18IO80211PeerManager16destroyReportersEv'
+    signature: 'void IO80211PeerManager::destroyReporters()'
+  - addr: '0xffffff80021d9338'
+    mangled: '_ZN18IO80211PeerManager16updateAllReportsEv'
+    signature: 'void IO80211PeerManager::updateAllReports()'
+  - addr: '0xffffff80021df8cc'
+    mangled: '_ZN18IO80211PeerManager15getScanningStateEv'
+    signature: 'unsigned int IO80211PeerManager::getScanningState()'
+  - addr: '0xffffff80021dfc24'
+    mangled: '_ZN18IO80211PeerManager15getOutputBEBytesEv'
+    signature: 'unsigned long long IO80211PeerManager::getOutputBEBytes()'
+  - addr: '0xffffff80021dfc36'
+    mangled: '_ZN18IO80211PeerManager15getOutputBKBytesEv'
+    signature: 'unsigned long long IO80211PeerManager::getOutputBKBytes()'
+  - addr: '0xffffff80021dfc48'
+    mangled: '_ZN18IO80211PeerManager15getOutputVIBytesEv'
+    signature: 'unsigned long long IO80211PeerManager::getOutputVIBytes()'
+  - addr: '0xffffff80021dfc5a'
+    mangled: '_ZN18IO80211PeerManager15getOutputVOBytesEv'
+    signature: 'unsigned long long IO80211PeerManager::getOutputVOBytes()'
+
+local_change:
+  files:
+    - include/Airport/IO80211PeerManager.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

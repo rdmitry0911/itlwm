@@ -1,0 +1,21 @@
+CR-210 build evidence — differential diagnostic Generic vs Network
+date: 2026-04-28T21:26:56Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: bead053c4cc9ad67fb81be2bb14824200ad9bd63c3a17922d5b19f9ad9b21523
+kext UUID:   299D2140-4EE2-32DE-88C7-971AD9E78EC0
+kext size:   16285216
+
+BootKC undef-symbol verification: "OK: all 884 undefined symbols resolve against BootKC"
+
+Source-side delta vs CR-209:
+  AirportItlwm/AirportItlwmV2.cpp:
+    - AirportItlwmIO80211PacketPool::withName(): packetType passed to
+      pool->initWithName() switched from kIOSkywalkPacketTypeNetwork (=1)
+      to kIOSkywalkPacketTypeGeneric (=0). Diagnostic log line
+      'initWithName=' now appends '(DIFFERENTIAL type=0)' for clarity.
+      The packetType printed in the 'new=' line is also rebound to
+      the same Generic constant so the runtime evidence is internally
+      consistent.

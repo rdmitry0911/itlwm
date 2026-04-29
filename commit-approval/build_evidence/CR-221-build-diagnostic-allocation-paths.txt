@@ -1,0 +1,24 @@
+CR-221 BUILD EVIDENCE — DIAGNOSTIC_INSTRUMENTATION (allocation paths)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : d3a07c2abccac863e1909aa562051a6ee5687245
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : e8fee6a09431174e8200d003ecf8521b03399d47f9db645935ac5da1119ab31c
+Kext UUID     : 3D13F5CA-1CE8-39DA-BF4D-DA4AE3BA0208
+Kext size     : 16298920 bytes
+
+BootKC undef  : 887 (delta +3 vs CR-220's 884; expected from new
+                refs to OSMetaClass::getMetaClassWithName(OSSymbol*),
+                OSSymbol::withCStringNoCopy(char const*),
+                OSMetaClass virtual alloc())
+Linker check  : OK: all 887 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: e8fee6a09431174e8200d003ecf8521b03399d47f9db645935ac5da1119ab31c
+Install UUID  : 3D13F5CA-1CE8-39DA-BF4D-DA4AE3BA0208
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)

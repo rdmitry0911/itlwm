@@ -36,7 +36,11 @@ class IO80211Peer;
 class CCPipe;
 class IO80211APIUserClient;
 class IO80211PeerManager;
-struct apple80211_wme_ac;
+struct apple80211_wme_ac {
+    UInt32 value;
+};
+static_assert(sizeof(apple80211_wme_ac) == sizeof(UInt32),
+              "apple80211_wme_ac must match Tahoe's 32-bit AC carrier");
 struct apple80211_interface_availability;
 struct apple80211_cca_report;
 struct apple80211_stat_report;
@@ -122,6 +126,7 @@ public:
     virtual IOReturn inputPacket(IO80211NetworkPacket *,packet_info_tag *,ether_header *,bool *,bool); // [364] extra bool
     virtual IOReturn forwardInfraRelayPackets(IO80211NetworkPacket*, ether_header*);  // [365]
     virtual void logSkywalkTxReqPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,unsigned char *,apple80211_wme_ac,bool); // [366]
+    void recordInputPacket(int, int);
     virtual SInt64 pendingPackets(unsigned char);                                     // [367]
     virtual SInt64 packetSpace(unsigned char);                                        // [368]
     virtual bool isChipInterfaceReady(void);                                          // [369]
@@ -236,6 +241,7 @@ public:
     virtual IOReturn inputPacket(IO80211NetworkPacket *,packet_info_tag *,ether_header *,bool *);
     virtual IOReturn forwardInfraRelayPackets(IO80211NetworkPacket*, ether_header*);
     virtual void logSkywalkTxReqPacket(IO80211NetworkPacket *,PacketSkywalkScratch *,unsigned char *,apple80211_wme_ac,bool);
+    void recordInputPacket(int, int);
     virtual SInt64 pendingPackets(unsigned char);
     virtual SInt64 packetSpace(unsigned char);
     virtual bool isChipInterfaceReady(void);
@@ -327,6 +333,98 @@ public:
     OSString *setInterfaceRole(UInt role);
     void *setInterfaceId(UInt id);
     int getInterfaceRole();
+
+    // CR-187 additions: non-virtual identity / pid-lock / work-queue /
+    // peer-manager / peer-monitor / hardware-address / parent-interface /
+    // postMessage / ioctl-route / device-type / medium-type / power-state /
+    // property-table / command-allowed / errno helpers. Recovered from
+    // IO80211Family BootKernelExtensions.kc on 2026-04-28:
+    //   ffffff800227849c IO80211SkywalkInterface::pidLockPid()
+    //   ffffff80022772e6 IO80211SkywalkInterface::setPidLock(bool)
+    //   ffffff8002276fcc IO80211SkywalkInterface::getWorkQueue()
+    //   ffffff8002274c8e IO80211SkywalkInterface::getInterfaceId()
+    //   ffffff8002274c7c IO80211SkywalkInterface::getPeerManager()
+    //   ffffff8002276fde IO80211SkywalkInterface::getPeerMonitor(IO80211Peer*)
+    //   ffffff80022770fa IO80211SkywalkInterface::setInitMacAddress(ether_addr&)
+    //   ffffff8002278916 IO80211SkywalkInterface::getMacAddressAgent()
+    //   ffffff8002278466 IO80211SkywalkInterface::getParentInterface()
+    //   ffffff8002277cb4 IO80211SkywalkInterface::getInterfaceMonitor()
+    //   ffffff8002274bbc IO80211SkywalkInterface::getInterfaceRoleStr()
+    //   ffffff800227848a IO80211SkywalkInterface::isLowLatencyEnabled()
+    //   ffffff80022772b2 IO80211SkywalkInterface::postMessageInternal(
+    //                        unsigned int, void*, unsigned long, bool)
+    //   ffffff800227776e IO80211SkywalkInterface::postMessageSync(
+    //                        unsigned int, void*, unsigned long)
+    //   ffffff80022788a4 IO80211SkywalkInterface::routeIoctlToWcl(
+    //                        unsigned int, unsigned int, void*, unsigned long)
+    //   ffffff8002278414 IO80211SkywalkInterface::getDeviceType()
+    //   ffffff8002278428 IO80211SkywalkInterface::setDeviceType(unsigned int)
+    //   ffffff80022771f0 IO80211SkywalkInterface::getMediumType()
+    //   ffffff80022774f2 IO80211SkywalkInterface::getPowerState()
+    //   ffffff80022783cc IO80211SkywalkInterface::getPropertyTable()
+    //   ffffff8002276868 IO80211SkywalkInterface::isCommandAllowed()
+    //
+    // NOTE: IO80211SkywalkInterface::getBSDName() (0xffffff8002274c9e),
+    // stringFromReturn(int) (0xffffff8002276f86), and errnoFromReturn(int)
+    // (0xffffff800227862e) are virtual overrides of parent-class virtuals
+    // (IOSkywalkNetworkInterface::getBSDName, IOService::stringFromReturn,
+    // IOService::errnoFromReturn). Declaring them here would introduce
+    // new vtable references and break bit-identity. They are already
+    // linked through the inherited vtable slots. Deferred to a future CR
+    // that explicitly approves vtable references.
+    int pidLockPid(void);
+    void setPidLock(bool);
+    void *getWorkQueue(void);
+    unsigned int getInterfaceId(void);
+    IO80211PeerManager *getPeerManager(void);
+    void *getPeerMonitor(IO80211Peer *);
+    void setInitMacAddress(ether_addr &);
+    // NOTE: IO80211SkywalkInterface::getHardwareAddress(ether_addr*) and
+    // setHardwareAddress(ether_addr*) are virtual overrides of the parent
+    // IOSkywalkEthernetInterface virtuals; declaring them here would
+    // introduce two new vtable references and break bit-identity. Their
+    // BootKC addresses (0xffffff8002277082, 0xffffff800227711a) are
+    // already linked through the inherited vtable slot. Deferred to a
+    // future CR that explicitly approves vtable references.
+    void *getMacAddressAgent(void);
+    void *getParentInterface(void);
+    void *getInterfaceMonitor(void);
+    char const *getInterfaceRoleStr(void);
+    bool isLowLatencyEnabled(void);
+    void postMessageInternal(unsigned int, void *, unsigned long, bool);
+    IOReturn postMessageSync(unsigned int, void *, unsigned long);
+    IOReturn routeIoctlToWcl(unsigned int, unsigned int, void *, unsigned long);
+    unsigned int getDeviceType(void);
+    void setDeviceType(unsigned int);
+    unsigned int getMediumType(void);
+    unsigned long getPowerState(void);
+    void *getPropertyTable(void);
+    bool isCommandAllowed(void);
+
+    // CR-190 additions: non-virtual companion-id, pid-lock,
+    // low-latency, time-sync, dispatch-queue, controller-workqueue,
+    // and process-info helpers recovered from BootKC IO80211Family on
+    // 2026-04-28. All take primitives and already-known opaque types.
+    // The remaining peer / runtime-state / timestamp / latency /
+    // media exports listed in the BootKC table are already declared
+    // as virtuals earlier in the same class body — those stay intact
+    // and are not redeclared here.
+    //   ffffff80022781cc IO80211SkywalkInterface::getCompanionInterfaceId()
+    //   ffffff80022781dc IO80211SkywalkInterface::setCompanionInterfaceId(unsigned int)
+    //   ffffff800227739a IO80211SkywalkInterface::pidLocked()
+    //   ffffff8002278478 IO80211SkywalkInterface::setLowLatencyEnabled(bool)
+    //   ffffff80022771ea IO80211SkywalkInterface::updateTimeSyncMacAddress(ether_addr&)
+    //   ffffff8002275220 IO80211SkywalkInterface::validateDispatchQueue()
+    //   ffffff8002276fba IO80211SkywalkInterface::getControllerWorkQueue()
+    //   ffffff80022765a2 IO80211SkywalkInterface::storeProcessNameAndIoctlInformation(unsigned long)
+    unsigned int getCompanionInterfaceId(void);
+    void setCompanionInterfaceId(unsigned int);
+    bool pidLocked(void);
+    void setLowLatencyEnabled(bool);
+    void updateTimeSyncMacAddress(ether_addr &);
+    void validateDispatchQueue(void);
+    void *getControllerWorkQueue(void);
+    void storeProcessNameAndIoctlInformation(unsigned long);
 
 public:
     // Apple-internal ivars for IO80211SkywalkInterface.

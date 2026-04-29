@@ -1,0 +1,259 @@
+schema_version: 1
+document_id: tahoe_post_yaml_findings_2026_04_26
+title: Tahoe post-YAML restoration findings, CR-090 through CR-116
+status: active_addendum
+created: "2026-04-26"
+baseline:
+  last_yaml_update_before_this_addendum: "2026-04-14 00:13 EEST"
+  source_truth_order:
+    - reference_decomp
+    - runtime_evidence
+    - reviewer_decisions
+    - local_static_audit
+  purpose: >
+    Preserve driver-restoration findings discovered after the previous YAML
+    bundle edits, without rewriting the earlier reverse-engineering bundle.
+
+ui_and_join_restoration_chain:
+  - cr: CR-090
+    anomaly: A-ASSOC-WCL-LINK-IND-017
+    layer: wcl_current_bss_publication
+    finding: >
+      Tahoe association-up must publish WCL link indication message 0xd8 with
+      the recovered 16-byte payload before current-BSS lookup can work.
+    result: implemented_in_worktree_history
+  - cr: CR-091
+    layer: wcl_bss_info_layout
+    finding: >
+      WCL current-BSS output object is a 0x844 BeaconMetaData plus IE carrier.
+      The consumer checks BSSID at output offset 0x29 and passes output+0x44
+      as the IE pointer.
+    result: implemented_in_worktree_history
+  - cr: CR-093
+    layer: wcl_connect_complete
+    finding: >
+      AppleBCMWLANJoinAdapter posts APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT
+      0xd5 with payload length 0xa4. WCLJoinManager accepts only that length
+      and uses it to leave WAITING_FOR_CONNECT_COMPLETE.
+    result: implemented_in_worktree_history
+  - cr: CR-109
+    layer: wcl_associate_candidate_identity
+    finding: >
+      Tahoe WCL associate carrier supplies candidate_count at +0x218 and the
+      first candidate BSSID at +0x220. Using the older context field can select
+      an all-zero BSSID while WCL selected a real AP.
+    result: implemented_in_worktree_history
+  - cr: CR-110
+    layer: association_completion_owner
+    finding: >
+      On Tahoe, WCL join-done owns infrastructure association completion.
+      Legacy zero-payload APPLE80211_M_ASSOC_DONE races ahead of the payloaded
+      WCL event and must not be emitted for the Tahoe path.
+    result: implemented_in_worktree_history
+  - cr: CR-111
+    layer: wcl_roam_lock
+    finding: >
+      WCL_SET_ROAM_LOCK selector 0x1ac carries one byte. Non-null data is
+      consumed as roam_off; returning unsupported is a visible contract
+      divergence during join, link-up, and cleanup.
+    result: superseded_by_CR_112_batch
+  - cr: CR-112
+    layer: post_association_rsn_observability
+    finding: >
+      Keep the roam-lock contract fix and add bounded passive EAPOL RX/TX,
+      setCIPHER_KEY, and RSN-state telemetry. The probe is behavior-neutral and
+      does not force EAPOL, keys, RSN, retry, or event replay.
+    result: implemented_in_worktree_history
+
+skywalk_rx_tx_restoration_chain:
+  - cr: CR-094
+    layer: rx_packet_prepare
+    finding: >
+      RX packets allocated from the Skywalk pool must be prepared with queue and
+      direction before getPacketBuffers() is used. Pool APIs return IOReturn,
+      not bool or void.
+    result: superseded_by_CR_095_exact_diff
+  - cr: CR-095
+    layer: rx_packet_prepare_exact_diff
+    finding: >
+      Same technical fix as CR-094, resubmitted as exact live diff after the
+      reviewer exact-diff gate rejected CR-094.
+    result: implemented_in_worktree_history
+  - cr: CR-096
+    layer: skywalk_packet_vtable_abi
+    finding: >
+      Local packet lifecycle calls must match Tahoe packet vtable and exported
+      ABI; private guessed packet and buflet methods are unsafe.
+    result: implemented_in_worktree_history
+  - cr: CR-097
+    layer: buflet_packing
+    finding: >
+      Direct private buflet data access can panic. Payload access must use the
+      recovered Tahoe packet data API instead of guessed private layout.
+    result: implemented_in_worktree_history
+  - cr: CR-098
+    layer: packet_data_api
+    finding: >
+      Packet payload read/write moved to Tahoe packet data API, but the next
+      static check found RX enqueue vtable slot mismatch before safe install.
+    result: superseded_by_CR_099
+  - cr: CR-099
+    layer: rx_enqueue_vtable_abi
+    finding: >
+      Tahoe RX completion queue packet-object enqueue is the vtable slot after
+      the raw queue_entry overload. Local SDK header order had to be patched so
+      IOSkywalkPacket array enqueue dispatches to the packet-object lifecycle.
+    result: implemented_in_worktree_history
+  - cr: CR-100
+    layer: rx_enqueue_overload_shape
+    finding: >
+      RX enqueue overload shape was narrowed, but full RX/TX audit found more
+      lifecycle defects before runtime.
+    result: superseded_by_CR_101
+  - cr: CR-101
+    layer: rx_tx_lifecycle
+    finding: >
+      TX callback return is consumed queue entries, not hardware delivery
+      success. RX must handle mbuf_copydata failure and must complete prepared
+      packets before returning them to the pool on failed enqueue.
+    result: implemented_in_worktree_history
+  - cr: CR-102
+    layer: prepared_rx_cleanup
+    finding: >
+      Cleaning up prepared RX packets with the wrong source queue can enter
+      IOSkywalkPacketQueue default packetCompletion() and panic.
+    result: superseded_by_CR_103
+  - cr: CR-103
+    layer: rx_null_source_queue
+    finding: >
+      Locally allocated RX packets have no submission/source queue. Prepare and
+      complete local RX packets with sourceQueue=nullptr while preserving RX
+      direction.
+    result: implemented_in_worktree_history
+  - cr: CR-104
+    layer: queue_workloop
+    finding: >
+      RX completion queue must be attached to the active workloop before
+      enqueue; otherwise enqueue fails with 0xe00002d8 after association.
+    result: implemented_in_worktree_history
+  - cr: CR-105
+    layer: queue_workloop_current
+    finding: >
+      After workloop attachment, the next exact queue gate became queue enabled
+      state rather than workloop-null state.
+    result: superseded_by_CR_107
+  - cr: CR-107
+    layer: queue_enable
+    finding: >
+      The data path must enable the Skywalk queue event sources before RX
+      completion can accept association traffic.
+    result: implemented_in_worktree_history
+
+active_skywalk_interface_layer:
+  - cr: CR-113
+    layer: infra_registration_and_input_probe
+    finding: >
+      AppleBCMWLANSkywalkInterface starts through
+      IO80211InfraInterface::registerInfraEthernetInterface(), not by bypassing
+      the infra shim with direct IOSkywalkEthernetInterface registration. A pure
+      passthrough inputPacket probe identifies whether RX completion reaches
+      IO80211 peer-manager input.
+    result: implemented_in_worktree_history
+  - cr: CR-114
+    layer: queue_pool_accessors
+    finding: >
+      The registered Wi-Fi Skywalk interface must expose existing TX submission
+      queue, RX completion queue, TX pool, RX pool, and numTxQueues through
+      IO80211 accessors. Inherited base accessors return null or zero.
+    result: implemented_in_worktree_history
+  - cr: CR-115
+    layer: inventory_lifecycle
+    finding: >
+      Reference active layer also has distinct TX completion queue, multicast
+      work source, workloop add/remove coverage, queue depth/capacity accessors,
+      pending/space methods, and datapath enable/disable. CR-115 was rejected
+      because it used unexported BootKC symbols.
+    result: rejected_structural
+  - cr: CR-116
+    layer: queue_abi_and_metadata
+    finding: >
+      TX completion queue callback ABI is UInt32 on Tahoe. Queue capacity/depth
+      must come from driver-owned construction metadata or Apple custom queue
+      ivars, not from unexported non-const IOSkywalkPacketQueue methods. Apple
+      custom pending/space methods return 0.
+    result: pending_stage_1
+
+negative_findings_and_guardrails:
+  - id: no_forced_rsn
+    finding: >
+      No batch may fake setCIPHER_KEY, IO80211RSNDone, EAPOL TX, DHCP success,
+      link success, or internet reachability. Each producer must be restored at
+      its owner layer.
+  - id: no_event_replay_without_producer
+    finding: >
+      WCL or IO80211 events must not be replayed or duplicated unless reference
+      producer-side decomp proves the same replay edge.
+  - id: diagnostics_boundary
+    finding: >
+      Diagnostics may log or trace existing passthrough calls only. They must
+      not call contested Wi-Fi getters, reorder lifecycle, retry, poll, or
+      mutate state.
+  - id: exact_diff_gate
+    finding: >
+      A reviewer approval applies to the exact submitted diff only. If the diff
+      changes, submit a new request rather than editing an old one.
+
+current_open_items_after_CR118:
+  - id: rsn_data_completion
+    status: open_after_runtime
+    note: >
+      CR-118 includes the CR-116 active queue/lifecycle/ABI layer, the CR-117
+      AP_MODE layer, and the CR-118 AP_IE_LIST layer, but does not claim final
+      RSN/data root cause. Runtime after approval must show whether EAPOL TX,
+      setCIPHER_KEY, RSN done, DHCP, and data path progress.
+  - id: apsta_softap_layer
+    status: required_owner_reconstruction
+    note: >
+      AP/SoftAP belongs to a separate APSTA/SAP owner surface. Missing local
+      owner state is not a final exclusion; the required next layer is
+      reconstruction of the IO80211SapProtocol/APSTA owner object, state block,
+      queue surface, and registration path before HostAP capability is
+      advertised.
+
+post_CR117_layer_additions:
+  - cr: CR-118
+    layer: primary_sta_ap_ie_list
+    finding: >
+      AppleBCMWLANCore AP_IE_LIST initializes output length to zero, delegates
+      IO80211BssManager, and writes the resulting length. The local Tahoe
+      wrapper must publish zero-length success for no current AP IE list instead
+      of returning a wrapper error, while still preventing fixed-buffer overflow.
+    result: pending_stage_1
+  - cr: CR-119
+    layer: legacy_sta_ap_ie_list_shadow
+    finding: >
+      The legacy STA dispatcher carried the pre-CR-118 AP_IE_LIST error gates.
+      It now mirrors the same zero-length success and fixed-carrier overflow
+      semantics as the Tahoe Skywalk path so AP_IE_LIST does not drift between
+      dispatch planes.
+    result: pending_stage_1
+  - cr: CR-120
+    layer: mcs_nrate_and_virtual_if_shadow
+    finding: >
+      Forced disassembly of AppleBCMWLANCore::getMCS proves the public MCS
+      index is decoded from cached nrate state, not from ic_bss->ni_txmcs and
+      not from an association-gated BSS helper. The same batch mirrors the
+      recovered Tahoe VIRTUAL_IF_CREATE role-dependent public failure shape in
+      the legacy dispatcher. The APSTA/SoftAP role-7 failure-only shape is
+      interim until the required APSTA/SAP owner layer is reconstructed.
+    result: pending_stage_1
+  - cr: CR-121
+    layer: apsta_owner_layer_reconstruction
+    finding: >
+      Apple role-7 creation allocates an AppleBCMWLANIO80211APSTAInterface
+      object through the APSTA factory, stores it at core expansion +0x2c30,
+      and uses a private state block at self+0x130 for SoftAP carriers,
+      feature bits, queues, pools, and datapath accessors. Local absence of
+      this owner is a confirmed reconstruction requirement and remains active
+      implementation debt.
+    result: pending_stage_1

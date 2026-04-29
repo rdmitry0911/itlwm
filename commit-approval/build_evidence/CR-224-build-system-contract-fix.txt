@@ -1,0 +1,60 @@
+CR-224 BUILD EVIDENCE — SYSTEM_CONTRACT_FIX (1:1 IO80211NetworkPacket subclass)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : d3a07c2abccac863e1909aa562051a6ee5687245
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : 52999d3d4155b702dadc10fb7a0a8a6fe80a16d62d05bf49d7e2c50fa7151ffc
+Kext UUID     : C41A4394-9FF6-358D-BA5D-3E147ED1742B
+Kext size     : 16304032 bytes
+
+BootKC undef  : 922 (delta +14 vs CR-223's 908; new IO80211NetworkPacket
+                exports pulled in by IO80211NetworkPacket subclass:
+                gMetaClass, ctor, dtor, setPTMMode, getBufferSize,
+                getPacketType, both prepareWithQueue overloads,
+                getVirtualAddress, setPktEnqueueTime, getFirmwareTxStatus,
+                setFirmwareTxStatus, firmwareToHostTxStatus,
+                setIngressEgressTimestamp, getPktEnqueueTime const,
+                getIngressEgressTimestamp const, isPTMMode const)
+Linker check  : OK: all 922 undefined symbols resolve against BootKC
+
+Vtable identity proof
+---------------------
+Source: nm-extracted relocation table for __ZTV25AirportItlwmIO80211Packet
+        @ kext file offset 0xf05918, vt size 0x240 (72 slots), 60 ext relocs.
+Full slot map: analysis/cr224_vtable_proof_2026_04_29.txt
+
+Auditor-required slots (CR-223 REJECTION bullet 2):
+  vt[35] init           : __ZN15IOSkywalkPacket12initWithPoolE...
+  vt[5]  failure destr  : __ZNK8OSObject7releaseEv
+  vt[49] prepareWQ 3arg : __ZN20IO80211NetworkPacket16prepareWithQueue...jj
+  vt[56] getPacketType  : __ZN20IO80211NetworkPacket13getPacketTypeEv
+  vt[57] getVirtualAddr : __ZN20IO80211NetworkPacket17getVirtualAddressEv
+  vt[58] setPTMMode     : __ZN20IO80211NetworkPacket10setPTMModeEb
+  vt[59] setIngressEgress  : __ZN20IO80211NetworkPacket25setIngressEgressTimestampEy
+  vt[60] getIngressEgress c : __ZNK20IO80211NetworkPacket25getIngressEgressTimestampEv
+  vt[61] isPTMMode c    : __ZNK20IO80211NetworkPacket9isPTMModeEv
+  vt[62] setPktEnqueue  : __ZN20IO80211NetworkPacket17setPktEnqueueTimeEy
+  vt[63] getPktEnqueue c: __ZNK20IO80211NetworkPacket17getPktEnqueueTimeEv
+  vt[64] fwToHostTxStat : __ZN20IO80211NetworkPacket22firmwareToHostTxStatus...
+  vt[65] setFirmwareTxSt : __ZN20IO80211NetworkPacket19setFirmwareTxStatus...
+  vt[66] getFirmwareTxSt : __ZN20IO80211NetworkPacket19getFirmwareTxStatusEv
+  vt[67] getBufferSize  : __ZN20IO80211NetworkPacket13getBufferSizeEv
+  vt[68] prepareWQ 2arg : __ZN20IO80211NetworkPacket16prepareWithQueue...j
+
+Every IO80211NetworkPacket-required virtual is at its expected vtable
+slot pointing to the IO80211Family-exported implementation. ZERO
+local-class virtual overrides; the produced object's vtable layout
+is identical to IO80211NetworkPacket's vtable (modulo the per-class
+gMetaClass/typeinfo header at slots 0/1). The framework dispatching
+on this packet via any of these slots calls the IO80211Family
+implementation, satisfying the IO80211 packet-class system contract.
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: 52999d3d4155b702dadc10fb7a0a8a6fe80a16d62d05bf49d7e2c50fa7151ffc
+Install UUID  : C41A4394-9FF6-358D-BA5D-3E147ED1742B
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)

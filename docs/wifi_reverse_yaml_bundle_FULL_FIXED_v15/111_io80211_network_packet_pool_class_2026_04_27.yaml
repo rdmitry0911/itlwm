@@ -1,0 +1,98 @@
+version: 1
+topic: Tahoe IO80211 network packet pool class
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_skywalk_packet_class_allocation
+  follows:
+    - "103_skywalk_packet_pool_network_type_2026_04_27.yaml"
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "106_rx_completion_pending_producer_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - association_attempt_reaches_rx_eapol_input
+    - eapol_rx_present
+    - eapol_tx_absent
+    - set_cipher_key_absent
+    - rsn_done_absent
+    - ap_deauth_reason_15
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window"
+  observed:
+    - "hidden association returns 0x0"
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+
+reference:
+  apple_packet_pool:
+    binary: "/srv/project/ghidra_output/AppleBCMWLANBusInterfacePCIeMac_decompiled.c"
+    new_packet_function:
+      name: "AppleBCMWLANPCIeSkywalkPacketPool::newPacketWithDescriptor"
+      address: "0xffffff80014cb250"
+      contract: "allocates AppleBCMWLANPCIeSkywalkPacket, not base IOSkywalkNetworkPacket"
+    allocate_packet_function:
+      name: "AppleBCMWLANPCIeSkywalkPacketPool::allocatePacket"
+      address: "0xffffff80014cb8ae"
+      contract: "parent allocation result is validated against the Apple packet metaclass"
+    apple_packet:
+      allocation_size: "0x80"
+      base_constructor_chain: "calls IO80211NetworkPacket constructor before Apple vtable install"
+      scratch_pointer_offset: "0x78"
+      scratch_size: "0x98"
+  io80211_network_packet:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    class: "IO80211NetworkPacket"
+    size: "0x78"
+    get_packet_type:
+      symbol: "__ZN20IO80211NetworkPacket13getPacketTypeEv"
+      address: "0xffffff80022cf000"
+      semantics:
+        ether_type_88b4: 3
+        ether_type_888e_eapol: 2
+        ipv4_udp_dhcp_bootp: 1
+        default: 0
+  io80211_consumers:
+    - "IO80211InfraInterface::inputPacket(IO80211NetworkPacket*, packet_info_tag*, ether_header*, bool*, bool)"
+    - "IO80211PeerManager::inputPacket(IO80211NetworkPacket*, packet_info_tag*, ether_header*, bool*)"
+    - "IO80211PeerManager::skywalkInputPacket(IO80211NetworkPacket*, IO80211Peer*, packet_info_tag*, ether_header*, bool, bool, bool*, bool)"
+
+local_before_cr_170:
+  file: "AirportItlwm/AirportItlwmV2.cpp"
+  pool_creation: "IOSkywalkPacketBufferPool::withName(..., kIOSkywalkPacketTypeNetwork, ...)"
+  rx_handoff: "reinterpret_cast<IO80211NetworkPacket *>(pkt)"
+  mismatch: "base network packet pools do not prove allocation of IO80211NetworkPacket-family objects"
+
+local_fix_cr_170:
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "AirportItlwm/AirportItlwmV2.cpp"
+    - "include/Airport/IO80211NetworkPacket.h"
+  changes:
+    - "add a local IO80211NetworkPacket declaration inheriting IOSkywalkNetworkPacket"
+    - "add AirportItlwmIO80211PacketPool as an IOSkywalkPacketBufferPool subclass"
+    - "override newPacket(...) to allocate system IO80211NetworkPacket via OSMetaClass::allocClassWithName"
+    - "initialize the packet with the same pool descriptor through initWithPool(...)"
+    - "use the new packet pool for both TX and RX Tahoe Skywalk pools"
+  non_claims:
+    - "does not synthesize Apple PCIe packet scratch"
+    - "does not write raw packet+0x78 storage"
+    - "does not call scratch-dependent TX log paths"
+    - "does not force EAPOL TX"
+    - "does not force key install or IO80211RSNDone"
+    - "does not add retry, replay, delay, poll loop, forced link, or deauth masking"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undefined symbol verification"
+  after_runtime:
+    - "verify RX EAPOL still reaches IO80211 input"
+    - "verify whether EAPOL TX appears"
+    - "verify setCIPHER_KEY and IO80211RSNDone progression"
+    - "verify no regression in network visibility"

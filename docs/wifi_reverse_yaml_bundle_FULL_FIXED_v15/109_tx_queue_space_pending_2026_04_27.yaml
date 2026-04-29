@@ -1,0 +1,68 @@
+document: tx_queue_space_pending_2026_04_27
+version: 1
+date: 2026-04-27
+status: implemented_locally_pending_stage1
+
+topic: Skywalk TX queue space and pending-count visibility
+
+reference:
+  apple_primary_get_tx_sub_queue:
+    function: "AppleBCMWLANSkywalkInterface::getTxSubQueue(apple80211_wme_ac)"
+    address: "0xffffff800155fb5a"
+    semantics:
+      - "maps WME AC through owner queue-index table"
+      - "checks queue index against owner TX queue count"
+      - "returns queue pointer from owner TX queue vector"
+  apple_apsta_get_tx_sub_queue:
+    function: "AppleBCMWLANIO80211APSTAInterface::getTxSubQueue(apple80211_wme_ac)"
+    address: "0xffffff80016940b4"
+    semantics:
+      - "same queue-index-to-vector lookup in APSTA owner layout"
+  apple_tx_queue_depth:
+    primary_function: "AppleBCMWLANSkywalkInterface::getTxQueueDepth()"
+    primary_address: "0xffffff800155fbfe"
+    apsta_function: "AppleBCMWLANIO80211APSTAInterface::getTxQueueDepth()"
+    apsta_address: "0xffffff8001694126"
+    semantics:
+      - "reads first TX queue object"
+      - "returns TX queue capacity field"
+  io80211_space_pending:
+    pendingPackets:
+      function: "IO80211SkywalkInterface::pendingPackets(unsigned char)"
+      address: "0xffffff80022780ac"
+      semantics:
+        - "maps flow queue database"
+        - "calls matched queue pending-count virtual"
+    packetSpace:
+      function: "IO80211SkywalkInterface::packetSpace(unsigned char)"
+      address: "0xffffff8002278134"
+      semantics:
+        - "maps flow queue database"
+        - "calls matched queue packet-space virtual"
+
+local_divergence_before_cr168:
+  - "getTxSubQueue exposed fTxQueue"
+  - "pendingPackets ignored fTxQueue and returned 0"
+  - "packetSpace ignored fTxQueue and returned 0"
+  - "the system could observe zero TX admission space while the local TX queue existed"
+
+local_restoration_cr168:
+  - "keeps the local single-TX-queue mapping consistent"
+  - "local TX queue lookup returns fTxQueue"
+  - "pendingPackets returns fTxQueue->getPacketCount()"
+  - "packetSpace returns fTxQueue->getFreeSpace()"
+
+system_contract_touchpoints:
+  - "getTxSubQueue"
+  - "getTxQueueDepth"
+  - "pendingPackets"
+  - "packetSpace"
+  - "IOSkywalkTxSubmissionQueue packet count"
+  - "IOSkywalkPacketQueue free-space accounting"
+
+non_claims:
+  - "does not force EAPOL TX success"
+  - "does not force key install or RSN completion"
+  - "does not force link, DHCP, internet, or data success"
+  - "does not fabricate queue capacity outside the live IOSkywalk queue"
+  - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"

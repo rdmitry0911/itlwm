@@ -11,6 +11,42 @@
 
 namespace TahoePayloadBuilders {
 
+static constexpr uint16_t kActionFramePayloadCapacity = 0x708;
+static constexpr uint16_t kActionFrameMaximumPayloadLength =
+    kActionFramePayloadCapacity - 1;
+static constexpr uint16_t kActionFrameV1TxPayloadSize = 0x724;
+static constexpr uint32_t kActionFrameV2FirmwareThreshold = 0x15;
+static constexpr uint32_t kActionFrameProgressFlagOffset = 0x4478;
+static constexpr uint32_t kActionFrameProgressStartMsOffset = 0x4480;
+static constexpr uint32_t kActionFrameProgressOverdueMs = 0x12d;
+static constexpr uint32_t kActionFrameProgressOverdueLogLine = 0x3b1d;
+static constexpr uint32_t kActionFrameProgressOverdueStatusLine = 0x3b1e;
+static constexpr uint32_t kActionFrameProgressOverdueStatus = 0xe3ff852b;
+static constexpr uint32_t kActionFrameProgressScanRejectStatus = 0xe00002d5;
+static constexpr uint32_t kActionFrameProgressScanRejectLogLine = 0x00a5;
+
+static_assert(kActionFramePayloadCapacity == 0x708,
+              "Apple WCL action-frame V2 rejects total bytes >= 0x708");
+static_assert(kActionFrameMaximumPayloadLength == 0x707,
+              "Apple WCL action-frame V1 accepts total bytes up to 0x707");
+static_assert(kActionFrameV1TxPayloadSize == 0x724,
+              "Apple WCL action-frame V1 sends fixed CommandTxPayload size 0x724");
+static_assert(kActionFrameV2FirmwareThreshold == 0x15,
+              "Apple WCL action-frame V2 threshold is core-private generation > 0x14");
+static_assert(kActionFrameProgressFlagOffset == 0x4478,
+              "AppleBCMWLANCore action-frame progress byte offset");
+static_assert(kActionFrameProgressStartMsOffset == 0x4480,
+              "AppleBCMWLANCore action-frame progress start-ms offset");
+static_assert(kActionFrameProgressOverdueMs == 0x12d,
+              "AppleBCMWLANCore action-frame overdue threshold");
+static_assert(kActionFrameProgressScanRejectStatus == 0xe00002d5,
+              "AppleBCMWLANScanAdapter rejects scans while action-frame is in progress");
+
+inline bool isActionFrameProgressOverdue(uint64_t nowMs, uint64_t startMs)
+{
+    return static_cast<uint64_t>(nowMs - startMs) >= kActionFrameProgressOverdueMs;
+}
+
 struct IEPayloads {
     bool customAssoc = false;
     uint32_t frameTypeFlags = 0;
@@ -55,7 +91,7 @@ struct ActionFramePayload {
     uint8_t category = 0;
     uint32_t channel = 0;
     uint16_t frameLen = 0;
-    uint8_t frame[0x708] = {};
+    uint8_t frame[kActionFramePayloadCapacity] = {};
     bool useV2 = false;
 };
 
@@ -165,11 +201,11 @@ inline bool buildActionFrame(const apple80211_wcl_action_frame *data,
     payload->category = raw[0];
     payload->channel = *reinterpret_cast<const uint32_t *>(raw + 4);
     payload->frameLen = *reinterpret_cast<const uint16_t *>(raw + 0xe);
-    if (payload->frameLen >= sizeof(payload->frame))
+    if (payload->frameLen > kActionFrameMaximumPayloadLength)
         return false;
     if (payload->frameLen != 0)
         memcpy(payload->frame, raw + 0x10, payload->frameLen);
-    payload->useV2 = firmwareGeneration >= 0x15;
+    payload->useV2 = firmwareGeneration >= kActionFrameV2FirmwareThreshold;
     return true;
 }
 

@@ -279,7 +279,7 @@
 
 ## ANOMALY
 - id: A-ASSOC-HIDDEN-WCL-EXTERNAL-PMK-004
-- status: CONFIRMED_ROOT_CAUSE
+- status: REJECTED
 - symptom: after CR-066 runtime networks are visible and hidden WCL association no longer panics, but manual join to SSID `btn-vno` fails with `airportd` error `-3905`.
 - first visible manifestation: `airportd` reports `Failed to associate ... returned error code -3905` after the local driver logs repeated `ieee80211_node_choose_bss reject ssid=btn-vno fail=0x40`.
 - expected system behavior: a WCL join request that carries a validated `CIPHER_PMK` owner must be allowed past local PSK-only BSS filtering without importing PMK bytes from a carrier that does not contain them; the Apple supplicant/WCL key owner remains the source of PMK material.
@@ -2338,6 +2338,306 @@
 - notes:
   - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
 
+## ANOMALY
+
+- id: A-ASSOC-WCL-CANDIDATE-BSSID-035
+- status: FIX_IMPLEMENTED
+- symptom: after CR-107 the driver is visible and networks are visible, but `CONTROL_STA_NETWORK` join is slow/partial: the connected icon appears without internet access and then the station disconnects.
+- first visible manifestation: CR-108 CONTROL_STA_NETWORK runtime on `2026-04-26 08:30:52..08:35:15 +0300` after the queue-enabled driver was loaded.
+- expected system behavior: a hidden WCL join must bind the local association attempt to the same BSS candidate selected by WCL; the selected candidate BSSID is carried in the `apple80211AssocCandidates` candidate list.
+- actual behavior: `setWCL_ASSOCIATE(...)` reads BSSID from `raw + 0x1F4`, which is zero in the Tahoe carrier. That clears `IEEE80211_F_DESBSSID` in `associateSSID(...)`, so local net80211 can select any same-SSID BSS before WCL/key management finishes.
+- divergence point: `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...)` uses the context/private field at `+0x1F4` instead of the WCL candidate list at `+0x218/+0x220`.
+- evidence:
+  - runtime logs: `commit-approval/runtime_evidence/CR-108-current-control_sta_network-runtime-20260426.txt`, sha256 `cce93c0c0d9f864a1aa9186fae384406478efe310f7c6f572aed1bbdcb738a59`, lines `230/254/304/338` show `WCLJoinRequest Beacon Info ... BSSID=50:4F:3B:CD:DD:67 ... channel=<100:3> ... akm=0x00048080 ssid='CONTROL_STA_NETWORK'`.
+  - runtime logs: the same artifact lines `233/257/307/341` show local `setWCL_ASSOCIATE BSSID=00:00:00:00:00:00` for the same join request.
+  - runtime logs: the same artifact lines `271..276` and `321..326` show local selection of different same-SSID BSSs (`50:88:11:da:43:9e` channel `153`, then `e4:3a:65:44:e4:dd` channel `161`) with `akms=2` before later attempts settle on WCL's `50:4f:3b:cd:dd:67` with `akms=10`.
+  - runtime logs: the same artifact lines `3023/3084` and refreshed log `commit-approval/runtime_evidence/CR-108-current-live-last30m-20260426-refresh.log`, sha256 `9ac4fb922785f346931d01abbcf047c6a73be335bf35848a95025f3f391f9f7e`, lines `270019..270098` and `301440..301519` record `NetworkName = CONTROL_STA_NETWORK`, short `WiFiAssociatedDuration`, `WiFiDisconnectReasonINVALID_AKMS = 1`, and `WiFiNetworkJoinResult = 1`.
+  - decomp: remote `IO80211Family_decompiled.c` `FUN_ffffff8002220b06(...)` initializes `*(undefined4 *)(param_2 + 0x218) = 0` for the candidate count.
+  - decomp: remote `IO80211Family_decompiled.c` `FUN_ffffff8002220f84(...)` reads `uVar3 = *(uint *)(param_3 + 0x218)`, writes candidate BSSID via vtable slot `+0x170` to `param_3 + uVar3 * 0x12 + 0x220`, writes the paired MAC at `+0x226`, channel at `+0x22c`, and then increments the candidate count.
+  - decomp: remote `AppleBCMWLAN_Core_decompiled.c` `AppleBCMWLANCore::setWCL_ASSOCIATE(...)` sets auth/SSID context and delegates the whole `apple80211AssocCandidates` carrier to `AppleBCMWLANJoinAdapter::performJoin(...)`; it does not extract the unrelated `+0x1F4` field as the selected BSSID.
+- candidate causes:
+  - confirmed: local compatibility code loses WCL's selected BSS by reading the wrong carrier field, allowing net80211 same-SSID BSS selection to diverge from the WCL candidate and AKM context.
+  - insufficient data after this fix: if the exact selected-BSSID association still reaches no-internet/deauth, the next blocker moves to EAPOL/key install or post-key data path; that is outside this candidate.
+- rejected causes:
+  - `useAppleRSNSupplicant(IO80211VirtualInterface *)`: rejected for Tahoe V3 in `A-RSN-APPLE-SUPPLICANT-V2-OVERRIDE-034`; the V3 base has no such virtual slot.
+  - forcing RSN done, faking `setCIPHER_KEY`, retrying joins, delaying joins, or re-emitting connect events: rejected as forced state/retry/replay without producer-side reference proof.
+  - deriving BSSID from local scan cache by SSID: rejected as heuristic; the selected BSS is already present in the WCL carrier.
+  - continuing to use `+0x1F4` for WCL candidate joins: rejected by runtime zero value and reference carrier layout.
+- confirmed deviation: Tahoe WCL carrier stores candidate count at `+0x218` and first candidate BSSID at `+0x220`; local code ignores that list and treats `+0x1F4` as BSSID.
+- root cause: hidden association is not constrained to WCL's selected BSS. WCL chooses `50:4F:3B:CD:DD:67`, but local association initially targets other `CONTROL_STA_NETWORK` BSSs with different AKM, producing UI delay and `INVALID_AKMS`.
+- fix: implemented locally for CR-109. `setWCL_ASSOCIATE(...)` now reads candidate count from `+0x218` and uses first candidate BSSID from `+0x220` when the carrier contains candidates; the no-candidate carrier branch preserves the previous context-field behavior. Logs now report selected source, candidate count, candidate BSSID, and context BSSID.
+- verification:
+  - source check: `associateSSID(...)` receives candidate BSSID `50:4f:3b:cd:dd:67` for the observed carrier instead of zero.
+  - build check: Tahoe build must succeed and BootKC unresolved-symbol validation must pass.
+  - runtime check after Stage 1 approval: reboot with exact CR-109 diff, attempt one `CONTROL_STA_NETWORK` join, verify `setWCL_ASSOCIATE ... source=candidate candidates=1 candidate=50:4f:3b:cd:dd:67`, verify no local `ieee80211_node_join_bss` to `50:88:11:da:43:9e` or `e4:3a:65:44:e4:dd` during that WCL request, then classify any remaining failure as the next EAPOL/key/data blocker with fresh evidence.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-WCL-CANDIDATE-BSSID-035
+- symptom: `CONTROL_STA_NETWORK` join shows transient connected/no-internet state, then disconnects; UI prompts and failure notification are delayed.
+- expected system behavior: WCL-selected candidate BSSID from the `apple80211AssocCandidates` carrier must be the BSSID used by the local association path, so WCL's candidate, auth/AKM context, and local net80211 selected BSS are identical.
+- actual behavior: WCL logs selected `50:4F:3B:CD:DD:67`, but local `setWCL_ASSOCIATE(...)` logs zero BSSID and local net80211 first joins other `CONTROL_STA_NETWORK` BSSs with different AKM.
+- exact divergence point: `AirportItlwm/AirportItlwmSkywalkInterface.cpp::AirportItlwmSkywalkInterface::setWCL_ASSOCIATE`.
+- evidence from runtime:
+  - `CR-108-current-control_sta_network-runtime-20260426.txt` lines `230/254/304/338`: WCL selected BSSID `50:4F:3B:CD:DD:67`.
+  - `CR-108-current-control_sta_network-runtime-20260426.txt` lines `233/257/307/341`: local BSSID field is `00:00:00:00:00:00`.
+  - `CR-108-current-control_sta_network-runtime-20260426.txt` lines `271..276` and `321..326`: local association selects other same-SSID BSSs before the correct BSSID.
+  - refreshed log `CR-108-current-live-last30m-20260426-refresh.log` lines `270019..270098` and `301440..301519`: `CONTROL_STA_NETWORK` failures end with `WiFiDisconnectReasonINVALID_AKMS = 1`.
+- evidence from decomp:
+  - `IO80211Family_decompiled.c::FUN_ffffff8002220b06(...)`: candidate count initialized at carrier offset `+0x218`.
+  - `IO80211Family_decompiled.c::FUN_ffffff8002220f84(...)`: candidate BSSID written to `+0x220 + index * 0x12`, paired MAC to `+0x226`, channel to `+0x22c`, then candidate count is incremented.
+  - `AppleBCMWLANCore::setWCL_ASSOCIATE(...)`: delegates the complete carrier to `AppleBCMWLANJoinAdapter::performJoin(...)`; it does not use `+0x1F4` as selected BSSID.
+- exact semantic mismatch between reference and our code: reference preserves the selected candidate list in the join carrier and joins through it; local compatibility code discards that list and clears the desired-BSSID constraint by passing a zero BSSID to `associateSSID(...)`.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: hidden WCL associate carrier parsing; `setAUTH_TYPE(...)`; `setRSN_IE(...)`; `associateSSID(...)`; net80211 `ic_des_bssid` / `IEEE80211_F_DESBSSID`; WCL join-done/current-BSS/connect-complete; later RSN/EAPOL/key/data path.
+  - expected contract at each touchpoint: carrier parsing must use the WCL candidate list; auth and RSN IE payloads remain unchanged; `associateSSID(...)` must constrain local BSS selection to the same WCL candidate; later WCL and RSN/data paths must observe a single coherent BSS/AKM context.
+  - why no relevant touchpoints are missing: the observed `INVALID_AKMS` scope is caused before key install/DHCP/data by a mismatch between WCL candidate identity and local selected BSS; all fields that define that identity are the candidate BSSID plus the already preserved auth/RSN fields.
+  - why proposed path adds no extra system-visible side effects: no event, callback, return status, retry, delay, forced state, key payload, RSN payload, packet ownership, queue lifecycle, or scan result is changed; the patch only uses the BSSID already written by the system's carrier builder.
+- why this is root cause and not just correlation:
+  - runtime shows the exact same WCL request selects BSSID `50:4F:3B:CD:DD:67` while local code passes zero BSSID.
+  - runtime then shows local same-SSID BSS choices with different AKM before the correct BSS, followed by `INVALID_AKMS`.
+  - decomp proves the selected BSSID source exists at `+0x220`; source audit proves local code reads `+0x1F4` instead.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - the local driver cannot call Apple's private `AppleBCMWLANJoinAdapter`, so it must translate the public system-facing carrier into local net80211 state.
+  - using `+0x218/+0x220` mirrors the exact IO80211Family carrier layout and makes the local `ic_des_bssid` constraint represent the same candidate that the reference join adapter receives.
+  - the no-candidate branch is a carrier-shape split, not a recovery fallback: when the system did not provide candidates, the previous context-field behavior is preserved rather than guessing a BSSID.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp::setWCL_ASSOCIATE`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - use local scan cache to find BSSID by SSID: rejected as heuristic and can pick the same wrong BSS.
+  - continue with zero BSSID and wait for later retries: rejected as retry/timing-dependent behavior and already causes wrong-BSS selection.
+  - force AKM/RSN values to match the selected AP: rejected because auth/RSN payloads are already present and should not be rewritten without reference proof.
+  - force join success, RSN done, or connect-complete: rejected as state fabrication.
+  - add sleeps/polls/retries around association: rejected as timing workaround.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - inspect source/diff artifact for the exact `+0x218/+0x220` offset use and absence of forced state/retry/delay.
+  - create CR-109 Stage 1 request with exact current diff and do not install or collect after-fix runtime until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: IO80211Family writes candidate count at `+0x218` and first candidate BSSID at `+0x220`.
+- Есть ли прямое подтверждение по runtime-данным? Да: WCL selected `50:4F:3B:CD:DD:67`, local code passed zero BSSID, local net80211 selected other same-SSID BSSs, and the system recorded `INVALID_AKMS`.
+- Доказал ли я причинность, а не просто корреляцию? Да: zero BSSID directly disables the local desired-BSSID constraint, and the log shows the resulting wrong-BSS selections before failure.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Да within `SYSTEM_CONTRACT_FIX`: local code now maps the same WCL candidate list consumed by the reference join adapter into the local `associateSSID(...)` BSSID constraint.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Нет.
+- Не закрываю ли я симптом вместо причины? Нет: исправляется источник selected-BSSID identity mismatch before RSN/key/data.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: paths and line references are listed in the anomaly and fix candidate above.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-109-WCL-CANDIDATE-BSSID
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-ASSOC-WCL-CANDIDATE-BSSID-035`
+- source verification:
+  - `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...)` reads `candidate_count` from `raw + 0x218`.
+  - when `candidate_count > 0`, `associateSSID(...)` and diagnostic recording receive first candidate BSSID from `raw + 0x220`.
+  - when `candidate_count == 0`, the previous context field at `raw + 0x1F4` is preserved for a no-candidate carrier shape.
+  - the patch does not alter auth type, RSN IE, connect-complete, link-up, key install, queue lifecycle, packet ownership, or return status.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-109-build-20260426-wcl-candidate-bssid.txt`
+  - build log sha256: `69c68a8a287d64900098b5a8f910d2cc7ad3d58c3c4f310784cb6eda8b20e165`
+  - built binary UUID: `66030ADC-0CDF-359F-BCA8-2F8FBEFF51ED`
+  - built binary sha256: `91f302f95560ea42626a574944b31112f6d989d93c5d745c4f9fcebaf69c4c18`
+- disassembly verification:
+  - focus artifact: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-109-setWCL_ASSOCIATE-disasm-focus-20260426.txt`
+  - focus artifact sha256: `97c6981ca9d603b521a647d2a5ec1d27175238ece9385eaf2a1dc7f492a950c2`
+  - disassembly lines `75..82` show load from `0x218`, context pointer `+0x1f4`, and candidate pointer `+0x220`.
+  - disassembly lines `83..90` show `candidate_count > 0` selects the `+0x220` pointer; otherwise it keeps the `+0x1f4` pointer.
+  - disassembly line `212` shows the runtime log string with selected BSSID, source, candidate count, candidate BSSID, and context BSSID.
+- diff artifact:
+  - `/Users/bob/Projects/itlwm/commit-approval/artifacts/CR-109-wcl-candidate-bssid.diff`
+  - final diff sha256 and line count are recorded in the CR-109 Stage 1 request after this implementation-verification section is included.
+- notes:
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-DATA-SKYWALK-RX-QUEUE-ENABLE-033
+- status: FIX_IMPLEMENTED
+- symptom: after CR-105 the driver is visible in UI and association reaches the post-connect RX window, but `skywalkRxInput(...)` drops every RX packet with `IOSkywalkRxCompletionQueue::enqueuePackets(...) == 0xe00002d7`; RSN remains incomplete and the AP disconnects the station.
+- first visible manifestation: CR-106 CONTROL_STA_NETWORK runtime logs show `skywalkRxInput: enqueuePackets failed 0xe00002d7` on the first five post-association RX packets while `IO80211RSNDone = No`, `current_ssid = CONTROL_STA_NETWORK`, and `IOLinkStatus = 1`.
+- expected system behavior: Skywalk packet queues used by the datapath must be workloop-attached, queue-ready, and enabled before RX/TX queue operations are used after association.
+- actual behavior: CR-105 attaches `fTxQueue` and `fRxQueue` to `_fWorkloop`, but the local Tahoe path never calls `fTxQueue->enable()` or `fRxQueue->enable()`.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::enableAdapter(...)` powers the HAL and watchdog without enabling the registered Skywalk queues; `disableAdapterCore(...)` likewise lacks symmetric queue disable.
+- evidence:
+  - runtime evidence: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-107-queue-enable-root-cause-evidence-20260426.txt`, sha256 `4c24608540900f06db1fd7c61ad0c71eea074ac9577cf80dfd408c1a3a43a9f5`, records CR-106 `0xe00002d7` drops and local absence of queue enable calls.
+  - BootKC symbols: Tahoe exports `IOSkywalkRxCompletionQueue::enable/disable`, `IOSkywalkTxSubmissionQueue::enable/disable`, and const `IOSkywalkPacketQueue::isQueueReady`.
+  - IOSkywalk decomp: `IOSkywalkPacketQueue::initWithPool(...)` initializes the inherited enabled byte at `this+0x28` to `0`; `IOSkywalkPacketQueue::isQueueReady()` returns `this+0xcc & 1`; `IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket * const *, ...)` returns default `0xe00002d7` unless both `this+0x28 & 1` and `this+0xcc & 1` are set.
+  - reference decomp: `AppleBCMWLANSkywalkInterface::enableDatapath()` calls queue virtual slot `0x150` on the TX/RX datapath queues before RX `requestEnqueue`; `disableDatapath()` calls the symmetric virtual slot `0x158`.
+  - local binary evidence before fix: the built CR-105/CR-106 binary imports queue `getWorkLoop` and enqueue symbols but does not import `IOSkywalkRxCompletionQueue::enable` or `IOSkywalkTxSubmissionQueue::enable`.
+- candidate causes:
+  - confirmed: local queues remain disabled after creation/workloop attachment, so the first RX enqueue reaches the Tahoe enabled/ready gate and fails with `0xe00002d7`.
+  - watch after fix: if the new runtime still reports `0xe00002d7` with `RXenabled=1` and a non-null `RXwl`, then the remaining blocker is `mQueueReady`/registration readiness by elimination from the decompiled gate.
+- rejected causes:
+  - missing workloop: rejected for CR-106 because CR-105 eliminated `0xe00002d8`; `0xe00002d7` is the next gate after the workloop-null check.
+  - retrying `enqueuePackets(...)`: rejected as fallback/duplicate-delivery risk and cannot set the queue enabled bit.
+  - forcing RSN/connect state: rejected because RX packets are dropped before supplicant traffic can complete.
+  - calling contested Wi-Fi getters from user diagnostics: rejected as unrelated and previously shown to risk side effects.
+- confirmed deviation: the local Tahoe datapath omits the explicit queue enable lifecycle that Tahoe exposes on the same Skywalk queue classes and that AppleBCMWLAN invokes from datapath enable.
+- root cause: after CR-105, `fRxQueue` has a workloop but remains disabled; Tahoe `enqueuePackets(...)` maps that state to `0xe00002d7`, dropping EAPOL/RSN RX packets and preventing association completion.
+- fix: implemented locally for CR-107. `enableAdapter(...)` enables `fTxQueue` and `fRxQueue` before HAL enable; `disableAdapterCore(...)` disables them symmetrically before HAL disable; enqueue-fail logs now include read-only `RXenabled` and `RXwl` to distinguish enabled-bit failure from queue-ready failure in one reboot by the decompiled gate.
+- verification:
+  - source check: `AirportItlwmV2.cpp` imports and calls `IOSkywalkTxSubmissionQueue::enable/disable` and `IOSkywalkRxCompletionQueue::enable/disable`.
+  - build check: Tahoe build must succeed and BootKC unresolved-symbol validation must resolve the new queue lifecycle imports.
+  - runtime check after Stage 1 approval: reboot, attempt one join to `CONTROL_STA_NETWORK`, verify no post-association `enqueuePackets failed 0xe00002d7` with `RXenabled=0`; if `0xe00002d7` remains with `RXenabled=1` and non-null `RXwl`, classify the next blocker as queue-ready/registration readiness.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-DATA-SKYWALK-RX-QUEUE-ENABLE-033
+- symptom: UI sees networks and association starts, but post-connect RX packets are dropped with `0xe00002d7`; RSN stays incomplete and the station disconnects.
+- expected system behavior: queue lifecycle must be `withPool` -> workloop attachment -> register logical link -> datapath enable -> queue operations; queue operations require the inherited enabled bit and queue-ready bit.
+- actual behavior: lifecycle stops at workloop attachment/registration; the local Tahoe path never enables `fTxQueue`/`fRxQueue`.
+- exact divergence point: `AirportItlwm::enableAdapter(...)` and `AirportItlwm::disableAdapterCore(...)` in `AirportItlwmV2.cpp`.
+- evidence from runtime:
+  - CR-106 logs show first RX drops as `skywalkRxInput: enqueuePackets failed 0xe00002d7`.
+  - CR-106 ioreg/regdiag show the driver and UI path are alive, SSID is selected, but `IO80211RSNDone = No`.
+- evidence from decomp:
+  - Tahoe `IOSkywalkRxCompletionQueue::enqueuePackets(...)` returns `0xe00002d7` unless both `this+0x28` enabled and `this+0xcc` queue-ready are true.
+  - Tahoe `IOSkywalkPacketQueue::initWithPool(...)` initializes enabled to `0`.
+  - AppleBCMWLAN `enableDatapath()` explicitly enables the datapath queues; `disableDatapath()` disables them.
+- exact semantic mismatch between reference and our code: Apple/Tahoe datapath enables queue event sources before datapath queue use; local code only attaches them to a workloop and then uses them disabled.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation:
+  - CR-105 changed the return from workloop-null `0xe00002d8` to the next exact decompiled gate `0xe00002d7`.
+  - source audit proves no queue enable call exists in the local lifecycle.
+  - decomp proves disabled state is sufficient to produce the exact runtime return before any later RSN/DHCP/data stage.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it uses the queue classes' own Tahoe `enable/disable` methods at the datapath enable/disable lifecycle edge.
+  - it does not retry, replay, reorder association events, force link/RSN state, or alter packet ownership.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::enableAdapter`
+  - `AirportItlwm/AirportItlwmV2.cpp::disableAdapterCore`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - enabling queues in `start(...)`: rejected because Apple enables queues at datapath enable, not at construction/registration.
+  - retry/drop suppression around `enqueuePackets(...)`: rejected as fallback and not a lifecycle fix.
+  - forcing `IO80211RSNDone` or link active: rejected because the actual blocker is packet delivery into Skywalk before RSN completion.
+  - adding sleeps/polls/wait loops: rejected as unproven synchronization.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - build with `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - verify new imports/disassembly for queue `enable/disable`
+  - create CR-107 Stage 1 request; do not install or commit until reviewer allows after-fix runtime
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-107-QUEUE-ENABLE
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-DATA-SKYWALK-RX-QUEUE-ENABLE-033`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::enableAdapter(...)` now calls `fTxQueue->enable()` and `fRxQueue->enable()` before `fHalService->enable(...)`.
+  - `AirportItlwm/AirportItlwmV2.cpp::disableAdapterCore(...)` now calls `fTxQueue->disable()` and `fRxQueue->disable()` before `fHalService->disable(...)`.
+  - `skywalkRxInput(...)` failure logging includes `RXenabled` and `RXwl`; no direct `isQueueReady()` call is emitted because Tahoe exports only the const symbol and the local SDK declaration is stale.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-107-build-20260426-queue-enable.txt`
+  - build log sha256: `05cbcb577b6cef0e4e3fae4b4d7ceecc2eca56b25df0a0ca20233e1423a62585`
+  - built binary UUID: `59229FCD-B203-3DDC-8518-10F617BCCF66`
+  - built binary sha256: `741510e52c02c84b1552d5c10b8376467c5c306cb35075c0541c2350e584a2ca`
+- disassembly verification:
+  - focus artifact: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-107-queue-enable-disasm-imports-20260426.txt`
+  - focus artifact sha256: `c3c1fd49a22e16254b8c00694dcb9ec2df8807b3afa49203848cf0beabfa091e`
+  - `enableAdapter(...)` shows queue virtual slot `0x150` calls before HAL enable, matching queue `enable()`.
+  - `disableAdapterCore(...)` shows queue virtual slot `0x158` calls before HAL disable, matching queue `disable()`.
+  - both functions use slot `0x160` only for inherited `isEnabled()` verification logging.
+- diff artifact:
+  - `/Users/bob/Projects/itlwm/commit-approval/artifacts/CR-107-queue-enable.diff`
+  - final diff sha256 and line count are recorded in the CR-107 Stage 1 request.
+- notes:
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-RSN-APPLE-SUPPLICANT-V2-OVERRIDE-034
+- status: REJECTED
+- symptom: after CR-107 the driver remains visible and WCL accepts the associated BSS, but the join does not complete RSN; the UI shows a transient connected icon/no internet and then the AP deauths the station.
+- first visible manifestation: CR-108 CONTROL_STA_NETWORK runtime, `2026-04-26 08:31:25..08:31:29 +0300`, after the CR-107 queue-enabled driver was loaded.
+- expected system behavior: Tahoe V2 controller must advertise the Apple RSN supplicant contract through the V2 `IO80211Controller::useAppleRSNSupplicant(IO80211VirtualInterface *)` virtual seam; then CoreWiFi/WCL can run Apple-managed RSN/EAPOL, deliver EAPOL through the Apple path, and call the existing `setCIPHER_KEY(...)` producer for PTK/GTK.
+- actual behavior: CR-037 enabled `USE_APPLE_SUPPLICANT` for the Tahoe target, but the only local `useAppleRSNSupplicant(...)` implementation remains in legacy `AirportItlwm.cpp`. Tahoe builds `AirportItlwmV2.cpp` instead, and the built Tahoe binary has no `AirportItlwm::useAppleRSNSupplicant` symbol.
+- divergence point: `AirportItlwm/AirportItlwmV2.hpp` lacks the V2 `useAppleRSNSupplicant(IO80211VirtualInterface *)` override declared by `include/Airport/IO80211ControllerV2.h`; `AirportItlwm/AirportItlwmV2.cpp` therefore never returns the `USE_APPLE_SUPPLICANT` state on that system-facing virtual.
+- evidence:
+  - runtime logs: `commit-approval/runtime_evidence/CR-108-current-control_sta_network-runtime-20260426.txt` shows `ASSOC -> RUN`, `postTahoeWclLinkUpInd msg=0xd8`, `WCL Joined Bss ... BSSID=50:4F:3B:CD:DD:67`, `sendWCLJoinDone ... lastStatusCode=0`, and `postTahoeWclConnectCompleteEvent ... status=0`, followed by repeated `CWEAPOLClient ... failed to retrieve 8021X state (2)` and later `ieee80211_recv_deauth` / `RUN -> AUTH`.
+  - ioreg: `commit-approval/runtime_evidence/CR-108-current-ioreg-io80211-20260426.txt` / focused IOService dump show the driver is loaded on `en0` and `IO80211RSNDone = No` after the failed attempt.
+  - negative runtime markers: the CR-108 focused artifacts contain no local `setCIPHER_KEY`, no `output EAPOL packet`, and no `input EAPOL packet` marker before deauth, so the first missing producer is before key install/DHCP/data.
+  - source: `include/Airport/IO80211ControllerV2.h` declares `virtual bool useAppleRSNSupplicant(IO80211VirtualInterface *);`; `AirportItlwm/AirportItlwmV2.hpp` has no override; legacy `AirportItlwm.cpp` implements only `useAppleRSNSupplicant(IO80211Interface *)`.
+  - build/source list: `itlwm.xcodeproj/project.pbxproj` uses `AirportItlwmV2.cpp in Sources` for the Tahoe target and the Tahoe build settings contain `USE_APPLE_SUPPLICANT`.
+  - binary: `nm -a -C Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm` shows `vtable for AirportItlwm` but no `AirportItlwm::useAppleRSNSupplicant`.
+  - reference: BootKC exports `AppleBCMWLANCore::useAppleRSNSupplicant()` and `IO80211InfraInterface::handleKeyDone(bool,bool)`, proving that Apple’s reference driver has an explicit RSN-supplicant producer seam and later key-done consumer path on Tahoe.
+  - consolidated evidence artifact: `commit-approval/runtime_evidence/CR-108-apple-rsn-v2-override-root-cause-evidence-20260426.txt`, sha256 `dd6a20b357f0e73933ebf64ea360e7e9a4a49d8da414d5e3ef0e79cf7082164d`.
+- candidate causes:
+  - rejected: Tahoe V2 never overrides the Apple-supplicant virtual seam, so the system observes an Apple-facing join surface but cannot start/retrieve the expected 802.1X supplicant state for this controller.
+  - moved to confirmed anomaly: `setWCL_ASSOCIATE(...)` currently reads BSSID from offset `0x1F4`, which is zero while `WCLJoinRequest` selected `50:4F:3B:CD:DD:67`; the exact carrier source is now proven as candidate count `+0x218` and first candidate BSSID `+0x220` in `A-ASSOC-WCL-CANDIDATE-BSSID-035`.
+- rejected causes:
+  - CR-107 queue-enabled bit as current first blocker: rejected for CR-108 scope; after CR-107 there is no observed `skywalkRxInput: enqueuePackets failed 0xe00002d7`, and WCL reaches successful current-BSS/connect-complete.
+  - WCL current-BSS/connect-complete producers: rejected as current first blocker; CR-108 logs show WCL joined BSS and `sendWCLJoinDone lastStatusCode=0 extendedCode=0`.
+  - forcing `IO80211RSNDone`, fabricating `setCIPHER_KEY`, or posting synthetic key completion: rejected as fake success and masking.
+  - changing BSSID carrier offset now: rejected until exact reference/carrier proof identifies the correct source.
+- confirmed deviation: rejected as a patchable Tahoe V3 root cause. Tahoe target builds with `IO80211FAMILY_V3`, and `include/Airport/IO80211ControllerV3.h` has no `useAppleRSNSupplicant(...)` virtual slot. The earlier V2-header seam does not apply to the loaded Tahoe class layout.
+- root cause: rejected. The build failure proves adding this override would not align to a real Tahoe V3 system-facing virtual and would create a non-building diff, so the current RSN/EAPOL blocker must be below a different seam.
+- fix: none. The attempted V2/V3 override candidate was removed immediately after build rejection.
+- verification:
+  - `git diff --check`
+  - Tahoe build through `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - binary audit must show `AirportItlwm::useAppleRSNSupplicant(IO80211VirtualInterface*)`
+  - after Stage 1 approval, install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, and verify whether the failure moves from `CWEAPOLClient failed to retrieve 8021X state` / no `setCIPHER_KEY` to EAPOL/key progress or a later concrete datapath blocker.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-RSN-APPLE-SUPPLICANT-V2-OVERRIDE-034
+- candidate_status: REJECTED_AFTER_BUILD_HEADER_CHECK
+- symptom: WCL current-BSS/connect-complete succeeds, but RSN/EAPOL never starts visibly; no `setCIPHER_KEY`, `IO80211RSNDone = No`, then AP deauth / link down.
+- expected system behavior: Tahoe V2 controller exposes the Apple RSN supplicant contract through `useAppleRSNSupplicant(IO80211VirtualInterface *)`, coherent with the already enabled Tahoe `USE_APPLE_SUPPLICANT` build macro and the existing `getRSN_IE` / `setRSN_IE` / EAPOL handoff / `setCIPHER_KEY` touchpoints.
+- actual behavior: Tahoe target compiles `AirportItlwmV2.cpp`, but the only local supplicant override is the legacy `IO80211Interface *` implementation in `AirportItlwm.cpp`; current Tahoe binary has no local override symbol.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.hpp` and `AirportItlwm/AirportItlwmV2.cpp` omit the V2 `IO80211VirtualInterface *` override.
+- evidence from runtime:
+  - CR-108 logs show WCL successful join/current-BSS/connect-complete, repeated `CWEAPOLClient ... failed to retrieve 8021X state (2)`, no `setCIPHER_KEY` / EAPOL markers, `IO80211RSNDone = No`, then AP deauth.
+- evidence from decomp:
+  - BootKC symbol evidence exposes `AppleBCMWLANCore::useAppleRSNSupplicant()` and `IO80211InfraInterface::handleKeyDone(bool,bool)` on the Tahoe reference path.
+  - The V2 SDK header exposes the exact system-facing virtual seam as `IO80211Controller::useAppleRSNSupplicant(IO80211VirtualInterface *)`.
+- exact semantic mismatch between reference and our code:
+  - reference has an explicit Apple RSN supplicant producer seam; local Tahoe V2 leaves the producer inherited/default while compiling the rest of the Apple-supplicant RSN/EAPOL branches.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: V2 `useAppleRSNSupplicant(IO80211VirtualInterface *)`; Tahoe `USE_APPLE_SUPPLICANT` build setting; `getRSN_IE(...)`; `setRSN_IE(...)`; net80211 EAPOL handoff; `setCIPHER_KEY(...)`; `IO80211RSNDone` / `handleKeyDone` consumer state.
+  - expected contract at each touchpoint: controller reports Apple supplicant enabled; Apple-managed RSN IE override is available; inbound EAPOL is handed to Apple userspace; PTK/GTK are installed only through `setCIPHER_KEY`; RSN done remains driven by real key install.
+  - why no relevant touchpoints are missing: CR-108 has already passed scan visibility, hidden associate, WCL current-BSS, connect-complete, link-up, and queue enabled-bit; the first missing runtime producer is 802.1X/RSN start before any key/DHCP/data path.
+  - why proposed path adds no extra system-visible side effects: it only returns the compile-time Apple-supplicant contract through the documented virtual; it does not emit events, modify payloads, force state, retry, delay, fabricate keys, or bypass EAPOL.
+- why this is root cause and not just correlation:
+  - the runtime failure is exactly at supplicant-state retrieval before EAPOL/key events; the target contains the macro and all downstream branches, but the loaded V2 class has no producer override for the system query that enables that contract.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it restores the missing controller-level supplicant producer seam instead of changing downstream EAPOL/key behavior; the return semantics match the existing legacy AirportItlwm implementation already used by non-Tahoe Airport targets.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp::AirportItlwm`
+  - `AirportItlwm/AirportItlwmV2.cpp::AirportItlwm::useAppleRSNSupplicant`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - fake `APPLE80211_M_RSN_HANDSHAKE_DONE`: rejected as forced success.
+  - direct key fabrication or PMK import from WCL carrier: rejected; reference keeps WCL PMK ownership outside assoc candidates and key install must come through `setCIPHER_KEY`.
+  - delaying deauth / extending join timers: rejected as timing workaround.
+  - changing `setWCL_ASSOCIATE` BSSID offset now: rejected until exact carrier source is proven.
+- verification result:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build rejected the candidate because `useAppleRSNSupplicant` marked `override` does not override any Tahoe V3 base method.
+  - `include/Airport/IO80211ControllerV3.h` confirms Tahoe V3 has no such virtual slot; `include/Airport/IO80211ControllerV2.h` has the older V2 slot, but Tahoe does not compile against it.
+  - candidate removed; no Stage 1 request will be filed for this rejected path.
+
 ## POST-CR-104 WATCHLIST
 
 - scope: possible next failures around `_fWorkloop` and Skywalk queue lifecycle after the CR-104 queue workloop attach fix.
@@ -2652,3 +2952,5957 @@
   - final diff sha256 and line count are recorded in the CR-103 Stage 1 request to avoid self-referential diff hash churn.
 - notes:
   - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-ASSOC-TAHOE-LEGACY-ZERO-ASSOC-DONE-036
+- status: CONFIRMED_ROOT_CAUSE
+- symptom: after CR-109, the driver and scan list are visible, local association to `CONTROL_STA_NETWORK` reaches the selected WCL BSSID and briefly enters link-up/no-internet, then no EAPOL/key install occurs and the AP deauths with reason 15.
+- first visible manifestation: `2026-04-26 16:54:56 +0300` on loaded CR-109 binary UUID `66030ADC-0CDF-359F-BCA8-2F8FBEFF51ED`.
+- expected system behavior: on Tahoe, infrastructure association completion is owned by the WCL join path and is delivered to `IO80211SkywalkInterface::reportDataPathEvents(type=9, data=<apple join payload>, len=468, gated=false)`. The payload carries the join status consumed by the WCL/IO80211 join manager.
+- actual behavior: local net80211 `IEEE80211_EVT_STA_ASSOC_DONE` also posts legacy `APPLE80211_M_ASSOC_DONE` with `data=NULL,len=0,gated=true` before the WCL payloaded `type=9` completion.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp::eventHandler(...)` maps `IEEE80211_EVT_STA_ASSOC_DONE` to `APPLE80211_M_ASSOC_DONE` unconditionally for Tahoe.
+- evidence:
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-110-current-latest-control_sta_network-focused-20260426.log`, sha256 `69bf3a35247782fb1884b10086bff0bef5e7eba9bd593cab213f928c129b980a`.
+    - lines `18385..18802`: `setWCL_ASSOCIATE` now selects `BSSID=50:4f:3b:cd:dd:67 source=candidate candidates=1`, proving the CR-109 BSSID identity blocker is gone.
+    - lines `18921..18922`: local `ieee80211_node_join_bss` selects the same BSSID `50:4f:3b:cd:dd:67`.
+    - lines `18967..18996`: net80211 `eventHandler msgCode=1` posts `postMessageGated msg=9 dataLen=0`, which becomes `reportDataPathEvents type=0x9 data=0x0 dataLen=0 gated=1 ic_state=3`.
+    - lines `19059..19149`: WCL then publishes the real current BSS/link state and `reportDataPathEvents type=0x9 data=<private> dataLen=468 gated=0 ic_state=4`.
+    - counts in the same artifact: `type=0x9 data=0x0` appears 16 times; payloaded `type=0x9 dataLen=468` appears only 4 times; no `setCIPHER_KEY`, no logged EAPOL TX/RX, 118 `CWEAPOLClient ... failed to retrieve 8021X state (2)` lines, and 14 `Deauth received, reason 15` lines.
+    - `commit-approval/runtime_evidence/CR-110-currentboot-control_sta_network-bssinfo-20260426.log` proves `syncTahoeCurrentApAddress` and `getWCL_BSS_INFO` return the same selected BSSID, so current-BSS publication is not the current blocker.
+  - decomp:
+    - remote `/srv/project/ghidra_output/IO80211Family_decompiled.c`, `IO80211SkywalkInterface::reportDataPathEvents(...)`, case `9`, around lines `47305..47323`: payloaded `Infra assoc DONE` calls the WCL join manager status update through `FUN_ffffff800226f7b6(..., param_3[0x6e])`.
+    - the same case skips that status update when `param_3 == NULL`; the null legacy event only takes the common message path and lacks the WCL join status.
+    - remote `WCLJoinManager::sendWCLJoinDone(...)`, around lines `125760..125940`, builds and sends the WCL join-done bulletin; the CR-110 runtime observes this as the payloaded `type=9,len=468` event.
+    - remote `WCLNetManager::handleSupplicantEvent(...)`, around lines `8753..8765`, only accepts real supplicant payloads with `data != NULL` and `len == 0x28`, confirming that WCL-side state machines are payload-sensitive and not legacy zero-payload driven.
+  - docs:
+    - Tahoe event-payload notes in `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked*.yaml` classify extended WCL association/connect events as payloaded Tahoe events and old link/assoc events as legacy.
+- candidate causes:
+  - confirmed: local Tahoe publishes a non-reference, zero-payload legacy association completion before the WCL payloaded association completion.
+  - rejected: CR-109 selected-BSSID mismatch remains active; current logs prove candidate BSSID and local `join_bss` now match.
+  - rejected: current-BSS BSSID layout remains active; current logs prove `getWCL_BSS_INFO` returns BSSID `50:4f:3b:cd:dd:67` and valid channel/IE data.
+  - insufficient data after this fix: once zero-payload assoc-done is removed, RX EAPOL, TX EAPOL, key install, DHCP, and steady-state data may expose the next blocker.
+- rejected causes:
+  - replay/duplicate `0x42` READY: rejected because CR-110 already has `type=0x42 dataLen=24`; replay would be forbidden and non-reference.
+  - force `setCIPHER_KEY` / `RSN_HANDSHAKE_DONE`: rejected because no real EAPOL/key material has arrived through the Apple producer path.
+  - delay/retry association or WCL events: rejected as timing heuristic; the divergence is a deterministic extra producer.
+  - modify selected-BSSID again: rejected because CR-110 proves selected BSSID is now coherent.
+- confirmed deviation: Tahoe WCL association completion has a payloaded WCL join-done producer; local code additionally sends a legacy null-payload association-complete producer from net80211.
+- root cause: the first system-visible association-complete event on Tahoe is the local zero-payload legacy `APPLE80211_M_ASSOC_DONE`, so IO80211/WCL consumers observe an association completion without the WCL join-status payload before the real WCL join completion. The subsequent supplicant/key path never starts (`setCIPHER_KEY=0`, EAPOL TX/RX markers absent, repeated `CWEAPOLClient` state failures) and the AP deauths with reason 15.
+- fix: on Tahoe only, do not translate `IEEE80211_EVT_STA_ASSOC_DONE` into legacy `APPLE80211_M_ASSOC_DONE`; leave WCL `sendWCLJoinDone` / payloaded `reportDataPathEvents(type=9,len=468)` as the sole association-complete producer. Non-Tahoe legacy behavior remains unchanged.
+- verification:
+  - source check: Tahoe branch returns from `eventHandler(...)` on `IEEE80211_EVT_STA_ASSOC_DONE` before `postMessageGated`.
+  - build check: `git diff --check`, `bash -n scripts/build_tahoe.sh`, Tahoe build, BootKC unresolved-symbol validation.
+  - runtime check after Stage 1 approval: install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, and verify no `postMessageGated msg=9 dataLen=0` / no `reportDataPathEvents type=0x9 data=0x0` during the join; payloaded `type=0x9 dataLen=468`, `0xd8`, `0xd5`, and `0x42` remain; then classify whether `setCIPHER_KEY`, EAPOL TX/RX, DHCP, and data progress or expose the next blocker.
+- notes:
+  - This is not a replay or suppression of a valid Tahoe producer. It removes a legacy producer that has no WCL payload and is not the Tahoe association-complete owner.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-TAHOE-LEGACY-ZERO-ASSOC-DONE-036
+- symptom: CR-109 reaches coherent selected-BSSID association and WCL link/current-BSS publication, but RSN/EAPOL/key install does not begin and the AP deauths with reason 15.
+- expected system behavior: Tahoe association completion is delivered by the WCL join-done path as payloaded `reportDataPathEvents(type=9, len=468)`, followed by WCL link/connect/ready state; legacy zero-payload `APPLE80211_M_ASSOC_DONE` must not race ahead of that owner.
+- actual behavior: local `eventHandler(...)` posts `APPLE80211_M_ASSOC_DONE` with `data=NULL,len=0` for every net80211 `IEEE80211_EVT_STA_ASSOC_DONE`, including Tahoe hidden-WCL association.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::eventHandler(...)`, `case IEEE80211_EVT_STA_ASSOC_DONE`.
+- evidence from runtime:
+  - `CR-110-current-latest-control_sta_network-focused-20260426.log` shows CR-109 selected-BSSID alignment is fixed (`source=candidate`, `join_bss` BSSID `50:4f:3b:cd:dd:67`).
+  - the same log shows `postMessageGated msg=9 dataLen=0` and `reportDataPathEvents type=0x9 data=0x0 dataLen=0 gated=1 ic_state=3` preceding the WCL `WCL Joined Bss`, `setWCL_LINK_STATE_UPDATE`, and payloaded `reportDataPathEvents type=0x9 dataLen=468`.
+  - the same log shows no `setCIPHER_KEY`, no EAPOL TX/RX markers, repeated `CWEAPOLClient` failures, and AP deauth reason 15 after this malformed first assoc-complete edge.
+- evidence from decomp:
+  - `IO80211SkywalkInterface::reportDataPathEvents(...)` case `9` treats payloaded and null-payload paths differently; only the payloaded path calls the WCL join status update with `param_3[0x6e]`.
+  - `WCLJoinManager::sendWCLJoinDone(...)` is the WCL join-done producer; runtime observes it as the payloaded `type=9,len=468` event.
+  - AppleBCMWLAN has WCL/firmware join producers and no local net80211 legacy eventHandler that emits an extra null-payload `APPLE80211_M_ASSOC_DONE` before WCL join-done.
+- exact semantic mismatch between reference and our code: local Tahoe publishes two association-complete producers for one association: a legacy null-payload producer first and the WCL payloaded producer second. Reference Tahoe semantics use the WCL payloaded producer for the WCL association state.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation:
+  - the malformed zero-payload `type=9` is the first assoc-complete event in the failing runtime.
+  - decomp proves payload is semantically significant for WCL join-status propagation.
+  - runtime proves all earlier known blockers are cleared: networks visible, selected BSSID coherent, current BSS available, link-up/connect/ready events present.
+  - the first missing downstream state appears immediately after this duplicate/null assoc-complete edge: Apple supplicant state cannot be retrieved and no key producer is called.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - it leaves the WCL join-done producer intact and removes only the extra legacy net80211 producer on Tahoe.
+  - non-Tahoe legacy `IO80211Interface` behavior remains unchanged.
+  - no event replay, duplicate publish, fake success, forced key, retry, delay, polling, or fallback is introduced.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::eventHandler`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - replay `0x42` READY or payloaded `0x9`: rejected because producer-side reference evidence for replay is absent and current runtime already contains these events.
+  - fabricate `setCIPHER_KEY` / `RSN_HANDSHAKE_DONE`: rejected as fake RSN state.
+  - delay WCL join, delay EAPOL, or extend join timeout: rejected as timing heuristic.
+  - suppress AP deauth or report fake connected state: rejected as masking.
+  - modify RX/TX packet lifecycles without fresh EAPOL evidence: rejected for this fix; current default diagnostics were off and the first proven divergence is the association-complete producer edge.
+  - change CR-109 BSSID logic again: rejected by CR-110 runtime.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - `./scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  - disassemble/grep built binary for the new Tahoe skip log string and absence of Tahoe assoc-done mapping in the affected branch
+  - create CR-110 Stage 1 request; do not install, runtime-test, or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: `reportDataPathEvents(type=9)` has a payload-only WCL join-status update path; WCL join-done is a separate producer.
+- Есть ли прямое подтверждение по runtime-данным? Да: CR-110 shows the local null-payload assoc-done arrives before WCL payloaded assoc-done, with all earlier selected-BSSID/current-BSS blockers cleared.
+- Доказал ли я причинность, а не просто корреляцию? Да для текущего first bad system-visible edge: the malformed first assoc-complete lacks the payload required by the decompiled WCL status update, and the downstream supplicant/key path never starts after it.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Да: WCL join-done remains the sole Tahoe assoc-complete producer.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Да, не добавляю; удаляется только non-reference duplicate producer.
+- Не закрываю ли я симптом вместо причины? Нет: исправляется точка расхождения в producer ownership for assoc completion.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: paths and line anchors are listed above.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-110-TAHOE-SKIP-LEGACY-ASSOCDONE
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-ASSOC-TAHOE-LEGACY-ZERO-ASSOC-DONE-036`
+- source verification:
+  - `AirportItlwm/AirportItlwmV2.cpp::eventHandler(...)` now handles `IEEE80211_EVT_STA_ASSOC_DONE` with a Tahoe-only early return.
+  - Tahoe no longer maps this net80211 event to `APPLE80211_M_ASSOC_DONE`, so this branch cannot call `postMessageGated(...)` with `msg=9,data=NULL,len=0`.
+  - Non-Tahoe behavior remains unchanged and still maps the legacy event to `APPLE80211_M_ASSOC_DONE`.
+  - The retained current live diff still includes the already reviewed CR-107 queue enable lifecycle and CR-109 candidate-BSSID carrier fix because they are uncommitted and are part of the exact runtime baseline.
+- build verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build: passed.
+  - BootKC symbol verification: `OK: all 851 undefined symbols resolve against BootKC`.
+  - build log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-110-build-20260426-tahoe-skip-legacy-assocdone.txt`
+  - build log sha256: `dc2557bbedc2664fa18a52dc1640205578dc949bd6d0a139507161b90e259337`
+  - built binary UUID: `CC6CA7E8-EFAA-3740-9BF1-D5F74CC93E64`
+  - built binary sha256: `91b1e9c295d2b7c8220094354df720e21c6560d964853f670d1b3cca1df8e89d`
+- binary verification:
+  - built string evidence: `%s: DEBUG %s Tahoe: skip legacy zero-payload ASSOC_DONE; WCL JoinDone owns assoc completion`
+  - eventHandler disassembly focus: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-110-eventhandler-disasm-focus-20260426.txt`
+  - eventHandler disassembly focus sha256: `9a831f544df5141ada4bc6372e20f8c299b8d8e5d58b721c1751a120059c69df`
+  - disassembly lines `283..298` show the assoc-done case logging branch jumping directly to `eventHandler` return at `0x51a8a`, before the shared `runAction(postMessageGated, ...)` path at lines `342..354`.
+- runtime-before evidence:
+  - current failing runtime log: `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-110-current-latest-control_sta_network-focused-20260426.log`
+  - current failing runtime log sha256: `69bf3a35247782fb1884b10086bff0bef5e7eba9bd593cab213f928c129b980a`
+  - runtime proves the selected BSSID is coherent after CR-109, WCL current-BSS/link events are present, but legacy `type=0x9,data=NULL,len=0` events race ahead of payloaded `type=0x9,len=468` WCL join-done events; no `setCIPHER_KEY` or EAPOL progress follows.
+- notes:
+  - This implementation intentionally does not add retries, delays, event replay, fake key state, forced RSN success, queue bypass, or data-path packet changes.
+  - Do not install or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME` for the exact current diff.
+
+## ANOMALY
+
+- id: A-WCL-ROAM-LOCK-UNSUPPORTED-037
+- status: FIX_IMPLEMENTED
+- symptom: after CR-110 runtime, `CONTROL_STA_NETWORK` join reaches WCL join-done success and a transient link-up state, but RSN/key completion still does not occur; during the same join/link-up lifecycle, WCL `SET_ROAM_LOCK` commands fail with `0xe00002c7`.
+- first visible manifestation: `2026-04-26 17:54:04..17:55:52 +0300` on loaded CR-110 binary UUID `CC6CA7E8-EFAA-3740-9BF1-D5F74CC93E64`.
+- expected system behavior: Tahoe WCL roam manager sends `APPLE80211_IOC_WCL_SET_ROAM_LOCK` as a real one-byte IOUC command. The driver-side AppleBCMWLANCore handler rejects NULL with raw `0x16`, otherwise interprets the first byte as a boolean `roam_off` value and delegates it to `AppleBCMWLANRoamAdapter::setRoamLock(bool)`.
+- actual behavior: local `AirportItlwmSkywalkInterface::setWCL_SET_ROAM_LOCK(...)` is an explicit unsupported stub returning `0xe00002c7`, and the local header comments still claim no Apple producer was recovered.
+- divergence point: `AirportItlwm/AirportItlwmSkywalkInterface.cpp::setWCL_SET_ROAM_LOCK(...)` and the matching slot comment in `AirportItlwm/AirportItlwmSkywalkInterface.hpp`.
+- evidence:
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-111-control_sta_network-current-focused-20260426-1814.log`, sha256 `c3bf2dc04ba2c7aa593cc1e723b707e674a740878ac012c91677cf7b1df21889`.
+    - lines `53172..53173`: first WCL set fails before the first hidden associate attempt: `Set type=<APPLE80211_IOC_WCL_SET_ROAM_LOCK> ... res=<FAIL:-536870201:0xe00002c7>`.
+    - lines `53288..53289`: second WCL set fails before the retry associate attempt.
+    - lines `54360..54361`: WCL set fails exactly as NET_MANAGER reaches LINK_UP after `sendWCLJoinDone ... lastStatusCode=0`.
+    - lines `65279..65280`: WCL set fails again during leave/key-done cleanup.
+    - the same log proves CR-110 fixed its claim: `Tahoe: skip legacy` appears, `postMessageGated msg=9` is absent, `sendWCLJoinDone lastStatusCode=0` appears, and `airportd` reports `Successfully associated`.
+  - ioreg:
+    - current state after the failed attempt still has `IOInterfaceName=en0`, `IOLinkStatus=1`, and `IO80211RSNDone=No`, proving the failure is in the post-join WCL/RSN chain, not scan/UI publication.
+  - decomp:
+    - remote symbol corpus proves the producer exists: `AppleBCMWLANCore::setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock*) @ 0xffffff800160151a`, `AppleBCMWLANRoamAdapter::setRoamLock(bool) @ 0xffffff800154ee10`, `WCLRoamManager::setRoamLock(bulletinBoardMessage&) @ 0xffffff800212939e`, and `WCLRoamManager::updateRoamLockState(...) @ 0xffffff80021293cc`.
+    - remote `IO80211Family_decompiled.c` around `FUN_ffffff80021293cc`: WCL updates a roam-lock source bitmask and sends `cmdIouc(0x1ac, ..., &local_41, 1, ...)`, proving the driver payload is exactly one byte.
+    - remote `IO80211Family_decompiled.c` around `FUN_ffffff800212939e`: WCL bulletin handling reads source at payload `+0`, boolean at `+4`, force at `+5`, then calls `updateRoamLockState(...)`; this proves WCL owns the producer lifecycle, not a public user-space heuristic.
+    - remote disassembly artifact `/srv/project/ghidra_output/CR111_roam_lock_disasm.txt`, sha256 `aa4d410a5921e3e1f9db8ee109d10dc83a3032a8b6b6b097a62af5be03bf87b7`, decodes `AppleBCMWLANCore::setWCL_SET_ROAM_LOCK`: non-NULL data reads byte `data[0]`, converts it to bool with `setne`, loads RoamAdapter from core offset `+0x15c0`, and tail-calls `AppleBCMWLANRoamAdapter::setRoamLock(bool)`.
+    - remote `AppleBCMWLAN_Core_decompiled.c` / `AppleBCMWLANCoreMac_decompiled.c` around `AppleBCMWLANRoamAdapter::setRoamLock(bool)` proves the adapter programs a `"roam_off"` command with a 4-byte command payload containing the boolean argument.
+  - docs:
+    - local `docs/tahoe_signal_chain_audit.md` and current source comments saying no Apple producer was recovered are stale and contradicted by the decomp/runtime evidence above.
+- candidate causes:
+  - confirmed: local slot `[591]` returns unsupported for a real WCL command that Tahoe sends in the association/link-up lifecycle.
+  - insufficient data: this deviation is not yet proven to be the sole cause of missing `setCIPHER_KEY`/EAPOL; it must be removed before the remaining RSN/key/data blocker can be attributed cleanly.
+  - insufficient data: `setWCL_REASSOC(...)` also differs from recovered AppleBCMWLANCore because local code has an extra `ic_state == RUN` pre-gate; it is downstream after AP deauth in the current runtime and needs separate proof before patching.
+- rejected causes:
+  - reintroducing legacy assoc-done: rejected because CR-110 after-runtime proves that zero-payload assoc-done is gone while WCL join-done succeeds.
+  - forcing `IO80211RSNDone` or `setCIPHER_KEY`: rejected because no real key material has been observed.
+  - retrying, delaying, or replaying WCL events: rejected by protocol and no producer-side reference evidence.
+- confirmed deviation: reference has a real one-byte WCL roam-lock driver command path; local code advertises the slot but returns `kIOReturnUnsupported`.
+- root cause: not claimed as the sole RSN/EAPOL root cause. This is a confirmed system-facing deviation in the active join/link-up chain, and current user instruction allows proactive 1:1 removal of such divergences when the reference contract is known. The remaining no-internet/deauth symptom must still be reclassified after this unsupported WCL command is removed.
+- fix: replace the unsupported stub with a narrow Tahoe-compatible handler: NULL returns raw `0x16`, non-NULL consumes only byte `data[0]` as `roam_off`, stores the exact WCL roam-lock state in driver-owned state, logs the state, and returns success without emitting events, changing join state, forcing keys, or touching packet queues.
+- verification:
+  - source check: `setWCL_SET_ROAM_LOCK(...)` no longer returns unsupported for non-NULL data and does not change association, key, EAPOL, RX, TX, or WCL completion code.
+  - structural check: `git diff --check`; exact patch artifact for CR-111; Stage 1 request before build/install/runtime.
+  - after approval runtime check: install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, verify no `APPLE80211_IOC_WCL_SET_ROAM_LOCK ... 0xe00002c7`, verify `WCL [591] ... roam_off=<0|1>` logs appear at the same lifecycle points, then reclassify the first remaining blocker by `setCIPHER_KEY`, EAPOL RX/TX, DHCP/IP, and data-path evidence.
+- notes:
+  - This patch intentionally does not implement Apple firmware command transport `"roam_off"` because the local port does not carry `AppleBCMWLANRoamAdapter`; it preserves the exact system-facing WCL IOUC contract and state carrier without adding a guessed firmware substitute.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-WCL-ROAM-LOCK-UNSUPPORTED-037
+- symptom: after CR-110, WCL join-done/connect-complete succeeds, but the association still falls out before RSN/data completion; in that same lifecycle, `APPLE80211_IOC_WCL_SET_ROAM_LOCK` repeatedly fails with `0xe00002c7`.
+- expected system behavior: WCL sends selector `0x1ac` with a one-byte boolean payload; AppleBCMWLANCore consumes byte `0` as `roam_off` and delegates it to the roam adapter.
+- actual behavior: local Tahoe interface returns unsupported for every `setWCL_SET_ROAM_LOCK(...)` call.
+- exact divergence point: `AirportItlwmSkywalkInterface::setWCL_SET_ROAM_LOCK(...)`.
+- evidence from runtime:
+  - `CR-111-control_sta_network-current-focused-20260426-1814.log` lines `53172..53173`, `53288..53289`, `54360..54361`, and `65279..65280` show the same WCL selector failing with `0xe00002c7` during associate, retry, link-up, and cleanup.
+  - the same runtime shows networks visible, selected-BSSID coherent, no legacy zero-payload assoc-done, WCL join-done success, and `Successfully associated`, so this is not a scan/UI or CR-110 regression.
+- evidence from decomp:
+  - `WCLRoamManager::updateRoamLockState(...)` sends `cmdIouc(0x1ac, ..., &local_41, 1, ...)`; the payload length is exactly one byte.
+  - `AppleBCMWLANCore::setWCL_SET_ROAM_LOCK(...)` disassembly consumes `data[0] != 0` and tail-calls `AppleBCMWLANRoamAdapter::setRoamLock(bool)`.
+  - `AppleBCMWLANRoamAdapter::setRoamLock(bool)` builds the `"roam_off"` command with that boolean payload.
+- exact semantic mismatch between reference and our code: reference accepts and consumes a real one-byte WCL roam-lock command; local code returns unsupported and discards it.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: WCL IOUC selector `0x1ac`; `apple80211_set_roam_lock` non-NULL payload byte `0`; NULL return code; local stored roam-lock state; log evidence; absence of association/key/data side effects.
+  - expected contract at each touchpoint: selector `0x1ac` must not return unsupported for valid WCL payload; byte `0` is interpreted as the boolean roam-off state; NULL is rejected with raw `0x16`; no WCL join/key/data state is fabricated; no retry/replay/delay is introduced.
+  - why no relevant touchpoints are missing: within this claim scope, the observed failure is the WCL command contract itself. The Apple hidden roam-adapter firmware owner is not present in itlwm, and using a guessed local firmware/scan substitute would create an unproven extra side effect. The remaining RSN/EAPOL/DHCP touchpoints are explicitly outside this claim and will be classified after this command stops failing.
+  - why proposed path adds no extra system-visible side effects: the patch only stores the incoming one-byte state and returns the reference non-NULL success result; it emits no events, changes no link/assoc state, installs no keys, sends no frames, does not touch RX/TX queues, and does not alter scan results.
+- why this is root cause and not just correlation:
+  - root cause of the `WCL_SET_ROAM_LOCK -> 0xe00002c7` failures is confirmed by direct source/decomp/runtime evidence.
+  - this candidate does not claim to be the sole cause of missing RSN/EAPOL completion; it removes a confirmed Tahoe contract deviation in the active failing lifecycle so the next runtime can expose the true remaining blocker without this unsupported-command noise.
+- why proposed fix is 1:1 with reference architecture and semantics:
+  - payload shape matches reference exactly: one byte, `data[0] != 0`.
+  - NULL contract matches the recovered raw `0x16` path.
+  - the patch does not invent a local firmware command; it preserves the recovered command state in the local owner until a proven local roam-adapter equivalent is available.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp::setWCL_SET_ROAM_LOCK`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp` local payload struct and init state
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp` cached state members and slot comment
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - return success without consuming payload: rejected because reference consumes byte `0`.
+  - send a guessed local reassoc/scan/roam command: rejected because no exact local equivalent to `AppleBCMWLANRoamAdapter::setRoamLock(bool)` is proven.
+  - alter EAPOL/key/DHCP paths in the same patch: rejected because WCL roam-lock failure is a separate confirmed contract deviation and EAPOL root cause remains unproven after CR-110.
+  - patch `setWCL_REASSOC(...)` now: rejected for this batch because the extra local RUN gate is downstream after AP deauth in current runtime and needs its own proof/safe 1:1 carrier handling.
+  - replay or delay WCL events: rejected by protocol.
+- verification plan:
+  - `git diff --check`
+  - create exact CR-111 patch artifact and Stage 1 structural request
+  - do not build, install, runtime-test, or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`
+  - after approval, build via Tahoe script, copy to `/L/E/` without unloading, reboot, retry `CONTROL_STA_NETWORK`, and collect sudo logs proving `WCL_SET_ROAM_LOCK` no longer fails plus next-stage RSN/EAPOL/DHCP evidence.
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Да: WCL sends selector `0x1ac` with one byte; AppleBCMWLANCore consumes byte `0` and calls `setRoamLock(bool)`.
+- Есть ли прямое подтверждение по runtime-данным? Да: current CR-111 runtime shows repeated `WCL_SET_ROAM_LOCK -> 0xe00002c7` exactly in the join/link-up lifecycle.
+- Доказал ли я причинность, а не просто корреляцию? Да для unsupported-command failure itself; no для полного EAPOL/DHCP blocker, поэтому claim scope ограничен confirmed deviation.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Да для system-facing selector payload/null/success contract; hidden firmware roam owner intentionally not guessed.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Да, не добавляю; нет retry/delay/replay/fake state.
+- Не закрываю ли я симптом вместо причины? Нет: исправляется прямое расхождение `unsupported` vs real WCL command, а оставшийся no-internet/deauth остаётся открытым.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: artifacts and paths are listed above.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-111-WCL-ROAM-LOCK-CONTRACT
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-WCL-ROAM-LOCK-UNSUPPORTED-037`
+- source verification:
+  - `AirportItlwmSkywalkInterface::setWCL_SET_ROAM_LOCK(...)` now rejects NULL with raw `0x16`.
+  - non-NULL payload is treated as the exact one-byte WCL carrier; byte `0` is stored as `cachedWclRoamLocked`.
+  - the handler logs `WCL [591] ... roam_off=<0|1>` and returns success without posting events, forcing link/RSN state, sending frames, or touching RX/TX queues.
+  - the stale slot comment now points to the recovered WCLRoamManager / AppleBCMWLANCore producer path.
+- structural verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build/install/runtime not performed: Stage 1 approval is required first.
+- runtime-before evidence:
+  - `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-111-control_sta_network-current-focused-20260426-1814.log`
+  - sha256 `c3bf2dc04ba2c7aa593cc1e723b707e674a740878ac012c91677cf7b1df21889`
+  - the log shows four `APPLE80211_IOC_WCL_SET_ROAM_LOCK -> 0xe00002c7` failures in the join/link-up/cleanup lifecycle while CR-110's assoc-done fix remains effective.
+- decomp evidence:
+  - `/srv/project/ghidra_output/CR111_roam_lock_disasm.txt`
+  - sha256 `aa4d410a5921e3e1f9db8ee109d10dc83a3032a8b6b6b097a62af5be03bf87b7`
+  - the disassembly proves `data[0] != 0` is the driver-side boolean consumed by `AppleBCMWLANCore::setWCL_SET_ROAM_LOCK(...)`.
+- notes:
+  - This implementation is intentionally not a full local roaming engine. It removes the confirmed WCL system-contract deviation and leaves RSN/EAPOL/DHCP root-cause classification to the next runtime.
+
+## ANOMALY
+
+- id: A-RSN-EAPOL-PASSIVE-PROBE-038
+- status: CORRELATED
+- symptom: after CR-110 runtime, Tahoe WCL join-done succeeds and the UI reaches a transient associated/no-internet state, but `IO80211RSNDone` remains `No`, no `setCIPHER_KEY(...)` producer is observed, and the AP eventually deauths with reason 15.
+- first visible manifestation: `2026-04-26 17:54:19..17:55:52 +0300` in `CR-111-control_sta_network-current-focused-20260426-1814.log`.
+- expected system behavior: after successful WCL join-done, RSN should progress through inbound EAPOL, optional outbound EAPOL, Apple key installation via `setCIPHER_KEY(...)`, `IO80211RSNDone`, DHCP/IP, and data traffic.
+- actual behavior: the current default log proves successful WCL join-done and `airportd` association, but it does not prove whether EAPOL RX reaches `skywalkRxInput(...)`, whether EAPOL TX reaches `skywalkTxAction(...)` / `outputPacket(...)`, or whether the failure is before `setCIPHER_KEY(...)`.
+- divergence point: unresolved within the post-WCL-join RSN/data chain; current evidence narrows the unknown to EAPOL RX delivery, EAPOL TX delivery, Apple supplicant/key producer, or post-key data.
+- evidence:
+  - runtime logs:
+    - `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-111-control_sta_network-current-focused-20260426-1814.log`
+    - sha256 `c3bf2dc04ba2c7aa593cc1e723b707e674a740878ac012c91677cf7b1df21889`
+    - lines `53710..53722`: `sendWCLJoinDone lastStatusCode=0 extendedCode=0` and payloaded `reportDataPathEvents type=0x9 dataLen=468`.
+    - line `53751`: `airportd` reports `Successfully associated`.
+    - lines `54360..54361` and `65279..65280`: active WCL `SET_ROAM_LOCK` failures, addressed by `A-WCL-ROAM-LOCK-UNSUPPORTED-037`.
+    - lines `54524..60141`: repeated AP deauth reason 15 after transient association.
+    - line `65275`: `handleKeyDone` reports `IO80211RSNDone set=<0>`.
+    - focused grep shows no `setCIPHER_KEY`, no `APPLE80211_IOC_CIPHER_KEY`, no `input EAPOL`, and no `output EAPOL` markers in the default log.
+  - decomp:
+    - `AppleBCMWLANCore::setWCL_REASSOC(...)` delegates to `AppleBCMWLANNetAdapter::sendReassocCommand(...)`; decomp of `sendReassocCommand(...)` contains an associated-state check and returns `0xe00002bc` on not-associated, so the current `WCL_REASSOC -> 0xe00002bc` after deauth is not a safe pre-deauth root fix.
+    - `AppleBCMWLANCore::setEAP_FILTER_CONFIG(...)` rejects NULL with `0xe00002bc`, stores the first dword, and enters a core vtable path; current local handling already satisfies the visible carrier contract and no runtime selector failure is observed.
+    - `AppleBCMWLANInfraProtocol::setCIPHER_KEY(...)` / existing local `setCIPHER_KEY(...)` remain the real key-install producer path, but the runtime has no call to that producer.
+- candidate causes:
+  - confirmed for a parallel system-facing deviation: `WCL_SET_ROAM_LOCK` is a real one-byte WCL selector and local code returned unsupported; this is covered by `A-WCL-ROAM-LOCK-UNSUPPORTED-037`.
+  - insufficient data: inbound EAPOL may not reach `skywalkRxInput(...)`.
+  - insufficient data: inbound EAPOL may reach RX but fail before/at `fRxQueue->enqueuePackets(...)`.
+  - insufficient data: Apple supplicant may not emit outbound EAPOL.
+  - insufficient data: outbound EAPOL may be dropped in `skywalkTxAction(...)` before `outputPacket(...)`.
+  - insufficient data: key installation may not call `setCIPHER_KEY(...)` after EAPOL.
+- rejected causes:
+  - patch `setWCL_REASSOC(...)` in this batch: rejected because current failure is after AP deauth and recovered reference `sendReassocCommand(...)` also has an associated-state guard with `0xe00002bc` not-associated return.
+  - patch `getWCL_BSS_INFO(...)` in this batch: rejected because current runtime reaches WCL join-done success and `airportd` association; repeated BSS-info failures appear after the link is already lost.
+  - add `APPLE80211_IOC_CIPHER_KEY` routing without a producer attempt: rejected because current logs show no key command attempt or route failure.
+  - force `IO80211RSNDone`, fabricate keys, replay events, delay joins, or retry EAPOL: rejected by protocol and would mask the missing producer/packet evidence.
+- confirmed deviation: none yet for the remaining RSN/EAPOL layer; this anomaly exists to justify passive instrumentation only.
+- root cause: not claimed. The post-WCL-join symptom is correlated with a missing RSN/key transition, but current logs do not identify the first missing EAPOL/key touchpoint.
+- fix: add bounded, behavior-neutral EAPOL probe logs in the existing RX/TX packet paths so the next single reboot can classify whether the blocker is RX ingress, RX enqueue, TX emission, key producer, or later data.
+- verification:
+  - source check: probe reads only Ethernet EtherType/length already present in the packet buffer or mbuf; no packet bytes, ordering, queues, ownership, return values, gating, or WCL state are changed.
+  - structural check: `git diff --check`, `bash -n scripts/build_tahoe.sh`.
+  - after Stage 1 approval: build/install without unloading, reboot, attempt one `CONTROL_STA_NETWORK` join, then collect sudo logs for `ITLWM_EAPOL`, `output EAPOL packet`, `setCIPHER_KEY`, `IO80211RSNDone`, DHCP/IP, and AP deauth.
+- notes:
+  - This is intentionally a batch companion to the `WCL_SET_ROAM_LOCK` contract fix. It is not a speculative RSN fix.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-RSN-EAPOL-PASSIVE-PROBE-038
+- symptom: WCL join-done succeeds and the UI shows transient association, but RSN/key/data completion does not happen and current logs lack enough EAPOL visibility to classify the next root cause in one reboot.
+- expected system behavior: post-join EAPOL RX/TX and `setCIPHER_KEY(...)` are observable enough to prove where RSN fails without changing packet behavior.
+- actual behavior: with default diagnostics off, `skywalkRxInput(...)` does not log EAPOL RX success/failure, and `skywalkTxAction(...)` can drop a Skywalk packet before `outputPacket(...)` without an EAPOL-specific marker.
+- exact divergence point: observability gap at `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput(...)` and `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction(...)`.
+- evidence from runtime:
+  - `CR-111-control_sta_network-current-focused-20260426-1814.log` shows WCL join-done success, `airportd` association, `IO80211RSNDone set=<0>`, no `setCIPHER_KEY`, no `APPLE80211_IOC_CIPHER_KEY`, and no EAPOL markers.
+  - repeated reason-15 deauths prove the failure is in the RSN/key window after association, not scan/UI publication.
+- evidence from decomp:
+  - no decomp evidence is required for a pure diagnostic probe; decomp is used only to reject speculative fixes in nearby selectors (`WCL_REASSOC` and `EAP_FILTER_CONFIG`).
+- exact semantic mismatch between reference and our code: not claimed; this is `DIAGNOSTIC_INSTRUMENTATION`, not a reference-alignment fix.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- if DIAGNOSTIC_INSTRUMENTATION:
+  - exact hypotheses being disambiguated: EAPOL RX absent; EAPOL RX present but dropped before enqueue; EAPOL RX enqueued but Apple supplicant emits no TX; EAPOL TX emitted but dropped before `outputPacket`; EAPOL exchange reaches key material but `setCIPHER_KEY` is not called; post-key data remains broken.
+  - exact probe points: `skywalkRxInput(...)` after EtherType detection and at each existing RX terminal result; `skywalkTxAction(...)` after valid Skywalk packet data is available and at pre-output drop/output result; existing `outputPacket(...)` EAPOL log; existing `setCIPHER_KEY(...)` log.
+  - why these probe points are sufficient: they bracket the packet boundary before userspace (RX), the userspace-to-driver Skywalk TX boundary, the legacy hardware output queue, and the existing key-install producer without adding new producers.
+  - why instrumentation is behavior-neutral: it only reads EtherType/length from already-owned packet memory and emits bounded `XYLog` lines; it does not mutate packet data, queue state, link state, WCL state, return codes, ownership, ordering, or timing logic.
+  - what exact runtime evidence must be collected: first-N `ITLWM_EAPOL path=rx|tx stage=... len=... result=...` lines, any existing `output EAPOL packet` line, any `setCIPHER_KEY` line, `IO80211RSNDone`, DHCP/IP evidence, and deauth reason/timing.
+- why this is root cause and not just correlation: not claimed; this patch is explicitly limited to missing evidence in a localized post-join causal chain.
+- why proposed fix is 1:1 with reference architecture and semantics: not applicable; no behavior is changed. It preserves all existing producers and packet paths.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::airportItlwmRegDiagMbufIsEapol`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - force `setCIPHER_KEY` / `IO80211RSNDone`: rejected as fake key state.
+  - add retries, delays, polling, or event replay: rejected by protocol.
+  - patch `WCL_REASSOC` now: rejected by reference associated-state guard and current after-deauth timing.
+  - patch `BSS_INFO` now: rejected as downstream after current-BSS/join success.
+  - route `CIPHER_KEY` speculatively: rejected because no CIPHER_KEY producer attempt is observed.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - generate a superseding batch patch artifact and Stage 1 request.
+  - do not build, install, runtime-test, or commit until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## SELF-CHECK
+
+- Есть ли прямое подтверждение по декомпилу? Для диагностической вставки оно не требуется; декомпил использован для отказа от неподтвержденных фиксов `WCL_REASSOC` и `EAP_FILTER_CONFIG`.
+- Есть ли прямое подтверждение по runtime-данным? Да: текущий лог локализует сбой после WCL join-done и до `setCIPHER_KEY`/`IO80211RSNDone`, но не содержит RX/TX EAPOL markers.
+- Доказал ли я причинность, а не просто корреляцию? Нет, и поэтому кодовый change class строго `DIAGNOSTIC_INSTRUMENTATION`.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Поведение не меняется; probe не добавляет producer/consumer path.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? Да, не добавляю.
+- Не закрываю ли я симптом вместо причины? Нет: цель - собрать missing runtime evidence за один reboot после удаления уже доказанного WCL roam-lock deviation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, divergence point, runtime evidence? Да: paths and artifacts are listed above.
+
+## IMPLEMENTATION VERIFICATION
+
+- id: CR-112-POSTASSOC-WCL-RSN-BATCH
+- status: FIX_IMPLEMENTED
+- anomaly covered:
+  - `A-WCL-ROAM-LOCK-UNSUPPORTED-037`
+  - `A-RSN-EAPOL-PASSIVE-PROBE-038`
+- source verification:
+  - `setWCL_SET_ROAM_LOCK(...)` remains the reference-backed system-contract fix for WCL selector `0x1ac`: non-NULL payload byte `0` is consumed as `roam_off`, NULL returns raw `0x16`, and no link/key/data side effect is added.
+  - `airportItlwmEthernetBufferIsEapol(...)` only reads an Ethernet header from already-owned memory and has no packet mutation side effect.
+  - `skywalkRxInput(...)` now logs bounded `ITLWM_EAPOL path=rx ... stage=<terminal>` markers for EAPOL RX block/drop/success outcomes. It does not change allocation, preparation, copy, enqueue, mbuf free, return values, or queue ownership.
+  - `skywalkTxAction(...)` now logs bounded `ITLWM_EAPOL path=tx ... stage=mbuf-alloc|copyback|output` markers for EAPOL TX packets that have already exposed valid packet data. It records regdiag TX drops only for pre-output EAPOL drops when data diagnostics are enabled.
+  - Existing `outputPacket(...)` EAPOL and `setCIPHER_KEY(...)` logs remain the downstream markers; no forced key or RSN state was added.
+- structural verification:
+  - `git diff --check`: passed.
+  - `bash -n scripts/build_tahoe.sh`: passed.
+  - Tahoe build/install/runtime not performed: Stage 1 approval is required first.
+- rejected-in-batch verification:
+  - `WCL_REASSOC` was not patched: recovered reference `sendReassocCommand(...)` has an associated-state guard and current failure is after AP deauth.
+  - `getWCL_BSS_INFO` was not patched: current runtime reaches WCL join-done success and `airportd` association; observed getter failures are downstream after loss of association.
+  - `CIPHER_KEY` routing was not patched: current runtime shows no CIPHER_KEY producer attempt to route.
+- runtime-before evidence:
+  - `/Users/bob/Projects/itlwm/commit-approval/runtime_evidence/CR-111-control_sta_network-current-focused-20260426-1814.log`
+  - sha256 `c3bf2dc04ba2c7aa593cc1e723b707e674a740878ac012c91677cf7b1df21889`
+  - this log proves successful WCL join-done and UI association, four `WCL_SET_ROAM_LOCK -> 0xe00002c7` failures, no `setCIPHER_KEY`, no EAPOL markers, `IO80211RSNDone set=<0>`, and AP deauth reason 15.
+- expected after-fix runtime evidence:
+  - no `APPLE80211_IOC_WCL_SET_ROAM_LOCK ... 0xe00002c7`.
+  - bounded `WCL [591] ... roam_off=<0|1>` lifecycle logs.
+  - if association still fails, bounded `ITLWM_EAPOL path=rx|tx ...` markers must identify whether the next blocker is RX absence/drop, TX absence/drop, missing `setCIPHER_KEY`, or later DHCP/data.
+- notes:
+  - `CR-112` supersedes the narrower `CR-111` request because it keeps the exact WCL roam-lock contract fix and adds only behavior-neutral post-join telemetry needed to avoid another one-fix/one-reboot cycle.
+
+## ANOMALY
+
+- id: A-SKYWALK-INFRA-REGISTRATION-DIRECT-039
+- status: CONFIRMED_DEVIATION
+- symptom: after CR-112, UI-visible association reaches WCL join-done and `airportd` reports success, but RSN/EAPOL does not complete; inbound EAPOL reaches local `skywalkRxInput(...)` and `fRxQueue->enqueuePackets(...)` returns success, while no outbound EAPOL TX and no `setCIPHER_KEY(...)` producer are observed.
+- first visible manifestation: `2026-04-26 19:22:10..19:32:54 +0300` in `CR-113-focused-live-log-20260426-194658.log`.
+- expected system behavior: the Apple Wi-Fi reference starts its Skywalk interface through the infra registration shim `IO80211InfraInterface::registerInfraEthernetInterface(...)`, passing the registration info, queue array, queue count, TX pool, and RX pool.
+- actual behavior: local Tahoe start path calls `IOSkywalkEthernetInterface::registerEthernetInterface(...)` directly from `AirportItlwm::start(...)`.
+- divergence point: `AirportItlwm/AirportItlwmV2.cpp` STEP 8d registration call.
+- evidence:
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log`, sha256 `4a9c1ac912cc870746e38e5e9df5edd107ecb280b5f17289f3bf73770f39791f`.
+    - log proves `registerEthernetInterface=0x0`, WCL join-done success, `airportd` association, `ITLWM_EAPOL path=rx ... stage=enqueue-ok len=113 result=0x0`, no `ITLWM_EAPOL path=tx`, no `setCIPHER_KEY`, and `IO80211RSNDone set=<0> res=<1>`.
+  - regdiag:
+    - `commit-approval/runtime_evidence/CR-113-regdiag-snapshot-after-rebuild-20260426.txt`, sha256 `e2180806a7991e97d0bb03f8120f7fab765fad01b8e29a994ddca6f5c30e5a93`.
+    - snapshot shows driver objects present, `link=0x1`, `current_ssid=CONTROL_STA_NETWORK`, and live `txQ/rxQ` pointers.
+  - decomp:
+    - `xcrun nm -m /tmp/itlwm_ref/IO80211Family` exports `IO80211InfraInterface::registerInfraEthernetInterface(RegistrationInfo*, IOSkywalkPacketQueue**, unsigned int, IOSkywalkPacketBufferPool*, IOSkywalkPacketBufferPool*)` at `0xffffff80022e6bc4`.
+    - `xcrun nm -m /tmp/itlwm_ref/AppleBCMWLANCoreMac` shows AppleBCMWLAN dynamically imports the same symbol.
+    - remote decomp `IO80211Family_decompiled.c:263824..263920` shows `registerInfraEthernetInterface(...)` conditionally handles infra MAC state, then calls the underlying `FUN_ffffff8002a3d994(..., 0)` registration body.
+    - reference disassembly of `AppleBCMWLANSkywalkInterface::start(...)` around `0xffffff800155d1de` calls `IO80211InfraInterface::registerInfraEthernetInterface(...)`, not direct `registerEthernetInterface(...)`.
+- candidate causes:
+  - confirmed: local code bypasses the infra registration shim used by the reference Wi-Fi interface.
+  - insufficient data: whether this shim is the full root cause of missing EAPOL TX/key producer.
+  - still open: generic `IOSkywalkNetworkPacket` vs reference `IO80211NetworkPacket` subclass may be the next deeper packet-delivery mismatch, but implementing a custom packet class is not safe in this batch without exact local allocation proof.
+- rejected causes:
+  - call `IO80211InfraInterface::inputPacket(...)` manually from `skywalkRxInput(...)`: rejected because reference calls it with an `IO80211NetworkPacket*`/subclass; local RX allocation currently returns a generic Skywalk packet and a reinterpret-cast would violate ABI/ownership.
+  - fabricate EAPOL TX, key install, or RSN done: rejected by protocol and no key material producer evidence.
+  - add retry/replay/delay around RX completion: rejected by protocol and no reference producer-side proof.
+- confirmed deviation: reference uses `registerInfraEthernetInterface(...)`; local code uses direct `registerEthernetInterface(...)`.
+- root cause: not claimed as the sole RSN root cause. This is a confirmed active-layer reference divergence adjacent to the current blocker and safe to remove 1:1; the next runtime will show whether it restores IO80211 packet consumption or exposes the packet-subclass mismatch.
+- fix: declare the non-virtual infra registration shim in the local IO80211 header and call it from Tahoe STEP 8d with the same arguments currently passed to direct registration, without changing queues, pools, registration info content, BSD attach ordering, link state, or packet flow.
+- verification:
+  - source check: STEP 8d log must report `registerInfraEthernetInterface=0x0`.
+  - structural check: `git diff --check`.
+  - after Stage 1 approval: build/install without unloading, reboot, join `CONTROL_STA_NETWORK`, collect `regdiag snapshot/trace` and sudo logs for infra registration, `ITLWM_IO80211_INPUT`, EAPOL RX/TX, `setCIPHER_KEY`, `IO80211RSNDone`, and deauth/DHCP.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-INFRA-REGISTRATION-DIRECT-039
+- symptom: WCL association succeeds and EAPOL RX enqueue succeeds, but the Wi-Fi supplicant/key path does not produce EAPOL TX or `setCIPHER_KEY(...)`.
+- expected system behavior: reference Wi-Fi Skywalk start goes through `IO80211InfraInterface::registerInfraEthernetInterface(...)`.
+- actual behavior: local Tahoe start directly calls `IOSkywalkEthernetInterface::registerEthernetInterface(...)`.
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp::AirportItlwm::start` STEP 8d.
+- evidence from runtime: `CR-113-focused-live-log-20260426-194658.log` proves direct registration success, WCL join success, EAPOL RX enqueue success, and missing EAPOL TX/key producer.
+- evidence from decomp: IO80211Family exports `registerInfraEthernetInterface(...)`; AppleBCMWLAN imports and calls it in `AppleBCMWLANSkywalkInterface::start(...)`; IO80211Family decomp shows it wraps the same underlying registration body with infra-specific MAC/log handling.
+- exact semantic mismatch between reference and our code: reference enters the Wi-Fi infra registration shim; local code bypasses it and enters the lower Ethernet registration body directly.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: this candidate only claims a confirmed reference deviation in the active packet-delivery layer, not final root cause of RSN. User instruction for the current batch allows confirmed 1:1 divergences adjacent to the blocker to be removed before another reboot.
+- why proposed fix is 1:1 with reference architecture and semantics: same method, same argument shape, same queues, same pools, same registration info pointer, and no extra events/retries/replays are added.
+- files/functions to modify:
+  - `include/Airport/IO80211InfraInterface.h`
+  - `AirportItlwm/AirportItlwmV2.cpp::AirportItlwm::start`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - manual `inputPacket(...)` call with a cast packet pointer: rejected as unsafe ABI mismatch.
+  - change queue count or add synthetic queues: rejected until the local queue inventory is proven equivalent to reference `numTxQueues + 2`.
+  - change packet pool type: rejected for this batch because it requires a larger custom `IO80211NetworkPacket` allocation path.
+  - force RSN/key/EAPOL producer state: rejected.
+- verification plan:
+  - `git diff --check`.
+  - create CR-113 patch artifact and Stage 1 request.
+  - no build/install/runtime until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## ANOMALY
+
+- id: A-IO80211-INPUT-VISIBILITY-GAP-040
+- status: CORRELATED
+- symptom: local RX EAPOL is enqueued to the RX completion queue, but current evidence cannot prove whether IO80211 infra input/peer-manager processing receives the packet after enqueue.
+- first visible manifestation: `ITLWM_EAPOL path=rx ... stage=enqueue-ok` without any downstream EAPOL TX/key evidence in `CR-113-focused-live-log-20260426-194658.log`.
+- expected system behavior: reference `IO80211InfraInterface::inputPacket(...)` logs RX completion through the interface monitor and then delegates to `IO80211PeerManager::skywalkInputPacket(...)` with the packet, peer, tag, and Ethernet header.
+- actual behavior: local code has no marker at the virtual `inputPacket(IO80211NetworkPacket*, packet_info_tag*, ether_header*, bool*, bool)` boundary, so the next missing edge cannot be distinguished in one reboot.
+- divergence point: observability gap at `AirportItlwmSkywalkInterface` inherited `inputPacket(...)` slot.
+- evidence:
+  - runtime logs: RX EAPOL enqueue succeeds but no EAPOL TX/key producer is observed.
+  - decomp: `IO80211InfraInterface::inputPacket(...)` at `0xffffff80022e3f20` calls monitor logging, resolves peer manager from infra state, fills tag ethertype from packet data when available, and calls `IO80211PeerManager::skywalkInputPacket(...)` at `0xffffff80021dd7b4`.
+- candidate causes:
+  - RX completion may not invoke `inputPacket(...)` at all.
+  - RX completion may invoke `inputPacket(...)` with non-EAPOL/invalid header metadata.
+  - RX completion may invoke `inputPacket(...)` successfully, making the next blocker inside peer manager/supplicant/key producer.
+- rejected causes:
+  - changing payload/ownership at this boundary: rejected; diagnostic must be pure pass-through.
+  - forcing `inputPacket(...)` from local RX path: rejected because packet class compatibility is not proven.
+- confirmed deviation: none; this is a diagnostic visibility gap.
+- root cause: not claimed.
+- fix: add a Tahoe-only override of `AirportItlwmSkywalkInterface::inputPacket(...)` that records a bounded regdiag/log marker, calls `IO80211InfraInterface::inputPacket(...)` with unchanged arguments, records the return, and returns it unchanged.
+- verification:
+  - source check: override does not mutate packet/tag/header/flags or alter return semantics.
+  - after Stage 1 approval runtime: if `ITLWM_IO80211_INPUT` appears for EAPOL and returns success but TX/key still absent, the next blocker is downstream of IO80211 input; if it never appears, the blocker remains RX completion packet/queue class delivery.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-IO80211-INPUT-VISIBILITY-GAP-040
+- symptom: after RX EAPOL enqueue success, downstream IO80211/supplicant processing is not observable.
+- expected system behavior: IO80211 infra input boundary should be distinguishable from RX completion enqueue and key/TX producers.
+- actual behavior: current diagnostics bracket enqueue and TX/key only; they do not prove inherited `inputPacket(...)` entry/return.
+- exact divergence point: inherited `IO80211InfraInterface::inputPacket(...)` slot in `AirportItlwmSkywalkInterface`.
+- evidence from runtime: `CR-113-focused-live-log-20260426-194658.log` has RX enqueue success with no EAPOL TX and no `setCIPHER_KEY`.
+- evidence from decomp: IO80211Family decomp of `IO80211InfraInterface::inputPacket(...)` shows this is the exact boundary that delegates to peer manager packet input.
+- exact semantic mismatch between reference and our code: not claimed; this is diagnostic instrumentation.
+- diagnostic class: DIAGNOSTIC_INSTRUMENTATION
+- if DIAGNOSTIC_INSTRUMENTATION:
+  - exact hypotheses being disambiguated: RX completion never reaches IO80211 input; IO80211 input receives EAPOL but fails/returns error; IO80211 input succeeds and the next blocker is supplicant/key producer; non-EAPOL metadata reaches input while EAPOL does not.
+  - exact probe points: entry and return of `AirportItlwmSkywalkInterface::inputPacket(...)` Tahoe signature.
+  - why these probe points are sufficient: they sit immediately downstream of the RX completion queue and immediately upstream of peer manager/supplicant processing recovered in decomp.
+  - why instrumentation is behavior-neutral: the override only reads `ether_header::ether_type`, increments bounded diagnostic counters, emits bounded logs/traces, calls the base implementation with identical arguments, and returns the base result unchanged.
+  - what exact runtime evidence must be collected: `ITLWM_IO80211_INPUT stage=entry|return type=0x888e eapol=1 result=...`, regdiag trace entries, EAPOL RX/TX markers, `setCIPHER_KEY`, `IO80211RSNDone`, DHCP/IP, and deauth timing.
+- why this is root cause and not just correlation: root cause is not claimed; this probe is required to identify the first missing edge after already observed RX enqueue success.
+- why proposed fix is 1:1 with reference architecture and semantics: no behavior is changed; the existing reference/base implementation remains the sole packet consumer.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - manual call to base `inputPacket(...)` from `skywalkRxInput(...)`: rejected as an extra callback and unsafe packet class assumption.
+  - changing RX queue enqueue semantics: rejected for this diagnostic.
+  - widening regdiag schema: rejected; existing trace fields are enough.
+- verification plan:
+  - `git diff --check`.
+  - create CR-113 patch artifact and Stage 1 request.
+  - after approval, build/install/reboot and use `airport_itlwm_regdiag get trace` plus sudo logs for one join attempt.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes for the infra registration reference path and for the IO80211 input/peer-manager downstream boundary.
+- Есть ли прямое подтверждение по runtime-данным? Yes: CR-113 runtime and regdiag prove association/link/RX enqueue success with missing TX/key/RSN completion.
+- Доказал ли я причинность, а не просто корреляцию? For final RSN failure, no; therefore only the confirmed registration deviation is fixed, and the IO80211 input change is explicitly diagnostic.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? The registration fix does; the diagnostic override calls the same base implementation and does not alter semantics.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: no forced association, no forced key, no fake RSN, no replay/retry/delay.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: files, symbol addresses, runtime artifact names, and hashes are listed above.
+
+## ANOMALY
+
+- id: A-SKYWALK-QUEUE-ACCESSORS-INHERITED-041
+- status: CONFIRMED_DEVIATION
+- symptom: after RX EAPOL is accepted by the local RX completion queue, the Apple supplicant/key path still does not emit EAPOL TX or `setCIPHER_KEY(...)`; static audit of the active Skywalk layer shows the interface-visible queue/pool accessors are still inherited from base stubs.
+- first visible manifestation: CR-113 runtime proves `ITLWM_EAPOL path=rx ... stage=enqueue-ok len=113 result=0x0`, no `ITLWM_EAPOL path=tx`, no `setCIPHER_KEY(...)`, and `IO80211RSNDone set=<0> res=<1>`.
+- expected system behavior: the Wi-Fi Skywalk interface must expose its registered queue/pool inventory through the IO80211 virtual accessors. Reference AppleBCMWLANSkywalkInterface returns the concrete RX completion queue, TX submission queue selected by WME AC, TX packet pool, RX packet pool, and number of TX queues.
+- actual behavior: local `AirportItlwmSkywalkInterface` does not override these slots, so Tahoe `IO80211SkywalkInterface` base stubs return zero for `getRxCompQueue`, `getTxSubQueue`, `getTxPacketPool`, `getRxPacketPool`, and `getNumTxQueues`.
+- divergence point: `AirportItlwm/AirportItlwmSkywalkInterface.hpp` lacks queue/pool accessor overrides; `AirportItlwm/AirportItlwmSkywalkInterface.cpp` lacks implementations that return the already-created `AirportItlwm::fTxQueue`, `fRxQueue`, `fTxPool`, and `fRxPool`.
+- evidence:
+  - runtime evidence: `commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log`, sha256 `4a9c1ac912cc870746e38e5e9df5edd107ecb280b5f17289f3bf73770f39791f`, shows WCL join success, RX EAPOL enqueue success, no EAPOL TX/key producer.
+  - regdiag evidence: `commit-approval/runtime_evidence/CR-113-regdiag-snapshot-after-rebuild-20260426.txt`, sha256 `e2180806a7991e97d0bb03f8120f7fab765fad01b8e29a994ddca6f5c30e5a93`, shows live `txQ` and `rxQ` pointers while the interface accessors remain inherited.
+  - local static evidence: `rg` finds `getRxCompQueue/getTxSubQueue/getTxPacketPool/getRxPacketPool/getNumTxQueues` declarations only in `include/Airport/IO80211SkywalkInterface.h`, not in `AirportItlwmSkywalkInterface`.
+  - IO80211Family decomp: base `IO80211SkywalkInterface` functions at `0xffffff800227857e`, `0xffffff800227858e`, `0xffffff8002278596`, `0xffffff800227859e`, and `0xffffff80022785b6` return `0`.
+  - AppleBCMWLAN decomp:
+    - `AppleBCMWLANSkywalkInterface::getRxCompQueue()` at `0xffffff800155fb36` returns ivars `+0x68`.
+    - `AppleBCMWLANSkywalkInterface::getTxSubQueue(apple80211_wme_ac)` at `0xffffff800155fb5a` maps AC through ivars `+0x3c` and returns queue vector `+0x78 + queueId*8`.
+    - `AppleBCMWLANSkywalkInterface::getTxSubQueue(unsigned int)` at `0xffffff800155fb7e` bounds-checks against `numTxQueues` and returns queue vector `+0x78 + index*8`.
+    - `AppleBCMWLANSkywalkInterface::getTxPacketPool()` at `0xffffff800155fbb2` returns ivars `+0x50`.
+    - `AppleBCMWLANSkywalkInterface::getRxPacketPool()` at `0xffffff800155fbc4` returns ivars `+0x58`.
+    - `AppleBCMWLANSkywalkInterface::getNumTxQueues()` at `0xffffff800155fb24` returns ivars byte `+0x2a`.
+- candidate causes:
+  - confirmed: the local interface advertises no TX/RX queue/pool inventory through IO80211 accessors even though the controller has already created and registered those objects.
+  - insufficient data: whether this accessor gap is the full root cause of missing supplicant TX/key production or one prerequisite alongside packet subclass/TxCompletionQueue work.
+  - still open: reference has a separate TX completion queue and multicast queue; local has no proven 1:1 objects for those slots in this batch.
+- rejected causes:
+  - return `fTxQueue` from `getTxCompQueue()`: rejected because reference `getTxCompQueue()` returns a distinct TX completion queue at ivars `+0x60`, not the TX submission queue.
+  - fabricate a TX completion queue in this batch: rejected because AppleBCM uses a custom `AppleBCMWLANSkywalkTxCompletionQueue` subclass and exact local completion semantics are not proven.
+  - implement `pendingPackets()` / `packetSpace()` with guessed constants: rejected; reference calls queue methods and local public header/mangling for queue count/space still needs separate proof.
+  - force EAPOL TX/key/RSN state: rejected by protocol.
+- confirmed deviation: base IO80211 accessors return zero; reference Apple Wi-Fi accessors return concrete queue/pool inventory.
+- root cause: not claimed for final RSN failure. This is a confirmed active-layer reference deviation adjacent to the current blocker and safe to remove for the queue/pool objects that already exist locally.
+- fix: implement only the 1:1-safe accessor subset: `getRxCompQueue()`, `getTxSubQueue(apple80211_wme_ac)`, `getTxPacketPool()`, `getRxPacketPool()`, and `getNumTxQueues()`. Leave `getTxCompQueue()`, `getMultiCastQueue()`, depth/capacity, `pendingPackets()`, `packetSpace()`, and datapath methods unchanged until exact local objects/semantics are proven.
+- implementation ABI note: local headers only forward-declare `apple80211_wme_ac`, but the recovered AppleBCM `getTxSubQueue(apple80211_wme_ac)` body receives it as a 32-bit value (`uint param_2`) and uses it as an AC index. Completing the local forward declaration as a one-`UInt32` POD carrier is required for an out-of-line override and preserves the recovered 4-byte calling convention.
+- verification:
+  - source check: accessors return only existing object pointers from `AirportItlwm` and do not allocate, retain/release, enable/disable, enqueue, retry, replay, or mutate packet/link/key state.
+  - structural check: `git diff --check`.
+  - after Stage 1 approval: build/install without unloading, reboot, join `CONTROL_STA_NETWORK`, and collect logs/regdiag for accessor-enabled queue inventory, IO80211 input, EAPOL RX/TX, `setCIPHER_KEY`, `IO80211RSNDone`, and deauth/DHCP.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-QUEUE-ACCESSORS-INHERITED-041
+- symptom: WCL association succeeds and RX EAPOL enqueue succeeds, but the system still does not produce EAPOL TX/key installation; active-layer static audit finds inherited zero queue/pool accessors.
+- expected system behavior: IO80211 consumers querying a Wi-Fi Skywalk interface receive the same queue/pool inventory that was registered with the logical link.
+- actual behavior: local class inherits base stubs that return zero.
+- exact divergence point: `AirportItlwmSkywalkInterface` vtable slots for RX completion queue, TX subqueue, TX pool, RX pool, and TX queue count.
+- evidence from runtime: CR-113 focused log and regdiag show live queues/pools and RX enqueue success but no downstream TX/key producer.
+- evidence from decomp: AppleBCMWLAN returns ivar-backed queue/pool pointers; IO80211SkywalkInterface base stubs return zero for the same slots.
+- exact semantic mismatch between reference and our code: reference exposes the active queue/pool inventory through interface virtuals; local exposes no inventory through those virtuals.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: final RSN root cause is not claimed; the queue/pool accessor mismatch is a confirmed reference deviation in the currently active packet-delivery layer and removing it is necessary before a meaningful after-fix runtime can classify the remaining blocker.
+- why proposed fix is 1:1 with reference architecture and semantics: the patch returns the concrete local equivalents of reference ivars `+0x68`, `+0x78[0]`, `+0x50`, `+0x58`, and `numTxQueues=1`; it does not invent missing distinct queues.
+- files/functions to modify:
+  - `include/Airport/IO80211SkywalkInterface.h`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - map TX completion to TX submission: rejected as a class/semantic mismatch.
+  - add base `IOSkywalkTxCompletionQueue` now: rejected because reference uses a custom Apple queue subclass and exact completion ownership is not proven.
+  - add pending/space/depth/capacity guessed values: rejected as non-reference heuristics.
+  - force `inputPacket`, EAPOL, key, RSN, retry, delay, or replay: rejected.
+- verification plan:
+  - `git diff --check`
+  - `bash -n scripts/build_tahoe.sh`
+  - regenerate the superseding batch diff/request.
+  - do not build/install/runtime-test until reviewer returns `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: AppleBCMWLAN queue/pool accessors return concrete ivars while IO80211SkywalkInterface base accessors return zero.
+- Есть ли прямое подтверждение по runtime-данным? Yes: CR-113 runtime shows the local queues exist and accept RX EAPOL while downstream TX/key production is absent.
+- Доказал ли я причинность, а не просто корреляцию? For full RSN, no; therefore this is a reference-alignment prerequisite in the active layer, not a final root-cause claim.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? For the included subset, yes: existing local TX submission/RX completion queues and TX/RX pools are exposed through the same accessor slots.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: no fake TX, no fake key, no fake RSN; unproven TX completion/multicast/space methods remain explicitly out of scope.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: symbol addresses, local grep result, runtime artifact names, and hashes are recorded above.
+
+## ANOMALY
+
+- id: A-SKYWALK-INVENTORY-LIFECYCLE-PARTIAL-042
+- status: CONFIRMED_DEVIATION
+- symptom: после успешной ассоциации и RX EAPOL enqueue система не доходит до устойчивого RSN/data path; предыдущая статическая ревизия оставила часть активного Skywalk inventory/lifecycle слоя на inherited/base stubs.
+- first visible manifestation: CR-113/CR-114 runtime shows WCL association/link and `ITLWM_EAPOL path=rx ... stage=enqueue-ok`, but no stable EAPOL TX/key/data path completion.
+- expected system behavior: reference `AppleBCMWLANSkywalkInterface` exposes the full local Skywalk queue inventory and lifecycle surface used by IO80211: TX submission queue vector, RX completion queue, distinct TX completion queue, multicast work source, TX/RX pools, TX queue count, queue depth/capacity/space, and datapath enable/disable.
+- actual behavior: local `AirportItlwmSkywalkInterface` only exposes the CR-114 accessor subset and still inherits zero/no-op behavior for TX completion queue, multicast queue, depth/capacity/space, `pendingPackets`, `packetSpace`, and datapath lifecycle methods; `AirportItlwm` creates only TX submission and RX completion queues.
+- divergence point: `AirportItlwmV2` Skywalk object inventory lacks `IOSkywalkTxCompletionQueue` and multicast event source; `AirportItlwmSkywalkInterface` lacks the corresponding accessor/lifecycle overrides.
+- evidence:
+  - AppleBCMWLAN decomp: `AppleBCMWLANSkywalkInterface::getTxCompQueue()` returns ivars `+0x60`; `getRxCompQueue()` returns `+0x68`; TX subqueues live at `+0x78 + index*8`; `getMultiCastQueue()` returns `+0x98`; pools are `+0x50/+0x58`; `getNumTxQueues()` returns byte `+0x2a`.
+  - AppleBCMWLAN decomp: `enableDatapath()` enables TX completion queue and RX completion queue, requests RX enqueue, and enters the infra datapath enable edge; `disableDatapath()` disables TX subqueues, multicast queue, RX completion queue, and TX completion queue.
+  - AppleBCMWLAN decomp: `AppleBCMWLANSkywalkTxCompletionQueue` is a distinct `IOSkywalkTxCompletionQueue` subclass; `AppleBCMWLANSkywalkMulticastQueue` is an `IO80211WorkSource` event source with no-op dequeue/stat methods and retained interface pointer.
+  - local SDK headers: `IOSkywalkTxCompletionQueue::withPool(...)`, `enable()`, `disable()`, `requestEnqueue(...)`, `getPacketCount()`, and `IOSkywalkPacketQueue::getCapacity()/getFreeSpace()/getWorkLoop()` provide the local system contract for the missing packet queue object.
+  - local static evidence: `AirportItlwmV2.hpp` currently has `fTxQueue` and `fRxQueue` only; `AirportItlwmSkywalkInterface.hpp/.cpp` currently override only `getRxCompQueue`, `getTxSubQueue`, pools, and `getNumTxQueues`.
+- candidate causes:
+  - confirmed: the local Wi-Fi Skywalk interface still reports an incomplete queue/lifecycle inventory compared with the reference active layer.
+  - confirmed: IO80211 can see no TX completion queue or multicast work source through the virtual accessors, even though reference exposes both.
+  - still open: whether this is the final RSN/data root cause or one required prerequisite before the next runtime boundary can be isolated.
+- rejected causes:
+  - alias `getTxCompQueue()` to the TX submission queue: rejected; reference uses a distinct TX completion queue object.
+  - register multicast queue as a packet queue: rejected; reference multicast object is a work source/event source, not a packet queue in the logical-link queue array.
+  - invent multiple TX queues or AC-specific queue depths: rejected; local has one TX submission queue, so all valid ACs map to queue 0.
+  - force EAPOL/key/RSN/link/data success: rejected by protocol.
+- confirmed deviation: reference has distinct TX completion/multicast objects and lifecycle accessors; local does not.
+- root cause: not claimed as final RSN root cause; this is a confirmed active-layer reference deviation that must be restored before runtime evidence can be interpreted as a higher-layer failure.
+- fix: restore the local one-queue equivalent of the reference layer: create a distinct `IOSkywalkTxCompletionQueue`, create a multicast `IOEventSource` work source, attach/remove both on `_fWorkloop`, expose `getTxCompQueue()`/`getMultiCastQueue()`, implement depth/capacity/space/pending accessors from the concrete queue methods, and implement datapath enable/disable without changing packet/key/link success semantics.
+- verification:
+  - static source check that new accessors return concrete objects only and do not fake RSN/key/data state.
+  - `git diff --check`.
+  - create superseding batch request/artifact; build/install/reboot only after Stage 1 approval.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-INVENTORY-LIFECYCLE-PARTIAL-042
+- symptom: association/RX EAPOL reaches the local RX queue but stable RSN/data path is not reached; static audit shows missing reference Skywalk inventory/lifecycle objects and accessors.
+- expected system behavior: the IO80211-facing Skywalk interface exposes the same complete queue/work-source inventory and datapath lifecycle surface as AppleBCMWLAN.
+- actual behavior: local class exposes only the CR-114 queue/pool subset and lacks TX completion queue, multicast work source, depth/capacity/space, pending/space, and datapath lifecycle overrides.
+- exact divergence point: `AirportItlwm::start()` Skywalk object creation/workloop attachment and `AirportItlwmSkywalkInterface` virtual slots `[367]`, `[368]`, `[425]`, `[426]`, `[428]`, `[433]`, `[437]`, `[438]`.
+- evidence from runtime: CR-113/CR-114 logs prove live local TX/RX queues and RX EAPOL enqueue success, followed by missing EAPOL TX/key/RSN completion.
+- evidence from decomp: AppleBCMWLAN returns distinct ivar-backed TX completion and multicast objects, implements depth/capacity/space from queue objects, and explicitly enables/disables those queues in datapath lifecycle.
+- exact semantic mismatch between reference and our code: reference presents a complete active Skywalk object inventory and lifecycle; local presents an incomplete inventory and inherits zero/no-op base behavior for several system-facing slots.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: final RSN/data root cause is not claimed; the missing inventory/lifecycle surface is a confirmed reference deviation on the active path, and restoring it is required before attributing the remaining blocker to IO80211, firmware, key, or DHCP layers.
+- why proposed fix is 1:1 with reference architecture and semantics: the patch adds the same object categories and accessors as reference while preserving the local one-TX-queue topology; it returns real local queue/pool/work-source objects and uses public queue methods for counts/capacity/space instead of constants or forced state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - fake TX completion by returning TX submission queue.
+  - add guessed AC queue vector or multiple queues not present locally.
+  - register multicast as a packet queue.
+  - force/replay EAPOL, key install, RSN done, link up, DHCP, retry, delay, or poll.
+- verification plan:
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh` if present.
+  - generate superseding CR request and diff artifact.
+  - no kext build/install/runtime until reviewer grants `APPROVED_FOR_AFTER_FIX_RUNTIME`.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: AppleBCMWLAN exposes and lifecycles TX completion, RX completion, TX subqueue vector, multicast work source, pools, queue count, depth/capacity, and datapath methods.
+- Есть ли прямое подтверждение по runtime-данным? Yes for the active symptom boundary: local queues exist and RX EAPOL is enqueued, while downstream TX/key/RSN does not complete.
+- Доказал ли я причинность, а не просто корреляцию? For final RSN/data failure, no; therefore this is recorded as a confirmed reference-alignment prerequisite, not final root cause.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes within local one-queue topology: distinct TX completion queue, multicast event source, concrete queue accessors, and datapath enable/disable surface are restored.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No fake key/link/RSN/data success is introduced.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: AppleBCMWLAN ivar offsets and local file/function divergences are recorded above.
+
+## ANOMALY
+
+- id: A-SKYWALK-QUEUE-ABI-SYMBOL-SURFACE-043
+- status: CONFIRMED_DEVIATION
+- symptom: CR-115 correctly identified the missing active Skywalk queue/lifecycle layer but failed Stage 1 structural review because the built kext referenced two symbols not exported by the Tahoe BootKC symbol surface.
+- first visible manifestation: `commit-approval/decisions/COMMIT_DECISION_CR-115.md` reports `status: REJECTED`, `allow_after_fix_runtime: NO`, and BootKC unresolved symbols for `IOSkywalkPacketQueue::getCapacity()` and `IOSkywalkTxCompletionQueue::withPool(...)` with an `int`/`IOReturn` callback signature.
+- expected system behavior: local Tahoe source and build headers must bind only to exported BootKC symbols or use local state for driver-owned constants; queue/lifecycle restoration must not introduce unresolved kernel imports.
+- actual behavior: local `IOSkywalkTxCompletionQueue.h` declares `IOSkywalkTxCompletionQueueAction` as `IOReturn`, producing a `PFi...` mangled `withPool(...)` import, while BootKC exports the `PFj...`/`UInt32` callback form. Local CR-115 code also called non-const `IOSkywalkPacketQueue::getCapacity()`, while BootKC exports the const form and the local queue capacity is already driver-owned construction state.
+- divergence point:
+  - `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkTxCompletionQueue.h` and `scripts/build_tahoe.sh` do not patch the TX completion callback ABI to Tahoe's exported `UInt32` form.
+  - `AirportItlwmSkywalkInterface::getTxQueueDepth()` and `getRxQueueCapacity()` call `getCapacity()` directly instead of returning local queue construction metadata.
+  - `pendingPackets()` / `packetSpace()` used generic local queue methods even though Apple custom TX submission queue methods at vtable `+0x348/+0x340` return `0`.
+- evidence:
+  - CR-115 reviewer evidence: unresolved `__ZN20IOSkywalkPacketQueue11getCapacityEv` and `__ZN26IOSkywalkTxCompletionQueue8withPool...PFi...`.
+  - local BootKC export scan: Tahoe exports `__ZN26IOSkywalkTxCompletionQueue8withPool...PFj...`, `__ZN26IOSkywalkTxCompletionQueue12initWithPool...PFj...`, `__ZNK20IOSkywalkPacketQueue11getCapacityEv`, and `__ZNK20IOSkywalkPacketQueue12getFreeSpaceEv`.
+  - AppleBCMWLAN decomp: `AppleBCMWLANSkywalkTxSubmissionQueue::getQueueDepth()` and `getCapacity()` return the custom queue ivar `+0x28`; `getRingFreeSpace()` and `getPendingPacketCount()` return `0`.
+  - AppleBCMWLAN decomp: `AppleBCMWLANSkywalkInterface::packetSpace(queue)` calls TX queue vtable `+0x340`; `pendingPackets(queue)` calls TX queue vtable `+0x348`; `getTxQueueDepth()` reads TX queue custom ivar `+0x28`; `getRxQueueCapacity()` reads RX completion custom ivar `+0x10`.
+- candidate causes:
+  - confirmed: the CR-115 source/header ABI used unexported manglings for TX completion queue factory and packet queue capacity.
+  - confirmed: the local code used generic queue methods where the Apple custom queue layer uses local driver-owned ivars or no-op methods.
+  - still open: whether the restored active Skywalk layer is sufficient for RSN/data completion; runtime remains blocked until Stage 1 approval.
+- rejected causes:
+  - remove TX completion queue entirely: rejected because BootKC exports the correct `UInt32` ABI and Apple reference exposes a distinct TX completion queue.
+  - call `IOSkywalkPacketQueue::getCapacity()` by forcing a non-const declaration: rejected by BootKC symbol verification.
+  - keep `packetSpace()` as generic free-space calculation: rejected because Apple custom `getRingFreeSpace()` returns `0` in the recovered decomp.
+  - install/runtime-test despite Stage 1 rejection: rejected by protocol and reviewer decision.
+- confirmed deviation: CR-115's queue restoration was structurally incomplete at the ABI/export layer.
+- root cause: for CR-115 rejection, confirmed: wrong local header ABI and direct use of a non-exported capacity symbol. For RSN/data failure, not claimed.
+- fix: patch `scripts/build_tahoe.sh` to align `IOSkywalkTxCompletionQueueAction` to `UInt32`, change the local TX completion callback to `UInt32`, stop calling `getCapacity()`/`getFreeSpace()` from the interface accessors, store driver-owned TX/RX queue sizes from the exact queue construction capacity, and return `0` from `pendingPackets()`/`packetSpace()` to match Apple custom queue methods.
+- verification:
+  - update docs with the CR-115 rejection and BootKC ABI findings.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` with BootKC verification, saving build evidence.
+  - create fresh CR-116 artifact/request; do not install or runtime-test until Stage 1 approval.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-QUEUE-ABI-SYMBOL-SURFACE-043
+- symptom: CR-115 active Skywalk layer restoration cannot pass structural review because the kext imports unexported Tahoe symbols.
+- expected system behavior: all queue/lifecycle restoration code must bind to exported Tahoe BootKC symbols and local driver-owned state.
+- actual behavior: TX completion queue factory uses the wrong callback ABI and queue capacity accessors import the wrong `getCapacity()` mangling.
+- exact divergence point: `IOSkywalkTxCompletionQueueAction` callback type, `skywalkTxCompletionAction(...)` return type, direct `getCapacity()`/`getFreeSpace()` calls in `AirportItlwmSkywalkInterface`, and missing local queue-size fields in `AirportItlwm`.
+- evidence from runtime: no new runtime allowed; CR-113/CR-114 remain before-fix symptom evidence, and CR-115 reviewer build evidence is the relevant structural failure evidence.
+- evidence from decomp: Apple custom TX queue stores capacity/depth in local ivar `+0x28`, RX completion stores capacity in local ivar `+0x10`, and Apple custom pending/space methods return `0`.
+- exact semantic mismatch between reference and our code: reference returns driver-owned queue metadata/custom no-op queue methods; local CR-115 called generic queue methods and imported a factory with the wrong callback ABI.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for CR-115 rejection, the unresolved symbols are the exact structural root cause. For RSN/data, root cause is not claimed; this fix only makes the restored layer structurally loadable and reference-aligned.
+- why proposed fix is 1:1 with reference architecture and semantics: distinct TX completion queue is retained using the exported Tahoe `UInt32` callback ABI; depth/capacity come from driver-owned queue construction metadata like Apple custom ivars; pending/space return `0` like Apple custom TX queue methods.
+- files/functions to modify:
+  - `scripts/build_tahoe.sh`
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `docs/tahoe_signal_chain_audit.md`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+- forbidden alternative fixes considered and rejected:
+  - dropping TX completion queue instead of fixing its ABI.
+  - using non-exported/non-const `getCapacity()`.
+  - replacing packetSpace with guessed free-space arithmetic.
+  - installing or collecting after-fix runtime without Stage 1 approval.
+- verification plan:
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` and archive output as CR-116 structural evidence.
+  - regenerate artifact and request.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: Apple custom queue methods/ivars and interface callers are recovered.
+- Есть ли прямое подтверждение по runtime-данным? For this structural failure, yes: CR-115 reviewer build evidence names exact unresolved imports.
+- Доказал ли я причинность, а не просто корреляцию? Yes for the CR-115 rejection; no claim is made for final RSN/data root cause.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes for the restored layer within local one-queue topology and exported Tahoe ABI.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: no fake key/link/RSN/data state.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: CR-115 decision, BootKC nm exports, and AppleBCMWLAN decomp offsets are recorded above.
+
+## ANOMALY
+
+- id: A-APMODE-STA-FIXEDFAIL-SURFACE-044
+- status: CONFIRMED_DEVIATION
+- symptom: the AP/SoftAP layer was not explicitly documented after the last YAML update, and the Tahoe BSD bridge did not expose an explicit `APPLE80211_IOC_AP_MODE` fixed-fail route for the primary STA interface.
+- first visible manifestation: static audit after CR-116 while restoring the next layer with special AP-mode coverage.
+- expected system behavior: on the normal primary STA interface, `AppleBCMWLANCore::setAP_MODE(apple80211_apmode_data*)` returns fixed `0xe00002c7`; the normal path does not create APSTA state, does not advertise HostAP capability, and does not mutate public AP mode state.
+- actual behavior: the local `processApple80211Ioctl(...)` bridge had no explicit `APPLE80211_IOC_AP_MODE` case, and local `setAP_MODE(...)` cached `data+4` before returning the same fixed fail code. That local cache is not present in the normal Apple path and could become a false AP state carrier if the public ioctl reaches the local handler.
+- divergence point:
+  - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)` lacks an explicit `APPLE80211_IOC_AP_MODE` setter route even though the Tahoe bridge explicitly routes adjacent public setters.
+  - `AirportItlwmSkywalkInterface::setAP_MODE(...)` writes `cachedApMode` despite reference normal-path semantics being fixed fail without state mutation.
+- evidence:
+  - decomp: remote `/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c`, `AppleBCMWLANCore::setAP_MODE(...) @ 0xffffff80016034dc`, initializes return value to `0xe00002c7`; only under verbose-debug plus feature gate `0x3f` does it clear the return and update bit 10 at core expansion `+0x288c`.
+  - decomp: APSTA/SoftAP methods are on `AppleBCMWLANIO80211APSTAInterface`, not the primary STA core path. Recovered methods include `setHOST_AP_MODE(...)`, `getHOST_AP_MODE_HIDDEN(...)`, `getSOFTAP_PARAMS(...)`, `getSOFTAP_STATS(...)`, and `setSOFTAP_WIFI_NETWORK_INFO_IE(...)`.
+  - local code: HostAP capability publication remains commented out in the STA capability path, which is consistent with not advertising AP support on the primary STA interface.
+  - local code: `cachedApMode` is written only by `setAP_MODE(...)` and is otherwise unused, so removing it cannot remove a legitimate local producer.
+- candidate causes:
+  - confirmed: the public AP mode bridge route and handler side-effect are not aligned with the recovered primary STA contract.
+  - rejected: enabling HostAP capability or creating APSTA/SoftAP state in this batch; the APSTA reference layer is a separate interface class and requires AP owner state not present on the local primary STA.
+  - rejected: implementing APSTA SoftAP selectors on the primary STA bridge; decomp places them on APSTA and their private owner offsets are not present in the local topology.
+- rejected causes:
+  - treat AP_MODE as a success carrier: rejected because the normal reference path returns `0xe00002c7`.
+  - cache the requested AP mode while returning failure: rejected because the normal reference path has no public state mutation.
+  - advertise `APPLE80211_C_FLAG_HOST_AP` to force AP workflows: rejected because that would invite APSTA/SoftAP requests without the required APSTA owner layer.
+- confirmed deviation: the local AP_MODE public surface was not an explicit fixed-fail/no-state STA contract.
+- root cause: for AP layer restoration, confirmed static deviation. No claim is made that this is the current RSN/data root cause.
+- fix: add an explicit `APPLE80211_IOC_AP_MODE` setter route to the Tahoe BSD bridge, make `setAP_MODE(...)` a pure fixed-fail/no-state path, remove the unused `cachedApMode` carrier, and document APSTA/SoftAP as a separate not-yet-restored interface layer.
+- verification:
+  - update YAML docs with post-Apr-14 findings and AP/APSTA contract.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` with BootKC verification.
+  - create a fresh CR-117 batch request superseding CR-116; do not install or runtime-test until Stage 1 approval.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APMODE-STA-FIXEDFAIL-SURFACE-044
+- symptom: AP mode public surface is not restored/documented as an explicit primary-STA fixed-fail contract.
+- expected system behavior: `APPLE80211_IOC_AP_MODE` on the primary STA surface reaches `setAP_MODE(...)` and returns fixed `0xe00002c7` without AP state side effects unless the hidden verbose-debug/feature-gated Apple path is active.
+- actual behavior: local bridge falls through to unsupported unless super handles it, while the local handler would cache the caller carrier before returning failure if reached.
+- exact divergence point: missing AP_MODE case in `processApple80211Ioctl(...)`; `cachedApMode` write in `setAP_MODE(...)`.
+- evidence from runtime: no new AP runtime is claimed; current runtime focus remains RSN/data after CR-113/CR-114. This is a static layer-restoration fix requested before another runtime cycle.
+- evidence from decomp: `AppleBCMWLANCore::setAP_MODE(...) @ 0xffffff80016034dc` returns `0xe00002c7` by default and only updates AP bit state behind verbose-debug plus feature gate `0x3f`; APSTA/SoftAP methods are recovered on `AppleBCMWLANIO80211APSTAInterface`.
+- exact semantic mismatch between reference and our code: reference normal STA path has fixed fail/no state mutation; local handler cached AP mode and the bridge did not make the AP fixed-fail route explicit.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for the AP surface layer, the decomp identifies the exact return and side-effect contract; this fix restores that layer only and does not claim RSN/data root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: the primary STA handler becomes a pure fixed-fail path; APSTA/SoftAP selectors remain out of the primary STA bridge because reference implements them on a separate APSTA interface class.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/93_tahoe_post_yaml_findings_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+- forbidden alternative fixes considered and rejected:
+  - enabling HostAP capability on the STA interface.
+  - implementing APSTA SoftAP selectors without APSTA owner state.
+  - preserving a cached AP mode while returning failure.
+  - using AP mode as a workaround for station join/RSN failures.
+- verification plan:
+  - `rg cachedApMode` must return no code references.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` and archive structural evidence.
+  - regenerate exact artifact and submit CR-117.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: AppleBCMWLANCore primary STA AP_MODE and APSTA/SoftAP methods are recovered from the remote decomp.
+- Есть ли прямое подтверждение по runtime-данным? No AP runtime claim is made; this is requested static AP layer restoration before another runtime cycle.
+- Доказал ли я причинность, а не просто корреляцию? Yes for the AP surface semantic deviation; no claim is made for the current RSN/data blocker.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes for the primary STA AP_MODE path: fixed fail and no AP state mutation.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: no fake AP, link, key, RSN, DHCP, or data state.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: decomp offsets and local functions are listed above.
+
+## ANOMALY
+
+- id: A-APIE-LIST-ZEROLEN-SUCCESS-045
+- status: CONFIRMED_DEVIATION
+- symptom: AP-related public GET surface still has a stricter local failure contract than the recovered Apple primary STA path.
+- first visible manifestation: static AP-surface audit after CR-117.
+- expected system behavior: `AppleBCMWLANCore::getAP_IE_LIST(apple80211_ap_ie_data*)` initializes the output length to zero, delegates to `IO80211BssManager` to copy AP IE bytes into `data+8`, and writes the resulting length back to `data+4`. The visible AppleBCMWLAN wrapper does not reject a missing current BSS or an empty AP IE list before writing zero length.
+- actual behavior: local `AirportItlwmSkywalkInterface::getAP_IE_LIST(...)` returns `kIOReturnError` when there is no current BSS, no `ni_rsnie_tlv`, zero IE length, `ni_rsnie_tlv_len > data->len`, or length over 1024. On Tahoe the public carrier embeds a 1024-byte IE array, so treating incoming `data->len` as required capacity is not the recovered Apple wrapper contract.
+- divergence point:
+  - local code checks `data->len` as input capacity and returns error for empty/no-BSS cases.
+  - reference wrapper initializes local length to zero and writes the final length, making empty/no-current-BSS a zero-length publication rather than a local AP_IE_LIST error at the wrapper layer.
+- evidence:
+  - decomp: `AppleBCMWLANCore::getAP_IE_LIST(...) @ 0xffffff80015e5b46` sets local length to `0`, calls `FUN_ffffff800226698a(bssManager, data+8, &local_len)`, then writes `*(uint32_t *)(data+4) = local_len`.
+  - decomp: `IO80211BssManager` helper `FUN_ffffff800226698a @ 0xffffff800226698a` returns `0xe0822403` if no current BSS and otherwise calls the node method at vtable `+0x1b0`; the AppleBCMWLAN wrapper does not propagate that helper return in the recovered code.
+  - local struct: Tahoe `apple80211_ap_ie_data` embeds `ie_data[APPLE80211_NETWORK_DATA_MAX_IE_LEN]`, so the output buffer is fixed at 1024 bytes.
+  - local code: `getAP_IE_LIST(...)` returns error on no BSS/no IE/zero length and on `ni_rsnie_tlv_len > data->len`.
+- candidate causes:
+  - confirmed: local AP_IE_LIST wrapper has stricter error gates than the recovered Apple wrapper.
+  - rejected: fabricate AP IE bytes when none exist; reference publishes the helper-produced length and initializes it to zero.
+  - rejected: copy beyond `APPLE80211_NETWORK_DATA_MAX_IE_LEN`; local hard maximum remains necessary because the Tahoe public carrier has a fixed array.
+- rejected causes:
+  - changing RSN_IE programming: AP_IE_LIST is read-only publication and must not mutate RSN state.
+  - using caller-provided `data->len` as input capacity on Tahoe: rejected because the public struct has an embedded fixed buffer and Apple wrapper writes `len` as output.
+  - treating this as final RSN/data root cause: rejected; this restores an AP-related public surface only.
+- confirmed deviation: local AP_IE_LIST does not match Apple zero-length publication semantics for no/empty IE cases.
+- root cause: confirmed for the AP_IE_LIST surface layer; no claim is made for final RSN/data.
+- fix: set `version`, initialize `len` to zero, return success with zero length when no current AP IE list exists, ignore incoming `data->len` as capacity on Tahoe, and copy at most a valid local IE list no larger than `APPLE80211_NETWORK_DATA_MAX_IE_LEN`.
+- verification:
+  - update YAML AP surface docs.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` with BootKC verification.
+  - create CR-118 superseding CR-117.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APIE-LIST-ZEROLEN-SUCCESS-045
+- symptom: AP_IE_LIST GET can fail at the local wrapper layer where the Apple primary STA wrapper publishes zero length.
+- expected system behavior: wrapper initializes output length to zero, delegates BssManager, writes final length, and does not make the incoming length field a required capacity.
+- actual behavior: local wrapper returns error for no BSS/no IE/zero length and if IE length exceeds caller-provided `data->len`.
+- exact divergence point: `AirportItlwmSkywalkInterface::getAP_IE_LIST(...)`.
+- evidence from runtime: no new runtime is claimed for this layer; this is static AP-surface restoration before the next runtime cycle.
+- evidence from decomp: `AppleBCMWLANCore::getAP_IE_LIST(...) @ 0xffffff80015e5b46` and `IO80211BssManager` helper `FUN_ffffff800226698a @ 0xffffff800226698a`.
+- exact semantic mismatch between reference and our code: reference publishes output length with zero as the initialized empty result; local code uses missing IE as an error and treats output length as input capacity.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for AP_IE_LIST semantics, the wrapper-level decomp and local code directly disagree. This fix restores that surface only.
+- why proposed fix is 1:1 with reference architecture and semantics: zero-length publication mirrors the wrapper initialization and final length write; local fixed-array maximum prevents overflow without inventing IE content.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/93_tahoe_post_yaml_findings_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+- forbidden alternative fixes considered and rejected:
+  - fake AP IE content.
+  - truncate invalid over-1024 IE silently.
+  - mutate RSN or association state from this getter.
+  - claim final RSN/data completion.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - regenerate artifact and submit CR-118.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: AppleBCMWLANCore AP_IE_LIST wrapper and IO80211BssManager helper are recovered.
+- Есть ли прямое подтверждение по runtime-данным? No AP_IE runtime claim is made; this is a static surface restoration.
+- Доказал ли я причинность, а не просто корреляцию? Yes for the AP_IE_LIST surface mismatch; no claim is made for RSN/data.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes at wrapper level: initialize length to zero, publish final length, no fake IE.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: function addresses and local function are listed above.
+
+## ANOMALY
+
+- id: A-LEGACY-APIE-LIST-SHADOW-046
+- status: CONFIRMED_DEVIATION
+- symptom: after the Tahoe AP_IE_LIST wrapper was restored, the legacy STA dispatcher still carried the old stricter AP_IE_LIST error contract, keeping a shadow mismatch that can regress non-Tahoe or reused IOCTL paths.
+- first visible manifestation: post-CR-118 legacy dispatcher audit; `docs/tahoe_discrepancy_inventory.md` explicitly lists legacy `getAP_IE_LIST` as remaining shadow mismatch.
+- expected system behavior: AP_IE_LIST wrapper semantics should be consistent across local dispatch planes: initialize output length to zero, return zero-length success when no current AP IE list exists, copy a valid local IE list when present, and reject only invalid arguments or fixed-carrier overflow.
+- actual behavior: `AirportItlwm::getAP_IE_LIST(...)` still returns `kIOReturnError` for no current BSS, no IE pointer, zero IE length, and `ni_rsnie_tlv_len > data->len`.
+- divergence point: `AirportSTAIOCTL.cpp::getAP_IE_LIST(...)` retained pre-CR-118 semantics after the Tahoe Skywalk implementation was corrected.
+- evidence:
+  - decomp: same Apple wrapper contract recorded in `A-APIE-LIST-ZEROLEN-SUCCESS-045`.
+  - local docs: `docs/tahoe_discrepancy_inventory.md` "Legacy STA dispatcher still carries a shadow mismatch surface" lists `getAP_IE_LIST`.
+  - local code: Tahoe `AirportItlwmSkywalkInterface::getAP_IE_LIST(...)` is now restored, while legacy `AirportItlwm::getAP_IE_LIST(...)` still has stricter error gates.
+- candidate causes:
+  - confirmed: legacy dispatcher drift from the restored AP_IE_LIST wrapper contract.
+  - rejected: remove legacy dispatcher handling; non-Tahoe paths still build this code and it documents a shared Apple80211 contract.
+  - rejected: leave legacy stricter than Tahoe; this preserves a known regression source in a neighboring dispatcher.
+- rejected causes:
+  - fabricate AP IE bytes on legacy path.
+  - use incoming `data->len` as fixed-array capacity.
+  - change RSN_IE/setRSN_IE behavior in the same patch without separate proof.
+- confirmed deviation: legacy `getAP_IE_LIST(...)` no longer matches the restored reference wrapper semantics.
+- root cause: confirmed for legacy AP_IE_LIST shadow drift; no claim is made for current Tahoe RSN/data.
+- fix: apply the same zero-length success and fixed-array overflow semantics to `AirportItlwm::getAP_IE_LIST(...)`.
+- verification:
+  - update YAML docs.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` with BootKC verification.
+  - create CR-119 superseding CR-118.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-LEGACY-APIE-LIST-SHADOW-046
+- symptom: legacy AP_IE_LIST dispatcher remains stricter than the restored Apple wrapper.
+- expected system behavior: zero-length success for no AP IE list; copy valid IE list; reject only bad argument or fixed-buffer overflow.
+- actual behavior: legacy handler returns error for empty/no-current-BSS cases and treats `data->len` as input capacity.
+- exact divergence point: `AirportItlwm::getAP_IE_LIST(...)` in `AirportSTAIOCTL.cpp`.
+- evidence from runtime: no new runtime claim; this is static shadow-layer cleanup after CR-118.
+- evidence from decomp: AppleBCMWLANCore AP_IE_LIST wrapper and IO80211BssManager helper from `A-APIE-LIST-ZEROLEN-SUCCESS-045`.
+- exact semantic mismatch between reference and our code: reference wrapper publishes a length initialized to zero; legacy local code returns an error.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for the legacy shadow layer, the exact local function diverges from the recovered wrapper semantics and from the now-correct Tahoe path.
+- why proposed fix is 1:1 with reference architecture and semantics: it mirrors the wrapper length publication without inventing IE content.
+- files/functions to modify:
+  - `AirportItlwm/AirportSTAIOCTL.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/93_tahoe_post_yaml_findings_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml`
+- forbidden alternative fixes considered and rejected:
+  - deleting legacy AP_IE_LIST routing.
+  - truncating oversized IE silently.
+  - fabricating empty RSN IE bytes.
+  - changing RSN_IE in the same batch.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - regenerate artifact and submit CR-119.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the AP_IE_LIST wrapper contract is already recovered.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made for this legacy shadow layer.
+- Доказал ли я причинность, а не просто корреляцию? Yes for the shadow-layer mismatch; no claim is made for current RSN/data.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes at the wrapper-publication level.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: AP_IE_LIST decomp and legacy local function are recorded above.
+
+## ANOMALY
+
+- id: A-MCS-NRATE-PRODUCER-AND-VIF-SHADOW-047
+- status: CONFIRMED_DEVIATION
+- symptom: after the AP surface cleanup, two adjacent STA public surfaces still diverge from recovered Tahoe behavior: `getMCS(...)` uses association/node state instead of the Apple cached `nrate` producer, and the legacy dispatcher still collapses Tahoe `setVIRTUAL_IF_CREATE(...)` role failures to generic unsupported.
+- first visible manifestation: post-CR-119 static audit of remaining STA shadow layers.
+- expected system behavior:
+  - `AppleBCMWLANCore::getMCS(apple80211_mcs_data*)` rejects `NULL`, queries cached `"nrate"` state, treats success and `0xe00002e3` as completed query paths, decodes the public MCS index from the cached nrate word only when the word encodes Apple rate families `0x01000000`, `0x02000000`, or `0x03000000`, and returns the config-query status.
+  - `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` is not generic unsupported on Tahoe: NAN roles `8..10` expose `0xe00002c7`, proximity/AWDL role `6` and APSTA/SoftAP role `7` expose owner-dependent failures, and unknown roles expose `0xe0000001`.
+- actual behavior:
+  - Tahoe `AirportItlwmSkywalkInterface::getMCS(...)` only updates a local `cachedCurrentMcs` from `ic_bss->ni_txmcs` in `RUN` and otherwise returns success with the old cached scalar.
+  - legacy `AirportItlwm::getMCS(...)` reads `ic_bss->ni_txmcs` directly and returns success even when there is no cached transport `nrate`.
+  - legacy `AirportItlwm::setVIRTUAL_IF_CREATE(...)` returns `kIOReturnUnsupported` for every Tahoe-era role before the reference public fail split can be observed.
+- divergence point:
+  - `AirportItlwmSkywalkInterface.cpp::getMCS(...)`
+  - `AirportSTAIOCTL.cpp::getMCS(...)`
+  - `AirportSTAIOCTL.cpp::setVIRTUAL_IF_CREATE(...)` under `__IO80211_TARGET >= __MAC_13_0`
+- evidence:
+  - decomp/disasm: remote `CR120_getMCS_forced_disasm.txt` for `AppleBCMWLANCore::getMCS(...)` at `0xffffff80016214c4..0xffffff8001621603` shows the `"nrate"` config query, accepted `0xe00002e3`, family mask `rate & 0x07000000`, public index writes at `data+4`, and return of the query status.
+  - decomp: remote `/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c`, `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...) @ 0xffffff80015fc280`, shows role checks for `8..10`, `6`, `7`, and default unknown-role return `0xe0000001`.
+  - local code: the Tahoe path already uses cached nrate for `getMCS_VHT(...)`, so the required local transport carrier exists.
+  - local code: `cachedCurrentMcs` is only a local helper for the currently incorrect `getMCS(...)` path and can be removed once `getMCS(...)` reads nrate directly.
+- candidate causes:
+  - confirmed: local `getMCS(...)` producer source is not the recovered Apple `nrate` source.
+  - confirmed: legacy virtual-interface creation remains a generic unsupported shadow while the Tahoe path already exposes the recovered role-dependent failure shape.
+  - superseded by A-APSTA-OWNER-LAYER-RECONSTRUCTION-048: APSTA/SoftAP enablement cannot be faked on primary STA, but role `7` is a required APSTA/SAP owner reconstruction target, not a permanent failure policy.
+- rejected causes:
+  - force association success, RSN completion, key installation, EAPOL replay, DHCP, or link readiness.
+  - fake APSTA/SoftAP owner state or advertise HostAP capability before the APSTA/SAP owner layer is reconstructed.
+  - keep `getMCS(...)` tied to `ic_bss->ni_txmcs` because it is locally convenient; reference reads cached transport `nrate`.
+- confirmed deviation: the public MCS producer and legacy virtual-interface shadow do not match recovered Tahoe semantics.
+- root cause: confirmed for these layer contracts only. This batch does not claim final internet reachability or RSN/data root cause.
+- fix:
+  - add a shared local nrate decode policy to both Tahoe and legacy files.
+  - make both `getMCS(...)` paths return the config-cache status and decode MCS from cached nrate.
+  - remove the stale Tahoe `cachedCurrentMcs` carrier.
+  - mirror Tahoe `setVIRTUAL_IF_CREATE(...)` role-dependent public failures in the legacy dispatcher for Tahoe-era targets.
+- verification:
+  - update YAML documentation with the new nrate and virtual-interface findings.
+  - update inventory docs so these no longer remain open shadow mismatches.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh` with BootKC verification.
+  - create a fresh CR-120 batch request superseding CR-119.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-MCS-NRATE-PRODUCER-AND-VIF-SHADOW-047
+- symptom: remaining STA shadow surfaces drift from recovered Tahoe `getMCS` and virtual-interface public fail contracts.
+- expected system behavior: `getMCS` is backed by cached `"nrate"` and returns the config-query status; virtual-interface creation exposes role-dependent Tahoe failures instead of generic unsupported.
+- actual behavior: local `getMCS` reads association/node `ni_txmcs` or stale cached MCS, and legacy virtual-interface creation returns generic unsupported for all Tahoe-era roles.
+- exact divergence point: `AirportItlwmSkywalkInterface::getMCS(...)`, `AirportItlwm::getMCS(...)`, and `AirportItlwm::setVIRTUAL_IF_CREATE(...)`.
+- evidence from runtime: no new runtime is claimed for this static layer batch; current runtime remains post-association/no-internet. These are confirmed adjacent static divergences found before the next reboot cycle.
+- evidence from decomp: `AppleBCMWLANCore::getMCS(...)` forced disassembly at `0xffffff80016214c4..0xffffff8001621603`; `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...) @ 0xffffff80015fc280`.
+- exact semantic mismatch between reference and our code: reference reads cached transport `nrate` and returns query status, while local code reads BSS node state and always succeeds; reference exposes virtual-interface role fail split, while legacy local code returns generic unsupported.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the recovered producer bodies and local handlers disagree at exact system-facing getter/setter boundaries. The fix restores only those boundaries and does not mask downstream RSN/data symptoms.
+- why proposed fix is 1:1 with reference architecture and semantics: nrate family masks and index extraction follow the recovered instruction sequence; virtual-interface failures mirror the already restored Tahoe no-owner path only as an interim state until APSTA/SAP owner creation is reconstructed.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `AirportItlwm/AirportSTAIOCTL.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/93_tahoe_post_yaml_findings_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+- forbidden alternative fixes considered and rejected:
+  - keep using `ni_txmcs` as the MCS source.
+  - return success when the cached nrate query has no value.
+  - fake APSTA/SoftAP interfaces or HostAP capability bits before the APSTA/SAP owner layer is reconstructed.
+  - install/reboot/commit without approval.
+- verification plan:
+  - `rg cachedCurrentMcs` must return no code references.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - regenerate exact artifact and submit CR-120.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: `getMCS` forced disassembly and `setVIRTUAL_IF_CREATE` decomp identify exact producer/fail semantics.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim; this is an approved-cycle static restoration batch before the next runtime.
+- Доказал ли я причинность, а не просто корреляцию? Yes for these public contracts; no final RSN/data root-cause claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes within the local available transport carriers and primary-STA/no-APSTA topology.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: no fake association, key, RSN, EAPOL, DHCP, APSTA, or link state is introduced.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: remote disasm/decomp paths and local functions are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-OWNER-LAYER-RECONSTRUCTION-048
+- status: CONFIRMED_DEVIATION
+- symptom: the APSTA/SoftAP layer was documented as a non-primary owner path, but the local topology still lacks the Apple-required owner class/structure that role 7 creates.
+- first visible manifestation: post-CR-120 review of the recovered `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` role-7 branch and APSTA symbols.
+- expected system behavior:
+  - `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` role 7 creates an `AppleBCMWLANIO80211APSTAInterface` object through the APSTA factory, stores it at core expansion `+0x2c30`, initializes APSTA private state at `self+0x130`, and returns role-specific status based on owner creation state.
+  - APSTA is not a primary-STA shim. It is a separate `IO80211SapProtocol` / `AppleBCMWLANIO80211APSTAInterface` owner surface with BSD identity `ap` unit `1`, Wi-Fi subfamily `3`, SoftAP IOCTL carriers, state block offsets, queue/pool accessors, and datapath enable/disable methods.
+  - If a class, owner object, state block, queue, or carrier exists in the Apple contract, local recovery must reconstruct it instead of treating its absence as a permanent limitation.
+- actual behavior:
+  - local `AirportItlwmSkywalkInterface::setVIRTUAL_IF_CREATE(...)` returns the recovered public role failures, including `0xe00002bd` for role 7, but does not create or store an APSTA owner object.
+  - local docs in the CR-117..CR-120 area contain wording such as "do not create APSTA owner state" and "owner object absent" that is valid only as an interim no-owner failure shape, not as a final restoration rule.
+  - the local tree has no `IO80211SapProtocol` header/model and no `AirportItlwmAPSTAInterface` owner that can hold APSTA state at `self+0x130`.
+- divergence point:
+  - `AirportItlwmSkywalkInterface::setVIRTUAL_IF_CREATE(...)` role 7 branch.
+  - Tahoe AP/APSTA YAML addenda `94` and `95`.
+  - pending request `CR-120` claim scope and guardrails.
+- evidence:
+  - decomp: `/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c`, `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...) @ 0xffffff80015fc280`, role 7 calls `FUN_ffffff8001685422(param_1, data+4, 7, data+0x10)`, stores the result at `param_1[0x25] + 0x2c30`, then writes feature-gated bytes at `(*(apsta+0x130)+0x32a)` and `(*(apsta+0x130)+0x32b)`.
+  - decomp: `FUN_ffffff8001685422 @ 0xffffff8001685422` allocates `AppleBCMWLANIO80211APSTAInterface` with object size `0x138`.
+  - decomp/symbols: `AppleBCMWLANIO80211APSTAInterface::~AppleBCMWLANIO80211APSTAInterface()` calls `IO80211SapProtocol` destructor, proving a distinct SAP protocol owner layer above the base Skywalk interface.
+  - symbols: `/srv/project/ghidra_output/kdk_symbols.txt` lists `AppleBCMWLANIO80211APSTAInterface::withOptions(AppleBCMWLANCore*, ether_addr*, uint, char*)`, `init(AppleBCMWLANCore*, ether_addr*, uint, char*)`, `start(AppleBCMWLANCore*, IOSkywalkEthernetInterface::RegistrationInfo*)`, `getBSDNamePrefix`, `getInterfaceSubFamily`, `getBSDUnitNumber`, SoftAP methods, RSN/STA methods, and datapath queue accessors.
+  - vtable dump: `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt` shows `IO80211SapProtocol` has its own vtable at `0xffffff80023e8dc0`; APSTA vtable at `0xffffff8001777508` places identity methods at slots `311/319/320`, queue/datapath methods at slots `425..439`, `forwardPacket` at slot `465`, and SoftAP/SAP methods at slots `514..529`. This proves a direct subclass of the current local `AirportItlwmSkywalkInterface` would have the wrong ABI shape for APSTA.
+  - decomp: `getInterfaceSubFamily()` returns `3`; `getBSDUnitNumber()` returns `1`; YAML `89` records the APSTA BSD prefix as `ap`.
+  - decomp: `getSOFTAP_PARAMS(...)` reads state block `self+0x130` offsets `+0x18/+0x1c/+0x20/+0x24/+0x28/+0x68/+0x0e/+0x10`; `getSOFTAP_STATS(...)` copies `0x58` bytes from `state+0x1b0`; `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` copies `0x24` bytes into APSTA state at owner `+0x2c` when feature gate `0x46` is enabled and length byte `<0x21`.
+  - decomp: APSTA queue/datapath accessors read `state+0x2a4`, `+0x2d8`, `+0x2e0`, `+0x2e8`, `+0x2f0`, `+0x300`, `+0x320`, and map AC through `state+0x2b8 + ac*4`.
+- candidate causes:
+  - confirmed: local topology has not reconstructed the `IO80211SapProtocol`/APSTA owner surface required by the recovered role-7 path.
+  - confirmed: the APSTA ABI cannot be recovered by deriving from the current primary STA class because the APSTA/SAP vtable slots differ from the local `IO80211InfraProtocol`/primary STA shape.
+  - confirmed: previous docs overstated "do not create APSTA owner state" as a guardrail; the correct rule is "do not fake role-7 success before the required owner layer is reconstructed".
+  - rejected: implement SoftAP selectors on the primary STA interface; reference places them on APSTA, so this would preserve the wrong owner topology.
+  - rejected: leave APSTA permanently absent because Apple uses a class/object not yet present locally; the RE objective is to reconstruct required classes/objects.
+- confirmed deviation: role-7 owner creation and SAP/APSTA class topology are missing locally.
+- root cause: confirmed for the APSTA/SoftAP layer itself. This is not claimed as the current STA internet-connect root cause, but it is a real Apple-contract divergence that must be restored before AP mode can be considered complete.
+- fix: supersede the CR-120 APSTA wording, document the exact APSTA owner reconstruction requirements, and prepare the next code batch around `IO80211SapProtocol` / `AirportItlwmAPSTAInterface` rather than around primary-STA failure-only handling.
+- verification:
+  - update YAML docs so "missing owner" becomes "reconstruct required owner" rather than "do not implement".
+  - update pending commit request text so the reviewer sees APSTA failure-shape as interim, not final policy.
+  - preserve current primary STA behavior until the APSTA owner object, state block, vtable surface, queues, and registration path are recovered 1:1.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-OWNER-LAYER-RECONSTRUCTION-048
+- symptom: APSTA/SoftAP has a recovered owner class/state contract but local docs and request text still describe owner absence as a limiting guardrail.
+- expected system behavior: recover missing Apple-required owner classes, state blocks, and structures; do not satisfy APSTA by primary-STA stubs.
+- actual behavior: role 7 currently exposes a failure-only shape and docs say not to create owner state.
+- exact divergence point: `setVIRTUAL_IF_CREATE` role 7, APSTA/SoftAP YAML addenda, and CR-120 claim scope.
+- evidence from runtime: no new runtime claim; this is a static RE correction from recovered decomp/symbols.
+- evidence from decomp: `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)`, APSTA factory/object size, APSTA state offsets, APSTA identity methods, SoftAP carriers, and queue/datapath accessors listed above.
+- exact semantic mismatch between reference and our code: reference has a separate APSTA/SAP owner object; local code only returns missing-owner failure and the docs accidentally frame that as final.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the role-7 branch directly constructs/stores an APSTA owner and later APSTA methods directly read its state block; no alternate owner path exists in the reference evidence.
+- why proposed fix is 1:1 with reference architecture and semantics: it changes the restoration target from primary-STA stubs to the recovered APSTA owner topology and preserves failure-only behavior only until the missing owner is implemented.
+- files/functions to modify:
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/95_mcs_nrate_and_virtual_if_shadow_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_signal_chain_audit.md`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `commit-approval/requests/CR-120-mcs-nrate-vif-shadow.md`
+- forbidden alternative fixes considered and rejected:
+  - declare APSTA/SoftAP permanently out of scope because the local owner class is absent.
+  - implement APSTA/SoftAP selectors on the primary STA interface.
+  - advertise HostAP capability before APSTA owner lifecycle is reconstructed.
+  - fake role-7 success without an APSTA owner object, state block, queues, and registration path.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - no build required for documentation-only correction; the next code batch must build before submission.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: role-7 owner creation, APSTA object size, state offsets, identity methods, SoftAP carriers, and datapath accessors are recovered.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim is made here.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA layer incompleteness: the reference directly constructs and stores an owner object that local code lacks.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? This correction aligns the target architecture; implementation follows in the next code batch.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it reopens the missing owner layer as a required reconstruction item.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact decomp addresses, symbols, local functions, and docs are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-STATE-BLOCK-SCAFFOLD-049
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA/SAP owner reconstruction now has recovered state offsets, but the local tree still has no compile-time representation of the APSTA state block at `self+0x130`.
+- first visible manifestation: APSTA owner-layer audit after A-APSTA-OWNER-LAYER-RECONSTRUCTION-048.
+- expected system behavior:
+  - `AppleBCMWLANIO80211APSTAInterface` owns a private state block at object offset `+0x130`.
+  - SoftAP getters and setters read/write fixed fields inside that state block.
+  - APSTA queue/datapath accessors read fixed queue, pool, queue-map, and feature-bit offsets inside the same state block.
+  - Feature gates in role-7 creation write APSTA state bits at offsets `+0x32a` and `+0x32b`.
+- actual behavior:
+  - local code has no APSTA state-block type, no compile-time offset checks, and no local carrier for the recovered SAP/APSTA queue/pool fields.
+  - the current role-7 path can only return missing-owner failure because there is no owner state object to initialize safely.
+- divergence point:
+  - missing local APSTA state definition corresponding to APSTA object member `self+0x130`.
+  - no local offsets for SoftAP fields, stats, TX/RX pools, completion queues, multicast queue, or feature bits.
+- evidence:
+  - decomp: role-7 creation writes `(*(apsta+0x130)+0x32a)=1` and `(*(apsta+0x130)+0x32b)=1` after APSTA object creation.
+  - decomp: `getSOFTAP_PARAMS(...)` reads APSTA state offsets `+0x0e`, `+0x10`, `+0x18`, `+0x1c`, `+0x20`, `+0x24`, `+0x28`, and `+0x68`.
+  - decomp: `getSOFTAP_STATS(...)` copies `0x58` bytes from APSTA state `+0x1b0`.
+  - decomp: `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` copies `0x24` bytes to APSTA state `+0x2c` when the Apple feature gate permits it.
+  - decomp: APSTA queue/datapath accessors read `+0x2a4`, `+0x2b8`, `+0x2d8`, `+0x2e0`, `+0x2e8`, `+0x2f0`, `+0x300`, and `+0x320`.
+- candidate causes:
+  - confirmed: the local APSTA state layer is absent.
+  - rejected: implement APSTA by adding these fields to the primary STA object; Apple keeps them in the APSTA/SAP owner state.
+  - rejected: enable role-7 success before the APSTA owner lifecycle and registration path exist.
+- confirmed deviation: local code lacks the recovered APSTA state block that Apple APSTA methods directly consume.
+- root cause: confirmed for the APSTA owner state layer. This is a structural prerequisite and does not claim to solve the current STA association/data blocker by itself.
+- fix:
+  - add a local APSTA state-block definition with compile-time static asserts for every recovered Apple offset.
+  - include that definition in the Tahoe Skywalk interface build so offset drift fails compilation immediately.
+  - keep role-7 success disabled until the next owner-object/lifecycle layer is reconstructed.
+- verification:
+  - compile-time `static_assert` offsets for SoftAP, stats, queue/pool, multicast, and feature-bit fields.
+  - YAML docs updated with the new local carrier and remaining owner-object work.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - create CR-122 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-STATE-BLOCK-SCAFFOLD-049
+- symptom: recovered APSTA state offsets are documented but not represented in compilable local code.
+- expected system behavior: local APSTA/SAP reconstruction has an exact state-block carrier before role-7 creation is exposed.
+- actual behavior: no local APSTA state block exists, so role-7 creation cannot be restored without guessing storage.
+- exact divergence point: Apple APSTA object `self+0x130` state block versus absent local carrier.
+- evidence from runtime: no new runtime claim; this is a decomp/static reconstruction step.
+- evidence from decomp: role-7 feature-bit writes, SoftAP getters/setters, stats copy, and APSTA datapath accessors listed in A-APSTA-STATE-BLOCK-SCAFFOLD-049.
+- exact semantic mismatch between reference and our code: reference has fixed APSTA owner state offsets; local code has none.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: every recovered APSTA SoftAP/datapath method dereferences this state block directly, so the owner layer cannot be implemented correctly without it.
+- why proposed fix is 1:1 with reference architecture and semantics: it encodes the recovered offsets only and does not invent state transitions or fake role-7 success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - add APSTA fields to the primary STA object.
+  - expose role-7 success with no APSTA owner lifecycle.
+  - derive APSTA from the current primary STA class before the SAP vtable/header is recovered.
+  - fabricate queues or queue depths without the APSTA owner state.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-122.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the recovered APSTA methods directly read/write the listed state offsets.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim is made for this scaffold.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA owner reconstruction: the state block is a direct operand of the recovered Apple methods.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: offset-only state carrier, no guessed behavior.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: this is the missing structural layer needed before APSTA owner creation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA state offsets are listed above and mirrored in compile-time asserts.
+
+## ANOMALY
+
+- id: A-IO80211SAP-PROTOCOL-SCAFFOLD-050
+- status: CONFIRMED_DEVIATION
+- symptom: the APSTA state block now exists locally, but the Tahoe SAP protocol vtable shape is still absent, so a future APSTA owner would either derive from the wrong primary-STA class or append SoftAP methods at the wrong slots.
+- first visible manifestation: APSTA/SAP vtable audit after A-APSTA-STATE-BLOCK-SCAFFOLD-049.
+- expected system behavior:
+  - `IO80211SapProtocol` is a distinct Tahoe owner protocol with vtable at `0xffffff80023e8dc0`.
+  - Its vtable inherits the Tahoe `IO80211SkywalkInterface` shape through `syncDPSStats` and then exposes SAP/virtual-interface slots before APSTA overrides SoftAP and station-management selectors.
+  - `AppleBCMWLANIO80211APSTAInterface` overrides SAP slots for `getSSID`, `getCHANNEL`, `getSTATE`, `getOP_MODE`, `getSTATION_LIST`, station IE/stats/key carriers, peer-cache, HostAP, SoftAP, RSN, and STA authorization/deauth.
+- actual behavior:
+  - local `include/Airport/IO80211VirtualInterface.h` is an older IOService-based virtual-interface header and does not represent the Tahoe SAP/Skywalk vtable seam.
+  - local code has no `IO80211SapProtocol.h`, so there is no compile-time APSTA/SAP base shape to prevent vtable drift.
+- divergence point:
+  - recovered `IO80211SapProtocol` vtable slots `481..519` and APSTA slots `505..531` versus absent local Tahoe SAP protocol header.
+- evidence:
+  - remote vtable dump `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt` shows `IO80211SapProtocol` vtable at `0xffffff80023e8dc0`, with slots `280..480` aligned to the Tahoe Skywalk base and slots `481..519` forming the SAP/virtual-interface extension seam.
+  - the same dump shows `AppleBCMWLANIO80211APSTAInterface` vtable at `0xffffff8001777508`, overriding APSTA datapath slots `425..439`, `forwardPacket` at slot `465`, and SAP/SoftAP slots `505..531`.
+  - KDK symbols list only `IO80211SapProtocol` meta/ctor/dtor symbols, proving there is no rich local method header to import from; the slot surface must be reconstructed from vtable and APSTA override evidence.
+  - KDK symbols identify APSTA methods and signatures including `getSSID(apple80211_ssid_data*)`, `getCHANNEL(apple80211_channel_data*)`, `getSTATE(apple80211_state_data*)`, `getOP_MODE(apple80211_opmode_data*)`, `getSTATION_LIST(apple80211_sta_data*)`, `getPEER_CACHE_MAXIMUM_SIZE(apple80211_peer_cache_maximum_size*)`, `getHOST_AP_MODE_HIDDEN(apple80211_host_ap_mode_hidden_t*)`, `getSOFTAP_PARAMS(apple80211_softap_params*)`, `getSOFTAP_STATS(apple80211_softap_stats*)`, `setHOST_AP_MODE(apple80211_network_data*)`, `setSTA_AUTHORIZE(apple80211_sta_authorize_data*)`, `setSTA_DEAUTH(apple80211_sta_disassoc_data*)`, `setRSN_CONF(apple80211_rsn_conf_data*)`, `setSOFTAP_TRIGGER_CSA(apple80211_softap_csa_params*)`, and `setSOFTAP_WIFI_NETWORK_INFO_IE(apple80211_softap_wifi_network_info*)`.
+- candidate causes:
+  - confirmed: local SAP protocol header is absent.
+  - confirmed: deriving APSTA from `IO80211InfraProtocol` or the old local `IO80211VirtualInterface` would produce the wrong owner topology or vtable slots.
+  - rejected: use no-arg reserved placeholders for SoftAP slots; APSTA methods must occupy the recovered slots with their typed signatures, not append after them.
+- confirmed deviation: local headers cannot yet express the recovered Tahoe SAP/APSTA method-slot seam.
+- root cause: confirmed for APSTA owner-class reconstruction. This remains structural and does not claim primary-STA data/connectivity resolution.
+- fix:
+  - add a Tahoe-only `IO80211SapProtocol` contract header that records the recovered SAP/APSTA slot seam.
+  - declare the recovered typed SoftAP and station-management slot carriers as a compile-time contract so future APSTA owner implementation cannot append them at wrong slots.
+  - do not define a C++ `IO80211SapProtocol` base class yet because the recovered APSTA `forwardPacket` override occupies a slot currently named differently in the local Skywalk header; the full SAP class requires a separate exact slot map, not a subclass of the current primary-STA header.
+  - include the header from the V3/V2 Apple80211 umbrella so it is compiled in the Tahoe build.
+  - do not instantiate SAP/APSTA or return role-7 success yet.
+- verification:
+  - compile with the new header in the Tahoe umbrella include path.
+  - update YAML/docs with the SAP protocol vtable seam.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - create CR-123 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-IO80211SAP-PROTOCOL-SCAFFOLD-050
+- symptom: APSTA owner state exists locally but the SAP protocol base/vtable seam is still missing.
+- expected system behavior: local APSTA owner reconstruction has a Tahoe `IO80211SapProtocol` base shape before any APSTA class is instantiated.
+- actual behavior: local headers only have primary STA and old virtual-interface shapes.
+- exact divergence point: `IO80211SapProtocol` vtable `481..519` and APSTA overrides `505..531`.
+- evidence from runtime: no new runtime claim; this is a decomp/static header reconstruction step.
+- evidence from decomp: resolved SAP/APSTA vtable dump and APSTA KDK symbols listed above.
+- exact semantic mismatch between reference and our code: reference has a distinct SAP protocol seam; local code has no way to place APSTA SoftAP methods at the recovered slots.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: APSTA role-7 creation returns an APSTA object whose virtual methods are called through this exact SAP/Skywalk vtable seam. A wrong base class would shift the selectors even if the state block is correct.
+- why proposed fix is 1:1 with reference architecture and semantics: it records the recovered SAP/APSTA vtable seam and typed slots without defining an ABI-wrong C++ base class or inventing runtime behavior.
+- files/functions to modify:
+  - `include/Airport/IO80211SapProtocol.h`
+  - `include/Airport/Apple80211.h`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - derive APSTA from `IO80211InfraProtocol` or current `AirportItlwmSkywalkInterface`.
+  - derive APSTA from the old local `IO80211VirtualInterface` header.
+  - define `IO80211SapProtocol` as a simple subclass of current local `IO80211SkywalkInterface` while slot aliases remain unresolved.
+  - use no-arg reserved placeholders for typed SAP/SoftAP slots.
+  - instantiate APSTA before constructor/start/free and registration contracts are recovered.
+  - advertise HostAP or return role-7 success in this batch.
+- verification plan:
+  - compile Tahoe target with the new header included.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-123.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the SAP/APSTA vtable dump and APSTA symbols recover the seam and typed selectors.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made for this header scaffold.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA owner reconstruction: wrong base shape would place APSTA selectors in the wrong vtable slots.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes at the header/vtable-shape level; no runtime behavior is invented.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: this restores the missing SAP protocol layer required before APSTA owner creation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: vtable slot ranges and APSTA symbols are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-LIFECYCLE-STATE-RESOURCE-051
+- status: CONFIRMED_DEVIATION
+- symptom: the APSTA state scaffold covers SoftAP/datapath offsets, but the recovered APSTA lifecycle uses additional state resources and an exact state allocation size that are not yet represented locally.
+- first visible manifestation: APSTA owner lifecycle audit after A-IO80211SAP-PROTOCOL-SCAFFOLD-050.
+- expected system behavior:
+  - APSTA `free()` treats the private state block at `self+0x130` as a `0x338`-byte allocation.
+  - APSTA `freeResources()`, `stop(IOService*)`, `reset()`, and `initSoftAPParameters()` release or reset timer/work-source/resource pointers and state flags at fixed offsets.
+  - The APSTA state block carries not only public SoftAP/datapath fields, but also lifecycle resources needed for safe teardown and reset.
+- actual behavior:
+  - local `AirportItlwmAPSTAStateBlock` only asserted coverage through feature bits and left lifecycle/resource offsets inside padding.
+  - state size was asserted only as minimum coverage rather than exact recovered lifecycle size.
+- divergence point:
+  - APSTA state offsets `+0x70`, `+0x78`, `+0xb8`, `+0x1a8`, `+0x218`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, `+0x260`, `+0x26c`, `+0x329`, and exact state size `0x338`.
+- evidence:
+  - decomp: `AppleBCMWLANIO80211APSTAInterface::free()` calls `freeResources()` and then zeroes/releases `*(self+0x130)` with size `0x338`.
+  - decomp: `freeResources()` stops/releases state pointers at `+0x70`, `+0x78`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, and `+0x260`.
+  - decomp: `stop(IOService*)` detaches TX queues, TX/RX completion queues, and multicast work source at state offsets already recorded for datapath.
+  - decomp: `reset()` writes `0` to state `+0x26c`, clears byte `+0x329`, reads owner/core pointer at `+0x218`, updates link state, and zeroes `state+0xb8` for `0xf0` bytes.
+  - decomp: `initSoftAPParameters()` clears the `state+0xb8` runtime block and writes zero at `state+0x1a8`.
+- candidate causes:
+  - confirmed: lifecycle/resource state offsets were hidden inside padding in the local scaffold.
+  - confirmed: exact APSTA state allocation size is now recovered as `0x338`.
+  - rejected: keep treating state size as unknown once `free()` provides the release size.
+- confirmed deviation: local APSTA state block did not yet encode lifecycle resources and exact state allocation size.
+- root cause: confirmed for APSTA lifecycle scaffold completeness. This still does not instantiate APSTA or claim primary-STA connectivity resolution.
+- fix:
+  - split APSTA state padding into named lifecycle/resource fields at recovered offsets.
+  - add static asserts for lifecycle timers/resources, owner/core pointer, reset flag/state, runtime block, and exact `0x338` state size.
+  - update YAML/docs with lifecycle offset evidence.
+  - keep role-7 success disabled until constructor/start/registration are implemented.
+- verification:
+  - compile-time offset asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - create CR-124 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-LIFECYCLE-STATE-RESOURCE-051
+- symptom: APSTA state scaffold lacks lifecycle/resource fields and exact state size recovered from APSTA `free/reset/stop` paths.
+- expected system behavior: APSTA state block exposes lifecycle resources and exact `0x338` allocation size before APSTA owner instantiation.
+- actual behavior: those offsets were padding and size was only minimum coverage.
+- exact divergence point: APSTA lifecycle state offsets and state release size.
+- evidence from runtime: no new runtime claim; this is decomp/static lifecycle reconstruction.
+- evidence from decomp: APSTA `free()`, `freeResources()`, `stop(IOService*)`, `reset()`, and `initSoftAPParameters()` offsets listed above.
+- exact semantic mismatch between reference and our code: reference lifecycle operates on named state resources; local scaffold hid them and did not assert exact size.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: APSTA teardown/reset directly dereferences these offsets, so a role-7 owner cannot be made safe without them.
+- why proposed fix is 1:1 with reference architecture and semantics: it only names and asserts recovered offsets and exact allocation size; it does not create or start APSTA.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - leave lifecycle offsets as anonymous padding.
+  - keep APSTA state size open after `free()` proves `0x338`.
+  - instantiate APSTA owner before lifecycle resources and teardown path are encoded.
+  - return role-7 success or advertise HostAP in this batch.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-124.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA lifecycle methods directly use the recovered offsets and state release size.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made for this scaffold.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA lifecycle safety: these offsets are direct teardown/reset operands.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: offset and size assertions only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores the missing lifecycle state layer.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: APSTA lifecycle functions and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-ROLE7-CREATION-STORAGE-052
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA state and SAP contracts are now present, but the role-7 creation/storage contract from `setVIRTUAL_IF_CREATE` is still only prose and not represented in compiled local code.
+- first visible manifestation: APSTA owner creation audit after A-APSTA-LIFECYCLE-STATE-RESOURCE-051.
+- expected system behavior:
+  - `apple80211_virt_if_create_data` role field at `data+0x0c` selects APSTA role `7`.
+  - role 7 passes `data+0x04` as the MAC carrier and `data+0x10` as the output BSD-name carrier to the APSTA factory.
+  - the APSTA owner pointer is stored in core expansion at `+0x2c30`.
+  - duplicate APSTA owner returns `0xe00002d2`; failed APSTA creation returns `0xe00002bd`; unknown roles return `0xe0000001`.
+  - successful creation applies feature gates `0x0d` and `0x0c` to APSTA state bytes `+0x32a` and `+0x32b`.
+- actual behavior:
+  - local code still has only failure-only role-7 behavior and no compiled owner-storage/factory-argument contract.
+  - APSTA core expansion storage offsets and role-7 carrier offsets are documented but not asserted in code.
+- divergence point:
+  - role-7 branch of `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` versus absent local `AirportItlwmAPSTACoreExpansionStorageLayout` and role-7 carrier witness.
+- evidence:
+  - decomp: `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...) @ 0xffffff80015fc280` checks `*(int *)(data+0x0c) == 7`.
+  - decomp: when no APSTA owner exists at `coreExpansion+0x2c30`, it calls `FUN_ffffff8001685422(core, data+0x04, 7, data+0x10)` and stores the returned pointer at `coreExpansion+0x2c30`.
+  - decomp: duplicate APSTA owner returns `0xe00002d2`; failed creation returns `0xe00002bd`; unknown role returns `0xe0000001`.
+  - decomp: after successful creation, feature gate `0x0d` writes `state+0x32a`, and feature gate `0x0c` writes `state+0x32b`.
+  - symbols: `AppleBCMWLANIO80211APSTAInterface::withOptions(AppleBCMWLANCore*, ether_addr*, uint, char*)` and `init(AppleBCMWLANCore*, ether_addr*, uint, char*)` confirm the factory/init argument shape.
+- candidate causes:
+  - confirmed: local code lacks a compiled owner-storage/role-7 carrier witness.
+  - rejected: wire role-7 success before final APSTA class, registration, resource creation, and SAP slot aliases are complete.
+- confirmed deviation: role-7 owner storage and factory carrier contract absent from compiled local APSTA scaffold.
+- root cause: confirmed for APSTA owner-creation scaffold completeness only.
+- fix:
+  - add role-7 constants and return-code constants to APSTA scaffold.
+  - add a packed virtual-interface create carrier witness with static asserts for `mac`, `role`, and `bsdName` offsets.
+  - add a core expansion storage witness with APSTA owner pointer at `+0x2c30`.
+  - add a typed factory function contract for `(core, ether_addr*, role, bsdName)`.
+  - keep local `setVIRTUAL_IF_CREATE` role-7 runtime behavior unchanged until the APSTA owner class and registration path are implemented.
+- verification:
+  - compile-time offset asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - create CR-125 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-ROLE7-CREATION-STORAGE-052
+- symptom: role-7 APSTA creation/storage facts are recovered but not compiled into local code.
+- expected system behavior: local APSTA scaffold records carrier offsets, core storage offset, factory argument shape, role, return codes, and feature gates before runtime creation is enabled.
+- actual behavior: these facts exist only in docs and role 7 still returns no-owner failure.
+- exact divergence point: `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` role-7 branch.
+- evidence from runtime: no runtime claim; this is static/decomp scaffold restoration.
+- evidence from decomp: role-7 branch and APSTA factory symbols listed above.
+- exact semantic mismatch between reference and our code: reference stores APSTA owner at core expansion `+0x2c30` using exact carrier offsets; local code has no compiled witness for that storage contract.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: role-7 creation directly consumes these offsets and writes the owner pointer at this core expansion field.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes the recovered constants/offsets and keeps runtime creation disabled until later layers are complete.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - return role-7 success without APSTA owner class/registration.
+  - store APSTA owner in primary STA object state instead of core expansion `+0x2c30`.
+  - use guessed carrier offsets instead of the recovered `data+0x04/+0x0c/+0x10`.
+  - advertise HostAP in this batch.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-125.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: role-7 branch directly shows carrier offsets, core storage, return codes, and feature gates.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA owner creation: these are direct operands of the recovered creation path.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: constants and offsets only, no guessed behavior.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores the missing owner-storage scaffold.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact role-7 branch evidence is listed above.
+
+## ANOMALY
+
+- id: A-APSTA-DATAPATH-ACTIVATION-RESOURCE-053
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA role-7 storage, lifecycle, and queue accessors are now represented, but two active APSTA datapath/resource state operands are still hidden inside padding.
+- first visible manifestation: APSTA datapath activation audit after A-APSTA-ROLE7-CREATION-STORAGE-052.
+- expected system behavior:
+  - APSTA method at `0xffffff8001694064` returns the private state object at `state+0x210`.
+  - SoftAP/APSTA event and async callback paths use `state+0x210` as the bytestream/logger sink for firmware event payload traces.
+  - `enableDatapath()` calls the object stored at `state+0x2d0` through vtable slot `+0x120` before starting TX/RX completion queues.
+  - `disableDatapath()` calls the object stored at `state+0x2d0` through vtable slot `+0x128` before stopping RX/TX completion queues.
+  - queue-missing failure remains `0xe00002bc`; APSTA creation remains disabled until owner class/start/resource creation is complete.
+- actual behavior:
+  - local `AirportItlwmAPSTAStateBlock` names queues, pools, lifecycle resources, and feature bits, but still treats `+0x210` and `+0x2d0` as anonymous padding.
+  - local docs list queue accessors but not the datapath activation owner object used by enable/disable.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::enableDatapath() @ 0xffffff8001693b82`
+  - `AppleBCMWLANIO80211APSTAInterface::disableDatapath() @ 0xffffff8001693e80`
+  - `FUN_ffffff8001694064 @ 0xffffff8001694064`
+- evidence:
+  - decomp: `FUN_ffffff8001694064` returns `*(state+0x210)`.
+  - decomp: `handleEvent(...)`, `handleSetRpsNoaAsyncCallBack`, and `handleSetBcnIntervalAsyncCallBack` use `state+0x210` with bytestream helper calls.
+  - decomp: `enableDatapath()` invokes `(*(state+0x2d0)->vtable+0x120)(state+0x2d0, self)`, starts `state+0x2e8` and `state+0x2f0`, then arms the RX completion queue via vtable `+0x298`.
+  - decomp: `disableDatapath()` invokes `(*(state+0x2d0)->vtable+0x128)(state+0x2d0, self)`, then stops `state+0x2f0` and `state+0x2e8`.
+  - docs: APSTA queue accessor offsets are already recorded in YAML 96, but activation owner `+0x2d0` and bytestream/resource `+0x210` are absent from the compiled state scaffold.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacks named fields/static asserts for two direct APSTA datapath/resource operands.
+  - rejected: enable role-7 success now; constructor, start registration, resource creation, and SAP slot aliases are not complete.
+- confirmed deviation: two direct APSTA state operands are not represented in compiled local code.
+- root cause: confirmed for APSTA datapath activation/resource scaffold completeness only.
+- fix:
+  - split APSTA state padding to name `resource210` at `+0x210`.
+  - split APSTA state padding to name `datapathOwner2d0` at `+0x2d0`.
+  - add static asserts for both recovered offsets.
+  - update YAML and prose docs with the activation contract.
+  - keep runtime role-7/APSTA creation disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-126 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-DATAPATH-ACTIVATION-RESOURCE-053
+- symptom: APSTA datapath activation/resource offsets are recovered in decomp but absent from compiled local scaffold.
+- expected system behavior: local APSTA scaffold records every direct state operand used by APSTA datapath activation and bytestream/resource access before any runtime APSTA creation is enabled.
+- actual behavior: `state+0x210` and `state+0x2d0` remain anonymous padding.
+- exact divergence point: APSTA `enableDatapath()`, `disableDatapath()`, and `FUN_ffffff8001694064`.
+- evidence from runtime: no new runtime claim; this is static/decomp scaffold restoration.
+- evidence from decomp: functions and offsets listed in A-APSTA-DATAPATH-ACTIVATION-RESOURCE-053.
+- exact semantic mismatch between reference and our code: reference uses named owner/resource slots at `+0x210` and `+0x2d0`; local code cannot safely model APSTA activation without them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: these are direct operands dereferenced by reference APSTA datapath methods.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes recovered offsets and does not start queues, allocate APSTA, or return role-7 success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - return role-7 success before constructor/start/resource creation are recovered.
+  - invent a local datapath owner object without the factory/start path.
+  - null-guard or mask missing APSTA queues.
+  - fake HostAP/APSTA capability in the primary STA object.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-126.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA datapath/resource functions directly dereference `state+0x210` and `state+0x2d0`.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA activation scaffold completeness: the offsets are direct operands.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: offset fields/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores missing APSTA state operands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact decomp functions and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-INIT-START-RESOURCE-CONTRACT-054
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA private-state offsets for datapath activation are now named, but the APSTA init/start resource contract that populates those fields is still absent from compiled local scaffolding.
+- first visible manifestation: APSTA factory/init/start audit after A-APSTA-DATAPATH-ACTIVATION-RESOURCE-053.
+- expected system behavior:
+  - `withOptions(core, mac, role, bsdName)` allocates APSTA object size `0x138` and calls `init(core, mac, role, bsdName)` through the APSTA vtable.
+  - `init(core, mac, role, bsdName)` allocates APSTA state, stores owner/core at `state+0x218`, clears feature bytes `+0x32a/+0x32b`, initializes timer/resource fields, and sets APSTA queue defaults.
+  - `init(...)` stores resource references at state offsets `+0x210`, `+0x228`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, and `+0x260`.
+  - `init(...)` sets `state+0x268 = 2`, `state+0x20c = 0`, clears `state+0x88` and `state+0xb0`, sets `state+0x14 = 0x12c`, sets `state+0x2a4 = 4`, and seeds a four-entry map at `state+0x2a8..0x2b4` with `0,1,2,3`.
+  - `start(core, RegistrationInfo*)` refreshes logger/resource `state+0x210`, stores work queue at `state+0x330`, stores bus interface/provider at `state+0x2c8`, resolves datapath owner at `state+0x2d0`, and calls owner vtable `+0x118` with a stack configuration that points to APSTA queue/pool storage fields.
+- actual behavior:
+  - local scaffold names lifecycle resources and datapath accessors but does not encode the init/start state slots or the queue-configuration carrier.
+  - local code has no compiled witness for the stack contract passed to datapath owner vtable `+0x118`.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::withOptions(...) @ 0xffffff8001685422`
+  - `AppleBCMWLANIO80211APSTAInterface::init(AppleBCMWLANCore*, ether_addr*, uint, char*) @ 0xffffff80016854ee`
+  - `AppleBCMWLANIO80211APSTAInterface::start(AppleBCMWLANCore*, IOSkywalkEthernetInterface::RegistrationInfo*) @ 0xffffff8001686378`
+- evidence:
+  - disasm: `withOptions(...)` allocates `0x138`, installs the APSTA vtable, and calls vtable slot `+0x1090` with `(core, mac, role, bsdName)`.
+  - disasm: `init(...)` stores `core` at `state+0x218`, clears `+0x32a/+0x32b`, creates timer sources at `+0x70/+0x78`, and fills resource offsets `+0x210`, `+0x228`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, `+0x260`.
+  - disasm: `init(...)` writes defaults at `+0x14`, `+0x20c`, `+0x268`, `+0x2a4`, and `+0x2a8..0x2b4`.
+  - disasm: `start(...)` stores work queue `+0x330`, bus/provider `+0x2c8`, datapath owner `+0x2d0`, and passes pointers to `+0x2a8`, `+0x300`, `+0x2f8`, `+0x2e8`, `+0x2f0`, `+0x320`, `+0x2d8`, `+0x2e0`, plus logger to vtable `+0x118`.
+  - disasm: on registration failure, `start(...)` removes work sources for TX queues, TX/RX completion queues, and multicast queue instead of masking failures.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacks named fields/static asserts for init/start operands and lacks the start queue-configuration carrier witness.
+  - rejected: allocate local APSTA or return role-7 success before the full class/registration/resource path is represented.
+- confirmed deviation: APSTA init/start resource slots and configuration carrier are not represented in compiled local code.
+- root cause: confirmed for APSTA owner init/start scaffold completeness only.
+- fix:
+  - add named state fields and static asserts for recovered init/start offsets.
+  - add a local stack-carrier witness for the APSTA start queue/resource configuration passed to datapath owner vtable `+0x118`.
+  - update YAML/prose docs.
+  - keep runtime role-7 creation disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-127 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-INIT-START-RESOURCE-CONTRACT-054
+- symptom: APSTA init/start resource and queue-configuration contracts are recovered but absent from compiled local scaffolding.
+- expected system behavior: local APSTA scaffolding records every direct init/start state operand and the carrier shape used when APSTA asks the datapath owner to create queues/pools.
+- actual behavior: the state slots and carrier remain anonymous or absent.
+- exact divergence point: APSTA `withOptions(...)`, `init(core, mac, role, bsdName)`, and `start(core, RegistrationInfo*)`.
+- evidence from runtime: no new runtime claim; this is static/disasm scaffold restoration.
+- evidence from decomp: APSTA disassembly addresses and operands listed in A-APSTA-INIT-START-RESOURCE-CONTRACT-054.
+- exact semantic mismatch between reference and our code: reference init/start writes and passes APSTA owner/resource fields that local compiled scaffolding does not yet represent.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: these are direct stores and direct carrier fields used before APSTA can register and create its datapath.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes recovered offsets and carrier layout; it does not allocate APSTA, create queues, or return role-7 success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - instantiate APSTA before the init/start carrier is represented.
+  - invent queue ownership or work-source registration without the recovered `+0x118` owner call.
+  - ignore `state+0x2c8`, `state+0x2f8`, or `state+0x330` because current local code lacks matching objects.
+  - fake HostAP/APSTA capability in the primary STA object.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-127.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA init/start disassembly directly shows the stores, references, and carrier offsets.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA init/start scaffold completeness: these are direct operands of APSTA creation/start.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: fields and carrier layout only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores missing APSTA init/start operands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA disassembly addresses and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-HOSTAP-STATE-MACHINE-FIELDS-055
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA init/start resource scaffolding is present, but AP/SoftAP control state fields used by HostAP mode transitions are still hidden in padding or over-broad fields.
+- first visible manifestation: AP-mode control-path audit after A-APSTA-INIT-START-RESOURCE-CONTRACT-054.
+- expected system behavior:
+  - `holdSoftAPPowerAssertion()` writes `state+0x0c = 1`.
+  - `setHOST_AP_MODE_HIDDEN(...)` writes hidden-mode state byte `state+0x0d`.
+  - `hostAPPowerOff()` and `setHOST_AP_MODE_HIDDEN(...)` clear `state+0x0e` on AP shutdown/hidden-mode transitions.
+  - `configureLowPowerModeExit()` checks a 32-bit field at `state+0xb4`.
+  - `setHostApModeInternal(...)` tests/writes `state+0x26c` as the AP-up state and tests/writes `state+0x270` as a HostAP transition/in-progress state.
+  - successful AP enable sets `state+0x26c = 1`, clears `state+0x20c`, and updates `state+0x14`.
+  - `setHOST_AP_MODE(...)` wraps `setHostApModeInternal(...)` with proximity/NAN bringdown/bringup around core expansion owners `+0x2c28`, `+0x74f0`, and `+0x74f8`, gated by feature `0x46`.
+- actual behavior:
+  - local APSTA state scaffold had no named bytes for `+0x0c/+0x0d`, no exact `+0xb4` 32-bit field, and no named `+0x270` transition field.
+  - local docs described APSTA resources and queue start but not the AP-mode control flags.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE(...) @ 0xffffff80016884ae`
+  - `AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...) @ 0xffffff8001688bc2`
+  - `AppleBCMWLANIO80211APSTAInterface::hostAPPowerOff() @ 0xffffff8001692772`
+  - `AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE_HIDDEN(...) @ 0xffffff800168d970`
+  - `AppleBCMWLANIO80211APSTAInterface::holdSoftAPPowerAssertion() @ 0xffffff800168dbc2`
+  - `AppleBCMWLANIO80211APSTAInterface::configureLowPowerModeExit() @ 0xffffff80016928e4`
+- evidence:
+  - disasm: `holdSoftAPPowerAssertion()` writes byte `state+0x0c`.
+  - disasm: `setHOST_AP_MODE_HIDDEN(...)` writes byte `state+0x0d` and clears byte `state+0x0e` on the shutdown branch.
+  - decomp: `hostAPPowerOff()` tests `state+0x26c`, calls `setPowerSaveState`, clears byte `state+0x0e`, and calls `setHostApModeInternal(NULL)`.
+  - disasm: `configureLowPowerModeExit()` compares 32-bit `state+0xb4` with zero.
+  - disasm: `setHostApModeInternal(...)` tests/writes 32-bit `state+0x270`, writes `state+0x26c`, clears `state+0x20c`, and updates `state+0x14`.
+  - decomp: `setHOST_AP_MODE(...)` coordinates proximity/NAN owners around `setHostApModeInternal(...)` under feature gate `0x46`.
+- candidate causes:
+  - confirmed: AP-mode control fields were not represented as exact local state operands.
+  - rejected: implement HostAP state transitions before the full control path and firmware IOVAR sequence are represented.
+- confirmed deviation: AP-mode control flags and transition state fields are missing from compiled local scaffold.
+- root cause: confirmed for APSTA AP-mode state scaffold completeness only.
+- fix:
+  - name state bytes `+0x0c` and `+0x0d`.
+  - split the `+0xb0` runtime area so `+0xb4` is an exact 32-bit field.
+  - name state dword `+0x270`.
+  - add static asserts and update YAML/prose docs.
+  - keep runtime HostAP/role-7 creation disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-128 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-HOSTAP-STATE-MACHINE-FIELDS-055
+- symptom: AP/SoftAP control state fields are recovered but absent from the compiled APSTA state scaffold.
+- expected system behavior: APSTA state scaffold records AP-mode flags and transition fields before HostAP mode methods are implemented.
+- actual behavior: those fields remain padding or over-broad runtime fields.
+- exact divergence point: APSTA `setHOST_AP_MODE`, `setHostApModeInternal`, `setHOST_AP_MODE_HIDDEN`, `holdSoftAPPowerAssertion`, `hostAPPowerOff`, and `configureLowPowerModeExit`.
+- evidence from runtime: no new runtime claim; this is static/decomp scaffold restoration.
+- evidence from decomp: APSTA decomp/disasm addresses and operands listed in A-APSTA-HOSTAP-STATE-MACHINE-FIELDS-055.
+- exact semantic mismatch between reference and our code: reference AP-mode control dereferences exact state bytes/dwords that local code does not yet model.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: these fields are direct operands of the AP-mode transition path.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes recovered offsets; it does not implement AP enable/disable, firmware IOVAR calls, or capability publication.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - advertise HostAP capability from primary STA.
+  - force AP mode success without firmware IOVAR sequence.
+  - hide missing AP state with default/null guards.
+  - enable role-7 owner before final APSTA class and method bodies are complete.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-128.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA AP-mode methods directly read/write these offsets.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for AP-mode scaffold completeness: these are direct operands in AP-mode transitions.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact fields/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores missing AP-mode state operands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA AP-mode methods and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-REGISTRATION-INFO-CARRIER-056
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA owner/state/start scaffolds exist, but the exact APSTA `RegistrationInfo` carrier assembled by role-7 `setVIRTUAL_IF_CREATE` is still absent from compiled local scaffolding.
+- first visible manifestation: APSTA role-7 registration audit after A-APSTA-HOSTAP-STATE-MACHINE-FIELDS-055.
+- expected system behavior:
+  - after successful role-7 APSTA owner creation and feature gates, `setVIRTUAL_IF_CREATE(...)` zeroes a stack `RegistrationInfo` block of size `0x130`.
+  - it calls `APSTA->initRegistrationInfo(info, 1, 0x130)` before APSTA-specific field writes.
+  - it writes `info+0x14 = 2`.
+  - it copies the APSTA hardware address returned by APSTA vtable `+0xcf8` to bytes `info+0x108..0x10d`.
+  - it writes qword `info+0x24 = 0x8000000080`.
+  - it writes dword `info+0x0c = 3`.
+  - it writes BSD prefix pointer `"ap"` to `info+0x30` and BSD unit `1` to `info+0x38`.
+  - it writes flags at `info+0x40`, using `6` when `IOPMResetPowerStateOnWake` is present and otherwise OR-ing bit `0x4` into the existing field.
+  - it then calls `AppleBCMWLANIO80211APSTAInterface::start(core, info)`.
+- actual behavior:
+  - local code has only an opaque `IOSkywalkEthernetInterface::RegistrationInfo` pad and no APSTA-specific compiled carrier witness.
+  - APSTA registration fields are documented only indirectly in disassembly notes.
+- divergence point:
+  - role-7 branch of `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)`, disassembly range `0xffffff80015fc628..0xffffff80015fc73b`.
+- evidence:
+  - disasm: `leaq -0x160(%rbp), %r12; movl $0x130, %esi; call bzero`.
+  - disasm: call `0xffffff8002a3d7f2` with APSTA owner, stack info, type `1`, and size `0x130`.
+  - disasm: writes `0x14`, `0x24`, `0x0c`, `0x30`, `0x38`, `0x40`, and bytes `0x108..0x10d`.
+  - disasm: calls `AppleBCMWLANIO80211APSTAInterface::start(core, RegistrationInfo*)` with the same stack carrier.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacks an APSTA registration carrier layout and offset asserts.
+  - rejected: rely on the opaque local registration pad when implementing role-7 success.
+- confirmed deviation: APSTA role-7 registration info layout is not represented in compiled local code.
+- root cause: confirmed for APSTA registration scaffold completeness only.
+- fix:
+  - add `AirportItlwmAPSTARegistrationInfoLayout` as a packed layout witness.
+  - add constants for size, init type, fixed APSTA fields, and registration option qword.
+  - add static asserts for all recovered offsets and size.
+  - update YAML/prose docs.
+  - keep role-7 success disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-129 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-REGISTRATION-INFO-CARRIER-056
+- symptom: APSTA registration carrier fields are recovered but absent from compiled local scaffolding.
+- expected system behavior: local scaffolding records the exact APSTA `RegistrationInfo` producer contract before role-7 success is enabled.
+- actual behavior: only an opaque registration pad exists locally.
+- exact divergence point: role-7 `setVIRTUAL_IF_CREATE(...)` APSTA registration-info assembly.
+- evidence from runtime: no new runtime claim; this is static/disasm scaffold restoration.
+- evidence from decomp: disassembly range `0xffffff80015fc628..0xffffff80015fc73b` listed above.
+- exact semantic mismatch between reference and our code: reference writes APSTA-specific registration fields at fixed offsets; local code does not model those offsets.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: these fields are direct inputs to APSTA `start(core, RegistrationInfo*)`.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes recovered constants/offsets; it does not call `start`, allocate APSTA, or return role-7 success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - use the opaque local `RegistrationInfo` pad without APSTA offset assertions.
+  - set APSTA BSD fields by guessed names or guessed offsets.
+  - enable role-7 APSTA before registration carrier, class/vtable, and queue creation are fully represented.
+  - fake APSTA registration through primary STA.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-129.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: role-7 registration-info assembly directly writes the recovered fields.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA registration scaffold completeness: these fields are direct inputs to APSTA start.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact carrier layout/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores missing APSTA registration carrier operands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact disassembly addresses and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-REGISTER-ETHERNET-QUEUE-LIST-057
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA `RegistrationInfo` carrier is now represented, but the APSTA queue-list carrier passed to `registerEthernetInterface` is still only prose.
+- first visible manifestation: APSTA start registration audit after A-APSTA-REGISTRATION-INFO-CARRIER-056.
+- expected system behavior:
+  - `AppleBCMWLANIO80211APSTAInterface::start(core, RegistrationInfo*)` reads `numTxQueues` from `state+0x2a4`.
+  - it builds a queue pointer list from `state+0x300` TX submission queues.
+  - it appends TX completion queue `state+0x2e8` and RX completion queue `state+0x2f0`.
+  - with APSTA init default `numTxQueues = 4`, the effective registration list has 6 entries.
+  - it registers each TX submission queue and both completion queues with the work queue before calling `registerEthernetInterface`.
+  - it calls `registerEthernetInterface(info, queueList, numTxQueues + 2, state+0x2d8, state+0x2e0, 0)`.
+  - on registration failure it removes work sources for TX queues, TX completion, RX completion, and multicast queue.
+- actual behavior:
+  - local APSTA scaffold has queue storage fields but no compiled witness for the queue-list carrier consumed by `registerEthernetInterface`.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::start(AppleBCMWLANCore*, IOSkywalkEthernetInterface::RegistrationInfo*)`, disassembly range `0xffffff80016865ca..0xffffff8001686881`.
+- evidence:
+  - disasm: copies `state+0x300` TX queue pointers into a stack list using `numTxQueues * 8`.
+  - disasm: writes `state+0x2e8` after the TX queue block and `state+0x2f0` after that.
+  - disasm: loops over `state+0x300` and calls work queue vtable `+0x140` for each TX queue.
+  - disasm: calls work queue vtable `+0x140` for `state+0x2e8` and `state+0x2f0`.
+  - disasm: calls `registerEthernetInterface(info, queueList, numTxQueues + 2, txPool, rxPool, 0)`.
+  - disasm: failure path removes work sources through work queue vtable `+0x148`.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacks a queue-list carrier witness for APSTA Ethernet registration.
+  - rejected: register only one primary-STA queue or collapse TX completion/RX completion into the primary STA list.
+- confirmed deviation: APSTA registration queue-list carrier is not represented in compiled local code.
+- root cause: confirmed for APSTA start/registration scaffold completeness only.
+- fix:
+  - add constants for APSTA extra completion queues and effective registration queue count.
+  - add `AirportItlwmAPSTARegisterQueueListLayout` with four TX queues plus TX/RX completion queues.
+  - add static asserts for completion queue offsets and size.
+  - update YAML/prose docs.
+  - keep runtime role-7 creation disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-130 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-REGISTER-ETHERNET-QUEUE-LIST-057
+- symptom: APSTA queue-list registration carrier is recovered but absent from compiled local scaffolding.
+- expected system behavior: local scaffolding records the exact APSTA queue list passed to `registerEthernetInterface`.
+- actual behavior: queue storage exists, but queue-list carrier shape is not compiled.
+- exact divergence point: APSTA `start(core, RegistrationInfo*)` queue registration and `registerEthernetInterface` call.
+- evidence from runtime: no new runtime claim; this is static/disasm scaffold restoration.
+- evidence from decomp: APSTA start disassembly range `0xffffff80016865ca..0xffffff8001686881`.
+- exact semantic mismatch between reference and our code: reference registers a six-entry APSTA queue list for the default four-TX-queue topology; local code does not model that list.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the list is a direct argument to APSTA Ethernet registration.
+- why proposed fix is 1:1 with reference architecture and semantics: it only encodes recovered carrier shape and constants; it does not register queues or enable APSTA.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - collapse APSTA into the primary STA one-queue topology.
+  - omit TX completion or RX completion from the registration list.
+  - register queues without modeling the failure cleanup path.
+  - enable role-7 APSTA before queue creation and registration are complete.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-130.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA start disassembly directly constructs and registers the queue list.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA registration scaffold completeness: this list is a direct registration argument.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact queue-list carrier/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores missing APSTA queue-registration carrier operands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA start disassembly range and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-SOFTAP-PUBLIC-CARRIER-CONTRACT-058
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA owner scaffolding now has start/registration carriers, but several public SAP/SoftAP getter/setter carriers and the RSN reject gate are still not represented in compiled local witnesses.
+- first visible manifestation: APSTA public/SAP surface audit after A-APSTA-REGISTER-ETHERNET-QUEUE-LIST-057.
+- expected system behavior:
+  - `getSTATE(...)` writes state value `4` at output offset `+0x04` and returns success.
+  - `getPEER_CACHE_MAXIMUM_SIZE(...)` writes max peer count `8` at output offset `+0x04` and returns success.
+  - `getHOST_AP_MODE_HIDDEN(...)` rejects NULL with raw `0x16`; non-NULL writes `1` at the output base.
+  - `getSOFTAP_PARAMS(...)` copies APSTA state offsets `+0x18/+0x1c/+0x20/+0x24/+0x68/+0x10/+0x0e/+0x28` into output offsets `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x16/+0x17/+0x18`.
+  - `getSOFTAP_STATS(...)` copies `0x58` bytes from APSTA state `+0x1b0`.
+  - `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` is feature-gate `0x46` controlled; when enabled it accepts only inputs whose byte `+0x03` is below `0x21`, copies exactly `0x24` bytes into state `+0x2c`, and otherwise returns `0xe00002c2`.
+  - `setSOFTAP_TRIGGER_CSA(...)` returns `6` when AP is not up or reset flag bit 0 is not set, rejects NULL with raw `0x16`, accepts parsed chanspec values below `0x10000`, and rejects parsed chanspec values at or above `0x10000` with raw `0x16`.
+  - `setRSN_CONF(...)` tests byte `state+0x29b`; when bit `0x10` is set it returns `0xe00002d5` instead of entering the normal RSN parse path.
+  - `setSTA_AUTHORIZE(...)` rejects NULL with `0xe00002c2`; `setSTA_DEAUTH(...)` tailcalls the existing vtable slot at `+0x1040`.
+- actual behavior:
+  - local APSTA scaffold documents some of these contracts in prose/YAML, but no compiled witness records the SoftAP params output shape, Wi-Fi network info IE input shape, public constants, or the RSN gate byte at `state+0x29b`.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::getSTATE(...) @ 0xffffff8001687dfe`
+  - `AppleBCMWLANIO80211APSTAInterface::getPEER_CACHE_MAXIMUM_SIZE(...) @ 0xffffff80016882da`
+  - `AppleBCMWLANIO80211APSTAInterface::getHOST_AP_MODE_HIDDEN(...) @ 0xffffff80016882ea`
+  - `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_TRIGGER_CSA(...) @ 0xffffff800168e0ae`
+  - `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_WIFI_NETWORK_INFO_IE(...) @ 0xffffff800168e602`
+  - `AppleBCMWLANIO80211APSTAInterface::getSOFTAP_PARAMS(...) @ 0xffffff800168e7f4`
+  - `AppleBCMWLANIO80211APSTAInterface::getSOFTAP_STATS(...) @ 0xffffff800168e838`
+  - `AppleBCMWLANIO80211APSTAInterface::setRSN_CONF(...) @ 0xffffff800168e85c`
+  - `AppleBCMWLANIO80211APSTAInterface::setSTA_AUTHORIZE(...) @ 0xffffff800168f016`
+  - `AppleBCMWLANIO80211APSTAInterface::setSTA_DEAUTH(...) @ 0xffffff800168f14c`
+- evidence:
+  - decomp: `getSTATE(...)` writes `*(param+4) = 4`.
+  - decomp: `getPEER_CACHE_MAXIMUM_SIZE(...)` writes `*(param+4) = 8`.
+  - decomp: `getHOST_AP_MODE_HIDDEN(...)` writes `*param = 1` for non-NULL and returns raw `0x16` for NULL.
+  - decomp: `getSOFTAP_PARAMS(...)` copies the exact state/output offsets listed above.
+  - decomp: `getSOFTAP_STATS(...)` calls memcpy from `self+0x130+0x1b0` for `0x58` bytes.
+  - decomp: `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` checks feature `0x46`, tests `param+3 < 0x21`, copies `0x24`, and otherwise returns `0xe00002c2`.
+  - decomp: `setSOFTAP_TRIGGER_CSA(...)` checks `state+0x26c`, bit `state+0x329 & 1`, NULL input, and parsed channel spec threshold `0x10000`.
+  - decomp: `setRSN_CONF(...)` tests `(*(byte *)(state+0x29b) & 0x10)` and returns `0xe00002d5` when blocked.
+  - decomp: `setSTA_AUTHORIZE(...)` returns `0xe00002c2` for NULL; `setSTA_DEAUTH(...)` calls vtable `+0x1040`.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacks compiled carriers/constants for this public SoftAP/SAP surface and lacks named state byte `+0x29b`.
+  - rejected: implement APSTA getters/setters with primary-STA guessed structures or generic unsupported return codes.
+- confirmed deviation: reference public APSTA methods use fixed offsets and raw return codes not fully represented in local compiled scaffolding.
+- root cause: confirmed for public APSTA/SoftAP scaffold completeness only; no claim is made that this alone fixes STA internet reachability.
+- fix:
+  - add APSTA public constants for state, peer cache, hidden mode, raw/IOKit return values, CSA threshold, and SoftAP network-info length limit.
+  - add packed witness layouts for SoftAP params output and SoftAP Wi-Fi network-info IE carrier.
+  - split `AirportItlwmAPSTAStateBlock` padding to name `rsnConfGate29b`.
+  - add static asserts for all recovered offsets and carrier sizes.
+  - update YAML/prose docs.
+  - keep runtime role-7 APSTA creation disabled in this batch.
+- verification:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-131 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-SOFTAP-PUBLIC-CARRIER-CONTRACT-058
+- symptom: public APSTA/SoftAP getter/setter contracts are recovered but not compiled into local witnesses.
+- expected system behavior: local APSTA scaffolding records the exact public carrier offsets, fixed values, reject codes, and RSN gate byte before implementing a real APSTA owner.
+- actual behavior: several recovered contracts remain prose-only and `state+0x29b` is still anonymous padding.
+- exact divergence point: APSTA public methods listed in A-APSTA-SOFTAP-PUBLIC-CARRIER-CONTRACT-058.
+- evidence from runtime: no new runtime claim; this is a static/decomp layer restoration batch.
+- evidence from decomp: APSTA decomp at addresses `0xffffff8001687dfe`, `0xffffff80016882da`, `0xffffff80016882ea`, `0xffffff800168e0ae`, `0xffffff800168e602`, `0xffffff800168e7f4`, `0xffffff800168e838`, `0xffffff800168e85c`, `0xffffff800168f016`, and `0xffffff800168f14c`.
+- exact semantic mismatch between reference and our code: reference uses fixed public output/input offsets and return values; local scaffolding does not yet encode them and therefore cannot be used safely as an APSTA owner ABI base.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this layer, the missing constants/offsets are the exact ABI operands consumed by public SAP methods; the fix is not claiming final STA association/data root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it only records recovered layouts, constants, and state byte offsets; it does not synthesize AP success, force RSN, or call contested Wi-Fi methods.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - return generic unsupported for APSTA public methods.
+  - fake AP/RSN/link state to satisfy UI.
+  - implement SoftAP public methods against the primary STA owner.
+  - ignore the `state+0x29b` RSN gate and always parse RSN_CONF.
+  - add fallback/retry/replay/polling around APSTA public methods.
+- verification plan:
+  - compile-time offset static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-131.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: each constant, carrier offset, and `state+0x29b` bit check is from APSTA decomp.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for public APSTA/SAP ABI scaffold completeness; no final RSN/data root-cause claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, offsets, and layout witnesses only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores public APSTA ABI operands without changing runtime STA behavior.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA method addresses and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-SAP-VTABLE-ALIAS-CONTRACT-059
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA public method carriers are now recorded, but the SAP/APSTA vtable alias contract still does not distinguish the base `IO80211SapProtocol` extension slots from the concrete APSTA slot aliases.
+- first visible manifestation: SAP protocol/class slot audit after A-APSTA-SOFTAP-PUBLIC-CARRIER-CONTRACT-058.
+- expected system behavior:
+  - the recovered `IO80211SapProtocol` vtable has slots `280..519`.
+  - the base SAP extension starts at slot `481` / byte offset `0x0f08`.
+  - base `IO80211SapProtocol` slot `483` / byte offset `0x0f18` points at `IO80211VirtualInterface::forwardPacket(IO80211NetworkPacket*)`.
+  - concrete `AppleBCMWLANIO80211APSTAInterface` overrides `forwardPacket(IO80211NetworkPacket*)` at concrete slot `465` / byte offset `0x0e88`.
+  - concrete APSTA slot `488` / byte offset `0x0f40` is `setMacAddress(ether_addr&)`.
+  - concrete APSTA public SAP/SoftAP method slots `505..531` occupy byte offsets `0x0fc8..0x1098`.
+  - `IO80211SapProtocol` base vtable stops at slot `519`; APSTA extends the concrete surface through slot `531`.
+- actual behavior:
+  - local `IO80211SapProtocol.h` records method slot constants and typedefs, but it lacks explicit base-vs-concrete alias constants and byte-offset guards.
+  - without those guards, a later C++ class definition could place APSTA `forwardPacket` at the base virtual-interface slot `483` instead of the concrete APSTA slot `465`.
+- divergence point:
+  - `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt`
+  - `IO80211SapProtocol vtable 0xffffff80023e8dc0 slots 280..519`
+  - `AppleBCMWLANIO80211APSTAInterface vtable 0xffffff8001777508 slots 280..559`
+- evidence:
+  - vtable dump: base `IO80211SapProtocol` slot `481` is at `+0x0f08`.
+  - vtable dump: base `IO80211SapProtocol` slot `483` is `IO80211VirtualInterface::forwardPacket(...)` at `+0x0f18`.
+  - vtable dump: concrete APSTA slot `465` is `AppleBCMWLANIO80211APSTAInterface::forwardPacket(...)` at `+0x0e88`.
+  - vtable dump: concrete APSTA slot `488` is `AppleBCMWLANIO80211APSTAInterface::setMacAddress(...)` at `+0x0f40`.
+  - vtable dump: concrete APSTA slots `505..531` map to APSTA public SAP/SoftAP methods.
+  - decomp: APSTA destructor calls `IO80211SapProtocol::~IO80211SapProtocol()`.
+- candidate causes:
+  - confirmed: local SAP header lacks compiled alias/byte-offset guards for base-vs-concrete APSTA slot placement.
+  - rejected: define a C++ `IO80211SapProtocol` base class now using current primary-STA method ordering.
+- confirmed deviation: SAP/APSTA slot aliases are known from reference but not fully encoded as compiled local constants/static asserts.
+- root cause: confirmed for SAP/APSTA ABI scaffold completeness only.
+- fix:
+  - add explicit constants for base SAP vtable range, base virtual-interface `forwardPacket` slot, and concrete APSTA slot range.
+  - add byte-offset constants for key APSTA/SAP slots.
+  - add static asserts that preserve the slot collision distinction before any class definition is introduced.
+  - update YAML/prose docs.
+  - keep `IO80211SapProtocol` as a contract header, not a C++ base class, in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-132 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-SAP-VTABLE-ALIAS-CONTRACT-059
+- symptom: SAP/APSTA vtable aliases are recovered but not compiled with enough guards to prevent wrong APSTA class layout.
+- expected system behavior: local scaffolding distinguishes base `IO80211SapProtocol` extension slots from concrete `AppleBCMWLANIO80211APSTAInterface` slots.
+- actual behavior: local header has method slot constants but lacks explicit base-vs-concrete alias constants and byte-offset assertions.
+- exact divergence point: `IO80211SapProtocol` and `AppleBCMWLANIO80211APSTAInterface` vtable dumps listed in A-APSTA-SAP-VTABLE-ALIAS-CONTRACT-059.
+- evidence from runtime: no new runtime claim; this is static ABI restoration.
+- evidence from decomp: vtable dump plus APSTA destructor decomp calling `IO80211SapProtocol` destructor.
+- exact semantic mismatch between reference and our code: reference APSTA `forwardPacket` is concrete slot `465`, while base virtual-interface forwardPacket remains slot `483`; local code does not yet guard this distinction.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this ABI layer, wrong slot placement would make the future APSTA owner call the wrong method; the vtable entries are direct dispatch targets.
+- why proposed fix is 1:1 with reference architecture and semantics: it only records recovered slot/byte-offset aliases and keeps the class undefined until the slot map is safe.
+- files/functions to modify:
+  - `include/Airport/IO80211SapProtocol.h`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - define the SAP base class now.
+  - move APSTA `forwardPacket` to slot `483`.
+  - collapse APSTA into the primary STA Skywalk vtable.
+  - implement thunks without recording exact slot aliases.
+  - use guessed vtable padding.
+- verification plan:
+  - compile-time static asserts.
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-132.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: vtable dump and APSTA destructor decomp directly identify the SAP/APSTA relation and slot aliases.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for ABI scaffold completeness; no final RSN/data root-cause claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact slot and byte-offset constants/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it prevents a known wrong APSTA owner ABI without changing runtime behavior.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact vtable slots, byte offsets, and destructor relation are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-FORWARD-PACKET-TX-QUEUE-SELECTION-060
+- status: CONFIRMED_DEVIATION
+- symptom: SAP/APSTA vtable aliases are guarded, but the concrete APSTA `forwardPacket` datapath semantics are still not compiled into the local APSTA witness.
+- first visible manifestation: APSTA datapath audit after A-APSTA-SAP-VTABLE-ALIAS-CONTRACT-059.
+- expected system behavior:
+  - `AppleBCMWLANIO80211APSTAInterface::forwardPacket(IO80211NetworkPacket*)` is the concrete slot-465 APSTA forward path.
+  - it calls a packet metadata helper on the `IO80211NetworkPacket`.
+  - it selects a TX subqueue pointer from APSTA state using `state+0x300 + ((metadata >> 4) & 0xff8)`.
+  - it calls the selected queue's vtable entry `+0x318` with the packet.
+- actual behavior:
+  - local APSTA state block has `txSubQueues` at `state+0x300`, but no compiled constants record the packet metadata shift, selector mask, or queue vtable call offset.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::forwardPacket(IO80211NetworkPacket*) @ 0xffffff8001693940`.
+- evidence:
+  - decomp: `uVar2 = FUN_ffffff8002a341a8(param_2);`
+  - decomp: `plVar1 = *(long **)(*(long *)(param_1 + 0x130) + 0x300 + (ulong)(uVar2 >> 4 & 0xff8));`
+  - decomp: `(**(code **)(*plVar1 + 0x318))(plVar1,param_2);`
+  - vtable dump: concrete APSTA `forwardPacket` is slot `465` / byte offset `0x0e88`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks forwardPacket queue-selection constants.
+  - rejected: route APSTA packets through primary STA single-queue forwarding or guessed AC mapping.
+- confirmed deviation: APSTA forwardPacket queue-selection semantics are recovered but not represented locally.
+- root cause: confirmed for APSTA TX datapath scaffold completeness only.
+- fix:
+  - add constants for metadata shift `4`, selector mask `0xff8`, TX subqueue base offset `0x300`, and selected queue vtable offset `0x318`.
+  - assert that the forwardPacket TX subqueue base constant matches `AirportItlwmAPSTAStateBlock::txSubQueues`.
+  - update YAML/prose docs.
+  - keep runtime APSTA forwarding disabled in this batch.
+- verification:
+  - compile-time static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-133 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-FORWARD-PACKET-TX-QUEUE-SELECTION-060
+- symptom: APSTA forwardPacket queue-selection contract is recovered but absent from compiled local APSTA scaffolding.
+- expected system behavior: local APSTA scaffolding records the exact packet metadata shift/mask and selected queue vtable offset used by reference APSTA forwarding.
+- actual behavior: local code only records the TX subqueue array, not how `forwardPacket` indexes it.
+- exact divergence point: APSTA `forwardPacket(IO80211NetworkPacket*) @ 0xffffff8001693940`.
+- evidence from runtime: no new runtime claim; this is static APSTA TX datapath restoration.
+- evidence from decomp: APSTA `forwardPacket` decomp listed in A-APSTA-FORWARD-PACKET-TX-QUEUE-SELECTION-060.
+- exact semantic mismatch between reference and our code: reference derives the TX subqueue pointer from packet metadata using `>> 4` and `& 0xff8`, then calls queue vtable `+0x318`; local scaffold does not record those operands.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this TX datapath layer, those operands are the direct dispatch path for APSTA transmitted packets.
+- why proposed fix is 1:1 with reference architecture and semantics: it only records recovered constants and asserts the state offset; it does not transmit packets, retry, reorder, or force success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - send APSTA packets through the primary STA forwarder.
+  - select TX queue by guessed AC mapping in `forwardPacket`.
+  - clamp or fallback to queue zero without reference evidence.
+  - add retry/poll/replay around queue submission.
+- verification plan:
+  - compile-time static asserts.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-133.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA `forwardPacket` decomp directly shows the metadata helper, shift, mask, state offset, and queue vtable offset.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA TX datapath scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records the APSTA forwarding path without enabling it.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA `forwardPacket` function and operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-DATAPATH-METRIC-ACCESSORS-061
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA forwardPacket queue selection is recorded, but APSTA datapath metric accessors still lack compiled constants for queue-internal depth/capacity operands.
+- first visible manifestation: APSTA datapath accessor audit after A-APSTA-FORWARD-PACKET-TX-QUEUE-SELECTION-060.
+- expected system behavior:
+  - `getTxHeadroom()` returns `0`.
+  - `getTxQueueDepth()` reads the first APSTA TX subqueue from `state+0x300`; if missing it returns `0`.
+  - when the TX subqueue exists, `getTxQueueDepth()` reads a nested object pointer at `queue+0x168` and returns dword `+0x28` from that nested object.
+  - `getRxQueueCapacity()` reads RX completion queue from `state+0x2f0`; if missing it returns `0`.
+  - when the RX completion queue exists, `getRxQueueCapacity()` reads a nested object pointer at `queue+0x138` and returns dword `+0x10` from that nested object.
+- actual behavior:
+  - YAML/prose docs record these accessor semantics, but compiled APSTA scaffolding lacks constants for the nested queue offsets and missing-queue zero value.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::getTxHeadroom() @ 0xffffff800169411e`
+  - `AppleBCMWLANIO80211APSTAInterface::getTxQueueDepth() @ 0xffffff8001694126`
+  - `AppleBCMWLANIO80211APSTAInterface::getRxQueueCapacity() @ 0xffffff800169414e`
+- evidence:
+  - decomp: `getTxHeadroom()` returns `0`.
+  - decomp: `getTxQueueDepth()` loads `*(state+0x300)`, returns `0` when NULL, otherwise returns `*(uint32_t *)(*(queue+0x168)+0x28)`.
+  - decomp: `getRxQueueCapacity()` loads `*(state+0x2f0)`, returns `0` when NULL, otherwise returns `*(uint32_t *)(*(queue+0x138)+0x10)`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks nested queue metric offset constants.
+  - rejected: use generic queue capacity APIs or guessed local queue counters for APSTA metrics.
+- confirmed deviation: APSTA metric accessor operands are recovered but not represented locally.
+- root cause: confirmed for APSTA datapath metric scaffold completeness only.
+- fix:
+  - add constants for zero headroom/missing metric, TX queue nested object offset `0x168`, TX depth dword `0x28`, RX queue nested object offset `0x138`, and RX capacity dword `0x10`.
+  - update YAML/prose docs.
+  - keep runtime APSTA datapath disabled in this batch.
+- verification:
+  - compile-time static asserts and header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-134 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-DATAPATH-METRIC-ACCESSORS-061
+- symptom: APSTA datapath metric accessors are documented but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact zero/default and nested queue offsets used by reference metric accessors.
+- actual behavior: local code has APSTA queue fields but not queue-internal metric operands.
+- exact divergence point: APSTA `getTxHeadroom`, `getTxQueueDepth`, and `getRxQueueCapacity` methods listed in A-APSTA-DATAPATH-METRIC-ACCESSORS-061.
+- evidence from runtime: no new runtime claim; this is static APSTA datapath restoration.
+- evidence from decomp: APSTA metric accessor decomp listed above.
+- exact semantic mismatch between reference and our code: reference reads nested queue objects at `+0x168/+0x138` and dwords at `+0x28/+0x10`; local scaffold does not record those operands.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this accessor layer, these operands are the exact returned metrics.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not call unexported queue APIs or synthesize live metrics.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - call generic queue capacity APIs.
+  - invent local queue metrics not present in APSTA decomp.
+  - return fixed nonzero capacity/depth.
+  - enable APSTA datapath before owner/queue allocation is restored.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-134.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA metric accessor decomp directly shows each offset.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for metric accessor scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records APSTA metric operands without enabling the datapath.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact functions and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-DATAPATH-LIFECYCLE-VTABLE-OFFSETS-062
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA datapath storage and metrics are represented, but the exact enable/disable lifecycle vtable offsets remain prose-only.
+- first visible manifestation: APSTA datapath lifecycle audit after A-APSTA-DATAPATH-METRIC-ACCESSORS-061.
+- expected system behavior:
+  - `enableDatapath()` calls the datapath owner at `state+0x2d0` vtable `+0x120`.
+  - `enableDatapath()` starts TX completion queue `state+0x2e8` via queue vtable `+0x150`.
+  - `enableDatapath()` starts RX completion queue `state+0x2f0` via queue vtable `+0x150`.
+  - `enableDatapath()` arms RX completion queue via queue vtable `+0x298` with arguments `0, 0`.
+  - missing TX or RX completion queue returns `0xe00002bc`.
+  - `disableDatapath()` calls the datapath owner at `state+0x2d0` vtable `+0x128`.
+  - `disableDatapath()` stops RX completion queue `state+0x2f0` via queue vtable `+0x158`, then stops TX completion queue `state+0x2e8` via queue vtable `+0x158`.
+- actual behavior:
+  - local APSTA scaffold has `datapathOwner2d0`, `txCompQueue`, and `rxCompQueue`, but lacks compiled constants for the owner lifecycle vtable offsets and queue start/stop/arm offsets.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::enableDatapath() @ 0xffffff8001693b82`
+  - `AppleBCMWLANIO80211APSTAInterface::disableDatapath() @ 0xffffff8001693e80`
+- evidence:
+  - decomp: enable calls `(**(state+0x2d0 vtable +0x120))(owner, self)`.
+  - decomp: enable calls `(**(state+0x2e8 vtable +0x150))()` and `(**(state+0x2f0 vtable +0x150))()`.
+  - decomp: enable calls `(**(state+0x2f0 vtable +0x298))(rxCompQueue, 0, 0)`.
+  - decomp: enable returns `0xe00002bc` on missing completion queues.
+  - decomp: disable calls `(**(state+0x2d0 vtable +0x128))(owner, self)`.
+  - decomp: disable calls stop vtable `+0x158` on RX completion first and TX completion second.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks lifecycle vtable offset constants.
+  - rejected: start/stop queues directly from primary STA workloop without APSTA datapath owner.
+- confirmed deviation: APSTA datapath lifecycle vtable operands are recovered but not represented locally.
+- root cause: confirmed for APSTA datapath lifecycle scaffold completeness only.
+- fix:
+  - add constants for datapath owner enable/disable vtable offsets `0x120/0x128`.
+  - add constants for completion queue start/stop offsets `0x150/0x158`.
+  - add constant for RX completion arm offset `0x298`.
+  - add constants for arm arguments `0,0` and missing queue return `0xe00002bc`.
+  - update YAML/prose docs.
+  - keep runtime APSTA datapath disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-135 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-DATAPATH-LIFECYCLE-VTABLE-OFFSETS-062
+- symptom: APSTA datapath lifecycle offsets are documented but not compiled as contract constants.
+- expected system behavior: local APSTA scaffold records exact owner/queue vtable offsets for enable/disable lifecycle.
+- actual behavior: local code has storage fields but not lifecycle vtable operands.
+- exact divergence point: APSTA `enableDatapath` and `disableDatapath` methods listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA datapath restoration.
+- evidence from decomp: APSTA datapath lifecycle decomp listed in A-APSTA-DATAPATH-LIFECYCLE-VTABLE-OFFSETS-062.
+- exact semantic mismatch between reference and our code: reference sequences owner enable/disable and completion queue start/stop/arm through fixed vtable offsets; local scaffold does not record those offsets.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this lifecycle layer, those vtable offsets are the direct queue/owner transition calls.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not start queues, add retries, or force datapath success.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - bypass datapath owner `state+0x2d0`.
+  - start only one completion queue.
+  - ignore RX arm vtable `+0x298`.
+  - treat missing queues as success.
+  - add retry/poll around queue start.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-135.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA enable/disable datapath decomp directly shows each vtable offset.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for datapath lifecycle scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records lifecycle operands without enabling APSTA datapath.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact enable/disable functions and vtable offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-START-WORKSOURCE-REGISTRATION-063
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA `start` queue-list and datapath lifecycle operands are represented, but the work-source registration/cleanup contract around `registerEthernetInterface` remains partially prose-only.
+- first visible manifestation: APSTA `start(core, RegistrationInfo*)` audit after A-APSTA-DATAPATH-LIFECYCLE-VTABLE-OFFSETS-062.
+- expected system behavior:
+  - APSTA `start` calls datapath owner `state+0x2d0` vtable `+0x118` with the queue config carrier.
+  - APSTA `start` treats `numTxQueues >= 7` as an invalid/trap path before building the registration queue list.
+  - if multicast queue `state+0x320` exists, APSTA adds it to work queue `state+0x330` before Ethernet registration.
+  - it adds each TX submission queue from `state+0x300` to the work queue through vtable `+0x140`.
+  - it adds TX completion `state+0x2e8` and RX completion `state+0x2f0` through the same work queue vtable `+0x140`.
+  - it calls `registerEthernetInterface(info, queueList, numTxQueues + 2, state+0x2d8, state+0x2e0, 0)`.
+  - if registration fails, it removes TX queues, TX completion, RX completion, and multicast through work queue vtable `+0x148` when present.
+- actual behavior:
+  - local APSTA scaffold has the queue config and queue list carrier, but compiled constants do not yet record owner config vtable `+0x118`, work queue add/remove offsets `+0x140/+0x148`, the TX queue trap threshold, or the register call flags.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::start(AppleBCMWLANCore*, RegistrationInfo*)`, disassembly `0xffffff8001686378..0xffffff800168689d`.
+- evidence:
+  - disasm: calls `state+0x2d0` vtable `+0x118` with the stack queue config carrier.
+  - disasm: `cmpq $0x7, %r13; jae ...` before copying TX queues.
+  - disasm: optional multicast work-source add before queue-list assembly.
+  - disasm: loops over TX queues and calls work queue vtable `+0x140`.
+  - disasm: calls vtable `+0x140` for `state+0x2e8` and `state+0x2f0`.
+  - disasm: computes count `numTxQueues + 2` and passes final zero argument to `registerEthernetInterface`.
+  - disasm: on nonzero registration result, removes TX queues, TX/RX completion queues, and multicast using work queue vtable `+0x148`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks start-time work-source registration/cleanup constants.
+  - rejected: register Ethernet queues without work-source membership.
+- confirmed deviation: APSTA start work-source registration and cleanup operands are recovered but not represented locally.
+- root cause: confirmed for APSTA start scaffold completeness only.
+- fix:
+  - add constants for datapath owner queue-config vtable offset `0x118`.
+  - add constants for work queue add/remove vtable offsets `0x140/0x148`.
+  - add constants for TX queue trap threshold `7`, maximum accepted TX queues `6`, and register flags `0`.
+  - update YAML/prose docs.
+  - keep runtime APSTA `start` disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-136 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-START-WORKSOURCE-REGISTRATION-063
+- symptom: APSTA start work-source add/remove and register flags are recovered but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact vtable offsets/order/limits for start-time work-source membership and cleanup.
+- actual behavior: local code has queue storage and carriers but not these start-time operands.
+- exact divergence point: APSTA `start` disassembly `0xffffff8001686378..0xffffff800168689d`.
+- evidence from runtime: no new runtime claim; this is static APSTA start restoration.
+- evidence from decomp: APSTA start disassembly listed in A-APSTA-START-WORKSOURCE-REGISTRATION-063.
+- exact semantic mismatch between reference and our code: reference registers queues as work sources before Ethernet registration and removes them on failure through fixed work queue vtable offsets; local scaffold does not record those operands.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this start layer, these operands are the direct lifecycle calls around Ethernet registration.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not allocate APSTA, add work sources, call registration, or mask failures.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - skip work-source add before Ethernet registration.
+  - skip failure cleanup.
+  - treat registration failure as success.
+  - infer a different queue-count limit.
+  - enable APSTA `start` before the full owner class is implemented.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-136.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA start disassembly directly shows config, add/remove, count, and register operands.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA start scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records start operands without enabling APSTA runtime registration.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact APSTA start disassembly range and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-TEARDOWN-RESOURCE-CLEANUP-064
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA start/work-source registration operands are represented, but the matching stop/freeResources cleanup contract remains partially prose-only.
+- first visible manifestation: APSTA teardown audit after A-APSTA-START-WORKSOURCE-REGISTRATION-063.
+- expected system behavior:
+  - `freeResources()` cancels timer sources at `state+0x70` and `state+0x78` through vtable `+0x158`, releases them through vtable `+0x28`, and clears both fields.
+  - `freeResources()` releases retained init resources at `state+0x240`, `+0x248`, `+0x250`, `+0x260`, and `+0x258` through vtable `+0x28` when present and clears each field.
+  - `stop(IOService*)` iterates `state+0x300 + i*8` while `i < state+0x2a4`, stops each TX queue through vtable `+0x158`, removes it from the work queue through vtable `+0x148`, releases it through vtable `+0x28` if still present, and clears the slot.
+  - `stop(IOService*)` applies the same stop/remove/release/clear sequence to TX completion `state+0x2e8` and RX completion `state+0x2f0`.
+  - `stop(IOService*)` stops multicast queue `state+0x320`, removes it through work queue vtable `+0x148`, calls the direct `IO80211WorkQueue::removeWorkSource` path, releases it, clears the field, and then tailcalls the super stop vtable offset `+0x5d8`.
+- actual behavior:
+  - local APSTA scaffold has queue/timer/resource fields and start-time add/remove constants, but lacks compiled teardown offset aliases for stop/release/null and the exact stop/freeResources cleanup topology.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::freeResources() @ 0xffffff8001685d64..0xffffff8001685e92`
+  - `AppleBCMWLANIO80211APSTAInterface::stop(IOService*) @ 0xffffff8001686a7e..0xffffff8001686c91`
+- evidence:
+  - decomp/disasm: `freeResources()` uses timer vtable `+0x158`, release vtable `+0x28`, and clears `state+0x70/+0x78/+0x240/+0x248/+0x250/+0x260/+0x258`.
+  - decomp/disasm: `stop(IOService*)` loops over `state+0x300` bounded by byte `state+0x2a4`; stop vtable `+0x158`, work queue remove vtable `+0x148`, release vtable `+0x28`, and NULL clear are all visible.
+  - disasm: multicast cleanup at `state+0x320` includes both work queue vtable `+0x148` and direct `IO80211WorkQueue::removeWorkSource` call before release/clear.
+  - disasm: final tailcall uses super vtable offset `+0x5d8`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks teardown constants tying stop/freeResources to the recovered fields and vtable offsets.
+  - rejected: rely on primary STA queue teardown for APSTA queues.
+  - rejected: skip direct multicast remove because the start path already removes via vtable on registration failure.
+- confirmed deviation: APSTA teardown operands are recovered but not represented as compiled local witnesses.
+- root cause: confirmed for APSTA teardown scaffold completeness only.
+- fix:
+  - add constants for object release, timer cancel, queue stop, work queue remove, direct multicast-remove marker, super stop offset, teardown NULL value, freeResources offsets, and stop queue offsets.
+  - add static asserts tying those constants to `AirportItlwmAPSTAStateBlock` fields.
+  - update YAML/prose docs and save a local reference teardown snippet.
+  - keep runtime APSTA stop/freeResources disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-137 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-TEARDOWN-RESOURCE-CLEANUP-064
+- symptom: APSTA teardown offsets are recovered but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact stop/freeResources release, remove, clear, and super-tailcall operands used by reference.
+- actual behavior: local code has fields and start-time registration constants, but not teardown operand witnesses.
+- exact divergence point: APSTA `freeResources()` and `stop(IOService*)` ranges listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA teardown restoration.
+- evidence from decomp: APSTA teardown decomp/disasm listed in A-APSTA-TEARDOWN-RESOURCE-CLEANUP-064.
+- exact semantic mismatch between reference and our code: reference uses fixed vtable offsets and field cleanup order for APSTA timers/resources/queues; local scaffold does not record those operands.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this teardown layer, those operands are the direct reference cleanup actions for every APSTA timer/resource/queue field in scope.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not invoke teardown, add fallback cleanup, or mask leaks.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_teardown_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - use primary STA teardown for APSTA queues.
+  - skip direct multicast `removeWorkSource` because the vtable remove exists.
+  - infer extra release/reset fields not present in the teardown disassembly.
+  - call stop/freeResources before APSTA owner construction is implemented.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-137.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA `freeResources()` and `stop(IOService*)` decomp/disasm directly show each field and vtable offset.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for teardown scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records cleanup operands without enabling APSTA runtime teardown.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact teardown function ranges and offsets are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-RESET-SOFTAP-DEFAULTS-065
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA teardown is represented, but reset/initSoftAPParameters defaults and reset-time timer/stat cleanup remain partially prose-only.
+- first visible manifestation: APSTA lifecycle audit after A-APSTA-TEARDOWN-RESOURCE-CLEANUP-064.
+- expected system behavior:
+  - `reset()` clears `state+0x26c` and byte `state+0x329`.
+  - `reset()` calls `AppleBCMWLANCore::setConcurrencyState(4, false)`.
+  - `reset()` zeroes `state+0xb8` for `0xf0` bytes, clears `state+0x0` and `state+0xb0`, calls `setPowerSaveState(0, 0xa)`, invokes timer sources `state+0x70/+0x78` through vtable `+0x218`, clears stats `state+0x1b0..+0x207`, and clears runtime qwords `state+0x90/+0x98/+0xa0`.
+  - `initSoftAPParameters()` clears stats `state+0x1b0..+0x207`, clears `state+0x1a8`, zeroes `state+0xb8` for `0xf0` bytes, clears `state+0x0`, writes DTIM/default fields `state+0x16 = 1`, `state+0x18 = 0xf`, `state+0x1c = 0x1e`, `state+0x20 = 0x708`, `state+0x24 = 0xa`, and `state+0x28 = 3`.
+  - `initSoftAPParameters()` calls `setBeaconInterval(state+0x14)` and, when `state+0x16 != state+0x6a`, sends or runs IOCTL `0x4e` through commander `state+0x228` before writing applied DTIM `state+0x6a = state+0x16` on success.
+- actual behavior:
+  - local APSTA scaffold has broad runtime/stat buffers but lacks compiled field names/constants for reset defaults, DTIM/applied-DTIM, reset timer action, and initSoftAPParameters IOCTL `0x4e`.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::reset() @ 0xffffff8001686cc6..0xffffff8001686e32`
+  - `AppleBCMWLANIO80211APSTAInterface::initSoftAPParameters() @ 0xffffff8001687888..0xffffff8001687ade`
+- evidence:
+  - disasm: `reset()` writes `0` to `state+0x26c/+0x329/+0x0/+0xb0`, zeroes `state+0xb8` size `0xf0`, calls `setPowerSaveState(0,0xa)`, calls timer vtable `+0x218`, and clears stats/runtime qwords.
+  - disasm: `initSoftAPParameters()` clears stats qwords `+0x1b0..+0x200`, clears `+0x1a8`, zeroes `+0xb8` size `0xf0`, writes default qwords at `+0x18/+0x20`, writes `+0x16` and `+0x28`, calls `setBeaconInterval`, and uses IOCTL `0x4e` for DTIM period update when `+0x16 != +0x6a`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks reset/default constants and named fields needed for AP/SoftAP parameter initialization.
+  - rejected: derive AP/SoftAP defaults from local primary STA defaults.
+  - rejected: skip DTIM/applied-DTIM because AP runtime is not enabled yet.
+- confirmed deviation: APSTA reset/initSoftAPParameters operands are recovered but not fully represented locally.
+- root cause: confirmed for APSTA reset/default scaffold completeness only.
+- fix:
+  - name the recovered state fields at `+0x0`, `+0x16`, `+0x6a`, `+0x90`, `+0x98`, and `+0xa0`.
+  - add constants for reset/default offsets, sizes, values, timer action vtable `+0x218`, concurrency/power-save arguments, and DTIM IOCTL `0x4e`.
+  - add static asserts tying constants to local state layout.
+  - update YAML/prose docs and save a local reference note.
+  - keep runtime APSTA reset/initSoftAPParameters disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-138 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-RESET-SOFTAP-DEFAULTS-065
+- symptom: APSTA reset/initSoftAPParameters defaults are recovered but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact reset clears, SoftAP defaults, DTIM/applied-DTIM fields, timer action, and IOCTL operand used by reference.
+- actual behavior: local code has broad reserved buffers and earlier prose notes but not the compiled field/default witnesses.
+- exact divergence point: APSTA `reset()` and `initSoftAPParameters()` ranges listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA lifecycle/default restoration.
+- evidence from decomp: APSTA reset/default disassembly listed in A-APSTA-RESET-SOFTAP-DEFAULTS-065.
+- exact semantic mismatch between reference and our code: reference writes specific AP/SoftAP defaults and reset clears at fixed offsets; local scaffold leaves several of those offsets anonymous and lacks the constants.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this lifecycle/default layer, these operands are the direct reference writes/calls that initialize APSTA SoftAP state.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not run AP initialization, synthesize defaults dynamically, or force AP state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_reset_init_softap_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer AP defaults from primary STA code.
+  - skip DTIM/applied-DTIM state because AP runtime is still disabled.
+  - call `initSoftAPParameters()` before APSTA owner construction is implemented.
+  - force AP state or concurrency state at runtime.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-138.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA `reset()` and `initSoftAPParameters()` disassembly directly shows fields, defaults, sizes, vtable offset, and IOCTL.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for reset/default scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, field names, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records default/reset operands without enabling APSTA runtime initialization.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function ranges and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-CR167-RX-PRODUCER-TAG-STATS-CLOSURE
+- status: FIX_IMPLEMENTED
+- symptom: after RX pending-producer restoration, the active RX completion producer still omitted the reference tag-carrier and post-batch accounting edges.
+- first visible manifestation: static/decomp audit of the CR-166 RX producer before after-fix runtime.
+- expected system behavior:
+  - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...)` drains owner-side staged RX packets.
+  - it passes packet scratch/tag into the interface input slot.
+  - it maps tag TID offset `+0x18` into service class offset `+0x29`.
+  - it fills the Skywalk-provided produced packet array.
+  - after the batch it calls `IO80211SkywalkInterface::recordInputPacket(int, int)` and then the RX-counter virtual slot.
+- actual behavior:
+  - local `skywalkRxAction(...)` created tag metadata only immediately before `inputPacket(...)`.
+  - local RX pending ring carried only the packet pointer.
+  - local `skywalkRxAction(...)` did not call `recordInputPacket(...)` or `updateRxCounter(...)` after producing packets.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction(...)`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxStagePendingPacket(...)`
+  - reference `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @ 0xffffff80014ca8e4`
+- evidence:
+  - panic logs: none for this request.
+  - runtime logs: current live driver is not CR-166/CR-167, so no after-fix runtime claim is made.
+  - ioreg: not used for this static batch.
+  - packet traces: not used for this static batch.
+  - firmware traces: not used for this static batch.
+  - decomp: Apple producer reads packet scratch/tag, maps `+0x18` to `+0x29`, calls input, stores produced packets, then calls `recordInputPacket(int,int) @ 0xffffff8002277c96` and interface RX-counter slot.
+  - docs: `docs/reference/AppleBCMWLAN_rx_producer_tag_stats_2026_04_27.md`, YAML `108_rx_producer_tag_stats_2026_04_27.yaml`.
+- candidate causes:
+  - confirmed: local RX pending producer lacked a staged metadata carrier.
+  - confirmed: local RX producer lacked post-batch IO80211 RX accounting.
+  - rejected: raw write to `packet+0x78`; Tahoe generic `IOSkywalkNetworkPacket` class size is `0x78`, so Apple PCIe scratch storage is subclass-specific.
+- confirmed deviation: tag carrier and RX accounting edges were missing.
+- root cause: confirmed for RX producer semantic incompleteness. This batch does not claim final RSN/DHCP/data root cause.
+- fix:
+  - add `fRxPendingTags[]` and `fRxPendingLengths[]` next to `fRxPendingPackets[]`.
+  - stage tag/length with each RX pending packet.
+  - pop staged tag/length with the packet in `skywalkRxAction(...)`.
+  - call `recordInputPacket(produced, producedBytes)` and `updateRxCounter(produced)` after produced RX batches.
+  - document the local packet-class constraint and new YAML layer.
+- verification:
+  - pending build and CR-167 request.
+- notes:
+  - no retry, replay, duplicate notify, forced accepted success, forced EAPOL TX, key, RSN, DHCP, link state, or deauth masking was added.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR167-RX-PRODUCER-TAG-STATS-CLOSURE
+- symptom: CR-166 RX producer still lacked reference tag-carrier and post-batch RX accounting edges.
+- expected system behavior: RX completion producer carries tag metadata with the produced packet, calls input once per produced packet, fills the produced packet array, and updates IO80211 RX accounting once per batch.
+- actual behavior: local producer carried only packet pointers and returned produced packets without `recordInputPacket/updateRxCounter`.
+- exact divergence point: `skywalkRxAction(...)` and `skywalkRxStagePendingPacket(...)` vs. Apple RX completion producer at `0xffffff80014ca8e4`.
+- evidence from runtime: current loaded driver is not this candidate; runtime verification remains pending after Stage 1.
+- evidence from decomp: Apple producer body and IO80211 symbol evidence listed above.
+- exact semantic mismatch between reference and our code: local RX producer omitted staged tag metadata and the post-batch RX accounting calls.
+- fix justification path: SYSTEM_CONTRACT_FIX plus REFERENCE_ALIGNMENT_FIX for the exported accounting calls.
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: RX pending producer record, inputPacket tag argument, produced packet array, `recordInputPacket`, `updateRxCounter`.
+  - expected contract at each touchpoint: tag metadata accompanies the packet through producer action; input is called once; produced packet is returned once; accounting is updated once per batch with count and byte total.
+  - why no relevant touchpoints are missing: scope is limited to RX completion producer handoff/accounting; downstream EAPOL TX, key, RSN, DHCP, data and link state are non-claims.
+  - why proposed path adds no extra system-visible side effects: no packet replay, retry, delay, forced state, accepted-success forcing, or masking.
+- why this is root cause and not just correlation: the missing tag/accounting edges are direct producer operands in reference; this fixes producer semantic incompleteness before the next runtime.
+- why proposed fix is 1:1 with reference architecture and semantics: it restores owner-side metadata staging and the reference accounting edge while avoiding unsafe subclass-field synthesis.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `include/Airport/IO80211SkywalkInterface.h`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_rx_completion_input_handoff_2026_04_27.md`
+  - `docs/reference/AppleBCMWLAN_rx_producer_tag_stats_2026_04_27.md`
+  - `docs/tahoe_signal_chain_audit.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/108_rx_producer_tag_stats_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+- forbidden alternative fixes considered and rejected:
+  - raw `packet+0x78` scratch pointer write: rejected because generic packet size is `0x78`.
+  - call input from `skywalkRxInput(...)`: rejected because reference calls from the RX producer action.
+  - force accepted success, EAPOL TX, key, RSN, DHCP or link state: rejected by protocol and reference scope.
+  - add retry/replay/delay/poll around RX: rejected by protocol.
+- verification plan:
+  - `git diff --check`.
+  - YAML parse for new/changed YAML.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - create CR-167 superseding CR-166.
+
+## ANOMALY
+
+- id: A-APSTA-BEACON-DTIM-IOCTL-CARRIERS-066
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA reset/defaults record `setBeaconInterval` and DTIM apply entry points, but the exact IOCTL carrier/callback operands are not compiled.
+- first visible manifestation: APSTA beacon/DTIM audit after A-APSTA-RESET-SOFTAP-DEFAULTS-065.
+- expected system behavior:
+  - `setBeaconInterval(uint16_t)` compares the requested value to applied beacon interval `state+0x68`; if equal, it returns without IOCTL.
+  - when different, it builds a 4-byte payload head, uses commander `state+0x228`, and sends or runs IOCTL `0x4c`.
+  - async path installs `handleSetBcnIntervalAsyncCallBack` in callback context slot `+0x8`; sync path passes no callback.
+  - on success, `setBeaconInterval` writes applied beacon interval `state+0x68 = requested`.
+  - `initSoftAPParameters()` uses the same 4-byte payload head with IOCTL `0x4e` for DTIM period and writes applied DTIM `state+0x6a = state+0x16` on success.
+  - both async callbacks ignore status `0`, log nonzero status through the interface logger, then emit bytestream telemetry from `CommandRxPayload` pointer `+0x0`, length `+0x8`, through `state+0x210`.
+- actual behavior:
+  - local APSTA scaffold has state fields for `+0x68/+0x6a` and default constants, but lacks compiled constants/layout witness for the IOCTL numbers, 4-byte payload head, callback payload offsets, and callback telemetry contract.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setBeaconInterval(uint16_t) @ 0xffffff8001687ae4..0xffffff8001687c7e`
+  - `AppleBCMWLANIO80211APSTAInterface::handleSetBcnIntervalAsyncCallBack(...) @ 0xffffff800169365a..0xffffff800169370b`
+  - `AppleBCMWLANIO80211APSTAInterface::handleSetBcnDTIMPeriodAsyncCallBack(...) @ 0xffffff800169370e..0xffffff80016937bf`
+- evidence:
+  - disasm: `setBeaconInterval` compares `%r14w` with `state+0x68`, prepares stack payload pointer and length `4`, uses commander `state+0x228`, and calls IOCTL `0x4c`.
+  - disasm: async beacon path writes callback function pointer at callback context `+0x8`; sync path passes NULL callback arguments.
+  - disasm: success path writes requested value to `state+0x68`.
+  - disasm: DTIM path in `initSoftAPParameters` prepares the same payload length `4`, calls IOCTL `0x4e`, and writes `state+0x6a` on success.
+  - disasm: both callbacks read bytestream pointer at callback payload `+0x0`, length at `+0x8`, and call bytestream logging through `state+0x210`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks beacon/DTIM IOCTL carrier and callback payload constants.
+  - rejected: use generic AP parameter setters without per-IOCTL payload/callback ABI.
+  - rejected: write `state+0x68/+0x6a` without confirmed IOCTL success path.
+- confirmed deviation: APSTA beacon/DTIM IOCTL operands are recovered but not represented locally.
+- root cause: confirmed for APSTA beacon/DTIM scaffold completeness only.
+- fix:
+  - add constants for IOCTL `0x4c`, IOCTL `0x4e`, payload size `4`, callback context offset `+0x8`, callback rxPayload pointer/length offsets, bytestream enable flag, and applied beacon/DTIM field offsets.
+  - add a command payload head layout witness.
+  - rename `state+0x68` field to applied beacon interval.
+  - update YAML/prose docs and save a local reference note.
+  - keep runtime APSTA beacon/DTIM setters disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-139 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-BEACON-DTIM-IOCTL-CARRIERS-066
+- symptom: APSTA beacon interval and DTIM IOCTL carrier/callback operands are recovered but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact IOCTLs, payload size, applied-state fields, callback context, and rxPayload bytestream offsets used by reference.
+- actual behavior: local code has default fields but not the IOCTL/callback ABI witnesses.
+- exact divergence point: APSTA `setBeaconInterval`, `handleSetBcnIntervalAsyncCallBack`, and `handleSetBcnDTIMPeriodAsyncCallBack` ranges listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA beacon/DTIM carrier restoration.
+- evidence from decomp: APSTA beacon/DTIM disassembly listed in A-APSTA-BEACON-DTIM-IOCTL-CARRIERS-066.
+- exact semantic mismatch between reference and our code: reference uses fixed IOCTLs and payload/callback ABI for beacon/DTIM apply; local scaffold does not record those operands.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this AP parameter layer, these operands are the direct reference command/callback contract.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants and a layout witness only; it does not send IOCTLs, force applied fields, or bypass callbacks.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_beacon_dtim_ioctl_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer payload ABI from unrelated IOCTLs.
+  - write applied beacon/DTIM fields without IOCTL success.
+  - suppress callback errors.
+  - call beacon/DTIM setters before APSTA owner construction is implemented.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-139.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA beacon/DTIM disassembly directly shows IOCTLs, payload length, fields, callback context, and rxPayload offsets.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for beacon/DTIM carrier scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, one payload-head layout witness, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records IOCTL/callback ABI without sending commands.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function ranges and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-HOSTAP-SUCCESS-TAIL-067
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA beacon/DTIM carriers are represented, but the `setHostApModeInternal` success-tail state/timer/closednet operands remain prose-only.
+- first visible manifestation: APSTA HostAP success-tail audit after A-APSTA-BEACON-DTIM-IOCTL-CARRIERS-066.
+- expected system behavior:
+  - after AP bring-up succeeds, reference writes `state+0x26c = 1`, clears `state+0x20c`, clears `state+0x88`, and calls `handleAPStatsUpdates(state+0x70)`.
+  - it schedules monitor timer `state+0x78` through vtable `+0x1d0` with interval `0x3e8`.
+  - it reads network-data flags at input `+0x4`; bit `8` selects beacon interval `0x64`, otherwise `0x12c`, and writes the selected value to `state+0x14`.
+  - if flags bit `9` is set, it sends IOVAR `"closednet"` through commander `state+0x228` with 4-byte payload value `1`.
+  - on closednet success it continues to `initSoftAPParameters()`; on nonzero error it logs but still rejoins the common path.
+- actual behavior:
+  - local APSTA scaffold has state fields and beacon/DTIM command carriers, but lacks compiled constants for this HostAP success-tail state, timer, flag-bit, and closednet IOVAR contract.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...) @ 0xffffff800168c138..0xffffff800168c296`
+- evidence:
+  - disasm: writes `1` to `state+0x26c`, `0` to `state+0x20c`, and `0` to `state+0x88`.
+  - disasm: calls `handleAPStatsUpdates` with `state+0x70`, then schedules `state+0x78` through vtable `+0x1d0` with `0x3e8`.
+  - disasm: reads `input+0x4`, tests bits `8` and `9`, selects beacon interval `0x64` or `0x12c`, writes `state+0x14`, then optionally sends IOVAR `"closednet"` with payload size `4` and value `1`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks HostAP success-tail constants.
+  - rejected: use generic link-up/timer defaults from primary STA.
+  - rejected: omit closednet because hidden-mode setter exists elsewhere.
+- confirmed deviation: APSTA HostAP success-tail operands are recovered but not represented locally.
+- root cause: confirmed for APSTA HostAP success-tail scaffold completeness only.
+- fix:
+  - add constants for AP-up state, stats/runtime clears, monitor timer vtable/interval, network-data flags offset, flag bits `8/9`, beacon interval values `0x64/0x12c`, closednet payload value/size, and closednet IOVAR presence.
+  - add static asserts tying offset constants to local state layout.
+  - update YAML/prose docs and save a local reference note.
+  - keep runtime HostAP mode disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-140 batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-HOSTAP-SUCCESS-TAIL-067
+- symptom: APSTA HostAP success-tail state/timer/closednet operands are recovered but not compiled as APSTA contract constants.
+- expected system behavior: local APSTA scaffold records exact state writes, timer schedule, beacon interval selection, and closednet IOVAR operands used by reference after AP bring-up.
+- actual behavior: local code has fields and adjacent command carriers but not this success-tail witness.
+- exact divergence point: APSTA `setHostApModeInternal` success-tail range listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA HostAP success-tail restoration.
+- evidence from decomp: APSTA HostAP success-tail disassembly listed in A-APSTA-HOSTAP-SUCCESS-TAIL-067.
+- exact semantic mismatch between reference and our code: reference uses fixed state/timer/flag/closednet operands; local scaffold does not record them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this HostAP success-tail layer, these are the direct reference writes/calls after AP bring-up.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not enable HostAP, force AP-up state, schedule timers, or send closednet.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_hostap_success_tail_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer AP-up side effects from primary STA link-up.
+  - schedule timers without reference interval.
+  - skip closednet because hidden-mode setter exists.
+  - force AP-up state at runtime.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-140.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: `setHostApModeInternal` disassembly directly shows state writes, timer vtable/interval, flag bits, beacon interval values, and closednet payload.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for HostAP success-tail scaffold completeness; no final STA RSN/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records HostAP success-tail operands without enabling HostAP.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact success-tail function range and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-HOSTAP-ASSOC-VENDOR-IE-LAYER-068
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA HostAP success tail is represented, but the immediately preceding max-assoc and vendor-IE programming operands remain prose-only.
+- first visible manifestation: APSTA `setHostApModeInternal` audit after A-APSTA-HOSTAP-SUCCESS-TAIL-067.
+- expected system behavior:
+  - before the AP-up success tail, reference reads firmware/config max-assoc from the core expansion path, stores it at `state+0x8`, calls `setMaxAssoc(value)`, then invokes APSTA vtable `+0xb18` selector `0x57` over `state+0x8` with length `4`.
+  - `setMaxAssoc(unsigned int)` compares the requested value against `state+0x4`, computes payload `state+0x0 + requested`, verifies it does not exceed `state+0x8`, writes `state+0x4 = requested`, and sends IOVAR `maxassoc` through commander `state+0x228` with a 4-byte payload.
+  - if network data contains a vendor IE list at `network_data+0x2dc/+0x2e0`, reference calls `programVendorIEList`; otherwise it calls `programAppleVendorIE`.
+  - `programVendorIEList` accepts chunks only while at least 6 bytes remain, validates IE body length from input `+0x1`, allocates an `0x814`-byte `apple80211_ie_data` carrier, fills fixed header values, copies IE bytes, calls `AppleBCMWLANCore::setVendorIE(interfaceId, carrier)`, frees the carrier, and advances by `length + 2`.
+  - `programAppleVendorIE` uses IOVAR `vndr_ie`: it sizes the RX buffer from `min(maxTxPayload, maxRxPayload) - strlen("vndr_ie") - 1`, deletes existing Apple OUI entries, sends a fixed Apple capability IE with length `0x18`, and can append extended capability data from `state+0x2c/+0x2e/+0x2f/+0x30/+0x50/+0x51/+0x59` when feature flag `0x46` and local SoftAP IE fields require it.
+- actual behavior:
+  - local APSTA scaffold has state fields and command payload head, but lacks compiled constants/layout witnesses for max-assoc, network-data vendor IE list offsets, vendor IE carrier size/header, and Apple vendor IE `vndr_ie` command operands.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...) @ 0xffffff800168c0bf..0xffffff800168c138`
+  - `AppleBCMWLANIO80211APSTAInterface::setMaxAssoc(unsigned int) @ 0xffffff800168c6ac..0xffffff800168c7b5`
+  - `AppleBCMWLANIO80211APSTAInterface::programVendorIEList(unsigned char*, unsigned int) @ 0xffffff800168c7ba..0xffffff800168c9da`
+  - `AppleBCMWLANIO80211APSTAInterface::programAppleVendorIE() @ 0xffffff800168c9e0..0xffffff800168d30d`
+- evidence:
+  - disasm: `setHostApModeInternal` stores max-assoc at `state+0x8`, calls `setMaxAssoc`, then calls vtable `+0xb18` with selector `0x57`, payload `state+0x8`, and length `4`; it branches on network-data vendor IE length `+0x2dc` and data `+0x2e0`.
+  - disasm: `setMaxAssoc` uses offsets `state+0x0/+0x4/+0x8`, IOVAR `maxassoc`, payload length `4`, and commander `state+0x228`.
+  - disasm: `programVendorIEList` validates input length, allocates `0x814`, writes fixed header qwords `0x1a00000001` and `0x400000001`, writes IE id at `+0x14`, copies payload to `+0x15`, writes `length + 1` at `+0x10`, calls `setVendorIE`, and frees the carrier.
+  - disasm: `programAppleVendorIE` uses `vndr_ie`, `getMaxCmdTxPayload`, `getMaxCmdRxPayload`, delete command `del`, add command `add`, fixed carrier allocation `0x52`, capability payload length `0x18`, Apple OUI compare length `3`, feature flag `0x46`, and extended IE source fields in the APSTA state block.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks this HostAP max-assoc/vendor-IE layer.
+  - rejected: treat vendor IE programming as optional because APSTA runtime is not enabled yet.
+  - rejected: synthesize AP vendor IE behavior from primary STA association IE handling.
+- confirmed deviation: APSTA HostAP max-assoc and vendor-IE operands are recovered but not represented locally.
+- root cause: confirmed for APSTA HostAP max-assoc/vendor-IE scaffold completeness only.
+- fix:
+  - add constants and static asserts for max-assoc state offsets, `maxassoc` payload size, selector `0x57`, vtable offset `0xb18`, network-data vendor IE length/data offsets, vendor IE carrier layout, Apple vendor IE command sizes, Apple OUI/delete/add/capability/extended capability operands.
+  - add local layout witnesses for the vendor IE carrier and command set buffer.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-141 batch request.
+- notes:
+  - This is a static reference-alignment batch. It does not send `maxassoc`, `vndr_ie`, selector `0x57`, or vendor IE commands at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-HOSTAP-ASSOC-VENDOR-IE-LAYER-068
+- symptom: APSTA HostAP success-tail is represented, but the max-assoc/vendor-IE layer before it is not compiled as a local APSTA contract.
+- expected system behavior: local APSTA scaffold records exact max-assoc state operands, selector `0x57`, network-data vendor IE list offsets, vendor IE carrier layout, and Apple `vndr_ie` command operands used by reference before AP-up.
+- actual behavior: local code has adjacent HostAP state fields but not this contract layer.
+- exact divergence point: APSTA `setHostApModeInternal`, `setMaxAssoc`, `programVendorIEList`, and `programAppleVendorIE` ranges listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA HostAP max-assoc/vendor-IE restoration.
+- evidence from decomp: APSTA disassembly listed in A-APSTA-HOSTAP-ASSOC-VENDOR-IE-LAYER-068.
+- exact semantic mismatch between reference and our code: reference uses fixed offsets, carrier sizes, command names, selector, and payload lengths; local scaffold does not record them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this HostAP layer, these are the direct reference calls and data carriers immediately before AP-up success-tail.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants and layout witnesses only; it does not enable HostAP, send firmware commands, or force state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_hostap_assoc_vendor_ie_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer AP max-assoc behavior from primary STA association limits.
+  - treat missing vendor IE programming as harmless because APSTA runtime is still disabled.
+  - send `maxassoc` or `vndr_ie` before APSTA owner construction is complete.
+  - collapse Apple vendor IE programming into a generic IE copy path.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-141.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the APSTA disassembly directly shows max-assoc offsets, selector `0x57`, vendor IE list offsets, carrier sizes, fixed header values, command names, and payload lengths.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for HostAP max-assoc/vendor-IE scaffold completeness; no final STA association/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records reference operands without enabling APSTA runtime.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function ranges and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-ENABLE-AP-INTERFACE-LAYER-069
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA HostAP success-tail and pre-tail max-assoc/vendor-IE layers are represented, but `enableAPInterface()` AP bring-up side effects remain prose-only.
+- first visible manifestation: APSTA `enableAPInterface` audit after A-APSTA-HOSTAP-ASSOC-VENDOR-IE-LAYER-068.
+- expected system behavior:
+  - reference `setHostApModeInternal` calls `enableAPInterface()` after success-tail/concurrency setup when feature gates and caller network data require AP interface enablement.
+  - `enableAPInterface()` conditionally sends `rrm_bcn_req_thrtl_win` and `rrm_bcn_req_max_off_chan_time` with 4-byte zero payloads when feature flag `0x15` and config byte `+0xe2` allow it.
+  - it conditionally sends `wnm` with a 4-byte zero payload when feature flag `0x19` and config byte `+0xe3` allow it.
+  - it reads boot arg `wlan.ap.maxmpdu` with size `4`; failure maps to `0xffffffff`, success with nonzero value calls `configureMPDUSize(value)`, and success with zero skips MPDU override.
+  - it sets core-private bit `0x10000` at private offset `+0x2890`.
+  - it calls APSTA vtable `+0xe70` with arguments `(2, 1)`.
+  - it prepares `scb_probe` payload qword `0xf0000001e` and dword `5` with payload size `0x0c`; it sends async with `handleSetScbProbeAsyncCallBack` when the commander/feature path supports async completion, otherwise runs sync.
+  - it notifies the core path with event id `0x1e`, optional interface name pointer/length capped below `0x11`, and flag `1`.
+  - it calls APSTA vtable `+0xb18` selector `4` with zero payload args, calls `AppleBCMWLANCore::addEventBit(5)`, and tailcalls `writeEventBitField()`.
+- actual behavior:
+  - local APSTA scaffold has generic command payload and HostAP layers, but lacks compiled constants/layout witnesses for `enableAPInterface` RRM/WNM/MPDU/scb_probe/event operands.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::enableAPInterface() @ 0xffffff800168d310..0xffffff800168d858`
+- evidence:
+  - disasm: feature flag `0x15`, config byte `+0xe2`, IOVAR names `rrm_bcn_req_thrtl_win` and `rrm_bcn_req_max_off_chan_time`, payload size `4`, payload value `0`.
+  - disasm: feature flag `0x19`, config byte `+0xe3`, IOVAR `wnm`, payload size `4`, payload value `0`.
+  - disasm: boot arg `wlan.ap.maxmpdu` size `4`, default `0xffffffff`, conditional `configureMPDUSize`.
+  - disasm: OR `0x10000` into core-private `+0x2890`, APSTA vtable `+0xe70` args `(2,1)`, `scb_probe` qword/dword payload size `0x0c`, callback context offsets `+0/+0x8/+0x10`, notification id `0x1e`, final vtable `+0xb18` selector `4`, `addEventBit(5)`, and `writeEventBitField`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks the `enableAPInterface` side-effect layer.
+  - rejected: treat AP-enable as equivalent to primary STA link-up.
+  - rejected: skip RRM/WNM/scb_probe because APSTA runtime remains disabled.
+- confirmed deviation: APSTA `enableAPInterface` operands are recovered but not represented locally.
+- root cause: confirmed for APSTA `enableAPInterface` scaffold completeness only.
+- fix:
+  - add constants for RRM/WNM feature gates, config byte offsets, IOVAR names, payload sizes/defaults, MPDU boot-arg behavior, core-private bit, APSTA vtable calls, `scb_probe` payload/completion layout, core notification id, and event bit.
+  - add local layout witnesses for `scb_probe` payload and command completion context.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-142 batch request.
+- notes:
+  - This is a static reference-alignment batch. It does not send RRM/WNM/MPDU/scb_probe commands at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-ENABLE-AP-INTERFACE-LAYER-069
+- symptom: APSTA `enableAPInterface()` side-effect operands are recovered but not compiled as a local APSTA contract.
+- expected system behavior: local APSTA scaffold records exact RRM/WNM disable, MPDU override, core-private flag, APSTA vtable calls, `scb_probe`, notification, and event-bit operands used by reference.
+- actual behavior: local code has adjacent HostAP layers but not this AP-enable contract layer.
+- exact divergence point: APSTA `enableAPInterface()` range listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA AP-enable restoration.
+- evidence from decomp: APSTA disassembly listed in A-APSTA-ENABLE-AP-INTERFACE-LAYER-069.
+- exact semantic mismatch between reference and our code: reference uses fixed feature gates, config byte offsets, IOVAR names, payload sizes, vtable selectors, event ids, and payload carriers; local scaffold does not record them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this AP-enable layer, these are the direct reference calls and side-effect operands before AP link-up publication.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants and layout witnesses only; it does not enable HostAP, send firmware commands, or force state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_enable_ap_interface_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer AP-enable behavior from primary STA link-up.
+  - omit RRM/WNM/scb_probe because APSTA runtime is still disabled.
+  - send any AP-enable IOVAR before APSTA owner construction is complete.
+  - force final event bit or link-up publication.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-142.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: `enableAPInterface` disassembly directly shows RRM/WNM/MPDU/scb_probe/event operands.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for AP-enable scaffold completeness; no final STA association/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records reference AP-enable operands without enabling APSTA runtime.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function range and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-HIDDEN-POWER-ASSERTION-LAYER-070
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA AP-enable side effects are represented, but hidden-mode and SoftAP power-assertion operands remain prose-only.
+- first visible manifestation: APSTA `setHOST_AP_MODE_HIDDEN` / `holdSoftAPPowerAssertion` audit after A-APSTA-ENABLE-AP-INTERFACE-LAYER-069.
+- expected system behavior:
+  - `setHOST_AP_MODE_HIDDEN` first requires AP-up state `state+0x26c != 0`; otherwise it returns `6`.
+  - null input returns raw invalid argument `0x16`.
+  - hidden value is read from input `+0x4` and must be `0` or `1`.
+  - it sends IOVAR `closednet` through commander `state+0x228` with a 4-byte payload carrying the requested hidden value.
+  - on success it writes `state+0x0d = (hidden != 0)`.
+  - when hidden is cleared and AP remains up, it calls `setPowerSaveState(0, 9)`, clears `state+0x0e`, and calls `holdSoftAPPowerAssertion()`.
+  - `holdSoftAPPowerAssertion()` writes `state+0x0c = 1`, then notifies the core path with event id `0x8d`, payload value `1`, payload size `4`, and flag `1` through the core resource `state+0x218 -> +0x128 -> +0x2c20`.
+- actual behavior:
+  - local APSTA scaffold has the state fields but lacks compiled constants for hidden input offset/range, post-success state writes, power-save reason, and power assertion notification operands.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE_HIDDEN(...) @ 0xffffff800168d970..0xffffff800168dbbc`
+  - `AppleBCMWLANIO80211APSTAInterface::holdSoftAPPowerAssertion() @ 0xffffff800168dbc2..0xffffff800168dc8c`
+- evidence:
+  - disasm: `setHOST_AP_MODE_HIDDEN` tests `state+0x26c`, returns `6` when AP is not up, validates input and `input+0x4 <= 1`, sends `closednet` payload length `4`, writes `state+0x0d`, optionally calls `setPowerSaveState(0, 9)`, clears `state+0x0e`, and calls `holdSoftAPPowerAssertion`.
+  - disasm: `holdSoftAPPowerAssertion` writes `state+0x0c = 1`, builds a 4-byte payload value `1`, uses event id `0x8d`, core resource `core+0x128+0x2c20`, and flag `1`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks hidden-mode and power assertion operands.
+  - rejected: map hidden mode to the HostAP success-tail `closednet` default only.
+  - rejected: skip power assertion because APSTA runtime remains disabled.
+- confirmed deviation: APSTA hidden-mode and SoftAP power-assertion operands are recovered but not represented locally.
+- root cause: confirmed for APSTA hidden/power scaffold completeness only.
+- fix:
+  - add constants for hidden input offset/range, AP-up required state, return values, `closednet` payload, post-success state fields, power-save args, and hold-power notification operands.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-143 batch request.
+- notes:
+  - This is a static reference-alignment batch. It does not send hidden-mode or power assertion commands at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-HIDDEN-POWER-ASSERTION-LAYER-070
+- symptom: APSTA hidden-mode and SoftAP power-assertion operands are recovered but not compiled as a local APSTA contract.
+- expected system behavior: local APSTA scaffold records exact hidden-mode validation, `closednet` payload, post-success field writes, power-save transition, and power assertion notification operands.
+- actual behavior: local code has adjacent AP-enable fields but not this hidden/power contract layer.
+- exact divergence point: APSTA `setHOST_AP_MODE_HIDDEN` and `holdSoftAPPowerAssertion` ranges listed above.
+- evidence from runtime: no new runtime claim; this is static APSTA hidden/power restoration.
+- evidence from decomp: APSTA disassembly listed in A-APSTA-HIDDEN-POWER-ASSERTION-LAYER-070.
+- exact semantic mismatch between reference and our code: reference uses fixed validation, return, state, IOVAR, power-save, and notification operands; local scaffold does not record them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this hidden/power layer, these are the direct reference calls and state writes.
+- why proposed fix is 1:1 with reference architecture and semantics: it records constants only; it does not enable hidden-mode runtime, send commands, or force state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_hidden_power_assertion_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - infer hidden-mode behavior from HostAP success-tail `closednet`.
+  - omit power assertion because APSTA runtime is still disabled.
+  - send `closednet` or core notification before APSTA owner construction is complete.
+  - force hidden state or AP-up state locally.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-143.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: hidden-mode and power assertion disassembly directly shows validation, offsets, return values, payloads, and notification operands.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for hidden/power scaffold completeness; no final STA association/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records reference hidden/power operands without enabling APSTA runtime.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function ranges and disassembly operands are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA hidden/power operands are represented, but channel, CSA, and STA-control public method carriers are still partially prose-only and the CSA threshold documentation was inverted.
+- first visible manifestation: APSTA public method audit after A-APSTA-HIDDEN-POWER-ASSERTION-LAYER-070.
+- expected system behavior:
+  - `getCHANNEL(...)` builds a 0x0c-byte RX payload, uses virtual IOCTL get selector `0x1d`, copies the received channel number to output `+0x08`, and ORs output flags `+0x0c` with `0x08` for channels below `0x0f` or `0x10` otherwise.
+  - `setCHANNEL(...)` rejects null input and channels `>= 0x100` with raw `0x16`, maps flags `0x02/0x04/0x400` to bandwidth `2/3/4`, calls `AppleBCMWLANCore::getChanSpec`, returns `0xe00002c2` for zero chanspec, and sends 4-byte IOVAR `chanspec` for nonzero chanspec.
+  - `setSOFTAP_TRIGGER_CSA(...)` requires `state+0x26c != 0` and `state+0x329 & 1`, rejects null input with raw `0x16`, accepts parsed chanspec values below `0x10000`, rejects values at or above `0x10000`, and sends 6-byte IOVAR `csa`.
+  - `setSTA_AUTHORIZE(...)` rejects null input with `0xe00002c2`, reads the MAC at input `+0x08`, and selects virtual IOCTL `0x7a` for flag values below `1` or `0x79` otherwise.
+  - `setSTA_DISASSOCIATE(...)` occupies APSTA vtable slot `522`/byte offset `0x1050`, builds a 0x0c-byte payload from input `+0x04/+0x08/+0x0c`, writes sentinel word `0xaaaa`, and calls virtual IOCTL set selector `0xc9`.
+  - `setSTA_DEAUTH(...)` occupies APSTA vtable slot `523`/byte offset `0x1058` and tailcalls APSTA byte offset `+0x1040`.
+- actual behavior:
+  - local APSTA scaffold has adjacent public SoftAP constants, but channel/CSA/STA-control carrier layouts and vtable byte-offset guards are incomplete.
+  - previous local prose/YAML stated the CSA threshold in reverse: “below `0x10000` returns raw `0x16`”.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::getCHANNEL(...) @ 0xffffff8001687cbe`
+  - `AppleBCMWLANIO80211APSTAInterface::setCHANNEL(...) @ 0xffffff800168dcfa`
+  - `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_TRIGGER_CSA(...) @ 0xffffff800168e0ae`
+  - `AppleBCMWLANIO80211APSTAInterface::setSTA_AUTHORIZE(...) @ 0xffffff800168f016`
+  - `AppleBCMWLANIO80211APSTAInterface::setSTA_DEAUTH(...) @ 0xffffff800168f14c`
+  - `AppleBCMWLANIO80211APSTAInterface::setSTA_DISASSOCIATE(...) @ 0xffffff800168f15e`
+- evidence:
+  - decomp: KDK symbols and resolved APSTA vtable show channel/CSA/STA-control slots and method addresses.
+  - disasm: `getCHANNEL(...)` uses selector `0x1d`, RX size `0x0c`, range qword `0x0000000c000c000c`, output number `+0x08`, and flags `0x08/0x10`.
+  - disasm: `setCHANNEL(...)` validates channel `< 0x100`, maps flags to bandwidth, gets chanspec, and sends IOVAR `chanspec`.
+  - disasm: `setSOFTAP_TRIGGER_CSA(...)` accepts chanspec values below `0x10000`, rejects `>= 0x10000`, and builds the 6-byte `csa` payload.
+  - disasm: `setSTA_AUTHORIZE(...)` uses null return `0xe00002c2`, MAC payload `input+0x08`, and selectors `0x79/0x7a`.
+  - disasm: `setSTA_DISASSOCIATE(...)` builds the 0x0c-byte payload and calls selector `0xc9`.
+  - disasm: `setSTA_DEAUTH(...)` tailcalls byte offset `+0x1040`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_channel_csa_sta_control_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacked compiled channel/CSA/STA-control carrier witnesses and carried an inverted CSA threshold statement.
+  - rejected: treat CSA as unsupported because APSTA runtime is not yet enabled.
+  - rejected: implement channel setters through primary STA channel state.
+  - rejected: add null guard to `setSTA_DISASSOCIATE` without producer-side reference evidence.
+- confirmed deviation: APSTA channel/CSA/STA-control operands are recovered from reference but not fully represented locally; CSA threshold prose contradicted disassembly.
+- root cause: confirmed for APSTA public channel/CSA/STA-control scaffold completeness only; no final STA association/data-path root-cause claim is made.
+- fix:
+  - add constants and layout witnesses for channel data, channel carrier, command RX range, CSA input/payload, STA authorize input, STA disassociate input/payload, and STA-control selectors.
+  - add SAP/APSTA vtable slot and byte-offset constants for `getCHANNEL`, `setCHANNEL`, `setSTA_AUTHORIZE`, `setSTA_DISASSOCIATE`, `setSTA_DEAUTH`, `setRSN_CONF`, and `setSOFTAP_TRIGGER_CSA`.
+  - correct CSA threshold documentation in YAML, discrepancy inventory, signal-chain audit, and analysis.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-145 batch request.
+- notes:
+  - This is a static reference-alignment batch. It does not send channel, CSA, authorize, disassociate, or deauth commands at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071
+- symptom: APSTA channel/CSA/STA-control method contracts are recovered but incomplete locally, and CSA threshold prose is inverted.
+- expected system behavior: local APSTA scaffold records exact channel, CSA, authorize, disassociate, deauth carriers, selectors, return codes, vtable slots, and CSA threshold semantics before enabling a real APSTA owner.
+- actual behavior: several carriers/slots remain prose-only and CSA was documented as rejecting the accepted `< 0x10000` range.
+- exact divergence point: APSTA methods listed in A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071.
+- evidence from runtime: no new runtime claim; this is static APSTA public-method restoration.
+- evidence from decomp: APSTA disassembly listed in A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071 plus resolved APSTA vtable dump.
+- exact semantic mismatch between reference and our code: reference uses fixed carriers, selectors, return values, and threshold semantics; local scaffold did not encode them and docs contradicted CSA disassembly.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this layer, these are direct ABI and command operands consumed by APSTA public methods. The fix does not claim final STA connect/data root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants, layouts, and vtable slot guards only; it does not synthesize APSTA runtime, force AP/STA state, or add retry/fallback behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `include/Airport/IO80211SapProtocol.h`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_channel_csa_sta_control_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - force APSTA channel success or CSA success locally.
+  - add fallback/retry/polling around channel or CSA methods.
+  - implement APSTA channel setters using primary STA channel state.
+  - add unreferenced null guard to `setSTA_DISASSOCIATE`.
+  - keep the old CSA threshold documentation after disassembly disproved it.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-145.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: APSTA channel/CSA/STA-control disassembly directly shows selectors, offsets, payload sizes, vtable byte offsets, and CSA threshold.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA public-method scaffold completeness; no final STA association/data claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records reference APSTA operands without enabling APSTA runtime.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-ASYNC-CALLBACK-TELEMETRY-CONTRACTS-079
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA HostAP IPv4 packet-filter delete and beacon interval/DTIM async callback telemetry contracts were still not represented as compiled local witnesses.
+- first visible manifestation: APSTA callback-tail audit after A-APSTA-MONITOR-POWER-STATS-CONTRACTS-078.
+- expected system behavior:
+  - `setHostApModeInternal(...)` sends `pkt_filter_delete` through `state+0x228` with 4-byte payload value `0x6c`, no RX expected, callback cookie `0`, and callback `deleteIPv4PktFiltersAsyncCallBack`.
+  - `deleteIPv4PktFiltersAsyncCallBack(...)` returns on status `0`; nonzero status logs at level `2` and decodes errors through `state+0x218` vtable `+0x780`.
+  - `setBeaconInterval(uint16_t)` skips when requested equals `state+0x68`, sends IOCTL `0x4c` payload size `4`, uses callback `handleSetBcnIntervalAsyncCallBack`, and writes `state+0x68` after successful send/sync set.
+  - DTIM setup in `initSoftAPParameters()` skips when `state+0x16 == state+0x6a`, sends IOCTL `0x4e` payload size `4`, uses callback `handleSetBcnDTIMPeriodAsyncCallBack`, and writes `state+0x6a` after successful send/sync set.
+  - beacon interval/DTIM callbacks return on status `0`; nonzero status logs at level `1` and emits `CommandRxPayload` data `+0x00`, length `+0x08`, telemetry flag `1`, through resource `state+0x210`.
+- actual behavior:
+  - local APSTA scaffold had beacon/DTIM carrier documentation, but lacked compiled string/constant witnesses for callback labels, log levels/lines, async RX payload offsets, and IPv4 packet-filter delete.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHostApModeInternal(...) @ 0xffffff8001688d12..0xffffff8001688d84`
+  - `deleteIPv4PktFiltersAsyncCallBack(...) @ 0xffffff8001692b52`
+  - `setBeaconInterval(uint16_t) @ 0xffffff8001687ae4`
+  - DTIM producer in `initSoftAPParameters() @ 0xffffff800168795f..0xffffff8001687ac2`
+  - `handleSetBcnIntervalAsyncCallBack(...) @ 0xffffff800169365a`
+  - `handleSetBcnDTIMPeriodAsyncCallBack(...) @ 0xffffff800169370e`
+- evidence:
+  - disasm: HostAP path writes dword `0x6c`, sends IOVAR `pkt_filter_delete`, TX length `4`, no RX expected, callback cookie `0`.
+  - disasm: delete callback status-nonzero path logs at level `2`, line `0x0ea0`, using error decode vtable `+0x780`.
+  - disasm: beacon interval path uses IOCTL `0x4c`, payload size `4`, applied state `+0x68`, sync error line `0x106b`.
+  - disasm: DTIM path uses IOCTL `0x4e`, payload size `4`, source `+0x16`, applied state `+0x6a`, sync error line `0x1091`.
+  - disasm: callbacks use labels `BCNPRD IOCTL rxPayload bytestream: ` and `DTIMPRD IOCTL rxPayload bytestream: ` with RX data offset `0`, length offset `8`, telemetry flag `1`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_async_callback_telemetry_2026_04_27.md`.
+- candidate causes:
+  - confirmed: APSTA callback telemetry constants/strings were not compiled into the local scaffold.
+  - rejected: execute HostAP filter/beacon/DTIM commands before APSTA owner lifecycle is complete.
+- confirmed deviation: recovered APSTA async callback/telemetry operands existed only partially in YAML/prose, not in compiled local witnesses.
+- root cause: confirmed for this APSTA callback-tail layer only. No final primary STA association/data or AP runtime root cause is claimed.
+- fix:
+  - add constants, strings, and static asserts for `pkt_filter_delete`, callback labels, log levels/lines, async RX payload offsets, telemetry flag, and delete-filter payload.
+  - add reference/YAML/prose documentation.
+  - keep APSTA runtime disabled.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-153.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-ASYNC-CALLBACK-TELEMETRY-CONTRACTS-079
+- symptom: APSTA async callback telemetry contracts and HostAP IPv4 filter delete were incomplete in the local scaffold.
+- expected system behavior: local APSTA scaffold records exact IOVAR name, payload value/size, callback log levels/lines, RX payload offsets, telemetry labels, and state/resource offsets.
+- actual behavior: these facts were absent or prose-only.
+- exact divergence point: APSTA functions listed in A-APSTA-ASYNC-CALLBACK-TELEMETRY-CONTRACTS-079.
+- evidence from runtime: no new runtime claim; this is static APSTA callback-tail restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference uses fixed strings, payload values, callback metadata, and telemetry offsets; local scaffold did not encode them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA callback-tail layer, the recovered disassembly directly defines the missing ABI/semantic contracts. The fix does not claim final STA/AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants/string/static asserts/docs only; it does not execute callbacks/IOVARs, force state, synthesize success, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_async_callback_telemetry_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - call APSTA HostAP filter/beacon/DTIM IOVARs from primary STA runtime.
+  - force applied beacon/DTIM state.
+  - add fallback/retry/poll or suppress callback errors.
+  - enable role-7 APSTA creation in this structural batch.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-153.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed APSTA disassembly directly shows IOVAR name, payload value/size, callback metadata, RX offsets, telemetry labels, log levels, and line constants.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA async callback scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, string witnesses, YAML, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered APSTA callback contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-MONITOR-POWER-STATS-CONTRACTS-078
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA monitor/stats timers, power-state machine tail, assoc-list conversion, MFP command, datapath print, and RX-counter contracts were still missing from the local scaffold after CR-151.
+- first visible manifestation: APSTA owner-layer audit after A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077.
+- expected system behavior:
+  - `handleAPStatsUpdates(IO80211TimerSource*)` validates timer `state+0x70`, allocates `0x808`, calls APSTA vtable `+0xfd8`, updates activity baseline `state+0x88`, posts inactivity STA message `0x0d` at threshold `0x16e361`, and reschedules interval `0x1388`.
+  - `monitorAPInterface(IO80211TimerSource*)` validates timer `state+0x78`, mirrors core-private `+0x4d59` bit 0 to `state+0x208`, refreshes Apple vendor IE when required, updates RX deltas at `state+0x1b8/+0x1c0`, drives low-traffic counter `state+0x64`, and reschedules interval `0x3e8`.
+  - `setPowerSaveState(...)` is gated by `state+0x0e`, ignores reason `7`, records transition count at `state+0x1c8 + state * 0x10`, accumulates durations through timestamp `state+0x1a8`, and handles states `0..3` with the recovered beacon/power-assertion side effects.
+  - assoc-list callback/conversion uses BCM count `+0x00`, first MAC `+0x04`, MAC stride `6`, Apple output size `0x808`, version `1`, count `+0x04`, entries `+0x08`, entry stride `0x10`, max count `0x80`, clamp threshold `0x81`.
+  - MFP uses feature gate `0x26`, IOVAR `mfp`, payload size `4`, unsupported return `0`.
+  - `printDataPath(userPrintCtx*)` uses userPrintCtx offsets `+0x18/+0x20/+0x24/+0x28` and vtable slots `+0x338/+0x320/+0x328/+0xc68`; `updateRxCounter(uint64_t)` adds to `state+0xa0`.
+- actual behavior:
+  - local APSTA scaffold lacked compiled constants/layout/static asserts for these contracts.
+  - docs/YAML did not record the monitor/power/stats layer recovered after CR-151.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::handleAPStatsUpdates(...) @ 0xffffff8001685a36`
+  - `monitorAPInterface(...) @ 0xffffff8001685e94`
+  - `setPowerSaveState(...) @ 0xffffff8001686e62`
+  - `getAssocListAsyncCallback(...) @ 0xffffff80016880fe`
+  - `convertBCMAssocListToAppleAssocList(...) @ 0xffffff80016881f6`
+  - `configureManagementFrameProtectionForSoftAP(...) @ 0xffffff800168c4fe`
+  - `printDataPath(...) @ 0xffffff8001694176`
+  - `updateRxCounter(...) @ 0xffffff8001694450`
+- evidence:
+  - disasm: stats timer shows `0x808` allocation, APSTA vtable `+0xfd8`, async failure `0xe00002d8`, inactivity thresholds `0x16e360/0x16e361/0x170a71`, timer interval `0x1388`.
+  - disasm: monitor timer shows core-private byte `+0x4d59`, mirror `state+0x208`, vendor-IE refresh flag `state+0x62`, low-traffic counter `state+0x64`, RX counter vtable `+0xc38`, baselines `state+0x90/+0x98`, stats `state+0x1b8/+0x1c0`, interval `0x3e8`.
+  - disasm: power-state machine shows reason gates, transition records, `modesw_bcns_wait`, `lphs_mode`, beacon duty-cycle and power assertion side effects.
+  - disasm: assoc-list conversion shows exact BCM/Apple layout, clamp, and entry copy offsets.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_monitor_power_stats_2026_04_27.md`.
+- candidate causes:
+  - confirmed: APSTA monitor/power/stats constants and layout witnesses were not compiled into local scaffold.
+  - rejected: execute timers/IOVARs before APSTA owner lifecycle is complete.
+  - rejected: add fallback, forced state changes, or primary-STA substitutions.
+- confirmed deviation: recovered APSTA monitor/power/stats ABI and semantic operands existed only in analysis, not in compiled local witnesses or YAML.
+- root cause: confirmed for this APSTA layer restoration only. No final primary STA association/data or AP runtime root cause is claimed.
+- fix:
+  - add constants, state-field splits, layout witnesses, and static asserts for monitor/stats timers, assoc-list conversion, power-state records, MFP, datapath print, and RX counter.
+  - add reference/YAML/prose documentation.
+  - keep APSTA runtime disabled.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-152.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-MONITOR-POWER-STATS-CONTRACTS-078
+- symptom: APSTA monitor/power/stats contracts after the power/offload/datapath tail were incomplete in the local scaffold.
+- expected system behavior: local APSTA scaffold records exact timer, power-state, assoc-list, MFP, datapath-print, and RX-counter constants, layouts, state offsets, vtable offsets, and return semantics.
+- actual behavior: these facts were absent or prose-only.
+- exact divergence point: APSTA functions listed in A-APSTA-MONITOR-POWER-STATS-CONTRACTS-078.
+- evidence from runtime: no new runtime claim; this is static APSTA layer restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference uses fixed state offsets, timers, payload layouts, IOVAR names, vtable offsets, thresholds, and return values; local scaffold did not encode them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA owner-layer segment, the recovered disassembly directly defines the missing ABI/semantic contracts. The fix does not claim final STA/AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants/layout/static asserts/docs only; it does not execute timers/IOVARs, force state, synthesize success, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_monitor_power_stats_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - call APSTA monitor/stats timers or MFP/power IOVARs from primary STA runtime.
+  - force AP-up, low-power, association-list, or counter state.
+  - add fallback/retry/poll or suppress callback errors.
+  - enable role-7 APSTA creation in this structural batch.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-152.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed APSTA disassembly directly shows offsets, thresholds, IOVAR names, payload sizes, vtable offsets, state writes, and return values.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA monitor/power/stats scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, state fields, YAML, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered APSTA contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-ACTION-FRAME-LPHS-CONTRACTS-080
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA event/station-table contracts existed, but action-frame LPHS state semantics were incomplete and one local constant pair inverted Apple sleep/awake meanings.
+- first visible manifestation: APSTA action-frame audit after A-APSTA-ASYNC-CALLBACK-TELEMETRY-CONTRACTS-079.
+- expected system behavior:
+  - `handleEvent` dispatches event type `0x4b` into the action-frame path.
+  - action-frame payload base is `event+0x30`; minimum accepted payload length is `0x12`.
+  - raw version `0x0100` reads category/action at payload `+0x10/+0x11`; raw version `0x0200` requires length `0x1a` and reads category/action at payload `+0x18/+0x19`.
+  - unknown version leaves category/action at sentinel `0xaa`; byte-swapped versions `>= 3` are rejected.
+  - LPHS category is `0x7f`; accepted actions are `1` and `2`.
+  - accepted action value is written directly to station sleep-state `state+0xb8 + index*0x30 + 0x10`.
+  - new station entries initialize sleep-state to `2`; active entries with sleep-state `2` block `checkIfAllStaAreInLPM`.
+  - when no active station remains in blocking state `2` and SoftAP concurrency is disabled, Apple calls `setPowerSaveState(3, 0x0b)`.
+- actual behavior:
+  - local scaffold had action-frame offsets but lacked event-offset, sentinel, reject-threshold, all-STA check, log-line, and power-save reason witnesses.
+  - local constants identified action `1` as awake and action `2` as sleep, opposite of Apple station-table semantics.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::handleEvent(...)` action-frame branch `0xffffff80016904bf..0xffffff8001690f70`.
+  - inlined `checkIfAllStaAreInLPM()` loop `0xffffff8001690d10..0xffffff8001690f24`.
+  - all-STA transition tail `0xffffff8001690f24..0xffffff8001690f70`.
+  - `AppleBCMWLANIO80211APSTAInterface::setPowerSaveState(...) @ 0xffffff8001686e62`.
+  - `runPowerSaveStateMachine()` log site `0xffffff8001686214..0xffffff8001686234`.
+- evidence:
+  - disasm: action-frame branch reads event type `0x4b`, payload length `event+0x14`, and payload base `event+0x30`.
+  - disasm: v1 branch reads category/action from absolute event offsets `+0x40/+0x41`; v2 branch reads from `+0x48/+0x49`.
+  - disasm: category `0x7f` with action `1` or `2` writes the action byte directly to station entry sleep-state offset `+0x10`.
+  - disasm: add-station path initializes entry sleep-state to `2`.
+  - disasm: `checkIfAllStaAreInLPM` treats active entries with sleep-state `2` as blockers and only then suppresses all-LPM transition.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_action_frame_lphs_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local APSTA LPHS action constants inverted sleep/awake semantics.
+  - confirmed: local scaffold lacked compiled all-STA LPM transition and parse sentinels.
+  - rejected: force low-power state without the Apple all-STA check.
+  - rejected: synthesize or replay LPHS action frames.
+  - rejected: alter primary STA power state from this APSTA-only path.
+- confirmed deviation: reference maps action `1` to low-power/sleep and action `2` to awake/default through direct station-table writes; local constants said the opposite.
+- root cause: confirmed for APSTA action-frame/LPHS scaffold correctness only. No final primary STA association/data or AP runtime root cause is claimed.
+- fix:
+  - correct LPHS action constants and station-table low-power/awake aliases.
+  - add event-offset, reject-threshold, sentinel, all-STA blocker, power-save reason, and log-line witnesses.
+  - add reference/YAML/prose documentation.
+  - keep APSTA runtime disabled.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-154.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-ACTION-FRAME-LPHS-CONTRACTS-080
+- symptom: APSTA action-frame LPHS semantics and all-STA LPM transition contracts were incomplete, with sleep/awake action constants inverted locally.
+- expected system behavior: local APSTA scaffold records exact action-frame parse offsets, LPHS action semantics, station sleep-state aliases, all-STA checker state, power-save transition, and log-line constants.
+- actual behavior: local constants had action `1` as awake and action `2` as sleep; several parse/check contracts were absent or prose-only.
+- exact divergence point: APSTA functions listed in A-APSTA-ACTION-FRAME-LPHS-CONTRACTS-080.
+- evidence from runtime: no new runtime claim; this is static APSTA action-frame/LPHS restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference writes LPHS action `1/2` directly into station sleep-state, where state `2` is initialized default/awake and blocks all-LPM; local constants treated `2` as low-power.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA action-frame layer, the recovered disassembly directly defines the missing ABI/semantic contracts. The fix does not claim final STA/AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants, aliases, static asserts, YAML, and docs only; it does not execute APSTA runtime, synthesize frames, force state, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_action_frame_lphs_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - force all-STA low-power without station-table evidence.
+  - synthesize, replay, or re-emit LPHS action frames.
+  - change primary STA power, association, key, or data paths from this APSTA-only layer.
+  - add fallback/retry/poll or suppress invalid action-frame versions.
+  - enable role-7 APSTA creation in this structural batch.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-154.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed APSTA action-frame branch directly shows event type, offsets, LPHS action writes, station-state blocker, and all-STA transition.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA action-frame/LPHS scaffold correctness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, aliases, static asserts, YAML, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered APSTA action-frame contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA station/key public bodies are represented, but the producer-side event and station-table mutation layer was still partial.
+- first visible manifestation: APSTA station table audit after A-APSTA-STATION-KEY-BODY-CONTRACTS-075.
+- expected system behavior:
+  - APSTA station table is a five-entry block from `state+0xb8` with stride `0x30`.
+  - each station entry has active byte at entry `+0x00`, MAC at `+0x01`, sleep state at `+0x10`, AIHS flag at `+0x20`, sharing flag at `+0x24`, and Apple-station flag at `+0x28`.
+  - `handleEvent(...) @ 0xffffff800168faa0` reads event type/status/reason/auth/data-length/address/data at `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x18/+0x30`.
+  - association/reassociation events `8/10` with status/reason `0/0` write state metadata `+0x80/+0x84`, call `updateSTAAssocInfo`, parse RSNXE, and post STA message id `0x0c` with payload size `0x114`.
+  - removal events `5/6/11/12` decrement associated count when nonzero, notify each APSTA TX subqueue via vtable `+0x358`, clear the table entry, and post STA message id `0x0d` with payload size `0x0c`.
+  - `postMessageForSTA(...) @ 0xffffff8001691bb8` dispatches through APSTA vtable `+0xb18` and notifies core owner `state+0x218 -> +0x128 -> +0x2c20` with flag `1`.
+  - `checkForAppleIE(...)`, `updateSTAAssocInfo(...)`, `parseRSNXE(...)`, `checkForStationListMismatch(...)`, and `removeStaFromStaTable(...)` use the fixed IE, RSNXE, station-list, and table offsets recorded in the reference note.
+- actual behavior:
+  - local station-table witness had the MAC at entry offset `0`, while reference uses active byte at `+0` and MAC at `+1`.
+  - event producer contracts, STA message payloads, action-frame low-power updates, Apple IE flags, RSNXE parsing, firmware-list mismatch handling, and removal clear policy were not compiled witnesses.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::handleEvent(...) @ 0xffffff800168faa0`
+  - `AppleBCMWLANIO80211APSTAInterface::postMessageForSTA(...) @ 0xffffff8001691bb8`
+  - `AppleBCMWLANIO80211APSTAInterface::checkForAppleIE(...) @ 0xffffff8001691cc6`
+  - `AppleBCMWLANIO80211APSTAInterface::updateSTAAssocInfo(...) @ 0xffffff8001691d6a`
+  - `AppleBCMWLANIO80211APSTAInterface::parseRSNXE(...) @ 0xffffff800169217e`
+  - `AppleBCMWLANIO80211APSTAInterface::checkForStationListMismatch(...) @ 0xffffff800169229a`
+  - `AppleBCMWLANIO80211APSTAInterface::removeStaFromStaTable(...) @ 0xffffff800169252a`
+- evidence:
+  - disassembly: `updateSTAAssocInfo` writes active byte at `state+0xb8 + index*0x30`, MAC at `+0xb9`, sleep state at `+0xc8`, AIHS/sharing at `+0xd8/+0xdc`, and increments `state+0x00`.
+  - disassembly: association path posts message id `0x0c` size `0x114`; removal path posts message id `0x0d` size `0x0c`.
+  - disassembly: `removeStaFromStaTable` rejects indexes `>=5` with `0xe00002bc` and clears six qwords from the entry.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local APSTA scaffold lacked producer-side station table/event witnesses.
+  - confirmed: previous station-table entry witness modeled the MAC-relative view instead of the full active-byte entry.
+  - rejected: infer station state from primary STA association state.
+  - rejected: route event handling at runtime before APSTA owner/lifecycle is complete.
+- confirmed deviation: APSTA event/station-table producer contracts were recovered but absent or partially wrong locally.
+- root cause: confirmed for APSTA event/station-table scaffold completeness only; no final STA/AP runtime claim is made.
+- fix:
+  - change the local station-table entry witness to the full `0x30` byte entry with active/MAC/sleep/AIHS/sharing/Apple-station fields.
+  - type `state+0xb8` as five station-table entries while preserving state size `0x338`.
+  - add event header, STA association/removal message, action-frame, Apple IE, RSNXE, station-list mismatch, and removal constants/layouts.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-150 batch request.
+- notes:
+  - This batch is structural and supersedes CR-149. It does not invoke APSTA event handling at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076
+- symptom: APSTA event/station table contracts are recovered but not compiled into local layout witnesses.
+- expected system behavior: local APSTA scaffold records exact station-table entry offsets, event header offsets, STA post-message payload sizes, Apple IE/RSNXE parse operands, action-frame low-power operands, and station-list mismatch behavior.
+- actual behavior: these contracts remained absent or partially represented; the station-table entry witness had a MAC-relative offset instead of full entry offset.
+- exact divergence point: APSTA methods listed in A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076.
+- evidence from runtime: no new runtime claim; this is static APSTA producer-layer restoration.
+- evidence from decomp: APSTA disassembly from `/tmp/AppleBCMWLANCoreMac` at the exact addresses listed above.
+- exact semantic mismatch between reference and our code: reference owns a typed five-entry station table with active byte, MAC, sleep state, station flags, STA event messages, and queue notifications; local scaffold did not encode that producer layer.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA scaffold layer, these fields are the producer-side state consumed by already recovered station/key public methods.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants, state aliases, carriers, and static asserts only; it does not execute APSTA event handling or alter primary STA behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - map APSTA station table to primary STA association state.
+  - force associated-station counts or AP-up state.
+  - add runtime event dispatch before APSTA owner lifecycle is restored.
+  - guess Apple OUI byte values not needed for the local ABI/layout witness.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-150.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed method disassemblies directly show offsets, event ids, message sizes, table entry fields, return values, and helper calls.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA event/station-table scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, state aliases, message carriers, and static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records the recovered APSTA producer layer before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-HOSTAP-CONTROL-POWER-LAYER-072
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA channel/CSA/STA-control carriers are represented, but HostAP control/power wrapper operands remain prose-only.
+- first visible manifestation: APSTA `setHOST_AP_MODE` / HostAP power audit after A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071.
+- expected system behavior:
+  - `setHOST_AP_MODE(...)` reads network-data mode at input `+0x1c`.
+  - it reads proximity owner from core-private `+0x2c28`, NAN owner from `+0x74f0`, and NAN data owner from `+0x74f8`.
+  - for non-null input with mode `+0x1c != 0`, feature gate `0x46` controls pre-internal bringdown of those neighbouring owners before `setHostApModeInternal(input)`.
+  - for null input or mode `+0x1c == 0`, it calls `setHostApModeInternal(input)` first and then, when feature gate `0x46` permits, brings neighbouring owners back up only if core-private `+0x2890 & 1` is set and core-private dword `+0x4d8c` is `4` or `1`.
+  - `hostAPPowerOff()` returns `0` if AP-up state `state+0x26c` is zero.
+  - when AP is up and associated station count `state+0x00` is zero, `hostAPPowerOff()` calls `setPowerSaveState(0, 0x0c)`, clears `state+0x0e`, calls `setHostApModeInternal(NULL)`, and notifies core event id `1` with null payload, payload size `0`, and flag `1`.
+  - when AP is up, associated station count is nonzero, and SoftAP concurrency is disabled, it calls `setPowerSaveState(3, 3)`.
+  - `isSoftAPConcurrencyEnabled()` requires feature `0x46` and core-private byte `+0x4d59 & 0x1b`.
+  - `configureLowPowerModeExit()` returns when `state+0xb4 == 0`; otherwise it dispatches low-power exit through work-queue vtable `+0x130`, uses 4-byte command payloads, and successful low-power exit clears `state+0xb4`.
+- actual behavior:
+  - local APSTA scaffold has adjacent state fields, but not compiled witnesses for network-data mode `+0x1c`, NAN owner offsets, bring-up gates, HostAP power-off notification, concurrency mask, or low-power exit work-queue gate.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE(...) @ 0xffffff80016884ae`
+  - `AppleBCMWLANIO80211APSTAInterface::hostAPPowerOff() @ 0xffffff8001692772`
+  - `AppleBCMWLANIO80211APSTAInterface::isSoftAPConcurrencyEnabled() @ 0xffffff8001692896`
+  - `AppleBCMWLANIO80211APSTAInterface::configureLowPowerModeExit() @ 0xffffff80016928e4`
+- evidence:
+  - decomp: `setHOST_AP_MODE(...)` reads core-private neighbouring owners `+0x2c28/+0x74f0/+0x74f8`, tests input `+0x1c`, and gates bringdown/bringup through feature `0x46`.
+  - decomp: `setHOST_AP_MODE(...)` bringup path tests core-private `+0x2890 & 1` and dword `+0x4d8c == 4 || == 1`.
+  - decomp: `hostAPPowerOff()` tests `state+0x26c`, checks `state+0x00`, calls `setPowerSaveState(0, 0x0c)`, clears `state+0x0e`, calls `setHostApModeInternal(NULL)`, and calls core notify with event id `1`, null payload, size `0`, flag `1`.
+  - decomp: `isSoftAPConcurrencyEnabled()` tests feature `0x46` and core-private byte `+0x4d59 & 0x1b`.
+  - decomp: `configureLowPowerModeExit()` returns on `state+0xb4 == 0`, uses work queue vtable `+0x130`, and success thunks clear `state+0xb4`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_hostap_control_power_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local APSTA compiled witness lacks HostAP control/power owner/gate operands.
+  - rejected: represent HostAP mode as a primary STA mode flag.
+  - rejected: skip neighbouring owner offsets because APSTA runtime remains disabled.
+  - rejected: force HostAP power-off or low-power exit state.
+- confirmed deviation: HostAP control/power wrapper operands are recovered but not represented locally.
+- root cause: confirmed for APSTA HostAP control/power scaffold completeness only; no AP/SoftAP runtime success claim is made.
+- fix:
+  - add constants for network-data mode/vendor offsets, feature gate, neighbouring owners, bring-up private gates, power-off paths, SoftAP concurrency mask, and low-power exit gate.
+  - add `AirportItlwmAPSTAHostApModeNetworkDataLayout`.
+  - extend the core-expansion layout witness through proximity/APSTA/NAN/NAN-data owner offsets.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-146 batch request.
+- notes:
+  - This is a static reference-alignment batch. It does not bring down/up neighbouring owners or run HostAP power/low-power code at runtime.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-HOSTAP-CONTROL-POWER-LAYER-072
+- symptom: APSTA HostAP control/power wrapper contracts are recovered but not compiled as local witnesses.
+- expected system behavior: local APSTA scaffold records exact HostAP mode input offsets, neighbouring owner offsets, feature/private gates, power-off semantics, concurrency mask, and low-power exit gate before enabling a real APSTA owner.
+- actual behavior: these operands remained YAML/prose-only.
+- exact divergence point: APSTA methods listed in A-APSTA-HOSTAP-CONTROL-POWER-LAYER-072.
+- evidence from runtime: no new runtime claim; this is static APSTA HostAP control/power restoration.
+- evidence from decomp: APSTA decomp for `setHOST_AP_MODE`, `hostAPPowerOff`, `isSoftAPConcurrencyEnabled`, and `configureLowPowerModeExit`.
+- exact semantic mismatch between reference and our code: reference uses fixed owner offsets, gates, input offsets, return semantics, and low-power state transitions; local scaffold did not encode them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this layer, these are direct HostAP control/power operands. The fix does not claim final STA or AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants/layout offsets only; it does not execute HostAP runtime, force state, or add retry/fallback behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_hostap_control_power_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - implement HostAP control as primary STA mode switching.
+  - skip proximity/NAN owner offsets.
+  - force `state+0x26c`, `state+0x0e`, or `state+0xb4`.
+  - add fallback/retry/polling around HostAP mode.
+  - call HostAP power-off or low-power exit before APSTA owner runtime is complete.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-146.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the referenced methods directly show owner offsets, gates, input offsets, power-off sequence, concurrency mask, and low-power exit state.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for HostAP control/power scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records reference HostAP operands without enabling runtime.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-PUBLIC-SAP-SLOT-SURFACE-073
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA HostAP control/power operands are represented, but the complete public SAP vtable surface still has only partial local concrete slot/byte-offset guards.
+- first visible manifestation: APSTA public SAP ABI audit after A-APSTA-HOSTAP-CONTROL-POWER-LAYER-072.
+- expected system behavior:
+  - APSTA public getter methods occupy concrete slots `505..516` and byte offsets `0x0fc8..0x1020`.
+  - APSTA public setter methods occupy concrete slots `517..531` and byte offsets `0x1028..0x1098`.
+  - every public getter/setter from `getSSID` through `setMIS_MAX_STA` has a local AppleBCMWLAN APSTA slot constant and byte-offset static assert before a real APSTA owner class is introduced.
+- actual behavior:
+  - local SAP header recorded the typed method list but had concrete AppleBCMWLAN APSTA constants/asserts for only a subset of public slots.
+- divergence point:
+  - resolved APSTA vtable `0xffffff8001777508`, slots `505..531`, source `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt`.
+- evidence:
+  - vtable dump: slots `505..516` map to byte offsets `0x0fc8..0x1020`.
+  - vtable dump: slots `517..531` map to byte offsets `0x1028..0x1098`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_public_sap_slots_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local `IO80211SapProtocol.h` did not yet guard every concrete APSTA public getter/setter slot and byte offset.
+  - rejected: rely only on typed typedef declarations without concrete APSTA alias asserts.
+  - rejected: defer slot guards until the final C++ owner class exists.
+- confirmed deviation: concrete APSTA public SAP vtable surface was only partially represented locally.
+- root cause: confirmed for public SAP ABI scaffold completeness only; no runtime APSTA method implementation claim is made.
+- fix:
+  - add AppleBCMWLAN APSTA slot constants for every public getter/setter slot `505..531`.
+  - add byte-offset constants and static asserts for the complete surface in `include/Airport/IO80211SapProtocol.h`.
+  - update YAML/prose docs and save a local reference note.
+- verification:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-147 batch request.
+- notes:
+  - This is a public ABI scaffold only. It does not define the final APSTA C++ owner class and does not route runtime calls through these slots.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-PUBLIC-SAP-SLOT-SURFACE-073
+- symptom: complete APSTA public SAP slot surface is recovered but not fully compiled into local concrete slot guards.
+- expected system behavior: local SAP/APSTA header records every public getter/setter slot and byte offset from `getSSID` through `setMIS_MAX_STA`.
+- actual behavior: only a subset of the concrete AppleBCMWLAN APSTA aliases had constants and byte-offset static asserts.
+- exact divergence point: APSTA vtable `0xffffff8001777508`, slots `505..531`.
+- evidence from runtime: no new runtime claim; this is static ABI restoration.
+- evidence from decomp: resolved APSTA vtable dump at `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt`.
+- exact semantic mismatch between reference and our code: reference has fixed concrete public SAP slots and byte offsets; local code did not yet guard all of them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this ABI layer, the slot/byte-offset constants are the direct reference contract needed before a local APSTA owner class can be safely defined.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact slot numbers and byte offsets only; it does not add method implementations, runtime routing, or fallback behavior.
+- files/functions to modify:
+  - `include/Airport/IO80211SapProtocol.h`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_public_sap_slots_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - omit concrete APSTA aliases for methods whose bodies are not implemented yet.
+  - define the final APSTA class before the full slot surface is guarded.
+  - route runtime calls through guessed slots.
+  - collapse APSTA public SAP slots into primary STA or reserved base slots.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-147.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the resolved APSTA vtable dump lists exact slots and byte offsets for the full public surface.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for ABI scaffold completeness; no runtime method behavior claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants/static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records the reference ABI surface before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: vtable dump path and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-PUBLIC-SIMPLE-BODY-CONTRACTS-074
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA public SAP slot surface is complete, but simple public method bodies still lack local compiled offset/return witnesses.
+- first visible manifestation: APSTA method-body audit after A-APSTA-PUBLIC-SAP-SLOT-SURFACE-073.
+- expected system behavior:
+  - `getSSID(...)` reads length from `state+0x274`, rejects lengths greater than `0x20` with raw `0x16`, writes output length at `+0x04`, copies bytes from `state+0x278` to output `+0x08`, and returns `0`.
+  - `getSTATE(...)` writes value `4` at output `+0x04` and returns `0`.
+  - `getOP_MODE(...)` rejects null input with raw `0x16`, writes type `1` at output `+0x00`, writes mode `8` at output `+0x04` when `state+0x26c != 0`, otherwise writes `0`, and returns `0`.
+  - `getPEER_CACHE_MAXIMUM_SIZE(...)` writes value `8` at output `+0x04` and returns `0`.
+  - `getHOST_AP_MODE_HIDDEN(...)` rejects null input with raw `0x16`, writes value `1` at output base, and returns `0`.
+  - `getSOFTAP_PARAMS(...)` copies fields from `state+0x18/+0x1c/+0x20/+0x24/+0x68/+0x10/+0x0e/+0x28` to fixed output offsets and returns `0`.
+  - `getSOFTAP_STATS(...)` copies `0x58` bytes from `state+0x1b0` and returns `0`.
+  - `setSSID(...)` performs optional logging only, does not mutate SSID state, and returns `0`.
+  - `setPEER_CACHE_CONTROL(...)` calls `AppleBCMWLANCore::completePeerCacheControl(input, self)` through `state+0x218`, ignores the helper result, and returns `0`.
+  - `setSOFTAP_PARAMS(...)` has no null guard, uses input `+0x17` and `state+0x0e`, optionally calls `setBeaconInterval` for input `+0x14 != 0xffff`, copies input fields to state `+0x18/+0x1c/+0x20/+0x24/+0x28`, and returns `0`.
+  - `setSOFTAP_EXTENDED_CAPABILITIES_IE(...)` clears state `+0x50/+0x58/+0x60`, copies input `+0x00/+0x01/+0x09` to state `+0x50/+0x51/+0x59`, and returns `0`.
+  - `setMIS_MAX_STA(...)` calls `setMaxAssoc(*(uint32_t *)(input+0x00))` only when `state+0x26c != 0`, ignores the helper result, and returns `0`.
+- actual behavior:
+  - local APSTA scaffold represented some SoftAP carriers, but did not compile the SSID state fields, opmode/state/simple getter layouts, ext-cap input layout, MIS input layout, or exact simple setter return/mutation contracts.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::getSSID(...) @ 0xffffff8001687c84`
+  - `AppleBCMWLANIO80211APSTAInterface::getOP_MODE(...) @ 0xffffff8001687e0e`
+  - `AppleBCMWLANIO80211APSTAInterface::setPEER_CACHE_CONTROL(...) @ 0xffffff8001688490`
+  - `AppleBCMWLANIO80211APSTAInterface::setSSID(...) @ 0xffffff800168dc92`
+  - `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_PARAMS(...) @ 0xffffff800168e536`
+  - `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_EXTENDED_CAPABILITIES_IE(...) @ 0xffffff800168e7b8`
+  - `AppleBCMWLANIO80211APSTAInterface::setMIS_MAX_STA(...) @ 0xffffff8001693a80`
+- evidence:
+  - decomp: `getSSID` disassembly directly shows `state+0x274`, `state+0x278`, output `+0x04/+0x08`, max length `0x20`, and return `0x16`.
+  - decomp: `getOP_MODE` disassembly directly shows null return `0x16`, output type `1`, source `state+0x26c`, and mode values `8` or `0`.
+  - decomp: `setPEER_CACHE_CONTROL` disassembly directly shows core pointer `state+0x218`, helper call, ignored result, and return `0`.
+  - decomp: `setSSID` disassembly directly shows logging-only behavior and return `0`.
+  - decomp: `setSOFTAP_PARAMS` disassembly directly shows input offsets `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x17/+0x18`, state offsets `+0x0e/+0x18/+0x1c/+0x20/+0x24/+0x28/+0x68/+0x26c`, sentinel `0xffff`, power-save calls `(0,0)` and `(1,0)`, and return `0`.
+  - decomp: `setSOFTAP_EXTENDED_CAPABILITIES_IE` disassembly directly shows clears at `state+0x50/+0x58/+0x60`, copies from input `+0x00/+0x01/+0x09`, and return `0`.
+  - decomp: `setMIS_MAX_STA` disassembly directly shows AP-up gate `state+0x26c`, input dword `+0x00`, `setMaxAssoc`, ignored result, and return `0`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_public_simple_bodies_2026_04_27.md`.
+- candidate causes:
+  - confirmed: simple public APSTA body contracts were not fully represented as compiled local witnesses.
+  - rejected: implement these bodies on the primary STA path.
+  - rejected: force AP state, SSID, opmode, or helper success at runtime.
+  - rejected: add null guards where reference has no null guard.
+- confirmed deviation: local scaffold was missing compiled witnesses for exact simple public body offsets and fixed returns.
+- root cause: confirmed for APSTA simple body scaffold completeness only; no final STA association/data root-cause claim is made.
+- fix:
+  - add constants and layout witnesses for SSID, state, opmode, peer-cache max, hidden mode, SoftAP stats, SoftAP ext-cap input, and MIS max-STA input.
+  - split APSTA state block `reserved0274` into `softapSsidLength274`, `softapSsid278[0x20]`, and reserved tail before `rsnConfGate29b`.
+  - add static asserts for recovered offsets, fixed values, copy sizes, and simple setter source/target offsets.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-148 batch request.
+- notes:
+  - `setCIPHER_KEY`, `getSTA_IE_LIST`, `getSTA_STATS`, and `getKEY_RSC` are intentionally left for the next station/key datapath body batch because their contracts include command buffers and IOVAR/IOCTL traffic.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-PUBLIC-SIMPLE-BODY-CONTRACTS-074
+- symptom: simple public APSTA method bodies are recovered but not fully compiled into local offset/layout/return witnesses.
+- expected system behavior: local APSTA scaffold records exact state/output offsets, input offsets, fixed values, return semantics, and no-null-guard behavior for the simple public methods listed above.
+- actual behavior: local scaffold had only partial SoftAP carrier witnesses and lacked exact compiled witnesses for SSID/opmode/simple setter bodies.
+- exact divergence point: APSTA methods listed in A-APSTA-PUBLIC-SIMPLE-BODY-CONTRACTS-074.
+- evidence from runtime: no new runtime claim; this is static APSTA body-contract restoration.
+- evidence from decomp: APSTA disassembly from `/tmp/AppleBCMWLANCoreMac` at the exact addresses listed above.
+- exact semantic mismatch between reference and our code: reference uses fixed state/output offsets, fixed values, fixed raw returns, and specific absence of null guards in setters; local scaffold did not encode these body contracts.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA scaffold layer, these constants/layouts are direct ABI/body contracts consumed by public SAP methods. The fix does not claim to resolve the current STA join blocker by itself.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants, state fields, carriers, and static asserts only; it does not route runtime calls, force state, synthesize helper success, or add fallback behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_public_simple_bodies_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - implement these APSTA methods by borrowing primary STA state.
+  - force `state+0x26c`, SSID length, opmode, or hidden state.
+  - add null guards to `setSOFTAP_PARAMS`, `setSOFTAP_EXTENDED_CAPABILITIES_IE`, or `setMIS_MAX_STA`.
+  - preserve helper return from `setPEER_CACHE_CONTROL` or `setMIS_MAX_STA`.
+  - include station/key datapath bodies in this simple-body batch without completing their command-buffer audit.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - submit CR-148.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed method disassemblies directly show offsets, constants, return values, and helper-result policies.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for simple public body scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, state fields, and static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records recovered APSTA body contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-STATION-KEY-BODY-CONTRACTS-075
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA simple public bodies are represented, but station/key public bodies with command buffers still lack compiled local selector/payload/layout witnesses.
+- first visible manifestation: APSTA station/key body audit after A-APSTA-PUBLIC-SIMPLE-BODY-CONTRACTS-074.
+- expected system behavior:
+  - `getSTATION_LIST(...)` rejects null with raw `0x16`, rejects AP-down `state+0x26c == 0` with `0x39`, allocates a `0x100` byte maclist initialized with dword `0x2a`, uses virtual IOCTL get selector `0x9f`, returns `0xe00002bd` on allocation failure, returns `0xe00002d8` on async submit failure, and converts the BCM assoc list on sync success.
+  - `setCIPHER_KEY(...)` rejects AP-down with `6`, has no null guard after AP-up passes, reads cipher type from input `+0x08`, accepts cipher types `3` and `5`, returns success for cipher type `0` and unsupported nonzero ciphers, maps to a `0xa4` byte `wl_wsec_key`, and uses virtual IOCTL set selector `0x2d`.
+  - `getSTA_IE_LIST(...)` rejects null with raw `0x16`, scans station entries from `state+0xb9` to `state+0x1a9` with stride `0x30` and 6-byte MAC compares, returns `2` when not found, uses IOVAR `wpaie`, and updates output length from output `+0x11` plus `2` on success.
+  - `getSTA_STATS(...)` rejects AP-down with `0x39`, rejects null with raw `0x16`, derives allocation size from core-private `+0x30c` with thresholds `7` and `0x0f`, uses IOVAR `sta_info`, copies RX fields `+0x58/+0x68/+0x54/+0x60` to output `+0x0c/+0x10/+0x14/+0x18`, and frees the allocation.
+  - `getKEY_RSC(...)` has no null guard, reads key index from input `+0x0e`, uses virtual IOCTL get selector `0xb7`, 8-byte TX payload, RX range `0x0000000800040008`, and writes output length/value at `+0x50/+0x54` on success.
+- actual behavior:
+  - local APSTA scaffold did not compile these station/key selectors, payload sizes, allocation sizes, station-table offsets, IOVAR names, output offsets, or no-null-guard contracts.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::getSTATION_LIST(...) @ 0xffffff8001687e40`
+  - `AppleBCMWLANIO80211APSTAInterface::setCIPHER_KEY(...) @ 0xffffff800168f2b6`
+  - `AppleBCMWLANIO80211APSTAInterface::getSTA_IE_LIST(...) @ 0xffffff800168f59c`
+  - `AppleBCMWLANIO80211APSTAInterface::getSTA_STATS(...) @ 0xffffff800168f808`
+  - `AppleBCMWLANIO80211APSTAInterface::getKEY_RSC(...) @ 0xffffff800168f9e6`
+- evidence:
+  - decomp: `getSTATION_LIST` disassembly directly shows state gate `+0x26c`, allocation size `0x100`, initial dword `0x2a`, selector `0x9f`, async completion, sync RX range, and return values.
+  - decomp: `setCIPHER_KEY` disassembly directly shows AP-up gate, cipher type offset `+0x08`, accepted values `3/5`, `0xa4` `wl_wsec_key`, selector `0x2d`, and unsupported-cipher success return.
+  - decomp: `getSTA_IE_LIST` disassembly directly shows station-table scan `+0xb9..+0x1a9`, stride `0x30`, MAC size `6`, IOVAR `wpaie`, and output length rule.
+  - decomp: `getSTA_STATS` disassembly directly shows allocation thresholds/sizes, IOVAR `sta_info`, TX MAC offset `+0x04`, output copy offsets, and return values.
+  - decomp: `getKEY_RSC` disassembly directly shows key-index offset `+0x0e`, selector `0xb7`, payload sizes/range, and output `+0x50/+0x54`.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_station_key_bodies_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local scaffold lacked station/key command-buffer body witnesses.
+  - rejected: treat these as primary STA key/station methods.
+  - rejected: add null guards to `setCIPHER_KEY` or `getKEY_RSC`.
+  - rejected: guess station-table depth or key payload sizes from local structs instead of reference.
+- confirmed deviation: station/key APSTA public bodies were recovered but not represented as compiled local contracts.
+- root cause: confirmed for station/key body scaffold completeness only; no final STA association/data root-cause claim is made.
+- fix:
+  - add constants for selectors, payload sizes, allocation sizes, station table offsets/stride, IOVAR names, return values, and output offsets.
+  - add layout witnesses for maclist, station-table entry, STA IE data, STA stats data, key RSC data, and `wl_wsec_key` size.
+  - add static asserts tying state gates, resources, station-table bounds, names, and carriers to recovered offsets.
+  - update YAML/prose docs and save a local reference note.
+  - keep APSTA runtime disabled in this batch.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-149 batch request.
+- notes:
+  - This batch is still structural. It does not invoke the station/key methods at runtime and does not change primary STA key programming.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-STATION-KEY-BODY-CONTRACTS-075
+- symptom: station/key APSTA public body contracts are recovered but not compiled into local selector/payload/layout witnesses.
+- expected system behavior: local APSTA scaffold records exact selectors, payload sizes, allocation sizes, station-table offsets, IOVAR names, returns, and output offsets for `getSTATION_LIST`, `setCIPHER_KEY`, `getSTA_IE_LIST`, `getSTA_STATS`, and `getKEY_RSC`.
+- actual behavior: these contracts remained absent or prose-only.
+- exact divergence point: APSTA methods listed in A-APSTA-STATION-KEY-BODY-CONTRACTS-075.
+- evidence from runtime: no new runtime claim; this is static APSTA station/key body restoration.
+- evidence from decomp: APSTA disassembly from `/tmp/AppleBCMWLANCoreMac` at the exact addresses listed above.
+- exact semantic mismatch between reference and our code: reference uses fixed command selectors, payload sizes, station-table bounds, output offsets, return values, and no-null-guard bodies; local scaffold did not encode them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA station/key body layer, these are direct command-buffer contracts consumed by public SAP methods. The fix does not claim to resolve the current STA join blocker by itself.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants, state aliases, carriers, names, and static asserts only; it does not execute APSTA station/key runtime or alter primary STA behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_station_key_bodies_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - map APSTA station/key methods to primary STA key/station state.
+  - force AP-up state or command success.
+  - add fallback/retry/polling around APSTA station/key commands.
+  - add null guards not present in reference bodies.
+  - invent station table size or key carrier size without disassembly evidence.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-149.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed method disassemblies directly show selectors, offsets, allocation sizes, payload sizes, return values, and IOVAR names.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for station/key body scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, state aliases, names, and static asserts only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it records recovered APSTA command-buffer contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077
+- status: CONFIRMED_DEVIATION
+- symptom: APSTA event/station-table producer contracts are represented, but the adjacent power/offload/datapath tail remained partially restored and contained one incorrect documented datapath return.
+- first visible manifestation: APSTA tail audit after A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076.
+- expected system behavior:
+  - `configureMPDUSize(uint32_t)` sends `ampdu_mpdu` with 4-byte payload only when core-private `+0x3fc == 2` and `+0x30c <= 4`.
+  - low-power exit uses `lphs_mode` payload value `0`; beacon wait-period success uses `lphs_mode` payload value `1`; both payloads are 4 bytes.
+  - ARP offload success sends `arp_hostip_clear`, then host-IP clear success reads `state+0xac` and sends `arp_hostip` with 4-byte payload.
+  - `setBeaconDutyCycle` sends `rpsnoa` payload `0x10` with header `0x100100101`, mode word `2`, and enable word at `+0x0e`.
+  - `configureBeaconDutyCycleParams` sends `rpsnoa` payload `0x18` with header `0x300180101`, mode word `2`, dynamic byte `0x0a - dynamicPSParams[level].byte8`, and rotated qword at `+0x10`.
+  - `releaseSoftAPPowerAssertion()` clears `state+0x0c` and notifies event `0x8d` with payload value `0`, size `4`, flag `1`.
+  - `softApStatsAccumulatePowerStateDuration(...)` adds duration to `state+0x1d0 + power_state * 0x10` and updates timestamp `state+0x1a8`.
+  - `enable(uint32_t)` checks vtable `+0xd58`, calls superclass slot `+0x860` when running, and returns `0xe00002d5` when not running.
+  - `disable(uint32_t)` calls vtable `+0xda0` and superclass slot `+0x868`.
+  - `enableDatapath()` checks vtable `+0xcf0`; if interface is not enabled it returns `0xe00002bc`, not success.
+  - APSTA accessors return state fields `+0x210/+0x2a4/+0x2e8/+0x2f0/+0x2b8->+0x300/+0x320/+0x2d8/+0x2e0`.
+  - `setMacAddress(...)` sends `cur_etheraddr` only when interface id is not `-1` and AP-up state `state+0x26c` is zero.
+  - `configureSoftAPPeerStats(bool)` is feature-gated by `0x7a`, sends `softap_stats` payload size `0x0e`, and successful callback writes `state+0x328 = cookie & 1`.
+- actual behavior:
+  - local scaffold lacked compiled witnesses for MPDU/offload/RPSNOA/release/stats/interface-tail/MAC/peer-stats operands.
+  - YAML incorrectly stated that APSTA `enableDatapath()` returns success when the interface is not enabled.
+- divergence point:
+  - `AppleBCMWLANIO80211APSTAInterface::configureMPDUSize(...) @ 0xffffff80016925f6`
+  - `configureLowPowerModeExit() @ 0xffffff80016928e4`
+  - ARP/low-power callbacks `0xffffff8001692bee..0xffffff8001693195`
+  - `setBeaconDutyCycle(...) @ 0xffffff800169319a`
+  - `configureBeaconDutyCycleParams(...) @ 0xffffff80016934a0`
+  - `releaseSoftAPPowerAssertion() @ 0xffffff80016937c2`
+  - `softApStatsAccumulatePowerStateDuration(...) @ 0xffffff8001693892`
+  - `enable(...) @ 0xffffff8001693980`
+  - `disable(...) @ 0xffffff8001693aa0`
+  - `enableDatapath(...) @ 0xffffff8001693b82`
+  - `disableDatapath(...) @ 0xffffff8001693e80`
+  - accessors `0xffffff8001694064..0xffffff8001694174`
+  - `setMacAddress(...) @ 0xffffff8001694464`
+  - `configureSoftAPPeerStats(...) @ 0xffffff800169456a`
+- evidence:
+  - disasm: `configureMPDUSize` tests core-private `+0x3fc` and `+0x30c`, uses IOVAR `ampdu_mpdu`, and sends a 4-byte payload.
+  - disasm: low-power/ARP callbacks use `lphs_mode`, `arp_hostip_clear`, `arp_hostip`, payload size `4`, callback cookies `0`, and host IP source `state+0xac`.
+  - disasm: RPSNOA methods build fixed `0x10` and `0x18` payloads with the constants and offsets listed above.
+  - disasm: release power assertion writes `state+0x0c = 0` and notifies event `0x8d`.
+  - disasm: power stats writes duration buckets at `state+0x1d0 + state*0x10` and timestamp `state+0x1a8`.
+  - disasm: `enableDatapath` not-enabled branch jumps to the shared failure return `0xe00002bc`; previous YAML text saying success was wrong.
+  - docs: `docs/reference/AppleBCMWLAN_APSTA_power_offload_datapath_tail_2026_04_27.md`.
+- candidate causes:
+  - confirmed: APSTA tail constants/layouts were not compiled into the local scaffold.
+  - confirmed: the existing YAML had an incorrect APSTA `enableDatapath` not-enabled return.
+  - rejected: execute these APSTA IOVARs at runtime before the APSTA owner class and lifecycle are enabled.
+  - rejected: treat APSTA datapath not-enabled as success.
+- confirmed deviation: APSTA power/offload/datapath tail operands are recovered in reference but not represented locally; one local doc statement contradicted the disassembly.
+- root cause: confirmed for APSTA tail scaffold completeness only. No final primary STA association/data or AP runtime root cause is claimed.
+- fix:
+  - add constants, IOVAR names, state aliases, and layout witnesses for MPDU, low-power/ARP, RPSNOA, release assertion, power stats, enable/disable, datapath gate/accessors, MAC set, and SoftAP peer stats.
+  - split APSTA state fields for `state+0xac` ARP host IP and `state+0x328` SoftAP peer-stats enabled state.
+  - correct YAML `enableDatapath` not-enabled return to `0xe00002bc`.
+  - add reference/YAML/prose documentation.
+  - keep APSTA runtime disabled.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-151.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077
+- symptom: APSTA tail contracts after station-table producer were incomplete and one datapath not-enabled return was documented incorrectly.
+- expected system behavior: local APSTA scaffold records exact MPDU/offload/RPSNOA/release/stats/interface/datapath/MAC/peer-stats constants, payload layouts, state offsets, and return semantics.
+- actual behavior: these facts were absent or prose-only; `enableDatapath` not-enabled path was incorrectly described as success.
+- exact divergence point: APSTA functions listed in A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077.
+- evidence from runtime: no new runtime claim; this is static APSTA tail restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference uses fixed command names, payload sizes, state offsets, vtable gates, and return values; local scaffold did not encode them and had a wrong YAML return for one branch.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this APSTA owner-tail layer, the recovered disassembly directly defines the missing ABI/semantic contracts. The fix does not claim final STA/AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants/layout/static asserts/docs only; it does not execute IOVARs, force state, synthesize success, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmAPSTAInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_power_offload_datapath_tail_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/96_apsta_owner_layer_reconstruction_2026_04_26.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - call APSTA MPDU/low-power/ARP/RPSNOA/peer-stats IOVARs from primary STA runtime.
+  - treat APSTA `enableDatapath` not-enabled path as success.
+  - force AP-up, low-power, peer-stats, MAC address, or datapath state.
+  - add fallback/retry/poll or suppress callback errors.
+  - enable role-7 APSTA creation in this structural batch.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-151.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed APSTA disassembly directly shows offsets, IOVAR names, payload sizes, vtable offsets, return values, and state writes.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for APSTA tail scaffold completeness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, layout witnesses, state fields, YAML correction, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered APSTA contracts before runtime implementation.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-WCL-ACTION-FRAME-SEND-CONTRACTS-081
+- status: CONFIRMED_DEVIATION
+- symptom: WCL outbound action-frame sender preserved the visible oversized fail shape, but local V1 transport length and local cache capacity did not match Apple.
+- first visible manifestation: WCL action-frame static audit after A-APSTA-ACTION-FRAME-LPHS-CONTRACTS-080.
+- expected system behavior:
+  - `AppleBCMWLANCore::setWCL_ACTION_FRAME(...)` rejects `NULL` with `0xe00002bc`.
+  - the caller carrier uses category `+0x00`, channel `+0x04`, peer address `+0x08`, frame length `+0x0e`, and frame bytes `+0x10`.
+  - V2 is selected when core-private firmware generation `+0x30c > 0x14`.
+  - V1 `sendActionFrame(...)` accepts total action-frame bytes up to `0x707`, zeroes a `0x718` buffer, and sends fixed IOVAR CommandTxPayload length `0x724`.
+  - V2 `sendActionFrameV2(...)` rejects total bytes `>= 0x708`, allocates `total + 0x34`, and uses issue-command dispatch.
+- actual behavior:
+  - local V1 dispatch used `frameLen` as the request length instead of the fixed `0x724` V1 payload size.
+  - local last-action-frame cache was limited to `0x200` bytes while the recovered sender capacity is `0x708`.
+  - V2 threshold and capacity values were literals rather than a single recovered contract.
+- divergence point:
+  - `AppleBCMWLANCore::setWCL_ACTION_FRAME(...) @ 0xffffff8001636ab4`.
+  - `AppleBCMWLANNetAdapter::sendActionFrame(...) @ 0xffffff8001549050`.
+  - `AppleBCMWLANNetAdapter::sendActionFrameV2(...) @ 0xffffff8001549322`.
+- evidence:
+  - disasm: core path tests input null and returns `0xe00002bc`.
+  - disasm: core path reads firmware generation at core-private `+0x30c` and selects V2 when it is above `0x14`.
+  - disasm: V1 path checks total bytes against `0x707`, zeroes `0x718`, and uses CommandTxPayload length `0x724`.
+  - disasm: V2 path rejects total bytes `>= 0x708`, allocates `total + 0x34`, and sends the issue-command path.
+  - docs: `docs/reference/AppleBCMWLAN_WCL_action_frame_send_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local V1 commander dispatch length did not match the recovered Apple fixed payload length.
+  - confirmed: local cached action-frame capacity was narrower than the recovered sender capacity.
+  - rejected: synthesize action-frame send success without matching the transport contract.
+  - rejected: implement real Broadcom adapter injection in this structural batch.
+- confirmed deviation: reference V1 sends fixed `0x724` payload and both send paths use `0x708` capacity / `0x707` maximum; local V1 length/cache capacity did not encode that contract.
+- root cause: confirmed for WCL action-frame sender contract correctness only. No final primary STA association/data or AP runtime root cause is claimed.
+- fix:
+  - add named action-frame capacity, maximum payload, V1 fixed payload, and V2 threshold constants.
+  - route local V1 dispatch with request size `0x724`.
+  - expand local cached action-frame buffer to `0x708`.
+  - add reference/YAML/prose documentation.
+- verification:
+  - header syntax.
+  - YAML parse for APSTA and new WCL action-frame YAML.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-155.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-WCL-ACTION-FRAME-SEND-CONTRACTS-081
+- symptom: WCL outbound action-frame sender V1 request length and local cache capacity did not match Apple.
+- expected system behavior: local Tahoe commander records V1 fixed payload size `0x724`, V2 dynamic request length, capacity `0x708`, maximum accepted payload `0x707`, and threshold `0x15`.
+- actual behavior: local V1 request length was only `frameLen`, local cache was `0x200`, and threshold/capacity literals were not tied to the recovered contract.
+- exact divergence point: WCL action-frame functions listed in A-WCL-ACTION-FRAME-SEND-CONTRACTS-081.
+- evidence from runtime: no new runtime claim; this is static WCL sender contract restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference V1 dispatch sends fixed `0x724` bytes and both paths share `0x708` capacity; local V1 dispatch and cache capacity did not.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this sender layer, the recovered disassembly directly defines the transport payload contract. The fix does not claim final association or AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants and local dispatch/cache sizes only; it does not synthesize frames, force success, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/TahoePayloadBuilders.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `AirportItlwm/TahoeCommanderV2.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_WCL_action_frame_send_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/97_wcl_action_frame_send_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - synthesize action-frame success without matching V1/V2 transport shape.
+  - force V2 for every path as an undocumented workaround.
+  - keep truncating local action-frame cache to `0x200`.
+  - implement Broadcom adapter injection in this batch without full backend evidence.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-155.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed WCL/core/net-adapter disassembly directly shows threshold, offsets, max length, fixed V1 payload size, and V2 allocation path.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for WCL action-frame sender contract correctness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, request-size routing, cache capacity, YAML, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered WCL sender contracts before deeper backend injection.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-WCL-ACTION-FRAME-PROGRESS-CONTRACTS-082
+- status: CONFIRMED_DEVIATION
+- symptom: WCL action-frame sender state existed without the adjacent Apple progress/overdue contract that gates scans during in-flight action-frame completion.
+- first visible manifestation: WCL action-frame static audit after A-WCL-ACTION-FRAME-SEND-CONTRACTS-081.
+- expected system behavior:
+  - `AppleBCMWLANCore::setActionFrameProgress(bool)` stores the progress byte at core-private `+0x4478`.
+  - `AppleBCMWLANCore::getActionFrameProgress()` calls `checkActionFrameCompleteOverdue()` and then returns bit 0 from `+0x4478`.
+  - `checkActionFrameCompleteOverdue()` compares unsigned elapsed milliseconds against `0x12d`, using the start timestamp at `+0x4480`.
+  - on overdue, Apple clears `+0x4478`, logs line `0x3b1d`, and emits status `0xe3ff852b` through line `0x3b1e`.
+  - `AppleBCMWLANScanAdapter::startScan(...)` calls the overdue check and rejects scan with `0xe00002d5` / line `0x00a5` if progress remains set.
+- actual behavior:
+  - local Tahoe action-frame owner recorded the last action-frame payload but had no progress flag witness.
+  - local code had no progress start-ms witness, overdue threshold, overdue status, scan reject status, or get-before-check helper semantics.
+- divergence point:
+  - `AppleBCMWLANCore::checkActionFrameCompleteOverdue() @ 0xffffff80015ba4d2`.
+  - `AppleBCMWLANCore::setActionFrameProgress(bool) @ 0xffffff80016344aa`.
+  - `AppleBCMWLANCore::getActionFrameProgress() @ 0xffffff80016344be`.
+  - `AppleBCMWLANScanAdapter::startScan(...) @ 0xffffff80016ccc7a`.
+- evidence:
+  - disasm: `setActionFrameProgress` stores `%sil` to core-private `+0x4478`.
+  - disasm: `getActionFrameProgress` calls `checkActionFrameCompleteOverdue` before reading `+0x4478` bit 0.
+  - disasm: `checkActionFrameCompleteOverdue` reads `+0x4480`, compares against `0x12d`, clears `+0x4478`, logs line `0x3b1d`, and emits `0xe3ff852b` through line `0x3b1e`.
+  - disasm: `setupDriver` clears `+0x4478`.
+  - disasm: `startScan` calls the overdue check, tests `+0x4478`, and rejects with `0xe00002d5` / log line `0x00a5`.
+  - docs: `docs/reference/AppleBCMWLAN_WCL_action_frame_progress_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local owner state did not encode the progress/overdue contract adjacent to the recovered action-frame sender.
+  - confirmed: local docs/YAML lacked the scan rejection edge for action-frame progress.
+  - insufficient data: exact timestamp producer and completion-clear lifecycle outside these recovered functions.
+  - rejected: enable local scan rejection using a guessed timestamp.
+- confirmed deviation: reference has progress flag, start timestamp, overdue check, and scan rejection contracts; local owner registry had none of these witnesses.
+- root cause: confirmed for WCL action-frame progress contract incompleteness only. No final association/data/AP runtime root cause is claimed.
+- fix:
+  - add named constants for progress flag/start-ms offsets, overdue threshold, overdue status/log lines, and scan reject status/log line.
+  - add `progress` and `progressStartMs` witnesses to `TahoeOwnerRegistry::ActionFrameOwner`.
+  - add pure helper methods for `setActionFrameProgress`, `checkActionFrameCompleteOverdue`, and `getActionFrameProgress`.
+  - add reference/YAML/prose documentation.
+- verification:
+  - header syntax.
+  - YAML parse for APSTA and WCL YAML.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-156.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-WCL-ACTION-FRAME-PROGRESS-CONTRACTS-082
+- symptom: WCL action-frame progress/overdue state and scan reject contract were absent from the local recovered Tahoe owner layer.
+- expected system behavior: local Tahoe owner layer records the Apple progress byte, start timestamp, overdue threshold, overdue clear, status/log constants, and get-before-check semantics.
+- actual behavior: local code recorded action-frame payload send shape but not the adjacent progress/overdue state.
+- exact divergence point: WCL action-frame progress functions listed in A-WCL-ACTION-FRAME-PROGRESS-CONTRACTS-082.
+- evidence from runtime: no new runtime claim; this is static WCL progress contract restoration.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference stores progress at `+0x4478`, reads start-ms at `+0x4480`, clears progress after unsigned elapsed `>= 0x12d`, and scan rejects with `0xe00002d5` while progress remains set; local owner registry had no equivalent state or helper semantics.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this progress layer, the recovered disassembly directly defines the state contract and scan gate. The fix does not claim final association/data or AP runtime root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants and pure owner helper semantics only; it does not synthesize timestamps, force completion, enable scan gating, or add fallback/retry/poll behavior.
+- files/functions to modify:
+  - `AirportItlwm/TahoePayloadBuilders.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_WCL_action_frame_progress_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/98_wcl_action_frame_progress_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - enable scan rejection from local scan path before recovering timestamp producer and completion-clear lifecycle.
+  - synthesize a progress timestamp.
+  - force action-frame completion or clear progress on local timeout.
+  - suppress scans or add retry/poll logic around scan requests.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-156.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: the listed WCL/core/scan-adapter disassembly directly shows progress offset, start-ms offset, overdue threshold, clear, status, and scan reject status.
+- Есть ли прямое подтверждение по runtime-данным? No runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for WCL action-frame progress contract correctness; no final STA/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes: exact constants, owner-state witnesses, pure helper semantics, YAML, and docs only.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores recovered WCL progress contracts before enabling runtime scan gating.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-TAHOE-CONTROLLER-QUEUE-MULTICAST-CAPACITY-083
+- status: CONFIRMED_DEVIATION
+- symptom: Tahoe controller queue/depth/capacity and promiscuous/multicast methods did not match recovered AppleBCMWLANCore and IO80211Family contracts.
+- first visible manifestation: static audit after WCL action-frame progress recovery and the user-requested multicast/datapath/depth/capacity layer review.
+- expected system behavior:
+  - `requestQueueSizeAndTimeout` returns `0xe00002c7` unless both `wlan.coalesce.qsize` and `wlan.coalesce.timeout` low 16-bit values are nonzero, then writes both outputs and returns success.
+  - `getDataQueueDepth(OSObject*)` returns the AppleBCMWLANCore ring depth at core-private `+0x1154`, initialized to `0x200`.
+  - `getActionFramePoolCapacity()` returns `0x100`.
+  - `setPromiscuousMode(bool)` stores the requested bool at core-private `+0x4778`.
+  - multicast mode/list share reject gate `+0x2891` bit `0x80`, max list count `0x20`, count offset `+0x234`, list offset `+0x238`, 6-byte entries, payload fill `0xaa`, payload capacity `0xca`, and IOVAR `mcast_list`.
+- actual behavior:
+  - local `requestQueueSizeAndTimeout` returned success unconditionally and wrote no outputs.
+  - local Tahoe controller inherited the IO80211 default data queue depth path instead of exposing AppleBCMWLANCore `0x200` ring depth.
+  - local action-frame pool capacity was not explicit.
+  - local promiscuous/multicast requested state and multicast-list Apple cache/limit had no Tahoe owner witnesses.
+- divergence point:
+  - `AppleBCMWLANCore::requestQueueSizeAndTimeout(...) @ 0xffffff8001583018`.
+  - `AppleBCMWLANCore::fetchAndUpdateRingParameters() @ 0xffffff800159418a`.
+  - `AppleBCMWLANCore::getDataQueueDepth(OSObject*) @ 0xffffff8001634388`.
+  - `AppleBCMWLANCore::setPromiscuousMode(bool) @ 0xffffff80015e07cc`.
+  - `AppleBCMWLANCore::setMulticastMode(bool) @ 0xffffff80015e07ec`.
+  - `AppleBCMWLANCore::setMulticastList(ether_addr const*, unsigned int) @ 0xffffff80015e0930`.
+  - `IO80211Controller::getActionFramePoolCapacity() @ 0xffffff800221a26e`.
+  - `IO80211SkywalkInterface::getDataQueueDepth() @ 0xffffff8002276f66`.
+- evidence:
+  - disasm: `requestQueueSizeAndTimeout` reads the two coalesce DT parameters and returns `0xe00002c7` unless both are nonzero.
+  - disasm: success path writes `*queue` and `*timeout` before returning `0`.
+  - disasm: `fetchAndUpdateRingParameters` writes default `0x200` to core-private `+0x1154`.
+  - disasm: `getDataQueueDepth` returns `movzwl 0x1154(%rax), %eax`.
+  - disasm: IO80211 base `getDataQueueDepth` returns `0x400`.
+  - disasm: IO80211SkywalkInterface dispatches `getDataQueueDepth` through the controller vtable.
+  - disasm: IO80211 base `getActionFramePoolCapacity` returns `0x100`.
+  - disasm: `setPromiscuousMode` stores `%sil` at core-private `+0x4778`.
+  - disasm: multicast mode/list use reject gate `+0x2891` bit `0x80`, status `0xe0823804`, and IOVAR `mcast_list`.
+  - disasm: multicast list rejects count `> 0x20` with `0xe00002bc`, stores count/list at `+0x234/+0x238`, and builds a `4 + count * 6` payload in a `0xca` byte buffer filled with `0xaa`.
+  - docs: `docs/reference/AppleBCMWLAN_controller_queue_multicast_capacity_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local queue-size method reported success without satisfying the output contract.
+  - confirmed: local data queue depth could expose the IO80211 base default rather than AppleBCMWLANCore ring depth.
+  - confirmed: local owner registry lacked controller promiscuous/multicast state witnesses.
+  - insufficient data: exact Broadcom multicast IOVAR backend and APSTA virtual-interface multicast lifecycle.
+  - rejected: add guessed queue sizes when DT/local properties are absent.
+  - rejected: issue Broadcom `mcast_list` firmware IOVAR without recovered local commander owner path.
+- confirmed deviation: reference queue/depth/capacity and multicast/promiscuous contracts above were absent or mismatched locally.
+- root cause: confirmed for controller queue/depth/capacity and multicast/promiscuous contract completeness only. Final primary STA association/data and AP runtime success are not claimed.
+- fix:
+  - add Tahoe controller contract constants and static asserts.
+  - add controller owner state for promiscuous mode, multicast mode/list, data depth, and coalesce outputs.
+  - make `requestQueueSizeAndTimeout` return unsupported unless both local coalesce properties are nonzero, then write both outputs and cache them.
+  - add `getDataQueueDepth` override returning owner default `0x200`.
+  - add explicit `getActionFramePoolCapacity` override returning `0x100`.
+  - cache promiscuous/multicast requests and reject multicast-list counts above `0x20`.
+  - add reference/YAML/prose documentation.
+- verification:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-157.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-TAHOE-CONTROLLER-QUEUE-MULTICAST-CAPACITY-083
+- symptom: Tahoe controller queue/depth/capacity and promiscuous/multicast contracts diverged from Apple.
+- expected system behavior: local controller exposes Apple queue-size return semantics, AppleBCMWLANCore data depth default, action-frame capacity, promiscuous state, and multicast limit/cache contracts.
+- actual behavior: local queue-size method returned success without writes, local data depth/capacity was not explicit, and multicast/promiscuous owner witnesses were absent.
+- exact divergence point: controller functions listed in A-TAHOE-CONTROLLER-QUEUE-MULTICAST-CAPACITY-083.
+- evidence from runtime: no new runtime claim; this is static controller contract restoration adjacent to the active association/data blocker.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` and IO80211Family disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference queue-size returns unsupported unless both outputs can be written; reference data-depth returns Apple ring depth `+0x1154` default `0x200`; reference stores promiscuous/multicast/list owner state and enforces max count `0x20`; local code did not.
+- fix justification path: REFERENCE_ALIGNMENT_FIX for constants, statuses, offsets, limits, return values, and owner-state witnesses; SYSTEM_CONTRACT_FIX for reading local coalesce values through IOService properties because the closed Apple `getDTParameter32` helper is not available locally.
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: `requestQueueSizeAndTimeout` output pointers and return value.
+  - expected contract at each touchpoint: write both 16-bit outputs only when both values are nonzero; otherwise return `0xe00002c7`.
+  - why no relevant touchpoints are missing: the caller-visible contract is limited to two output pointers and one return code; no firmware state or IO80211 event is emitted by this method.
+  - why proposed path adds no extra system-visible side effects: it only reads local IOService properties and caches values in private owner state.
+- why this is root cause and not just correlation: for this layer, the recovered disassembly directly defines framework-facing method contracts. The fix does not claim final association/data root cause.
+- why proposed fix is 1:1 with reference architecture and semantics: exact constants, return statuses, queue-depth default, capacity, multicast limit, and owner-state witnesses are restored; unrecovered Broadcom multicast IOVAR dispatch is intentionally not synthesized.
+- files/functions to modify:
+  - `AirportItlwm/TahoeControllerContracts.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_controller_queue_multicast_capacity_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/99_controller_queue_multicast_capacity_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - keep returning queue-size success without writing outputs.
+  - synthesize hardcoded coalesce values when no local property is present.
+  - inherit IO80211 base `0x400` queue depth after AppleBCMWLANCore override was confirmed.
+  - issue Broadcom `mcast_list` IOVAR or virtual IOVAR without recovered local owner path.
+  - add retry, poll, fallback, forced state, or suppression.
+- verification plan:
+  - header syntax.
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-157.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: exact AppleBCMWLANCore and IO80211Family function addresses and constants are listed above.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for controller method contract correctness; no final association/data/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes for constants, offsets, statuses, capacity, depth default, and caller-visible queue semantics. Broadcom multicast IOVAR dispatch is explicitly not claimed.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores confirmed framework-facing contracts adjacent to the active blocker.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-TAHOE-HIDDEN-INTERFACE-FLOW-TIMESTAMP-084
+- status: CONFIRMED_DEVIATION
+- symptom: hidden `+0x1510` flow/timestamp/log-pipe/virtual-interface surface was only partially represented locally and one flow release path had a non-reference debug-log side effect.
+- first visible manifestation: hidden-interface static audit after controller queue/multicast/capacity recovery.
+- expected system behavior:
+  - hidden interface-side owner offset `+0x1510` records flow queue delegation slots `+0xa68/+0xa70/+0xa78`.
+  - unsupported flow IDs fall back to base request/release slots `+0xd60/+0xd68`.
+  - hidden flow request operands come from metadata pointer, `metadata+0x06`, `metadata+0x0c`, and `metadata+0x10`.
+  - packet timestamp enable/disable use base slots `+0xd90/+0xd98`, command-gate actions, and gated hidden slots `+0xaa8/+0xab0`.
+  - log pipes come from hidden object `+0x88` at offsets `+0x218/+0x220/+0x230`.
+  - virtual-interface lifecycle delegates through base slots `+0xe10/+0xd40/+0xd48`, null status `0xe00002bc`, proximity owner `+0x2c28`, role `6`, wake flag `0x10000`.
+- actual behavior:
+  - local code had no compiled constants for these hidden-interface slots and offsets.
+  - local `flowIdSupported` was a literal false instead of a recoverable owner-state witness.
+  - local `releaseFlowQueue` logged every call up to a local debug limit, which Apple does not do on the no-op fallback path.
+- divergence point:
+  - `AppleBCMWLANCore::flowIdSupported() @ 0xffffff80015b7a98`.
+  - `AppleBCMWLANCore::releaseFlowQueue(IO80211FlowQueue*) @ 0xffffff80015b7ab4`.
+  - `AppleBCMWLANCore::requestFlowQueue(FlowIdMetadata const*) @ 0xffffff80015b7b10`.
+  - `AppleBCMWLANCore::enablePacketTimestamping() @ 0xffffff800162da9c`.
+  - `AppleBCMWLANCore::enablePacketTimestampingGated() @ 0xffffff800162db4e`.
+  - `AppleBCMWLANCore::disablePacketTimestamping() @ 0xffffff800162db6a`.
+  - `AppleBCMWLANCore::disablePacketTimestampingGated() @ 0xffffff800162dc1c`.
+  - `AppleBCMWLANCore::getLogPipes(CCPipe**, CCPipe**, CCPipe**) @ 0xffffff8001634230`.
+  - `AppleBCMWLANCore::createVirtualInterface(...) @ 0xffffff80015fc952`.
+  - `AppleBCMWLANCore::enableVirtualInterface(...) @ 0xffffff80015fc964`.
+  - `AppleBCMWLANCore::disableVirtualInterface(...) @ 0xffffff80015fcb28`.
+- evidence:
+  - disasm: `flowIdSupported` loads core-private `+0x1510` and tail-calls hidden slot `+0xa68`.
+  - disasm: `requestFlowQueue` tests hidden slot `+0xa68`, uses base fallback `+0xd60`, and calls hidden slot `+0xa70` with recovered metadata operands.
+  - disasm: `releaseFlowQueue` uses hidden slot `+0xa78` when supported, otherwise base fallback `+0xd68`.
+  - disasm: timestamp enable/disable call base slots `+0xd90/+0xd98` and gated hidden slots `+0xaa8/+0xab0`.
+  - disasm: `getLogPipes` reads hidden object `+0x88`, then `+0x218/+0x220/+0x230`.
+  - disasm: virtual-interface lifecycle delegates through base slots `+0xe10/+0xd40/+0xd48`; null path returns `0xe00002bc`; role `6` path involves `+0x2c28` and wake flag `0x10000`.
+  - docs: `docs/reference/AppleBCMWLAN_hidden_interface_flow_timestamp_2026_04_27.md`.
+- candidate causes:
+  - confirmed: hidden-interface constants and owner witnesses were absent.
+  - confirmed: local `releaseFlowQueue` added a debug-log side effect not present in the recovered fallback path.
+  - insufficient data: exact local flow-queue backend, hidden timestamp backend, and APSTA/proximity virtual-interface runtime owner.
+  - rejected: synthesize flow queues while `flowIdSupported` local owner is false.
+  - rejected: enable hidden timestamping without a recovered timestamp owner backend.
+- confirmed deviation: local structural layer did not encode hidden `+0x1510` flow/timestamp/log/virtual-interface slots and had a local-only debug side effect.
+- root cause: confirmed for hidden-interface structural completeness only. No final association/data/AP runtime root cause is claimed.
+- fix:
+  - add `TahoeHiddenInterfaceContracts.hpp`.
+  - add hidden-interface owner witnesses to `TahoeOwnerRegistry`.
+  - make `flowIdSupported` return owner state, default false.
+  - remove debug logging from `releaseFlowQueue` and keep only a private owner witness.
+  - add reference/YAML/prose documentation.
+- verification:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-158.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-TAHOE-HIDDEN-INTERFACE-FLOW-TIMESTAMP-084
+- symptom: hidden `+0x1510` flow/timestamp/log-pipe/virtual-interface surface was not locally recoverable and release-flow logging introduced a non-reference side effect.
+- expected system behavior: local layer records exact hidden-interface slots/offsets/statuses and does not add debug logging to the flow release fallback path.
+- actual behavior: local code had no constants/owner witnesses for these slots and logged in `releaseFlowQueue`.
+- exact divergence point: hidden-interface functions listed in A-TAHOE-HIDDEN-INTERFACE-FLOW-TIMESTAMP-084.
+- evidence from runtime: no new runtime claim; this is static hidden-interface structural recovery.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference delegates through hidden `+0x1510` slots or base fallback slots; local code had no structural owner witnesses and added a debug-log side effect on release.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this layer, the recovered disassembly directly defines slots, operands, statuses, and fallback behavior. The fix does not claim final runtime association/data/AP success.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact hidden-interface constants and owner witnesses, keeps flow IDs disabled by default, preserves base request fallback by not overriding `requestFlowQueue`, and removes a local-only log side effect.
+- files/functions to modify:
+  - `AirportItlwm/TahoeHiddenInterfaceContracts.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_hidden_interface_flow_timestamp_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/100_hidden_interface_flow_timestamp_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - synthesize flow queues with no recovered local flow owner.
+  - override `requestFlowQueue` while flow IDs are false instead of preserving base fallback.
+  - enable packet timestamping hidden slots with no recovered timestamp owner backend.
+  - enable APSTA/proximity virtual-interface runtime from this structural batch.
+  - add retry, poll, fallback, forced state, or synthetic objects.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-158.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: exact AppleBCMWLANCore addresses and vtable offsets are listed above.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for hidden-interface structural contract correctness; no final association/data/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes for structural constants, owner witnesses, default flow-disabled state, and removal of local-only release logging.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No: it restores confirmed hidden-interface contracts without pretending to implement unrecovered backends.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes: exact function addresses and reference note are listed above.
+
+## ANOMALY
+
+- id: A-TAHOE-QOS-DYNSAR-OFFSETS-085
+- status: CONFIRMED_DEVIATION
+- symptom: Q11-C1 QoS / DynSAR / congestion-control helper offsets were not locally represented as recovered owner state.
+- first visible manifestation: post-CR-158 static audit of nearby AppleBCMWLANCore helper methods.
+- expected system behavior:
+  - DynSAR fail-safe helper reads start ticks at core-private `+0x74e0` and returns `((now - start) >> 0x0a) < 0x9502f9`.
+  - congestion-control helpers test core-private `+0x7584` bit `0`, returning `0` when set and `0xe00002c7` when clear.
+  - AWDL AMPDU force flags are stored at `+0x3768/+0x3764`.
+  - hardware feature flags are read from `+0x458c`.
+  - split-TX status reads bit 0 from `+0x00dc`.
+  - TX address resolution counters are read from `+0x2aa4/+0x2aa8`.
+- actual behavior:
+  - local code had no compiled constants or owner witnesses for these recovered offsets and helper statuses.
+- divergence point:
+  - `AppleBCMWLANCore::wasDynSARInFailSafeMode() @ 0xffffff8001632052`.
+  - `AppleBCMWLANCore::configureCongestionControlMechanisms(...) @ 0xffffff8001632144`.
+  - `AppleBCMWLANCore::configureAggregationCongestionControlMechanism(...) @ 0xffffff8001632162`.
+  - `AppleBCMWLANCore::forceAwdlAmpdu() @ 0xffffff800163428c`.
+  - `AppleBCMWLANCore::setForceAwdlAmpdu(...) @ 0xffffff80016342a0`.
+  - `AppleBCMWLANCore::forceDisableAwdlAmpdu() @ 0xffffff80016342b4`.
+  - `AppleBCMWLANCore::setForceDisableAwdlAmpdu(...) @ 0xffffff80016342c8`.
+  - `AppleBCMWLANCore::getHwFeatureFlags() const @ 0xffffff80016342dc`.
+  - `AppleBCMWLANCore::isSplitTxStatusEnabled() @ 0xffffff800163434a`.
+  - `AppleBCMWLANCore::getTxAddrResolveReqV4() @ 0xffffff8001634360`.
+  - `AppleBCMWLANCore::getTxAddrResolveReqV6() @ 0xffffff8001634374`.
+- evidence:
+  - disasm: DynSAR helper reads `+0x74e0`, shifts elapsed by `0x0a`, compares against `0x9502f9`, and logs line `0xdea9`.
+  - disasm: congestion helpers test `+0x7584` bit 0 and return success or `0xe00002c7`.
+  - disasm: AWDL AMPDU accessors read/write `+0x3768/+0x3764`.
+  - disasm: feature/split/address helpers read `+0x458c`, `+0x00dc`, `+0x2aa4`, and `+0x2aa8`.
+  - docs: `docs/reference/AppleBCMWLAN_qos_dynsar_offsets_2026_04_27.md`.
+- candidate causes:
+  - confirmed: local owner registry lacked the Q11-C1 helper state container.
+  - confirmed: local docs/YAML lacked these recovered offsets.
+  - rejected: enable QoS IOVARs without full backend recovery.
+  - rejected: force DynSAR/congestion/AMPDU/split-TX/address-resolution state.
+- confirmed deviation: recovered Q11-C1 offsets/statuses were absent from local compiled witnesses.
+- root cause: confirmed for QoS/DynSAR structural completeness only. No final association/data/AP runtime root cause is claimed.
+- fix:
+  - add `TahoeQosDynsarContracts.hpp`.
+  - add `QosDynsarOwner` witnesses to `TahoeOwnerRegistry`.
+  - add pure helper semantics for DynSAR fail-safe and congestion feature gate.
+  - add reference/YAML/prose documentation.
+- verification:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-159.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-TAHOE-QOS-DYNSAR-OFFSETS-085
+- symptom: Q11-C1 QoS/DynSAR helper offsets and statuses were not locally recoverable.
+- expected system behavior: local owner layer records exact Apple offsets, bit masks, threshold, and unsupported status for the recovered helpers.
+- actual behavior: local code had no constants or owner witnesses for these helpers.
+- exact divergence point: QoS/DynSAR helper functions listed in A-TAHOE-QOS-DYNSAR-OFFSETS-085.
+- evidence from runtime: no new runtime claim; this is static owner-layer recovery.
+- evidence from decomp: Tahoe `AppleBCMWLANCoreMac` disassembly listed above and summarized in the new reference note.
+- exact semantic mismatch between reference and our code: reference has concrete core-private offsets and status semantics; local code did not encode them.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: for this layer, the recovered disassembly directly defines offsets/statuses. The fix does not claim final runtime behavior.
+- why proposed fix is 1:1 with reference architecture and semantics: it records exact constants and pure owner witnesses only; it does not synthesize policy state or issue QoS IOVARs.
+- files/functions to modify:
+  - `AirportItlwm/TahoeQosDynsarContracts.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_qos_dynsar_offsets_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/101_qos_dynsar_offsets_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+  - `docs/tahoe_discrepancy_inventory.md`
+  - `docs/tahoe_signal_chain_audit.md`
+- forbidden alternative fixes considered and rejected:
+  - call QoS IOVARs without backend recovery.
+  - force DynSAR fail-safe state.
+  - force congestion-control support.
+  - force AWDL AMPDU, split-TX, or TX address-resolution counters.
+  - add retry, poll, fallback, forced state, or synthetic policy.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-159.
+
+## SELF-CHECK
+
+- Есть ли у меня прямое подтверждение по декомпилу? Yes: exact AppleBCMWLANCore addresses and offsets are listed above.
+- Есть ли прямое подтверждение по runtime-данным? No new runtime claim is made.
+- Доказал ли я причинность, а не просто корреляцию? Yes for Q11-C1 owner-layer completeness; no final association/data/AP runtime claim is made.
+- Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Yes for constants, helper semantics, statuses, and owner witnesses.
+- Не добавляю ли я эвристику, fallback, workaround, suppression, forced synchronization, guessed state correction? No.
+- Не закрываю ли я симптом вместо причины? No.
+- Могу ли я показать конкретные ссылки на reference decomp, наш код, точку расхождения, тест / лог / trace? Yes.
+
+## ANOMALY
+
+- id: A-ASSOC-RSN-CARRIER-OWNER-160
+- status: FIX_IMPLEMENTED
+- symptom: primary STA join reaches WCL join/RX-EAPOL boundary, but RSN/key/data completion remains absent; the hidden association carrier and local RSN IE compatibility handoff still had unrecovered owner details.
+- first visible manifestation: current post-CR-114/CR-159 static audit of the active WCL association layer.
+- expected system behavior:
+  - hidden association carriers use selectors `0x45/0x46` and exact assoc-candidates payload length `0x3ad8`.
+  - WCL association carrier fields are parsed from exact offsets: auth `+0x10/+0x14/+0x18`, SSID `+0x20/+0x1c`, RSN IE `+0xd6/+0xd4`, Instant Hotspot `+0x1e0/+0x1e1`, PMF `+0x217`, BSS info `+0x214`, and candidate list `+0x218/+0x220/+0x226/+0x22c`.
+  - JoinAdapter RSN programming uses pointer+length semantics.
+  - Direct `AppleBCMWLANCore::setRSN_IE(...)` returns success and does not copy a fixed local stack buffer.
+- actual behavior:
+  - local active WCL association code still carried several hidden-assoc constants as local magic offsets.
+  - local `setRSN_IE(...)` copied `APPLE80211_MAX_RSN_IE_LEN` bytes from `apple80211_rsn_ie_data::ie`, even when the caller populated only `len` bytes.
+- divergence point:
+  - `AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS(...)`
+  - `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...)`
+  - `AirportItlwmSkywalkInterface::setRSN_IE(...)`
+  - `AirportItlwm::setRSN_IE(...)`
+- evidence:
+  - decomp: `AppleBCMWLANCore::setWCL_ASSOCIATE(...) @ 0xffffff80015fbacc` reads auth/SSID/RSN/candidate fields and delegates the carrier to JoinAdapter.
+  - decomp: `AppleBCMWLANJoinAdapter::performJoin(...) @ 0xffffff8001576df8` consumes RSN IE pointer `+0xd6` and length `+0xd4`, candidate count `+0x218`, and first candidate fields `+0x220/+0x226/+0x22c`.
+  - decomp: `AppleBCMWLANJoinAdapter::setAssocRSNIE(...) @ 0xffffff80015795b8` builds the command payload from pointer+length.
+  - decomp: `AppleBCMWLANCore::setRSN_IE(...) @ 0xffffff800160433e` returns success immediately.
+  - runtime boundary: previous evidence shows WCL join and RX EAPOL progress without final EAPOL TX/key/RSN completion; no final root-cause claim is made here.
+- candidate causes:
+  - confirmed: missing compiled association carrier constants/owner witness.
+  - confirmed: local fixed-size RSN override copy is not equivalent to reference pointer+length semantics.
+  - rejected: force EAPOL TX, synthesize keys, force RSN done, rewrite AKM/auth bits, or add retries/replays/delays.
+- confirmed deviation: active local carrier/RSN handoff did not fully encode the recovered Apple hidden-assoc owner contract.
+- root cause: confirmed for hidden association / RSN carrier layer completeness only. No final RSN/data runtime root cause is claimed.
+- fix:
+  - add `TahoeAssociationContracts.hpp`.
+  - add `AssociationOwner` witnesses to `TahoeOwnerRegistry`.
+  - replace hidden-assoc selectors, payload length, and WCL carrier offsets with recovered constants.
+  - retain selected-BSSID semantics from candidate count `+0x218` and first BSSID `+0x220`.
+  - zero local RSN override and copy only bounded caller-provided IE length in both Skywalk and legacy setters.
+- verification:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-160.
+
+## ANOMALY
+
+- id: A-RSN-SUPPLICANT-VIRTUAL-OWNER-161-REJECTED
+- status: REJECTED
+- symptom: proposed CR-161 attempted to restore RSN supplicant ownership by
+  adding `AirportItlwmV2::useAppleRSNSupplicant(IO80211VirtualInterface *)`.
+- first visible manifestation: Tahoe build failed with
+  `AirportItlwmV2.hpp:296: 'useAppleRSNSupplicant' marked 'override' but does
+  not override any member functions`.
+- expected system behavior: Tahoe code must only override virtual methods
+  actually present in `IO80211ControllerV3`; remaining RSN/EAPOL work must be
+  localized at a real IO80211Infra/Skywalk/RSN producer or consumer boundary.
+- actual behavior: `IO80211ControllerV3` has no
+  `useAppleRSNSupplicant(IO80211VirtualInterface *)` slot, while the recovered
+  Apple method is `AppleBCMWLANCore::useAppleRSNSupplicant()` with no interface
+  argument and a `featureFlagIsBitSet(0)` body.
+- divergence point: the CR-161 candidate confused the older V2 controller seam
+  with the Tahoe V3 controller ABI.
+- evidence:
+  - build: full `xcodebuild` log showed the non-overriding method error.
+  - decomp: `/tmp/AppleBCMWLANCoreMac` exports
+    `AppleBCMWLANCore::useAppleRSNSupplicant()` at `0xffffff80015905f4`.
+  - source: `include/Airport/IO80211ControllerV3.h` enumerates Tahoe controller
+    slots `[396]-[469]` without that method.
+- rejected causes:
+  - missing Tahoe V3 virtual supplicant overload: rejected.
+  - leaving the method without `override`: rejected as dead local code with no
+    proven system-facing call path.
+- confirmed deviation: none for this proposed layer.
+- root cause: rejected as a root-cause candidate for the current no-EAPOL-TX
+  symptom.
+- fix: remove the invalid CR-161 code/docs/YAML from the active batch and
+  continue with the real EAPOL/RSN/key boundary.
+- verification:
+  - no `tahoeOwnerRegistry.supplicant` or CR-161 YAML/reference remains in the
+    active tree.
+  - Tahoe build must return to the CR-160-derived baseline.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-ASSOC-RSN-CARRIER-OWNER-160
+- symptom: association reaches WCL join/RX-EAPOL boundary but RSN/key/data completion remains absent; hidden-assoc carrier and RSN IE handoff still had unrecovered owner details.
+- expected system behavior: local owner layer records exact hidden-assoc selectors, payload size, carrier offsets, candidate list layout, and pointer+length RSN IE semantics.
+- actual behavior: local code used hardcoded active offsets and copied a fixed RSN IE buffer length from partially populated stack carriers.
+- exact divergence point: WCL association bridge/parser and local RSN IE override setters listed above.
+- evidence from runtime: existing CR-113/CR-114 boundary proves this is the active post-join layer; no final runtime root cause is claimed.
+- evidence from decomp: AppleBCMWLANCore/JoinAdapter addresses and offsets listed in A-ASSOC-RSN-CARRIER-OWNER-160.
+- exact semantic mismatch between reference and our code: reference hands RSN IE as explicit pointer+length through JoinAdapter, while local compatibility storage copied the entire 257-byte backing array regardless of caller length.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: hidden selector gate, slot-470 hidden-assoc bridge, WCL association carrier parser, `setAUTH_TYPE(...)`, `setRSN_IE(...)`, net80211 RSN override, association request IE generation.
+  - expected contract at each touchpoint: only exact `0x3ad8` hidden carrier routes to WCL associate; carrier fields are read from recovered offsets; selected BSSID comes from the candidate list; RSN override contains only the caller-provided IE bytes and a zeroed tail.
+  - why no relevant touchpoints are missing: scope ends at association request RSN IE handoff before EAPOL/key/DHCP; those downstream producers are explicitly not modified.
+  - why proposed path adds no extra system-visible side effects: no callback, retry, replay, delay, forced key, forced RSN state, forced link, or AKM rewrite is added.
+- why this is root cause and not just correlation: for this layer, the decomp directly proves the exact carrier layout and RSN pointer+length contract; the fix restores that layer without claiming downstream RSN completion.
+- why proposed fix is 1:1 with reference architecture and semantics: constants and owner witnesses mirror the recovered carrier; local bounded RSN copy is the compatibility equivalent of JoinAdapter pointer+length semantics.
+- files/functions to modify:
+  - `AirportItlwm/TahoeAssociationContracts.hpp`
+  - `AirportItlwm/TahoeOwnerRegistry.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `AirportItlwm/AirportSTAIOCTL.cpp`
+  - docs/reference/YAML/protocol docs
+- forbidden alternative fixes considered and rejected:
+  - force EAPOL TX/key/RSN done.
+  - fabricate PMK/PTK/GTK.
+  - rewrite AKM/auth bits.
+  - add sleep/retry/replay/poll.
+  - suppress disconnect/deauth.
+- verification plan:
+  - YAML parse.
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-160.
+
+## ANOMALY
+
+- id: A-SKYWALK-PACKET-POOL-NETWORK-TYPE-161
+- status: FIX_IMPLEMENTED
+- symptom:
+  - Visible networks remain available, but association stalls after RX EAPOL
+    enqueue; no EAPOL TX, no cipher key install, and no RSN completion are
+    observed.
+- first visible manifestation:
+  - Runtime evidence from CR-112/CR-113 shows `ITLWM_EAPOL path=rx
+    stage=enqueue-ok`, followed by WCL/RSN failure and no key install.
+- expected system behavior:
+  - Apple creates Wi-Fi Skywalk packet pools as network packet pools
+    (`kIOSkywalkPacketTypeNetwork`, value `1`).
+  - The downstream IO80211 RX/TX path consumes
+    `IO80211NetworkPacket*` / `IOSkywalkNetworkPacket` objects.
+- actual behavior:
+  - Local `AirportItlwm::start` created both TX and RX pools with packet type
+    `0`, i.e. generic Skywalk packet pools.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp` STEP 8b pool creation.
+- evidence:
+  - panic logs:
+    - none for this anomaly.
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-112-afterfix-kernel-focused-20260426-1935.log`
+    - `commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log`
+    - RX EAPOL enqueue succeeds, but repository runtime evidence contains no
+      `ITLWM_IO80211_INPUT` marker for those failing association runs.
+  - ioreg:
+    - not required for this packet-pool class divergence.
+  - packet traces:
+    - no EAPOL TX/key-install progression after RX EAPOL enqueue.
+  - firmware traces:
+    - AP deauth/RSN failure remains after RX EAPOL enqueue; no local TX/key
+      proof.
+  - decomp:
+    - `AppleBCMWLANSkywalkPacketPool::initWithName(...) @
+      0xffffff80016e033c` copies pool options and calls parent init with
+      `movl $0x1, %ecx`.
+    - BootKC exports `IOSkywalkNetworkPacket::withPool(...)`.
+    - BootKC/AppleBCMWLAN symbols show IO80211 consumers taking
+      `IO80211NetworkPacket*`, including `IO80211InfraInterface::inputPacket`
+      and `IO80211PeerManager::skywalkInputPacket`.
+  - docs:
+    - `docs/reference/AppleBCMWLAN_skywalk_packet_pool_network_type_2026_04_27.md`
+    - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/103_skywalk_packet_pool_network_type_2026_04_27.yaml`
+- candidate causes:
+  - confirmed: generic local packet pool prevents RX completion from
+    satisfying the IO80211 network-packet input contract.
+- rejected causes:
+  - Manual `inputPacket(...)` call is rejected: reference requires a real
+    network-packet object reaching the boundary, not a forced callback.
+  - Forced EAPOL TX, forced RSN done, forced key install, retry, delay, and
+    replay are rejected: none are reference producer-side fixes for this
+    packet-class mismatch.
+  - A guessed custom `IO80211NetworkPacket` subclass is rejected for this batch
+    because the complete Tahoe base layout/vtable and ownership lifecycle are
+    not yet locally recovered.
+- confirmed deviation:
+  - Reference parent pool init receives packet type `1`; local code used `0`.
+- root cause:
+  - For the currently confirmed missing boundary, local RX enqueue used generic
+    packet-pool objects while the reference IO80211 datapath is network-packet
+    typed. This is the first confirmed semantic mismatch between local RX
+    enqueue success and absent IO80211 input.
+- fix:
+  - `AirportItlwm/AirportItlwmV2.cpp` now creates both TX and RX pools with
+    `kIOSkywalkPacketTypeNetwork`.
+  - `AirportItlwm/AirportItlwmV2.hpp` now includes
+    `<IOKit/skywalk/IOSkywalkPacket.h>` for the named packet-type constant.
+- verification:
+  - structural build pending after current batch.
+  - after-fix runtime must confirm whether `ITLWM_IO80211_INPUT` appears after
+    RX enqueue and whether EAPOL TX/key/RSN progression advances.
+- notes:
+  - This fix does not implement the deeper Apple PCIe custom packet subclass.
+    That remains a separate layer only if runtime still proves a packet-class
+    mismatch after network packet pools are restored.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-PACKET-POOL-NETWORK-TYPE-161
+- symptom: association reaches RX EAPOL enqueue, but IO80211 input, EAPOL TX,
+  key install, and RSN completion remain absent.
+- expected system behavior: Apple creates Wi-Fi Skywalk TX/RX pools with
+  `kIOSkywalkPacketTypeNetwork` and downstream IO80211 consumes network-packet
+  objects.
+- actual behavior: local TX/RX pools used packet type `0`
+  (`kIOSkywalkPacketTypeGeneric`).
+- exact divergence point: `AirportItlwm/AirportItlwmV2.cpp` STEP 8b pool
+  creation.
+- evidence from runtime: CR-112/CR-113 show RX EAPOL enqueue success with no
+  `ITLWM_IO80211_INPUT` marker and no EAPOL TX/key/RSN completion.
+- evidence from decomp: `AppleBCMWLANSkywalkPacketPool::initWithName(...)`
+  passes `1` to parent `IOSkywalkPacketBufferPool::initWithName`; BootKC and
+  AppleBCMWLAN IO80211 consumers are typed as `IO80211NetworkPacket*`.
+- exact semantic mismatch between reference and our code: reference packet
+  pools produce network packet objects for this datapath; local code requested
+  generic packet objects.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the first missing boundary
+  after confirmed local RX enqueue is IO80211 network input, and the reference
+  object contract at that boundary is network-packet typed.
+- why proposed fix is 1:1 with reference architecture and semantics: the same
+  local pool factory calls are retained, but their packet-type argument is
+  changed to the reference value `kIOSkywalkPacketTypeNetwork`.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `analysis/ANALYSIS_REPORT_2026-04-23.md`
+  - `docs/reference/AppleBCMWLAN_skywalk_packet_pool_network_type_2026_04_27.md`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/85_bsd_attach_chain_xref_checked.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/103_skywalk_packet_pool_network_type_2026_04_27.yaml`
+  - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/MANIFEST_V11.txt`
+- forbidden alternative fixes considered and rejected:
+  - manual `inputPacket(...)` callback.
+  - forced EAPOL TX, key install, or RSN success.
+  - retry, delay, replay, or state masking.
+  - guessed custom `IO80211NetworkPacket` subclass without full ABI recovery.
+- verification plan:
+  - `git diff --check`.
+  - `bash -n scripts/build_tahoe.sh`.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - Stage 1 request for structural review.
+  - after approval, runtime evidence must check for `ITLWM_IO80211_INPUT`,
+    EAPOL TX, key install, and RSN progression.
+
+## ANOMALY
+
+- id: A-SKYWALK-NETWORK-PACKET-TAG-ABI-162
+- status: FIX_IMPLEMENTED
+- symptom:
+  - RX EAPOL reaches the local enqueue boundary, but IO80211 input, EAPOL TX,
+    key install, and RSN completion remain absent.
+  - A direct producer-side input restoration is blocked until the local packet
+    and tag ABI matches the reference consumers.
+- first visible manifestation:
+  - CR-112/CR-113 runtime evidence shows RX EAPOL enqueue success and no
+    `ITLWM_IO80211_INPUT` marker.
+- expected system behavior:
+  - `IOSkywalkNetworkPacket` is an `IOSkywalkPacket` subclass.
+  - RX completion passes `IO80211NetworkPacket*`, a valid packet scratch/tag,
+    and an ethernet header to the IO80211 interface input path.
+- actual behavior:
+  - local `IOSkywalkNetworkPacket` inherited from `IOService` and declared
+    generic packet methods in the wrong class.
+  - local `packet_info_tag` was empty.
+- divergence point:
+  - `include/Airport/IOSkywalkNetworkPacket.h`
+  - `include/Airport/apple_private_spi.h`
+- evidence:
+  - panic logs:
+    - none for this structural ABI anomaly.
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-112-afterfix-kernel-focused-20260426-1935.log`
+    - `commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log`
+    - RX EAPOL enqueue succeeds, but no IO80211 input marker follows.
+  - ioreg:
+    - not required for this ABI declaration mismatch.
+  - packet traces:
+    - no EAPOL TX/key-install progression after RX EAPOL enqueue.
+  - firmware traces:
+    - not required for this declaration mismatch.
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+      0xffffff80014ca8e4` passes packet scratch/tag and ethernet header into
+      the interface input slot for normal roles.
+    - The RX producer reads scratch `+0x18` and writes mapped service class to
+      scratch `+0x29`.
+    - `IO80211InterfaceMonitor::logRxCompletionPacket(...) @
+      0xffffff80022f633e` reads tag `+0x18` and tag `+0x14`.
+    - `AppleBCMWLANPCIeSkywalkPacket::free()` frees scratch at packet `+0x78`
+      with size `0x98`; `prepare()` clears the first `0x30` bytes.
+  - docs:
+    - `docs/reference/AppleBCMWLAN_network_packet_tag_abi_2026_04_27.md`
+    - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/104_network_packet_tag_abi_2026_04_27.yaml`
+- candidate causes:
+  - confirmed: local network-packet/tag ABI declarations do not satisfy
+    proven IO80211 RX input consumers.
+- rejected causes:
+  - Passing a null or empty tag into `inputPacket(...)` is rejected because the
+    monitor dereferences fixed tag offsets.
+  - A guessed stack tag is rejected because it would not be tied to packet
+    scratch ownership.
+  - Forced EAPOL TX/key/RSN, retry, delay, replay, and poll are rejected.
+- confirmed deviation:
+  - Reference `IOSkywalkNetworkPacket` is an `IOSkywalkPacket` subclass.
+  - Reference consumers dereference packet tag/scratch offsets absent from the
+    local empty struct.
+- root cause:
+  - For the ABI-restoration blocker, the local declarations cannot represent
+    the reference RX input tuple safely. This is a deterministic contract
+    violation at the exact boundary that must be restored before direct input
+    delivery is safe.
+- fix:
+  - `IOSkywalkNetworkPacket` declaration now matches the Tahoe Skywalk header
+    shape.
+  - `packet_info_tag` now records proven offsets `+0x14`, `+0x18`, `+0x29`
+    and size `0x98`, with compile-time assertions.
+- verification:
+  - structural build pending after current batch.
+  - after the later RX handoff fix, runtime must verify IO80211 input,
+    EAPOL TX, key install, and RSN progression.
+- notes:
+  - Field names in `packet_info_tag` are local documentation names. Offsets,
+    size, and consumer use are the decompile-proven facts.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-NETWORK-PACKET-TAG-ABI-162
+- symptom: RX EAPOL reaches local enqueue, but IO80211 input and downstream
+  RSN/key/data progression remain absent; a direct handoff fix is unsafe until
+  packet/tag ABI is restored.
+- expected system behavior: `IOSkywalkNetworkPacket` inherits
+  `IOSkywalkPacket`; RX completion supplies a valid `packet_info_tag` with
+  proven offsets used by IO80211 consumers.
+- actual behavior: local network-packet class and tag struct did not represent
+  those contracts.
+- exact divergence point: local network-packet declaration and empty
+  `packet_info_tag`.
+- evidence from runtime: CR-112/CR-113 show RX EAPOL enqueue success without
+  `ITLWM_IO80211_INPUT`.
+- evidence from decomp: Apple RX completion producer and IO80211 monitor
+  dereference the exact offsets listed in the anomaly.
+- exact semantic mismatch between reference and our code: local declarations
+  described a different class hierarchy and zero-sized tag storage for a path
+  that consumes fixed packet scratch/tag fields.
+- fix justification path: REFERENCE_ALIGNMENT_FIX plus SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: RX completion producer,
+    `IO80211InfraInterface::inputPacket(...)`, IO80211 monitor,
+    `IO80211PeerManager::skywalkInputPacket(...)`.
+  - expected contract at each touchpoint: network packet object plus non-empty
+    scratch/tag layout for offsets `+0x14`, `+0x18`, and `+0x29`.
+  - why no relevant touchpoints are missing: this claim is limited to ABI
+    declarations and does not claim the later packet delivery edge.
+  - why proposed path adds no extra system-visible side effects: no runtime
+    callbacks or state changes are added.
+- why this is root cause and not just correlation: the referenced consumers
+  deterministically read fields absent from the local ABI.
+- why proposed fix is 1:1 with reference architecture and semantics: class
+  declaration follows the Tahoe Skywalk header; tag layout includes only
+  decompile-proven offsets and size.
+- files/functions to modify:
+  - `include/Airport/IOSkywalkNetworkPacket.h`
+  - `include/Airport/apple_private_spi.h`
+  - docs/reference/YAML/protocol docs
+- forbidden alternative fixes considered and rejected:
+  - direct input with null/empty tag.
+  - guessed stack tag.
+  - forced EAPOL/key/RSN.
+  - retry, delay, replay, poll, or masking.
+- verification plan:
+  - `git diff --check`.
+  - YAML parse for the new file.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - Stage 1 structural request CR-162.
+
+## ANOMALY
+
+- id: A-SKYWALK-RX-COMPLETION-INPUT-HANDOFF-163
+- status: FIX_IMPLEMENTED
+- symptom:
+  - RX EAPOL reaches local enqueue, but IO80211 input, EAPOL TX, key install,
+    RSN completion, and stable data path remain absent.
+- first visible manifestation:
+  - CR-112/CR-113 runtime logs show `ITLWM_EAPOL path=rx stage=enqueue-ok`
+    with no `ITLWM_IO80211_INPUT`.
+- expected system behavior:
+  - RX completion action performs producer-side handoff to the IO80211 input
+    slot with packet, tag/scratch, ethernet header, null accepted pointer, and
+    final bool `false`.
+- actual behavior:
+  - local `skywalkRxAction(...)` incremented `rxCbCnt` and returned `count`
+    without delivering packets to IO80211 input.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction`
+- evidence:
+  - panic logs:
+    - none for this anomaly.
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-112-afterfix-kernel-focused-20260426-1935.log`
+    - `commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log`
+    - RX EAPOL enqueue succeeds, but no IO80211 input marker follows.
+  - ioreg:
+    - not required for this completion-action divergence.
+  - packet traces:
+    - no EAPOL TX/key-install progression after RX EAPOL enqueue.
+  - firmware traces:
+    - AP deauth/RSN failure remains after RX enqueue without downstream local
+      input proof.
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+      0xffffff80014ca8e4` calls the interface input slot from the RX completion
+      callback.
+    - The call passes packet scratch/tag, `dataVirtualAddress + dataOffset`,
+      null accepted pointer, and `false`.
+    - `IO80211InfraInterface::inputPacket(...) @ 0xffffff80022e3f20`
+      synchronously calls monitor and peer-manager consumers.
+  - docs:
+    - `docs/reference/AppleBCMWLAN_rx_completion_input_handoff_2026_04_27.md`
+    - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/105_rx_completion_input_handoff_2026_04_27.yaml`
+- candidate causes:
+  - confirmed: local RX completion action acknowledged packets without the
+    reference IO80211 input handoff.
+- rejected causes:
+  - Calling input from `skywalkRxInput(...)` is rejected because the reference
+    edge is the completion callback, not the earlier mbuf-copy producer.
+  - Passing a forced accepted pointer/success is rejected because reference
+    passes null accepted pointer.
+  - Packet replay, retry, delay, forced key/RSN, and disconnect suppression are
+    rejected.
+- confirmed deviation:
+  - Reference RX completion callback calls input; local callback returned
+    without input.
+- root cause:
+  - The only runtime edge reached before the stall is RX enqueue, and the
+    corresponding reference completion action is the missing IO80211 input
+    producer. Local omission directly explains absent `ITLWM_IO80211_INPUT`.
+- fix:
+  - `skywalkRxAction(...)` now validates packet data, derives ethernet header,
+    initializes recovered `packet_info_tag`, and calls
+    `AirportItlwmSkywalkInterface::inputPacket(...)` with null accepted pointer
+    and `false`.
+- verification:
+  - structural build passed locally before request preparation.
+  - after-fix runtime must verify whether `ITLWM_IO80211_INPUT`, EAPOL TX, key
+    install, and RSN completion progress.
+- notes:
+  - This does not synthesize a downstream result. The next runtime run must
+    show whether IO80211 input accepts the packet and whether RSN advances.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-SKYWALK-RX-COMPLETION-INPUT-HANDOFF-163
+- symptom: RX EAPOL enqueue succeeds, but IO80211 input and downstream
+  EAPOL/key/RSN progression are absent.
+- expected system behavior: RX completion action calls interface input from the
+  completion boundary.
+- actual behavior: local completion action only returned `count`.
+- exact divergence point: `skywalkRxAction(...)`.
+- evidence from runtime: CR-112/CR-113 show enqueue-ok without input marker.
+- evidence from decomp: Apple PCIe RX completion callback calls interface
+  input with packet/tag/header/null-accepted/false.
+- exact semantic mismatch between reference and our code: local completion
+  callback omitted the producer-side handoff.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: RX completion action, IO80211 input,
+    monitor, peer manager.
+  - expected contract at each touchpoint: valid packet data/header and tag
+    tuple; null accepted pointer; no forced downstream state.
+  - why no relevant touchpoints are missing: scope is bounded to the missing
+    post-enqueue input edge.
+  - why proposed path adds no extra system-visible side effects: no replay,
+    retry, duplicate enqueue, forced success, or key/RSN fabrication.
+- why this is root cause and not just correlation: decomp proves the exact
+  missing producer-side call at the runtime-stalled edge.
+- why proposed fix is 1:1 with reference architecture and semantics: input is
+  called from RX completion action, not the earlier producer, with reference
+  null accepted/final false semantics.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction`
+  - docs/reference/YAML/protocol docs
+- forbidden alternative fixes considered and rejected:
+  - direct input from `skywalkRxInput(...)`.
+  - packet replay/duplication.
+  - forced accepted success.
+  - forced EAPOL/key/RSN/link/DHCP success.
+  - retry, delay, poll, or masking.
+- verification plan:
+  - `git diff --check`.
+  - YAML parse for 105.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - Stage 1 structural request CR-163.
+
+## ANOMALY
+
+- id: A-CR165-RX-COMPLETION-PRODUCER-STAGING
+- status: FIX_IMPLEMENTED
+- symptom:
+  - CONTROL_STA_NETWORK association reaches a brief connected UI state, but there is no
+    internet/data path and the interface later leaves the network.
+- first visible manifestation:
+  - CR-164 after-fix runtime shows repeated RX EAPOL enqueue success without
+    `skywalkRxAction(...)` or `ITLWM_IO80211_INPUT`.
+- expected system behavior:
+  - The RX completion owner maintains pending RX packets and rings
+    `IOSkywalkRxCompletionQueue::requestEnqueue(...)`.
+  - The registered producer action drains pending packets, performs the
+    IO80211 input handoff, fills the Skywalk-provided output array, and returns
+    produced count.
+- actual behavior:
+  - Local `skywalkRxInput(...)` called base
+    `IOSkywalkRxCompletionQueue::enqueuePackets(...)` directly.
+  - Base enqueue returned success but did not invoke the registered action.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction`
+- evidence:
+  - runtime logs:
+    - `commit-approval/runtime_evidence/CR-164-afterfix-control_sta_network-focused-20260427-173915.log`
+    - `ITLWM_EAPOL path=rx stage=enqueue-ok` appears repeatedly.
+    - `skywalkRxAction` is absent.
+    - `ITLWM_IO80211_INPUT` is absent.
+    - WCL reports `assocTimerAction@1177:Update Bss fail`.
+    - WCL leaves due to `<Update Bss fail>`.
+  - decomp:
+    - `IOSkywalkRxCompletionQueue::requestEnqueue(...) @ 0xffffff8002a59c4c`
+      calls the registered action and uses its return as produced count.
+    - `IOSkywalkRxCompletionQueue::enqueuePackets(...) @ 0xffffff8002a59cda /
+      0xffffff8002a59d84` publishes packets to the base networking path and
+      does not call the registered action.
+    - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+      0xffffff80014ca8e4` drains an owner-side pending list, calls the
+      interface input slot, writes produced packets into the output array, and
+      returns produced count.
+- candidate causes:
+  - confirmed: missing local pending RX producer queue and wrong use of base
+    `enqueuePackets` as the action boundary.
+- rejected causes:
+  - direct duplicate `inputPacket(...)` after base enqueue is rejected because
+    the reference handoff happens before base publish from the producer action.
+  - forced RSN/key/link/DHCP success and deauth masking are rejected.
+  - retry/poll/delay loops are rejected.
+- confirmed deviation:
+  - Reference owner action is reached through `requestEnqueue` and produces the
+    batch; local code bypassed that action by calling base `enqueuePackets`.
+- root cause:
+  - This exactly explains CR-164 runtime: RX packets are prepared and accepted
+    by base enqueue, but the only code that calls IO80211 input is never
+    entered.
+- fix:
+  - Added fixed-capacity local pending RX packet ring.
+  - `skywalkRxInput(...)` stages prepared packets and calls
+    `fRxQueue->requestEnqueue(nullptr, 0)`.
+  - `skywalkRxAction(...)` pops pending packets, calls IO80211 input, fills the
+    Skywalk-provided packet array, and returns produced count.
+  - Pending prepared packets are drained during stop/free before RX pool
+    release.
+- verification:
+  - `git diff --check`: PASS.
+  - `./scripts/build_tahoe.sh`: PASS, BootKC symbol check PASS.
+  - `./scripts/build_regdiag.sh`: PASS.
+  - after-fix runtime must verify `producer-input` and
+    `ITLWM_IO80211_INPUT`.
+- notes:
+  - This is not a packet replay. The packet is produced once from the local
+    pending queue, matching the Apple action architecture.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR165-RX-COMPLETION-PRODUCER-STAGING
+- symptom: RX EAPOL reaches local RX path, but IO80211 input remains absent and
+  WCL later leaves the network after BSS update failure.
+- expected system behavior: pending RX owner plus `requestEnqueue` producer
+  action performs the IO80211 input handoff and returns produced packets.
+- actual behavior: local code directly called base `enqueuePackets`, bypassing
+  the registered action.
+- exact divergence point: `skywalkRxInput(...)` direct base enqueue and
+  `skywalkRxAction(...)` never reached.
+- evidence from runtime: CR-164 after-fix CONTROL_STA_NETWORK log has repeated
+  `ITLWM_EAPOL stage=enqueue-ok`, no `skywalkRxAction`, no
+  `ITLWM_IO80211_INPUT`, then WCL Update Bss fail / leave.
+- evidence from decomp: IOSkywalk `requestEnqueue` calls the action;
+  IOSkywalk base `enqueuePackets` does not; AppleBCMWLAN action drains pending
+  RX list, calls IO80211 input, fills output array, returns produced count.
+- exact semantic mismatch between reference and our code: missing owner-side
+  pending RX producer and wrong boundary for input handoff.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: it explains both sides of
+  the runtime contradiction: packets were enqueued successfully but the only
+  local input hook was never called.
+- why proposed fix is 1:1 with reference architecture and semantics: local
+  producer action now drains pending RX packets, calls input, fills the
+  provided array, and returns produced count, matching the recovered Apple
+  action role.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxInput`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction`
+  - RX completion docs/YAML/manifests
+- forbidden alternative fixes considered and rejected:
+  - forced accepted success.
+  - forced EAPOL/key/RSN/DHCP/link success.
+  - direct duplicate input after base enqueue.
+  - retry/poll/delay loops.
+  - deauth masking.
+- verification plan:
+  - `git diff --check`.
+  - YAML parse for 105/106.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - Stage 1 structural request CR-165.
+
+## ANOMALY
+
+- id: A-CR166-TX-COMPLETION-PRODUCER-OWNERSHIP
+- status: FIX_IMPLEMENTED
+- symptom: after association the UI reaches partial connected/no-internet state
+  and later disconnects; once CR-165 restores RX producer input, TX submission
+  is expected to start and every consumed packet must be completed.
+- first visible manifestation: local static path shows `skywalkTxAction(...)`
+  returns consumed packets without any completion producer; current CR-164
+  runtime still does not reach TX because RX producer action is bypassed.
+- expected system behavior:
+  - consumed TX packets are returned through a TX completion producer.
+  - produced TX completion packets reach IOSkywalk completion accounting and
+    `completeWithQueue(queue, kIOSkywalkPacketDirectionTx, 0)`.
+- actual behavior:
+  - `skywalkTxAction(...)` copies bytes into an mbuf and returns consumed count.
+  - `skywalkTxCompletionAction(...)` returns `0`.
+  - no local pending TX completion producer exists.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxCompletionAction`
+- evidence:
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::stagePacket(...) @
+      0xffffff80014c91c0` links packet scratch/list nodes into the completion
+      queue owner list.
+    - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::requestEnqueue(...) @
+      0xffffff80014c920c` delegates to the IOSkywalk producer boundary.
+    - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::enqueuePackets(...) @
+      0xffffff80014c8d62` drains staged packets into the output array and
+      returns produced count.
+    - IOSkywalk TX completion enqueue path near `0xffffff8002a3fa9e` calls
+      packet `completeWithQueue(queue, kIOSkywalkPacketDirectionTx, 0)`.
+  - runtime:
+    - current CR-164 focused CONTROL_STA_NETWORK runtime does not reach TX logs because
+      RX producer/input is still absent.
+    - this candidate is therefore an adjacent confirmed ownership divergence,
+      not an independently proven pre-CR165 current root cause.
+- confirmed deviation:
+  - reference has a TX completion producer and ownership-return path.
+  - local consumed packets had no completion producer.
+- root cause:
+  - confirmed for downstream TX queue ownership leak/stall once TX submission
+    starts; not claimed as the CR-164 pre-RX-producer root cause.
+- fix:
+  - add fixed-capacity TX completion pending ring.
+  - stage every non-null packet consumed by `skywalkTxAction(...)`.
+  - ring `fTxCompQueue->requestEnqueue(nullptr, 0)` after a TX batch.
+  - make `skywalkTxCompletionAction(...)` pop staged packets into the provided
+    array and return produced count.
+  - drain pending TX completion packets before queue/pool release.
+- verification:
+  - `git diff --check`.
+  - YAML parse for 105/106/107.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - Stage 1 structural request CR-166.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR166-TX-COMPLETION-PRODUCER-OWNERSHIP
+- symptom: consumed TX Skywalk packets have no completion producer, which would
+  stall/leak TX ownership once TX submission begins after RX producer restore.
+- expected system behavior: consumed TX packets are staged, produced through TX
+  completion queue `requestEnqueue`, and completed by IOSkywalk.
+- actual behavior: local TX action returned consumed count while the TX
+  completion action returned zero.
+- exact divergence point: local `skywalkTxAction(...)` and
+  `skywalkTxCompletionAction(...)` versus Apple TX completion
+  stage/request/produce path.
+- evidence from runtime: CR-164 runtime still cannot reach this path because
+  RX producer is bypassed; no independent current-root claim is made.
+- evidence from decomp: Apple `stagePacket`, `requestEnqueue`,
+  `enqueuePackets`, and IOSkywalk completion path prove the ownership-return
+  contract.
+- exact semantic mismatch between reference and our code: missing TX
+  completion producer and missing completion ownership return for consumed
+  packets.
+- fix justification path: SYSTEM_CONTRACT_FIX
+- if SYSTEM_CONTRACT_FIX:
+  - enumerated system-facing touchpoints: TX submission consumed count, mbuf
+    output handoff, TX completion pending producer, requestEnqueue, completion
+    action packet array, completeWithQueue, teardown drain.
+  - expected contract at each touchpoint: every non-null consumed packet is
+    completed exactly once, without forcing packet delivery success or link
+    state.
+  - why no relevant touchpoints are missing: scope is limited to ownership
+    closure for packets already consumed by the local TX action.
+  - why proposed path adds no extra system-visible side effects: no retry,
+    replay, poll, forced success, synthetic packet, key/link/RSN/DHCP state, or
+    deauth masking.
+- why this is root cause and not just correlation: confirmed root for TX
+  ownership leak/stall after TX begins; not claimed as the current CR-164 root.
+- why proposed fix is 1:1 with reference architecture and semantics: it
+  restores stage + requestEnqueue + producer-array completion architecture.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxCompletionAction`
+  - docs/reference/YAML/inventory/signal-chain analysis
+- forbidden alternative fixes considered and rejected:
+  - direct packet deallocation without completion.
+  - base enqueue shortcut without producer evidence.
+  - retry/poll/delay.
+  - forced TX/EAPOL/key/RSN/link/DHCP success.
+- verification plan:
+  - `git diff --check`.
+  - YAML parse for 105/106/107.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-166 Stage 1 structural batch request.
+
+## Current Active Batch Note
+
+- id: A-CR167-RX-PRODUCER-TAG-STATS-CLOSURE
+- status: implemented locally, pending Stage 1 structural review as CR-167.
+- scope: closes the RX producer tag carrier and post-batch accounting edge
+  found during the active Skywalk RX producer audit.
+- detailed evidence: see the full `A-CR167-RX-PRODUCER-TAG-STATS-CLOSURE`
+  entry above and
+  `docs/reference/AppleBCMWLAN_rx_producer_tag_stats_2026_04_27.md`.
+- verification:
+  - `git diff --check` passed.
+  - selected YAML parse for 105/106/107/108 passed; full bundle parse is
+    blocked by the pre-existing `81_event_payload_schemas.yaml` syntax issue.
+  - `./scripts/build_tahoe.sh` passed.
+  - `./scripts/build_regdiag.sh` passed.
+
+- id: A-CR168-TX-QUEUE-SPACE-PENDING-CLOSURE
+- status: implemented locally, pending Stage 1 structural review as CR-168.
+- scope: closes the TX queue admission visibility mismatch adjacent to the
+  active RX/TX producer restoration.
+- evidence:
+  - Apple primary `getTxSubQueue(...) @ 0xffffff800155fb5a` and APSTA
+    `getTxSubQueue(...) @ 0xffffff80016940b4` return queue objects through
+    owner-vector lookup.
+  - Apple `getTxQueueDepth()` reads live queue capacity.
+  - IO80211SkywalkInterface `pendingPackets(...) @ 0xffffff80022780ac` and
+    `packetSpace(...) @ 0xffffff8002278134` query queue object virtuals.
+- local divergence:
+  - local `getTxSubQueue(...)` exposed `fTxQueue`.
+  - local `pendingPackets(...)` and `packetSpace(...)` returned unconditional
+    zero.
+- fix:
+  - make local single-TX-queue lookup return `fTxQueue` consistently.
+  - return `fTxQueue->getPacketCount()` from `pendingPackets(...)`.
+  - return `fTxQueue->getFreeSpace()` from `packetSpace(...)`.
+- non-claims:
+  - no forced TX success, EAPOL/key/RSN/DHCP/link success, retry, replay,
+    delay, poll loop, synthetic packet, or deauth masking.
+
+## ANOMALY
+
+- id: A-CR169-TX-OUTPUT-ACCOUNTING-CLOSURE
+- status: FIX_IMPLEMENTED
+- symptom: after CONTROL_STA_NETWORK association the UI reaches partial
+  connected/no-internet state and later disconnects; active TX submission has
+  a confirmed missing IO80211 output-accounting edge.
+- first visible manifestation: local static TX path shows
+  `skywalkTxAction(...)` returning consumed packets and updating
+  `sRT.txPktSent` without calling IO80211 output accounting.
+- expected system behavior:
+  - TX submission dequeue accumulates accepted packet and byte totals.
+  - the interface output-accounting edge is called once for the batch.
+- actual behavior:
+  - local `skywalkTxAction(...)` called `outputPacket(...)` for copied mbufs.
+  - accepted packet count was recorded only in local `sRT.txPktSent`.
+  - no `recordOutputPacket(...)` call followed the TX batch.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+- evidence:
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkTxSubmissionQueue::dequeuePackets(...) @
+      0xffffff80014c611c` accumulates packet and byte totals.
+    - tail call site near `0xffffff80014c7944` invokes the interface virtual
+      slot matching `recordOutputPacket(...)`.
+    - `IO80211SkywalkInterface::recordOutputPacket(apple80211_wme_ac,int,int)
+      @ 0xffffff8002277cc6` delegates to the interface monitor when present.
+  - runtime:
+    - current after-fix runs still fail after partial association, so this is
+      an active-layer confirmed divergence being removed before the next
+      reboot cycle; it is not claimed as the sole remaining connection root.
+- confirmed deviation:
+  - reference records TX output accounting after dequeue.
+  - local code skipped that IO80211 accounting edge.
+- root cause:
+  - confirmed for missing IO80211 TX output monitor/accounting state after
+    local accepted TX frames; not claimed as the only remaining CONTROL_STA_NETWORK
+    connection root cause.
+- fix:
+  - accumulate delivered packet bytes for frames where `outputPacket(...)`
+    returns `kIOReturnOutputSuccess`.
+  - call `recordOutputPacket({ APPLE80211_WME_AC_BE }, delivered,
+    deliveredBytes)` after the TX batch.
+- verification:
+  - `git diff --check`.
+  - targeted YAML parse for 105/106/107/108/109/110.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-169 Stage 1 structural batch request.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR169-TX-OUTPUT-ACCOUNTING-CLOSURE
+- symptom: accepted TX packets are not reflected through IO80211 output
+  accounting.
+- expected system behavior: Apple TX submission dequeue calls
+  `recordOutputPacket(ac, packetCount, byteCount)` after the batch.
+- actual behavior: local `skywalkTxAction(...)` updates only local counters
+  after accepted `outputPacket(...)` frames.
+- exact divergence point: local `skywalkTxAction(...)` lacks the Apple tail
+  output-accounting call.
+- evidence from runtime: association reaches a partial connected state then
+  drops; current work is removing confirmed active-layer divergences before
+  the next reboot cycle.
+- evidence from decomp: Apple TX submission dequeue call site near
+  `0xffffff80014c7944`; IO80211 output-accounting implementation at
+  `0xffffff8002277cc6`.
+- exact semantic mismatch between reference and our code: missing post-batch
+  IO80211 TX output accounting.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: it is the direct cause of
+  missing IO80211 output monitor/accounting state after accepted local TX
+  frames; no broader connection-success claim is made.
+- why proposed fix is 1:1 with reference architecture and semantics: use the
+  existing IO80211 accounting method once after the TX batch with packet and
+  byte totals; no synthetic packet, scratch, retry, replay, or forced state.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkTxAction`
+  - TX output-accounting docs/YAML/manifests
+- forbidden alternative fixes considered and rejected:
+  - calling `logTxPacket(...)` / `logSkywalkTxReqPacket(...)` with synthetic
+    scratch.
+  - forced EAPOL/TX/key/RSN/DHCP/link/data success.
+  - retry, replay, delay, poll loop, or deauth masking.
+- verification plan:
+  - `git diff --check`.
+  - targeted YAML parse.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-169 Stage 1 structural request.
+
+## Current Active Batch Note
+
+- id: A-CR169-TX-OUTPUT-ACCOUNTING-CLOSURE
+- status: implemented locally, pending Stage 1 structural review as CR-169.
+- scope: closes the confirmed TX output-accounting mismatch adjacent to the
+  active TX submission/completion restoration.
+- evidence:
+  - Apple TX submission dequeue accumulates packet and byte totals and calls
+    `recordOutputPacket(...)` after the batch.
+  - IO80211 output accounting is monitor/accounting only, not forced datapath
+    success.
+- local divergence:
+  - local `skywalkTxAction(...)` updated only `sRT.txPktSent`.
+- fix:
+  - record delivered packet and byte totals after accepted `outputPacket(...)`
+    frames through `fNetIf->recordOutputPacket(...)`.
+- non-claims:
+  - no forced TX/EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+    poll loop, synthetic scratch, synthetic packet, or deauth masking.
+
+## ANOMALY
+
+- id: A-CR170-IO80211-NETWORK-PACKET-POOL-CLASS
+- status: FIX_IMPLEMENTED
+- symptom: CONTROL_STA_NETWORK association reaches IO80211 RX input with EAPOL frames, but
+  EAPOL TX, `setCIPHER_KEY`, and `IO80211RSNDone` remain absent before AP
+  deauth reason 15.
+- first visible manifestation:
+  - 2026-04-27 regdiag runtime after CR-169-class driver: `eapol_rx=8`,
+    `eapol_tx=0`, `IO80211RSNDone=No`, no cipher key install.
+- expected system behavior:
+  - AppleBCMWLAN packet pools allocate packet objects in the
+    `IO80211NetworkPacket` family.
+  - IO80211 input receives a real `IO80211NetworkPacket*`.
+  - `IO80211NetworkPacket::getPacketType(...)` classifies EtherType `0x888e`
+    as EAPOL packet type `2`.
+- actual behavior:
+  - local pools were base `IOSkywalkPacketBufferPool` objects with
+    `kIOSkywalkPacketTypeNetwork`.
+  - local RX handoff passed the allocated packet through
+    `reinterpret_cast<IO80211NetworkPacket *>(pkt)`.
+  - runtime shows IO80211 input success for RX EAPOL, but no downstream
+    EAPOL/key/RSN progression.
+- divergence point:
+  - `AirportItlwm/AirportItlwmV2.cpp::start(...)` TX/RX pool creation.
+  - `AirportItlwm/AirportItlwmV2.cpp::skywalkRxAction(...)` input handoff.
+- evidence:
+  - runtime logs:
+    - 2026-04-27 CONTROL_STA_NETWORK window: RX EAPOL reaches producer input and returns
+      success; no TX EAPOL/key/RSN progression; AP deauth reason 15.
+  - ioreg:
+    - `IO80211SSID=CONTROL_STA_NETWORK`
+    - `IO80211RSNDone=No`
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkPacketPool::newPacketWithDescriptor(...) @
+      0xffffff80014cb250` calls
+      `AppleBCMWLANPCIeSkywalkPacket::withPool(...)`.
+    - `AppleBCMWLANPCIeSkywalkPacketPool::allocatePacket(...) @
+      0xffffff80014cb8ae` validates the returned packet against the Apple
+      packet metaclass.
+    - `IO80211NetworkPacket::getPacketType(...) @ 0xffffff80022cf000`
+      returns `2` for EtherType `0x888e`.
+    - IO80211 consumers are typed as `IO80211NetworkPacket*`.
+  - docs:
+    - `docs/reference/AppleBCMWLAN_io80211_network_packet_pool_class_2026_04_27.md`
+    - `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/111_io80211_network_packet_pool_class_2026_04_27.yaml`
+- candidate causes:
+  - confirmed: local pool allocation returned the wrong packet class for the
+    IO80211 input contract.
+- rejected causes:
+  - forced EAPOL TX/key/RSN/DHCP/link success.
+  - retry, delay, replay, poll loop, duplicate notification, or deauth masking.
+  - raw writes to Apple PCIe packet scratch at `packet+0x78`.
+  - scratch-dependent TX log methods without an Apple packet scratch object.
+- confirmed deviation:
+  - reference allocates packet objects in the IO80211 packet class family.
+  - local code allocated base Skywalk network packets and cast them at handoff.
+- root cause:
+  - confirmed for the active EAPOL/RSN handoff mismatch: IO80211 input receives
+    a packet pointer whose allocation class is not reference-equivalent, so the
+    downstream packet-type/supplicant path is not proven satisfied even though
+    the input call returns success.
+- fix:
+  - add a local `IO80211NetworkPacket` declaration inheriting
+    `IOSkywalkNetworkPacket`.
+  - add `AirportItlwmIO80211PacketPool`, an `IOSkywalkPacketBufferPool`
+    subclass.
+  - override `newPacket(...)` to allocate the system
+    `IO80211NetworkPacket` metaclass and call inherited `initWithPool(...)`.
+  - use this pool for both Tahoe TX and RX packet pools.
+- verification:
+  - `git diff --check`: pass.
+  - `./scripts/build_tahoe.sh`: pass, BootKC symbol verification pass with 884
+    resolved undefined symbols.
+  - `./scripts/build_regdiag.sh`: pending in current CR-170 batch.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR170-IO80211-NETWORK-PACKET-POOL-CLASS
+- symptom: RX EAPOL reaches IO80211 input, but EAPOL TX, key install, and RSN
+  completion remain absent.
+- expected system behavior: packet pools allocate an
+  `IO80211NetworkPacket`-family object before IO80211 input; that class parses
+  packet type and returns EAPOL type `2` for EtherType `0x888e`.
+- actual behavior: local pool allocation returned base Skywalk network packets
+  and local RX handoff relied on `reinterpret_cast`.
+- exact divergence point: local TX/RX pool allocation hook.
+- evidence from runtime: `eapol_rx=8`, `eapol_tx=0`, no `setCIPHER_KEY`, no
+  `IO80211RSNDone`, AP deauth reason 15 after successful RX input.
+- evidence from decomp: Apple packet pool creates Apple packet objects in the
+  `IO80211NetworkPacket` family; `IO80211NetworkPacket::getPacketType(...)`
+  classifies `0x888e` as EAPOL type `2`; IO80211 input consumers are typed as
+  `IO80211NetworkPacket*`.
+- exact semantic mismatch between reference and our code: reference satisfies
+  the packet object class contract at allocation; local code only satisfied the
+  C++ pointer signature by cast.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the current runtime proves
+  the RX producer and input call return success while the next EAPOL/key/RSN
+  path remains absent; the first remaining confirmed reference mismatch at that
+  boundary is packet allocation class and packet-type semantics.
+- why proposed fix is 1:1 with reference architecture and semantics: restore a
+  packet-pool allocation hook that returns an `IO80211NetworkPacket` object
+  before queue/input handoff; do not force consumer state or packet outcomes.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `include/Airport/IO80211NetworkPacket.h`
+  - docs/reference/YAML/audit/inventory/analysis files
+- forbidden alternative fixes considered and rejected:
+  - forced EAPOL TX, key install, RSN done, DHCP, or link success.
+  - retry, replay, delay, poll loop, or deauth masking.
+  - raw Apple packet scratch synthesis at `packet+0x78`.
+  - scratch-dependent log methods without Apple packet scratch ownership.
+- verification plan:
+  - `git diff --check`.
+  - targeted YAML parse.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-170 Stage 1 structural request superseding CR-169.
+
+## Current Active Batch Note
+
+- id: A-CR170-IO80211-NETWORK-PACKET-POOL-CLASS
+- status: implemented locally, preparing Stage 1 structural review as CR-170.
+- scope: supersedes CR-169 by adding the next confirmed packet-class allocation
+  restoration adjacent to the active EAPOL/RSN blocker.
+- evidence:
+  - Apple packet pool owns packet allocation and returns
+    `IO80211NetworkPacket`-family objects.
+  - IO80211 packet type parsing is class behavior, not a generic pointer cast.
+  - runtime proves RX input success without EAPOL TX/key/RSN progression.
+- local divergence:
+  - base Skywalk network packet pool plus `reinterpret_cast`.
+- fix:
+  - allocate real system `IO80211NetworkPacket` objects from a local pool
+    subclass via `newPacket(...)`.
+- non-claims:
+  - no forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+    poll loop, synthetic scratch, synthetic packet, or deauth masking.
+
+## ANOMALY
+
+- id: A-CR173-PACKET-SCRATCH-FIELD-MAP
+- status: FIX_IMPLEMENTED
+- symptom: Apple packet scratch owner restoration needs a complete field map;
+  local `packet_info_tag` had only the early IO80211 monitor/input fields
+  named.
+- first visible manifestation:
+  - 2026-04-27 packet scratch audit found additional decompile-proven Apple
+    scratch fields at `+0x48`, `+0x50`, `+0x74`, `+0x80`, `+0x8a`, and
+    `+0x90`.
+- expected system behavior:
+  - Apple packet scratch is size `0x98`.
+  - packet methods use bus/virtual address, signature, TX status, flow queue,
+    and AC/duplicate fields at fixed offsets.
+- actual behavior:
+  - local `packet_info_tag` preserved the size and early fields but left these
+    later offsets anonymous.
+- divergence point:
+  - `include/Airport/apple_private_spi.h::packet_info_tag`
+- evidence:
+  - decomp:
+    - `AppleBCMWLANPCIeSkywalkPacket::complete(...)` clears scratch `+0x48`
+      and `+0x50`.
+    - `setPktSignature(...)` writes scratch `+0x74`.
+    - `setStatus/getStatus` use scratch `+0x80`.
+    - `setFlowQueueIdx/getFlowQueueIdx` use scratch `+0x8a`.
+    - `setAc/getAc` and `setPktDup` use scratch `+0x90`.
+    - `free()` releases scratch size `0x98`.
+- rejected implementation path:
+  - a direct local C++ subclass of `IO80211NetworkPacket` was tested and
+    rejected before CR submission.
+  - BootKC verification failed on generated vtable references to non-exported
+    `IOSkywalkPacket::*` symbols:
+    `getDataOff`, `getDataLength`, `getDataOffset`, `getPacketBuffers`,
+    `setDataOffAndLen`, `getMemoryDescriptor`, `getPacketBufferCount`,
+    `getDataVirtualAddress`, `getDataIOVirtualAddress`.
+- confirmed deviation:
+  - local field map was incomplete.
+- root cause:
+  - confirmed for the field-map layer; not claimed as final connection root
+    cause.
+- fix:
+  - add named fields and offset assertions while preserving total size `0x98`.
+- verification:
+  - pending CR-173 structural build evidence.
+
+## Current Active Batch Note
+
+- id: A-CR173-PACKET-SCRATCH-FIELD-MAP
+- status: implemented locally, preparing Stage 1 structural review as CR-173.
+- scope: supersedes CR-172 with a safe scratch field-map restoration and a
+  documented rejection of direct C++ packet subclassing.
+- evidence:
+  - decomp proves scratch offsets and direct subclass build failed BootKC
+    symbol verification.
+- local divergence:
+  - packet_info_tag had anonymous later scratch fields.
+- fix:
+  - name fields and assert offsets; no behavior change.
+- non-claims:
+  - no forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+    poll loop, synthetic scratch, synthetic packet, or deauth masking.
+
+## ANOMALY
+
+- id: A-CR172-IO80211-NETWORK-PACKET-VIRTUAL-SURFACE
+- status: FIX_IMPLEMENTED
+- symptom: exact restoration of the Apple packet subclass/scratch layer is
+  blocked because the local `IO80211NetworkPacket` declaration lacks the
+  exported intermediate packet surface.
+- first visible manifestation:
+  - 2026-04-27 decomp/static audit after CR-171 found that local
+    `IO80211NetworkPacket` was still an empty subclass while Apple packet
+    constructors enter a real IO80211 packet class layer.
+- expected system behavior:
+  - `IO80211NetworkPacket` declares metaclass state, `getPacketType`,
+    virtual packet helpers, firmware TX status helpers, `getBufferSize`, and
+    both `prepareWithQueue(...)` overloads.
+- actual behavior:
+  - local `IO80211NetworkPacket` only inherited `IOSkywalkNetworkPacket` and
+    declared no methods of its own.
+- divergence point:
+  - `include/Airport/IO80211NetworkPacket.h`
+- evidence:
+  - decomp:
+    - `kdk_symbols.txt` exports the full IO80211NetworkPacket method list.
+    - `IO80211Family_decompiled.c` shows constructor chain, deallocation size
+      `0x78`, EAPOL packet-type classification, and method stub/tailcall
+      semantics.
+    - `AppleBCMWLANBusInterfacePCIeMac_decompiled.c` shows
+      `AppleBCMWLANPCIeSkywalkPacket` constructors calling the
+      `IO80211NetworkPacket` constructor chain before installing the Apple
+      vtable.
+  - runtime context:
+    - current CONTROL_STA_NETWORK runs still localize the active blocker to the
+      packet/IO80211 handoff after RX EAPOL input succeeds without EAPOL
+      TX/key/RSN progression.
+- candidate causes:
+  - confirmed: local header did not model the decompile/export-proven
+    intermediate packet class surface.
+- rejected causes:
+  - guessed Apple subclass.
+  - raw writes to `packet+0x78`.
+  - forced EAPOL/key/RSN/DHCP/link success, retry, replay, delay, poll loop,
+    packet synthesis, or deauth masking.
+- confirmed deviation:
+  - reference has a concrete `IO80211NetworkPacket` method/vtable layer.
+  - local declaration was empty.
+- root cause:
+  - confirmed for the layer-restoration blocker: a future local Apple packet
+    subclass cannot be declared against the reference base ABI if the
+    intermediate packet surface is missing locally.
+- fix:
+  - add `OSDeclareDefaultStructors(IO80211NetworkPacket)`.
+  - add export/decompile-proven method declarations and opaque
+    `IO80211NetworkTXStatus`.
+  - assert `sizeof(IO80211NetworkPacket) == 0x78`.
+- verification:
+  - `git diff --check`: pass.
+  - `./scripts/build_tahoe.sh`: pass, BootKC symbol verification pass.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR172-IO80211-NETWORK-PACKET-VIRTUAL-SURFACE
+- symptom: Apple packet subclass/scratch layer cannot be represented 1:1
+  because local `IO80211NetworkPacket` is an empty declaration.
+- expected system behavior: `IO80211NetworkPacket` has its own exported
+  metaclass/method surface before Apple packet subclasses install their
+  vtables.
+- actual behavior: local header declared no IO80211 packet surface.
+- exact divergence point: `include/Airport/IO80211NetworkPacket.h`.
+- evidence from runtime: current runtime keeps packet/IO80211 handoff as the
+  active layer; RX EAPOL succeeds, but EAPOL TX/key/RSN progression is absent.
+- evidence from decomp: symbols and decomp prove the method surface,
+  constructor chain, size `0x78`, packet-type parser, and Apple subclass
+  constructor dependency.
+- exact semantic mismatch between reference and our code: reference has a real
+  intermediate packet class; local code modeled only an empty shell.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: this directly prevents
+  compiling the next decompile-proven Apple packet subclass ABI without
+  guessing.
+- why proposed fix is 1:1 with reference architecture and semantics: add only
+  proven declarations and size assertion; do not instantiate or alter runtime.
+- files/functions to modify:
+  - `include/Airport/IO80211NetworkPacket.h`
+  - docs/reference/YAML/audit/inventory/analysis files
+- forbidden alternative fixes considered and rejected:
+  - guessed subclass/vtable.
+  - raw scratch writes.
+  - forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay, poll
+    loop, packet synthesis, or deauth masking.
+- verification plan:
+  - `git diff --check`.
+  - targeted YAML parse.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-172 Stage 1 structural request superseding CR-171.
+
+## Current Active Batch Note
+
+- id: A-CR172-IO80211-NETWORK-PACKET-VIRTUAL-SURFACE
+- status: implemented locally, preparing Stage 1 structural review as CR-172.
+- scope: supersedes CR-171 by adding the next confirmed packet ABI header
+  surface required before Apple packet subclass/scratch restoration.
+- evidence:
+  - export/decomp proves the IO80211NetworkPacket method surface and Apple
+    subclass constructor dependency.
+- local divergence:
+  - local IO80211NetworkPacket header was empty.
+- fix:
+  - add proven method declarations, ABI enum, and size assertion.
+- non-claims:
+  - no forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+    poll loop, synthetic scratch, synthetic packet, or deauth masking.
+
+## ANOMALY
+
+- id: A-CR171-IOSKYWALK-NETWORK-PACKET-SIZE
+- status: FIX_IMPLEMENTED
+- symptom: exact restoration of the Apple packet scratch/datapath layer is
+  blocked because the local base packet declaration consumes the subclass
+  scratch-pointer slot.
+- first visible manifestation:
+  - 2026-04-27 decomp/static audit after CR-170 found a class-size conflict:
+    reference base packets are `0x78`, while the local declaration included an
+    extra pointer.
+- expected system behavior:
+  - `IOSkywalkNetworkPacket` and `IO80211NetworkPacket` are `0x78` byte class
+    instances.
+  - `AppleBCMWLANPCIeSkywalkPacket` is the `0x80` subclass that owns the
+    scratch pointer at packet offset `+0x78`.
+- actual behavior:
+  - tracked local `IOSkywalkNetworkPacket` declared a protected
+    `void *mReserved` member.
+  - any local subclass would place its first field at `+0x80`, not at the
+    Apple scratch-pointer offset `+0x78`.
+- divergence point:
+  - `include/Airport/IOSkywalkNetworkPacket.h`
+- evidence:
+  - decomp:
+    - `IOSkywalkFamily_decompiled.c`: `IOSkywalkNetworkPacket` metaclass size
+      `0x78`.
+    - `IO80211Family_decompiled.c`: `IO80211NetworkPacket` constructor chain
+      enters `IOSkywalkNetworkPacket`; deallocation size is `0x78`.
+    - `AppleBCMWLANBusInterfacePCIeMac_decompiled.c`:
+      `AppleBCMWLANPCIeSkywalkPacket` size is `0x80`; scratch pointer is read
+      at packet `+0x78`; scratch size is `0x98`.
+  - runtime context:
+    - current CONTROL_STA_NETWORK runs still localize the active blocker to the
+      packet/IO80211 handoff after RX EAPOL input succeeds without EAPOL
+      TX/key/RSN progression.
+- candidate causes:
+  - confirmed: local base-size declaration does not match the reference base
+    packet class and would break the next scratch-bearing subclass layer.
+- rejected causes:
+  - raw writes to `packet+0x78` on a base packet.
+  - forcing EAPOL TX, key install, RSN done, DHCP, link, retry, replay, delay,
+    poll loop, packet synthesis, or deauth masking.
+- confirmed deviation:
+  - reference reserves packet offset `+0x78` for the Apple PCIe subclass, not
+    for `IOSkywalkNetworkPacket`.
+- root cause:
+  - confirmed for the layer-restoration blocker: local declarations made the
+    proven Apple subclass layout impossible to represent 1:1.
+- fix:
+  - remove the non-reference `mReserved` member from the tracked local
+    declaration.
+  - add `sizeof(IOSkywalkNetworkPacket) == 0x78` assertions.
+- verification:
+  - pending CR-171 structural build evidence.
+
+## FIX_CANDIDATE
+
+- anomaly_id: A-CR171-IOSKYWALK-NETWORK-PACKET-SIZE
+- symptom: packet-class/scratch ABI layer cannot be restored 1:1 while active
+  STA EAPOL/RSN work depends on `IO80211NetworkPacket*` handoff.
+- expected system behavior: Tahoe registers `IOSkywalkNetworkPacket` and
+  `IO80211NetworkPacket` as `0x78` byte classes; Apple PCIe packet subclass is
+  `0x80` and owns scratch pointer storage at `+0x78`.
+- actual behavior: the tracked local `IOSkywalkNetworkPacket` declaration adds
+  `void *mReserved`, extending the base layout beyond the reference size.
+- exact divergence point: tracked local `IOSkywalkNetworkPacket` declaration.
+- evidence from runtime: current runtime still shows RX EAPOL input success
+  with no EAPOL TX/key/RSN progression, keeping packet/IO80211 handoff as the
+  active layer under repair.
+- evidence from decomp: `IOSkywalkNetworkPacket` and `IO80211NetworkPacket`
+  are size `0x78`; `AppleBCMWLANPCIeSkywalkPacket` is size `0x80` and uses
+  `packet+0x78` for scratch.
+- exact semantic mismatch between reference and our code: local base class
+  reserved storage that reference assigns to the first subclass layer.
+- fix justification path: REFERENCE_ALIGNMENT_FIX
+- why this is root cause and not just correlation: the mismatch directly
+  prevents exact implementation of the decompile-proven subclass scratch
+  layout; no runtime hypothesis is needed for this ABI contradiction.
+- why proposed fix is 1:1 with reference architecture and semantics: remove
+  the absent field and assert the proven base class size.
+- files/functions to modify:
+  - `include/Airport/IOSkywalkNetworkPacket.h`
+  - docs/reference/YAML/audit/inventory/analysis files
+- forbidden alternative fixes considered and rejected:
+  - raw scratch writes on base packets.
+  - synthetic Apple packet scratch without class-size/vtable proof.
+  - forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay, poll
+    loop, packet synthesis, or deauth masking.
+- verification plan:
+  - `git diff --check`.
+  - targeted YAML parse.
+  - `./scripts/build_tahoe.sh`.
+  - `./scripts/build_regdiag.sh`.
+  - submit CR-171 Stage 1 structural request superseding CR-170.
+
+## Current Active Batch Note
+
+- id: A-CR171-IOSKYWALK-NETWORK-PACKET-SIZE
+- status: implemented locally, preparing Stage 1 structural review as CR-171.
+- scope: supersedes CR-170 by adding the next confirmed packet ABI foundation
+  fix required before Apple packet scratch/datapath restoration.
+- evidence:
+  - decomp proves base packet size `0x78` and Apple subclass scratch pointer
+    at `+0x78`.
+- local divergence:
+  - local base class had an extra pointer, shifting subclass storage.
+- fix:
+  - remove non-reference storage and add class-size assertions.
+- non-claims:
+  - no forced EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+    poll loop, synthetic scratch, synthetic packet, or deauth masking.

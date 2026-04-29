@@ -1,0 +1,60 @@
+---
+# 130_skywalk_companion_batch_2026_04_28.yaml
+# IO80211SkywalkInterface companion-id / pid-lock / dispatch helpers (CR-190).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-190
+date: 2026-04-28
+class: IO80211SkywalkInterface
+header: include/Airport/IO80211SkywalkInterface.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-189
+batch_size: 8
+notes: |
+  All eight exports are direct-call (non-vtable) methods of
+  IO80211SkywalkInterface that are NOT already declared as virtuals
+  earlier in the same class body. They use only primitive types and
+  already-known opaque types (`bool`, `unsigned int`, `unsigned long`,
+  `void *`, `ether_addr &`).
+
+  The remaining BootKC IO80211SkywalkInterface non-virtual exports
+  recovered on 2026-04-28 (attachPeer, detachPeer, cachePeer, findPeer,
+  getSelfMacAddr, getFeatureFlags, getDataQueueDepth, handleChosenMedia,
+  flushPacketQueues, isChipInterfaceReady, isCommandProhibited,
+  isInterfaceEnabled, setRunningState, getSupportedMediaArray,
+  setPromiscuousModeEnable, shouldLog, getLastQueuePacketTime,
+  getLastRxUnicastLinkActivityTime, logTxLatency, logRxLatency,
+  getLastTxTimeStamp, getLastRxTimeStamp, setDebugTrafficReport) are
+  already declared as virtuals earlier in the class body and resolve
+  through the inherited vtable; redeclaring them as non-virtual would
+  conflict with their existing virtual signatures.
+
+symbols:
+  - addr: '0xffffff80022781cc'
+    signature: 'unsigned int IO80211SkywalkInterface::getCompanionInterfaceId()'
+  - addr: '0xffffff80022781dc'
+    signature: 'void IO80211SkywalkInterface::setCompanionInterfaceId(unsigned int)'
+  - addr: '0xffffff800227739a'
+    signature: 'bool IO80211SkywalkInterface::pidLocked()'
+  - addr: '0xffffff8002278478'
+    signature: 'void IO80211SkywalkInterface::setLowLatencyEnabled(bool)'
+  - addr: '0xffffff80022771ea'
+    signature: 'void IO80211SkywalkInterface::updateTimeSyncMacAddress(ether_addr&)'
+  - addr: '0xffffff8002275220'
+    signature: 'void IO80211SkywalkInterface::validateDispatchQueue()'
+  - addr: '0xffffff8002276fba'
+    signature: 'void *IO80211SkywalkInterface::getControllerWorkQueue()'
+  - addr: '0xffffff80022765a2'
+    signature: 'void IO80211SkywalkInterface::storeProcessNameAndIoctlInformation(unsigned long)'
+
+local_change:
+  files:
+    - include/Airport/IO80211SkywalkInterface.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

@@ -1,0 +1,31 @@
+CR-216 build evidence — newPacket end-to-end branch coverage + split-halves redaction bypass
+date: 2026-04-29T09:50:03Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext sha256: 9ce9feb7e479d2d929a315cb5b090804ecfd28a5b55ac2a74d8fd63a29413f32
+kext UUID:   07A5527B-65EA-3659-9DC7-BA1CCD688381
+kext size:   16298648
+
+BootKC undef-symbol verification: OK: all 885 undefined symbols resolve against BootKC
+(+1 vs CR-215: a new IO80211NetworkPacket symbol was statically pulled in by the
+ static_cast/reinterpret_cast pattern in newPacket — already-present in CR-215 path
+ but logged with new probe; the new symbol is __ZTV20IO80211NetworkPacket vtable
+ referenced by the diagnostic AFTER_ALLOC log emitting object's vtable.)
+
+Source-side delta vs CR-215:
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. AirportItlwmIO80211PacketPool::withName factory: replace all 0x%llx pointer
+       outputs with split-halves 0x%x_%x via static helpers ptrHi32/ptrLo32
+       (uint32_t-typed memory reads bypass os_log privacy redaction).
+    2. AirportItlwmIO80211PacketPool::newPacket override: add end-to-end branch
+       coverage. Four mutually-exclusive return paths each emit a NEWPACKET_<branch>
+       FINAL marker:
+         - BAD_ARGS  (desc==NULL || outPacket==NULL)
+         - ALLOC_NULL (OSMetaClass::allocClassWithName returned NULL)
+         - INIT_FALSE (packet->initWithPool returned false)
+         - OK         (success)
+       Verbose state on first 4 calls per pool; OK_TICK summary every 64 calls
+       and on calls 254/255 to bound the 256-packet inventory loop without log floods.
+    3. AirportItlwm::start STEP 8b BEGIN/AFTER_TX/AFTER_RX/FINAL/BOTH_OK pointer
+       outputs converted to split-halves.

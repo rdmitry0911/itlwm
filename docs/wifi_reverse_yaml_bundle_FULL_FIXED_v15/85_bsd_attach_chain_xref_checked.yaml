@@ -61,12 +61,15 @@ bsd_attach_sequence:
         Returns bool. Called by driver, not by framework.
 
     - step: 4
-      call: "IOSkywalkPacketBufferPool::withName(name, interface, 0, &poolOpts)"
+      call: "IOSkywalkPacketBufferPool::withName(name, interface, 1, &poolOpts)"
       type: factory
       notes: >-
         Create TX and RX packet buffer pools. PoolOptions: packetCount,
         bufferCount, bufferSize, maxBuffersPerPacket. Factory method,
-        not virtual dispatch.
+        not virtual dispatch. Later AppleBCMWLANSkywalkPacketPool decomp
+        corrected the packetType from 0 to 1: the parent initWithName call is
+        made with kIOSkywalkPacketTypeNetwork, matching the downstream
+        IO80211NetworkPacket / IOSkywalkNetworkPacket datapath contract.
 
     - step: 5
       call: "IOSkywalkTxSubmissionQueue::withPool / IOSkywalkRxCompletionQueue::withPool"

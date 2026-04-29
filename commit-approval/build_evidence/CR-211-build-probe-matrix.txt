@@ -1,0 +1,39 @@
+CR-211 build evidence — comprehensive kern_pbufpool_create probe matrix
+date: 2026-04-29T05:37:39Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: 52e1e745bc2d78316293dc3a07bc004627f3a2a58de4d8a3f227a0b6bc367a68
+kext UUID:   C2C52783-BEB5-3DF1-96DA-1523FB2E5CC4
+kext size:   16285520
+
+BootKC undef-symbol verification: "OK: all 886 undefined symbols resolve against BootKC"
+  +2 vs CR-210 (884): _kern_pbufpool_create, _kern_pbufpool_destroy
+
+Source-side delta vs CR-210:
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. AirportItlwmIO80211PacketPool::withName(): packetType reverted from
+       Generic back to kIOSkywalkPacketTypeNetwork (1:1 with AppleBCMWLAN).
+    2. AirportItlwm::start STEP 8b: prepended a 16-case probe matrix that
+       calls kern_pbufpool_create directly with various kbi_flags / size
+       configurations BEFORE the normal pool factory; each successful
+       pool is destroyed via kern_pbufpool_destroy.
+
+    Probe coverage:
+      - GEN_baseline      = KBIF_QUANTUM (pre-d3a07c2 control)
+      - GEN_user          = QUANTUM | USER_ACCESS
+      - NET_no_flags      = 0 (type=Network without poolFlags)
+      - NET_user          = USER_ACCESS (current state, AppleBCMWLAN match)
+      - CLONE_baseline    = BUFFER_ON_DEMAND
+      - NET_user_persist  = USER_ACCESS | PERSISTENT
+      - NET_user_monolith = USER_ACCESS | MONOLITHIC
+      - NET_user_persist_mo = USER_ACCESS | PERSISTENT | MONOLITHIC
+      - NET_user_inhibit  = USER_ACCESS | INHIBIT_CACHE
+      - NET_user_kro      = USER_ACCESS | KERNEL_READONLY
+      - NET_user_nomag    = USER_ACCESS | NO_MAGAZINES
+      - NET_user_iodir_io = USER_ACCESS | IODIR_IN | IODIR_OUT
+      - NET_user_segsz_small = USER_ACCESS, buf_seg_size=0x20000
+      - NET_user_pkts_1024 = USER_ACCESS, packetCount=1024
+      - NET_user_pkts_4096 = USER_ACCESS, packetCount=4096
+      - GEN_user_persist  = QUANTUM | USER_ACCESS | PERSISTENT

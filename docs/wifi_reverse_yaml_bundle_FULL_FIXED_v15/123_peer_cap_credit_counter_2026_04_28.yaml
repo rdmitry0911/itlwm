@@ -1,0 +1,118 @@
+version: 1
+topic: Tahoe IO80211Peer capability/credit/counter accessor helpers
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_peer_capability_credit_counter_surface
+  follows:
+    - "117_peer_public_api_2026_04_28.yaml"
+    - "118_peermanager_datapath_lookup_2026_04_28.yaml"
+    - "119_peermanager_infra_config_2026_04_28.yaml"
+    - "120_interface_monitor_public_api_2026_04_28.yaml"
+    - "121_infrainterface_property_updaters_2026_04_28.yaml"
+    - "122_interface_monitor_leaky_ap_reporters_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - peer_capability_credit_counter_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..182)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "Peer credit/counter state is opaque to the local kext — no caller can read or update it"
+  use_in_this_batch: "no runtime change yet — CR-183 only widens the locally declared API surface so future caller wiring can drive Peer capability flags, TX credit accounting, RX/TX sequence counters, and the Cached-in-FW / SoftAP-peer flags"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211Peer::getHtCapable()", addr: "ffffff80021c3376" }
+      - { sym: "IO80211Peer::setHtCapable(bool)", addr: "ffffff80021c3388" }
+      - { sym: "IO80211Peer::getVhtCapable()", addr: "ffffff80021c339a" }
+      - { sym: "IO80211Peer::setVhtCapable(bool)", addr: "ffffff80021c33ac" }
+      - { sym: "IO80211Peer::isHeSupported()", addr: "ffffff80021c33ce" }
+      - { sym: "IO80211Peer::setHeSupported(bool)", addr: "ffffff80021c33e0" }
+      - { sym: "IO80211Peer::is6ECapable()", addr: "ffffff80021c3836" }
+      - { sym: "IO80211Peer::set6ECapable(bool)", addr: "ffffff80021c3824" }
+      - { sym: "IO80211Peer::hasHTorVHTCaps()", addr: "ffffff80021c5d86" }
+      - { sym: "IO80211Peer::canTransmit(unsigned int, unsigned int)", addr: "ffffff80021c3af0" }
+      - { sym: "IO80211Peer::canTransmitReason(unsigned int, unsigned int)", addr: "ffffff80021c3a1c" }
+      - { sym: "IO80211Peer::getOpenCredits()", addr: "ffffff80021c5f02" }
+      - { sym: "IO80211Peer::getCloseCredits()", addr: "ffffff80021c5ef4" }
+      - { sym: "IO80211Peer::getNumTxPacket()", addr: "ffffff80021c5fcc" }
+      - { sym: "IO80211Peer::getOutputSuccess()", addr: "ffffff80021c3814" }
+      - { sym: "IO80211Peer::getTxQuantum()", addr: "ffffff80021c370a" }
+      - { sym: "IO80211Peer::setTxQuantum(unsigned int)", addr: "ffffff80021c371a" }
+      - { sym: "IO80211Peer::getNextTxSeq(unsigned char)", addr: "ffffff80021c5dd6" }
+      - { sym: "IO80211Peer::getRxSequence()", addr: "ffffff80021c3682" }
+      - { sym: "IO80211Peer::getRxSequenceMulticast()", addr: "ffffff80021c3672" }
+      - { sym: "IO80211Peer::setTransmitOk(bool)", addr: "ffffff80021c372a" }
+      - { sym: "IO80211Peer::isCachedInFw()", addr: "ffffff80021c5da0" }
+      - { sym: "IO80211Peer::setCachedInFw(bool)", addr: "ffffff80021c5db2" }
+      - { sym: "IO80211Peer::isSoftAPPeer()", addr: "ffffff80021c5ec8" }
+      - { sym: "IO80211Peer::setSoftAPPeer(bool)", addr: "ffffff80021c5ed8" }
+
+local_before_cr_183:
+  files:
+    - "include/Airport/IO80211Peer.h"
+  mismatch: "CR-177 declared six Peer helpers (withAddressAndManager, init, getMacAddress, setMacAddress, getManager, getGeneration). Capability flags, credit accounting, TX/RX sequence counters, and cache/SoftAP peer flags were missing"
+  consequence: "any future caller wanting to read Peer HT/VHT/HE/6E capability flags, query TX credits, walk RX/TX sequence numbers, or check Cached-in-FW / SoftAP peer state would need per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_183:
+  supersedes: "CR-182"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211Peer.h"
+  changes:
+    - "extend `class IO80211Peer` with twenty-five non-virtual public method declarations"
+    - "declare nine capability getters/setters (HT/VHT/HE/6E/hasHTorVHT)"
+    - "declare two transmit predicates (canTransmit, canTransmitReason)"
+    - "declare four credit/counter accessors (getOpenCredits, getCloseCredits, getNumTxPacket, getOutputSuccess)"
+    - "declare four TX-quantum/sequence helpers (getTxQuantum, setTxQuantum, getNextTxSeq, setTransmitOk)"
+    - "declare two RX-sequence helpers (getRxSequence, getRxSequenceMulticast)"
+    - "declare four cache/SoftAP-peer flag accessors (isCachedInFw, setCachedInFw, isSoftAPPeer, setSoftAPPeer)"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-182"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the twenty-five new Peer methods from any local code path"
+    - "does not declare IO80211Peer with any base class or data layout beyond what was already in the local header"
+    - "does not include kernel-internal types whose definitions are not yet recovered"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "Peer constructor / init body recovery (which fields the cap/credit accessors back onto)"
+      - "thread/gate context for capability setters"
+      - "ordering of canTransmit / setTransmitOk relative to data-path TX submission"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition (carry-over)"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c (carry-over)"
+    note: "wired CR will be CR-184+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-183 has no caller wiring, so kext is bit-identical to CR-182"

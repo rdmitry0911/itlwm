@@ -1,0 +1,6 @@
+CR-201 — IO80211BssManager primitive-only batch (regdiag)
+date: 2026-04-28
+command: scripts/build_regdiag.sh
+regdiag path: Build/Debug/Tahoe/airport_itlwm_regdiag
+regdiag sha256: 6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+binary invariance: PASS

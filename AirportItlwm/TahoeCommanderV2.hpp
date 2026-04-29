@@ -148,7 +148,8 @@ public:
             return dispatchIssueCommand(620, TahoeCommandRouter::routeActionFrame(),
                                         owner.frameLen, 0, asyncContext, true);
         return dispatchIOVarSet(620, TahoeCommandRouter::routeActionFrame(),
-                                owner.frameLen, 0, asyncContext, false);
+                                TahoePayloadBuilders::kActionFrameV1TxPayloadSize,
+                                0, asyncContext, false);
     }
 
     IOReturn runSetRangingAuthenticate(const apple80211_ranging_authenticate_request_t *data,

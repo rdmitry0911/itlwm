@@ -10,13 +10,17 @@
 #define AirportItlwmV2_hpp
 
 #include "Apple80211.h"
+#include "TahoeControllerContracts.hpp"
+#include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeCommanderV2.hpp"
 
 #include "IOKit/network/IOGatedOutputQueue.h"
+#include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSString.h>
 #include <IOKit/IOService.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IOLocks.h>
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSMetaClass.h>
 #include <IOKit/IOFilterInterruptEventSource.h>
@@ -30,7 +34,9 @@
 #endif
 #include "Airport/IO80211FaultReporter.h"
 #include <skywalk/packet/os_packet.h>
+#include <IOKit/skywalk/IOSkywalkPacket.h>
 #include <IOKit/skywalk/IOSkywalkTxSubmissionQueue.h>
+#include <IOKit/skywalk/IOSkywalkTxCompletionQueue.h>
 #include <IOKit/skywalk/IOSkywalkRxCompletionQueue.h>
 
 enum
@@ -38,6 +44,12 @@ enum
     kPowerStateOff = 0,
     kPowerStateOn,
     kPowerStateCount
+};
+
+enum
+{
+    kAirportItlwmRxPendingCapacity = 256,
+    kAirportItlwmTxCompletionPendingCapacity = 256
 };
 
 // WiFi radio power states (matches Apple's apple80211_power_state)
@@ -290,13 +302,29 @@ public:
         return false;
     }
     virtual bool flowIdSupported() override {
-        return false;
+        return tahoeOwnerRegistry.hiddenInterface.flowIdSupported;
     }
     virtual SInt32 monitorModeSetEnabled(bool, UInt) override {
         return kIOReturnSuccess;
     }
+    virtual UInt32 getDataQueueDepth(OSObject *) override;
+    virtual UInt32 getActionFramePoolCapacity() override {
+        return TahoeControllerContracts::kActionFramePoolCapacity;
+    }
     virtual IOReturn requestQueueSizeAndTimeout(unsigned short *queue, unsigned short *timeout) override {
-        XYLog("%s\n", __FUNCTION__);
+        OSNumber *queueValue = OSDynamicCast(OSNumber, getProperty(TahoeControllerContracts::kCoalesceQSizeProperty));
+        OSNumber *timeoutValue = OSDynamicCast(OSNumber, getProperty(TahoeControllerContracts::kCoalesceTimeoutProperty));
+        const uint16_t queueSize = queueValue != nullptr ?
+            static_cast<uint16_t>(queueValue->unsigned32BitValue()) : 0;
+        const uint16_t queueTimeout = timeoutValue != nullptr ?
+            static_cast<uint16_t>(timeoutValue->unsigned32BitValue()) : 0;
+        if (queueSize == 0 || queueTimeout == 0)
+            return static_cast<IOReturn>(TahoeControllerContracts::kUnsupportedStatus);
+
+        *queue = queueSize;
+        *timeout = queueTimeout;
+        tahoeOwnerRegistry.controller.coalesceQueueSize = queueSize;
+        tahoeOwnerRegistry.controller.coalesceTimeout = queueTimeout;
         return kIOReturnSuccess;
     }
 
@@ -420,7 +448,23 @@ public:
     IOSkywalkPacketBufferPool *fTxPool;
     IOSkywalkPacketBufferPool *fRxPool;
     IOSkywalkTxSubmissionQueue *fTxQueue;
+    IOSkywalkTxCompletionQueue *fTxCompQueue;
     IOSkywalkRxCompletionQueue *fRxQueue;
+    IOEventSource *fMultiCastQueue;
+    UInt32 fSkywalkTxQueueDepth;
+    UInt32 fSkywalkRxQueueCapacity;
+    IOLock *fRxPendingLock;
+    IOSkywalkPacket *fRxPendingPackets[kAirportItlwmRxPendingCapacity];
+    packet_info_tag fRxPendingTags[kAirportItlwmRxPendingCapacity];
+    UInt32 fRxPendingLengths[kAirportItlwmRxPendingCapacity];
+    UInt32 fRxPendingHead;
+    UInt32 fRxPendingTail;
+    UInt32 fRxPendingCount;
+    IOLock *fTxCompletionPendingLock;
+    IOSkywalkPacket *fTxCompletionPendingPackets[kAirportItlwmTxCompletionPendingCapacity];
+    UInt32 fTxCompletionPendingHead;
+    UInt32 fTxCompletionPendingTail;
+    UInt32 fTxCompletionPendingCount;
     
     //IO80211
     uint8_t power_state;

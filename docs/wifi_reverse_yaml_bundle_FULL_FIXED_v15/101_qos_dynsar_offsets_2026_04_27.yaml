@@ -1,0 +1,66 @@
+schema_version: 1
+document_id: qos_dynsar_offsets_2026_04_27
+title: Tahoe QoS, DynSAR, congestion-control, and feature offset contracts
+status: active_addendum
+created: "2026-04-27"
+source_files:
+  - local: "AirportItlwm/TahoeQosDynsarContracts.hpp"
+  - local: "AirportItlwm/TahoeOwnerRegistry.hpp"
+  - local: "docs/reference/AppleBCMWLAN_qos_dynsar_offsets_2026_04_27.md"
+  - binary: "/tmp/AppleBCMWLANCoreMac"
+
+qos_dynsar_contracts:
+  dynsar_fail_safe:
+    function: "AppleBCMWLANCore::wasDynSARInFailSafeMode()"
+    address: "0xffffff8001632052"
+    start_ticks_offset: "0x74e0"
+    elapsed_shift: "0x0a"
+    window: "0x9502f9"
+    log_line: "0xdea9"
+    helper_semantics: "((nowTicks - startTicks) >> 0x0a) < 0x9502f9"
+  congestion_control:
+    configureCongestionControlMechanisms:
+      address: "0xffffff8001632144"
+    configureAggregationCongestionControlMechanism:
+      address: "0xffffff8001632162"
+    feature_offset: "0x7584"
+    feature_bit: "0x01"
+    success_status: "0"
+    unsupported_status: "0xe00002c7"
+  awdl_ampdu:
+    forceAwdlAmpdu:
+      read_address: "0xffffff800163428c"
+      write_address: "0xffffff80016342a0"
+      offset: "0x3768"
+    forceDisableAwdlAmpdu:
+      read_address: "0xffffff80016342b4"
+      write_address: "0xffffff80016342c8"
+      offset: "0x3764"
+  feature_flags:
+    getHwFeatureFlags:
+      address: "0xffffff80016342dc"
+      offset: "0x458c"
+  split_tx_status:
+    function: "AppleBCMWLANCore::isSplitTxStatusEnabled()"
+    address: "0xffffff800163434a"
+    offset: "0x00dc"
+    bit: "0x01"
+  tx_address_resolution:
+    v4:
+      function: "AppleBCMWLANCore::getTxAddrResolveReqV4()"
+      address: "0xffffff8001634360"
+      offset: "0x2aa4"
+    v6:
+      function: "AppleBCMWLANCore::getTxAddrResolveReqV6()"
+      address: "0xffffff8001634374"
+      offset: "0x2aa8"
+  local_alignment:
+    - "add TahoeQosDynsarContracts constants and helper semantics"
+    - "add QosDynsarOwner witness fields to TahoeOwnerRegistry"
+    - "do not enable QoS IOVAR dispatch"
+    - "do not force DynSAR/congestion/AMPDU/split-TX/address-resolution state"
+  non_claims:
+    - "does not claim final STA association, DHCP, RSN/EAPOL, or data path success"
+    - "does not enable AP/SoftAP runtime"
+    - "does not implement QoS IOVAR dispatch"
+    - "does not add retry, poll, fallback, forced state, or synthetic policy"

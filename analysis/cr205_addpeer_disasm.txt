@@ -1,0 +1,178 @@
+=== 0xffffff80021d3f58 ===
+  function: FUN_ffffff80021d3f58 @ ffffff80021d3f58, body=[[ffffff80021d3f58, ffffff80021d4081] [ffffff80021d4137, ffffff80021d41a1] [ffffff80021d41ae, ffffff80021d41cf]]
+  signature: undefined FUN_ffffff80021d3f58(void)
+  return type: undefined
+    ffffff80021d3f58: PUSH RBP
+    ffffff80021d3f59: MOV RBP,RSP
+    ffffff80021d3f5c: PUSH R15
+    ffffff80021d3f5e: PUSH R14
+    ffffff80021d3f60: PUSH R13
+    ffffff80021d3f62: PUSH R12
+    ffffff80021d3f64: PUSH RBX
+    ffffff80021d3f65: SUB RSP,0x48
+    ffffff80021d3f69: MOV RBX,RDI
+    ffffff80021d3f6c: TEST RSI,RSI
+    ffffff80021d3f6f: JZ 0xffffff80021d3faa
+    ffffff80021d3f71: MOV R15,RSI
+    ffffff80021d3f74: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d3f78: MOV R14,qword ptr [RAX + 0x530]
+    ffffff80021d3f7f: TEST R14,R14
+    ffffff80021d3f82: JZ 0xffffff80021d3fee
+    ffffff80021d3f84: TEST byte ptr [R15],0x1
+    ffffff80021d3f88: JNZ 0xffffff80021d3fdc
+    ffffff80021d3f8a: MOV RAX,qword ptr [R14 + 0x18]
+    ffffff80021d3f8e: MOV ECX,dword ptr [R15]
+    ffffff80021d3f91: MOVZX EDX,word ptr [R15 + 0x4]
+    ffffff80021d3f96: MOV word ptr [RAX + 0x5c],DX
+    ffffff80021d3f9a: MOV dword ptr [RAX + 0x58],ECX
+    ffffff80021d3f9d: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d3fa1: MOV R14,qword ptr [RAX + 0x530]
+    ffffff80021d3fa8: JMP 0xffffff80021d3fdc
+    ffffff80021d3faa: LEA RDX,[-0x7ffdc8d50e]
+    ffffff80021d3fb1: LEA RCX,[-0x7ffdc8d4ec]
+    ffffff80021d3fb8: LEA R8,[-0x7ffdc8a9db]
+    ffffff80021d3fbf: XOR R14D,R14D
+    ffffff80021d3fc2: MOV RSI,0x800000000000000
+    ffffff80021d3fcc: MOV RDI,RBX
+    ffffff80021d3fcf: MOV R9D,0x1502
+    ffffff80021d3fd5: XOR EAX,EAX
+    ffffff80021d3fd7: CALL 0xffffff80021c655e
+    ffffff80021d3fdc: MOV RAX,R14
+    ffffff80021d3fdf: ADD RSP,0x48
+    ffffff80021d3fe3: POP RBX
+    ffffff80021d3fe4: POP R12
+    ffffff80021d3fe6: POP R13
+    ffffff80021d3fe8: POP R14
+    ffffff80021d3fea: POP R15
+    ffffff80021d3fec: POP RBP
+    ffffff80021d3fed: RET
+    ffffff80021d3fee: MOV RDI,qword ptr [RAX + 0x538]
+    ffffff80021d3ff5: TEST RDI,RDI
+    ffffff80021d3ff8: JZ 0xffffff80021d401d
+    ffffff80021d3ffa: MOV RCX,qword ptr [RDI + 0x10]
+    ffffff80021d3ffe: MOV EAX,dword ptr [RCX + 0x20]
+    ffffff80021d4001: CMP RAX,0x1000000
+    ffffff80021d4007: JZ 0xffffff80021d404a
+    ffffff80021d4009: MOV EDX,dword ptr [RCX + 0x24]
+    ffffff80021d400c: MOV ECX,dword ptr [RCX + 0x34]
+    ffffff80021d400f: IMUL RCX,RAX
+    ffffff80021d4013: CMP RCX,RDX
+    ffffff80021d4016: JA 0xffffff80021d404a
+    ffffff80021d4018: XOR R14D,R14D
+    ffffff80021d401b: JMP 0xffffff80021d3fdc
+    ffffff80021d401d: LEA RDX,[-0x7ffdc8d50e]
+    ffffff80021d4024: LEA RCX,[-0x7ffdc8d4ec]
+    ffffff80021d402b: LEA R8,[-0x7ffdc8a9db]
+    ffffff80021d4032: XOR R14D,R14D
+    ffffff80021d4035: MOV RSI,0x800000000000000
+    ffffff80021d403f: MOV RDI,RBX
+    ffffff80021d4042: MOV R9D,0x150e
+    ffffff80021d4048: JMP 0xffffff80021d3fd5
+    ffffff80021d404a: LEA RSI,[-0x7ffde39b1f]
+    ffffff80021d4051: MOV RDX,RBX
+    ffffff80021d4054: MOV RCX,R15
+    ffffff80021d4057: XOR R8D,R8D
+    ffffff80021d405a: MOV R9D,0xffffffff
+    ffffff80021d4060: CALL 0xffffff80021b9f7a
+    ffffff80021d4065: TEST RAX,RAX
+    ffffff80021d4068: JZ 0xffffff80021d4137
+    ffffff80021d406e: MOV R14,RAX
+    ffffff80021d4071: MOV RAX,qword ptr [RBX]
+    ffffff80021d4074: MOV RDI,RBX
+    ffffff80021d4077: CALL qword ptr [RAX + 0x38]
+    ffffff80021d407a: MOV RDI,RAX
+    ffffff80021d407d: CALL 0xffffff80009ff9b0
+    ffffff80021d4137: MOV RDI,R15
+    ffffff80021d413a: MOV RSI,RBX
+    ffffff80021d413d: CALL 0xffffff80021bf64a
+    ffffff80021d4142: LEA R12,[-0x7ffdc8a963]
+    ffffff80021d4149: TEST RAX,RAX
+    ffffff80021d414c: JZ 0xffffff80021d419d
+    ffffff80021d414e: MOV R14,RAX
+    ffffff80021d4151: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d4155: MOV RDI,qword ptr [RAX + 0x538]
+    ffffff80021d415c: MOV RSI,R14
+    ffffff80021d415f: CALL 0xffffff80021b9e0a
+    ffffff80021d4164: TEST AL,AL
+    ffffff80021d4166: JZ 0xffffff80021d4194
+    ffffff80021d4168: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d416c: MOV RSI,qword ptr [RAX + 0x518]
+    ffffff80021d4173: MOV RDI,R14
+    ffffff80021d4176: CALL 0xffffff80021c4cf4
+    ffffff80021d417b: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d417f: MOV RAX,qword ptr [RAX + 0x538]
+    ffffff80021d4186: TEST RAX,RAX
+    ffffff80021d4189: JZ 0xffffff80021d41ae
+    ffffff80021d418b: MOV RAX,qword ptr [RAX + 0x10]
+    ffffff80021d418f: MOV ESI,dword ptr [RAX + 0x24]
+    ffffff80021d4192: JMP 0xffffff80021d41b0
+    ffffff80021d4194: MOV RAX,qword ptr [R14]
+    ffffff80021d4197: MOV RDI,R14
+    ffffff80021d419a: CALL qword ptr [RAX + 0x28]
+    ffffff80021d419d: XOR R14D,R14D
+    ffffff80021d41a0: JMP 0xffffff80021d41bf
+    ffffff80021d41ae: XOR ESI,ESI
+    ffffff80021d41b0: MOV RDI,RBX
+    ffffff80021d41b3: CALL 0xffffff80021d42a6
+    ffffff80021d41b8: LEA R12,[-0x7ffdc8a966]
+    ffffff80021d41bf: MOV RAX,qword ptr [RBX]
+    ffffff80021d41c2: MOV RDI,RBX
+    ffffff80021d41c5: CALL qword ptr [RAX + 0x38]
+    ffffff80021d41c8: MOV RDI,RAX
+    ffffff80021d41cb: CALL 0xffffff80009ff9b0
+
+=== 0xffffff80021d7ba0 ===
+  function: IO80211PeerManager::addPeerOperation() @ ffffff80021d7ba0, body=[[ffffff80021d7ba0, ffffff80021d7bf6] [ffffff80021d7c12, ffffff80021d7c29]]
+  signature: undefined IO80211PeerManager::addPeerOperation()(void)
+  return type: undefined
+    ffffff80021d7ba0: PUSH RBP
+    ffffff80021d7ba1: MOV RBP,RSP
+    ffffff80021d7ba4: PUSH R15
+    ffffff80021d7ba6: PUSH R14
+    ffffff80021d7ba8: PUSH RBX
+    ffffff80021d7ba9: PUSH RAX
+    ffffff80021d7baa: MOV RBX,RDI
+    ffffff80021d7bad: MOV RAX,qword ptr [RDI + 0x18]
+    ffffff80021d7bb1: MOV R14,qword ptr [RAX + 0xbf8]
+    ffffff80021d7bb8: TEST R14,R14
+    ffffff80021d7bbb: JNZ 0xffffff80021d7bd5
+    ffffff80021d7bbd: MOV RDI,RBX
+    ffffff80021d7bc0: CALL 0xffffff80021d73e0
+    ffffff80021d7bc5: MOV RAX,qword ptr [RBX + 0x18]
+    ffffff80021d7bc9: MOV R14,qword ptr [RAX + 0xbf8]
+    ffffff80021d7bd0: TEST R14,R14
+    ffffff80021d7bd3: JZ 0xffffff80021d7c12
+    ffffff80021d7bd5: MOV RSI,0x4966506565724164
+    ffffff80021d7bdf: MOV RDI,RBX
+    ffffff80021d7be2: CALL 0xffffff80021ce526
+    ffffff80021d7be7: MOV EDX,0x1
+    ffffff80021d7bec: MOV RDI,R14
+    ffffff80021d7bef: MOV RSI,RAX
+    ffffff80021d7bf2: CALL 0xffffff8000b00f40
+    ffffff80021d7c12: MOV R14,qword ptr [RAX + 0x518]
+    ffffff80021d7c19: MOV RAX,qword ptr [RBX]
+    ffffff80021d7c1c: MOV RDI,RBX
+    ffffff80021d7c1f: CALL qword ptr [RAX + 0x38]
+    ffffff80021d7c22: MOV RDI,RAX
+    ffffff80021d7c25: CALL 0xffffff80009ff9b0
+
+=== 0xffffff80022e1148 ===
+  no function at 0xffffff80022e1148
+=== 0xffffff80021bdc4c ===
+  function: FUN_ffffff80021bdc4c @ ffffff80021bdc4c, body=[[ffffff80021bdc4c, ffffff80021bdc73]]
+  signature: undefined FUN_ffffff80021bdc4c(void)
+  return type: undefined
+    ffffff80021bdc4c: PUSH RBP
+    ffffff80021bdc4d: MOV RBP,RSP
+    ffffff80021bdc50: PUSH R15
+    ffffff80021bdc52: PUSH R14
+    ffffff80021bdc54: PUSH R13
+    ffffff80021bdc56: PUSH R12
+    ffffff80021bdc58: PUSH RBX
+    ffffff80021bdc59: PUSH RAX
+    ffffff80021bdc5a: MOV dword ptr [RBP + -0x2c],EDX
+    ffffff80021bdc5d: MOV R15D,ESI
+    ffffff80021bdc60: MOV R12,RDI
+    ffffff80021bdc63: LEA RDI,[-0x7ffdbf1d00]
+    ffffff80021bdc6a: MOV ESI,0x18
+    ffffff80021bdc6f: CALL 0xffffff8000a016c0

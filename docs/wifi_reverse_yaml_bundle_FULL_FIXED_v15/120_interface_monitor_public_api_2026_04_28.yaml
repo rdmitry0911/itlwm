@@ -1,0 +1,112 @@
+version: 1
+topic: Tahoe IO80211InterfaceMonitor public direct-call API surface
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_interface_monitor_public_surface
+  follows:
+    - "115_infrainterface_tahoe_api_2026_04_28.yaml"
+    - "116_peermanager_public_api_2026_04_28.yaml"
+    - "117_peer_public_api_2026_04_28.yaml"
+    - "118_peermanager_datapath_lookup_2026_04_28.yaml"
+    - "119_peermanager_infra_config_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - interface_monitor_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..179)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+  use_in_this_batch: "no runtime change yet — CR-180 only widens the locally declared API surface so future caller wiring can link against documented BootKC interface-monitor symbols"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211InterfaceMonitor::getController()", addr: "ffffff80022f7938", returns: "IO80211Controller *" }
+      - { sym: "IO80211InterfaceMonitor::getInputBytes()", addr: "ffffff80022f7568", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getInputPackets()", addr: "ffffff80022f7536", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputBEBytes()", addr: "ffffff80022f7694", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputBKBytes()", addr: "ffffff80022f76c6", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputVIBytes()", addr: "ffffff80022f772a", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputVOBytes()", addr: "ffffff80022f76f8", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputBEPackets()", addr: "ffffff80022f759a", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputBKPackets()", addr: "ffffff80022f75cc", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputVIPackets()", addr: "ffffff80022f7662", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getOutputVOPackets()", addr: "ffffff80022f75fe", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::getInterfaceRSSI()", addr: "ffffff80022f54f4", returns: "long long" }
+      - { sym: "IO80211InterfaceMonitor::setInterfaceRSSI(long long)", addr: "ffffff80022f521e", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::hasInterfaceRSSI()", addr: "ffffff80022f54c2", returns: "bool" }
+      - { sym: "IO80211InterfaceMonitor::setInterfaceSNR(long long)", addr: "ffffff80022f5530", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::setInterfaceNF(long long)", addr: "ffffff80022f57f2", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::getLinkRate()", addr: "ffffff80022ef27c", returns: "unsigned long long" }
+      - { sym: "IO80211InterfaceMonitor::setLinkRate(unsigned long long)", addr: "ffffff80022ef20c", returns: "void" }
+      - { sym: "IO80211InterfaceMonitor::modifyChID(unsigned long long)", addr: "ffffff80022ef182", returns: "void" }
+
+local_before_cr_180:
+  files:
+    - "include/Airport/IO80211Interface.h"
+  mismatch: "no canonical IO80211InterfaceMonitor header in the local include tree; class only forward-declared in IO80211Interface.h"
+  consequence: "any future caller wanting to read counters, RSSI/SNR/NF, link rate or the interface controller would have to add per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_180:
+  supersedes: "CR-179"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211InterfaceMonitor.h"
+  changes:
+    - "create new header `include/Airport/IO80211InterfaceMonitor.h`"
+    - "declare `class IO80211InterfaceMonitor` as opaque (no base class, no data, no vtable)"
+    - "declare `IO80211Controller *getController(void)`"
+    - "declare ten counter accessors (input bytes/packets, output bytes/packets per AC)"
+    - "declare RSSI/SNR/NF accessors and mutators"
+    - "declare link-rate accessor/mutator and channel modifier"
+    - "forward-declare `class IO80211Controller`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-179"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the nineteen new interface-monitor methods from any local code path"
+    - "does not declare IO80211InterfaceMonitor with any base class or data layout"
+    - "does not include kernel-internal types whose definitions are not yet recovered"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for setInterfaceRSSI / setLinkRate"
+      - "consumer paths that currently bypass these accessors"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition for setLinkState(state=2)"
+      - "ordering of setCurrentApAddress vs setLinkState"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c"
+      - "definition of peerState enum and other kernel-internal peer types"
+    note: "wired CR will be CR-181+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-180 has no caller wiring, so kext is bit-identical to CR-179"

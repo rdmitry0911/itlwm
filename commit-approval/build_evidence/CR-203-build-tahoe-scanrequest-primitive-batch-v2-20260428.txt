@@ -1,0 +1,21 @@
+IONetworkController.h: slots 6/7 already patched
+IOSkywalkTxSubmissionQueue.h: callbacks already patched
+IOSkywalkRxCompletionQueue.h: callbacks already patched
+IOSkywalkTxCompletionQueue.h: callbacks already patched
+IOSkywalkRxCompletionQueue.h: enqueuePackets overloads already patched
+IOSkywalkPacket.h: Tahoe packet vtable slots already patched
+--- xcodebuild: WARNING: Using the first of multiple matching destinations:
+{ platform:macOS, arch:x86_64, id:9F438DC0-7A5A-5522-BE6B-49327E62032B, name:My Mac }
+{ platform:macOS, name:Any Mac }
+
+Building only AirportItlwm.kext via AirportItlwm-Tahoe (Debug) commit=d3a07c2...
+ld: warning: ignoring duplicate libraries: '-lkmod'
+
+/Users/bob/Projects/itlwm/itlwm.xcodeproj: warning: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to 10.12, but the range of supported deployment target versions is 10.13 to 26.2.99. (in target 'fw_gen' from project 'itlwm')
+** BUILD SUCCEEDED **
+
+
+Build succeeded: /Users/bob/Projects/itlwm/Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+
+Verifying symbols...
+OK: all 884 undefined symbols resolve against BootKC

@@ -1,0 +1,94 @@
+schema_version: 1
+document_id: mcs_nrate_and_virtual_if_shadow_2026_04_26
+title: Tahoe MCS nrate producer and virtual-interface shadow contracts
+status: active_addendum
+created: "2026-04-26"
+source_files:
+  - remote: "/srv/project/ghidra_output/CR120_getMCS_forced_disasm.txt"
+  - remote: "/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+  - local: "AirportItlwm/AirportSTAIOCTL.cpp"
+
+primary_sta_mcs_contract:
+  selector:
+    ioctl: APPLE80211_IOC_MCS
+    numeric_id: 57
+    request_direction: get
+    carrier: apple80211_mcs_data
+  reference:
+    function: "AppleBCMWLANCore::getMCS(apple80211_mcs_data*)"
+    address_range: "0xffffff80016214c4..0xffffff8001621603"
+    producer_source: "cached nrate config state"
+    query_key: "nrate"
+    null_return: "0xe00002c2"
+    accepted_query_returns:
+      - "0x00000000"
+      - "0xe00002e3"
+    return_policy: "returns the nrate query status"
+    decode_policy:
+      - family_mask: "rate & 0x07000000"
+      - family_0x01000000_index: "rate & 0xff"
+      - family_0x02000000_index: "rate & 0x0f"
+      - family_0x03000000_index: "rate & 0x0f"
+      - other_families: "do not publish a new index"
+  local_policy:
+    do_not_use_bss_node_txmcs: true
+    do_not_gate_on_association_state: true
+    use_existing_transport_rate_cache: true
+    mirror_on_legacy_sta_dispatcher: true
+    rationale: >
+      The recovered producer is a transport-rate cache getter, not an
+      IO80211BssManager association helper and not a direct ieee80211_node
+      field read.
+
+transport_rate_cache_mapping:
+  iwm:
+    local_source: "iwm_softc::lq_sta.rs_drv.last_rate_n_flags"
+    no_explicit_valid_bit: true
+    local_query_return_when_present: "0x00000000"
+  iwx:
+    local_source: "iwx_softc::sc_last_rate_n_flags"
+    validity_bit: "iwx_softc::sc_has_last_rate_n_flags"
+    no_cached_value_return: "0xe00002e3"
+
+virtual_interface_create_contract:
+  selector:
+    ioctl: APPLE80211_IOC_VIRTUAL_IF_CREATE
+    numeric_id: 94
+    request_direction: set
+    carrier: apple80211_virt_if_create_data
+  reference:
+    function: "AppleBCMWLANCore::setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data*)"
+    address: "0xffffff80015fc280"
+    role_field_offset: "data+0x0c"
+    public_role_failures:
+      - roles: [8, 9, 10]
+        meaning: "NAN / NAN-data owner path"
+        public_return_without_owner_success: "0xe00002c7"
+      - role: 6
+        meaning: "proximity / AWDL owner path"
+        local_primary_sta_return: "0xe00002bd"
+      - role: 7
+        meaning: "APSTA / SoftAP owner path"
+        local_primary_sta_return: "0xe00002bd"
+      - role: "other"
+        public_return: "0xe0000001"
+  local_policy:
+    mirror_on_legacy_sta_dispatcher_for_tahoe_targets: true
+    apsta_owner_state: "required_next_layer_not_primary_sta_stub"
+    advertise_hostap_capability: "only_after_apsta_owner_reconstruction"
+    rationale: >
+      Role 7 proves that SoftAP belongs to a real APSTA owner layer. The
+      failure-only local branch is an interim no-owner shape, not a final
+      policy. The required fix is to reconstruct the APSTA/SAP owner object and
+      only then expose successful APSTA creation/capability behavior.
+
+guardrails:
+  - rule: "Do not use ic_bss->ni_txmcs as the public MCS producer."
+    reason: "Reference getMCS reads cached nrate state."
+  - rule: "Do not turn VIRTUAL_IF_CREATE role 7 into primary-STA success."
+    reason: "Reference routes SoftAP/APSTA through a separate APSTA/SAP owner object."
+  - rule: "Reconstruct the APSTA owner object/state before setting APPLE80211_C_FLAG_HOST_AP."
+    reason: "Capability publication is a contract to satisfy AP/SoftAP lifecycle."
+  - rule: "Do not use these fixes to force RSN, EAPOL, DHCP, or link readiness."
+    reason: "They restore public getters/fail-shapes only."

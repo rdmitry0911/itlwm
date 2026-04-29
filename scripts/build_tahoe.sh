@@ -33,6 +33,7 @@ BOOTKC="${1:-/Volumes/macos-750/System/Library/KernelCollections/BootKernelExten
 patch_mackernelsdk() {
     local header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/network/IONetworkController.h"
     local tx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkTxSubmissionQueue.h"
+    local txc_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkTxCompletionQueue.h"
     local rx_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkRxCompletionQueue.h"
     local packet_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h"
 
@@ -82,6 +83,14 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
         echo "IOSkywalkRxCompletionQueue.h: callbacks already patched"
     fi
 
+    if [ -f "$txc_header" ] && grep -q 'typedef IOReturn (\*IOSkywalkTxCompletionQueueAction)' "$txc_header"; then
+        echo "Patching IOSkywalkTxCompletionQueue.h: callbacks -> BootKC ABI"
+        perl -0pi -e 's|typedef IOReturn \(\*IOSkywalkTxCompletionQueueAction\)\( OSObject \* owner, IOSkywalkTxCompletionQueue \*, IOSkywalkPacket \*\*, UInt32, void \* \);|typedef UInt32 (*IOSkywalkTxCompletionQueueAction)( OSObject * owner, IOSkywalkTxCompletionQueue *, IOSkywalkPacket **, UInt32, void * );|g' "$txc_header"
+        echo "  done"
+    elif [ -f "$txc_header" ]; then
+        echo "IOSkywalkTxCompletionQueue.h: callbacks already patched"
+    fi
+
     # Tahoe 26.x has packet-array enqueue at vtable slot 0x2a0 and direct
     # packet/chain-head enqueue at slot 0x2a8.  Older local SDK headers model
     # the second overload as queue_entry*, which can make a packet array call
@@ -109,6 +118,32 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
         echo "  done"
     elif [ -f "$packet_header" ]; then
         echo "IOSkywalkPacket.h: Tahoe packet vtable slots already patched"
+    fi
+
+    # CR-223: Tahoe BootKC exports the IOSkywalkPacket data-accessor
+    # virtuals (and getPacketType) const-qualified (mangled __ZNK...).
+    # MacKernelSDK header had them non-const, so any subclass that
+    # constructs its own vtable emits __ZN... refs that the kernel
+    # does not export. Adding `const` keeps the vtable slot layout
+    # identical (these are pure accessors) and aligns the mangled
+    # signatures with kernel exports. setDataOffAndLen's second param
+    # is `unsigned long` in BootKC (mangled `m`), not `uint64_t` (`y`)
+    # — fix the type for the same reason.
+    if [ -f "$packet_header" ] && ! grep -q 'getDataLength() const' "$packet_header"; then
+        echo "Patching IOSkywalkPacket.h: const-qualify Tahoe accessor virtuals"
+        perl -0pi -e 's|    virtual UInt32 getPacketBuffers\( IOSkywalkPacketBuffer \*\* buffers, UInt32 maxBuffers \);|    virtual UInt32 getPacketBuffers( IOSkywalkPacketBuffer ** buffers, UInt32 maxBuffers ) const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual UInt32 getPacketBufferCount\(\);|    virtual UInt32 getPacketBufferCount() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual IOMemoryDescriptor \* getMemoryDescriptor\(\);|    virtual IOMemoryDescriptor * getMemoryDescriptor() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual UInt32 getDataLength\(\);|    virtual UInt32 getDataLength() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual UInt16 getDataOffset\(\);|    virtual UInt16 getDataOffset() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual int64_t getDataOff\(\);|    virtual int64_t getDataOff() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual void \* getDataVirtualAddress\(\);|    virtual void * getDataVirtualAddress() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual void \* getDataIOVirtualAddress\(\);|    virtual void * getDataIOVirtualAddress() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual UInt32 getPacketType\(\);|    virtual UInt32 getPacketType() const;|g' "$packet_header"
+        perl -0pi -e 's|    virtual IOReturn setDataOffAndLen\( int64_t offset, uint64_t length \);|    virtual IOReturn setDataOffAndLen( int64_t offset, unsigned long length );|g' "$packet_header"
+        echo "  done"
+    elif [ -f "$packet_header" ]; then
+        echo "IOSkywalkPacket.h: const-qualified accessors already patched"
     fi
 }
 

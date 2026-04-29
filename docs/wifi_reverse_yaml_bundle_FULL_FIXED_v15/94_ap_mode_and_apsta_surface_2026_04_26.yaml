@@ -1,0 +1,161 @@
+schema_version: 1
+document_id: ap_mode_and_apsta_surface_2026_04_26
+title: Tahoe AP mode, APSTA, and SoftAP surface contracts
+status: active_addendum
+created: "2026-04-26"
+source_files:
+  - remote: "/srv/project/ghidra_output/AppleBCMWLAN_Core_decompiled.c"
+  - local: "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+  - local: "include/Airport/apple80211_ioctl.h"
+  - local: "include/Airport/apple80211_var.h"
+
+primary_sta_ap_mode_contract:
+  selector:
+    ioctl: APPLE80211_IOC_AP_MODE
+    numeric_id: 26
+    request_direction: set
+    carrier: apple80211_apmode_data
+  reference:
+    function: "AppleBCMWLANCore::setAP_MODE(apple80211_apmode_data*)"
+    address: "0xffffff80016034dc"
+    default_return: "0xe00002c7"
+    normal_path_state_mutation: false
+    gated_success_path:
+      conditions:
+        - "AppleBCMWLAN_isVerboseDebugLoggingAllowed() != 0"
+        - "feature gate 0x3f returns true"
+      side_effect: "sets or clears bit 10 at core expansion +0x288c based on data+4 == 2"
+      applicability: "hidden debug/feature path only, not the normal STA contract"
+  local_policy:
+    route_public_ioctl_explicitly: true
+    return_value: "0xe00002c7"
+    mutate_cached_ap_mode: false
+    advertise_hostap_capability_on_sta: false
+    rationale: >
+      The primary STA interface must expose the same fixed-fail AP_MODE surface
+      without inventing AP state or enabling APSTA workflows.
+
+primary_sta_ap_ie_list_contract:
+  selector:
+    ioctl: APPLE80211_IOC_AP_IE_LIST
+    numeric_id: 48
+    request_direction: get
+    carrier: apple80211_ap_ie_data
+  reference:
+    function: "AppleBCMWLANCore::getAP_IE_LIST(apple80211_ap_ie_data*)"
+    address: "0xffffff80015e5b46"
+    wrapper_semantics:
+      - "initialize local output length to 0"
+      - "delegate IO80211BssManager helper with output pointer data+8"
+      - "write final length to data+4"
+    bss_manager_helper:
+      function: "FUN_ffffff800226698a"
+      address: "0xffffff800226698a"
+      no_current_bss_return: "0xe0822403"
+      wrapper_propagates_helper_return: false
+  local_policy:
+    set_version: true
+    initialize_len_to_zero: true
+    no_bss_or_no_ie_result: kIOReturnSuccess
+    no_bss_or_no_ie_len: 0
+    ignore_incoming_len_as_capacity_on_tahoe: true
+    mirror_on_legacy_sta_dispatcher: true
+    overflow_result: kIOReturnError
+    rationale: >
+      Tahoe apple80211_ap_ie_data embeds a fixed 1024-byte output array. The
+      incoming len field is output state, not required caller capacity.
+
+apsta_interface_surface:
+  class: AppleBCMWLANIO80211APSTAInterface
+  relationship_to_primary_sta: >
+    APSTA and SoftAP selectors belong to a separate APSTA interface surface.
+    They must not be implemented on the primary STA bridge unless the local
+    driver also restores APSTA owner state and lifecycle. This is not a
+    final no-owner policy: the Apple-required APSTA/SAP owner layer must be
+    reconstructed as its own class/object topology.
+  owner_reconstruction_status: required
+  owner_reconstruction_target:
+    protocol_base: IO80211SapProtocol
+    concrete_class: AppleBCMWLANIO80211APSTAInterface
+    factory_address: "0xffffff8001685422"
+    object_size: "0x138"
+    core_storage_offset: "core_expansion+0x2c30"
+    state_block_pointer: "self+0x130"
+    bsd_name_prefix: "ap"
+    bsd_unit_number: 1
+    interface_subfamily: 3
+  recovered_methods:
+    - selector: APPLE80211_IOC_HOST_AP_MODE
+      numeric_id: 25
+      function: "AppleBCMWLANIO80211APSTAInterface::setHOST_AP_MODE(apple80211_network_data*)"
+      address: "0xffffff80016884ae"
+      contract_summary: >
+        Complex AP owner path. It references core expansion AP/nearby owner
+        offsets, may bring down proximity/NAN links, and delegates to
+        setHostApModeInternal(). It must be restored on the APSTA owner, not
+        stubbed as primary STA success.
+    - selector: APPLE80211_IOC_HOST_AP_MODE_HIDDEN
+      numeric_id: 336
+      function: "AppleBCMWLANIO80211APSTAInterface::getHOST_AP_MODE_HIDDEN(...)"
+      address: "0xffffff80016882ea"
+      contract_summary: >
+        If output is non-null, writes 1 and calls getInterfaceId(); visible
+        decompile returns raw 0x16 on the recovered tail path.
+    - selector: APPLE80211_IOC_SOFTAP_PARAMS
+      numeric_id: 347
+      function: "AppleBCMWLANIO80211APSTAInterface::getSOFTAP_PARAMS(apple80211_softap_params*)"
+      address: "0xffffff800168e7f4"
+      contract_summary: >
+        Reads APSTA ivar block at self+0x130 and copies public fields from
+        offsets +0x18, +0x1c, +0x20, +0x24, +0x28, +0x68, +0x0e, and +0x10.
+    - selector: APPLE80211_IOC_SOFTAP_STATS
+      numeric_id: 350
+      function: "AppleBCMWLANIO80211APSTAInterface::getSOFTAP_STATS(apple80211_softap_stats*)"
+      address: "0xffffff800168e838"
+      contract_summary: "Copies 0x58 bytes from APSTA ivar block +0x1b0."
+    - selector: APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE
+      numeric_id: 352
+      function: "AppleBCMWLANIO80211APSTAInterface::setSOFTAP_WIFI_NETWORK_INFO_IE(...)"
+      address: "0xffffff800168e602"
+      contract_summary: >
+        Feature gate 0x46 controls behavior. If enabled and byte at data+3 is
+        less than 0x21, copies 0x24 bytes into APSTA state at owner+0x2c.
+        Otherwise returns 0xe00002c2. If feature gate is disabled, returns 0.
+
+capability_publication_rules:
+  hostap_capability_flag:
+    public_flag: APPLE80211_C_FLAG_HOST_AP
+    local_status: publish_only_after_apsta_owner_reconstruction
+    reason: >
+      Advertising HostAP is a contract that the APSTA owner object, state
+      block, queues, SoftAP carriers, and lifecycle are present. The local
+      primary STA must not fake that contract; the missing owner layer must be
+      reconstructed first.
+  channel_hostap_flag:
+    public_flag: APPLE80211_C_FLAG_HOST_AP
+    local_status: publish_only_after_apsta_owner_reconstruction
+    reason: >
+      Channel/capability HostAP bits are not a discovery shortcut; they are a
+      contract that AP/SoftAP lifecycle can be satisfied.
+
+implementation_guardrails:
+  - rule: "Do not return success from primary STA AP_MODE."
+    reason: "Reference normal path returns 0xe00002c7."
+  - rule: "Do not cache AP mode on fixed-fail primary STA path."
+    reason: "Reference normal path does not mutate AP state."
+  - rule: "Do not implement SoftAP selectors on the primary STA bridge."
+    reason: "Reference implements them on AppleBCMWLANIO80211APSTAInterface."
+  - rule: "Reconstruct the APSTA owner layer before enabling HostAP capabilities."
+    reason: "Capability advertisement is system-visible behavior and requires the Apple owner topology."
+  - rule: "Do not use AP mode to mask station join, RSN, or data failures."
+    reason: "AP mode is not a producer for STA EAPOL/key/DHCP completion."
+  - rule: "Do not fabricate AP IE bytes from AP_IE_LIST."
+    reason: "Reference publishes BssManager-produced bytes or zero length."
+
+next_layer_requirements_for_real_apsta_support:
+  - requirement: "Recover local IO80211SapProtocol base/class shape."
+  - requirement: "Implement a local APSTA owner object, not a primary-STA shim."
+  - requirement: "Recover APSTA interface construction and registration path."
+  - requirement: "Recover AP owner state backing self+0x130 and core expansion offsets used by setHOST_AP_MODE."
+  - requirement: "Recover SoftAP public carriers before exposing selectors 347, 349, 350, and 352 locally."
+  - requirement: "Only then consider HostAP capability publication."

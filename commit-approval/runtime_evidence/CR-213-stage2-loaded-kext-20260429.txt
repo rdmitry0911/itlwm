@@ -1,0 +1,10 @@
+CR-213 Stage 2 loaded-kext identity, captured at 2026-04-29 09:55 (boot)
+
+Loaded kext at the time of capture (kextstat output):
+  140    0 0xffffff7f96620000 0xf00714   0xf00714   com.zxystd.AirportItlwm (2.4.0) 3AC188DA-A10C-3541-97FD-861969956A44
+
+kext UUID:   3AC188DA-A10C-3541-97FD-861969956A44
+kext sha256: 9723ec2d7ef333a8e8f4fa1df2080875d26935a508d7c3c3fffeba8a0b2eaaa1
+kext size:   16289520
+
+Matches CR-213 Stage 1 build evidence and Stage 1 decision approval line 39.

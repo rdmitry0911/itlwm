@@ -835,26 +835,49 @@ Files:
 - [AirportSTAIOCTL.cpp](/Users/bob/Projects/itlwm/AirportItlwm/AirportSTAIOCTL.cpp)
 
 Even though Tahoe UI traffic now goes through the Skywalk path, the legacy STA
-dispatcher remains part of the codebase contract and still contains unresolved
-Apple mismatches.
+dispatcher remains part of the codebase contract. The CR-118..CR-120 cycle
+closed the AP_IE_LIST, MCS, and VIRTUAL_IF_CREATE shadow drift, leaving only
+surfaces that still need separate proof.
 
 Remaining raw-`6` legacy getters:
 
 - `getPROTMODE`
-- `getMCS_INDEX_SET`
-- `getNOISE`
-- `getMCS`
 
 Remaining legacy unsupported/gated surfaces needing classification:
 
 - `getRSN_IE`
 - `setRSN_IE`
+
+Recently closed legacy shadow surfaces:
+
+- `getMCS_INDEX_SET`
+- `getNOISE`
+- `getMCS`
 - `getAP_IE_LIST`
 - `setVIRTUAL_IF_CREATE`
 
-These must stay in the inventory because they mirror producer semantics that
-may still be reused, and they are a common source of regressions when Tahoe and
-legacy paths drift apart.
+The remaining open items stay in the inventory because they mirror producer
+semantics that may still be reused. The closed items stay listed only as
+regression markers for future Tahoe/legacy drift audits.
+
+### 7. APSTA / SoftAP owner layer is a required reconstruction item
+
+Reference role-7 `setVIRTUAL_IF_CREATE(...)` does not end at a generic failure
+contract. It allocates an `AppleBCMWLANIO80211APSTAInterface` object, stores it
+at core expansion `+0x2c30`, and uses the APSTA state block at `self+0x130` for
+SoftAP carriers, feature bits, queues, pools, and datapath accessors.
+
+The local primary STA bridge must not fake those selectors, but the missing
+`IO80211SapProtocol` / APSTA owner object is now open implementation debt, not
+a closed or excluded topic.
+
+Required local reconstruction:
+
+- `IO80211SapProtocol` base/vtable shape.
+- APSTA owner object with `ap` prefix, BSD unit `1`, and Wi-Fi subfamily `3`.
+- APSTA state block offsets used by SoftAP carriers and queue/datapath accessors.
+- Role-7 creation/storage path matching Apple core expansion `+0x2c30`.
+- HostAP capability publication only after the APSTA lifecycle exists.
 
 ## Open Needs Decompile
 
@@ -2021,3 +2044,2692 @@ reference producer.
   - the proven public current-link selectors should finally survive slot
     `[411]` and either enter the local helper plane or fail deeper than this
     gate
+
+### 32. Active Skywalk queue layer must use exported Tahoe ABI and driver-owned queue metadata
+- anomaly_id: `TAHOE-SKYWALK-QUEUE-ABI-SYMBOL-SURFACE-025`
+- queue: active Skywalk inventory/lifecycle layer after `CR-115` rejection
+- producer: `AirportItlwm::start()` Skywalk queue construction and
+  `AirportItlwmSkywalkInterface` queue/lifecycle accessors
+- symptom:
+  - `CR-115` was rejected before runtime because reviewer build completed
+    compilation but failed BootKC symbol verification
+  - unresolved imports:
+    - non-const `IOSkywalkPacketQueue::getCapacity()`
+    - `IOSkywalkTxCompletionQueue::withPool(...)` with `IOReturn` callback ABI
+- Apple/decomp contract now added to the inventory:
+  - reference has a distinct TX completion queue at interface ivars `+0x60`
+  - reference has RX completion at `+0x68`, TX subqueue vector at `+0x78`, and
+    multicast work source at `+0x98`
+  - TX queue depth/capacity comes from the Apple custom TX queue ivar `+0x28`
+  - RX queue capacity comes from the Apple custom RX completion queue ivar
+    `+0x10`
+  - Apple custom TX queue `getRingFreeSpace()` returns `0`
+  - Apple custom TX queue `getPendingPacketCount()` returns `0`
+- BootKC ABI contract:
+  - Tahoe exports `IOSkywalkTxCompletionQueue::withPool(...)` with `UInt32`
+    callback ABI, not `IOReturn`
+  - Tahoe exports `IOSkywalkPacketQueue::getCapacity()` as const only
+- local mismatch before CR-116:
+  - the CR-115 source relied on the wrong TX completion callback ABI
+  - the queue metric accessors called generic queue capacity/free-space methods
+    instead of returning local driver-owned queue metadata / Apple custom no-op
+    results
+- exact correction for the next batch:
+  - patch the Tahoe build header path for `IOSkywalkTxCompletionQueueAction`
+    to `UInt32`
+  - make the local TX completion callback return `UInt32`
+  - keep the distinct TX completion queue instead of dropping it
+  - store local queue depth/capacity from the exact queue construction capacity
+  - return those stored values from `getTxQueueDepth()` and
+    `getRxQueueCapacity()`
+  - return `0` from `pendingPackets()` and `packetSpace()` to match Apple
+    custom queue methods
+- non-claims:
+  - this does not prove final RSN/data root cause
+  - this does not add fake EAPOL, fake keys, fake RSN, fake DHCP, retry, delay,
+    replay, or forced link success
+  - this does not permit install/runtime until the resubmitted Stage 1 request
+    is approved
+
+### 33. APSTA state block must exist before role-7 owner creation can be restored
+- anomaly_id: `A-APSTA-STATE-BLOCK-SCAFFOLD-049`
+- layer: APSTA/SAP owner reconstruction after CR-121
+- Apple contract:
+  - role-7 `setVIRTUAL_IF_CREATE(...)` creates `AppleBCMWLANIO80211APSTAInterface`
+    object size `0x138`
+  - APSTA object offset `+0x130` stores the private APSTA state pointer
+  - role-7 feature gates write APSTA state bytes `+0x32a` and `+0x32b`
+  - SoftAP methods read state offsets `+0x0e`, `+0x10`, `+0x18`, `+0x1c`,
+    `+0x20`, `+0x24`, `+0x28`, `+0x2c`, `+0x68`, and stats at `+0x1b0`
+  - APSTA queue/datapath methods read state offsets `+0x2a4`, `+0x2b8`,
+    `+0x2d8`, `+0x2e0`, `+0x2e8`, `+0x2f0`, `+0x300`, and `+0x320`
+- local mismatch before CR-122:
+  - APSTA/SoftAP offsets were only documented in YAML
+  - there was no compilable local state carrier with offset checks
+  - role-7 success could not be implemented without inventing storage
+- exact correction:
+  - add `AirportItlwmAPSTAStateBlock` as a local APSTA state offset witness
+  - add `AirportItlwmAPSTAObjectStorageLayout` to assert APSTA object
+    state-pointer offset `+0x130` and size witness `0x138`
+  - compile these assertions through `AirportItlwmSkywalkInterface.hpp`
+  - do not expose role-7 success yet; owner lifecycle and SAP vtable/header are
+    the next reconstruction layer
+- non-claims:
+  - this is not a primary-STA data/connectivity fix
+  - this does not fake HostAP/APSTA capability
+  - this does not create queues, pool ownership, or APSTA BSD registration yet
+
+### 34. SAP protocol vtable seam must not be modeled as primary STA inheritance
+- anomaly_id: `A-IO80211SAP-PROTOCOL-SCAFFOLD-050`
+- layer: APSTA/SAP owner-class reconstruction after CR-122
+- Apple contract:
+  - `IO80211SapProtocol` vtable is recovered at `0xffffff80023e8dc0`
+  - `AppleBCMWLANIO80211APSTAInterface` vtable is recovered at
+    `0xffffff8001777508`
+  - SAP inherits the Tahoe Skywalk prefix through the `syncDPSStats` area, then
+    exposes a SAP/virtual-interface extension seam at slots `481..519`
+  - APSTA overrides typed station-management and SoftAP selectors at slots
+    `505..531`
+  - APSTA also overrides `forwardPacket(IO80211NetworkPacket*)` at recovered
+    slot `465`, so a simple subclass of the current local primary-STA
+    `IO80211SkywalkInterface` header is not a proven-safe APSTA base
+- local mismatch before CR-123:
+  - no local `IO80211SapProtocol` contract existed
+  - the old local `IO80211VirtualInterface` header is IOService-based and does
+    not model the Tahoe SAP/Skywalk seam
+  - defining APSTA directly from the current primary STA classes would either
+    put SoftAP selectors after the wrong slots or collide with unresolved
+    Skywalk slot aliases
+- exact correction:
+  - add `include/Airport/IO80211SapProtocol.h` as a compiled contract header
+  - record recovered slots and typed function-pointer carriers for APSTA/SAP
+    methods without defining an ABI-wrong C++ base class yet
+  - include the header through the V3/V2 Apple80211 umbrella so syntax and type
+    declarations are compiled in the Tahoe build
+- non-claims:
+  - this does not instantiate APSTA
+  - this does not return role-7 success or advertise HostAP
+  - this does not resolve the remaining SAP slot aliases needed for the final
+    C++ base class
+
+### 35. APSTA lifecycle resources are part of the private state block
+- anomaly_id: `A-APSTA-LIFECYCLE-STATE-RESOURCE-051`
+- layer: APSTA owner lifecycle/state scaffold after CR-123
+- Apple contract:
+  - APSTA `free()` releases the private state block with exact size `0x338`
+  - `freeResources()` releases timer/resource pointers at state offsets `+0x70`,
+    `+0x78`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, and `+0x260`
+  - `reset()` clears state `+0x26c`, byte `+0x329`, and zeroes `+0xb8` for
+    `0xf0` bytes
+  - `initSoftAPParameters()` clears the same runtime block and scalar `+0x1a8`
+  - HostAP/reset paths read owner/core pointer at state `+0x218`
+- local mismatch before CR-124:
+  - these lifecycle offsets were anonymous padding in
+    `AirportItlwmAPSTAStateBlock`
+  - APSTA state size was only asserted as minimum coverage
+- exact correction:
+  - name lifecycle/resource fields in the state scaffold
+  - add static asserts for every recovered lifecycle/resource offset
+  - assert exact APSTA state block size `0x338`
+- non-claims:
+  - this does not allocate or start APSTA
+  - this does not attach timers/resources
+  - this does not enable role-7 success or HostAP capability
+
+### 36. Role-7 APSTA creation/storage contract must be compiled before enablement
+- anomaly_id: `A-APSTA-ROLE7-CREATION-STORAGE-052`
+- layer: APSTA owner creation/storage scaffold after CR-124
+- Apple contract:
+  - `setVIRTUAL_IF_CREATE` role is at carrier `data+0x0c`
+  - APSTA role is `7`
+  - APSTA factory receives `core`, `data+0x04` MAC carrier, role `7`, and
+    `data+0x10` BSD-name carrier
+  - created APSTA owner is stored at core expansion `+0x2c30`
+  - proximity owner is the adjacent core expansion field `+0x2c28`
+  - duplicate owner returns `0xe00002d2`
+  - create failure returns `0xe00002bd`
+  - unknown role returns `0xe0000001`
+  - feature gates `0x0d` and `0x0c` write APSTA state bytes `+0x32a` and
+    `+0x32b`
+- local mismatch before CR-125:
+  - role-7 carrier/storage facts were documented but not compiled
+  - there was no local core expansion storage witness for APSTA owner `+0x2c30`
+- exact correction:
+  - add a packed `AirportItlwmAPSTAVirtualIfCreateCarrierLayout`
+  - add `AirportItlwmAPSTACoreExpansionStorageLayout`
+  - add APSTA role/feature-gate/return-code constants
+  - add a typed factory argument contract
+- non-claims:
+  - this does not return role-7 success
+  - this does not allocate APSTA
+  - this does not publish HostAP capability
+
+### 37. APSTA datapath activation uses a separate owner/resource pair
+- anomaly_id: `A-APSTA-DATAPATH-ACTIVATION-RESOURCE-053`
+- layer: APSTA datapath/resource scaffold after CR-125
+- Apple contract:
+  - APSTA helper `FUN_ffffff8001694064` returns `state+0x210`
+  - APSTA event and SoftAP async callback paths use `state+0x210` as their
+    bytestream/logger resource
+  - APSTA `enableDatapath()` calls object `state+0x2d0` vtable `+0x120` before
+    starting TX/RX completion queues
+  - APSTA `disableDatapath()` calls object `state+0x2d0` vtable `+0x128`
+    before stopping RX/TX completion queues
+  - missing completion queues still return `0xe00002bc`
+- local mismatch before CR-126:
+  - APSTA state offsets `+0x210` and `+0x2d0` were hidden inside padding
+  - APSTA datapath accessors were documented, but activation owner/resource
+    operands were not compiled into the scaffold
+- exact correction:
+  - name `AirportItlwmAPSTAStateBlock::resource210`
+  - name `AirportItlwmAPSTAStateBlock::datapathOwner2d0`
+  - add static asserts for offsets `+0x210` and `+0x2d0`
+- non-claims:
+  - this does not allocate or start APSTA
+  - this does not create the datapath owner object
+  - this does not return role-7 success
+  - this does not publish HostAP capability
+
+### 38. APSTA init/start populates resource slots before role-7 success
+- anomaly_id: `A-APSTA-INIT-START-RESOURCE-CONTRACT-054`
+- layer: APSTA factory/init/start scaffold after CR-126
+- Apple contract:
+  - `withOptions(core, mac, role, bsdName)` allocates APSTA object size
+    `0x138` and calls APSTA `init(core, mac, role, bsdName)`
+  - `init(...)` allocates private APSTA state, stores owner/core at
+    `state+0x218`, clears feature bytes `+0x32a/+0x32b`, creates timer sources
+    at `+0x70/+0x78`, and fills resource references at `+0x210`, `+0x228`,
+    `+0x240`, `+0x248`, `+0x250`, `+0x258`, and `+0x260`
+  - `init(...)` sets defaults at `+0x14`, `+0x20c`, `+0x268`, `+0x2a4`, and
+    four queue-map entries at `+0x2a8..+0x2b4`
+  - `start(core, RegistrationInfo*)` stores work queue `+0x330`, bus/provider
+    `+0x2c8`, datapath owner `+0x2d0`, and passes a stack queue config to
+    datapath owner vtable `+0x118`
+  - the queue config passes pointers to `+0x2a8`, `+0x300`, `+0x2f8`,
+    `+0x2e8`, `+0x2f0`, `+0x320`, `+0x2d8`, and `+0x2e0`
+- local mismatch before CR-127:
+  - APSTA init/start fields were still anonymous padding
+  - there was no compiled local witness for the queue config carrier passed to
+    datapath owner `+0x118`
+- exact correction:
+  - name all recovered init/start state fields in `AirportItlwmAPSTAStateBlock`
+  - add `AirportItlwmAPSTAStartQueueConfigLayout`
+  - add static asserts for each recovered state offset and config offset
+- non-claims:
+  - this does not instantiate APSTA at runtime
+  - this does not create queues locally
+  - this does not register APSTA with BSD/Skywalk
+  - this does not return role-7 success
+  - this does not publish HostAP capability
+
+### 39. AP/SoftAP control flags are fixed APSTA state fields
+- anomaly_id: `A-APSTA-HOSTAP-STATE-MACHINE-FIELDS-055`
+- layer: APSTA HostAP control-state scaffold after CR-127
+- Apple contract:
+  - `holdSoftAPPowerAssertion()` writes byte `state+0x0c`
+  - `setHOST_AP_MODE_HIDDEN(...)` writes byte `state+0x0d`
+  - AP shutdown/hidden-mode paths clear byte `state+0x0e`
+  - `configureLowPowerModeExit()` checks 32-bit `state+0xb4`
+  - `setHostApModeInternal(...)` tests/writes `state+0x26c` and
+    `state+0x270`
+  - successful AP enable sets `state+0x26c = 1`, clears `state+0x20c`, and
+    updates `state+0x14`
+  - `setHOST_AP_MODE(...)` coordinates proximity/NAN owners at core expansion
+    `+0x2c28`, `+0x74f0`, and `+0x74f8` around `setHostApModeInternal`
+- local mismatch before CR-128:
+  - AP/SoftAP control bytes `+0x0c/+0x0d`, power field `+0xb4`, and
+    transition field `+0x270` were not named or asserted
+  - docs covered queue/init resources but not AP-mode control flags
+- exact correction:
+  - name `powerAssertionFlag0c`
+  - name `hiddenNetworkFlag0d`
+  - split `softapPowerStateB4` out of the `+0xb0` runtime area
+  - name `hostApTransitionState270`
+  - add static asserts and YAML/prose documentation
+- non-claims:
+  - this does not implement HostAP mode transitions
+  - this does not send firmware IOVAR sequences
+  - this does not create or publish APSTA
+  - this does not return role-7 success
+  - this does not publish HostAP capability
+
+### 40. Role-7 APSTA registration uses a fixed RegistrationInfo carrier
+- anomaly_id: `A-APSTA-REGISTRATION-INFO-CARRIER-056`
+- layer: APSTA role-7 registration carrier scaffold after CR-128
+- Apple contract:
+  - after APSTA owner creation and feature gates, `setVIRTUAL_IF_CREATE`
+    zeroes a `0x130`-byte `RegistrationInfo` stack block
+  - it calls APSTA `initRegistrationInfo(info, 1, 0x130)`
+  - it writes APSTA-specific fields at `info+0x0c`, `+0x14`, `+0x24`,
+    `+0x30`, `+0x38`, `+0x40`, and `+0x108`
+  - `info+0x30` carries BSD prefix `"ap"` and `info+0x38` carries BSD unit `1`
+  - `info+0x108..+0x10d` receives the six-byte APSTA hardware address from
+    APSTA vtable `+0xcf8`
+  - the populated carrier is passed to
+    `AppleBCMWLANIO80211APSTAInterface::start(core, info)`
+- local mismatch before CR-129:
+  - local `IOSkywalkEthernetInterface::RegistrationInfo` was only an opaque
+    304-byte pad
+  - APSTA-specific registration producer offsets were not asserted anywhere
+- exact correction:
+  - add packed `AirportItlwmAPSTARegistrationInfoLayout`
+  - add constants for size, init type, APSTA fixed field values, and options
+    qword
+  - add static asserts for all recovered offsets and carrier size
+- non-claims:
+  - this does not call APSTA `start`
+  - this does not instantiate APSTA at runtime
+  - this does not return role-7 success
+  - this does not publish HostAP capability
+
+### 41. APSTA Ethernet registration uses four TX queues plus completion queues
+- anomaly_id: `A-APSTA-REGISTER-ETHERNET-QUEUE-LIST-057`
+- layer: APSTA start/registration queue-list scaffold after CR-129
+- Apple contract:
+  - APSTA `start(core, RegistrationInfo*)` reads `numTxQueues` from
+    `state+0x2a4`
+  - APSTA init sets `numTxQueues = 4`
+  - start copies TX submission queues from `state+0x300..+0x318` into a stack
+    queue list
+  - start appends TX completion queue `state+0x2e8` and RX completion queue
+    `state+0x2f0`
+  - start calls `registerEthernetInterface(info, queueList, numTxQueues + 2,
+    state+0x2d8, state+0x2e0, 0)`
+  - failure cleanup removes work sources for TX queues, TX/RX completion
+    queues, and multicast queue
+- local mismatch before CR-130:
+  - local scaffold had queue storage fields but no queue-list carrier witness
+  - future APSTA start implementation could accidentally collapse APSTA to the
+    primary STA one-queue topology
+- exact correction:
+  - add `AirportItlwmAPSTARegisterQueueListLayout`
+  - add constants for two completion queues and six effective registration
+    queue entries
+  - add static asserts for TX/RX completion offsets and queue-list size
+- non-claims:
+  - this does not create queues
+  - this does not register APSTA
+  - this does not call APSTA `start`
+  - this does not return role-7 success
+
+### 42. APSTA public SoftAP/SAP carriers use fixed offsets and return codes
+- anomaly_id: `A-APSTA-SOFTAP-PUBLIC-CARRIER-CONTRACT-058`
+- layer: APSTA public SAP/SoftAP carrier scaffold after CR-130
+- Apple contract:
+  - `getSTATE(...)` writes state value `4` at output `+0x04`
+  - `getPEER_CACHE_MAXIMUM_SIZE(...)` writes value `8` at output `+0x04`
+  - `getHOST_AP_MODE_HIDDEN(...)` returns raw `0x16` for NULL and writes value
+    `1` for non-NULL
+  - `getSOFTAP_PARAMS(...)` copies APSTA state offsets
+    `+0x18/+0x1c/+0x20/+0x24/+0x68/+0x10/+0x0e/+0x28` into output offsets
+    `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x16/+0x17/+0x18`
+  - `getSOFTAP_STATS(...)` copies `0x58` bytes from `state+0x1b0`
+  - `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` accepts only input byte `+0x03`
+    below `0x21`, copies exactly `0x24` bytes into `state+0x2c`, and otherwise
+    returns `0xe00002c2`
+  - `setSOFTAP_TRIGGER_CSA(...)` returns `6` when AP is not ready, returns raw
+    `0x16` for NULL, accepts parsed channel specs below `0x10000` for IOVAR
+    `csa`, and rejects parsed channel specs at or above `0x10000`
+  - `setRSN_CONF(...)` rejects with `0xe00002d5` when `state+0x29b` bit `0x10`
+    is set
+  - `setSTA_AUTHORIZE(...)` rejects NULL with `0xe00002c2`
+  - `setSTA_DEAUTH(...)` tailcalls vtable slot `+0x1040`
+- local mismatch before CR-131:
+  - SoftAP params output and Wi-Fi network-info input carrier shapes were
+    prose-only
+  - public constants and reject codes were not compiled into the APSTA witness
+  - `state+0x29b` was still anonymous padding despite the RSN_CONF gate
+- exact correction:
+  - add `AirportItlwmAPSTASoftAPParamsOutputLayout`
+  - add `AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout`
+  - name `AirportItlwmAPSTAStateBlock::rsnConfGate29b`
+  - add constants and static asserts for recovered carrier offsets, copy size,
+    length threshold, and return codes
+- non-claims:
+  - this does not instantiate APSTA
+  - this does not enable AP/SoftAP runtime paths
+  - this does not force RSN success
+  - this does not change primary STA association/data behavior
+
+### 43. SAP/APSTA vtable aliases require base-vs-concrete guards
+- anomaly_id: `A-APSTA-SAP-VTABLE-ALIAS-CONTRACT-059`
+- layer: SAP/APSTA vtable ABI scaffold after CR-131
+- Apple contract:
+  - `IO80211SapProtocol` vtable spans recovered slots `280..519`
+  - base SAP extension starts at slot `481`, byte offset `0x0f08`
+  - base `IO80211SapProtocol` slot `483`, byte offset `0x0f18`, is
+    `IO80211VirtualInterface::forwardPacket(IO80211NetworkPacket*)`
+  - concrete `AppleBCMWLANIO80211APSTAInterface` slot `465`, byte offset
+    `0x0e88`, is `AppleBCMWLANIO80211APSTAInterface::forwardPacket(...)`
+  - concrete APSTA slot `488`, byte offset `0x0f40`, is
+    `setMacAddress(ether_addr&)`
+  - concrete APSTA public SAP/SoftAP surface continues through slot `531`,
+    byte offset `0x1098`
+  - APSTA destructor calls `IO80211SapProtocol` destructor
+- local mismatch before CR-132:
+  - the local SAP contract header had method slot constants but not explicit
+    base-vs-concrete alias constants
+  - there were no byte-offset asserts guarding the forwardPacket collision
+- exact correction:
+  - add base `IO80211SapProtocol` vtable range constants
+  - add concrete `AppleBCMWLANAPSTAVtableSlot*` aliases
+  - add byte-offset constants and static asserts for key dispatch targets
+  - keep `IO80211SapProtocol` as a contract header only
+- non-claims:
+  - this does not define a C++ SAP base class
+  - this does not instantiate APSTA
+  - this does not change runtime vtable dispatch
+  - this does not enable role-7 success
+
+### 44. APSTA forwardPacket selects TX subqueue from packet metadata
+- anomaly_id: `A-APSTA-FORWARD-PACKET-TX-QUEUE-SELECTION-060`
+- layer: APSTA TX datapath scaffold after CR-132
+- Apple contract:
+  - concrete APSTA `forwardPacket(IO80211NetworkPacket*)` is slot `465`
+  - the method calls a packet metadata helper
+  - it selects a TX subqueue pointer from
+    `state+0x300 + ((metadata >> 4) & 0xff8)`
+  - it calls the selected queue vtable entry `+0x318` with the packet
+- local mismatch before CR-133:
+  - `txSubQueues` at `state+0x300` was named, but the forwardPacket selector
+    shift, mask, and selected-queue submit vtable offset were not compiled
+- exact correction:
+  - add constants for selector shift `4`, selector mask `0xff8`, TX subqueue
+    base `0x300`, and queue submit vtable offset `0x318`
+  - assert that the TX subqueue base constant matches
+    `AirportItlwmAPSTAStateBlock::txSubQueues`
+- non-claims:
+  - this does not transmit APSTA packets
+  - this does not enable APSTA runtime forwarding
+  - this does not clamp or fallback to queue zero
+  - this does not change primary STA TX behavior
+
+### 45. APSTA datapath metric accessors read queue-internal operands
+- anomaly_id: `A-APSTA-DATAPATH-METRIC-ACCESSORS-061`
+- layer: APSTA datapath accessor scaffold after CR-133
+- Apple contract:
+  - `getTxHeadroom()` returns `0`
+  - `getTxQueueDepth()` reads first TX subqueue from `state+0x300`
+  - missing TX subqueue returns `0`
+  - existing TX subqueue reads nested object pointer at `queue+0x168` and
+    returns dword `nested+0x28`
+  - `getRxQueueCapacity()` reads RX completion queue from `state+0x2f0`
+  - missing RX completion queue returns `0`
+  - existing RX completion queue reads nested object pointer at `queue+0x138`
+    and returns dword `nested+0x10`
+- local mismatch before CR-134:
+  - these offsets were present only in YAML/prose
+  - compiled APSTA scaffold did not have constants for the nested metric
+    operands
+- exact correction:
+  - add constants for zero headroom and missing-queue metric value
+  - add constants for TX queue nested object/value offsets `0x168` and `0x28`
+  - add constants for RX queue nested object/value offsets `0x138` and `0x10`
+- non-claims:
+  - this does not call generic queue capacity APIs
+  - this does not synthesize nonzero metrics
+  - this does not enable APSTA datapath
+  - this does not change primary STA queue metrics
+
+### 46. APSTA datapath lifecycle uses fixed owner/queue vtable offsets
+- anomaly_id: `A-APSTA-DATAPATH-LIFECYCLE-VTABLE-OFFSETS-062`
+- layer: APSTA datapath lifecycle scaffold after CR-134
+- Apple contract:
+  - `enableDatapath()` calls datapath owner `state+0x2d0` vtable `+0x120`
+  - it starts TX completion queue `state+0x2e8` with queue vtable `+0x150`
+  - it starts RX completion queue `state+0x2f0` with queue vtable `+0x150`
+  - it arms RX completion queue with vtable `+0x298` and arguments `0,0`
+  - missing completion queue returns `0xe00002bc`
+  - `disableDatapath()` calls datapath owner `state+0x2d0` vtable `+0x128`
+  - it stops RX completion queue first with vtable `+0x158`, then TX
+    completion queue with vtable `+0x158`
+- local mismatch before CR-135:
+  - APSTA storage fields existed, but lifecycle vtable offsets were prose-only
+- exact correction:
+  - add constants for owner enable/disable offsets `0x120/0x128`
+  - add constants for completion queue start/stop offsets `0x150/0x158`
+  - add constant for RX completion arm offset `0x298`
+  - add constants for RX arm args `0,0` and missing queue return
+    `0xe00002bc`
+- non-claims:
+  - this does not start queues at runtime
+  - this does not allocate the datapath owner
+  - this does not treat missing queues as success
+  - this does not change primary STA datapath lifecycle
+
+### 47. APSTA start registers queue work sources before Ethernet registration
+- anomaly_id: `A-APSTA-START-WORKSOURCE-REGISTRATION-063`
+- layer: APSTA start/work-source scaffold after CR-135
+- Apple contract:
+  - APSTA `start` calls datapath owner `state+0x2d0` vtable `+0x118` with the
+    queue config carrier
+  - `numTxQueues >= 7` enters the reference invalid/trap path before queue-list
+    registration
+  - multicast queue `state+0x320`, when present, is added to work queue
+    `state+0x330`
+  - each TX submission queue from `state+0x300` is added through work queue
+    vtable `+0x140`
+  - TX completion `state+0x2e8` and RX completion `state+0x2f0` are added
+    through the same vtable `+0x140`
+  - `registerEthernetInterface` is called with queue count `numTxQueues + 2`,
+    TX/RX pools `state+0x2d8/+0x2e0`, and flags `0`
+  - registration failure removes TX queues, TX completion, RX completion, and
+    multicast through work queue vtable `+0x148`
+- local mismatch before CR-136:
+  - these start-time work-source offsets and register flags were prose-only
+- exact correction:
+  - add constants for owner config offset `0x118`
+  - add constants for work queue add/remove offsets `0x140/0x148`
+  - add constants for TX queue trap threshold `7`, max accepted TX queues `6`,
+    and register flags `0`
+- non-claims:
+  - this does not call APSTA `start`
+  - this does not add work sources at runtime
+  - this does not call `registerEthernetInterface`
+  - this does not mask registration failure
+
+### 48. APSTA teardown releases the exact timer/resource/queue fields it owns
+- anomaly_id: `A-APSTA-TEARDOWN-RESOURCE-CLEANUP-064`
+- layer: APSTA stop/freeResources scaffold after CR-136
+- Apple contract:
+  - `freeResources()` cancels timer sources `state+0x70` and `state+0x78`
+    through vtable `+0x158`, releases them through vtable `+0x28`, and clears
+    both fields
+  - `freeResources()` releases retained resources at `state+0x240`,
+    `+0x248`, `+0x250`, `+0x260`, and `+0x258` through vtable `+0x28` when
+    present and clears each field
+  - `stop(IOService*)` iterates TX queues from `state+0x300` while
+    `i < state+0x2a4`
+  - for every non-null TX queue, stop uses queue vtable `+0x158`, work queue
+    remove vtable `+0x148`, release vtable `+0x28`, and NULL-clears the slot
+  - TX completion `state+0x2e8` and RX completion `state+0x2f0` use the same
+    stop/remove/release/clear sequence
+  - multicast queue `state+0x320` is stopped, removed through work queue vtable
+    `+0x148`, removed again through direct `IO80211WorkQueue::removeWorkSource`,
+    released, and cleared
+  - final tailcall goes to super stop vtable offset `+0x5d8`
+- local mismatch before CR-137:
+  - APSTA fields and start add/remove constants existed, but teardown release
+    and clear operands were prose-only
+- exact correction:
+  - add constants for object release `0x28`, timer/queue stop `0x158`, work
+    queue remove `0x148`, multicast direct-remove marker, super stop `0x5d8`,
+    and teardown NULL
+  - add constants/static asserts for the timer, retained resource, completion
+    queue, TX queue base, and multicast queue offsets
+  - add a local reference note for the recovered teardown sequence
+- non-claims:
+  - this does not enable APSTA runtime teardown
+  - this does not allocate or release APSTA queues at runtime
+  - this does not add fallback cleanup beyond reference
+  - this does not change primary STA stop/free behavior
+
+### 49. APSTA reset and initSoftAPParameters carry fixed SoftAP defaults
+- anomaly_id: `A-APSTA-RESET-SOFTAP-DEFAULTS-065`
+- layer: APSTA reset/default scaffold after CR-137
+- Apple contract:
+  - `reset()` clears `state+0x26c` and byte `state+0x329`
+  - `reset()` calls `AppleBCMWLANCore::setConcurrencyState(4, false)`
+  - `reset()` zeroes `state+0xb8` for `0xf0` bytes, clears `state+0x0` and
+    `state+0xb0`, and calls `setPowerSaveState(0, 0xa)`
+  - `reset()` invokes timer sources `state+0x70/+0x78` through vtable `+0x218`
+  - `reset()` clears stats `state+0x1b0..+0x207` and runtime qwords
+    `state+0x90/+0x98/+0xa0`
+  - `initSoftAPParameters()` clears the same stats block, clears
+    `state+0x1a8`, zeroes `state+0xb8` for `0xf0` bytes, and clears
+    `state+0x0`
+  - `initSoftAPParameters()` writes fixed defaults:
+    `state+0x16 = 1`, `state+0x18 = 0x0f`, `state+0x1c = 0x1e`,
+    `state+0x20 = 0x708`, `state+0x24 = 0x0a`, and `state+0x28 = 3`
+  - it calls `setBeaconInterval(state+0x14)` and applies DTIM through IOCTL
+    `0x4e` via commander `state+0x228` when `state+0x16 != state+0x6a`
+- local mismatch before CR-138:
+  - reset/default operands were only partially documented
+  - fields `+0x0`, `+0x16`, `+0x6a`, `+0x90`, `+0x98`, and `+0xa0` were still
+    anonymous in the local state block witness
+- exact correction:
+  - name recovered reset/default fields in `AirportItlwmAPSTAStateBlock`
+  - add constants for reset clears, runtime/stat sizes, timer vtable `+0x218`,
+    concurrency/power-save arguments, SoftAP default values, and IOCTL `0x4e`
+  - add a local reference note for the recovered reset/initSoftAPParameters
+    sequence
+- non-claims:
+  - this does not call APSTA `reset()` or `initSoftAPParameters()` at runtime
+  - this does not force AP state or concurrency state
+  - this does not synthesize AP defaults from primary STA code
+  - this does not change primary STA reset behavior
+
+### 50. APSTA beacon interval and DTIM use fixed IOCTL carriers
+- anomaly_id: `A-APSTA-BEACON-DTIM-IOCTL-CARRIERS-066`
+- layer: APSTA beacon/DTIM IOCTL scaffold after CR-138
+- Apple contract:
+  - `setBeaconInterval(uint16_t)` compares the request to applied interval
+    `state+0x68`; equal values skip IOCTL
+  - changed beacon interval uses commander `state+0x228`, payload length `4`,
+    and IOCTL `0x4c`
+  - async beacon path stores `handleSetBcnIntervalAsyncCallBack` at callback
+    context `+0x8` and cookie `0` at `+0x10`
+  - sync beacon path passes no callback
+  - beacon success writes requested interval to `state+0x68`
+  - DTIM apply uses source `state+0x16`, applied field `state+0x6a`, payload
+    length `4`, commander `state+0x228`, and IOCTL `0x4e`
+  - DTIM success writes `state+0x6a = state+0x16`
+  - both async callbacks return on status `0`; for nonzero status they log and
+    emit rxPayload bytestream telemetry using pointer `+0x0`, length `+0x8`,
+    and telemetry resource `state+0x210`
+- local mismatch before CR-139:
+  - IOCTL numbers and payload/callback offsets were not compiled as APSTA
+    contract constants
+  - `state+0x68` remained a generic SoftAP params field instead of the applied
+    beacon interval field
+- exact correction:
+  - add constants for IOCTL `0x4c`, IOCTL `0x4e`, payload size `4`, callback
+    offsets, rxPayload offsets, and applied beacon/DTIM fields
+  - add `AirportItlwmAPSTACommandPayloadHeadLayout`
+  - rename local `state+0x68` field to applied beacon interval
+  - add a local reference note for the recovered beacon/DTIM sequence
+- non-claims:
+  - this does not send beacon or DTIM IOCTLs at runtime
+  - this does not write applied beacon/DTIM fields at runtime
+  - this does not suppress callback errors
+  - this does not enable APSTA AP mode
+
+### 51. APSTA HostAP success tail resets state and schedules monitor timer
+- anomaly_id: `A-APSTA-HOSTAP-SUCCESS-TAIL-067`
+- layer: APSTA HostAP success-tail scaffold after CR-139
+- Apple contract:
+  - successful AP bring-up writes `state+0x26c = 1`
+  - it clears `state+0x20c` and `state+0x88`
+  - it calls `handleAPStatsUpdates(state+0x70)`
+  - it schedules AP monitor timer `state+0x78` through vtable `+0x1d0` with
+    interval `0x3e8`
+  - it reads network-data flags at input `+0x4`
+  - flags bit `8` selects beacon interval `0x64`; otherwise `0x12c` is written
+    to `state+0x14`
+  - flags bit `9` sends IOVAR `closednet` through commander `state+0x228` with
+    4-byte payload value `1`
+  - the common tail continues to `initSoftAPParameters()`
+- local mismatch before CR-140:
+  - HostAP success-tail state/timer/flag/closednet operands were prose-only
+- exact correction:
+  - add constants for state offsets/values, monitor timer vtable/interval,
+    network-data flag offset, bits `8/9`, beacon interval values, and closednet
+    payload
+  - add static asserts tying HostAP offsets to local state layout
+  - add a local reference note for the recovered success-tail sequence
+- non-claims:
+  - this does not set AP-up state at runtime
+  - this does not schedule timers at runtime
+  - this does not send `closednet`
+  - this does not enable HostAP mode
+
+### 52. APSTA HostAP max-assoc and vendor IE layer precedes AP-up
+- anomaly_id: `A-APSTA-HOSTAP-ASSOC-VENDOR-IE-LAYER-068`
+- layer: APSTA HostAP max-assoc/vendor-IE scaffold after CR-140
+- Apple contract:
+  - `setHostApModeInternal` reads max-assoc through the core expansion chain
+    `state+0x218 -> +0x128 -> +0x1558 -> +0x10 -> +0xb4`
+  - it stores that value at `state+0x8`, calls `setMaxAssoc`, then invokes
+    APSTA vtable `+0xb18` with selector `0x57`, payload `state+0x8`, and
+    payload size `4`
+  - `setMaxAssoc` uses `state+0x0/+0x4/+0x8`, sends IOVAR `maxassoc`
+    through commander `state+0x228`, and uses payload `state+0x0 +
+    requested` with size `4`
+  - network-data vendor IE length/data are at `+0x2dc/+0x2e0`
+  - nonzero vendor IE length calls `programVendorIEList`; zero length calls
+    `programAppleVendorIE`
+  - `programVendorIEList` allocates an `0x814` byte carrier, writes fixed
+    header qwords `0x1a00000001` and `0x400000001`, copies each IE, calls
+    `AppleBCMWLANCore::setVendorIE`, and frees the carrier
+  - `programAppleVendorIE` uses `vndr_ie`, deletes existing Apple OUI entries,
+    sends a fixed `0x18` byte Apple capability IE, and can append extended
+    capability data from APSTA state offsets `+0x2c/+0x2e/+0x2f/+0x30/+0x50/
+    +0x51/+0x59`
+- local mismatch before CR-141:
+  - max-assoc state offsets, selector `0x57`, vendor IE list offsets, carrier
+    size/header fields, and Apple `vndr_ie` operands were prose-only
+- exact correction:
+  - add constants for max-assoc source/fields, selector `0x57`, vtable
+    `+0xb18`, network-data vendor IE offsets, vendor IE carrier layout, and
+    Apple `vndr_ie` command buffers
+  - add layout witnesses for the `0x814` byte vendor IE carrier and `0x52`
+    byte Apple vendor IE set buffer
+  - add static asserts tying APSTA state offsets `+0x0/+0x4/+0x8/+0x2c/+0x50/
+    +0x51/+0x59` to the recovered layer
+- non-claims:
+  - this does not call `setMaxAssoc` at runtime
+  - this does not send selector `0x57`
+  - this does not call `setVendorIE` or `vndr_ie`
+  - this does not enable HostAP mode
+
+### 53. APSTA enableAPInterface carries RRM/WNM/MPDU/scb_probe side effects
+- anomaly_id: `A-APSTA-ENABLE-AP-INTERFACE-LAYER-069`
+- layer: APSTA AP-enable scaffold after CR-141
+- Apple contract:
+  - `enableAPInterface()` conditionally sends `rrm_bcn_req_thrtl_win` and
+    `rrm_bcn_req_max_off_chan_time` using feature flag `0x15`, config byte
+    `+0xe2`, 4-byte zero payloads, and commander `state+0x228`
+  - it conditionally sends `wnm` using feature flag `0x19`, config byte
+    `+0xe3`, a 4-byte zero payload, and commander `state+0x228`
+  - it reads boot arg `wlan.ap.maxmpdu` size `4`; failed read maps to
+    `0xffffffff`, nonzero success calls `configureMPDUSize`, and zero success
+    skips the override
+  - it ORs `0x10000` into core-private offset `+0x2890`
+  - it calls APSTA vtable `+0xe70` with arguments `(2, 1)`
+  - it sends `scb_probe` with payload qword `0xf0000001e`, dword `5`, and size
+    `0x0c`, using async completion when supported and sync otherwise
+  - async completion context stores owner at `+0x0`, callback at `+0x8`, and
+    cookie `0` at `+0x10`
+  - it notifies core event id `0x1e`, caps interface name length below `0x11`,
+    calls APSTA vtable `+0xb18` selector `4`, adds event bit `5`, and tailcalls
+    `writeEventBitField()`
+- local mismatch before CR-142:
+  - AP-enable RRM/WNM/MPDU/scb_probe/event operands were prose-only
+- exact correction:
+  - add constants for feature gates, config byte offsets, command names,
+    payload sizes/defaults, core-private bit, vtable selectors, notification
+    operands, and event bit
+  - add layout witnesses for the `0x0c` byte `scb_probe` payload and `0x18`
+    byte command completion context
+- non-claims:
+  - this does not call `enableAPInterface` at runtime
+  - this does not send RRM, WNM, MPDU, or `scb_probe` commands
+  - this does not publish AP link-up or write event bits
+  - this does not enable HostAP mode
+
+### 54. APSTA hidden mode and SoftAP power assertion have fixed operands
+- anomaly_id: `A-APSTA-HIDDEN-POWER-ASSERTION-LAYER-070`
+- layer: APSTA hidden/power scaffold after CR-142
+- Apple contract:
+  - `setHOST_AP_MODE_HIDDEN` requires AP-up state `state+0x26c != 0`, returns
+    `6` when AP is not up, and returns raw invalid argument `0x16` for null
+    input
+  - hidden value is read from input `+0x4` and must be `0` or `1`
+  - it sends IOVAR `closednet` through commander `state+0x228` with 4-byte
+    payload carrying the requested hidden value
+  - on success it writes `state+0x0d = (hidden != 0)`
+  - when hidden is cleared and AP remains up, it calls
+    `setPowerSaveState(0, 9)`, clears `state+0x0e`, and calls
+    `holdSoftAPPowerAssertion`
+  - `holdSoftAPPowerAssertion` writes `state+0x0c = 1` and notifies core event
+    `0x8d` through resource `state+0x218 -> +0x128 -> +0x2c20` with payload
+    value `1`, payload size `4`, and flag `1`
+- local mismatch before CR-143:
+  - hidden-mode validation, return, state write, power-save, and power
+    assertion notification operands were prose-only
+- exact correction:
+  - add constants for hidden input offset/range, required AP-up state, return
+    values, `closednet` payload size, post-success fields, power-save args, and
+    hold-power notification operands
+  - add static asserts tying `state+0x0c/+0x0d/+0x0e/+0x26c` to the recovered
+    contract
+- non-claims:
+  - this does not call hidden-mode setters at runtime
+  - this does not send `closednet`
+  - this does not change power-save state
+  - this does not hold power assertions at runtime
+
+### 55. APSTA channel, CSA, and STA-control methods have fixed carriers
+- anomaly_id: `A-APSTA-CHANNEL-CSA-STA-CONTROL-LAYER-071`
+- layer: APSTA public channel/CSA/STA-control scaffold after CR-143
+- Apple contract:
+  - `getCHANNEL(...)` uses virtual IOCTL get selector `0x1d`, 0x0c-byte RX
+    payload/range `0x0000000c000c000c`, writes channel number to output
+    `+0x08`, and ORs flags `0x08` for channels below `0x0f` or `0x10`
+    otherwise
+  - `setCHANNEL(...)` rejects NULL and channels `>= 0x100` with raw `0x16`,
+    maps flags `0x02/0x04/0x400` to bandwidth `2/3/4`, calls
+    `getChanSpec`, returns `0xe00002c2` on zero chanspec, and sends 4-byte
+    IOVAR `chanspec`
+  - `setSOFTAP_TRIGGER_CSA(...)` requires `state+0x26c != 0` and
+    `state+0x329 & 1`, rejects NULL with `0x16`, accepts parsed chanspec
+    values below `0x10000`, rejects parsed chanspec values `>= 0x10000`, and
+    sends a 6-byte IOVAR `csa`
+  - `setSTA_AUTHORIZE(...)` rejects NULL with `0xe00002c2`, uses MAC at
+    input `+0x08`, and selects virtual IOCTL `0x79` or `0x7a` from flag
+    input `+0x04`
+  - `setSTA_DISASSOCIATE(...)` occupies APSTA slot `522`/byte `0x1050`,
+    builds a 0x0c-byte payload from input `+0x04/+0x08/+0x0c` with sentinel
+    word `0xaaaa`, and calls virtual IOCTL set selector `0xc9`
+  - `setSTA_DEAUTH(...)` occupies APSTA slot `523`/byte `0x1058` and tailcalls
+    byte offset `+0x1040`
+- local mismatch before CR-145:
+  - channel, CSA, and STA-control carriers were partially prose-only
+  - the CSA threshold was previously documented in reverse: the reference
+    accepts `< 0x10000` and rejects `>= 0x10000`
+  - `setSTA_DISASSOCIATE` slot and payload were not recorded in the local SAP
+    contract header
+- exact correction:
+  - add constants and layout witnesses for channel data, RX payload range,
+    CSA input/payload, STA authorize input, and STA disassociate input/payload
+  - add SAP vtable slot/byte-offset constants for channel and STA-control
+    methods
+  - correct YAML/prose CSA threshold documentation
+- non-claims:
+  - this does not enable role-7 APSTA success
+  - this does not send channel, CSA, authorize, disassociate, or deauth
+    commands at runtime
+  - this does not force AP state or STA state
+
+### 56. APSTA HostAP control and power wrapper has fixed owner/gate operands
+- anomaly_id: `A-APSTA-HOSTAP-CONTROL-POWER-LAYER-072`
+- layer: APSTA HostAP control/power scaffold after CR-145
+- Apple contract:
+  - `setHOST_AP_MODE(...)` reads network-data mode at input `+0x1c`
+  - neighbouring owners are read from core-private offsets `+0x2c28`,
+    `+0x74f0`, and `+0x74f8`
+  - feature gate `0x46` controls whether proximity/NAN owners are brought
+    down before `setHostApModeInternal(input)` or brought up after the
+    disable/zero-mode internal call
+  - bring-up is additionally gated by core-private `+0x2890 & 1` and dword
+    `+0x4d8c` being `4` or `1`
+  - `hostAPPowerOff()` returns `0` when AP-up state `state+0x26c` is zero
+  - with no associated stations (`state+0x00 == 0`), `hostAPPowerOff()` calls
+    `setPowerSaveState(0, 0x0c)`, clears `state+0x0e`, calls
+    `setHostApModeInternal(NULL)`, and notifies core event id `1` with null
+    payload, size `0`, flag `1`
+  - with associated stations and concurrency disabled, it calls
+    `setPowerSaveState(3, 3)`
+  - `isSoftAPConcurrencyEnabled()` requires feature `0x46` and core-private
+    byte `+0x4d59 & 0x1b`
+  - `configureLowPowerModeExit()` returns when `state+0xb4 == 0`; otherwise it
+    dispatches low-power exit through work-queue vtable `+0x130` and successful
+    exit clears `state+0xb4`
+- local mismatch before CR-146:
+  - hostap control/power offsets and neighbouring owner gates were only
+    described in YAML/prose
+  - network-data mode `+0x1c`, NAN owner offsets, power-off notify operands,
+    concurrency mask, and low-power exit gate were not compiled witnesses
+- exact correction:
+  - add constants for network-data mode/vendor IE offsets, feature gates,
+    neighbouring owners, bring-up private gates, power-off paths, concurrency
+    mask, and low-power exit work-queue gate
+  - add `AirportItlwmAPSTAHostApModeNetworkDataLayout`
+  - extend core-expansion witness through proximity/APSTA/NAN/NAN-data owners
+  - add static asserts for all recovered offsets
+- non-claims:
+  - this does not call `setHOST_AP_MODE`
+  - this does not bring up/down proximity or NAN owners
+  - this does not call `hostAPPowerOff`
+  - this does not run low-power exit at runtime
+
+### 57. APSTA public SAP slot surface must be complete before owner class
+- anomaly_id: `A-APSTA-PUBLIC-SAP-SLOT-SURFACE-073`
+- layer: APSTA public SAP ABI scaffold after CR-146
+- Apple contract:
+  - APSTA concrete public getters occupy slots `505..516`, byte offsets
+    `0x0fc8..0x1020`
+  - APSTA concrete public setters occupy slots `517..531`, byte offsets
+    `0x1028..0x1098`
+  - every public SAP getter/setter slot from `getSSID` through
+    `setMIS_MAX_STA` has a fixed concrete slot and byte offset in the resolved
+    AppleBCMWLAN APSTA vtable
+- local mismatch before CR-147:
+  - only a subset of concrete APSTA slot aliases had local AppleBCMWLAN
+    constants and byte-offset asserts
+  - a future local APSTA C++ class could still accidentally leave remaining
+    public methods at base/reserved offsets
+- exact correction:
+  - add AppleBCMWLAN APSTA slot constants for all public getter/setter slots
+    `505..531`
+  - add byte-offset constants and static asserts for every slot in
+    `include/Airport/IO80211SapProtocol.h`
+  - add reference note and YAML/prose documentation for the complete surface
+- non-claims:
+  - this does not define the final APSTA C++ owner class
+  - this does not route runtime calls through these slots
+  - this does not implement remaining method bodies
+
+### 58. APSTA simple public body contracts have fixed offsets and returns
+- anomaly_id: `A-APSTA-PUBLIC-SIMPLE-BODY-CONTRACTS-074`
+- layer: APSTA public simple body scaffold after CR-147
+- Apple contract:
+  - `getSSID(...)` reads length from `state+0x274`, rejects lengths greater
+    than `0x20` with raw `0x16`, writes output length at `+0x04`, copies
+    bytes from `state+0x278` to output `+0x08`, and returns `0`
+  - `getSTATE(...)` writes value `4` at output `+0x04` and returns `0`
+  - `getOP_MODE(...)` returns raw `0x16` for NULL, writes type `1` at output
+    `+0x00`, writes mode `8` at output `+0x04` when `state+0x26c != 0`,
+    otherwise writes `0`, and returns `0`
+  - `getPEER_CACHE_MAXIMUM_SIZE(...)` writes value `8` at output `+0x04`
+  - `getHOST_AP_MODE_HIDDEN(...)` returns raw `0x16` for NULL and writes value
+    `1` at output base
+  - `getSOFTAP_PARAMS(...)` copies fields from state
+    `+0x18/+0x1c/+0x20/+0x24/+0x68/+0x10/+0x0e/+0x28` to fixed output
+    offsets and returns `0`
+  - `getSOFTAP_STATS(...)` copies `0x58` bytes from `state+0x1b0`
+  - `setSSID(...)` is logging-only, does not mutate SSID state, and returns
+    `0`
+  - `setPEER_CACHE_CONTROL(...)` calls
+    `AppleBCMWLANCore::completePeerCacheControl(input, self)` via
+    `state+0x218`, ignores the helper result, and returns `0`
+  - `setSOFTAP_PARAMS(...)` has no null guard, uses input
+    `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x17/+0x18`, state
+    `+0x0e/+0x18/+0x1c/+0x20/+0x24/+0x28/+0x68/+0x26c`, sentinel
+    `0xffff`, power-save calls `(0,0)` and `(1,0)`, and returns `0`
+  - `setSOFTAP_EXTENDED_CAPABILITIES_IE(...)` clears state
+    `+0x50/+0x58/+0x60`, copies input `+0x00/+0x01/+0x09` to state
+    `+0x50/+0x51/+0x59`, and returns `0`
+  - `setMIS_MAX_STA(...)` calls `setMaxAssoc(input+0x00)` only when
+    `state+0x26c != 0`, ignores the helper result, and returns `0`
+- local mismatch before CR-148:
+  - SSID state fields `+0x274/+0x278` were hidden inside a reserved block
+  - opmode/state/peer-cache/hidden/simple setter body contracts were YAML or
+    prose-only, not compiled local witnesses
+  - simple setters with no reference null guard were not explicitly protected
+    against accidental local guard insertion
+- exact correction:
+  - add constants and layout witnesses for SSID, state, opmode, peer-cache
+    maximum, hidden mode, SoftAP stats, SoftAP ext-cap input, and MIS max-STA
+    input
+  - split the APSTA state block around `state+0x274/+0x278` while preserving
+    `rsnConfGate29b` at `0x29b` and total size `0x338`
+  - add static asserts tying the simple body offsets, fixed values, copy sizes,
+    and helper-result policies to compiled witnesses
+  - add reference note and YAML documentation for the simple body layer
+- non-claims:
+  - this does not route runtime calls through APSTA public methods
+  - this does not enable APSTA/HostAP runtime
+  - this does not implement station/key datapath methods such as
+    `setCIPHER_KEY`, `getSTA_IE_LIST`, `getSTA_STATS`, or `getKEY_RSC`
+
+### 59. APSTA station/key public bodies have fixed command-buffer contracts
+- anomaly_id: `A-APSTA-STATION-KEY-BODY-CONTRACTS-075`
+- layer: APSTA station/key body scaffold after CR-148
+- Apple contract:
+  - `getSTATION_LIST(...)` rejects NULL with raw `0x16`, AP-down with `0x39`,
+    allocates a `0x100` byte maclist initialized with dword `0x2a`, uses
+    virtual IOCTL get selector `0x9f`, returns `0xe00002bd` on allocation
+    failure, returns `0xe00002d8` on async submit failure, and converts the
+    BCM assoc list on sync success
+  - `setCIPHER_KEY(...)` rejects AP-down with `6`, has no null guard after
+    AP-up passes, reads cipher type at input `+0x08`, accepts only cipher
+    types `3` and `5` for programming, returns success for cipher `0` and
+    unsupported nonzero ciphers, maps to a `0xa4` byte `wl_wsec_key`, and uses
+    virtual IOCTL set selector `0x2d`
+  - `getSTA_IE_LIST(...)` rejects NULL with raw `0x16`, scans station entries
+    from `state+0xb9` to `state+0x1a9` with stride `0x30` and 6-byte MAC
+    compares, returns `2` when not found, uses IOVAR `wpaie`, and updates
+    output `+0x0c` from output `+0x11 + 2`
+  - `getSTA_STATS(...)` rejects AP-down with `0x39`, NULL with raw `0x16`,
+    derives allocation size from core-private `+0x30c` with thresholds `7` and
+    `0x0f`, uses IOVAR `sta_info`, copies RX fields
+    `+0x58/+0x68/+0x54/+0x60` to output `+0x0c/+0x10/+0x14/+0x18`, and frees
+    the allocation
+  - `getKEY_RSC(...)` has no null guard, reads key index at input `+0x0e`,
+    uses virtual IOCTL get selector `0xb7`, 8-byte TX payload, RX range
+    `0x0000000800040008`, and writes output length/value at `+0x50/+0x54`
+- local mismatch before CR-149:
+  - command selectors, payload sizes, allocation sizes, station-table bounds,
+    IOVAR names, key/RSC offsets, and return values were not compiled local
+    witnesses
+  - no-null-guard bodies were not explicitly protected against accidental local
+    guard insertion
+- exact correction:
+  - add constants for selectors, payload sizes, allocation sizes, station-table
+    offset/stride/end, IOVAR names, return values, and output offsets
+  - add layout witnesses for maclist, station-table entry, STA IE data, STA
+    stats data, key RSC data, and `wl_wsec_key`
+  - add static asserts tying state gates, resources, station table bounds,
+    names, and carriers to recovered reference values
+- non-claims:
+  - this does not execute APSTA station/key methods at runtime
+  - this does not change primary STA key programming
+  - this does not force AP-up state or command success
+
+### 60. APSTA event/station-table producer layer has fixed entry and message contracts
+- anomaly_id: `A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076`
+- layer: APSTA event/station-table producer scaffold after CR-149
+- Apple contract:
+  - station table is five `0x30` byte entries at `state+0xb8`
+  - each entry has active byte `+0x00`, MAC `+0x01`, sleep state `+0x10`,
+    AIHS flag `+0x20`, sharing flag `+0x24`, and Apple-station flag `+0x28`
+  - `handleEvent(...)` reads event type/status/reason/auth/data-length/address/data
+    at event `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x18/+0x30`
+  - association/reassociation events `8/10` with status/reason `0/0` post STA
+    message id `0x0c` with payload size `0x114`
+  - removal events `5/6/11/12` notify APSTA TX subqueues via vtable `+0x358`,
+    clear the entry, and post STA message id `0x0d` with payload size `0x0c`
+  - `postMessageForSTA(...)` dispatches through APSTA vtable `+0xb18` and
+    notifies core owner `state+0x218 -> +0x128 -> +0x2c20` with flag `1`
+  - `removeStaFromStaTable(index)` rejects indexes `>= 5` with `0xe00002bc`
+    and clears six qwords from the entry
+- local mismatch before CR-150:
+  - station-table entry witness used a MAC-relative offset instead of full
+    active-byte entry layout
+  - event header offsets, STA post-message carriers, Apple IE/RSNXE parse
+    operands, action-frame low-power operands, station-list mismatch behavior,
+    and removal clear policy were not compiled local witnesses
+- exact correction:
+  - type `state+0xb8` as five APSTA station entries
+  - add event header, STA association/removal message, action-frame, Apple IE,
+    RSNXE, station-list mismatch, and removal constants/layouts
+  - add static asserts tying those carriers to recovered offsets and state
+    aliases
+- non-claims:
+  - this does not execute APSTA event handling at runtime
+  - this does not enable APSTA/HostAP ownership
+  - this does not alter primary STA association or key paths
+
+### 61. APSTA power/offload/datapath tail has fixed payload and return contracts
+- anomaly_id: `A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077`
+- layer: APSTA power/offload/datapath tail scaffold after CR-150
+- Apple contract:
+  - `configureMPDUSize` sends `ampdu_mpdu` with 4-byte payload only when
+    core-private `+0x3fc == 2` and `+0x30c <= 4`
+  - low-power exit and enter paths send `lphs_mode` payload values `0` and
+    `1`, size `4`, no RX expected
+  - ARP offload success sends `arp_hostip_clear`, then reads `state+0xac` and
+    sends `arp_hostip` payload size `4`
+  - `setBeaconDutyCycle` sends `rpsnoa` payload size `0x10` with header
+    `0x100100101`, mode word `2`, and enable word at `+0x0e`
+  - `configureBeaconDutyCycleParams` sends `rpsnoa` payload size `0x18` with
+    header `0x300180101`, mode word `2`, dynamic byte at `+0x0e`, and rotated
+    params qword at `+0x10`
+  - `releaseSoftAPPowerAssertion` clears `state+0x0c` and notifies event
+    `0x8d`, payload value `0`, size `4`, flag `1`
+  - power-state durations accumulate at `state+0x1d0 + state * 0x10`, while
+    timestamp lives at `state+0x1a8`
+  - APSTA `enableDatapath` first checks vtable `+0xcf0`; if not enabled, it
+    returns `0xe00002bc`, not success
+  - `setMacAddress` sends `cur_etheraddr` only when interface id is not `-1`
+    and AP-up state `state+0x26c` is zero
+  - `configureSoftAPPeerStats` uses feature gate `0x7a`, IOVAR
+    `softap_stats`, payload size `0x0e`, and successful callback writes
+    `state+0x328 = cookie & 1`
+- local mismatch before CR-151:
+  - these constants and payload layouts were absent from compiled local APSTA
+    witnesses
+  - YAML incorrectly described the APSTA `enableDatapath` not-enabled branch as
+    success
+- exact correction:
+  - add MPDU, low-power/ARP, RPSNOA, release assertion, stats,
+    enable/disable, datapath, MAC, and peer-stats constants/layout witnesses
+  - split APSTA state fields `state+0xac` and `state+0x328`
+  - correct the documented `enableDatapath` not-enabled return to
+    `0xe00002bc`
+- non-claims:
+  - this does not send APSTA IOVARs at runtime
+  - this does not enable role-7 APSTA creation
+  - this does not alter primary STA association, key, or data paths
+
+### 62. APSTA monitor/power/stats layer has fixed timer and conversion contracts
+- anomaly_id: `A-APSTA-MONITOR-POWER-STATS-CONTRACTS-078`
+- layer: APSTA monitor/power/stats scaffold after CR-151
+- Apple contract:
+  - `handleAPStatsUpdates(...)` validates timer `state+0x70`, allocates
+    `0x808`, calls APSTA vtable `+0xfd8`, accepts async failure
+    `0xe00002d8`, calls `checkForStationListMismatch`, tracks activity
+    baseline `state+0x88`, posts inactivity STA message `0x0d` with payload
+    `{ qword 0, dword 0xffffffff }`, and reschedules at `0x1388`
+  - `monitorAPInterface(...)` validates timer `state+0x78`, mirrors
+    core-private `+0x4d59` bit 0 to `state+0x208`, refreshes Apple vendor IE
+    when `state+0x62` requires it, tracks low traffic at `state+0x64`,
+    updates RX baselines `state+0x90/+0x98`, accumulates stats at
+    `state+0x1b8/+0x1c0`, and reschedules at `0x3e8`
+  - `setPowerSaveState(...)` is gated by `state+0x0e`, ignores reason `7`,
+    writes current state at `state+0x10`, records transition counts at
+    `state+0x1c8 + state * 0x10`, and aliases duration buckets at
+    `state+0x1d0`
+  - assoc-list callback/conversion uses BCM count `+0x00`, MACs from `+0x04`
+    stride `6`, Apple output size `0x808`, version `1`, count `+0x04`,
+    entries `+0x08`, stride `0x10`, max `0x80`, clamp threshold `0x81`
+  - MFP uses feature gate `0x26`, IOVAR `mfp`, 4-byte payload, and unsupported
+    return `0`
+  - `printDataPath` uses userPrintCtx offsets `+0x18/+0x20/+0x24/+0x28` and
+    vtable slots `+0x338/+0x320/+0x328/+0xc68`; `updateRxCounter` adds to
+    `state+0xa0`
+- local mismatch before CR-152:
+  - these timer, conversion, MFP, print, and RX-counter contracts were absent
+    from compiled APSTA witnesses
+  - APSTA state fields `state+0x62`, `state+0x64`, and `state+0x208` were not
+    explicitly typed
+- exact correction:
+  - add constants/layout witnesses for inactivity message, BCM/Apple assoc
+    lists, power-state records, monitor counters, MFP, printDataPath, and
+    updateRxCounter
+  - split APSTA state fields `state+0x62`, `state+0x64`, and `state+0x208`
+  - add static asserts tying these fields to recovered Apple offsets and
+    aliases
+- non-claims:
+  - this does not execute APSTA timers or IOVARs at runtime
+  - this does not enable APSTA/HostAP ownership
+  - this does not alter primary STA association, key, or data paths
+
+### 63. APSTA async callback telemetry has fixed filter/beacon operands
+- anomaly_id: `A-APSTA-ASYNC-CALLBACK-TELEMETRY-CONTRACTS-079`
+- layer: APSTA async callback telemetry scaffold after CR-152
+- Apple contract:
+  - HostAP startup sends virtual IOVAR `pkt_filter_delete` through
+    `state+0x228` with 4-byte payload value `0x6c`, no RX expected, callback
+    cookie `0`, and callback `deleteIPv4PktFiltersAsyncCallBack`
+  - `deleteIPv4PktFiltersAsyncCallBack` returns on status `0`; nonzero status
+    logs at level `2`, line `0x0ea0`, and decodes errors through
+    `state+0x218` vtable `+0x780`
+  - `setBeaconInterval` uses IOCTL `0x4c`, 4-byte payload, callback
+    `handleSetBcnIntervalAsyncCallBack`, skip/apply target `state+0x68`, and
+    sync error line `0x106b`
+  - DTIM setup uses IOCTL `0x4e`, 4-byte payload, callback
+    `handleSetBcnDTIMPeriodAsyncCallBack`, source `state+0x16`, apply target
+    `state+0x6a`, and sync error line `0x1091`
+  - beacon callbacks return on status `0`; nonzero status logs at level `1`
+    and emits RX payload data `+0x00`, length `+0x08`, telemetry flag `1`,
+    through `state+0x210`
+- local mismatch before CR-153:
+  - callback labels, log levels/lines, RX payload offsets, telemetry flag, and
+    `pkt_filter_delete` payload were not compiled local witnesses
+- exact correction:
+  - add constants/string witnesses for `pkt_filter_delete`,
+    `BCNPRD IOCTL rxPayload bytestream: `, and
+    `DTIMPRD IOCTL rxPayload bytestream: `
+  - add static asserts tying async RX payload offsets, telemetry flag, payload
+    value/size, and callback log levels to recovered values
+- non-claims:
+  - this does not execute APSTA callbacks or IOVARs at runtime
+  - this does not enable APSTA/HostAP ownership
+  - this does not alter primary STA association, key, or data paths
+
+### 64. APSTA action-frame LPHS has fixed sleep/awake state semantics
+- anomaly_id: `A-APSTA-ACTION-FRAME-LPHS-CONTRACTS-080`
+- layer: APSTA action-frame / LPHS scaffold after CR-153
+- Apple contract:
+  - `handleEvent` event type `0x4b` parses action-frame payload from
+    `event+0x30` and accepts minimum payload length `0x12`
+  - raw version `0x0100` reads category/action at payload `+0x10/+0x11`;
+    raw version `0x0200` requires length `0x1a` and reads payload
+    `+0x18/+0x19`
+  - unknown category/action sentinel is `0xaa`; byte-swapped versions `>= 3`
+    are rejected
+  - LPHS category is `0x7f`; accepted actions are `1` and `2`
+  - accepted action value is written directly to station-table sleep-state
+    `entry+0x10`
+  - station add initializes sleep-state to `2`; active entries with state `2`
+    block all-STA LPM
+  - when no active station remains in blocking state `2` and SoftAP
+    concurrency is disabled, Apple calls `setPowerSaveState(3, 0x0b)`
+- local mismatch before CR-154:
+  - local constants treated action `1` as awake and action `2` as sleep
+  - parse sentinel, event offsets, all-STA blocker, transition reason, and log
+    line witnesses were absent from the compiled scaffold
+- exact correction:
+  - action `1` is low-power/sleep and action `2` is awake/default
+  - add event-offset, reject-threshold, sentinel, blocker-state, transition,
+    power-save reason, and log-line constants/static asserts
+- non-claims:
+  - this does not enable APSTA owner creation
+  - this does not synthesize LPHS action frames
+  - this does not force power-save transitions
+  - this does not alter primary STA association, key, or data paths
+
+### 65. WCL action-frame send path has fixed V1/V2 payload contracts
+- anomaly_id: `A-WCL-ACTION-FRAME-SEND-CONTRACTS-081`
+- layer: WCL action-frame sender after CR-154
+- Apple contract:
+  - `setWCL_ACTION_FRAME` rejects `NULL` with `0xe00002bc`
+  - carrier fields are category `+0x00`, channel `+0x04`, peer address
+    `+0x08`, frame length `+0x0e`, and frame bytes `+0x10`
+  - V2 is selected when core-private firmware generation `+0x30c > 0x14`
+  - V1 `sendActionFrame` uses a fixed IOVAR CommandTxPayload length `0x724`
+    after zeroing a `0x718` buffer and accepting total bytes up to `0x707`
+  - V2 `sendActionFrameV2` rejects total bytes `>= 0x708`, allocates
+    `total + 0x34`, and uses issue-command dispatch
+- local mismatch before CR-155:
+  - local V1 dispatch used only `frameLen` as request length instead of the
+    Apple fixed `0x724` payload size
+  - local diagnostic cache truncated action frames to `0x200` even though the
+    recovered sender capacity is `0x708`
+  - the V2 threshold and capacity literals were split across call sites instead
+    of being a single recovered contract
+- exact correction:
+  - add named action-frame capacity, maximum length, V1 payload size, and V2
+    threshold constants
+  - route local V1 dispatch with fixed request size `0x724`
+  - expand local cached action-frame buffer to `0x708`
+- non-claims:
+  - this does not implement real Broadcom action-frame adapter injection
+  - this does not synthesize action frames
+  - this does not alter primary STA association or APSTA owner creation
+
+### 66. WCL action-frame progress gates scan through overdue state
+- anomaly_id: `A-WCL-ACTION-FRAME-PROGRESS-CONTRACTS-082`
+- layer: WCL action-frame progress after CR-155
+- Apple contract:
+  - `setActionFrameProgress(bool)` stores the bool byte at core-private
+    `+0x4478`
+  - `getActionFrameProgress()` first calls
+    `checkActionFrameCompleteOverdue()`, then returns bit 0 from
+    core-private `+0x4478`
+  - `checkActionFrameCompleteOverdue()` reads the start timestamp from
+    core-private `+0x4480`, compares unsigned elapsed milliseconds against
+    `0x12d`, clears `+0x4478` when overdue, logs line `0x3b1d`, and emits
+    status `0xe3ff852b` through line `0x3b1e`
+  - `setupDriver()` clears the progress byte during driver-state
+    initialization
+  - `AppleBCMWLANScanAdapter::startScan(...)` performs the overdue check and
+    rejects scan with `0xe00002d5` / line `0x00a5` while progress remains set
+- local mismatch before CR-156:
+  - local Tahoe owner registry had no action-frame progress bit witness
+  - local code had no progress start-ms witness or overdue helper semantics
+  - local code had no named scan reject status/log-line constants for this
+    Apple gate
+- exact correction:
+  - add named progress flag/start-ms offsets, overdue threshold, overdue
+    status, and scan reject constants
+  - add action-frame owner `progress` and `progressStartMs` witnesses
+  - add pure owner helper semantics for set/get/overdue-check
+- non-claims:
+  - this does not enable local scan rejection while progress is set
+  - this does not synthesize a timestamp or force completion
+  - this does not alter primary STA association, DHCP, RSN/EAPOL, or data paths
+
+### 67. Controller queue/depth/capacity and multicast owner contracts diverged
+- anomaly_id: `A-TAHOE-CONTROLLER-QUEUE-MULTICAST-CAPACITY-083`
+- layer: Tahoe controller queue/depth/capacity and multicast/promiscuous layer
+  after CR-156
+- Apple contract:
+  - `requestQueueSizeAndTimeout` reads `wlan.coalesce.qsize` and
+    `wlan.coalesce.timeout`; it returns `0xe00002c7` unless both low 16-bit
+    values are nonzero, and writes both output pointers before returning `0`
+  - `fetchAndUpdateRingParameters` initializes core-private `+0x1154` to
+    `0x200`; `getDataQueueDepth(OSObject*)` returns this 16-bit field
+  - `IO80211SkywalkInterface::getDataQueueDepth()` dispatches to the bound
+    controller vtable slot for `getDataQueueDepth(OSObject*)`
+  - IO80211 base `getDataQueueDepth` returns `0x400`, while
+    `getActionFramePoolCapacity` returns `0x100`
+  - `setPromiscuousMode(bool)` stores the bool at core-private `+0x4778`
+  - multicast mode/list share reject gate `+0x2891` bit `0x80` with status
+    `0xe0823804`
+  - multicast list rejects count `> 0x20` with `0xe00002bc`, stores count at
+    `+0x234`, stores 6-byte entries at `+0x238`, builds `4 + count * 6`
+    payloads in a `0xca` stack buffer filled with `0xaa`, and uses IOVAR
+    `mcast_list`
+- local mismatch before CR-157:
+  - `requestQueueSizeAndTimeout` returned success unconditionally and wrote no
+    output values
+  - Tahoe local controller did not override `getDataQueueDepth`, leaving the
+    IO80211 default `0x400` instead of the AppleBCMWLANCore default `0x200`
+  - action-frame pool capacity was not explicit locally
+  - promiscuous/multicast requested state and multicast-list cache/limit had no
+    Tahoe owner witnesses
+- exact correction:
+  - add Tahoe controller contract constants for queue, depth, capacity,
+    promiscuous, multicast offsets/statuses/payload shape
+  - return `0xe00002c7` from `requestQueueSizeAndTimeout` unless both local
+    coalesce properties are nonzero, then write both output pointers and cache
+    the values
+  - override `getDataQueueDepth` with owner default `0x200`
+  - override `getActionFramePoolCapacity` with `0x100`
+  - cache promiscuous/multicast requested state and multicast-list caller data
+  - reject multicast-list count above `0x20` with `0xe00002bc`
+- non-claims:
+  - this does not implement Broadcom multicast IOVAR dispatch locally
+  - this does not enable AP/SoftAP runtime
+  - this does not claim final primary STA association or data success
+  - this does not add retry, poll, fallback, forced state, or synthetic queue
+    parameters
+
+### 68. Hidden +0x1510 flow/timestamp/virtual-interface surface was not recorded
+- anomaly_id: `A-TAHOE-HIDDEN-INTERFACE-FLOW-TIMESTAMP-084`
+- layer: hidden interface owner surface after CR-157
+- Apple contract:
+  - core-private `+0x1510` stores the hidden interface-side owner object
+  - `flowIdSupported()` delegates to hidden slot `+0xa68`
+  - `requestFlowQueue(...)` checks slot `+0xa68`, falls back to base slot
+    `+0xd60` when unsupported, returns `NULL` while commands are rejected, and
+    otherwise calls hidden slot `+0xa70` with metadata operands at
+    `+0x06/+0x0c/+0x10`
+  - `releaseFlowQueue(...)` delegates to hidden slot `+0xa78` when flow IDs are
+    supported, otherwise falls back to base slot `+0xd68`
+  - packet timestamp enable/disable use base slots `+0xd90/+0xd98`, command
+    gate actions, and gated hidden slots `+0xaa8/+0xab0`
+  - `getLogPipes(...)` reads hidden object `+0x88`, then event/log/snapshot
+    pipes at `+0x218/+0x220/+0x230`
+  - virtual-interface create/enable/disable delegate through base slots
+    `+0xe10/+0xd40/+0xd48`; null enable/disable status is `0xe00002bc`; role
+    `6` paths involve proximity owner `+0x2c28` and wake flag `0x10000`
+- local mismatch before CR-158:
+  - hidden `+0x1510` flow/timestamp/log-pipe/virtual-interface slots were not
+    recorded as compiled local constants
+  - local `flowIdSupported` was a literal false rather than an owner-state
+    witness
+  - local `releaseFlowQueue` emitted debug logs, adding a non-reference side
+    effect on the flow-queue release path
+- exact correction:
+  - add hidden-interface constants and static asserts
+  - add hidden-interface owner witnesses to `TahoeOwnerRegistry`
+  - make `flowIdSupported` return the owner witness, defaulting to false
+  - keep `requestFlowQueue` inherited from base while flow IDs are false
+  - remove debug logging from local `releaseFlowQueue` and retain only an owner
+    release witness
+- non-claims:
+  - this does not enable flow queues
+  - this does not enable packet timestamping through a hidden backend
+  - this does not enable APSTA/proximity virtual-interface runtime
+  - this does not claim final association/data/AP success
+
+### 69. QoS / DynSAR / congestion-control offsets were not represented locally
+- anomaly_id: `A-TAHOE-QOS-DYNSAR-OFFSETS-085`
+- layer: Q11-C1 QoS / DynSAR helper owner after CR-158
+- Apple contract:
+  - `wasDynSARInFailSafeMode()` reads start ticks at `+0x74e0`, computes
+    `((now - start) >> 0x0a) < 0x9502f9`, and logs at line `0xdea9` when
+    debug output is enabled
+  - congestion-control configuration helpers test `+0x7584` bit `0`; return
+    `0` when set and `0xe00002c7` when clear
+  - AWDL AMPDU force flags live at `+0x3768` and `+0x3764`
+  - hardware feature flags live at `+0x458c`
+  - split-TX status is bit `0` at `+0x00dc`
+  - TX address resolution counters live at `+0x2aa4/+0x2aa8`
+- local mismatch before CR-159:
+  - these helper offsets and return/status contracts were not compiled local
+    witnesses
+  - the local owner registry had no Q11-C1/QoS-DynSAR state container
+- exact correction:
+  - add `TahoeQosDynsarContracts.hpp`
+  - add `TahoeOwnerRegistry::QosDynsarOwner`
+  - add pure helper semantics for DynSAR fail-safe window and congestion
+    feature gate
+- non-claims:
+  - this does not call QoS IOVARs
+  - this does not enable DynSAR policy
+  - this does not force congestion, AMPDU, split-TX, or address-resolution state
+  - this does not claim final association/data/AP success
+## 160. Hidden association / RSN carrier owner offsets recovered
+
+- anomaly: `A-ASSOC-RSN-CARRIER-OWNER-160`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANCore::setWCL_ASSOCIATE(...) @ 0xffffff80015fbacc`
+  - `AppleBCMWLANJoinAdapter::performJoin(...) @ 0xffffff8001576df8`
+  - `AppleBCMWLANJoinAdapter::setAssocRSNIE(...) @ 0xffffff80015795b8`
+  - `AppleBCMWLANCore::setRSN_IE(...) @ 0xffffff800160433e`
+- finding:
+  - Tahoe hidden associate carriers are selectors `0x45/0x46` with exact
+    assoc-candidates length `0x3ad8`.
+  - The selected WCL candidate remains candidate count `+0x218` and first
+    BSSID `+0x220`.
+  - RSN IE is carried as explicit pointer `+0xd6` and length `+0xd4`; local
+    fixed-size copy of a partially initialized `apple80211_rsn_ie_data` stack
+    object is not reference-equivalent.
+- local alignment:
+  - added `TahoeAssociationContracts.hpp`.
+  - added `TahoeOwnerRegistry::AssociationOwner`.
+  - replaced active hidden-assoc magic offsets with recovered constants.
+  - changed local RSN override storage to zero previous state and copy only the
+    bounded caller-provided IE length.
+- non-claims:
+  - no forced EAPOL TX, key install, RSN done, DHCP, retry, delay, or replay.
+
+## 161. Skywalk packet pools used generic packet type
+
+- anomaly: `A-SKYWALK-PACKET-POOL-NETWORK-TYPE-161`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANSkywalkPacketPool::initWithName(...) @ 0xffffff80016e033c`
+  - parent `IOSkywalkPacketBufferPool::initWithName` is called with packet
+    type `1`, i.e. `kIOSkywalkPacketTypeNetwork`
+  - IO80211 downstream consumers use `IO80211NetworkPacket*` /
+    `IOSkywalkNetworkPacket` contracts
+- local mismatch before CR-161:
+  - `AirportItlwm` created `AirportItlwm-TX` and `AirportItlwm-RX` pools with
+    packet type `0`, i.e. generic Skywalk packet pools
+  - runtime showed RX EAPOL enqueue success but no `ITLWM_IO80211_INPUT`
+    marker afterward
+- exact correction:
+  - change both local pool factory calls to `kIOSkywalkPacketTypeNetwork`
+- non-claims:
+  - no manual `inputPacket(...)` callback
+  - no forced EAPOL TX/key/RSN success
+  - no retry, delay, replay, state masking, or guessed custom packet subclass
+
+## 162. Skywalk network packet and RX tag ABI were not represented
+
+- anomaly: `A-SKYWALK-NETWORK-PACKET-TAG-ABI-162`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+    0xffffff80014ca8e4`
+  - `IO80211InterfaceMonitor::logRxCompletionPacket(...) @
+    0xffffff80022f633e`
+  - `MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkNetworkPacket.h`
+- finding:
+  - RX completion producer passes the network packet, packet scratch/tag, and
+    ethernet header to the interface input slot.
+  - The producer reads scratch `+0x18` and writes mapped service class to
+    scratch `+0x29`.
+  - IO80211 monitor reads tag `+0x18` as TID and tag `+0x14` as its monitored
+    completion gate.
+  - Apple PCIe packet scratch lives at packet `+0x78`, has size `0x98`, and
+    prepare clears the first `0x30` bytes.
+- local mismatch before CR-162:
+  - local `IOSkywalkNetworkPacket` inherited from `IOService` and declared
+    generic packet methods in the wrong class.
+  - local `packet_info_tag` was empty despite proven downstream dereferences.
+- exact correction:
+  - align `IOSkywalkNetworkPacket` declaration to the Tahoe Skywalk header
+    shape.
+  - add partial `packet_info_tag` layout for offsets `+0x14`, `+0x18`,
+    `+0x29`, total size `0x98`, with static assertions.
+- non-claims:
+  - no manual `inputPacket(...)` callback
+  - no forced EAPOL TX/key/RSN success
+  - no retry, delay, replay, or guessed RX completion delivery
+
+## 163. RX completion action did not perform IO80211 input handoff
+
+- anomaly: `A-SKYWALK-RX-COMPLETION-INPUT-HANDOFF-163`
+- status: `SUPERSEDED_BY_A-CR165-RX-COMPLETION-PRODUCER-STAGING`
+- reference:
+  - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+    0xffffff80014ca8e4`
+  - `IO80211InfraInterface::inputPacket(...) @ 0xffffff80022e3f20`
+- finding:
+  - Apple RX completion producer calls the interface input slot from the
+    completion callback after deriving `ether_header` from packet data pointer
+    plus data offset.
+  - The call passes packet scratch/tag, a null accepted pointer, and `false`.
+  - Local runtime reached RX enqueue but never reached the IO80211 input probe.
+- local mismatch before CR-163:
+  - local `skywalkRxAction(...)` only incremented `rxCbCnt` and returned
+    `count`.
+- exact correction:
+  - local `skywalkRxAction(...)` now validates packet data, builds the ethernet
+    header pointer, initializes recovered tag storage, and calls
+    `AirportItlwmSkywalkInterface::inputPacket(...)` from the RX completion
+    boundary.
+- non-claims:
+  - no direct input call from `skywalkRxInput(...)`
+  - no packet replay/duplication
+  - no forced accepted success
+  - no forced EAPOL TX/key/RSN/DHCP/link success
+
+## 165. RX completion producer action was bypassed by direct base enqueue
+
+- anomaly: `A-CR165-RX-COMPLETION-PRODUCER-STAGING`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `IOSkywalkRxCompletionQueue::requestEnqueue(...) @ 0xffffff8002a59c4c`
+  - `IOSkywalkRxCompletionQueue::enqueuePackets(...) @
+    0xffffff8002a59cda / 0xffffff8002a59d84`
+  - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+    0xffffff80014ca8e4`
+- finding:
+  - IOSkywalk calls the registered RX producer action from
+    `requestEnqueue(...)`, not from base `enqueuePackets(...)`.
+  - AppleBCMWLAN's producer action drains an owner-side pending RX list, calls
+    IO80211 input, fills the Skywalk-provided output packet array, and returns
+    produced count.
+  - CR-164 runtime showed local RX EAPOL enqueue success while
+    `skywalkRxAction` and `ITLWM_IO80211_INPUT` remained absent.
+- local mismatch before CR-165:
+  - local `skywalkRxInput(...)` prepared a packet and called
+    `fRxQueue->enqueuePackets(...)` directly.
+  - no local pending producer queue existed, so the registered action was
+    bypassed.
+- exact correction:
+  - add fixed-capacity local pending RX packet ring.
+  - stage prepared RX packets in `skywalkRxInput(...)`.
+  - ring `fRxQueue->requestEnqueue(nullptr, 0)`.
+  - make `skywalkRxAction(...)` pop pending packets, call IO80211 input, fill
+    the output packet array, and return produced count.
+- non-claims:
+  - no forced accepted success
+  - no forced EAPOL TX/key/RSN/DHCP/link success
+  - no retry, delay, poll loop, replay, duplicate notify, or deauth masking
+
+## 166. TX submission consumed packets had no completion producer
+
+- anomaly: `A-CR166-TX-COMPLETION-PRODUCER-OWNERSHIP`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::stagePacket(...) @
+    0xffffff80014c91c0`
+  - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::enqueuePackets(...) @
+    0xffffff80014c8d62`
+  - `AppleBCMWLANPCIeSkywalkTxCompletionQueue::requestEnqueue(...) @
+    0xffffff80014c920c`
+  - IOSkywalk TX completion enqueue path near `0xffffff8002a3fa9e`
+- finding:
+  - Apple stages completed TX packets in an owner-side completion list, rings
+    the completion producer boundary, drains produced packets into the
+    Skywalk-provided array, and the IOSkywalk base completion path calls
+    `completeWithQueue(queue, kIOSkywalkPacketDirectionTx, 0)`.
+- local mismatch before CR-166:
+  - local `skywalkTxAction(...)` copied data to an mbuf and returned the
+    original `IOSkywalkPacket` as consumed.
+  - no packet was staged on `fTxCompQueue`.
+  - `skywalkTxCompletionAction(...)` returned `0` unconditionally.
+- exact correction:
+  - add a fixed-capacity TX completion pending producer ring.
+  - stage each non-null packet consumed by `skywalkTxAction(...)`.
+  - ring `fTxCompQueue->requestEnqueue(nullptr, 0)` after the TX batch.
+  - make `skywalkTxCompletionAction(...)` pop staged packets, fill the
+    provided array, and return produced count.
+  - drain pending completion packets before queue/pool release.
+- non-claims:
+  - no forced TX success, key install, RSN, DHCP, link, or internet success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 167. RX producer missed packet tag carrier and post-batch accounting
+
+- anomaly: `A-CR167-RX-PRODUCER-TAG-STATS-CLOSURE`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...) @
+    0xffffff80014ca8e4`
+  - `IO80211SkywalkInterface::recordInputPacket(int, int) @
+    0xffffff8002277c96`
+- finding:
+  - Apple's RX completion producer passes packet scratch/tag metadata into
+    `inputPacket(...)`, fills the produced packet array, then records input
+    packet/byte accounting and updates the RX counter.
+  - Local generic `IOSkywalkNetworkPacket` is size `0x78`; the Apple PCIe
+    scratch pointer at `packet+0x78` is subclass storage and cannot be
+    synthesized by raw offset.
+- local mismatch before CR-167:
+  - local RX pending records carried only packet pointers.
+  - local RX producer did not call `recordInputPacket(...)` or
+    `updateRxCounter(...)` after producing a batch.
+- exact correction:
+  - add local RX pending tag and length metadata arrays.
+  - pass the staged tag into `inputPacket(...)`.
+  - call `recordInputPacket(produced, producedBytes)` and
+    `updateRxCounter(produced)` after produced RX batches.
+- non-claims:
+  - no forced accepted success, EAPOL TX, key install, RSN, DHCP, or link
+    success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 168. TX queue space and pending visibility returned unconditional zero
+
+- anomaly: `A-CR168-TX-QUEUE-SPACE-PENDING-CLOSURE`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANSkywalkInterface::getTxSubQueue(...) @
+    0xffffff800155fb5a`
+  - `AppleBCMWLANIO80211APSTAInterface::getTxSubQueue(...) @
+    0xffffff80016940b4`
+  - `IO80211SkywalkInterface::pendingPackets(...) @ 0xffffff80022780ac`
+  - `IO80211SkywalkInterface::packetSpace(...) @ 0xffffff8002278134`
+- finding:
+  - Apple exposes queue-backed TX admission state through queue objects.
+  - IO80211's base space/pending paths map queue objects and call their
+    pending/free-space virtuals.
+- local mismatch before CR-168:
+  - local `getTxSubQueue(...)` returned `fTxQueue`.
+  - local `pendingPackets(...)` and `packetSpace(...)` returned `0`.
+- exact correction:
+  - local single-queue mapping now returns `fTxQueue` consistently.
+  - `pendingPackets(...)` returns `fTxQueue->getPacketCount()`.
+  - `packetSpace(...)` returns `fTxQueue->getFreeSpace()`.
+- non-claims:
+  - no fabricated queue capacity
+  - no forced TX success, EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 169. TX submission output accounting was skipped after accepted packets
+
+- anomaly: `A-CR169-TX-OUTPUT-ACCOUNTING-CLOSURE`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkTxSubmissionQueue::dequeuePackets(...) @
+    0xffffff80014c611c`
+  - TX accounting call site near `0xffffff80014c7944`
+  - `IO80211SkywalkInterface::recordOutputPacket(apple80211_wme_ac,int,int) @
+    0xffffff8002277cc6`
+- finding:
+  - Apple TX submission dequeue accumulates packet and byte totals for the
+    batch and calls the IO80211 output-accounting edge.
+  - IO80211 output accounting delegates to interface monitor state and does
+    not force link, key, or datapath success.
+- local mismatch before CR-169:
+  - local `skywalkTxAction(...)` counted delivered packets only in
+    `sRT.txPktSent`.
+  - no `recordOutputPacket(...)` call followed accepted `outputPacket(...)`
+    frames.
+- exact correction:
+  - accumulate delivered packet bytes for accepted TX frames.
+  - call `recordOutputPacket({ APPLE80211_WME_AC_BE }, delivered,
+    deliveredBytes)` after the TX batch for the local single-queue mapping.
+- non-claims:
+  - no Apple packet scratch synthesis
+  - no scratch-dependent TX log method calls
+  - no forced TX/EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 170. Skywalk packet pool allocated the wrong IO80211 packet class
+
+- anomaly: `A-CR170-IO80211-NETWORK-PACKET-POOL-CLASS`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkPacketPool::newPacketWithDescriptor(...) @
+    0xffffff80014cb250`
+  - `AppleBCMWLANPCIeSkywalkPacketPool::allocatePacket(...) @
+    0xffffff80014cb8ae`
+  - `IO80211NetworkPacket::getPacketType(...) @ 0xffffff80022cf000`
+  - `IO80211InfraInterface::inputPacket(...) @ 0xffffff80022e3838`
+  - `IO80211PeerManager::skywalkInputPacket(...) @ 0xffffff80021dd58c`
+- finding:
+  - AppleBCMWLAN packet pools allocate packet objects in the
+    `IO80211NetworkPacket` family.
+  - `IO80211NetworkPacket::getPacketType(...)` parses Ethernet payload and
+    classifies EtherType `0x888e` as EAPOL packet type `2`.
+  - The active runtime already reaches the IO80211 input boundary with RX
+    EAPOL, but no EAPOL TX/key/RSN progression follows.
+- local mismatch before CR-170:
+  - local pools used base `IOSkywalkPacketBufferPool::withName(...,
+    kIOSkywalkPacketTypeNetwork, ...)`.
+  - local RX handoff passed the packet as
+    `reinterpret_cast<IO80211NetworkPacket *>(pkt)`.
+  - the allocation path did not prove that the object was a real
+    `IO80211NetworkPacket`.
+- exact correction:
+  - add a local declaration for the system `IO80211NetworkPacket` class.
+  - add `AirportItlwmIO80211PacketPool`, an `IOSkywalkPacketBufferPool`
+    subclass.
+  - override `newPacket(...)` to allocate the system `IO80211NetworkPacket`
+    metaclass and initialize it with the pool descriptor.
+  - use the new pool for both TX and RX.
+- non-claims:
+  - no Apple PCIe packet scratch synthesis
+  - no raw `packet+0x78` writes
+  - no scratch-dependent log method calls
+  - no forced EAPOL TX, key install, RSN done, DHCP, link, or data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 171. IOSkywalkNetworkPacket base size included non-reference storage
+
+- anomaly: `A-CR171-IOSKYWALK-NETWORK-PACKET-SIZE`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `IOSkywalkNetworkPacket` metaclass construction in
+    `IOSkywalkFamily_decompiled.c`, size `0x78`
+  - `IO80211NetworkPacket` constructor/deallocation in
+    `IO80211Family_decompiled.c`, size `0x78`
+  - `AppleBCMWLANPCIeSkywalkPacket` metaclass construction in
+    `AppleBCMWLANBusInterfacePCIeMac_decompiled.c`, size `0x80`
+  - Apple packet scratch pointer uses at packet offset `+0x78`
+- finding:
+  - `+0x78` is subclass-owned scratch-pointer storage in the Apple PCIe
+    packet object.
+  - It is not a field of `IOSkywalkNetworkPacket` or `IO80211NetworkPacket`.
+- local mismatch before CR-171:
+  - the tracked local `IOSkywalkNetworkPacket` declaration added
+    `void *mReserved`.
+  - that shifted the local base size to `0x80`, consuming the reference
+    subclass scratch-pointer slot.
+- exact correction:
+  - remove the non-reference member from the tracked local declaration.
+  - add static assertions for `sizeof(IOSkywalkNetworkPacket) == 0x78`.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no scratch-dependent method calls
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 172. IO80211NetworkPacket local declaration lacked the exported packet surface
+
+- anomaly: `A-CR172-IO80211-NETWORK-PACKET-VIRTUAL-SURFACE`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `kdk_symbols.txt` exported `IO80211NetworkPacket` method list
+  - `IO80211Family_decompiled.c` constructor/deallocation and packet-type
+    implementation
+  - `AppleBCMWLANPCIeSkywalkPacket` constructors in
+    `AppleBCMWLANBusInterfacePCIeMac_decompiled.c`
+- finding:
+  - `IO80211NetworkPacket` is a real intermediate class layer, not just an
+    empty type alias over `IOSkywalkNetworkPacket`.
+  - Apple packet subclass construction enters this layer before installing the
+    Apple packet vtable.
+- local mismatch before CR-172:
+  - local `IO80211NetworkPacket` header declared an empty subclass.
+  - that was enough for CR-170 system-object allocation, but not enough to
+    compile a future Apple packet subclass against the correct base ABI.
+- exact correction:
+  - add `OSDeclareDefaultStructors(IO80211NetworkPacket)`.
+  - add the export/decompile-proven method declarations.
+  - add opaque `IO80211NetworkTXStatus` enum declaration for ABI-correct
+    signatures.
+  - assert `sizeof(IO80211NetworkPacket) == 0x78`.
+- non-claims:
+  - no local IO80211 packet instantiation
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 173. Packet scratch field map was incomplete for Apple PCIe packet offsets
+
+- anomaly: `A-CR173-PACKET-SCRATCH-FIELD-MAP`
+- status: `FIX_IMPLEMENTED` locally, pending structural review
+- reference:
+  - `AppleBCMWLANPCIeSkywalkPacket` scratch pointer at packet `+0x78`
+  - scratch size `0x98`
+  - scratch field uses at `+0x48`, `+0x50`, `+0x74`, `+0x80`, `+0x8a`, `+0x90`
+- finding:
+  - the local tag struct had the correct total size but only named the early
+    IO80211 input/monitor fields.
+  - later Apple packet scratch fields need compile-time names before any safe
+    scratch owner restoration can proceed.
+- local mismatch before CR-173:
+  - `packet_info_tag` left the proven Apple packet fields anonymous.
+- exact correction:
+  - name bus and virtual address fields.
+  - name packet signature, TX status, flow queue index, and AC/duplicate flags.
+  - add static offset assertions for all named fields.
+- rejected path:
+  - direct local C++ subclass of `IO80211NetworkPacket` was tested and
+    rejected before submission.
+  - BootKC verification failed on non-exported `IOSkywalkPacket::*` virtuals
+    generated into the subclass vtable.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+
+## 174. Packet scratch RX/TX VLAN, RxDrop marker, and AC meta byte fields unnamed
+
+- anomaly: `A-CR174-PACKET-SCRATCH-RX-TX-VLAN-FIELD-MAP`
+- status: `FIX_IMPLEMENTED` locally; supersedes CR-173 structural review
+- reference:
+  - `IO80211InfraInterface::logTxPacket` writes `+0x1c` (TX VLAN, byteswapped) and `+0x28` (AC meta).
+  - `IO80211InfraInterface::inputPacket` and `AppleBCMWLANLowLatencyInterface::inputPacket` write `+0x22` (RX VLAN, byteswapped).
+  - `IO80211PeerManager::skywalkInputPacket` reads `+0x22` for RX log construction.
+  - `IO80211PeerManager::inputPacket` and `IO80211PeerManager::skywalkInputPacket` clear `+0x24` (RxDrop marker).
+- finding:
+  - CR-173 left `+0x19..+0x28` as anonymous `reserved19[0x10]`. Cross-decompile audit confirms four offsets in that range carry distinct meanings used by exported IO80211 RX/TX path methods.
+- local mismatch before CR-174:
+  - `packet_info_tag` named no fields between `tid` (`+0x18`) and `service_class` (`+0x29`).
+- exact correction:
+  - promote `tx_vlan_tag` (`+0x1c`, uint32_t) out of `reserved19`.
+  - promote `rx_vlan_tag` (`+0x22`, uint16_t).
+  - promote `rx_drop_marker` (`+0x24`, uint32_t).
+  - promote `ac_meta` (`+0x28`, uint8_t).
+  - narrow padding bands to `reserved19[0x19..0x1b]` and `reserved20[0x20..0x21]`.
+  - add static offset assertions for all four new fields.
+  - struct size remains `0x98`.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - confirms purely additive structural rename — no live code references the new field names yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+
+## 175. IO80211InfraInterface Tahoe public API helpers undeclared
+
+- anomaly: `A-CR175-INFRAINTERFACE-TAHOE-API-HEADER-ALIGNMENT`
+- status: `FIX_IMPLEMENTED` locally; supersedes CR-174 structural review
+- reference:
+  - `IO80211InfraInterface::getInfraPeer()` exported at `0xffffff80022e1148`.
+  - `IO80211InfraInterface::getCurrentApAddress()` exported at `0xffffff80022e5ef8`.
+  - `IO80211InfraInterface::handleKeyDone(bool, bool)` exported at `0xffffff80022e6f9c`.
+  - `IO80211InfraInterface::bssidChange(void *, unsigned long)` exported at `0xffffff80022e116e`.
+- finding:
+  - All four are direct-call (non-vtable) BootKC exports on the live Tahoe IO80211Family. Until CR-175 the local `IO80211InfraInterface.h` did not declare them, so any future caller would need a per-call `extern "C"` shim with mangled signature instead of using the documented C++ surface.
+- local mismatch before CR-175:
+  - missing `IO80211Peer *getInfraPeer(void)` declaration.
+  - missing `ether_addr *getCurrentApAddress(void)` declaration.
+  - missing `void handleKeyDone(bool, bool)` declaration.
+  - missing `void bssidChange(void *, unsigned long)` declaration.
+- exact correction:
+  - add four non-virtual declarations under `#if __IO80211_TARGET >= __MAC_26_0` block in `include/Airport/IO80211InfraInterface.h`.
+  - anchor each to its BootKC address in a comment block.
+  - vtable layout unchanged.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive structural rename — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls to `getInfraPeer`, `getCurrentApAddress`, `handleKeyDone`, or `bssidChange` from any local code path
+
+## 176. IO80211PeerManager public peer API undeclared in local headers
+
+- anomaly: `A-CR176-PEERMANAGER-PUBLIC-API-HEADER-ALIGNMENT`
+- status: `FIX_IMPLEMENTED` locally; supersedes CR-175 structural review
+- reference:
+  - `IO80211PeerManager::addPeer(unsigned char *)` exported at `0xffffff80021d3f58`.
+  - `IO80211PeerManager::addPeerOperation()` exported at `0xffffff80021d7ba0`.
+  - `IO80211PeerManager::removePeer(IO80211Peer *)` exported at `0xffffff80021d4452`.
+  - `IO80211PeerManager::removePeer(unsigned char *)` exported at `0xffffff80021d4806`.
+  - `IO80211PeerManager::removePeerOperation()` exported at `0xffffff80021d7c7e`.
+  - `IO80211PeerManager::getPeerList()` exported at `0xffffff80021df2fe`.
+  - `IO80211PeerManager::getPeerStats(apple80211_peer_stats *)` exported at `0xffffff80021d298e`.
+- finding:
+  - the local include directory had no canonical header for the IO80211PeerManager public API. Existing files only forward-declared the class.
+- local mismatch before CR-176:
+  - no `IO80211PeerManager.h` header.
+  - peer add/remove/list/stats methods undeclared anywhere in `include/Airport`.
+- exact correction:
+  - add new `include/Airport/IO80211PeerManager.h`.
+  - declare `class IO80211PeerManager` as opaque, non-data, no vtable.
+  - declare the seven non-virtual exported peer-management methods with BootKC-matching signatures.
+  - forward-declare `IO80211Peer` and `apple80211_peer_stats`.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the seven peer-management methods
+  - no declared base class or data layout for `IO80211PeerManager`
+
+## 177. IO80211Peer public peer API undeclared in local headers
+
+- anomaly: `A-CR177-PEER-PUBLIC-API-HEADER-ALIGNMENT`
+- status: `FIX_IMPLEMENTED` locally; supersedes CR-176 structural review
+- reference:
+  - `IO80211Peer::withAddressAndManager(unsigned char const *, IO80211PeerManager *)` exported at `0xffffff80021bf64a`.
+  - `IO80211Peer::init()` exported at `0xffffff80021bf6c0`.
+  - `IO80211Peer::getMacAddress()` exported at `0xffffff80021bff7a`.
+  - `IO80211Peer::setMacAddress(ether_addr *)` exported at `0xffffff80021c5df4`.
+  - `IO80211Peer::getManager()` exported at `0xffffff80021c3558`.
+  - `IO80211Peer::getGeneration()` exported at `0xffffff80021c60dc`.
+- finding:
+  - the local include directory had no canonical header for the IO80211Peer public API. Existing files only forward-declared the class.
+- local mismatch before CR-177:
+  - no `IO80211Peer.h` header.
+  - peer factory, init, MAC accessors, manager back-pointer and generation undeclared anywhere in `include/Airport`.
+- exact correction:
+  - add new `include/Airport/IO80211Peer.h`.
+  - declare `class IO80211Peer` as opaque, non-data, no vtable.
+  - declare the six non-virtual exported peer methods (one factory, one init, four accessors/mutators) with BootKC-matching signatures.
+  - forward-declare `IO80211PeerManager` and `ether_addr`.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the six peer methods
+  - no declared base class or data layout for `IO80211Peer`
+  - no inclusion of kernel-internal types like `peerState` or `peerMonitoringCtx`
+
+## 178. IO80211PeerManager data-path + peer-lookup helper surface absent
+
+- topic: structural reference alignment of IO80211PeerManager data-path and lookup surface
+- date: 2026-04-28
+- supersedes: CR-177
+- reference evidence:
+  - `IO80211PeerManager::findPeer(unsigned char *)` exported at `0xffffff80021d1388`.
+  - `IO80211PeerManager::findCachedPeer(unsigned char *)` exported at `0xffffff80021d3f0c`.
+  - `IO80211PeerManager::getUnicastPeer()` exported at `0xffffff80021df2a8`.
+  - `IO80211PeerManager::getMulticastPeer()` exported at `0xffffff80021df296`.
+  - `IO80211PeerManager::getEnabled()` exported at `0xffffff80021df672`.
+  - `IO80211PeerManager::setEnableState(bool)` exported at `0xffffff80021cc798`.
+  - `IO80211PeerManager::getDataPathOpen()` exported at `0xffffff80021df4f8`.
+  - `IO80211PeerManager::setDataPathOpen(bool)` exported at `0xffffff80021df50a`.
+  - `IO80211PeerManager::setDataPathState(bool)` exported at `0xffffff80021cde60`.
+  - `IO80211PeerManager::lockDataPath()` exported at `0xffffff80021cded6`.
+  - `IO80211PeerManager::unlockDataPath()` exported at `0xffffff80021cdfca`.
+- finding:
+  - the CR-176 IO80211PeerManager header only declared peer-membership helpers (addPeer/removePeer/getPeerList/getPeerStats). Lookup and data-path-control helpers were missing.
+- local mismatch before CR-178:
+  - `findPeer`, `findCachedPeer`, `getUnicastPeer`, `getMulticastPeer` undeclared.
+  - `getEnabled`, `setEnableState` undeclared.
+  - `getDataPathOpen`, `setDataPathOpen`, `setDataPathState`, `lockDataPath`, `unlockDataPath` undeclared.
+- exact correction:
+  - extend `include/Airport/IO80211PeerManager.h` with eleven non-virtual public method declarations matching the BootKC signatures listed above.
+  - keep `class IO80211PeerManager` opaque (no base class, no data, no vtable).
+  - anchor each new declaration to its BootKC address in the header preamble.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the eleven new peer-manager methods
+  - no declared base class or data layout for `IO80211PeerManager`
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 179. IO80211PeerManager infra BSSID/SSID/channel/RSSI helper surface absent
+
+- topic: structural reference alignment of IO80211PeerManager infra-config helpers
+- date: 2026-04-28
+- supersedes: CR-178
+- reference evidence:
+  - `IO80211PeerManager::getInfraBssid()` exported at `0xffffff80021df07a`.
+  - `IO80211PeerManager::getInfraSsidLen()` exported at `0xffffff80021df2de`.
+  - `IO80211PeerManager::setInfraSsidLen(unsigned int)` exported at `0xffffff80021df2ee`.
+  - `IO80211PeerManager::getInfraSsidBytes()` exported at `0xffffff80021df08a`.
+  - `IO80211PeerManager::setInfraSsidBytes(unsigned char*, unsigned int)` exported at `0xffffff80021df09a`.
+  - `IO80211PeerManager::setInfraTxState(bool)` exported at `0xffffff80021d4e36`.
+  - `IO80211PeerManager::setInfraChannel(apple80211_channel*)` exported at `0xffffff80021d4eb0`.
+  - `IO80211PeerManager::copyInfraChannel(apple80211_channel*)` exported at `0xffffff80021d4e72`.
+  - `IO80211PeerManager::resetInfraChannel()` exported at `0xffffff80021d4e90`.
+  - `IO80211PeerManager::setInfraChannelInfo(apple80211_channel*)` exported at `0xffffff80021df04c`.
+  - `IO80211PeerManager::setInfraChannelFlags(unsigned int)` exported at `0xffffff80021df06a`.
+  - `IO80211PeerManager::getInfraRSSI()` exported at `0xffffff80021df994`.
+  - `IO80211PeerManager::setInfraRSSI(int)` exported at `0xffffff80021df984`.
+- finding:
+  - the CR-178 header had not yet declared the infra-config (BSSID/SSID/channel/RSSI/TX-state) helpers.
+- local mismatch before CR-179:
+  - thirteen public direct-call helpers undeclared anywhere in `include/Airport`.
+- exact correction:
+  - extend `include/Airport/IO80211PeerManager.h` with thirteen non-virtual public method declarations matching the BootKC signatures listed above.
+  - keep `class IO80211PeerManager` opaque (no base class, no data, no vtable).
+  - forward-declare `struct apple80211_channel` and `struct ether_addr`.
+  - anchor each new declaration to its BootKC address in the header preamble.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the thirteen new peer-manager methods
+  - no declared base class or data layout for `IO80211PeerManager`
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 180. IO80211InterfaceMonitor public direct-call header surface absent
+
+- topic: structural reference alignment of IO80211InterfaceMonitor public surface
+- date: 2026-04-28
+- supersedes: CR-179
+- reference evidence:
+  - 19 non-virtual exported helpers on `IO80211InterfaceMonitor` recovered
+    from BootKC IO80211Family, addresses listed in the corresponding YAML
+    `120_interface_monitor_public_api_2026_04_28.yaml`.
+- finding:
+  - the local include directory had no canonical header for the
+    IO80211InterfaceMonitor public API. Existing files only forward-declared
+    the class in IO80211Interface.h.
+- local mismatch before CR-180:
+  - no `IO80211InterfaceMonitor.h` header.
+  - controller back-pointer, counters, RSSI/SNR/NF accessors, link-rate
+    accessor, and channel modifier all undeclared anywhere in `include/Airport`.
+- exact correction:
+  - add new `include/Airport/IO80211InterfaceMonitor.h`.
+  - declare `class IO80211InterfaceMonitor` as opaque, non-data, no vtable.
+  - declare the nineteen non-virtual exported member functions with
+    BootKC-matching signatures.
+  - forward-declare `IO80211Controller`.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the nineteen interface-monitor methods
+  - no declared base class or data layout for `IO80211InterfaceMonitor`
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 181. IO80211InfraInterface IORegistry property updater helper surface absent
+
+- topic: structural reference alignment of IO80211InfraInterface IORegistry property updater helpers
+- date: 2026-04-28
+- supersedes: CR-180
+- reference evidence:
+  - 11 non-virtual exported helpers on `IO80211InfraInterface` recovered
+    from BootKC IO80211Family, addresses listed in the corresponding YAML
+    `121_infrainterface_property_updaters_2026_04_28.yaml`.
+- finding:
+  - the CR-175 InfraInterface header had not yet declared the property
+    updaters or runtime helpers that any future caller-wiring CR will
+    need to keep IORegistry state in sync.
+- local mismatch before CR-181:
+  - `updateSSIDProperty`, `updateLocaleProperty`, `updateBSSIDProperty`,
+    `updateChannelProperty`, `updateCountryCodeProperty`,
+    `updateStaticProperties`, `updateLinkSpeed` undeclared.
+  - `loadHwChannels`, `loadChannelInfo` undeclared.
+  - `onDispatchQueue`, `cancelDebounceTimer` undeclared.
+- exact correction:
+  - extend `include/Airport/IO80211InfraInterface.h` under the
+    `__IO80211_TARGET >= __MAC_26_0` block with eleven non-virtual
+    public method declarations matching the BootKC signatures.
+  - anchor each new declaration to its BootKC address in the header
+    preamble next to the CR-175 entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the eleven new InfraInterface methods
+  - no declared base class or data layout for `IO80211InfraInterface` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 182. IO80211InterfaceMonitor leaky-AP, reporter, and packet-record helpers undeclared (REFERENCE_ALIGNMENT_FIX, supersedes 181)
+
+- locus: `include/Airport/IO80211InterfaceMonitor.h`
+- evidence: `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/122_interface_monitor_leaky_ap_reporters_2026_04_28.yaml`
+- delta-from-reference:
+  - CR-180 declared 19 InterfaceMonitor helpers (controller, counters,
+    RSSI/SNR/NF, link/channel). The leaky-AP cache, IOReporter
+    lifecycle, and per-packet record helpers were missing.
+  - `getLeakyApSsid(apple80211_ssid*)`, `getLeakyApBssid(ether_addr*)`,
+    `resetLeakyApStats()` undeclared.
+  - `setInputPacketRSSI(long long)`, `recordInputPacket(int, int)`,
+    `recordOutputPacket(apple80211_wme_ac, int, int)`, `initFrameStats()`
+    undeclared.
+  - `initHeFrameStats()`, `destroyReporters()`, `updateAllReports()`
+    undeclared.
+- exact correction:
+  - extend `include/Airport/IO80211InterfaceMonitor.h` `class
+    IO80211InterfaceMonitor` body with ten non-virtual public method
+    declarations matching the BootKC signatures.
+  - add forward declarations for `apple80211_ssid`, `ether_addr`, and
+    `enum apple80211_wme_ac : unsigned int`.
+  - anchor each new declaration to its BootKC address in the header
+    preamble next to the CR-180 entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the ten new InterfaceMonitor methods
+  - no declared base class or data layout for `IO80211InterfaceMonitor` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 183. IO80211Peer capability/credit/counter accessor helpers undeclared (REFERENCE_ALIGNMENT_FIX, supersedes 182)
+
+- locus: `include/Airport/IO80211Peer.h`
+- evidence: `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/123_peer_cap_credit_counter_2026_04_28.yaml`
+- delta-from-reference:
+  - CR-177 declared six Peer helpers (`withAddressAndManager`, `init`,
+    `getMacAddress`, `setMacAddress`, `getManager`, `getGeneration`).
+    Capability/credit/counter helpers were missing.
+  - HT/VHT/HE/6E capability getters/setters undeclared.
+  - `hasHTorVHTCaps`, `canTransmit`, `canTransmitReason` undeclared.
+  - `getOpenCredits`, `getCloseCredits`, `getNumTxPacket`,
+    `getOutputSuccess` undeclared.
+  - `getTxQuantum`, `setTxQuantum`, `getNextTxSeq`, `setTransmitOk`
+    undeclared.
+  - `getRxSequence`, `getRxSequenceMulticast` undeclared.
+  - `isCachedInFw`, `setCachedInFw`, `isSoftAPPeer`, `setSoftAPPeer`
+    undeclared.
+- exact correction:
+  - extend `include/Airport/IO80211Peer.h` `class IO80211Peer` body
+    with twenty-five non-virtual public method declarations matching
+    the BootKC signatures.
+  - anchor each new declaration to its BootKC address in the header
+    preamble next to the CR-177 entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the twenty-five new Peer methods
+  - no declared base class or data layout for `IO80211Peer` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 184. IO80211Peer RSSI/packet-stats/cache/queue helpers undeclared (REFERENCE_ALIGNMENT_FIX, supersedes 183)
+
+- locus: `include/Airport/IO80211Peer.h`
+- evidence: `docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/124_peer_rssi_stats_cache_2026_04_28.yaml`
+- delta-from-reference:
+  - CR-177/CR-183 declared 31 Peer helpers (identity, capability,
+    credit, counter). Per-band RSSI accounting, packet-stats accessors,
+    cache-state queries, and queue/lifetime helpers were missing.
+  - `getStatsID`, `getStatsIDValid` undeclared.
+  - `reportRssi`, `reportChainRssi`, `getAvgRssi24G`, `getAvgRssi5G`,
+    `getAvgRssiAcrossBands`, `getAvgChainRssi5G`, `setPeerAvgRssi24G`,
+    `setPeerAvgRssi5G` undeclared.
+  - `simulateDPS`, `freeResources`, `unpauseQueues`, `reclaimPackets`,
+    `clearCacheState` undeclared.
+  - `getRxBitField`, `getRxBitFieldMulticast`, `incrementRxCount`
+    undeclared.
+  - `getPacketStats`, `getPacketStatsRealTimeRx`,
+    `getPacketStatsRealTimeTx`, `getCumDataStats` undeclared.
+  - `hasRealTimeData`, `hasLowLatencyData`, `hasQueuedPackets`
+    undeclared.
+  - `getDataLinkCount`, `logPeerTxLatency`, `updateQueueState`,
+    `setPacketLifetime` undeclared.
+  - `getCacheTimeStamp`, `setCacheTimeStamp` undeclared.
+  - `isBssSteeringPeer`, `isBssSteeringPeerSyncState` undeclared.
+- exact correction:
+  - extend `include/Airport/IO80211Peer.h` `class IO80211Peer` body
+    with thirty-three non-virtual public method declarations matching
+    the BootKC signatures.
+  - add forward declaration for `apple80211_channel`.
+  - anchor each new declaration to its BootKC address in the header
+    preamble next to the CR-183 entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the thirty-three new Peer methods
+  - no declared base class or data layout for `IO80211Peer` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 185. IO80211PeerManager parameterless accessor surface (CR-185, 2026-04-28)
+
+- discrepancy: `IO80211PeerManager` exports thirty-three parameterless /
+  single-primitive accessors that the local
+  `include/Airport/IO80211PeerManager.h` did not declare.
+- BootKC addresses (IO80211Family, 2026-04-28):
+  - `getBSDName` `0xffffff80021c90aa`
+  - `GetProvider` `0xffffff80021df576`
+  - `getController` `0xffffff80021c6bd2`
+  - `getInterfaceId` `0xffffff80021c8648`
+  - `getCommandGate` `0xffffff80021df390`
+  - `interfaceMonitor` `0xffffff80021cea00`
+  - `getCountryCode` `0xffffff80021df8bc`
+  - `getDTIMPeriod` `0xffffff80021df5ee`
+  - `getBeaconPeriod` `0xffffff80021df5de`
+  - `getEnabling` `0xffffff80021ccbba`
+  - `failToEnable` `0xffffff80021c9d2c`
+  - `getHeCapable` `0xffffff80021df650`
+  - `getVhtCapable` `0xffffff80021df63e`
+  - `getMyHeCap` `0xffffff80021df89c`
+  - `getMyVhtCap` `0xffffff80021df88c`
+  - `getRsdbCap` `0xffffff80021df8ac`
+  - `getHtCapabilities` `0xffffff80021df87c`
+  - `isRsdbSupported` `0xffffff80021df0ee`
+  - `onDispatchQueue` `0xffffff80021dfb38`
+  - `isPeerCacheFull` `0xffffff80021d4c0c`
+  - `printHashTable` `0xffffff80021d4f0c`
+  - `removeAllPeers` `0xffffff80021d46a0`
+  - `freeResources` `0xffffff80021c93a4`
+  - `awdlChipReset` `0xffffff80021ccf5c`
+  - `flushFreeMbufs` `0xffffff80021cc734`
+  - `enablemDNSTx` `0xffffff80021dba82`
+  - `destroyReporters` `0xffffff80021c9a56`
+  - `updateAllReports` `0xffffff80021d9338`
+  - `getScanningState` `0xffffff80021df8cc`
+  - `getOutputBEBytes` `0xffffff80021dfc24`
+  - `getOutputBKBytes` `0xffffff80021dfc36`
+  - `getOutputVIBytes` `0xffffff80021dfc48`
+  - `getOutputVOBytes` `0xffffff80021dfc5a`
+- justification class: `REFERENCE_ALIGNMENT_FIX` (header-only,
+  no caller wiring)
+- local change: extends `class IO80211PeerManager` body with the
+  thirty-three new method declarations and anchors each declaration to
+  its BootKC address in the header preamble next to the CR-179 entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the thirty-three new PeerManager methods
+  - no declared base class or data layout for `IO80211PeerManager` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 186. IO80211InfraInterface LQM/WMM/AVC/BT-coex/SIB/ULLA/AWDL/BPF/leaky-AP/supplicant/P2P helper surface (CR-186, 2026-04-28)
+
+- discrepancy: `IO80211InfraInterface` exports twenty-one non-virtual
+  helpers using only primitive argument types that the local
+  `include/Airport/IO80211InfraInterface.h` did not declare.
+- BootKC addresses (IO80211Family, 2026-04-28):
+  - `getLQMData` `0xffffff80022e4446`
+  - `setLQMGated` `0xffffff80022e451c`
+  - `setLQMStatic` `0xffffff80022e44c4`
+  - `getMonitorMode` `0xffffff80022e5d1e`
+  - `getWMMBWReset` `0xffffff80022e5ca2`
+  - `setWMMBWReset` `0xffffff80022e5cb8`
+  - `getAVCAdvisory` `0xffffff80022e14cc`
+  - `getBtCoexState` `0xffffff80022e66e0`
+  - `resetInterface` `0xffffff80022e190e`
+  - `getTrafficMonitor` `0xffffff80022e5dce`
+  - `finishSIBCoexTimer` `0xffffff80022e1386`
+  - `resetSIBTurnOnMetrics` `0xffffff80022e3aca`
+  - `getCoPTxRTSFailCount` `0xffffff80022e3a8a`
+  - `getULLALiteDuration` `0xffffff80022e3a9e`
+  - `getAwdlMaxBandWidth` `0xffffff80022e39e6`
+  - `notifyAWDLStateChange` `0xffffff80022e57fe`
+  - `bpfTapInternal` `0xffffff80022e58d6`
+  - `setLeakyAPStatsMode` `0xffffff80022e3784`
+  - `UpdateULLADuration` `0xffffff80022e12f2`
+  - `handleSupplicantEvent` `0xffffff80022e1e0c`
+  - `routeToP2PInterface` `0xffffff80022e1e3a`
+- justification class: `REFERENCE_ALIGNMENT_FIX` (header-only,
+  no caller wiring)
+- local change: extends `class IO80211InfraInterface` body with the
+  twenty-one new method declarations and anchors each declaration to
+  its BootKC address in the header preamble next to the CR-181
+  entries.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the twenty-one new InfraInterface methods
+  - no declared base class or data layout for `IO80211InfraInterface` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 187. IO80211SkywalkInterface non-virtual helper surface (CR-187, 2026-04-28)
+
+- discrepancy: `IO80211SkywalkInterface` exports twenty non-virtual
+  helpers using only primitive / already-known opaque types that the
+  local `include/Airport/IO80211SkywalkInterface.h` did not declare.
+- BootKC addresses (IO80211Family, 2026-04-28):
+  - `pidLockPid` `0xffffff800227849c`
+  - `setPidLock` `0xffffff80022772e6`
+  - `getWorkQueue` `0xffffff8002276fcc`
+  - `getInterfaceId` `0xffffff8002274c8e`
+  - `getPeerManager` `0xffffff8002274c7c`
+  - `getPeerMonitor` `0xffffff8002276fde`
+  - `setInitMacAddress` `0xffffff80022770fa`
+  - `getMacAddressAgent` `0xffffff8002278916`
+  - `getParentInterface` `0xffffff8002278466`
+  - `getInterfaceMonitor` `0xffffff8002277cb4`
+  - `getInterfaceRoleStr` `0xffffff8002274bbc`
+  - `isLowLatencyEnabled` `0xffffff800227848a`
+  - `postMessageInternal` `0xffffff80022772b2`
+  - `postMessageSync` `0xffffff800227776e`
+  - `routeIoctlToWcl` `0xffffff80022788a4`
+  - `getDeviceType` `0xffffff8002278414`
+  - `setDeviceType` `0xffffff8002278428`
+  - `getMediumType` `0xffffff80022771f0`
+  - `getPowerState` `0xffffff80022774f2`
+  - `getPropertyTable` `0xffffff80022783cc`
+  - `isCommandAllowed` `0xffffff8002276868`
+- justification class: `REFERENCE_ALIGNMENT_FIX` (header-only,
+  no caller wiring)
+- local change: extends `class IO80211SkywalkInterface` body with the
+  twenty new method declarations and anchors each declaration to its
+  BootKC address in the header preamble; documents five deferred
+  exports (`getBSDName`, `getHardwareAddress`, `setHardwareAddress`,
+  `stringFromReturn`, `errnoFromReturn`) that would implicitly override
+  a parent-class virtual and break bit-identity.
+- binary invariance:
+  - generated kext sha256 unchanged: `c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8`.
+  - UUID unchanged: `BA3D771F-F079-33FF-94E5-C792E66237D8`.
+  - regdiag sha256: `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`.
+  - confirms purely additive header extension — no live code references the new declarations yet.
+- non-claims:
+  - no Apple PCIe packet subclass synthesis
+  - no raw `packet+0x78` writes
+  - no packet allocation/input/output behavior change
+  - no forced EAPOL/key/RSN/DHCP/link/data success
+  - no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+  - no calls from any local code path to the twenty new SkywalkInterface methods
+  - no declared base class or data layout for `IO80211SkywalkInterface` beyond what was already present
+  - no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 188. IO80211InterfaceMonitor extended primitive helpers (CR-188)
+
+- date: 2026-04-28
+- class: REFERENCE_ALIGNMENT_FIX
+- supersedes: CR-187
+- file: include/Airport/IO80211InterfaceMonitor.h
+
+Adds twenty-seven non-virtual primitive-only public method
+declarations recovered from BootKC IO80211Family on 2026-04-28:
+- effective rate getters/setters: getEffectiveLinkRate / setEffectiveLinkRate /
+  getEffectiveDataTransferRate / setEffectiveDataTransferRate / setDataTransferRates
+- expected-peak latency: setExpectedPeakLatency
+- CCA family: getInterfaceAverageCCA / hasInterfaceAverageCCA / setInterfaceAverageCCA
+- traffic mix: setInterfaceOpenPercent / setInterfaceOFDMDesense
+- DPS counters: incrementDPSDetected / incrementConsecutiveDPS
+- leaky-AP validators / resetters: isBssidMetricsLoaded / isLeakyApSsidBssidValid /
+  isLeakyApSsidMatchesSsidMetrics / resetLeakyApSsidMetrics / resetLeakyApBssidMetrics
+- leaky-AP updaters: updateLeakyApStatus / updateLeakyApNetwork
+- activity / LQM: setPreviousInterfaceActivity / setLQM
+- range / BW queries: getLowRxRatePeriodRange / getEffectiveRxBWSinceLastRead /
+  getEffectiveTxBWSinceLastRead
+- aggregation / load: aggregatedPeersTxLatency / loadLeakyApBssidMetricsFromSsidMetrics
+
+Local kext does not call them; declarations only. Verified against
+kernel SDK (Kernel.framework) — no parent-class virtual collides
+with any of these names. Bit-identical to CR-187.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the twenty-seven new InterfaceMonitor methods
+- no declared base class or data layout for `IO80211InterfaceMonitor` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 189. IO80211InfraInterface additional primitive helpers (CR-189)
+
+- date: 2026-04-28
+- class: REFERENCE_ALIGNMENT_FIX
+- supersedes: CR-188
+- file: include/Airport/IO80211InfraInterface.h
+
+Adds eighteen additional non-virtual primitive-only public method
+declarations recovered from BootKC IO80211Family on 2026-04-28:
+- 5G band-switch counters: get5GLowHighBandSwitchCounter / SuccessPerc
+- CoP SIB-coex turn-on metrics: getCoPSIBCoexTurnOnCount / Duration
+- ULLA classic duration: getULLAClassicDuration
+- counter resets: resetCoPTxRTSFailCount / resetTxPathHealthCheck
+- infra-peers logging: setInfraPeersLoggingEnabled
+- data-transfer-rate dispatchers: reportDataTransferRates / Static / Timer
+- link-status timer: triggerLinkStatusUpdate
+- leaky-AP / multicast / params timers: handleLeakyApStatsResetTimer /
+  restoreMulticastStateTimer / updateLinkParametersStatic / updateLinkStatusStatic
+- latency / publish: updateTxRxLatency / publishOffloadCapability
+
+Forward declaration `class IO80211TimerSource;` added.
+
+Local kext does not call them; declarations only. Bit-identical to
+CR-188.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the eighteen new InfraInterface methods
+- no declared base class or data layout for `IO80211InfraInterface` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 190. IO80211SkywalkInterface companion-id / pid-lock / dispatch helpers (CR-190)
+
+Anomaly: BootKC IO80211Family.kc exports eight additional non-virtual
+direct-call methods of `IO80211SkywalkInterface` not declared by the
+local header after CR-187:
+
+- companion interface-id: getCompanionInterfaceId / setCompanionInterfaceId
+- pid lock: pidLocked
+- low-latency: setLowLatencyEnabled
+- time-sync mac: updateTimeSyncMacAddress(ether_addr&)
+- dispatch: validateDispatchQueue / getControllerWorkQueue
+- ioctl trace: storeProcessNameAndIoctlInformation(unsigned long)
+
+Excluded (already declared as virtuals in same class body): attachPeer,
+detachPeer, cachePeer, findPeer, getSelfMacAddr, getFeatureFlags,
+getDataQueueDepth, handleChosenMedia, flushPacketQueues,
+isChipInterfaceReady, isCommandProhibited, isInterfaceEnabled,
+setRunningState, getSupportedMediaArray, setPromiscuousModeEnable,
+shouldLog, getLastQueuePacketTime, getLastRxUnicastLinkActivityTime,
+logTxLatency, logRxLatency, getLastTxTimeStamp, getLastRxTimeStamp,
+setDebugTrafficReport.
+
+Local kext does not call the new helpers; declarations only.
+Bit-identical to CR-189.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the eight new SkywalkInterface methods
+- no declared base class or data layout for `IO80211SkywalkInterface` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 191. IO80211PeerManager primitive-only helper batch (CR-191)
+
+Anomaly: BootKC IO80211Family.kc exports twenty additional non-virtual
+direct-call methods of `IO80211PeerManager` not declared by the local
+header after CR-185:
+
+- channel: modifyChID(unsigned long long)
+- printers: printPeers(unsigned int, unsigned int)
+- mDNS toggles: getBlockMdns / setBlockMdns / getBlockMdnsTx / setBlockMdnsTx
+- toggles: setP2PLogging(bool) / setDisplayState(bool) / setScanOn2GOnly(bool)
+- counters: setPeersCount, getTxQueueStamp / setTxQueueStamp,
+  updateCtlCount, updateRxPackets
+- timing: setBeaconPeriod, setDTIMPeriod
+- queries: is24GOnlyScan, macAddressEqual
+- save: saveCountryCode(unsigned char*)
+- report: reportP2PCCA(unsigned char, unsigned int x4)
+
+None of these names match a parent-class virtual or a virtual already
+declared in the same class body.
+
+Local kext does not call the new helpers; declarations only.
+Bit-identical to CR-190.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the twenty new PeerManager methods
+- no declared base class or data layout for `IO80211PeerManager` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 192. IO80211Peer state-flag and counter accessor batch (CR-192)
+
+Anomaly: BootKC IO80211Family.kc exports thirty additional non-virtual
+direct-call methods of `IO80211Peer` not declared by the local header
+after CR-184:
+
+- HT/VHT IE-present flags: getHtOperationIEPresent / setHtOperationIEPresent /
+  getVhtOperationIEPresent / setVhtOperationIEPresent
+- peer add/delete request: getPeerAddRequestedState / setPeerAddRequestedState /
+  getPeerDeleteRequestedState / setPeerDeleteRequestedState /
+  isPeerAddRequestInProgress / setPeerAddRequestInProgress /
+  isPeerDeleteRequesetInProgress / setPeerDeleteRequestInProgress
+- BSS steering: setBssSteeringPeerSyncState
+- Bonjour rx: getUnicastBonjourRx / setUnicastBonjourRx /
+  getMulticastBonjourRx / setMulticastBonjourRx
+- beacon: getBeaconReceivedCount / incrementBeaconReceivedCount
+- data links: getTotalDataLinkCount / incrementTotalDataLinks /
+  decrementTotalDataLinks / incrementDataLinks / decrementDataLinks
+- realtime sessions: getRealTimeDataSessionCount /
+  incrementRealTimeDataSession / decrementRealTimeDataSession
+- low-latency sessions: getLowLatencyDataSessionCount /
+  incrementLowLatencyDataSession / decrementLowLatencyDataSession
+
+Local kext does not call the new helpers; declarations only.
+Bit-identical to CR-191.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the thirty new Peer methods
+- no declared base class or data layout for `IO80211Peer` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 193. IO80211Peer timestamp / link-activity / cache-time batch (CR-193)
+
+Anomaly: BootKC IO80211Family.kc exports twenty-four additional non-
+virtual direct-call methods of `IO80211Peer` not declared by the
+local header after CR-192:
+
+- Rx link activity: getLastRxUnicastLinkActivity / setLastRxUnicastLinkActivity /
+  getLastRxMulticastLinkActivity / setLastRxMulticastLinkActivity
+- peer activity: getPeerLastDataActivityTimeMsec /
+  getPeerDataInActivityExceededThreshold
+- peer presence: getLastPeerPresencePosted / setLastPeerPresencePosted /
+  setPeerDiscoveredTime
+- caching: getCachingDeniedTimeStamp / setCachingDeniedTimeStamp /
+  getLastCacheAddAttempt / getWaitingToBeUnCachedTimeStamp
+- data log: getLastDataLogTimeStamp / setLastDataLogTimeStamp
+- output: getLastOutputSuccess / setLastOutputSuccess
+- chain RSSI: getTimeOfFirstChainRssiSample / setTimeOfFirstChainRssiSample
+- queue: getLastQueuePacket / setLastQueuePacket
+- tx-status log: getNumTransmitStatusLog / getNumTxStatusMismatch /
+  setNumTxStatusMismatch
+
+Local kext does not call the new helpers; declarations only.
+Bit-identical to CR-192.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the twenty-four new Peer methods
+- no declared base class or data layout for `IO80211Peer` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## 194. IO80211Peer caching-state and tx-counter batch (CR-194)
+
+Anomaly: BootKC IO80211Family.kc exports thirty-three additional non-
+virtual direct-call methods of `IO80211Peer` not declared by the
+local header after CR-193:
+
+- caching state: setStateForCachedPeer / setPreCachingStateForPeer /
+  setPreUnCachingStateForPeer / clearPreUnCachingStateForPeer /
+  getPreUnCachingStateForPeer / setReservationEnabled /
+  clearReservationEnabled / ifCacheReservationEnabled /
+  isPeerDeniedCachingForThisSession /
+  setPeerDeniedCachingForThisSession /
+  getReceivedSidecarRequest / setReceivedSidecarRequest
+- low-latency idle: setLowLatencyLinkIdle / clearLowLatencyLinkIdle /
+  isLowLatencyLinkIdle
+- cache wait: isWaitingToBeCached / setWaitingToBeCached /
+  isWaitingToBeUnCached
+- updates: updateRequestBitField / updateNumHostPackets /
+  updateAllReports / updateCumDataStats / updateIntervalDataStats /
+  clearIntervalDataStats / updateTxPacketStats /
+  allocTxLatencyStorage / freeTxLatencyStorage
+- tx counters: incrementTxOkCount / incrementTxQueueCount /
+  incrementTxFailNoAckCount / incrementTxFailOtherCount
+- llw: llwLoadPacketLifetimeHistogram /
+  llwComputeTxConsecutiveErrorCount
+
+Local kext does not call the new helpers; declarations only.
+Bit-identical to CR-193.
+
+Non-claims:
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the thirty-three new Peer methods
+- no declared base class or data layout for `IO80211Peer` beyond what was already present
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## item 196 — IO80211LinkQualityMonitor primitive-only batch (NEW header)
+
+- class: IO80211LinkQualityMonitor (NEW local header)
+- batch_size: 48
+- header: include/Airport/IO80211LinkQualityMonitor.h
+- supersedes: item 195 (IO80211Peer caching-state batch)
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Helpers (BootKC, IO80211Family.kc, recovered 2026-04-28): induced
+fault injectors (induceTxBadPhy/induceTxLatency/induceTxLowPhyRate/
+induceRxBadPhy/induceRxHighOverflow/induceRxHighPNReplay/
+induceRxHighDecryptError/induceRxHighMCDecryptError/
+induceRxAmpduDupErrors/induceSlowWiFiIfDebugTriggered), measurement
+reset/analyze (resetLatencyCoP/resetMeasurements/analyzeTxLatency/
+analyzeMeasurements(bool)), input/output triggers (requestUserInput/
+triggerUserInput/triggerLinkProbe(bool)/triggerIPFailRecovery), caps
+and AWDL state updaters (updateCcaExtCaps(bool)/
+updateRealTimeAWDLActiveState(bool)), event recorders
+(recordPhyActivity(long long, bool)/recordPhyRate(unsigned int, bool)/
+recordTxLatency(unsigned long long)/recordAMPDUDensity(unsigned int)/
+recordSymptomsInput(unsigned long long)/recordRxPacket(unsigned long
+long, unsigned long long)/recordLinkProbeResult(int)/
+recordUserInputResult(int)/recordAWDLInfraDutyCycle(unsigned int)/
+recordEscoTrafficIndication(unsigned int)/
+recordInterfaceConcurrencyState(bool)), index lookups (getCCAIndex/
+getRSSIIndex/getNSSIndex/getExpectedPhyRate), accessor getters
+(getCcaExtCaps/getChannelWidth/getElapsedPeriodMS/
+getWorstAvgLatencyCoP/getWorstMaxLatencyCop/getOffChannelDurationUS/
+getTVPMActiveDurationMS/getMaxQueueFullDurationMS/
+getRealTimeAWDLActiveState/getConcurrentInterfaceActiveDurationMS/
+getPeerMacAddress) and timer arming/timeout
+(armMeasurementTimer/checkMeasurementTimeout). All declarations use
+only primitive types.
+
+### Non-claims (item 196)
+
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no retry, delay, poll loop, replay, packet synthesis, or deauth masking
+- no calls from any local code path to the 48 LQM methods
+- no declared base class or data layout for `IO80211LinkQualityMonitor`
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## item 198 — IO80211BSSBeacon primitive-only batch (NEW header)
+
+- class: IO80211BSSBeacon (NEW local header)
+- batch_size: 102
+- header: include/Airport/IO80211BSSBeacon.h
+- supersedes: item 196 (IO80211LinkQualityMonitor primitive-only batch)
+- resubmission: CR-199 supersedes CR-198 (5 unrecovered void*-typed
+  helpers deferred — getLogger / getSSID / getOWETransSSID /
+  getRnRContext / getQueueChain)
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Helpers (BootKC, IO80211Family.kc, recovered 2026-04-28): vendor /
+network identification probes (isLikelyOrbiNetwork / isAppleNetwork /
+isIOSDevice / isLikelyAlpineBMWNetwork / isNBTEvoBMWNetwork /
+isCarPlayDongle / isWACNetwork), capability and timing setters
+(setCapabilities / setBeaconPeriod / updateRSSI / updateSNR /
+updateNoise / setNonTransmittedBssidIndex / setInterworkingIEPresent /
+setInternetAccess), rate-set computation and AKM/dump helpers
+(calculateRates / getAKMs / dumpBeacon), RSSI/SNR/probe/internet
+accessibility const accessors (getRSSI / getSNR /
+isDirectedProbeNetwork / isInternetAccessible), channel updater and
+current-BSS mark/clear/predicate (updateChannel / setAsCurrent /
+removeAsCurrent / isCurrent), SSID-cstr / address / ie-list-length
+getters (getSSIDCStr / getOWETransSSIDLength / getSSIDLength /
+isOWETrans / getAddress / getIeListLength), LQM / noise / noise-delta /
+channel / band / chan-spec / DTIM-period / beacon-period /
+ATIM-window / listen-interval / capabilities const accessors
+(hasLQMResult / getNoise / getNoiseDeltaOverTwoCores /
+updateNoiseDeltaOverTwoCores / getChannel / getBand / getChanSWSpec /
+getChanPrimarySWSpec / getDTIMPeriod / getBeaconPeriod /
+getATIMWindow / getListenInterval / getCapabilities), HT-rx-rates /
+rx-rate / rx-rate-percent / rx-rate / CCA mutators (getHtRxRates /
+getRxRate / getRxRatePercent / updateRxRate / updateCCA), short-SSID
+matcher and age/timestamp accessors (shortSSIDMatches /
+getAgeInSeconds / getAgeInMS / getTimestamp), encryption / WEP / WPA /
+HT / VHT / HE / AP predicates (isPrivacyEnabled / isWEPEnabled /
+isWPAEnabled / isHTEnabled / isVHTEnabled / isHEEnabled / isAP),
+encryption-mode / AP-mode getters (getEncryptionMode / getAPMode),
+blacklist / hidden mutators and predicates (setBlacklisted /
+isBlacklisted / setHidden / isHidden), max/min rate getters
+(getMaxRate / getMinRate), capability-tree predicates
+(isProxyARPSupported / isTIMBroadcastSupported / isDMSSupported /
+isBSSTransMgmtSupported / isBSSQoSMgmtMSCSSupported /
+isBSSBeaconProtectionCapable / isBSSSAEPKCapable /
+isBSSSAEPKPwdExclsivelyUsed / isBSSOCVCapable /
+isFastBSSTransitionSupported / isNeighborReportSupported /
+isWiFiNetworkFullyLoaded / isScoreComputed / isEhtEnabled /
+isQosFastLaneEnabled / isNwAssuranceEnabledInCCXIE /
+isSameSSIDCoLocatedAP / isSplitSSIDCoLocatedAP), FT / MFP / PMKSA /
+interworking / wifi-info accessors (isFtEnabled / isBssMfpCapable /
+getPMKSAExpiration / isInterworkingIEPresent /
+isWiFiNetworkInfoAvailable / setPMKSAExpiration /
+getNonTransmittedBssidIndex), FILS / beacon-at-HE-rate predicates
+(isFILSDiscoveryFrame / isBeaconAtHeRate), current-BSS-AKMs /
+multi-BSSID / MLD getters and predicates (getCurrentBSSAKMs /
+getMultiBssidOffset / getMldAddress / isNonTransmittedBssid / isMld).
+All declarations use only primitive parameter and primitive-pointer
+return types.
+
+Deferred from CR-198 (return types are unrecovered kernel-internal
+pointers; will be re-introduced once decomp evidence documents the
+actual reference return types): getLogger() const, getSSID() const,
+getOWETransSSID() const, getRnRContext() const, getQueueChain().
+
+### Non-claims (item 198)
+
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no calls from any local code path to the 102 BSSBeacon methods
+- no declared base class or data layout for `IO80211BSSBeacon`
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+
+## item 200 — IO80211BssManager primitive-only batch (NEW header) [SUPERSEDED]
+
+- class: IO80211BssManager (NEW local header)
+- batch_size (CR-200): 41 — REJECTED (return types declared by
+  naming-convention inference, not decompile evidence)
+- supersedes: item 198 (IO80211BSSBeacon primitive-only batch)
+- superseded_by: item 201
+
+## item 201 — IO80211BssManager primitive-only batch (decomp-evidenced)
+
+- class: IO80211BssManager (NEW local header)
+- batch_size: 14
+- header: include/Airport/IO80211BssManager.h
+- supersedes: item 200 (CR-200 41-helper batch)
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Helpers (BootKC, IO80211Family.kc, recovered 2026-04-28): the
+fourteen helpers from CR-200's forty-one-symbol candidate set whose
+return type is unambiguously recovered by Ghidra 12.2's C decompile
+of `BootKernelExtensions.kc` (output captured in
+`analysis/cr201_bssmgr_decomp.c`):
+
+- void setters: resetRateAndIndexSet / setAdHocCreated(bool) /
+  setSISOAssoc(bool) / setPrivateMacJoinStatus(bool) /
+  setDeviceTypeInDhcpAllowStatus(bool) /
+  setAssociateToHotspotInWoWMode(bool) / set6gStandAloneTopology(bool)
+- bool predicate: isAssociatedToAdhoc
+- byte/unsigned-char predicate: isAssociatedOnHighBand
+- ulong/unsigned-long getters and predicates:
+  isAssociatedToiOSDevice / getPrivateMacJoinStatus /
+  getDeviceTypeInDhcpAllowStatus / isAssociateToHotspotInWoWMode /
+  get6gStandAloneTopology
+
+Deferred (twenty-seven from the CR-200 candidate set): twelve
+helpers whose decompile produced an opaque placeholder return type
+(`undefined4` / `undefined8`); nine helpers whose decompile did not
+recover the BootKC mangled symbol name (Ghidra emitted
+`FUN_<addr>`); six helpers whose decompile reported MISSING at the
+recorded address. The kernel-internal-typed deferred set documented
+under item 200 also remains deferred.
+
+### Non-claims (item 201)
+
+- no synthesis of `AppleBCMWLANPCIeSkywalkPacket`
+- no `packet+0x78` write
+- no change to packet allocation/queueing/input/output
+- no forced EAPOL/key/RSN/DHCP/link/data success
+- no calls from any local code path to the 14 BssManager methods
+- no declared base class or data layout for `IO80211BssManager`
+- no inclusion of kernel-internal types whose definitions are not yet recovered
+- no `void *` substitution for any unrecovered kernel-internal return type
+- no promotion of `undefined4`/`undefined8` decompile placeholders to
+  concrete C++ return types

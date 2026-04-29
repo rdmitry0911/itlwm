@@ -1,0 +1,36 @@
+CR-217 build evidence — stateless newPacket coverage + redaction bypass
+date: 2026-04-29T10:15:36Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext sha256: 2a5237012a531fa19e79f12b31b9c3a25b63b8f161bba50bc023e77eb50d5724
+kext UUID:   B431DDC7-7A1A-3962-838D-9A17821D72C1
+kext size:   16294192
+
+BootKC undef-symbol verification: OK: all 884 undefined symbols resolve against BootKC
+
+Symbol-delta vs CR-215 (which had 884 undefs):
+  +0 / -0 — same set.
+  CR-216 inadvertently added _OSIncrementAtomic (885); CR-217 removes that
+  by dropping the static counters and atomic primitives, returning to 884.
+
+Source-side delta vs CR-216 (rejected):
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. AirportItlwmIO80211PacketPool::newPacket override:
+       - REMOVED 'static volatile SInt32 s_callSeq' counter
+       - REMOVED 'static volatile SInt32 s_okSeq' counter
+       - REMOVED both OSIncrementAtomic() calls
+       - REMOVED conditional 'verbose' / OK_TICK gating
+       - Each of the 4 mutually-exclusive return paths now emits
+         a single stateless XYLog FINAL marker (BAD_ARGS / ALLOC_NULL
+         / INIT_FALSE / OK). All previous BAD_ARGS / ALLOC_NULL /
+         INIT_FALSE / OK markers retained, with all per-call counter
+         arguments removed.
+    2. Factory and STEP 8b POOLTRACE pointer-format unchanged from
+       CR-216 (split-halves 0x%x_%x via static helpers ptrHi32 /
+       ptrLo32 / slotHi32 / slotLo32; helpers are pure functions
+       with no state).
+
+End-to-end coverage criterion: every branch of the 'newPacket
+return path' hypothesis has a final XYLog marker. Stateless: no
+counters, no atomic primitives, no new mutable state.

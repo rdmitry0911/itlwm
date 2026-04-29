@@ -1,0 +1,67 @@
+---
+# 129_infra_additional_primitives_2026_04_28.yaml
+# IO80211InfraInterface additional primitive helper batch (CR-189).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-189
+date: 2026-04-28
+class: IO80211InfraInterface
+header: include/Airport/IO80211InfraInterface.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-188
+batch_size: 18
+notes: |
+  All eighteen exports are direct-call (non-vtable) methods of
+  IO80211InfraInterface. Use only primitives (`bool`, `unsigned int`,
+  `unsigned long long`, `void *`) and an opaque `IO80211TimerSource *`
+  forward-declared in the same header.
+
+symbols:
+  - addr: '0xffffff80022e3a38'
+    signature: 'unsigned int IO80211InfraInterface::get5GLowHighBandSwitchCounter()'
+  - addr: '0xffffff80022e3a4c'
+    signature: 'unsigned int IO80211InfraInterface::get5GLowHighBandSwitchSuccessPerc()'
+  - addr: '0xffffff80022e3be6'
+    signature: 'unsigned long long IO80211InfraInterface::getCoPSIBCoexTurnOnCount()'
+  - addr: '0xffffff80022e3bfa'
+    signature: 'unsigned long long IO80211InfraInterface::getCoPSIBCoexTurnOnDuration()'
+  - addr: '0xffffff80022e3a76'
+    signature: 'unsigned long long IO80211InfraInterface::getULLAClassicDuration()'
+  - addr: '0xffffff80022e3ab2'
+    signature: 'void IO80211InfraInterface::resetCoPTxRTSFailCount()'
+  - addr: '0xffffff80022e4b6a'
+    signature: 'void IO80211InfraInterface::resetTxPathHealthCheck()'
+  - addr: '0xffffff80022e3ccc'
+    signature: 'void IO80211InfraInterface::setInfraPeersLoggingEnabled(bool)'
+  - addr: '0xffffff80022e42fa'
+    signature: 'void IO80211InfraInterface::reportDataTransferRates()'
+  - addr: '0xffffff80022e440c'
+    signature: 'void IO80211InfraInterface::reportDataTransferRatesStatic(void*)'
+  - addr: '0xffffff80022ddfd0'
+    signature: 'void IO80211InfraInterface::reportDataTransferRatesTimer(IO80211TimerSource*)'
+  - addr: '0xffffff80022dded2'
+    signature: 'void IO80211InfraInterface::triggerLinkStatusUpdate(IO80211TimerSource*)'
+  - addr: '0xffffff80022e29ea'
+    signature: 'void IO80211InfraInterface::handleLeakyApStatsResetTimer(IO80211TimerSource*)'
+  - addr: '0xffffff80022ddf66'
+    signature: 'void IO80211InfraInterface::restoreMulticastStateTimer(IO80211TimerSource*)'
+  - addr: '0xffffff80022e4084'
+    signature: 'void IO80211InfraInterface::updateLinkParametersStatic(void*, void*)'
+  - addr: '0xffffff80022e45e2'
+    signature: 'void IO80211InfraInterface::updateLinkStatusStatic(void*)'
+  - addr: '0xffffff80022e62cc'
+    signature: 'void IO80211InfraInterface::updateTxRxLatency()'
+  - addr: '0xffffff80022de4b2'
+    signature: 'void IO80211InfraInterface::publishOffloadCapability()'
+
+local_change:
+  files:
+    - include/Airport/IO80211InfraInterface.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

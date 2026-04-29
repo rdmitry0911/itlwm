@@ -6,6 +6,11 @@
 #ifndef TahoeOwnerRegistry_hpp
 #define TahoeOwnerRegistry_hpp
 
+#include "TahoeAssociationContracts.hpp"
+#include "TahoeControllerContracts.hpp"
+#include "TahoeHiddenInterfaceContracts.hpp"
+#include "TahoePayloadBuilders.hpp"
+#include "TahoeQosDynsarContracts.hpp"
 #include <stdint.h>
 
 struct TahoeOwnerRegistry {
@@ -52,9 +57,11 @@ struct TahoeOwnerRegistry {
         uint8_t category = 0;
         uint32_t channel = 0;
         uint16_t frameLen = 0;
-        uint8_t frame[0x708] = {};
+        uint8_t frame[TahoePayloadBuilders::kActionFramePayloadCapacity] = {};
         bool useV2 = false;
         bool hasFrame = false;
+        uint8_t progress = 0;
+        uint64_t progressStartMs = 0;
     } actionFrame;
 
     struct RangingOwner {
@@ -76,6 +83,74 @@ struct TahoeOwnerRegistry {
         int32_t secondary = -1;
     } dualPowerMode;
 
+    struct ControllerOwner {
+        bool promiscuousMode = false;
+        bool multicastMode = false;
+        uint32_t multicastCount = 0;
+        uint8_t multicastList[TahoeControllerContracts::kMulticastMaxEntries]
+                             [TahoeControllerContracts::kMulticastAddressLength] = {};
+        uint16_t dataQueueDepth = TahoeControllerContracts::kAppleDataQueueDepthDefault;
+        uint16_t coalesceQueueSize = 0;
+        uint16_t coalesceTimeout = 0;
+    } controller;
+
+    struct HiddenInterfaceOwner {
+        bool flowIdSupported = false;
+        uint32_t flowQueueRequestCount = 0;
+        uint32_t flowQueueReleaseCount = 0;
+        uint32_t packetTimestampEnableCount = 0;
+        uint32_t packetTimestampDisableCount = 0;
+        bool packetTimestampingEnabled = false;
+        bool hasLogPipeSurface = false;
+        uint32_t virtualInterfaceEnableCount = 0;
+        uint32_t virtualInterfaceDisableCount = 0;
+        uint32_t virtualInterfaceCreateCount = 0;
+    } hiddenInterface;
+
+    struct QosDynsarOwner {
+        uint64_t dynSarFailSafeStartTicks = 0;
+        uint8_t congestionControlFeature = 0;
+        uint32_t forceAwdlAmpdu = 0;
+        uint32_t forceDisableAwdlAmpdu = 0;
+        uint32_t hwFeatureFlags = 0;
+        uint8_t splitTxStatus = 0;
+        uint32_t txAddrResolveReqV4 = 0;
+        uint32_t txAddrResolveReqV6 = 0;
+    } qosDynsar;
+
+    struct AssociationOwner {
+        bool hasCarrier = false;
+        bool selectedFromCandidate = false;
+        uint16_t apMode = 0;
+        uint32_t authLower = 0;
+        uint32_t authUpper = 0;
+        uint32_t authFlags = 0;
+        uint32_t ssidLength = 0;
+        uint16_t rsnIeLength = 0;
+        uint16_t boundedRsnIeLength = 0;
+        uint16_t instantHotspotFlags = 0;
+        uint8_t instantHotspotAppleDeviceFlags = 0;
+        uint8_t pmfCapabilityField = 0;
+        uint32_t bssInfoFlags = 0;
+        uint32_t candidateCount = 0;
+        uint8_t ssid[33] = {};
+        uint8_t selectedBssid[6] = {};
+        uint8_t candidateBssid[6] = {};
+        uint8_t contextBssid[6] = {};
+    } association;
+
+    bool isDynSarFailSafeMode(uint64_t nowTicks) const
+    {
+        return TahoeQosDynsarContracts::isDynSarFailSafeMode(
+            nowTicks, qosDynsar.dynSarFailSafeStartTicks);
+    }
+
+    bool isCongestionControlSupported() const
+    {
+        return TahoeQosDynsarContracts::congestionControlSupported(
+            qosDynsar.congestionControlFeature);
+    }
+
     void reset()
     {
         *this = TahoeOwnerRegistry();
@@ -87,6 +162,28 @@ struct TahoeOwnerRegistry {
         dualPowerMode.secondary = secondaryValue;
         txPowerCapBypass.sendEligible =
             (primaryValue != -1) && (secondaryValue != -1);
+    }
+
+    void setActionFrameProgress(bool inProgress)
+    {
+        actionFrame.progress = inProgress ? 1 : 0;
+    }
+
+    bool checkActionFrameCompleteOverdue(uint64_t nowMs)
+    {
+        if ((actionFrame.progress & 1U) == 0)
+            return false;
+        if (!TahoePayloadBuilders::isActionFrameProgressOverdue(
+                nowMs, actionFrame.progressStartMs))
+            return false;
+        actionFrame.progress = 0;
+        return true;
+    }
+
+    bool getActionFrameProgress(uint64_t nowMs)
+    {
+        checkActionFrameCompleteOverdue(nowMs);
+        return (actionFrame.progress & 1U) != 0;
     }
 };
 

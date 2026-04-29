@@ -1,0 +1,22 @@
+CR-201 — IO80211BssManager primitive-only batch (NEW header, decomp-evidenced return types)
+date: 2026-04-28
+command: scripts/build_tahoe.sh
+result: ** BUILD SUCCEEDED **
+BootKC undef-symbol verification: OK — all 884 undefined symbols resolve
+
+kext path: Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256 pre  = c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+kext sha256 post = c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+UUID pre/post   = BA3D771F-F079-33FF-94E5-C792E66237D8
+binary invariance: PASS
+
+Header introduces 14 primitive-only direct-call exports of
+IO80211BssManager. Each declared return type matches the C decompile
+produced by Ghidra 12.2 against the BootKernelExtensions.kc program in
+/srv/project/ghidra_output (decompile output captured in
+analysis/cr201_bssmgr_decomp.c). 27 helpers from the originally
+surveyed 41-symbol candidate set are deferred — either because Ghidra
+yielded an ambiguous placeholder return type (`undefined4`,
+`undefined8`) or could not locate a function entry at the recorded
+address (MISSING). No `void *` substitution. No call sites added.
+Supersedes CR-200 (same recovered set, narrower decomp-evidenced subset).

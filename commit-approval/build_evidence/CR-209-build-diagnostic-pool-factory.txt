@@ -1,0 +1,21 @@
+CR-209 build evidence — pool factory diagnostic instrumentation
+date: 2026-04-28T21:02:55Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: 5ac7fab025ba1b6927cb456fa9370a86cd51afdd6a5fa677bb21e5b7f0fa1234
+kext UUID:   A69D6889-6392-3359-93FD-2D995691D6C6
+kext size:   16285216
+
+BootKC undef-symbol verification:
+  scripts/build_tahoe.sh tail emitted: "OK: all 884 undefined symbols resolve against BootKC"
+
+Source-side delta vs CR-208:
+  AirportItlwm/AirportItlwmV2.cpp:
+    - AirportItlwmIO80211PacketPool::withName(): added 3 XYLog calls
+      to distinguish (a) new returned NULL, (b) initWithName returned
+      false. No semantic change to pool construction; the only behavior
+      delta is additional log output.
+
+Size delta vs CR-208 kext (bc899fc7…): +64 bytes (log string literals).

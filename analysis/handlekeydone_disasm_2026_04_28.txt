@@ -1,0 +1,64 @@
+## IO80211InfraInterface::handleKeyDone(bool, bool)  raw disasm proof
+## address: 0xffffff80022e6f9c
+## source:  BootKernelExtensions.kc, IO80211Family
+## tool:    Ghidra 12.2 analyzeHeadless + DisasmRangeAddr.py (range bytes
+##          are stored as DataDB because Ghidra failed to analyze the
+##          function; raw bytes recovered, decoded by hand)
+## purpose: post-hoc evidence backing the existing declaration in
+##          include/Airport/IO80211InfraInterface.h:133.
+
+=== prologue ===
+ffffff80022e6f9c: 55                       PUSH RBP
+ffffff80022e6f9d: 48 89 E5                 MOV  RBP, RSP
+ffffff80022e6fa0: 41 57                    PUSH R15
+ffffff80022e6fa2: 41 56                    PUSH R14
+ffffff80022e6fa4: 41 54                    PUSH R12
+ffffff80022e6fa6: 53                       PUSH RBX
+ffffff80022e6fa7: 48 83 EC 10              SUB  RSP, 0x10
+
+=== argument captures (right after prologue) ===
+ffffff80022e6fab: 41 89 D7                 MOV  R15D, EDX     ; arg3 = bool b
+ffffff80022e6fae: 41 89 F6                 MOV  R14D, ESI     ; arg2 = bool a
+ffffff80022e6fb1: 48 89 FB                 MOV  RBX, RDI      ; arg1 = this
+
+=== first conditional on bool a (ESI) ===
+ffffff80022e6fb4: 85 F6                    TEST ESI, ESI      ; bool-shaped 32-bit test
+ffffff80022e6fb6: 74 09                    JZ   +9            ; skip if !a
+
+=== epilogue path #1 (tail call through RAX, line 0xffffff80022e7036) ===
+ffffff80022e7036: 48 83 C4 10              ADD  RSP, 0x10
+ffffff80022e703a: 5B                       POP  RBX
+ffffff80022e703b: 41 5C                    POP  R12
+ffffff80022e703d: 41 5E                    POP  R14
+ffffff80022e703f: 41 5F                    POP  R15
+ffffff80022e7041: 5D                       POP  RBP
+ffffff80022e7042: FF E0                    JMP  RAX           ; tail call
+
+=== epilogue path #2 (plain RET, line 0xffffff80022e7044) ===
+ffffff80022e7044: 48 83 C4 10              ADD  RSP, 0x10
+ffffff80022e7048: 5B                       POP  RBX
+ffffff80022e7049: 41 5C                    POP  R12
+ffffff80022e704b: 41 5E                    POP  R14
+ffffff80022e704d: 41 5F                    POP  R15
+ffffff80022e704f: 5D                       POP  RBP
+ffffff80022e7050: C3                       RET
+
+=== ABI / type interpretation (raw x86_64 SysV) ===
+- arg1 (RDI) is a 64-bit pointer = `IO80211InfraInterface *this`.
+- arg2 (ESI) and arg3 (EDX) are 32-bit register loads of the low byte
+  of the corresponding 64-bit arg slot. Both args are saved into
+  callee-saved 32-bit registers (R14D, R15D), and the very first
+  branch tests ESI as 32-bit. This is the macOS x86_64 C++ `bool`
+  ABI: low-byte-only pass, accessed as 32-bit zero-extended.
+- The function does NOT establish a return value before either
+  epilogue:
+    * Path #1 ends in `JMP RAX` where RAX was loaded from a vtable
+      slot at +0x208 (a tail-call to a virtual method whose return
+      type is irrelevant to handleKeyDone).
+    * Path #2 ends in plain `RET` with no `MOVZX EAX, AL`, no
+      `XOR EAX, EAX`, no full 64-bit move into RAX. This is the
+      C++ `void` return ABI signature.
+- Therefore the proven C++ signature is:
+      void IO80211InfraInterface::handleKeyDone(bool, bool);
+  This matches the declaration already present at
+  include/Airport/IO80211InfraInterface.h:133.

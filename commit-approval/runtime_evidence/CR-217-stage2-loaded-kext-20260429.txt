@@ -1,0 +1,10 @@
+CR-217 Stage 2 loaded-kext identity, captured at 2026-04-29 13:45 boot
+
+Loaded kext (kextstat output):
+  143    0 0xffffff7f96620000 0xf01e84   0xf01e84   com.zxystd.AirportItlwm (2.4.0) B431DDC7-7A1A-3962-838D-9A17821D72C1
+
+kext UUID:   B431DDC7-7A1A-3962-838D-9A17821D72C1
+kext sha256: 2a5237012a531fa19e79f12b31b9c3a25b63b8f161bba50bc023e77eb50d5724
+kext size:   16294192
+
+Matches CR-217 Stage 1 build evidence and Stage 1 decision approval line 37.

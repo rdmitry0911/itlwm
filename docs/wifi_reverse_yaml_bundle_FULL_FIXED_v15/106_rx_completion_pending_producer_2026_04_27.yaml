@@ -1,0 +1,101 @@
+version: 1
+topic: Tahoe Skywalk RX completion pending producer queue
+status: confirmed_root_cause_fix_implemented_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_skywalk_rx_completion_producer
+  follows:
+    - "103_skywalk_packet_pool_network_type_2026_04_27.yaml"
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "105_rx_completion_input_handoff_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - association_reaches_eapol_rx
+    - rx_eapol_enqueue_success
+    - rx_completion_action_absent
+    - io80211_input_absent
+    - wcl_update_bss_fail
+    - leave_network_deauth
+
+runtime_evidence:
+  after_cr_164:
+    file: "commit-approval/runtime_evidence/CR-164-afterfix-control_sta_network-focused-20260427-173915.log"
+    facts:
+      - "ITLWM_EAPOL path=rx stage=enqueue-ok appears repeatedly"
+      - "skywalkRxAction does not appear"
+      - "ITLWM_IO80211_INPUT does not appear"
+      - "assocTimerAction reports Update Bss fail"
+      - "leaveNetworkCommand runs due to Update Bss fail"
+      - "IO80211RSNDone set=0 rekey=0 res=1 is observed on teardown"
+
+reference:
+  ioskywalk_request_path:
+    binary: "/srv/project/ghidra_output/IOSkywalkFamily_decompiled.c"
+    function: "IOSkywalkRxCompletionQueue::requestEnqueue"
+    address: "0xffffff8002a59c4c"
+    behavior:
+      - "calls the registered action through the queue action pointer"
+      - "passes owner, queue, output packet array, available packet count, and refcon"
+      - "uses the returned count as produced packet count"
+  ioskywalk_enqueue_path:
+    binary: "/srv/project/ghidra_output/IOSkywalkFamily_decompiled.c"
+    functions:
+      - "IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket const**, unsigned int, unsigned int) @ 0xffffff8002a59cda"
+      - "IOSkywalkRxCompletionQueue::enqueuePackets(IOSkywalkPacket*, unsigned int, unsigned int) @ 0xffffff8002a59d84"
+    behavior:
+      - "publishes packets to the base networking/KPipe path"
+      - "does not invoke the registered producer action"
+  apple_rx_producer_action:
+    binary: "/srv/project/ghidra_output/AppleBCMWLAN_Bus_decompiled.c"
+    function: "AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets"
+    address: "0xffffff80014ca8e4"
+    behavior:
+      - "drains owner-side pending RX list"
+      - "gets packet data virtual address and data offset"
+      - "gets packet scratch/tag pointer"
+      - "maps tag TID at +0x18 into service class at +0x29"
+      - "calls the interface input slot with packet, tag, dataVirtualAddress + dataOffset, nullptr, false"
+      - "writes produced packet pointers into the IOSkywalk-provided output array"
+      - "returns produced packet count"
+
+local_before_cr_165:
+  file: "AirportItlwm/AirportItlwmV2.cpp"
+  behavior:
+    - "skywalkRxInput prepared an IOSkywalkPacket from mbuf RX"
+    - "skywalkRxInput called fRxQueue->enqueuePackets directly"
+    - "skywalkRxAction was registered but not reached by that direct enqueue path"
+  semantic_mismatch:
+    - "missing owner-side pending RX producer queue"
+    - "missing requestEnqueue producer action boundary"
+
+local_fix_cr_165:
+  type: "REFERENCE_ALIGNMENT_FIX plus SYSTEM_CONTRACT_FIX"
+  files:
+    - "AirportItlwm/AirportItlwmV2.hpp"
+    - "AirportItlwm/AirportItlwmV2.cpp"
+  changes:
+    - "adds fixed-capacity local pending RX packet ring owned by AirportItlwm"
+    - "stages prepared RX packets in skywalkRxInput"
+    - "rings fRxQueue->requestEnqueue(nullptr, 0) instead of direct base enqueuePackets"
+    - "changes skywalkRxAction into the producer action that pops pending packets"
+    - "per produced packet, calls AirportItlwmSkywalkInterface::inputPacket with recovered tag/header/null-accepted/false semantics"
+    - "fills the Skywalk-provided packet array and returns produced count"
+    - "drains pending prepared packets during stop/free before RX pool release"
+  non_claims:
+    - "does not force IO80211 accepted success"
+    - "does not force EAPOL TX"
+    - "does not force key install"
+    - "does not force RSN done"
+    - "does not force DHCP, IP, internet, or link success"
+    - "does not retry, poll, delay, replay, duplicate notify, or mask deauth"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "verify ITLWM_EAPOL path=rx stage=producer-input appears"
+    - "verify ITLWM_IO80211_INPUT appears after producer-input"
+    - "classify next blocker by EAPOL TX, setCIPHER_KEY, IO80211RSNDone, DHCP/IP, data path, and disconnect timing"

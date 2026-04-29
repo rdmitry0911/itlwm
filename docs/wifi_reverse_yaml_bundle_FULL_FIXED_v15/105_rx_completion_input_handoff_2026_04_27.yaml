@@ -1,0 +1,92 @@
+version: 1
+topic: Tahoe Skywalk RX completion input handoff
+status: superseded_by_pending_producer_alignment
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_skywalk_rx_completion_to_io80211_input
+  follows:
+    - "103_skywalk_packet_pool_network_type_2026_04_27.yaml"
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - association_attempt_reaches_rx_eapol_enqueue
+    - io80211_input_marker_absent
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+
+reference:
+  producer:
+    binary: "/srv/project/ghidra_output/AppleBCMWLAN_Bus_decompiled.c"
+    function: "AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets"
+    address: "0xffffff80014ca8e4"
+    role: "RX completion producer-side input callback"
+    call_shape: "interface_input(interface, packet, packet_scratch, dataVirtualAddress + dataOffset, nullptr, false)"
+    packet_access:
+      data_virtual_address_vtable_slot: "0x1f0"
+      data_offset_vtable_slot: "0x150"
+      data_length_vtable_slot: "0x140"
+    tag_access:
+      scratch_pointer_source: "packet scratch"
+      tid_offset: "0x18"
+      service_class_offset: "0x29"
+      accepted_pointer: "nullptr"
+      final_bool: false
+  consumer:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    function: "IO80211InfraInterface::inputPacket"
+    address: "0xffffff80022e3f20"
+    behavior: "synchronously calls monitor and IO80211PeerManager::skywalkInputPacket"
+
+local_before_cr_163:
+  file: "AirportItlwm/AirportItlwmV2.cpp"
+  producer: "skywalkRxInput copied mbuf data into RX packet and enqueued to fRxQueue"
+  completion_action: "skywalkRxAction incremented rxCbCnt and returned count without input handoff"
+  runtime_match:
+    - "ITLWM_EAPOL path=rx stage=enqueue-ok appears"
+    - "ITLWM_IO80211_INPUT marker is absent"
+
+local_fix_cr_163:
+  type: "SYSTEM_CONTRACT_FIX"
+  function: "skywalkRxAction"
+  changes:
+    - "use RX completion action as the producer-side input boundary"
+    - "derive ethernet header from packet data virtual address plus data offset"
+    - "zero-initialize recovered packet_info_tag"
+    - "set local tid 0 and service-class default 4"
+    - "call AirportItlwmSkywalkInterface::inputPacket(packet, tag, ether_header, nullptr, false)"
+    - "return consumed packet count"
+  non_claims:
+    - "does not call input from skywalkRxInput"
+    - "does not replay or duplicate packets"
+    - "does not force accepted success"
+    - "does not force EAPOL TX"
+    - "does not force key install"
+    - "does not force RSN success"
+    - "does not force DHCP or data success"
+
+runtime_correction_cr_164:
+  evidence:
+    file: "commit-approval/runtime_evidence/CR-164-afterfix-control_sta_network-focused-20260427-173915.log"
+    observed:
+      - "ITLWM_EAPOL path=rx stage=enqueue-ok repeats"
+      - "skywalkRxAction is absent"
+      - "ITLWM_IO80211_INPUT is absent"
+      - "WCL leaves after Update Bss fail"
+  corrected_interpretation:
+    - "IOSkywalkRxCompletionQueue::enqueuePackets publishes to the base networking path and does not invoke the registered action"
+    - "IOSkywalkRxCompletionQueue::requestEnqueue is the path that calls the registered producer action"
+    - "AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets is the owner/action body that drains an Apple pending RX list, calls IO80211 input, fills the IOSkywalk output packet array, and returns produced count"
+  superseded_by:
+    - "106_rx_completion_pending_producer_2026_04_27.yaml"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "verify ITLWM_IO80211_INPUT appears after RX enqueue"
+    - "verify whether EAPOL TX appears"
+    - "verify whether key install / RSN completion progresses"

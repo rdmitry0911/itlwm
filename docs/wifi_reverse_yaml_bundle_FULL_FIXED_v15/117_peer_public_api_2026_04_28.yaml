@@ -1,0 +1,97 @@
+version: 1
+topic: Tahoe IO80211Peer public direct-call API surface
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_peer_public_surface
+  follows:
+    - "115_infrainterface_tahoe_api_2026_04_28.yaml"
+    - "116_peermanager_public_api_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - peer_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..176)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+  use_in_this_batch: "no runtime change yet — CR-177 only widens the locally declared API surface so future caller wiring can link against documented BootKC peer symbols"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211Peer::withAddressAndManager(unsigned char const*, IO80211PeerManager*)", addr: "ffffff80021bf64a", returns: "IO80211Peer *", attr: "static factory" }
+      - { sym: "IO80211Peer::init()", addr: "ffffff80021bf6c0", returns: "bool" }
+      - { sym: "IO80211Peer::getMacAddress()", addr: "ffffff80021bff7a", returns: "ether_addr *" }
+      - { sym: "IO80211Peer::setMacAddress(ether_addr*)", addr: "ffffff80021c5df4", returns: "void" }
+      - { sym: "IO80211Peer::getManager()", addr: "ffffff80021c3558", returns: "IO80211PeerManager *" }
+      - { sym: "IO80211Peer::getGeneration()", addr: "ffffff80021c60dc", returns: "unsigned int" }
+
+local_before_cr_177:
+  files:
+    - "include/Airport/*"
+  mismatch: "no canonical IO80211Peer header in the local include tree; class only forward-declared in IO80211SkywalkInterface.h"
+  consequence: "any future caller wanting to invoke peer factory/init/accessors would have to add per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_177:
+  supersedes: "CR-176"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211Peer.h"
+  changes:
+    - "create new header `include/Airport/IO80211Peer.h`"
+    - "declare `class IO80211Peer` as opaque (no base class, no data, no vtable)"
+    - "declare static `IO80211Peer *withAddressAndManager(unsigned char const *, IO80211PeerManager *)`"
+    - "declare `bool init(void)`"
+    - "declare `ether_addr *getMacAddress(void)`"
+    - "declare `void setMacAddress(ether_addr *)`"
+    - "declare `IO80211PeerManager *getManager(void)`"
+    - "declare `unsigned int getGeneration(void)`"
+    - "forward-declare `class IO80211PeerManager` and `struct ether_addr`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-176"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the six peer methods from any local code path"
+    - "does not declare IO80211Peer with any base class or data layout"
+    - "does not include kernel-internal types like peerState or peerMonitoringCtx"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for addPeer / addPeerOperation"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition for setLinkState(state=2)"
+      - "ordering of setCurrentApAddress vs setLinkState"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c"
+      - "definition of peerState enum and other kernel-internal peer types"
+    note: "wired CR will be CR-178+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-177 has no caller wiring, so kext is bit-identical to CR-176"

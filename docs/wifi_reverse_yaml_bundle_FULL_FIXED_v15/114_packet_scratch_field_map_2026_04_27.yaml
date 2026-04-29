@@ -1,0 +1,141 @@
+version: 1
+topic: Tahoe AppleBCMWLAN packet scratch field map
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_packet_scratch_abi_foundation
+  follows:
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "108_rx_producer_tag_stats_2026_04_27.yaml"
+    - "112_ioskywalk_network_packet_size_2026_04_27.yaml"
+    - "113_io80211_network_packet_virtual_surface_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - apple_packet_scratch_owner_unrestored
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+  use_in_this_batch: "keeps packet scratch/IO80211 handoff as the active layer; this batch names proven scratch fields without changing behavior"
+
+reference:
+  apple_packet:
+    binary: "/srv/project/ghidra_output/AppleBCMWLANBusInterfacePCIeMac_decompiled.c"
+    class: "AppleBCMWLANPCIeSkywalkPacket"
+    scratch_pointer_offset_in_packet: "0x78"
+    scratch_size: "0x98"
+    field_uses:
+      - { offset: "0x18", name: "tid", use: "RX TID consumed/mapped by RX completion producer" }
+      - { offset: "0x1c", name: "tx_vlan_tag", type: "uint32_t", use: "byteswapped TX VLAN, written by IO80211InfraInterface::logTxPacket at 0xffffff80022e3896" }
+      - { offset: "0x22", name: "rx_vlan_tag", type: "uint16_t", use: "byteswapped RX VLAN, written by IO80211InfraInterface::inputPacket at 0xffffff80022e3f20 and AppleBCMWLANLowLatencyInterface::inputPacket; read by IO80211PeerManager::skywalkInputPacket at 0xffffff80021dd7b4" }
+      - { offset: "0x24", name: "rx_drop_marker", type: "uint32_t", use: "RxDrop log marker, cleared by IO80211PeerManager::inputPacket at 0xffffff80021d1424 and on RxDrop branch of IO80211PeerManager::skywalkInputPacket" }
+      - { offset: "0x28", name: "ac_meta", type: "uint8_t", use: "TX accounting / per-AC meta byte mask, cleared then written by IO80211InfraInterface::logTxPacket; conditional override sets 0x76" }
+      - { offset: "0x29", name: "service_class", use: "service class written before IO80211 input" }
+      - { offset: "0x48", name: "bus_address", use: "cleared by packet complete" }
+      - { offset: "0x50", name: "virtual_address", use: "returned by getVirtualAddress and cleared by complete" }
+      - { offset: "0x74", name: "packet_signature", value: "0xdeadbeef", use: "new-packet signature" }
+      - { offset: "0x80", name: "tx_status", use: "setStatus/getStatus" }
+      - { offset: "0x8a", name: "flow_queue_idx", use: "setFlowQueueIdx/getFlowQueueIdx" }
+      - { offset: "0x90", name: "ac_dup_flags", use: "low nibble AC, high bit duplicate packet marker" }
+  io80211_monitor:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    function: "IO80211InterfaceMonitor::logRxCompletionPacket"
+    consumed_offsets:
+      - "0x14"
+      - "0x18"
+      - "0x29"
+
+local_before_cr_173:
+  file: "include/Airport/apple_private_spi.h"
+  mismatch: "packet_info_tag preserved only offsets 0x14/0x18/0x29 and size 0x98; later Apple scratch fields remained anonymous"
+  consequence: "subsequent packet-scratch work had no compile-time field map for proven Apple offsets"
+
+local_fix_cr_173:
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/apple_private_spi.h"
+  changes:
+    - "name bus_address at scratch+0x48"
+    - "name virtual_address at scratch+0x50"
+    - "name packet_signature at scratch+0x74"
+    - "name tx_status at scratch+0x80"
+    - "name flow_queue_idx at scratch+0x8a"
+    - "name ac_dup_flags at scratch+0x90"
+    - "add compile-time offset assertions for every named field"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+
+local_fix_cr_174:
+  supersedes: "CR-173"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/apple_private_spi.h"
+  changes:
+    - "name tx_vlan_tag at scratch+0x1c (uint32_t, byteswapped) — backed by IO80211InfraInterface::logTxPacket at 0xffffff80022e3896"
+    - "name rx_vlan_tag at scratch+0x22 (uint16_t, byteswapped) — backed by IO80211InfraInterface::inputPacket at 0xffffff80022e3f20 and AppleBCMWLANLowLatencyInterface::inputPacket override"
+    - "name rx_drop_marker at scratch+0x24 (uint32_t) — backed by IO80211PeerManager::inputPacket at 0xffffff80021d1424 and skywalkInputPacket RxDrop branch"
+    - "name ac_meta at scratch+0x28 (uint8_t) — backed by IO80211InfraInterface::logTxPacket"
+    - "narrow reserved19 to scratch+0x19..+0x1b and add reserved20 at +0x20..+0x21 to keep size 0x98"
+    - "add compile-time offset assertions for tx_vlan_tag, rx_vlan_tag, rx_drop_marker, ac_meta"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    note: "no live code references new field names yet, so generated binary is bit-identical to CR-173 — confirms purely additive structural rename"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+
+handoff_contract:
+  status: "confirmed_by_cross_decompile_audit"
+  conclusion: "packet_info_tag * is an explicit pointer parameter on the IO80211 input chain; not packet-owned scratch"
+  evidence:
+    - { fn: "IO80211InfraInterface::inputPacket(IO80211NetworkPacket *, packet_info_tag *, ether_header *, bool *, bool)", addr: "0xffffff80022e3f20", param_index: 3 }
+    - { fn: "IO80211PeerManager::inputPacket(IO80211NetworkPacket *, packet_info_tag *, ether_header *, bool *)", addr: "0xffffff80021d1424", param_index: 3 }
+    - { fn: "IO80211PeerManager::skywalkInputPacket(IO80211NetworkPacket *, IO80211Peer *, packet_info_tag *, ether_header *, bool, bool, bool *, bool)", addr: "0xffffff80021dd7b4", param_index: 4 }
+    - { fn: "AppleBCMWLANLowLatencyInterface::inputPacket(...)", addr: "0xffffff8001563fac", note: "overrides base, enriches tag+0x22 (RX VLAN) before forwarding to base" }
+  local_path: "AirportItlwmSkywalkInterface::inputPacket already passes packet_info_tag *tag through to IO80211InfraInterface::inputPacket"
+
+rejected_path:
+  direct_local_cpp_subclass:
+    attempted: true
+    result: "rejected before CR submission"
+    reason: "BootKC symbol verification failed because the generated subclass vtable referenced non-exported IOSkywalkPacket virtual methods"
+    unresolved_symbols:
+      - "IOSkywalkPacket::getDataOff()"
+      - "IOSkywalkPacket::getDataLength()"
+      - "IOSkywalkPacket::getDataOffset()"
+      - "IOSkywalkPacket::getPacketBuffers(IOSkywalkPacketBuffer**, unsigned int)"
+      - "IOSkywalkPacket::setDataOffAndLen(long long, unsigned long long)"
+      - "IOSkywalkPacket::getMemoryDescriptor()"
+      - "IOSkywalkPacket::getPacketBufferCount()"
+      - "IOSkywalkPacket::getDataVirtualAddress()"
+      - "IOSkywalkPacket::getDataIOVirtualAddress()"
+    implication: "Apple packet subclass restoration needs a different proven construction strategy; naive C++ inheritance is not submit-safe"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "after approved install, verify no regression in network visibility"
+    - "continue packet scratch ownership investigation with the rejected subclass path excluded"

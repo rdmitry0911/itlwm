@@ -1,0 +1,81 @@
+---
+# 133_peer_timestamp_batch_2026_04_28.yaml
+# IO80211Peer timestamp / link-activity / cache-time helpers (CR-193).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Justification class: REFERENCE_ALIGNMENT_FIX (header-only declarations).
+
+cr: CR-193
+date: 2026-04-28
+class: IO80211Peer
+header: include/Airport/IO80211Peer.h
+justification: REFERENCE_ALIGNMENT_FIX
+supersedes: CR-192
+batch_size: 24
+notes: |
+  All twenty-four exports are direct-call methods of IO80211Peer.
+  Each takes only primitive types (`bool`, `unsigned int`,
+  `unsigned long long`). The local IO80211Peer class has no declared
+  base class, so all declarations are non-virtual members; none of
+  the new names match a method already declared in the local class
+  body (CR-177 / CR-183 / CR-184 / CR-192).
+
+symbols:
+  - addr: '0xffffff80021c592e'
+    signature: 'unsigned long long IO80211Peer::getLastRxUnicastLinkActivity()'
+  - addr: '0xffffff80021c29d4'
+    signature: 'void IO80211Peer::setLastRxUnicastLinkActivity(unsigned long long)'
+  - addr: '0xffffff80021c5fdc'
+    signature: 'unsigned long long IO80211Peer::getLastRxMulticastLinkActivity()'
+  - addr: '0xffffff80021c5fee'
+    signature: 'void IO80211Peer::setLastRxMulticastLinkActivity(unsigned long long)'
+  - addr: '0xffffff80021c57f2'
+    signature: 'unsigned long long IO80211Peer::getPeerLastDataActivityTimeMsec()'
+  - addr: '0xffffff80021c5ade'
+    signature: 'bool IO80211Peer::getPeerDataInActivityExceededThreshold()'
+  - addr: '0xffffff80021c6000'
+    signature: 'unsigned long long IO80211Peer::getLastPeerPresencePosted()'
+  - addr: '0xffffff80021c6012'
+    signature: 'void IO80211Peer::setLastPeerPresencePosted(unsigned long long)'
+  - addr: '0xffffff80021c5e4a'
+    signature: 'void IO80211Peer::setPeerDiscoveredTime(unsigned long long)'
+  - addr: '0xffffff80021c5d8e'
+    signature: 'unsigned long long IO80211Peer::getCachingDeniedTimeStamp()'
+  - addr: '0xffffff80021c5d50'
+    signature: 'void IO80211Peer::setCachingDeniedTimeStamp(unsigned long long)'
+  - addr: '0xffffff80021c5f10'
+    signature: 'unsigned long long IO80211Peer::getLastCacheAddAttempt()'
+  - addr: '0xffffff80021c378c'
+    signature: 'unsigned long long IO80211Peer::getLastDataLogTimeStamp()'
+  - addr: '0xffffff80021c379e'
+    signature: 'void IO80211Peer::setLastDataLogTimeStamp(unsigned long long)'
+  - addr: '0xffffff80021c36e6'
+    signature: 'unsigned long long IO80211Peer::getLastOutputSuccess()'
+  - addr: '0xffffff80021c36f8'
+    signature: 'void IO80211Peer::setLastOutputSuccess(unsigned long long)'
+  - addr: '0xffffff80021c36b2'
+    signature: 'unsigned long long IO80211Peer::getTimeOfFirstChainRssiSample()'
+  - addr: '0xffffff80021c36c4'
+    signature: 'void IO80211Peer::setTimeOfFirstChainRssiSample(unsigned long long)'
+  - addr: '0xffffff80021c5d1a'
+    signature: 'unsigned long long IO80211Peer::getWaitingToBeUnCachedTimeStamp()'
+  - addr: '0xffffff80021c5f22'
+    signature: 'unsigned long long IO80211Peer::getLastQueuePacket()'
+  - addr: '0xffffff80021c5faa'
+    signature: 'void IO80211Peer::setLastQueuePacket(unsigned long long)'
+  - addr: '0xffffff80021c5fbc'
+    signature: 'unsigned int IO80211Peer::getNumTransmitStatusLog()'
+  - addr: '0xffffff80021c3692'
+    signature: 'unsigned int IO80211Peer::getNumTxStatusMismatch()'
+  - addr: '0xffffff80021c36a2'
+    signature: 'void IO80211Peer::setNumTxStatusMismatch(unsigned int)'
+
+local_change:
+  files:
+    - include/Airport/IO80211Peer.h
+
+binary_invariance:
+  kext_sha256_pre:  c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_sha256_post: c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8
+  kext_uuid:        BA3D771F-F079-33FF-94E5-C792E66237D8
+  regdiag_sha256:   6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad
+  bootkc_undef_check: PASS  # all 884 undefined symbols resolve

@@ -1,0 +1,97 @@
+version: 1
+topic: Tahoe IO80211NetworkPacket virtual surface
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_packet_class_abi_foundation
+  follows:
+    - "111_io80211_network_packet_pool_class_2026_04_27.yaml"
+    - "112_ioskywalk_network_packet_size_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - apple_packet_subclass_layer_unrestored
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+  use_in_this_batch: "keeps packet/IO80211 handoff as the active layer; this batch restores a decompile-proven C++ ABI surface without changing runtime behavior"
+
+reference:
+  symbols:
+    source: "/srv/project/ghidra_output/kdk_symbols.txt"
+    exported_methods:
+      - "__ZN20IO80211NetworkPacket13getPacketTypeEv"
+      - "__ZN20IO80211NetworkPacket17getVirtualAddressEv"
+      - "__ZN20IO80211NetworkPacket10setPTMModeEb"
+      - "__ZN20IO80211NetworkPacket25setIngressEgressTimestampEy"
+      - "__ZNK20IO80211NetworkPacket25getIngressEgressTimestampEv"
+      - "__ZNK20IO80211NetworkPacket9isPTMModeEv"
+      - "__ZN20IO80211NetworkPacket17setPktEnqueueTimeEy"
+      - "__ZNK20IO80211NetworkPacket17getPktEnqueueTimeEv"
+      - "__ZN20IO80211NetworkPacket22firmwareToHostTxStatusE22IO80211NetworkTXStatus"
+      - "__ZN20IO80211NetworkPacket19setFirmwareTxStatusE22IO80211NetworkTXStatus"
+      - "__ZN20IO80211NetworkPacket19getFirmwareTxStatusEv"
+      - "__ZN20IO80211NetworkPacket13getBufferSizeEv"
+      - "__ZN20IO80211NetworkPacket16prepareWithQueueEP20IOSkywalkPacketQueuej"
+      - "__ZN20IO80211NetworkPacket16prepareWithQueueEP20IOSkywalkPacketQueuejj"
+  decomp:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    constructor_chain: "calls IOSkywalkNetworkPacket constructor then installs IO80211NetworkPacket vtable"
+    deallocation_size: "0x78"
+    packet_type_semantics:
+      ether_type_888e_eapol: 2
+      ether_type_88b4: 3
+      ipv4_udp_dhcp_bootp: 1
+      default: 0
+    method_semantics:
+      getVirtualAddress: "returns null in base IO80211NetworkPacket"
+      ptm_timestamp_setters: "unsupported stubs"
+      ptm_timestamp_getters: "zero/false base values"
+      firmware_status: "maps firmware status through a small table"
+      prepareWithQueue: "tail-calls parent packet preparation paths"
+  apple_subclass:
+    binary: "/srv/project/ghidra_output/AppleBCMWLANBusInterfacePCIeMac_decompiled.c"
+    class: "AppleBCMWLANPCIeSkywalkPacket"
+    constructor_chain: "calls IO80211NetworkPacket constructor before installing Apple packet vtable"
+    implication: "local Apple packet subclass restoration requires the IO80211NetworkPacket base surface to be declared first"
+
+local_before_cr_172:
+  file: "include/Airport/IO80211NetworkPacket.h"
+  mismatch: "empty subclass declaration did not model the exported IO80211NetworkPacket method/vtable surface"
+  consequence: "future Apple packet subclass code would be compiled against an incomplete intermediate base ABI"
+
+local_fix_cr_172:
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211NetworkPacket.h"
+  changes:
+    - "add OSDeclareDefaultStructors(IO80211NetworkPacket)"
+    - "add the decompile/export-proven IO80211NetworkPacket methods"
+    - "add an opaque IO80211NetworkTXStatus enum declaration for ABI-correct signatures"
+    - "add static_assert(sizeof(IO80211NetworkPacket) == 0x78)"
+  non_claims:
+    - "does not instantiate local IO80211NetworkPacket objects"
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not alter packet allocation, queueing, or input/output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "after approved install, verify no regression in network visibility"
+    - "if EAPOL TX/key/RSN still fail, continue with Apple packet subclass/scratch or IO80211 peer-manager input path using this header surface"

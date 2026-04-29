@@ -1,0 +1,61 @@
+document: tx_completion_producer_2026_04_27
+version: 1
+date: 2026-04-27
+status: implemented_locally_pending_stage1
+
+topic: Skywalk TX completion producer and consumed packet ownership
+
+reference:
+  apple_tx_completion_queue:
+    stagePacket:
+      function: "AppleBCMWLANPCIeSkywalkTxCompletionQueue::stagePacket"
+      address: "0xffffff80014c91c0"
+      semantics:
+        - "links a completed packet into the TX completion owner-side list"
+    enqueuePackets:
+      function: "AppleBCMWLANPCIeSkywalkTxCompletionQueue::enqueuePackets"
+      address: "0xffffff80014c8d62"
+      semantics:
+        - "drains staged TX completion packets"
+        - "fills the Skywalk-provided packet array"
+        - "returns produced count"
+    requestEnqueue:
+      function: "AppleBCMWLANPCIeSkywalkTxCompletionQueue::requestEnqueue"
+      address: "0xffffff80014c920c"
+      semantics:
+        - "delegates to the IOSkywalk queue producer boundary"
+  ioskywalk_completion_base:
+    function: "IOSkywalk TX completion enqueue path"
+    address: "0xffffff8002a3fa9e"
+    semantics:
+      - "iterates produced packets"
+      - "calls packet completeWithQueue(queue, kIOSkywalkPacketDirectionTx, 0)"
+      - "updates TX completion accounting"
+
+local_divergence_before_cr166:
+  - "skywalkTxAction copied packet bytes into an mbuf and returned consumed count"
+  - "the consumed IOSkywalkPacket was not staged on fTxCompQueue"
+  - "skywalkTxCompletionAction returned 0 unconditionally"
+  - "consumed TX packets therefore had no local ownership-return path"
+
+local_restoration_cr166:
+  - "adds a fixed-capacity pending TX completion ring"
+  - "stages every non-null packet consumed by skywalkTxAction"
+  - "rings fTxCompQueue->requestEnqueue(nullptr, 0) after the TX batch"
+  - "makes skywalkTxCompletionAction pop staged packets into the provided array"
+  - "drains pending completion packets during stop/free before pool release"
+
+system_contract_touchpoints:
+  - "TX submission consumed count"
+  - "existing outputPacket mbuf handoff"
+  - "TX completion pending producer"
+  - "IOSkywalkTxCompletionQueue::requestEnqueue"
+  - "TX completion producer packet array"
+  - "completeWithQueue TX ownership return"
+  - "teardown drain before queue/pool release"
+
+non_claims:
+  - "does not force EAPOL TX success"
+  - "does not force key install or RSN completion"
+  - "does not force link, DHCP, or internet success"
+  - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"

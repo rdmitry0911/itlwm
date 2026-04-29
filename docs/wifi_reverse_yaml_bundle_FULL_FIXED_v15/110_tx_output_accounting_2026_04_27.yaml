@@ -1,0 +1,43 @@
+---
+id: 110_tx_output_accounting_2026_04_27
+date: 2026-04-27
+topic: skywalk_tx_output_accounting
+status: confirmed_deviation_fixed_locally
+source_priority: decompile_first
+reference:
+  component: AppleBCMWLANBusInterfacePCIeMac + IO80211Family
+  functions:
+    tx_submission_dequeue:
+      symbol: "AppleBCMWLANPCIeSkywalkTxSubmissionQueue::dequeuePackets(...)"
+      address: "0xffffff80014c611c"
+      accounting_call_site: "0xffffff80014c7944"
+      behavior:
+        - "accumulates TX dequeue packet count and byte count"
+        - "loads queue AC from TX queue owner state"
+        - "calls interface virtual slot +0xb30 after the TX batch"
+    output_accounting:
+      symbol: "IO80211SkywalkInterface::recordOutputPacket(apple80211_wme_ac,int,int)"
+      address: "0xffffff8002277cc6"
+      behavior:
+        - "delegates to IO80211InterfaceMonitor::recordOutputPacket when a monitor exists"
+        - "otherwise returns without forcing datapath state"
+local_before:
+  - "skywalkTxAction copied accepted Skywalk TX frames into mbufs"
+  - "skywalkTxAction called outputPacket(...) and updated only sRT.txPktSent"
+  - "no IO80211 output-accounting call was made after the TX batch"
+local_after:
+  - "skywalkTxAction accumulates delivered packet and byte counts"
+  - "after accepted outputPacket(...) frames, skywalkTxAction calls recordOutputPacket"
+  - "the local single-queue mapping reports APPLE80211_WME_AC_BE as the AC"
+non_claims:
+  - "does not synthesize Apple PacketSkywalkScratch"
+  - "does not call scratch-dependent logTxPacket or logSkywalkTxReqPacket"
+  - "does not force TX success"
+  - "does not force EAPOL, key install, RSN, DHCP, link, or data success"
+  - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+validation:
+  required:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "./scripts/build_tahoe.sh"
+    - "./scripts/build_regdiag.sh"

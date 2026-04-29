@@ -20,6 +20,7 @@
 #include "IOSkywalkPacketBufferPool.h"
 #include "IOSkywalkLegacyEthernetInterface.h"
 #include "IO80211SkywalkInterface.h"
+#include "IO80211SapProtocol.h"
 #elif defined(IO80211FAMILY_V2)
 #include "IO80211WorkQueue.h"
 #include "IO80211ControllerV2.h"
@@ -28,6 +29,7 @@
 #include "IOSkywalkPacketBufferPool.h"
 #include "IOSkywalkLegacyEthernetInterface.h"
 #include "IO80211SkywalkInterface.h"
+#include "IO80211SapProtocol.h"
 #else
 #include "IO80211Controller.h"
 #include "IO80211Interface.h"

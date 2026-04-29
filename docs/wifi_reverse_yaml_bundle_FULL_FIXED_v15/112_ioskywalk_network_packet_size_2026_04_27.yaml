@@ -1,0 +1,83 @@
+version: 1
+topic: Tahoe IOSkywalkNetworkPacket size ABI
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_packet_class_abi_foundation
+  follows:
+    - "104_network_packet_tag_abi_2026_04_27.yaml"
+    - "108_rx_producer_tag_stats_2026_04_27.yaml"
+    - "111_io80211_network_packet_pool_class_2026_04_27.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - apple_packet_scratch_layer_still_unrestored
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+    - "no setCIPHER_KEY appears before AP deauth reason 15"
+  use_in_this_batch: "localizes the active work to the packet/IO80211 handoff layer; this batch fixes a decompile-proven ABI foundation mismatch and does not claim final RSN root-cause closure"
+
+reference:
+  ioskywalk_network_packet:
+    binary: "/srv/project/ghidra_output/IOSkywalkFamily_decompiled.c"
+    metaclass_size_sites:
+      - { function: "FUN_ffffff8002a33e56", class: "IOSkywalkNetworkPacket", size: "0x78" }
+      - { function: "FUN_ffffff8002a33f34", class: "IOSkywalkNetworkPacket", size: "0x78" }
+      - { function: "FUN_ffffff8002a346fe", class: "IOSkywalkNetworkPacket", size: "0x78" }
+  io80211_network_packet:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    constructor_chain: "IO80211NetworkPacket constructor calls IOSkywalkNetworkPacket constructor before installing IO80211 vtable"
+    deallocation_size: "0x78"
+  apple_pcie_packet_subclass:
+    binary: "/srv/project/ghidra_output/AppleBCMWLANBusInterfacePCIeMac_decompiled.c"
+    class: "AppleBCMWLANPCIeSkywalkPacket"
+    allocation_size: "0x80"
+    base_constructor_chain: "calls IO80211NetworkPacket constructor before installing Apple vtable"
+    scratch_pointer_offset: "0x78"
+    scratch_size: "0x98"
+    scratch_uses:
+      - "setPktSignature writes scratch+0x74"
+      - "complete clears scratch+0x50 and scratch+0x48"
+      - "free releases scratch size 0x98"
+      - "getScratch returns *(packet+0x78)"
+
+local_before_cr_171:
+  files:
+    - "include/Airport/IOSkywalkNetworkPacket.h"
+  mismatch: "declared an extra void* mReserved member, making the local class layout 0x80 instead of reference 0x78"
+  consequence: "a local Apple-packet subclass would place its first subclass field at +0x80 instead of the reference scratch pointer offset +0x78"
+  source_note: "the ignored local MacKernelSDK mirror was inspected as a source/header witness but is not part of the tracked CR diff"
+
+local_fix_cr_171:
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IOSkywalkNetworkPacket.h"
+  changes:
+    - "remove the non-reference mReserved storage from IOSkywalkNetworkPacket"
+    - "add static_assert(sizeof(IOSkywalkNetworkPacket) == 0x78)"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not call scratch-dependent TX/RX log methods"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "after approved install, verify no regression in network visibility"
+    - "verify whether EAPOL TX/key/RSN progresses after packet class and size foundations are both present"
+    - "if still blocked, continue with IO80211NetworkPacket virtual surface or Apple packet scratch subclass only after full vtable proof"

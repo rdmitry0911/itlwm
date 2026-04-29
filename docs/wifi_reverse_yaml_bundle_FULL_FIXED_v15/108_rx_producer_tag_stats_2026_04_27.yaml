@@ -1,0 +1,57 @@
+document: rx_producer_tag_stats_2026_04_27
+version: 1
+date: 2026-04-27
+status: implemented_locally_pending_stage1
+
+topic: Skywalk RX producer tag carrier and post-batch accounting
+
+reference:
+  apple_rx_completion_producer:
+    function: "AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets"
+    address: "0xffffff80014ca8e4"
+    semantics:
+      - "drains owner-side staged RX packets"
+      - "uses packet scratch/tag as the inputPacket tag argument"
+      - "maps tag TID at +0x18 into service class at +0x29"
+      - "fills the Skywalk-provided produced packet array"
+  io80211_accounting:
+    recordInputPacket:
+      function: "IO80211SkywalkInterface::recordInputPacket(int, int)"
+      address: "0xffffff8002277c96"
+    updateRxCounter:
+      function: "IO80211SkywalkInterface::updateRxCounter(unsigned long long)"
+      vtable_slot: "+0xd48 in the recovered Apple producer call"
+
+local_divergence_before_cr167:
+  - "skywalkRxAction built the tag only as an immediate local stack object"
+  - "the RX pending producer did not carry tag metadata with the packet"
+  - "skywalkRxAction did not call recordInputPacket after producing the batch"
+  - "skywalkRxAction did not call updateRxCounter after producing the batch"
+
+local_constraint:
+  - "the local packet pool produces generic IOSkywalkNetworkPacket objects"
+  - "Tahoe IOSkywalkNetworkPacket class size is 0x78"
+  - "Apple PCIe packet scratch pointer at packet+0x78 belongs to the Apple PCIe packet subclass"
+  - "local code must not write a synthetic scratch pointer at packet+0x78"
+
+local_restoration_cr167:
+  - "adds tag and length metadata to the local RX pending producer ring"
+  - "pops the staged tag together with the RX packet in skywalkRxAction"
+  - "keeps inputPacket call shape packet, tag, ethernet header, nullptr, false"
+  - "sums produced RX bytes for the batch"
+  - "calls recordInputPacket(produced, producedBytes)"
+  - "calls updateRxCounter(produced)"
+
+system_contract_touchpoints:
+  - "RX pending producer record"
+  - "inputPacket tag argument"
+  - "RX produced packet array"
+  - "IO80211 recordInputPacket"
+  - "IO80211 updateRxCounter"
+
+non_claims:
+  - "does not claim final association or data success"
+  - "does not synthesize the Apple PCIe packet subclass"
+  - "does not force accepted success"
+  - "does not force EAPOL TX, key install, RSN, DHCP, link, or internet success"
+  - "does not add retry, replay, delay, poll loop, duplicate notify, or deauth masking"

@@ -197,3 +197,1120 @@ investigation of "no networks visible" after driver loads without panic.
          (matches Apple 1:1); ieee80211_end_scan returns after SCAN_DONE without
          calling ieee80211_node_choose_bss / ieee80211_node_join_bss
        - Rejection flag bitmask reference (0x01-0x80)
+
+-------------------------------------------------------------
+
+Added in V17 (2026-04-26):
+
+Documents all post-Apr-14 restoration findings from CR-090 through CR-116 and
+adds the AP/APSTA/SoftAP contract split recovered during the next-layer audit.
+
+- 93_tahoe_post_yaml_findings_2026_04_26.yaml  (NEW)
+    Addendum for the complete post-YAML investigation chain:
+      - WCL link indication, BSS-info layout, connect-complete event, selected
+        candidate BSSID, Tahoe association-completion owner, WCL roam lock,
+        and post-association RSN telemetry.
+      - Skywalk RX/TX packet lifecycle: packet preparation, packet data API,
+        RX enqueue vtable ABI, TX consumed-count return, prepared RX cleanup,
+        sourceQueue=nullptr for local RX packets, workloop attach, and queue
+        enablement.
+      - Active Skywalk layer: infra registration shim, queue/pool accessors,
+        TX completion queue, multicast work source, datapath lifecycle, queue
+        metadata, and CR-115 BootKC ABI rejection corrected by CR-116.
+      - Guardrails: no forced RSN/key/EAPOL/DHCP/link state, no producer-less
+        event replay, behavior-neutral diagnostics only, and exact-diff gates.
+
+- 94_ap_mode_and_apsta_surface_2026_04_26.yaml  (NEW)
+    Dedicated AP-mode addendum:
+      - Primary STA APPLE80211_IOC_AP_MODE maps to
+        AppleBCMWLANCore::setAP_MODE(...) fixed fail 0xe00002c7 on the normal
+        path.
+      - Primary STA APPLE80211_IOC_AP_IE_LIST initializes output length to zero,
+        delegates IO80211BssManager, and publishes zero-length success when no
+        AP IE list exists.
+      - The normal STA path must not cache AP mode or fake HostAP/APSTA through
+        primary-STA state.
+      - APSTA/SoftAP selectors are documented as a separate
+        AppleBCMWLANIO80211APSTAInterface surface with recovered method
+        contracts for HOST_AP_MODE, HOST_AP_MODE_HIDDEN, SOFTAP_PARAMS,
+        SOFTAP_STATS, and SOFTAP_WIFI_NETWORK_INFO_IE.
+      - Missing APSTA owner state is now classified as a required
+        reconstruction target, not as a final no-owner policy.
+
+- 95_mcs_nrate_and_virtual_if_shadow_2026_04_26.yaml  (NEW)
+    Dedicated CR-120 addendum:
+      - APPLE80211_IOC_MCS is backed by cached "nrate" transport state and
+        decodes index from Apple rate-family masks, not from ic_bss->ni_txmcs.
+      - Tahoe and legacy STA dispatchers must share that MCS producer policy.
+      - APPLE80211_IOC_VIRTUAL_IF_CREATE keeps the recovered Tahoe public
+        role failure shape in the legacy dispatcher.
+      - Role 7 remains a SoftAP/APSTA owner path; the no-owner failure shape is
+        interim until the APSTA/SAP owner object and HostAP lifecycle are
+        reconstructed.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (NEW)
+    Dedicated APSTA owner-layer reconstruction addendum:
+      - records role-7 APSTA factory creation, object size 0x138, core
+        expansion storage at +0x2c30, state block pointer self+0x130, APSTA
+        identity `ap1`, and Wi-Fi subfamily 3.
+      - records resolved APSTA/SAP vtable evidence from
+        `/srv/project/ghidra_output/apsta_sap_vtables_resolved_20260426.txt`,
+        including APSTA identity slots 311/319/320 and SoftAP/SAP slots
+        514..529.
+      - records SoftAP public carriers, state offsets, feature-gated bits, and
+        APSTA queue/pool/datapath accessor offsets.
+      - explicitly states the RE rule that Apple-required owner objects,
+        classes, state blocks, queues, and carrier structures must be locally
+        reconstructed instead of treated as closed gaps.
+
+-------------------------------------------------------------
+
+Added in V18 (2026-04-27):
+
+Updates the APSTA owner-layer addendum with the first buildable restoration
+artifact for that layer.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA state scaffold:
+      - adds local `AirportItlwm/AirportItlwmAPSTAInterface.hpp` as the
+        compiled offset witness for APSTA private state.
+      - records `AirportItlwmAPSTAObjectStorageLayout` for object size witness
+        0x138 and state-pointer offset +0x130.
+      - records `AirportItlwmAPSTAStateBlock` static asserts for SoftAP fields,
+        SoftAP stats, APSTA datapath queues/pools, multicast queue, and role-7
+        feature bits.
+      - keeps role-7 success disabled until the next SAP protocol / APSTA owner
+        lifecycle layer is recovered.
+
+-------------------------------------------------------------
+
+Added in V19 (2026-04-27):
+
+Adds the first compiled SAP protocol contract artifact.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    SAP protocol seam:
+      - records local `include/Airport/IO80211SapProtocol.h`.
+      - records `IO80211SapProtocol` vtable range `481..519` and APSTA
+        SoftAP/station-management extension through slot `531`.
+      - records typed carriers for APSTA getters/setters, including HostAP,
+        SoftAP, RSN, station authorization/deauth, peer-cache, and MIS max STA.
+      - records the important negative finding that the final C++ SAP base must
+        not be a simple subclass of the current local primary-STA
+        `IO80211SkywalkInterface` header because the recovered APSTA
+        `forwardPacket` slot collides with an unresolved local Skywalk alias.
+
+-------------------------------------------------------------
+
+Added in V20 (2026-04-27):
+
+Extends the APSTA state scaffold with lifecycle/resource offsets.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA lifecycle state:
+      - records exact APSTA private state size `0x338` from
+        `AppleBCMWLANIO80211APSTAInterface::free()`.
+      - records lifecycle/resource offsets `+0x70`, `+0x78`, `+0xb8`,
+        `+0x1a8`, `+0x218`, `+0x240`, `+0x248`, `+0x250`, `+0x258`, `+0x260`,
+        `+0x26c`, and `+0x329`.
+      - updates the local state scaffold contract so these offsets are named
+        and statically asserted instead of hidden inside padding.
+
+-------------------------------------------------------------
+
+Added in V21 (2026-04-27):
+
+Adds the compiled role-7 APSTA creation/storage contract.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA role-7 creation:
+      - records local `AirportItlwmAPSTAVirtualIfCreateCarrierLayout` for
+        carrier offsets `data+0x04`, `data+0x0c`, and `data+0x10`.
+      - records local `AirportItlwmAPSTACoreExpansionStorageLayout` for
+        proximity owner `+0x2c28` and APSTA owner `+0x2c30`.
+      - records role `7`, feature gates `0x0d/0x0c`, return codes
+        `0xe00002d2`, `0xe00002bd`, and `0xe0000001`.
+      - keeps role-7 success disabled until APSTA class, registration,
+        queues, and resource creation are reconstructed.
+
+-------------------------------------------------------------
+
+Added in V22 (2026-04-27):
+
+Extends the APSTA state scaffold with datapath activation resources.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA datapath activation resource:
+      - records local `AirportItlwmAPSTAStateBlock::resource210` at state
+        offset `+0x210`.
+      - records local `AirportItlwmAPSTAStateBlock::datapathOwner2d0` at state
+        offset `+0x2d0`.
+      - records that `enableDatapath()` calls the `+0x2d0` owner vtable
+        `+0x120` before starting completion queues.
+      - records that `disableDatapath()` calls the same owner vtable `+0x128`
+        before stopping completion queues.
+      - keeps role-7 success disabled until APSTA class, registration,
+        resource creation, and queue startup are reconstructed.
+
+-------------------------------------------------------------
+
+Added in V23 (2026-04-27):
+
+Extends APSTA owner-layer docs with factory/init/start producer contracts.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA init/start resources:
+      - records `withOptions(core, mac, role, bsdName)` allocation and init
+        call contract.
+      - records APSTA init state writes for owner/core, timers, logger,
+        retained resources, runtime defaults, and queue-map defaults.
+      - records APSTA start state writes for work queue `+0x330`,
+        bus/provider `+0x2c8`, and datapath owner `+0x2d0`.
+      - records local `AirportItlwmAPSTAStartQueueConfigLayout` for the stack
+        carrier passed to datapath owner vtable `+0x118`.
+      - keeps role-7 success disabled until the real APSTA class,
+        registration, queue creation, and full SAP slot aliases are restored.
+
+-------------------------------------------------------------
+
+Added in V24 (2026-04-27):
+
+Adds APSTA HostAP control-state field recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA HostAP control state:
+      - records AP power assertion byte `state+0x0c`.
+      - records hidden-network byte `state+0x0d`.
+      - records AP low-power/power state dword `state+0xb4`.
+      - records HostAP transition state dword `state+0x270`.
+      - records the AP-mode wrapper relation between `setHOST_AP_MODE`,
+        `setHostApModeInternal`, proximity owner `+0x2c28`, and NAN owners
+        `+0x74f0/+0x74f8`.
+      - keeps HostAP runtime enablement disabled until the full firmware IOVAR
+        sequence and APSTA class path are reconstructed.
+
+-------------------------------------------------------------
+
+Added in V25 (2026-04-27):
+
+Adds APSTA role-7 RegistrationInfo carrier recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA RegistrationInfo carrier:
+      - records local `AirportItlwmAPSTARegistrationInfoLayout`.
+      - records exact carrier size `0x130`.
+      - records APSTA `initRegistrationInfo(info, 1, 0x130)` producer
+        contract.
+      - records APSTA registration fields at offsets `+0x0c`, `+0x14`,
+        `+0x24`, `+0x30`, `+0x38`, `+0x40`, and `+0x108`.
+      - keeps role-7 success disabled until the APSTA class/start path and
+        queue creation are ready.
+
+-------------------------------------------------------------
+
+Added in V26 (2026-04-27):
+
+Adds APSTA Ethernet registration queue-list recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA Ethernet queue list:
+      - records local `AirportItlwmAPSTARegisterQueueListLayout`.
+      - records four TX submission queues followed by TX completion and RX
+        completion queues.
+      - records effective registration count `numTxQueues + 2`, which is six
+        for the APSTA default `numTxQueues = 4`.
+      - records registerEthernetInterface arguments, including TX/RX packet
+        pools at `state+0x2d8/+0x2e0`.
+      - records cleanup of work sources on registration failure.
+
+-------------------------------------------------------------
+
+Added in V27 (2026-04-27):
+
+Adds APSTA public SoftAP/SAP carrier and return-code recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA public SoftAP/SAP contracts:
+      - records local `AirportItlwmAPSTASoftAPParamsOutputLayout`.
+      - records local `AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout`.
+      - records fixed public values for APSTA state, peer-cache maximum, and
+        hidden AP mode.
+      - records raw return codes `0x16`, `6`, `0xe00002c2`, and `0xe00002d5`
+        where used by recovered APSTA public methods.
+      - records `setSOFTAP_WIFI_NETWORK_INFO_IE` length byte `+0x03`, limit
+        `<0x21`, and copy size `0x24`.
+      - records `setRSN_CONF` gate byte `state+0x29b` bit `0x10`.
+      - keeps APSTA runtime enablement disabled until owner construction,
+        queue creation, and SAP slot aliases are fully implemented.
+
+-------------------------------------------------------------
+
+Added in V28 (2026-04-27):
+
+Adds SAP/APSTA vtable alias and byte-offset guards.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    SAP/APSTA vtable alias contract:
+      - records `IO80211SapProtocol` base recovered range `280..519`.
+      - records SAP extension first slot `481` / byte offset `0x0f08`.
+      - records base `IO80211VirtualInterface::forwardPacket` at slot `483` /
+        byte offset `0x0f18`.
+      - records concrete APSTA `forwardPacket` at slot `465` / byte offset
+        `0x0e88`.
+      - records concrete APSTA `setMacAddress` at slot `488` / byte offset
+        `0x0f40`.
+      - records concrete APSTA public surface through slot `531` / byte offset
+        `0x1098`.
+      - keeps `IO80211SapProtocol` as a contract header only until the real
+        class layout can be introduced without slot collision.
+
+-------------------------------------------------------------
+
+Added in V29 (2026-04-27):
+
+Adds APSTA forwardPacket TX queue-selection recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA forwardPacket TX datapath:
+      - records concrete APSTA `forwardPacket` slot `465` / byte offset
+        `0x0e88`.
+      - records packet metadata selector shift `4`.
+      - records selector mask `0xff8`.
+      - records TX subqueue base `state+0x300`.
+      - records selected queue submit vtable offset `0x318`.
+      - keeps APSTA forwarding disabled until the owner and queues are
+        implemented.
+
+-------------------------------------------------------------
+
+Added in V30 (2026-04-27):
+
+Adds APSTA datapath metric accessor operand recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA datapath metrics:
+      - records `getTxHeadroom()` fixed return `0`.
+      - records `getTxQueueDepth()` source queue `state+0x300`.
+      - records TX queue nested object offset `0x168` and depth dword offset
+        `0x28`.
+      - records `getRxQueueCapacity()` source queue `state+0x2f0`.
+      - records RX queue nested object offset `0x138` and capacity dword offset
+        `0x10`.
+      - records missing-queue return `0`.
+
+-------------------------------------------------------------
+
+Added in V31 (2026-04-27):
+
+Adds APSTA datapath lifecycle vtable-offset recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA datapath lifecycle:
+      - records datapath owner enable/disable vtable offsets `0x120` and
+        `0x128`.
+      - records completion queue start/stop vtable offsets `0x150` and
+        `0x158`.
+      - records RX completion queue arm vtable offset `0x298` with args `0,0`.
+      - records missing completion queue return `0xe00002bc`.
+      - keeps APSTA datapath runtime disabled until owner and queues exist.
+
+-------------------------------------------------------------
+
+Added in V32 (2026-04-27):
+
+Adds APSTA start-time work-source registration recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA start/work-source registration:
+      - records datapath owner queue-config vtable offset `0x118`.
+      - records work queue add/remove vtable offsets `0x140` and `0x148`.
+      - records TX queue invalid/trap threshold `7` and max accepted TX queues
+        `6`.
+      - records optional multicast, TX queue, TX completion, and RX completion
+        work-source add order.
+      - records registration failure cleanup remove order.
+      - records `registerEthernetInterface` flags `0`.
+
+-------------------------------------------------------------
+
+Added in V33 (2026-04-27):
+
+Adds APSTA stop/freeResources teardown recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA teardown/resource cleanup:
+      - records `freeResources()` timer cancel vtable offset `0x158`.
+      - records object release vtable offset `0x28`.
+      - records cleanup and NULL-clear of timers `state+0x70/+0x78`.
+      - records cleanup and NULL-clear of retained resources
+        `state+0x240/+0x248/+0x250/+0x260/+0x258`.
+      - records `stop(IOService*)` TX queue loop over `state+0x300` bounded
+        by `state+0x2a4`.
+      - records TX/RX completion and multicast queue stop/remove/release/clear
+        sequences.
+      - records multicast direct `IO80211WorkQueue::removeWorkSource` call and
+        final super stop vtable offset `0x5d8`.
+
+-------------------------------------------------------------
+
+Added in V34 (2026-04-27):
+
+Adds APSTA reset/initSoftAPParameters default recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA reset/default lifecycle:
+      - records `reset()` clears for `state+0x26c`, `state+0x329`,
+        `state+0xb8` size `0xf0`, `state+0x0`, `state+0xb0`, stats
+        `state+0x1b0..+0x207`, and runtime qwords `state+0x90/+0x98/+0xa0`.
+      - records reset calls to `setConcurrencyState(4, false)`,
+        `setPowerSaveState(0, 0xa)`, and timer vtable `+0x218`.
+      - records `initSoftAPParameters()` defaults at
+        `state+0x16/+0x18/+0x1c/+0x20/+0x24/+0x28`.
+      - records DTIM apply path through commander `state+0x228` and IOCTL
+        `0x4e`, with applied DTIM stored at `state+0x6a`.
+
+-------------------------------------------------------------
+
+Added in V35 (2026-04-27):
+
+Adds APSTA beacon interval and DTIM IOCTL carrier recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA beacon/DTIM command carriers:
+      - records command payload head offsets `+0x0` data and `+0x8` length.
+      - records 4-byte payload size for beacon interval and DTIM period.
+      - records beacon interval IOCTL `0x4c` and applied field `state+0x68`.
+      - records DTIM IOCTL `0x4e` and applied field `state+0x6a`.
+      - records callback context offsets `+0x8` function and `+0x10` cookie.
+      - records callback rxPayload bytestream offsets `+0x0` data and `+0x8`
+        length, emitted through telemetry resource `state+0x210`.
+
+-------------------------------------------------------------
+
+Added in V36 (2026-04-27):
+
+Adds APSTA HostAP success-tail recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA HostAP success tail:
+      - records AP-up write `state+0x26c = 1`.
+      - records clearing `state+0x20c` and `state+0x88`.
+      - records `handleAPStatsUpdates(state+0x70)`.
+      - records monitor timer schedule `state+0x78` vtable `+0x1d0` interval
+        `0x3e8`.
+      - records network-data flags offset `+0x4`, bits `8/9`, beacon interval
+        values `0x64/0x12c`, and closednet payload value `1` size `4`.
+
+-------------------------------------------------------------
+
+Added in V37 (2026-04-27):
+
+Adds APSTA HostAP max-assoc and vendor IE layer recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA HostAP max-assoc/vendor IE layer:
+      - records max-assoc source chain
+        `state+0x218 -> +0x128 -> +0x1558 -> +0x10 -> +0xb4`.
+      - records max-assoc state fields `state+0x0/+0x4/+0x8`.
+      - records IOVAR `maxassoc` payload size `4`.
+      - records APSTA vtable `+0xb18` selector `0x57` with payload
+        `state+0x8` size `4`.
+      - records network-data vendor IE length/data offsets `+0x2dc/+0x2e0`.
+      - records `programVendorIEList` carrier size `0x814`, header values
+        `0x1a00000001` and `0x400000001`, and payload offsets.
+      - records `programAppleVendorIE` IOVAR `vndr_ie`, set-buffer size
+        `0x52`, delete/add commands, fixed capability payload size `0x18`,
+        and extended capability source offsets.
+
+-------------------------------------------------------------
+
+Added in V38 (2026-04-27):
+
+Adds APSTA `enableAPInterface()` recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA enable AP interface layer:
+      - records RRM feature gate `0x15`, config byte `+0xe2`, IOVARs
+        `rrm_bcn_req_thrtl_win` and `rrm_bcn_req_max_off_chan_time`, payload
+        value `0`, and payload size `4`.
+      - records WNM feature gate `0x19`, config byte `+0xe3`, IOVAR `wnm`,
+        payload value `0`, and payload size `4`.
+      - records boot arg `wlan.ap.maxmpdu`, size `4`, default
+        `0xffffffff`, zero-skip policy, and `configureMPDUSize` path.
+      - records core-private `+0x2890 |= 0x10000`.
+      - records APSTA vtable `+0xe70` arguments `(2, 1)`.
+      - records `scb_probe` payload qword `0xf0000001e`, dword `5`, size
+        `0x0c`, and async completion offsets `+0x0/+0x8/+0x10`.
+      - records core notification event id `0x1e`, interface-name length cap
+        `0x11`, final selector `4` through vtable `+0xb18`, event bit `5`,
+        and `writeEventBitField()` tailcall.
+
+-------------------------------------------------------------
+
+Added in V39 (2026-04-27):
+
+Adds APSTA hidden-mode and SoftAP power-assertion recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA hidden/power layer:
+      - records `setHOST_AP_MODE_HIDDEN` required AP-up state `state+0x26c`.
+      - records not-up return `6` and null-input return `0x16`.
+      - records hidden input offset `+0x4` and accepted values `0..1`.
+      - records `closednet` payload size `4` and state write `state+0x0d`.
+      - records hidden-clear tail `setPowerSaveState(0, 9)`, clear
+        `state+0x0e`, and `holdSoftAPPowerAssertion`.
+      - records `holdSoftAPPowerAssertion` write `state+0x0c = 1`.
+      - records core notification event id `0x8d`, resource chain
+        `state+0x218 -> +0x128 -> +0x2c20`, payload value `1`, payload size
+        `4`, and flag `1`.
+
+-------------------------------------------------------------
+
+Added in V40 (2026-04-27):
+
+Adds APSTA channel, CSA, and STA-control carrier recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA channel/CSA/STA-control layer:
+      - records `getCHANNEL` selector `0x1d`, 0x0c-byte RX payload, range
+        qword `0x0000000c000c000c`, output offsets `+0x08/+0x0c`, and band
+        flag split at channel `0x0f`.
+      - records `setCHANNEL` validation, bandwidth flag map
+        `0x02/0x04/0x400 -> 2/3/4`, default bandwidth source
+        `state+0x218 -> +0x128 -> +0x408`, zero-chanspec return
+        `0xe00002c2`, and IOVAR `chanspec`.
+      - corrects CSA threshold documentation: parsed chanspec values below
+        `0x10000` are accepted for IOVAR `csa`; values at or above
+        `0x10000` return raw `0x16`.
+      - records `setSTA_AUTHORIZE` selectors `0x79/0x7a`, MAC input offset
+        `+0x08`, and null return `0xe00002c2`.
+      - records `setSTA_DISASSOCIATE` APSTA slot `522`, byte offset `0x1050`,
+        selector `0xc9`, payload size `0x0c`, and sentinel word `0xaaaa`.
+      - records `setSTA_DEAUTH` APSTA slot `523`, byte offset `0x1058`, and
+        tailcall byte offset `+0x1040`.
+
+-------------------------------------------------------------
+
+Added in V41 (2026-04-27):
+
+Adds APSTA HostAP control/power wrapper recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA HostAP control/power layer:
+      - records `setHOST_AP_MODE` network-data mode offset `+0x1c`.
+      - records neighbouring owner offsets `+0x2c28`, `+0x74f0`, and
+        `+0x74f8`.
+      - records feature gate `0x46`, bring-up private flag `+0x2890 & 1`, and
+        mode dword `+0x4d8c` accepted values `4` and `1`.
+      - records `hostAPPowerOff` AP-up state `state+0x26c`, associated station
+        count `state+0x00`, `setPowerSaveState(0, 0x0c)`, clear
+        `state+0x0e`, core notify event id `1`, null payload size `0`, and
+        concurrency fallback `setPowerSaveState(3, 3)`.
+      - records `isSoftAPConcurrencyEnabled` feature `0x46` and core-private
+        byte `+0x4d59 & 0x1b`.
+      - records `configureLowPowerModeExit` low-power state `state+0xb4`,
+        work-queue vtable `+0x130`, 4-byte payload, and success write
+        `state+0xb4 = 0`.
+
+-------------------------------------------------------------
+
+Added in V42 (2026-04-27):
+
+Adds complete APSTA public SAP slot-surface recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA public SAP slot surface:
+      - records getter slots `505..516`, byte offsets `0x0fc8..0x1020`,
+        from `getSSID` through `getSOFTAP_STATS`.
+      - records setter slots `517..531`, byte offsets `0x1028..0x1098`,
+        from `setSSID` through `setMIS_MAX_STA`.
+      - updates `include/Airport/IO80211SapProtocol.h` with concrete
+        AppleBCMWLAN APSTA constants and byte-offset static asserts for every
+        public SAP method in that range.
+
+-------------------------------------------------------------
+
+Added in V43 (2026-04-27):
+
+Adds APSTA public simple body-contract recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA public simple bodies:
+      - records `getSSID` state length `+0x274`, byte source `+0x278`, output
+        offsets `+0x04/+0x08`, maximum length `0x20`, and raw invalid return
+        `0x16`.
+      - records `getOP_MODE` NULL return `0x16`, output type `1`, AP-up source
+        `state+0x26c`, AP-up mode `8`, and down mode `0`.
+      - records simple getter contracts for `getSTATE`,
+        `getPEER_CACHE_MAXIMUM_SIZE`, `getHOST_AP_MODE_HIDDEN`,
+        `getSOFTAP_PARAMS`, and `getSOFTAP_STATS`.
+      - records simple setter contracts for `setSSID`,
+        `setPEER_CACHE_CONTROL`, `setSOFTAP_PARAMS`,
+        `setSOFTAP_EXTENDED_CAPABILITIES_IE`, and `setMIS_MAX_STA`.
+      - records that `setSOFTAP_PARAMS`, `setSOFTAP_EXTENDED_CAPABILITIES_IE`,
+        and `setMIS_MAX_STA` have no reference null guard in these bodies.
+      - adds local layout witness names now compiled in
+        `AirportItlwm/AirportItlwmAPSTAInterface.hpp`.
+
+-------------------------------------------------------------
+
+Added in V44 (2026-04-27):
+
+Adds APSTA station/key public body-contract recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA station/key bodies:
+      - records `getSTATION_LIST` AP-up gate `state+0x26c`, returns
+        `0x16/0x39/0xe00002bd/0xe00002d8`, maclist size `0x100`, initial
+        dword `0x2a`, virtual IOCTL get selector `0x9f`, and sync RX range
+        `0x0000010001000100`.
+      - records `setCIPHER_KEY` AP-down return `6`, cipher type offset `+0x08`,
+        accepted cipher types `3/5`, unsupported-cipher success return,
+        bytestream resource `state+0x210`, `wl_wsec_key` size `0xa4`, and
+        virtual IOCTL set selector `0x2d`.
+      - records `getSTA_IE_LIST` station table scan
+        `state+0xb9..state+0x1a9`, stride `0x30`, MAC size `6`, not-found
+        return `2`, and IOVAR `wpaie`.
+      - records `getSTA_STATS` allocation thresholds `7/0x0f`, allocation
+        sizes `0x108/0x118/+0x10`, IOVAR `sta_info`, TX MAC offset `+0x04`,
+        and output copy offsets.
+      - records `getKEY_RSC` key-index offset `+0x0e`, virtual IOCTL get
+        selector `0xb7`, RX range `0x0000000800040008`, output length offset
+        `+0x50`, and output value offset `+0x54`.
+
+-------------------------------------------------------------
+
+Added in V45 (2026-04-27):
+
+Adds APSTA event/station-table producer-layer recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA event/station-table layer:
+      - records `handleEvent` event header offsets
+        `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x18/+0x30`.
+      - records event branches `4`, `5`, `6`, `8`, `10`, `11`, `12`, `16`,
+        `0x36`, `0x4b`, and `0x96`.
+      - records the full five-entry station table at `state+0xb8`, stride
+        `0x30`, with active/MAC/sleep/AIHS/sharing/Apple-station fields.
+      - records STA association message id `0x0c` size `0x114` and removal
+        message id `0x0d` size `0x0c`.
+      - records `postMessageForSTA` dispatcher vtable `+0xb18`, notify owner
+        `state+0x218 -> +0x128 -> +0x2c20`, and notify flag `1`.
+      - records Apple IE scan operands, RSNXE element `0xf4`, action-frame
+        low-power operands, station-list mismatch operands, and
+        `removeStaFromStaTable` invalid-index return `0xe00002bc`.
+
+-------------------------------------------------------------
+
+Added in V46 (2026-04-27):
+
+Adds APSTA power/offload/datapath tail recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA power/offload/datapath tail:
+      - records `configureMPDUSize` gates core-private `+0x3fc == 2` and
+        `+0x30c <= 4`, IOVAR `ampdu_mpdu`, and 4-byte payload.
+      - records `lphs_mode` exit/enter payload values `0/1`, ARP offload
+        chain `arp_hostip_clear -> arp_hostip`, and host IP source
+        `state+0xac`.
+      - records `rpsnoa` payload layouts for `setBeaconDutyCycle` (`0x10`)
+        and `configureBeaconDutyCycleParams` (`0x18`).
+      - records `releaseSoftAPPowerAssertion` event `0x8d`, payload value `0`,
+        size `4`, flag `1`.
+      - records power-state duration bucket base `state+0x1d0`, bucket stride
+        `0x10`, and timestamp `state+0x1a8`.
+      - corrects APSTA `enableDatapath` not-enabled branch to return
+        `0xe00002bc` instead of success.
+      - records `cur_etheraddr` MAC set guard and SoftAP peer-stats feature
+        `0x7a`, IOVAR `softap_stats`, payload size `0x0e`, callback write
+        `state+0x328 = cookie & 1`.
+
+-------------------------------------------------------------
+
+Added in V47 (2026-04-27):
+
+Adds APSTA monitor/power/stats layer recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA monitor/power/stats layer:
+      - records `handleAPStatsUpdates` timer `state+0x70`, allocation
+        `0x808`, vtable `+0xfd8`, async failure `0xe00002d8`, activity
+        baseline `state+0x88`, inactivity thresholds
+        `0x16e360/0x16e361/0x170a71`, message id `0x0d`, and reschedule
+        interval `0x1388`.
+      - records `monitorAPInterface` timer `state+0x78`, core-private
+        `+0x4d59`, mirror `state+0x208`, vendor-IE flag `state+0x62`,
+        low-traffic counter `state+0x64`, RX baselines `state+0x90/+0x98`,
+        stats deltas `state+0x1b8/+0x1c0`, and interval `0x3e8`.
+      - records `setPowerSaveState` current-state offset `state+0x10`,
+        transition records `state+0x1c8`, duration buckets `state+0x1d0`,
+        ignored reason `7`, monitor reason `4`, reset reason `0x0a`, and
+        power-off reason `0x0c`.
+      - records BCM/Apple assoc-list conversion layout: BCM count `+0x00`,
+        first MAC `+0x04`, MAC stride `6`, Apple output size `0x808`,
+        version `1`, entries `+0x08`, stride `0x10`, max count `0x80`.
+      - records MFP feature gate `0x26`, IOVAR `mfp`, 4-byte payload,
+        printDataPath userPrintCtx offsets, queue print vtable slots, and
+        `updateRxCounter` target `state+0xa0`.
+
+-------------------------------------------------------------
+
+Added in V48 (2026-04-27):
+
+Adds APSTA async callback telemetry recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA async callback telemetry layer:
+      - records HostAP `pkt_filter_delete` producer in `setHostApModeInternal`,
+        payload value `0x6c`, payload size `4`, command source `state+0x228`,
+        no RX expected, callback cookie `0`, and callback
+        `deleteIPv4PktFiltersAsyncCallBack`.
+      - records delete callback nonzero-status log level `2`, line `0x0ea0`,
+        and error decode through `state+0x218` vtable `+0x780`.
+      - records beacon interval IOCTL `0x4c`, payload size `4`, applied target
+        `state+0x68`, callback `handleSetBcnIntervalAsyncCallBack`, and sync
+        error line `0x106b`.
+      - records DTIM IOCTL `0x4e`, payload size `4`, source `state+0x16`,
+        applied target `state+0x6a`, callback
+        `handleSetBcnDTIMPeriodAsyncCallBack`, and sync error line `0x1091`.
+      - records callback telemetry labels, RX payload offsets `+0x00/+0x08`,
+        telemetry resource `state+0x210`, and telemetry flag `1`.
+
+-------------------------------------------------------------
+
+Added in V49 (2026-04-27):
+
+Adds APSTA action-frame / LPHS state recovery.
+
+- 96_apsta_owner_layer_reconstruction_2026_04_26.yaml  (UPDATED)
+    APSTA action-frame / LPHS layer:
+      - records `handleEvent` event type `0x4b`, payload base `event+0x30`,
+        minimum length `0x12`, swapped-version reject threshold `3`, and
+        unknown category/action sentinel `0xaa`.
+      - records v1 action-frame category/action offsets `payload+0x10/+0x11`
+        and v2 offsets `payload+0x18/+0x19`.
+      - corrects LPHS action semantics: action `1` is low-power/sleep, action
+        `2` is awake/default, and new station entries initialize to state `2`.
+      - records `checkIfAllStaAreInLPM` table scan over five `0x30`-byte
+        entries and all-STA transition `setPowerSaveState(3, 0x0b)` when no
+        active station remains in blocking state `2` and SoftAP concurrency is
+        disabled.
+
+-------------------------------------------------------------
+
+Added in V50 (2026-04-27):
+
+Adds WCL action-frame send path recovery.
+
+- 97_wcl_action_frame_send_2026_04_27.yaml  (NEW)
+    WCL action-frame send layer:
+      - records `AppleBCMWLANCore::setWCL_ACTION_FRAME` null return
+        `0xe00002bc`, net-adapter owner `+0x15e0`, carrier offsets
+        `+0x00/+0x04/+0x08/+0x0e/+0x10`, and V2 threshold
+        core-private `+0x30c > 0x14`.
+      - records V1 `sendActionFrame` maximum total action-frame bytes `0x707`,
+        backing zero buffer `0x718`, and fixed IOVAR CommandTxPayload length
+        `0x724`.
+      - records V2 `sendActionFrameV2` reject threshold `>= 0x708`, dynamic
+        allocation `total + 0x34`, and issue-command dispatch.
+      - aligns local commander/cache capacity constants to `0x708`, maximum
+        accepted payload to `0x707`, V1 fixed payload size to `0x724`, and V2
+        threshold to `0x15`.
+
+-------------------------------------------------------------
+
+Added in V51 (2026-04-27):
+
+Adds WCL action-frame progress / scan-overdue contract recovery.
+
+- 98_wcl_action_frame_progress_2026_04_27.yaml  (NEW)
+    WCL action-frame progress layer:
+      - records `setActionFrameProgress(bool)` storing bit state at
+        core-private `+0x4478`.
+      - records `getActionFrameProgress()` calling
+        `checkActionFrameCompleteOverdue()` before returning bit 0.
+      - records progress start timestamp at core-private `+0x4480`, overdue
+        threshold `0x12d` ms, overdue clear of `+0x4478`, log lines
+        `0x3b1d/0x3b1e`, and status `0xe3ff852b`.
+      - records `AppleBCMWLANScanAdapter::startScan(...)` pre-scan overdue
+        check and scan rejection status `0xe00002d5` with line `0x00a5` while
+        action-frame progress is still set.
+      - aligns local Tahoe owner registry with progress/start-ms witnesses and
+        pure helper semantics only; it does not enable scan gating without the
+        recovered timestamp producer and completion-clear lifecycle.
+
+-------------------------------------------------------------
+
+Added in V52 (2026-04-27):
+
+Adds Tahoe controller queue/depth/capacity and multicast/promiscuous contract
+recovery.
+
+- 99_controller_queue_multicast_capacity_2026_04_27.yaml  (NEW)
+    Controller queue and multicast layer:
+      - records `AppleBCMWLANCore::requestQueueSizeAndTimeout` reading
+        `wlan.coalesce.qsize` and `wlan.coalesce.timeout`, returning
+        `0xe00002c7` unless both low 16-bit values are nonzero, and writing
+        both output pointers on success.
+      - records Apple data queue depth source core-private `+0x1154`, default
+        `0x200`, IO80211 base default `0x400`, and Skywalk interface dispatch
+        through controller `getDataQueueDepth(OSObject*)`.
+      - records action-frame pool capacity `0x100`.
+      - records promiscuous state offset `+0x4778`.
+      - records multicast reject gate `+0x2891` bit `0x80`, statuses
+        `0xe0823804`/`0xe00002bc`, count offset `+0x234`, list offset
+        `+0x238`, max entries `0x20`, 6-byte stride, payload fill `0xaa`,
+        payload capacity `0xca`, and IOVAR name `mcast_list`.
+      - aligns local Tahoe controller owner state, queue-size return semantics,
+        data-depth/capacity overrides, promiscuous/multicast witnesses, and
+        multicast-list max-count rejection while preserving the existing Intel
+        HAL backend path until the Broadcom multicast IOVAR owner is recovered.
+
+-------------------------------------------------------------
+
+Added in V53 (2026-04-27):
+
+Adds hidden `+0x1510` flow queue / timestamp / log-pipe / virtual-interface
+surface recovery.
+
+- 100_hidden_interface_flow_timestamp_2026_04_27.yaml  (NEW)
+    Hidden interface owner layer:
+      - records core-private hidden interface offset `+0x1510`.
+      - records flow queue delegation slots `+0xa68/+0xa70/+0xa78`, base
+        fallback slots `+0xd60/+0xd68`, and `FlowIdMetadata` operand offsets
+        `+0x06/+0x0c/+0x10`.
+      - records packet timestamp base slots `+0xd90/+0xd98`, gated hidden slots
+        `+0xaa8/+0xab0`, and the gated function addresses.
+      - records log-pipe owner offset `+0x88` and pipe offsets
+        `+0x218/+0x220/+0x230`.
+      - records virtual-interface base slots `+0xe10/+0xd40/+0xd48`, null
+        status `0xe00002bc`, proximity owner `+0x2c28`, role `6`, and wake flag
+        `0x10000`.
+      - aligns local code by adding hidden-interface constants and owner
+        witnesses, keeping flow IDs disabled until a real local flow owner is
+        recovered, and removing a local debug-log side effect from
+        `releaseFlowQueue`.
+
+-------------------------------------------------------------
+
+Added in V54 (2026-04-27):
+
+Adds QoS / DynSAR / congestion-control offset recovery.
+
+- 101_qos_dynsar_offsets_2026_04_27.yaml  (NEW)
+    QoS / DynSAR owner layer:
+      - records DynSAR fail-safe start ticks at `+0x74e0`, elapsed shift `0x0a`,
+        window `0x9502f9`, and log line `0xdea9`.
+      - records congestion-control feature gate at `+0x7584` bit `0`, success
+        `0`, and unsupported status `0xe00002c7`.
+      - records AWDL AMPDU flags `+0x3768/+0x3764`.
+      - records hardware feature flags `+0x458c`, split-TX bit at `+0x00dc`,
+        and TX address resolution counters `+0x2aa4/+0x2aa8`.
+      - aligns local code by adding constants and owner witnesses only; it does
+        not enable QoS IOVAR dispatch or force policy state.
+
+-------------------------------------------------------------
+
+Added in V55 (2026-04-27):
+
+Adds hidden association / RSN carrier owner recovery.
+
+- 102_hidden_assoc_rsn_carrier_2026_04_27.yaml  (NEW)
+    Hidden association and RSN carrier layer:
+      - records hidden association selectors `0x45/0x46` and exact
+        assoc-candidates payload length `0x3ad8`.
+      - records `AppleBCMWLANCore::setWCL_ASSOCIATE` and
+        `AppleBCMWLANJoinAdapter::performJoin` carrier offsets for auth,
+        SSID, RSN IE pointer/length, Instant Hotspot flags, PMF capability,
+        context BSSID, and candidate list.
+      - records candidate count at `+0x218`, first candidate BSSID at `+0x220`,
+        paired MAC at `+0x226`, channel at `+0x22c`, and stride `0x12`.
+      - records JoinAdapter `setAssocRSNIE` pointer+length semantics and direct
+        `AppleBCMWLANCore::setRSN_IE` success no-op behavior.
+      - aligns local code by adding association constants and owner witnesses,
+        replacing active WCL magic offsets, and bounding local RSN override copy
+        to the explicit caller-provided IE length without forcing RSN/key state.
+
+-------------------------------------------------------------
+
+Added in V56 (2026-04-27):
+
+Adds Skywalk packet-pool network-type correction for the active
+primary-STA RX/TX datapath.
+
+- 103_skywalk_packet_pool_network_type_2026_04_27.yaml  (NEW)
+    Skywalk packet pool network type:
+      - records `AppleBCMWLANSkywalkPacketPool::initWithName` passing
+        `packetType=1` (`kIOSkywalkPacketTypeNetwork`) to the parent
+        `IOSkywalkPacketBufferPool` init path.
+      - records downstream IO80211 consumers as `IO80211NetworkPacket*` /
+        `IOSkywalkNetworkPacket` contract points.
+      - corrects older local/YAML state that used packetType `0` generic
+        packet pools.
+      - aligns local TX/RX pool factory calls to
+        `kIOSkywalkPacketTypeNetwork` without adding manual input callbacks,
+        forced RSN/EAPOL/key state, retries, or guessed packet subclasses.
+
+-------------------------------------------------------------
+
+Added in V57 (2026-04-27):
+
+Adds Skywalk network-packet and RX tag ABI restoration.
+
+- 104_network_packet_tag_abi_2026_04_27.yaml  (NEW)
+    Skywalk network packet and RX tag ABI:
+      - records producer-side
+        `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...)`
+        passing `(packet, packet_scratch, ether_header, false, false)` to the
+        interface input slot.
+      - records packet scratch pointer at packet `+0x78`, scratch size
+        `0x98`, prepare zeroed prefix `0x30`, TID offset `+0x18`, and
+        service-class offset `+0x29`.
+      - records `IO80211InterfaceMonitor::logRxCompletionPacket(...)`
+        reading tag offsets `+0x14` and `+0x18`.
+      - aligns local `IOSkywalkNetworkPacket` declaration to the Tahoe Skywalk
+        header shape and records a partial `packet_info_tag` layout with
+        compile-time offset/size assertions.
+      - does not add manual `inputPacket(...)`, forced EAPOL/key/RSN state,
+        retries, replay, or guessed RX completion delivery.
+
+-------------------------------------------------------------
+
+Added in V58 (2026-04-27):
+
+Adds RX completion to IO80211 input handoff restoration.
+
+- 105_rx_completion_input_handoff_2026_04_27.yaml  (NEW)
+    Skywalk RX completion input handoff:
+      - records
+        `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...)` as the
+        producer-side callback that calls the interface input slot.
+      - records packet data virtual address, data offset, tag TID/service-class
+        offsets, null accepted pointer, and final bool `false` call shape.
+      - records local divergence where `skywalkRxAction(...)` returned `count`
+        without calling IO80211 input after `fRxQueue->enqueuePackets(...)`.
+      - aligns local completion action to call
+        `AirportItlwmSkywalkInterface::inputPacket(...)` from the RX completion
+        boundary only.
+      - does not replay packets, call input from the earlier mbuf-copy
+        producer, force accepted success, or synthesize EAPOL/key/RSN/DHCP
+        state.
+
+-------------------------------------------------------------
+
+Added in V59 (2026-04-27):
+
+Adds the corrected RX completion pending-producer contract after CR-164 runtime
+showed that base `IOSkywalkRxCompletionQueue::enqueuePackets(...)` does not
+invoke the registered RX action.
+
+- 106_rx_completion_pending_producer_2026_04_27.yaml  (NEW)
+    Skywalk RX completion pending producer:
+      - records CR-164 runtime evidence: RX EAPOL `enqueue-ok` appears, but
+        `skywalkRxAction` and `ITLWM_IO80211_INPUT` remain absent.
+      - records `IOSkywalkRxCompletionQueue::requestEnqueue(...)` as the path
+        that calls the registered producer action.
+      - records base RX completion `enqueuePackets(...)` as the networking
+        publish path that does not invoke the action.
+      - refines the AppleBCMWLAN producer interpretation: the recovered
+        `AppleBCMWLANPCIeSkywalkRxCompletionQueue::enqueuePackets(...)` action
+        drains an owner-side pending list, calls IO80211 input, fills the
+        Skywalk-provided packet array, and returns produced count.
+      - aligns local code by staging prepared RX packets in a fixed-capacity
+        pending queue, ringing `requestEnqueue`, and producing packets from
+        `skywalkRxAction`.
+      - does not force accepted success, EAPOL TX, key install, RSN, DHCP,
+        data, link success, retry, replay, duplicate notify, or deauth masking.
+
+-------------------------------------------------------------
+
+Added in V60 (2026-04-27):
+
+Adds TX completion producer restoration for packets consumed by the local
+Skywalk TX submission action.
+
+- 107_tx_completion_producer_2026_04_27.yaml  (NEW)
+    Skywalk TX completion producer:
+      - records `AppleBCMWLANPCIeSkywalkTxCompletionQueue::stagePacket(...)`
+        linking completed packets into an owner-side list.
+      - records `requestEnqueue(...)` as the TX completion producer boundary.
+      - records `enqueuePackets(...)` draining staged completion packets into
+        the Skywalk-provided packet array and returning produced count.
+      - records IOSkywalk TX completion base behavior completing produced
+        packets with `completeWithQueue(queue, kIOSkywalkPacketDirectionTx, 0)`.
+      - aligns local code by staging every non-null consumed TX packet,
+        ringing `fTxCompQueue->requestEnqueue(nullptr, 0)`, and producing
+        completion packets from `skywalkTxCompletionAction`.
+      - does not force EAPOL TX success, key install, RSN, DHCP, link,
+        retry, replay, delay, poll loop, packet synthesis, or deauth masking.
+
+-------------------------------------------------------------
+
+Added in V61 (2026-04-27):
+
+Adds RX producer tag-carrier and post-batch accounting closure.
+
+- 108_rx_producer_tag_stats_2026_04_27.yaml  (NEW)
+    Skywalk RX producer tag/accounting:
+      - records Apple RX completion producer use of packet scratch/tag as the
+        `inputPacket(...)` tag argument.
+      - records TID `+0x18` to service-class `+0x29` mapping.
+      - records post-batch calls to
+        `IO80211SkywalkInterface::recordInputPacket(int, int)` and
+        `updateRxCounter(unsigned long long)`.
+      - records the local constraint that generic Tahoe
+        `IOSkywalkNetworkPacket` is size `0x78`, so Apple PCIe subclass
+        scratch storage at `packet+0x78` must not be synthesized by raw offset.
+      - aligns local code by staging recovered tag metadata with RX pending
+        packets and mirroring the post-batch RX accounting edge.
+      - does not force accepted success, EAPOL TX, key install, RSN, DHCP,
+        link, retry, replay, delay, poll loop, duplicate notify, or deauth
+        masking.
+
+-------------------------------------------------------------
+
+Added in V62 (2026-04-27):
+
+Adds TX queue space and pending-count visibility closure.
+
+- 109_tx_queue_space_pending_2026_04_27.yaml  (NEW)
+    Skywalk TX queue space/pending:
+      - records Apple primary and APSTA `getTxSubQueue(...)` owner-vector
+        lookup semantics.
+      - records Apple `getTxQueueDepth()` reading the live TX queue capacity.
+      - records IO80211SkywalkInterface `pendingPackets(...)` and
+        `packetSpace(...)` querying queue objects instead of returning
+        unconditional zero.
+      - records the local divergence where `getTxSubQueue(...)` exposed
+        `fTxQueue`, but `pendingPackets(...)` and `packetSpace(...)` returned
+        `0`.
+      - aligns local code by returning `fTxQueue->getPacketCount()` and
+        `fTxQueue->getFreeSpace()` for the local single-queue mapping.
+      - does not force EAPOL TX success, key install, RSN, DHCP, link, data,
+        retry, replay, delay, poll loop, packet synthesis, or deauth masking.
+
+-------------------------------------------------------------
+
+Added in V63 (2026-04-27):
+
+Adds TX output-accounting closure after TX submission dequeue.
+
+- 110_tx_output_accounting_2026_04_27.yaml  (NEW)
+    Skywalk TX output accounting:
+      - records Apple TX submission dequeue accumulating packet and byte
+        counts for the batch.
+      - records the Apple call to
+        `IO80211SkywalkInterface::recordOutputPacket(apple80211_wme_ac,int,int)`
+        after the TX dequeue batch.
+      - records IO80211 output accounting as a monitor/accounting edge, not a
+        forced datapath state transition.
+      - records the local divergence where `skywalkTxAction(...)` updated only
+        local runtime counters after accepted `outputPacket(...)` frames.
+      - aligns local code by calling `recordOutputPacket` with accepted packet
+        and byte totals for the local single BE queue mapping.
+      - does not synthesize Apple packet scratch, call scratch-dependent TX log
+        methods, force TX/EAPOL/key/RSN/DHCP/link/data success, retry, replay,
+        delay, poll loop, packet synthesis, or deauth masking.
+
+-------------------------------------------------------------
+
+Added in V64 (2026-04-27):
+
+Adds the IO80211 network packet allocation-class restoration for the active
+EAPOL/RSN blocker.
+
+- 111_io80211_network_packet_pool_class_2026_04_27.yaml  (NEW)
+    IO80211 network packet pool class:
+      - records runtime evidence where RX EAPOL reaches IO80211 input, but
+        EAPOL TX, key install, and RSN done remain absent before AP deauth
+        reason 15.
+      - records AppleBCMWLAN packet pool `newPacketWithDescriptor(...)`
+        allocating an Apple packet object in the `IO80211NetworkPacket`
+        family, not a base Skywalk network packet.
+      - records `IO80211NetworkPacket::getPacketType(...)` classifying
+        EtherType `0x888e` as EAPOL packet type `2`.
+      - records the local divergence where the pool was still a base
+        `IOSkywalkPacketBufferPool` and RX handoff relied on
+        `reinterpret_cast<IO80211NetworkPacket *>`.
+      - aligns local code by adding an `IOSkywalkPacketBufferPool` subclass
+        whose `newPacket(...)` allocates system `IO80211NetworkPacket` objects
+        via `OSMetaClass::allocClassWithName(...)` and initializes them through
+        `initWithPool(...)`.
+      - does not synthesize Apple PCIe packet scratch, write `packet+0x78`,
+        call scratch-dependent log methods, force EAPOL/key/RSN/DHCP/link/data
+        success, retry, replay, delay, poll loop, packet synthesis, or deauth
+        masking.
+
+-------------------------------------------------------------
+
+Added in V65 (2026-04-27):
+
+Adds the IOSkywalkNetworkPacket base-size ABI closure required before the
+Apple PCIe packet scratch layer can be restored safely.
+
+- 112_ioskywalk_network_packet_size_2026_04_27.yaml  (NEW)
+    IOSkywalkNetworkPacket size ABI:
+      - records Tahoe `IOSkywalkNetworkPacket` metaclass size `0x78`.
+      - records `IO80211NetworkPacket` constructor/deallocation also staying
+        at the same `0x78` base size.
+      - records AppleBCMWLAN PCIe packet subclass allocation size `0x80` and
+        scratch pointer ownership at packet offset `+0x78`.
+      - records the local divergence where the tracked local
+        `IOSkywalkNetworkPacket` declaration added an extra `void *mReserved`
+        member, shifting subclass storage to `+0x80`.
+      - aligns the tracked local declaration by removing that non-reference
+        storage and adding `sizeof(IOSkywalkNetworkPacket) == 0x78`
+        assertions.
+      - does not synthesize Apple packet scratch, write `packet+0x78`, call
+        scratch-dependent methods, or force EAPOL/key/RSN/DHCP/link/data
+        success, retry, replay, delay, poll, packet synthesis, or deauth
+        masking.
+
+-------------------------------------------------------------
+
+Added in V66 (2026-04-27):
+
+Adds the IO80211NetworkPacket virtual/method surface needed before a local
+Apple packet subclass can be represented safely.
+
+- 113_io80211_network_packet_virtual_surface_2026_04_27.yaml  (NEW)
+    IO80211NetworkPacket virtual surface:
+      - records the exported Tahoe `IO80211NetworkPacket` methods from
+        `kdk_symbols.txt`.
+      - records constructor/deallocation size `0x78` and `getPacketType`
+        EAPOL classification from `IO80211Family_decompiled.c`.
+      - records Apple packet subclass constructors entering the
+        `IO80211NetworkPacket` constructor chain before installing their own
+        vtable.
+      - records the local divergence where `IO80211NetworkPacket` was an
+        empty local C++ shell over `IOSkywalkNetworkPacket`.
+      - aligns the tracked local declaration by adding only the
+        decompile/export-proven methods and `sizeof(IO80211NetworkPacket) ==
+        0x78`.
+      - does not instantiate a local IO80211 packet, synthesize Apple packet
+        scratch, write `packet+0x78`, or force EAPOL/key/RSN/DHCP/link/data
+        success, retry, replay, delay, poll, packet synthesis, or deauth
+        masking.
+
+-------------------------------------------------------------
+
+Added in V67 (2026-04-27):
+
+Adds the recovered Apple packet scratch field map and records the rejected
+direct C++ subclass path.
+
+- 114_packet_scratch_field_map_2026_04_27.yaml  (NEW)
+    Packet scratch field map:
+      - records `AppleBCMWLANPCIeSkywalkPacket` scratch pointer at packet
+        `+0x78` and scratch size `0x98`.
+      - names proven scratch fields at `+0x48`, `+0x50`, `+0x74`, `+0x80`,
+        `+0x8a`, and `+0x90`, while preserving prior `+0x14`, `+0x18`, and
+        `+0x29` IO80211 input/monitor fields.
+      - adds compile-time offset assertions to the local `packet_info_tag`.
+      - records that a direct local C++ subclass attempt was rejected before
+        submission because BootKC symbol verification exposed unresolved
+        non-exported `IOSkywalkPacket::*` virtual method references.
+      - does not synthesize Apple packet subclass storage, write
+        `packet+0x78`, change packet allocation/input/output behavior, or
+        force EAPOL/key/RSN/DHCP/link/data success, retry, replay, delay,
+        poll, packet synthesis, or deauth masking.

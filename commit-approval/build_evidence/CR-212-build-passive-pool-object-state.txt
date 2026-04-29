@@ -1,0 +1,45 @@
+CR-212 build evidence - passive pool object-state diagnostic
+date: 2026-04-29T06:07:58Z
+host: MacBook-Pro-8.local
+HEAD: d3a07c2abccac863e1909aa562051a6ee5687245
+
+kext path:   Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+kext sha256: 23df3c9204a3469fb48151abcb65b78ccd8ebd941c81bba75b71f3422b484bed
+kext UUID:   8E888F45-92BE-3879-AC2E-35DC729F625D
+kext size:   16285216
+
+Build command:
+  scripts/build_tahoe.sh
+
+Build result:
+  ** BUILD SUCCEEDED **
+
+BootKC undef-symbol verification:
+  OK: all 884 undefined symbols resolve against BootKC
+
+Source-side delta vs rejected CR-211:
+  AirportItlwm/AirportItlwmV2.cpp:
+    1. Removed the CR-211 direct kern_pbufpool_create / destroy probe
+       matrix from AirportItlwm::start STEP 8b.
+    2. Kept the production packet type at kIOSkywalkPacketTypeNetwork.
+    3. Added passive diagnostic log fields inside the existing
+       AirportItlwmIO80211PacketPool::withName path:
+         - pool object vtable word immediately after new
+         - owner object vtable word immediately after new
+         - pool object words at offsets 0x18 and 0x20 immediately after
+           the existing initWithName call returns
+
+Diagnostic neutrality checks:
+  - No direct kern_pbufpool_create or kern_pbufpool_destroy calls remain.
+  - No packetType / PoolOptions / owner / name argument changes.
+  - No retry, fallback, replay, polling, delay, or forced success.
+  - No ownership change: existing OSSafeReleaseNULL path remains unchanged.
+  - BootKC undefined-symbol count returned from CR-211's 886 to 884.
+
+Static grep:
+  rg -n "PROBE_MATRIX|ProbeCase|kern_pbufpool|kIOSkywalkPacketTypeGeneric|DIFFERENTIAL" AirportItlwm/AirportItlwmV2.cpp
+
+Result:
+  Only explanatory comments around the existing CR-208 PoolOptions
+  poolFlags mapping mention kern_pbufpool_create. No active pbufpool probe
+  calls or Generic differential path remain.

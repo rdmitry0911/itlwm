@@ -1,0 +1,107 @@
+version: 1
+topic: Tahoe IO80211PeerManager data-path + peer-lookup helpers
+status: confirmed_deviation_fixed_locally
+date: 2026-04-28
+
+scope:
+  layer: primary_sta_io80211_peer_manager_datapath_lookup_surface
+  follows:
+    - "115_infrainterface_tahoe_api_2026_04_28.yaml"
+    - "116_peermanager_public_api_2026_04_28.yaml"
+    - "117_peer_public_api_2026_04_28.yaml"
+  symptom_chain:
+    - networks_visible
+    - rx_eapol_reaches_io80211_input
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+    - peer_lookup_helpers_undeclared
+    - data_path_state_helpers_undeclared
+
+runtime_evidence:
+  source: "2026-04-27 CONTROL_STA_NETWORK regdiag/log window (carryover from CR-174..177)"
+  observed:
+    - "RX EAPOL reaches IO80211 input and returns success"
+    - "regdiag counters include eapol_rx=8 and eapol_tx=0"
+    - "IORegistry reports IO80211RSNDone=No"
+  use_in_this_batch: "no runtime change yet — CR-178 only widens the locally declared API surface so future caller wiring can link against documented BootKC peer-manager symbols"
+
+reference:
+  io80211family:
+    binary: "/srv/project/ghidra_output/IO80211Family_decompiled.c"
+    symbol_table: "/srv/project/ghidra_additional/kc_target_symbols.txt"
+    direct_call_helpers:
+      - { sym: "IO80211PeerManager::findPeer(unsigned char*)", addr: "ffffff80021d1388", returns: "IO80211Peer *" }
+      - { sym: "IO80211PeerManager::findCachedPeer(unsigned char*)", addr: "ffffff80021d3f0c", returns: "IO80211Peer *" }
+      - { sym: "IO80211PeerManager::getUnicastPeer()", addr: "ffffff80021df2a8", returns: "IO80211Peer *" }
+      - { sym: "IO80211PeerManager::getMulticastPeer()", addr: "ffffff80021df296", returns: "IO80211Peer *" }
+      - { sym: "IO80211PeerManager::getEnabled()", addr: "ffffff80021df672", returns: "bool" }
+      - { sym: "IO80211PeerManager::setEnableState(bool)", addr: "ffffff80021cc798", returns: "void" }
+      - { sym: "IO80211PeerManager::getDataPathOpen()", addr: "ffffff80021df4f8", returns: "bool" }
+      - { sym: "IO80211PeerManager::setDataPathOpen(bool)", addr: "ffffff80021df50a", returns: "void" }
+      - { sym: "IO80211PeerManager::setDataPathState(bool)", addr: "ffffff80021cde60", returns: "void" }
+      - { sym: "IO80211PeerManager::lockDataPath()", addr: "ffffff80021cded6", returns: "void" }
+      - { sym: "IO80211PeerManager::unlockDataPath()", addr: "ffffff80021cdfca", returns: "void" }
+
+local_before_cr_178:
+  files:
+    - "include/Airport/IO80211PeerManager.h"
+  mismatch: "header only declared the seven peer-membership helpers (CR-176); peer-lookup and data-path control helpers were missing"
+  consequence: "any future caller wanting to look up a peer by address or gate the data path would have to add per-callsite extern declarations with mangled signatures"
+
+local_fix_cr_178:
+  supersedes: "CR-177"
+  type: "REFERENCE_ALIGNMENT_FIX"
+  files:
+    - "include/Airport/IO80211PeerManager.h"
+  changes:
+    - "extend `class IO80211PeerManager` with eleven non-virtual public method declarations"
+    - "declare `IO80211Peer *findPeer(unsigned char *)`"
+    - "declare `IO80211Peer *findCachedPeer(unsigned char *)`"
+    - "declare `IO80211Peer *getUnicastPeer(void)`"
+    - "declare `IO80211Peer *getMulticastPeer(void)`"
+    - "declare `bool getEnabled(void)`"
+    - "declare `void setEnableState(bool)`"
+    - "declare `bool getDataPathOpen(void)`"
+    - "declare `void setDataPathOpen(bool)`"
+    - "declare `void setDataPathState(bool)`"
+    - "declare `void lockDataPath(void)`"
+    - "declare `void unlockDataPath(void)`"
+    - "anchor each declaration to its BootKC address in the header preamble"
+  binary_invariance:
+    sha256_pre: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    sha256_post: "c1d6e7b134c70c8db158a6d270379684d992f1e67bc51bdfa220c7437929aaf8"
+    uuid_pre: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    uuid_post: "BA3D771F-F079-33FF-94E5-C792E66237D8"
+    regdiag_sha256: "6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad"
+    note: "no live code references the new declarations yet, so generated binary is bit-identical to CR-177"
+  non_claims:
+    - "does not synthesize AppleBCMWLANPCIeSkywalkPacket"
+    - "does not write packet+0x78"
+    - "does not change packet allocation, queueing, input, or output behavior"
+    - "does not force EAPOL TX, key install, RSN, DHCP, link, or data success"
+    - "does not add retry, replay, delay, poll loop, packet synthesis, or deauth masking"
+    - "does not call any of the eleven new peer-manager methods from any local code path"
+    - "does not declare IO80211PeerManager with any base class or data layout"
+    - "does not include kernel-internal types whose definitions are not yet recovered"
+
+deferred_work:
+  caller_wiring:
+    status: "open"
+    blockers:
+      - "thread/gate context for findPeer / data-path lock acquisition"
+      - "writer of IO80211InfraInterface this[0x24]+0x58 == 1 precondition for setLinkState(state=2)"
+      - "ordering of setCurrentApAddress vs setLinkState"
+      - "handleKeyDone body recovery via raw disasm at 0xffffff80022e6f9c"
+      - "definition of peerState enum and other kernel-internal peer types"
+    note: "wired CR will be CR-179+ after these gates are decompile-confirmed"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "targeted YAML parse"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+    - "BootKC undef-symbol verification — must remain 884 resolved"
+  after_runtime:
+    - "no runtime expectation: CR-178 has no caller wiring, so kext is bit-identical to CR-177"

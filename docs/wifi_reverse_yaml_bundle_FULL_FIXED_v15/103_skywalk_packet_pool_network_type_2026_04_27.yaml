@@ -1,0 +1,70 @@
+version: 1
+topic: Tahoe Skywalk packet pool network type
+status: confirmed_deviation_fixed_locally
+date: 2026-04-27
+
+scope:
+  layer: primary_sta_skywalk_rx_tx_packet_pool
+  symptom_chain:
+    - networks_visible
+    - association_attempt_reaches_rx_eapol_enqueue
+    - io80211_input_marker_absent
+    - eapol_tx_absent
+    - key_install_absent
+    - rsn_done_absent
+
+reference:
+  apple_function:
+    name: "AppleBCMWLANSkywalkPacketPool::initWithName"
+    address: "0xffffff80016e033c"
+    binary: "/tmp/AppleBCMWLANCoreMac"
+  parent_init_packet_type:
+    value: 1
+    name: "kIOSkywalkPacketTypeNetwork"
+    evidence: "disassembly shows `movl $0x1, %ecx` immediately before parent slot call `*0x130(%rax)`"
+  downstream_contract:
+    packet_classes:
+      - "IOSkywalkNetworkPacket"
+      - "IO80211NetworkPacket"
+    consumers:
+      - "IO80211InfraInterface::inputPacket(IO80211NetworkPacket*, ...)"
+      - "IO80211PeerManager::skywalkInputPacket(IO80211NetworkPacket*, ...)"
+
+local_before_cr_161:
+  file: "AirportItlwm/AirportItlwmV2.cpp"
+  functions:
+    - "AirportItlwm::start"
+  packet_pool_factory_calls:
+    tx: "IOSkywalkPacketBufferPool::withName(\"AirportItlwm-TX\", fNetIf, 0, &poolOpts)"
+    rx: "IOSkywalkPacketBufferPool::withName(\"AirportItlwm-RX\", fNetIf, 0, &poolOpts)"
+  mismatch: "local packetType 0 created generic packet pools instead of reference network packet pools"
+
+runtime_evidence:
+  before_fix:
+    - "commit-approval/runtime_evidence/CR-112-afterfix-kernel-focused-20260426-1935.log"
+    - "commit-approval/runtime_evidence/CR-113-focused-live-log-20260426-194658.log"
+  observed:
+    - "ITLWM_EAPOL path=rx stage=enqueue-ok appears"
+    - "ITLWM_IO80211_INPUT marker is absent"
+    - "EAPOL TX / setCIPHER_KEY / RSN done are absent"
+
+local_fix_cr_161:
+  type: "REFERENCE_ALIGNMENT_FIX"
+  change:
+    tx_packet_type: "kIOSkywalkPacketTypeNetwork"
+    rx_packet_type: "kIOSkywalkPacketTypeNetwork"
+  non_claims:
+    - "does not add manual inputPacket callbacks"
+    - "does not force EAPOL TX"
+    - "does not force key install"
+    - "does not force RSN success"
+    - "does not synthesize a custom IO80211NetworkPacket subclass without full ABI proof"
+
+verification_plan:
+  structural:
+    - "git diff --check"
+    - "scripts/build_tahoe.sh"
+    - "scripts/build_regdiag.sh"
+  after_runtime:
+    - "verify whether ITLWM_IO80211_INPUT appears after RX enqueue"
+    - "verify EAPOL TX / key install / RSN completion progression"

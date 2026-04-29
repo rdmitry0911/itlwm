@@ -1,0 +1,164 @@
+---
+# 137_bssmanager_primitive_batch_2026_04_28.yaml
+# IO80211BssManager primitive-only direct-call exports (CR-201).
+# Source-of-truth: BootKC IO80211Family.kc symbol table, recovered 2026-04-28.
+# Return types: each entry's return type is the verbatim Ghidra 12.2
+# C-decompile output captured in analysis/cr201_bssmgr_decomp.c.
+# Justification class: REFERENCE_ALIGNMENT_FIX (NEW header file).
+
+cr: CR-201
+supersedes: CR-200
+date: 2026-04-28
+class: IO80211BssManager
+header: include/Airport/IO80211BssManager.h
+justification: REFERENCE_ALIGNMENT_FIX
+batch_size: 14
+notes: |
+  CR-201 narrows CR-200's 41-symbol candidate set to the 14 helpers
+  whose return type is unambiguously recovered by Ghidra 12.2 C-
+  decompile against BootKernelExtensions.kc. 27 candidates from CR-200
+  are deferred — either their decompile yielded a Ghidra placeholder
+  return type (`undefined4`, `undefined8`) that cannot be promoted to a
+  C++ type without inference, or Ghidra failed to locate a function
+  entry at the recorded address (MISSING). The deferred set still
+  includes helpers with kernel-internal struct/enum signatures.
+  No `void *` substitution. No call sites added. Header is the only
+  new artifact; kext is bit-identical to CR-200 build.
+
+symbols:
+  - addr: '0xffffff80022665a0'
+    sig: 'IO80211BssManager::isAssociatedOnHighBand()'
+    return_type: 'unsigned char'
+    decomp_type: 'byte'
+  - addr: '0xffffff8002266722'
+    sig: 'IO80211BssManager::isAssociatedToAdhoc()'
+    return_type: 'bool'
+    decomp_type: 'bool'
+  - addr: '0xffffff8002266cfc'
+    sig: 'IO80211BssManager::resetRateAndIndexSet()'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff8002266da8'
+    sig: 'IO80211BssManager::isAssociatedToiOSDevice()'
+    return_type: 'unsigned long'
+    decomp_type: 'ulong'
+  - addr: '0xffffff8002268030'
+    sig: 'IO80211BssManager::setAdHocCreated(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff8002268054'
+    sig: 'IO80211BssManager::setSISOAssoc(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff8002268066'
+    sig: 'IO80211BssManager::setPrivateMacJoinStatus(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff8002268078'
+    sig: 'IO80211BssManager::setDeviceTypeInDhcpAllowStatus(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff800226808a'
+    sig: 'IO80211BssManager::getPrivateMacJoinStatus()'
+    return_type: 'unsigned long'
+    decomp_type: 'ulong'
+  - addr: '0xffffff800226809c'
+    sig: 'IO80211BssManager::getDeviceTypeInDhcpAllowStatus()'
+    return_type: 'unsigned long'
+    decomp_type: 'ulong'
+  - addr: '0xffffff80022680ae'
+    sig: 'IO80211BssManager::setAssociateToHotspotInWoWMode(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+  - addr: '0xffffff80022680c0'
+    sig: 'IO80211BssManager::isAssociateToHotspotInWoWMode()'
+    return_type: 'unsigned long'
+    decomp_type: 'ulong'
+  - addr: '0xffffff8002268106'
+    sig: 'IO80211BssManager::get6gStandAloneTopology()'
+    return_type: 'unsigned long'
+    decomp_type: 'ulong'
+  - addr: '0xffffff8002268118'
+    sig: 'IO80211BssManager::set6gStandAloneTopology(bool)'
+    return_type: 'void'
+    decomp_type: 'void'
+
+deferred_from_cr200:
+  reason_undefined_return:
+    - addr: '0xffffff80022665ae'
+      sig: 'IO80211BssManager::isAssociatedOn2G()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff8002266624'
+      sig: 'IO80211BssManager::isAssociatedOn5G()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff800226669a'
+      sig: 'IO80211BssManager::isAssociatedOn6G()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff8002266710'
+      sig: 'IO80211BssManager::isAssociated()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff800226682e'
+      sig: 'IO80211BssManager::setLastBSSRssi()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff8002266e62'
+      sig: 'IO80211BssManager::isAssociatedToLPHSCapableiOSHotspot()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff8002266fcc'
+      sig: 'IO80211BssManager::get6GMode()'
+      decomp_type: 'undefined4'
+    - addr: '0xffffff800226703e'
+      sig: 'IO80211BssManager::isEAPJoin()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff800226709a'
+      sig: 'IO80211BssManager::is8021XJoin()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff80022670de'
+      sig: 'IO80211BssManager::isDynamicWEP()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff800226733c'
+      sig: 'IO80211BssManager::isLikelyOrbiMeshNetwork()'
+      decomp_type: 'undefined8'
+    - addr: '0xffffff8002268646'
+      sig: 'IO80211BssManager::isMloConnection()'
+      decomp_type: 'undefined8'
+  reason_unrecovered_symbol_in_decomp:
+    - addr: '0xffffff80022661a6'
+      sig: 'IO80211BssManager::set6GMode(unsigned int)'
+      ghidra_name: 'FUN_ffffff80022661a6'
+    - addr: '0xffffff8002266fee'
+      sig: 'IO80211BssManager::setBandInfoBitmap(unsigned int)'
+      ghidra_name: 'FUN_ffffff8002266fee'
+    - addr: '0xffffff800226713c'
+      sig: 'IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)'
+      ghidra_name: 'FUN_ffffff800226713c'
+    - addr: '0xffffff80022671de'
+      sig: 'IO80211BssManager::setOWEOpenSSID(unsigned char const*, unsigned long)'
+      ghidra_name: 'FUN_ffffff80022671de'
+    - addr: '0xffffff8002267236'
+      sig: 'IO80211BssManager::setAssocColocatedNetworkScopeId(unsigned char const*, unsigned long)'
+      ghidra_name: 'FUN_ffffff8002267236'
+    - addr: '0xffffff8002267afa'
+      sig: 'IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)'
+      ghidra_name: 'FUN_ffffff8002267afa'
+    - addr: '0xffffff8002268000'
+      sig: 'IO80211BssManager::isAssociatedTo11ax() const'
+      ghidra_name: 'FUN_ffffff8002268000'
+    - addr: '0xffffff800226801e'
+      sig: 'IO80211BssManager::isAdhocCreated() const'
+      ghidra_name: 'FUN_ffffff800226801e'
+    - addr: '0xffffff8002268042'
+      sig: 'IO80211BssManager::isSISOAssoc() const'
+      ghidra_name: 'FUN_ffffff8002268042'
+  reason_missing_in_decomp:
+    - addr: '0xffffff80022662fe'
+      sig: 'IO80211BssManager::freeResources()'
+    - addr: '0xffffff8002266ac2'
+      sig: 'IO80211BssManager::updateRxRate(int)'
+    - addr: '0xffffff8002266d68'
+      sig: 'IO80211BssManager::dumpBSS(char*, unsigned int, unsigned int) const'
+    - addr: '0xffffff8002266f9a'
+      sig: 'IO80211BssManager::setNetworkFlags(bool, unsigned int)'
+    - addr: '0xffffff8002267abc'
+      sig: 'IO80211BssManager::setAssociatedAuthType(unsigned char*, unsigned short)'
+    - addr: '0xffffff80022680e0'
+      sig: 'IO80211BssManager::isAssociatedToOpenBss()'

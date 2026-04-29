@@ -14,6 +14,27 @@
 #include <net80211/ieee80211_var.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSString.h>
+#include <libkern/c++/OSSymbol.h>
+#include <libkern/c++/OSMetaClass.h>
+
+// CR-226: extern "C" asm-named declarations for the BootKC-exported
+// IO80211NetworkPacket allocator and constructor. Direct asm-named
+// declarations are required because:
+//   - the freestanding kext build has no `<new>`, so C++ placement-new
+//     is unavailable;
+//   - `IO80211NetworkPacket::operator new` would otherwise resolve via
+//     normal name lookup to the inherited `OSObject::operator new`
+//     (the local IO80211NetworkPacket header doesn't redeclare it),
+//     allocating from the generic OSObject zone instead of
+//     IO80211NetworkPacket's own kalloc_type_view (CR-225 reviewer's
+//     finding).
+extern "C" void *
+AirportItlwm_IO80211NetworkPacket_operatorNew(unsigned long size)
+    __asm("__ZN20IO80211NetworkPacketnwEm");
+
+extern "C" void
+AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
+    __asm("__ZN20IO80211NetworkPacketC1EPK11OSMetaClass");
 
 // Build identification must print the actual source revision in load logs so the
 // running kext can be matched 1:1 against the workspace and installed binary.
@@ -33,17 +54,423 @@
 #define ITLWM_COMMIT_SUFFIX " (" ITLWM_XSTR(ITLWM_COMMIT_HASH) ")"
 
 #include "AirportItlwmSkywalkInterface.hpp"
+#include "Airport/IO80211NetworkPacket.h"
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
+
+class AirportItlwmSkywalkMulticastQueue : public IOEventSource
+{
+    OSDeclareDefaultStructors(AirportItlwmSkywalkMulticastQueue)
+
+public:
+    static AirportItlwmSkywalkMulticastQueue *withInterface(IO80211SkywalkInterface *interface)
+    {
+        AirportItlwmSkywalkMulticastQueue *queue = new AirportItlwmSkywalkMulticastQueue;
+        if (queue != nullptr && !queue->initWithInterface(interface))
+            OSSafeReleaseNULL(queue);
+        return queue;
+    }
+
+    virtual bool initWithInterface(IO80211SkywalkInterface *interface)
+    {
+        if (interface == nullptr)
+            return false;
+
+        fInterface = nullptr;
+        if (!IOEventSource::init(interface, nullptr))
+            return false;
+
+        fInterface = interface;
+        fInterface->retain();
+        return true;
+    }
+
+    virtual void free() override
+    {
+        OSSafeReleaseNULL(fInterface);
+        IOEventSource::free();
+    }
+
+    virtual IO80211SkywalkInterface *getInterface()
+    {
+        return fInterface;
+    }
+
+    virtual void requestDequeue()
+    {
+    }
+
+    virtual void collectQueueStats(void *)
+    {
+    }
+
+    virtual void *getInterfaceContext()
+    {
+        return nullptr;
+    }
+
+private:
+    IO80211SkywalkInterface *fInterface;
+};
+
+// CR-225 SYSTEM_CONTRACT_FIX. Direct IO80211NetworkPacket allocation —
+// no subclass.
+//
+// CR-222 Stage 2 evidence proved the alloc gate. CR-224 attempted to
+// bypass it via a same-kext IO80211NetworkPacket subclass, which kmutil
+// rejected at AuxKC build time with `Malformed vtable. Super class
+// '__ZTV20IO80211NetworkPacket' has 72 entries vs subclass
+// '__ZTV25AirportItlwmIO80211Packet' with 69 entries`: our local
+// IO80211NetworkPacket / IOSkywalkNetworkPacket / IOSkywalkPacket
+// headers are incomplete relative to Tahoe's actual class definitions,
+// so the subclass vtable cannot be aligned 1:1 from this kext.
+//
+// CR-225 takes a different reference path: instead of subclassing,
+// construct an IO80211NetworkPacket *directly* using the framework's
+// own exported allocation primitives:
+//   - `IO80211NetworkPacket::operator new(size_t)` at BootKC
+//     0xffffff80022c591c is a 0x10-byte thunk:
+//        mov rsi, rdi                ; size
+//        lea rdi, [rip + 0x13f116]   ; IO80211NetworkPacket kalloc_type_view
+//        jmp kalloc_type_impl        ; 0xffffff8000a4ca30
+//     This goes through IO80211NetworkPacket's OWN kalloc_type_view —
+//     not the gated MetaClass::alloc() path (which at 0xffffff80022c5914
+//     is literally `xor eax, eax; ret`, hardcoded to NULL by Apple).
+//   - `IO80211NetworkPacket::IO80211NetworkPacket(OSMetaClass const *)`
+//     constructor (C1) at 0xffffff80022c5840 chains
+//     IOSkywalkNetworkPacket / IOSkywalkPacket / IOCommand / OSObject
+//     constructors and installs the IO80211NetworkPacket vtable
+//     (`lea rax, [rip+0x11d0f3]; mov [rbx], rax`).
+//   - `IO80211NetworkPacket::gMetaClass` at 0xffffff80023f86e0
+//     (S, exported).
+//
+// After construction, the produced object IS-A real IO80211NetworkPacket
+// with the genuine IO80211NetworkPacket vtable. We then call the
+// inherited `vt[35]` init virtual to bind it to the pool/descriptor
+// (mirroring `IOSkywalkNetworkPacket::withPool` BootKC 0xffffff800297effa)
+// and `vt[5]` failure destruct on init failure.
+//
+// No same-kext subclass is introduced. No vtable construction in our
+// kext. No header alignment surgery. The approach is byte-for-byte the
+// same allocate-then-init shape Apple's framework factory uses,
+// substituting only the IO80211NetworkPacket-specific operator-new
+// thunk for the IOSkywalkNetworkPacket-specific kalloc_type_view.
+static IO80211NetworkPacket *AirportItlwm_newIO80211NetworkPacket(
+    IOSkywalkPacketBufferPool *pool,
+    IOSkywalkPacketDescriptor *desc,
+    UInt32 options);
+
+class AirportItlwmIO80211PacketPool : public IOSkywalkPacketBufferPool
+{
+    OSDeclareDefaultStructors(AirportItlwmIO80211PacketPool)
+
+public:
+    // CR-216 helper: render a 64-bit pointer-derived value as two 32-bit
+    // halves. os_log on Tahoe redacts pointer-derived %llx as <private>
+    // even after (uintptr_t) cast (CR-215 evidence 12:32 boot), but it
+    // leaves %x of uint32_t public. Reading the raw memory via uint32_t
+    // pointers strips the pointer lineage.
+    static inline uint32_t ptrHi32(const void *p) {
+        unsigned long long v = (unsigned long long)(uintptr_t)p;
+        return (uint32_t)(v >> 32);
+    }
+    static inline uint32_t ptrLo32(const void *p) {
+        unsigned long long v = (unsigned long long)(uintptr_t)p;
+        return (uint32_t)(v & 0xffffffffu);
+    }
+
+    // CR-216 helper: read a 64-bit memory cell at (base+off) as two
+    // uint32_t halves. The intermediate is uint32_t-typed so os_log
+    // does not see pointer lineage.
+    static inline uint32_t slotHi32(const void *base, size_t off) {
+        return *reinterpret_cast<const uint32_t *>(
+            reinterpret_cast<const uint8_t *>(base) + off + 4);
+    }
+    static inline uint32_t slotLo32(const void *base, size_t off) {
+        return *reinterpret_cast<const uint32_t *>(
+            reinterpret_cast<const uint8_t *>(base) + off);
+    }
+
+    static AirportItlwmIO80211PacketPool *withName(
+        const char *name,
+        OSObject *owner,
+        const IOSkywalkPacketBufferPool::PoolOptions *options)
+    {
+        // CR-216 end-to-end branch coverage for the
+        // "IOSkywalkPacketBufferPool::initWithName returns false" hypothesis,
+        // building on CR-215. CR-215 evidence (2026-04-29 12:32 boot,
+        // commit-approval/runtime_evidence/CR-215-stage2-boot-log-20260429.txt)
+        // pinned the failure to the framework's POST_OSARRAY packet
+        // inventory loop, which calls our subclass `newPacket` override
+        // (vt slot 50). CR-216 adds branch-to-final-point coverage inside
+        // newPacket itself (NEWPACKET_<branch>) and bypasses os_log's
+        // privacy redaction by reading every pointer-derived 64-bit
+        // value as a pair of uint32_t halves rendered as `0x%x_%x`.
+        const UInt32 packetType = kIOSkywalkPacketTypeNetwork;
+
+        AirportItlwmIO80211PacketPool *pool =
+            new AirportItlwmIO80211PacketPool;
+        XYLog("itlwm: PACKETPOOL[%s] new=0x%x_%x poolVtable=0x%x_%x "
+              "(size=%lu opts=0x%x_%x owner=0x%x_%x ownerVtable=0x%x_%x "
+              "pktCount=%u bufCount=%u bufSize=%u maxBPP=%u memSegSz=%u "
+              "poolFlags=0x%x type=%d)\n",
+              name ? name : "(null)",
+              ptrHi32(pool), ptrLo32(pool),
+              ptrHi32(pool ? *reinterpret_cast<void **>(pool) : nullptr),
+              ptrLo32(pool ? *reinterpret_cast<void **>(pool) : nullptr),
+              sizeof(AirportItlwmIO80211PacketPool),
+              ptrHi32(options), ptrLo32(options),
+              ptrHi32(owner), ptrLo32(owner),
+              ptrHi32(owner ? *reinterpret_cast<void **>(owner) : nullptr),
+              ptrLo32(owner ? *reinterpret_cast<void **>(owner) : nullptr),
+              options ? options->packetCount : 0,
+              options ? options->bufferCount : 0,
+              options ? options->bufferSize : 0,
+              options ? options->maxBuffersPerPacket : 0,
+              options ? options->memorySegmentSize : 0,
+              options ? options->poolFlags : 0,
+              (int)packetType);
+        if (pool == nullptr) {
+            XYLog("itlwm: PACKETPOOL[%s] FAIL: new returned NULL\n",
+                  name ? name : "(null)");
+            XYLog("itlwm: PACKETPOOL[%s] FINAL branch=NEW_NULL return=0x0_0\n",
+                  name ? name : "(null)");
+            return nullptr;
+        }
+
+        bool ok = pool->initWithName(name, owner, packetType, options);
+
+        // Read every internal-state slot the framework's initWithName
+        // writes, in chronological order of the writes per its disasm.
+        // Each 64-bit pointer slot is split into hi/lo uint32_t halves
+        // (slotHi32 / slotLo32) to bypass os_log privacy redaction.
+        uint8_t *poolBytes = reinterpret_cast<uint8_t *>(pool);
+        uint32_t s_name_hi  = slotHi32(poolBytes, 0x98);  // OSString name (0x9c5f)
+        uint32_t s_name_lo  = slotLo32(poolBytes, 0x98);
+        uint32_t s_thC_hi   = slotHi32(poolBytes, 0xb0);  // thread_call (0x9c7f)
+        uint32_t s_thC_lo   = slotLo32(poolBytes, 0xb0);
+        uint32_t s_seg_hi   = slotHi32(poolBytes, 0x78);  // SegmentStats (0x9c9b)
+        uint32_t s_seg_lo   = slotLo32(poolBytes, 0x78);
+        uint32_t s_lk1_hi   = slotHi32(poolBytes, 0x80);  // lock1 (0x9cad)
+        uint32_t s_lk1_lo   = slotLo32(poolBytes, 0x80);
+        uint32_t s_lk2_hi   = slotHi32(poolBytes, 0x88);  // lock2 (0x9cc2)
+        uint32_t s_lk2_lo   = slotLo32(poolBytes, 0x88);
+        uint32_t s_own_hi   = slotHi32(poolBytes, 0x20);  // mProvider (0x9cee)
+        uint32_t s_own_lo   = slotLo32(poolBytes, 0x20);
+        uint32_t s_pbp_hi   = slotHi32(poolBytes, 0x18);  // kern_pbufpool (post 0x9e7b)
+        uint32_t s_pbp_lo   = slotLo32(poolBytes, 0x18);
+        uint32_t s_a1_hi    = slotHi32(poolBytes, 0x68);  // OSArray (0x9eff)
+        uint32_t s_a1_lo    = slotLo32(poolBytes, 0x68);
+        uint32_t s_a2_hi    = slotHi32(poolBytes, 0x60);  // OSArray (0x9f24)
+        uint32_t s_a2_lo    = slotLo32(poolBytes, 0x60);
+        uint32_t s_typeCache  =
+            *reinterpret_cast<uint32_t *>(poolBytes + 0x3c);  // packetType cache (0x9cea)
+        uint32_t s_flagsCache =
+            *reinterpret_cast<uint32_t *>(poolBytes + 0x48);  // poolFlags cache (0x9cf6)
+        uint8_t  s_singleSeg  =
+            *reinterpret_cast<uint8_t *>(poolBytes + 0xb8);   // mSingleMemorySegment (0x9d60)
+        uint8_t  s_disposed   =
+            *reinterpret_cast<uint8_t *>(poolBytes + 0xba);   // mDisposed (0x9ef3)
+
+        // Slot non-zero predicates: a 64-bit value is non-zero iff either
+        // half is non-zero.
+        bool nz_name  = (s_name_hi  | s_name_lo)  != 0;
+        bool nz_thC   = (s_thC_hi   | s_thC_lo)   != 0;
+        bool nz_seg   = (s_seg_hi   | s_seg_lo)   != 0;
+        bool nz_lk1   = (s_lk1_hi   | s_lk1_lo)   != 0;
+        bool nz_lk2   = (s_lk2_hi   | s_lk2_lo)   != 0;
+        bool nz_own   = (s_own_hi   | s_own_lo)   != 0;
+        bool nz_pbp   = (s_pbp_hi   | s_pbp_lo)   != 0;
+        bool nz_a1    = (s_a1_hi    | s_a1_lo)    != 0;
+        bool nz_a2    = (s_a2_hi    | s_a2_lo)    != 0;
+        (void)nz_name;
+
+        XYLog("itlwm: PACKETPOOL[%s] initWithName=%d (type=%d) slots: "
+              "name=0x%x_%x thCall=0x%x_%x segStats=0x%x_%x "
+              "lock1=0x%x_%x lock2=0x%x_%x owner=0x%x_%x "
+              "pbufpool=0x%x_%x arr1=0x%x_%x arr2=0x%x_%x "
+              "typeCache=%u flagsCache=0x%x singleSeg=%u disposed=%u\n",
+              name ? name : "(null)", ok ? 1 : 0, (int)packetType,
+              s_name_hi, s_name_lo,
+              s_thC_hi,  s_thC_lo,
+              s_seg_hi,  s_seg_lo,
+              s_lk1_hi,  s_lk1_lo,
+              s_lk2_hi,  s_lk2_lo,
+              s_own_hi,  s_own_lo,
+              s_pbp_hi,  s_pbp_lo,
+              s_a1_hi,   s_a1_lo,
+              s_a2_hi,   s_a2_lo,
+              s_typeCache, s_flagsCache,
+              (unsigned)s_singleSeg, (unsigned)s_disposed);
+
+        if (ok) {
+            XYLog("itlwm: PACKETPOOL[%s] FINAL branch=INIT_TRUE "
+                  "return=0x%x_%x pbufpool=0x%x_%x owner=0x%x_%x "
+                  "arr1=0x%x_%x arr2=0x%x_%x\n",
+                  name ? name : "(null)",
+                  ptrHi32(pool), ptrLo32(pool),
+                  s_pbp_hi, s_pbp_lo,
+                  s_own_hi, s_own_lo,
+                  s_a1_hi,  s_a1_lo,
+                  s_a2_hi,  s_a2_lo);
+            return pool;
+        }
+
+        // Classify the framework-internal stage where initWithName gave
+        // up. Stage labels follow the chronological order of the writes
+        // inside initWithName (KDK 0x9c5f..0x9f24); the first 0-valued
+        // slot pinpoints the last completed stage.
+        const char *failStage;
+        if (!nz_thC) {
+            failStage = "PRE_THCALL";        // thread_call_allocate failed (KDK 0x9c89)
+        } else if (!nz_seg) {
+            failStage = "PRE_SEGSTATS";      // IOMallocTypeImpl failed (KDK 0x9ca2)
+        } else if (!nz_lk1) {
+            failStage = "PRE_LOCK1";         // first IORecursiveLockAlloc failed (KDK 0x9cb7)
+        } else if (!nz_lk2) {
+            failStage = "PRE_LOCK2";         // second IORecursiveLockAlloc failed (KDK 0x9ccc)
+        } else if (!nz_own || s_typeCache == 0) {
+            failStage = "PRE_OWNER_CACHE";   // never reached the post-IOBSD writes (KDK 0x9cea-0x9cf6)
+        } else if (!nz_pbp) {
+            failStage = "KPBP_REJECT";       // kern_pbufpool_create rejected (KDK 0x9e84/0x9eb5)
+        } else if (!nz_a1) {
+            failStage = "OSARRAY_FIRST";     // first OSArray::withCapacity failed (KDK 0x9f06)
+        } else if (!nz_a2) {
+            failStage = "OSARRAY_SECOND";    // second OSArray::withCapacity failed (KDK 0x9f27)
+        } else {
+            failStage = "POST_OSARRAY";      // post-OSArray (packet inventory loop or later)
+        }
+
+        XYLog("itlwm: PACKETPOOL[%s] FINAL branch=INIT_FALSE_%s preRelease "
+              "pool=0x%x_%x pbufpool=0x%x_%x owner=0x%x_%x "
+              "arr1=0x%x_%x arr2=0x%x_%x disposed=%u\n",
+              name ? name : "(null)", failStage,
+              ptrHi32(pool), ptrLo32(pool),
+              s_pbp_hi, s_pbp_lo,
+              s_own_hi, s_own_lo,
+              s_a1_hi,  s_a1_lo,
+              s_a2_hi,  s_a2_lo,
+              (unsigned)s_disposed);
+        OSSafeReleaseNULL(pool);
+        XYLog("itlwm: PACKETPOOL[%s] FAIL: initWithName returned false; "
+              "pool released to NULL\n", name ? name : "(null)");
+        XYLog("itlwm: PACKETPOOL[%s] FINAL branch=INIT_FALSE_%s "
+              "return=0x%x_%x\n", name ? name : "(null)", failStage,
+              ptrHi32(pool), ptrLo32(pool));
+        return pool;
+    }
+
+    // CR-226 newPacket override. Mirrors the AppleBCMWLAN intermediate
+    // dispatch pattern (`newPacket` → `newPacketWithDescriptor`) and
+    // logs both ALLOC_NULL and OK terminal points using the CR-216
+    // split-halves redaction-bypass helpers.
+    virtual IOReturn newPacket(IOSkywalkPacketDescriptor *desc,
+                               IOSkywalkPacket **outPacket) override
+    {
+        if (desc == nullptr || outPacket == nullptr)
+            return kIOReturnBadArgument;
+        IOSkywalkPacket *p = newPacketWithDescriptor(desc);
+        if (p == nullptr) {
+            XYLog("itlwm: NEWPACKET FINAL branch=ALLOC_NULL "
+                  "this=0x%x_%x desc=0x%x_%x ret=0xe00002bd\n",
+                  ptrHi32(this), ptrLo32(this),
+                  ptrHi32(desc), ptrLo32(desc));
+            return kIOReturnNoMemory;
+        }
+        *outPacket = p;
+        XYLog("itlwm: NEWPACKET FINAL branch=OK "
+              "this=0x%x_%x packet=0x%x_%x\n",
+              ptrHi32(this), ptrLo32(this),
+              ptrHi32(p),    ptrLo32(p));
+        return kIOReturnSuccess;
+    }
+
+    virtual IOSkywalkPacket *newPacketWithDescriptor(
+        IOSkywalkPacketDescriptor *desc);
+};
 
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(AirportItlwmBootNub, IOService)
 OSDefineMetaClassAndStructors(CTimeout, OSObject)
+OSDefineMetaClassAndStructors(AirportItlwmSkywalkMulticastQueue, IOEventSource)
+OSDefineMetaClassAndStructors(AirportItlwmIO80211PacketPool,
+                              IOSkywalkPacketBufferPool)
+
+// CR-225: direct IO80211NetworkPacket allocation. Mirrors
+// `IOSkywalkNetworkPacket::withPool` body (BootKC 0xffffff800297effa
+// capstone disassembly):
+//   1. operator new -> kalloc_type_impl(class-specific kalloc_type_view, 0x78)
+//   2. C1 constructor (chains parents and installs class vtable)
+//   3. virtual init at vt[35] (binds packet to pool/descriptor)
+//   4. on failure, virtual destruct at vt[5]
+//
+// CR-225 substitutes IO80211NetworkPacket's own operator new
+// (0xffffff80022c591c) and constructor (0xffffff80022c5840) for the
+// IOSkywalkNetworkPacket variants used by the framework factory.
+// IO80211NetworkPacket::MetaClass::alloc() (0xffffff80022c5914) is
+// hardcoded by Apple to return NULL — we do not call it. Operator
+// new bypasses MetaClass::alloc() and uses the IO80211NetworkPacket
+// kalloc_type_view directly.
+//
+// Result: a real IO80211NetworkPacket instance with the IO80211Family
+// vtable installed — no subclass, no vtable construction in our kext.
+static IO80211NetworkPacket *
+AirportItlwm_newIO80211NetworkPacket(IOSkywalkPacketBufferPool *pool,
+                                      IOSkywalkPacketDescriptor *desc,
+                                      UInt32 options)
+{
+    // Direct asm-named call to BootKC `__ZN20IO80211NetworkPacketnwEm` at
+    // 0xffffff80022c591c (operator new thunk -> kalloc_type_impl with
+    // IO80211NetworkPacket's own kalloc_type_view). C++ name lookup of
+    // `IO80211NetworkPacket::operator new` would resolve to the inherited
+    // `OSObject::operator new` symbol (`__ZN8OSObjectnwEm`) because our
+    // local IO80211NetworkPacket header does not redeclare operator new.
+    // Using the asm-named extern "C" declaration forces the linker to
+    // emit the IO80211NetworkPacket-specific symbol reference.
+    void *mem = AirportItlwm_IO80211NetworkPacket_operatorNew(0x78);
+    if (mem == nullptr) return nullptr;
+
+    // Direct call to BootKC-exported IO80211NetworkPacket C1 constructor
+    // (asm name `__ZN20IO80211NetworkPacketC1EPK11OSMetaClass` at
+    // 0xffffff80022c5860). The constructor chains
+    // IOSkywalkNetworkPacket / IOSkywalkPacket / IOCommand / OSObject
+    // ctors and installs the IO80211NetworkPacket vtable
+    // (`lea rax, [rip+0x11d0f3]; mov [rbx], rax`). We avoid C++
+    // placement-new because the freestanding kext build has no `<new>`.
+    AirportItlwm_IO80211NetworkPacket_C1(mem, IO80211NetworkPacket::metaClass);
+    IO80211NetworkPacket *p = static_cast<IO80211NetworkPacket *>(mem);
+
+    // vt[35] init virtual (initWithPool) and vt[5] failure destruct
+    // — same slots IOSkywalkNetworkPacket::withPool dispatches to.
+    void **vtbl = *reinterpret_cast<void ***>(p);
+    typedef bool (*InitFn)(IOSkywalkPacket *,
+                           IOSkywalkPacketBufferPool *,
+                           IOSkywalkPacketDescriptor *,
+                           UInt32);
+    auto init_fn = reinterpret_cast<InitFn>(vtbl[35]);
+    if (!init_fn(p, pool, desc, options)) {
+        typedef void (*DestructFn)(IOSkywalkPacket *);
+        reinterpret_cast<DestructFn>(vtbl[5])(p);
+        return nullptr;
+    }
+    return p;
+}
+
+// CR-226 newPacketWithDescriptor: delegate to direct IO80211NetworkPacket
+// allocator (operator new + C1 ctor + vt[35] init), defined above.
+IOSkywalkPacket *
+AirportItlwmIO80211PacketPool::newPacketWithDescriptor(
+    IOSkywalkPacketDescriptor *desc)
+{
+    return AirportItlwm_newIO80211NetworkPacket(this, desc, 0);
+}
 
 #include "Airport/CCDataStream.h"
 #include "Airport/CCFaultReporter.h"
 
+
+static constexpr UInt32 kAirportItlwmSkywalkQueueCapacity = 256;
 
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
@@ -61,6 +488,10 @@ struct AirportItlwmRegDiagState {
 };
 
 static AirportItlwmRegDiagState sRegDiag = {};
+static volatile uint32_t sEapolRxProbeLogCount = 0;
+static volatile uint32_t sEapolTxProbeLogCount = 0;
+
+static const uint32_t kAirportItlwmEapolProbeLogLimit = 16;
 
 static bool
 airportItlwmRegDiagEnabled(uint32_t modeMask)
@@ -88,6 +519,38 @@ static void
 airportItlwmRegDiagInitTrace()
 {
     sRegDiag.trace.version = AIRPORT_ITLWM_REGDIAG_ABI_VERSION;
+}
+
+static bool
+airportItlwmEthernetBufferIsEapol(const void *data, size_t length)
+{
+    if (data == nullptr || length < sizeof(ether_header_t))
+        return false;
+
+    const ether_header_t *eh = reinterpret_cast<const ether_header_t *>(data);
+    return eh->ether_type == htons(ETHERTYPE_PAE);
+}
+
+static const char *
+airportItlwmEapolProbePathName(uint32_t path)
+{
+    return path == kAirportItlwmRegDiagPathRx ? "rx" : "tx";
+}
+
+static void
+airportItlwmLogEapolProbe(uint32_t path, const char *stage, uint32_t length,
+                          IOReturn result)
+{
+    volatile uint32_t *counter = path == kAirportItlwmRegDiagPathRx ?
+                                 &sEapolRxProbeLogCount :
+                                 &sEapolTxProbeLogCount;
+    const uint32_t count = ++(*counter);
+    if (count <= kAirportItlwmEapolProbeLogLimit) {
+        XYLog("ITLWM_EAPOL path=%s count=%u stage=%s len=%u result=0x%x\n",
+              airportItlwmEapolProbePathName(path), count,
+              stage != nullptr ? stage : "unknown", length,
+              static_cast<uint32_t>(result));
+    }
 }
 
 static uint32_t
@@ -406,8 +869,7 @@ airportItlwmRegDiagMbufIsEapol(mbuf_t m, uint32_t *length)
     if (len < sizeof(ether_header_t) || mbuf_data(m) == nullptr)
         return false;
 
-    ether_header_t *eh = reinterpret_cast<ether_header_t *>(mbuf_data(m));
-    return eh->ether_type == htons(ETHERTYPE_PAE);
+    return airportItlwmEthernetBufferIsEapol(mbuf_data(m), len);
 }
 
 void
@@ -1196,6 +1658,76 @@ copyUInt32Property(IORegistryEntry *entry, const char *name, uint32_t *value)
 // Kernel symbol uses mangled 'j' (unsigned int), not 'i' (int).
 // Packet param is IOSkywalkPacket * const * (PKP mangling) — the array
 // entries are const, but the packets themselves are mutable.
+static bool
+skywalkTxStageCompletionPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
+{
+    if (that == nullptr || that->fTxCompletionPendingLock == nullptr ||
+        pkt == nullptr)
+        return false;
+
+    IOLockLock(that->fTxCompletionPendingLock);
+    bool staged = false;
+    if (that->fTxCompletionPendingCount <
+        kAirportItlwmTxCompletionPendingCapacity) {
+        that->fTxCompletionPendingPackets[that->fTxCompletionPendingTail] =
+            pkt;
+        that->fTxCompletionPendingTail =
+            (that->fTxCompletionPendingTail + 1) %
+            kAirportItlwmTxCompletionPendingCapacity;
+        that->fTxCompletionPendingCount++;
+        staged = true;
+    }
+    IOLockUnlock(that->fTxCompletionPendingLock);
+    return staged;
+}
+
+static IOSkywalkPacket *
+skywalkTxPopCompletionPacket(AirportItlwm *that)
+{
+    if (that == nullptr || that->fTxCompletionPendingLock == nullptr)
+        return nullptr;
+
+    IOLockLock(that->fTxCompletionPendingLock);
+    IOSkywalkPacket *pkt = nullptr;
+    if (that->fTxCompletionPendingCount != 0) {
+        pkt = that->fTxCompletionPendingPackets[
+            that->fTxCompletionPendingHead];
+        that->fTxCompletionPendingPackets[that->fTxCompletionPendingHead] =
+            nullptr;
+        that->fTxCompletionPendingHead =
+            (that->fTxCompletionPendingHead + 1) %
+            kAirportItlwmTxCompletionPendingCapacity;
+        that->fTxCompletionPendingCount--;
+    }
+    IOLockUnlock(that->fTxCompletionPendingLock);
+    return pkt;
+}
+
+static void
+skywalkTxReleaseCompletedPacket(AirportItlwm *that, IOSkywalkPacket *pkt)
+{
+    if (pkt == nullptr)
+        return;
+
+    if (that != nullptr && that->fTxCompQueue != nullptr) {
+        pkt->completeWithQueue(that->fTxCompQueue,
+                               kIOSkywalkPacketDirectionTx, 0);
+        return;
+    }
+    if (that != nullptr && that->fTxPool != nullptr)
+        that->fTxPool->deallocatePacket(pkt);
+}
+
+static void
+skywalkTxDrainCompletionPackets(AirportItlwm *that)
+{
+    if (that == nullptr)
+        return;
+
+    while (IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(that))
+        skywalkTxReleaseCompletedPacket(that, pkt);
+}
+
 static unsigned int
 skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                 IOSkywalkPacket * const *packets, UInt32 count, void *refCon)
@@ -1209,13 +1741,25 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
     sRT.txCbCnt++;
     UInt32 consumed = 0;
     UInt32 delivered = 0;
+    UInt32 deliveredBytes = 0;
+    UInt32 stagedCompletions = 0;
     for (UInt32 i = 0; i < count; i++) {
-        consumed++;
         IOSkywalkPacket *pkt = packets[i];
         if (!pkt) {
+            consumed++;
             sRT.txPktDrop++;
             continue;
         }
+        if (!skywalkTxStageCompletionPacket(that, pkt)) {
+            sRT.txPktDrop++;
+            if (sRT.txCbCnt <= 3)
+                XYLog("skywalkTxAction: completion stage failed pkt %u/%u "
+                      "pending=%u\n",
+                      i, count, that->fTxCompletionPendingCount);
+            break;
+        }
+        stagedCompletions++;
+        consumed++;
 
         // Confirm that prepareWithQueue populated at least one packet buffer.
         IOSkywalkPacketBuffer *bufs[1] = { NULL };
@@ -1236,59 +1780,284 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
             sRT.txPktDrop++;
             continue;
         }
+        bool txEapol = airportItlwmEthernetBufferIsEapol(
+            static_cast<const uint8_t *>(objAddr) + dataOff, dataLen);
 
         // Allocate an mbuf with packet header and copy the Ethernet frame
         mbuf_t m = NULL;
         if (mbuf_allocpacket(MBUF_DONTWAIT, dataLen, NULL, &m) != 0) {
             sRT.txPktDrop++;
+            if (txEapol) {
+                airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx,
+                                              dataLen, true,
+                                              kIOReturnOutputDropped);
+                airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx,
+                                          "mbuf-alloc", dataLen,
+                                          kIOReturnOutputDropped);
+            }
             continue;
         }
 
         if (mbuf_copyback(m, 0, dataLen, (uint8_t *)objAddr + dataOff, MBUF_DONTWAIT) != 0) {
             mbuf_freem(m);
             sRT.txPktDrop++;
+            if (txEapol) {
+                airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx,
+                                              dataLen, true,
+                                              kIOReturnOutputDropped);
+                airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx,
+                                          "copyback", dataLen,
+                                          kIOReturnOutputDropped);
+            }
             continue;
         }
 
         IOReturn outRet = that->outputPacket(m, NULL);
-        if (outRet == kIOReturnOutputSuccess)
+        if (txEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathTx, "output",
+                                      dataLen, outRet);
+        if (outRet == kIOReturnOutputSuccess) {
             delivered++;
-        else
+            deliveredBytes += dataLen;
+        } else {
             sRT.txPktDrop++;
+        }
     }
 
     sRT.txPktSent += delivered;
+    if (delivered != 0 && that->fNetIf != nullptr) {
+        apple80211_wme_ac ac = { APPLE80211_WME_AC_BE };
+        that->fNetIf->recordOutputPacket(ac, static_cast<int>(delivered),
+                                         static_cast<int>(deliveredBytes));
+    }
+    if (stagedCompletions != 0 && that->fTxCompQueue != nullptr) {
+        IOReturn ret = that->fTxCompQueue->requestEnqueue(nullptr, 0);
+        if (ret != kIOReturnSuccess && sRT.txCbCnt <= 3)
+            XYLog("skywalkTxAction: tx completion requestEnqueue failed "
+                  "0x%x pending=%u\n",
+                  ret, that->fTxCompletionPendingCount);
+    }
     if (sRT.txCbCnt <= 3 && count > 0)
         XYLog("skywalkTxAction: count=%u consumed=%u delivered=%u (total tx=%u)\n",
               count, consumed, delivered, sRT.txPktSent);
     return consumed;
 }
 
-// Skywalk RX completion callback — notification from the Skywalk subsystem
-// after it has consumed packets that the driver enqueued to the RX queue.
-// This is a completion notification, not a receive path — the actual RX
-// injection happens in skywalkRxInput() called from _if_input().
+// Skywalk RX completion producer action.  AppleBCMWLAN stages prepared RX
+// packets in its queue owner, then IOSkywalkRxCompletionQueue::requestEnqueue()
+// calls this action to fill the Skywalk-provided packet array.  The IO80211
+// input handoff happens here, before the base RX completion queue publishes the
+// produced packets to the networking side.
 // Return type is unsigned int to match kernel ABI (see TX callback comment).
+static void
+skywalkRxReleasePreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
+{
+    if (rxPkt == nullptr)
+        return;
+
+    rxPkt->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
+    if (that != nullptr && that->fRxPool != nullptr)
+        that->fRxPool->deallocatePacket(rxPkt);
+}
+
+static bool
+skywalkRxBuildInputTag(packet_info_tag *tag)
+{
+    if (tag == nullptr)
+        return false;
+
+    bzero(tag, sizeof(*tag));
+    tag->tid = 0;
+    tag->service_class = 4;
+    return true;
+}
+
+static bool
+skywalkRxStagePendingPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt,
+                            const packet_info_tag *tag, UInt32 length)
+{
+    if (that == nullptr || that->fRxPendingLock == nullptr ||
+        rxPkt == nullptr || tag == nullptr)
+        return false;
+
+    IOLockLock(that->fRxPendingLock);
+    bool staged = false;
+    if (that->fRxPendingCount < kAirportItlwmRxPendingCapacity) {
+        that->fRxPendingPackets[that->fRxPendingTail] = rxPkt;
+        that->fRxPendingTags[that->fRxPendingTail] = *tag;
+        that->fRxPendingLengths[that->fRxPendingTail] = length;
+        that->fRxPendingTail =
+            (that->fRxPendingTail + 1) % kAirportItlwmRxPendingCapacity;
+        that->fRxPendingCount++;
+        staged = true;
+    }
+    IOLockUnlock(that->fRxPendingLock);
+    return staged;
+}
+
+static IOSkywalkPacket *
+skywalkRxPopPendingPacket(AirportItlwm *that, packet_info_tag *tag,
+                          UInt32 *length)
+{
+    if (that == nullptr || that->fRxPendingLock == nullptr)
+        return nullptr;
+
+    IOLockLock(that->fRxPendingLock);
+    IOSkywalkPacket *rxPkt = nullptr;
+    if (that->fRxPendingCount != 0) {
+        const UInt32 index = that->fRxPendingHead;
+        rxPkt = that->fRxPendingPackets[index];
+        if (tag != nullptr)
+            *tag = that->fRxPendingTags[index];
+        if (length != nullptr)
+            *length = that->fRxPendingLengths[index];
+        that->fRxPendingPackets[index] = nullptr;
+        bzero(&that->fRxPendingTags[index], sizeof(that->fRxPendingTags[index]));
+        that->fRxPendingLengths[index] = 0;
+        that->fRxPendingHead =
+            (that->fRxPendingHead + 1) % kAirportItlwmRxPendingCapacity;
+        that->fRxPendingCount--;
+    }
+    IOLockUnlock(that->fRxPendingLock);
+    return rxPkt;
+}
+
+static bool
+skywalkRxRemovePendingPacket(AirportItlwm *that, IOSkywalkPacket *target)
+{
+    if (that == nullptr || that->fRxPendingLock == nullptr || target == nullptr)
+        return false;
+
+    IOLockLock(that->fRxPendingLock);
+    const UInt32 count = that->fRxPendingCount;
+    UInt32 read = that->fRxPendingHead;
+    UInt32 write = that->fRxPendingHead;
+    bool removed = false;
+
+    for (UInt32 i = 0; i < count; i++) {
+        IOSkywalkPacket *pkt = that->fRxPendingPackets[read];
+        packet_info_tag tag = that->fRxPendingTags[read];
+        UInt32 length = that->fRxPendingLengths[read];
+        that->fRxPendingPackets[read] = nullptr;
+        bzero(&that->fRxPendingTags[read], sizeof(that->fRxPendingTags[read]));
+        that->fRxPendingLengths[read] = 0;
+        read = (read + 1) % kAirportItlwmRxPendingCapacity;
+        if (!removed && pkt == target) {
+            removed = true;
+            continue;
+        }
+        that->fRxPendingPackets[write] = pkt;
+        that->fRxPendingTags[write] = tag;
+        that->fRxPendingLengths[write] = length;
+        write = (write + 1) % kAirportItlwmRxPendingCapacity;
+    }
+
+    that->fRxPendingTail = write;
+    if (removed) {
+        that->fRxPendingCount = count - 1;
+        bzero(&that->fRxPendingTags[write], sizeof(that->fRxPendingTags[write]));
+        that->fRxPendingLengths[write] = 0;
+    }
+    IOLockUnlock(that->fRxPendingLock);
+    return removed;
+}
+
+static void
+skywalkRxDrainPendingPackets(AirportItlwm *that)
+{
+    if (that == nullptr)
+        return;
+
+    while (IOSkywalkPacket *rxPkt = skywalkRxPopPendingPacket(that, nullptr,
+                                                             nullptr))
+        skywalkRxReleasePreparedPacket(that, rxPkt);
+}
+
 static unsigned int
 skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
                 IOSkywalkPacket **packets, UInt32 count, void *refCon)
 {
     sRT.rxCbCnt++;
-    return count;
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == nullptr || that->fNetIf == nullptr || packets == nullptr)
+        return 0;
+
+    UInt32 produced = 0;
+    UInt32 producedBytes = 0;
+    for (UInt32 i = 0; i < count; i++) {
+        packet_info_tag tag;
+        UInt32 stagedLength = 0;
+        IOSkywalkPacket *pkt = skywalkRxPopPendingPacket(that, &tag,
+                                                        &stagedLength);
+        if (pkt == nullptr)
+            break;
+
+        void *base = pkt->getDataVirtualAddress();
+        UInt16 dataOffset = pkt->getDataOffset();
+        UInt32 dataLength = pkt->getDataLength();
+        if (base == nullptr || dataLength < sizeof(ether_header) ||
+            dataOffset > SKYWALK_BUF_SIZE ||
+            dataLength > SKYWALK_BUF_SIZE - dataOffset) {
+            skywalkRxReleasePreparedPacket(that, pkt);
+            continue;
+        }
+
+        ether_header *eh = reinterpret_cast<ether_header *>(
+            static_cast<uint8_t *>(base) + dataOffset);
+
+        IOReturn ret = that->fNetIf->inputPacket(
+            reinterpret_cast<IO80211NetworkPacket *>(pkt),
+            &tag,
+            eh,
+            nullptr,
+            false);
+
+        if (airportItlwmEthernetBufferIsEapol(eh, dataLength)) {
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx,
+                                      "producer-input", dataLength, ret);
+        }
+
+        packets[produced++] = pkt;
+        producedBytes += dataLength != 0 ? dataLength : stagedLength;
+    }
+    if (produced != 0) {
+        that->fNetIf->recordInputPacket(static_cast<int>(produced),
+                                        static_cast<int>(producedBytes));
+        that->fNetIf->updateRxCounter(produced);
+    }
+    (void)queue;
+    (void)refCon;
+    return produced;
+}
+
+static UInt32
+skywalkTxCompletionAction(OSObject *owner, IOSkywalkTxCompletionQueue *,
+                          IOSkywalkPacket **packets, UInt32 count, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == nullptr || packets == nullptr)
+        return 0;
+
+    UInt32 produced = 0;
+    for (; produced < count; produced++) {
+        IOSkywalkPacket *pkt = skywalkTxPopCompletionPacket(that);
+        if (pkt == nullptr)
+            break;
+        packets[produced] = pkt;
+    }
+    return produced;
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
 static void
 skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
 {
-    rxPkt->completeWithQueue(nullptr, kIOSkywalkPacketDirectionRx, 0);
-    that->fRxPool->deallocatePacket(rxPkt);
+    skywalkRxReleasePreparedPacket(that, rxPkt);
 }
 
-// Skywalk RX input handler — called from _if_input() on the Sequoia path.
-// Converts an mbuf (received from the 802.11 stack) into an IOSkywalkPacket
-// and enqueues it to the RX completion queue for delivery to the BSD stack
-// through the Skywalk nexus.
+// Skywalk RX input handler — called from _if_input() on the Tahoe path.
+// Converts an mbuf into a prepared IOSkywalkPacket, stages it in the local
+// RX producer queue, and rings IOSkywalkRxCompletionQueue::requestEnqueue().
 static int
 skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 {
@@ -1308,14 +2077,14 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         return EINVAL;
     }
     uint32_t diagLength = static_cast<uint32_t>(len);
-    bool diagEapol = false;
-    if (airportItlwmRegDiagPacketProbeEnabled())
-        diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
+    bool diagEapol = airportItlwmRegDiagMbufIsEapol(m, nullptr);
     if (diagEapol && airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockEapolRx)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockEapolRx,
                                        kAirportItlwmRegDiagPathRx, diagLength);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       true, static_cast<IOReturn>(EIO));
+        airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "block-eapol-rx",
+                                  diagLength, static_cast<IOReturn>(EIO));
         mbuf_freem(m);
         return 0;
     }
@@ -1324,6 +2093,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
                                        kAirportItlwmRegDiagPathRx, diagLength);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(EIO));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "block-rx",
+                                      diagLength, static_cast<IOReturn>(EIO));
         mbuf_freem(m);
         return 0;
     }
@@ -1340,6 +2112,11 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
                                       diagEapol,
                                       allocRet != kIOReturnSuccess ? allocRet :
                                       static_cast<IOReturn>(ENOMEM));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "alloc",
+                                      diagLength,
+                                      allocRet != kIOReturnSuccess ? allocRet :
+                                      static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -1350,6 +2127,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, prepRet);
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "prepare",
+                                      diagLength, prepRet);
         mbuf_freem(m);
         return EIO;
     }
@@ -1361,6 +2141,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(ENOMEM));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "buffers",
+                                      diagLength, static_cast<IOReturn>(ENOMEM));
         mbuf_freem(m);
         return ENOMEM;
     }
@@ -1370,6 +2153,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, static_cast<IOReturn>(EMSGSIZE));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "capacity",
+                                      diagLength, static_cast<IOReturn>(EMSGSIZE));
         mbuf_freem(m);
         return EMSGSIZE;
     }
@@ -1381,6 +2167,9 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol,
                                       static_cast<IOReturn>(copyRet));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "copy",
+                                      diagLength, static_cast<IOReturn>(copyRet));
         mbuf_freem(m);
         return EIO;
     }
@@ -1389,29 +2178,64 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
         skywalkRxReturnPreparedPacket(that, rxPkt);
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, dataRet);
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "length",
+                                      diagLength, dataRet);
         mbuf_freem(m);
         return EIO;
     }
 
-    // Enqueue the packet to the RX completion queue
-    IOSkywalkPacket * const pktArray[] = { rxPkt };
-    IOReturn ret = that->fRxQueue->enqueuePackets(pktArray, 1, 0);
+    packet_info_tag tag;
+    if (!skywalkRxBuildInputTag(&tag) ||
+        !skywalkRxStagePendingPacket(that, rxPkt, &tag,
+                                     static_cast<UInt32>(len))) {
+        skywalkRxReturnPreparedPacket(that, rxPkt);
+        sRT.rxEnqFail++;
+        if (sRT.rxEnqFail <= 5)
+            XYLog("skywalkRxInput: pending stage failed (drop #%u) "
+                  "pending=%u RXenabled=%d RXwl=%p\n",
+                  sRT.rxEnqFail, that->fRxPendingCount,
+                  that->fRxQueue->isEnabled() ? 1 : 0,
+                  that->fRxQueue->getWorkLoop());
+        airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
+                                      diagEapol,
+                                      static_cast<IOReturn>(ENOSPC));
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx,
+                                      "pending-full", diagLength,
+                                      static_cast<IOReturn>(ENOSPC));
+        mbuf_freem(m);
+        return ENOSPC;
+    }
+
+    IOReturn ret = that->fRxQueue->requestEnqueue(nullptr, 0);
 
     mbuf_freem(m);
 
     if (ret != kIOReturnSuccess) {
-        skywalkRxReturnPreparedPacket(that, rxPkt);
         sRT.rxEnqFail++;
         if (sRT.rxEnqFail <= 5)
-            XYLog("skywalkRxInput: enqueuePackets failed 0x%x (drop #%u)\n", ret, sRT.rxEnqFail);
+            XYLog("skywalkRxInput: requestEnqueue failed 0x%x (fail #%u) "
+                  "pending=%u RXenabled=%d RXwl=%p\n",
+                  ret, sRT.rxEnqFail, that->fRxPendingCount,
+                  that->fRxQueue->isEnabled() ? 1 : 0,
+                  that->fRxQueue->getWorkLoop());
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                       diagEapol, ret);
+        if (diagEapol)
+            airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx,
+                                      "request-enqueue", diagLength, ret);
+        if (skywalkRxRemovePendingPacket(that, rxPkt))
+            skywalkRxReturnPreparedPacket(that, rxPkt);
         return EIO;
     }
 
     sRT.rxPktOK++;
     airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathRx, diagLength,
                                   diagEapol, kIOReturnSuccess);
+    if (diagEapol)
+        airportItlwmLogEapolProbe(kAirportItlwmRegDiagPathRx, "request-ok",
+                                  diagLength, kIOReturnSuccess);
 
     return 0;
 }
@@ -1448,6 +2272,38 @@ void AirportItlwm::releaseAll()
         scanSource->release();
         scanSource = NULL;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    skywalkTxDrainCompletionPackets(this);
+    skywalkRxDrainPendingPackets(this);
+    if (_fWorkloop && fMultiCastQueue && fMultiCastQueue->getWorkLoop() == _fWorkloop) {
+        fMultiCastQueue->disable();
+        _fWorkloop->removeEventSource(fMultiCastQueue);
+    }
+    if (_fWorkloop && fTxCompQueue && fTxCompQueue->getWorkLoop() == _fWorkloop) {
+        fTxCompQueue->disable();
+        _fWorkloop->removeEventSource(fTxCompQueue);
+    }
+    if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
+        fTxQueue->disable();
+        _fWorkloop->removeEventSource(fTxQueue);
+    }
+    if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
+        fRxQueue->disable();
+        _fWorkloop->removeEventSource(fRxQueue);
+    }
+    OSSafeReleaseNULL(fMultiCastQueue);
+    OSSafeReleaseNULL(fTxCompQueue);
+    OSSafeReleaseNULL(fTxQueue);
+    OSSafeReleaseNULL(fRxQueue);
+    OSSafeReleaseNULL(fTxPool);
+    OSSafeReleaseNULL(fRxPool);
+    sRT.fTxQueuePtr = 0;
+    sRT.fRxQueuePtr = 0;
+    sRT.fTxPoolPtr = 0;
+    sRT.fRxPoolPtr = 0;
+    fSkywalkTxQueueDepth = 0;
+    fSkywalkRxQueueCapacity = 0;
+#endif
 
     OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
@@ -1590,8 +2446,14 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             break;
         case IEEE80211_EVT_STA_ASSOC_DONE:
             RT_SET(2);
+#if __IO80211_TARGET >= __MAC_26_0
+            XYLog("DEBUG %s Tahoe: skip legacy zero-payload ASSOC_DONE; WCL JoinDone owns assoc completion\n",
+                  __FUNCTION__);
+            return;
+#else
             apple80211Msg = APPLE80211_M_ASSOC_DONE;
             break;
+#endif
         case IEEE80211_EVT_STA_DEAUTH:
             RT_SET(3);
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
@@ -1722,7 +2584,25 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxPool = NULL;
     fRxPool = NULL;
     fTxQueue = NULL;
+    fTxCompQueue = NULL;
     fRxQueue = NULL;
+    fMultiCastQueue = NULL;
+    fSkywalkTxQueueDepth = 0;
+    fSkywalkRxQueueCapacity = 0;
+    fRxPendingLock = IOLockAlloc();
+    memset(fRxPendingPackets, 0, sizeof(fRxPendingPackets));
+    memset(fRxPendingTags, 0, sizeof(fRxPendingTags));
+    memset(fRxPendingLengths, 0, sizeof(fRxPendingLengths));
+    fRxPendingHead = 0;
+    fRxPendingTail = 0;
+    fRxPendingCount = 0;
+    fTxCompletionPendingLock = IOLockAlloc();
+    memset(fTxCompletionPendingPackets, 0, sizeof(fTxCompletionPendingPackets));
+    fTxCompletionPendingHead = 0;
+    fTxCompletionPendingTail = 0;
+    fTxCompletionPendingCount = 0;
+    if (fRxPendingLock == NULL || fTxCompletionPendingLock == NULL)
+        ret = false;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
     RT_SET(15);
     XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
@@ -2323,17 +3203,73 @@ bool AirportItlwm::start(IOService *provider)
 
     // Create Skywalk packet buffer pools for TX and RX
     sRT.startStep = 81;
+
     {
         IOSkywalkPacketBufferPool::PoolOptions poolOpts = {};
-        poolOpts.packetCount = 256;
-        poolOpts.bufferCount = 256;
+        poolOpts.packetCount = kAirportItlwmSkywalkQueueCapacity;
+        poolOpts.bufferCount = kAirportItlwmSkywalkQueueCapacity;
         poolOpts.bufferSize  = SKYWALK_BUF_SIZE;
         poolOpts.maxBuffersPerPacket = 1;
+        // poolFlags bit 0 is required for kIOSkywalkPacketTypeNetwork pools.
+        // 1:1 with AppleBCMWLAN reference: AppleBCMWLANPCIeSkywalk::
+        // allocSkywalkCommonResources @ 0xffffff80014ccd56 sets
+        // local_30 = 0x100000000 in PoolOptions, i.e. memorySegmentSize=0
+        // and poolFlags=1. Inside IOSkywalkPacketBufferPool::initWithName
+        // (KDK IOSkywalkFamily.kext @ 0x9bf0) bit 0 of poolFlags maps to
+        // kern_pbufpool_create flag bit 5 (shll $5 / andl $0x20). For
+        // packetType=0 the framework auto-sets the LSB; for
+        // packetType=Network (=1) it does not, so the caller must
+        // supply this bit explicitly or kern_pbufpool_create rejects
+        // the pool.
+        poolOpts.poolFlags = 1;
 
-        fTxPool = IOSkywalkPacketBufferPool::withName("AirportItlwm-TX", fNetIf, 0, &poolOpts);
-        fRxPool = IOSkywalkPacketBufferPool::withName("AirportItlwm-RX", fNetIf, 0, &poolOpts);
+        // CR-216: unredact controller-level pointers via split-halves
+        // (`0x%x_%x`) since CR-215 evidence (12:32 boot) showed the
+        // earlier `0x%llx` form was still privacy-redacted by os_log.
+        XYLog("itlwm: POOLTRACE[STEP8b] BEGIN owner=0x%x_%x opts=0x%x_%x "
+              "pktCount=%u bufCount=%u bufSize=%u maxBPP=%u "
+              "memSegSz=%u poolFlags=0x%x\n",
+              AirportItlwmIO80211PacketPool::ptrHi32(fNetIf),
+              AirportItlwmIO80211PacketPool::ptrLo32(fNetIf),
+              AirportItlwmIO80211PacketPool::ptrHi32(&poolOpts),
+              AirportItlwmIO80211PacketPool::ptrLo32(&poolOpts),
+              poolOpts.packetCount,
+              poolOpts.bufferCount, poolOpts.bufferSize,
+              poolOpts.maxBuffersPerPacket, poolOpts.memorySegmentSize,
+              poolOpts.poolFlags);
+        sRT.startStep = 811;
+        fTxPool = AirportItlwmIO80211PacketPool::withName(
+            "AirportItlwm-TX", fNetIf, &poolOpts);
+        XYLog("itlwm: POOLTRACE[STEP8b] AFTER_TX tx=0x%x_%x rx=0x%x_%x\n",
+              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
+        sRT.startStep = 812;
+        fRxPool = AirportItlwmIO80211PacketPool::withName(
+            "AirportItlwm-RX", fNetIf, &poolOpts);
+        XYLog("itlwm: POOLTRACE[STEP8b] AFTER_RX tx=0x%x_%x rx=0x%x_%x\n",
+              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
+        sRT.startStep = 813;
         XYLog("DEBUG %s [STEP 8b] pools: TX=%p RX=%p\n", __FUNCTION__, fTxPool, fRxPool);
         if (!fTxPool || !fRxPool) {
+            uint32_t poolFailMask =
+                (fTxPool ? 0u : 1u) | (fRxPool ? 0u : 2u);
+            const char *poolFailBranch =
+                (poolFailMask == 1) ? "TX_ONLY" :
+                (poolFailMask == 2) ? "RX_ONLY" : "TX_RX";
+            sRT.startStep = 814;
+            XYLog("itlwm: POOLTRACE[STEP8b] FINAL branch=%s "
+                  "failMask=0x%x tx=0x%x_%x rx=0x%x_%x cleanup="
+                  "super_stop_releaseAll_disarm_return_false\n",
+                  poolFailBranch, poolFailMask,
+                  AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
+                  AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
+                  AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
+                  AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
             XYLog("DEBUG %s [STEP 8b] FAIL: pool creation (TX=%p RX=%p)\n",
                   __FUNCTION__, fTxPool, fRxPool);
             super::stop(provider);
@@ -2341,25 +3277,61 @@ bool AirportItlwm::start(IOService *provider)
             DISARM_PANIC_TIMER();
             return false;
         }
+        sRT.startStep = 815;
+        XYLog("itlwm: POOLTRACE[STEP8b] FINAL branch=BOTH_OK "
+              "tx=0x%x_%x rx=0x%x_%x handoff=STEP8c\n",
+              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
+              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
+              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
     }
     RT3_SET(2); // pools created
     sRT.fTxPoolPtr = (uint64_t)(uintptr_t)fTxPool;
     sRT.fRxPoolPtr = (uint64_t)(uintptr_t)fRxPool;
 
-    // Create Skywalk TX submission and RX completion queues
-    fTxQueue = IOSkywalkTxSubmissionQueue::withPool(fTxPool, 256, 0, this,
+    // Create the Wi-Fi Skywalk queue inventory. Reference AppleBCMWLAN exposes
+    // distinct TX submission, TX completion, RX completion, and multicast work
+    // source objects through IO80211SkywalkInterface accessors.
+    fSkywalkTxQueueDepth = kAirportItlwmSkywalkQueueCapacity;
+    fSkywalkRxQueueCapacity = kAirportItlwmSkywalkQueueCapacity;
+    fTxQueue = IOSkywalkTxSubmissionQueue::withPool(fTxPool, fSkywalkTxQueueDepth, 0, this,
                                                     skywalkTxAction, NULL, 0);
-    fRxQueue = IOSkywalkRxCompletionQueue::withPool(fRxPool, 256, 0, this,
+    fTxCompQueue = IOSkywalkTxCompletionQueue::withPool(
+        fTxPool, fSkywalkTxQueueDepth, 0, this, skywalkTxCompletionAction,
+        NULL, 0);
+    fRxQueue = IOSkywalkRxCompletionQueue::withPool(fRxPool, fSkywalkRxQueueCapacity, 0, this,
                                                     skywalkRxAction, NULL, 0);
-    XYLog("DEBUG %s [STEP 8c] queues: TX=%p RX=%p\n", __FUNCTION__, fTxQueue, fRxQueue);
-    if (!fTxQueue || !fRxQueue) {
-        XYLog("DEBUG %s [STEP 8c] FAIL: queue creation (TX=%p RX=%p)\n",
-              __FUNCTION__, fTxQueue, fRxQueue);
+    fMultiCastQueue = AirportItlwmSkywalkMulticastQueue::withInterface(fNetIf);
+    XYLog("DEBUG %s [STEP 8c] queues: TX=%p TXC=%p RX=%p MC=%p\n",
+          __FUNCTION__, fTxQueue, fTxCompQueue, fRxQueue, fMultiCastQueue);
+    if (!fTxQueue || !fTxCompQueue || !fRxQueue || !fMultiCastQueue) {
+        uint32_t queueFailMask =
+            (fTxQueue ? 0u : 1u) |
+            (fTxCompQueue ? 0u : 2u) |
+            (fRxQueue ? 0u : 4u) |
+            (fMultiCastQueue ? 0u : 8u);
+        XYLog("itlwm: POOLTRACE[STEP8c] FINAL branch=DOWNSTREAM_QUEUE_FAIL "
+              "poolResult=BOTH_OK queueFailMask=0x%x "
+              "TX=0x%llx TXC=0x%llx RX=0x%llx MC=0x%llx cleanup="
+              "super_stop_releaseAll_disarm_return_false\n",
+              queueFailMask,
+              (unsigned long long)(uintptr_t)fTxQueue,
+              (unsigned long long)(uintptr_t)fTxCompQueue,
+              (unsigned long long)(uintptr_t)fRxQueue,
+              (unsigned long long)(uintptr_t)fMultiCastQueue);
+        XYLog("DEBUG %s [STEP 8c] FAIL: queue creation (TX=%p TXC=%p RX=%p MC=%p)\n",
+              __FUNCTION__, fTxQueue, fTxCompQueue, fRxQueue, fMultiCastQueue);
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
+    XYLog("itlwm: POOLTRACE[STEP8c] boundary=QUEUES_OK "
+          "poolResult=BOTH_OK TX=0x%llx TXC=0x%llx RX=0x%llx MC=0x%llx\n",
+          (unsigned long long)(uintptr_t)fTxQueue,
+          (unsigned long long)(uintptr_t)fTxCompQueue,
+          (unsigned long long)(uintptr_t)fRxQueue,
+          (unsigned long long)(uintptr_t)fMultiCastQueue);
     RT3_SET(3); // queues created
     sRT.fTxQueuePtr = (uint64_t)(uintptr_t)fTxQueue;
     sRT.fRxQueuePtr = (uint64_t)(uintptr_t)fRxQueue;
@@ -2369,24 +3341,50 @@ bool AirportItlwm::start(IOService *provider)
     // packet delivery; register the queues with the same controller workloop
     // before handing them to the logical-link registration path.
     IOReturn txQueueWorkloopRet = _fWorkloop->addEventSource(fTxQueue);
+    IOReturn txCompQueueWorkloopRet = _fWorkloop->addEventSource(fTxCompQueue);
     IOReturn rxQueueWorkloopRet = _fWorkloop->addEventSource(fRxQueue);
-    XYLog("DEBUG %s [STEP 8c-wl] queue addEventSource TX=0x%x RX=0x%x "
-          "TXwl=%p RXwl=%p\n",
-          __FUNCTION__, txQueueWorkloopRet, rxQueueWorkloopRet,
-          fTxQueue->getWorkLoop(), fRxQueue->getWorkLoop());
+    IOReturn multicastQueueWorkloopRet = _fWorkloop->addEventSource(fMultiCastQueue);
+    XYLog("DEBUG %s [STEP 8c-wl] queue addEventSource TX=0x%x TXC=0x%x "
+          "RX=0x%x MC=0x%x TXwl=%p TXCwl=%p RXwl=%p MCwl=%p\n",
+          __FUNCTION__, txQueueWorkloopRet, txCompQueueWorkloopRet,
+          rxQueueWorkloopRet, multicastQueueWorkloopRet,
+          fTxQueue->getWorkLoop(), fTxCompQueue->getWorkLoop(),
+          fRxQueue->getWorkLoop(), fMultiCastQueue->getWorkLoop());
     if (txQueueWorkloopRet != kIOReturnSuccess ||
-        rxQueueWorkloopRet != kIOReturnSuccess) {
-        XYLog("DEBUG %s [STEP 8c-wl] FAIL: queue workloop attach TX=0x%x RX=0x%x\n",
-              __FUNCTION__, txQueueWorkloopRet, rxQueueWorkloopRet);
+        txCompQueueWorkloopRet != kIOReturnSuccess ||
+        rxQueueWorkloopRet != kIOReturnSuccess ||
+        multicastQueueWorkloopRet != kIOReturnSuccess) {
+        uint32_t workloopFailMask =
+            (txQueueWorkloopRet == kIOReturnSuccess ? 0u : 1u) |
+            (txCompQueueWorkloopRet == kIOReturnSuccess ? 0u : 2u) |
+            (rxQueueWorkloopRet == kIOReturnSuccess ? 0u : 4u) |
+            (multicastQueueWorkloopRet == kIOReturnSuccess ? 0u : 8u);
+        XYLog("itlwm: POOLTRACE[STEP8c-wl] FINAL "
+              "branch=DOWNSTREAM_WORKLOOP_FAIL poolResult=BOTH_OK "
+              "workloopFailMask=0x%x TX=0x%x TXC=0x%x RX=0x%x MC=0x%x "
+              "cleanup=remove_successful_sources_super_stop_releaseAll_"
+              "disarm_return_false\n",
+              workloopFailMask, txQueueWorkloopRet, txCompQueueWorkloopRet,
+              rxQueueWorkloopRet, multicastQueueWorkloopRet);
+        XYLog("DEBUG %s [STEP 8c-wl] FAIL: queue workloop attach "
+              "TX=0x%x TXC=0x%x RX=0x%x MC=0x%x\n",
+              __FUNCTION__, txQueueWorkloopRet, txCompQueueWorkloopRet,
+              rxQueueWorkloopRet, multicastQueueWorkloopRet);
         if (txQueueWorkloopRet == kIOReturnSuccess)
             _fWorkloop->removeEventSource(fTxQueue);
+        if (txCompQueueWorkloopRet == kIOReturnSuccess)
+            _fWorkloop->removeEventSource(fTxCompQueue);
         if (rxQueueWorkloopRet == kIOReturnSuccess)
             _fWorkloop->removeEventSource(fRxQueue);
+        if (multicastQueueWorkloopRet == kIOReturnSuccess)
+            _fWorkloop->removeEventSource(fMultiCastQueue);
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
+    XYLog("itlwm: POOLTRACE[STEP8c-wl] boundary=WORKLOOPS_OK "
+          "poolResult=BOTH_OK handoff=STEP8d\n");
 
     // Wire up Skywalk RX input handler on the internal ifnet before
     // registration, so received frames go through the Skywalk path
@@ -2457,27 +3455,34 @@ bool AirportItlwm::start(IOService *provider)
             (IOSkywalkPacketQueue *)fTxQueue,
             (IOSkywalkPacketQueue *)fRxQueue
         };
-        // registerEthernetInterface returns IOReturn: 0 = kIOReturnSuccess.
-        // Was incorrectly declared bool — 0 (success) was misread as false.
-        // Ghidra FUN_0xa3d994: validates regInfo, builds LogicalLink from
-        // queues via registerNetworkInterface(0xa36fd2), returns 0 on success.
+#if __IO80211_TARGET >= __MAC_26_0
+        // Reference AppleBCMWLANSkywalkInterface enters the Wi-Fi infra shim,
+        // which then delegates to the same underlying Ethernet registration.
+        IOReturn regRet = static_cast<IO80211InfraInterface *>(fNetIf)
+            ->registerInfraEthernetInterface(
+                (IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
+                queues, 2, fTxPool, fRxPool);
+        XYLog("DEBUG %s [STEP 8d] registerInfraEthernetInterface=0x%x\n",
+              __FUNCTION__, regRet);
+#else
         IOReturn regRet = fNetIf->registerEthernetInterface(
             (const IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
             queues, 2, fTxPool, fRxPool, 0);
         XYLog("DEBUG %s [STEP 8d] registerEthernetInterface=0x%x\n", __FUNCTION__, regRet);
+#endif
         if (regRet != kIOReturnSuccess) {
-            XYLog("DEBUG %s [STEP 8d] FAIL: registerEthernetInterface ret=0x%x\n", __FUNCTION__, regRet);
+            XYLog("DEBUG %s [STEP 8d] FAIL: Skywalk registration ret=0x%x\n", __FUNCTION__, regRet);
             super::stop(provider);
             releaseAll();
             DISARM_PANIC_TIMER();
             return false;
         }
     }
-    RT3_SET(4); // registerEthernetInterface OK
+    RT3_SET(4); // Skywalk registration OK
     SD_SET(14);
 
     // Post-registration diagnostics: verify kernel populated nexusProvider
-    // during registerEthernetInterface (via kernel Skywalk dispatcher
+    // during Skywalk registration (via kernel Skywalk dispatcher
     // FUN_ffffff8000a6be70 → FUN_0xa37640 core registration body).
     // nexusProvider (+0xC8) must be non-NULL for BSDClient nexus creation.
     {
@@ -2494,7 +3499,7 @@ bool AirportItlwm::start(IOService *provider)
               __FUNCTION__, nexusProv, nexusArena, asyncSent, regObj90);
         if (!nexusProv) {
             XYLog("DEBUG %s [POST-REG] WARNING: nexusProvider still NULL "
-                  "after registerEthernetInterface — BSDClient nexus "
+                  "after Skywalk registration — BSDClient nexus "
                   "creation will fail\n", __FUNCTION__);
         }
     }
@@ -2662,20 +3667,42 @@ void AirportItlwm::stop(IOService *provider)
     sRT.stopStep = 6;
     // Release Skywalk queues and pools
     XYLog("DEBUG %s [6] releasing Skywalk queues/pools\n", __FUNCTION__);
+#if __IO80211_TARGET >= __MAC_26_0
+    skywalkTxDrainCompletionPackets(this);
+    skywalkRxDrainPendingPackets(this);
+#endif
+    if (_fWorkloop && fMultiCastQueue && fMultiCastQueue->getWorkLoop() == _fWorkloop) {
+        XYLog("DEBUG %s [6] removing fMultiCastQueue=%p from _fWorkloop=%p\n",
+              __FUNCTION__, fMultiCastQueue, _fWorkloop);
+        fMultiCastQueue->disable();
+        _fWorkloop->removeEventSource(fMultiCastQueue);
+    }
+    if (_fWorkloop && fTxCompQueue && fTxCompQueue->getWorkLoop() == _fWorkloop) {
+        XYLog("DEBUG %s [6] removing fTxCompQueue=%p from _fWorkloop=%p\n",
+              __FUNCTION__, fTxCompQueue, _fWorkloop);
+        fTxCompQueue->disable();
+        _fWorkloop->removeEventSource(fTxCompQueue);
+    }
     if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
         XYLog("DEBUG %s [6] removing fTxQueue=%p from _fWorkloop=%p\n",
               __FUNCTION__, fTxQueue, _fWorkloop);
+        fTxQueue->disable();
         _fWorkloop->removeEventSource(fTxQueue);
     }
     if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
         XYLog("DEBUG %s [6] removing fRxQueue=%p from _fWorkloop=%p\n",
               __FUNCTION__, fRxQueue, _fWorkloop);
+        fRxQueue->disable();
         _fWorkloop->removeEventSource(fRxQueue);
     }
+    OSSafeReleaseNULL(fMultiCastQueue);
+    OSSafeReleaseNULL(fTxCompQueue);
     OSSafeReleaseNULL(fTxQueue);  sRT.fTxQueuePtr = 0;
     OSSafeReleaseNULL(fRxQueue);  sRT.fRxQueuePtr = 0;
     OSSafeReleaseNULL(fTxPool);   sRT.fTxPoolPtr = 0;
     OSSafeReleaseNULL(fRxPool);   sRT.fRxPoolPtr = 0;
+    fSkywalkTxQueueDepth = 0;
+    fSkywalkRxQueueCapacity = 0;
     sRT.stopStep = 61;
     RT3_SET(15); // detachInterface entered
     XYLog("DEBUG %s [6b] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
@@ -2769,6 +3796,16 @@ void AirportItlwm::free()
     if (btcProfile != NULL) {
         IOFree(btcProfile, sizeof(struct apple80211_btc_profiles_data));
         btcProfile = NULL;
+    }
+    skywalkTxDrainCompletionPackets(this);
+    skywalkRxDrainPendingPackets(this);
+    if (fTxCompletionPendingLock != NULL) {
+        IOLockFree(fTxCompletionPendingLock);
+        fTxCompletionPendingLock = NULL;
+    }
+    if (fRxPendingLock != NULL) {
+        IOLockFree(fRxPendingLock);
+        fRxPendingLock = NULL;
     }
     sRT.freeStep = 4;
     XYLog("DEBUG %s [3] super::free\n", __FUNCTION__);
@@ -3235,17 +4272,34 @@ UInt32 AirportItlwm::getFeatures() const
 
 IOReturn AirportItlwm::setPromiscuousMode(IOEnetPromiscuousMode mode)
 {
+    tahoeOwnerRegistry.controller.promiscuousMode = mode != 0;
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::setMulticastMode(IOEnetMulticastMode mode)
 {
+    tahoeOwnerRegistry.controller.multicastMode = mode != 0;
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::setMulticastList(IOEthernetAddress* addr, UInt32 len)
 {
+    if (len > TahoeControllerContracts::kMulticastMaxEntries)
+        return static_cast<IOReturn>(TahoeControllerContracts::kErrorStatus);
+
+    tahoeOwnerRegistry.controller.multicastCount = len;
+    memset(tahoeOwnerRegistry.controller.multicastList, 0,
+           sizeof(tahoeOwnerRegistry.controller.multicastList));
+    if (addr != nullptr && len != 0) {
+        memcpy(tahoeOwnerRegistry.controller.multicastList, addr,
+               len * TahoeControllerContracts::kMulticastAddressLength);
+    }
     return fHalService->getDriverController()->setMulticastList(addr, len);
+}
+
+UInt32 AirportItlwm::getDataQueueDepth(OSObject *)
+{
+    return tahoeOwnerRegistry.controller.dataQueueDepth;
 }
 
 IOReturn AirportItlwm::getPacketFilters(const OSSymbol *group, UInt32 *filters) const
@@ -3271,13 +4325,9 @@ enableFeature(IO80211FeatureCode code, void *data)
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
-// vtable dump[429] = releaseFlowQueue at vptr+0xD58.  Not called during start().
-static int sReleaseFlowQueueCallCount = 0;
 void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
 {
-    int n = ++sReleaseFlowQueueCallCount;
-    if (n <= 50)
-        XYLog("DEBUG [vtable429] releaseFlowQueue #%d\n", n);
+    tahoeOwnerRegistry.hiddenInterface.flowQueueReleaseCount++;
     return nullptr;
 }
 
@@ -3741,6 +4791,27 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
         XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
         return kIOReturnNotReady;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fTxCompQueue)
+        fTxCompQueue->enable();
+    if (fRxQueue)
+        fRxQueue->enable();
+    if (fTxQueue)
+        fTxQueue->enable();
+    if (fTxCompQueue || fRxQueue || fTxQueue || fMultiCastQueue) {
+        XYLog("DEBUG %s skywalk queues enabled TX=%p TXenabled=%d "
+              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d\n",
+              __FUNCTION__,
+              fTxQueue,
+              fTxQueue && fTxQueue->isEnabled() ? 1 : 0,
+              fTxCompQueue,
+              fTxCompQueue && fTxCompQueue->isEnabled() ? 1 : 0,
+              fRxQueue,
+              fRxQueue && fRxQueue->isEnabled() ? 1 : 0,
+              fMultiCastQueue,
+              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0);
+    }
+#endif
     fHalService->enable(netif);
     struct _ifnet *ifp = &ic->ic_ac.ac_if;
     XYLog("DEBUG %s post-enable: ic_state=%d if_flags=0x%x\n",
@@ -3762,6 +4833,29 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
         watchdogTimer->cancelTimeout();
         watchdogTimer->disable();
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fTxQueue)
+        fTxQueue->disable();
+    if (fMultiCastQueue)
+        fMultiCastQueue->disable();
+    if (fRxQueue)
+        fRxQueue->disable();
+    if (fTxCompQueue)
+        fTxCompQueue->disable();
+    if (fTxCompQueue || fRxQueue || fTxQueue || fMultiCastQueue) {
+        XYLog("DEBUG %s skywalk queues disabled TX=%p TXenabled=%d "
+              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d\n",
+              __FUNCTION__,
+              fTxQueue,
+              fTxQueue && fTxQueue->isEnabled() ? 1 : 0,
+              fTxCompQueue,
+              fTxCompQueue && fTxCompQueue->isEnabled() ? 1 : 0,
+              fRxQueue,
+              fRxQueue && fRxQueue->isEnabled() ? 1 : 0,
+              fMultiCastQueue,
+              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0);
+    }
+#endif
     if (fHalService)
         fHalService->disable(netif);
 }
