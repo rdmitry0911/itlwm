@@ -1416,6 +1416,15 @@ cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
     if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
 } while (0)
 
+// CR-236: file-scope atomic counter from SkywalkInterface.cpp.
+// Incremented on every entry to our getAssocState override; read
+// here at d5_producer snapshots (capped at 32 events spanning the
+// connect window) so we get periodic samples of cumulative call
+// rate. Resolves the CR-235 deferred polling-frequency question.
+// extern "C" linkage avoids name-mangling mismatch from the
+// surrounding anonymous namespace.
+extern "C" volatile uint64_t cr236GetAssocStateCount;
+
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
@@ -1490,6 +1499,11 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
                       thisPtr, i120, i128,
                       (unsigned)b120_88, (unsigned)b128_180,
                       (unsigned)b128_198, (unsigned)b128_19c);
+            // CR-236: snapshot of uncapped getAssocState counter.
+            // Resolves CR-235 deferred polling-frequency question.
+            CR234_LOG("DEBUG CR236_POLL d5_producer getAssocState_count=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr236GetAssocStateCount,
+                                                         __ATOMIC_RELAXED));
         }
     }
     XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",

@@ -56,6 +56,21 @@ static constexpr int32_t kIo80211InputStageReturn = 2000;
     if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
 } while (0)
 
+// CR-236: file-scope atomic counter for total getAssocState calls
+// across the entire boot. Uncapped, so it stays accurate past the
+// CR234_LOG_LIMIT=32 helper cap. Dumped from V2.cpp at d5_producer
+// snapshots (separate per-site cap of 32) to give 32 timeline
+// samples across the connect window. Disambiguates the deferred
+// CR-235 question: does airportd poll getAssocState at all after
+// the helper cap exhausts? If counter is invariant across the 32
+// d5 snapshots, airportd does not poll post-cap; if it increases,
+// the rate is observable.
+//
+// extern "C" linkage so the V2.cpp consumer (which is inside an
+// anonymous namespace) can reference it without name-mangling
+// mismatch.
+extern "C" volatile uint64_t cr236GetAssocStateCount = 0;
+
 // CR-234: dump BOTH reader bytes plus identity-check bssid bytes.
 // - inner_128+0x180 : byte read by IO80211InfraInterface::getAssocState (per
 //                     decomp at ffffff80022e5e2a). Written by
@@ -1856,6 +1871,10 @@ bindController(AirportItlwm *provider)
 int AirportItlwmSkywalkInterface::
 getAssocState(void)
 {
+    // CR-236: uncapped atomic counter — increments on every entry,
+    // independent of the CR-234 helper cap. Read at d5_producer
+    // snapshots from V2.cpp.
+    __atomic_add_fetch(&cr236GetAssocStateCount, 1, __ATOMIC_RELAXED);
     cr234DumpInnerState(this, "getAssocState");
     int assocState = IO80211InfraInterface::getAssocState();
     const unsigned int assocStateRaw = static_cast<unsigned int>(assocState);
