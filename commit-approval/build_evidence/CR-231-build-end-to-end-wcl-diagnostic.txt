@@ -1,0 +1,75 @@
+CR-231 BUILD EVIDENCE — DIAGNOSTIC_INSTRUMENTATION (end-to-end WCL connect-complete branch coverage)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : e1040cb9e929a8bf6816fde269a0f4d8a7b3742c (post-CR-229 commit; CR-230 has not yet been committed)
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : f887b6c261c7dc2a13f03ae55a4c2f22a0cdc86cad42c2f9cc8a3d9fa953723b
+Kext UUID     : 8223B864-BE80-3B4A-A3B2-A84365F5CE4B
+Kext size     : 16304064 bytes
+
+BootKC undef  : 886 (same as CR-229/CR-230 — XYLog already linked)
+Linker check  : OK: all 886 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: f887b6c261c7dc2a13f03ae55a4c2f22a0cdc86cad42c2f9cc8a3d9fa953723b
+Install UUID  : 8223B864-BE80-3B4A-A3B2-A84365F5CE4B
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)
+
+End-to-end branch coverage
+--------------------------
+Per `feedback_diagnostic_end_to_end_criterion`, all 7 branches of the
+WCL connect-complete hypothesis instrumented in one build. CR-230's
+hex-dump producer instrumentation is preserved; CR-231 adds the
+remaining branches.
+
+Compiled tags (verified by `strings`):
+
+```
+%s: DEBUG CR230_POST_PRE msg=0x%x size=0x%zx                   (CR-230 carry-over branch 3)
+%s: DEBUG CR230_POST_DONE msg=0x%x                              (CR-230 carry-over branch 3)
+%s: DEBUG CR230_PAYLOAD off=0x%02zx ...                         (CR-230 carry-over branch 2)
+%s: DEBUG CR231_PRODUCER_STATE fNetIf=%d ic=%d ic_state=%d ...  (branch 1 expanded)
+%s: DEBUG CR231_IOREG_STATE CoreWiFiDriverReadyKey=%s ...       (branch 7)
+%s: DEBUG CR231_POST_GATED msg=0x%x len=0x%x ic_state=%d        (branch 5 — every workloop event)
+%s: DEBUG CR231_IOCTL cmd=0x%x req_type=%d req_data=%d          (branch 4 — every IOCTL airportd issues)
+```
+
+Branch coverage matrix:
+
+| # | Hypothesis branch | Tag | Site | Rate-limit |
+|---|---|---|---|---|
+| 1 | Producer entry state (ic_state, bss, flags, bssid) | CR231_PRODUCER_STATE | postTahoeWclConnectCompleteEvent entry | 16/run |
+| 2 | Payload bytes on-the-wire | CR230_PAYLOAD | postTahoeWclConnectCompleteEvent | 11 rows × link-up rate |
+| 3 | postMessage call markers | CR230_POST_PRE/DONE | postTahoeWclConnectCompleteEvent | unbounded (link-up rate) |
+| 4 | Every IOCTL airportd issues to driver | CR231_IOCTL | processApple80211Ioctl entry | 16/run |
+| 5 | Every event posted via workloop | CR231_POST_GATED | postMessageGated | 16/run |
+| 6 | Producer entry state (carry from branch 1) | (covered by 1) | — | — |
+| 7 | IOREG state at link-up post | CR231_IOREG_STATE | postTahoeWclConnectCompleteEvent (after CR230 hex dump) | 16/run |
+
+Diagnostic neutrality
+---------------------
+All emitters are XYLog calls + reads of existing state (ic_state,
+fNetIf, payload bytes, IOCTL request fields). No new state mutations,
+no retry, no fallback, no return-value changes, no behavioral side
+effects. CR230_POST_PRE/DONE remains unbounded but is bound by the
+intrinsic LINK_UP event rate (~10/30s during auto-join retries per
+CR-229 Stage 2 evidence).
+
+Per-call rate-limit at 16 emissions for CR231_* tags via the macros
+`CR231_LOG()` (V2.cpp) and `CR231_IOCTL_LOG()`
+(AirportItlwmSkywalkInterface.cpp). After the 16th emission, the
+counter silently increments; the running total can be read post-Stage 2
+by re-running with the limit raised if needed.
+
+kmutil load test
+----------------
+    $ sudo kmutil load -p /Library/Extensions/AirportItlwm.kext
+    Extension with identifiers com.zxystd.AirportItlwm not approved
+    to load. Please approve using System Settings.
+
+Passes vtable check; reaches normal Tahoe re-approval gate.

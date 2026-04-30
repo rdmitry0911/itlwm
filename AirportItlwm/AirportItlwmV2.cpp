@@ -1333,10 +1333,104 @@ static bool buildTahoeWclConnectCompletePayload(
     return true;
 }
 
+// CR-230 DIAGNOSTIC_INSTRUMENTATION: log a per-byte hex dump of the
+// 0xa4-byte payload we ship to the IO80211 bulletin board so we can
+// verify the on-the-wire bytes match what the AppleBCMWLAN reference
+// (BootKC 0xffffff800158abce sendConnectComplete -> bulletin board
+// subscriber 0xffffff800220a9a2 connectCompleteEventHandler ->
+// 0xffffff8002232ab0 updateConnectCompleteEvent) reads from the same
+// payload offsets. Reference decomp:
+// analysis/cr230_applebcmwlan_sendConnectComplete_2026_04_29.txt.
+//
+// Also captures the postMessage return code to confirm whether the
+// framework accepted, queued, or rejected our event. CR-229 Stage 2
+// proved the next-layer blocker is `ENCAP_BR_PORT_NOT_VALID` because
+// `ni_port_valid` never flips to 1; airportd never issues
+// setCIPHER_KEY because it sees `isAssociated=0`. This event is the
+// only known driver→framework signal that should mark association
+// complete on Tahoe; if airportd isn't acting on it, we need to
+// know whether the issue is (a) wrong payload bytes, (b) the post
+// not reaching the WCL subscriber, or (c) something earlier in the
+// state machine gating. The diagnostic logs the payload + post
+// return value at the only producer site so we can attribute.
+// CR-232: safe payload hex dumper. CR-230's earlier version
+// unconditionally read p[row+0..15] before the trailing-row check,
+// which over-read the 0xa4-byte payload by 12 bytes on the final
+// row (row=0xa0 → reads p[0xa0..0xaf], but valid range is p[0..0xa3]).
+// CR-231 reviewer flagged this as a kernel-safety blocker. Every
+// dereference is now guarded by `idx < sizeof(*payload)`; OOB indices
+// pad with 0 in the format-arg list so the log line keeps a fixed
+// 16-byte-per-row visual structure.
+static void
+cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
+{
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(payload);
+    const size_t plen = sizeof(*payload);  // 0xa4
+    for (size_t row = 0; row < plen; row += 16) {
+        // Each byte is fetched safely: returns 0 if outside the valid
+        // [0..plen) range. The 16-arg format is preserved so the log
+        // line is always exactly 16 hex pairs.
+        #define BYTE_AT(off) (((row + (off)) < plen) ? p[row + (off)] : (uint8_t)0)
+        XYLog("DEBUG CR230_PAYLOAD off=0x%02zx %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+              row,
+              BYTE_AT(0),  BYTE_AT(1),  BYTE_AT(2),  BYTE_AT(3),
+              BYTE_AT(4),  BYTE_AT(5),  BYTE_AT(6),  BYTE_AT(7),
+              BYTE_AT(8),  BYTE_AT(9),  BYTE_AT(10), BYTE_AT(11),
+              BYTE_AT(12), BYTE_AT(13), BYTE_AT(14), BYTE_AT(15));
+        #undef BYTE_AT
+    }
+}
+
+// CR-231 end-to-end branch coverage of the WCL connect-complete
+// hypothesis. Adds rate-limited log emitters at every checkpoint our
+// kext can observe between (a) producer entry and (b) airportd-facing
+// IOCTL responses. CR-230 covered branches 1-3 (producer state,
+// payload bytes, post markers); CR-231 adds:
+//   branch 4: every apple80211 IOCTL airportd polls — single log at
+//             processApple80211Ioctl entry with req_type + ic_state.
+//   branch 5: every postMessage call from kext — log msg-code + len
+//             + ic_state at the centralized postMessageGated and at
+//             each direct controller->postMessage() call site near
+//             LINK_UP / ASSOC events.
+//   branch 6: producer entry expansion — log fNetIf + ic_state +
+//             ic_bss + currentStatus + power_state at every entry
+//             into postTahoeWclConnectCompleteEvent.
+//   branch 7: IOREG state snapshot — log CoreWiFiDriverReadyKey and
+//             interface state once per LINK_UP event.
+// Each emitter has a per-site rate limit (16 emissions) to bound log
+// volume during a stalled handshake.
+#define CR231_LOG_LIMIT 16
+#define CR231_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr231_n; \
+    unsigned int _v = ++_cr231_n; \
+    if (_v <= CR231_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
         return false;
+
+    // CR-231 BRANCH 6: producer entry-state expansion.
+    // Captures all fields that gate buildTahoeWclConnectCompletePayload
+    // and the upstream LinkState/RUN preconditions, so Stage 2 evidence
+    // can attribute "post fired but framework state wrong" vs. "post
+    // skipped because of state".
+    {
+        struct ieee80211com *ic = (controller->fHalService != nullptr)
+            ? controller->fHalService->get80211Controller() : nullptr;
+        const uint8_t *bssid = (ic && ic->ic_bss) ? ic->ic_bss->ni_bssid : nullptr;
+        CR231_LOG("DEBUG CR231_PRODUCER_STATE fNetIf=%d ic=%d ic_state=%d ic_bss=%d "
+                  "ic_flags=0x%x bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                  controller->fNetIf != nullptr ? 1 : 0,
+                  ic != nullptr ? 1 : 0,
+                  ic ? (int)ic->ic_state : -1,
+                  ic && ic->ic_bss ? 1 : 0,
+                  ic ? (unsigned)ic->ic_flags : 0,
+                  bssid ? bssid[0] : 0, bssid ? bssid[1] : 0,
+                  bssid ? bssid[2] : 0, bssid ? bssid[3] : 0,
+                  bssid ? bssid[4] : 0, bssid ? bssid[5] : 0);
+    }
 
     apple80211_wcl_connect_complete_event payload;
     if (!buildTahoeWclConnectCompletePayload(controller, &payload))
@@ -1346,9 +1440,27 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
           __FUNCTION__, APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
           sizeof(payload), payload.status, payload.reason,
           ether_sprintf(payload.records[0].bssid));
+    // CR-232: dump the actual payload bytes the framework will read.
+    // (CR-230's unsafe original was replaced after the CR-231 reviewer
+    //  flagged out-of-bounds reads on the final row.)
+    cr232LogPayloadHex(&payload);
+    // CR-231 BRANCH 7: IOREG state snapshot at LINK_UP post site.
+    {
+        OSObject *prop = controller->fNetIf
+            ? controller->fNetIf->getProperty("CoreWiFiDriverReadyKey")
+            : nullptr;
+        OSString *propStr = OSDynamicCast(OSString, prop);
+        const char *propVal = propStr ? propStr->getCStringNoCopy() : "<missing>";
+        CR231_LOG("DEBUG CR231_IOREG_STATE CoreWiFiDriverReadyKey=%s fNetIf=%d\n",
+                  propVal, controller->fNetIf != nullptr ? 1 : 0);
+    }
+    XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",
+          APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT, sizeof(payload));
     controller->postMessage(controller->fNetIf,
                             APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
                             &payload, sizeof(payload), true);
+    XYLog("DEBUG CR230_POST_DONE msg=0x%x\n",
+          APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT);
     return true;
 }
 
@@ -2349,6 +2461,18 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     }
     UInt32 msg = (UInt32)(uintptr_t)arg0;
     sRT.lastPostMsg = msg;
+    // CR-231 BRANCH 5: log every event posted through the centralized
+    // workloop dispatcher. Captures msg-code + data-len + ic_state at
+    // post time so Stage 2 evidence can correlate which events the
+    // framework saw between LINK_UP and the airportd `isAssociated=0`
+    // observation.
+    {
+        struct ieee80211com *ic = (that->fHalService != nullptr)
+            ? that->fHalService->get80211Controller() : nullptr;
+        unsigned int dataLen = (unsigned int)(uintptr_t)arg2;
+        CR231_LOG("DEBUG CR231_POST_GATED msg=0x%x len=0x%x ic_state=%d\n",
+                  msg, dataLen, ic ? (int)ic->ic_state : -1);
+    }
     // Use controller-level postMessage — routes through IO80211Controller
     // dispatch (like Apple's postMessageInfra), NOT through
     // IO80211InfraInterface::postMessage which calls

@@ -1,0 +1,94 @@
+CR-230 BUILD EVIDENCE — DIAGNOSTIC_INSTRUMENTATION (WCL connect-complete payload hex dump)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : e1040cb9e929a8bf6816fde269a0f4d8a7b3742c (post-CR-229 commit)
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : d672775d76ba294a4b13f0d738f953485ba4221bbb95844034966106bf0d676f
+Kext UUID     : 9FBB8378-12A3-3A2C-9290-8744CEC88A25
+Kext size     : 16299448 bytes
+
+BootKC undef  : 886 (same as CR-229; XYLog already linked)
+Linker check  : OK: all 886 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: d672775d76ba294a4b13f0d738f953485ba4221bbb95844034966106bf0d676f
+Install UUID  : 9FBB8378-12A3-3A2C-9290-8744CEC88A25
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)
+
+Diagnostic instrumentation
+--------------------------
+Adds three log emitters around the existing
+`postTahoeWclConnectCompleteEvent()` call site (file
+`AirportItlwm/AirportItlwmV2.cpp`, function near line 1336):
+
+  CR230_PAYLOAD off=0xRR  HHHHHHHH HHHHHHHH HHHHHHHH HHHHHHHH
+                         (16 bytes per row, 11 rows for 0xa4 bytes,
+                          last row covers offsets 0xa0..0xa3)
+  CR230_POST_PRE  msg=0xd5 size=0xa4
+  CR230_POST_DONE msg=0xd5
+
+Compiled tags (verified by `strings`):
+  %s: DEBUG CR230_POST_PRE msg=0x%x size=0x%zx
+  %s: DEBUG CR230_POST_DONE msg=0x%x
+  %s: DEBUG CR230_PAYLOAD off=0x%02zx %02x%02x%02x%02x ...
+
+Coverage scope
+--------------
+Single producer site: `postTahoeWclConnectCompleteEvent` in
+`AirportItlwm/AirportItlwmV2.cpp`. This is the only place that
+constructs and posts msg=0xd5 (APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT)
+in our kext, called only from `setLinkStateGated` on Tahoe when
+linkState transitions to `kIO80211NetworkLinkUp`.
+
+The diagnostic emits BEFORE the post and AFTER the post, plus a hex
+dump of the 0xa4-byte payload sitting on the stack at the post site.
+This allows Stage 2 evidence to compare wire bytes against the
+AppleBCMWLAN reference layout decoded at
+`analysis/cr230_applebcmwlan_sendConnectComplete_2026_04_29.txt`.
+
+Diagnostic neutrality
+---------------------
+- No new state mutation; only XYLog calls + hex-dump reads of the
+  on-stack payload buffer.
+- No retry, fallback, packet substitution, queue manipulation, timing
+  change, or behavioral side effect.
+- Hex dump is bounded to the payload's 0xa4 bytes; XYLog emits 11
+  fixed lines per post call.
+- Because `postTahoeWclConnectCompleteEvent` itself is rate-limited by
+  link-state transitions (fires once per LINK_UP event from
+  `setLinkStateGated`), the diagnostic adds at most 11+2 = 13 log
+  lines per LINK_UP event. Observed firing rate in CR-229 Stage 2
+  evidence was ~10 events over 30 seconds (one per auto-join retry),
+  so worst case is ~130 log lines per minute during connect retries —
+  bounded.
+
+kmutil load test
+----------------
+    $ sudo kmutil load -p /Library/Extensions/AirportItlwm.kext
+    Extension with identifiers com.zxystd.AirportItlwm not approved
+    to load. Please approve using System Settings.
+
+Passes vtable check; reaches normal Tahoe re-approval gate.
+
+Reference decomp
+----------------
+analysis/cr230_applebcmwlan_sendConnectComplete_2026_04_29.txt
+documents the AppleBCMWLAN call chain (sendConnectComplete →
+bulletinBoard → connectCompleteEventHandler → updateConnectCompleteEvent
+→ handleJoinConnectComplete) and exactly which payload offsets the
+framework reads:
+  - payload[0..1]: event-level status (16-bit)
+  - payload[2..3]: event-level reason (16-bit)
+  - payload[0xc..0x13]: records[0].status + records[0].reason (64-bit)
+  - bssid is NOT read by updateConnectCompleteEvent (validatePredicate
+    at 0xffffff800220a5bc may use it, not yet decompiled).
+
+Stage 2 evidence will compare the actual posted payload against the
+expected zero-status/zero-reason success layout to determine whether
+the issue is (a) wrong payload bytes, (b) post not reaching the
+WCL subscriber, or (c) earlier state-machine gating.

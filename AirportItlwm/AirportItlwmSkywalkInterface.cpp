@@ -1236,9 +1236,29 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     return super::processBSDCommand(interface, cmd, data);
 }
 
+// CR-231 BRANCH 4+5: log every apple80211 IOCTL airportd issues.
+// Centralized at the dispatch entry point so we capture the request
+// type + cmd direction even before the per-handler switch. Per-call
+// rate-limited (16 emissions per process lifetime) to bound log spam
+// during airportd's polling loops.
+#define CR231_IOCTL_LOG_LIMIT 16
+#define CR231_IOCTL_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr231_iocn; \
+    unsigned int _v = ++_cr231_iocn; \
+    if (_v <= CR231_IOCTL_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
 IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
+    // CR-231 BRANCH 4: log every IOCTL airportd issues so Stage 2
+    // evidence shows what airportd polls AFTER our connect-complete
+    // post and what we return. The dispatch happens via
+    // `switch (req->req_type)` further down.
+    CR231_IOCTL_LOG("DEBUG CR231_IOCTL cmd=0x%x req_type=%d req_data=%d\n",
+                    (unsigned)cmd,
+                    req ? (int)req->req_type : -1,
+                    req && req->req_data ? 1 : 0);
     // Tahoe's non-virtual interface path still queries VIRTUAL_IF_ROLE/PARENT
     // during airportd/CoreWiFi _initInterface.  Reverse docs record Apple's
     // expected behavior here: non-virtual interfaces do NOT return raw POSIX

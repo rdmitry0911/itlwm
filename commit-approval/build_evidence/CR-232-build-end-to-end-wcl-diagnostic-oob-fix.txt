@@ -1,0 +1,106 @@
+CR-232 BUILD EVIDENCE — DIAGNOSTIC_INSTRUMENTATION (end-to-end WCL connect-complete branch coverage, OOB-fix)
+
+Build target  : AirportItlwm.kext (Tahoe Debug)
+Build script  : scripts/build_tahoe.sh
+Build result  : ** BUILD SUCCEEDED **
+HEAD commit   : e1040cb9e929a8bf6816fde269a0f4d8a7b3742c (post-CR-229 commit; CR-230, CR-231 are rejected and stay in worktree)
+
+Kext binary   : Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Kext sha256   : 08f5edbeb5236d279db46e5907f241a5f31b848c5604ac88a9fb947501b96d71
+Kext UUID     : 5C34B0D9-5E82-353C-8678-EF6442DF1141
+Kext size     : 16304064 bytes
+
+BootKC undef  : 886 (same as CR-229..CR-231 — XYLog already linked; no new symbol references)
+Linker check  : OK: all 886 undefined symbols resolve against BootKC
+
+Install path  : /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm
+Install sha256: 08f5edbeb5236d279db46e5907f241a5f31b848c5604ac88a9fb947501b96d71
+Install UUID  : 5C34B0D9-5E82-353C-8678-EF6442DF1141
+Install match : MATCH (sha+UUID)
+
+git diff --cached --check : passes (verified post-stage)
+
+CR-231 reviewer-flagged blocker fix
+------------------------------------
+CR-231 was rejected because the carried CR-230 `cr230LogPayloadHex()`
+unconditionally evaluated `p[row+0]..p[row+15]` for the final row at
+`row=0xa0`, reading 12 bytes (`p[0xa4..0xaf]`) past the 0xa4-byte
+`apple80211_wcl_connect_complete_event` payload object. Each of those
+reads was a kernel-context out-of-bounds read.
+
+CR-232 replaces the dumper with a safe variant `cr232LogPayloadHex()`:
+
+```c
+static void
+cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
+{
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(payload);
+    const size_t plen = sizeof(*payload);  // 0xa4
+    for (size_t row = 0; row < plen; row += 16) {
+        #define BYTE_AT(off) (((row + (off)) < plen) ? p[row + (off)] : (uint8_t)0)
+        XYLog("DEBUG CR230_PAYLOAD off=0x%02zx ...", row,
+              BYTE_AT(0), ..., BYTE_AT(15));
+        #undef BYTE_AT
+    }
+}
+```
+
+`BYTE_AT(off)` returns 0 if `row + off >= sizeof(*payload)`. Every
+dereference is bounded; the format-arg layout is preserved so the log
+line is always exactly 16 hex pairs. The final row at `row=0xa0`
+prints `p[0xa0..0xa3]` real bytes followed by 12 zero pads.
+
+The unsafe `cr230LogPayloadHex()` symbol is no longer present in the
+binary (replaced, not coexisting). nm output:
+
+```
+$ nm Build/Debug/Tahoe/AirportItlwm.kext/Contents/MacOS/AirportItlwm | c++filt | grep PayloadHex
+0000000000066ac0 t (anonymous namespace)::cr232LogPayloadHex(apple80211_wcl_connect_complete_event const*)
+```
+
+The `CR230_PAYLOAD` log tag is preserved (consumer-facing format
+unchanged) so Stage 2 evidence aligns with prior expectations.
+
+End-to-end branch coverage
+--------------------------
+Per `feedback_diagnostic_end_to_end_criterion`. All CR-231 branches
+preserved verbatim:
+
+```
+%s: DEBUG CR230_PAYLOAD off=0x%02zx ...                          (branch 2)
+%s: DEBUG CR230_POST_DONE msg=0x%x                                (branch 3)
+%s: DEBUG CR230_POST_PRE msg=0x%x size=0x%zx                     (branch 3)
+%s: DEBUG CR231_IOCTL cmd=0x%x req_type=%d req_data=%d            (branch 4 — every IOCTL airportd issues)
+%s: DEBUG CR231_IOREG_STATE CoreWiFiDriverReadyKey=%s fNetIf=%d   (branch 7)
+%s: DEBUG CR231_POST_GATED msg=0x%x len=0x%x ic_state=%d           (branch 5 — every workloop event)
+%s: DEBUG CR231_PRODUCER_STATE ...                                  (branch 1)
+```
+
+Branch coverage matrix is unchanged from CR-231:
+
+| # | Branch | Tag | Site | Rate-limit |
+|---|---|---|---|---|
+| 1 | Producer entry state | CR231_PRODUCER_STATE | postTahoeWclConnectCompleteEvent entry | 16/run |
+| 2 | Payload bytes (safe) | CR230_PAYLOAD | postTahoeWclConnectCompleteEvent | 11 rows × link-up rate |
+| 3 | postMessage call markers | CR230_POST_PRE/DONE | postTahoeWclConnectCompleteEvent | unbounded by link-up rate |
+| 4 | Every IOCTL airportd issues | CR231_IOCTL | processApple80211Ioctl entry | 16/run |
+| 5 | Every event posted via workloop | CR231_POST_GATED | postMessageGated | 16/run |
+| 6 | (covered by 1) | — | — | — |
+| 7 | IOREG state at LINK_UP | CR231_IOREG_STATE | postTahoeWclConnectCompleteEvent | 16/run |
+
+Diagnostic neutrality
+---------------------
+- All emitters are XYLog calls + reads of existing state — every
+  payload-byte read is bounded by `idx < sizeof(*payload)`.
+- No new state mutation, no retry, no fallback, no return-value
+  changes, no behavioral side effects.
+- CR231_LOG/CR231_IOCTL_LOG rate-limiters cap each call site at 16
+  emissions to bound log volume.
+
+kmutil load test
+----------------
+    $ sudo kmutil load -p /Library/Extensions/AirportItlwm.kext
+    Extension with identifiers com.zxystd.AirportItlwm not approved
+    to load. Please approve using System Settings.
+
+Passes vtable check; reaches normal Tahoe re-approval gate.

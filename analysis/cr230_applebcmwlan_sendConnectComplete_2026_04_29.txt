@@ -1,0 +1,106 @@
+CR-230 REFERENCE DECOMP — AppleBCMWLAN connect-complete chain (Tahoe BootKC)
+
+1. AppleBCMWLANJoinAdapter::sendConnectComplete @ BootKC 0xffffff800158abce
+-------------------------------------------------------------------------
+Builds 0xa4-byte apple80211_wcl_connect_complete_event payload and posts
+msg=0xd5 (APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT) to the bulletin board.
+
+  rdi = JoinAdapter (this)
+  r15 = this->[+0x10]                       ; pointer to JoinState
+
+  ; gating
+  if r15->[+1] == 0 return                  ; "ready" flag must be set
+  if r15->[+4] != 0 return                  ; "already-completed" flag must be clear
+  r12w = r15->[+0x280]                       ; idx (16-bit)
+  if r12w == 0xFFFF return                   ; "valid index" check
+
+  ; payload construction (rbp - 0xc8 = 0xa0-byte buffer; rbp - 0xcc = payload base)
+  memset(rbp - 0xc8, 0, 0xa0)
+  payload[0..1] = r15->[+0x280]              ; "status" header (16-bit)
+  payload[2..3] = r15->[+0x282]              ; "reason" header (16-bit)
+  for i in 0..9:                              ; 10 records
+      src = r15 + 0x2ac + i * 0x44           ; per-record source (0x44 bytes each)
+      dst = payload + 4 + i * 0x10           ; per-record dest (0x10 bytes each)
+      dst[0..3] = src[-0x20]                  ; bssid[0..3]   (32-bit)
+      dst[4..5] = src[-0x1c]                  ; bssid[4..5]   (16-bit)
+      dst[6..7] = (zero)                      ; reserved
+      dst[8..0xb] = src[-4]                   ; record.status (32-bit)
+      dst[0xc..0xf] = src[+0]                 ; record.reason (32-bit)
+
+  ; post via [r15+0x38]->[+0x128]->[+0x2c20] (postMessage method)
+  postMessage(dest, msg=0xd5, payload=rbp-0xcc, size=0xa4, flags=1)
+  r15->[+4] = 1                              ; mark "completed"
+  r15->[+1] = 0                              ; clear "ready"
+
+
+2. WCLJoinManager::connectCompleteEventHandler @ BootKC 0xffffff800220a9a2
+--------------------------------------------------------------------------
+Bulletin-board subscriber that validates the posted msg=0xd5:
+
+  bulletinBoardMsg->[+0x28] = 1              ; ack message
+  payload = bulletinBoardMsg->[+0x10]
+  if payload == NULL goto err
+  if bulletinBoardMsg->[+8] != 0xa4 goto err ; size must be 0xa4
+  ; success: tail-call state-machine 0xffffff800211e974 with state code 5
+
+  err:
+    ; rdi = this->[+0x20]->[+0x208]
+    ; if NULL return 0xe00002bc (kIOReturnNoMemory)
+    ; else call 0xffffff80031d121c with rsi=1; if false return 0xe00002bc
+
+
+3. WCLJoinRequest::updateConnectCompleteEvent @ BootKC 0xffffff8002232ab0
+------------------------------------------------------------------------
+Reads ONLY 4 bytes of payload (and 8 more from payload[+0xc]):
+
+  void update(this=rdi, payload=rsi):
+    sub = this->[+0x10]                      ; JoinSubState
+    inner = sub->[+0x20]                     ; deeper state
+    if inner != NULL:
+      val64 = payload->[+0xc]                  ; 64-bit read (i.e., records[0].status + records[0].reason)
+      deep = inner->[+0x10]
+      deep->[+4] = 1                          ; "got connect complete" flag
+      deep->[+0x28] = val64                   ; store record[0].status/reason as 64-bit
+    sub->[+8]  = payload[+0]    (16-bit)      ; copy "status" header
+    sub->[+0xa] = payload[+2]   (16-bit)      ; copy "reason" header
+
+
+4. WCLJoinManager::handleJoinConnectComplete @ BootKC 0xffffff800220bfa4
+-----------------------------------------------------------------------
+Higher-level dispatcher called by the state-machine after handler validates:
+
+  joinReq = this->[+0x20]->[+0x238]
+  if joinReq == NULL return
+  joinReq.updateConnectCompleteEvent(...)    ; reads payload (above)
+  if validatePredicate(this) at 0xffffff800220a5bc:
+    state-machine call(this, rsi=6, rdx=0)   ; success path (code 6)
+  else:
+    sendWCLJoinDone()                          ; failure path posting
+    state-machine call(this, rsi=0xd, rdx=&local_byte0)  ; failure code 13
+
+
+CONSEQUENCE FOR CR-231 FIX
+--------------------------
+The framework reads:
+- payload[0..1] (event-level status) — must be 0 (success)
+- payload[2..3] (event-level reason) — must be 0 (no error)
+- payload[0xc..0xf] (records[0].status) — must be 0 (per-record success)
+- payload[0x10..0x13] (records[0].reason) — must be 0 (no error)
+Bssid is not read by updateConnectCompleteEvent, but may be checked by
+validatePredicate (0xffffff800220a5bc — not yet decompiled).
+
+Our local buildTahoeWclConnectCompletePayload zeros the buffer then
+sets only records[0].bssid, leaving status/reason at 0 (which is
+what AppleBCMWLAN does for success). So payload contents themselves
+look correct.
+
+The PROBLEM must be UPSTREAM: either
+  (a) our postMessage doesn't reach the bulletin board subscriber
+      that drives WCLJoinManager::connectCompleteEventHandler;
+  (b) WCLJoinManager subscribes via a callback/registration we don't
+      install;
+  (c) some prior state (JoinAdapter ready/index flags equivalent) is
+      not set so our event is dropped earlier.
+
+CR-230 will instrument the post-time payload bytes + capture
+postMessage routing details so CR-231 can target the right wiring.
