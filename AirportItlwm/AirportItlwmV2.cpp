@@ -1406,6 +1406,16 @@ cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
     if (_v <= CR231_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
 } while (0)
 
+// CR-234/CR-235: per-site 32-cap logger for the getAssocState
+// reader/writer end-to-end probes. Distinct from CR231_LOG so the
+// rate-limit advertised in the request matches the binary.
+#define CR234_LOG_LIMIT 32
+#define CR234_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr234_n; \
+    unsigned int _v = ++_cr234_n; \
+    if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
@@ -1453,6 +1463,34 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
         const char *propVal = propStr ? propStr->getCStringNoCopy() : "<missing>";
         CR231_LOG("DEBUG CR231_IOREG_STATE CoreWiFiDriverReadyKey=%s fNetIf=%d\n",
                   propVal, controller->fNetIf != nullptr ? 1 : 0);
+    }
+    // CR-234 BRANCH E: dump BOTH reader bytes + identity check at d5
+    // producer entry. i120_88 is what IO80211SkywalkInterface::
+    // getAssocState reads; i128_180 is what IO80211InfraInterface::
+    // getAssocState reads. i128_198/19c are the bssid bytes the
+    // framework's setCurrentApAddress writes — comparing to the
+    // bssid we passed proves the inner pointer at this+0x128 matches
+    // the framework's view.
+    {
+        const void *thisPtr = controller->fNetIf;
+        if (thisPtr != nullptr) {
+            const char *base = reinterpret_cast<const char *>(thisPtr);
+            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
+            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
+            uint8_t b120_88 = (i120 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
+            uint8_t b128_180 = (i128 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
+            uint32_t b128_198 = (i128 != nullptr)
+                ? *(reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(i128) + 0x198)) : 0;
+            uint16_t b128_19c = (i128 != nullptr)
+                ? *(reinterpret_cast<const uint16_t *>(reinterpret_cast<const uint8_t *>(i128) + 0x19c)) : 0;
+            CR234_LOG("DEBUG CR234_INNER d5_producer thisPtr=%p i120=%p i128=%p "
+                      "i120_88=0x%02x i128_180=0x%02x i128_198=0x%08x i128_19c=0x%04x\n",
+                      thisPtr, i120, i128,
+                      (unsigned)b120_88, (unsigned)b128_180,
+                      (unsigned)b128_198, (unsigned)b128_19c);
+        }
     }
     XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",
           APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT, sizeof(payload));
@@ -4209,7 +4247,48 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     RT2_SET(13);
+    // CR-234 BRANCH D: PRE/POST setRunningState - probes the
+    // IO80211SkywalkInterface variant byte at (this+0x120)+0x88 (per
+    // decomp at ffffff8002277284 where setRunningState is the writer
+    // and ffffff800227855a where IO80211SkywalkInterface::getAssocState
+    // reads the same byte). Compares against the InfraInterface
+    // variant byte at (this+0x128)+0x180 to disambiguate which reader
+    // path airportd uses.
+    {
+        const void *thisPtr = that->fNetIf;
+        if (thisPtr != nullptr) {
+            const char *base = reinterpret_cast<const char *>(thisPtr);
+            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
+            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
+            uint8_t b120_88 = (i120 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
+            uint8_t b128_180 = (i128 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
+            CR234_LOG("DEBUG CR234_INNER setRunningState_PRE thisPtr=%p i120=%p i128=%p "
+                      "i120_88=0x%02x i128_180=0x%02x linkUp=%d\n",
+                      thisPtr, i120, i128,
+                      (unsigned)b120_88, (unsigned)b128_180,
+                      linkState == kIO80211NetworkLinkUp ? 1 : 0);
+        }
+    }
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
+    {
+        const void *thisPtr = that->fNetIf;
+        if (thisPtr != nullptr) {
+            const char *base = reinterpret_cast<const char *>(thisPtr);
+            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
+            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
+            uint8_t b120_88 = (i120 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
+            uint8_t b128_180 = (i128 != nullptr)
+                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
+            CR234_LOG("DEBUG CR234_INNER setRunningState_POST thisPtr=%p i120=%p i128=%p "
+                      "i120_88=0x%02x i128_180=0x%02x linkUp=%d\n",
+                      thisPtr, i120, i128,
+                      (unsigned)b120_88, (unsigned)b128_180,
+                      linkState == kIO80211NetworkLinkUp ? 1 : 0);
+        }
+    }
 #if __IO80211_TARGET >= __MAC_26_0
     if (linkState == kIO80211NetworkLinkUp)
         postTahoeWclConnectCompleteEvent(that);

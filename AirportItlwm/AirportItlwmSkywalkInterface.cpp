@@ -48,6 +48,50 @@ static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
 static constexpr uint32_t kIo80211InputProbeLimit = 64;
 static constexpr int32_t kIo80211InputStageEntry = 1000;
 static constexpr int32_t kIo80211InputStageReturn = 2000;
+
+#define CR234_LOG_LIMIT 32
+#define CR234_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr234_n; \
+    unsigned int _v = ++_cr234_n; \
+    if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
+// CR-234: dump BOTH reader bytes plus identity-check bssid bytes.
+// - inner_128+0x180 : byte read by IO80211InfraInterface::getAssocState (per
+//                     decomp at ffffff80022e5e2a). Written by
+//                     IO80211InfraInterface::setCurrentApAddress (per decomp
+//                     at ffffff80022e5e40).
+// - inner_120+0x88  : byte read by IO80211SkywalkInterface::getAssocState (per
+//                     decomp at ffffff800227855a). Written by
+//                     IO80211SkywalkInterface::setRunningState (per decomp at
+//                     ffffff8002277284).
+// - inner_128+0x198 : bssid bytes 0..3 (32-bit), written by the framework's
+//                     setCurrentApAddress(non-NULL) — identity proof that
+//                     `this+0x128` matches what the framework's writer used.
+// - inner_128+0x19c : bssid bytes 4..5 (16-bit), same identity proof.
+// All reads are NULL-guarded.
+static void cr234DumpInnerState(const void *thisPtr, const char *tag) {
+    if (thisPtr == nullptr) {
+        CR234_LOG("DEBUG CR234_INNER %s thisPtr=NULL\n", tag);
+        return;
+    }
+    const char *base = reinterpret_cast<const char *>(thisPtr);
+    const void *inner_120 = *reinterpret_cast<const void * const *>(base + 0x120);
+    const void *inner_128 = *reinterpret_cast<const void * const *>(base + 0x128);
+    uint8_t b120_88 = (inner_120 != nullptr)
+        ? *(reinterpret_cast<const uint8_t *>(inner_120) + 0x88) : 0xff;
+    uint8_t b128_180 = (inner_128 != nullptr)
+        ? *(reinterpret_cast<const uint8_t *>(inner_128) + 0x180) : 0xff;
+    uint32_t b128_198 = (inner_128 != nullptr)
+        ? *(reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(inner_128) + 0x198)) : 0;
+    uint16_t b128_19c = (inner_128 != nullptr)
+        ? *(reinterpret_cast<const uint16_t *>(reinterpret_cast<const uint8_t *>(inner_128) + 0x19c)) : 0;
+    CR234_LOG("DEBUG CR234_INNER %s thisPtr=%p i120=%p i128=%p "
+              "i120_88=0x%02x i128_180=0x%02x i128_198=0x%08x i128_19c=0x%04x\n",
+              tag, thisPtr, inner_120, inner_128,
+              (unsigned)b120_88, (unsigned)b128_180,
+              (unsigned)b128_198, (unsigned)b128_19c);
+}
 static volatile uint32_t sIo80211InputProbeCount = 0;
 
 static uint16_t airportItlwmHostEtherType(const ether_header *eh)
@@ -1812,6 +1856,7 @@ bindController(AirportItlwm *provider)
 int AirportItlwmSkywalkInterface::
 getAssocState(void)
 {
+    cr234DumpInnerState(this, "getAssocState");
     int assocState = IO80211InfraInterface::getAssocState();
     const unsigned int assocStateRaw = static_cast<unsigned int>(assocState);
     const unsigned int assocStateLow8 = assocStateRaw & 0xffU;
@@ -1905,7 +1950,9 @@ setCurrentApAddress(ether_addr *addr)
     XYLog("DEBUG %s addr=%s ic_state=%d ic_bss=%p\n",
           __FUNCTION__, addr ? ether_sprintf(addr->octet) : "(null)",
           ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
+    cr234DumpInnerState(this, "setCurrentApAddress_PRE");
     IO80211InfraInterface::setCurrentApAddress(addr);
+    cr234DumpInnerState(this, "setCurrentApAddress_POST");
 }
 
 IOReturn AirportItlwmSkywalkInterface::
