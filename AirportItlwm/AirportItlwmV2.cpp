@@ -1425,6 +1425,24 @@ cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
 // surrounding anonymous namespace.
 extern "C" volatile uint64_t cr236GetAssocStateCount;
 
+// CR-237: end-to-end uncapped counters for every potential PSK/PMK
+// delivery channel. Snapshot of all 12 counters at d5_producer below
+// gives a timeline-correlated dump of which channels are firing
+// during the connect window (and which are silent).
+extern "C" volatile uint64_t cr237_setCipherKey_count;
+extern "C" volatile uint64_t cr237_setPTK_count;
+extern "C" volatile uint64_t cr237_setGTK_count;
+extern "C" volatile uint64_t cr237_setRSN_IE_count;
+extern "C" volatile uint64_t cr237_setAUTH_TYPE_count;
+extern "C" volatile uint64_t cr237_setWCL_ASSOCIATE_count;
+extern "C" volatile uint64_t cr237_setWCL_LINK_UP_DONE_count;
+extern "C" volatile uint64_t cr237_setWCL_REASSOC_count;
+extern "C" volatile uint64_t cr237_setWCL_LINK_STATE_UPDATE_count;
+extern "C" volatile uint64_t cr237_processApple80211Ioctl_count;
+extern "C" volatile uint64_t cr237_processBSDCommand_count;
+extern "C" volatile uint64_t cr237_associateSSID_count;
+extern "C" volatile uint64_t cr237_eapol_rx_count;
+
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
@@ -1504,6 +1522,31 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
             CR234_LOG("DEBUG CR236_POLL d5_producer getAssocState_count=%llu\n",
                       (unsigned long long)__atomic_load_n(&cr236GetAssocStateCount,
                                                          __ATOMIC_RELAXED));
+            // CR-237: snapshot of all 12 PSK-delivery channel counters.
+            // End-to-end coverage per feedback_diagnostic_end_to_end_criterion:
+            //   - H1 BSD-ioctl path : bsdcmd / ioctl / setCipherKey
+            //   - H2 WCL channels   : wclAssoc / wclLinkUpDone / wclReassoc
+            //   - H3 Pre-associate  : setRSN_IE / setAUTH_TYPE
+            //   - H4 Key install    : setPTK / setGTK
+            //   - H5 Convergence    : associateSSID
+            //   - H6 EAPOL RX       : eapolRX
+            CR234_LOG("DEBUG CR237_POLL d5_producer "
+                      "cipherKey=%llu PTK=%llu GTK=%llu RSN_IE=%llu AUTH_TYPE=%llu "
+                      "wclAssoc=%llu wclLinkUp=%llu wclReassoc=%llu wclLSU=%llu "
+                      "ioctl=%llu bsdcmd=%llu assocSSID=%llu eapolRX=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr237_setCipherKey_count,            __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setPTK_count,                  __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setGTK_count,                  __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setRSN_IE_count,               __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setAUTH_TYPE_count,            __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setWCL_ASSOCIATE_count,        __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setWCL_LINK_UP_DONE_count,     __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setWCL_REASSOC_count,          __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_setWCL_LINK_STATE_UPDATE_count,__ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_processApple80211Ioctl_count,  __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_processBSDCommand_count,       __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_associateSSID_count,           __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr237_eapol_rx_count,                __ATOMIC_RELAXED));
         }
     }
     XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",

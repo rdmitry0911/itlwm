@@ -71,6 +71,38 @@ static constexpr int32_t kIo80211InputStageReturn = 2000;
 // mismatch.
 extern "C" volatile uint64_t cr236GetAssocStateCount = 0;
 
+// CR-237: end-to-end uncapped atomic counters covering every potential
+// PSK/PMK delivery channel airportd/wifid might use on Tahoe with WCL.
+// Per feedback_diagnostic_end_to_end_criterion: instrument ALL hypothesis
+// branches in one boot. Resolves "where does PSK arrive so it can be
+// loaded into ic->ic_psk for the OpenBSD pae_input host supplicant?"
+// Each counter is uncapped (atomic-only). Snapshot via CR234_LOG at
+// d5_producer in V2.cpp gives a timeline-correlated dump.
+extern "C" volatile uint64_t cr237_setCipherKey_count = 0;
+extern "C" volatile uint64_t cr237_setPTK_count = 0;
+extern "C" volatile uint64_t cr237_setGTK_count = 0;
+extern "C" volatile uint64_t cr237_setRSN_IE_count = 0;
+extern "C" volatile uint64_t cr237_setAUTH_TYPE_count = 0;
+extern "C" volatile uint64_t cr237_setWCL_ASSOCIATE_count = 0;
+extern "C" volatile uint64_t cr237_setWCL_LINK_UP_DONE_count = 0;
+extern "C" volatile uint64_t cr237_setWCL_REASSOC_count = 0;
+extern "C" volatile uint64_t cr237_setWCL_LINK_STATE_UPDATE_count = 0;
+extern "C" volatile uint64_t cr237_processApple80211Ioctl_count = 0;
+extern "C" volatile uint64_t cr237_processBSDCommand_count = 0;
+extern "C" volatile uint64_t cr237_associateSSID_count = 0;
+extern "C" volatile uint64_t cr237_eapol_rx_count = 0;
+
+// CR-237: per-site capped log helper for entry payload dumps. Counter
+// is per-macro-expansion (each call site has its own _cr237_n static).
+// Used for sites that dump non-counter payload (kKeyOffset peek,
+// associateSSID args, etc). Cap=16 to bound log spam.
+#define CR237_LOG_LIMIT 16
+#define CR237_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr237_n; \
+    unsigned int _v = ++_cr237_n; \
+    if (_v <= CR237_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
 // CR-234: dump BOTH reader bytes plus identity-check bssid bytes.
 // - inner_128+0x180 : byte read by IO80211InfraInterface::getAssocState (per
 //                     decomp at ffffff80022e5e2a). Written by
@@ -781,6 +813,18 @@ static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe0
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
 {
+    __atomic_add_fetch(&cr237_associateSSID_count, 1, __ATOMIC_RELAXED);
+    bool cr237KeyNonZero = false;
+    if (key != nullptr && key_len > 0 && key_len <= 64) {
+        for (uint32_t i = 0; i < key_len; ++i) {
+            if (key[i] != 0) { cr237KeyNonZero = true; break; }
+        }
+    }
+    CR237_LOG("DEBUG CR237_ASSOC_SSID key_ptr_nonnull=%d key_len=%u key_nonzero=%d "
+              "auth_lower=%u auth_upper=%u importLocalPmk=%d externalPmkOwner=%d\n",
+              key != nullptr ? 1 : 0, key_len, cr237KeyNonZero ? 1 : 0,
+              authtype_lower, authtype_upper,
+              importLocalPmk ? 1 : 0, externalPmkOwner ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("DEBUG %s ssid_len=%u auth_lower=%u auth_upper=%u key_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x ic_state=%d\n",
           __FUNCTION__, ssid_len, authtype_lower, authtype_upper, key_len,
@@ -871,11 +915,14 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
 }
 
 void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
+    __atomic_add_fetch(&cr237_setPTK_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_SET_PTK key_len=%zu key_ptr_nonnull=%d\n",
+              key_len, key != nullptr ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     struct ieee80211_node    * ni = ic->ic_bss;
     struct ieee80211_key *k;
     int keylen;
-    
+
     ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;
     
     if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP) {
@@ -912,6 +959,9 @@ void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
 }
 
 void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_int8_t *rsc) {
+    __atomic_add_fetch(&cr237_setGTK_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_SET_GTK key_len=%zu kid=%u gtk_ptr_nonnull=%d\n",
+              key_len, (unsigned)kid, gtk != nullptr ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     struct ieee80211_node    * ni = ic->ic_bss;
     struct ieee80211_key *k;
@@ -1039,6 +1089,9 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
     const uint32_t count = ++sIo80211InputProbeCount;
     const uint16_t etherType = airportItlwmHostEtherType(eh);
     const bool isEapol = etherType == ETHERTYPE_PAE;
+    if (isEapol) {
+        __atomic_add_fetch(&cr237_eapol_rx_count, 1, __ATOMIC_RELAXED);
+    }
     const bool shouldLog = count <= kIo80211InputProbeLimit || isEapol;
     const uint64_t traceArg =
         (static_cast<uint64_t>(etherType) << 32) | static_cast<uint64_t>(count);
@@ -1263,6 +1316,7 @@ bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 IOReturn AirportItlwmSkywalkInterface::
 processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 {
+    __atomic_add_fetch(&cr237_processBSDCommand_count, 1, __ATOMIC_RELAXED);
     // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the
     // IO80211InfraProtocol vtable. Our driver still implements those semantics
     // as helper methods below, but without an explicit BSD-command bridge they
@@ -1310,6 +1364,9 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
+    __atomic_add_fetch(&cr237_processApple80211Ioctl_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_IOCTL_ENTRY cmd=0x%x req_type=%d\n",
+              (unsigned)cmd, req ? (int)req->req_type : -1);
     // CR-231 BRANCH 4: log every IOCTL airportd issues so Stage 2
     // evidence shows what airportd polls AFTER our connect-complete
     // post and what we return. The dispatch happens via
@@ -1977,6 +2034,8 @@ setCurrentApAddress(ether_addr *addr)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
+    __atomic_add_fetch(&cr237_setWCL_LINK_STATE_UPDATE_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_WCL_LSU data_nonnull=%d\n", data ? 1 : 0);
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
     const unsigned int b6 = raw ? raw[6] : 0xff;
     const unsigned int b7 = raw ? raw[7] : 0xff;
@@ -2254,6 +2313,7 @@ getAUTH_TYPE(struct apple80211_authtype_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setAUTH_TYPE(struct apple80211_authtype_data *ad)
 {
+    __atomic_add_fetch(&cr237_setAUTH_TYPE_count, 1, __ATOMIC_RELAXED);
     XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, ad->authtype_lower, ad->authtype_upper);
     current_authtype_lower = ad->authtype_lower;
     current_authtype_upper = ad->authtype_upper;
@@ -2263,25 +2323,35 @@ setAUTH_TYPE(struct apple80211_authtype_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setCIPHER_KEY(struct apple80211_key *key)
 {
+    __atomic_add_fetch(&cr237_setCipherKey_count, 1, __ATOMIC_RELAXED);
+    // CR-237: structural metadata only. No byte-content boolean, no
+    // raw-key bytes. Caller-identity is not instrumented; counter
+    // increments bundle local internal calls and external/userclient
+    // calls (Stage 2 readout must use ordering/timing to disambiguate).
+    CR237_LOG("DEBUG CR237_SET_CIPHER_KEY key_len=%u cipher=%u flags=%u idx=%u\n",
+              key ? key->key_len : 0,
+              key ? key->key_cipher_type : 0,
+              key ? key->key_flags : 0,
+              key ? key->key_index : 0);
     XYLog("%s\n", __FUNCTION__);
-    const char* keydump = hexdump(key->key, key->key_len);
-    const char* rscdump = hexdump(key->key_rsc, key->key_rsc_len);
+    // CR-237: redact the legacy raw-key / raw-rsc hexdump. Logging
+    // those bytes leaks credentials into kernel logs; the structural
+    // fields (len/cipher/flags/index) above are sufficient for
+    // diagnostic purposes. Bssid is non-secret; keep it as eadump.
     const char* eadump = hexdump(key->key_ea.octet, APPLE80211_ADDR_LEN);
     static_assert(__offsetof(struct apple80211_key, key_ea) == 92, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, key_rsc_len) == 80, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_len) == 100, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kek_len) == 120, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_key) == 104, "struct corrupted");
-    if (keydump && rscdump && eadump)
-        XYLog("Set key request: len=%d cipher_type=%d flags=%d index=%d key=%s rsc_len=%d rsc=%s ea=%s\n",
-              key->key_len, key->key_cipher_type, key->key_flags, key->key_index, keydump, key->key_rsc_len, rscdump, eadump);
+    if (eadump)
+        XYLog("Set key request: len=%d cipher_type=%d flags=%d index=%d "
+              "key=[REDACTED %d bytes] rsc_len=%d rsc=[REDACTED] ea=%s\n",
+              key->key_len, key->key_cipher_type, key->key_flags, key->key_index,
+              key->key_len, key->key_rsc_len, eadump);
     else
         XYLog("Set key request, but failed to allocate memory for hexdump\n");
-    
-    if (keydump)
-        IOFree((void*)keydump, 3 * key->key_len + 1);
-    if (rscdump)
-        IOFree((void*)rscdump, 3 * key->key_rsc_len + 1);
+
     if (eadump)
         IOFree((void*)eadump, 3 * APPLE80211_ADDR_LEN + 1);
     
@@ -3634,6 +3704,10 @@ getRSN_IE(struct apple80211_rsn_ie_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setRSN_IE(struct apple80211_rsn_ie_data *data)
 {
+    __atomic_add_fetch(&cr237_setRSN_IE_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_SET_RSN_IE data_nonnull=%d ie_len=%u\n",
+              data ? 1 : 0,
+              data ? data->len : 0);
 #ifdef USE_APPLE_SUPPLICANT
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (!data)
@@ -4236,8 +4310,10 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
+    __atomic_add_fetch(&cr237_setWCL_ASSOCIATE_count, 1, __ATOMIC_RELAXED);
     RT2_SET(3); sRT.assocCount++;
     if (!candidates) {
+        CR237_LOG("DEBUG CR237_WCL_ASSOC candidates=NULL\n");
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                        nullptr, 0, nullptr, 0, 0, 0,
                                        kIOReturnBadArgument);
@@ -4246,6 +4322,45 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
+
+    // CR-237: observation-only probe of UNKNOWN CARRIER METADATA at
+    // candidate offsets kKeyOffset / kKeyLengthOffset.
+    // TahoeAssociationContracts.hpp declares these offsets, but
+    // primary reference evidence (CR-067, AppleBCMWLANCore decomp)
+    // shows that WCL key ownership is SEPARATE from
+    // apple80211AssocCandidates: WCLJoinRequest::checkValidationFor-
+    // Apple80211Key returns a request-private key pointer at +0x18,
+    // and AppleBCMWLANJoinAdapter::performJoin does NOT copy a PMK
+    // from the candidate buffer. So this probe is observational only;
+    // a non-zero result MUST NOT be interpreted as a confirmed PSK
+    // channel.
+    //
+    // Scan range is strictly [kKeyOffset, kKeyLengthOffset) = 8 bytes
+    // BEFORE the length field, so the scanned region NEVER overlaps
+    // the length field itself (avoids the self-confirming
+    // contamination flagged by CR-237 v1 review).
+    //
+    // No raw bytes are logged; only counts.
+    {
+        const uint32_t cr237KeyLen = *reinterpret_cast<const uint32_t *>(
+            raw + TahoeAssociationContracts::kKeyLengthOffset);
+        unsigned int cr237Pre8NonZero = 0;
+        static_assert(TahoeAssociationContracts::kKeyLengthOffset -
+                      TahoeAssociationContracts::kKeyOffset == 0x08,
+                      "CR-237 probe assumes kKeyOffset+8 == kKeyLengthOffset");
+        for (uint32_t i = 0; i < 8; ++i) {
+            if (raw[TahoeAssociationContracts::kKeyOffset + i] != 0)
+                cr237Pre8NonZero++;
+        }
+        CR237_LOG("DEBUG CR237_WCL_ASSOC_META keyLenField=%u "
+                  "pre8NonZeroBytes=%u/8 "
+                  "kKeyOffset=0x%x kKeyLenOffset=0x%x payloadLen=0x%x "
+                  "interpretation=unknown_carrier_metadata\n",
+                  cr237KeyLen, cr237Pre8NonZero,
+                  TahoeAssociationContracts::kKeyOffset,
+                  TahoeAssociationContracts::kKeyLengthOffset,
+                  TahoeAssociationContracts::kAssocCandidatesPayloadLength);
+    }
 
     // Extract fields from the apple80211AssocCandidates carrier recovered from IO80211Family.
     uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(
@@ -5128,6 +5243,9 @@ setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REASSOC(apple80211_reassoc *data)
 {
+    __atomic_add_fetch(&cr237_setWCL_REASSOC_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_WCL_REASSOC data_nonnull=%d\n",
+              data ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBCMWLANCore::setWCL_REASSOC is not an ack-only stub: it snapshots
@@ -5444,6 +5562,9 @@ setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_UP_DONE(void *data)
 {
+    __atomic_add_fetch(&cr237_setWCL_LINK_UP_DONE_count, 1, __ATOMIC_RELAXED);
+    CR237_LOG("DEBUG CR237_WCL_LINK_UP_DONE data_nonnull=%d\n",
+              data ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     (void)data;
 
