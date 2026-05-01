@@ -1129,9 +1129,41 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
             if (ifp->if_bpf && m1 == NULL)
                 bpf_mtap(ifp->if_bpf, m, BPF_DIRECTION_IN);
 #endif
-#ifdef USE_APPLE_SUPPLICANT
+// CR-250 Phase 2 step 3 — narrow the USE_APPLE_SUPPLICANT EAPOL
+// route-to-userspace gate so that on Tahoe
+// (`__IO80211_TARGET >= __MAC_26_0`) only PSK/SHA256_PSK EAPOL
+// frames go to the OpenBSD kernel `ieee80211_eapol_key_input()`.
+// 802.1X/Enterprise (8021X / SHA256_8021X AKMs) keep the
+// existing Apple userspace `ml_enqueue` route because
+// eapolclient is the canonical consumer for that AKM class.
+//
+// CR-247's setwpaparms has populated the WPA/RSN state on the
+// new PLTI userclient delivery path (CR-242/244). Once CR-251
+// (planned daemon, was CR-249/250 in earlier docs) delivers a
+// real PMK before assoc, kernel 4-way will succeed for
+// PSK/SHA256_PSK. Without the daemon, ic_psk is empty and
+// kernel pae either short-circuits in RSNA_SUPP_INITIALIZE or
+// produces a garbage PTK -> bad MIC -> AP deauths (same
+// observable user-facing outcome as current ml_enqueue
+// dead-end, just via a code path that becomes functional once
+// CR-251 lands).
+//
+// Pre-Tahoe builds preserve the legacy `ml_enqueue`-everything
+// behavior unchanged.
+#if defined(USE_APPLE_SUPPLICANT) && __IO80211_TARGET >= __MAC_26_0
+            // Tahoe split: PSK/SHA256_PSK -> kernel pae;
+            // 802.1X/Enterprise -> userspace eapolclient via ml_enqueue.
+            if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
+                ml_enqueue(ml, m);
+            } else {
+                ieee80211_eapol_key_input(ic, m, ni);
+            }
+#elif defined(USE_APPLE_SUPPLICANT)
+            // Pre-Tahoe USE_APPLE_SUPPLICANT: unchanged legacy route.
             ml_enqueue(ml, m);
 #else
+            // Non-USE_APPLE_SUPPLICANT builds: existing dual-delivery
+            // for 8021X (to userspace + kernel) plus kernel pae.
 #ifdef IO80211FAMILY_V2
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
                 XYLog("%s Duplicate EAPOL packet to user space\n", __FUNCTION__);
