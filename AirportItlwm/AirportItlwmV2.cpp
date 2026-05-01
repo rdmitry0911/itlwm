@@ -5733,22 +5733,71 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
 IOReturn AirportItlwm::
 deliverExternalPMK(const struct apple80211_key *key)
 {
-    // CR-239 Phase 1 — log only. Phase 2 will:
-    //   - if key->key_cipher_type == APPLE80211_CIPHER_PMK (=6) and
-    //     key->key_len == 32, memcpy into ic->ic_psk and set
-    //     IEEE80211_F_PSK so the kernel pae_input supplicant can
-    //     derive PTK during 4-way handshake.
-    //   - gate `USE_APPLE_SUPPLICANT` for Tahoe so the OpenBSD-derived
-    //     ieee80211_recv_4way_msg1 path runs instead of routing M1
-    //     into ml_enqueue() (a userspace queue with no Tahoe consumer
-    //     for PSK networks).
-    XYLog("CR239 AirportItlwm::deliverExternalPMK key_len=%u "
-          "cipher=%u flags=%u idx=%u "
-          "(Phase 1 stub: ic_psk NOT modified; supplicant NOT enabled)\n",
-          key ? key->key_len : 0,
-          key ? key->key_cipher_type : 0,
-          key ? key->key_flags : 0,
-          key ? key->key_index : 0);
+    // CR-244 Phase 2 step 1 — write the delivered PMK to ic->ic_psk
+    // and set IEEE80211_F_PSK so the OpenBSD net80211 supplicant has
+    // the keying material it needs. The store shape matches
+    // AirportItlwm.cpp:191-192 (legacy associateSSID PSK path) and
+    // is the host-supplicant input contract used by
+    // ieee80211_recv_4way_msg1 / ieee80211_pmk_to_ptk in the
+    // OpenBSD-derived itl80211 tree.
+    //
+    // CONTRACT (DeliverPMK is a PMK-only method):
+    //   - key == NULL              -> kIOReturnBadArgument
+    //   - cipher_type != PMK       -> kIOReturnBadArgument (REJECT,
+    //                                  no state change). Per
+    //                                  CR-243 review: airportd's
+    //                                  set-PMK worker rejects
+    //                                  invalid PMK inputs before
+    //                                  Apple80211Set; we mirror
+    //                                  that reject contract here
+    //                                  rather than returning
+    //                                  kIOReturnSuccess (which
+    //                                  would mask a caller/daemon
+    //                                  bug).
+    //   - key_len != IEEE80211_PMK_LEN -> kIOReturnBadArgument
+    //   - HAL not initialized       -> kIOReturnNotReady
+    //   - all checks pass           -> memcpy 32 bytes,
+    //                                  ic_flags |= IEEE80211_F_PSK,
+    //                                  kIOReturnSuccess
+    //
+    // CR-244 SCOPE LIMIT: this commit alone is NOT sufficient to
+    // fix the deauth-loop. USE_APPLE_SUPPLICANT remains defined,
+    // so the kernel pae_input path is still dead. CR-245 (separate
+    // future CR) will gate USE_APPLE_SUPPLICANT for
+    // `__IO80211_TARGET >= __MAC_26_0`. CR-246 (separate future CR)
+    // will ship the userspace daemon that opens 'PLTI' and calls
+    // DeliverPMK with real keychain-derived PMK material.
+    if (key == nullptr) {
+        XYLog("CR244 AirportItlwm::deliverExternalPMK key=NULL\n");
+        return kIOReturnBadArgument;
+    }
+    XYLog("CR244 AirportItlwm::deliverExternalPMK ENTRY key_len=%u "
+          "cipher=%u flags=%u idx=%u\n",
+          key->key_len, key->key_cipher_type,
+          key->key_flags, key->key_index);
+    if (key->key_cipher_type != APPLE80211_CIPHER_PMK) {
+        XYLog("CR244 deliverExternalPMK REJECT_CIPHER cipher=%u expected=%u\n",
+              key->key_cipher_type, (unsigned)APPLE80211_CIPHER_PMK);
+        return kIOReturnBadArgument;
+    }
+    if (key->key_len != IEEE80211_PMK_LEN) {
+        XYLog("CR244 deliverExternalPMK REJECT_LEN key_len=%u expected=%u\n",
+              key->key_len, (unsigned)IEEE80211_PMK_LEN);
+        return kIOReturnBadArgument;
+    }
+    struct ieee80211com *ic = (fHalService != nullptr)
+        ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr) {
+        XYLog("CR244 deliverExternalPMK NOT_READY ic=NULL\n");
+        return kIOReturnNotReady;
+    }
+    memcpy(ic->ic_psk, key->key, sizeof(ic->ic_psk));
+    ic->ic_flags |= IEEE80211_F_PSK;
+    XYLog("CR244 deliverExternalPMK WROTE %zu bytes to ic_psk; "
+          "IEEE80211_F_PSK set; ic_flags=0x%x "
+          "(USE_APPLE_SUPPLICANT still active -- kernel 4-way dead "
+          "until CR-245)\n",
+          sizeof(ic->ic_psk), (unsigned)ic->ic_flags);
     return kIOReturnSuccess;
 }
 #endif // __IO80211_TARGET >= __MAC_26_0
