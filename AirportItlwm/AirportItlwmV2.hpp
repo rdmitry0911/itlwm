@@ -244,6 +244,32 @@ public:
     virtual IOService* probe(IOService* provider, SInt32* score) override;
     virtual bool start(IOService *provider) override;
     virtual void stop(IOService *provider) override;
+
+#if __IO80211_TARGET >= __MAC_26_0
+    // CR-239 Phase 1 — custom IOUserClient infrastructure for a
+    // privileged userspace agent (AirportItlwmAgent). T1 (50-LOC
+    // standalone test) proved Apple80211BindToInterface fails -3903
+    // for non-airportd processes due to the Apple-private entitlement
+    // `com.apple.private.driverkit.driver-access =
+    // com.apple.private.wifi.driverkit`. A custom IOUserClient on our
+    // own controller side-steps that gate while staying within stable
+    // IOKit user-client APIs.
+    //
+    // Phase 1 SCOPE: this commit adds the user-client class, the
+    // `newUserClient` dispatch on AirportItlwm, and a stub
+    // `deliverExternalPMK` handler that ONLY logs the call. No
+    // connect-flow state is touched (ic->ic_psk unchanged, no
+    // USE_APPLE_SUPPLICANT toggle, no setCIPHER_KEY rerouting).
+    // Phase 2 will land the credential-wiring change behind its own
+    // review.
+    virtual IOReturn newUserClient(task_t owningTask,
+                                   void *securityID,
+                                   UInt32 type,
+                                   OSDictionary *properties,
+                                   IOUserClient **handler) override;
+    IOReturn deliverExternalPMK(const struct apple80211_key *key);
+#endif
+
 #if __IO80211_TARGET < __MAC_26_0
     virtual IOReturn enable(IO80211SkywalkInterface *netif) override;
     virtual IOReturn disable(IO80211SkywalkInterface *netif) override;

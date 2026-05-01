@@ -57,6 +57,9 @@ AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
 #include "Airport/IO80211NetworkPacket.h"
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
+#if __IO80211_TARGET >= __MAC_26_0
+#include <IOKit/IOUserClient.h>
+#endif
 
 class AirportItlwmSkywalkMulticastQueue : public IOEventSource
 {
@@ -389,6 +392,85 @@ public:
         IOSkywalkPacketDescriptor *desc);
 };
 
+#if __IO80211_TARGET >= __MAC_26_0
+// CR-239 Phase 1 — custom IOUserClient subclass exposing a private
+// driver-side surface for our companion userspace daemon
+// (AirportItlwmAgent). T1 (analysis/cr239_t1_tier_a_decisive_2026_05_01.txt)
+// proved Apple80211BindToInterface fails with -3903 for non-airportd
+// processes due to the Apple-private entitlement
+// `com.apple.private.driverkit.driver-access =
+// com.apple.private.wifi.driverkit`. A custom IOUserClient on our own
+// controller bypasses that gate while keeping us within stable IOKit
+// user-client APIs.
+//
+// Phase 1 SCOPE: this commit adds the user-client class, the
+// `newUserClient` dispatch on `AirportItlwm`, and a stub
+// `deliverExternalPMK` handler that ONLY logs the call. No
+// connect-flow state is touched (ic->ic_psk is unchanged, no
+// USE_APPLE_SUPPLICANT toggle, no setCIPHER_KEY rerouting). Phase 2
+// will land the credential-wiring change behind its own review.
+
+// Custom user-client connection type. Userspace passes this value as
+// the `type` argument to IOServiceOpen() to request our private
+// channel; any other value falls through to the parent
+// IO80211Controller::newUserClient (which historically returned
+// kIOReturnUnsupported for our class but now we delegate explicitly
+// for forward compatibility).
+//
+// Magic value chosen as ASCII "ITLP" reversed (P-L-T-I) for grep-
+// ability; NOT a security boundary. The access-control boundary is
+// `IOUserClient::clientHasPrivilege(kIOClientPrivilegeAdministrator)`
+// in `AirportItlwm::newUserClient` below.
+#define kAirportItlwmUserClientType  ('PLTI')   // 0x504C5449
+
+enum {
+    kAirportItlwmUserClientMethod_DeliverPMK = 0,
+    kAirportItlwmUserClientMethod_NumMethods
+};
+
+class AirportItlwmUserClient : public IOUserClient
+{
+    OSDeclareDefaultStructors(AirportItlwmUserClient)
+
+public:
+    virtual bool initWithTask(task_t owningTask,
+                              void *securityID,
+                              UInt32 type,
+                              OSDictionary *properties) APPLE_KEXT_OVERRIDE;
+    virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+    virtual void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
+    virtual IOReturn externalMethod(uint32_t selector,
+                                    IOExternalMethodArguments *args,
+                                    IOExternalMethodDispatch *dispatch,
+                                    OSObject *target,
+                                    void *reference) APPLE_KEXT_OVERRIDE;
+
+    // Static dispatch entry — referenced by sAirportItlwmUserClientMethods
+    // table immediately below. Must be public so the file-scope table
+    // initializer can take its address.
+    static IOReturn sExtDeliverPMK(AirportItlwmUserClient *target,
+                                   void *reference,
+                                   IOExternalMethodArguments *args);
+
+private:
+    AirportItlwm *fProvider;
+    task_t       fOwningTask;
+};
+
+static const IOExternalMethodDispatch
+sAirportItlwmUserClientMethods[kAirportItlwmUserClientMethod_NumMethods] = {
+    // [0] kAirportItlwmUserClientMethod_DeliverPMK
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtDeliverPMK,
+        0,                                        // checkScalarInputCount
+        sizeof(struct apple80211_key),            // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        0                                         // checkStructureOutputSize
+    }
+};
+#endif // __IO80211_TARGET >= __MAC_26_0
+
 #define super IO80211Controller
 OSDefineMetaClassAndStructors(AirportItlwm, IO80211Controller);
 OSDefineMetaClassAndStructors(AirportItlwmBootNub, IOService)
@@ -396,6 +478,9 @@ OSDefineMetaClassAndStructors(CTimeout, OSObject)
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkMulticastQueue, IOEventSource)
 OSDefineMetaClassAndStructors(AirportItlwmIO80211PacketPool,
                               IOSkywalkPacketBufferPool)
+#if __IO80211_TARGET >= __MAC_26_0
+OSDefineMetaClassAndStructors(AirportItlwmUserClient, IOUserClient)
+#endif
 
 // CR-225: direct IO80211NetworkPacket allocation. Mirrors
 // `IOSkywalkNetworkPacket::withPool` body (BootKC 0xffffff800297effa
@@ -5466,3 +5551,204 @@ void AirportItlwm::setPowerStateOn()
         pmPolicyMaker->acknowledgeSetPowerState();
     }
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+// =====================================================================
+// CR-239 Phase 1 — AirportItlwmUserClient implementation.
+//
+// Userspace open sequence (from a privileged root LaunchDaemon):
+//   io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault,
+//                          IOServiceMatching("AirportItlwm"));
+//   io_connect_t conn;
+//   IOServiceOpen(svc, mach_task_self(),
+//                 kAirportItlwmUserClientType /*'PLTI'*/, &conn);
+//   IOConnectCallStructMethod(conn,
+//                kAirportItlwmUserClientMethod_DeliverPMK,
+//                &apple80211_key, sizeof(struct apple80211_key),
+//                NULL, NULL);
+// =====================================================================
+
+bool AirportItlwmUserClient::
+initWithTask(task_t owningTask, void *securityID, UInt32 type,
+             OSDictionary *properties)
+{
+    if (!IOUserClient::initWithTask(owningTask, securityID, type,
+                                    properties)) {
+        return false;
+    }
+    fOwningTask = owningTask;
+    fProvider = nullptr;
+    XYLog("CR239 AirportItlwmUserClient::initWithTask type=0x%x task=%p\n",
+          (unsigned)type, owningTask);
+    return true;
+}
+
+bool AirportItlwmUserClient::
+start(IOService *provider)
+{
+    if (!IOUserClient::start(provider))
+        return false;
+    fProvider = OSDynamicCast(AirportItlwm, provider);
+    if (fProvider == nullptr) {
+        XYLog("CR239 AirportItlwmUserClient::start provider is not AirportItlwm\n");
+        return false;
+    }
+    XYLog("CR239 AirportItlwmUserClient::start provider=%p\n", provider);
+    return true;
+}
+
+void AirportItlwmUserClient::
+stop(IOService *provider)
+{
+    XYLog("CR239 AirportItlwmUserClient::stop\n");
+    fProvider = nullptr;
+    IOUserClient::stop(provider);
+}
+
+IOReturn AirportItlwmUserClient::
+clientClose(void)
+{
+    XYLog("CR239 AirportItlwmUserClient::clientClose\n");
+    if (!isInactive())
+        terminate();
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmUserClient::
+externalMethod(uint32_t selector,
+               IOExternalMethodArguments *args,
+               IOExternalMethodDispatch *dispatch,
+               OSObject *target,
+               void *reference)
+{
+    if (selector >= kAirportItlwmUserClientMethod_NumMethods) {
+        XYLog("CR239 AirportItlwmUserClient::externalMethod selector=%u "
+              "out of range (max=%u)\n",
+              (unsigned)selector,
+              (unsigned)kAirportItlwmUserClientMethod_NumMethods);
+        return kIOReturnBadArgument;
+    }
+    dispatch = (IOExternalMethodDispatch *)
+               &sAirportItlwmUserClientMethods[selector];
+    target = this;
+    return IOUserClient::externalMethod(selector, args, dispatch,
+                                        target, reference);
+}
+
+IOReturn AirportItlwmUserClient::
+sExtDeliverPMK(AirportItlwmUserClient *target,
+               void *reference,
+               IOExternalMethodArguments *args)
+{
+    // CR-242 — Access control is enforced once, at open time, by
+    // `AirportItlwm::newUserClient` via
+    // `IOUserClient::clientHasPrivilege(securityID,
+    // kIOClientPrivilegeAdministrator)`. By the time
+    // `sExtDeliverPMK` runs we have a per-connection
+    // `AirportItlwmUserClient` that the caller already proved they
+    // were entitled to open. CR-241 Stage 2 showed that the
+    // CR-240 method-time `clientHasAuthorization(fOwningTask,
+    // fProvider)` call returned `kIOReturnNotPermitted` for
+    // legitimate root callers without an explicit IOService
+    // authorization grant, making the log-only stub unreachable;
+    // reviewer required removal so the Phase 1 surface is usable
+    // by the future privileged daemon. The `securityID` captured
+    // at open time would only re-confirm a frozen value, so we do
+    // not re-check it here either.
+    //
+    // Argument size is validated by IOUserClient dispatch using
+    // the `checkStructureInputSize == sizeof(struct apple80211_key)`
+    // entry in `sAirportItlwmUserClientMethods[0]` -- CR-241
+    // Stage 2 evidence (`04_bad_size.txt`) showed that wrong-size
+    // calls return `kIOReturnBadArgument` directly from the
+    // dispatch layer without invoking this handler. Adding a
+    // duplicate in-handler check would only fire on theoretically
+    // unreachable paths, so it is removed.
+    if (target == nullptr || target->fProvider == nullptr)
+        return kIOReturnNotReady;
+    if (args == nullptr || args->structureInput == nullptr)
+        return kIOReturnBadArgument;
+    return target->fProvider->deliverExternalPMK(
+        (const struct apple80211_key *)args->structureInput);
+}
+
+// =====================================================================
+// AirportItlwm controller-side dispatch.
+// =====================================================================
+
+IOReturn AirportItlwm::
+newUserClient(task_t owningTask, void *securityID, UInt32 type,
+              OSDictionary *properties, IOUserClient **handler)
+{
+    if (type != kAirportItlwmUserClientType) {
+        // Defer to base class so existing IO80211APIUserClient
+        // dispatch is preserved unchanged. We only intercept the
+        // unique 'PLTI' type magic for our private channel.
+        return IO80211Controller::newUserClient(owningTask, securityID,
+                                                type, properties,
+                                                handler);
+    }
+    // CR-240 — Open-time authorization gate. The PLTI type magic is a
+    // selector, NOT an access-control boundary (per CR-239 reviewer
+    // note: "security-through-obscurity"). A custom user-client that
+    // will (in Phase 2) accept PSK material MUST require admin
+    // privilege so a non-root local process cannot inject keying
+    // state by guessing the type magic. We use IOKit's documented
+    // `clientHasPrivilege(securityToken, kIOClientPrivilegeAdministrator)`
+    // (static method on IOUserClient, declared in
+    // MacKernelSDK/Headers/IOKit/IOUserClient.h:326). Only callers
+    // running as root (effective uid 0) pass.
+    IOReturn auth = IOUserClient::clientHasPrivilege(
+        securityID, kIOClientPrivilegeAdministrator);
+    if (auth != kIOReturnSuccess) {
+        XYLog("CR240 AirportItlwm::newUserClient(type=0x%x) DENIED -- "
+              "clientHasPrivilege(kIOClientPrivilegeAdministrator)=0x%x\n",
+              (unsigned)type, (unsigned)auth);
+        return kIOReturnNotPrivileged;
+    }
+    XYLog("CR240 AirportItlwm::newUserClient(type=0x%x) AUTHORIZED -- "
+          "creating AirportItlwmUserClient\n",
+          (unsigned)type);
+    AirportItlwmUserClient *client = OSTypeAlloc(AirportItlwmUserClient);
+    if (client == nullptr) {
+        return kIOReturnNoMemory;
+    }
+    if (!client->initWithTask(owningTask, securityID, type, properties)) {
+        client->release();
+        return kIOReturnError;
+    }
+    if (!client->attach(this)) {
+        client->release();
+        return kIOReturnError;
+    }
+    if (!client->start(this)) {
+        client->detach(this);
+        client->release();
+        return kIOReturnError;
+    }
+    *handler = client;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+deliverExternalPMK(const struct apple80211_key *key)
+{
+    // CR-239 Phase 1 — log only. Phase 2 will:
+    //   - if key->key_cipher_type == APPLE80211_CIPHER_PMK (=6) and
+    //     key->key_len == 32, memcpy into ic->ic_psk and set
+    //     IEEE80211_F_PSK so the kernel pae_input supplicant can
+    //     derive PTK during 4-way handshake.
+    //   - gate `USE_APPLE_SUPPLICANT` for Tahoe so the OpenBSD-derived
+    //     ieee80211_recv_4way_msg1 path runs instead of routing M1
+    //     into ml_enqueue() (a userspace queue with no Tahoe consumer
+    //     for PSK networks).
+    XYLog("CR239 AirportItlwm::deliverExternalPMK key_len=%u "
+          "cipher=%u flags=%u idx=%u "
+          "(Phase 1 stub: ic_psk NOT modified; supplicant NOT enabled)\n",
+          key ? key->key_len : 0,
+          key ? key->key_cipher_type : 0,
+          key ? key->key_flags : 0,
+          key ? key->key_index : 0);
+    return kIOReturnSuccess;
+}
+#endif // __IO80211_TARGET >= __MAC_26_0
