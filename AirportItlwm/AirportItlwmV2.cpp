@@ -5794,10 +5794,42 @@ deliverExternalPMK(const struct apple80211_key *key)
     memcpy(ic->ic_psk, key->key, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
     XYLog("CR244 deliverExternalPMK WROTE %zu bytes to ic_psk; "
-          "IEEE80211_F_PSK set; ic_flags=0x%x "
-          "(USE_APPLE_SUPPLICANT still active -- kernel 4-way dead "
-          "until CR-245)\n",
+          "IEEE80211_F_PSK set; ic_flags=0x%x\n",
           sizeof(ic->ic_psk), (unsigned)ic->ic_flags);
+    // CR-245 Phase 2 step 2 — set up the WPA/RSN association params
+    // the OpenBSD net80211 supplicant needs (IEEE80211_F_RSNON,
+    // ic_rsnprotos, ic_rsnakms, ic_rsngroupcipher, ic_rsnciphers).
+    // Mirrors the legacy associateSSID PSK branch at
+    // AirportItlwm.cpp:188-194: enabled=1, protos=WPA1|WPA2,
+    // akms=PSK|SHA256_PSK, ciphers/groupcipher left to defaults
+    // (CCMP for RSN). ieee80211_ioctl_setwpaparms returns ENETRESET
+    // on success (positive value, signaling network state was
+    // reset); we do not act on the return code -- the new RSN
+    // params are read by the kernel pae state machine when the
+    // next 4-way arrives.
+    //
+    // SCOPE LIMIT: USE_APPLE_SUPPLICANT remains defined globally,
+    // so EAPOL frames still go to ml_enqueue() instead of
+    // ieee80211_eapol_key_input(). CR-246 (separate future CR)
+    // will gate the input.c routing site for Tahoe so the kernel
+    // 4-way actually fires. CR-247 will ship the userspace daemon.
+    struct ieee80211_wpaparams wpa;
+    memset(&wpa, 0, sizeof(wpa));
+    wpa.i_enabled = 1;
+    wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
+    wpa.i_akms    = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
+    int wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
+    XYLog("CR245 deliverExternalPMK setwpaparms enabled=1 "
+          "protos=WPA1|WPA2 akms=PSK|SHA256_PSK rc=%d "
+          "(ENETRESET=%d expected); ic_flags=0x%x "
+          "ic_rsnprotos=0x%x ic_rsnakms=0x%x "
+          "ic_rsngroupcipher=%d ic_rsnciphers=0x%x\n",
+          wparc, (int)ENETRESET,
+          (unsigned)ic->ic_flags,
+          (unsigned)ic->ic_rsnprotos,
+          (unsigned)ic->ic_rsnakms,
+          (int)ic->ic_rsngroupcipher,
+          (unsigned)ic->ic_rsnciphers);
     return kIOReturnSuccess;
 }
 #endif // __IO80211_TARGET >= __MAC_26_0
