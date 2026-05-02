@@ -92,6 +92,113 @@ extern "C" volatile uint64_t cr237_processBSDCommand_count = 0;
 extern "C" volatile uint64_t cr237_associateSSID_count = 0;
 extern "C" volatile uint64_t cr237_eapol_rx_count = 0;
 
+// =========================================================================
+// CR-258: extends CR-237 instrumentation to plausible PMK delivery branches
+// per the "сквозная инструментализация по всем веткам исследуемой гипотезы"
+// criterion. CR-237 covered 13 channels (the "obvious" ones); CR-258
+// closes the remaining gap on the explicitly in-scope branches:
+//   Branch A — Per-opcode counter array indexed by APPLE80211_IOC_* in
+//              processApple80211Ioctl, so we see exactly which opcodes
+//              fire on Tahoe (the wrapper is already instrumented; this
+//              gives the per-opcode breakdown).
+//   Branch B — All uninstrumented setWCL_* methods (the WCL channel
+//              airportd uses on Tahoe).
+//   Branch C — The legacy-form direct PMK carrier setASSOCIATE
+//              (apple80211_assoc_data has an embedded apple80211_key at
+//              ad_key offset 0x38) and the generic carriers that could
+//              embed PMK metadata: setIE, setRSN_XE, setSET_PROPERTY,
+//              setCLEAR_PMKSA_CACHE.
+//
+// Branch D (IORegistry setProperty() override / per-ethertype inputPacket
+// breakdown / direct WCLJoinRequest accessor) is INTENTIONALLY OUT OF
+// SCOPE for this CR. No counter, no snapshot slot, no source coverage
+// is published for any Branch D surface. If Stage 2 evidence shows all
+// in-scope branches silent, a follow-up CR adds Branch D coverage.
+//
+// Each probe records only metadata (count, pointer-non-null, payload size,
+// PMK-shape match). NO raw key bytes ever appear in any log line.
+// PMK-shape detection (cr257_detect_pmk_shape below) returns true only
+// for payloads containing at least one 32-byte run with >=8 distinct
+// byte values (excludes all-zero and trivial repetitive patterns), as
+// PMK is high-entropy 32 bytes. This is a heuristic SIGNAL that the
+// payload may carry a PMK; the actual content is never dumped.
+// =========================================================================
+extern "C" volatile uint64_t cr257_setASSOCIATE_count = 0;
+extern "C" volatile uint64_t cr257_setIE_count = 0;
+extern "C" volatile uint64_t cr257_setRSN_XE_count = 0;
+extern "C" volatile uint64_t cr257_setSET_PROPERTY_count = 0;
+extern "C" volatile uint64_t cr257_setCLEAR_PMKSA_CACHE_count = 0;
+
+extern "C" volatile uint64_t cr257_setWCL_TRIGGER_CC_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_SCAN_REQ_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_LEAVE_NETWORK_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_SCAN_ABORT_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_SET_ROAM_LOCK_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_UPDATE_FAST_LANE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_REAL_TIME_MODE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ACTION_FRAME_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ROAM_USER_CACHE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ROAM_PROFILE_CONFIG_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ARP_MODE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_NETWORK_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BGSCAN_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_PARAMS_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_JOIN_ABORT_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_QOS_PARAMS_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ULOFDMA_STATE_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_LIMITED_AGGREGATION_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_BCN_MUTE_CONFIG_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_ASSOCIATED_SLEEP_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_SOI_CONFIG_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_WNM_OPS_count = 0;
+extern "C" volatile uint64_t cr257_setWCL_WNM_OFFLOAD_count = 0;
+
+// Per-opcode counter array, sized 320 to cover all current APPLE80211_IOC_*
+// opcode values (max ~290 in apple80211_ioctl.h) with safety margin.
+extern "C" volatile uint64_t cr257_apple80211_ioctl_per_op[320] = {};
+
+// PMK-shape detection: returns true if payload contains at least one
+// 32-byte run with >=8 distinct byte values. Matches typical PMK
+// (high-entropy 32-byte derivation) and excludes all-zero, all-0xff,
+// and trivial repetitive patterns. Heuristic only; the actual content
+// is never logged.
+static bool cr257_detect_pmk_shape(const void *p, size_t n)
+{
+    if (p == nullptr || n < 32) return false;
+    const uint8_t *bytes = static_cast<const uint8_t *>(p);
+    for (size_t off = 0; off + 32 <= n; off++) {
+        uint32_t seen[8] = {};   // 256-bit bitmap of seen byte values
+        unsigned distinct = 0;
+        for (size_t i = 0; i < 32; i++) {
+            uint8_t b = bytes[off + i];
+            uint32_t bit = 1u << (b & 31);
+            uint32_t &slot = seen[b >> 5];
+            if (!(slot & bit)) { slot |= bit; distinct++; }
+        }
+        if (distinct >= 8) return true;
+    }
+    return false;
+}
+
+#define CR257_LOG_LIMIT 16
+#define CR257_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr257_n; \
+    unsigned int _v = ++_cr257_n; \
+    if (_v <= CR257_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
+} while (0)
+
+#define CR257_PROBE(name, ptr, len) do { \
+    __atomic_add_fetch(&cr257_##name##_count, 1, __ATOMIC_RELAXED); \
+    const void *_p = (ptr); \
+    size_t _n = (size_t)(len); \
+    bool _pmk = (_p != nullptr) ? cr257_detect_pmk_shape(_p, _n) : false; \
+    CR257_LOG("DEBUG CR257_PROBE name=%s ptr_nonnull=%d len=%zu pmk_shape=%d\n", \
+              #name, _p != nullptr ? 1 : 0, _n, _pmk ? 1 : 0); \
+} while (0)
+
 // CR-237: per-site capped log helper for entry payload dumps. Counter
 // is per-macro-expansion (each call site has its own _cr237_n static).
 // Used for sites that dump non-counter payload (kKeyOffset peek,
@@ -1365,6 +1472,17 @@ IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
     __atomic_add_fetch(&cr237_processApple80211Ioctl_count, 1, __ATOMIC_RELAXED);
+    // CR-257: per-opcode counter so we see exactly which APPLE80211_IOC_*
+    // values airportd uses on Tahoe (the wrapper counter alone hides the
+    // distribution). Bounded array index check prevents OOB writes.
+    if (req != nullptr) {
+        int op = req->req_type;
+        if (op >= 0 && op < (int)(sizeof(cr257_apple80211_ioctl_per_op) /
+                                   sizeof(cr257_apple80211_ioctl_per_op[0]))) {
+            __atomic_add_fetch(&cr257_apple80211_ioctl_per_op[op], 1,
+                               __ATOMIC_RELAXED);
+        }
+    }
     CR237_LOG("DEBUG CR237_IOCTL_ENTRY cmd=0x%x req_type=%d\n",
               (unsigned)cmd, req ? (int)req->req_type : -1);
     // CR-231 BRANCH 4: log every IOCTL airportd issues so Stage 2
@@ -3813,6 +3931,23 @@ getNSS(struct apple80211_nss_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
+    CR257_PROBE(setASSOCIATE, ad, ad ? sizeof(*ad) : 0);
+    // CR-257: setASSOCIATE is the legacy-form direct PMK carrier path.
+    // apple80211_assoc_data has ad_key (apple80211_key) embedded at
+    // offset 0x38. If airportd uses this code path on Tahoe (via
+    // BSD-ioctl SIOCSA80211 IOC_ASSOCIATE), the PMK is right there.
+    // Log ad_key metadata explicitly (no raw key bytes).
+    if (ad != nullptr) {
+        CR257_LOG("DEBUG CR257_setASSOCIATE_KEY ad_key.key_len=%u "
+                  "ad_key.key_cipher_type=%u ad_key.key_flags=0x%x "
+                  "ad_key.key_index=%u ad_auth_upper=0x%x ad_rsn_ie_len=%u\n",
+                  (unsigned)ad->ad_key.key_len,
+                  (unsigned)ad->ad_key.key_cipher_type,
+                  (unsigned)ad->ad_key.key_flags,
+                  (unsigned)ad->ad_key.key_index,
+                  (unsigned)ad->ad_auth_upper,
+                  (unsigned)ad->ad_rsn_ie_len);
+    }
     RT2_SET(3); sRT.assocCount++;
     if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
@@ -3999,6 +4134,7 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
 IOReturn AirportItlwmSkywalkInterface::
 setCLEAR_PMKSA_CACHE(void *req)
 {
+    CR257_PROBE(setCLEAR_PMKSA_CACHE, req, 0);
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
     //if doing background or active scan, don't free nodes.
@@ -4105,6 +4241,7 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_TRIGGER_CC(triggerCC *data)
 {
+    CR257_PROBE(setWCL_TRIGGER_CC, data, 0);
     if (!data)
         return kIOReturnBadArgument;
 
@@ -4272,6 +4409,7 @@ setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
+    CR257_PROBE(setWCL_SCAN_REQ, req, 0);
     RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(req);
@@ -4511,6 +4649,7 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 {
+    CR257_PROBE(setWCL_LEAVE_NETWORK, data, 0);
     if (!data)
         return kIOReturnError;
 
@@ -4542,6 +4681,7 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_ABORT(void *data)
 {
+    CR257_PROBE(setWCL_SCAN_ABORT, data, 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
@@ -4633,6 +4773,7 @@ setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
 {
+    CR257_PROBE(setWCL_SET_ROAM_LOCK, data, data ? sizeof(*data) : 0);
     // WCLRoamManager sends selector 0x1ac with exactly one payload byte.
     // AppleBCMWLANCore rejects NULL with raw 0x16, then forwards data[0] as
     // the `roam_off` bool to AppleBCMWLANRoamAdapter::setRoamLock(bool).
@@ -4683,6 +4824,7 @@ setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
 {
+    CR257_PROBE(setWCL_UPDATE_FAST_LANE, data, 0);
     // The recovered Tahoe visible contract is minimal: Apple rejects NULL with
     // 0xe00002bc and otherwise reports success from the public setter surface
     // before the deeper traffic-policy owner work.
@@ -4850,6 +4992,7 @@ setIBSS_MODE(apple80211_network_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIE(apple80211_ie_data *data)
 {
+    CR257_PROBE(setIE, data, data ? sizeof(*data) : 0);
     TahoeAsyncCommandContext asyncContext{};
     const IOReturn rc =
         (instance != nullptr)
@@ -5071,6 +5214,7 @@ setHP2P_CTRL(apple80211_hp2p_ctrl *)
 IOReturn AirportItlwmSkywalkInterface::
 setSET_PROPERTY(apple80211_set_property_unserialized_data *data)
 {
+    CR257_PROBE(setSET_PROPERTY, data, 0);
     // AppleBCMWLANCore::setSET_PROPERTY runs through a gated property callback
     // path. Preserve the caller-visible "delegated setter" contract instead of
     // reporting generic unsupported.
@@ -5172,6 +5316,7 @@ setLQM_CONFIG(apple80211_lqm_config_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 {
+    CR257_PROBE(setWCL_REAL_TIME_MODE, data, 0);
     const auto *mode = reinterpret_cast<const tahoeWclRealTimeMode *>(data);
 
     // AppleBCMWLANCore::setWCL_REAL_TIME_MODE is a real producer with two
@@ -5191,6 +5336,7 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 {
+    CR257_PROBE(setWCL_ACTION_FRAME, data, 0);
     const uint32_t firmwareGeneration =
         (instance != nullptr && instance->fNetIf != nullptr)
             ? TahoePayloadBuilders::kActionFrameV2FirmwareThreshold
@@ -5221,6 +5367,7 @@ setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 {
+    CR257_PROBE(setWCL_ROAM_USER_CACHE, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_ROAM_USER_CACHE delegates into the roam adapter
     // `cmdROAM_USER_CACHE(...)`. The recovered helper family shows that the
     // caller-visible payload carries channel entries from offset 0x0 in 0x0c
@@ -5279,6 +5426,7 @@ setWCL_REASSOC(apple80211_reassoc *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 {
+    CR257_PROBE(setWCL_LEGACY_ROAM_PROFILE_CONFIG, data, data ? sizeof(*data) : 0);
     // WCLRoamProfile::setRoamingProfile(legacy) consumes exactly 0x60 bytes,
     // and AppleBCMWLANRoamAdapter stores that profile before it reconfigures
     // join preferences / Multi-AP state. The local port does not have the
@@ -5299,6 +5447,7 @@ setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 {
+    CR257_PROBE(setWCL_ROAM_PROFILE_CONFIG, data, data ? sizeof(*data) : 0);
     // WCLRoamProfile::setRoamingProfile(modern) ships a 0x23c payload into the
     // roam adapter. Apple's downstream helper fans this out into join
     // preference and per-band policy programming. Persist the exact carrier so
@@ -5318,6 +5467,7 @@ setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
 {
+    CR257_PROBE(setWCL_ARP_MODE, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_ARP_MODE has three distinct pieces:
     // - NULL -> 0xe00002bc
     // - mode 0/1 choose the keepalive/GARP owner path, anything else -> 0xe00002bc
@@ -5356,6 +5506,7 @@ setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 {
+    CR257_PROBE(setWCL_CONFIG_BG_MOTIONPROFILE, data, data ? sizeof(*data) : 0);
     // AppleBGScanAdapter first validates its internal motion-profile mapping,
     // then programs PNO/EPNO from the incoming blob. The recovered helper
     // rejects a zero PNO-count byte with a generic error, so keep that gate
@@ -5375,6 +5526,7 @@ setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
 {
+    CR257_PROBE(setWCL_CONFIG_BG_NETWORK, data, data ? sizeof(*data) : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // Apple clears PFN state, resets its internal "cached network available"
@@ -5405,6 +5557,7 @@ setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
 {
+    CR257_PROBE(setWCL_CONFIG_BGSCAN, data, data ? sizeof(*data) : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBCMWLANCore::setWCL_CONFIG_BGSCAN is a tiny command multiplexer:
@@ -5447,6 +5600,7 @@ setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
 {
+    CR257_PROBE(setWCL_CONFIG_BG_PARAMS, data, data ? sizeof(*data) : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBGScanAdapter::setWCL_CONFIG_BG_PARAMS carries two independent
@@ -5471,6 +5625,7 @@ setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
+    CR257_PROBE(setWCL_JOIN_ABORT, data, 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
@@ -5518,6 +5673,7 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 {
+    CR257_PROBE(setWCL_QOS_PARAMS, data, 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     const auto *qos = reinterpret_cast<const tahoeWclQosParams *>(data);
 
@@ -5595,6 +5751,7 @@ setWCL_LINK_UP_DONE(void *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 {
+    CR257_PROBE(setWCL_SET_SCAN_HOME_AWAY_TIME, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME consumes a single dword
     // and forwards it into the scan-adapter owner. Preserve the same carrier
     // instead of acknowledging slot [604] and discarding the timing request.
@@ -5609,6 +5766,7 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
 {
+    CR257_PROBE(setWCL_ULOFDMA_STATE, data, 0);
     const auto *state = reinterpret_cast<const tahoeWclUlofdmaState *>(data);
 
     // AppleBCMWLANCore::setWCL_ULOFDMA_STATE is a plain 11ax-adapter producer:
@@ -5829,6 +5987,7 @@ setREALTIME_QOS_MSCS(apple80211_state_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setRSN_XE(apple80211_rsn_xe_data *data)
 {
+    CR257_PROBE(setRSN_XE, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -5853,12 +6012,14 @@ setGAS_ABORT(void *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config *data)
 {
+    CR257_PROBE(setWCL_LIMITED_AGGREGATION, data, 0);
     return data == nullptr ? kIOReturnBadArgumentTahoe : kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config *data)
 {
+    CR257_PROBE(setWCL_BCN_MUTE_CONFIG, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -5880,6 +6041,7 @@ setEAP_FILTER_CONFIG(apple80211_eap_filter_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
 {
+    CR257_PROBE(setWCL_ASSOCIATED_SLEEP, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -5891,6 +6053,7 @@ setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SOI_CONFIG(appl80211_sleep_on_inactivity_config *data)
 {
+    CR257_PROBE(setWCL_SOI_CONFIG, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -6057,6 +6220,7 @@ setNDD_REQ(apple80211_ndd_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 {
+    CR257_PROBE(setWCL_WNM_OPS, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_WNM_OPS is a real producer with only one gate
     // visible at the core layer: NULL -> 0xe00002bc, otherwise delegate into
     // WnmAdapter::configureWnmFeatures(...). The WCL-side consumer mutates a
@@ -6076,6 +6240,7 @@ setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 {
+    CR257_PROBE(setWCL_WNM_OFFLOAD, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_WNM_OFFLOAD has the same core-layer contract:
     // NULL -> 0xe00002bc, otherwise delegate into WnmAdapter
     // configureWnmOffloadFeatures(...). Recovered WCLWnmAgent helpers mutate

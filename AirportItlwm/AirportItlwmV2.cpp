@@ -1528,6 +1528,46 @@ extern "C" volatile uint64_t cr237_processBSDCommand_count;
 extern "C" volatile uint64_t cr237_associateSSID_count;
 extern "C" volatile uint64_t cr237_eapol_rx_count;
 
+// CR-258: extended PMK-delivery instrumentation. See SkywalkInterface.cpp
+// for declarations and payload-shape detection rationale. Snapshot at
+// d5_producer dumps the per-channel counters AND the non-zero entries
+// of the per-opcode array, so we see exactly which Apple80211 opcodes
+// fire on Tahoe and which set* methods are reached. Branch D (IORegistry
+// setProperty / non-EAPOL inputPacket / WCLJoinRequest accessor) is OUT
+// OF SCOPE for this CR; no Branch D counters are declared or snapshotted.
+extern "C" volatile uint64_t cr257_setASSOCIATE_count;
+extern "C" volatile uint64_t cr257_setIE_count;
+extern "C" volatile uint64_t cr257_setRSN_XE_count;
+extern "C" volatile uint64_t cr257_setSET_PROPERTY_count;
+extern "C" volatile uint64_t cr257_setCLEAR_PMKSA_CACHE_count;
+extern "C" volatile uint64_t cr257_setWCL_TRIGGER_CC_count;
+extern "C" volatile uint64_t cr257_setWCL_SCAN_REQ_count;
+extern "C" volatile uint64_t cr257_setWCL_LEAVE_NETWORK_count;
+extern "C" volatile uint64_t cr257_setWCL_SCAN_ABORT_count;
+extern "C" volatile uint64_t cr257_setWCL_SET_ROAM_LOCK_count;
+extern "C" volatile uint64_t cr257_setWCL_UPDATE_FAST_LANE_count;
+extern "C" volatile uint64_t cr257_setWCL_REAL_TIME_MODE_count;
+extern "C" volatile uint64_t cr257_setWCL_ACTION_FRAME_count;
+extern "C" volatile uint64_t cr257_setWCL_ROAM_USER_CACHE_count;
+extern "C" volatile uint64_t cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count;
+extern "C" volatile uint64_t cr257_setWCL_ROAM_PROFILE_CONFIG_count;
+extern "C" volatile uint64_t cr257_setWCL_ARP_MODE_count;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_NETWORK_count;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BGSCAN_count;
+extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_PARAMS_count;
+extern "C" volatile uint64_t cr257_setWCL_JOIN_ABORT_count;
+extern "C" volatile uint64_t cr257_setWCL_QOS_PARAMS_count;
+extern "C" volatile uint64_t cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count;
+extern "C" volatile uint64_t cr257_setWCL_ULOFDMA_STATE_count;
+extern "C" volatile uint64_t cr257_setWCL_LIMITED_AGGREGATION_count;
+extern "C" volatile uint64_t cr257_setWCL_BCN_MUTE_CONFIG_count;
+extern "C" volatile uint64_t cr257_setWCL_ASSOCIATED_SLEEP_count;
+extern "C" volatile uint64_t cr257_setWCL_SOI_CONFIG_count;
+extern "C" volatile uint64_t cr257_setWCL_WNM_OPS_count;
+extern "C" volatile uint64_t cr257_setWCL_WNM_OFFLOAD_count;
+extern "C" volatile uint64_t cr257_apple80211_ioctl_per_op[320];
+
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
@@ -1632,6 +1672,70 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
                       (unsigned long long)__atomic_load_n(&cr237_processBSDCommand_count,       __ATOMIC_RELAXED),
                       (unsigned long long)__atomic_load_n(&cr237_associateSSID_count,           __ATOMIC_RELAXED),
                       (unsigned long long)__atomic_load_n(&cr237_eapol_rx_count,                __ATOMIC_RELAXED));
+            // CR-257: extended snapshot covering Tier-1 candidates
+            // (legacy direct PMK carriers + IE channels) and all
+            // uninstrumented setWCL_* methods.
+            CR234_LOG("DEBUG CR257_POLL_TIER1 d5_producer "
+                      "setASSOC=%llu setIE=%llu setRSN_XE=%llu "
+                      "setSET_PROP=%llu setCLEAR_PMKSA=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr257_setASSOCIATE_count,            __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setIE_count,                   __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setRSN_XE_count,               __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setSET_PROPERTY_count,         __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setCLEAR_PMKSA_CACHE_count,    __ATOMIC_RELAXED));
+            CR234_LOG("DEBUG CR257_POLL_WCL_A d5_producer "
+                      "TRIG_CC=%llu SCAN_REQ=%llu LEAVE_NET=%llu SCAN_ABORT=%llu "
+                      "ROAM_LOCK=%llu FAST_LANE=%llu RT_MODE=%llu ACT_FR=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_TRIGGER_CC_count,                __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SCAN_REQ_count,                  __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LEAVE_NETWORK_count,             __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SCAN_ABORT_count,                __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SET_ROAM_LOCK_count,             __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_UPDATE_FAST_LANE_count,          __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_REAL_TIME_MODE_count,            __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ACTION_FRAME_count,              __ATOMIC_RELAXED));
+            CR234_LOG("DEBUG CR257_POLL_WCL_B d5_producer "
+                      "ROAM_UC=%llu LEG_RPC=%llu RPC=%llu ARP=%llu "
+                      "BG_MP=%llu BG_NET=%llu BGSCAN=%llu BG_PRM=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ROAM_USER_CACHE_count,           __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count,__ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ROAM_PROFILE_CONFIG_count,       __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ARP_MODE_count,                  __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count,   __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_NETWORK_count,         __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BGSCAN_count,             __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_PARAMS_count,          __ATOMIC_RELAXED));
+            CR234_LOG("DEBUG CR257_POLL_WCL_C d5_producer "
+                      "JOIN_ABT=%llu QOS=%llu HAW_TIME=%llu ULOFDMA=%llu "
+                      "LIM_AGG=%llu BCN_MUTE=%llu ASSOC_SLP=%llu SOI=%llu "
+                      "WNM_OPS=%llu WNM_OFF=%llu\n",
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_JOIN_ABORT_count,                __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_QOS_PARAMS_count,                __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count,   __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ULOFDMA_STATE_count,             __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LIMITED_AGGREGATION_count,       __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_BCN_MUTE_CONFIG_count,           __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ASSOCIATED_SLEEP_count,          __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SOI_CONFIG_count,                __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_WNM_OPS_count,                   __ATOMIC_RELAXED),
+                      (unsigned long long)__atomic_load_n(&cr257_setWCL_WNM_OFFLOAD_count,               __ATOMIC_RELAXED));
+            // Dump non-zero entries of per-opcode counter array. Bounded
+            // emission per d5 fire so logs don't explode if airportd
+            // hammers many opcodes.
+            {
+                int nz_emitted = 0;
+                for (int op = 0;
+                     op < (int)(sizeof(cr257_apple80211_ioctl_per_op) /
+                                sizeof(cr257_apple80211_ioctl_per_op[0]));
+                     op++) {
+                    uint64_t v = __atomic_load_n(&cr257_apple80211_ioctl_per_op[op],
+                                                 __ATOMIC_RELAXED);
+                    if (v == 0) continue;
+                    CR234_LOG("DEBUG CR257_POLL_OP d5_producer op=%d count=%llu\n",
+                              op, (unsigned long long)v);
+                    if (++nz_emitted >= 24) break;  // bound per-fire
+                }
+            }
         }
     }
     XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",
