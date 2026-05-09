@@ -1587,6 +1587,54 @@ ieee80211_plcp2rate(u_int8_t plcp, enum ieee80211_phymode mode)
         panic("%s: unexpected mode %u", __func__, mode);
     
     DPRINTF(("unsupported plcp %u\n", plcp));
-    
+
     return 0;
+}
+
+/*
+ * Host-owned WCL reassociation owner publication helpers.
+ *
+ * The recovered Apple contract reserves the terminal WCL selectors
+ * (0x49 success, 0xcf failure) for events that follow an actual lower
+ * host-owner reassociation request send/attempt. Publication is gated
+ * on ic_wcl_reassoc_owner_active and on a leaf state that proves the
+ * lower owner had reached at least the REASSOC_REQ_SENT stage (or one
+ * of the post-send-attempt failure leaves SEND_FAIL/TIMEOUT). Pre-send
+ * producer abandonment must close the owner state without firing any
+ * terminal selector; the gate below enforces that invariant.
+ */
+void
+ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
+{
+    if (ic == NULL || ic->ic_event_handler == NULL)
+        return;
+    if (!ic->ic_wcl_reassoc_owner_active)
+        return;
+    if (!ieee80211_wcl_reassoc_leaf_is_post_send(
+            ic->ic_wcl_reassoc_owner_last_leaf))
+        return;
+    /*
+     * Close the owner state before publishing so the terminal selector
+     * cannot be re-emitted by a subsequent unrelated state change.
+     */
+    ic->ic_wcl_reassoc_owner_active = 0;
+    ic->ic_wcl_reassoc_owner_last_leaf =
+        IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, NULL);
+}
+
+void
+ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
+{
+    if (ic == NULL || ic->ic_event_handler == NULL)
+        return;
+    if (!ic->ic_wcl_reassoc_owner_active)
+        return;
+    if (!ieee80211_wcl_reassoc_leaf_is_post_send(
+            ic->ic_wcl_reassoc_owner_last_leaf))
+        return;
+    ic->ic_wcl_reassoc_owner_active = 0;
+    ic->ic_wcl_reassoc_owner_last_leaf =
+        IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
+    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &result);
 }

@@ -5414,9 +5414,43 @@ setWCL_REASSOC(apple80211_reassoc *data)
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
         return kIOReturnBadArgumentTahoe;
 
+    /*
+     * Recovered host-owned WCL reassociation owner contract: open the
+     * owner record before delegating to the lower owner so any later
+     * terminal selector publication can be gated on real lower-owner
+     * progression. The producer itself never publishes 0x49 / 0xcf;
+     * publication is performed by the post-send-gated helpers in
+     * net80211 after the lower owner has actually sent or attempted
+     * to send the reassociation request. Pre-send abandonment closes
+     * the owner state via the producer's synchronous return without
+     * firing a terminal selector, matching the recovered Apple body.
+     */
+    ic->ic_wcl_reassoc_owner_active = 1;
+    ic->ic_wcl_reassoc_owner_last_leaf =
+        IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP;
+
     const int rc = ieee80211_send_mgmt(ic, ic->ic_bss,
                                        IEEE80211_FC0_SUBTYPE_REASSOC_REQ,
                                        0, 0);
+    if (rc == 0) {
+        /*
+         * Lower host owner has accepted and sent the reassociation
+         * request frame; the WCL terminal edge is now owned by the
+         * net80211 reassoc-response RX path or the management-frame
+         * timeout, not by this producer.
+         */
+        ic->ic_wcl_reassoc_owner_last_leaf =
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT;
+    } else {
+        /*
+         * The lower send was attempted and failed synchronously. This
+         * is a real send-failure edge; the post-send gate accepts it
+         * for terminal 0xcf publication.
+         */
+        ic->ic_wcl_reassoc_owner_last_leaf =
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL;
+        ieee80211_wcl_reassoc_post_failure(ic, static_cast<u_int32_t>(rc));
+    }
     XYLog("WCL [590] %s channels=%u scores=%u reason=%d flags=0x%02x rc=%d\n",
           __FUNCTION__, data->channel_count, data->score_count,
           static_cast<int>(data->roam_reason), data->feature_flags, rc);

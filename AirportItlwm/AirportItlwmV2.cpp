@@ -2847,6 +2847,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     void *msgData = NULL;
     unsigned int msgDataLen = 0;
     static UInt32 scanStatus;  // static — must survive until postMessageGated runs
+    static UInt32 reassocEventStatus[2];
+    static UInt32 reassocFailureStatus;
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
             RT_SET(1);
@@ -2875,6 +2877,32 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             scanStatus = data ? *(UInt32 *)data : 0;
             msgData = &scanStatus;
             msgDataLen = sizeof(scanStatus);
+            break;
+        case IEEE80211_EVT_WCL_REASSOC_DONE:
+            // Recovered Apple terminal: reassociation result selector
+            // 0x49 with 8-byte status payload, first dword == 0 means
+            // success. The host owner publishes this only after a real
+            // reassociation request send/attempt has produced a
+            // success result; the post-send gate in
+            // ieee80211_wcl_reassoc_post_success() enforces that.
+            reassocEventStatus[0] = 0;
+            reassocEventStatus[1] = 0;
+            apple80211Msg = IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT;
+            msgData = reassocEventStatus;
+            msgDataLen = sizeof(reassocEventStatus);
+            break;
+        case IEEE80211_EVT_WCL_REASSOC_FAIL:
+            // Recovered Apple terminal: reassociation failure selector
+            // 0xcf with 4-byte nonzero failure code. Published only by
+            // the gated host owner helper after a real send/attempt
+            // failure (send error, response failure/discard, or
+            // management timeout).
+            reassocFailureStatus = data ? *(UInt32 *)data : 1U;
+            if (reassocFailureStatus == 0)
+                reassocFailureStatus = 1U;
+            apple80211Msg = IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE;
+            msgData = &reassocFailureStatus;
+            msgDataLen = sizeof(reassocFailureStatus);
             break;
         default:
             XYLog("DEBUG %s UNHANDLED msgCode=%d\n", __FUNCTION__, msgCode);

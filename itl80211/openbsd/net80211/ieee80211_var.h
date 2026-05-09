@@ -439,6 +439,16 @@ struct ieee80211com {
     /* The channel width has changed (20<->2040) */
     void            (*ic_update_chw)(struct ieee80211com *);
     void            (*ic_event_handler)(struct ieee80211com *, int, void *);
+    /*
+     * Host-owned WCL reassociation owner state (see contract notes near
+     * IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT). active is set
+     * by setWCL_REASSOC when the producer accepts a request; last_leaf
+     * tracks producer/lower-owner progression and is consumed by the
+     * post-send gate that decides whether terminal 0x49/0xcf selector
+     * publication is permitted.
+     */
+    u_int32_t       ic_wcl_reassoc_owner_active;
+    u_int32_t       ic_wcl_reassoc_owner_last_leaf;
 	CTimeout*		ic_bgscan_timeout;
 	uint32_t		ic_bgscan_fail;
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
@@ -662,6 +672,57 @@ struct ieee80211_ess {
 #define IEEE80211_EVT_STA_DEAUTH                2
 #define IEEE80211_EVT_COUNTRY_CODE_UPDATE       3
 #define IEEE80211_EVT_SCAN_DONE                 4
+#define IEEE80211_EVT_WCL_REASSOC_DONE          5
+#define IEEE80211_EVT_WCL_REASSOC_FAIL          6
+
+/*
+ * Host-owned WCL reassociation owner contract recovered from the public
+ * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
+ * NetAdapter::sendReassocCommand callback/event family). The local Intel
+ * iwm/iwx firmware does not expose an equivalent firmware-owned
+ * WLC_REASSOC command surface, so the lower owner of the reassociation
+ * request is the existing OpenBSD net80211 management-frame
+ * send/recv/timeout machinery. The contract below reserves terminal
+ * selector publication (0x49 success, 0xcf failure) for events that
+ * follow an actual lower host-owner reassociation request send/attempt;
+ * a non-terminal progress selector (0x89) is allowed for roam-scan-start
+ * markers but does not close the owner. Pre-send producer abandonment
+ * (bgscan candidate loss, switch-prep allocation/deauth failure,
+ * leave-while-not-yet-sent, generic driver-reset records, AP/APSTA, or
+ * userspace shims) closes the owner state without firing any terminal
+ * selector.
+ */
+#define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_FAILURE       0x000000cfU
+#define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_SCAN_EVENT    0x00000089U
+#define IEEE80211_WCL_REASSOC_OWNER_SELECTOR_REASSOC_EVENT 0x00000049U
+
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE              0U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP             1U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT  24U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL 25U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT 26U
+
+/*
+ * Returns nonzero when the recovered contract permits terminal selector
+ * publication for a leaf transition. Pre-send producer leaves (IDLE,
+ * SETUP) are not permitted to publish the terminal 0x49/0xcf selectors;
+ * they may only close the owner state silently.
+ */
+static __inline int
+ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
+{
+    switch (leaf) {
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL:
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
+void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);
 
 void	ieee80211_ifattach(struct _ifnet *, IOEthernetController *controller);
 void	ieee80211_ifdetach(struct _ifnet *);
