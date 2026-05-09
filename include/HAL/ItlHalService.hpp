@@ -29,25 +29,122 @@
 
 #include <net80211/ieee80211_var.h>
 
+/*
+ * AP/GO HAL parameter shapes.
+ *
+ * These structs are the canonical local representation of the
+ * recovered Apple AppleBCMWLAN AP/GO firmware command parameters.
+ * They are owned by the host APSTA owner / net80211 HostAP layer and
+ * are passed by const pointer into the HAL so the lower backend
+ * (Intel iwx/iwm + firmware) can translate them into device-specific
+ * commands when AP/GO support is implemented. Each pointer field is
+ * borrowed for the duration of the call; the HAL must not retain
+ * pointers across returns.
+ */
+
+struct ItlHalApConfig {
+    uint8_t  bssid[IEEE80211_ADDR_LEN];
+    uint16_t channel;
+    uint16_t beaconInterval;
+    uint8_t  dtimPeriod;
+    uint32_t maxStations;
+    const void *beaconTemplate;
+    size_t beaconTemplateLength;
+};
+
+struct ItlHalApKey {
+    const uint8_t *station;
+    uint8_t keyIndex;
+    uint8_t cipher;
+    const void *keyData;
+    size_t keyLength;
+    const void *rsc;
+    size_t rscLength;
+};
+
+struct ItlHalApCSA {
+    uint16_t channel;
+    uint8_t count;
+};
+
+struct ItlHalApStationCommand {
+    uint32_t command;
+    const uint8_t *station;
+    uint32_t flags;
+};
+
 class ItlHalService : public OSObject {
     OSDeclareAbstractStructors(ItlHalService)
-    
+
 public:
-    
+
     virtual bool attach(IOPCIDevice *device) = 0;
-    
+
     virtual void detach(IOPCIDevice *device) = 0;
-    
+
     virtual IOReturn enable(IONetworkInterface *interface) = 0;
-    
+
     virtual IOReturn disable(IONetworkInterface *interface) = 0;
-    
+
     virtual struct ieee80211com *get80211Controller() = 0;
-    
+
     virtual ItlDriverInfo *getDriverInfo() = 0;
-    
+
     virtual ItlDriverController *getDriverController() = 0;
-    
+
+    /*
+     * AP/GO HAL surface.
+     *
+     * The default implementations are deliberately fail-closed: a
+     * concrete HAL backend can own STA-mode lifetime without
+     * advertising AP/GO firmware support, and host-side AP/APSTA code
+     * (the host APSTA owner skeleton, OpenBSD net80211 HostAP) can
+     * query the HAL through this surface instead of the backend
+     * type. supportsAPMode() returns false until a backend overrides
+     * it with a positive AP/GO firmware capability check; the command
+     * methods return kIOReturnUnsupported until the backend overrides
+     * them with the corresponding firmware command path.
+     *
+     * A backend that returns true from supportsAPMode() must also
+     * implement startAPMode/stopAPMode and at least one of the
+     * command methods needed by the AP/GO bring-up flow it advertises
+     * (beacon update, AP key install, CSA, station add/remove). It
+     * must remain re-entry-safe: calling stopAPMode() while AP mode
+     * is not started must succeed without side effects.
+     *
+     * All parameter pointers are borrowed for the duration of the
+     * call. The HAL must not retain pointers, must not free them, and
+     * must complete any necessary copy before returning.
+     */
+    virtual bool supportsAPMode() const { return false; }
+    virtual IOReturn startAPMode(const struct ItlHalApConfig *config) {
+        (void)config;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn stopAPMode() { return kIOReturnUnsupported; }
+    virtual IOReturn updateAPBeacon(const void *templateBytes,
+                                    size_t templateLength,
+                                    uint16_t beaconInterval,
+                                    uint8_t dtimPeriod) {
+        (void)templateBytes;
+        (void)templateLength;
+        (void)beaconInterval;
+        (void)dtimPeriod;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setAPKey(const struct ItlHalApKey *key) {
+        (void)key;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) {
+        (void)csa;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *cmd) {
+        (void)cmd;
+        return kIOReturnUnsupported;
+    }
+
     virtual void free() override;
 
 public:
