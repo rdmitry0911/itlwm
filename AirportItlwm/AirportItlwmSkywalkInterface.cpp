@@ -1834,6 +1834,21 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setSOFTAP_EXTENDED_CAPABILITIES_IE(
+                    this,
+                    (apple80211_softap_extended_capabilities_info *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_MIS_MAX_STA:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setMIS_MAX_STA(this,
+                    (apple80211_mis_max_sta *)req->req_data);
+            return kIOReturnUnsupported;
         default:
             return kIOReturnUnsupported;
     }

@@ -386,6 +386,13 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
         case APPLE80211_IOC_BTCOEX_MODE:
             IOCTL(request_type, BTCOEX_MODE, apple80211_btc_mode_data);
             break;
+        case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
+            IOCTL_SET(request_type, SOFTAP_EXTENDED_CAPABILITIES_IE,
+                      apple80211_softap_extended_capabilities_info);
+            break;
+        case APPLE80211_IOC_MIS_MAX_STA:
+            IOCTL_SET(request_type, MIS_MAX_STA, apple80211_mis_max_sta);
+            break;
         default:
         unhandled:
             if (!ml_at_interrupt_context()) {
@@ -1760,5 +1767,139 @@ getLINK_CHANGED_EVENT_DATA(OSObject *object, struct apple80211_link_changed_even
     } else
         ed->rssi = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
     XYLog("Link %s, reason: %d, voluntary: %d\n", ed->isLinkDown ? "down" : "up", ed->reason, ed->voluntary);
+    return kIOReturnSuccess;
+}
+
+/*
+ * AP-mode HostAP selector wiring (Tahoe IO80211Family parity).
+ *
+ * The Apple BCM HostAP path stores
+ * setSOFTAP_EXTENDED_CAPABILITIES_IE input bytes into a private
+ * APSTA state region. The recovered body first clears qword +0x50,
+ * qword +0x58 and word +0x60 (bytes 0x50..0x61), then writes the
+ * input fields back at state offsets +0x50 (1 byte from input
+ * +0x00), +0x51 (qword from input +0x01) and +0x59 (qword from
+ * input +0x09). The qword writes at +0x51 and +0x59 are unaligned,
+ * which is why the local mirror is a tightly packed 17-byte
+ * struct. The selector returns success without firmware
+ * interaction. setMIS_MAX_STA gates on the APSTA AP-up flag; when
+ * AP is up it forwards the input dword +0x00 to a maxassoc
+ * backend, ignores the helper result, and returns success. When AP
+ * is down the body silently returns success.
+ *
+ * The local backend for the maxassoc admission limit is the
+ * OpenBSD net80211 ic->ic_max_aid field, consumed by the existing
+ * AID allocation loop in ieee80211_node_join() (rejects beyond
+ * limit with IEEE80211_REASON_ASSOC_TOOMANY = 17). The AID/TIM
+ * bitmap allocated at attach time covers IEEE80211_AID_DEF
+ * entries; raising ic_max_aid above that capacity would overrun
+ * ic_aid_bitmap and ic_tim_bitmap, so writes are clamped to
+ * [1, IEEE80211_AID_DEF].
+ *
+ * Functional AP-mode operation requires separate iwx/iwm HAL work
+ * (both currently panic on IEEE80211_M_HOSTAP). This wiring stops
+ * at selector dispatch + APSTA state mirror + admission-limit
+ * plumbing; AP firmware enablement is residual scope.
+ */
+bool AirportItlwm::isHostApRunning() const
+{
+    /*
+     * HostAP mode is structurally unreachable on this driver:
+     *   - The build defines IEEE80211_STA_ONLY, which hides
+     *     IEEE80211_M_HOSTAP from the ieee80211_opmode enumeration
+     *     (see itl80211/openbsd/net80211/ieee80211_var.h:259-268).
+     *   - The iwx and iwm firmware MAC-context command paths
+     *     panic on any opmode that is not STA or MONITOR
+     *     (itlwm/hal_iwx/ItlIwx.cpp:8428 and
+     *     itlwm/hal_iwm/mac80211.cpp:2019).
+     * The recovered Apple contract for setMIS_MAX_STA reads
+     * "if AP-up state is nonzero, ...; ignore helper result;
+     * return success", so a structurally-false AP-up gate yields
+     * the truthful no-backend-call return-success branch.
+     */
+    return false;
+}
+
+IOReturn AirportItlwm::setMaxAssoc(uint32_t value)
+{
+    if (fHalService == nullptr) {
+        return kIOReturnNotReady;
+    }
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic == nullptr) {
+        return kIOReturnNotReady;
+    }
+    /*
+     * Clamp invariant: ic_aid_bitmap and ic_tim_bitmap are sized at
+     * attach against ic_max_aid using IEEE80211_AID_DEF when the
+     * field is unset (see ieee80211_node_attach in
+     * itl80211/openbsd/net80211/ieee80211_node.c). Reducing the
+     * limit below the previously allocated capacity is always safe
+     * because the ieee80211_node_join admission loop only inspects
+     * bitmap indices < ic_max_aid; raising the limit above the
+     * allocated capacity is rejected here to preserve the
+     * bitmap-size invariant.
+     */
+    if (value < 1) {
+        value = 1;
+    }
+    if (value > IEEE80211_AID_DEF) {
+        value = IEEE80211_AID_DEF;
+    }
+    ic->ic_max_aid = (uint16_t)value;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
+    struct apple80211_softap_extended_capabilities_info *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    /*
+     * Recovered Apple body clears state qword +0x50, qword +0x58
+     * and word +0x60 (covering bytes 0x50..0x61), and then writes
+     * input byte +0x00 to state +0x50, input qword +0x01 to state
+     * +0x51 and input qword +0x09 to state +0x59. The qword writes
+     * at +0x51 and +0x59 are unaligned inside the cleared region.
+     *
+     * The local mirror reuses the same packed wire-carrier type
+     * (apple80211_softap_extended_capabilities_info), so its three
+     * fields physically land at mirror offsets +0x00, +0x01 and
+     * +0x09 — corresponding to state +0x50, +0x51 and +0x59 — and
+     * the qword fields are unaligned inside the mirror exactly as
+     * they are inside the cleared APSTA region. The compile-time
+     * static_asserts on the carrier type enforce this layout.
+     * Each scalar assignment below fully overwrites the prior value
+     * at its mirror offset, which subsumes the recovered clear+write
+     * sequence for that field. The single byte at state +0x61 is
+     * cleared by the recovered body but is not written by either
+     * the recovered body or this mirror; it lies past the end of the
+     * 17-byte mirror, so the local representation does not need to
+     * track it.
+     */
+    fAPSTASoftApExtCapsState.flag00  = in->flag00;
+    fAPSTASoftApExtCapsState.value01 = in->value01;
+    fAPSTASoftApExtCapsState.value09 = in->value09;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::
+setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    /*
+     * Recovered Apple body: AP-up gate; when AP is operational
+     * forward input dword +0x00 to setMaxAssoc and ignore its
+     * result, otherwise the body is silently a no-op. The
+     * dispatcher returns success unconditionally per the recovered
+     * contract.
+     */
+    if (isHostApRunning()) {
+        (void)setMaxAssoc(in->value00);
+    }
     return kIOReturnSuccess;
 }

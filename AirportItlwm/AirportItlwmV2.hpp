@@ -449,7 +449,16 @@ public:
     IOReturn getCHANNEL(OSObject *object, struct apple80211_channel_data *data);
     IOReturn setCHANNEL(OSObject *object, struct apple80211_channel_data *data);
     IOReturn getPLATFORM_CONFIG(OSObject *object, struct apple80211_platform_config *data);
-    
+
+    // AP-mode HostAP selector wiring (Tahoe IO80211Family parity).
+    IOReturn setSOFTAP_EXTENDED_CAPABILITIES_IE(
+        OSObject *object,
+        struct apple80211_softap_extended_capabilities_info *data);
+    IOReturn setMIS_MAX_STA(OSObject *object,
+        struct apple80211_mis_max_sta *data);
+    bool isHostApRunning() const;
+    IOReturn setMaxAssoc(uint32_t value);
+
 public:
     IOInterruptEventSource* fInterrupt;
     IOTimerEventSource *watchdogTimer;
@@ -533,7 +542,33 @@ public:
     uint32_t btcMode;
     uint32_t btcOptions;
     bool awdlSyncEnable;
-    
+
+    // Project-owned APSTA SoftAP-extended-capabilities state. The recovered
+    // public-binary contract first clears three regions of APSTA state
+    // (qword at +0x50, qword at +0x58, word at +0x60 — together bytes
+    // 0x50..0x61), then writes input fields back at relative offsets +0x50
+    // (1 byte from input +0x00), +0x51 (qword from input +0x01) and +0x59
+    // (qword from input +0x09). The qword writes are unaligned inside the
+    // cleared region.
+    //
+    // The mirror reuses the wire request-carrier type. That type is
+    // declared __attribute__((packed)) in include/Airport/apple80211_ioctl.h
+    // and carries compile-time static_asserts pinning flag00 to mirror
+    // +0x00, value01 to mirror +0x01, value09 to mirror +0x09 and the
+    // total size to 17 bytes. Reusing the same type therefore makes the
+    // mirror layout claim mechanically true without restating the
+    // assertions here.
+    //
+    // We carry these three slots in driver-private state because the
+    // underlying OpenBSD/iwx HALs do not expose AP-mode capability storage
+    // and the AP runtime is not enabled in this driver (IEEE80211_STA_ONLY
+    // hides the M_HOSTAP enum value, and iwx/iwm panic on any non-STA
+    // mode). The state is therefore a structural cache only;
+    // setSOFTAP_EXTENDED_CAPABILITIES_IE returns kIOReturnSuccess after
+    // the copy so the boot probe completes without producing fake side
+    // effects.
+    struct apple80211_softap_extended_capabilities_info fAPSTASoftApExtCapsState;
+
     CCPipe *driverLogPipe;
     CCPipe *driverDataPathPipe;
     CCPipe *driverSnapshotsPipe;

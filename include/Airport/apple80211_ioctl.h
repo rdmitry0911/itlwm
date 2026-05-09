@@ -368,6 +368,8 @@ struct apple80211req
 #define APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE  352
 #define APPLE80211_IOC_NSS  353
 #define APPLE80211_IOC_SET_MAC_ADDRESS 368
+#define APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE 403
+#define APPLE80211_IOC_MIS_MAX_STA                     508
 
 #define APPLE80211_IOC_CARD_SPECIFIC            0xffffffff    // req_type
 
@@ -1551,5 +1553,50 @@ struct apple80211_platform_config {
 } __attribute__((packed));
 
 static_assert(sizeof(struct apple80211_platform_config) == 0x7, "invalid struct apple80211_platform_config");
+
+// Recovered from public-binary single-pass byte-copy contract observed in the
+// Tahoe SoftAP capability path. The producer first clears three independent
+// regions of driver-private APSTA state (qword at relative offset 0x50,
+// qword at relative offset 0x58, word at relative offset 0x60 — covering
+// bytes 0x50..0x61), and then writes the request payload into that same
+// region at relative offsets 0x50 (one byte from input +0x00), 0x51
+// (one qword from input +0x01) and 0x59 (one qword from input +0x09). The
+// qword writes at +0x51 and +0x59 land on unaligned addresses inside the
+// APSTA region, so the local mirror must be a tightly packed 17-byte blob
+// — there is no native or Apple-side alignment padding in the byte-copy
+// program. The selector ID (403) was recovered from a chained-pointer
+// rebase on selector 352 in the AppleBCMWLAN SoftAP capability table.
+struct apple80211_softap_extended_capabilities_info {
+    uint8_t  flag00;     // input +0x00 -> APSTA state +0x50 (1 byte)
+    uint64_t value01;    // input +0x01 -> APSTA state +0x51 (8 bytes, unaligned)
+    uint64_t value09;    // input +0x09 -> APSTA state +0x59 (8 bytes, unaligned)
+} __attribute__((packed));
+
+static_assert(__offsetof(struct apple80211_softap_extended_capabilities_info, flag00) == 0x00,
+              "softap_extended_capabilities_info.flag00 offset must be 0x00");
+static_assert(__offsetof(struct apple80211_softap_extended_capabilities_info, value01) == 0x01,
+              "softap_extended_capabilities_info.value01 offset must be 0x01");
+static_assert(__offsetof(struct apple80211_softap_extended_capabilities_info, value09) == 0x09,
+              "softap_extended_capabilities_info.value09 offset must be 0x09");
+static_assert(sizeof(struct apple80211_softap_extended_capabilities_info) == 17,
+              "softap_extended_capabilities_info packed payload must be 17 bytes");
+
+// Recovered from public-binary AP-up-gated maxassoc selector observed in the
+// Tahoe MIS configuration path: the producer reads a single uint32 maxassoc
+// value at relative offset 0x00 and forwards it to the per-radio max-assoc
+// admission limit. The recovered request struct in the wire layout is 0xC
+// bytes; the trailing 8 bytes are reserved/padding and not consumed by the
+// AP-up branch. The selector ID (508) was recovered from a chained-pointer
+// rebase on the MIS selector table adjacent to existing public selectors.
+struct apple80211_mis_max_sta {
+    uint32_t value00;    // requested maxassoc (clamped to [1, IEEE80211_AID_DEF])
+    uint32_t reserved04; // unused by the AP-up branch
+    uint32_t reserved08; // unused by the AP-up branch
+} __attribute__((packed));
+
+static_assert(__offsetof(struct apple80211_mis_max_sta, value00) == 0x00,
+              "mis_max_sta.value00 offset must be 0x00");
+static_assert(sizeof(struct apple80211_mis_max_sta) == 0xC,
+              "mis_max_sta packed payload must be 0xC bytes");
 
 #endif // _APPLE80211_IOCTL_H_
