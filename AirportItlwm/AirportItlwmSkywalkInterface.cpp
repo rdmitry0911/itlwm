@@ -8,6 +8,7 @@
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
+#include "AirportItlwmAPSTAInterface.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -4751,9 +4752,59 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
         case 10:
             return static_cast<IOReturn>(0xe00002c7);
         case 6:
-            return static_cast<IOReturn>(0xe00002bd);
-        case 7:
-            return static_cast<IOReturn>(0xe00002bd);
+            /*
+             * Role 6 is the proximity/AWDL public-failure path on
+             * Tahoe. The hidden AWDL owner is not present on this
+             * driver, so AppleBCMWLANCore returns the recovered
+             * create-failed code 0xe00002bd before the AWDL owner is
+             * consulted. This code path stays out of the APSTA owner
+             * skeleton (which validates only role 7) so that the
+             * AWDL public failure is preserved exactly.
+             */
+            return static_cast<IOReturn>(kAirportItlwmAPSTACreateFailedReturn);
+        case 7: {
+            /*
+             * Recovered APSTA role-7 acquisition contract: validate
+             * the carrier through the host APSTA owner skeleton and
+             * fail closed at the lower-backend gate.
+             *
+             * The lower-backend gate is structurally false on this
+             * driver: the iwx/iwm HALs do not expose AP/GO firmware
+             * MAC-context support, the OpenBSD net80211 build keeps
+             * IEEE80211_STA_ONLY in scope, and there is no AP
+             * firmware event producer bridge. While those surfaces
+             * are absent, role-7 acquisition fails closed at the
+             * gate with the recovered Apple "create-failed" return
+             * code (0xe00002bd), and no AP interface, AP-up state,
+             * beaconing, or station publication is exposed.
+             *
+             * The owner is stack-local: it is constructed,
+             * validated, cleared, and destroyed inside this handler
+             * invocation. The clear() call enforces deterministic
+             * cleanup ordering on every exit edge so the storage
+             * invariant remains "owner inactive" once this handler
+             * returns. The skeleton does not implement a persistent
+             * owner state, an existing-owner check, or a delete
+             * path; those edges depend on the lower-backend support
+             * named above.
+             */
+            AirportItlwmAPSTAInterface tentativeOwner;
+            if (!tentativeOwner.initWithCarrier(
+                    static_cast<uint32_t>(data->role), data->mac,
+                    reinterpret_cast<const char *>(data->bsd_name))) {
+                tentativeOwner.clear();
+                return static_cast<IOReturn>(
+                    kAirportItlwmAPSTARawInvalidArgumentReturn);
+            }
+            const bool lowerReady =
+                AirportItlwmAPSTAInterface::isLowerBackendReady();
+            tentativeOwner.clear();
+            if (!lowerReady)
+                return static_cast<IOReturn>(
+                    kAirportItlwmAPSTACreateFailedReturn);
+            return static_cast<IOReturn>(
+                kAirportItlwmAPSTACreateFailedReturn);
+        }
         default:
             return static_cast<IOReturn>(0xe0000001);
     }

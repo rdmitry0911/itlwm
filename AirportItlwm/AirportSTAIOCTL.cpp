@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwm.hpp"
+#include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeAssociationContracts.hpp"
 #include <sys/_netstat.h>
 
@@ -1691,8 +1692,39 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
         case 10:
             return static_cast<IOReturn>(0xe00002c7);
         case APPLE80211_VIF_AWDL:
-        case APPLE80211_VIF_SOFT_AP:
             return static_cast<IOReturn>(0xe00002bd);
+        case APPLE80211_VIF_SOFT_AP: {
+            /*
+             * Recovered APSTA role-7 acquisition contract: validate
+             * the carrier through the host APSTA owner skeleton and
+             * fail closed at the lower-backend gate.
+             *
+             * The lower-backend gate is structurally false on this
+             * driver: the iwx/iwm HALs do not expose AP/GO firmware
+             * MAC-context support, the OpenBSD net80211 build keeps
+             * IEEE80211_STA_ONLY in scope, and there is no AP
+             * firmware event producer bridge. While those surfaces
+             * are absent, role-7 acquisition fails closed at the
+             * gate with the recovered Apple "create-failed" return
+             * code (0xe00002bd).
+             */
+            AirportItlwmAPSTAInterface tentativeOwner;
+            if (!tentativeOwner.initWithCarrier(
+                    static_cast<uint32_t>(data->role), data->mac,
+                    reinterpret_cast<const char *>(data->bsd_name))) {
+                tentativeOwner.clear();
+                return static_cast<IOReturn>(
+                    kAirportItlwmAPSTARawInvalidArgumentReturn);
+            }
+            const bool lowerReady =
+                AirportItlwmAPSTAInterface::isLowerBackendReady();
+            tentativeOwner.clear();
+            if (!lowerReady)
+                return static_cast<IOReturn>(
+                    kAirportItlwmAPSTACreateFailedReturn);
+            return static_cast<IOReturn>(
+                kAirportItlwmAPSTACreateFailedReturn);
+        }
         default:
             return static_cast<IOReturn>(0xe0000001);
     }
