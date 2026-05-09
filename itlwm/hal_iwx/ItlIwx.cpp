@@ -345,6 +345,12 @@ get80211Controller()
     return &com.sc_ic;
 }
 
+bool ItlIwx::
+supportsAPMode() const
+{
+    return iwx_firmware_family_supports_ap_go(com.sc_device_family);
+}
+
 #define MUL_NO_OVERFLOW    (1UL << (sizeof(size_t) * 4))
 
 #define    M_CANFAIL    0x0004

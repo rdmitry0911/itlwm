@@ -123,7 +123,7 @@
 #include <sys/kpi_mbuf.h>
 
 #include "if_iwxreg.h"
-#include "if_iwxvar.h"
+#include "IwxApGoCapability.hpp"
 #include <sys/pcireg.h>
 
 #include <IOKit/network/IOEthernetController.h>
@@ -153,6 +153,22 @@ public:
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
+
+    /*
+     * AP/GO HAL capability gate. Consults the project-owned
+     * iwx_firmware_family_supports_ap_go() classification helper for
+     * `com.sc_device_family`. Returns `false` for every iwx device
+     * family known today; the helper has no positive entry.
+     *
+     * Overriding the default `ItlHalService::supportsAPMode() const`
+     * (which also returns `false`) does not change observable
+     * behaviour: both the default and this override return `false`
+     * on every iwx device. The override exists so the AP/GO HAL
+     * capability gate is wired through a single project-owned
+     * classification surface, ready for a positive per-family entry
+     * once the AP-mode firmware command path is implemented.
+     */
+    bool supportsAPMode() const override;
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
