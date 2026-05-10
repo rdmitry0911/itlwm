@@ -173,3 +173,123 @@ So the selector 352 copy region is provably cleared at object teardown by `free(
 - No iwx AP/GO capability gate lifted.
 - No source typedef added.
 - No kext install/reboot/AP runtime/AP-up/project-completion claim.
+
+## Follow-up bounded decomp pass — 2026-05-10
+
+A bounded function-boundary pass against the same reference Ghidra project (`wifi_analysis_26_3` on `192.168.40.116`) produced direct decomp evidence for the overmerged-boundary setters listed in the prior section, the channel-spec helper called from `setSOFTAP_TRIGGER_CSA`, and a refreshed re-decomp of `setHostApModeInternal` and `setRSN_CONF` after correcting false `setNoReturn` flags on returning callees. The pass scope was strictly decomp/function-boundary; no source compilation unit, header, or build script is changed by the new evidence. Decomp/reference debt is narrowed but not closed.
+
+The pass driver is the project script `CR465FollowUpDecompV2.py`. Its logic: disassemble the entry address (the overmerged entries had not been auto-disassembled), apply `CreateFunctionCmd` at the entry, refresh the body via flow-derived re-create when an existing 1- or 2-byte stub is detected, name the new function with the demangled symbol from `kdk_symbols.txt` (`AppleBCMWLANIO80211APSTAInterface::setX` style), iterate the called-functions list of `setHostApModeInternal` and `setRSN_CONF` and clear `setNoReturn` only when the callee's body still contains a `RET` instruction (callees with no `RET` retain the flag), then decompile every target. The Ghidra project was saved at the end of the headless run, so the new function entries, names, and corrected return flags persist on the reference host for any subsequent decomp cycle.
+
+### Reproducer (follow-up)
+
+- Host: `ssh 192.168.40.116`.
+- Ghidra build: `/srv/project/ghidra/build/ghidra_install/ghidra_12.2_DEV/support/analyzeHeadless`.
+- Ghidra project: `/srv/project/ghidra_output` project `wifi_analysis_26_3` program `BootKernelExtensions.kc` (project save persisted the new function entries, renames, and `setNoReturn` corrections).
+- Driver script: `/srv/project/ghidra_output/CR465FollowUpDecompV2.py` (canonical follow-up driver) and `/srv/project/ghidra_output/CR465FollowUpDecomp.py` (V1 predecessor, retained for the `setNoReturn` audit log).
+- Output directory: `/srv/project/ghidra_output/cr465_followup/` with one `.c` per target plus `csa_window_funcs.txt`, `function_creation_log.txt`, `noreturn_remediation.txt`, and `run.log`.
+- Host capacity at submission: `nproc=28`, ~48 GiB RAM with ~14 GiB free, no swap, load 0.75 / 0.72 / 0.72; no concurrent Ghidra `analyzeHeadless` or `java` process. The twelve-target sequential headless pass completed under one minute end-to-end.
+- Concurrency posture: a single sequential headless pass under one program-write lock is materially faster than `ParallelDecompiler`/concurrent-queue sharding for twelve mid-size targets, because the dominant cost is the program-write lock for `CreateFunctionCmd` / body refresh / `setNoReturn` mutation rather than the native decomp engine. No single function in the batch was a long-pole single-core decomp; the largest body (1159 bytes) carries truncation/jumptable warnings from real bad-instruction sites in the bytes, not from a single-core decompile-engine bottleneck. No `-max-cpu` adjustment was needed.
+
+### Inventory of overmerged-boundary setters now recovered
+
+The setters listed in the prior section as not-auto-discovered (overmerged-boundary classification) have been created as discrete functions at the BootKC entry points predicted by `kdk_symbols.txt + 0x50`. Body sizes and per-output decompiler-warning state are recorded below. Sizes are bytes of recovered function body. The "Output state" column reproduces literal Ghidra warnings present inside each `.c` output. Warnings of class `Subroutine does not return` on these outputs all originate from real noReturn calls into the logging-fatal callee `FUN_ffffff8000307340` (the noReturn remediation pass retained the flag because the callee body has no `RET` instruction); they are real dead-end branches, not false flags.
+
+| Symbol | BootKC entry | Body size | Output file | Output state |
+|---|---|---|---|---|
+| `setHOST_AP_MODE_HIDDEN(apple80211_host_ap_mode_hidden_t*)` | `0xffffff800168d970` | 436 | `01_setHOST_AP_MODE_HIDDEN.c` | warned (two `Subroutine does not return` on logging-fatal branches) |
+| `setSOFTAP_PARAMS(apple80211_softap_params*)` | `0xffffff800168e536` | 204 | `02_setSOFTAP_PARAMS.c` | clean |
+| `setSOFTAP_EXTENDED_CAPABILITIES_IE(apple80211_softap_extended_capabilities_ie*)` | `0xffffff800168e7b8` | 59 | `03_setSOFTAP_EXTENDED_CAPABILITIES_IE.c` | clean |
+| `setSSID(apple80211_ssid_data*)` | `0xffffff800168dc92` | 102 | `04_setSSID_APSTA.c` | warned (one `Subroutine does not return` on logging-fatal branch) |
+| `setBeaconInterval(apple80211_beacon_interval_data*)` | `0xffffff8001687ae4` | 312 | `05_setBeaconInterval.c` | clean |
+| `enableAPInterface()` | `0xffffff800168d310` | 626 | `06_enableAPInterface.c` | warned (two `Subroutine does not return` on logging-fatal branches) |
+| `setMaxAssoc(apple80211_max_assoc_data*)` | `0xffffff800168c6ac` | 101 | `07_setMaxAssoc.c` | warned (one `Subroutine does not return` on logging-fatal branch) |
+| `configureManagementFrameProtectionForSoftAP()` | `0xffffff800168c4fe` | 355 | `08_configureManagementFrameProtectionForSoftAP.c` | warned (two `Subroutine does not return` on logging-fatal branches) |
+| `setCIPHER_KEY(apple80211_key*)` | `0xffffff800168f2b6` | 399 | `09_setCIPHER_KEY_APSTA.c` | warned (three `Subroutine does not return` on logging-fatal branches) |
+
+### CSA helper window inventory and selector 26 owner classification
+
+The function inventory of the requested CSA helper window `0xffffff8001602000..0xffffff8001604000` resolves nine functions, all in the `AppleBCMWLANCore` class (not `AppleBCMWLANIO80211APSTAInterface`):
+
+| BootKC entry | Symbol | Body size |
+|---|---|---|
+| `0xffffff8001602206` | `FUN_ffffff8001602206` (anonymous helper) | 243 |
+| `0xffffff8001602362` | `AppleBCMWLANCore::setREASSOCIATE_WITH_CORECAPTURE(apple80211_capture_debug_info_t*)` | 142 |
+| `0xffffff800160243a` | `AppleBCMWLANCore::setRESET_CHIP(apple80211_reset_command*)` | 437 |
+| `0xffffff8001602b3e` | `AppleBCMWLANCore::setCHANNEL(apple80211_channel_data*)` | 450 |
+| `0xffffff8001602f74` | `csa_helper_FUN_ffffff8001602f74` (created/named in this pass) | 792 |
+| `0xffffff80016034dc` | `AppleBCMWLANCore::setAP_MODE(apple80211_apmode_data*)` | 101 |
+| `0xffffff8001603564` | `AppleBCMWLANCore::setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params*)` | 195 |
+| `0xffffff8001603768` | `AppleBCMWLANCore::setTHERMAL_INDEX(apple80211_thermal_index_t*)` | 262 |
+| `0xffffff8001603ca8` | `AppleBCMWLANCore::setTXPOWER(apple80211_txpower_data*)` | 299 |
+
+This narrows the previously open selector-26 dispatch classification: the `apple80211_apmode_data` consumer is `AppleBCMWLANCore::setAP_MODE` at `0xffffff80016034dc`, not anything in the `AppleBCMWLANIO80211APSTAInterface` `0xffffff8001685000..0xffffff8001695000` range. Any future producer-side wire-struct decomp for selector 26 must walk callers of the `AppleBCMWLANCore::setAP_MODE` entry. Inner reads of `apple80211_apmode_data` were not the subject of this bounded pass and remain open research — bytes 0..(sizeof - 1) of the wire struct are not classified by the recovered owner alone.
+
+### Selector 349 — CSA helper `csa_helper_FUN_ffffff8001602f74`
+
+The 792-byte body recovered from `10_csa_helper_FUN_ffffff8001602f74.c` proves the following reads on the channel-descriptor argument that `setSOFTAP_TRIGGER_CSA` forwards as `param_2 + 4`:
+
+- The early gate is `if (uVar2 - 0x100 < 0xffffff01) { return 0x16 / diagnostic-emit }` on `uVar2 = *(uint32_t *)(param_2 + 4)`. The TRUE branch is the helper's error-return path: it either returns `0x16` (`EINVAL`) directly or calls the owner's diagnostic-emit helper and returns its status. Under unsigned 32-bit semantics the TRUE branch fires for `uVar2 == 0` and for `uVar2 >= 0x100` (because `0 - 0x100 = 0xffffff00 < 0xffffff01` and any `uVar2 >= 0x100` produces `uVar2 - 0x100 >= 0` that satisfies `< 0xffffff01` once it is below the wrap point, while values in `0xffffff01..0xffffffff` map back through the wrap to values still strictly less than `0xffffff01` against `uVar2 - 0x100`); the FALSE branch (the normal/forward path) therefore fires only for `uVar2` in `0x01..0xff`. The accepted channel value at `param_2 + 4` is therefore a primary-channel value in `1..255`, stored in a 32-bit carrier. This is consistent with the helper's later byte-level comparison `uVar2 == bVar4` against `bVar4 = ChanSpecGetPrimaryChannel(...)`, which returns a byte primary-channel value, and corrects any earlier reading of the gate as a `0x100..0xffff` accepted range.
+- `*(uint32_t *)(param_2 + 8)` is read as a flags word with bits at `0x2`, `0x4`, `>>10 & 1`, `>>11 & 1`, `0x8`, `0x10`, `>>13 & 1`. The first four bits map to bandwidth-class branches that select an `iVar9` value of 2, 3, 4, or 5; bit `0x8` and bit `0x10` select an additional legacy-class branch; bit `>>13 & 1` enters another classification edge. Per-bit semantic naming is not pinned by the helper alone.
+- The helper consults the core's chanspec table at `*(...)(param_1[0x25] + 0x4550)` and the count at `*(uint16_t *)(param_1[0x25] + 0x4dcc)`, iterates over channel entries, calls `AppleBCMWLANChanSpec::getAppleChannelSpec` and `ChanSpecGetPrimaryChannel(AppleChannelSpec_t)`, compares `uVar2 == primary` with the bandwidth-class match `local_38 == ((uVar5 & 0xffff) >> 0xe)`, and writes the resulting `AppleChanSpec` 16-bit value into `*param_3` on success.
+
+Open: inner sub-fields of the channel descriptor beyond `+0x04` (primary-channel byte in u32 carrier) and `+0x08` (flags word) are not visible in the helper alone; the selector-349 setter still only forwards `param_2 + 4` as a pointer, so any non-channel-descriptor sub-fields in the wire struct beyond that pointer remain open research.
+
+### Selector 25 — `setHostApModeInternal` re-decomp (warned-improved)
+
+The redecomp at `11_setHostApModeInternal_redecomp.c` is a strict improvement over the prior warned/truncated body. The new body size is 1159 bytes; the prior decomp ended early at the first warning site. The new output exposes additional surviving reads in post-call blocks but still carries `Control flow encountered bad instruction data`, four `Bad instruction - Truncating control flow here`, `Could not recover jumptable at 0xffffff800178bebf. Too many branches`, `Treating indirect jump as call`, and `Subroutine does not return` warnings; treat the body as warned-improved, not closed. The `setNoReturn` remediation pass cleared three false-noReturn flags on returning callees that had previously cut off the post-call control-flow recovery: `FUN_ffffff8003222728` at `0xffffff8003222728`, `IO80211SkywalkInterface::getInterfaceId()` at `0xffffff8002274c8e`, and `FUN_ffffff8000101050` at `0xffffff8000101050`. The remaining `Bad instruction - Truncating control flow here` sites are not callee-flag artefacts; closing them needs per-truncation-site `CreateFunction` annotations on the bad-instruction successors plus jumptable target enumeration. Vendor IE programming at `param_2 + 0x2dc` length and `+0x2e0` payload remains a predicted but unrecovered iovar emission.
+
+### Selector 77 — `setRSN_CONF` re-decomp (no per-cipher slot reads visible)
+
+The redecomp at `12_setRSN_CONF_redecomp.c` recovers a 524-byte body. Count and version reads at `param_2 + 0x2c`, `+0x7c`, `+0x08`, `+0x58` are confirmed; the RSN gate byte at `state + 0x29b` low-nibble bit `0x10` is confirmed. The redecomp does not surface inner per-slot reads at `param_2 + 0x30 + i*8` or `param_2 + 0x80 + i*8`; the slot-level wire layout is not visible in this output's blocks. Closing this needs a wider re-decomp that follows the call into the wrapper `apple80211setRSN_CONF` named in `kdk_symbols.txt`, not just the APSTA setter. The single `Subroutine does not return` annotation in this output is the genuinely-noReturn callee `FUN_ffffff8000307340`; the `setNoReturn` remediation pass retained that flag because the callee body has no `RET` instruction.
+
+### Selector 351 — `setSOFTAP_EXTENDED_CAPABILITIES_IE` (clean)
+
+The 59-byte body at `0xffffff800168e7b8` (output `03_setSOFTAP_EXTENDED_CAPABILITIES_IE.c`) zeroes 18 bytes at `state + 0x50..+0x61` (8 bytes via `*(uint64_t *)(state + 0x58) = 0`, 8 bytes via `*(uint64_t *)(state + 0x50) = 0`, and 2 bytes via `*(uint16_t *)(state + 0x60) = 0`), then copies 17 bytes from `param_2 + 0x00..+0x10` into `state + 0x50..+0x60` as: 1 byte at `state + 0x50` from `param_2 + 0x00` (`*(uint8_t *)(state + 0x50) = *param_2`), 8 bytes at `state + 0x51..+0x58` from `param_2 + 0x01..+0x08` (`*(uint64_t *)(state + 0x51) = *(uint64_t *)(param_2 + 1)`), and 8 bytes at `state + 0x59..+0x60` from `param_2 + 0x09..+0x10` (`*(uint64_t *)(state + 0x59) = *(uint64_t *)(param_2 + 9)`). State byte `+0x61` is left at zero after the clear/copy pass. The wire layout of the input carrier is therefore one length byte at `param_2 + 0x00` followed by sixteen IE octets at `param_2 + 0x01..+0x10`; the setter does not validate the length byte beyond the unconditional copy.
+
+### Standalone `setSSID` setter (clean apart from logging branch)
+
+The 102-byte body at `0xffffff800168dc92` (output `04_setSSID_APSTA.c`) is essentially a no-op: it reads the AP-up gate via the core's interface-up check (`(*core)[0xd08]`) and on the not-up path forwards to the logging-fatal helper. The setter never writes the SSID into APSTA private state and does not emit any `bsscfg:ssid` iovar. The actual SSID programming continues to flow through `setHostApModeInternal` via the `bsscfg:ssid` iovar emission documented in the prior section. This output corrects any expectation that selector 79 (`setSSID`) is a primary SSID producer.
+
+### `setHOST_AP_MODE_HIDDEN` (closednet emission and hidden cache)
+
+The 436-byte body at `0xffffff800168d970` (output `01_setHOST_AP_MODE_HIDDEN.c`) reads `*(uint32_t *)(param_2 + 4)` as the hidden-flag value, accepts only `< 2` (boolean), and emits the `closednet` iovar via the host-call helper `FUN_ffffff80016e47e8(stateHandle, ifid, "closednet", &valuePtr, 0, 0)`. On success the setter writes the boolean cache `*(bool *)(state + 0xd) = uStack_2c != 0`. When the transition is hidden=1 → hidden=0 with `state + 0x26c != 0`, the setter calls `FUN_ffffff8001686e62(this, 0, 9)`, clears `*(uint8_t *)(state + 0xe) = 0`, and then calls `holdSoftAPPowerAssertion()`. The pre-condition reproduces the `state + 0x26c == 0` gate observed in the other AP-mode setters: with the AP mirror not up, the setter falls to the diagnostic-emit branch and does not write the `closednet` iovar.
+
+### `setMaxAssoc` cap-gate
+
+The 101-byte body at `0xffffff800168c6ac` (output `07_setMaxAssoc.c`) reads the requested max-station count from `param_2` (signature inferred), reads `*piVar1` (current associated-station count) and `piVar1[2]` (system-wide cap) at `state + 0x00` and `state + 0x08` respectively, and writes the requested count to `piVar1[1]` (`state + 0x04`) only when `(uint)(*piVar1 + param_2) <= (uint)piVar1[2]` holds. Exceeding the gate falls through to a logging-fatal no-op branch via `FUN_ffffff8000307340`. This pins the wire as a `uint32_t` max-station count and the cap as `current + requested <= limit`. The state-offset map already records `state + 0x00` (associated count, read), `state + 0x04` (max, write), `state + 0x08` (limit, read).
+
+### `setNoReturn` remediation log
+
+The follow-up pass cleared three callee `setNoReturn` flags whose call sites had cut off control-flow recovery in `setHostApModeInternal`. The clears apply only to callees whose body still contains a `RET` instruction (heuristic guard). Cleared callees:
+
+- `FUN_ffffff8003222728` at `0xffffff8003222728` — caller `setHostApModeInternal`.
+- `IO80211SkywalkInterface::getInterfaceId()` at `0xffffff8002274c8e` — caller `setHostApModeInternal` and `setRSN_CONF`.
+- `FUN_ffffff8000101050` at `0xffffff8000101050` — caller `setHostApModeInternal`.
+
+Retained `setNoReturn` (correct, callee body has no `RET`):
+
+- `FUN_ffffff8000307340` at `0xffffff8000307340` — logging-fatal terminator used by the diagnostic-emit branches across `01`, `04`, `06`, `07`, `08`, `09`, and `12`.
+
+### Updated open-research list (post-pass)
+
+The pass narrows but does not close decomp/reference debt for the AP control plane. The post-pass open list:
+
+1. Selector 352 inner payload — bytes `0`, `1`, `2` and the 32-byte payload at `+0x04..+0x23` remain producer-side. The bounded pass did not target the producer; closing these needs a separate workpack against `airportd` / `WirelessRadioManager` / `Wireless Diagnostics`, not a `BootKernelExtensions.kc` Ghidra task.
+2. Selector 77 per-cipher sub-blocks at `param_2 + 0x30 + i*8` and `+0x80 + i*8` remain open after the redecomp; the wrapper `apple80211setRSN_CONF` is the next decomp target if the auditor selects another decomp pass.
+3. Selector 349 inner sub-fields beyond `+0x04` (primary-channel byte in u32 carrier accepted in `1..255`) and `+0x08` (flags word) of the channel descriptor remain open; the selector-349 setter only forwards `param_2 + 4` as a pointer.
+4. Selector 25 fields beyond SSID — `setHostApModeInternal_redecomp` is warned-improved, not closed; closing the residual `Bad instruction - Truncating control flow here` sites and the unrecovered jumptable at `0xffffff800178bebf` needs per-truncation-site `CreateFunction` plus jumptable target enumeration.
+5. Selector 26 inner field reads — owner classified to `AppleBCMWLANCore::setAP_MODE` at `0xffffff80016034dc`, but `apple80211_apmode_data` field reads were not the subject of this bounded pass and remain open.
+6. APSTA reset coverage beyond the offsets already proved — the bounded pass did not target reset/free and the prior section's coverage is unchanged.
+
+This open list bounds the residual decomp/reference debt; this document does not assert that the AP control plane is closed.
+
+### Updated allowed-scope check (follow-up pass)
+
+- No selector routing changes added by the follow-up evidence.
+- No host APSTA owner `.cpp` body added.
+- No AP profile carrier or carrier-to-HAL mapper added.
+- No iwx/iwm HOSTAP guard changes.
+- No iwx AP/GO capability gate lifted.
+- No source typedef added by the follow-up evidence.
+- No kext install/reboot/AP runtime/AP-up/project-completion claim.
+- The Ghidra project save on `192.168.40.116` persists the new function entries, names, and corrected `setNoReturn` flags; the project save is reference-side state, not an itlwm source change.
