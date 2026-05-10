@@ -148,6 +148,32 @@ bool ItlIwx::attach(IOPCIDevice *device)
         releaseAll();
         return false;
     }
+
+    /*
+     * One-shot AP/GO HAL boundary self-test.
+     *
+     * Exercises the ItlHalService virtual dispatch on the iwx
+     * backend so observable IOReturn values for startAPMode and
+     * stopAPMode are recorded once per attach. The call is made
+     * through an ItlHalService * to land on the abstract HAL
+     * boundary; on every iwx device today the fail-closed
+     * iwx_softc_supports_ap_go() gate keeps the firmware command
+     * path unreachable, so startAPMode must observe
+     * kIOReturnUnsupported and stopAPMode must be idempotent
+     * (kIOReturnSuccess). The single log line is read from
+     * kernel logs to verify the AP/GO HAL boundary contract
+     * without altering any STA, monitor, AP-mode firmware
+     * command, or APSTA owner code path.
+     */
+    {
+        ItlHalService *hal = static_cast<ItlHalService *>(this);
+        IOReturn ap_start_ret = hal->startAPMode(NULL);
+        IOReturn ap_stop_ret = hal->stopAPMode();
+        XYLog("itlwm: ap-hal-probe gate=%d startAPMode=0x%08x stopAPMode=0x%08x\n",
+              iwx_softc_supports_ap_go(&com) ? 1 : 0,
+              ap_start_ret, ap_stop_ret);
+    }
+
     return true;
 }
 
@@ -349,6 +375,43 @@ bool ItlIwx::
 supportsAPMode() const
 {
     return iwx_softc_supports_ap_go(&com);
+}
+
+/*
+ * AP-mode HAL bring-up entry. Forwards to the iwx-internal
+ * iwx_start_ap_mode() lifecycle helper, which gates on
+ * iwx_softc_supports_ap_go(&com) and short-circuits with
+ * kIOReturnUnsupported when the firmware capability gate rejects
+ * AP/GO operation. EINVAL maps to kIOReturnBadArgument.
+ */
+IOReturn ItlIwx::
+startAPMode(const struct ItlHalApConfig *config)
+{
+    int err = iwx_start_ap_mode(&com, config);
+    if (err == EOPNOTSUPP)
+        return kIOReturnUnsupported;
+    if (err == EINVAL)
+        return kIOReturnBadArgument;
+    if (err != 0)
+        return kIOReturnError;
+    return kIOReturnSuccess;
+}
+
+/*
+ * AP-mode HAL tear-down entry. Forwards to iwx_stop_ap_mode(); when
+ * the firmware capability gate is closed the helper returns 0 so
+ * stopAPMode is idempotent across re-entry from the host APSTA
+ * owner.
+ */
+IOReturn ItlIwx::
+stopAPMode()
+{
+    int err = iwx_stop_ap_mode(&com);
+    if (err == EOPNOTSUPP)
+        return kIOReturnUnsupported;
+    if (err != 0)
+        return kIOReturnError;
+    return kIOReturnSuccess;
 }
 
 #define MUL_NO_OVERFLOW    (1UL << (sizeof(size_t) * 4))
@@ -8443,6 +8506,141 @@ iwx_mac_ctxt_cmd_fill_sta(struct iwx_softc *sc, struct iwx_node *in,
     sta->listen_interval = htole32(10);
     sta->assoc_id = htole32(ni->ni_associd);
     sta->assoc_beacon_arrive_time = htole32(ni->ni_rstamp);
+}
+
+/*
+ * Convert AP-mode beacon-state parameters into firmware-endian AP-arm
+ * wire fields. Beacon-time, beacon-tsf, beacon-interval (TU), DTIM
+ * period (in beacon intervals), the multicast queue id, and the
+ * beacon-template id are written into `struct iwx_mac_data_ap`.
+ * `beacon_tsf` is fixed to zero per the AP_MAC_DATA_API_S_VER_2
+ * contract.
+ */
+void ItlIwx::
+iwx_mac_ctxt_cmd_fill_ap(struct iwx_softc *sc, struct iwx_mac_data_ap *ap,
+                         uint32_t beacon_time, uint32_t bi_tu,
+                         uint32_t dtim_period, uint32_t mcast_qid,
+                         uint32_t beacon_template_id)
+{
+    uint32_t dtim_interval = bi_tu * dtim_period;
+
+    ap->beacon_time = htole32(beacon_time);
+    ap->beacon_tsf = htole64(0);
+    ap->bi = htole32(bi_tu);
+    ap->bi_reciprocal = htole32(iwx_reciprocal(bi_tu));
+    ap->dtim_interval = htole32(dtim_interval);
+    ap->dtim_reciprocal = htole32(iwx_reciprocal(dtim_interval));
+    ap->mcast_qid = htole32(mcast_qid);
+    ap->beacon_template = htole32(beacon_template_id);
+}
+
+/*
+ * Convert P2P GO-mode parameters into firmware-endian GO-arm wire
+ * fields. The embedded AP arm is delegated to
+ * iwx_mac_ctxt_cmd_fill_ap; `ctwin` is the client traffic window in
+ * TU (zero means no CT window) and `opp_ps_enabled` is non-zero when
+ * the GO advertises opportunistic power-save in its NoA attribute.
+ */
+void ItlIwx::
+iwx_mac_ctxt_cmd_fill_go(struct iwx_softc *sc, struct iwx_mac_data_go *go,
+                         uint32_t beacon_time, uint32_t bi_tu,
+                         uint32_t dtim_period, uint32_t mcast_qid,
+                         uint32_t beacon_template_id, uint32_t ctwin,
+                         uint32_t opp_ps_enabled)
+{
+    iwx_mac_ctxt_cmd_fill_ap(sc, &go->ap, beacon_time, bi_tu, dtim_period,
+                             mcast_qid, beacon_template_id);
+    go->ctwin = htole32(ctwin);
+    go->opp_ps_enabled = htole32(opp_ps_enabled);
+}
+
+/*
+ * Build and send an AP/GO MAC-context command. Issues
+ * IWX_MAC_CONTEXT_CMD with mac_type = IWX_FW_MAC_TYPE_GO so the
+ * firmware treats the context as a SoftAP. Per-arm fields come from
+ * the caller-supplied `config`. The command is fail-closed at the
+ * iwx_softc_supports_ap_go() gate: when the gate returns false the
+ * function returns EOPNOTSUPP without touching the firmware.
+ *
+ * Caller-owned: `config` for ADD/MODIFY actions; the REMOVE action
+ * tolerates a NULL `config`.
+ */
+int ItlIwx::
+iwx_mac_ctxt_cmd_ap_send(struct iwx_softc *sc,
+                         const struct ItlHalApConfig *config,
+                         uint32_t action)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_mac_ctx_cmd cmd;
+    uint32_t bi_tu;
+    uint32_t dtim_period;
+    uint32_t mcast_qid = 0;
+    uint32_t beacon_template_id = 0;
+    uint32_t beacon_time = 0;
+
+    if (!iwx_softc_supports_ap_go(sc))
+        return EOPNOTSUPP;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(0, 0));
+    cmd.action = htole32(action);
+    cmd.mac_type = htole32(IWX_FW_MAC_TYPE_GO);
+    cmd.tsf_id = htole32(IWX_TSF_ID_A);
+
+    if (action == IWX_FW_CTXT_ACTION_REMOVE) {
+        return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0,
+                                sizeof(cmd), &cmd);
+    }
+
+    if (config == NULL)
+        return EINVAL;
+
+    IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_myaddr);
+    IEEE80211_ADDR_COPY(cmd.bssid_addr, config->bssid);
+    bi_tu = config->beaconInterval;
+    dtim_period = config->dtimPeriod ? config->dtimPeriod : 1;
+    cmd.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP |
+                               IWX_MAC_FILTER_IN_PROBE_REQUEST);
+
+    iwx_mac_ctxt_cmd_fill_ap(sc, &cmd.ap, beacon_time, bi_tu, dtim_period,
+                             mcast_qid, beacon_template_id);
+
+    return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
+}
+
+/*
+ * Bring AP mode up. Issues IWX_FW_CTXT_ACTION_ADD via
+ * iwx_mac_ctxt_cmd_ap_send when the firmware capability gate admits
+ * AP/GO operation; otherwise returns EOPNOTSUPP. The fail-closed gate
+ * is the iwx_softc_supports_ap_go() helper, which composes the
+ * per-family classification, the IWX_UCODE_TLV_FLAGS_GO_UAPSD flag,
+ * and the IWX_UCODE_TLV_CAPA_BEACON_STORING capability.
+ */
+int ItlIwx::
+iwx_start_ap_mode(struct iwx_softc *sc, const struct ItlHalApConfig *config)
+{
+    if (!iwx_softc_supports_ap_go(sc))
+        return EOPNOTSUPP;
+    if (config == NULL)
+        return EINVAL;
+    return iwx_mac_ctxt_cmd_ap_send(sc, config, IWX_FW_CTXT_ACTION_ADD);
+}
+
+/*
+ * Tear AP mode down. Issues IWX_FW_CTXT_ACTION_REMOVE via
+ * iwx_mac_ctxt_cmd_ap_send when the firmware capability gate admits
+ * AP/GO operation. Returns 0 (idempotent success) when the gate
+ * rejects the operation: tearing down a context that the firmware
+ * never accepted is a no-op rather than an error so re-entrant
+ * stop calls from the host APSTA owner do not propagate spurious
+ * failures.
+ */
+int ItlIwx::
+iwx_stop_ap_mode(struct iwx_softc *sc)
+{
+    if (!iwx_softc_supports_ap_go(sc))
+        return 0;
+    return iwx_mac_ctxt_cmd_ap_send(sc, NULL, IWX_FW_CTXT_ACTION_REMOVE);
 }
 
 int ItlIwx::

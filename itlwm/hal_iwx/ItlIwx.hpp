@@ -169,7 +169,19 @@ public:
      * once the AP-mode firmware command path is implemented.
      */
     bool supportsAPMode() const override;
-    
+
+    /*
+     * AP/GO HAL bring-up and tear-down. Both entries are gated on
+     * iwx_softc_supports_ap_go(&com); when the gate rejects AP/GO
+     * operation startAPMode returns kIOReturnUnsupported and
+     * stopAPMode returns kIOReturnSuccess so the host APSTA owner's
+     * tear-down path is idempotent. Real firmware command issuance
+     * happens only when every gate of the capability surface admits
+     * AP/GO, which is not the case for any current iwx device.
+     */
+    IOReturn startAPMode(const struct ItlHalApConfig *config) override;
+    IOReturn stopAPMode() override;
+
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     
@@ -422,6 +434,20 @@ public:
             struct iwx_mac_ctx_cmd *, uint32_t);
     void    iwx_mac_ctxt_cmd_fill_sta(struct iwx_softc *, struct iwx_node *,
             struct iwx_mac_data_sta *, int);
+    void    iwx_mac_ctxt_cmd_fill_ap(struct iwx_softc *,
+            struct iwx_mac_data_ap *, uint32_t beacon_time,
+            uint32_t bi_tu, uint32_t dtim_period, uint32_t mcast_qid,
+            uint32_t beacon_template_id);
+    void    iwx_mac_ctxt_cmd_fill_go(struct iwx_softc *,
+            struct iwx_mac_data_go *, uint32_t beacon_time,
+            uint32_t bi_tu, uint32_t dtim_period, uint32_t mcast_qid,
+            uint32_t beacon_template_id, uint32_t ctwin,
+            uint32_t opp_ps_enabled);
+    int    iwx_mac_ctxt_cmd_ap_send(struct iwx_softc *,
+            const struct ItlHalApConfig *, uint32_t action);
+    int    iwx_start_ap_mode(struct iwx_softc *,
+            const struct ItlHalApConfig *);
+    int    iwx_stop_ap_mode(struct iwx_softc *);
     int    iwx_mac_ctxt_cmd(struct iwx_softc *, struct iwx_node *, uint32_t, int);
     int    iwx_clear_statistics(struct iwx_softc *);
     int    iwx_update_quotas(struct iwx_softc *, struct iwx_node *, int);
