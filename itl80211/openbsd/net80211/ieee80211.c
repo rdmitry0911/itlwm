@@ -900,6 +900,16 @@ ieee80211_watchdog(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     if (ic->ic_mgt_timer && --ic->ic_mgt_timer == 0) {
+        /*
+         * Publish the WCL reassociation terminal failure selector
+         * for a management-timer expiration that fires while a
+         * host-owned reassociation request is in flight, before the
+         * standard timeout handling transitions the state machine.
+         * The helper's post-send gate filters non-active or pre-send
+         * owners, so the call is a no-op when no reassociation is
+         * outstanding.
+         */
+        ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)ETIMEDOUT);
         if (ic->ic_opmode == IEEE80211_M_STA &&
             (ic->ic_state == IEEE80211_S_AUTH ||
              ic->ic_state == IEEE80211_S_ASSOC)) {
