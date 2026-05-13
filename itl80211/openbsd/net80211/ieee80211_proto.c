@@ -1426,6 +1426,17 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 		 * If mgt = -1, driver is already partway down, so do
 		 * not send management frames.
 		 */
+		/*
+		 * Publish the WCL reassociation terminal failure
+		 * selector when an in-flight host-owned reassociation
+		 * owner is invalidated by a driver-initiated reset
+		 * (signalled by mgt == -1 entering INIT). The helper's
+		 * post-send gate filters non-active and pre-send
+		 * owners, so unrelated INIT transitions remain silent.
+		 */
+		if (mgt == -1)
+			ieee80211_wcl_reassoc_post_failure(ic,
+			    (u_int32_t)ECANCELED);
 		switch (ostate) {
 		case IEEE80211_S_INIT:
 			break;
