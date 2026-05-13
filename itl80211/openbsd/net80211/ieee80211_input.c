@@ -2700,9 +2700,13 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         if (ic->ic_event_handler) {
             (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
         }
+        if (reassoc)
+            ieee80211_wcl_reassoc_post_success(ic);
     }
     
     if (status != IEEE80211_STATUS_SUCCESS) {
+        if (reassoc)
+            ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)status);
         if (ifp->if_flags & IFF_DEBUG)
             XYLog("%s: %sassociation failed (status %d)"
                   " for %s\n", ifp->if_xname,
