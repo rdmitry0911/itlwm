@@ -606,6 +606,7 @@
 		F89F35F72A49867F00061876 /* IO80211ControllerV2.h in Headers */ = {isa = PBXBuildFile; fileRef = F89F35F12A49867F00061876 /* IO80211ControllerV2.h */; };
 		F89F35F82A49867F00061876 /* IO80211ControllerV2.h in Headers */ = {isa = PBXBuildFile; fileRef = F89F35F12A49867F00061876 /* IO80211ControllerV2.h */; };
 		F8A028222A4A7DDC00C6DE90 /* AirportItlwmV2.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A028202A4A7DDC00C6DE90 /* AirportItlwmV2.cpp */; };
+		CCFE467100ABCDEF00DEAD02 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCFE467100ABCDEF00DEAD01 /* AirportItlwmAPSTAStage1Owner.cpp */; };
 		F8A028232A4A7DDC00C6DE90 /* AirportItlwmV2.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8A028212A4A7DDC00C6DE90 /* AirportItlwmV2.hpp */; };
 		F8A0282F2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A0282D2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.cpp */; };
 		F8A028302A4A7E0500C6DE90 /* AirportItlwmEthernetInterface.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8A0282E2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.hpp */; };
@@ -923,6 +924,7 @@
 		F8D94CCB2B9ABFE20081A3C4 /* ecb_enc.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07E423FCBC6C009FBA6C /* ecb_enc.c */; };
 		F8D94CCC2B9ABFE20081A3C4 /* chachapoly.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07E923FCBC6C009FBA6C /* chachapoly.c */; };
 		F8D94CCD2B9ABFE20081A3C4 /* AirportItlwmV2.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A028202A4A7DDC00C6DE90 /* AirportItlwmV2.cpp */; };
+		CCFE467100ABCDEF00DEAD03 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCFE467100ABCDEF00DEAD01 /* AirportItlwmAPSTAStage1Owner.cpp */; };
 		F8D94CCE2B9ABFE20081A3C4 /* (null) in Sources */ = {isa = PBXBuildFile; };
 		F8D94CCF2B9ABFE20081A3C4 /* md5.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07EA23FCBC6C009FBA6C /* md5.c */; };
 		F8D94CD02B9ABFE20081A3C4 /* arc4.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07EB23FCBC6C009FBA6C /* arc4.c */; };
@@ -1064,6 +1066,7 @@
 		F8E94CCB2B9ABFE20081A3C4 /* ecb_enc.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07E423FCBC6C009FBA6C /* ecb_enc.c */; };
 		F8E94CCC2B9ABFE20081A3C4 /* chachapoly.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07E923FCBC6C009FBA6C /* chachapoly.c */; };
 		F8E94CCD2B9ABFE20081A3C4 /* AirportItlwmV2.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A028202A4A7DDC00C6DE90 /* AirportItlwmV2.cpp */; };
+		CCFE467100ABCDEF00DEAD04 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCFE467100ABCDEF00DEAD01 /* AirportItlwmAPSTAStage1Owner.cpp */; };
 		F8E94CCE2B9ABFE20081A3C4 /* (null) in Sources */ = {isa = PBXBuildFile; };
 		F8E94CCF2B9ABFE20081A3C4 /* md5.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07EA23FCBC6C009FBA6C /* md5.c */; };
 		F8E94CD02B9ABFE20081A3C4 /* arc4.c in Sources */ = {isa = PBXBuildFile; fileRef = 024A07EB23FCBC6C009FBA6C /* arc4.c */; };
@@ -1308,6 +1311,7 @@
 		F89B6C2225027609000F77FF /* debug.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = debug.h; sourceTree = "<group>"; };
 		F89F35F12A49867F00061876 /* IO80211ControllerV2.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IO80211ControllerV2.h; sourceTree = "<group>"; };
 		F8A028202A4A7DDC00C6DE90 /* AirportItlwmV2.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AirportItlwmV2.cpp; sourceTree = "<group>"; };
+		CCFE467100ABCDEF00DEAD01 /* AirportItlwmAPSTAStage1Owner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AirportItlwmAPSTAStage1Owner.cpp; sourceTree = "<group>"; };
 		F8A028212A4A7DDC00C6DE90 /* AirportItlwmV2.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = AirportItlwmV2.hpp; sourceTree = "<group>"; };
 		F8A0282D2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AirportItlwmEthernetInterface.cpp; sourceTree = "<group>"; };
 		F8A0282E2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = AirportItlwmEthernetInterface.hpp; sourceTree = "<group>"; };
@@ -1735,6 +1739,7 @@
 				F89B6BBF25021C9C000F77FF /* Info.plist */,
 				F883EC1F266F43F200EA018C /* AirportItlwm-Monterey-Info.plist */,
 				F8A028202A4A7DDC00C6DE90 /* AirportItlwmV2.cpp */,
+				CCFE467100ABCDEF00DEAD01 /* AirportItlwmAPSTAStage1Owner.cpp */,
 				F8A028212A4A7DDC00C6DE90 /* AirportItlwmV2.hpp */,
 				F8A0282D2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.cpp */,
 				F8A0282E2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.hpp */,
@@ -3280,6 +3285,7 @@
 				F8B210E02A2EC2680043ECBD /* ecb_enc.c in Sources */,
 				F8B210E12A2EC2680043ECBD /* chachapoly.c in Sources */,
 				F8A028222A4A7DDC00C6DE90 /* AirportItlwmV2.cpp in Sources */,
+				CCFE467100ABCDEF00DEAD02 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */,
 				F8B210E22A2EC2680043ECBD /* (null) in Sources */,
 				F8B210E32A2EC2680043ECBD /* md5.c in Sources */,
 				F8B210E42A2EC2680043ECBD /* arc4.c in Sources */,
@@ -3360,6 +3366,7 @@
 				F8D94CCB2B9ABFE20081A3C4 /* ecb_enc.c in Sources */,
 				F8D94CCC2B9ABFE20081A3C4 /* chachapoly.c in Sources */,
 				F8D94CCD2B9ABFE20081A3C4 /* AirportItlwmV2.cpp in Sources */,
+				CCFE467100ABCDEF00DEAD03 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */,
 				F8D94CCE2B9ABFE20081A3C4 /* (null) in Sources */,
 				F8D94CCF2B9ABFE20081A3C4 /* md5.c in Sources */,
 				F8D94CD02B9ABFE20081A3C4 /* arc4.c in Sources */,
@@ -3440,6 +3447,7 @@
 				F8E94CCB2B9ABFE20081A3C4 /* ecb_enc.c in Sources */,
 				F8E94CCC2B9ABFE20081A3C4 /* chachapoly.c in Sources */,
 				F8E94CCD2B9ABFE20081A3C4 /* AirportItlwmV2.cpp in Sources */,
+				CCFE467100ABCDEF00DEAD04 /* AirportItlwmAPSTAStage1Owner.cpp in Sources */,
 				F8E94CCE2B9ABFE20081A3C4 /* (null) in Sources */,
 				F8E94CCF2B9ABFE20081A3C4 /* md5.c in Sources */,
 				F8E94CD02B9ABFE20081A3C4 /* arc4.c in Sources */,
