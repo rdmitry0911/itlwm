@@ -6007,10 +6007,20 @@ deliverExternalPMK(const struct apple80211_key *key)
  * without touching driver state and the boot-time HostAP probe
  * completes without producing a fake AP-mode side effect.
  *
- * setMIS_MAX_STA gates on the APSTA AP-up flag; when AP is up it
- * forwards the input dword +0x00 to a maxassoc backend, ignores
- * the helper result, and returns success. When AP is down the body
- * silently returns success.
+ * setMIS_MAX_STA follows the same controller-to-owner routing
+ * pattern. The recovered Apple body gates on the APSTA AP-up flag;
+ * when AP is up it forwards the input dword +0x00 to the maxassoc
+ * backend, ignores the helper result, and returns success, and
+ * when AP is down the body silently returns success. That AP-up
+ * gate, the [1, IEEE80211_AID_DEF] clamp, the APSTA state-block
+ * fields softapMaxAssoc04/softapMaxAssocLimit08, and the
+ * net80211 ic->ic_max_aid mutation all live inside the host
+ * APSTA owner (AirportItlwmAPSTAStage1Owner::setMisMaxSta and
+ * setMaxAssoc) so the controller-layer selector is purely a
+ * forward to the owner. When the owner is absent (default STA
+ * boot before role-7 create) the recovered Apple body still
+ * returns success without firmware interaction, so the selector
+ * returns success without touching driver state.
  *
  * The local backend for the maxassoc admission limit is the
  * OpenBSD net80211 ic->ic_max_aid field, consumed by the existing
@@ -6019,7 +6029,7 @@ deliverExternalPMK(const struct apple80211_key *key)
  * bitmap allocated at attach time covers IEEE80211_AID_DEF
  * entries; raising ic_max_aid above that capacity would overrun
  * ic_aid_bitmap and ic_tim_bitmap, so writes are clamped to
- * [1, IEEE80211_AID_DEF].
+ * [1, IEEE80211_AID_DEF] inside the owner's setMaxAssoc body.
  *
  * Functional AP-mode operation requires separate iwx/iwm HAL work
  * (both currently panic on IEEE80211_M_HOSTAP). This wiring stops
@@ -6037,7 +6047,7 @@ bool AirportItlwm::isHostApRunning() const
      * advertise AP/GO firmware support, so the owner's isApRunning
      * gate stays false in the present runtime; this preserves the
      * structurally-false AP-up behaviour that selector callers
-     * (setMIS_MAX_STA, setMaxAssoc, downstream HostAP probes)
+     * (setMIS_MAX_STA owner forward, downstream HostAP probes)
      * depend on. Once a HAL backend advertises AP/GO and
      * startLowerIfReady succeeds, the owner publishes AP-up true
      * through this gate without any further selector wiring change.
@@ -6105,36 +6115,6 @@ void AirportItlwm::deleteAPSTAOwner()
     fAPSTAOwner = NULL;
 }
 
-IOReturn AirportItlwm::setMaxAssoc(uint32_t value)
-{
-    if (fHalService == nullptr) {
-        return kIOReturnNotReady;
-    }
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic == nullptr) {
-        return kIOReturnNotReady;
-    }
-    /*
-     * Clamp invariant: ic_aid_bitmap and ic_tim_bitmap are sized at
-     * attach against ic_max_aid using IEEE80211_AID_DEF when the
-     * field is unset (see ieee80211_node_attach in
-     * itl80211/openbsd/net80211/ieee80211_node.c). Reducing the
-     * limit below the previously allocated capacity is always safe
-     * because the ieee80211_node_join admission loop only inspects
-     * bitmap indices < ic_max_aid; raising the limit above the
-     * allocated capacity is rejected here to preserve the
-     * bitmap-size invariant.
-     */
-    if (value < 1) {
-        value = 1;
-    }
-    if (value > IEEE80211_AID_DEF) {
-        value = IEEE80211_AID_DEF;
-    }
-    ic->ic_max_aid = (uint16_t)value;
-    return kIOReturnSuccess;
-}
-
 IOReturn AirportItlwm::
 setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
     struct apple80211_softap_extended_capabilities_info *in)
@@ -6171,14 +6151,25 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
         return kIOReturnBadArgument;
     }
     /*
-     * Recovered Apple body: AP-up gate; when AP is operational
-     * forward input dword +0x00 to setMaxAssoc and ignore its
-     * result, otherwise the body is silently a no-op. The
-     * dispatcher returns success unconditionally per the recovered
-     * contract.
+     * Forward the selector input through the host APSTA owner's
+     * setMisMaxSta entry point. The owner enforces the recovered
+     * Apple AP-up gate (only an owner whose lifecycle is Running
+     * and whose lower-HAL startAPMode has reported success
+     * publishes AP-up true), and on AP-up forwards the input
+     * dword +0x00 through the owner's setMaxAssoc, which writes
+     * softapMaxAssoc04/softapMaxAssocLimit08 in the APSTA state
+     * block and updates the net80211 ic->ic_max_aid admission
+     * limit while preserving the AID/TIM bitmap invariant. The
+     * recovered Apple body returns success without firmware
+     * interaction whether AP is up or down, so the absence of
+     * the owner (default STA boot before role-7 create) is not
+     * an error: the controller-layer selector returns success
+     * without touching driver state, preserving the boot-time
+     * HostAP probe completion without producing a fake AP-mode
+     * side effect.
      */
-    if (isHostApRunning()) {
-        (void)setMaxAssoc(in->value00);
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnSuccess;
     }
-    return kIOReturnSuccess;
+    return fAPSTAOwner->setMisMaxSta(in);
 }
