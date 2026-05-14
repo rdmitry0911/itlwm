@@ -2721,8 +2721,21 @@ void AirportItlwm::releaseAll()
      * clears the station table; running teardown after fHalService
      * has been released would leave the lower-stop call without a
      * HAL service and skip the contractual stopAPMode invocation.
+     *
+     * Unbind the producer-bridge consumer before releasing the
+     * owner so the producer reads NULL cb/arg fields after the
+     * owner storage is reclaimed. The unregister API requires the
+     * cookie passed at register time and is a no-op when no
+     * consumer is currently bound, so calling it unconditionally
+     * is safe.
      */
     if (fAPSTAOwner != NULL) {
+        if (fHalService != NULL) {
+            struct ieee80211com *ic = fHalService->get80211Controller();
+            if (ic != NULL) {
+                ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
+            }
+        }
         fAPSTAOwner->release();
         fAPSTAOwner = NULL;
     }
@@ -6089,6 +6102,29 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
         return nullptr;
     }
     fAPSTAOwner = owner;
+    /*
+     * Bind the host APSTA owner as the net80211 station-event
+     * consumer for this controller. The producer bridge in
+     * ieee80211_node_join / ieee80211_node_leave publishes
+     * IEEE80211_APSTA_EVENT_{ASSOC,REASSOC,LEAVE} when an AP
+     * station transitions; the registration is structurally
+     * inert in default IEEE80211_STA_ONLY builds because those
+     * publish call sites are not compiled. The producer-bridge
+     * register is idempotent for the same (cb, arg) pair and
+     * the bridge snapshots cb/arg at publication, so paired
+     * (un)register around owner lifetime is sufficient. A
+     * register failure is treated as non-fatal because the
+     * owner itself is functional without the bridge binding;
+     * the binding is only load-bearing once an AP-opt-out
+     * build compiles the publish call sites.
+     */
+    if (fHalService != NULL) {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (ic != NULL) {
+            (void)ieee80211_apsta_event_register(
+                ic, AirportItlwmAPSTAStage1Net80211Event, owner);
+        }
+    }
     return fAPSTAOwner;
 }
 
@@ -6110,6 +6146,19 @@ void AirportItlwm::deleteAPSTAOwner()
 {
     if (fAPSTAOwner == NULL) {
         return;
+    }
+    /*
+     * Unbind the producer-bridge consumer before releasing the
+     * owner so a producer with stale cb/arg cannot dispatch into
+     * reclaimed owner storage. The unregister API uses the cookie
+     * passed at register time and is a no-op when no consumer is
+     * currently bound.
+     */
+    if (fHalService != NULL) {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (ic != NULL) {
+            ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
+        }
     }
     fAPSTAOwner->release();
     fAPSTAOwner = NULL;

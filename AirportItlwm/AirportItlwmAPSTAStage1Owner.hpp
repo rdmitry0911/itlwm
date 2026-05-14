@@ -24,9 +24,9 @@ struct ieee80211_node;
 
 extern "C" void AirportItlwmAPSTAStage1Net80211Event(
     struct ieee80211com *ic,
-    void *arg,
-    uint32_t eventType,
-    const struct ieee80211_node *ni);
+    struct ieee80211_node *ni,
+    int event,
+    void *arg);
 
 enum AirportItlwmAPSTAStage1LifecycleState {
     kAirportItlwmAPSTAStage1Unallocated = 0,
