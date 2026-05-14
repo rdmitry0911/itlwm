@@ -213,6 +213,9 @@ extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);
 }
 
+class AirportItlwmAPSTAStage1Owner;
+struct apple80211_virt_if_create_data;
+
 class AirportItlwm : public IO80211Controller {
     OSDeclareDefaultStructors(AirportItlwm)
 #define IOCTL(REQ_TYPE, REQ, DATA_TYPE) \
@@ -459,6 +462,16 @@ public:
     bool isHostApRunning() const;
     IOReturn setMaxAssoc(uint32_t value);
 
+    /*
+     * Host APSTA owner accessors. Role-7 (APPLE80211_VIF_SOFT_AP)
+     * acquisition allocates the owner through ensureAPSTAOwner();
+     * driver release tears it down through deleteAPSTAOwner().
+     * The owner reports AP-up status through isHostApRunning().
+     */
+    AirportItlwmAPSTAStage1Owner *ensureAPSTAOwner(
+        const struct apple80211_virt_if_create_data *create);
+    void deleteAPSTAOwner();
+
 public:
     IOInterruptEventSource* fInterrupt;
     IOTimerEventSource *watchdogTimer;
@@ -478,6 +491,7 @@ public:
     IO80211SkywalkInterface *fNetIf;
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
+    AirportItlwmAPSTAStage1Owner *fAPSTAOwner;
 
     // Skywalk packet pools and queues for proper Sequoia registration
     IOSkywalkPacketBufferPool *fTxPool;

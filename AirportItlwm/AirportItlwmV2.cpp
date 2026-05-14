@@ -8,6 +8,7 @@
 
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmRegDiag.hpp"
+#include "AirportItlwmAPSTAStage1Owner.hpp"
 #include <sys/_netstat.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
@@ -2713,6 +2714,18 @@ void AirportItlwm::releaseAll()
         io80211FaultReporter->release();
         io80211FaultReporter = NULL;
     }
+    /*
+     * Tear down the host APSTA owner before fHalService.
+     * AirportItlwmAPSTAStage1Owner::teardown stops the lower AP
+     * backend (if it was ever started) through fHalService and
+     * clears the station table; running teardown after fHalService
+     * has been released would leave the lower-stop call without a
+     * HAL service and skip the contractual stopAPMode invocation.
+     */
+    if (fAPSTAOwner != NULL) {
+        fAPSTAOwner->release();
+        fAPSTAOwner = NULL;
+    }
     if (fHalService) {
         XYLog("DEBUG %s [2] releasing fHalService=%p\n", __FUNCTION__, fHalService);
         fHalService->release();
@@ -3040,6 +3053,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxCompletionPendingHead = 0;
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
+    fAPSTAOwner = NULL;
     if (fRxPendingLock == NULL || fTxCompletionPendingLock == NULL)
         ret = false;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
@@ -6003,20 +6017,80 @@ deliverExternalPMK(const struct apple80211_key *key)
 bool AirportItlwm::isHostApRunning() const
 {
     /*
-     * HostAP mode is structurally unreachable on this driver:
-     *   - The build defines IEEE80211_STA_ONLY, which hides
-     *     IEEE80211_M_HOSTAP from the ieee80211_opmode enumeration
-     *     (see itl80211/openbsd/net80211/ieee80211_var.h:259-268).
-     *   - The iwx and iwm firmware MAC-context command paths
-     *     panic on any opmode that is not STA or MONITOR
-     *     (itlwm/hal_iwx/ItlIwx.cpp:8428 and
-     *     itlwm/hal_iwm/mac80211.cpp:2019).
-     * The recovered Apple contract for setMIS_MAX_STA reads
-     * "if AP-up state is nonzero, ...; ignore helper result;
-     * return success", so a structurally-false AP-up gate yields
-     * the truthful no-backend-call return-success branch.
+     * Recovered Apple AppleBCMWLAN APSTA contract: AP-up is true
+     * only when the host APSTA owner is present (allocated by
+     * role-7 create) AND the lower HAL backend has reported a
+     * successful startAPMode through AirportItlwmAPSTAStage1Owner::
+     * startLowerIfReady. The iwx and iwm HALs do not currently
+     * advertise AP/GO firmware support, so the owner's isApRunning
+     * gate stays false in the present runtime; this preserves the
+     * structurally-false AP-up behaviour that selector callers
+     * (setMIS_MAX_STA, setMaxAssoc, downstream HostAP probes)
+     * depend on. Once a HAL backend advertises AP/GO and
+     * startLowerIfReady succeeds, the owner publishes AP-up true
+     * through this gate without any further selector wiring change.
      */
-    return false;
+    if (fAPSTAOwner == NULL) {
+        return false;
+    }
+    return fAPSTAOwner->isApRunning();
+}
+
+/*
+ * Host APSTA owner factory.
+ *
+ * ensureAPSTAOwner is invoked from the role-7 (APPLE80211_VIF_SOFT_AP)
+ * dispatch in AirportItlwmSkywalkInterface::setVIRTUAL_IF_CREATE.
+ * It returns the existing owner if role-7 create has been called
+ * before; otherwise it allocates a new AirportItlwmAPSTAStage1Owner
+ * and initializes it from the carrier descriptor. The owner stores
+ * the carrier role, MAC address, and BSD name, and prepares the
+ * APSTA state block (max-assoc default, beacon interval, DTIM)
+ * before this function returns. AP-up remains false until a HAL
+ * backend advertises AP/GO and startLowerIfReady succeeds.
+ */
+AirportItlwmAPSTAStage1Owner *
+AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *create)
+{
+    if (create == nullptr) {
+        return nullptr;
+    }
+    if (fAPSTAOwner != NULL) {
+        return fAPSTAOwner;
+    }
+    AirportItlwmAPSTAStage1Owner *owner = new AirportItlwmAPSTAStage1Owner;
+    if (owner == NULL) {
+        return nullptr;
+    }
+    if (!owner->initWithController(this, create)) {
+        owner->release();
+        return nullptr;
+    }
+    fAPSTAOwner = owner;
+    return fAPSTAOwner;
+}
+
+/*
+ * Host APSTA owner cleanup.
+ *
+ * deleteAPSTAOwner is the explicit teardown path. It releases the
+ * owner reference, which invokes AirportItlwmAPSTAStage1Owner::free
+ * -> teardown -> stopLower, stopping the lower AP backend through
+ * fHalService and clearing the station table before the owner
+ * memory is reclaimed. The Tahoe Skywalk dispatch surface does
+ * not expose a per-role-7 delete entry point, so this function is
+ * reached through AirportItlwm::releaseAll during driver release;
+ * the legacy AirportSTAIOCTL setVIRTUAL_IF_DELETE wiring will reuse
+ * this path when its dispatch is migrated to the host owner in a
+ * follow-up layer.
+ */
+void AirportItlwm::deleteAPSTAOwner()
+{
+    if (fAPSTAOwner == NULL) {
+        return;
+    }
+    fAPSTAOwner->release();
+    fAPSTAOwner = NULL;
 }
 
 IOReturn AirportItlwm::setMaxAssoc(uint32_t value)
