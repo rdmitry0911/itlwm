@@ -3214,7 +3214,19 @@ ieee80211_node_join(struct ieee80211com *ic, struct ieee80211_node *ni,
         ni->ni_rsncipher = IEEE80211_CIPHER_USEGROUP;
     } else
         ieee80211_node_join_rsn(ic, ni);
-    
+
+    /*
+     * Publish the AP station-event to the registered consumer. The
+     * publication is dormant when no consumer is registered, so this
+     * is a harmless no-op in builds that compile the AP path but do
+     * not allocate an APSTA owner. The newassoc flag computed at the
+     * top of this function distinguishes a fresh association from a
+     * reassociation against an already-associated station.
+     */
+    ieee80211_apsta_event_publish(ic, ni,
+        newassoc ? IEEE80211_APSTA_EVENT_ASSOC :
+                   IEEE80211_APSTA_EVENT_REASSOC);
+
 #if NBRIDGE > 0
     /*
      * If the parent interface is a bridge port, learn
@@ -3381,7 +3393,16 @@ ieee80211_node_leave(struct ieee80211com *ic, struct ieee80211_node *ni)
 
     if (ic->ic_node_leave != NULL)
         (*ic->ic_node_leave)(ic, ni);
-    
+
+    /*
+     * Publish the AP station-leave event before the node is moved
+     * into IEEE80211_STA_COLLECT so the consumer still observes the
+     * association id and per-station state that identify the entry
+     * to remove. The publication is dormant when no consumer is
+     * registered.
+     */
+    ieee80211_apsta_event_publish(ic, ni, IEEE80211_APSTA_EVENT_LEAVE);
+
     ieee80211_node_newstate(ni, IEEE80211_STA_COLLECT);
     
 #if NBRIDGE > 0
@@ -3553,6 +3574,85 @@ ieee80211_ess_cmp(const struct ieee80211_ess_rbt *b1,
                   const struct ieee80211_ess_rbt *b2)
 {
     return (memcmp(b1->essid, b2->essid, IEEE80211_NWID_LEN));
+}
+
+/*
+ * Net80211 AP station-event producer bridge.
+ *
+ * The bridge publishes per-station lifecycle events from the AP-mode
+ * node management code (ieee80211_node_join, ieee80211_node_leave) to
+ * a single host-owned APSTA owner consumer. The producer is dormant
+ * until ieee80211_apsta_event_register installs a callback, so client
+ * builds and AP-opt-out builds with no role-7 owner allocated never
+ * observe a behavior change at the publication call sites.
+ *
+ * Concurrency invariants come from the controller layer that owns
+ * APSTA owner allocation: register and unregister are paired with the
+ * existing role-7 create/delete and controller stop/free transitions
+ * and are not called from interrupt context. The bridge itself takes
+ * no lock; it reads ic_apsta_event_cb/ic_apsta_event_arg as plain
+ * fields and forwards them to the consumer.
+ */
+
+int
+ieee80211_apsta_event_register(struct ieee80211com *ic,
+    ieee80211_apsta_event_cb_t cb, void *arg)
+{
+    if (cb == NULL)
+        return EINVAL;
+    /*
+     * Accept idempotent re-registration of the same consumer with
+     * the same cookie so role-7 create handlers may be re-entered
+     * during owner allocation without tripping the gate. Reject any
+     * attempt to install a different consumer or cookie while one
+     * is already registered; the controller layer must explicitly
+     * unregister the old consumer first.
+     */
+    if (ic->ic_apsta_event_cb != NULL &&
+        (ic->ic_apsta_event_cb != cb ||
+         ic->ic_apsta_event_arg != arg))
+        return EBUSY;
+    ic->ic_apsta_event_cb = cb;
+    ic->ic_apsta_event_arg = arg;
+    return 0;
+}
+
+void
+ieee80211_apsta_event_unregister(struct ieee80211com *ic, void *arg)
+{
+    if (ic->ic_apsta_event_cb == NULL)
+        return;
+    /*
+     * Identity check: a stale teardown that arrives after a new
+     * owner has registered must not silently clear the new
+     * consumer's callback. Callers that pass a non-matching cookie
+     * are no-ops by design.
+     */
+    if (ic->ic_apsta_event_arg != arg)
+        return;
+    ic->ic_apsta_event_cb = NULL;
+    ic->ic_apsta_event_arg = NULL;
+}
+
+void
+ieee80211_apsta_event_publish(struct ieee80211com *ic,
+    struct ieee80211_node *ni, int event)
+{
+    ieee80211_apsta_event_cb_t cb;
+    void *arg;
+
+    /*
+     * Snapshot the callback and cookie before invoking the consumer
+     * so a concurrent unregister cannot tear them out from under
+     * the in-flight publication. The producer holds no extra
+     * reference on ni; the consumer must take its own reference if
+     * it needs the node beyond the callback frame.
+     */
+    cb = ic->ic_apsta_event_cb;
+    arg = ic->ic_apsta_event_arg;
+    if (cb == NULL)
+        return;
+    cb(ic, ni, event, arg);
 }
 
 /*
