@@ -460,7 +460,6 @@ public:
     IOReturn setMIS_MAX_STA(OSObject *object,
         struct apple80211_mis_max_sta *data);
     bool isHostApRunning() const;
-    IOReturn setMaxAssoc(uint32_t value);
 
     /*
      * Host APSTA owner accessors. Role-7 (APPLE80211_VIF_SOFT_AP)
