@@ -5992,13 +5992,25 @@ deliverExternalPMK(const struct apple80211_key *key)
  * qword +0x58 and word +0x60 (bytes 0x50..0x61), then writes the
  * input fields back at state offsets +0x50 (1 byte from input
  * +0x00), +0x51 (qword from input +0x01) and +0x59 (qword from
- * input +0x09). The qword writes at +0x51 and +0x59 are unaligned,
- * which is why the local mirror is a tightly packed 17-byte
- * struct. The selector returns success without firmware
- * interaction. setMIS_MAX_STA gates on the APSTA AP-up flag; when
- * AP is up it forwards the input dword +0x00 to a maxassoc
- * backend, ignores the helper result, and returns success. When AP
- * is down the body silently returns success.
+ * input +0x09). The qword writes at +0x51 and +0x59 are unaligned
+ * inside the cleared region. That offset-pinned layout is held in
+ * the host APSTA owner's state block: the
+ * AirportItlwmAPSTAStateBlock fields softapAppleVendorIEExtra50,
+ * softapAppleVendorIETail51 and softapAppleVendorIETail59 are
+ * pinned to +0x50/+0x51/+0x59 by the compile-time static_asserts
+ * in AirportItlwmAPSTAInterface.hpp. The controller-layer selector
+ * forwards input through AirportItlwmAPSTAStage1Owner::
+ * setSoftAPExtCaps when the host APSTA owner has been allocated by
+ * role-7 create. When the owner is absent (default STA boot before
+ * role-7 create) the recovered Apple body still returns success
+ * without firmware interaction, so the selector returns success
+ * without touching driver state and the boot-time HostAP probe
+ * completes without producing a fake AP-mode side effect.
+ *
+ * setMIS_MAX_STA gates on the APSTA AP-up flag; when AP is up it
+ * forwards the input dword +0x00 to a maxassoc backend, ignores
+ * the helper result, and returns success. When AP is down the body
+ * silently returns success.
  *
  * The local backend for the maxassoc admission limit is the
  * OpenBSD net80211 ic->ic_max_aid field, consumed by the existing
@@ -6011,8 +6023,8 @@ deliverExternalPMK(const struct apple80211_key *key)
  *
  * Functional AP-mode operation requires separate iwx/iwm HAL work
  * (both currently panic on IEEE80211_M_HOSTAP). This wiring stops
- * at selector dispatch + APSTA state mirror + admission-limit
- * plumbing; AP firmware enablement is residual scope.
+ * at selector dispatch + APSTA owner state mirror + admission-
+ * limit plumbing; AP firmware enablement is residual scope.
  */
 bool AirportItlwm::isHostApRunning() const
 {
@@ -6131,31 +6143,25 @@ setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
         return kIOReturnBadArgument;
     }
     /*
-     * Recovered Apple body clears state qword +0x50, qword +0x58
-     * and word +0x60 (covering bytes 0x50..0x61), and then writes
-     * input byte +0x00 to state +0x50, input qword +0x01 to state
-     * +0x51 and input qword +0x09 to state +0x59. The qword writes
-     * at +0x51 and +0x59 are unaligned inside the cleared region.
-     *
-     * The local mirror reuses the same packed wire-carrier type
-     * (apple80211_softap_extended_capabilities_info), so its three
-     * fields physically land at mirror offsets +0x00, +0x01 and
-     * +0x09 — corresponding to state +0x50, +0x51 and +0x59 — and
-     * the qword fields are unaligned inside the mirror exactly as
-     * they are inside the cleared APSTA region. The compile-time
-     * static_asserts on the carrier type enforce this layout.
-     * Each scalar assignment below fully overwrites the prior value
-     * at its mirror offset, which subsumes the recovered clear+write
-     * sequence for that field. The single byte at state +0x61 is
-     * cleared by the recovered body but is not written by either
-     * the recovered body or this mirror; it lies past the end of the
-     * 17-byte mirror, so the local representation does not need to
-     * track it.
+     * Forward the selector input through the host APSTA owner's
+     * setSoftAPExtCaps entry point, which mirrors flag00/value01/
+     * value09 into the offset-pinned state-block fields
+     * softapAppleVendorIEExtra50/Tail51/Tail59 (recovered Apple
+     * +0x50/+0x51/+0x59 layout, with the +0x51 and +0x59 qwords
+     * unaligned inside the cleared region; the offsets are pinned
+     * by the compile-time static_asserts in
+     * AirportItlwmAPSTAInterface.hpp). The recovered Apple body
+     * returns success without firmware interaction, so the absence
+     * of the owner (default STA boot before role-7 create) is not
+     * an error: the controller-layer selector returns success
+     * without touching driver state, preserving the boot-time
+     * HostAP probe completion without producing a fake AP-mode
+     * side effect.
      */
-    fAPSTASoftApExtCapsState.flag00  = in->flag00;
-    fAPSTASoftApExtCapsState.value01 = in->value01;
-    fAPSTASoftApExtCapsState.value09 = in->value09;
-    return kIOReturnSuccess;
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnSuccess;
+    }
+    return fAPSTAOwner->setSoftAPExtCaps(in);
 }
 
 IOReturn AirportItlwm::
