@@ -356,14 +356,14 @@ IOReturn AirportItlwmAPSTAStage1Owner::publishStationEventFromNet80211(
 
 extern "C" void AirportItlwmAPSTAStage1Net80211Event(
     struct ieee80211com *ic,
-    void *arg,
-    uint32_t eventType,
-    const struct ieee80211_node *ni)
+    struct ieee80211_node *ni,
+    int event,
+    void *arg)
 {
     (void)ic;
     AirportItlwmAPSTAStage1Owner *owner = static_cast<AirportItlwmAPSTAStage1Owner *>(arg);
     if (owner == nullptr || ni == nullptr) {
         return;
     }
-    (void)owner->publishStationEventFromNet80211(eventType, ni->ni_macaddr, 0);
+    (void)owner->publishStationEventFromNet80211(static_cast<uint32_t>(event), ni->ni_macaddr, 0);
 }
