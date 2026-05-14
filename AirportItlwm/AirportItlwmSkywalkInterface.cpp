@@ -9,6 +9,7 @@
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwmAPSTAStage1Owner.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -4764,46 +4765,52 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
             return static_cast<IOReturn>(kAirportItlwmAPSTACreateFailedReturn);
         case 7: {
             /*
-             * Recovered APSTA role-7 acquisition contract: validate
-             * the carrier through the host APSTA owner skeleton and
-             * fail closed at the lower-backend gate.
+             * Recovered APSTA role-7 acquisition contract.
              *
-             * The lower-backend gate is structurally false on this
-             * driver: the iwx/iwm HALs do not expose AP/GO firmware
-             * MAC-context support, the OpenBSD net80211 build keeps
-             * IEEE80211_STA_ONLY in scope, and there is no AP
-             * firmware event producer bridge. While those surfaces
-             * are absent, role-7 acquisition fails closed at the
-             * gate with the recovered Apple "create-failed" return
-             * code (0xe00002bd), and no AP interface, AP-up state,
-             * beaconing, or station publication is exposed.
+             * The recovered Apple AppleBCMWLAN APSTA contract for
+             * role-7 (APPLE80211_VIF_SOFT_AP) decouples owner
+             * lifetime from AP firmware bring-up: role-7 create
+             * allocates a host APSTA owner that owns the APSTA
+             * state block, station table, AP-up gate, and SoftAP
+             * selector mirror, while AP-up remains false until the
+             * lower HAL backend explicitly advertises and starts
+             * AP mode. The host owner therefore reports create
+             * success even when the lower HAL backend is
+             * fail-closed.
              *
-             * The owner is stack-local: it is constructed,
-             * validated, cleared, and destroyed inside this handler
-             * invocation. The clear() call enforces deterministic
-             * cleanup ordering on every exit edge so the storage
-             * invariant remains "owner inactive" once this handler
-             * returns. The skeleton does not implement a persistent
-             * owner state, an existing-owner check, or a delete
-             * path; those edges depend on the lower-backend support
-             * named above.
+             * The owner is controller-stored (instance->fAPSTAOwner)
+             * so its lifetime spans role-7 create through driver
+             * release. ensureAPSTAOwner returns the existing owner
+             * if a previous create call already allocated one;
+             * otherwise it allocates a new owner and initializes it
+             * from the carrier descriptor. Cleanup is performed in
+             * AirportItlwm::releaseAll() before fHalService is
+             * released. The Tahoe Skywalk dispatch surface does not
+             * expose a per-role-7 delete entry point, so explicit
+             * deleteAPSTAOwner() is not called from this handler.
+             *
+             * The lower HAL backend is currently fail-closed: the
+             * iwx and iwm HALs do not advertise AP/GO firmware
+             * support, so AirportItlwmAPSTAStage1Owner::isApRunning
+             * stays false after create. The recovered Apple
+             * contract treats that case as "owner present, AP-up
+             * false". setMIS_MAX_STA,
+             * setSOFTAP_EXTENDED_CAPABILITIES_IE, beacon/key/CSA,
+             * and station-event publication remain structurally
+             * inert until a HAL backend advertises AP/GO and
+             * startLowerIfReady succeeds.
              */
-            AirportItlwmAPSTAInterface tentativeOwner;
-            if (!tentativeOwner.initWithCarrier(
-                    static_cast<uint32_t>(data->role), data->mac,
-                    reinterpret_cast<const char *>(data->bsd_name))) {
-                tentativeOwner.clear();
+            if (instance == nullptr) {
+                return kIOReturnNotReady;
+            }
+            AirportItlwmAPSTAStage1Owner *owner =
+                instance->ensureAPSTAOwner(data);
+            if (owner == nullptr) {
                 return static_cast<IOReturn>(
                     kAirportItlwmAPSTARawInvalidArgumentReturn);
             }
-            const bool lowerReady =
-                AirportItlwmAPSTAInterface::isLowerBackendReady();
-            tentativeOwner.clear();
-            if (!lowerReady)
-                return static_cast<IOReturn>(
-                    kAirportItlwmAPSTACreateFailedReturn);
-            return static_cast<IOReturn>(
-                kAirportItlwmAPSTACreateFailedReturn);
+            (void)owner->startLowerIfReady();
+            return kIOReturnSuccess;
         }
         default:
             return static_cast<IOReturn>(0xe0000001);
