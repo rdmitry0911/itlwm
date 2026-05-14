@@ -2126,7 +2126,31 @@ iwm_mac_ctxt_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action,
         XYLog("MAC already removed");
         return 0;
     }
-    
+
+    /*
+     * Operating-mode admission gate for the iwm MAC-context firmware
+     * command. iwm_mac_ctxt_cmd_common() encodes the firmware MAC type
+     * from ic->ic_opmode and aborts with panic("unsupported operating
+     * mode") when the opmode is neither IEEE80211_M_MONITOR nor
+     * IEEE80211_M_STA. The iwm HAL does not advertise an AP/GO
+     * MAC-context backend, and no reviewed runtime can currently bring
+     * AP-up true on this HAL. Even so, refuse the command at the
+     * wrapper layer with ENOTSUP for any opmode value outside the two
+     * supported families; this keeps the void helper unreachable from
+     * a non-supported opmode and turns a future host-side opmode
+     * regression into a logged, recoverable error rather than a kernel
+     * panic. The guard becomes load-bearing once the upcoming
+     * IEEE80211_STA_ONLY removal allows IEEE80211_M_HOSTAP,
+     * IEEE80211_M_IBSS, or IEEE80211_M_AHDEMO to propagate from
+     * net80211 into this HAL.
+     */
+    if (ic->ic_opmode != IEEE80211_M_MONITOR &&
+        ic->ic_opmode != IEEE80211_M_STA) {
+        XYLog("%s: refusing MAC context cmd for unsupported ic_opmode %d\n",
+              __FUNCTION__, ic->ic_opmode);
+        return ENOTSUP;
+    }
+
     memset(&cmd, 0, sizeof(cmd));
     
     iwm_mac_ctxt_cmd_common(sc, in, &cmd, action);
