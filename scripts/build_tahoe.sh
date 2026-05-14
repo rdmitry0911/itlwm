@@ -4,24 +4,72 @@
 #  itlwm
 #
 #  Builds only AirportItlwm.kext for Tahoe and stages it into:
-#    Build/Debug/Tahoe/AirportItlwm.kext
+#    Build/Debug/Tahoe/AirportItlwm.kext         (default STA-only build)
+#    Build/Debug/Tahoe-OptOut/AirportItlwm.kext  (IEEE80211_OPT_OUT_STA_ONLY build)
 #  Then verifies all undefined symbols resolve against the target
 #  kernel's BootKernelExtensions.kc.
 #
 #  Usage:
-#    ./scripts/build_tahoe.sh [BOOTKC_PATH]
+#    ./scripts/build_tahoe.sh [--opt-out] [BOOTKC_PATH]
+#    BUILD_OPT_OUT_STA_ONLY=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
+#
+#  --opt-out / BUILD_OPT_OUT_STA_ONLY=1 selects the AP-mode exploration
+#  build variant. The variant defines IEEE80211_OPT_OUT_STA_ONLY in
+#  GCC_PREPROCESSOR_DEFINITIONS, which the header-level enabler in
+#  itl80211/openbsd/net80211/ieee80211_var.h resolves into an undef
+#  of IEEE80211_STA_ONLY for every translation unit that includes the
+#  header. The result is a kext that compiles the AP/HOSTAP code paths
+#  in net80211 (including the ieee80211_apsta_event_publish call sites
+#  inside ieee80211_node_join and ieee80211_node_leave) without
+#  modifying the Xcode project file. The opt-out variant uses a
+#  separate DerivedData directory and a separate staged output root,
+#  so opt-out builds never overwrite the default STA-only artifacts.
 #
 #  BOOTKC_PATH defaults to /Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc
 #  If the BootKC is not found, the build succeeds but the symbol check is skipped.
 
 set -euo pipefail
 
+OPT_OUT_STA_ONLY=0
+if [ "${BUILD_OPT_OUT_STA_ONLY:-0}" = "1" ]; then
+    OPT_OUT_STA_ONLY=1
+fi
+
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --opt-out)
+            OPT_OUT_STA_ONLY=1
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+if [ "${#POSITIONAL[@]}" -gt 0 ]; then
+    set -- "${POSITIONAL[@]}"
+else
+    set --
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TARGET="AirportItlwm-Tahoe"
 CONFIGURATION="Debug"
-DERIVED_DATA="$PROJECT_DIR/DerivedData"
-OUTPUT_ROOT="$PROJECT_DIR/Build/$CONFIGURATION/Tahoe"
+
+if [ "$OPT_OUT_STA_ONLY" -eq 1 ]; then
+    VARIANT_LABEL="Tahoe-OptOut"
+    DERIVED_DATA="$PROJECT_DIR/DerivedData-optout"
+    EXTRA_PP=" IEEE80211_OPT_OUT_STA_ONLY"
+else
+    VARIANT_LABEL="Tahoe"
+    DERIVED_DATA="$PROJECT_DIR/DerivedData"
+    EXTRA_PP=""
+fi
+
+OUTPUT_ROOT="$PROJECT_DIR/Build/$CONFIGURATION/$VARIANT_LABEL"
 OUTPUT_KEXT="$OUTPUT_ROOT/AirportItlwm.kext"
 OUTPUT_BINARY="$OUTPUT_KEXT/Contents/MacOS/AirportItlwm"
 BUILD_KEXT="$DERIVED_DATA/Build/Products/$CONFIGURATION/Tahoe/AirportItlwm.kext"
@@ -155,19 +203,19 @@ BUILD_SETTINGS=$(xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
     -showBuildSettings \
-    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH")
+    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH""$EXTRA_PP")
 if [[ "$BUILD_SETTINGS" != *USE_APPLE_SUPPLICANT* ]]; then
     echo "ERROR: Tahoe target missing USE_APPLE_SUPPLICANT in effective GCC_PREPROCESSOR_DEFINITIONS"
     exit 1
 fi
 
 echo ""
-echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION) commit=$GIT_HASH..."
+echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) commit=$GIT_HASH..."
 xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
     -derivedDataPath "$DERIVED_DATA" \
-    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH" \
+    GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH""$EXTRA_PP" \
     2>&1 | tail -5
 
 if [ ! -f "$BUILD_BINARY" ]; then
