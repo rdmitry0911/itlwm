@@ -59,6 +59,23 @@
 #define IEEE80211_STA_ONLY	1
 #endif
 
+/*
+ * Build-time opt-out for IEEE80211_STA_ONLY.
+ *
+ * The Tahoe Xcode configurations inject IEEE80211_STA_ONLY through
+ * GCC_PREPROCESSOR_DEFINITIONS to compile out AP/HOSTAP code paths
+ * by default. An AP-mode exploration configuration sets
+ * IEEE80211_OPT_OUT_STA_ONLY before this header is included to
+ * suppress that injection without editing the project file. The
+ * undef must run after every other path that could define the
+ * STA_ONLY macro so the opt-out flag is always authoritative when
+ * present, and it must remain a no-op when the flag is unset so
+ * client/STA-only builds keep their existing behavior.
+ */
+#ifdef IEEE80211_OPT_OUT_STA_ONLY
+#undef IEEE80211_STA_ONLY
+#endif
+
 #include <sys/param.h>
 #include <sys/timeout.h>
 #include <sys/_if_ether.h>
@@ -449,6 +466,27 @@ struct ieee80211com {
      */
     u_int32_t       ic_wcl_reassoc_owner_active;
     u_int32_t       ic_wcl_reassoc_owner_last_leaf;
+    /*
+     * Single-consumer net80211 AP station-event bridge state.
+     *
+     * ic_apsta_event_cb is a non-retaining callback that the
+     * host-owned APSTA owner registers on role-7 create through
+     * ieee80211_apsta_event_register and clears on role-7 delete or
+     * controller teardown through ieee80211_apsta_event_unregister.
+     * It is dormant (NULL) until a consumer registers, so default
+     * STA-only and AP-opt-out builds with no APSTA owner allocated
+     * never observe a behavior change at the producer publication
+     * sites in ieee80211_node_join/ieee80211_node_leave.
+     *
+     * ic_apsta_event_arg is the opaque consumer-owned cookie passed
+     * back to the callback and used by the unregister identity check
+     * so a stale teardown that arrives after a new owner has
+     * registered cannot silently clear the new consumer's callback.
+     */
+    void            (*ic_apsta_event_cb)(struct ieee80211com *,
+                            struct ieee80211_node *, int event,
+                            void *arg);
+    void            *ic_apsta_event_arg;
 	CTimeout*		ic_bgscan_timeout;
 	uint32_t		ic_bgscan_fail;
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
@@ -723,6 +761,44 @@ ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
 
 void	ieee80211_wcl_reassoc_post_failure(struct ieee80211com *, u_int32_t);
 void	ieee80211_wcl_reassoc_post_success(struct ieee80211com *);
+
+/*
+ * Net80211 AP station-event producer bridge.
+ *
+ * The bridge is the single seam through which net80211 publishes AP
+ * station lifecycle events (associate, reassociate, leave) to the
+ * host-owned APSTA owner. A single consumer is supported per
+ * ieee80211com because the APSTA owner is itself a per-controller
+ * singleton; concurrent registration of a second owner is rejected
+ * rather than silently overwriting the first registration.
+ *
+ * The producer is dormant when no consumer is registered, so the
+ * call sites added inside the existing #ifndef IEEE80211_STA_ONLY
+ * blocks of ieee80211_node_join and ieee80211_node_leave are
+ * harmless no-ops in client builds and in AP-opt-out builds where
+ * no role-7 owner has been allocated. The callback receives ic, the
+ * affected node, the event identifier, and the cookie that was
+ * supplied at registration. The callback must not retain ni beyond
+ * its own stack frame unless it takes its own reference, because
+ * the producer holds only the caller's existing reference for the
+ * duration of the event publication.
+ *
+ * Event identifiers match the recovered Apple APSTA owner contract
+ * and are stable across producers/consumers; new identifiers must be
+ * appended without renumbering existing values.
+ */
+#define IEEE80211_APSTA_EVENT_LEAVE     5
+#define IEEE80211_APSTA_EVENT_ASSOC     8
+#define IEEE80211_APSTA_EVENT_REASSOC   10
+
+typedef void (*ieee80211_apsta_event_cb_t)(struct ieee80211com *,
+    struct ieee80211_node *, int event, void *arg);
+
+int  ieee80211_apsta_event_register(struct ieee80211com *,
+    ieee80211_apsta_event_cb_t cb, void *arg);
+void ieee80211_apsta_event_unregister(struct ieee80211com *, void *arg);
+void ieee80211_apsta_event_publish(struct ieee80211com *,
+    struct ieee80211_node *, int event);
 
 void	ieee80211_ifattach(struct _ifnet *, IOEthernetController *controller);
 void	ieee80211_ifdetach(struct _ifnet *);
