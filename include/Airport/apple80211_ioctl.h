@@ -68,6 +68,13 @@ struct apple80211req
 #define     APPLE80211_CIPHER_KEY_UNICAST        1   // req_val
 #define     APPLE80211_CIPHER_KEY_MULICAST       2   // req_val
 
+// Tahoe Skywalk current-PMK setter delivered through the alternate
+// apple80211setCUR_PMK selector. Carries struct apple80211_pmk; the
+// key bytes live at struct offset 0x10, and the validated key length
+// at offset 0x04. Used by Apple userspace to publish or refresh the
+// active host-supplicant PMK on a PSK association edge.
+#define APPLE80211_IOC_CUR_PMK                 360   // req_type
+
 #define APPLE80211_IOC_CHANNEL                   4   // req_type
 
 #define APPLE80211_IOC_POWERSAVE                 5   // req_type
@@ -702,16 +709,43 @@ struct apple80211_scan_multiple_data
 
 static_assert(__offsetof(struct apple80211_scan_multiple_data, bssid_count) == 0x19c, "zxystd: BSSID offset invalid");
 
+/*
+ * apple80211_link_changed_event_data - Tahoe IOCTL ABI.
+ *
+ * The recovered Apple reference uses a 32-byte response on the
+ * APPLE80211_IOC_LINK_CHANGED_EVENT_DATA IOCTL: the userspace
+ * consumer allocates 32 bytes for the response buffer and the
+ * kernel publisher writes voluntary at +0x1c (link-down) /
+ * +0x1d (link-up), packs the link reason and instantaneous RSSI
+ * into a union at +0x04, exposes SNR / NF / CCA at +0x08 / +0x0a /
+ * +0x0c, and copies up to twelve bytes of last-association payload
+ * at +0x10..+0x1b on link-down. Fields not produced by this driver
+ * remain zero per the bzero entry contract.
+ */
 struct apple80211_link_changed_event_data
 {
-    bool       isLinkDown; // 0
-    uint32_t   rssi;       // 4
-    uint16_t   snr;        // 8
-    uint16_t   nf;         // 10
-    char       cca;        // 12
-    bool       voluntary;  // 16
-    uint32_t   reason;     // 20
+    uint8_t    isLinkDown;        // +0x00
+    uint8_t    _pad_01[3];        // +0x01..+0x03
+    union {                       // +0x04..+0x07
+        uint32_t rssi;            //   when isLinkDown == 0 (link-up RSSI)
+        uint32_t reason;          //   when isLinkDown == 1 (apple80211_link_down_reason)
+    };
+    uint16_t   snr;               // +0x08
+    uint16_t   nf;                // +0x0a
+    int8_t     cca;               // +0x0c
+    uint8_t    _pad_0d[3];        // +0x0d..+0x0f
+    uint8_t    last_assoc[12];    // +0x10..+0x1b (filled on link-down only)
+    uint8_t    voluntary_down;    // +0x1c
+    uint8_t    voluntary_up;      // +0x1d
+    uint8_t    _pad_1e[2];        // +0x1e..+0x1f
 };
+
+static_assert(sizeof(struct apple80211_link_changed_event_data) == 0x20,
+              "apple80211_link_changed_event_data must be 32 bytes (Tahoe IOCTL ABI)");
+static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_down) == 0x1c,
+              "voluntary_down must live at +0x1c per Tahoe IOCTL ABI");
+static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up) == 0x1d,
+              "voluntary_up must live at +0x1d per Tahoe IOCTL ABI");
 
 struct apple80211_apmode_data
 {

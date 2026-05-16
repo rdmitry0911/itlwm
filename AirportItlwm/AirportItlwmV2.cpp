@@ -1208,6 +1208,34 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
         case APPLE80211_IOC_RSN_IE:
         case APPLE80211_IOC_SET_MAC_ADDRESS:
             return isSet;
+        case APPLE80211_IOC_CIPHER_KEY:
+            // Tahoe Skywalk PMK / pairwise / group / PMKSA key ingress
+            // through the card-specific bridge. The recovered Apple
+            // delivery for APPLE80211_IOC_CIPHER_KEY = 3 with
+            // key_cipher_type = APPLE80211_CIPHER_PMK (6) or
+            // APPLE80211_CIPHER_MSK (9) reaches the driver as a
+            // card-specific SIOCSA80211 IOCTL on the Skywalk
+            // interface. Without an explicit route here the IOCTL
+            // falls back to the default IO80211 path and never
+            // reaches the local setCIPHER_KEY handler, so the
+            // shared external-PMK ingestion sink is never invoked
+            // and ieee80211com::ic_psk stays empty before the host
+            // supplicant consumes its first 4-way M1. Route the
+            // SET-side here so case 6 / case 9 converge on
+            // installExternalPmkLocked the same way Apple
+            // AppleBCMWLANCore PMK owner state is populated.
+            return isSet;
+        case APPLE80211_IOC_CUR_PMK:
+            // Tahoe Skywalk current-PMK ingress through the
+            // card-specific bridge. The recovered Apple delivery for
+            // selector 0x168 / IOC 360 reaches the driver as a
+            // card-specific IOCTL on the Skywalk interface; routing
+            // both SIOCSA80211 and SIOCGA80211 through processApple80211Ioctl
+            // gives the local sink a single concrete entry point.
+            // The SIOCGA80211 path keeps the credential-safe Apple
+            // failure 0xe00002c7 from getCUR_PMK and never snapshots
+            // PMK material into the caller buffer.
+            return true;
         case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
         case APPLE80211_IOC_MIS_MAX_STA:
             return isSet;
@@ -1370,7 +1398,6 @@ static uint32_t buildTahoeWclLinkReason(unsigned int rawReason)
     const uint32_t mapped = static_cast<uint32_t>(rawReason - 1);
     return (mapped < 9) ? mapped : kTahoeWclInvalidLinkReason;
 }
-
 static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
                                   unsigned int rawReason)
 {
@@ -4598,13 +4625,29 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         postTahoeWclConnectCompleteEvent(that);
 #endif
 #if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Tahoe legacy event-publication ownership.
+     *
+     * The 32-byte APPLE80211_M_LINK_CHANGED carrier that Apple's userspace
+     * event handler `__setupEventHandlersWithInterfaceName:` length-checks
+     * against `sizeof(apple80211_link_changed_event_data) == 0x20` is
+     * published exactly once per accepted link-state transition from the
+     * Tahoe Skywalk `AirportItlwmSkywalkInterface::setLinkStateInternal`
+     * override. `setLinkStateGated` reaches that override through the
+     * preceding `((IO80211InfraInterface *)fNetIf)->setLinkState(...)`
+     * call; the override emits the recovered 32-byte payload on the parent
+     * transition's success edge, so re-publishing here would deliver the
+     * same userspace event twice for a single accepted transition.
+     *
+     * Keep this branch limited to the link-down zero-length
+     * APPLE80211_M_SSID_CHANGED carrier. The recovered reference does not
+     * contain a payload-bearing writer for that event code, and Tahoe
+     * userspace does not length-reject the zero-length publication.
+     * APPLE80211_M_BSSID_CHANGED also has no standalone payload-bearing
+     * writer in the recovered reference and remains suppressed on Tahoe.
+     */
     if (linkState != kIO80211NetworkLinkUp) {
-        that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
-        that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
         that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
-    } else {
-        XYLog("DEBUG %s Tahoe: skipped legacy up zero-payload 4/3/2 events\n",
-              __FUNCTION__);
     }
 #else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);

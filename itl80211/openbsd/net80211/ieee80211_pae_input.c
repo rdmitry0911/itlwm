@@ -265,9 +265,84 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
             return;
         }
         memcpy(ni->ni_pmk, pmk->pmk_key, IEEE80211_PMK_LEN);
-    } else    /* use pre-shared key */
+    } else {    /* use pre-shared key */
+        /* PSK-AKM first-M1 owner routing.
+         *
+         * The recovered Apple/Tahoe WCL contract distinguishes three
+         * PSK association ownership states for the first 4-way M1:
+         *   1. Local PAE owns the PMK: ic_psk holds non-zero PSK PMK
+         *      bytes delivered through the public ASSOCIATE / ad_key
+         *      path or through an explicit installExternalPmkLocked
+         *      ingress. The local PAE consumes M1, copies ic_psk into
+         *      ni_pmk, derives a PTK, and sends M2.
+         *   2. External Apple/user supplicant owns the PMK: ic_psk is
+         *      all zero and ic_external_pmk_owner is set on a hidden
+         *      WCL_ASSOCIATE entry that delivers no PMK bytes. The
+         *      local PAE must not derive a PTK from a zero PMK
+         *      because the resulting M2 MIC would be rejected as a
+         *      PSK mismatch and would also pre-empt the external
+         *      supplicant's legitimate first M1 consumption.
+         *   3. No active PMK owner: ic_psk is all zero and the
+         *      external owner state has been cleared. The local PAE
+         *      has no key material to consume M1 with; the handshake
+         *      stays pending for a future legitimate consumer (either
+         *      a later explicit local PMK ingress or a fresh external
+         *      owner re-assertion).
+         *
+         * Honour the recovered owner contract: classify the active
+         * owner by actual local PMK material first, then by the
+         * external owner state. Only the local-owner branch may copy
+         * ic_psk into ni_pmk, set IEEE80211_NODE_PMK, derive a PTK,
+         * and send M2; the external-owner and no-owner branches
+         * return early without mutating ni_pmk or ni->ni_flags.
+         */
+        unsigned int ic_psk_nonzero = 0;
+        for (size_t pmk_i = 0; pmk_i < IEEE80211_PMK_LEN; ++pmk_i) {
+            if (ic->ic_psk[pmk_i] != 0) ic_psk_nonzero++;
+        }
+        if (ic_psk_nonzero == 0) {
+            if (ic->ic_external_pmk_owner != 0) {
+                XYLog("%s owner=external ic_psk_nonzero_bytes=0/%u "
+                      "rsnakms=0x%x deferred_to_external_supplicant=1\n",
+                      "ieee80211_recv_4way_msg1_owner_route",
+                      (unsigned)IEEE80211_PMK_LEN,
+                      (unsigned)ni->ni_rsnakms);
+            } else {
+                XYLog("%s owner=none ic_psk_nonzero_bytes=0/%u "
+                      "rsnakms=0x%x ic_external_pmk_owner=0 "
+                      "deferred_no_owner=1\n",
+                      "ieee80211_recv_4way_msg1_owner_route",
+                      (unsigned)IEEE80211_PMK_LEN,
+                      (unsigned)ni->ni_rsnakms);
+            }
+            return;
+        }
+        XYLog("%s owner=local ic_psk_nonzero_bytes=%u/%u "
+              "rsnakms=0x%x ic_external_pmk_owner=%u\n",
+              "ieee80211_recv_4way_msg1_owner_route",
+              ic_psk_nonzero, (unsigned)IEEE80211_PMK_LEN,
+              (unsigned)ni->ni_rsnakms,
+              (unsigned)ic->ic_external_pmk_owner);
         memcpy(ni->ni_pmk, ic->ic_psk, IEEE80211_PMK_LEN);
+    }
     ni->ni_flags |= IEEE80211_NODE_PMK;
+    /* Structural observation point: report the non-zero byte
+     * count of ni->ni_pmk before ieee80211_derive_ptk consumes
+     * it. The PSK AKM 4-way handshake requires a non-zero PMK; a
+     * zero PMK at this point produces a PTK and an MIC that the
+     * authenticator rejects with a PSK mismatch. No raw key
+     * material is logged; only the count of non-zero bytes and
+     * the AKM mask. */
+    {
+        unsigned int ni_pmk_nonzero = 0;
+        for (size_t pmk_i = 0; pmk_i < IEEE80211_PMK_LEN; ++pmk_i) {
+            if (ni->ni_pmk[pmk_i] != 0) ni_pmk_nonzero++;
+        }
+        XYLog("%s ni_pmk_nonzero_bytes=%u/%u rsnakms=0x%x\n",
+              "ieee80211_recv_4way_msg1_pmk_check",
+              ni_pmk_nonzero, (unsigned)IEEE80211_PMK_LEN,
+              (unsigned)ni->ni_rsnakms);
+    }
     
     /* save authenticator's nonce (ANonce) */
     memcpy(ni->ni_nonce, key->nonce, EAPOL_KEY_NONCE_LEN);

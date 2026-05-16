@@ -565,6 +565,17 @@ struct ieee80211com {
 	u_int8_t		ic_globalcnt[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ic_nonce[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ic_psk[IEEE80211_PMK_LEN];
+	/* Active PSK PMK owner classification for the WCL_ASSOCIATE entry
+	 * path: nonzero when an Apple external supplicant owns the PSK PMK
+	 * (hidden WCL_ASSOCIATE with key_len=0 / importLocalPmk=false).
+	 * Cleared when the local driver becomes the PMK owner through the
+	 * public ASSOCIATE/ad_key path, explicit CIPHER_KEY/CUR_PMK ingress,
+	 * or PMKSA/cache, and at every lifecycle reset edge that
+	 * invalidates the prior owner. The first M1 consumer in
+	 * ieee80211_recv_4way_msg1 reads this flag together with ic_psk
+	 * non-zero-bytes to decide whether the local PAE owns the
+	 * handshake or defers to the external supplicant. */
+	u_int8_t		ic_external_pmk_owner;
 	CTimeout*		ic_rsn_timeout;
 	int			ic_tkip_micfail;
 	u_int64_t		ic_tkip_micfail_last_tsc;

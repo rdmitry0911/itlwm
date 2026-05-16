@@ -1783,22 +1783,39 @@ setVIRTUAL_IF_DELETE(OSObject *object, struct apple80211_virt_if_delete_data *da
     return kIOReturnSuccess;
 }
 
+/*
+ * V1 controller mirror of the Tahoe-shape link-changed-event-data
+ * publisher. The V1 IOCTL path must produce the same 32-byte
+ * response shape as the V2 / Skywalk interface so the upper layer
+ * reads voluntary and reason at the same offsets regardless of
+ * which controller class is bound.
+ */
 IOReturn AirportItlwm::
 getLINK_CHANGED_EVENT_DATA(OSObject *object, struct apple80211_link_changed_event_data *ed)
 {
     if (ed == nullptr)
         return 16;
-    
+
     struct ieee80211com *ic = fHalService->get80211Controller();
-    
+
     bzero(ed, sizeof(apple80211_link_changed_event_data));
     ed->isLinkDown = !(currentStatus & kIONetworkLinkActive);
     if (ed->isLinkDown) {
-        ed->voluntary = disassocIsVoluntary;
-        ed->reason = APPLE80211_LINK_DOWN_REASON_DEAUTH;
-    } else
-        ed->rssi = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
-    XYLog("Link %s, reason: %d, voluntary: %d\n", ed->isLinkDown ? "down" : "up", ed->reason, ed->voluntary);
+        ed->voluntary_down = disassocIsVoluntary ? 1 : 0;
+        ed->reason         = APPLE80211_LINK_DOWN_REASON_DEAUTH;
+        if (ic != nullptr && ic->ic_bss != nullptr) {
+            memcpy(ed->last_assoc, ic->ic_bss->ni_bssid, IEEE80211_ADDR_LEN);
+        }
+    } else {
+        ed->voluntary_up = 1;
+        if (ic != nullptr && ic->ic_bss != nullptr) {
+            ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+        }
+    }
+    XYLog("Link %s, voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
+          ed->isLinkDown ? "down" : "up",
+          ed->voluntary_down, ed->voluntary_up,
+          ed->isLinkDown ? ed->reason : ed->rssi);
     return kIOReturnSuccess;
 }
 

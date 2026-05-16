@@ -128,6 +128,26 @@ public:
     IOReturn getLINK_CHANGED_EVENT_DATA(apple80211_link_changed_event_data *);
     IOReturn setASSOCIATE(apple80211_assoc_data *);
     IOReturn setDISASSOCIATE(void *);
+    // Tahoe Skywalk current-PMK setter routed through the
+    // alternate apple80211setCUR_PMK selector at Tahoe absolute
+    // vtable slot [750] of __ZTV23IO80211SkywalkInterface (offset
+    // +0x1770). Apple delivers the externally sourced PSK PMK on
+    // PSK association edges via either CIPHER_KEY(PMK) or this
+    // CUR_PMK carrier; both must populate the same local host-
+    // supplicant PMK store before the first 4-way M1.
+    virtual IOReturn setCUR_PMK(apple80211_pmk *) override;
+    // Credential-safe shared external PMK ingestion helper used by
+    // both setCIPHER_KEY(APPLE80211_CIPHER_PMK) and setCUR_PMK.
+    // Validates a 32-byte PMK, copies it into ic_psk, sets PSK
+    // policy flags, and emits only non-secret structural markers.
+    IOReturn installExternalPmkLocked(const uint8_t *pmk_bytes,
+                                      uint32_t key_len,
+                                      const char *source_tag);
+    // Clear external PMK/PSK eligibility at lifecycle reset edges
+    // (disassociate, leave, PMKSA clear, RSN disable). Zeroes the
+    // local PMK store, drops the PSK policy flag, and emits a
+    // non-secret marker that names the reset reason.
+    void clearExternalPmkEligibilityLocked(const char *reason_tag);
     IOReturn setDEAUTH(apple80211_deauth_data *);
     IOReturn setSCAN_REQ(apple80211_scan_data *);
     IOReturn setSET_MAC_ADDRESS(apple80211_set_mac_address_data *);

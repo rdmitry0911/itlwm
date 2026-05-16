@@ -81,6 +81,21 @@ extern "C" volatile uint64_t cr236GetAssocStateCount = 0;
 // Each counter is uncapped (atomic-only). Snapshot via CR234_LOG at
 // d5_producer in V2.cpp gives a timeline-correlated dump.
 extern "C" volatile uint64_t cr237_setCipherKey_count = 0;
+// Counter of successful APPLE80211_CIPHER_PMK installs through
+// setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
+// concurrent IOCTL paths do not lose increments.
+extern "C" volatile uint64_t setCipherKey_pmk_install_count = 0;
+// Counter of successful apple80211setCUR_PMK installs through the
+// alternate selector into ieee80211com::ic_psk. Same atomic-relaxed
+// contract as the CIPHER_KEY counter so an observer can attribute
+// each PMK install to the carrier that delivered it.
+extern "C" volatile uint64_t setCUR_PMK_pmk_install_count = 0;
+// Counter of credential-safe external-PMK eligibility clears
+// performed on reset/leave/disassoc/PMKSA-clear edges. Each clear
+// zeroes ic_psk, drops IEEE80211_F_PSK, and logs only the reason
+// tag so an observer can reconstruct the lifecycle without raw
+// key material appearing in kernel logs.
+extern "C" volatile uint64_t external_pmk_eligibility_clear_count = 0;
 extern "C" volatile uint64_t cr237_setPTK_count = 0;
 extern "C" volatile uint64_t cr237_setGTK_count = 0;
 extern "C" volatile uint64_t cr237_setRSN_IE_count = 0;
@@ -940,9 +955,41 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
           bssid.octet[0], bssid.octet[1], bssid.octet[2],
           bssid.octet[3], bssid.octet[4], bssid.octet[5], ic->ic_state);
 
-    ieee80211_disable_rsn(ic);
+    // ieee80211_disable_rsn() zeroes ic->ic_psk along with the
+    // RSN config fields. On the WCL/Skywalk externally-owned-PSK
+    // path, Apple userspace delivers the PSK-derived PMK
+    // separately via setCIPHER_KEY with
+    // key_cipher_type=APPLE80211_CIPHER_PMK, and the delivery may
+    // arrive either before or after setWCL_ASSOCIATE invokes this
+    // function. The RSN-policy fields rebuilt below by
+    // ieee80211_ioctl_setwpaparms do not require the disable_rsn
+    // reset on that PSK path, so the reset is skipped only when
+    // both (a) the caller signals that an external owner controls
+    // the PMK and (b) the requested authentication type is a
+    // PSK-AKM (WPA-PSK, WPA2-PSK, or SHA256-PSK). Open, WEP,
+    // WPA-Enterprise, 8021X WCL associations, and the legacy
+    // local-key path continue to call disable_rsn so their RSN
+    // lifecycle is unchanged.
+    const uint32_t external_psk_mask =
+        APPLE80211_AUTHTYPE_WPA_PSK |
+        APPLE80211_AUTHTYPE_WPA2_PSK |
+        APPLE80211_AUTHTYPE_SHA256_PSK;
+    bool external_psk_path = externalPmkOwner &&
+        (authtype_upper & external_psk_mask) != 0;
+    if (!external_psk_path) {
+        // The local RSN-disable edge zeroes ic_psk and resets RSN
+        // configuration. The recovered Apple contract treats this as
+        // the lifecycle reset for the external-PMK eligibility, so
+        // drop IEEE80211_F_PSK and emit a non-secret reset marker
+        // before disable_rsn. Combining the helper-driven clear with
+        // the disable_rsn implicit zeroing keeps the structural
+        // clear count and the lifecycle reset observable on every
+        // non-PSK association edge that reaches this branch.
+        clearExternalPmkEligibilityLocked("associateSSID_disable_rsn");
+        ieee80211_disable_rsn(ic);
+    }
     ieee80211_disable_wep(ic);
-    
+
     struct ieee80211_wpaparams     wpa;
     struct ieee80211_nwkey         nwkey;
     bzero(&wpa, sizeof(wpa));
@@ -986,16 +1033,52 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
         XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
-        if (importLocalPmk) {
+        // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
+        // may legitimately arrive with key == nullptr or key_len
+        // smaller than the local PMK store (IEEE80211_PMK_LEN = 32)
+        // because Apple delivers the PSK-derived PMK separately
+        // through APPLE80211_IOC_CIPHER_KEY case APPLE80211_CIPHER_PMK,
+        // APPLE80211_IOC_CIPHER_KEY case APPLE80211_CIPHER_MSK, or
+        // APPLE80211_IOC_CUR_PMK, all of which converge on
+        // installExternalPmkLocked(...) and on ieee80211com::ic_psk.
+        // Treating the absent candidate key bytes as a local PMK
+        // import and memcpy-ing zeroes into ic_psk would destroy any
+        // PMK already installed by those carriers before the host
+        // supplicant consumes its first 4-way M1, breaking the
+        // invariant that the PMK byte store must be present in
+        // ic_psk before the first 4-way M1 is consumed. Treat any
+        // caller that requested a local import but supplied no
+        // usable key bytes as the external-owner case so the prior
+        // PMK install survives into the M1 consumer.
+        // Active-owner selection for the PSK 4-way M1 consumer. The
+        // public ASSOCIATE / ad_key path delivers a usable PMK byte
+        // window through the caller key, so the local PAE owns the
+        // handshake. The hidden WCL_ASSOCIATE path arrives with no
+        // PMK bytes; in that case an Apple/user external supplicant
+        // owns the first 4-way M1 and the local PAE must not derive
+        // a PTK from a zero PMK.
+        bool localImportHasKey =
+            importLocalPmk && key != nullptr &&
+            key_len >= sizeof(ic->ic_psk);
+        if (localImportHasKey) {
             memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
             ic->ic_flags |= IEEE80211_F_PSK;
-        } else if (externalPmkOwner) {
+            ic->ic_external_pmk_owner = 0;
+            XYLog("associateSSID_owner SELECTED owner=local source=public_ad_key "
+                  "key_len=%u ic_flags=0x%x\n",
+                  key_len, (unsigned)ic->ic_flags);
+        } else if (externalPmkOwner || importLocalPmk) {
             ic->ic_flags |= IEEE80211_F_PSK;
-            XYLog("DEBUG %s WCL external PMK owner marks PSK without local import key_len=%u\n",
-                  __FUNCTION__, key_len);
+            ic->ic_external_pmk_owner = 1;
+            XYLog("associateSSID_owner SELECTED owner=external source=wcl_associate "
+                  "key_len=%u ic_flags=0x%x externalPmkOwner=%d importLocalPmk=%d\n",
+                  key_len, (unsigned)ic->ic_flags,
+                  externalPmkOwner ? 1 : 0, importLocalPmk ? 1 : 0);
         } else {
-            XYLog("DEBUG %s WCL candidate has no local PMK source key_len=%u\n",
-                  __FUNCTION__, key_len);
+            ic->ic_external_pmk_owner = 0;
+            XYLog("associateSSID_owner SELECTED owner=none source=no_carrier "
+                  "key_len=%u ic_flags=0x%x\n",
+                  key_len, (unsigned)ic->ic_flags);
         }
         ieee80211_ioctl_setwpaparms(ic, &wpa);
     }
@@ -1734,6 +1817,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_CIPHER_KEY:
             return (cmd == SIOCSA80211) ? setCIPHER_KEY((apple80211_key *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_CUR_PMK:
+            // Tahoe Skywalk current-PMK carrier. The active local
+            // ingress for selector 0x168 / IOC 360 is the
+            // card-specific bridge: IO80211Family routes the IOCTL
+            // into handleCardSpecific(...) on the V2 controller,
+            // routeTahoeSkywalkIoctl(...) gates it through
+            // shouldRouteTahoeSkywalkIoctlReq(...) (which lists
+            // APPLE80211_IOC_CUR_PMK explicitly), and the request
+            // lands here. The set-side path enters the shared
+            // external-PMK ingestion helper through setCUR_PMK; the
+            // get-side path remains credential-safe and returns the
+            // documented Apple failure 0xe00002c7 from getCUR_PMK
+            // without snapshotting PMK material into the caller
+            // buffer.
+            return (cmd == SIOCSA80211) ? setCUR_PMK((struct apple80211_pmk *)req->req_data)
+                                        : getCUR_PMK((struct apple80211_pmk *)req->req_data);
         case APPLE80211_IOC_ASSOCIATION_STATUS:
             return (cmd == SIOCGA80211) ? getASSOCIATION_STATUS((apple80211_assoc_status_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -2150,6 +2249,80 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
           ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
     IOReturn ret = IO80211InfraInterface::setLinkStateInternal(
         state, debounceTimeout, debounce, code, connectionId);
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Tahoe APPLE80211_M_LINK_CHANGED single-owner publisher on the
+     * Skywalk link-state transition.
+     *
+     * The Tahoe userspace event handler
+     * `__setupEventHandlersWithInterfaceName:_block_invoke` length-checks
+     * every APPLE80211_M_LINK_CHANGED delivery against the 32-byte
+     * apple80211_link_changed_event_data shape recovered from
+     * WCLNetManager::getLinkChangeEventInternal at BootKC entry
+     * 0xffffff8002111138. This override is the single owner of that
+     * userspace carrier on Tahoe: both the Apple IO80211 framework path
+     * that drives link state directly into
+     * IO80211InfraInterface::setLinkStateInternal and the local BSD
+     * newstate path through AirportItlwm::setLinkStateGated reach this
+     * override (the latter via
+     * `((IO80211InfraInterface *)fNetIf)->setLinkState(...)`), and the
+     * Tahoe branch of setLinkStateGated no longer emits
+     * APPLE80211_M_LINK_CHANGED itself, so the carrier is published
+     * exactly once per accepted parent transition. Build the payload
+     * inline from state already owned by the V1 and V2
+     * APPLE80211_IOC_LINK_CHANGED_EVENT_DATA publishers: on link-up
+     * `voluntary_up = 1` and `rssi` from the current node; on link-down
+     * `voluntary_down` from the locally tracked disassociation
+     * initiator, `reason = APPLE80211_LINK_DOWN_REASON_DEAUTH`, and the
+     * current BSSID copied into `last_assoc[0..5]`. Fields itlwm does
+     * not produce remain zero per the bzero entry contract.
+     *
+     * Only the link-up and link-down terminal states publish the carrier;
+     * the intermediate IO80211LinkState values are framework-internal
+     * transitions and do not correspond to APPLE80211_M_LINK_CHANGED.
+     *
+     * Additionally gate the publication on the parent transition having
+     * succeeded (ret == kIOReturnSuccess). The IO80211 framework reports
+     * a nonzero IOReturn when an internal step inside the parent
+     * IO80211InfraInterface::setLinkStateInternal aborts the link-state
+     * transition before it is committed (for example a current-BSSID
+     * acquisition failure observed locally on the Tahoe ASSOC->RUN edge).
+     * A failed parent transition is not an accepted state change, so the
+     * userspace APPLE80211_M_LINK_CHANGED carrier is not authorized.
+     * Publishing only on success keeps the on-wire event tied to the
+     * Apple framework view of an accepted link-state transition and
+     * avoids forging a successful-looking notification after the parent
+     * rejected the transition.
+     */
+    if (ret == kIOReturnSuccess &&
+        instance != nullptr && instance->fNetIf != nullptr &&
+        (state == kIO80211NetworkLinkUp ||
+         state == kIO80211NetworkLinkDown)) {
+        apple80211_link_changed_event_data ed;
+        bzero(&ed, sizeof(ed));
+        const bool isLinkDown = (state != kIO80211NetworkLinkUp);
+        ed.isLinkDown = isLinkDown ? 1 : 0;
+        if (isLinkDown) {
+            ed.voluntary_down = instance->disassocIsVoluntary ? 1 : 0;
+            ed.reason = APPLE80211_LINK_DOWN_REASON_DEAUTH;
+            if (ic != nullptr && ic->ic_bss != nullptr)
+                memcpy(ed.last_assoc, ic->ic_bss->ni_bssid,
+                       IEEE80211_ADDR_LEN);
+        } else {
+            ed.voluntary_up = 1;
+            if (ic != nullptr && ic->ic_bss != nullptr)
+                ed.rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+        }
+        XYLog("DEBUG %s Tahoe Skywalk M_LINK_CHANGED isLinkDown=%u "
+              "voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
+              __FUNCTION__, ed.isLinkDown, ed.voluntary_down,
+              ed.voluntary_up,
+              ed.isLinkDown ? (unsigned int)ed.reason
+                            : (unsigned int)ed.rssi);
+        instance->postMessage(instance->fNetIf, APPLE80211_M_LINK_CHANGED,
+                              &ed, sizeof(ed), true);
+    }
+#endif
     XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
     return ret;
 }
@@ -2511,14 +2684,48 @@ setCIPHER_KEY(struct apple80211_key *key)
                     break;
             }
             break;
-        case APPLE80211_CIPHER_PMK:
-            XYLog("Setting WPA PMK is not supported\n");
+        case APPLE80211_CIPHER_PMK: {
+            // APPLE80211_IOC_CIPHER_KEY (=3) with key_cipher_type =
+            // APPLE80211_CIPHER_PMK (=6) is one of the two host-side
+            // PSK PMK delivery carriers on Tahoe Skywalk: the other is
+            // apple80211setCUR_PMK below. Both carriers must converge on
+            // the same local PMK sink (ieee80211com::ic_psk) so the
+            // OpenBSD-derived PAE supplicant reads a consistent PMK in
+            // ieee80211_recv_4way_msg1 regardless of which carrier
+            // delivered it. installExternalPmkLocked centralises the
+            // 32-byte validation, ic_psk copy, IEEE80211_F_PSK flag,
+            // and WPA/RSN PSK auth-state refresh, and emits only
+            // non-secret structural markers.
+            return installExternalPmkLocked(key->key,
+                                            key->key_len,
+                                            "CIPHER_KEY");
+        }
+        case APPLE80211_CIPHER_MSK: {
+            // Tahoe AppleBCMWLAN setKey case 9 shares the same PMK owner
+            // helper as case 6 when the carrier delivers a 32-byte PMK
+            // payload: the recovered AppleBCMWLANCore setter helper copies
+            // the source bytes into the PMK store regardless of whether
+            // the caller selected case 6 (PMK) or case 9 (MSK). The
+            // matching local sink is ieee80211com::ic_psk, so a 32-byte
+            // MSK delivered through this branch must populate the
+            // host-supplicant PMK store the same way case 6 does. The
+            // OpenBSD-derived net80211 supplicant only consumes a 32-byte
+            // PMK; longer MSK material that case 9 may carry on 8021X
+            // paths falls back to the existing PMKSA cache add so the
+            // local AKM_8021X consumer is unchanged.
+            if (key->key_len == IEEE80211_PMK_LEN) {
+                return installExternalPmkLocked(key->key,
+                                                key->key_len,
+                                                "CIPHER_KEY_MSK");
+            }
+            XYLog("Setting MSK (PMKSA cache add, key_len=%u)\n",
+                  key->key_len);
+            ieee80211_pmksa_add(fHalService->get80211Controller(),
+                                IEEE80211_AKM_8021X,
+                                fHalService->get80211Controller()->ic_bss->ni_macaddr,
+                                key->key, 0);
             break;
-        case APPLE80211_CIPHER_MSK:
-            XYLog("Setting MSK\n");
-            ieee80211_pmksa_add(fHalService->get80211Controller(), IEEE80211_AKM_8021X,
-                                fHalService->get80211Controller()->ic_bss->ni_macaddr, key->key, 0);
-            break;
+        }
         case APPLE80211_CIPHER_PMKSA:
             XYLog("Setting WPA PMKSA\n");
             ieee80211_pmksa_add(fHalService->get80211Controller(), IEEE80211_AKM_8021X,
@@ -2816,8 +3023,154 @@ getCUR_PMK(apple80211_pmk *)
     // AppleBCMWLANCore::getCUR_PMK defaults to 0xe00002c7 and only opens the
     // deeper debug/association subpath behind Apple-private gates. The port
     // must therefore expose the same public fail contract instead of generic
-    // unsupported.
+    // unsupported. Returning the documented Apple failure here also keeps
+    // the getter credential-safe: it does not snapshot ic_psk into the
+    // caller's buffer or otherwise expose raw PMK material to userspace.
     return static_cast<IOReturn>(0xe00002c7);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setCUR_PMK(struct apple80211_pmk *pmk)
+{
+    // Tahoe apple80211setCUR_PMK is the alternate PSK PMK delivery
+    // selector (0x168 / IOC 360). The Apple carrier struct
+    // apple80211_pmk holds the validated key length at offset 0x04
+    // and the source key bytes at offset 0x10. The accepted Apple
+    // semantics are that CUR_PMK and CIPHER_KEY case 6/9 both
+    // converge on the same host-side PMK owner, so the local
+    // implementation funnels both into the shared external-PMK
+    // helper. The active local ingress is the V2 controller
+    // card-specific bridge: IO80211Family delivers SIOCSA80211 and
+    // SIOCGA80211 ioctls into handleCardSpecific(...), which
+    // routeTahoeSkywalkIoctl(...) forwards to processApple80211Ioctl
+    // when shouldRouteTahoeSkywalkIoctlReq(...) accepts the selector
+    // (APPLE80211_IOC_CUR_PMK is explicitly listed in that allow
+    // list), and processApple80211Ioctl dispatches the SIOCSA80211
+    // direction here.
+    if (pmk == nullptr) {
+        XYLog("setCUR_PMK NOT_READY pmk=NULL\n");
+        return kIOReturnBadArgument;
+    }
+    return installExternalPmkLocked(pmk->apple_pmk_setter_source,
+                                    pmk->apple_pmk_key_len,
+                                    "CUR_PMK");
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+installExternalPmkLocked(const uint8_t *pmk_bytes,
+                         uint32_t key_len,
+                         const char *source_tag)
+{
+    // Shared external-PMK ingestion. The contract is the same for the
+    // CIPHER_KEY(PMK) and CUR_PMK carriers: validate IEEE80211_PMK_LEN,
+    // copy the 32-byte PMK into ic->ic_psk, set IEEE80211_F_PSK, refresh
+    // WPA/RSN PSK auth state through ieee80211_ioctl_setwpaparms so the
+    // OpenBSD-derived 4-way supplicant has consistent state at the
+    // first M1, and emit only non-secret structural markers (length,
+    // nonzero-byte count, policy flags, source tag). A malformed
+    // delivery returns an explicit IOReturn error so a future change to
+    // the carrier caller cannot silently turn a rejected PMK into
+    // kIOReturnSuccess. Per the Apple reference contract the PMK byte
+    // store must be present in ic_psk before the first 4-way M1 is
+    // consumed, regardless of whether the install arrived before or
+    // after setWCL_ASSOCIATE.
+    struct ieee80211com *ic = fHalService
+        ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr) {
+        XYLog("install_external_pmk NOT_READY source=%s ic=NULL\n",
+              source_tag != nullptr ? source_tag : "?");
+        return kIOReturnNotReady;
+    }
+    if (pmk_bytes == nullptr) {
+        XYLog("install_external_pmk REJECT_NULL source=%s\n",
+              source_tag != nullptr ? source_tag : "?");
+        return kIOReturnBadArgument;
+    }
+    if (key_len != IEEE80211_PMK_LEN) {
+        XYLog("install_external_pmk REJECT_LEN source=%s key_len=%u expected=%u\n",
+              source_tag != nullptr ? source_tag : "?",
+              key_len, (unsigned)IEEE80211_PMK_LEN);
+        return kIOReturnBadArgument;
+    }
+    memcpy(ic->ic_psk, pmk_bytes, sizeof(ic->ic_psk));
+    ic->ic_flags |= IEEE80211_F_PSK;
+    struct ieee80211_wpaparams wpa;
+    memset(&wpa, 0, sizeof(wpa));
+    wpa.i_enabled = 1;
+    wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 |
+                    IEEE80211_WPA_PROTO_WPA2;
+    wpa.i_akms    = IEEE80211_WPA_AKM_PSK |
+                    IEEE80211_WPA_AKM_SHA256_PSK;
+    int wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
+    // Mirror the CIPHER_KEY install counter for backward compatibility
+    // and bump the matching source-specific counter so an observer can
+    // attribute the install to the correct carrier.
+    ic->ic_external_pmk_owner = 0;
+    __atomic_add_fetch(&setCipherKey_pmk_install_count, 1,
+                       __ATOMIC_RELAXED);
+    if (source_tag != nullptr && strcmp(source_tag, "CUR_PMK") == 0) {
+        __atomic_add_fetch(&setCUR_PMK_pmk_install_count, 1,
+                           __ATOMIC_RELAXED);
+    }
+    unsigned int pmkNonZeroBytes = 0;
+    for (size_t i = 0; i < sizeof(ic->ic_psk); ++i) {
+        if (ic->ic_psk[i] != 0) pmkNonZeroBytes++;
+    }
+    XYLog("install_external_pmk INSTALLED source=%s key_len=%u "
+          "ic_psk_nonzero_bytes=%u/%zu ic_flags=0x%x "
+          "ic_rsnprotos=0x%x ic_rsnakms=0x%x "
+          "setwpaparms_rc=%d (ENETRESET=%d expected) "
+          "ic_external_pmk_owner=0\n",
+          source_tag != nullptr ? source_tag : "?",
+          key_len, pmkNonZeroBytes,
+          sizeof(ic->ic_psk), (unsigned)ic->ic_flags,
+          (unsigned)ic->ic_rsnprotos,
+          (unsigned)ic->ic_rsnakms,
+          wparc, (int)ENETRESET);
+    return kIOReturnSuccess;
+}
+
+void AirportItlwmSkywalkInterface::
+clearExternalPmkEligibilityLocked(const char *reason_tag)
+{
+    // Reset the external-PMK host-supplicant state at lifecycle edges
+    // that invalidate any previously delivered PMK: disassociate, leave,
+    // setCLEAR_PMKSA_CACHE, association reset, reassociation start, and
+    // RSN disable paths. The recovered Apple WCL contract is that PMK
+    // ownership does not survive these edges; carrying a stale PMK into
+    // a new association attempt would risk a host-supplicant MIC built
+    // from a wrong PMK on a fresh edge. Logging is credential-safe: the
+    // PMK bytes themselves never appear in kernel logs, only the
+    // structural marker that names the reset reason and reports the
+    // post-clear nonzero-byte count (always 0 by construction here).
+    struct ieee80211com *ic = fHalService
+        ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr) {
+        XYLog("clear_external_pmk NOT_READY reason=%s ic=NULL\n",
+              reason_tag != nullptr ? reason_tag : "?");
+        return;
+    }
+    memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
+    ic->ic_flags &= ~IEEE80211_F_PSK;
+    ic->ic_external_pmk_owner = 0;
+    // Clear the per-node PMK and PSK-AKM PMK readiness flag on the
+    // current bss node if one is bound. The recovered Apple owner
+    // contract requires the prior owner state to evaporate at the
+    // same reset edge that zeroes ic_psk; otherwise a fresh
+    // ieee80211_recv_4way_msg1 on a re-association could read a
+    // stale ni_pmk while ic_psk and the owner state are already
+    // cleared, producing a PTK from invalid material.
+    if (ic->ic_bss != nullptr) {
+        memset(ic->ic_bss->ni_pmk, 0, sizeof(ic->ic_bss->ni_pmk));
+        ic->ic_bss->ni_flags &= ~IEEE80211_NODE_PMK;
+    }
+    __atomic_add_fetch(&external_pmk_eligibility_clear_count, 1,
+                       __ATOMIC_RELAXED);
+    XYLog("clear_external_pmk CLEARED reason=%s ic_psk_nonzero_bytes=0/%zu "
+          "ic_flags=0x%x ic_external_pmk_owner=0 ni_pmk_cleared=%d\n",
+          reason_tag != nullptr ? reason_tag : "?",
+          sizeof(ic->ic_psk), (unsigned)ic->ic_flags,
+          ic->ic_bss != nullptr ? 1 : 0);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4050,6 +4403,16 @@ setDISASSOCIATE(void *ad)
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
+    // External PMK eligibility does not survive any disassociate
+    // edge that this selector represents, including the early-return
+    // sub-paths where the function returns before publishing a deauth
+    // or before resetting net80211 ESS state. Clear unconditionally
+    // on entry so a stale PMK does not survive into the next
+    // association attempt regardless of which sub-path the
+    // disassociate edge takes from here. The clear logs only a
+    // credential-safe reason marker and never the PMK bytes.
+    clearExternalPmkEligibilityLocked("setDISASSOCIATE");
+
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
         return kIOReturnSuccess;
@@ -4154,6 +4517,11 @@ setCLEAR_PMKSA_CACHE(void *req)
     CR257_PROBE(setCLEAR_PMKSA_CACHE, req, 0);
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
+    // PMKSA-cache clear semantically invalidates any held host PMK,
+    // so drop external PMK eligibility before touching the node
+    // cache. The clear is credential-safe and only emits structural
+    // markers naming the reset reason.
+    clearExternalPmkEligibilityLocked("setCLEAR_PMKSA_CACHE");
     //if doing background or active scan, don't free nodes.
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) || (ic->ic_flags & IEEE80211_F_ASCAN))
         return kIOReturnSuccess;
@@ -4190,22 +4558,52 @@ getMCS(struct apple80211_mcs_data* md)
     return ret;
 }
 
+/*
+ * apple80211_link_changed_event_data response producer.
+ *
+ * The Tahoe userspace consumer reads voluntary at +0x1c (link-down)
+ * or +0x1d (link-up) and reads either apple80211_link_down_reason
+ * or the link-up RSSI from the +0x04 union, so this routine must
+ * populate the 32-byte response shape:
+ *   - on link-down: voluntary_down from the locally-tracked disassoc
+ *     initiation flag, reason = DEAUTH (the BEACONLOST reason needs
+ *     a HAL-side beacon-loss teardown signal not produced by this
+ *     layer), and the current BSSID copied into the first six bytes
+ *     of last_assoc so the upper layer can identify the dropped
+ *     network.
+ *   - on link-up: voluntary_up is 1 because every itlwm STA path
+ *     reaches RUN through an explicit setASSOCIATE / setSCAN_REQ
+ *     join sequence; rssi published from the current node.
+ * snr / nf / cca remain zero because itlwm does not currently
+ * expose per-beacon noise-floor or channel CCA metrics from the
+ * iwx / iwm HAL; populating them is a separate parity layer.
+ */
 IOReturn AirportItlwmSkywalkInterface::
 getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
 {
     if (ed == nullptr)
         return 16;
-    
+
     struct ieee80211com *ic = fHalService->get80211Controller();
-    
+
     bzero(ed, sizeof(apple80211_link_changed_event_data));
     ed->isLinkDown = !(instance->currentStatus & kIONetworkLinkActive);
     if (ed->isLinkDown) {
-        ed->voluntary = disassocIsVoluntary;
-        ed->reason = APPLE80211_LINK_DOWN_REASON_DEAUTH;
-    } else
-        ed->rssi = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
-    XYLog("Link %s, reason: %d, voluntary: %d\n", ed->isLinkDown ? "down" : "up", ed->reason, ed->voluntary);
+        ed->voluntary_down = disassocIsVoluntary ? 1 : 0;
+        ed->reason         = APPLE80211_LINK_DOWN_REASON_DEAUTH;
+        if (ic != nullptr && ic->ic_bss != nullptr) {
+            memcpy(ed->last_assoc, ic->ic_bss->ni_bssid, IEEE80211_ADDR_LEN);
+        }
+    } else {
+        ed->voluntary_up = 1;
+        if (ic != nullptr && ic->ic_bss != nullptr) {
+            ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+        }
+    }
+    XYLog("Link %s, voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
+          ed->isLinkDown ? "down" : "up",
+          ed->voluntary_down, ed->voluntary_up,
+          ed->isLinkDown ? ed->reason : ed->rssi);
     return kIOReturnSuccess;
 }
 
@@ -4672,6 +5070,12 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 
     struct ieee80211com *ic = fHalService->get80211Controller();
     XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+
+    // WCL leave is the canonical Apple lifecycle edge that invalidates
+    // any externally delivered PMK. Clear before any early return so
+    // the host supplicant PMK store does not survive a leave into the
+    // next association attempt, regardless of the ic state at entry.
+    clearExternalPmkEligibilityLocked("setWCL_LEAVE_NETWORK");
 
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;
@@ -5468,6 +5872,15 @@ setWCL_REASSOC(apple80211_reassoc *data)
               data ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
+    // A reassociation start invalidates any external PMK delivered
+    // before the new association edge. The host supplicant must
+    // begin the reassociation 4-way handshake from a fresh PMK
+    // installed through CIPHER_KEY(PMK), CIPHER_KEY(MSK), or CUR_PMK
+    // on the reassociated network. Clear unconditionally so it
+    // covers both the success and the early-return paths of the
+    // reassociation selector.
+    clearExternalPmkEligibilityLocked("setWCL_REASSOC");
+
     // AppleBCMWLANCore::setWCL_REASSOC is not an ack-only stub: it snapshots
     // the recovered reassoc request, refuses NULL with 0xe00002bc, and bails
     // out with the same code when the interface is not associated. The actual
@@ -5736,6 +6149,15 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
+
+    // A join abort tears down the in-flight auth/assoc state and
+    // returns the WCL join manager to IDLE. The recovered Apple
+    // contract treats this as an association-reset edge for the PMK
+    // owner: any PMK that was delivered for the aborted association
+    // attempt must not survive into the next join. Clear before the
+    // state machine moves so the cleared eligibility is observable
+    // to the next association edge.
+    clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT");
 
     XYLog("WCL [598] %s ic_state=%d completion=%u\n",
           __FUNCTION__, ic->ic_state,
