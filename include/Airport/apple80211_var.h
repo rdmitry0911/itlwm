@@ -340,6 +340,52 @@ struct apple80211_key
     u_int8_t            wowl_kek_key[24];
 };
 
+// Field-level layout of the Tahoe apple80211_pmk carrier used by
+// apple80211setCUR_PMK (selector 0x168 / IOC 360) and the matching
+// apple80211getCUR_PMK getter (selector 0x16a). The Apple PMK owner
+// helper accepts a key length strictly less than 0x41 at offset
+// +0x04 and copies the source key material from carrier offset +0x10
+// into the PMK store. The getter writes the owner snapshot starting
+// at carrier offset +0x08 and stamps the version/metadata at +0x48,
+// +0x4c, and +0x54. Field names match the recovered Apple semantics
+// and do not log raw key material; the byte buffers carry credential
+// material and must only be reported through credential-safe markers.
+#define APPLE80211_PMK_BUFF_LEN              64
+// Recovered Apple Tahoe carrier layout: status at +0x48 is immediately
+// followed by two 8-byte metadata cookies at +0x4c and +0x54 with no
+// alignment padding. Natural C++ alignment of u_int64_t would push the
+// metadata fields to +0x50 / +0x58 and grow sizeof to 0x60, breaking
+// the IOCTL ABI. The struct is therefore packed and pinned by static
+// asserts on sizeof and every field offset, including metadata. Total
+// size is 0x5c bytes packed.
+struct apple80211_pmk
+{
+    u_int32_t           apple_pmk_header;                  // +0x00 header/reserved, not consumed by Apple setter/getter
+    u_int32_t           apple_pmk_key_len;                 // +0x04 validated key length, accepted when < 0x41
+    u_int8_t            apple_pmk_getter_window[8];        // +0x08..+0x0F getter-only output prefix
+    u_int8_t            apple_pmk_setter_source[56];       // +0x10..+0x47 setter source key material (PMK bytes)
+    u_int32_t           apple_pmk_status;                  // +0x48 status/version tag (0x10 on getter success)
+    u_int64_t           apple_pmk_metadata_0;              // +0x4c metadata cookie 0
+    u_int64_t           apple_pmk_metadata_1;              // +0x54 metadata cookie 1
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_pmk) == 0x5c,
+              "apple80211_pmk must be 0x5c bytes packed (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_header) == 0x00,
+              "apple_pmk_header must live at +0x00 (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_key_len) == 0x04,
+              "apple_pmk_key_len must live at +0x04 (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_getter_window) == 0x08,
+              "apple_pmk_getter_window must live at +0x08 (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_setter_source) == 0x10,
+              "apple_pmk_setter_source must live at +0x10 (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_status) == 0x48,
+              "apple_pmk_status must live at +0x48 (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_metadata_0) == 0x4c,
+              "apple_pmk_metadata_0 must live at +0x4c (Tahoe CUR_PMK ABI)");
+static_assert(__offsetof(struct apple80211_pmk, apple_pmk_metadata_1) == 0x54,
+              "apple_pmk_metadata_1 must live at +0x54 (Tahoe CUR_PMK ABI)");
+
 // Changing this affects any structure that contains a channel
 struct apple80211_channel
 {

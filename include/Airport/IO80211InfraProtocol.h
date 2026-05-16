@@ -6,9 +6,14 @@
 //  Copyright © 2023 钟先耀. All rights reserved.
 //
 //  Corrected vtable layout extracted from macOS 26.3 (25D125)
-//  BootKernelExtensions.kc on 2026-04-07.
-//  Total: 194 pure virtual methods (75 GET + 119 SET)
-//  Vtable slots [470]-[663] of IO80211InfraProtocol.
+//  BootKernelExtensions.kc on 2026-04-07; extended through Tahoe absolute
+//  vtable slot [750] on 2026-05-16 with the auditor-accepted Ghidra/
+//  static-analysis batch and Project Sources baseline for slots [664]-[750].
+//  Total: 281 declarations: 195 pure virtuals (75 GET + 119 SET + setCUR_PMK)
+//  and 86 non-pure placeholder virtuals at slots [664]-[749] whose only
+//  purpose is to preserve __ZTV23IO80211SkywalkInterface vtable layout up to
+//  slot [750] (the SET-side apple80211setCUR_PMK receiver at +0x1770).
+//  Vtable slots [470]-[750] of IO80211InfraProtocol.
 //
 
 #ifndef IO80211InfraProtocol_h
@@ -559,6 +564,395 @@ public:
     virtual IOReturn setOS_ELIGIBILITY(apple80211_os_eligibility *) = 0;
     // [663]
     virtual IOReturn setTX_MODE_CONFIG(apple80211_tx_mode_config *) = 0;
+
+    //
+    // Apple Tahoe vtable slots [664]-[750] of __ZTV23IO80211SkywalkInterface
+    // (87 entries). Reconstructed from BootKernelExtensions.kc 26.3 baseline
+    // through a Ghidra/static-analysis batch and corroborated by Project Sources.
+    // Slots [664]-[749] are placeholder non-pure virtuals with an empty default body whose
+    // sole purpose is to preserve __ZTV23IO80211SkywalkInterface vtable layout
+    // up to slot [750]. Where Apple/Ghidra material provided only a synthetic
+    // FUN_*/LAB_* label, the placeholder name preserves that exact target hex
+    // instead of inventing a semantic method name. For the small number of
+    // slots with a recovered Apple semantic identity, the identity is recorded
+    // in the comment but the local declaration name keeps the _TahoeSlotNNN
+    // prefix so it does not collide with parent-class virtuals at other local
+    // slot positions.
+    // Slot [750] is the SET-side Skywalk virtual receiver for the
+    // apple80211setCUR_PMK trampoline at 0xffffff80021eb3b9; base function is
+    // the forwarding thunk at 0xffffff8002277d2e and the AppleBCMWLAN production
+    // override target is 0xffffff8000b72960. Apple delivers the externally
+    // sourced PSK PMK through this slot, so the matching local override in
+    // AirportItlwmSkywalkInterface routes the apple80211_pmk * payload through
+    // installExternalPmkLocked into ic_psk before the host net80211 4-way M1.
+    //
+
+    // [664]
+    // Tahoe abs slot 664 at __ZTV23IO80211SkywalkInterface+0x14c0; target
+    // 0xffffff8002a28f14.
+    virtual void _TahoeSlot664_ffffff8002a28f14() {}
+    // [665]
+    // Tahoe abs slot 665 at __ZTV23IO80211SkywalkInterface+0x14c8; target
+    // 0xffffff8002a28f2a.
+    virtual void _TahoeSlot665_ffffff8002a28f2a() {}
+    // [666]
+    // Tahoe abs slot 666 at __ZTV23IO80211SkywalkInterface+0x14d0; target
+    // 0xffffff8002a28f40.
+    virtual void _TahoeSlot666_ffffff8002a28f40() {}
+    // [667]
+    // Tahoe abs slot 667 at __ZTV23IO80211SkywalkInterface+0x14d8; target
+    // 0xffffff8002a28f56.
+    virtual void _TahoeSlot667_ffffff8002a28f56() {}
+    // [668]
+    // Tahoe abs slot 668 at __ZTV23IO80211SkywalkInterface+0x14e0; target
+    // 0xffffff8002a28f6c.
+    virtual void _TahoeSlot668_ffffff8002a28f6c() {}
+    // [669]
+    // Tahoe abs slot 669 at __ZTV23IO80211SkywalkInterface+0x14e8; target
+    // 0xffffff8002a3732c.
+    virtual void _TahoeSlot669_ffffff8002a3732c() {}
+    // [670]
+    // Tahoe abs slot 670 at __ZTV23IO80211SkywalkInterface+0x14f0; target
+    // 0xffffff8002a376d0.
+    virtual void _TahoeSlot670_ffffff8002a376d0() {}
+    // [671]
+    // Tahoe abs slot 671 at __ZTV23IO80211SkywalkInterface+0x14f8; target
+    // 0xffffff8002275030.
+    virtual void _TahoeSlot671_ffffff8002275030() {}
+    // [672]
+    // Tahoe abs slot 672 at __ZTV23IO80211SkywalkInterface+0x1500; target
+    // 0xffffff80022b0532.
+    virtual void _TahoeSlot672_ffffff80022b0532() {}
+    // [673]
+    // Tahoe abs slot 673 at __ZTV23IO80211SkywalkInterface+0x1508; target
+    // 0xffffff8002a37aa0.
+    virtual void _TahoeSlot673_ffffff8002a37aa0() {}
+    // [674]
+    // Tahoe abs slot 674 at __ZTV23IO80211SkywalkInterface+0x1510; target
+    // 0xffffff8002a37af2.
+    virtual void _TahoeSlot674_ffffff8002a37af2() {}
+    // [675]
+    // Tahoe abs slot 675 at __ZTV23IO80211SkywalkInterface+0x1518; target
+    // 0xffffff8002a37b04.
+    virtual void _TahoeSlot675_ffffff8002a37b04() {}
+    // [676]
+    // Tahoe abs slot 676 at __ZTV23IO80211SkywalkInterface+0x1520; target
+    // 0xffffff8002a37b26.
+    virtual void _TahoeSlot676_ffffff8002a37b26() {}
+    // [677]
+    // Tahoe abs slot 677 at __ZTV23IO80211SkywalkInterface+0x1528; target
+    // 0xffffff80022b058e.
+    virtual void _TahoeSlot677_ffffff80022b058e() {}
+    // [678]
+    // Tahoe abs slot 678 at __ZTV23IO80211SkywalkInterface+0x1530; target
+    // 0xffffff8002a3831e.
+    virtual void _TahoeSlot678_ffffff8002a3831e() {}
+    // [679]
+    // Tahoe abs slot 679 at __ZTV23IO80211SkywalkInterface+0x1538; target
+    // 0xffffff8002a386c2.
+    virtual void _TahoeSlot679_ffffff8002a386c2() {}
+    // [680]
+    // Tahoe abs slot 680 at __ZTV23IO80211SkywalkInterface+0x1540; target
+    // 0xffffff8002a386ce.
+    virtual void _TahoeSlot680_ffffff8002a386ce() {}
+    // [681]
+    // Tahoe abs slot 681 at __ZTV23IO80211SkywalkInterface+0x1548; target
+    // 0xffffff80022b05fe.
+    virtual void _TahoeSlot681_ffffff80022b05fe() {}
+    // [682]
+    // Tahoe abs slot 682 at __ZTV23IO80211SkywalkInterface+0x1550; target
+    // 0xffffff8002277284.
+    virtual void _TahoeSlot682_ffffff8002277284() {}
+    // [683]
+    // Tahoe abs slot 683 at __ZTV23IO80211SkywalkInterface+0x1558; target
+    // 0xffffff8002277c0e.
+    virtual void _TahoeSlot683_ffffff8002277c0e() {}
+    // [684]
+    // Tahoe abs slot 684 at __ZTV23IO80211SkywalkInterface+0x1560; target
+    // 0xffffff8002277b10.
+    virtual void _TahoeSlot684_ffffff8002277b10() {}
+    // [685]
+    // Tahoe abs slot 685 at __ZTV23IO80211SkywalkInterface+0x1568; target
+    // 0xffffff8002a3dac6.
+    virtual void _TahoeSlot685_ffffff8002a3dac6() {}
+    // [686]
+    // Tahoe abs slot 686 at __ZTV23IO80211SkywalkInterface+0x1570; target
+    // 0xffffff8002a38478.
+    virtual void _TahoeSlot686_ffffff8002a38478() {}
+    // [687]
+    // Tahoe abs slot 687 at __ZTV23IO80211SkywalkInterface+0x1578; target
+    // 0xffffff8002a386da. LAB_; symbol-only concrete target.
+    virtual void _TahoeSlot687_ffffff8002a386da() {}
+    // [688]
+    // Tahoe abs slot 688 at __ZTV23IO80211SkywalkInterface+0x1580; target
+    // 0xffffff8002a3f09a.
+    virtual void _TahoeSlot688_ffffff8002a3f09a() {}
+    // [689]
+    // Tahoe abs slot 689 at __ZTV23IO80211SkywalkInterface+0x1588; target
+    // 0xffffff8002a37b44.
+    virtual void _TahoeSlot689_ffffff8002a37b44() {}
+    // [690]
+    // Tahoe abs slot 690 at __ZTV23IO80211SkywalkInterface+0x1590; target
+    // 0xffffff8002a3f1de.
+    virtual void _TahoeSlot690_ffffff8002a3f1de() {}
+    // [691]
+    // Tahoe abs slot 691 at __ZTV23IO80211SkywalkInterface+0x1598; target
+    // 0xffffff8002a38844.
+    virtual void _TahoeSlot691_ffffff8002a38844() {}
+    // [692]
+    // Tahoe abs slot 692 at __ZTV23IO80211SkywalkInterface+0x15a0; target
+    // 0xffffff8002a3f1fc.
+    virtual void _TahoeSlot692_ffffff8002a3f1fc() {}
+    // [693]
+    // Tahoe abs slot 693 at __ZTV23IO80211SkywalkInterface+0x15a8; target
+    // 0xffffff8002a3887e.
+    virtual void _TahoeSlot693_ffffff8002a3887e() {}
+    // [694]
+    // Tahoe abs slot 694 at __ZTV23IO80211SkywalkInterface+0x15b0; target
+    // 0xffffff8002a38892.
+    virtual void _TahoeSlot694_ffffff8002a38892() {}
+    // [695]
+    // Tahoe abs slot 695 at __ZTV23IO80211SkywalkInterface+0x15b8; target
+    // 0xffffff8002a3dca6.
+    virtual void _TahoeSlot695_ffffff8002a3dca6() {}
+    // [696]
+    // Tahoe abs slot 696 at __ZTV23IO80211SkywalkInterface+0x15c0; target
+    // 0xffffff8002a3dcc4.
+    virtual void _TahoeSlot696_ffffff8002a3dcc4() {}
+    // [697]
+    // Tahoe abs slot 697 at __ZTV23IO80211SkywalkInterface+0x15c8; target
+    // 0xffffff8002a3dcd6.
+    virtual void _TahoeSlot697_ffffff8002a3dcd6() {}
+    // [698]
+    // Tahoe abs slot 698 at __ZTV23IO80211SkywalkInterface+0x15d0; target
+    // 0xffffff80022b05a2.
+    virtual void _TahoeSlot698_ffffff80022b05a2() {}
+    // [699]
+    // Tahoe abs slot 699 at __ZTV23IO80211SkywalkInterface+0x15d8; target
+    // 0xffffff8002a3895e. LAB_; symbol-only concrete target.
+    virtual void _TahoeSlot699_ffffff8002a3895e() {}
+    // [700]
+    // Tahoe abs slot 700 at __ZTV23IO80211SkywalkInterface+0x15e0; target
+    // 0xffffff8002a38744.
+    virtual void _TahoeSlot700_ffffff8002a38744() {}
+    // [701]
+    // Tahoe abs slot 701 at __ZTV23IO80211SkywalkInterface+0x15e8; target
+    // 0xffffff8002a3874c.
+    virtual void _TahoeSlot701_ffffff8002a3874c() {}
+    // [702]
+    // Tahoe abs slot 702 at __ZTV23IO80211SkywalkInterface+0x15f0; target
+    // 0xffffff8002a38876.
+    virtual void _TahoeSlot702_ffffff8002a38876() {}
+    // [703]
+    // Tahoe abs slot 703 at __ZTV23IO80211SkywalkInterface+0x15f8; target
+    // 0xffffff80022af862.
+    virtual void _TahoeSlot703_ffffff80022af862() {}
+    // [704]
+    // Tahoe abs slot 704 at __ZTV23IO80211SkywalkInterface+0x1600; target
+    // 0xffffff8002a3f21a.
+    virtual void _TahoeSlot704_ffffff8002a3f21a() {}
+    // [705]
+    // Tahoe abs slot 705 at __ZTV23IO80211SkywalkInterface+0x1608; target
+    // 0xffffff8002a38914. Apple semantic identity: getBSDUnitNumber. base
+    // behavior returns 0 or -1 in IOSkywalk internals.
+    virtual void _TahoeSlot705_ffffff8002a38914() {}
+    // [706]
+    // Tahoe abs slot 706 at __ZTV23IO80211SkywalkInterface+0x1610; target
+    // 0xffffff80022785e6.
+    virtual void _TahoeSlot706_ffffff80022785e6() {}
+    // [707]
+    // Tahoe abs slot 707 at __ZTV23IO80211SkywalkInterface+0x1618; target
+    // 0xffffff8002a38c10.
+    virtual void _TahoeSlot707_ffffff8002a38c10() {}
+    // [708]
+    // Tahoe abs slot 708 at __ZTV23IO80211SkywalkInterface+0x1620; target
+    // 0xffffff8002a38e26.
+    virtual void _TahoeSlot708_ffffff8002a38e26() {}
+    // [709]
+    // Tahoe abs slot 709 at __ZTV23IO80211SkywalkInterface+0x1628; target
+    // 0xffffff8002a38e7e.
+    virtual void _TahoeSlot709_ffffff8002a38e7e() {}
+    // [710]
+    // Tahoe abs slot 710 at __ZTV23IO80211SkywalkInterface+0x1630; target
+    // 0xffffff8002a38f30.
+    virtual void _TahoeSlot710_ffffff8002a38f30() {}
+    // [711]
+    // Tahoe abs slot 711 at __ZTV23IO80211SkywalkInterface+0x1638; target
+    // 0xffffff8002a38f44.
+    virtual void _TahoeSlot711_ffffff8002a38f44() {}
+    // [712]
+    // Tahoe abs slot 712 at __ZTV23IO80211SkywalkInterface+0x1640; target
+    // 0xffffff8002a38f5a.
+    virtual void _TahoeSlot712_ffffff8002a38f5a() {}
+    // [713]
+    // Tahoe abs slot 713 at __ZTV23IO80211SkywalkInterface+0x1648; target
+    // 0xffffff8002a38f70.
+    virtual void _TahoeSlot713_ffffff8002a38f70() {}
+    // [714]
+    // Tahoe abs slot 714 at __ZTV23IO80211SkywalkInterface+0x1650; target
+    // 0xffffff8002a38f86.
+    virtual void _TahoeSlot714_ffffff8002a38f86() {}
+    // [715]
+    // Tahoe abs slot 715 at __ZTV23IO80211SkywalkInterface+0x1658; target
+    // 0xffffff8002a38f9c.
+    virtual void _TahoeSlot715_ffffff8002a38f9c() {}
+    // [716]
+    // Tahoe abs slot 716 at __ZTV23IO80211SkywalkInterface+0x1660; target
+    // 0xffffff8002a38fb2.
+    virtual void _TahoeSlot716_ffffff8002a38fb2() {}
+    // [717]
+    // Tahoe abs slot 717 at __ZTV23IO80211SkywalkInterface+0x1668; target
+    // 0xffffff8002a38fc8.
+    virtual void _TahoeSlot717_ffffff8002a38fc8() {}
+    // [718]
+    // Tahoe abs slot 718 at __ZTV23IO80211SkywalkInterface+0x1670; target
+    // 0xffffff8002a38fde.
+    virtual void _TahoeSlot718_ffffff8002a38fde() {}
+    // [719]
+    // Tahoe abs slot 719 at __ZTV23IO80211SkywalkInterface+0x1678; target
+    // 0xffffff8002a38ff4.
+    virtual void _TahoeSlot719_ffffff8002a38ff4() {}
+    // [720]
+    // Tahoe abs slot 720 at __ZTV23IO80211SkywalkInterface+0x1680; target
+    // 0xffffff8002277082.
+    virtual void _TahoeSlot720_ffffff8002277082() {}
+    // [721]
+    // Tahoe abs slot 721 at __ZTV23IO80211SkywalkInterface+0x1688; target
+    // 0xffffff800227711a. related symbol initialPowerStateForDomainState at
+    // 0xffffff800227714c.
+    virtual void _TahoeSlot721_ffffff800227711a() {}
+    // [722]
+    // Tahoe abs slot 722 at __ZTV23IO80211SkywalkInterface+0x1690; target
+    // 0xffffff8002a3dcf4.
+    virtual void _TahoeSlot722_ffffff8002a3dcf4() {}
+    // [723]
+    // Tahoe abs slot 723 at __ZTV23IO80211SkywalkInterface+0x1698; target
+    // 0xffffff8002a3e4fe.
+    virtual void _TahoeSlot723_ffffff8002a3e4fe() {}
+    // [724]
+    // Tahoe abs slot 724 at __ZTV23IO80211SkywalkInterface+0x16a0; target
+    // 0xffffff80022b06c4.
+    virtual void _TahoeSlot724_ffffff80022b06c4() {}
+    // [725]
+    // Tahoe abs slot 725 at __ZTV23IO80211SkywalkInterface+0x16a8; target
+    // 0xffffff8002a3e5dc.
+    virtual void _TahoeSlot725_ffffff8002a3e5dc() {}
+    // [726]
+    // Tahoe abs slot 726 at __ZTV23IO80211SkywalkInterface+0x16b0; target
+    // 0xffffff8002277c8e.
+    virtual void _TahoeSlot726_ffffff8002277c8e() {}
+    // [727]
+    // Tahoe abs slot 727 at __ZTV23IO80211SkywalkInterface+0x16b8; target
+    // 0xffffff8002a3f022.
+    virtual void _TahoeSlot727_ffffff8002a3f022() {}
+    // [728]
+    // Tahoe abs slot 728 at __ZTV23IO80211SkywalkInterface+0x16c0; target
+    // 0xffffff8002a3f1d8.
+    virtual void _TahoeSlot728_ffffff8002a3f1d8() {}
+    // [729]
+    // Tahoe abs slot 729 at __ZTV23IO80211SkywalkInterface+0x16c8; target
+    // 0xffffff8002a3f23c.
+    virtual void _TahoeSlot729_ffffff8002a3f23c() {}
+    // [730]
+    // Tahoe abs slot 730 at __ZTV23IO80211SkywalkInterface+0x16d0; target
+    // 0xffffff8002a3f250.
+    virtual void _TahoeSlot730_ffffff8002a3f250() {}
+    // [731]
+    // Tahoe abs slot 731 at __ZTV23IO80211SkywalkInterface+0x16d8; target
+    // 0xffffff8002a3f266.
+    virtual void _TahoeSlot731_ffffff8002a3f266() {}
+    // [732]
+    // Tahoe abs slot 732 at __ZTV23IO80211SkywalkInterface+0x16e0; target
+    // 0xffffff8002a3f27c.
+    virtual void _TahoeSlot732_ffffff8002a3f27c() {}
+    // [733]
+    // Tahoe abs slot 733 at __ZTV23IO80211SkywalkInterface+0x16e8; target
+    // 0xffffff8002a3f292.
+    virtual void _TahoeSlot733_ffffff8002a3f292() {}
+    // [734]
+    // Tahoe abs slot 734 at __ZTV23IO80211SkywalkInterface+0x16f0; target
+    // 0xffffff8002a3f2a8.
+    virtual void _TahoeSlot734_ffffff8002a3f2a8() {}
+    // [735]
+    // Tahoe abs slot 735 at __ZTV23IO80211SkywalkInterface+0x16f8; target
+    // 0xffffff8002a3f2be.
+    virtual void _TahoeSlot735_ffffff8002a3f2be() {}
+    // [736]
+    // Tahoe abs slot 736 at __ZTV23IO80211SkywalkInterface+0x1700; target
+    // 0xffffff8002a3f2d4.
+    virtual void _TahoeSlot736_ffffff8002a3f2d4() {}
+    // [737]
+    // Tahoe abs slot 737 at __ZTV23IO80211SkywalkInterface+0x1708; target
+    // 0xffffff8002a3f2ea.
+    virtual void _TahoeSlot737_ffffff8002a3f2ea() {}
+    // [738]
+    // Tahoe abs slot 738 at __ZTV23IO80211SkywalkInterface+0x1710; target
+    // 0xffffff8002a3f300.
+    virtual void _TahoeSlot738_ffffff8002a3f300() {}
+    // [739]
+    // Tahoe abs slot 739 at __ZTV23IO80211SkywalkInterface+0x1718; target
+    // 0xffffff8002a3f316. concrete non-reserved function.
+    virtual void _TahoeSlot739_ffffff8002a3f316() {}
+    // [740]
+    // Tahoe abs slot 740 at __ZTV23IO80211SkywalkInterface+0x1720; target
+    // 0xffffff80022af2de. concrete non-reserved function.
+    virtual void _TahoeSlot740_ffffff80022af2de() {}
+    // [741]
+    // Tahoe abs slot 741 at __ZTV23IO80211SkywalkInterface+0x1728; target
+    // 0xffffff80022768a2. concrete non-reserved function.
+    virtual void _TahoeSlot741_ffffff80022768a2() {}
+    // [742]
+    // Tahoe abs slot 742 at __ZTV23IO80211SkywalkInterface+0x1730; target
+    // 0xffffff80022b1bf4. concrete non-reserved function.
+    virtual void _TahoeSlot742_ffffff80022b1bf4() {}
+    // [743]
+    // Tahoe abs slot 743 at __ZTV23IO80211SkywalkInterface+0x1738; target
+    // 0xffffff8002277a7a. Apple semantic identity:
+    // IO80211SkywalkInterface::cachePeer. matching removePacketQueue(const
+    // IO80211FlowQueueHash*) evidence nearby.
+    virtual void _TahoeSlot743_ffffff8002277a7a() {}
+    // [744]
+    // Tahoe abs slot 744 at __ZTV23IO80211SkywalkInterface+0x1740; target
+    // 0xffffff8002277ce4. Apple semantic identity:
+    // IO80211SkywalkInterface::updateLinkStatus().
+    virtual void _TahoeSlot744_ffffff8002277ce4() {}
+    // [745]
+    // Tahoe abs slot 745 at __ZTV23IO80211SkywalkInterface+0x1748; target
+    // 0xffffff8002277cc6. Apple semantic identity:
+    // IO80211SkywalkInterface::setLQM(unsigned long long).
+    virtual void _TahoeSlot745_ffffff8002277cc6() {}
+    // [746]
+    // Tahoe abs slot 746 at __ZTV23IO80211SkywalkInterface+0x1750; target
+    // 0xffffff80022b29ca. Apple semantic identity:
+    // IO80211VirtualInterface::logTxPacket(IO80211NetworkPacket *,
+    // PacketSkywalkScratch *, apple80211_wme_ac, bool). corrected from
+    // baseline part02; not reserved.
+    virtual void _TahoeSlot746_ffffff80022b29ca() {}
+    // [747]
+    // Tahoe abs slot 747 at __ZTV23IO80211SkywalkInterface+0x1758; target
+    // 0xffffff80022b2a56. Apple semantic identity:
+    // IO80211VirtualInterface::postAWDLRtgStatistics(apple80211_awdl_rtg_statistics
+    // *).
+    virtual void _TahoeSlot747_ffffff80022b2a56() {}
+    // [748]
+    // Tahoe abs slot 748 at __ZTV23IO80211SkywalkInterface+0x1760; target
+    // 0xffffff8002277d28. Apple semantic identity:
+    // IO80211SkywalkInterface::setInterfaceCCA(apple80211_channel, int).
+    virtual void _TahoeSlot748_ffffff8002277d28() {}
+    // [749]
+    // Tahoe abs slot 749 at __ZTV23IO80211SkywalkInterface+0x1768; target
+    // 0xffffff80022b26c8. concrete non-reserved function.
+    virtual void _TahoeSlot749_ffffff80022b26c8() {}
+    // [750]
+    // Tahoe abs slot 750 at __ZTV23IO80211SkywalkInterface+0x1770.
+    // Base function pointer 0xffffff8002277d2e is the
+    // _RESERVED_IO80211SkywalkInterface_11 forwarding thunk; the live
+    // setCUR_PMK body 0xffffff8000b72960 is reached only through the
+    // AppleBCMWLANIO80211APSTAInterface subclass override. The pure-virtual
+    // declaration here forces every concrete IO80211InfraProtocol subclass
+    // to provide a credential-safe local setCUR_PMK implementation that
+    // matches Apple's observable contract.
+    virtual IOReturn setCUR_PMK(apple80211_pmk *) = 0;
 
 public:
     uint8_t filler[0x120];
