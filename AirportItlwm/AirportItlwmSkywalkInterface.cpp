@@ -2120,6 +2120,8 @@ init()
     cachedMwsConditionIdCount = 0;
     hasCachedMwsConditionIdConfig = false;
     memset(cachedMwsAntennaSelection, 0, sizeof(cachedMwsAntennaSelection));
+    memset(fLastPublishedBssid, 0, sizeof(fLastPublishedBssid));
+    fLastPublishedBssidValid = false;
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
 }
@@ -2321,6 +2323,89 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                             : (unsigned int)ed.rssi);
         instance->postMessage(instance->fNetIf, APPLE80211_M_LINK_CHANGED,
                               &ed, sizeof(ed), true);
+
+        /* Tahoe APPLE80211_M_BSSID_CHANGED 24-byte compact carrier.
+         *
+         * The recovered Apple writer for the BSSID-changed event delivers
+         * a 24-byte payload through the IOUC 0x1b1 selector path with the
+         * BSSID at offset 0x00 and the reason at offset 0x14, after
+         * applying two producer-side gates:
+         *
+         *   1. Zero-BSSID rejection. A proposed BSSID whose six octets
+         *      are all zero is rejected before publication. Mirror this
+         *      gate locally: an all-zero ni_bssid does not produce a
+         *      BSSID-changed publication and does not update the
+         *      last-published-BSSID tracker.
+         *   2. Same-BSS reason-1 suppression. A publication whose reason
+         *      field equals APPLE80211_BSSID_CHANGE_REASON_SAME_BSS (1)
+         *      and whose BSSID matches the last published BSSID is
+         *      suppressed. Mirror this gate locally by classifying the
+         *      proposed BSSID against the tracker: if the tracker is
+         *      valid and the proposed BSSID matches the last published
+         *      BSSID, the reason is APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
+         *      and the publication is suppressed; otherwise the reason
+         *      is APPLE80211_BSSID_CHANGE_REASON_INITIAL (0) and the
+         *      24-byte payload is published exactly once.
+         *
+         * Tahoe userspace length-checks this carrier (prior zero-length
+         * publication produced an `expected=24 actual=0` CoreWiFi
+         * rejection), so the populated 24-byte payload is the only valid
+         * shape. After a non-suppressed publication, the tracker is
+         * updated to the published BSSID and marked valid. On link-down
+         * the tracker is invalidated so the next link-up always
+         * republishes for a fresh association edge.
+         */
+        if (isLinkDown) {
+            this->fLastPublishedBssidValid = false;
+        } else if (ic != nullptr && ic->ic_bss != nullptr) {
+            uint8_t proposedBssid[IEEE80211_ADDR_LEN];
+            memcpy(proposedBssid, ic->ic_bss->ni_bssid,
+                   IEEE80211_ADDR_LEN);
+            const bool zeroBssidRejected =
+                (proposedBssid[0] | proposedBssid[1] | proposedBssid[2] |
+                 proposedBssid[3] | proposedBssid[4] |
+                 proposedBssid[5]) == 0;
+            if (zeroBssidRejected) {
+                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
+                      "bssid=00:00:00:00:00:00 reason=- "
+                      "same_bss_reason_1_suppressed=0 "
+                      "zero_bssid_rejected=1\n",
+                      __FUNCTION__);
+            } else {
+                const bool sameBssAsLastPublished =
+                    this->fLastPublishedBssidValid &&
+                    memcmp(proposedBssid, this->fLastPublishedBssid,
+                           IEEE80211_ADDR_LEN) == 0;
+                const uint32_t classifiedReason = sameBssAsLastPublished
+                    ? APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
+                    : APPLE80211_BSSID_CHANGE_REASON_INITIAL;
+                const bool sameBssidWithReason1 =
+                    (classifiedReason ==
+                         APPLE80211_BSSID_CHANGE_REASON_SAME_BSS) &&
+                    sameBssAsLastPublished;
+                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
+                      "bssid=%02x:%02x:%02x:%02x:%02x:%02x reason=%u "
+                      "same_bss_reason_1_suppressed=%u "
+                      "zero_bssid_rejected=0\n",
+                      __FUNCTION__,
+                      proposedBssid[0], proposedBssid[1], proposedBssid[2],
+                      proposedBssid[3], proposedBssid[4], proposedBssid[5],
+                      (unsigned)classifiedReason,
+                      sameBssidWithReason1 ? 1 : 0);
+                if (!sameBssidWithReason1) {
+                    apple80211_bssid_changed_event_data bd;
+                    bzero(&bd, sizeof(bd));
+                    memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
+                    bd.reason = classifiedReason;
+                    instance->postMessage(instance->fNetIf,
+                                          APPLE80211_M_BSSID_CHANGED,
+                                          &bd, sizeof(bd), true);
+                    memcpy(this->fLastPublishedBssid, proposedBssid,
+                           IEEE80211_ADDR_LEN);
+                    this->fLastPublishedBssidValid = true;
+                }
+            }
+        }
     }
 #endif
     XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
@@ -2337,6 +2422,100 @@ setCurrentApAddress(ether_addr *addr)
     cr234DumpInnerState(this, "setCurrentApAddress_PRE");
     IO80211InfraInterface::setCurrentApAddress(addr);
     cr234DumpInnerState(this, "setCurrentApAddress_POST");
+
+#if __IO80211_TARGET >= __MAC_26_0
+    /* Tahoe APPLE80211_M_BSSID_CHANGED 24-byte compact carrier - producer
+     * hook on the natural Apple framework setCurrentApAddress entry.
+     *
+     * The recovered Apple writer for the BSSID-changed event is reached
+     * whenever the framework hands the local kext a new current AP
+     * address. Mirror the two recovered producer-side gates against the
+     * incoming addr parameter:
+     *
+     *   1. Zero-BSSID rejection. A null addr pointer or an addr whose
+     *      six octets are all zero is rejected before publication. The
+     *      rejection also invalidates the last-published-BSSID tracker
+     *      so the next non-zero call always republishes for a fresh
+     *      association edge.
+     *   2. Same-BSS reason-1 classification + suppression. Classify the
+     *      proposed BSSID against the shared
+     *      fLastPublishedBssid / fLastPublishedBssidValid tracker. A
+     *      match selects APPLE80211_BSSID_CHANGE_REASON_SAME_BSS = 1
+     *      and suppresses; a non-match selects
+     *      APPLE80211_BSSID_CHANGE_REASON_INITIAL = 0 and publishes the
+     *      populated 24-byte payload through the standard
+     *      IO80211Controller::postMessage / IO80211Glue pending-queue
+     *      routing, then updates the tracker.
+     *
+     * The tracker is shared with the link-state-success publisher in
+     * setLinkStateInternal: whichever publisher fires first updates the
+     * tracker; if the other publisher also runs for the same accepted
+     * edge it observes a matching BSSID and is classified as
+     * APPLE80211_BSSID_CHANGE_REASON_SAME_BSS, so the suppression gate
+     * prevents double publication. Tahoe userspace length-checks this
+     * carrier (prior zero-length publication produced an
+     * `expected=24 actual=0` CoreWiFi rejection), so the populated
+     * 24-byte payload is the only valid Tahoe shape.
+     */
+    if (instance != nullptr && instance->fNetIf != nullptr) {
+        if (addr == nullptr) {
+            this->fLastPublishedBssidValid = false;
+            XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
+                  "bssid=00:00:00:00:00:00 reason=- "
+                  "same_bss_reason_1_suppressed=0 "
+                  "zero_bssid_rejected=1\n",
+                  __FUNCTION__);
+        } else {
+            uint8_t proposedBssid[IEEE80211_ADDR_LEN];
+            memcpy(proposedBssid, addr->octet, IEEE80211_ADDR_LEN);
+            const bool zeroBssidRejected =
+                (proposedBssid[0] | proposedBssid[1] | proposedBssid[2] |
+                 proposedBssid[3] | proposedBssid[4] |
+                 proposedBssid[5]) == 0;
+            if (zeroBssidRejected) {
+                this->fLastPublishedBssidValid = false;
+                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
+                      "bssid=00:00:00:00:00:00 reason=- "
+                      "same_bss_reason_1_suppressed=0 "
+                      "zero_bssid_rejected=1\n",
+                      __FUNCTION__);
+            } else {
+                const bool sameBssAsLastPublished =
+                    this->fLastPublishedBssidValid &&
+                    memcmp(proposedBssid, this->fLastPublishedBssid,
+                           IEEE80211_ADDR_LEN) == 0;
+                const uint32_t classifiedReason = sameBssAsLastPublished
+                    ? APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
+                    : APPLE80211_BSSID_CHANGE_REASON_INITIAL;
+                const bool sameBssidWithReason1 =
+                    (classifiedReason ==
+                         APPLE80211_BSSID_CHANGE_REASON_SAME_BSS) &&
+                    sameBssAsLastPublished;
+                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
+                      "bssid=%02x:%02x:%02x:%02x:%02x:%02x reason=%u "
+                      "same_bss_reason_1_suppressed=%u "
+                      "zero_bssid_rejected=0\n",
+                      __FUNCTION__,
+                      proposedBssid[0], proposedBssid[1], proposedBssid[2],
+                      proposedBssid[3], proposedBssid[4], proposedBssid[5],
+                      (unsigned)classifiedReason,
+                      sameBssidWithReason1 ? 1 : 0);
+                if (!sameBssidWithReason1) {
+                    apple80211_bssid_changed_event_data bd;
+                    bzero(&bd, sizeof(bd));
+                    memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
+                    bd.reason = classifiedReason;
+                    instance->postMessage(instance->fNetIf,
+                                          APPLE80211_M_BSSID_CHANGED,
+                                          &bd, sizeof(bd), true);
+                    memcpy(this->fLastPublishedBssid, proposedBssid,
+                           IEEE80211_ADDR_LEN);
+                    this->fLastPublishedBssidValid = true;
+                }
+            }
+        }
+    }
+#endif
 }
 
 IOReturn AirportItlwmSkywalkInterface::

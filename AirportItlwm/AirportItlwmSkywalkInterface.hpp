@@ -868,6 +868,19 @@ private:
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;
     bool disassocIsVoluntary;
+
+    /* Tahoe APPLE80211_M_BSSID_CHANGED last-published BSSID tracker.
+     *
+     * Used to enforce the recovered Apple same-BSS suppression rule:
+     * a 24-byte BSSID-changed publication whose reason field equals 1
+     * and whose bssid matches the last published bssid is suppressed.
+     * The tracker is reset on link-down and updated after every
+     * non-suppressed publication. The IEEE80211_ADDR_LEN reservation
+     * (6 bytes) matches struct apple80211_bssid_changed_event_data
+     * .bssid offset 0x00 size 6.
+     */
+    uint8_t fLastPublishedBssid[6];
+    bool    fLastPublishedBssidValid;
 };
 
 

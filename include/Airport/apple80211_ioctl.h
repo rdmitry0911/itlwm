@@ -747,6 +747,76 @@ static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_do
 static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up) == 0x1d,
               "voluntary_up must live at +0x1d per Tahoe IOCTL ABI");
 
+/*
+ * Tahoe event payload ABIs - three distinct carriers.
+ *
+ * The recovered Apple/Tahoe reference event-publication path distinguishes
+ * three event-payload ABIs that share the postMessage / IO80211Glue
+ * pending-queue routing infrastructure but must never be conflated at the
+ * payload-shape level:
+ *
+ *   1. 32-byte link-changed snapshot/getter payload
+ *      (APPLE80211_M_LINK_CHANGED = 4) carried by struct
+ *      apple80211_link_changed_event_data above. The struct is the
+ *      length-checked inline payload for APPLE80211_M_LINK_CHANGED
+ *      publication and the on-demand response for the SIOCGA80211 ioctl
+ *      path APPLE80211_IOC_LINK_CHANGED_EVENT_DATA = 156.
+ *   2. 24-byte BSSID-changed compact carrier (APPLE80211_M_BSSID_CHANGED
+ *      = 3) carried by struct apple80211_bssid_changed_event_data below.
+ *      The carrier was recovered with length 0x18 and reason at offset
+ *      0x14 from the Apple WCL writer reached through the IOUC selector
+ *      0x1b1 path (a separate 0x844-byte IOUC envelope, current-BSS plus
+ *      WCLBSSBeacon validation, zero-BSSID rejected, default and failure
+ *      statuses 0xe0822403 / pass-through IOUC failure / wrapper
+ *      bad-envelope 0xe00002bc). The recovered Apple suppression rule is:
+ *      a publication whose reason field equals 1 and whose bssid matches
+ *      the last published bssid is suppressed; any other reason or any
+ *      bssid transition publishes the populated 24-byte payload through
+ *      the standard IO80211Controller::postMessage / IO80211Glue
+ *      pending-queue routing. Tahoe userspace length-checks this carrier
+ *      and rejects zero-length publications, so the populated 24-byte
+ *      payload is the only valid Tahoe shape for this event.
+ *   3. 16-byte WCL link-state update carrier (WCL event code 0xd8) carried
+ *      by struct TahoeWclLinkChangedPayload defined in AirportItlwmV2.cpp.
+ *      This is a direct WCL link-state update path produced by
+ *      AppleBCMWLAN link-state handlers; it is not byte-synthesised from
+ *      the 32-byte link-changed payload, and the 24-byte BSSID-changed and
+ *      32-byte link-changed payloads must not be byte-synthesised from the
+ *      16-byte 0xd8 payload either. The three ABIs are independent.
+ *
+ * The shared IO80211Controller::postMessage / IO80211SkywalkInterface
+ * dispatch path routes these events through the IO80211Glue pending-queue
+ * pipeline (queued copy on enqueue, filter decision via isMsgNeeded, async
+ * versus sync routing through IO80211PostOffice::sendMail /
+ * sendMailSync, pending-list drain through processPendingEventQueue,
+ * free-after-delivery ownership in the postMessage layer). The local kext
+ * does not manage these lifecycle steps directly; it passes the populated
+ * payload and the asynchronous-delivery flag through postMessage and the
+ * framework handles copy/filter/route/drain/free.
+ */
+
+#define APPLE80211_BSSID_CHANGE_REASON_INITIAL  0
+#define APPLE80211_BSSID_CHANGE_REASON_SAME_BSS 1
+
+struct apple80211_bssid_changed_event_data
+{
+    uint8_t  bssid[6];        // +0x00..+0x05
+    uint8_t  _pad_06[0x0e];   // +0x06..+0x13 (Apple-internal fields not
+                              //                yet field-named)
+    uint32_t reason;          // +0x14..+0x17 (Apple BSSID change reason;
+                              //                value 1 is the suppression
+                              //                marker when bssid is
+                              //                unchanged)
+};
+
+static_assert(sizeof(struct apple80211_bssid_changed_event_data) == 0x18,
+              "apple80211_bssid_changed_event_data must be 24 bytes "
+              "(Tahoe compact carrier ABI)");
+static_assert(__offsetof(struct apple80211_bssid_changed_event_data, bssid) == 0x00,
+              "bssid must live at +0x00 per Tahoe IOCTL ABI");
+static_assert(__offsetof(struct apple80211_bssid_changed_event_data, reason) == 0x14,
+              "reason must live at +0x14 per Tahoe IOCTL ABI");
+
 struct apple80211_apmode_data
 {
     u_int32_t    version;
