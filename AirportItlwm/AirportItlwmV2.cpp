@@ -4643,8 +4643,26 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * APPLE80211_M_SSID_CHANGED carrier. The recovered reference does not
      * contain a payload-bearing writer for that event code, and Tahoe
      * userspace does not length-reject the zero-length publication.
-     * APPLE80211_M_BSSID_CHANGED also has no standalone payload-bearing
-     * writer in the recovered reference and remains suppressed on Tahoe.
+     * APPLE80211_M_BSSID_CHANGED has a recovered Apple writer on the
+     * WCL/IOUC side (selector 0x1b1) that produces a populated 24-byte
+     * BSSID-changed compact carrier with the BSSID at offset 0x00 and
+     * the reason at offset 0x14; see
+     * struct apple80211_bssid_changed_event_data. Tahoe userspace
+     * length-checks this carrier (prior zero-length publication
+     * produced an `expected=24 actual=0` CoreWiFi rejection), so the
+     * Tahoe branch must not republish APPLE80211_M_BSSID_CHANGED with
+     * a NULL/0 payload. The populated 24-byte publication is owned by
+     * the Tahoe Skywalk override
+     * `AirportItlwmSkywalkInterface::setCurrentApAddress`, which is
+     * the natural Apple framework producer of BSSID transitions and
+     * which publishes the populated payload through the standard
+     * IO80211Controller::postMessage / IO80211Glue routing on every
+     * call with a non-null, non-zero address, honouring the recovered
+     * zero-BSSID rejection and same-BSS reason-1 suppression gates.
+     * This Tahoe branch therefore does not emit APPLE80211_M_BSSID_CHANGED
+     * itself; the legacy zero-length BSSID-changed notify remains in
+     * the pre-Tahoe branch below as it predates the Tahoe userspace
+     * length check.
      */
     if (linkState != kIO80211NetworkLinkUp) {
         that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
