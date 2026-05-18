@@ -216,6 +216,42 @@ const char *convertApple80211IOCTLToString(signed int cmd);
 class AirportItlwmAPSTAStage1Owner;
 struct apple80211_virt_if_create_data;
 
+#if __IO80211_TARGET >= __MAC_26_0
+// Kext-side association-target request payload published by the PSK
+// association-start edge (AirportItlwmSkywalkInterface::associateSSID,
+// external-PSK branch) BEFORE the first 4-way M1 lands. The
+// AirportItlwmAgent helper drains this through the 'PLTI' user client
+// (kAirportItlwmUserClientMethod_WaitAssociationTarget), derives the
+// 32-byte WPA2 PMK from the System keychain credential keyed by ssid,
+// and delivers it back via kAirportItlwmUserClientMethod_DeliverPMK
+// with the assigned generation echoed as the scalar input so the kext
+// rejects stale PMK material whose generation no longer matches the
+// currently pending target.
+//
+// IDENTITY of the target is the (generation, ssid_bytes, bssid,
+// authtype_lower, authtype_upper) tuple. generation==0 means no
+// pending request; the publisher always assigns a non-zero generation
+// from a monotonically increasing counter.
+#define kAirportItlwmAssocTargetVersion 1u
+
+struct AirportItlwmAssociationTarget {
+    uint32_t version;            // = kAirportItlwmAssocTargetVersion
+    uint32_t reserved0;          // pad to align generation
+    uint64_t generation;         // monotonic, !=0 means "pending"
+    uint32_t ssid_len;           // bytes used in ssid[]
+    uint32_t authtype_lower;
+    uint32_t authtype_upper;
+    uint32_t reserved1;          // pad to align ssid
+    uint8_t  ssid[32];           // == IEEE80211_NWID_LEN
+    uint8_t  bssid[6];           // == IEEE80211_ADDR_LEN
+    uint8_t  pad1[2];            // tail alignment
+} __attribute__((packed));
+
+static_assert(sizeof(AirportItlwmAssociationTarget) == 72,
+              "AirportItlwmAssociationTarget ABI layout must match "
+              "AirportItlwmAgent/src/assoc_target.h");
+#endif // __IO80211_TARGET >= __MAC_26_0
+
 class AirportItlwm : public IO80211Controller {
     OSDeclareDefaultStructors(AirportItlwm)
 #define IOCTL(REQ_TYPE, REQ, DATA_TYPE) \
@@ -270,7 +306,8 @@ public:
                                    UInt32 type,
                                    OSDictionary *properties,
                                    IOUserClient **handler) override;
-    IOReturn deliverExternalPMK(const struct apple80211_key *key);
+    IOReturn deliverExternalPMK(const struct apple80211_key *key,
+                                uint64_t generation_echo);
 #endif
 
 #if __IO80211_TARGET < __MAC_26_0
@@ -568,6 +605,78 @@ public:
     IO80211FaultReporter *io80211FaultReporter;
 
     void performTahoeBootChipImage();
+
+#if __IO80211_TARGET >= __MAC_26_0
+    // Project-owned PLTI PMK producer trigger surface.
+    //
+    // publishPendingAssocTarget: called from the PSK association-start
+    //   edge (AirportItlwmSkywalkInterface::associateSSID external-owner
+    //   branch) BEFORE first 4-way M1. Assigns a new monotonic
+    //   generation, replaces fAssocTarget, wakes any helper waiting in
+    //   waitAssocTarget. Returns the generation (>0) on success or 0
+    //   if the input is invalid.
+    //
+    // waitAssocTarget: called from the
+    //   kAirportItlwmUserClientMethod_WaitAssociationTarget dispatch.
+    //   Blocks under the controller command gate until
+    //   fAssocTarget.generation differs from last_acked, then copies
+    //   the current target into *out. Returns kIOReturnSuccess on
+    //   success or kIOReturnAborted on cancel.
+    //
+    // cancelPendingAssocTarget: called on disable / leave / shutdown
+    //   and from clearExternalPmkEligibilityLocked. DESTRUCTIVE
+    //   variant. Under the same command gate as deliverExternalPMK,
+    //   it zeros the pending generation AND clears ic_psk +
+    //   IEEE80211_F_PSK + ic_external_pmk_owner so a concurrent
+    //   gated DeliverPMK either ran fully before the cancel (and we
+    //   wipe its install) or runs after the cancel (and rejects on
+    //   the now-zero generation). Use only on lifecycle reset
+    //   edges where the host PMK install is intentionally being
+    //   torn down.
+    //
+    // invalidatePendingAssocTargetOnly: NON-DESTRUCTIVE variant.
+    //   Under the same command gate, it zeros only the pending
+    //   target (generation + bytes) and sets fAssocTargetCanceled
+    //   so future DeliverPMK calls are rejected, BUT it does NOT
+    //   touch ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner.
+    //   Use on PSK sub-branches where the kext is about to install
+    //   a caller-supplied PMK directly (localImportHasKey) or has
+    //   already cleared the PMK state by an earlier
+    //   ieee80211_disable_rsn (owner=none): the helper must be
+    //   locked out of the new edge, but the locally-installed PMK
+    //   (or the legitimately empty PMK state) must survive the
+    //   helper lockout.
+    //
+    // deliverExternalPMK: runs the generation-echo replay check AND
+    //   the ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner /
+    //   ieee80211_ioctl_setwpaparms install under a single
+    //   IOCommandGate::runAction hold.
+    uint64_t publishPendingAssocTarget(const uint8_t *ssid,
+                                       uint32_t ssid_len,
+                                       const uint8_t bssid[6],
+                                       uint32_t authtype_lower,
+                                       uint32_t authtype_upper);
+    IOReturn waitAssocTarget(uint64_t last_acked,
+                             AirportItlwmAssociationTarget *out);
+    void     cancelPendingAssocTarget(const char *reason);
+    void     invalidatePendingAssocTargetOnly(const char *reason);
+#endif // __IO80211_TARGET >= __MAC_26_0
+
+#if __IO80211_TARGET >= __MAC_26_0
+    // Pending association target slot and its monotonic generation
+    // counter, both protected by the controller command gate (mutated
+    // only inside file-static airportItlwm*Action helpers run via
+    // getCommandGate()->runAction). fAssocTargetCanceled is set when
+    // the kext is going down or the association is reset, causing
+    // waitAssocTarget waiters to abort and deliverExternalPMK to
+    // reject. These fields are intentionally public so the same-
+    // translation-unit action helpers can touch them without needing
+    // friend declarations; no external translation unit is expected
+    // to read them directly.
+    AirportItlwmAssociationTarget fAssocTarget;
+    uint64_t                      fAssocGenCounter;
+    bool                          fAssocTargetCanceled;
+#endif
 
 private:
     TahoeOwnerRegistry tahoeOwnerRegistry;

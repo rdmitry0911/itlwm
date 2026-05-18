@@ -425,7 +425,26 @@ public:
 #define kAirportItlwmUserClientType  ('PLTI')   // 0x504C5449
 
 enum {
+    // [0] DeliverPMK
+    //   in: scalar[0] = generation echo (uint64_t) — must match the
+    //                   currently pending fAssocTarget.generation
+    //                   published by the PSK association-start edge,
+    //                   otherwise delivery is rejected with
+    //                   kIOReturnNotPermitted and ic_psk is left
+    //                   untouched (replay guard);
+    //       struct     = struct apple80211_key with
+    //                   key_cipher_type=APPLE80211_CIPHER_PMK and
+    //                   key_len=IEEE80211_PMK_LEN (32).
+    //   out: none.
+    // [1] WaitAssociationTarget
+    //   in: scalar[0] = last_acked generation (uint64_t). The dispatch
+    //                   blocks under the controller command gate until
+    //                   fAssocTarget.generation > last_acked, then
+    //                   returns the current AirportItlwmAssociationTarget
+    //                   snapshot.
+    //   out: struct    = AirportItlwmAssociationTarget snapshot.
     kAirportItlwmUserClientMethod_DeliverPMK = 0,
+    kAirportItlwmUserClientMethod_WaitAssociationTarget = 1,
     kAirportItlwmUserClientMethod_NumMethods
 };
 
@@ -447,27 +466,47 @@ public:
                                     OSObject *target,
                                     void *reference) APPLE_KEXT_OVERRIDE;
 
-    // Static dispatch entry — referenced by sAirportItlwmUserClientMethods
+    // Static dispatch entries — referenced by sAirportItlwmUserClientMethods
     // table immediately below. Must be public so the file-scope table
-    // initializer can take its address.
+    // initializer can take their addresses.
     static IOReturn sExtDeliverPMK(AirportItlwmUserClient *target,
                                    void *reference,
                                    IOExternalMethodArguments *args);
+    static IOReturn sExtWaitAssociationTarget(AirportItlwmUserClient *target,
+                                              void *reference,
+                                              IOExternalMethodArguments *args);
 
 private:
     AirportItlwm *fProvider;
     task_t       fOwningTask;
 };
 
+// Pin the carrier ABI for the helper-side mirror in
+// AirportItlwmAgent/src/userclient.c, which inlines the
+// apple80211_key layout without pulling MacKernelSDK into userspace.
+// If Apple ever changes the SDK struct size, both sides must update;
+// this assert catches drift on the kext build.
+static_assert(sizeof(struct apple80211_key) == 148,
+              "apple80211_key carrier size must match the helper-side "
+              "mirror in AirportItlwmAgent/src/userclient.c");
+
 static const IOExternalMethodDispatch
 sAirportItlwmUserClientMethods[kAirportItlwmUserClientMethod_NumMethods] = {
     // [0] kAirportItlwmUserClientMethod_DeliverPMK
     {
         (IOExternalMethodAction)&AirportItlwmUserClient::sExtDeliverPMK,
-        0,                                        // checkScalarInputCount
+        1,                                        // checkScalarInputCount (generation echo)
         sizeof(struct apple80211_key),            // checkStructureInputSize
         0,                                        // checkScalarOutputCount
         0                                         // checkStructureOutputSize
+    },
+    // [1] kAirportItlwmUserClientMethod_WaitAssociationTarget
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtWaitAssociationTarget,
+        1,                                        // checkScalarInputCount (last_acked generation)
+        0,                                        // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        sizeof(struct AirportItlwmAssociationTarget) // checkStructureOutputSize
     }
 };
 #endif // __IO80211_TARGET >= __MAC_26_0
@@ -2673,6 +2712,17 @@ void AirportItlwm::releaseAll()
     XYLog("DEBUG %s [1] logStream=%p(rc=%d) logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
           __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1,
           driverLogPipe, driverDataPathPipe, driverSnapshotsPipe, driverFaultReporter);
+#if __IO80211_TARGET >= __MAC_26_0
+    // Wake any helper currently blocked in waitAssocTarget so the
+    // user client thread can return kIOReturnAborted instead of
+    // dying with the command gate. Safe to call before _fCommandGate
+    // is released because cancelPendingAssocTarget is a no-op when
+    // getCommandGate() returns NULL. The gated cancel action also
+    // zeros ic_psk and drops IEEE80211_F_PSK / ic_external_pmk_owner
+    // so a PLTI DeliverPMK racing teardown cannot reinstall a stale
+    // PMK after the controller is on its way down.
+    cancelPendingAssocTarget("releaseAll");
+#endif
 
     // CRITICAL: Stop all timers FIRST, before releasing fHalService.
     // watchdogTimer runs on fWatchdogWorkLoop (a separate thread).
@@ -3525,6 +3575,16 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(8); // _fCommandGate OK
     _fWorkloop->addEventSource(_fCommandGate);
+#if __IO80211_TARGET >= __MAC_26_0
+    // Initialize the project-owned PLTI PMK producer trigger state.
+    // fAssocTarget is published lazily on the PSK association-start
+    // edge; until then generation==0 means "no pending request" and
+    // the helper's WaitAssociationTarget call sleeps under the
+    // controller command gate.
+    memset(&fAssocTarget, 0, sizeof(fAssocTarget));
+    fAssocGenCounter     = 0;
+    fAssocTargetCanceled = false;
+#endif
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
         !setCurrentMedium(primaryMedium) || !setSelectedMedium(primaryMedium)) {
@@ -5863,36 +5923,59 @@ sExtDeliverPMK(AirportItlwmUserClient *target,
                void *reference,
                IOExternalMethodArguments *args)
 {
-    // CR-242 — Access control is enforced once, at open time, by
+    // Access control is enforced once, at open time, by
     // `AirportItlwm::newUserClient` via
     // `IOUserClient::clientHasPrivilege(securityID,
     // kIOClientPrivilegeAdministrator)`. By the time
     // `sExtDeliverPMK` runs we have a per-connection
     // `AirportItlwmUserClient` that the caller already proved they
-    // were entitled to open. CR-241 Stage 2 showed that the
-    // CR-240 method-time `clientHasAuthorization(fOwningTask,
-    // fProvider)` call returned `kIOReturnNotPermitted` for
-    // legitimate root callers without an explicit IOService
-    // authorization grant, making the log-only stub unreachable;
-    // reviewer required removal so the Phase 1 surface is usable
-    // by the future privileged daemon. The `securityID` captured
-    // at open time would only re-confirm a frozen value, so we do
-    // not re-check it here either.
+    // were entitled to open; the `securityID` captured at open time
+    // would only re-confirm a frozen value, so we do not re-check
+    // it here either.
     //
-    // Argument size is validated by IOUserClient dispatch using
-    // the `checkStructureInputSize == sizeof(struct apple80211_key)`
-    // entry in `sAirportItlwmUserClientMethods[0]` -- CR-241
-    // Stage 2 evidence (`04_bad_size.txt`) showed that wrong-size
-    // calls return `kIOReturnBadArgument` directly from the
-    // dispatch layer without invoking this handler. Adding a
-    // duplicate in-handler check would only fire on theoretically
-    // unreachable paths, so it is removed.
+    // scalarInputCount=1 carries the 64-bit generation echo that
+    // the AirportItlwmAgent helper received from
+    // WaitAssociationTarget. Both the structure input size and the
+    // scalar input count are validated by IOUserClient dispatch via
+    // `checkStructureInputSize == sizeof(struct apple80211_key)` and
+    // `checkScalarInputCount == 1` in `sAirportItlwmUserClientMethods[0]`
+    // before this handler runs, so wrong-size calls return
+    // `kIOReturnBadArgument` directly from the dispatch layer.
     if (target == nullptr || target->fProvider == nullptr)
         return kIOReturnNotReady;
     if (args == nullptr || args->structureInput == nullptr)
         return kIOReturnBadArgument;
+    const uint64_t generation_echo = (uint64_t)args->scalarInput[0];
     return target->fProvider->deliverExternalPMK(
-        (const struct apple80211_key *)args->structureInput);
+        (const struct apple80211_key *)args->structureInput,
+        generation_echo);
+}
+
+IOReturn AirportItlwmUserClient::
+sExtWaitAssociationTarget(AirportItlwmUserClient *target,
+                          void *reference,
+                          IOExternalMethodArguments *args)
+{
+    // The AirportItlwmAgent helper calls this once per association
+    // edge. It passes the last_acked generation it already produced
+    // a PMK for (0 on first call). The controller blocks under its
+    // command gate until a NEW generation is published by the PSK
+    // association-start edge in
+    // AirportItlwmSkywalkInterface::associateSSID and then returns
+    // the current AirportItlwmAssociationTarget snapshot so the
+    // helper can locate the matching credential.
+    if (target == nullptr || target->fProvider == nullptr)
+        return kIOReturnNotReady;
+    if (args == nullptr || args->structureOutput == nullptr)
+        return kIOReturnBadArgument;
+    const uint64_t last_acked = (uint64_t)args->scalarInput[0];
+    AirportItlwmAssociationTarget snap;
+    memset(&snap, 0, sizeof(snap));
+    IOReturn rc = target->fProvider->waitAssocTarget(last_acked, &snap);
+    if (rc != kIOReturnSuccess)
+        return rc;
+    memcpy(args->structureOutput, &snap, sizeof(snap));
+    return kIOReturnSuccess;
 }
 
 // =====================================================================
@@ -5953,107 +6036,425 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
     return kIOReturnSuccess;
 }
 
-IOReturn AirportItlwm::
-deliverExternalPMK(const struct apple80211_key *key)
+// =====================================================================
+// Project-owned PLTI PMK producer trigger surface.
+//
+// Producer/consumer pipeline (entirely project-owned; no CWWiFiClient,
+// CoreWLAN, airportd, eventType 0x6d, or private entitlement is used):
+//
+//   PRODUCER (kext, AirportItlwmSkywalkInterface::associateSSID):
+//     external-PSK branch -> publishPendingAssocTarget(ssid, bssid,
+//                                                     authtype_*)
+//     -> assigns new monotonic generation, replaces fAssocTarget,
+//        wakes waiters via getCommandGate()->commandWakeup.
+//
+//   CONSUMER (helper, AirportItlwmAgent root LaunchDaemon):
+//     io_connect_t conn = IOServiceOpen(svc, 'PLTI');
+//     loop forever {
+//       WaitAssociationTarget(conn, last_acked) ->
+//         AirportItlwmAssociationTarget tgt (generation = G);
+//       look up tgt.ssid in System keychain (PSK password);
+//       PBKDF2-SHA1(password, ssid, 4096) -> 32-byte PMK;
+//       DeliverPMK(conn, generation=G, apple80211_key(PMK,32,...));
+//       last_acked = G;
+//     }
+//
+//   SINK (kext, AirportItlwm::deliverExternalPMK):
+//     under one IOCommandGate::runAction hold:
+//       validate (generation_echo == fAssocTarget.generation &&
+//                 !fAssocTargetCanceled);
+//       on mismatch -> kIOReturnNotPermitted, no ic state change;
+//       on match    -> memcpy 32 bytes into ic->ic_psk;
+//                      set IEEE80211_F_PSK;
+//                      clear ic_external_pmk_owner=0 so the first
+//                      4-way M1 routes through the local PAE
+//                      (owner=local), matching the existing
+//                      installExternalPmkLocked sink semantic;
+//                      ieee80211_ioctl_setwpaparms with
+//                      protos=WPA1|WPA2 + akms=PSK|SHA256_PSK.
+//
+// Lifecycle reset / replay invariant:
+//   cancelPendingAssocTarget runs under the SAME command gate as
+//   deliverExternalPMK, AND its gated action ALSO clears ic_psk +
+//   drops IEEE80211_F_PSK + zeros ic_external_pmk_owner. The two
+//   actions are therefore mutually exclusive: a cancel cannot
+//   interleave between the helper's generation validation and the
+//   ic_psk write, and a delivery cannot interleave between a cancel
+//   and the ic_psk zero. clearExternalPmkEligibilityLocked routes
+//   its ic_psk reset through cancelPendingAssocTarget for the same
+//   reason, so the legacy lifecycle edges (disassociate, leave,
+//   PMKSA clear, RSN disable, JOIN_ABORT, REASSOC) all share the
+//   same atomic critical section.
+// =====================================================================
+
+namespace {
+
+struct AirportItlwmPublishAssocArgs {
+    AirportItlwm *self;
+    const uint8_t *ssid;
+    uint32_t ssid_len;
+    const uint8_t *bssid;
+    uint32_t authtype_lower;
+    uint32_t authtype_upper;
+    uint64_t out_generation;
+};
+
+struct AirportItlwmWaitAssocArgs {
+    AirportItlwm *self;
+    uint64_t last_acked;
+    AirportItlwmAssociationTarget *out;
+    IOReturn rc;
+};
+
+struct AirportItlwmDeliverPmkArgs {
+    AirportItlwm *self;
+    const struct apple80211_key *key;
+    uint64_t generation_echo;
+    IOReturn rc;
+    int wparc;
+    uint32_t ic_flags_after;
+    uint32_t ic_rsnprotos_after;
+    uint32_t ic_rsnakms_after;
+};
+
+static IOReturn
+airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
+                               void * /*arg1*/, void * /*arg2*/,
+                               void * /*arg3*/)
 {
-    // CR-244 Phase 2 step 1 — write the delivered PMK to ic->ic_psk
-    // and set IEEE80211_F_PSK so the OpenBSD net80211 supplicant has
-    // the keying material it needs. The store shape matches
-    // AirportItlwm.cpp:191-192 (legacy associateSSID PSK path) and
-    // is the host-supplicant input contract used by
-    // ieee80211_recv_4way_msg1 / ieee80211_pmk_to_ptk in the
-    // OpenBSD-derived itl80211 tree.
-    //
-    // CONTRACT (DeliverPMK is a PMK-only method):
-    //   - key == NULL              -> kIOReturnBadArgument
-    //   - cipher_type != PMK       -> kIOReturnBadArgument (REJECT,
-    //                                  no state change). Per
-    //                                  CR-243 review: airportd's
-    //                                  set-PMK worker rejects
-    //                                  invalid PMK inputs before
-    //                                  Apple80211Set; we mirror
-    //                                  that reject contract here
-    //                                  rather than returning
-    //                                  kIOReturnSuccess (which
-    //                                  would mask a caller/daemon
-    //                                  bug).
-    //   - key_len != IEEE80211_PMK_LEN -> kIOReturnBadArgument
-    //   - HAL not initialized       -> kIOReturnNotReady
-    //   - all checks pass           -> memcpy 32 bytes,
-    //                                  ic_flags |= IEEE80211_F_PSK,
-    //                                  kIOReturnSuccess
-    //
-    // CR-244 SCOPE LIMIT: this commit alone is NOT sufficient to
-    // fix the deauth-loop. USE_APPLE_SUPPLICANT remains defined,
-    // so the kernel pae_input path is still dead. CR-245 (separate
-    // future CR) will gate USE_APPLE_SUPPLICANT for
-    // `__IO80211_TARGET >= __MAC_26_0`. CR-246 (separate future CR)
-    // will ship the userspace daemon that opens 'PLTI' and calls
-    // DeliverPMK with real keychain-derived PMK material.
-    if (key == nullptr) {
-        XYLog("CR244 AirportItlwm::deliverExternalPMK key=NULL\n");
-        return kIOReturnBadArgument;
+    AirportItlwmPublishAssocArgs *a = (AirportItlwmPublishAssocArgs *)arg0;
+    AirportItlwm *s = a->self;
+    s->fAssocGenCounter += 1;
+    if (s->fAssocGenCounter == 0) {
+        // Skip the reserved "no pending request" value on wraparound
+        // so the helper's last_acked!=0 check still distinguishes a
+        // fresh request from the no-request state.
+        s->fAssocGenCounter = 1;
     }
-    XYLog("CR244 AirportItlwm::deliverExternalPMK ENTRY key_len=%u "
-          "cipher=%u flags=%u idx=%u\n",
-          key->key_len, key->key_cipher_type,
-          key->key_flags, key->key_index);
-    if (key->key_cipher_type != APPLE80211_CIPHER_PMK) {
-        XYLog("CR244 deliverExternalPMK REJECT_CIPHER cipher=%u expected=%u\n",
-              key->key_cipher_type, (unsigned)APPLE80211_CIPHER_PMK);
-        return kIOReturnBadArgument;
+    memset(&s->fAssocTarget, 0, sizeof(s->fAssocTarget));
+    s->fAssocTarget.version    = kAirportItlwmAssocTargetVersion;
+    s->fAssocTarget.generation = s->fAssocGenCounter;
+    s->fAssocTarget.ssid_len   = a->ssid_len;
+    memcpy(s->fAssocTarget.ssid, a->ssid, a->ssid_len);
+    memcpy(s->fAssocTarget.bssid, a->bssid, 6);
+    s->fAssocTarget.authtype_lower = a->authtype_lower;
+    s->fAssocTarget.authtype_upper = a->authtype_upper;
+    s->fAssocTargetCanceled = false;
+    a->out_generation = s->fAssocGenCounter;
+    s->getCommandGate()->commandWakeup(&s->fAssocTarget,
+                                       /*oneThread=*/false);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmWaitAssocAction(OSObject * /*owner*/, void *arg0,
+                            void * /*arg1*/, void * /*arg2*/,
+                            void * /*arg3*/)
+{
+    AirportItlwmWaitAssocArgs *a = (AirportItlwmWaitAssocArgs *)arg0;
+    AirportItlwm *s = a->self;
+    while (!s->fAssocTargetCanceled &&
+           (s->fAssocTarget.generation == 0 ||
+            s->fAssocTarget.generation == a->last_acked)) {
+        IOReturn sr = s->getCommandGate()->commandSleep(
+            &s->fAssocTarget, THREAD_ABORTSAFE);
+        if (sr != THREAD_AWAKENED && sr != THREAD_TIMED_OUT) {
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
     }
-    if (key->key_len != IEEE80211_PMK_LEN) {
-        XYLog("CR244 deliverExternalPMK REJECT_LEN key_len=%u expected=%u\n",
-              key->key_len, (unsigned)IEEE80211_PMK_LEN);
-        return kIOReturnBadArgument;
+    if (s->fAssocTargetCanceled) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
     }
-    struct ieee80211com *ic = (fHalService != nullptr)
-        ? fHalService->get80211Controller() : nullptr;
+    memcpy(a->out, &s->fAssocTarget,
+           sizeof(AirportItlwmAssociationTarget));
+    a->rc = kIOReturnSuccess;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmCancelAssocAction(OSObject * /*owner*/, void *arg0,
+                              void * /*arg1*/, void * /*arg2*/,
+                              void * /*arg3*/)
+{
+    // DESTRUCTIVE cancel. Drop the PMK installation AND the
+    // pending-target generation in the SAME command-gate critical
+    // section, so a concurrent airportItlwmDeliverPmkAction running
+    // under the same gate either (a) ran fully before us and we now
+    // wipe its install, or (b) runs after us and sees
+    // fAssocTargetCanceled=true / fAssocTarget.generation=0 and
+    // rejects. Used by clearExternalPmkEligibilityLocked and
+    // releaseAll where wiping ic_psk is the intended lifecycle
+    // semantic.
+    AirportItlwm *s = (AirportItlwm *)arg0;
+    s->fAssocTargetCanceled = true;
+    memset(&s->fAssocTarget, 0, sizeof(s->fAssocTarget));
+    if (s->fHalService != nullptr) {
+        struct ieee80211com *ic = s->fHalService->get80211Controller();
+        if (ic != nullptr) {
+            memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
+            ic->ic_flags &= ~IEEE80211_F_PSK;
+            ic->ic_external_pmk_owner = 0;
+        }
+    }
+    s->getCommandGate()->commandWakeup(&s->fAssocTarget,
+                                       /*oneThread=*/false);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmInvalidateAssocOnlyAction(OSObject * /*owner*/, void *arg0,
+                                      void * /*arg1*/, void * /*arg2*/,
+                                      void * /*arg3*/)
+{
+    // NON-DESTRUCTIVE invalidate. Drop the pending PLTI target
+    // (zero generation, set canceled, wake waiters) so any
+    // subsequent gated DeliverPMK rejects on
+    // fAssocTargetCanceled=true or fAssocTarget.generation=0.
+    // Does NOT touch ic_psk / IEEE80211_F_PSK /
+    // ic_external_pmk_owner. Used by PSK sub-branches in
+    // AirportItlwmSkywalkInterface::associateSSID where the kext is
+    // about to install a caller-supplied PMK directly
+    // (localImportHasKey) or has already cleared the PMK state by
+    // an earlier ieee80211_disable_rsn (owner=none): the helper
+    // must be locked out, but the locally installed PMK (or the
+    // legitimately empty PMK state) must survive.
+    AirportItlwm *s = (AirportItlwm *)arg0;
+    s->fAssocTargetCanceled = true;
+    memset(&s->fAssocTarget, 0, sizeof(s->fAssocTarget));
+    s->getCommandGate()->commandWakeup(&s->fAssocTarget,
+                                       /*oneThread=*/false);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
+                             void * /*arg1*/, void * /*arg2*/,
+                             void * /*arg3*/)
+{
+    // Single critical section that holds the controller command gate
+    // across the target-identity replay-guard check AND the ic_psk
+    // write AND the IEEE80211_F_PSK / ic_external_pmk_owner /
+    // setwpaparms updates. This is the structural invariant that
+    // makes the replay guard sound: a concurrent
+    // airportItlwmCancelAssocAction cannot run between our check
+    // and our writes because it serializes on the same gate.
+    AirportItlwmDeliverPmkArgs *a = (AirportItlwmDeliverPmkArgs *)arg0;
+    AirportItlwm *s = a->self;
+    a->wparc            = 0;
+    a->ic_flags_after   = 0;
+    a->ic_rsnprotos_after = 0;
+    a->ic_rsnakms_after = 0;
+
+    if (a->generation_echo == 0 ||
+        s->fAssocTargetCanceled ||
+        s->fAssocTarget.generation == 0 ||
+        a->generation_echo != s->fAssocTarget.generation) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+
+    struct ieee80211com *ic = (s->fHalService != nullptr)
+        ? s->fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
-        XYLog("CR244 deliverExternalPMK NOT_READY ic=NULL\n");
-        return kIOReturnNotReady;
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
     }
-    memcpy(ic->ic_psk, key->key, sizeof(ic->ic_psk));
+
+    memcpy(ic->ic_psk, a->key->key, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
-    XYLog("CR244 deliverExternalPMK WROTE %zu bytes to ic_psk; "
-          "IEEE80211_F_PSK set; ic_flags=0x%x\n",
-          sizeof(ic->ic_psk), (unsigned)ic->ic_flags);
-    // CR-245 Phase 2 step 2 — set up the WPA/RSN association params
-    // the OpenBSD net80211 supplicant needs (IEEE80211_F_RSNON,
-    // ic_rsnprotos, ic_rsnakms, ic_rsngroupcipher, ic_rsnciphers).
-    // Mirrors the legacy associateSSID PSK branch at
-    // AirportItlwm.cpp:188-194: enabled=1, protos=WPA1|WPA2,
-    // akms=PSK|SHA256_PSK, ciphers/groupcipher left to defaults
-    // (CCMP for RSN). ieee80211_ioctl_setwpaparms returns ENETRESET
-    // on success (positive value, signaling network state was
-    // reset); we do not act on the return code -- the new RSN
-    // params are read by the kernel pae state machine when the
-    // next 4-way arrives.
-    //
-    // SCOPE LIMIT: USE_APPLE_SUPPLICANT remains defined globally,
-    // so EAPOL frames still go to ml_enqueue() instead of
-    // ieee80211_eapol_key_input(). CR-246 (separate future CR)
-    // will gate the input.c routing site for Tahoe so the kernel
-    // 4-way actually fires. CR-247 will ship the userspace daemon.
+    ic->ic_external_pmk_owner = 0;
+
     struct ieee80211_wpaparams wpa;
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
     wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     wpa.i_akms    = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
-    int wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
-    XYLog("CR245 deliverExternalPMK setwpaparms enabled=1 "
-          "protos=WPA1|WPA2 akms=PSK|SHA256_PSK rc=%d "
-          "(ENETRESET=%d expected); ic_flags=0x%x "
-          "ic_rsnprotos=0x%x ic_rsnakms=0x%x "
-          "ic_rsngroupcipher=%d ic_rsnciphers=0x%x\n",
-          wparc, (int)ENETRESET,
-          (unsigned)ic->ic_flags,
-          (unsigned)ic->ic_rsnprotos,
-          (unsigned)ic->ic_rsnakms,
-          (int)ic->ic_rsngroupcipher,
-          (unsigned)ic->ic_rsnciphers);
+    a->wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
+
+    a->ic_flags_after     = (uint32_t)ic->ic_flags;
+    a->ic_rsnprotos_after = (uint32_t)ic->ic_rsnprotos;
+    a->ic_rsnakms_after   = (uint32_t)ic->ic_rsnakms;
+    a->rc = kIOReturnSuccess;
     return kIOReturnSuccess;
+}
+
+} // namespace
+
+uint64_t AirportItlwm::
+publishPendingAssocTarget(const uint8_t *ssid,
+                          uint32_t ssid_len,
+                          const uint8_t bssid[6],
+                          uint32_t authtype_lower,
+                          uint32_t authtype_upper)
+{
+    if (ssid == nullptr || ssid_len == 0 ||
+        ssid_len > sizeof(fAssocTarget.ssid) || bssid == nullptr) {
+        XYLog("plti_publish_assoc_target REJECT_INPUT ssid_len=%u "
+              "ssid_nonnull=%d bssid_nonnull=%d\n",
+              ssid_len,
+              ssid != nullptr ? 1 : 0,
+              bssid != nullptr ? 1 : 0);
+        return 0;
+    }
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr) {
+        XYLog("plti_publish_assoc_target NOT_READY gate=NULL\n");
+        return 0;
+    }
+    AirportItlwmPublishAssocArgs a;
+    a.self = this;
+    a.ssid = ssid;
+    a.ssid_len = ssid_len;
+    a.bssid = bssid;
+    a.authtype_lower = authtype_lower;
+    a.authtype_upper = authtype_upper;
+    a.out_generation = 0;
+    gate->runAction(&airportItlwmPublishAssocAction, &a);
+    XYLog("plti_publish_assoc_target PUBLISHED generation=%llu "
+          "ssid_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x "
+          "authtype_lower=0x%x authtype_upper=0x%x\n",
+          (unsigned long long)a.out_generation, ssid_len,
+          bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+          authtype_lower, authtype_upper);
+    return a.out_generation;
+}
+
+IOReturn AirportItlwm::
+waitAssocTarget(uint64_t last_acked,
+                AirportItlwmAssociationTarget *out)
+{
+    if (out == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmWaitAssocArgs a;
+    a.self = this;
+    a.last_acked = last_acked;
+    a.out = out;
+    a.rc = kIOReturnSuccess;
+    gate->runAction(&airportItlwmWaitAssocAction, &a);
+    if (a.rc == kIOReturnSuccess) {
+        XYLog("plti_wait_assoc_target RETURNED generation=%llu "
+              "ssid_len=%u\n",
+              (unsigned long long)out->generation, out->ssid_len);
+    }
+    return a.rc;
+}
+
+void AirportItlwm::
+cancelPendingAssocTarget(const char *reason)
+{
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return;
+    gate->runAction(&airportItlwmCancelAssocAction, this);
+    XYLog("plti_cancel_assoc_target CLEARED reason=%s "
+          "ic_psk_zeroed=1 IEEE80211_F_PSK_dropped=1 "
+          "ic_external_pmk_owner=0\n",
+          reason != nullptr ? reason : "?");
+}
+
+void AirportItlwm::
+invalidatePendingAssocTargetOnly(const char *reason)
+{
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return;
+    gate->runAction(&airportItlwmInvalidateAssocOnlyAction, this);
+    XYLog("plti_invalidate_assoc_target_only CLEARED reason=%s "
+          "ic_psk_preserved=1\n",
+          reason != nullptr ? reason : "?");
+}
+
+IOReturn AirportItlwm::
+deliverExternalPMK(const struct apple80211_key *key,
+                   uint64_t generation_echo)
+{
+    // PMK-only sink for the PLTI external method DeliverPMK.
+    //
+    // Cheap input validation runs BEFORE the gated critical section
+    // so malformed callers do not contend with publish/cancel/wait
+    // on the command gate. The gated section then performs the
+    // target-identity replay-guard check AND the ic_psk install in
+    // a single atomic step so a concurrent
+    // airportItlwmCancelAssocAction cannot interleave between
+    // validation and write. See airportItlwmDeliverPmkAction above
+    // for the full atomicity argument.
+    //
+    // CONTRACT (in evaluation order):
+    //   - key == NULL                  -> kIOReturnBadArgument
+    //   - cipher_type != APPLE80211_CIPHER_PMK
+    //                                  -> kIOReturnBadArgument
+    //   - key_len != IEEE80211_PMK_LEN -> kIOReturnBadArgument
+    //   - command gate unavailable     -> kIOReturnNotReady
+    //   - inside the gated action:
+    //     - generation_echo == 0       -> kIOReturnNotPermitted
+    //     - fAssocTargetCanceled       -> kIOReturnNotPermitted
+    //     - fAssocTarget.generation == 0
+    //                                  -> kIOReturnNotPermitted
+    //     - generation_echo != pending -> kIOReturnNotPermitted
+    //     - ic unavailable             -> kIOReturnNotReady
+    //     - all checks pass            -> memcpy 32 bytes,
+    //                                      ic_flags |= IEEE80211_F_PSK,
+    //                                      ic_external_pmk_owner = 0,
+    //                                      ieee80211_ioctl_setwpaparms,
+    //                                      kIOReturnSuccess.
+    if (key == nullptr) {
+        XYLog("deliverExternalPMK REJECT key=NULL\n");
+        return kIOReturnBadArgument;
+    }
+    XYLog("deliverExternalPMK ENTRY key_len=%u "
+          "cipher=%u flags=%u idx=%u generation_echo=%llu\n",
+          key->key_len, key->key_cipher_type,
+          key->key_flags, key->key_index,
+          (unsigned long long)generation_echo);
+    if (key->key_cipher_type != APPLE80211_CIPHER_PMK) {
+        XYLog("deliverExternalPMK REJECT_CIPHER cipher=%u expected=%u\n",
+              key->key_cipher_type, (unsigned)APPLE80211_CIPHER_PMK);
+        return kIOReturnBadArgument;
+    }
+    if (key->key_len != IEEE80211_PMK_LEN) {
+        XYLog("deliverExternalPMK REJECT_LEN key_len=%u expected=%u\n",
+              key->key_len, (unsigned)IEEE80211_PMK_LEN);
+        return kIOReturnBadArgument;
+    }
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr) {
+        XYLog("deliverExternalPMK NOT_READY gate=NULL\n");
+        return kIOReturnNotReady;
+    }
+    AirportItlwmDeliverPmkArgs a;
+    a.self             = this;
+    a.key              = key;
+    a.generation_echo  = generation_echo;
+    a.rc               = kIOReturnSuccess;
+    a.wparc            = 0;
+    a.ic_flags_after   = 0;
+    a.ic_rsnprotos_after = 0;
+    a.ic_rsnakms_after = 0;
+    gate->runAction(&airportItlwmDeliverPmkAction, &a);
+    if (a.rc == kIOReturnNotPermitted) {
+        XYLog("deliverExternalPMK REJECT_GENERATION echo=%llu\n",
+              (unsigned long long)generation_echo);
+        return a.rc;
+    }
+    if (a.rc == kIOReturnNotReady) {
+        XYLog("deliverExternalPMK NOT_READY ic=NULL\n");
+        return a.rc;
+    }
+    XYLog("deliverExternalPMK INSTALLED generation_echo=%llu "
+          "ic_psk_len=%zu IEEE80211_F_PSK_set=1 "
+          "ic_external_pmk_owner=0 ic_flags=0x%x "
+          "ic_rsnprotos=0x%x ic_rsnakms=0x%x setwpaparms_rc=%d "
+          "(ENETRESET=%d expected)\n",
+          (unsigned long long)generation_echo,
+          sizeof(((struct ieee80211com *)nullptr)->ic_psk),
+          a.ic_flags_after, a.ic_rsnprotos_after,
+          a.ic_rsnakms_after, a.wparc, (int)ENETRESET);
+    return a.rc;
 }
 #endif // __IO80211_TARGET >= __MAC_26_0
 
