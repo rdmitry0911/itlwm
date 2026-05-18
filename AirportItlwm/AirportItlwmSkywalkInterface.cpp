@@ -1061,6 +1061,26 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
             importLocalPmk && key != nullptr &&
             key_len >= sizeof(ic->ic_psk);
         if (localImportHasKey) {
+#if __IO80211_TARGET >= __MAC_26_0
+            // BEFORE installing the caller-supplied PMK on this
+            // edge, invalidate any pending PLTI target so a
+            // concurrent gated helper DeliverPMK cannot land
+            // AFTER the caller install and overwrite ic_psk with a
+            // System.keychain-derived PMK. The non-destructive
+            // invalidate zeros only the pending generation under
+            // the controller command gate; it does NOT touch
+            // ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner, so
+            // the caller PMK installed immediately after survives
+            // this lockout. Any gated DeliverPMK that managed to
+            // complete BEFORE this invalidate wrote a helper PMK
+            // into ic_psk; the immediately-following memcpy
+            // overwrites that with the caller PMK, which is the
+            // correct precedence for the public ad_key path.
+            if (instance != nullptr) {
+                instance->invalidatePendingAssocTargetOnly(
+                    "associateSSID_owner_local");
+            }
+#endif
             memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
             ic->ic_flags |= IEEE80211_F_PSK;
             ic->ic_external_pmk_owner = 0;
@@ -1074,7 +1094,45 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
                   "key_len=%u ic_flags=0x%x externalPmkOwner=%d importLocalPmk=%d\n",
                   key_len, (unsigned)ic->ic_flags,
                   externalPmkOwner ? 1 : 0, importLocalPmk ? 1 : 0);
+#if __IO80211_TARGET >= __MAC_26_0
+            // External-supplicant PSK association edge: no caller PMK
+            // bytes arrived (WCL_ASSOCIATE delivers the PMK out of
+            // band, or the public path requested a local import but
+            // supplied no usable key). This is the ONLY PSK branch
+            // that needs the project-owned helper to derive and
+            // deliver a PMK before first M1. Publish the
+            // (ssid, bssid, authtype) target on the PLTI boundary
+            // under the controller command gate; the helper's
+            // WaitAssociationTarget call returns with the assigned
+            // generation, derives the WPA2 PMK from the System
+            // keychain entry, and calls DeliverPMK with the
+            // generation echoed back. The kext sink validates the
+            // echo under the same command gate as the install, so a
+            // concurrent lifecycle reset cannot interleave between
+            // the check and the ic_psk write.
+            if (instance != nullptr) {
+                instance->publishPendingAssocTarget(
+                    ssid, ssid_len, bssid.octet,
+                    authtype_lower, authtype_upper);
+            }
+#endif
         } else {
+#if __IO80211_TARGET >= __MAC_26_0
+            // PSK auth selected but no PMK carrier of any kind was
+            // identified on this edge. The earlier
+            // ieee80211_disable_rsn (run at the top of associateSSID
+            // when external_psk_path is false) already zeroed
+            // ic_psk; we just need to lock the helper out of this
+            // edge so a stale pending PLTI target from a prior
+            // external-owner association cannot accept a
+            // DeliverPMK. Non-destructive invalidate: leaves the
+            // already-empty PMK state alone but rejects future
+            // gated DeliverPMK calls.
+            if (instance != nullptr) {
+                instance->invalidatePendingAssocTargetOnly(
+                    "associateSSID_owner_none");
+            }
+#endif
             ic->ic_external_pmk_owner = 0;
             XYLog("associateSSID_owner SELECTED owner=none source=no_carrier "
                   "key_len=%u ic_flags=0x%x\n",
@@ -3329,9 +3387,38 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
               reason_tag != nullptr ? reason_tag : "?");
         return;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    // Route the ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner
+    // reset through the controller command gate so it is mutually
+    // exclusive with any in-flight gated PLTI DeliverPMK install,
+    // and so the pending PLTI association-target generation is
+    // invalidated inside the SAME critical section. The gated
+    // airportItlwmCancelAssocAction performs both the pending-target
+    // zero AND the ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner
+    // clear under one command-gate hold, eliminating the
+    // validation-vs-install race between deliverExternalPMK and a
+    // concurrent reset edge.
+    //
+    // The inline ic_psk zero pattern is kept only on the
+    // controller-back-pointer-missing fallback path (early bring-up
+    // edge before bindController completes) so the host-supplicant
+    // reset still happens deterministically even when the PLTI
+    // surface is not yet wired up.
+    if (instance != nullptr) {
+        instance->cancelPendingAssocTarget(
+            reason_tag != nullptr ? reason_tag : "clear_external_pmk");
+    } else {
+        memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
+        ic->ic_flags &= ~IEEE80211_F_PSK;
+        ic->ic_external_pmk_owner = 0;
+    }
+#else
+    // Older targets: no PLTI producer/cancel path exists, so the
+    // inline clear is the only path.
     memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
     ic->ic_flags &= ~IEEE80211_F_PSK;
     ic->ic_external_pmk_owner = 0;
+#endif
     // Clear the per-node PMK and PSK-AKM PMK readiness flag on the
     // current bss node if one is bound. The recovered Apple owner
     // contract requires the prior owner state to evaporate at the

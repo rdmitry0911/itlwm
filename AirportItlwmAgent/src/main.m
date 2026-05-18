@@ -1,101 +1,141 @@
 /*
- * AirportItlwmAgent — DIAGNOSTIC_INSTRUMENTATION (rev8 supersede of
- * REJECTED rev7 SYSTEM_CONTRACT_FIX request).
+ * AirportItlwmAgent — project-owned PLTI PMK producer
+ * (root LaunchDaemon).
  *
- * Rev7 (SYSTEM_CONTRACT_FIX) was REJECTED at Stage 1 because the
- * airportd producer-side body/lifecycle/entitlement contract for the
- * proposed CWWiFiClient join-delegate trigger was not closed in
- * evidence and several cited decomp artifacts were absent from the
- * guest. The auditor explicitly offered switching to
- * DIAGNOSTIC_INSTRUMENTATION as an acceptable alternative scope.
+ * The userland half of the project-owned WPA2 PSK PMK delivery
+ * pipeline. The Apple producer path that would normally feed an
+ * external supplicant on Tahoe is unreachable for project
+ * helpers:
  *
- * This rev8 strips the helper to a pure behavior-neutral observer:
- *   - register a CWWiFiClient delegate (the same delegate-slot
- *     contract the rejected rev7 used),
- *   - on every join / autoJoin lifecycle callback, os_log the
- *     interface name, the ssid value (when carried by the event,
- *     redacted via %{private}s), and any error.
+ *   - the CoreLocationd CWLocationClient join-started event path
+ *     gates on the `com.apple.wifi.events.private` HARD
+ *     entitlement at airportd's __verifyEntitlementForEventType:
+ *     (eventType 0x6d for autoJoinDidStart);
+ *   - an ad-hoc-codesigned project helper cannot claim that
+ *     private entitlement;
+ *   - no replay/late-subscriber path exists in any of the 22
+ *     CWXPCSubsystem helper-class init bodies, so a missed
+ *     pre-first-M1 subscribe edge cannot be recovered by
+ *     waiting.
  *
- * The diagnostic does NOT:
- *   - query the System keychain,
- *   - derive any PMK / PBKDF2 / key material,
- *   - open or call any kext IOUserClient,
- *   - mutate any kext or SCDynamicStore state,
- *   - retain, copy, or log any credential bytes.
+ * The helper opens the project-owned 'PLTI' user client on
+ * AirportItlwm and runs a strict producer pipeline driven
+ * entirely by the kext-side PSK association-start edge:
  *
- * The single hypothesis it disambiguates is whether the public
- * CoreWLAN -[CWWiFiClient joinDidStartForWiFiInterfaceWithName:ssid:]
- * delegate callback fires on the live iwx Tahoe path during the
- * pre-first-M1 association window. If Stage 2 runtime confirms the
- * callback fires, a future request will re-introduce the PMK
- * derivation/delivery pipeline together with the now-required
- * airportd producer-contract closure.
+ *     loop {
+ *       WaitAssociationTarget(conn, last_acked) -> tgt
+ *           (blocks under the kext command gate until a new PSK
+ *           association edge publishes a target);
+ *       open /Library/Keychains/AirportItlwm.keychain and unlock
+ *           it with the install-time random password read from
+ *           /etc/airportitlwm/keychain-password (mode 0600,
+ *           root:wheel; bytes scrubbed from the helper stack
+ *           immediately after SecKeychainUnlock returns);
+ *       lookup by service "AirportItlwm WiFi PSK" and
+ *           account = SSID -> passphrase (zeroed immediately
+ *           after PMK derivation);
+ *       PBKDF2-HMAC-SHA1(passphrase, ssid, 4096) -> 32-byte PMK;
+ *       DeliverPMK(conn, generation=tgt.generation, pmk32)
+ *           (kext validates generation_echo == pending generation
+ *           before writing ic_psk; mismatch = kIOReturnNotPermitted);
+ *       zero pmk32;
+ *       last_acked = tgt.generation;
+ *     }
  *
- * Behavior neutrality: the delegate methods read NSString arguments
- * passed in by CoreWLAN and emit os_log entries. No system contract
- * is exercised beyond the public -[CWWiFiClient setDelegate:] /
- * informal delegate dispatch already exercised by Apple system
- * components.
+ * No CWWiFiClient delegate, CoreWLAN, airportd, eventType 0x6d,
+ * private entitlement, or codesign-bypass path is used.
  *
- * Thread context: CWWiFiClient dispatches delegate callbacks on its
- * own internal serial dispatch queue inside an autorelease pool. The
- * delegate methods below run off-main, serialized per CWWiFiClient
- * instance.
- *
- * No raw key bytes ever appear in any log line (this helper never
- * obtains any). NETWORK_NAME (ssid) is logged through %{private}s so
- * os_log redacts it at runtime under default profiles.
+ * Secret-handling discipline:
+ *   - passphrase and pmk32 are stack buffers, explicitly
+ *     memset(0)'d as soon as DeliverPMK returns or the path
+ *     errors out;
+ *   - no PSK/PMK/passphrase bytes are ever logged;
+ *   - SSID lengths are logged but SSID bytes themselves are not
+ *     printed (SSIDs are visible in any beacon scan, but
+ *     omitting them keeps the helper log free of CONTROL_STA_
+ *     NETWORK aliases on the lab path).
  */
 
 #import <Foundation/Foundation.h>
-#import <CoreWLAN/CoreWLAN.h>
+#include "assoc_target.h"
+#include "userclient.h"
+#include "keychain.h"
+#include "wpa_key.h"
 #include "log.h"
+
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
-@interface AirportItlwmAgentDelegate : NSObject
-@end
+/* Maximum reasonable PSK/Passphrase length. WPA2 PSK passphrase
+ * is 8..63 ASCII bytes per IEEE 802.11-2016; some networks store
+ * a 64-hex-byte pre-derived PSK string, so a 128-byte cap is a
+ * generous upper bound that still fits comfortably on the stack
+ * and bounds the buffer-too-small failure path. */
+#define kAgentPassphraseMaxLen 128u
 
-@implementation AirportItlwmAgentDelegate
-
-- (void)joinDidStartForWiFiInterfaceWithName:(NSString *)interfaceName
-                                        ssid:(NSString *)ssid
+static void
+agent_zero(void *p, size_t n)
 {
-    AGENT_LOG("joinDidStart iface=%{public}s ssid=%{private}s",
-              interfaceName ? [interfaceName UTF8String] : "(nil)",
-              ssid ? [ssid UTF8String] : "(nil)");
+    /*
+     * memset_s is not available in macOS userspace headers; a
+     * volatile-pointer memset hand-roll is the canonical
+     * "compiler must not optimize this away" pattern for
+     * scrubbing secret-bearing memory before the buffer goes out
+     * of scope.
+     */
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--)
+        *v++ = 0;
 }
 
-- (void)joinDidCompleteForWiFiInterfaceWithName:(NSString *)interfaceName
-                                     isAutoJoin:(BOOL)isAutoJoin
-                                          error:(NSError *)error
+static int
+agent_handle_target(io_connect_t conn,
+                    const struct AirportItlwmAssociationTarget *tgt)
 {
-    AGENT_LOG("joinDidComplete iface=%{public}s isAutoJoin=%d "
-              "error=%{public}s",
-              interfaceName ? [interfaceName UTF8String] : "(nil)",
-              (int)isAutoJoin,
-              error ? [[error localizedDescription] UTF8String] : "(none)");
-}
+    uint8_t passphrase[kAgentPassphraseMaxLen];
+    size_t  passphrase_len = sizeof(passphrase);
+    uint8_t pmk32[32];
+    int     rc;
 
-- (void)autoJoinDidStartForWiFiInterfaceWithName:(NSString *)interfaceName
-{
-    AGENT_LOG("autoJoinDidStart iface=%{public}s",
-              interfaceName ? [interfaceName UTF8String] : "(nil)");
-}
+    AGENT_LOG("handle_target ENTRY generation=%llu ssid_len=%u "
+              "authtype_lower=0x%x authtype_upper=0x%x",
+              (unsigned long long)tgt->generation, tgt->ssid_len,
+              tgt->authtype_lower, tgt->authtype_upper);
 
-- (void)autoJoinDidCompleteForWiFiInterfaceWithName:(NSString *)interfaceName
-{
-    AGENT_LOG("autoJoinDidComplete iface=%{public}s",
-              interfaceName ? [interfaceName UTF8String] : "(nil)");
-}
+    int kc = AgentLookupProjectPSK(tgt->ssid, tgt->ssid_len,
+                                  passphrase, &passphrase_len);
+    if (kc != 0) {
+        AGENT_LOG("handle_target NO_CREDENTIAL generation=%llu "
+                  "ssid_len=%u rc=%d",
+                  (unsigned long long)tgt->generation,
+                  tgt->ssid_len, kc);
+        agent_zero(passphrase, sizeof(passphrase));
+        return kc;
+    }
 
-- (void)autoJoinDidUpdate:(NSDictionary *)update
-{
-    AGENT_LOG("autoJoinDidUpdate keys=%lu",
-              (unsigned long)(update ? [update count] : 0));
-}
+    rc = AgentDerivePMK_PBKDF2(passphrase, passphrase_len,
+                               tgt->ssid, tgt->ssid_len,
+                               pmk32);
+    agent_zero(passphrase, sizeof(passphrase));
+    if (rc != 0) {
+        AGENT_ERR("handle_target derivation FAILED generation=%llu rc=%d",
+                  (unsigned long long)tgt->generation, rc);
+        agent_zero(pmk32, sizeof(pmk32));
+        return rc;
+    }
 
-@end
+    kern_return_t kr = AgentDeliverPMK(conn, tgt->generation, pmk32);
+    agent_zero(pmk32, sizeof(pmk32));
+    if (kr != kIOReturnSuccess) {
+        AGENT_ERR("handle_target DeliverPMK FAILED generation=%llu kr=0x%x",
+                  (unsigned long long)tgt->generation, (unsigned)kr);
+        return -1;
+    }
+    AGENT_LOG("handle_target DONE generation=%llu",
+              (unsigned long long)tgt->generation);
+    return 0;
+}
 
 int
 main(int argc, char **argv)
@@ -104,35 +144,49 @@ main(int argc, char **argv)
     (void)argv;
 
     @autoreleasepool {
-        AGENT_LOG("diagnostic daemon starting (uid=%u)", (unsigned)getuid());
+        AGENT_LOG("project-owned PLTI PMK producer starting "
+                  "(uid=%u)", (unsigned)getuid());
 
-        CWWiFiClient *client = [CWWiFiClient sharedWiFiClient];
-        if (client == nil) {
-            AGENT_ERR("[CWWiFiClient sharedWiFiClient] returned nil");
+        io_connect_t conn = MACH_PORT_NULL;
+        kern_return_t kr = AgentOpenPLTI(&conn);
+        if (kr != kIOReturnSuccess) {
+            AGENT_ERR("AgentOpenPLTI failed kr=0x%x; daemon will exit "
+                      "and be restarted by launchd KeepAlive",
+                      (unsigned)kr);
             return 1;
         }
 
-        /*
-         * Keep a strong reference to the delegate for the daemon
-         * lifetime. -[CWWiFiClient setDelegate:] is a non-retaining
-         * store on the slot at +0x38 (proven by Ghidra asm of
-         * CoreWLAN.framework on Tahoe 26.2 at 0x7ff8115a4e03; the
-         * accepted prior FULL_DECOMP basis already on file as
-         * docs/reference/CR-479-next-layer-external-supplicant-pmk-delivery-static-closure-20260517.md),
-         * so a stack/temp delegate would be a use-after-free risk.
-         */
-        static AirportItlwmAgentDelegate *delegateStrongRef;
-        delegateStrongRef = [[AirportItlwmAgentDelegate alloc] init];
-        [client setDelegate:delegateStrongRef];
+        uint64_t last_acked = 0;
+        for (;;) {
+            struct AirportItlwmAssociationTarget tgt;
+            kr = AgentWaitAssociationTarget(conn, last_acked, &tgt);
+            if (kr == kIOReturnAborted) {
+                AGENT_LOG("WaitAssociationTarget aborted; closing "
+                          "connection and exiting for relaunch");
+                break;
+            }
+            if (kr != kIOReturnSuccess) {
+                AGENT_ERR("WaitAssociationTarget kr=0x%x; closing "
+                          "connection and exiting for relaunch",
+                          (unsigned)kr);
+                break;
+            }
+            (void)agent_handle_target(conn, &tgt);
+            /*
+             * Always advance last_acked even if the credential
+             * lookup or PMK delivery failed. Otherwise the helper
+             * would re-block on the same generation indefinitely
+             * and never observe the next association edge. A
+             * missing credential is not the kext's problem to
+             * solve; the helper logs it and moves on. The kext-
+             * side replay guard guarantees that an unrelated
+             * later DeliverPMK cannot retroactively land for the
+             * skipped generation.
+             */
+            last_acked = tgt.generation;
+        }
 
-        AGENT_LOG("CWWiFiClient delegate registered "
-                  "(DIAGNOSTIC_INSTRUMENTATION; observer-only); "
-                  "entering NSRunLoop (KeepAlive LaunchDaemon)");
-
-        [[NSRunLoop currentRunLoop] run];
-
-        /* Defensive cleanup (unreachable under launchd KeepAlive). */
-        [client setDelegate:nil];
+        IOServiceClose(conn);
     }
     return 0;
 }
