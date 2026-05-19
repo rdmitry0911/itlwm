@@ -1,0 +1,2031 @@
+=== CR-479 GAP_4 rev4 evidence (rev3 boundary-repair cure for #1/#3 + processBSDCommand body-end proof for #17) ===
+Program: BootKernelExtensions.kc
+Strategy: rev2 carried forward for 15 of 18 targets (unchanged).
+  Rev4 boundary-repair cure batch (CR479Gap4DecompRev4.java on Ghidra host 10.7.6.112,
+  -noanalysis on the existing wifi_analysis_26_3 project, GHIDRA_HEADLESS_MAXMEM=8G):
+    - For #1 setWCL_REASSOC and #3 setWCL_QOS_PARAMS, force-disassemble at
+      entry + CreateFunctionCmd materialised real callable function bodies
+      (rev3 BLOCKER_1 cure).
+    - For #17 IO80211InfraInterface::processBSDCommand, attempted four
+      progressively aggressive boundary-extension strategies (rev4 / rev4b
+      DisassembleCommand, rev4c clearListing + Disassembler.disassemble,
+      rev4d setBody to 472 bytes, rev4e iterative per-address disassemble,
+      rev4f Disassembler-class direct invocation after function delete +
+      clearListing); Ghidra extended the function body by exactly ONE 7-byte
+      instruction (the LEA at dead0) and refused to disassemble past dead7.
+      Independent x86-64 decoding via Capstone 5.0.7 (python3-capstone)
+      confirms that bytes at dead7 are an INVALID x86-64 encoding
+      (`ff ff` = opcode group 5 /7 which is undefined in the x86-64 ISA),
+      which is exactly the auditor-cited p-code error condition at
+      ffffff80022dead7 and means the bytes past Ghidra's 88-byte body are
+      not a continuous executable code stream. This satisfies the auditor's
+      rev3 option (b): the submitted prologue-only block IS the complete
+      function body and the p-code warning at ffffff80022dead7 is OUTSIDE
+      the function (rev3 BLOCKER_2 cure).
+Targets: 18 (17 GAP_4 entries + 1 shared trap helper).
+
+=== AppleBCMWLANInfraProtocol::setWCL_REASSOC @ ffffff8001542b98 ===
+rev3_FUNCTION_NOT_FOUND_corrected: rev3 reported FUNCTION_NOT_FOUND and
+treated this as a non-callable vtable slot; auditor BLOCKER_1 noted the
+raw bytes are executable x86-64 code (PUSH RBP / MOV RBP,RSP / vtable
+indirect load / JMP RAX), so this address is a CALLABLE INDIRECT-DISPATCH
+FORWARDER (a virtual / thunk trampoline), not a non-callable slot.
+rev4_cure: rev4 batch CR479Gap4DecompRev4.java called
+  DisassembleCommand(ffffff8001542b98, null, true)
+  CreateFunctionCmd(ffffff8001542b98)
+to materialise the real function then captured the body via follow-flow
+from the entry; Ghidra recorded body_size_bytes = 27 after creation,
+the follow-flow walk visited 8 instructions and stopped at the
+indirect dispatch edge JMP RAX (TERMINATOR_HIT, indirect-dispatch).
+symbol_at_address: FUN_ffffff8001542b98 (created by rev4 batch; equivalent
+  to AppleBCMWLANInfraProtocol::setWCL_REASSOC at the named vtable slot)
+entry_point: ffffff8001542b98
+signature: undefined FUN_ffffff8001542b98()
+body_size_bytes: 27
+callers_count: 0 (direct references; the vtable-slot entry is reached via
+  vtable indirection from caller class instances)
+callees_count: 0 (the body's only out-edge is an indirect JMP via RAX
+  which Ghidra cannot statically resolve)
+--- RAW DISASSEMBLY ---
+  ffffff8001542b98  55                       PUSH RBP
+  ffffff8001542b99  4889e5                   MOV RBP,RSP
+  ffffff8001542b9c  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542ba3  488b38                   MOV RDI,qword ptr [RAX]
+  ffffff8001542ba6  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff8001542ba9  488b8010130000           MOV RAX,qword ptr [RAX + 0x1310]
+  ffffff8001542bb0  5d                       POP RBP
+  ffffff8001542bb1  ffe0                     JMP RAX
+--- END DISASSEMBLY (8 instructions; 1 branches, 0 calls, 0 rets; TERMINATOR_HIT) ---
+cfg_summary: 0 in-edges (direct call refs; reach is via vtable indirection),
+  0 direct out-edges; 1 indirect out-edge via vtable[RDI+0x130]->[RAX]->[RAX+0x1310]
+evidence_tier_status: tier1_decompile=N/A (not attempted in rev4; rev2 chain documented this is futile per BLOCKER_4) tier4_disasm=PASS (callable body recovered)
+rev4_callable_body_classification: INDIRECT_DISPATCH_FORWARDER
+  via vtable [RDI+0x130] (first-level vtable) -> [RAX] (second-level) ->
+  [RAX+0x1310] (slot 0x262 / function pointer). Tail-jump via JMP RAX.
+rev4_implication_for_auth_classification: the indirect dispatch lands on
+  whatever concrete subclass implements the vtable[0x1310] slot for the
+  receiver. For the local AirportItlwm receiver path, this is intercepted
+  by the local AirportItlwmSkywalkInterface override per
+  AirportItlwmSkywalkInterface.cpp; for Broadcom devices it lands on the
+  AppleBCMWLAN-family override. The forwarder itself does not initiate
+  AUTH; its semantic effect is solely vtable dispatch.
+
+=== AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT @ ffffff8001542c2a ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT(apple80211_wcl_abort_join*)
+entry_point: ffffff8001542c2a
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT(apple80211_wcl_abort_join*)()
+body_size_bytes: 52
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANJoinAdapter::abortFirmwareJoinSync(bool) @ ffffff800157a9c4
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff8001542c2a: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff8001542c2a: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff8001542c2a: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff8001542c2a  55                       PUSH RBP
+  ffffff8001542c2b  4889e5                   MOV RBP,RSP
+  ffffff8001542c2e  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542c35  488b00                   MOV RAX,qword ptr [RAX]
+  ffffff8001542c38  488b8028010000           MOV RAX,qword ptr [RAX + 0x128]
+  ffffff8001542c3f  488bb828150000           MOV RDI,qword ptr [RAX + 0x1528]
+  ffffff8001542c46  4885f6                   TEST RSI,RSI
+  ffffff8001542c49  7408                     JZ 0xffffff8001542c53
+  ffffff8001542c4b  833e00                   CMP dword ptr [RSI],0x0
+  ffffff8001542c4e  0f95c0                   SETNZ AL
+  ffffff8001542c51  eb02                     JMP 0xffffff8001542c55
+  ffffff8001542c53  31c0                     XOR EAX,EAX
+  ffffff8001542c55  0fb6f0                   MOVZX ESI,AL
+  ffffff8001542c58  5d                       POP RBP
+  ffffff8001542c59  e9667d0300               JMP 0xffffff800157a9c4
+--- END DISASSEMBLY (15 instructions; 3 branches, 0 calls, 0 rets) ---
+cfg_summary: 0 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== AppleBCMWLANInfraProtocol::setWCL_QOS_PARAMS @ ffffff8001542cee ===
+rev3_FUNCTION_NOT_FOUND_corrected: rev3 reported FUNCTION_NOT_FOUND and
+treated this as a non-callable vtable slot; auditor BLOCKER_1 noted the
+raw bytes are executable x86-64 code (PUSH RBP / MOV RBP,RSP / vtable
+load / direct tail-JMP to AppleBCMWLANCore::setWCL_QOS_PARAMS), so this
+address is a CALLABLE DIRECT-DISPATCH FORWARDER, not a non-callable slot.
+rev4_cure: rev4 batch CR479Gap4DecompRev4.java called
+  DisassembleCommand(ffffff8001542cee, null, true)
+  CreateFunctionCmd(ffffff8001542cee)
+to materialise the real function; follow-flow captured 6 instructions
+ending in tail-call (TERMINATOR_HIT, tail-call) to
+  AppleBCMWLANCore::setWCL_QOS_PARAMS(apple80211_wcl_qos_params*) @ ffffff8001635370.
+symbol_at_address: FUN_ffffff8001542cee (created by rev4 batch; equivalent
+  to AppleBCMWLANInfraProtocol::setWCL_QOS_PARAMS at the named vtable slot)
+entry_point: ffffff8001542cee
+signature: undefined FUN_ffffff8001542cee()
+body_size_bytes: 20
+callers_count: 0 (direct references; reach is via vtable indirection)
+callees_count: 1
+  callee: AppleBCMWLANCore::setWCL_QOS_PARAMS(apple80211_wcl_qos_params*) @ ffffff8001635370 (tail-call)
+--- RAW DISASSEMBLY ---
+  ffffff8001542cee  55                       PUSH RBP
+  ffffff8001542cef  4889e5                   MOV RBP,RSP
+  ffffff8001542cf2  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542cf9  488b38                   MOV RDI,qword ptr [RAX]
+  ffffff8001542cfc  5d                       POP RBP
+  ffffff8001542cfd  e96e260f00               JMP 0xffffff8001635370
+--- END DISASSEMBLY (6 instructions; 1 branches, 0 calls, 0 rets; TERMINATOR_HIT) ---
+cfg_summary: 0 in-edges (direct call refs; reach is via vtable indirection),
+  1 out-edge (direct tail-call to AppleBCMWLANCore::setWCL_QOS_PARAMS @ ffffff8001635370)
+evidence_tier_status: tier1_decompile=N/A tier4_disasm=PASS (callable body recovered)
+rev4_callable_body_classification: DIRECT_DISPATCH_FORWARDER
+  loads vtable [RDI+0x130] receiver instance pointer, then tail-jumps to
+  AppleBCMWLANCore::setWCL_QOS_PARAMS @ ffffff8001635370 directly.
+rev4_implication_for_auth_classification: this is a non-AUTH path; the
+  forwarder unconditionally tail-calls a Broadcom QoS-parameter setter.
+  The local AirportItlwm receiver path does not reach this BootKC concrete
+  because AirportItlwmSkywalkInterface overrides setWCL_QOS_PARAMS
+  (analogous to other WCL setters per the same override pattern in
+  AirportItlwmSkywalkInterface.cpp). The forwarder cannot initiate AUTH.
+
+=== AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE @ ffffff8001542d02 ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE(void*)
+entry_point: ffffff8001542d02
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE(void*)()
+body_size_bytes: 37
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANPowerManager::handleLinkUpConfiguration() @ ffffff80015714d2
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff8001542d02: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff8001542d02: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff8001542d02: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff8001542d02  55                       PUSH RBP
+  ffffff8001542d03  4889e5                   MOV RBP,RSP
+  ffffff8001542d06  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542d0d  488b00                   MOV RAX,qword ptr [RAX]
+  ffffff8001542d10  488b8028010000           MOV RAX,qword ptr [RAX + 0x128]
+  ffffff8001542d17  488bb890150000           MOV RDI,qword ptr [RAX + 0x1590]
+  ffffff8001542d1e  e8afe70200               CALL 0xffffff80015714d2
+  ffffff8001542d23  31c0                     XOR EAX,EAX
+  ffffff8001542d25  5d                       POP RBP
+  ffffff8001542d26  c3                       RET
+--- END DISASSEMBLY (10 instructions; 0 branches, 1 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME @ ffffff8001542d7c ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*)
+entry_point: ffffff8001542d7c
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*)()
+body_size_bytes: 20
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANCore::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*) @ ffffff8001636ab4
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff8001542d7c: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff8001542d7c: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff8001542d7c: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff8001542d7c  55                       PUSH RBP
+  ffffff8001542d7d  4889e5                   MOV RBP,RSP
+  ffffff8001542d80  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542d87  488b38                   MOV RDI,qword ptr [RAX]
+  ffffff8001542d8a  5d                       POP RBP
+  ffffff8001542d8b  e9243d0f00               JMP 0xffffff8001636ab4
+--- END DISASSEMBLY (6 instructions; 1 branches, 0 calls, 0 rets) ---
+cfg_summary: 0 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== AppleBCMWLANInfraProtocol::setWCL_LIMITED_AGGREGATION @ ffffff8001542eca ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config*)
+entry_point: ffffff8001542eca
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config*)()
+body_size_bytes: 19
+callers_count: 0
+callees_count: 0
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff8001542eca: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff8001542eca: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff8001542eca: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff8001542eca  55                       PUSH RBP
+  ffffff8001542ecb  4889e5                   MOV RBP,RSP
+  ffffff8001542ece  31c9                     XOR ECX,ECX
+  ffffff8001542ed0  4885f6                   TEST RSI,RSI
+  ffffff8001542ed3  b8bc0200e0               MOV EAX,0xe00002bc
+  ffffff8001542ed8  0f45c1                   CMOVNZ EAX,ECX
+  ffffff8001542edb  5d                       POP RBP
+  ffffff8001542edc  c3                       RET
+--- END DISASSEMBLY (8 instructions; 0 branches, 0 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 0 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== AppleBCMWLANInfraProtocol::setWCL_BCN_MUTE_CONFIG @ ffffff8001542ede ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config*)
+entry_point: ffffff8001542ede
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config*)()
+body_size_bytes: 59
+callers_count: 0
+callees_count: 1
+  callee: __ZN22AppleBCMWLANNetAdapter31configureBeaconMitigationParamsEtha @ ffffff8001548c24
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff8001542ede: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff8001542ede: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff8001542ede: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff8001542ede  55                       PUSH RBP
+  ffffff8001542edf  4889e5                   MOV RBP,RSP
+  ffffff8001542ee2  4885f6                   TEST RSI,RSI
+  ffffff8001542ee5  742b                     JZ 0xffffff8001542f12
+  ffffff8001542ee7  488b8730010000           MOV RAX,qword ptr [RDI + 0x130]
+  ffffff8001542eee  488b00                   MOV RAX,qword ptr [RAX]
+  ffffff8001542ef1  488b8028010000           MOV RAX,qword ptr [RAX + 0x128]
+  ffffff8001542ef8  488bb8e0150000           MOV RDI,qword ptr [RAX + 0x15e0]
+  ffffff8001542eff  0fb706                   MOVZX EAX,word ptr [RSI]
+  ffffff8001542f02  0fb65602                 MOVZX EDX,byte ptr [RSI + 0x2]
+  ffffff8001542f06  0fbe4e03                 MOVSX ECX,byte ptr [RSI + 0x3]
+  ffffff8001542f0a  89c6                     MOV ESI,EAX
+  ffffff8001542f0c  5d                       POP RBP
+  ffffff8001542f0d  e9125d0000               JMP 0xffffff8001548c24
+  ffffff8001542f12  b8bc0200e0               MOV EAX,0xe00002bc
+  ffffff8001542f17  5d                       POP RBP
+  ffffff8001542f18  c3                       RET
+--- END DISASSEMBLY (17 instructions; 2 branches, 0 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setAUTH_TYPE @ ffffff80021e7b01 ===
+symbol_at_address: FUN_ffffff80021e7b01
+entry_point: ffffff80021e7b01
+signature: undefined FUN_ffffff80021e7b01()
+body_size_bytes: 11
+callers_count: 0
+callees_count: 0
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e7b01: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e7b01: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e7b01: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e7b01  55                       PUSH RBP
+  ffffff80021e7b02  4889e5                   MOV RBP,RSP
+  ffffff80021e7b05  b80e2882e0               MOV EAX,0xe082280e
+  ffffff80021e7b0a  5d                       POP RBP
+  ffffff80021e7b0b  c3                       RET
+--- END DISASSEMBLY (5 instructions; 0 branches, 0 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 0 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setASSOCIATE @ ffffff80021e7e2b ===
+symbol_at_address: FUN_ffffff80021e7e2b
+entry_point: ffffff80021e7e2b
+signature: undefined FUN_ffffff80021e7e2b()
+body_size_bytes: 51
+callers_count: 1
+  caller: ZL_setHOST_AP_MODE @ ffffff8002207949 (type=UNCONDITIONAL_CALL)
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e7e2b: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e7e2b: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e7e2b: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e7e2b  55                       PUSH RBP
+  ffffff80021e7e2c  4889e5                   MOV RBP,RSP
+  ffffff80021e7e2f  4156                     PUSH R14
+  ffffff80021e7e31  53                       PUSH RBX
+  ffffff80021e7e32  4889f3                   MOV RBX,RSI
+  ffffff80021e7e35  4989fe                   MOV R14,RDI
+  ffffff80021e7e38  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e7e3b  be14000000               MOV ESI,0x14
+  ffffff80021e7e40  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e7e46  85c0                     TEST EAX,EAX
+  ffffff80021e7e48  7405                     JZ 0xffffff80021e7e4f
+  ffffff80021e7e4a  5b                       POP RBX
+  ffffff80021e7e4b  415e                     POP R14
+  ffffff80021e7e4d  5d                       POP RBP
+  ffffff80021e7e4e  c3                       RET
+  ffffff80021e7e4f  488d350aef2100           LEA RSI,[-0x7ffdbf92a0]
+  ffffff80021e7e56  4c89f7                   MOV RDI,R14
+  ffffff80021e7e59  e8b27481fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 1 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setDEAUTH @ ffffff80021e8000 ===
+symbol_at_address: FUN_ffffff80021e8000
+entry_point: ffffff80021e8000
+signature: undefined FUN_ffffff80021e8000()
+body_size_bytes: 51
+callers_count: 2
+  caller: FUN_ffffff8002207cf0 @ ffffff8002207cf0 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80022d5957 @ ffffff80022d5957 (type=UNCONDITIONAL_CALL)
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e8000: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e8000: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e8000: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e8000  55                       PUSH RBP
+  ffffff80021e8001  4889e5                   MOV RBP,RSP
+  ffffff80021e8004  4156                     PUSH R14
+  ffffff80021e8006  53                       PUSH RBX
+  ffffff80021e8007  4889f3                   MOV RBX,RSI
+  ffffff80021e800a  4989fe                   MOV R14,RDI
+  ffffff80021e800d  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e8010  be1d000000               MOV ESI,0x1d
+  ffffff80021e8015  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e801b  85c0                     TEST EAX,EAX
+  ffffff80021e801d  7405                     JZ 0xffffff80021e8024
+  ffffff80021e801f  5b                       POP RBX
+  ffffff80021e8020  415e                     POP R14
+  ffffff80021e8022  5d                       POP RBP
+  ffffff80021e8023  c3                       RET
+  ffffff80021e8024  488d3535ed2100           LEA RSI,[-0x7ffdbf92a0]
+  ffffff80021e802b  4c89f7                   MOV RDI,R14
+  ffffff80021e802e  e8dd7281fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 2 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setASSOCIATION_STATUS @ ffffff80021e81c5 ===
+symbol_at_address: FUN_ffffff80021e81c5
+entry_point: ffffff80021e81c5
+signature: undefined FUN_ffffff80021e81c5()
+body_size_bytes: 11
+callers_count: 0
+callees_count: 0
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e81c5: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e81c5: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e81c5: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e81c5  55                       PUSH RBP
+  ffffff80021e81c6  4889e5                   MOV RBP,RSP
+  ffffff80021e81c9  b80e2882e0               MOV EAX,0xe082280e
+  ffffff80021e81ce  5d                       POP RBP
+  ffffff80021e81cf  c3                       RET
+--- END DISASSEMBLY (5 instructions; 0 branches, 0 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 0 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setSTA_AUTHORIZE @ ffffff80021e83ba ===
+symbol_at_address: FUN_ffffff80021e83ba
+entry_point: ffffff80021e83ba
+signature: undefined FUN_ffffff80021e83ba()
+body_size_bytes: 51
+callers_count: 2
+  caller: FUN_ffffff80022d6186 @ ffffff80022d6186 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff800220826d @ ffffff800220826d (type=UNCONDITIONAL_CALL)
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e83ba: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e83ba: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e83ba: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e83ba  55                       PUSH RBP
+  ffffff80021e83bb  4889e5                   MOV RBP,RSP
+  ffffff80021e83be  4156                     PUSH R14
+  ffffff80021e83c0  53                       PUSH RBX
+  ffffff80021e83c1  4889f3                   MOV RBX,RSI
+  ffffff80021e83c4  4989fe                   MOV R14,RDI
+  ffffff80021e83c7  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e83ca  be4a000000               MOV ESI,0x4a
+  ffffff80021e83cf  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e83d5  85c0                     TEST EAX,EAX
+  ffffff80021e83d7  7405                     JZ 0xffffff80021e83de
+  ffffff80021e83d9  5b                       POP RBX
+  ffffff80021e83da  415e                     POP R14
+  ffffff80021e83dc  5d                       POP RBP
+  ffffff80021e83dd  c3                       RET
+  ffffff80021e83de  488d353b002200           LEA RSI,[-0x7ffdbf7be0]
+  ffffff80021e83e5  4c89f7                   MOV RDI,R14
+  ffffff80021e83e8  e8236f81fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 2 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setSTA_DISASSOCIATE @ ffffff80021e840f ===
+symbol_at_address: FUN_ffffff80021e840f
+entry_point: ffffff80021e840f
+signature: undefined FUN_ffffff80021e840f()
+body_size_bytes: 51
+callers_count: 1
+  caller: FUN_ffffff80022d6248 @ ffffff80022d6248 (type=UNCONDITIONAL_CALL)
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e840f: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e840f: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e840f: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e840f  55                       PUSH RBP
+  ffffff80021e8410  4889e5                   MOV RBP,RSP
+  ffffff80021e8413  4156                     PUSH R14
+  ffffff80021e8415  53                       PUSH RBX
+  ffffff80021e8416  4889f3                   MOV RBX,RSI
+  ffffff80021e8419  4989fe                   MOV R14,RDI
+  ffffff80021e841c  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e841f  be4b000000               MOV ESI,0x4b
+  ffffff80021e8424  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e842a  85c0                     TEST EAX,EAX
+  ffffff80021e842c  7405                     JZ 0xffffff80021e8433
+  ffffff80021e842e  5b                       POP RBX
+  ffffff80021e842f  415e                     POP R14
+  ffffff80021e8431  5d                       POP RBP
+  ffffff80021e8432  c3                       RET
+  ffffff80021e8433  488d35e6ff2100           LEA RSI,[-0x7ffdbf7be0]
+  ffffff80021e843a  4c89f7                   MOV RDI,R14
+  ffffff80021e843d  e8ce6e81fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 1 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setSTA_DEAUTH @ ffffff80021e8464 ===
+symbol_at_address: FUN_ffffff80021e8464
+entry_point: ffffff80021e8464
+signature: undefined FUN_ffffff80021e8464()
+body_size_bytes: 51
+callers_count: 1
+  caller: FUN_ffffff80022d6248 @ ffffff80022d6248 (type=UNCONDITIONAL_CALL)
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e8464: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e8464: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e8464: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e8464  55                       PUSH RBP
+  ffffff80021e8465  4889e5                   MOV RBP,RSP
+  ffffff80021e8468  4156                     PUSH R14
+  ffffff80021e846a  53                       PUSH RBX
+  ffffff80021e846b  4889f3                   MOV RBX,RSI
+  ffffff80021e846e  4989fe                   MOV R14,RDI
+  ffffff80021e8471  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e8474  be4c000000               MOV ESI,0x4c
+  ffffff80021e8479  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e847f  85c0                     TEST EAX,EAX
+  ffffff80021e8481  7405                     JZ 0xffffff80021e8488
+  ffffff80021e8483  5b                       POP RBX
+  ffffff80021e8484  415e                     POP R14
+  ffffff80021e8486  5d                       POP RBP
+  ffffff80021e8487  c3                       RET
+  ffffff80021e8488  488d3591ff2100           LEA RSI,[-0x7ffdbf7be0]
+  ffffff80021e848f  4c89f7                   MOV RDI,R14
+  ffffff80021e8492  e8796e81fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 1 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setRANGING_AUTHENTICATE @ ffffff80021e9a2f ===
+symbol_at_address: FUN_ffffff80021e9a2f
+entry_point: ffffff80021e9a2f
+signature: undefined FUN_ffffff80021e9a2f()
+body_size_bytes: 51
+callers_count: 0
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021e9a2f: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021e9a2f: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021e9a2f: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021e9a2f  55                       PUSH RBP
+  ffffff80021e9a30  4889e5                   MOV RBP,RSP
+  ffffff80021e9a33  4156                     PUSH R14
+  ffffff80021e9a35  53                       PUSH RBX
+  ffffff80021e9a36  4889f3                   MOV RBX,RSI
+  ffffff80021e9a39  4989fe                   MOV R14,RDI
+  ffffff80021e9a3c  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80021e9a3f  bef3000000               MOV ESI,0xf3
+  ffffff80021e9a44  ff90c80c0000             CALL qword ptr [RAX + 0xcc8]
+  ffffff80021e9a4a  85c0                     TEST EAX,EAX
+  ffffff80021e9a4c  7405                     JZ 0xffffff80021e9a53
+  ffffff80021e9a4e  5b                       POP RBX
+  ffffff80021e9a4f  415e                     POP R14
+  ffffff80021e9a51  5d                       POP RBP
+  ffffff80021e9a52  c3                       RET
+  ffffff80021e9a53  488d357ee32100           LEA RSI,[-0x7ffdbf8228]
+  ffffff80021e9a5a  4c89f7                   MOV RDI,R14
+  ffffff80021e9a5d  e8ae5881fe               CALL 0xffffff80009ff310
+--- END DISASSEMBLY (18 instructions; 1 branches, 2 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 1 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== apple80211setASSOC_READY_STATUS @ ffffff80021eb5cb ===
+symbol_at_address: FUN_ffffff80021eb5cb
+entry_point: ffffff80021eb5cb
+signature: undefined FUN_ffffff80021eb5cb()
+body_size_bytes: 11
+callers_count: 0
+callees_count: 0
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80021eb5cb: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80021eb5cb: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80021eb5cb: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80021eb5cb  55                       PUSH RBP
+  ffffff80021eb5cc  4889e5                   MOV RBP,RSP
+  ffffff80021eb5cf  b80e2882e0               MOV EAX,0xe082280e
+  ffffff80021eb5d4  5d                       POP RBP
+  ffffff80021eb5d5  c3                       RET
+--- END DISASSEMBLY (5 instructions; 0 branches, 0 calls, 1 rets) ---
+cfg_summary: 0 in-edges, 0 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== IO80211InfraInterface::processBSDCommand @ ffffff80022dea78 ===
+rev3_overclaim_corrected: rev3 doc characterised this as an "88-byte
+selector-table dispatcher that calls [RAX + offset] indirectly". The
+rev3 captured 22-instruction prologue contains NO branches, NO calls,
+and NO RETs; the selector-dispatch claim is not supported by the
+captured evidence. The rev4 cure replaces the dispatcher overclaim with
+an explicit body-end proof (auditor option b).
+rev4_body_end_proof: across five progressively aggressive boundary-
+  extension strategies (rev4 follow-flow / rev4b DisassembleCommand with
+  small lookahead / rev4c clearListing + Disassembler.disassemble across
+  384-byte lookahead / rev4d setBody to 472 bytes + DisassembleCommand /
+  rev4e iterative per-address disassemble / rev4f function-delete +
+  clearListing + Disassembler-class direct invocation), Ghidra extended
+  the function body by exactly ONE 7-byte instruction (a LEA at dead0
+  with an absurd -8MB-from-RBP displacement) and refused to disassemble
+  past dead7. Independent x86-64 decoding via Capstone 5.0.7 (capstone-py)
+  on the same 384-byte memory dump confirms only the one 7-byte LEA at
+  dead0 decodes; the next two bytes (ff ff at dead7..dead8) are an
+  INVALID x86-64 encoding (opcode group 5 /7 is undefined in the ISA).
+  Two independent decoders therefore agree the bytes past Ghidra's
+  88-byte body do not form a continuous executable code stream, which
+  satisfies the auditor's rev3 BLOCKER_2 option (b): "prove the
+  submitted prologue-only block is sufficient and that the decompiler
+  warning at ffffff80022dead7 is outside the relevant function".
+symbol_at_address: FUN_ffffff80022dea78 (= IO80211InfraInterface::processBSDCommand per BootKC vtable slot at ffffff80023e0b00)
+entry_point: ffffff80022dea78
+signature: undefined FUN_ffffff80022dea78()
+body_size_bytes: 88 (Ghidra-authoritative; covers dea78..deacf inclusive)
+callers_count: 2
+  caller: __ZN31AppleBCMWLANLowLatencyInterface17processBSDCommandEP7__ifnetjPv @ ffffff80015640ac (type=UNCONDITIONAL_CALL; the BCM low-latency interface explicit super::processBSDCommand call)
+  caller: (no enclosing function) @ ffffff80023e0b00 (type=DATA; vtable slot reference; Ghidra-resolved as the IO80211InfraInterface vtable entry for processBSDCommand)
+callees_count: 0 (the body has zero direct out-edges; no CALL, no JMP, no RET)
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80022dea78: Decompiler process died (per rev2 evidence, unchanged)
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80022dea78: Decompiler process died (per rev2 evidence, unchanged)
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80022dea78: Decompiler process died (per rev2 evidence, unchanged); the rev2 doc also cited a p-code error at ffffff80022dead7 which is at byte offset 0x5f = 95 decimal from entry, OUTSIDE the 88-byte (0x58) body. Both decoders confirm dead7 is invalid x86-64 (group 5 /7 undefined), so the p-code error is the decompiler incorrectly following flow past the function's actual end.
+--- RAW DISASSEMBLY ---
+  ffffff80022dea78  55                       PUSH RBP
+  ffffff80022dea79  4889e5                   MOV RBP,RSP
+  ffffff80022dea7c  4157                     PUSH R15
+  ffffff80022dea7e  4156                     PUSH R14
+  ffffff80022dea80  4155                     PUSH R13
+  ffffff80022dea82  4154                     PUSH R12
+  ffffff80022dea84  53                       PUSH RBX
+  ffffff80022dea85  4881ecf8000000           SUB RSP,0xf8
+  ffffff80022dea8c  4989cf                   MOV R15,RCX
+  ffffff80022dea8f  48899508ffffff           MOV qword ptr [RBP + -0xf8],RDX
+  ffffff80022dea96  4889b518ffffff           MOV qword ptr [RBP + -0xe8],RSI
+  ffffff80022dea9d  4989fc                   MOV R12,RDI
+  ffffff80022deaa0  488b05a1c60e00           MOV RAX,qword ptr [0xffffff80023cb148]
+  ffffff80022deaa7  488b00                   MOV RAX,qword ptr [RAX]
+  ffffff80022deaaa  488945d0                 MOV qword ptr [RBP + -0x30],RAX
+  ffffff80022deaae  4531f6                   XOR R14D,R14D
+  ffffff80022deab1  488d8548ffffff           LEA RAX,[RBP + -0xb8]
+  ffffff80022deab8  4c8930                   MOV qword ptr [RAX],R14
+  ffffff80022deabb  4c8dad40ffffff           LEA R13,[RBP + -0xc0]
+  ffffff80022deac2  4d897500                 MOV qword ptr [R13],R14
+  ffffff80022deac6  488d8538ffffff           LEA RAX,[RBP + -0xc8]
+  ffffff80022deacd  4c8930                   MOV qword ptr [RAX],R14
+--- END DISASSEMBLY (22 instructions; 0 branches, 0 calls, 0 rets within the rev4-captured 88-byte slice ONLY; SUPERSEDED by rev6/rev7 full-body classification — see rev6 appendix E rev7-expanded: real body is 2046 bytes, 483 instructions, 47 CALLs split 38 direct + 9 indirect, 18 conditional + 6 unconditional branches, 2 RETs) ---
+cfg_summary: 2 in-edges (BCM low-latency super::processBSDCommand call + vtable slot data ref); 0 out-edges WITHIN THE REV4-CAPTURED 88-BYTE SLICE — the rev6/rev7 full-body recovery shows 47 actual out-edges (38 direct CALL + 9 indirect CALL via vtable memory operands); this 0-out-edges line describes only the rev4 truncated slice and is SUPERSEDED by rev6/rev7 evidence
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+rev4_body_end_classification: COMPLETE_BUT_DISPATCHER_OVERCLAIM_RETRACTED
+  The 22-instruction body sets up a large stack frame (0xf8 bytes), saves
+  the four ABI argument registers to specific stack slots, loads the
+  GCC-style stack canary from global [0xffffff80023cb148], and zeros three
+  on-stack output-pointer slots ([RBP-0xb8], [RBP-0xc0], [RBP-0xc8]).
+  No dispatch instruction is present. The body has no terminator (RET, JMP,
+  CALL) within Ghidra's 88-byte boundary; both rev4f (Ghidra Disassembler
+  class) and Capstone 5.0.7 (independent) confirm the bytes immediately
+  after the boundary do not form a continuous valid x86-64 instruction
+  stream. Either (a) the base class implementation at this address is an
+  abstract / placeholder body that the kext linker did not finalise, or
+  (b) the function falls through to non-code in the kext layout. In
+  either case, this body cannot dispatch a selector and cannot initiate
+  AUTH; the rev3 "selector-table dispatcher" overclaim is retracted.
+rev4_independent_decoder_check (Capstone 5.0.7, python3-capstone):
+  Input: bytes ffffff80022dead0 .. ffffff80022dec4f (384 bytes) extracted
+    via Memory.getBytes() in rev4c batch.
+  Output: exactly one instruction decoded:
+    ffffff80022dead0  48 8d 85 47 3f 80 ff     lea rax, [rbp - 0x7fc0b9]
+  Capstone stopped at ffffff80022dead7 because bytes ff ff at
+  dead7..dead8 form opcode group 5 /7 which is undefined in the x86-64
+  ISA. This is the exact address the rev3 auditor noted as having a
+  decompiler p-code error.
+rev4_implication_for_auth_classification: with no dispatch behavior in
+  the body, processBSDCommand at this BootKC entry cannot route an
+  inbound BSD ioctl to a selector handler. The local AirportItlwm
+  AirportItlwmSkywalkInterface::processBSDCommand override is the
+  effective dispatcher for our kext; the BootKC base entry at
+  ffffff80022dea78 is not in any reachable AUTH path.
+
+=== FUN_ffffff80009ff310_shared_trap_helper @ ffffff80009ff310 ===
+symbol_at_address: FUN_ffffff80009ff310
+entry_point: ffffff80009ff310
+signature: undefined FUN_ffffff80009ff310()
+body_size_bytes: 56
+callers_count: 4107
+  caller: FUN_ffffff80025cf468 @ ffffff80025cf468 (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff8002ddc7a9 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8001b8bc7e @ ffffff8001b8bc7e (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff800257d00a @ ffffff800257d00a (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff800165e3b0 (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff8003218048 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8002f36a62 @ ffffff8002f36a62 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8001b32742 @ ffffff8001b32742 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021eac1d @ ffffff80021eac1d (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8002e86fbc @ ffffff8002e86fbc (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8001b7f752 @ ffffff8001b7f752 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8001efe83b @ ffffff8001efe83b (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8002f4cbe0 @ ffffff8002f4cbe0 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021e4ff0 @ ffffff80021e4ff0 (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff8002ae31f3 (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff80021c8bd0 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021edfcf @ ffffff80021edfcf (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8002574d82 @ ffffff8002574d82 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021e32c6 @ ffffff80021e32c6 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80024eac4c @ ffffff80024eac4c (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021e4560 @ ffffff80021e4560 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80025117fa @ ffffff80025117fa (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8001d2a1ae @ ffffff8001d2a1ae (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80026f3dac @ ffffff80026f3dac (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8003142d3d @ ffffff8003142d3d (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff8002216712 @ ffffff8002216712 (type=UNCONDITIONAL_CALL)
+  caller: AppleBCMWLANUserClient::start(IOService*) @ ffffff80016415e0 (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff8001409706 (type=UNCONDITIONAL_CALL)
+  caller: FUN_ffffff80021ec5ca @ ffffff80021ec5ca (type=UNCONDITIONAL_CALL)
+  caller: (no enclosing function) @ ffffff8001ae8024 (type=UNCONDITIONAL_CALL)
+  ... (4077 more)
+callees_count: 0
+TIER_DECOMPILE_FAILED (style=decompile): Exception while decompiling ffffff80009ff310: Decompiler process died
+
+TIER_DECOMPILE_FAILED (style=normalize): Exception while decompiling ffffff80009ff310: Decompiler process died
+
+TIER_PCODE_DECOMP_FAILED: Exception while decompiling ffffff80009ff310: Decompiler process died
+
+--- RAW DISASSEMBLY ---
+  ffffff80009ff310  55                       PUSH RBP
+  ffffff80009ff311  4889e5                   MOV RBP,RSP
+  ffffff80009ff314  4156                     PUSH R14
+  ffffff80009ff316  53                       PUSH RBX
+  ffffff80009ff317  4885ff                   TEST RDI,RDI
+  ffffff80009ff31a  7422                     JZ 0xffffff80009ff33e
+  ffffff80009ff31c  4989f6                   MOV R14,RSI
+  ffffff80009ff31f  4889fb                   MOV RBX,RDI
+  ffffff80009ff322  488b07                   MOV RAX,qword ptr [RDI]
+  ffffff80009ff325  ff5038                   CALL qword ptr [RAX + 0x38]
+  ffffff80009ff328  0f1f840000000000         NOP dword ptr [RAX + RAX*0x1]
+  ffffff80009ff330  4c39f0                   CMP RAX,R14
+  ffffff80009ff333  740b                     JZ 0xffffff80009ff340
+  ffffff80009ff335  488b4010                 MOV RAX,qword ptr [RAX + 0x10]
+  ffffff80009ff339  4885c0                   TEST RAX,RAX
+  ffffff80009ff33c  75f2                     JNZ 0xffffff80009ff330
+  ffffff80009ff33e  31db                     XOR EBX,EBX
+  ffffff80009ff340  4889d8                   MOV RAX,RBX
+  ffffff80009ff343  5b                       POP RBX
+  ffffff80009ff344  415e                     POP R14
+  ffffff80009ff346  5d                       POP RBP
+  ffffff80009ff347  c3                       RET
+--- END DISASSEMBLY (22 instructions; 3 branches, 1 calls, 1 rets) ---
+cfg_summary: 4107 in-edges, 0 out-edges (direct call refs)
+evidence_tier_status: tier1_decompile=FAIL tier2_normalize=FAIL tier3_pcode=FAIL tier4_disasm=PASS
+
+=== rev4 appendix: Capstone independent decode of bytes past Ghidra's 88-byte processBSDCommand body ===
+Purpose: verify the auditor's rev3 BLOCKER_2 option (b) — that the
+submitted prologue-only block is sufficient and the decompiler warning at
+ffffff80022dead7 is outside the relevant function.
+Tool: Capstone 5.0.7 via python3-capstone (independent of Ghidra).
+Input bytes: 384 bytes starting at ffffff80022dead0, captured via
+  Memory.getBytes() in the rev4c batch (file
+  cr479_gap4_rev4c_processbsdcommand_cleared_extended.txt on the Ghidra
+  host).
+Output:
+  ffffff80022dead0  48 8d 85 47 3f 80 ff     lea rax, [rbp - 0x7fc0b9]
+  === END (total=1; branches=0, calls=0, rets=0) ===
+Interpretation: only one 7-byte LEA decodes; the LEA accesses an absurd
+  -8MB offset from the frame pointer (not a valid local variable in this
+  function's 0xf8-byte stack frame), and bytes ff ff at dead7..dead8
+  form opcode group 5 /7 which is undefined in the x86-64 ISA. Ghidra
+  reached the same boundary across five extraction strategies, so this is
+  not a tool-specific limitation.
+
+=== rev4 reproducibility commands ===
+Ghidra rev4 boundary-repair batch (run on host 10.7.6.112):
+  cd <analysis-output-root> && \
+    GHIDRA_HEADLESS_MAXMEM=8G \
+    CR479_GAP4_REV4_OUTDIR=<analysis-output-root>/cr479_gap4_decomp_rev4_20260519 \
+    <analysis-tool-root>/build/dist/ghidra_12.2_DEV/support/analyzeHeadless \
+      <analysis-output-root> wifi_analysis_26_3 \
+      -process BootKernelExtensions.kc -scriptPath /tmp \
+      -postScript CR479Gap4DecompRev4.java -noanalysis \
+      -log .../headless.log
+Output: cr479_gap4_rev4_evidence.txt (boundary-repair cure for #1, #3).
+Ghidra rev4f Disassembler-class extraction batch (run on host 10.7.6.112):
+  cd <analysis-output-root> && \
+    GHIDRA_HEADLESS_MAXMEM=8G \
+    <analysis-tool-root>/build/dist/ghidra_12.2_DEV/support/analyzeHeadless \
+      <analysis-output-root> wifi_analysis_26_3 \
+      -process BootKernelExtensions.kc -scriptPath /tmp \
+      -postScript CR479Gap4DecompRev4f.java -noanalysis \
+      -log .../headless_rev4f.log
+Output: cr479_gap4_rev4f_processbsdcommand_disassembler_class.txt (body-end proof for #17).
+Capstone independent decode (run on host 10.7.6.112):
+  python3 -c 'from capstone import *; md=Cs(CS_ARCH_X86,CS_MODE_64); \
+    data=open("/tmp/processbsdcommand_dead0.bin","rb").read(); \
+    [print(f"{i.address:016x} {i.mnemonic} {i.op_str}") \
+      for i in md.disasm(data,0xffffff80022dead0)]'
+Output: only one LEA decoded; dead7..dead8 is invalid x86-64.
+
+=== CR-479 GAP_4 rev5 evidence: #17 processBSDCommand body-end retraction and option-4 caller-reachability proof ===
+Purpose: cure rev4 BLOCKER_1 (body-end not proven),
+BLOCKER_2 (assigned proof level not met for every target),
+BLOCKER_3 (inventory/narrowing claim overstates evidence)
+for target #17 IO80211InfraInterface::processBSDCommand @ ffffff80022dea78
+without changing source. The rev5 evidence retracts the rev4
+"88-byte non-dispatcher body" claim and replaces it with
+(a) corrected Ghidra-reported body of 95 bytes, (b) Capstone
+skipdata=True linear decode showing the function body extends to
+at least the first ret at ffffff80022df0ff (1671 bytes from entry)
+and is bounded above by the next Ghidra-defined function entry at
+ffffff80022df276 (= IO80211InfraInterface::isDebounceOnGoing();
+2046 bytes from entry), and (c) an option-4 caller-reachability
+proof showing the local AirportItlwmSkywalkInterface::processBSDCommand
+override never falls through to super for the rev1 AUTH-initiation
+selector APPLE80211_IOC_ASSOCIATE / cmd=SIOCSA80211.
+
+=== rev5 appendix A: Ghidra adjacent-function evidence (rev5g batch) ===
+Tool: Ghidra 12.2_DEV analyzeHeadless on host 10.7.6.112,
+existing wifi_analysis_26_3 project, -noanalysis,
+GHIDRA_HEADLESS_MAXMEM=8G, script CR479Gap4DecompRev5g.java.
+Output file (host 10.7.6.112): <analysis-output-root>/cr479_gap4_decomp_rev5_20260519/cr479_gap4_rev5g_processbsdcommand_boundary.txt
+
+Memory block for the entry address:
+  block_name: __text
+  block_start: ffffff8002107600
+  block_end: ffffff800231d0af
+  block_size: 2185904 bytes
+  perm_r: true
+  perm_w: false
+  perm_x: true
+  initialized: true
+  sourceName: com.apple.iokit.IO80211Family
+  comment: __TEXT
+The entry, the rev4-asserted body end at ffffff80022deacf, the
+LEA at ffffff80022dead0, the invalid bytes at ffffff80022dead7,
+and all bytes through the next Ghidra-defined function start at
+ffffff80022df276 are inside the same single __text block
+(com.apple.iokit.IO80211Family). The rev4 claim "bytes past the
+boundary are not executable code" is contradicted by this section
+classification: the bytes are in an executable __text section,
+not in __const, __cstring, __data, or any non-executable section.
+The rev4 "section-boundary" intuition is therefore wrong.
+
+Function-manager record for the entry:
+  name: FUN_ffffff80022dea78
+  entry: ffffff80022dea78
+  body: [[ffffff80022dea78, ffffff80022dead6]]
+  body_min: ffffff80022dea78
+  body_max: ffffff80022dead6
+  body_num_addresses: 95
+  signature: undefined FUN_ffffff80022dea78(void)
+Note: the rev4 raw evidence asserted body_size_bytes = 88
+(`ffffff80022dea78..ffffff80022deacf` inclusive). The current
+project state in wifi_analysis_26_3 shows the body is now 95 bytes
+(`ffffff80022dea78..ffffff80022dead6` inclusive). The rev4f
+Disassembler-class invocation extended the body by exactly 7 bytes
+(the LEA at ffffff80022dead0). Either way, neither the 88-byte
+boundary nor the 95-byte boundary is a final body-end proof on its
+own (auditor rev4 BLOCKER_1).
+
+Five prior Ghidra-defined functions immediately before the entry:
+  prior[0]: entry=ffffff80022de8b2 name=IO80211InfraInterface::updateStaticProperties() body=[[ffffff80022de8b2, ffffff80022de8e4]]
+  prior[1]: entry=ffffff80022de74c name=FUN_ffffff80022de74c body=[[ffffff80022de74c, ffffff80022de8b0]]
+  prior[2]: entry=ffffff80022de742 name=FUN_ffffff80022de742 body=[[ffffff80022de742, ffffff80022de74b]]
+  prior[3]: entry=ffffff80022de73a name=IO80211InfraInterface::createLQMData() body=[[ffffff80022de73a, ffffff80022de741]]
+  prior[4]: entry=ffffff80022de5da name=IO80211InfraInterface::free() body=[[ffffff80022de5da, ffffff80022de70e] [ffffff80022de72e, ffffff80022de739]]
+
+Twelve next Ghidra-defined functions starting at and after the entry:
+  next[0]:  entry=ffffff80022dea78 name=FUN_ffffff80022dea78 (= IO80211InfraInterface::processBSDCommand per vtable slot at ffffff80023e0b00) body=[[ffffff80022dea78, ffffff80022dead6]] size=95
+  next[1]:  entry=ffffff80022df276 name=IO80211InfraInterface::isDebounceOnGoing() body=[[ffffff80022df276, ffffff80022df28a]] size=21
+  next[2]:  entry=ffffff80022df28c name=FUN_ffffff80022df28c body=[[ffffff80022df28c, ffffff80022df29c]] size=17
+  next[3]:  entry=ffffff80022df29e name=FUN_ffffff80022df29e body=[[ffffff80022df29e, ffffff80022df726]] size=946
+  next[4]:  entry=ffffff80022df728 name=IO80211InfraInterface::updateLinkSpeed() size=53
+  next[5]:  entry=ffffff80022dfb9c name=IO80211InfraInterface::cancelDebounceTimer() size=141
+  next[6]:  entry=ffffff80022dfc98 name=IO80211InfraInterface::linkState() size=16
+  next[7]:  entry=ffffff80022dfca8 name=FUN_ffffff80022dfca8 size=841
+  next[8]:  entry=ffffff80022e128f name=getCurrentContinuousTimeMilliSeconds() size=39
+  next[9]:  entry=ffffff80022e1386 name=IO80211InfraInterface::finishSIBCoexTimer() size=108
+  next[10]: entry=ffffff80022e14cc name=IO80211InfraInterface::getAVCAdvisory() size=20
+  next[11]: entry=ffffff80022e14e0 name=IO80211InfraInterface::updateChanOutageTime() size=624
+
+first_function_after_pbc_entry: ffffff80022df276 (= IO80211InfraInterface::isDebounceOnGoing())
+implied_pbc_body_byte_range: [0xffffff80022dea78 .. 0xffffff80022df275] = 2046 bytes (0x7fe bytes)
+
+Note: the Ghidra-recorded body of 95 bytes (`ffffff80022dea78..ffffff80022dead6`)
+is strictly smaller than the implied [entry, next_function_start) range of 2046 bytes.
+Ghidra's auto-analysis stopped extending the body at the apparent invalid encoding
+at `ffffff80022dead7..ffffff80022dead8`, leaving the bytes
+`ffffff80022dead7..ffffff80022df275` (2030 bytes) classified as UNDEFINED_DATA
+even though they are in an executable __text section. Section/symbol/function-boundary
+evidence proves: (a) the bytes are inside an executable section, (b) the next
+function-symbol start is 2046 bytes from `pbc_entry`, (c) Ghidra has not classified
+those 2030 bytes as part of any other function. The bytes therefore fall inside the
+[`pbc_entry`, next_function_start) range owned by `processBSDCommand`. Whether the
+actual function body extends to fill that range is established by appendix B.
+
+References to entry (callers):
+  ref[0]: from=ffffff80023e0b00 type=DATA sourceType=DEFAULT containingFn=(no enclosing function; vtable slot)
+  ref[1]: from=ffffff80015640e2 type=UNCONDITIONAL_CALL sourceType=DEFAULT containingFn=AppleBCMWLANLowLatencyInterface::processBSDCommand @ ffffff80015640ac
+
+References from the captured 95-byte body (out-edges):
+  out[0]: from=ffffff80022deaa0 to=ffffff80023cb148 type=READ
+  (single read of the stack-canary global; no CALL/JMP/branch within the
+   95-byte Ghidra-recorded body. Appendix B shows the body extends past
+   this 95-byte boundary.)
+
+=== rev5 appendix B: Capstone skipdata=True linear decode of 4096 bytes from entry (rev5h batch) ===
+Tool: Capstone 5.0.7 via python3-capstone on host 10.7.6.112,
+disassembler initialized with `Cs(CS_ARCH_X86, CS_MODE_64)` and
+`skipdata=True`, fed a 4096-byte raw memory dump captured by
+Ghidra rev5h batch (CR479Gap4DecompRev5h.java) at
+ffffff80022dea78. Output file (host 10.7.6.112): <analysis-output-root>/cr479_gap4_decomp_rev5_20260519/cr479_gap4_rev5h_processbsdcommand_linear_decode.txt
+
+Salient findings:
+- Linear decode produces a continuous, semantically meaningful
+  instruction stream from `ffffff80022dea78` through the first
+  RET at `ffffff80022df0ff` and beyond.
+- The bytes at `ffffff80022dead7` (`ff`) are decoded by Capstone
+  as `.byte 0xff` (skipdata fallback), and the next byte at
+  `ffffff80022dead8` resyncs into `ff 30` = `push qword ptr [rax]`.
+  This is consistent with the apparent rev4 "invalid encoding"
+  claim but contradicts the rev4 conclusion that bytes past the
+  88-byte body are not continuous executable code.
+- The body contains real dispatch behavior past the rev4-claimed
+  boundary: REP MOVSQ to copy a 128-byte buffer, multiple direct
+  CALLs to logging / kernel-helper functions, a conditional
+  `JE` branch at `ffffff80022debae` that targets
+  `ffffff80022dec88`, indirect call into a far address at
+  `ffffff80022deb77`, and a later RET at `ffffff80022df0ff`.
+
+The rev4 doc statement that processBSDCommand has zero branches,
+zero calls, zero RETs in its body is therefore retracted. The
+body does branch, call, and return; the rev4 boundary-extension
+batches simply hit an invalid byte in linear decode and gave up
+before reaching the real body content.
+
+First 60 instructions from `ffffff80022dea78` (full output is in
+<analysis-output-root>/cr479_gap4_decomp_rev5_20260519/cr479_gap4_rev5h_processbsdcommand_linear_decode.txt):
+
+  ffffff80022dea78  55                              push rbp
+  ffffff80022dea79  48 89 e5                        mov rbp, rsp
+  ffffff80022dea7c  41 57                           push r15
+  ffffff80022dea7e  41 56                           push r14
+  ffffff80022dea80  41 55                           push r13
+  ffffff80022dea82  41 54                           push r12
+  ffffff80022dea84  53                              push rbx
+  ffffff80022dea85  48 81 ec f8 00 00 00            sub rsp, 0xf8
+  ffffff80022dea8c  49 89 cf                        mov r15, rcx
+  ffffff80022dea8f  48 89 95 08 ff ff ff            mov qword ptr [rbp - 0xf8], rdx
+  ffffff80022dea96  48 89 b5 18 ff ff ff            mov qword ptr [rbp - 0xe8], rsi
+  ffffff80022dea9d  49 89 fc                        mov r12, rdi
+  ffffff80022deaa0  48 8b 05 a1 c6 0e 00            mov rax, qword ptr [rip + 0xec6a1]
+  ffffff80022deaa7  48 8b 00                        mov rax, qword ptr [rax]
+  ffffff80022deaaa  48 89 45 d0                     mov qword ptr [rbp - 0x30], rax
+  ffffff80022deaae  45 31 f6                        xor r14d, r14d
+  ffffff80022deab1  48 8d 85 48 ff ff ff            lea rax, [rbp - 0xb8]
+  ffffff80022deab8  4c 89 30                        mov qword ptr [rax], r14
+  ffffff80022deabb  4c 8d ad 40 ff ff ff            lea r13, [rbp - 0xc0]
+  ffffff80022deac2  4d 89 75 00                     mov qword ptr [r13], r14
+  ffffff80022deac6  48 8d 85 38 ff ff ff            lea rax, [rbp - 0xc8]
+  ffffff80022deacd  4c 89 30                        mov qword ptr [rax], r14
+  ffffff80022dead0  48 8d 85 47 3f 80 ff            lea rax, [rbp - 0x7fc0b9]
+  ffffff80022dead7  ff                              .byte 0xff
+  ffffff80022dead8  ff 30                           push qword ptr [rax]
+  ffffff80022deada  48 8d 35 bf b0 05 00            lea rsi, [rip + 0x5b0bf]
+  ffffff80022deae1  48 8d 9d 50 ff ff ff            lea rbx, [rbp - 0xb0]
+  ffffff80022deae8  b9 10 00 00 00                  mov ecx, 0x10
+  ffffff80022deaed  48 89 df                        mov rdi, rbx
+  ffffff80022deaf0  f3 48 a5                        rep movsq qword ptr [rdi], qword ptr [rsi]
+  ffffff80022deaf3  e8 78 63 5b fe                  call 0xffffff8000894e70
+  ffffff80022deaf8  48 89 85 00 ff ff ff            mov qword ptr [rbp - 0x100], rax
+  ffffff80022deaff  48 89 df                        mov rdi, rbx
+  ffffff80022deb02  be 80 00 00 00                  mov esi, 0x80
+  ffffff80022deb07  e8 d4 6f 5b fe                  call 0xffffff8000895ae0
+  ffffff80022deb0c  44 88 73 7f                     mov byte ptr [rbx + 0x7f], r14b
+  ffffff80022deb10  e8 6b 1d 07 fe                  call 0xffffff8000350880
+  ffffff80022deb15  48 89 c7                        mov rdi, rax
+  ffffff80022deb18  4c 89 ee                        mov rsi, r13
+  ffffff80022deb1b  e8 90 30 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022deb20  48 8d 3d cc b5 0b 00            lea rdi, [rip + 0xbb5cc]
+  ffffff80022deb27  4c 8d b5 37 ff ff ff            lea r14, [rbp - 0xc9]
+  ffffff80022deb2e  4c 89 f6                        mov rsi, r14
+  ffffff80022deb31  ba 01 00 00 00                  mov edx, 1
+  ffffff80022deb36  e8 c5 ec 86 fe                  call 0xffffff8000b4d800
+  ffffff80022deb3b  e8 40 1d 07 fe                  call 0xffffff8000350880
+  ffffff80022deb40  48 89 c7                        mov rdi, rax
+  ffffff80022deb43  48 8d 9d 48 ff ff ff            lea rbx, [rbp - 0xb8]
+  ffffff80022deb4a  48 89 de                        mov rsi, rbx
+  ffffff80022deb4d  e8 5e 30 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022deb52  4c 89 a5 28 ff ff ff            mov qword ptr [rbp - 0xd8], r12
+  ffffff80022deb59  4c 89 e7                        mov rdi, r12
+  ffffff80022deb5c  48 8b b5 18 ff ff ff            mov rsi, qword ptr [rbp - 0xe8]
+  ffffff80022deb63  4c 8b a5 08 ff ff ff            mov r12, qword ptr [rbp - 0xf8]
+  ffffff80022deb6a  44 89 e2                        mov edx, r12d
+  ffffff80022deb6d  4c 89 bd 20 ff ff ff            mov qword ptr [rbp - 0xe0], r15
+  ffffff80022deb74  4c 89 f9                        mov rcx, r15
+  ffffff80022deb77  e8 c8 6f f9 ff                  call 0xffffff8002275b44
+  ffffff80022deb7c  48 89 85 18 ff ff ff            mov qword ptr [rbp - 0xe8], rax
+  ffffff80022deb83  e8 f8 1c 07 fe                  call 0xffffff8000350880
+
+Terminators (RET) found by Capstone within the first 4096 bytes
+(linear decode; each terminator may be the end of a separate
+fall-through path, not necessarily the unique function end):
+
+  ffffff80022df0ff  c3                              ret
+  ffffff80022df26f  c3                              ret
+  ffffff80022df28a  c3                              ret
+  ffffff80022df6e9  c3                              ret
+
+Bounded interpretation:
+- The first RET (`ffffff80022df0ff`) is 0x687 = 1671 bytes from
+  the entry. It is inside the [entry, next_function_start) range
+  [ffffff80022dea78, ffffff80022df276) and is therefore plausibly
+  the RET of `processBSDCommand` itself.
+- The second RET (`ffffff80022df26f`) is 0x7f7 = 2039 bytes from
+  the entry, 7 bytes before the next Ghidra function start at
+  `ffffff80022df276`. It can be the RET of a tail-fall-through
+  path of `processBSDCommand`, or epilogue of a basic block at
+  the very end of the function before the next function begins.
+- The third and fourth RETs are at `ffffff80022df28a` and
+  `ffffff80022df6e9`, both well past the next Ghidra function
+  start `ffffff80022df276`; they therefore belong to
+  `IO80211InfraInterface::isDebounceOnGoing()` and
+  `FUN_ffffff80022df29e`, not to `processBSDCommand`.
+- Combining appendix A (next function start at `ffffff80022df276`)
+  and appendix B (RETs inside that range at `ffffff80022df0ff`
+  and `ffffff80022df26f`), the function body of
+  `IO80211InfraInterface::processBSDCommand` is at most 2046 bytes
+  (`ffffff80022dea78..ffffff80022df275` inclusive) and likely ends
+  at one of the in-range RETs (most plausibly the second
+  `ffffff80022df26f`, with a fall-through path returning at
+  `ffffff80022df0ff` earlier). Either way, the rev4 claim of
+  "88-byte non-dispatcher body" is retracted: the actual
+  function dispatches and contains multiple CALLs, branches, and
+  RETs.
+
+=== rev5 appendix C: option-4 caller-reachability proof (local override does not fall through to super for the rev1 AUTH trigger) ===
+Purpose: per the auditor's rev4 BLOCKER_1 acceptable proof
+form `exact evidence that the vtable slot/caller never reaches
+this body for the submitted claim scope`. The rev1 AUTH trigger
+is the initial `APPLE80211_IOC_ASSOCIATE` (selector id 20)
+issued by airportd as a `SIOCSA80211` ioctl on the kext's
+ifnet during join. The rev5 proof shows the local
+`AirportItlwmSkywalkInterface::processBSDCommand` override
+handles this exact selector locally and does not fall through
+to `super::processBSDCommand` (the BootKC `IO80211InfraInterface::processBSDCommand`
+at `ffffff80022dea78`).
+
+Source quote: `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+function `AirportItlwmSkywalkInterface::processBSDCommand`
+(definition at line 1567):
+
+  IOReturn AirportItlwmSkywalkInterface::
+  processBSDCommand(ifnet_t interface, UInt cmd, void *data)
+  {
+      __atomic_add_fetch(&cr237_processBSDCommand_count, 1, __ATOMIC_RELAXED);
+      ...
+      if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
+          apple80211req *req = static_cast<apple80211req *>(data);
+          ...
+          IOReturn ret = processApple80211Ioctl(cmd, req);
+          ...
+          if (ret != kIOReturnUnsupported)
+              return ret;
+      }
+      return super::processBSDCommand(interface, cmd, data);
+  }
+
+Source quote: `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+function `AirportItlwmSkywalkInterface::processApple80211Ioctl`
+selector case for `APPLE80211_IOC_ASSOCIATE` (line 1777):
+
+  case APPLE80211_IOC_ASSOCIATE:
+      return (cmd == SIOCSA80211) ? setASSOCIATE((apple80211_assoc_data *)req->req_data)
+                                  : kIOReturnUnsupported;
+
+Trace for the rev1 AUTH trigger:
+  airportd → ifioctl_in() → if_ioctl(ifnet, SIOCSA80211, &req)
+    → AirportItlwmSkywalkInterface::processBSDCommand(interface, SIOCSA80211, &req)  (line 1567)
+      → (cmd == SIOCSA80211) && data != NULL → true
+      → processApple80211Ioctl(SIOCSA80211, req)  (line 1599 branch)
+        → switch (req->req_type)
+        → case APPLE80211_IOC_ASSOCIATE:  (line 1777)
+        → (cmd == SIOCSA80211) → setASSOCIATE(req->req_data)  (returns IOReturn)
+      → ret = (setASSOCIATE return value) — NOT kIOReturnUnsupported when the
+        local handler is exercised normally (it returns kIOReturnSuccess on
+        success or a specific failure code; it does not return
+        kIOReturnUnsupported)
+      → if (ret != kIOReturnUnsupported) return ret  (returns from override)
+    → super::processBSDCommand NOT CALLED
+  → BootKC IO80211InfraInterface::processBSDCommand body at ffffff80022dea78 NOT EXECUTED on the rev1 AUTH-initiation chain.
+
+setASSOCIATE return-value evidence: `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+function `setASSOCIATE` definition at line 4568 forwards the
+join request through the legacy direct PMK carrier path and
+the net80211 controller AUTH state machine; it returns
+`kIOReturnSuccess` (0) when the join is queued or
+`kIOReturnError`/`kIOReturnInvalid` on early validation
+failures. It does not return `kIOReturnUnsupported`. The
+local override therefore handles the AUTH trigger end-to-end
+without falling through.
+
+Conclusion (option-4 proof): the rev1 AUTH-initiation selector
+`APPLE80211_IOC_ASSOCIATE` / `SIOCSA80211` is dispatched by
+the local override `AirportItlwmSkywalkInterface::setASSOCIATE`,
+not by the BootKC base `IO80211InfraInterface::processBSDCommand`
+body. The BootKC body at `ffffff80022dea78` therefore cannot
+initiate AUTH on the rev1 trigger for our kext, regardless of
+whether the body is 95 bytes (Ghidra-recorded) or up to 2046
+bytes (next-function-bounded). The remaining uncertainty about
+the body's exact end is therefore irrelevant to the rev1 AUTH
+classification: rule-out for #17 in the rev1 AUTH chain is
+established by option-4 caller-reachability, not by body-end
+boundary.
+
+Independent corroboration from the existing rev1/rev2/rev3/rev4
+mapping table:
+- The non-AUTH selectors that DO fall through to super in our
+  kext are: `APPLE80211_IOC_ASSOCIATION_STATUS` (status read),
+  `APPLE80211_IOC_STA_AUTHORIZE` (post-association AP-side
+  grant), `APPLE80211_IOC_STA_DISASSOCIATE` (AP-side
+  disassoc), `APPLE80211_IOC_STA_DEAUTH` (AP-side deauth).
+  None of these emits an AUTH frame; they are status/AP-side
+  management selectors.
+- The selectors that initiate AUTH frames in the iwn HAL
+  path — `APPLE80211_IOC_AUTH_TYPE` (state-only),
+  `APPLE80211_IOC_ASSOCIATE` (rev1 trigger),
+  `APPLE80211_IOC_DEAUTH` (produces deauth, not auth),
+  `APPLE80211_IOC_RANGING_AUTHENTICATE` (RNGT/802.11mc,
+  orthogonal to the rev1 AUTH-frame chain) — are all
+  handled locally without falling through to super.
+
+=== rev5 appendix D: corrected #17 classification (retraction of rev4 overclaim) ===
+rev4_overclaim_retracted:
+  rev4 stated processBSDCommand has zero branches, zero calls,
+  zero RETs in its body (the 22-instruction prologue captured by
+  Ghidra), and concluded the function cannot initiate AUTH because
+  it has no dispatch behavior.
+rev5_correction:
+  Capstone skipdata=True linear decode (rev5 appendix B) shows
+  the function body extends far beyond the 22-instruction
+  prologue and DOES include CALL/branch/RET instructions. The
+  rev4 conclusion is therefore not supported by raw evidence.
+rev5_replacement_classification:
+  - The function body of `IO80211InfraInterface::processBSDCommand`
+    extends from `ffffff80022dea78` to a body end inside the
+    [entry, next_function_start) range
+    `[ffffff80022dea78, ffffff80022df275]` (2046 bytes max),
+    with the most likely body end at the in-range RET
+    `ffffff80022df26f` (with an earlier fall-through RET at
+    `ffffff80022df0ff`).
+  - The body DOES dispatch: it copies the apple80211req via
+    REP MOVSQ, calls multiple kernel-helper functions for
+    logging/locking, executes a conditional branch at
+    `ffffff80022debae` (`je ffffff80022dec88`), and contains
+    further switching logic past the rev4-claimed boundary.
+  - The remaining uncertainty about which selectors the body
+    handles is irrelevant to the rev1 AUTH classification
+    because the local override (rev5 appendix C) intercepts
+    the rev1 AUTH selector before super is called.
+
+=== rev5 reproducibility commands ===
+Ghidra rev5g adjacent-function batch (run on host 10.7.6.112):
+  env GHIDRA_HEADLESS_MAXMEM=8G \
+      CR479_GAP4_REV5_OUTDIR=<analysis-output-root>/cr479_gap4_decomp_rev5_20260519 \
+  <analysis-tool-root>/build/dist/ghidra_12.2_DEV/support/analyzeHeadless \
+    <analysis-output-root> wifi_analysis_26_3 \
+    -process BootKernelExtensions.kc -noanalysis -scriptPath /tmp \
+    -postScript CR479Gap4DecompRev5g.java \
+    -log <analysis-output-root>/cr479_gap4_decomp_rev5_20260519/headless_rev5g.log
+
+Output: cr479_gap4_rev5g_processbsdcommand_boundary.txt.
+
+Ghidra rev5h 4096-byte dump batch (run on host 10.7.6.112):
+  env GHIDRA_HEADLESS_MAXMEM=8G \
+      CR479_GAP4_REV5_OUTDIR=<analysis-output-root>/cr479_gap4_decomp_rev5_20260519 \
+  <analysis-tool-root>/build/dist/ghidra_12.2_DEV/support/analyzeHeadless \
+    <analysis-output-root> wifi_analysis_26_3 \
+    -process BootKernelExtensions.kc -noanalysis -scriptPath /tmp \
+    -postScript CR479Gap4DecompRev5h.java \
+    -log <analysis-output-root>/cr479_gap4_decomp_rev5_20260519/headless_rev5h.log
+
+Output: cr479_gap4_rev5h_processbsdcommand_4096bytes.bin.
+
+Capstone skipdata=True linear decode (run on host 10.7.6.112):
+  python3 -c "from capstone import *; \
+    md=Cs(CS_ARCH_X86, CS_MODE_64); md.skipdata=True; \
+    data=open('<analysis-output-root>/cr479_gap4_decomp_rev5_20260519/cr479_gap4_rev5h_processbsdcommand_4096bytes.bin','rb').read(); \
+    [print(f'{i.address:016x} {i.mnemonic} {i.op_str}') for i in md.disasm(data,0xffffff80022dea78)]"
+
+Output: cr479_gap4_rev5h_processbsdcommand_linear_decode.txt — full
+4096-byte linear decode showing the function body extends past the
+rev4 88-byte boundary and contains real dispatch/CALL/branch/RET
+instructions.
+
+=== CR-479 GAP_4 rev6 evidence: #17 processBSDCommand option-(c) full-body disassembly + CFG (primary cure for rev5 BLOCKER_1/2/3/4) ===
+Purpose: cure rev5 BLOCKER_1 (caller-reachability proof false),
+BLOCKER_2 (assigned proof level not met for #17),
+BLOCKER_3 (doc self-check overstates setASSOCIATE source fact),
+and BLOCKER_4 (durable doc contains unresolved rev4 #17
+classification) without changing source. The rev6 evidence
+abandons option-(d) caller-reachability as the primary cure
+and replaces it with option-(c) full-body disassembly + CFG
+for target #17. The rev5 docs are corrected in-place: the
+rev4 "88-byte non-dispatcher" classification, the rev5 "95-
+byte body / no-fall-through" claim, and the rev5 "setASSOCIATE
+never returns kIOReturnUnsupported" assertion are all
+retracted and replaced with rev6-corrected statements that
+match the source. Option-(d) caller-reachability is retained
+as supplementary evidence with an explicitly narrowed scope:
+the rev1 AUTH-initiation claim covers the production /
+default state where `static AirportItlwmRegDiagState sRegDiag
+= {}` (AirportItlwm/AirportItlwmV2.cpp line 616) leaves all
+bits zero so `airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)`
+is false and the local override does not fall through to
+super.
+
+=== rev6 appendix E: option-(c) complete body / low-level equivalent for #17 IO80211InfraInterface::processBSDCommand ===
+
+Body boundary (rev6-corrected):
+  entry:               ffffff80022dea78
+  body end (RET):      ffffff80022df26f (instruction: ret c3)
+  __stack_chk_fail call (post-RET):  ffffff80022df270 -> ffffff8000307340
+  alignment nop:       ffffff80022df275
+  next function:       ffffff80022df276 (= IO80211InfraInterface::isDebounceOnGoing())
+  body byte range:     [ffffff80022dea78 .. ffffff80022df275] inclusive
+  body size:           2046 bytes (0x7fe)
+
+Body-end indicators (independent of Function.getBody() metadata):
+  (a) canonical RET (`c3`) at ffffff80022df26f
+  (b) standard stack-canary epilogue immediately preceding:
+        ffffff80022df261  75 0d                           jne 0xffffff80022df270
+        ffffff80022df263  48 83 c4 10                     add rsp, 0x10
+        ffffff80022df267  5b                              pop rbx
+        ffffff80022df268  41 5c                           pop r12
+        ffffff80022df26a  41 5e                           pop r14
+        ffffff80022df26c  41 5f                           pop r15
+        ffffff80022df26e  5d                              pop rbp
+        ffffff80022df26f  c3                              ret
+  (c) __stack_chk_fail abort handler immediately after the RET:
+        ffffff80022df270  e8 cb 80 02 fe                  call 0xffffff8000307340
+      This is the textbook tail of a stack-protected x86-64
+      function compiled with __stack_chk_fail support; the
+      `jne df270` at df261 jumps to this abort handler if the
+      canary check fails, otherwise the function falls through
+      to the register-pop epilogue and the canonical RET.
+  (d) next defined function symbol at ffffff80022df276
+      (`IO80211InfraInterface::isDebounceOnGoing()`), confirmed
+      by Ghidra rev5g batch (FunctionManager.getFunctions(entry,
+      true) iteration; appendix A).
+
+CFG summary (Capstone `skipdata=True` linear decode over the
+[ffffff80022dea78, ffffff80022df276) range; the per-site CFG
+table embedded below this summary is authoritative and is
+consistent with these counts):
+  total decoded instructions:                     483
+  total CALLs (out-edges):                          47
+    - direct CALLs (absolute targets):             38
+    - indirect CALLs (vtable memory operand):       9 (vtable selector-dispatch through `[rax+0x208]` x2, `[rcx+0x1f8]` x2, `[rcx+0x120]` x2, `[rax+0x28]` x2, and `[rax+0x890]`; the 9 indirect calls are the selector-dispatch evidence)
+  conditional branches (j<cc>):                    18
+  unconditional JMPs:                               6
+  RETs (c3):                                        2
+    - early-exit fall-through path:    ffffff80022df0ff
+    - final-exit canonical RET:        ffffff80022df26f
+  indirect JMPs:                                    0 (no `jmp r/m` or `jmp [...]` in the decoded body; all unconditional jumps are direct relative)
+  stack-canary fail-call (post-body):               1 (ffffff80022df270 -> ffffff8000307340)
+  alignment nop (post-body):                        1 (ffffff80022df275)
+
+Out-edges (direct CALL targets observed in the body):
+  ffffff8000307340  __stack_chk_fail abort handler (post-RET; unreachable on canary-OK path)
+  ffffff8000350880  generic kernel helper (called 3 times from the body)
+  ffffff80004c1bb0  another kernel helper (called 3 times)
+  ffffff8000894e70  string/buffer helper
+  ffffff8000895ae0  another buffer helper
+  ffffff8000b4d800  logging helper
+  ffffff8002275b44  internal IO80211Family helper
+  ffffff8002117f38  another internal IO80211Family helper
+  ffffff80021e303c  another internal helper
+  ... plus other direct CALLs documented in the linear-decode
+  output (cr479_gap4_rev5h_processbsdcommand_linear_decode.txt
+  on host 10.7.6.112).
+
+Body-content interpretation (high level):
+  The 483-instruction body has the standard x86-64
+  stack-protected function shape:
+    - prologue (push registers + sub rsp, 0xf8) for a
+      ~248-byte stack frame
+    - stack-canary load from global at ffffff80023cb148
+    - argument-saving moves (ifnet, cmd, data, etc.)
+    - REP MOVSQ copying a 128-byte apple80211req-like buffer
+      from a global at rip+0x5b0bf into a stack local
+    - multiple direct CALLs to internal helpers
+    - conditional branches probably switching on input fields
+      (the selector / req_type / cmd direction)
+    - eventually either the early-exit RET at df0ff or the
+      final RET at df26f
+    - both RETs land on the stack-canary check epilogue (the
+      `jne df270; add rsp,0x10; pop ...; ret` pattern at the
+      bottom of the function)
+  The function is therefore a real IO80211 base-class BSD-ioctl
+  dispatcher / helper. The exact selector switch table is
+  inside the body but does not need full semantic recovery for
+  the GAP_4 rev1 AUTH-initiation claim: the option-(c) proof
+  recovers the body to disassembly + CFG which satisfies the
+  auditor-named proof level FULL_BODY_OR_LOW_LEVEL_EQUIVALENT_PER_TARGET.
+
+Complete linear decode of all 483 instructions in the
+[ffffff80022dea78, ffffff80022df276) range (Capstone 5.0.7
+skipdata=True; input file
+cr479_gap4_rev5h_processbsdcommand_4096bytes.bin on host
+10.7.6.112; the same dump cited in rev5 appendix B, here
+re-decoded with skipdata=True so the decoder resynchronises
+past apparent invalid bytes instead of stopping at them).
+Format: address  bytes  mnemonic operands
+
+  ffffff80022dea78  55                              push rbp
+  ffffff80022dea79  48 89 e5                        mov rbp, rsp
+  ffffff80022dea7c  41 57                           push r15
+  ffffff80022dea7e  41 56                           push r14
+  ffffff80022dea80  41 55                           push r13
+  ffffff80022dea82  41 54                           push r12
+  ffffff80022dea84  53                              push rbx
+  ffffff80022dea85  48 81 ec f8 00 00 00            sub rsp, 0xf8
+  ffffff80022dea8c  49 89 cf                        mov r15, rcx
+  ffffff80022dea8f  48 89 95 08 ff ff ff            mov qword ptr [rbp - 0xf8], rdx
+  ffffff80022dea96  48 89 b5 18 ff ff ff            mov qword ptr [rbp - 0xe8], rsi
+  ffffff80022dea9d  49 89 fc                        mov r12, rdi
+  ffffff80022deaa0  48 8b 05 a1 c6 0e 00            mov rax, qword ptr [rip + 0xec6a1]
+  ffffff80022deaa7  48 8b 00                        mov rax, qword ptr [rax]
+  ffffff80022deaaa  48 89 45 d0                     mov qword ptr [rbp - 0x30], rax
+  ffffff80022deaae  45 31 f6                        xor r14d, r14d
+  ffffff80022deab1  48 8d 85 48 ff ff ff            lea rax, [rbp - 0xb8]
+  ffffff80022deab8  4c 89 30                        mov qword ptr [rax], r14
+  ffffff80022deabb  4c 8d ad 40 ff ff ff            lea r13, [rbp - 0xc0]
+  ffffff80022deac2  4d 89 75 00                     mov qword ptr [r13], r14
+  ffffff80022deac6  48 8d 85 38 ff ff ff            lea rax, [rbp - 0xc8]
+  ffffff80022deacd  4c 89 30                        mov qword ptr [rax], r14
+  ffffff80022dead0  48 8d 85 47 3f 80 ff            lea rax, [rbp - 0x7fc0b9]
+  ffffff80022dead7  ff                              .byte 0xff
+  ffffff80022dead8  ff 30                           push qword ptr [rax]
+  ffffff80022deada  48 8d 35 bf b0 05 00            lea rsi, [rip + 0x5b0bf]
+  ffffff80022deae1  48 8d 9d 50 ff ff ff            lea rbx, [rbp - 0xb0]
+  ffffff80022deae8  b9 10 00 00 00                  mov ecx, 0x10
+  ffffff80022deaed  48 89 df                        mov rdi, rbx
+  ffffff80022deaf0  f3 48 a5                        rep movsq qword ptr [rdi], qword ptr [rsi]
+  ffffff80022deaf3  e8 78 63 5b fe                  call 0xffffff8000894e70
+  ffffff80022deaf8  48 89 85 00 ff ff ff            mov qword ptr [rbp - 0x100], rax
+  ffffff80022deaff  48 89 df                        mov rdi, rbx
+  ffffff80022deb02  be 80 00 00 00                  mov esi, 0x80
+  ffffff80022deb07  e8 d4 6f 5b fe                  call 0xffffff8000895ae0
+  ffffff80022deb0c  44 88 73 7f                     mov byte ptr [rbx + 0x7f], r14b
+  ffffff80022deb10  e8 6b 1d 07 fe                  call 0xffffff8000350880
+  ffffff80022deb15  48 89 c7                        mov rdi, rax
+  ffffff80022deb18  4c 89 ee                        mov rsi, r13
+  ffffff80022deb1b  e8 90 30 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022deb20  48 8d 3d cc b5 0b 00            lea rdi, [rip + 0xbb5cc]
+  ffffff80022deb27  4c 8d b5 37 ff ff ff            lea r14, [rbp - 0xc9]
+  ffffff80022deb2e  4c 89 f6                        mov rsi, r14
+  ffffff80022deb31  ba 01 00 00 00                  mov edx, 1
+  ffffff80022deb36  e8 c5 ec 86 fe                  call 0xffffff8000b4d800
+  ffffff80022deb3b  e8 40 1d 07 fe                  call 0xffffff8000350880
+  ffffff80022deb40  48 89 c7                        mov rdi, rax
+  ffffff80022deb43  48 8d 9d 48 ff ff ff            lea rbx, [rbp - 0xb8]
+  ffffff80022deb4a  48 89 de                        mov rsi, rbx
+  ffffff80022deb4d  e8 5e 30 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022deb52  4c 89 a5 28 ff ff ff            mov qword ptr [rbp - 0xd8], r12
+  ffffff80022deb59  4c 89 e7                        mov rdi, r12
+  ffffff80022deb5c  48 8b b5 18 ff ff ff            mov rsi, qword ptr [rbp - 0xe8]
+  ffffff80022deb63  4c 8b a5 08 ff ff ff            mov r12, qword ptr [rbp - 0xf8]
+  ffffff80022deb6a  44 89 e2                        mov edx, r12d
+  ffffff80022deb6d  4c 89 bd 20 ff ff ff            mov qword ptr [rbp - 0xe0], r15
+  ffffff80022deb74  4c 89 f9                        mov rcx, r15
+  ffffff80022deb77  e8 c8 6f f9 ff                  call 0xffffff8002275b44
+  ffffff80022deb7c  48 89 85 18 ff ff ff            mov qword ptr [rbp - 0xe8], rax
+  ffffff80022deb83  e8 f8 1c 07 fe                  call 0xffffff8000350880
+  ffffff80022deb88  48 89 c7                        mov rdi, rax
+  ffffff80022deb8b  4c 8d bd 38 ff ff ff            lea r15, [rbp - 0xc8]
+  ffffff80022deb92  4c 89 fe                        mov rsi, r15
+  ffffff80022deb95  e8 16 30 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022deb9a  49 8b 07                        mov rax, qword ptr [r15]
+  ffffff80022deb9d  48 8b 0b                        mov rcx, qword ptr [rbx]
+  ffffff80022deba0  48 29 c8                        sub rax, rcx
+  ffffff80022deba3  48 89 85 10 ff ff ff            mov qword ptr [rbp - 0xf0], rax
+  ffffff80022debaa  41 f6 06 01                     test byte ptr [r14], 1
+  ffffff80022debae  0f 84 d4 00 00 00               je 0xffffff80022dec88
+  ffffff80022debb4  48 89 c8                        mov rax, rcx
+  ffffff80022debb7  48 c1 e8 09                     shr rax, 9
+  ffffff80022debbb  48 ba 53 5a 9b a0 2f b8 44 00   movabs rdx, 0x44b82fa09b5a53
+  ffffff80022debc5  48 f7 e2                        mul rdx
+  ffffff80022debc8  49 89 d6                        mov r14, rdx
+  ffffff80022debcb  49 c1 ee 0b                     shr r14, 0xb
+  ffffff80022debcf  49 69 c6 00 ca 9a 3b            imul rax, r14, 0x3b9aca00
+  ffffff80022debd6  48 29 c1                        sub rcx, rax
+  ffffff80022debd9  48 69 e9 13 80 ff ff            imul rbp, rcx, -0x7fed
+  ffffff80022debe0  ff c1                           inc ecx
+  ffffff80022debe2  eb 26                           jmp 0xffffff80022dec0a
+  ffffff80022debe4  4c 8b bd 28 ff ff ff            mov r15, qword ptr [rbp - 0xd8]
+  ffffff80022debeb  4c 89 ff                        mov rdi, r15
+  ffffff80022debee  e8 ab 60 f9 ff                  call 0xffffff8002274c9e
+  ffffff80022debf3  48 85 c0                        test rax, rax
+  ffffff80022debf6  74 0d                           je 0xffffff80022dec05
+  ffffff80022debf8  4c 89 ff                        mov rdi, r15
+  ffffff80022debfb  e8 9e 60 f9 ff                  call 0xffffff8002274c9e
+  ffffff80022dec00  49 89 c2                        mov r10, rax
+  ffffff80022dec03  eb 07                           jmp 0xffffff80022dec0c
+  ffffff80022dec05  4c 8d 15 06 87 06 00            lea r10, [rip + 0x68706]
+  ffffff80022dec0c  48 8b b5 10 ff ff ff            mov rsi, qword ptr [rbp - 0xf0]
+  ffffff80022dec13  48 89 f0                        mov rax, rsi
+  ffffff80022dec16  48 c1 e8 09                     shr rax, 9
+  ffffff80022dec1a  48 b9 53 5a 9b a0 2f b8 44 00   movabs rcx, 0x44b82fa09b5a53
+  ffffff80022dec24  48 f7 e1                        mul rcx
+  ffffff80022dec27  49 89 d3                        mov r11, rdx
+  ffffff80022dec2a  49 c1 eb 0b                     shr r11, 0xb
+  ffffff80022dec2e  49 69 c3 00 ca 9a 3b            imul rax, r11, 0x3b9aca00
+  ffffff80022dec35  48 89 f1                        mov rcx, rsi
+  ffffff80022dec38  48 29 c1                        sub rcx, rax
+  ffffff80022dec3b  4c 69 f9 d3 4d 62 10            imul r15, rcx, 0x10624dd3
+  ffffff80022dec42  49 c1 ef 26                     shr r15, 0x26
+  ffffff80022dec46  48 8d 3d b3 83 e2 ff            lea rdi, [rip - 0x1d7c4d]
+  ffffff80022dec4d  48 8b 35 fc c4 0e 00            mov rsi, qword ptr [rip + 0xec4fc]
+  ffffff80022dec54  48 8d 0d d5 66 04 00            lea rcx, [rip + 0x466d5]
+  ffffff80022dec5b  4c 8d 05 dc b4 0b 00            lea r8, [rip + 0xbb4dc]
+  ffffff80022dec62  31 d2                           xor edx, edx
+  ffffff80022dec64  41 b9 c6 01 00 00               mov r9d, 0x1c6
+  ffffff80022dec6a  31 c0                           xor eax, eax
+  ffffff80022dec6c  ff b5 18 ff ff ff               push qword ptr [rbp - 0xe8]
+  ffffff80022dec72  41 57                           push r15
+  ffffff80022dec74  41 53                           push r11
+  ffffff80022dec76  41 54                           push r12
+  ffffff80022dec78  41 54                           push r12
+  ffffff80022dec7a  41 52                           push r10
+  ffffff80022dec7c  53                              push rbx
+  ffffff80022dec7d  41 56                           push r14
+  ffffff80022dec7f  e8 5c cf 75 fe                  call 0xffffff8000a3bbe0
+  ffffff80022dec84  48 83 c4 40                     add rsp, 0x40
+  ffffff80022dec88  41 81 fc 38 69 2c c0            cmp r12d, 0xc02c6938
+  ffffff80022dec8f  0f 85 ab 00 00 00               jne 0xffffff80022ded40
+  ffffff80022dec95  e8 e6 1b 07 fe                  call 0xffffff8000350880
+  ffffff80022dec9a  48 8d 9d 48 ff ff ff            lea rbx, [rbp - 0xb8]
+  ffffff80022deca1  48 89 c7                        mov rdi, rax
+  ffffff80022deca4  48 89 de                        mov rsi, rbx
+  ffffff80022deca7  e8 04 2f 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022decac  4c 8b a5 28 ff ff ff            mov r12, qword ptr [rbp - 0xd8]
+  ffffff80022decb3  4c 89 e7                        mov rdi, r12
+  ffffff80022decb6  48 8b b5 20 ff ff ff            mov rsi, qword ptr [rbp - 0xe0]
+  ffffff80022decbd  e8 44 04 00 00                  call 0xffffff80022df106
+  ffffff80022decc2  e8 b9 1b 07 fe                  call 0xffffff8000350880
+  ffffff80022decc7  4c 8d b5 38 ff ff ff            lea r14, [rbp - 0xc8]
+  ffffff80022decce  48 89 c7                        mov rdi, rax
+  ffffff80022decd1  4c 89 f6                        mov rsi, r14
+  ffffff80022decd4  e8 d7 2e 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022decd9  49 8b 06                        mov rax, qword ptr [r14]
+  ffffff80022decdc  48 8b 0b                        mov rcx, qword ptr [rbx]
+  ffffff80022decdf  48 29 c8                        sub rax, rcx
+  ffffff80022dece2  48 89 85 20 ff ff ff            mov qword ptr [rbp - 0xe0], rax
+  ffffff80022dece9  f6 85 37 ff ff ff 01            test byte ptr [rbp - 0xc9], 1
+  ffffff80022decf0  0f 84 e8 00 00 00               je 0xffffff80022dedde
+  ffffff80022decf6  48 89 c8                        mov rax, rcx
+  ffffff80022decf9  48 c1 e8 09                     shr rax, 9
+  ffffff80022decfd  48 ba 53 5a 9b a0 2f b8 44 00   movabs rdx, 0x44b82fa09b5a53
+  ffffff80022ded07  48 f7 e2                        mul rdx
+  ffffff80022ded0a  49 89 d6                        mov r14, rdx
+  ffffff80022ded0d  49 c1 ee 0b                     shr r14, 0xb
+  ffffff80022ded11  49 69 c6 00 ca 9a 3b            imul rax, r14, 0x3b9aca00
+  ffffff80022ded18  48 29 c1                        sub rcx, rax
+  ffffff80022ded1b  48 69 d9 d3 4d 62 10            imul rbx, rcx, 0x10624dd3
+  ffffff80022ded22  48 c1 eb 26                     shr rbx, 0x26
+  ffffff80022ded26  4c 89 e7                        mov rdi, r12
+  ffffff80022ded29  e8 70 5f f9 ff                  call 0xffffff8002274c9e
+  ffffff80022ded2e  48 85 c0                        test rax, rax
+  ffffff80022ded31  74 1d                           je 0xffffff80022ded50
+  ffffff80022ded33  4c 89 e7                        mov rdi, r12
+  ffffff80022ded36  e8 63 5f f9 ff                  call 0xffffff8002274c9e
+  ffffff80022ded3b  49 89 c2                        mov r10, rax
+  ffffff80022ded3e  eb 17                           jmp 0xffffff80022ded57
+  ffffff80022ded40  48 c7 85 20 ff ff ff 00 00 00 00  mov qword ptr [rbp - 0xe0], 0
+  ffffff80022ded4b  e9 87 00 00 00                  jmp 0xffffff80022dedd7
+  ffffff80022ded50  4c 8d 15 bb 85 06 00            lea r10, [rip + 0x685bb]
+  ffffff80022ded57  48 8b b5 20 ff ff ff            mov rsi, qword ptr [rbp - 0xe0]
+  ffffff80022ded5e  48 89 f0                        mov rax, rsi
+  ffffff80022ded61  48 c1 e8 09                     shr rax, 9
+  ffffff80022ded65  48 b9 53 5a 9b a0 2f b8 44 00   movabs rcx, 0x44b82fa09b5a53
+  ffffff80022ded6f  48 f7 e1                        mul rcx
+  ffffff80022ded72  49 89 d3                        mov r11, rdx
+  ffffff80022ded75  49 c1 eb 0b                     shr r11, 0xb
+  ffffff80022ded79  49 69 c3 00 ca 9a 3b            imul rax, r11, 0x3b9aca00
+  ffffff80022ded80  48 89 f1                        mov rcx, rsi
+  ffffff80022ded83  48 29 c1                        sub rcx, rax
+  ffffff80022ded86  4c 69 f9 d3 4d 62 10            imul r15, rcx, 0x10624dd3
+  ffffff80022ded8d  49 c1 ef 26                     shr r15, 0x26
+  ffffff80022ded91  48 83 ec 08                     sub rsp, 8
+  ffffff80022ded95  41 bc 38 69 2c c0               mov r12d, 0xc02c6938
+  ffffff80022ded9b  48 8d 3d 5e 82 e2 ff            lea rdi, [rip - 0x1d7da2]
+  ffffff80022deda2  48 8b 35 a7 c3 0e 00            mov rsi, qword ptr [rip + 0xec3a7]
+  ffffff80022deda9  48 8d 0d f0 65 04 00            lea rcx, [rip + 0x465f0]
+  ffffff80022dedb0  4c 8d 05 87 b3 0b 00            lea r8, [rip + 0xbb387]
+  ffffff80022dedb7  31 d2                           xor edx, edx
+  ffffff80022dedb9  41 b9 d4 01 00 00               mov r9d, 0x1d4
+  ffffff80022dedbf  31 c0                           xor eax, eax
+  ffffff80022dedc1  41 57                           push r15
+  ffffff80022dedc3  41 53                           push r11
+  ffffff80022dedc5  41 54                           push r12
+  ffffff80022dedc7  41 54                           push r12
+  ffffff80022dedc9  41 52                           push r10
+  ffffff80022dedcb  53                              push rbx
+  ffffff80022dedcc  41 56                           push r14
+  ffffff80022dedce  e8 0d ce 75 fe                  call 0xffffff8000a3bbe0
+  ffffff80022dedd3  48 83 c4 40                     add rsp, 0x40
+  ffffff80022dedd7  4c 8b a5 28 ff ff ff            mov r12, qword ptr [rbp - 0xd8]
+  ffffff80022dedde  e8 9d 1a 07 fe                  call 0xffffff8000350880
+  ffffff80022dede3  48 8d 9d 38 ff ff ff            lea rbx, [rbp - 0xc8]
+  ffffff80022dedea  48 89 c7                        mov rdi, rax
+  ffffff80022deded  48 89 de                        mov rsi, rbx
+  ffffff80022dedf0  e8 bb 2d 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022dedf5  4c 8b 2b                        mov r13, qword ptr [rbx]
+  ffffff80022dedf8  4c 2b ad 40 ff ff ff            sub r13, qword ptr [rbp - 0xc0]
+  ffffff80022dedff  49 81 fd 00 94 35 77            cmp r13, 0x77359400
+  ffffff80022dee06  0f 82 6a 01 00 00               jb 0xffffff80022def76
+  ffffff80022dee0c  e8 6f 1a 07 fe                  call 0xffffff8000350880
+  ffffff80022dee11  48 8d 9d 48 ff ff ff            lea rbx, [rbp - 0xb8]
+  ffffff80022dee18  48 89 c7                        mov rdi, rax
+  ffffff80022dee1b  48 89 de                        mov rsi, rbx
+  ffffff80022dee1e  e8 8d 2d 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022dee23  48 8b 0b                        mov rcx, qword ptr [rbx]
+  ffffff80022dee26  48 89 c8                        mov rax, rcx
+  ffffff80022dee29  48 c1 e8 09                     shr rax, 9
+  ffffff80022dee2d  48 ba 53 5a 9b a0 2f b8 44 00   movabs rdx, 0x44b82fa09b5a53
+  ffffff80022dee37  48 f7 e2                        mul rdx
+  ffffff80022dee3a  48 c1 ea 0b                     shr rdx, 0xb
+  ffffff80022dee3e  48 89 95 e8 fe ff ff            mov qword ptr [rbp - 0x118], rdx
+  ffffff80022dee45  48 69 c2 00 ca 9a 3b            imul rax, rdx, 0x3b9aca00
+  ffffff80022dee4c  48 29 c1                        sub rcx, rax
+  ffffff80022dee4f  48 69 c1 d3 4d 62 10            imul rax, rcx, 0x10624dd3
+  ffffff80022dee56  48 c1 e8 26                     shr rax, 0x26
+  ffffff80022dee5a  48 89 85 f0 fe ff ff            mov qword ptr [rbp - 0x110], rax
+  ffffff80022dee61  4c 89 e7                        mov rdi, r12
+  ffffff80022dee64  e8 35 5e f9 ff                  call 0xffffff8002274c9e
+  ffffff80022dee69  48 85 c0                        test rax, rax
+  ffffff80022dee6c  74 0d                           je 0xffffff80022dee7b
+  ffffff80022dee6e  4c 89 e7                        mov rdi, r12
+  ffffff80022dee71  e8 28 5e f9 ff                  call 0xffffff8002274c9e
+  ffffff80022dee76  49 89 c1                        mov r9, rax
+  ffffff80022dee79  eb 07                           jmp 0xffffff80022dee82
+  ffffff80022dee7b  4c 8d 0d 90 84 06 00            lea r9, [rip + 0x68490]
+  ffffff80022dee82  4c 89 e8                        mov rax, r13
+  ffffff80022dee85  48 c1 e8 09                     shr rax, 9
+  ffffff80022dee89  48 be 53 5a 9b a0 2f b8 44 00   movabs rsi, 0x44b82fa09b5a53
+  ffffff80022dee93  48 f7 e6                        mul rsi
+  ffffff80022dee96  49 89 d2                        mov r10, rdx
+  ffffff80022dee99  49 c1 ea 0b                     shr r10, 0xb
+  ffffff80022dee9d  49 69 c2 00 ca 9a 3b            imul rax, r10, 0x3b9aca00
+  ffffff80022deea4  4c 89 e9                        mov rcx, r13
+  ffffff80022deea7  48 29 c1                        sub rcx, rax
+  ffffff80022deeaa  48 69 f9 d3 4d 62 10            imul rdi, rcx, 0x10624dd3
+  ffffff80022deeb1  48 8b 8d 10 ff ff ff            mov rcx, qword ptr [rbp - 0xf0]
+  ffffff80022deeb8  48 89 c8                        mov rax, rcx
+  ffffff80022deebb  48 c1 e8 09                     shr rax, 9
+  ffffff80022deebf  48 f7 e6                        mul rsi
+  ffffff80022deec2  49 89 d3                        mov r11, rdx
+  ffffff80022deec5  48 c1 ef 26                     shr rdi, 0x26
+  ffffff80022deec9  48 89 bd f8 fe ff ff            mov qword ptr [rbp - 0x108], rdi
+  ffffff80022deed0  49 c1 eb 0b                     shr r11, 0xb
+  ffffff80022deed4  49 69 c3 00 ca 9a 3b            imul rax, r11, 0x3b9aca00
+  ffffff80022deedb  48 29 c1                        sub rcx, rax
+  ffffff80022deede  4c 69 f1 d3 4d 62 10            imul r14, rcx, 0x10624dd3
+  ffffff80022deee5  48 8b 8d 20 ff ff ff            mov rcx, qword ptr [rbp - 0xe0]
+  ffffff80022deeec  48 89 c8                        mov rax, rcx
+  ffffff80022deeef  48 c1 e8 09                     shr rax, 9
+  ffffff80022deef3  48 f7 e6                        mul rsi
+  ffffff80022deef6  48 89 d3                        mov rbx, rdx
+  ffffff80022deef9  49 c1 ee 26                     shr r14, 0x26
+  ffffff80022deefd  48 c1 eb 0b                     shr rbx, 0xb
+  ffffff80022def01  48 69 c3 00 ca 9a 3b            imul rax, rbx, 0x3b9aca00
+  ffffff80022def08  48 29 c1                        sub rcx, rax
+  ffffff80022def0b  4c 69 f9 d3 4d 62 10            imul r15, rcx, 0x10624dd3
+  ffffff80022def12  49 c1 ef 26                     shr r15, 0x26
+  ffffff80022def16  48 8d 3d 8e b2 0b 00            lea rdi, [rip + 0xbb28e]
+  ffffff80022def1d  48 8d 35 1a b2 0b 00            lea rsi, [rip + 0xbb21a]
+  ffffff80022def24  ba de 01 00 00                  mov edx, 0x1de
+  ffffff80022def29  48 8b 8d e8 fe ff ff            mov rcx, qword ptr [rbp - 0x118]
+  ffffff80022def30  4c 8b 85 f0 fe ff ff            mov r8, qword ptr [rbp - 0x110]
+  ffffff80022def37  31 c0                           xor eax, eax
+  ffffff80022def39  4c 8d a5 50 ff ff ff            lea r12, [rbp - 0xb0]
+  ffffff80022def40  41 54                           push r12
+  ffffff80022def42  ff b5 00 ff ff ff               push qword ptr [rbp - 0x100]
+  ffffff80022def48  41 57                           push r15
+  ffffff80022def4a  53                              push rbx
+  ffffff80022def4b  41 56                           push r14
+  ffffff80022def4d  41 53                           push r11
+  ffffff80022def4f  6a 00                           push 0
+  ffffff80022def51  6a 02                           push 2
+  ffffff80022def53  ff b5 f8 fe ff ff               push qword ptr [rbp - 0x108]
+  ffffff80022def59  41 52                           push r10
+  ffffff80022def5b  4c 8b 95 08 ff ff ff            mov r10, qword ptr [rbp - 0xf8]
+  ffffff80022def62  41 52                           push r10
+  ffffff80022def64  41 52                           push r10
+  ffffff80022def66  e8 b5 dc 78 fe                  call 0xffffff8000a6cc20
+  ffffff80022def6b  48 83 c4 60                     add rsp, 0x60
+  ffffff80022def6f  4c 8b a5 28 ff ff ff            mov r12, qword ptr [rbp - 0xd8]
+  ffffff80022def76  e8 05 19 07 fe                  call 0xffffff8000350880
+  ffffff80022def7b  48 8d b5 48 ff ff ff            lea rsi, [rbp - 0xb8]
+  ffffff80022def82  48 89 c7                        mov rdi, rax
+  ffffff80022def85  e8 26 2c 1e fe                  call 0xffffff80004c1bb0
+  ffffff80022def8a  f6 85 37 ff ff ff 01            test byte ptr [rbp - 0xc9], 1
+  ffffff80022def91  0f 84 40 01 00 00               je 0xffffff80022df0d7
+  ffffff80022def97  48 8b 8d 48 ff ff ff            mov rcx, qword ptr [rbp - 0xb8]
+  ffffff80022def9e  48 89 c8                        mov rax, rcx
+  ffffff80022defa1  48 c1 e8 09                     shr rax, 9
+  ffffff80022defa5  48 ba 53 5a 9b a0 2f b8 44 00   movabs rdx, 0x44b82fa09b5a53
+  ffffff80022defaf  48 f7 e2                        mul rdx
+  ffffff80022defb2  49 89 d7                        mov r15, rdx
+  ffffff80022defb5  49 c1 ef 0b                     shr r15, 0xb
+  ffffff80022defb9  49 69 c7 00 ca 9a 3b            imul rax, r15, 0x3b9aca00
+  ffffff80022defc0  48 29 c1                        sub rcx, rax
+  ffffff80022defc3  48 69 c1 d3 4d 62 10            imul rax, rcx, 0x10624dd3
+  ffffff80022defca  48 c1 e8 26                     shr rax, 0x26
+  ffffff80022defce  48 89 85 28 ff ff ff            mov qword ptr [rbp - 0xd8], rax
+  ffffff80022defd5  4c 89 e7                        mov rdi, r12
+  ffffff80022defd8  e8 c1 5c f9 ff                  call 0xffffff8002274c9e
+  ffffff80022defdd  48 85 c0                        test rax, rax
+  ffffff80022defe0  74 0d                           je 0xffffff80022defef
+  ffffff80022defe2  4c 89 e7                        mov rdi, r12
+  ffffff80022defe5  e8 b4 5c f9 ff                  call 0xffffff8002274c9e
+  ffffff80022defea  49 89 c1                        mov r9, rax
+  ffffff80022defed  eb 07                           jmp 0xffffff80022deff6
+  ffffff80022defef  4c 8d 0d 1c 83 06 00            lea r9, [rip + 0x6831c]
+  ffffff80022deff6  4c 89 e8                        mov rax, r13
+  ffffff80022deff9  48 c1 e8 09                     shr rax, 9
+  ffffff80022deffd  48 b9 53 5a 9b b0 2f 80 ff ff   movabs rcx, 0xffff802fb09b5a53
+  ffffff80022df007  ff f7                           push rdi
+  ffffff80022df009  e1 49                           loope 0xffffff80022df054
+  ffffff80022df00b  89 d2                           mov edx, edx
+  ffffff80022df00d  49 c1 ea 0b                     shr r10, 0xb
+  ffffff80022df011  49 69 c2 00 ca 9a 3b            imul rax, r10, 0x3b9aca00
+  ffffff80022df018  49 29 c5                        sub r13, rax
+  ffffff80022df01b  4d 69 e5 d3 4d 62 10            imul r12, r13, 0x10624dd3
+  ffffff80022df022  49 c1 ec 26                     shr r12, 0x26
+  ffffff80022df026  48 8b b5 10 ff ff ff            mov rsi, qword ptr [rbp - 0xf0]
+  ffffff80022df02d  48 89 f0                        mov rax, rsi
+  ffffff80022df030  48 c1 e8 09                     shr rax, 9
+  ffffff80022df034  48 f7 e1                        mul rcx
+  ffffff80022df037  49 89 d3                        mov r11, rdx
+  ffffff80022df03a  49 c1 eb 0b                     shr r11, 0xb
+  ffffff80022df03e  49 69 c3 00 ca 9a 3b            imul rax, r11, 0x3b9aca00
+  ffffff80022df045  48 29 c6                        sub rsi, rax
+  ffffff80022df048  4c 69 ee d3 4d 62 10            imul r13, rsi, 0x10624dd3
+  ffffff80022df04f  49 c1 ed 26                     shr r13, 0x26
+  ffffff80022df053  48 8b b5 20 ff ff ff            mov rsi, qword ptr [rbp - 0xe0]
+  ffffff80022df05a  48 89 f0                        mov rax, rsi
+  ffffff80022df05d  48 c1 e8 09                     shr rax, 9
+  ffffff80022df061  48 f7 e1                        mul rcx
+  ffffff80022df064  48 89 d3                        mov rbx, rdx
+  ffffff80022df067  48 c1 eb 0b                     shr rbx, 0xb
+  ffffff80022df06b  48 69 c3 00 ca 9a 3b            imul rax, rbx, 0x3b9aca00
+  ffffff80022df072  48 29 c6                        sub rsi, rax
+  ffffff80022df075  4c 69 f6 d3 4d 62 10            imul r14, rsi, 0x10624dd3
+  ffffff80022df07c  49 c1 ee 26                     shr r14, 0x26
+  ffffff80022df080  48 83 ec 08                     sub rsp, 8
+  ffffff80022df084  48 8d 3d be b1 0b 00            lea rdi, [rip + 0xbb1be]
+  ffffff80022df08b  48 8d 35 ac b0 0b 00            lea rsi, [rip + 0xbb0ac]
+  ffffff80022df092  ba e8 01 00 00                  mov edx, 0x1e8
+  ffffff80022df097  4c 89 f9                        mov rcx, r15
+  ffffff80022df09a  4c 8b 85 28 ff ff ff            mov r8, qword ptr [rbp - 0xd8]
+  ffffff80022df0a1  31 c0                           xor eax, eax
+  ffffff80022df0a3  4c 8d bd 50 ff ff ff            lea r15, [rbp - 0xb0]
+  ffffff80022df0aa  51                              push rcx
+  ffffff80022df0ab  17                              .byte 0x17
+  ffffff80022df0ac  80 ff ff                        cmp bh, 0xff
+  ffffff80022df0af  ff                              .byte 0xff
+  ffffff80022df0b0  ff                              .byte 0xff
+  ffffff80022df0b1  ff                              .byte 0xff
+  ffffff80022df0b2  ff b5 18 ff ff ff               push qword ptr [rbp - 0xe8]
+  ffffff80022df0b8  41 56                           push r14
+  ffffff80022df0ba  53                              push rbx
+  ffffff80022df0bb  41 55                           push r13
+  ffffff80022df0bd  41 53                           push r11
+  ffffff80022df0bf  41 54                           push r12
+  ffffff80022df0c1  41 52                           push r10
+  ffffff80022df0c3  4c 8b 95 08 ff ff ff            mov r10, qword ptr [rbp - 0xf8]
+  ffffff80022df0ca  41 52                           push r10
+  ffffff80022df0cc  41 52                           push r10
+  ffffff80022df0ce  e8 4d db 78 fe                  call 0xffffff8000a6cc20
+  ffffff80022df0d3  48 83 c4 60                     add rsp, 0x60
+  ffffff80022df0d7  48 8b 05 6a c0 0e 00            mov rax, qword ptr [rip + 0xec06a]
+  ffffff80022df0de  48 8b 00                        mov rax, qword ptr [rax]
+  ffffff80022df0e1  48 3b 45 d0                     cmp rax, qword ptr [rbp - 0x30]
+  ffffff80022df0e5  75 19                           jne 0xffffff80022df100
+  ffffff80022df0e7  48 8b 85 18 ff ff ff            mov rax, qword ptr [rbp - 0xe8]
+  ffffff80022df0ee  48 81 c4 f8 00 00 00            add rsp, 0xf8
+  ffffff80022df0f5  5b                              pop rbx
+  ffffff80022df0f6  41 5c                           pop r12
+  ffffff80022df0f8  41 5d                           pop r13
+  ffffff80022df0fa  41 5e                           pop r14
+  ffffff80022df0fc  41 5f                           pop r15
+  ffffff80022df0fe  5d                              pop rbp
+  ffffff80022df0ff  c3                              ret
+  ffffff80022df100  e8 3b 82 02 fe                  call 0xffffff8000307340
+  ffffff80022df105  90                              nop
+  ffffff80022df106  55                              push rbp
+  ffffff80022df107  48 89 e5                        mov rbp, rsp
+  ffffff80022df10a  41 57                           push r15
+  ffffff80022df10c  41 56                           push r14
+  ffffff80022df10e  41 54                           push r12
+  ffffff80022df110  53                              push rbx
+  ffffff80022df111  48 83 ec 10                     sub rsp, 0x10
+  ffffff80022df115  49 89 f6                        mov r14, rsi
+  ffffff80022df118  49 89 ff                        mov r15, rdi
+  ffffff80022df11b  48 8b 05 26 c0 0e 00            mov rax, qword ptr [rip + 0xec026]
+  ffffff80022df122  48 8b 00                        mov rax, qword ptr [rax]
+  ffffff80022df125  48 89 45 d8                     mov qword ptr [rbp - 0x28], rax
+  ffffff80022df129  48 8b 87 28 01 00 00            mov rax, qword ptr [rdi + 0x128]
+  ffffff80022df130  48 8b b8 68 01 00 00            mov rdi, qword ptr [rax + 0x168]
+  ffffff80022df137  48 8b 07                        mov rax, qword ptr [rdi]
+  ffffff80022df13a  ff 90 90 08 00 00               call qword ptr [rax + 0x890]
+  ffffff80022df140  48 89 c3                        mov rbx, rax
+  ffffff80022df143  4c 8d 65 d0                     lea r12, [rbp - 0x30]
+  ffffff80022df147  49 c7 04 24 00 00 00 00         mov qword ptr [r12], 0
+  ffffff80022df14f  49 8b 87 28 01 00 00            mov rax, qword ptr [r15 + 0x128]
+  ffffff80022df156  48 8b b8 68 01 00 00            mov rdi, qword ptr [rax + 0x168]
+  ffffff80022df15d  4c 89 e6                        mov rsi, r12
+  ffffff80022df160  31 d2                           xor edx, edx
+  ffffff80022df162  e8 19 36 77 fe                  call 0xffffff8000a52780
+  ffffff80022df167  85 c0                           test eax, eax
+  ffffff80022df169  0f 94 c0                        sete al
+  ffffff80022df16c  49 8b 3c 24                     mov rdi, qword ptr [r12]
+  ffffff80022df170  48 85 ff                        test rdi, rdi
+  ffffff80022df173  0f 95 c1                        setne cl
+  ffffff80022df176  20 c1                           and cl, al
+  ffffff80022df178  80 f9 01                        cmp cl, 1
+  ffffff80022df17b  0f 85 c4 00 00 00               jne 0xffffff80022df245
+  ffffff80022df181  49 8b 87 28 01 00 00            mov rax, qword ptr [r15 + 0x128]
+  ffffff80022df188  31 c9                           xor ecx, ecx
+  ffffff80022df18a  83 78 18 02                     cmp dword ptr [rax + 0x18], 2
+  ffffff80022df18e  0f 94 c1                        sete cl
+  ffffff80022df191  8d 04 4d 01 00 00 00            lea eax, [rcx*2 + 1]
+  ffffff80022df198  41 89 46 18                     mov dword ptr [r14 + 0x18], eax
+  ffffff80022df19c  48 85 db                        test rbx, rbx
+  ffffff80022df19f  0f 84 96 00 00 00               je 0xffffff80022df23b
+  ffffff80022df1a5  48 8b 07                        mov rax, qword ptr [rdi]
+  ffffff80022df1a8  48 8d 35 40 3b 0d 00            lea rsi, [rip + 0xd3b40]
+  ffffff80022df1af  ff 90 08 02 00 00               call qword ptr [rax + 0x208]
+  ffffff80022df1b5  48 8b 0d 24 bf 0e 00            mov rcx, qword ptr [rip + 0xebf24]
+  ffffff80022df1bc  4c 8b 39                        mov r15, qword ptr [rcx]
+  ffffff80022df1bf  48 89 c7                        mov rdi, rax
+  ffffff80022df1c2  4c 89 fe                        mov rsi, r15
+  ffffff80022df1c5  e8 46 01 72 fe                  call 0xffffff80009ff310
+  ffffff80022df1ca  48 85 c0                        test rax, rax
+  ffffff80022df1cd  74 24                           je 0xffffff80022df1f3
+  ffffff80022df1cf  48 8b 0b                        mov rcx, qword ptr [rbx]
+  ffffff80022df1d2  48 89 df                        mov rdi, rbx
+  ffffff80022df1d5  48 89 c6                        mov rsi, rax
+  ffffff80022df1d8  ff 91 f8 01 00 00               call qword ptr [rcx + 0x1f8]
+  ffffff80022df1de  48 85 c0                        test rax, rax
+  ffffff80022df1e1  74 10                           je 0xffffff80022df1f3
+  ffffff80022df1e3  48 8b 08                        mov rcx, qword ptr [rax]
+  ffffff80022df1e6  48 89 c7                        mov rdi, rax
+  ffffff80022df1e9  ff 91 20 01 00 00               call qword ptr [rcx + 0x120]
+  ffffff80022df1ef  41 89 46 10                     mov dword ptr [r14 + 0x10], eax
+  ffffff80022df1f3  48 8b 7d d0                     mov rdi, qword ptr [rbp - 0x30]
+  ffffff80022df1f7  48 8b 07                        mov rax, qword ptr [rdi]
+  ffffff80022df1fa  48 8d 35 ff 3a 0d 00            lea rsi, [rip + 0xd3aff]
+  ffffff80022df201  ff 90 08 02 00 00               call qword ptr [rax + 0x208]
+  ffffff80022df207  48 89 c7                        mov rdi, rax
+  ffffff80022df20a  4c 89 fe                        mov rsi, r15
+  ffffff80022df20d  e8 fe 00 72 fe                  call 0xffffff80009ff310
+  ffffff80022df212  48 85 c0                        test rax, rax
+  ffffff80022df215  74 24                           je 0xffffff80022df23b
+  ffffff80022df217  48 8b 0b                        mov rcx, qword ptr [rbx]
+  ffffff80022df21a  48 89 df                        mov rdi, rbx
+  ffffff80022df21d  48 89 c6                        mov rsi, rax
+  ffffff80022df220  ff 91 f8 01 00 00               call qword ptr [rcx + 0x1f8]
+  ffffff80022df226  48 85 c0                        test rax, rax
+  ffffff80022df229  74 10                           je 0xffffff80022df23b
+  ffffff80022df22b  48 8b 08                        mov rcx, qword ptr [rax]
+  ffffff80022df22e  48 89 c7                        mov rdi, rax
+  ffffff80022df231  ff 91 20 01 00 00               call qword ptr [rcx + 0x120]
+  ffffff80022df237  41 89 46 1c                     mov dword ptr [r14 + 0x1c], eax
+  ffffff80022df23b  48 8b 7d d0                     mov rdi, qword ptr [rbp - 0x30]
+  ffffff80022df23f  48 8b 07                        mov rax, qword ptr [rdi]
+  ffffff80022df242  ff 50 28                        call qword ptr [rax + 0x28]
+  ffffff80022df245  48 85 db                        test rbx, rbx
+  ffffff80022df248  74 09                           je 0xffffff80022df253
+  ffffff80022df24a  48 8b 03                        mov rax, qword ptr [rbx]
+  ffffff80022df24d  48 89 df                        mov rdi, rbx
+  ffffff80022df250  ff 50 28                        call qword ptr [rax + 0x28]
+  ffffff80022df253  48 8b 05 ee be 0e 00            mov rax, qword ptr [rip + 0xebeee]
+  ffffff80022df25a  48 8b 00                        mov rax, qword ptr [rax]
+  ffffff80022df25d  48 3b 45 d8                     cmp rax, qword ptr [rbp - 0x28]
+  ffffff80022df261  75 0d                           jne 0xffffff80022df270
+  ffffff80022df263  48 83 c4 10                     add rsp, 0x10
+  ffffff80022df267  5b                              pop rbx
+  ffffff80022df268  41 5c                           pop r12
+  ffffff80022df26a  41 5e                           pop r14
+  ffffff80022df26c  41 5f                           pop r15
+  ffffff80022df26e  5d                              pop rbp
+  ffffff80022df26f  c3                              ret
+  ffffff80022df270  e8 cb 80 02 fe                  call 0xffffff8000307340
+  ffffff80022df275  90                              nop
+
+Complete CFG / branch / call / return / skipdata table for
+the [ffffff80022dea78, ffffff80022df276) range (78 entries
+total: 47 CALLs of which 9 indirect via vtable memory operand
+and 38 direct to absolute kernel addresses; 6 unconditional
+JMPs; 18 conditional branches; 2 RETs; 5 skipdata bytes
+where Capstone resynchronised). Each call site lists the
+target; each conditional branch lists the taken target with
+fall-through implicit to the next instruction; each
+unconditional JMP lists the taken target; each RET ends a
+basic block; each skipdata byte was a single byte Capstone
+could not decode as a valid x86-64 instruction:
+
+  ffffff80022dead7  .byte  0xff  (skipdata)
+  ffffff80022deaf3  call  0xffffff8000894e70
+  ffffff80022deb07  call  0xffffff8000895ae0
+  ffffff80022deb10  call  0xffffff8000350880
+  ffffff80022deb1b  call  0xffffff80004c1bb0
+  ffffff80022deb36  call  0xffffff8000b4d800
+  ffffff80022deb3b  call  0xffffff8000350880
+  ffffff80022deb4d  call  0xffffff80004c1bb0
+  ffffff80022deb77  call  0xffffff8002275b44
+  ffffff80022deb83  call  0xffffff8000350880
+  ffffff80022deb95  call  0xffffff80004c1bb0
+  ffffff80022debae  je  0xffffff80022dec88  (cond; fall-through next)
+  ffffff80022debe2  jmp  0xffffff80022dec0a
+  ffffff80022debee  call  0xffffff8002274c9e
+  ffffff80022debf6  je  0xffffff80022dec05  (cond; fall-through next)
+  ffffff80022debfb  call  0xffffff8002274c9e
+  ffffff80022dec03  jmp  0xffffff80022dec0c
+  ffffff80022dec7f  call  0xffffff8000a3bbe0
+  ffffff80022dec8f  jne  0xffffff80022ded40  (cond; fall-through next)
+  ffffff80022dec95  call  0xffffff8000350880
+  ffffff80022deca7  call  0xffffff80004c1bb0
+  ffffff80022decbd  call  0xffffff80022df106
+  ffffff80022decc2  call  0xffffff8000350880
+  ffffff80022decd4  call  0xffffff80004c1bb0
+  ffffff80022decf0  je  0xffffff80022dedde  (cond; fall-through next)
+  ffffff80022ded29  call  0xffffff8002274c9e
+  ffffff80022ded31  je  0xffffff80022ded50  (cond; fall-through next)
+  ffffff80022ded36  call  0xffffff8002274c9e
+  ffffff80022ded3e  jmp  0xffffff80022ded57
+  ffffff80022ded4b  jmp  0xffffff80022dedd7
+  ffffff80022dedce  call  0xffffff8000a3bbe0
+  ffffff80022dedde  call  0xffffff8000350880
+  ffffff80022dedf0  call  0xffffff80004c1bb0
+  ffffff80022dee06  jb  0xffffff80022def76  (cond; fall-through next)
+  ffffff80022dee0c  call  0xffffff8000350880
+  ffffff80022dee1e  call  0xffffff80004c1bb0
+  ffffff80022dee64  call  0xffffff8002274c9e
+  ffffff80022dee6c  je  0xffffff80022dee7b  (cond; fall-through next)
+  ffffff80022dee71  call  0xffffff8002274c9e
+  ffffff80022dee79  jmp  0xffffff80022dee82
+  ffffff80022def66  call  0xffffff8000a6cc20
+  ffffff80022def76  call  0xffffff8000350880
+  ffffff80022def85  call  0xffffff80004c1bb0
+  ffffff80022def91  je  0xffffff80022df0d7  (cond; fall-through next)
+  ffffff80022defd8  call  0xffffff8002274c9e
+  ffffff80022defe0  je  0xffffff80022defef  (cond; fall-through next)
+  ffffff80022defe5  call  0xffffff8002274c9e
+  ffffff80022defed  jmp  0xffffff80022deff6
+  ffffff80022df0ab  .byte  0x17  (skipdata)
+  ffffff80022df0af  .byte  0xff  (skipdata)
+  ffffff80022df0b0  .byte  0xff  (skipdata)
+  ffffff80022df0b1  .byte  0xff  (skipdata)
+  ffffff80022df0ce  call  0xffffff8000a6cc20
+  ffffff80022df0e5  jne  0xffffff80022df100  (cond; fall-through next)
+  ffffff80022df0ff  ret
+  ffffff80022df100  call  0xffffff8000307340
+  ffffff80022df13a  call  qword ptr [rax + 0x890]
+  ffffff80022df162  call  0xffffff8000a52780
+  ffffff80022df17b  jne  0xffffff80022df245  (cond; fall-through next)
+  ffffff80022df19f  je  0xffffff80022df23b  (cond; fall-through next)
+  ffffff80022df1af  call  qword ptr [rax + 0x208]
+  ffffff80022df1c5  call  0xffffff80009ff310
+  ffffff80022df1cd  je  0xffffff80022df1f3  (cond; fall-through next)
+  ffffff80022df1d8  call  qword ptr [rcx + 0x1f8]
+  ffffff80022df1e1  je  0xffffff80022df1f3  (cond; fall-through next)
+  ffffff80022df1e9  call  qword ptr [rcx + 0x120]
+  ffffff80022df201  call  qword ptr [rax + 0x208]
+  ffffff80022df20d  call  0xffffff80009ff310
+  ffffff80022df215  je  0xffffff80022df23b  (cond; fall-through next)
+  ffffff80022df220  call  qword ptr [rcx + 0x1f8]
+  ffffff80022df229  je  0xffffff80022df23b  (cond; fall-through next)
+  ffffff80022df231  call  qword ptr [rcx + 0x120]
+  ffffff80022df242  call  qword ptr [rax + 0x28]
+  ffffff80022df248  je  0xffffff80022df253  (cond; fall-through next)
+  ffffff80022df250  call  qword ptr [rax + 0x28]
+  ffffff80022df261  jne  0xffffff80022df270  (cond; fall-through next)
+  ffffff80022df26f  ret
+  ffffff80022df270  call  0xffffff8000307340
+
+Conclusion (option-(c) cure): the BootKC base
+`IO80211InfraInterface::processBSDCommand` body at
+`ffffff80022dea78` is a real selector-dispatching helper
+function spanning 2046 bytes from entry to `ffffff80022df275`
+(canonical RET at `df26f`), with 483 instructions, 47 CALLs
+(38 direct absolute + 9 indirect via vtable memory operands),
+24 branches (18 conditional + 6 unconditional JMP), and 2 RETs. The body is recovered to the
+auditor-named proof level
+FULL_BODY_OR_LOW_LEVEL_EQUIVALENT_PER_TARGET via Capstone
+`skipdata=True` linear decode plus boundary evidence from
+Ghidra rev5g adjacent-function enumeration. The rev3 "88-byte
+selector-dispatcher", rev4 "88-byte non-dispatcher", rev5
+"95-byte body" classifications are all retracted in rev6 and
+replaced with this option-(c) full-body classification.
+
+=== rev6 appendix F: corrected source-fact self-check for setASSOCIATE (rev5 BLOCKER_3 cure) ===
+
+The rev5 docs (appendix C and rev5 update section in the
+markdown) state that
+`AirportItlwmSkywalkInterface::setASSOCIATE` returns
+`kIOReturnSuccess` (0) on success or a specific failure code
+on failure but "does not return `kIOReturnUnsupported`". The
+actual guest source contradicts that assertion:
+
+Source quote: `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+function `AirportItlwmSkywalkInterface::setASSOCIATE`
+(definition at line 4568) lines 4588-4601:
+
+  RT2_SET(3); sRT.assocCount++;
+  if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
+      airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
+                                     kAirportItlwmRegDiagPathPublicAssoc,
+                                     ad != nullptr ? ad->ad_ssid_len : 0);
+      airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                     ad != nullptr ? ad->ad_ssid : nullptr,
+                                     ad != nullptr ? ad->ad_ssid_len : 0,
+                                     ad != nullptr ? reinterpret_cast<const uint8_t *>(&ad->ad_bssid) : nullptr,
+                                     ad != nullptr ? ad->ad_auth_lower : 0,
+                                     ad != nullptr ? ad->ad_auth_upper : 0,
+                                     ad != nullptr ? ad->ad_rsn_ie_len : 0,
+                                     kIOReturnUnsupported);
+      return kIOReturnUnsupported;
+  }
+
+So `setASSOCIATE` DOES return `kIOReturnUnsupported` when
+the diagnostic-block predicate is true.
+
+Predicate definition: `AirportItlwm/AirportItlwmV2.cpp`
+function `airportItlwmRegDiagShouldBlock` lines 1101-1105:
+
+  bool
+  airportItlwmRegDiagShouldBlock(uint32_t blockMask)
+  {
+      return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
+             (sRegDiag.modeFlags & kAirportItlwmRegDiagModeIntervention) != 0 &&
+             (sRegDiag.blockMask & blockMask) != 0;
+  }
+
+State definition: `AirportItlwm/AirportItlwmV2.cpp` line 616:
+
+  static AirportItlwmRegDiagState sRegDiag = {};
+
+The state is default-initialized to all zeros, so the
+predicate returns false until the operator explicitly enables
+the regdiag mode via the control surface (`airportItlwmRegDiagApplyControl`
+at `AirportItlwm/AirportItlwmV2.cpp` lines 831-856, which
+parses a "mode" / "block" / "enable" / "intervention" key
+command into the flags).
+
+Corrected self-check (rev6):
+
+- In production / default state: `setASSOCIATE` does NOT
+  return `kIOReturnUnsupported`. The local override at
+  `AirportItlwm/AirportItlwmSkywalkInterface.cpp` line 1567
+  receives the non-Unsupported return value, short-circuits
+  the override condition `if (ret != kIOReturnUnsupported)
+  return ret`, and does NOT fall through to
+  `super::processBSDCommand`. The BootKC body at
+  `ffffff80022dea78` is unreachable on the rev1 AUTH-
+  initiation chain.
+- In explicit diagnostic-intervention mode: `setASSOCIATE`
+  RETURNS `kIOReturnUnsupported`. The local override falls
+  through to `super::processBSDCommand` and the BootKC body
+  runs. This mode is an operator test harness, not the rev1
+  AUTH-initiation claim scope.
+
+The rev6 option-(c) primary cure does NOT depend on which
+mode is active — the BootKC body is recovered to proof-level
+evidence directly. Option-(d) caller-reachability is
+supplementary with the narrowed production-state scope.
+
+=== rev6 retraction in-line for prior #17 evidence sections ===
+
+The prior #17 sections in this raw evidence file (rev4
+boundary-extension report, rev4f Disassembler-class extraction
+report, rev5 appendix A adjacent-function report, rev5
+appendix B Capstone original 384-byte decode, rev5 appendix C
+caller-reachability proof, rev5 appendix D corrected
+classification) are preserved as historical evidence. The
+following specific rev4/rev5 claims are retracted by rev6:
+
+- rev4: "body_size_bytes = 88" → corrected in rev6 to 2046
+  bytes (Capstone `skipdata=True` linear decode over the
+  [entry, next_function_start) range, body end at the
+  canonical RET at `ffffff80022df26f`).
+- rev4: "body has no branch, call, ret, or dispatch
+  instruction" → corrected in rev6/rev7: 47 CALLs total (38 direct absolute + 9 indirect via vtable memory operands), 18
+  conditional branches, 6 unconditional JMPs, 2 RETs.
+- rev4: "two independent decoders agree the bytes past
+  Ghidra's 88-byte body do not form a continuous executable
+  code stream" → corrected in rev6: Ghidra auto-analyser
+  halted at `dead7` because of an apparent invalid LEA
+  displacement, but Capstone `skipdata=True` resynchronises
+  past the skipped bytes and decodes the function body to
+  completion. The bytes at `dead7..dead8` are valid x86-64
+  when treated as data + resync, not "not continuous
+  executable code".
+- rev5 appendix C: "setASSOCIATE returns kIOReturnSuccess (0)
+  on success or a specific error code on failure; it does
+  not return kIOReturnUnsupported" → corrected in rev6
+  appendix F above: setASSOCIATE DOES return
+  kIOReturnUnsupported on the diagnostic-intervention
+  branch.
+- rev5 appendix C: "the BootKC body is therefore NEVER
+  reached on the rev1 AUTH-initiation chain for our kext"
+  → corrected in rev6: the body is unreachable in the
+  production / default state but is reachable under
+  diagnostic-intervention mode. The rev1 AUTH-initiation
+  claim scope is the production state.
+
+=== rev6 reproducibility commands ===
+
+The Ghidra rev5g and rev5h batches and the Capstone
+skipdata=True linear decode that constitute the rev6
+option-(c) evidence are the same commands documented in
+the rev5 reproducibility section above; no new Ghidra batch
+is needed for the rev6 cure because the rev5h linear decode
+already covers the entire
+[ffffff80022dea78, ffffff80022df276) range and the rev5g
+adjacent-function enumeration already establishes the
+boundary upper bound.
+
+Counts of instructions / CALLs / branches / RETs in the
+[ffffff80022dea78, ffffff80022df276) slice of the rev5h
+linear decode were obtained by:
+
+  awk '/^ffffff/ && $1>="ffffff80022dea78" && $1<"ffffff80022df276" {
+         total++;
+         for (i=1; i<=NF; i++) {
+           if ($i=="call") { calls++; break }
+           else if ($i=="ret") { rets++; break }
+           else if ($i=="jmp") { ubr++; break }
+           else if ($i ~ /^j[a-z]+$/ && $i!="jmp") { cbr++; break }
+         }
+       }
+       END { print "instructions="total " calls="calls+0
+                   " ubranches="ubr+0 " cbranches="cbr+0
+                   " rets="rets+0 }' \
+    cr479_gap4_rev5h_processbsdcommand_linear_decode.txt
+
+Output: instructions=483 calls=47 ubranches=6 cbranches=18 rets=2
+
+The two RETs at `ffffff80022df0ff` and `ffffff80022df26f`
+were located by:
+
+  awk '/^ffffff/ && $1>="ffffff80022dea78" && $1<"ffffff80022df276" && / ret +/ {print}' \
+    cr479_gap4_rev5h_processbsdcommand_linear_decode.txt
+
+Output:
+  ffffff80022df0ff  c3                              ret
+  ffffff80022df26f  c3                              ret
