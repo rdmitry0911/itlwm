@@ -52,6 +52,12 @@
 #include <sys/endian.h>
 #include <sys/errno.h>
 #include <sys/sysctl.h>
+/* Project-owned auth-ACK diagnostic output carrier. See
+ * itl80211/linux/iwx_diag_log.h for the full lifetime /
+ * observability / security contract. The two
+ * ieee80211_recv_auth probes below are the layer (c) leaves
+ * of that carrier. */
+#include <linux/iwx_diag_log.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -2276,20 +2282,52 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm;
     u_int16_t algo, seq, status;
-    
+
     /* make sure all mandatory fixed fields are present */
     if (mbuf_len(m) < sizeof(*wh) + 6) {
         DPRINTF(("frame too short\n"));
+        /* Diagnostic probe (auth-ACK boundary): log the
+         * short-frame reject branch so the leaf-level trace
+         * distinguishes "AUTH frame reached net80211 and was
+         * rejected for length" from "AUTH frame reached net80211
+         * and was parsed". This branch does not affect whether
+         * the firmware emitted an L2 ACK to the AP (the firmware
+         * ACKs at MAC layer regardless of payload contents). */
+        IWX_AUTH_DIAG("ieee80211_recv_auth: frame too short len=%zu (rejecting)\n",
+              (size_t)mbuf_len(m));
         return;
     }
     wh = mtod(m, struct ieee80211_frame *);
     frm = (const u_int8_t *)&wh[1];
-    
+
     algo   = LE_READ_2(frm); frm += 2;
     seq    = LE_READ_2(frm); frm += 2;
     status = LE_READ_2(frm); frm += 2;
     DPRINTF(("auth %d seq %d from %s\n", algo, seq,
              ether_sprintf((u_int8_t *)wh->i_addr2)));
+
+    /* Diagnostic probe (auth-ACK boundary): log every AUTH frame
+     * that reaches net80211, with the AP-supplied algorithm,
+     * transaction sequence, and status code. Combined with the
+     * iwx tx-completion probe (which logs AUTH(seq=1) STA->AP
+     * completion) and the iwx_rx_frame MGT probe (which logs
+     * firmware RX delivery to the host driver), this entry point
+     * is the final observation in the receive chain. The four
+     * observation layers reported by these probes are
+     * (a) STA-side TX completion of AUTH(seq=1), (b) firmware-side
+     * RX delivery to the host driver, (c) host-side net80211
+     * delivery, and (d) AP-side L2-ACK observation captured by
+     * hostapd. Each layer is observed independently; this probe
+     * records layer (c) only. */
+    IWX_AUTH_DIAG("ieee80211_recv_auth: algo=%u seq=%u status=%u "
+          "from=%02x:%02x:%02x:%02x:%02x:%02x\n",
+          algo, seq, status,
+          ((const u_int8_t *)wh->i_addr2)[0],
+          ((const u_int8_t *)wh->i_addr2)[1],
+          ((const u_int8_t *)wh->i_addr2)[2],
+          ((const u_int8_t *)wh->i_addr2)[3],
+          ((const u_int8_t *)wh->i_addr2)[4],
+          ((const u_int8_t *)wh->i_addr2)[5]);
     
     /* only "open" auth mode is supported */
     if (algo != IEEE80211_AUTH_ALG_OPEN) {

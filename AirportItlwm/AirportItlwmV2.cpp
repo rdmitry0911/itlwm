@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwmV2.hpp"
+#include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAStage1Owner.hpp"
 #include <sys/_netstat.h>
@@ -4124,6 +4125,23 @@ bool AirportItlwm::start(IOService *provider)
     DISARM_PANIC_TIMER();
 #undef DISARM_PANIC_TIMER
 #undef SD_SET
+
+    /* HAL-independent same-carrier smoke marker: prove the
+     * project-owned os_log carrier is reachable on this VM
+     * regardless of which iwx / iwn / iwm HAL handles the
+     * underlying PCI device. The marker fires exactly once
+     * per successful AirportItlwm::start so the next runtime
+     * cycle can confirm carrier visibility via
+     *   sudo log show --info --debug --predicate
+     *     'subsystem == "com.zxystd.AirportItlwm" AND
+     *      category == "iwx.auth_ack"'
+     * before relying on the auth-ACK Case A-F classification
+     * built on the per-HAL leaf probes. iwx_auth_diag_init()
+     * is idempotent; the same os_log handle is reused by any
+     * subsequent per-HAL attach (iwx_attach, iwn_attach). */
+    iwx_auth_diag_init();
+    IWX_AUTH_DIAG("smoke_marker AirportItlwm_start OK\n");
+
     return true;
 }
 

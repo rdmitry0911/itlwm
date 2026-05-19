@@ -91,6 +91,28 @@ struct iwn_tx_data {
     /* A-MPDU subframes */
     int ampdu_txmcs;
     int ampdu_nframes;
+
+    /*
+     * Diagnostic identity captured by iwn_tx() BEFORE the
+     * existing mbuf_adj() trim that strips the 802.11 header
+     * from the mbuf prior to it being stored on data->m.
+     * iwn_tx_done() reads these to attribute the firmware TX
+     * completion to a specific management subtype + receiver
+     * MAC + AUTH transaction sequence; the completion mbuf is
+     * post-trim and is NOT a struct ieee80211_frame.
+     *
+     * Sentinels (set by iwn_tx() when the captured identity is
+     * not meaningful for this slot):
+     *   diag_subtype   = 0xff   : identity not captured
+     *                              (e.g., early-return path).
+     *   diag_auth_seq  = 0xffff : not an AUTH frame, or
+     *                              AUTH body shorter than 4
+     *                              bytes (sizeof(*wh)+4).
+     *   diag_peer[6]   = {0...} : identity not captured.
+     */
+    uint8_t  diag_subtype;
+    uint16_t diag_auth_seq;
+    uint8_t  diag_peer[6];
 };
 
 struct iwn_tx_ring {

@@ -336,6 +336,34 @@ struct iwx_tx_data {
     int flags;
 #define IWX_TXDATA_FLAG_CMD_IS_NARROW  0x01
     uint8_t type;
+    /*
+     * Diagnostic identity captured by iwx_tx() from the 802.11
+     * header BEFORE the mbuf_adj(m, hdrlen) trim. iwx_tx_data is
+     * the only structure that survives the trim and is reachable
+     * from the firmware TX completion handler
+     * (iwx_rx_tx_cmd_single), so the original management-frame
+     * subtype, receiver address, and authentication transaction
+     * sequence (for AUTH subtype only) must be stored here at
+     * TX time to be observable at completion time. Sentinels:
+     *   subtype = 0xff  -> not a management frame, or capture
+     *                      skipped (e.g., CMD frame, monitor
+     *                      inject). The completion-side probe
+     *                      MUST treat 0xff as "no identity
+     *                      captured" and NOT mis-attribute the
+     *                      completion to AUTH.
+     *   auth_seq = 0xffff -> not an AUTH frame, or AUTH frame
+     *                       too short to contain a transaction
+     *                       sequence field. Valid AUTH seq
+     *                       values are in [1, 4].
+     *   peer = {0} (all-zero) -> not captured. The all-zero MAC
+     *                          is not a valid receiver address
+     *                          for any unicast frame, so the
+     *                          completion-side probe can
+     *                          distinguish it from a real BSSID.
+     */
+    uint8_t  diag_subtype;
+    uint16_t diag_auth_seq;
+    uint8_t  diag_peer[6];
 };
 
 struct iwx_tx_ring {

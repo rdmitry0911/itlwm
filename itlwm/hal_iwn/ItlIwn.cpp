@@ -36,6 +36,7 @@
 
 #include "ItlIwn.hpp"
 #include <linux/types.h>
+#include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
 #include <FwData.h>
 #include <crypto/sha1.h>
@@ -612,6 +613,22 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     timeout_set(&sc->calib_to, iwn_calib_timeout, sc);
 //    rw_init(&sc->sc_rwlock, "iwnlock");
     task_set(&sc->init_task, iwn_init_task, sc, "iwn_init_task");
+
+    /* Initialize the project-owned auth-ACK diagnostic carrier
+     * and emit the deterministic same-carrier smoke marker for
+     * the iwn HAL. The smoke marker fires exactly once per
+     * successful iwn_attach so the next runtime cycle can
+     * confirm the carrier is reachable on this VM via
+     *   sudo log show --info --debug --predicate
+     *     'subsystem == "com.zxystd.AirportItlwm" AND
+     *      category == "iwx.auth_ack"'
+     * before relying on the auth-ACK Case A-F classification
+     * built on the iwn-side leaf probes. The init function is
+     * idempotent and shares the same os_log handle the iwx
+     * HAL initializes, so a future VM that loads both HALs in
+     * sequence does not double-create the handle. */
+    iwx_auth_diag_init();
+    IWX_AUTH_DIAG("smoke_marker iwn_attach OK\n");
     return true;
 
     /* Free allocated memory if something failed during attachment. */
@@ -2300,6 +2317,38 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     /* Send the frame to the 802.11 layer. */
     rxi.rxi_rssi = rssi;
     rxi.rxi_chan = chan;
+
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): log MGT
+     * RX frames at firmware-to-host delivery time. Filter to
+     * AUTH / ASSOC_RESP / REASSOC_RESP / DEAUTH / DISASSOC so
+     * beacons and probe responses do not flood oslog; auth-ACK
+     * Case A-F discrimination only needs the AP-originated
+     * management frames listed above. Behavior-neutral:
+     * read-only inspection of the existing RX mbuf. */
+    {
+        uint8_t rxfc0 = wh->i_fc[0];
+        if ((rxfc0 & IEEE80211_FC0_TYPE_MASK) ==
+            IEEE80211_FC0_TYPE_MGT) {
+            uint8_t rxsub = rxfc0 & IEEE80211_FC0_SUBTYPE_MASK;
+            if (rxsub == IEEE80211_FC0_SUBTYPE_AUTH ||
+                rxsub == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
+                rxsub == IEEE80211_FC0_SUBTYPE_REASSOC_RESP ||
+                rxsub == IEEE80211_FC0_SUBTYPE_DEAUTH ||
+                rxsub == IEEE80211_FC0_SUBTYPE_DISASSOC) {
+                IWX_AUTH_DIAG("iwn_rx_done: MGT subtype=0x%02x "
+                      "from=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "rssi=%d len=%d chan=%u\n",
+                      rxsub,
+                      ((const u_int8_t *)wh->i_addr2)[0],
+                      ((const u_int8_t *)wh->i_addr2)[1],
+                      ((const u_int8_t *)wh->i_addr2)[2],
+                      ((const u_int8_t *)wh->i_addr2)[3],
+                      ((const u_int8_t *)wh->i_addr2)[4],
+                      ((const u_int8_t *)wh->i_addr2)[5],
+                      rssi, len, (unsigned)chan);
+            }
+        }
+    }
     ieee80211_inputm(ifp, m, ni, &rxi, ml);
 
     /* Node is no longer needed. */
@@ -2909,6 +2958,28 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         ifp->netStat->outputErrors++;
     }
 
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): on MGT
+     * TX completion, log the firmware TX_RESP attributes
+     * (txfail, retry count, rate, fragment length) together
+     * with the per-tx-buffer identity captured before
+     * mbuf_adj. The MGT filter uses the diag_subtype
+     * sentinel (0xff = not captured) instead of dereferencing
+     * data->m as a struct ieee80211_frame, because data->m at
+     * completion is the post-trim payload only. */
+    if (data->diag_subtype != 0xff) {
+        IWX_AUTH_DIAG("iwn_tx_done: MGT subtype=0x%02x "
+              "peer=%02x:%02x:%02x:%02x:%02x:%02x "
+              "auth_seq=0x%04x txfail=%d ackfailcnt=%d "
+              "rate=0x%02x rflags=0x%02x len=%u\n",
+              data->diag_subtype,
+              data->diag_peer[0], data->diag_peer[1],
+              data->diag_peer[2], data->diag_peer[3],
+              data->diag_peer[4], data->diag_peer[5],
+              (unsigned)data->diag_auth_seq,
+              txfail, ackfailcnt, rate, rflags,
+              (unsigned)len);
+    }
+
     iwn_tx_done_free_txdata(sc, data);
 
     sc->sc_tx_timer = 0;
@@ -3446,6 +3517,53 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     else
         hdrlen = ieee80211_get_hdrlen(wh);
 
+    /* Capture-before-mbuf_adj diagnostic identity. iwn_tx()
+     * calls mbuf_adj(m, hdrlen) below (in both the CCMP-trim
+     * branch and the non-CCMP branch) BEFORE storing the
+     * post-trim mbuf on data->m. iwn_tx_done() therefore
+     * cannot read a struct ieee80211_frame from data->m at
+     * completion time. The locals captured here are stored on
+     * the per-tx-buffer iwn_tx_data entry just below the
+     * existing `data->m = m; data->ni = ni;` site so the
+     * completion handler can attribute the firmware TX_RESP
+     * to a specific management subtype + receiver MAC + AUTH
+     * transaction sequence. The capture is read-only on the
+     * still-untrimmed mbuf; behavior is unchanged.
+     *
+     * Sentinels:
+     *   diag_subtype = 0xff if the slot identity was not
+     *                       captured (e.g., MGT branch not
+     *                       taken for this frame).
+     *   diag_auth_seq = 0xffff if the frame is not AUTH or
+     *                       the first mbuf segment is shorter
+     *                       than hdrlen + 4 bytes (so the
+     *                       AUTH body is not contiguous with
+     *                       the 802.11 header in this read).
+     *   diag_peer = {0,0,0,0,0,0} when identity not captured. */
+    uint8_t  diag_subtype  = 0xff;
+    uint16_t diag_auth_seq = 0xffff;
+    uint8_t  diag_peer[6]  = { 0, 0, 0, 0, 0, 0 };
+    if (type == IEEE80211_FC0_TYPE_MGT) {
+        diag_subtype = subtype;
+        IEEE80211_ADDR_COPY(diag_peer, wh->i_addr1);
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH &&
+            mbuf_len(m) >= (size_t)(hdrlen + 4)) {
+            /*
+             * IEEE 802.11 auth body: algo(2) seq(2) status(2),
+             * little-endian, immediately after the 802.11
+             * header. Use mbuf_len(m) (first-segment length,
+             * not the total pkthdr length) so the read is
+             * contiguous with wh in the same mbuf segment.
+             * Match the iwx-side accepted safe pattern.
+             */
+            const u_int8_t *auth_body =
+                (const u_int8_t *)wh + hdrlen;
+            diag_auth_seq =
+                (uint16_t)(auth_body[2] |
+                           (auth_body[3] << 8));
+        }
+    }
+
     if ((hasqos = ieee80211_has_qos(wh))) {
         /* Select EDCA Access Category and TX ring for this frame. */
         struct ieee80211_tx_ba *ba;
@@ -3716,6 +3834,13 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     data->m = m;
     data->ni = ni;
     data->ampdu_txmcs = ni->ni_txmcs; /* updated upon Tx interrupt */
+    /* Store captured diagnostic identity onto the per-tx-buffer
+     * entry. The captured locals diag_subtype / diag_auth_seq /
+     * diag_peer above are the load-bearing copies for the
+     * iwn_tx_done MGT TX completion probe. */
+    data->diag_subtype  = diag_subtype;
+    data->diag_auth_seq = diag_auth_seq;
+    memcpy(data->diag_peer, diag_peer, sizeof(data->diag_peer));
 
     DPRINTFN(4, ("sending data: qid=%d idx=%d len=%d nsegs=%d\n",
         ring->qid, ring->cur, mbuf_pkthdr_len(m), nsegs));
@@ -5702,12 +5827,17 @@ iwn_auth(struct iwn_softc *sc, int arg)
         XYLog("%s: RXON command failed\n", sc->sc_dev.dv_xname);
         return error;
     }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): RXON OK. */
+    IWX_AUTH_DIAG("iwn_auth: RXON OK chan=%u\n",
+          (unsigned)sc->rxon.chan);
 
     /* Configuration has changed, set TX power accordingly. */
     if ((error = ops->set_txpower(sc, 1)) != 0) {
         XYLog("%s: could not set TX power\n", sc->sc_dev.dv_xname);
         return error;
     }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): set_txpower OK. */
+    IWX_AUTH_DIAG("iwn_auth: set_txpower OK\n");
     /*
      * Reconfiguring RXON clears the firmware nodes table so we must
      * add the broadcast node again.
@@ -5719,6 +5849,8 @@ iwn_auth(struct iwn_softc *sc, int arg)
             sc->sc_dev.dv_xname);
         return error;
     }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): add_broadcast_node OK. */
+    IWX_AUTH_DIAG("iwn_auth: add_broadcast_node OK ridx=%d\n", ridx);
 
     /*
      * Make sure the firmware gets to see a beacon before we send
@@ -5737,6 +5869,9 @@ iwn_auth(struct iwn_softc *sc, int arg)
     /* We can now clear the cached address of our previous AP. */
     memset(sc->bss_node_addr, 0, sizeof(sc->bss_node_addr));
 
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL):
+     * iwn_auth completed without error. */
+    IWX_AUTH_DIAG("iwn_auth: returning err=0\n");
     return 0;
 }
 

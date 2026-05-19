@@ -108,6 +108,7 @@
 
 #include "ItlIwx.hpp"
 #include <linux/types.h>
+#include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
 #include <FwData.h>
 #include <crypto/sha1.h>
@@ -138,6 +139,30 @@ int iwx_debug = 1;
 #define DPRINTF(x)    do { ; } while (0)
 #define DPRINTFN(n, x)    do { ; } while (0)
 #endif
+
+/* Project-owned diagnostic output carrier for the auth-ACK
+ * boundary work item. See <linux/iwx_diag_log.h> for the
+ * full lifetime / observability / security contract. The handle
+ * is global because the diagnostic call sites span both C++
+ * (ItlIwx.cpp) and C (ieee80211_input.c) translation units,
+ * and the carrier output is meant to be uniformly attributable
+ * to one (subsystem, category) pair across both sides.
+ */
+extern "C" {
+os_log_t iwx_auth_diag_log = NULL;
+
+void iwx_auth_diag_init(void)
+{
+    /* Idempotent: cheap fast-path return on every call after
+     * the first, so the call site in iwx_attach (and any
+     * future call site that wants to defensively re-init the
+     * carrier) does not need to deduplicate itself. */
+    if (iwx_auth_diag_log != NULL)
+        return;
+    iwx_auth_diag_log = os_log_create("com.zxystd.AirportItlwm",
+                                       "iwx.auth_ack");
+}
+} /* extern "C" */
 
 bool ItlIwx::attach(IOPCIDevice *device)
 {
@@ -5325,6 +5350,41 @@ iwx_rx_frame(struct iwx_softc *sc, mbuf_t m, int chanidx,
                      m, BPF_DIRECTION_IN);
     }
 #endif
+    /* Diagnostic probe (auth-ACK boundary): log non-beacon MGT
+     * subtypes (AUTH, ASSOC_RESP, REASSOC_RESP, DEAUTH, DISASSOC)
+     * before delivery to net80211. The probe records firmware RX
+     * delivery to the host driver; it does not by itself measure
+     * whether the firmware emitted an L2 ACK to the AP. Combined
+     * with the tx-completion probe and the ieee80211_recv_auth
+     * probe, the trace lets the auth-ACK boundary be bounded
+     * between firmware-RX-delivery and net80211-delivery layers.
+     * Beacons and probe responses are NOT logged: their volume
+     * would flood oslog. */
+    {
+        uint8_t fc0 = wh->i_fc[0];
+        if ((fc0 & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT) {
+            uint8_t subtype = fc0 & IEEE80211_FC0_SUBTYPE_MASK;
+            if (subtype == IEEE80211_FC0_SUBTYPE_AUTH ||
+                subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
+                subtype == IEEE80211_FC0_SUBTYPE_REASSOC_RESP ||
+                subtype == IEEE80211_FC0_SUBTYPE_DEAUTH ||
+                subtype == IEEE80211_FC0_SUBTYPE_DISASSOC) {
+                IWX_AUTH_DIAG("iwx_rx_frame: MGT subtype=0x%02x "
+                      "from=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d "
+                      "len=%zu chanidx=%d\n",
+                      subtype,
+                      ((const u_int8_t *)wh->i_addr2)[0],
+                      ((const u_int8_t *)wh->i_addr2)[1],
+                      ((const u_int8_t *)wh->i_addr2)[2],
+                      ((const u_int8_t *)wh->i_addr2)[3],
+                      ((const u_int8_t *)wh->i_addr2)[4],
+                      ((const u_int8_t *)wh->i_addr2)[5],
+                      rxi->rxi_rssi,
+                      (size_t)mbuf_pkthdr_len(m),
+                      chanidx);
+            }
+        }
+    }
     ieee80211_inputm(IC2IFP(ic), m, ni, rxi, ml);
     ieee80211_release_node(ic, ni);
 }
@@ -5893,12 +5953,55 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     KASSERT(tx_resp->frame_count == 1, "tx_resp->frame_count == 1");
     
     txfail = (status != IWX_TX_STATUS_SUCCESS);
-    
+
     if (txfail) {
         XYLog("%s %d OUTPUT_ERROR type=%d status=%d\n", __FUNCTION__, __LINE__, txd->type, status);
         ifp->netStat->outputErrors++;
         if (txd->type == IEEE80211_FC0_TYPE_MGT)
             iwx_toggle_tx_ant(sc, &sc->sc_mgmt_last_antenna_idx);
+    }
+
+    /* Diagnostic probe (auth-ACK boundary): log every MGT-frame TX
+     * completion (success and failure) so the auth completion can
+     * be correlated against the iwx_auth state machine and the
+     * ieee80211_recv_auth entry. iwx_tx() copies the 802.11
+     * header into the firmware TX command and then calls
+     * mbuf_adj(m, hdrlen) to trim the header from the mbuf before
+     * storing data->m, so the mbuf attached to txd at completion
+     * does NOT contain a struct ieee80211_frame and cannot be
+     * parsed as one. The identity (management subtype, receiver
+     * address i_addr1, and -- for AUTH -- the transaction
+     * sequence number) is therefore captured by iwx_tx() into
+     * txd->diag_* before the trim and read here.
+     *
+     * Sentinel handling: txd->diag_subtype = 0xff means iwx_tx()
+     * did not record a management identity for this slot (for
+     * example a non-MGT frame whose ring slot is being reused).
+     * The probe still fires for MGT-typed completions but logs
+     * the sentinel literally so a stale identity from a previous
+     * slot occupant is never silently presented as the current
+     * one. peer is logged as the captured 6 bytes; the all-zero
+     * sentinel cannot be a valid unicast receiver address.
+     *
+     * Data frames are NOT logged: their volume would flood oslog
+     * and the auth-ACK boundary is a management-frame question.
+     * Behavior-neutral: read-only access to txd fields. */
+    if (txd->type == IEEE80211_FC0_TYPE_MGT) {
+        IWX_AUTH_DIAG("iwx_rx_tx_cmd_single: MGT subtype=0x%02x "
+              "peer=%02x:%02x:%02x:%02x:%02x:%02x "
+              "auth_seq=0x%04x status=0x%x (%s) frame_count=%d "
+              "initial_rate=0x%x failure_frame=%d "
+              "wireless_media_time=%u\n",
+              txd->diag_subtype,
+              txd->diag_peer[0], txd->diag_peer[1],
+              txd->diag_peer[2], txd->diag_peer[3],
+              txd->diag_peer[4], txd->diag_peer[5],
+              (unsigned)txd->diag_auth_seq,
+              status, txfail ? "FAIL" : "SUCCESS",
+              tx_resp->frame_count,
+              le32toh(tx_resp->initial_rate),
+              tx_resp->failure_frame,
+              le16toh(tx_resp->wireless_media_time));
     }
 }
 
@@ -6819,6 +6922,36 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+    /*
+     * Capture diagnostic identity (subtype, peer/i_addr1, auth
+     * transaction sequence) BEFORE the later mbuf_adj(m, hdrlen)
+     * trim. Stored into iwx_tx_data below alongside data->type.
+     * Default to sentinels so a non-MGT or non-AUTH frame cannot
+     * present a stale identity from a previous TX in the same
+     * ring slot.
+     */
+    uint8_t  diag_subtype  = 0xff;
+    uint16_t diag_auth_seq = 0xffff;
+    uint8_t  diag_peer[6]  = { 0, 0, 0, 0, 0, 0 };
+    if (type == IEEE80211_FC0_TYPE_MGT) {
+        diag_subtype = subtype;
+        IEEE80211_ADDR_COPY(diag_peer, wh->i_addr1);
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            /*
+             * IEEE 802.11 auth body: algo(2) seq(2) status(2),
+             * little-endian, immediately after the 802.11
+             * header. The mbuf has not been trimmed yet, so
+             * wh + hdrlen still points at the auth body if
+             * the body is present in the first segment.
+             */
+            if (mbuf_len(m) >= hdrlen + 4) {
+                const u_int8_t *body =
+                    (const u_int8_t *)wh + hdrlen;
+                diag_auth_seq =
+                    (uint16_t)(body[2] | (body[3] << 8));
+            }
+        }
+    }
     
     tid = IWX_MGMT_TID;
     qid = sc->first_data_qid;
@@ -6943,6 +7076,17 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     data->m = m;
     data->in = in;
     data->type = type;
+    /*
+     * Persist the pre-trim diagnostic identity. Reading from
+     * wh here would be unsafe -- mbuf_adj above advanced the
+     * mbuf data pointer, and the original header bytes may be
+     * reclaimed by the mbuf subsystem on the next allocation.
+     * The captured locals diag_subtype / diag_auth_seq /
+     * diag_peer above are the load-bearing copies.
+     */
+    data->diag_subtype  = diag_subtype;
+    data->diag_auth_seq = diag_auth_seq;
+    memcpy(data->diag_peer, diag_peer, sizeof(data->diag_peer));
 
     DPRINTFN(3, ("sending data: 嘤嘤嘤 tid=%d qid=%d idx=%d queued=%d len=%d nsegs=%d flags=0x%08x rate_n_flags=0x%08x offload_assist=%u\n",
           tid, ring->qid, ring->cur, ring->queued, totlen, nsegs, le32toh(flags),
@@ -9462,11 +9606,26 @@ iwx_auth(struct iwx_softc *sc)
                                   ic->ic_ibss_chan, 1, 1, 0);
         if (err)
             return err;
+        /* Diagnostic probe (auth-ACK boundary): phy_ctxt_update
+         * success leaf for monitor opmode. Logged so the iwx_auth
+         * preconditioning trace shows the channel programming
+         * succeeded before any subsequent firmware command. */
+        IWX_AUTH_DIAG("iwx_auth: phy_ctxt_update MONITOR OK chan=%d "
+              "generation=%d\n",
+              ieee80211_chan2ieee(ic, ic->ic_ibss_chan), generation);
     } else {
         err = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[0],
                                   in->in_ni.ni_chan, 1, 1, 0);
         if (err)
             return err;
+        /* Diagnostic probe (auth-ACK boundary): phy_ctxt_update
+         * success leaf for STA opmode. Logged so the iwx_auth
+         * preconditioning trace shows the AP-channel programming
+         * succeeded before mac_ctxt_cmd. The leaf is named in the
+         * analysis report's preconditioning enumeration. */
+        IWX_AUTH_DIAG("iwx_auth: phy_ctxt_update STA OK chan=%d "
+              "generation=%d\n",
+              ieee80211_chan2ieee(ic, in->in_ni.ni_chan), generation);
     }
     in->in_phyctxt = &sc->sc_phyctxt[0];
     IEEE80211_ADDR_COPY(in->in_macaddr, in->in_ni.ni_macaddr);
@@ -9478,7 +9637,12 @@ iwx_auth(struct iwx_softc *sc)
         return err;
     }
     sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
-    
+    /* Diagnostic probe (auth-ACK boundary): step boundary marker,
+     * no behavior change. Emitted at the success path only so the
+     * leaf-level trace shows which iwx_auth step succeeded before
+     * the next firmware command. */
+    IWX_AUTH_DIAG("iwx_auth: mac_ctxt_cmd ADD OK generation=%d\n", generation);
+
     err = iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_ADD);
     if (err) {
         XYLog("%s: could not add binding (error %d)\n",
@@ -9486,30 +9650,38 @@ iwx_auth(struct iwx_softc *sc)
         goto rm_mac_ctxt;
     }
     sc->sc_flags |= IWX_FLAG_BINDING_ACTIVE;
-    
+    IWX_AUTH_DIAG("iwx_auth: binding_cmd ADD OK generation=%d\n", generation);
+
     err = iwx_add_sta_cmd(sc, in, 0);
     if (err) {
         XYLog("%s: could not add sta (error %d)\n",
               DEVNAME(sc), err);
         goto rm_binding;
     }
-    
+    IWX_AUTH_DIAG("iwx_auth: add_sta_cmd OK generation=%d sta_id=%d\n",
+          generation,
+          (ic->ic_opmode == IEEE80211_M_MONITOR) ? IWX_MONITOR_STA_ID
+                                                : IWX_STATION_ID);
+
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         err = iwx_enable_txq(sc, IWX_MONITOR_STA_ID,
                              IWX_DQA_INJECT_MONITOR_QUEUE, IWX_MGMT_TID,
                              sc->txq[IWX_DQA_INJECT_MONITOR_QUEUE].ring_count);
         if (err)
             goto rm_sta;
+        IWX_AUTH_DIAG("iwx_auth: enable_txq MONITOR OK generation=%d\n", generation);
         return 0;
     }
-    
+
     err = iwx_enable_mgmt_queue(sc);
     if (err)
         goto rm_sta;
-    
+    IWX_AUTH_DIAG("iwx_auth: enable_mgmt_queue OK generation=%d\n", generation);
+
     err = iwx_clear_statistics(sc);
     if (err)
         goto rm_sta;
+    IWX_AUTH_DIAG("iwx_auth: clear_statistics OK generation=%d\n", generation);
     
     /*
      * Prevent the FW from wandering off channel during association
@@ -9529,11 +9701,28 @@ iwx_auth(struct iwx_softc *sc)
      * will have a slightly lower priority, but more importantly, can be
      * fragmented so that it'll allow other activities to run.
      */
-    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD))
+    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
         err = iwx_schedule_protect_session(sc, in, duration);
-    else
+        /* Diagnostic probe (auth-ACK boundary): SESSION_PROT_CMD
+         * scheduling result. Logs whether the firmware accepted the
+         * channel-protection time event. */
+        IWX_AUTH_DIAG("iwx_auth: schedule_protect_session SESSION_PROT_CMD "
+              "duration_tu=%u err=%d generation=%d\n",
+              duration, err, generation);
+    } else {
         iwx_protect_session(sc, in, duration, in->in_ni.ni_intval / 2);
-    
+        /* Diagnostic probe (auth-ACK boundary): legacy TIME_EVENT
+         * path on firmwares without SESSION_PROT_CMD capability. */
+        IWX_AUTH_DIAG("iwx_auth: protect_session legacy duration_tu=%u "
+              "min_duration_tu=%u generation=%d\n",
+              duration, in->in_ni.ni_intval / 2, generation);
+    }
+
+    /* Diagnostic probe (auth-ACK boundary): iwx_auth return marker.
+     * Logs the final err so the trace bounds a partial-success
+     * iwx_auth (error after some step succeeded) from a
+     * full-success return. */
+    IWX_AUTH_DIAG("iwx_auth: returning err=%d generation=%d\n", err, generation);
     return err;
     
 rm_sta:
@@ -13445,6 +13634,18 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     }
     XYLog("DEBUG iwx_attach: iwx_preinit done OK\n");
     
+    /* Initialize the project-owned auth-ACK diagnostic carrier
+     * and emit the deterministic smoke marker. The smoke marker
+     * is the carrier-visibility probe: the next approved runtime
+     * cycle must observe this marker via
+     *   sudo log show --info --debug --predicate
+     *     'subsystem == "com.zxystd.AirportItlwm" AND
+     *      category == "iwx.auth_ack"'
+     * before relying on the auth-ACK Case A-F classification
+     * built on the four kext-side leaf probes. */
+    iwx_auth_diag_init();
+    IWX_AUTH_DIAG("smoke_marker iwx_attach OK\n");
+
     return true;
     
 fail5:
