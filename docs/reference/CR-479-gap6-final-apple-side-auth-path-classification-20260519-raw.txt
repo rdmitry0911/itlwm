@@ -1,0 +1,1314 @@
+GAP_6 raw-evidence companion
+correlation_id: CR-479-gap6-final-apple-side-auth-path-classification-20260519
+basis_commit_sha: 12bb9694320c897e21c137b255ba6eb92496c508
+basis_parent_sha: 106dde66c297f806dcce891a3c7d555793b74b92
+
+Source-of-truth artifact hashes (sha256, computed inside guest at
+/Users/devops/Projects/itlwm at HEAD 12bb9694):
+
+  AirportItlwm/AirportItlwmSkywalkInterface.cpp : a228a545ec234a64689e60279d0cff0188773ae87bc2b2af2e3fb9b15940cbfc
+  AirportItlwm/AirportItlwmSkywalkInterface.hpp : cc027d2aa929dbf3c4a0c233d458822becebb696eb26eb11b731cf54544a087c
+  itl80211/openbsd/net80211/ieee80211_proto.c   : 568ca33d84829d16a248178b2e941f9de2e15928615b6a395515f10540d3b451
+  itl80211/openbsd/net80211/ieee80211_proto.h   : 28407ad4154aa2d1b89e9162fe6a195d9a87a47f1634e48fe9e24f22df9dcec9
+  itl80211/openbsd/net80211/ieee80211_node.c    : 259d87a7759725c20f700df0771beebc81ee51ca268daea670d4a79259aea4e5
+  itl80211/openbsd/net80211/ieee80211_output.c  : 8c4b72d8295a30ba008acffdf21ae352d3c251a5a40213cf4552df725256d128
+  itlwm/hal_iwn/ItlIwn.cpp                      : 20c05b7995d9f2af0b10d7d716a1641c3302605e946cddae3376b5cde01c8ca4
+
+BootKC artifact hash (Ghidra host 10.7.6.112; carried forward from GAP_5):
+
+  <analysis-output-root>/BootKernelExtensions.kc
+    size=66650112  sha256=aaf052e7fcb4ee9c9a1e1d76a57e85966a853ea19cf9dc76183959ea416ca5a8
+
+----------------------------------------------------------------------
+Section labels (matching the markdown reference Sections A..H):
+  AA1 - AirportItlwmSkywalkInterface::setASSOCIATE body (lines 4568..4663; return at 4662; closing brace at 4663)
+  AA2 - AirportItlwmSkywalkInterface::associateSSID body (head)
+  AA3 - AirportItlwmSkywalkInterface::processBSDCommand body
+  AA4 - AirportItlwmSkywalkInterface::processApple80211Ioctl IOC_ASSOCIATE case
+  BB1 - iwn_attach sc_newstate save
+  BB2 - iwn_newstate body
+  BB3 - iwn_auth body
+  CC1 - ieee80211_node_join_bss body
+  CC2 - ieee80211_end_scan body (head)
+  CC3 - ic->ic_newstate / ic->ic_send_mgmt assignments
+  DD1 - ieee80211_newstate body (AUTH branch)
+  DD2 - IEEE80211_SEND_MGMT macro
+  EE1 - ieee80211_send_mgmt body (AUTH case)
+  EE2 - ieee80211_mgmt_output mq_enqueue
+  FF  - grep replay: IEEE80211_SEND_MGMT(...AUTH...) sites
+  GG  - BootKC negative-evidence string control (carry-forward)
+----------------------------------------------------------------------
+=== AA1 setASSOCIATE body (4568..4663) ===
+setASSOCIATE(struct apple80211_assoc_data *ad)
+{
+    CR257_PROBE(setASSOCIATE, ad, ad ? sizeof(*ad) : 0);
+    // CR-257: setASSOCIATE is the legacy-form direct PMK carrier path.
+    // apple80211_assoc_data has ad_key (apple80211_key) embedded at
+    // offset 0x38. If airportd uses this code path on Tahoe (via
+    // BSD-ioctl SIOCSA80211 IOC_ASSOCIATE), the PMK is right there.
+    // Log ad_key metadata explicitly (no raw key bytes).
+    if (ad != nullptr) {
+        CR257_LOG("DEBUG CR257_setASSOCIATE_KEY ad_key.key_len=%u "
+                  "ad_key.key_cipher_type=%u ad_key.key_flags=0x%x "
+                  "ad_key.key_index=%u ad_auth_upper=0x%x ad_rsn_ie_len=%u\n",
+                  (unsigned)ad->ad_key.key_len,
+                  (unsigned)ad->ad_key.key_cipher_type,
+                  (unsigned)ad->ad_key.key_flags,
+                  (unsigned)ad->ad_key.key_index,
+                  (unsigned)ad->ad_auth_upper,
+                  (unsigned)ad->ad_rsn_ie_len);
+    }
+    RT2_SET(3); sRT.assocCount++;
+    if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
+        airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
+                                       kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad != nullptr ? ad->ad_ssid_len : 0);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad != nullptr ? ad->ad_ssid : nullptr,
+                                       ad != nullptr ? ad->ad_ssid_len : 0,
+                                       ad != nullptr ? reinterpret_cast<const uint8_t *>(&ad->ad_bssid) : nullptr,
+                                       ad != nullptr ? ad->ad_auth_lower : 0,
+                                       ad != nullptr ? ad->ad_auth_upper : 0,
+                                       ad != nullptr ? ad->ad_rsn_ie_len : 0,
+                                       kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
+    XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
+          (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
+          (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
+          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 1) ? ", don't disassociate" : "",
+          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 2) ? ", don't blacklist" : "",
+          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 4) ? ", closed Network" : "",
+          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 8) ? ", 802.1X" : "",
+          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 0x20) ? ", force BSSID" : "");
+
+    struct apple80211_rsn_ie_data rsn_ie_data;
+    struct apple80211_authtype_data auth_type_data;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    if (!ad) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       nullptr, 0, nullptr, 0, 0, 0,
+                                       kIOReturnError);
+        return kIOReturnError;
+    }
+
+    XYLog("DEBUG %s ic_state=%d ic_opmode=%d\n", __FUNCTION__, ic->ic_state, ic->ic_opmode);
+    if (ic->ic_state < IEEE80211_S_SCAN) {
+        XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad->ad_ssid, ad->ad_ssid_len,
+                                       reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                       ad->ad_auth_lower, ad->ad_auth_upper,
+                                       ad->ad_rsn_ie_len, kIOReturnSuccess);
+        return kIOReturnSuccess;
+    }
+
+    if (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_AUTH) {
+        XYLog("DEBUG %s SKIP: ic_state=%d (already in ASSOC/AUTH)\n", __FUNCTION__, ic->ic_state);
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad->ad_ssid, ad->ad_ssid_len,
+                                       reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                       ad->ad_auth_lower, ad->ad_auth_upper,
+                                       ad->ad_rsn_ie_len, kIOReturnSuccess);
+        return kIOReturnSuccess;
+    }
+
+    if (ad->ad_mode != APPLE80211_AP_MODE_IBSS) {
+        disassocIsVoluntary = false;
+        auth_type_data.version = APPLE80211_VERSION;
+        auth_type_data.authtype_upper = ad->ad_auth_upper;
+        auth_type_data.authtype_lower = ad->ad_auth_lower;
+        setAUTH_TYPE(&auth_type_data);
+        memset(&rsn_ie_data, 0, sizeof(rsn_ie_data));
+        rsn_ie_data.version = APPLE80211_VERSION;
+        rsn_ie_data.len = ad->ad_rsn_ie[1] + 2;
+        memcpy(rsn_ie_data.ie, ad->ad_rsn_ie, rsn_ie_data.len);
+        setRSN_IE(&rsn_ie_data);
+
+        associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index, true, false);
+    }
+    airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                   ad->ad_ssid, ad->ad_ssid_len,
+                                   reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                   ad->ad_auth_lower, ad->ad_auth_upper,
+                                   ad->ad_rsn_ie_len, kIOReturnSuccess);
+    return kIOReturnSuccess;
+}
+
+=== AA2 associateSSID body head (938..1165) ===
+void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
+{
+    __atomic_add_fetch(&cr237_associateSSID_count, 1, __ATOMIC_RELAXED);
+    bool cr237KeyNonZero = false;
+    if (key != nullptr && key_len > 0 && key_len <= 64) {
+        for (uint32_t i = 0; i < key_len; ++i) {
+            if (key[i] != 0) { cr237KeyNonZero = true; break; }
+        }
+    }
+    CR237_LOG("DEBUG CR237_ASSOC_SSID key_ptr_nonnull=%d key_len=%u key_nonzero=%d "
+              "auth_lower=%u auth_upper=%u importLocalPmk=%d externalPmkOwner=%d\n",
+              key != nullptr ? 1 : 0, key_len, cr237KeyNonZero ? 1 : 0,
+              authtype_lower, authtype_upper,
+              importLocalPmk ? 1 : 0, externalPmkOwner ? 1 : 0);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    XYLog("DEBUG %s ssid_len=%u auth_lower=%u auth_upper=%u key_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x ic_state=%d\n",
+          __FUNCTION__, ssid_len, authtype_lower, authtype_upper, key_len,
+          bssid.octet[0], bssid.octet[1], bssid.octet[2],
+          bssid.octet[3], bssid.octet[4], bssid.octet[5], ic->ic_state);
+
+    // ieee80211_disable_rsn() zeroes ic->ic_psk along with the
+    // RSN config fields. On the WCL/Skywalk externally-owned-PSK
+    // path, Apple userspace delivers the PSK-derived PMK
+    // separately via setCIPHER_KEY with
+    // key_cipher_type=APPLE80211_CIPHER_PMK, and the delivery may
+    // arrive either before or after setWCL_ASSOCIATE invokes this
+    // function. The RSN-policy fields rebuilt below by
+    // ieee80211_ioctl_setwpaparms do not require the disable_rsn
+    // reset on that PSK path, so the reset is skipped only when
+    // both (a) the caller signals that an external owner controls
+    // the PMK and (b) the requested authentication type is a
+    // PSK-AKM (WPA-PSK, WPA2-PSK, or SHA256-PSK). Open, WEP,
+    // WPA-Enterprise, 8021X WCL associations, and the legacy
+    // local-key path continue to call disable_rsn so their RSN
+    // lifecycle is unchanged.
+    const uint32_t external_psk_mask =
+        APPLE80211_AUTHTYPE_WPA_PSK |
+        APPLE80211_AUTHTYPE_WPA2_PSK |
+        APPLE80211_AUTHTYPE_SHA256_PSK;
+    bool external_psk_path = externalPmkOwner &&
+        (authtype_upper & external_psk_mask) != 0;
+    if (!external_psk_path) {
+        // The local RSN-disable edge zeroes ic_psk and resets RSN
+        // configuration. The recovered Apple contract treats this as
+        // the lifecycle reset for the external-PMK eligibility, so
+        // drop IEEE80211_F_PSK and emit a non-secret reset marker
+        // before disable_rsn. Combining the helper-driven clear with
+        // the disable_rsn implicit zeroing keeps the structural
+        // clear count and the lifecycle reset observable on every
+        // non-PSK association edge that reaches this branch.
+        clearExternalPmkEligibilityLocked("associateSSID_disable_rsn");
+        ieee80211_disable_rsn(ic);
+    }
+    ieee80211_disable_wep(ic);
+
+    struct ieee80211_wpaparams     wpa;
+    struct ieee80211_nwkey         nwkey;
+    bzero(&wpa, sizeof(wpa));
+    bzero(&nwkey, sizeof(nwkey));
+
+    memset(ic->ic_des_essid, 0, IEEE80211_NWID_LEN);
+    memcpy(ic->ic_des_essid, ssid, ssid_len);
+    ic->ic_des_esslen = ssid_len;
+
+    bool is_zero = true;
+    for (int i = 0; i < IEEE80211_ADDR_LEN; i++)
+    is_zero &= bssid.octet[i] == 0;
+
+    if (!is_zero) {
+        IEEE80211_ADDR_COPY(ic->ic_des_bssid, bssid.octet);
+        ic->ic_flags |= IEEE80211_F_DESBSSID;
+    }
+    else {
+        memset(ic->ic_des_bssid, 0, IEEE80211_ADDR_LEN);
+        ic->ic_flags &= ~IEEE80211_F_DESBSSID;
+    }
+
+    // AUTHTYPE_WPA3_SAE AUTHTYPE_WPA3_FT_SAE
+    // we don't really support WPA3, but we have announced we support WPA3 in card capability function. so we fake it as WPA2 to support some WPA2/WPA3 mix wifi connection.
+    if (authtype_upper == APPLE80211_AUTHTYPE_WPA3_SAE || authtype_upper == APPLE80211_AUTHTYPE_WPA3_FT_SAE) {
+        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
+        authtype_upper |= APPLE80211_AUTHTYPE_WPA2_PSK;// hack
+    }
+    // AUTHTYPE_WPA3_ENTERPRISE AUTHTYPE_WPA3_FT_ENTERPRISE
+    if (authtype_upper == APPLE80211_AUTHTYPE_WPA3_ENTERPRISE || authtype_upper == APPLE80211_AUTHTYPE_WPA3_FT_ENTERPRISE) {
+        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
+        authtype_upper |= APPLE80211_AUTHTYPE_WPA2;// hack
+    }
+
+    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X)) {
+        XYLog("%s %d\n", __FUNCTION__, __LINE__);
+        wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
+    }
+
+    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK)) {
+        XYLog("%s %d\n", __FUNCTION__, __LINE__);
+        wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
+        wpa.i_enabled = 1;
+        // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
+        // may legitimately arrive with key == nullptr or key_len
+        // smaller than the local PMK store (IEEE80211_PMK_LEN = 32)
+        // because Apple delivers the PSK-derived PMK separately
+        // through APPLE80211_IOC_CIPHER_KEY case APPLE80211_CIPHER_PMK,
+        // APPLE80211_IOC_CIPHER_KEY case APPLE80211_CIPHER_MSK, or
+        // APPLE80211_IOC_CUR_PMK, all of which converge on
+        // installExternalPmkLocked(...) and on ieee80211com::ic_psk.
+        // Treating the absent candidate key bytes as a local PMK
+        // import and memcpy-ing zeroes into ic_psk would destroy any
+        // PMK already installed by those carriers before the host
+        // supplicant consumes its first 4-way M1, breaking the
+        // invariant that the PMK byte store must be present in
+        // ic_psk before the first 4-way M1 is consumed. Treat any
+        // caller that requested a local import but supplied no
+        // usable key bytes as the external-owner case so the prior
+        // PMK install survives into the M1 consumer.
+        // Active-owner selection for the PSK 4-way M1 consumer. The
+        // public ASSOCIATE / ad_key path delivers a usable PMK byte
+        // window through the caller key, so the local PAE owns the
+        // handshake. The hidden WCL_ASSOCIATE path arrives with no
+        // PMK bytes; in that case an Apple/user external supplicant
+        // owns the first 4-way M1 and the local PAE must not derive
+        // a PTK from a zero PMK.
+        bool localImportHasKey =
+            importLocalPmk && key != nullptr &&
+            key_len >= sizeof(ic->ic_psk);
+        if (localImportHasKey) {
+#if __IO80211_TARGET >= __MAC_26_0
+            // BEFORE installing the caller-supplied PMK on this
+            // edge, invalidate any pending PLTI target so a
+            // concurrent gated helper DeliverPMK cannot land
+            // AFTER the caller install and overwrite ic_psk with a
+            // System.keychain-derived PMK. The non-destructive
+            // invalidate zeros only the pending generation under
+            // the controller command gate; it does NOT touch
+            // ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner, so
+            // the caller PMK installed immediately after survives
+            // this lockout. Any gated DeliverPMK that managed to
+            // complete BEFORE this invalidate wrote a helper PMK
+            // into ic_psk; the immediately-following memcpy
+            // overwrites that with the caller PMK, which is the
+            // correct precedence for the public ad_key path.
+            if (instance != nullptr) {
+                instance->invalidatePendingAssocTargetOnly(
+                    "associateSSID_owner_local");
+            }
+#endif
+            memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
+            ic->ic_flags |= IEEE80211_F_PSK;
+            ic->ic_external_pmk_owner = 0;
+            XYLog("associateSSID_owner SELECTED owner=local source=public_ad_key "
+                  "key_len=%u ic_flags=0x%x\n",
+                  key_len, (unsigned)ic->ic_flags);
+        } else if (externalPmkOwner || importLocalPmk) {
+            ic->ic_flags |= IEEE80211_F_PSK;
+            ic->ic_external_pmk_owner = 1;
+            XYLog("associateSSID_owner SELECTED owner=external source=wcl_associate "
+                  "key_len=%u ic_flags=0x%x externalPmkOwner=%d importLocalPmk=%d\n",
+                  key_len, (unsigned)ic->ic_flags,
+                  externalPmkOwner ? 1 : 0, importLocalPmk ? 1 : 0);
+#if __IO80211_TARGET >= __MAC_26_0
+            // External-supplicant PSK association edge: no caller PMK
+            // bytes arrived (WCL_ASSOCIATE delivers the PMK out of
+            // band, or the public path requested a local import but
+            // supplied no usable key). This is the ONLY PSK branch
+            // that needs the project-owned helper to derive and
+            // deliver a PMK before first M1. Publish the
+            // (ssid, bssid, authtype) target on the PLTI boundary
+            // under the controller command gate; the helper's
+            // WaitAssociationTarget call returns with the assigned
+            // generation, derives the WPA2 PMK from the System
+            // keychain entry, and calls DeliverPMK with the
+            // generation echoed back. The kext sink validates the
+            // echo under the same command gate as the install, so a
+            // concurrent lifecycle reset cannot interleave between
+            // the check and the ic_psk write.
+            if (instance != nullptr) {
+                instance->publishPendingAssocTarget(
+                    ssid, ssid_len, bssid.octet,
+                    authtype_lower, authtype_upper);
+            }
+#endif
+        } else {
+#if __IO80211_TARGET >= __MAC_26_0
+            // PSK auth selected but no PMK carrier of any kind was
+            // identified on this edge. The earlier
+            // ieee80211_disable_rsn (run at the top of associateSSID
+            // when external_psk_path is false) already zeroed
+            // ic_psk; we just need to lock the helper out of this
+            // edge so a stale pending PLTI target from a prior
+            // external-owner association cannot accept a
+            // DeliverPMK. Non-destructive invalidate: leaves the
+            // already-empty PMK state alone but rejects future
+            // gated DeliverPMK calls.
+            if (instance != nullptr) {
+                instance->invalidatePendingAssocTargetOnly(
+                    "associateSSID_owner_none");
+            }
+#endif
+            ic->ic_external_pmk_owner = 0;
+            XYLog("associateSSID_owner SELECTED owner=none source=no_carrier "
+                  "key_len=%u ic_flags=0x%x\n",
+                  key_len, (unsigned)ic->ic_flags);
+        }
+        ieee80211_ioctl_setwpaparms(ic, &wpa);
+    }
+    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_SHA256_8021X)) {
+        XYLog("%s %d\n", __FUNCTION__, __LINE__);
+        wpa.i_akms |= IEEE80211_WPA_AKM_8021X | IEEE80211_WPA_AKM_SHA256_8021X;
+        wpa.i_enabled = 1;
+        ieee80211_ioctl_setwpaparms(ic, &wpa);
+    }
+
+    if (authtype_lower == APPLE80211_AUTHTYPE_SHARED) {
+        XYLog("shared key authentication is not supported!\n");
+        return;
+    }
+
+    if (authtype_upper == APPLE80211_AUTHTYPE_NONE && authtype_lower == APPLE80211_AUTHTYPE_OPEN) { // Open or WEP Open System
+        if (key_len > 0) {
+            XYLog("%s %d\n", __FUNCTION__, __LINE__);
+            nwkey.i_wepon = IEEE80211_NWKEY_WEP;
+            nwkey.i_defkid = key_index + 1;
+            nwkey.i_key[key_index].i_keylen = (int)key_len;
+            nwkey.i_key[key_index].i_keydat = key;
+            ieee80211_ioctl_setnwkeys(ic, &nwkey);
+        }
+    }
+}
+=== AA3 processBSDCommand body (1566..1610) ===
+IOReturn AirportItlwmSkywalkInterface::
+processBSDCommand(ifnet_t interface, UInt cmd, void *data)
+{
+    __atomic_add_fetch(&cr237_processBSDCommand_count, 1, __ATOMIC_RELAXED);
+    // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the
+    // IO80211InfraProtocol vtable. Our driver still implements those semantics
+    // as helper methods below, but without an explicit BSD-command bridge they
+    // never get called on 26.x.
+    //
+    // Evidence kept here so the reason for this bridge is not lost:
+    // - airportd repeatedly queried APPLE80211_IOC_SSID and received
+    //   0xe0822403 / "driver not available", aborting auto-join.
+    // - docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/89_remaining_gaps_closed_checked.yaml
+    //   shows Tahoe first tries WCL and then expects driver fallback behavior
+    //   matching IO80211Controller cache semantics (success + zeroed data).
+    // - Our Tahoe target does not build AirportSTAIOCTL.cpp, so the old ioctl
+    //   dispatcher never runs here; the BSD path must forward these requests.
+    if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
+        apple80211req *req = static_cast<apple80211req *>(data);
+        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
+            XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p ifnet=%p\n",
+                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
+                  req->req_type, req->req_data, interface);
+        }
+        IOReturn ret = processApple80211Ioctl(cmd, req);
+        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
+            XYLog("DEBUG %s RET cmd=0x%x req=%s(%d) ret=0x%x\n",
+                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
+                  req->req_type, ret);
+        }
+        if (ret != kIOReturnUnsupported)
+            return ret;
+    }
+    return super::processBSDCommand(interface, cmd, data);
+}
+
+// CR-231 BRANCH 4+5: log every apple80211 IOCTL airportd issues.
+// Centralized at the dispatch entry point so we capture the request
+// type + cmd direction even before the per-handler switch. Per-call
+// rate-limited (16 emissions per process lifetime) to bound log spam
+// during airportd's polling loops.
+#define CR231_IOCTL_LOG_LIMIT 16
+#define CR231_IOCTL_LOG(fmt, ...) do { \
+    static volatile unsigned int _cr231_iocn; \
+    unsigned int _v = ++_cr231_iocn; \
+
+=== AA4 processApple80211Ioctl IOC_ASSOCIATE case (1770..1790) ===
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_NOISE:
+            return (cmd == SIOCGA80211) ? getNOISE((apple80211_noise_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RSSI:
+            return (cmd == SIOCGA80211) ? getRSSI((apple80211_rssi_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_ASSOCIATE:
+            return (cmd == SIOCSA80211) ? setASSOCIATE((apple80211_assoc_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_DISASSOCIATE:
+            return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_RATE:
+            if (cmd == SIOCGA80211)
+                return getRATE((apple80211_rate_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setRATE((apple80211_rate_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_GUARD_INTERVAL:
+            return (cmd == SIOCGA80211) ? getGUARD_INTERVAL((apple80211_guard_interval_data *)req->req_data)
+=== BB1 iwn_attach sc_newstate save (598..610) ===
+    ic->ic_ampdu_tx_start = iwn_ampdu_tx_start;
+    ic->ic_ampdu_tx_stop = iwn_ampdu_tx_stop;
+    ic->ic_update_chw = iwn_update_chw;
+
+    /* Override 802.11 state transition machine. */
+    sc->sc_newstate = ic->ic_newstate;
+    ic->ic_newstate = iwn_newstate;
+    ieee80211_media_init(ifp);
+
+    sc->amrr.amrr_min_success_threshold =  1;
+    sc->amrr.amrr_max_success_threshold = 15;
+
+#if NBPFILTER > 0
+
+=== BB2 iwn_newstate body (1863..1960) ===
+iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
+{
+    XYLog("%s nstate=%d\n", __FUNCTION__, nstate);
+    struct _ifnet *ifp = &ic->ic_if;
+    struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
+    struct ieee80211_node *ni = ic->ic_bss;
+    ItlIwn *that = container_of(sc, ItlIwn, com);
+    int error;
+
+    if (ic->ic_state == IEEE80211_S_RUN) {
+        if (nstate == IEEE80211_S_SCAN) {
+            /*
+             * During RUN->SCAN we don't call sc_newstate() so
+             * we must stop A-MPDU Tx ourselves in this case.
+             */
+            ieee80211_stop_ampdu_tx(ic, ni, -1);
+            ieee80211_ba_del(ni);
+        }
+        timeout_del(&sc->calib_to);
+        sc->calib.state = IWN_CALIB_STATE_INIT;
+        if (sc->sc_flags & IWN_FLAG_BGSCAN)
+            that->iwn_scan_abort(sc);
+    }
+
+    if (ic->ic_state == IEEE80211_S_SCAN) {
+        if (nstate == IEEE80211_S_SCAN) {
+            if (sc->sc_flags & IWN_FLAG_SCANNING)
+                return 0;
+        } else
+            sc->sc_flags &= ~IWN_FLAG_SCANNING;
+        /* Turn LED off when leaving scan state. */
+        that->iwn_set_led(sc, IWN_LED_LINK, 1, 0);
+    }
+
+    if (ic->ic_state >= IEEE80211_S_ASSOC &&
+        nstate <= IEEE80211_S_ASSOC) {
+        /* Reset state to handle re- and disassociations. */
+        sc->rxon.associd = 0;
+        sc->rxon.filter &= ~htole32(IWN_FILTER_BSS);
+        sc->rxon.flags &= ~htole32(IWN_RXON_HT_CHANMODE_MIXED2040 |
+                                   IWN_RXON_HT_CHANMODE_PURE40 | IWN_RXON_HT_HT40MINUS);
+        sc->calib.state = IWN_CALIB_STATE_INIT;
+        sc->agg_queue_mask = 0;
+        error = that->iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
+        if (error != 0)
+            XYLog("%s: RXON command failed\n",
+                sc->sc_dev.dv_xname);
+    }
+
+    switch (nstate) {
+    case IEEE80211_S_SCAN:
+        /* Make the link LED blink while we're scanning. */
+        that->iwn_set_led(sc, IWN_LED_LINK, 10, 10);
+
+        if ((sc->sc_flags & IWN_FLAG_BGSCAN) == 0) {
+            ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+            ieee80211_node_cleanup(ic, ic->ic_bss);
+        }
+        if (ifp->if_flags & IFF_DEBUG)
+            XYLog("%s: %s -> %s\n", ifp->if_xname,
+                ieee80211_state_name[ic->ic_state],
+                ieee80211_state_name[nstate]);
+        ic->ic_state = nstate;
+        if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {
+            printf("%s: could not initiate scan\n",
+                sc->sc_dev.dv_xname);
+        }
+        return error;
+
+    case IEEE80211_S_ASSOC:
+        if (ic->ic_state != IEEE80211_S_RUN)
+            break;
+        /* FALLTHROUGH */
+    case IEEE80211_S_AUTH:
+        if ((error = that->iwn_auth(sc, arg)) != 0) {
+            XYLog("%s: could not move to auth state\n",
+                sc->sc_dev.dv_xname);
+            return error;
+        }
+        break;
+
+    case IEEE80211_S_RUN:
+        if ((error = that->iwn_run(sc)) != 0) {
+            XYLog("%s: could not move to run state\n",
+                sc->sc_dev.dv_xname);
+            return error;
+        }
+        break;
+
+    case IEEE80211_S_INIT:
+        sc->calib.state = IWN_CALIB_STATE_INIT;
+        break;
+    }
+
+    return sc->sc_newstate(ic, nstate, arg);
+}
+
+void ItlIwn::
+
+=== BB3 iwn_auth body (5777..5876) ===
+iwn_auth(struct iwn_softc *sc, int arg)
+{
+    XYLog("%s\n", __FUNCTION__);
+    struct iwn_ops *ops = &sc->ops;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_node *ni = ic->ic_bss;
+    int error, ridx;
+    int bss_switch =
+        (!IEEE80211_ADDR_EQ(sc->bss_node_addr, etheranyaddr) &&
+        !IEEE80211_ADDR_EQ(sc->bss_node_addr, ni->ni_macaddr));
+
+    /* Update adapter configuration. */
+    IEEE80211_ADDR_COPY(sc->rxon.bssid, ni->ni_bssid);
+    sc->rxon.chan = ieee80211_chan2ieee(ic, ni->ni_chan);
+    sc->rxon.flags = htole32(IWN_RXON_TSF | IWN_RXON_CTS_TO_SELF);
+    if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan)) {
+        sc->rxon.flags |= htole32(IWN_RXON_AUTO | IWN_RXON_24GHZ);
+        if (ic->ic_flags & IEEE80211_F_USEPROT)
+            sc->rxon.flags |= htole32(IWN_RXON_TGG_PROT);
+        DPRINTF(("%s: 2ghz prot 0x%x\n", __func__,
+            le32toh(sc->rxon.flags)));
+    }
+    if (ic->ic_flags & IEEE80211_F_SHSLOT)
+        sc->rxon.flags |= htole32(IWN_RXON_SHSLOT);
+    else
+        sc->rxon.flags &= ~htole32(IWN_RXON_SHSLOT);
+    if (ic->ic_flags & IEEE80211_F_SHPREAMBLE)
+        sc->rxon.flags |= htole32(IWN_RXON_SHPREAMBLE);
+    else
+        sc->rxon.flags &= ~htole32(IWN_RXON_SHPREAMBLE);
+    switch (ic->ic_curmode) {
+    case IEEE80211_MODE_11A:
+        sc->rxon.cck_mask  = 0;
+        sc->rxon.ofdm_mask = 0x15;
+        break;
+    case IEEE80211_MODE_11B:
+        sc->rxon.cck_mask  = 0x03;
+        sc->rxon.ofdm_mask = 0;
+        break;
+    default:    /* Assume 802.11b/g/n. */
+        sc->rxon.cck_mask  = 0x0f;
+        sc->rxon.ofdm_mask = 0x15;
+    }
+    /* Configure 40MHz early to avoid problems on 6205 devices. */
+    iwn_rxon_configure_ht40(ic, ni);
+    DPRINTF(("%s: rxon chan %d flags %x cck %x ofdm %x\n", __func__,
+        sc->rxon.chan, le32toh(sc->rxon.flags), sc->rxon.cck_mask,
+        sc->rxon.ofdm_mask));
+    error = iwn_cmd(sc, IWN_CMD_RXON, &sc->rxon, sc->rxonsz, 1);
+    if (error != 0) {
+        XYLog("%s: RXON command failed\n", sc->sc_dev.dv_xname);
+        return error;
+    }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): RXON OK. */
+    IWX_AUTH_DIAG("iwn_auth: RXON OK chan=%u\n",
+          (unsigned)sc->rxon.chan);
+
+    /* Configuration has changed, set TX power accordingly. */
+    if ((error = ops->set_txpower(sc, 1)) != 0) {
+        XYLog("%s: could not set TX power\n", sc->sc_dev.dv_xname);
+        return error;
+    }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): set_txpower OK. */
+    IWX_AUTH_DIAG("iwn_auth: set_txpower OK\n");
+    /*
+     * Reconfiguring RXON clears the firmware nodes table so we must
+     * add the broadcast node again.
+     */
+    ridx = IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ?
+        IWN_RIDX_OFDM : IWN_RIDX_CCK;
+    if ((error = iwn_add_broadcast_node(sc, 1, ridx)) != 0) {
+        XYLog("%s: could not add broadcast node\n",
+            sc->sc_dev.dv_xname);
+        return error;
+    }
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL): add_broadcast_node OK. */
+    IWX_AUTH_DIAG("iwn_auth: add_broadcast_node OK ridx=%d\n", ridx);
+
+    /*
+     * Make sure the firmware gets to see a beacon before we send
+     * the auth request. Otherwise the Tx attempt can fail due to
+     * the firmware's built-in regulatory domain enforcement.
+     * Delaying here for every incoming deauth frame can result in a DoS.
+     * Don't delay if we're here because of an incoming frame (arg != -1)
+     * or if we're already waiting for a response (ic_mgt_timer != 0).
+     * If we are switching APs after a background scan then net80211 has
+     * just faked the reception of a deauth frame from our old AP, so it
+     * is safe to delay in that case.
+     */
+    if ((arg == -1 || bss_switch) && ic->ic_mgt_timer == 0)
+        DELAY(ni->ni_intval * 3 * IEEE80211_DUR_TU);
+
+    /* We can now clear the cached address of our previous AP. */
+    memset(sc->bss_node_addr, 0, sizeof(sc->bss_node_addr));
+
+    /* Diagnostic probe (auth-ACK boundary, iwn HAL):
+     * iwn_auth completed without error. */
+    IWX_AUTH_DIAG("iwn_auth: returning err=0\n");
+    return 0;
+}
+=== CC1 ieee80211_node_join_bss body (1261..1346) ===
+ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, int force_reauth)
+{
+    XYLog("%s selbs=%s mac=%s chan=%d rssi=%d protos=%d akms=%d ciphers=%d\n", __FUNCTION__, selbs->ni_essid, ether_sprintf(selbs->ni_bssid), ieee80211_chan2ieee(ic, selbs->ni_chan), selbs->ni_rssi, selbs->ni_rsnprotos, selbs->ni_rsnakms, selbs->ni_rsnciphers);
+    enum ieee80211_phymode mode;
+    struct ieee80211_node *ni;
+    uint32_t assoc_fail = 0;
+
+    /* Reinitialize media mode and channels if needed. */
+    mode = ieee80211_chan2mode(ic, selbs->ni_chan);
+    if (mode != ic->ic_curmode)
+        ieee80211_setmode(ic, mode);
+
+    /* Keep recorded association failures for this BSS/ESS intact. */
+    if (IEEE80211_ADDR_EQ(ic->ic_bss->ni_macaddr, selbs->ni_macaddr) ||
+        (ic->ic_des_esslen > 0 && ic->ic_des_esslen == selbs->ni_esslen &&
+         memcmp(ic->ic_des_essid, selbs->ni_essid, selbs->ni_esslen) == 0))
+        assoc_fail = ic->ic_bss->ni_assoc_fail;
+
+    (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
+    ni = ic->ic_bss;
+    ni->ni_assoc_fail |= assoc_fail;
+
+    ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
+
+    /* Make sure we send valid rates in an association request. */
+    if (ic->ic_opmode == IEEE80211_M_STA)
+        ieee80211_fix_rate(ic, ni,
+                           IEEE80211_F_DOSORT | IEEE80211_F_DOFRATE |
+                           IEEE80211_F_DONEGO | IEEE80211_F_DODEL);
+
+    if (ic->ic_flags & IEEE80211_F_RSNON)
+        ieee80211_choose_rsnparams(ic);
+    else if (ic->ic_flags & IEEE80211_F_WEPON)
+        ni->ni_rsncipher = IEEE80211_CIPHER_USEGROUP;
+
+    ieee80211_node_newstate(selbs, IEEE80211_STA_BSS);
+#ifndef IEEE80211_STA_ONLY
+    if (ic->ic_opmode == IEEE80211_M_IBSS) {
+        ieee80211_fix_rate(ic, ni, IEEE80211_F_DOFRATE |
+                           IEEE80211_F_DONEGO | IEEE80211_F_DODEL);
+        if (ni->ni_rates.rs_nrates == 0) {
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            return;
+        }
+        ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+    } else
+#endif
+    {
+        int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
+                      ic->ic_opmode == IEEE80211_M_STA &&
+                      ic->ic_state == IEEE80211_S_RUN);
+        int roamscan = bgscan &&
+                    (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
+        int auth_next = (ic->ic_opmode == IEEE80211_M_STA &&
+                         ic->ic_state == IEEE80211_S_AUTH);
+        int mgt = -1;
+
+        XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
+
+        timeout_del(&ic->ic_bgscan_timeout);
+        ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+
+        if (!force_reauth) {
+            /*
+             * After a background scan, we have now switched APs.
+             * Pretend we were just de-authed, which makes
+             * ieee80211_new_state() try to re-auth and thus send
+             * an AUTH frame to our newly selected AP.
+             */
+            if (roamscan)
+                mgt = IEEE80211_FC0_SUBTYPE_DEAUTH;
+            /*
+             * If we are trying another AP after the previous one
+             * failed (state transition AUTH->AUTH), ensure that
+             * ieee80211_new_state() tries to send another auth frame.
+             */
+            else if (auth_next)
+                mgt = IEEE80211_FC0_SUBTYPE_AUTH;
+        } else {
+            mgt = IEEE80211_FC0_SUBTYPE_DEAUTH;
+        }
+
+        ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);
+    }
+}
+
+
+=== CC2 ieee80211_end_scan body head (1433..1635) ===
+ieee80211_end_scan(struct _ifnet *ifp)
+{
+    struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    struct ieee80211_node *ni, *selbs = NULL, *curbs = NULL;
+    int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
+                  ic->ic_opmode == IEEE80211_M_STA &&
+                  ic->ic_state == IEEE80211_S_RUN);
+    int roamscan = bgscan &&
+                (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
+
+    if (ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_DONE, NULL);
+
+    if (ifp->if_flags & IFF_DEBUG)
+        XYLog("%s: end %s scan\n", ifp->if_xname,
+              bgscan ? (roamscan ? "roam" : "background") :
+              ((ic->ic_flags & IEEE80211_F_ASCAN) ?
+               "active" : "passive"));
+
+    if (ic->ic_scan_count)
+        ic->ic_flags &= ~IEEE80211_F_ASCAN;
+
+    if (ic->ic_opmode == IEEE80211_M_STA)
+        ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
+
+    ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
+
+#ifndef IEEE80211_STA_ONLY
+    if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
+        /* XXX off stack? */
+        u_char occupied[howmany(IEEE80211_CHAN_MAX, NBBY)];
+        int i, fail;
+
+        /*
+         * The passive scan to look for existing AP's completed,
+         * select a channel to camp on.  Identify the channels
+         * that already have one or more AP's and try to locate
+         * an unoccupied one.  If that fails, pick a random
+         * channel from the active set.
+         */
+        memset(occupied, 0, sizeof(occupied));
+        RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree)
+        setbit(occupied, ieee80211_chan2ieee(ic, ni->ni_chan));
+        for (i = 0; i < IEEE80211_CHAN_MAX; i++)
+            if (isset(ic->ic_chan_active, i) && isclr(occupied, i))
+                break;
+        if (i == IEEE80211_CHAN_MAX) {
+            fail = arc4random() & 3;	/* random 0-3 */
+            for (i = 0; i < IEEE80211_CHAN_MAX; i++)
+                if (isset(ic->ic_chan_active, i) && fail-- == 0)
+                    break;
+        }
+        ieee80211_create_ibss(ic, &ic->ic_channels[i]);
+        return;
+    }
+#endif
+    if (ni == NULL) {
+        DPRINTF(("no scan candidate\n"));
+    notfound:
+
+#ifndef IEEE80211_STA_ONLY
+        if (ic->ic_opmode == IEEE80211_M_IBSS &&
+            (ic->ic_flags & IEEE80211_F_IBSSON) &&
+            ic->ic_des_esslen != 0) {
+            ieee80211_create_ibss(ic, ic->ic_ibss_chan);
+            return;
+        }
+#endif
+        if (ic->ic_state != IEEE80211_S_RUN) {
+            /*
+             * Reset the list of channels to scan and scan the next mode
+             * if nothing has been found.
+             * If the device scans all bands in one fell swoop, return
+             * current scan results to userspace regardless of mode.
+             * This will loop forever until an access point is found.
+             */
+            ieee80211_reset_scan(ifp);
+            if (ieee80211_next_mode(ifp) == IEEE80211_MODE_AUTO ||
+                (ic->ic_caps & IEEE80211_C_SCANALLBAND))
+                ic->ic_scan_count++;
+
+            ieee80211_next_scan(ifp);
+        }
+        return;
+    }
+
+    /* Possibly switch which ssid we are associated with */
+    if (!bgscan && ic->ic_opmode == IEEE80211_M_STA)
+        ieee80211_switch_ess(ic);
+
+    /*
+     * Apple/macOS: do NOT auto-select or join a BSS when
+     * AUTO_JOIN && des_esslen==0.
+     *
+     * In the Apple model, airportd handles network selection.  The scan
+     * populates ic_tree, IEEE80211_EVT_SCAN_DONE was delivered above,
+     * and the driver must now wait for airportd to read results via
+     * getSCAN_RESULT and issue APPLE80211_IOC_ASSOCIATE.
+     *
+     * Without this early return, the OpenBSD path below calls
+     * ieee80211_node_choose_bss → ieee80211_node_join_bss, which sends
+     * AUTH frames to the highest-RSSI AP without any credentials.
+     * For encrypted APs this causes a pointless AUTH→ASSOC→4-way-fail→
+     * SCAN cycle; for open APs the driver would auto-associate with a
+     * random network.  Either way it's wrong in the Apple model.
+     *
+     * Apple's BCM scanComplete() posts APPLE80211_M_SCAN_DONE and
+     * returns — no BSS selection or auto-join at the driver level.
+     */
+    if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
+        ic->ic_des_esslen == 0)
+        return;
+
+    selbs = ieee80211_node_choose_bss(ic, bgscan, &curbs);
+    if (bgscan) {
+        struct ieee80211_node_switch_bss_arg *arg;
+
+        ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        if (!roamscan) {
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+            return;
+        }
+
+        /* AP disappeared? Should not happen. */
+        if (selbs == NULL || curbs == NULL) {
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+            XYLog("%s %d AP disappeared? Should not happen.\n", __FUNCTION__, __LINE__);
+            goto notfound;
+        }
+
+        /*
+         * After a background scan we might end up choosing the
+         * same AP again. Do not change ic->ic_bss in this case,
+         * and make background scans less frequent.
+         */
+        if (selbs == curbs) {
+            if (ic->ic_bgscan_fail < IEEE80211_BGSCAN_FAIL_MAX)
+                ic->ic_bgscan_fail++;
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+            /*
+              * HT is negotiated during association so we must use
+              * ic_bss to check HT. The nodes tree was re-populated
+              * during background scan and therefore selbs and curbs
+              * may not carry HT information.
+              */
+             ni = ic->ic_bss;
+             if (ni->ni_flags & IEEE80211_NODE_HE)
+                 ieee80211_setmode(ic, IEEE80211_MODE_11AX);
+             else if (ni->ni_flags & IEEE80211_NODE_VHT)
+                ieee80211_setmode(ic, IEEE80211_MODE_11AC);
+             else if (ni->ni_flags & IEEE80211_NODE_HT)
+                 ieee80211_setmode(ic, IEEE80211_MODE_11N);
+             else
+                 ieee80211_setmode(ic,
+                     ieee80211_chan2mode(ic, ni->ni_chan));
+            return;
+        }
+
+        arg = (struct ieee80211_node_switch_bss_arg *)malloc(sizeof(*arg), 0, 0);
+        if (arg == NULL) {
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+            return;
+        }
+
+        ic->ic_bgscan_fail = 0;
+
+        /*
+         * We are going to switch APs. Stop A-MPDU Tx and
+         * queue a de-auth frame addressed to our current AP.
+         */
+        ieee80211_stop_ampdu_tx(ic, ic->ic_bss,
+                                IEEE80211_FC0_SUBTYPE_DEAUTH);
+        if (IEEE80211_SEND_MGMT(ic, ic->ic_bss,
+                                IEEE80211_FC0_SUBTYPE_DEAUTH,
+                                IEEE80211_REASON_AUTH_LEAVE) != 0) {
+            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+            free(arg);
+            return;
+        }
+
+        /* Prevent dispatch of additional data frames to hardware. */
+        ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+
+        /*
+         * Install a callback which will switch us to the new AP once
+         * all dispatched frames have been processed by hardware.
+         */
+        IEEE80211_ADDR_COPY(arg->cur_macaddr, curbs->ni_macaddr);
+        IEEE80211_ADDR_COPY(arg->sel_macaddr, selbs->ni_macaddr);
+        ic->ic_bss->ni_unref_arg = arg;
+        ic->ic_bss->ni_unref_arg_size = sizeof(*arg);
+        ic->ic_bss->ni_unref_cb = ieee80211_node_switch_bss;
+        /* F_BGSCAN flag gets cleared in ieee80211_node_join_bss(). */
+        return;
+    } else if (selbs == NULL)
+        goto notfound;
+
+    ieee80211_node_join_bss(ic, selbs);
+}
+
+/*
+ * Autoselect the best RSN parameters (protocol, AKMP, pairwise cipher...)
+ * that are supported by both peers (STA mode only).
+=== CC3 ic_newstate/ic_send_mgmt assignments (110..125) ===
+	ic->ic_fixed_rate = -1;			/* no fixed rate */
+	ic->ic_fixed_mcs = -1;			/* no fixed mcs */
+	ic->ic_protmode = IEEE80211_PROT_CTSONLY;
+
+	/* protocol state change handler */
+	ic->ic_newstate = ieee80211_newstate;
+
+	/* initialize management frame handlers */
+	ic->ic_recv_mgmt = ieee80211_recv_mgmt;
+	ic->ic_send_mgmt = ieee80211_send_mgmt;
+}
+
+void
+ieee80211_proto_detach(struct _ifnet *ifp)
+{
+    XYLog("%s\n", __FUNCTION__);
+=== DD1 ieee80211_newstate AUTH branch (1572..1645) ===
+	case IEEE80211_S_AUTH:
+        ieee80211_clean_sta_bss_node(ic);
+		if (ostate == IEEE80211_S_RUN)
+			ieee80211_check_wpa_supplicant_failure(ic, ni);
+		ni->ni_rsn_supp_state = RSNA_SUPP_INITIALIZE;
+		if (ic->ic_flags & IEEE80211_F_RSNON)
+			ieee80211_crypto_clear_groupkeys(ic);
+		switch (ostate) {
+		case IEEE80211_S_INIT:
+			if (ifp->if_flags & IFF_DEBUG)
+				XYLog("%s: invalid transition %s -> %s\n",
+				    ifp->if_xname, ieee80211_state_name[ostate],
+				    ieee80211_state_name[nstate]);
+			break;
+		case IEEE80211_S_SCAN:
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_AUTH, 1);
+			break;
+		case IEEE80211_S_AUTH:
+		case IEEE80211_S_ASSOC:
+			switch (mgt) {
+			case IEEE80211_FC0_SUBTYPE_AUTH:
+				if (ic->ic_opmode == IEEE80211_M_STA) {
+					IEEE80211_SEND_MGMT(ic, ni,
+					    IEEE80211_FC0_SUBTYPE_AUTH,
+					    IEEE80211_AUTH_OPEN_REQUEST);
+				}
+				break;
+			case IEEE80211_FC0_SUBTYPE_DEAUTH:
+				/* ignore and retry scan on timeout */
+				break;
+			}
+			break;
+		case IEEE80211_S_RUN:
+			timeout_del(&ic->ic_bgscan_timeout);
+			ic->ic_bgscan_fail = 0;
+			ieee80211_stop_ampdu_tx(ic, ni, mgt);
+			ieee80211_ba_del(ni);
+			switch (mgt) {
+			case IEEE80211_FC0_SUBTYPE_AUTH:
+				IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 2);
+				ic->ic_state = ostate;	/* stay RUN */
+				break;
+			case IEEE80211_FC0_SUBTYPE_DEAUTH:
+				/* try to reauth */
+				IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 1);
+				break;
+			}
+			break;
+		}
+		break;
+	case IEEE80211_S_ASSOC:
+		switch (ostate) {
+		case IEEE80211_S_INIT:
+		case IEEE80211_S_SCAN:
+		case IEEE80211_S_ASSOC:
+			if (ifp->if_flags & IFF_DEBUG)
+				XYLog("%s: invalid transition %s -> %s\n",
+				    ifp->if_xname, ieee80211_state_name[ostate],
+				    ieee80211_state_name[nstate]);
+			break;
+		case IEEE80211_S_AUTH:
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_ASSOC_REQ, 0);
+			break;
+		case IEEE80211_S_RUN:
+			ieee80211_stop_ampdu_tx(ic, ni, mgt);
+			ieee80211_ba_del(ni);
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_ASSOC_REQ, 1);
+			break;
+		}
+
+=== DD2 IEEE80211_SEND_MGMT macro (proto.h:62..68) ===
+#define	IEEE80211_S_MAX		(IEEE80211_S_RUN+1)
+
+#define	IEEE80211_SEND_MGMT(_ic,_ni,_type,_arg) \
+	((*(_ic)->ic_send_mgmt)(_ic, _ni, _type, _arg, 0))
+/* shortcut */
+#define IEEE80211_SEND_ACTION(_ic,_ni,_categ,_action,_arg) \
+	((*(_ic)->ic_send_mgmt)(_ic, _ni, IEEE80211_FC0_SUBTYPE_ACTION, \
+	    (_categ) << 16 | (_action), _arg))
+
+extern	const char * const ieee80211_mgt_subtype_name[];
+extern	const char * const ieee80211_state_name[IEEE80211_S_MAX];
+=== EE1 ieee80211_send_mgmt AUTH case (2040..2120) ===
+ieee80211_send_mgmt(struct ieee80211com *ic, struct ieee80211_node *ni,
+    int type, int arg1, int arg2)
+{
+#define	senderr(_x, _v)	do { ic->ic_stats._v++; ret = _x; goto bad; } while (0)
+	struct _ifnet *ifp = &ic->ic_if;
+	mbuf_t m;
+	int ret, timer;
+
+	if (ni == NULL)
+		panic("null node");
+
+	/*
+	 * Hold a reference on the node so it doesn't go away until after
+	 * the xmit is complete all the way in the driver.  On error we
+	 * will remove our reference.
+	 */
+	ieee80211_ref_node(ni);
+	timer = 0;
+	switch (type) {
+	case IEEE80211_FC0_SUBTYPE_PROBE_REQ:
+		if ((m = ieee80211_get_probe_req(ic, ni)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+
+		timer = IEEE80211_TRANS_WAIT;
+		break;
+#ifndef IEEE80211_STA_ONLY
+	case IEEE80211_FC0_SUBTYPE_PROBE_RESP:
+		if ((m = ieee80211_get_probe_resp(ic, ni)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+		break;
+#endif
+	case IEEE80211_FC0_SUBTYPE_AUTH:
+		m = ieee80211_get_auth(ic, ni, arg1 >> 16, arg1 & 0xffff);
+		if (m == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+
+		if (ic->ic_opmode == IEEE80211_M_STA)
+			timer = IEEE80211_TRANS_WAIT;
+		break;
+
+	case IEEE80211_FC0_SUBTYPE_DEAUTH:
+		if ((m = ieee80211_get_deauth(ic, ni, arg1)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+#ifndef IEEE80211_STA_ONLY
+		if ((ifp->if_flags & IFF_DEBUG) &&
+		    (ic->ic_opmode == IEEE80211_M_HOSTAP ||
+		    ic->ic_opmode == IEEE80211_M_IBSS))
+			XYLog("%s: station %s deauthenticate (reason %d)\n",
+			    ifp->if_xname, ether_sprintf(ni->ni_macaddr),
+			    arg1);
+#endif
+		break;
+
+	case IEEE80211_FC0_SUBTYPE_ASSOC_REQ:
+	case IEEE80211_FC0_SUBTYPE_REASSOC_REQ:
+		if ((m = ieee80211_get_assoc_req(ic, ni, type)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+
+		timer = IEEE80211_TRANS_WAIT;
+		break;
+#ifndef IEEE80211_STA_ONLY
+	case IEEE80211_FC0_SUBTYPE_ASSOC_RESP:
+	case IEEE80211_FC0_SUBTYPE_REASSOC_RESP:
+		if ((m = ieee80211_get_assoc_resp(ic, ni, arg1)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+		break;
+#endif
+	case IEEE80211_FC0_SUBTYPE_DISASSOC:
+		if ((m = ieee80211_get_disassoc(ic, ni, arg1)) == NULL)
+			senderr(ENOMEM, is_tx_nombuf);
+#ifndef IEEE80211_STA_ONLY
+		if ((ifp->if_flags & IFF_DEBUG) &&
+		    (ic->ic_opmode == IEEE80211_M_HOSTAP ||
+		    ic->ic_opmode == IEEE80211_M_IBSS))
+			XYLog("%s: station %s disassociate (reason %d)\n",
+			    ifp->if_xname, ether_sprintf(ni->ni_macaddr),
+			    arg1);
+#endif
+		break;
+
+	case IEEE80211_FC0_SUBTYPE_ACTION:
+
+=== EE2 ieee80211_mgmt_output mq_enqueue context (255..285) ===
+                if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
+                    IEEE80211_FC0_SUBTYPE_ACTION)
+                    subtype_name = ieee80211_action_name(wh);
+                else
+                    subtype_name = ieee80211_mgt_subtype_name[
+                        (type & IEEE80211_FC0_SUBTYPE_MASK) >>
+                        IEEE80211_FC0_SUBTYPE_SHIFT];
+                XYLog("%s: sending %s to %s on channel %u mode %s\n",
+                    ifp->if_xname, subtype_name,
+                    ether_sprintf(ni->ni_macaddr),
+                    ieee80211_chan2ieee(ic, ni->ni_chan),
+                    ieee80211_phymode_name[ic->ic_curmode]);
+            }
+        }
+
+    #ifndef IEEE80211_STA_ONLY
+        if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
+            ieee80211_pwrsave(ic, m, ni) != 0)
+            return 0;
+    #endif
+        mq_enqueue(&ic->ic_mgtq, m);
+        ifp->if_timer = 1;
+        ifp->if_start(ifp);
+        return 0;
+}
+
+/*-
+ * EDCA tables are computed using the following formulas:
+ *
+ * 1) EDCATable (non-AP QSTA)
+ *
+=== FF1 perl multi-line: IEEE80211_SEND_MGMT(.*?SUBTYPE_AUTH...) full output ===
+itl80211/openbsd/net80211/ieee80211_proto.c:1183: IEEE80211_SEND_MGMT(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH, seq + 1);
+---
+itl80211/openbsd/net80211/ieee80211_proto.c:1587: IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_AUTH, 1);
+---
+itl80211/openbsd/net80211/ieee80211_proto.c:1595: IEEE80211_SEND_MGMT(ic, ni,
+					    IEEE80211_FC0_SUBTYPE_AUTH,
+					    IEEE80211_AUTH_OPEN_REQUEST);
+---
+itl80211/openbsd/net80211/ieee80211_proto.c:1612: IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 2);
+---
+itl80211/openbsd/net80211/ieee80211_proto.c:1618: IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 1);
+---
+itl80211/openbsd/net80211/ieee80211_input.c:2340: IEEE80211_SEND_MGMT(ic, ni,
+                                IEEE80211_FC0_SUBTYPE_AUTH,
+                                IEEE80211_STATUS_ALG << 16 | ((seq + 1) & 0xfff));
+---
+
+=== FF2 context proto.c 1605..1635 (retry/shared-key branches) ===
+		case IEEE80211_S_RUN:
+			timeout_del(&ic->ic_bgscan_timeout);
+			ic->ic_bgscan_fail = 0;
+			ieee80211_stop_ampdu_tx(ic, ni, mgt);
+			ieee80211_ba_del(ni);
+			switch (mgt) {
+			case IEEE80211_FC0_SUBTYPE_AUTH:
+				IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 2);
+				ic->ic_state = ostate;	/* stay RUN */
+				break;
+			case IEEE80211_FC0_SUBTYPE_DEAUTH:
+				/* try to reauth */
+				IEEE80211_SEND_MGMT(ic, ni,
+				    IEEE80211_FC0_SUBTYPE_AUTH, 1);
+				break;
+			}
+			break;
+		}
+		break;
+	case IEEE80211_S_ASSOC:
+		switch (ostate) {
+		case IEEE80211_S_INIT:
+		case IEEE80211_S_SCAN:
+		case IEEE80211_S_ASSOC:
+			if (ifp->if_flags & IFF_DEBUG)
+				XYLog("%s: invalid transition %s -> %s\n",
+				    ifp->if_xname, ieee80211_state_name[ostate],
+				    ieee80211_state_name[nstate]);
+			break;
+		case IEEE80211_S_AUTH:
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_ASSOC_REQ, 0);
+			break;
+		case IEEE80211_S_RUN:
+			ieee80211_stop_ampdu_tx(ic, ni, mgt);
+			ieee80211_ba_del(ni);
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_ASSOC_REQ, 1);
+			break;
+		}
+
+=== FF3 context proto.c 1175..1195 (HOSTAP confirm) ===
+
+#ifndef IEEE80211_STA_ONLY
+void
+ieee80211_auth_open_confirm(struct ieee80211com *ic,
+    struct ieee80211_node *ni, uint16_t seq)
+{
+	struct _ifnet *ifp = &ic->ic_if;
+
+	IEEE80211_SEND_MGMT(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH, seq + 1);
+	if (ifp->if_flags & IFF_DEBUG)
+		XYLog("%s: station %s %s authenticated (open)\n",
+		    ifp->if_xname,
+		    ether_sprintf((u_int8_t *)ni->ni_macaddr),
+		    ni->ni_state != IEEE80211_STA_CACHE ?
+		    "newly" : "already");
+	ieee80211_node_newstate(ni, IEEE80211_STA_AUTH);
+}
+#endif
+
+void
+ieee80211_try_another_bss(struct ieee80211com *ic)
+
+=== FF4 context input.c 2330..2360 (RX-driven AUTH-RESP) ===
+          ((const u_int8_t *)wh->i_addr2)[5]);
+
+    /* only "open" auth mode is supported */
+    if (algo != IEEE80211_AUTH_ALG_OPEN) {
+        DPRINTF(("unsupported auth algorithm %d from %s\n",
+                 algo, ether_sprintf((u_int8_t *)wh->i_addr2)));
+        ic->ic_stats.is_rx_auth_unsupported++;
+#ifndef IEEE80211_STA_ONLY
+        if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
+            /* XXX hack to workaround calling convention */
+            IEEE80211_SEND_MGMT(ic, ni,
+                                IEEE80211_FC0_SUBTYPE_AUTH,
+                                IEEE80211_STATUS_ALG << 16 | ((seq + 1) & 0xfff));
+        }
+#endif
+        return;
+    }
+    ic->ic_deauth_reason = IEEE80211_REASON_UNSPECIFIED;
+    ic->ic_assoc_status = 0xffff;
+    ieee80211_auth_open(ic, wh, ni, rxi, seq, status);
+}
+
+#ifndef IEEE80211_STA_ONLY
+/*-
+ * (Re)Association request frame format:
+ * [2]   Capability information
+ * [2]   Listen interval
+ * [6*]  Current AP address (Reassociation only)
+ * [tlv] SSID
+ * [tlv] Supported rates
+ * [tlv] Extended Supported Rates (802.11g)
+
+=== FF5 ic_send_mgmt assignments ===
+itl80211/openbsd/net80211/ieee80211_proto.c:119:	ic->ic_send_mgmt = ieee80211_send_mgmt;
+
+=== FF6 ic_newstate assignments ===
+itlwm/hal_iwn/ItlIwn.cpp:604:    ic->ic_newstate = iwn_newstate;
+itlwm/hal_iwm/mac80211.cpp:4896:    ic->ic_newstate = iwm_newstate;
+itlwm/hal_iwx/ItlIwx.cpp.bak:13498:    ic->ic_newstate = iwx_newstate;
+itlwm/hal_iwx/ItlIwx.cpp:13616:    ic->ic_newstate = iwx_newstate;
+itl80211/openbsd/net80211/ieee80211_proto.c:115:	ic->ic_newstate = ieee80211_newstate;
+=== GG BootKC negative-evidence control (carried forward from GAP_5) ===
+
+Host: 10.7.6.112
+File: <analysis-output-root>/BootKernelExtensions.kc
+Size: 66650112 bytes
+Sha256: aaf052e7fcb4ee9c9a1e1d76a57e85966a853ea19cf9dc76183959ea416ca5a8
+
+  Total strings:          607314
+  ^iwn_                    0
+  IWN_CMD_                 0
+  ItlIwn                   0
+  itlwm                    0
+  intel.*iwn               0
+  iwlwifi                  0
+  iwn4965                  0
+  iwn_softc                0
+  ^IO80211 (control)       545
+
+The Intel iwn HAL is not duplicated in BootKernelExtensions.kc; the
+project kext is the only iwn implementation in the loaded system.
+This carries forward from GAP_5 unchanged.
