@@ -1,0 +1,237 @@
+=== CR-479 GAP_3 decomp evidence ===
+Program: BootKernelExtensions.kc
+BootKC sha (verified separately): see kc_all_symbols.txt header
+
+=== AppleBCMWLANInfraProtocol::setWCL_ASSOCIATE @ ffffff8001542cd2 ===
+FUNCTION_NOT_FOUND at this address
+
+=== AppleBCMWLANInfraProtocol::setWCL_REASSOC @ ffffff8001542b98 ===
+FUNCTION_NOT_FOUND at this address
+
+=== AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT @ ffffff8001542c2a ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT(apple80211_wcl_abort_join*)
+entry_point: ffffff8001542c2a
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_JOIN_ABORT(apple80211_wcl_abort_join*)()
+body_size: 52
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANJoinAdapter::abortFirmwareJoinSync(bool) @ ffffff800157a9c4
+DECOMPILE_FAILED: Exception while decompiling ffffff8001542c2a: Decompiler process died
+
+
+=== AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME @ ffffff8001542d7c ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*)
+entry_point: ffffff8001542d7c
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*)()
+body_size: 20
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANCore::setWCL_ACTION_FRAME(apple80211_wcl_action_frame*) @ ffffff8001636ab4
+DECOMPILE_FAILED: Exception while decompiling ffffff8001542d7c: Decompiler process died
+
+
+=== AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE @ ffffff8001542d02 ===
+symbol_at_address: AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE(void*)
+entry_point: ffffff8001542d02
+signature: undefined AppleBCMWLANInfraProtocol::setWCL_LINK_UP_DONE(void*)()
+body_size: 37
+callers_count: 0
+callees_count: 1
+  callee: AppleBCMWLANPowerManager::handleLinkUpConfiguration() @ ffffff80015714d2
+DECOMPILE_FAILED: Exception while decompiling ffffff8001542d02: Decompiler process died
+
+
+=== AppleBCMWLANInfraProtocol::setWCL_QOS_PARAMS @ ffffff8001542cee ===
+FUNCTION_NOT_FOUND at this address
+
+=== IO80211InfraInterface::processBSDCommand @ ffffff80022dea78 ===
+symbol_at_address: FUN_ffffff80022dea78
+entry_point: ffffff80022dea78
+signature: undefined FUN_ffffff80022dea78()
+body_size: 88
+callers_count: 2
+  caller: __ZN31AppleBCMWLANLowLatencyInterface17processBSDCommandEP7__ifnetjPv @ ffffff80015640ac
+  caller: (no enclosing function) @ ffffff80023e0b00
+callees_count: 0
+DECOMPILE_FAILED: Exception while decompiling ffffff80022dea78: Decompiler process died
+
+
+=== apple80211setAUTH_TYPE @ ffffff80021e7b01 ===
+symbol_at_address: FUN_ffffff80021e7b01
+entry_point: ffffff80021e7b01
+signature: undefined FUN_ffffff80021e7b01()
+body_size: 11
+callers_count: 0
+callees_count: 0
+DECOMPILE_FAILED: Exception while decompiling ffffff80021e7b01: Decompiler process died
+
+
+=== apple80211setASSOCIATE @ ffffff80021e7e2b ===
+symbol_at_address: FUN_ffffff80021e7e2b
+entry_point: ffffff80021e7e2b
+signature: undefined FUN_ffffff80021e7e2b()
+body_size: 51
+callers_count: 1
+  caller: ZL_setHOST_AP_MODE @ ffffff8002207949
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+DECOMPILE_FAILED: Exception while decompiling ffffff80021e7e2b: Decompiler process died
+
+
+=== apple80211setASSOC_READY_STATUS @ ffffff80021eb5cb ===
+symbol_at_address: FUN_ffffff80021eb5cb
+entry_point: ffffff80021eb5cb
+signature: undefined FUN_ffffff80021eb5cb()
+body_size: 11
+callers_count: 0
+callees_count: 0
+DECOMPILE_FAILED: Exception while decompiling ffffff80021eb5cb: Decompiler process died
+
+
+=== apple80211setRANGING_AUTHENTICATE @ ffffff80021e9a2f ===
+symbol_at_address: FUN_ffffff80021e9a2f
+entry_point: ffffff80021e9a2f
+signature: undefined FUN_ffffff80021e9a2f()
+body_size: 51
+callers_count: 0
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+DECOMPILE_FAILED: Exception while decompiling ffffff80021e9a2f: Decompiler process died
+
+
+=== apple80211setSTA_AUTHORIZE @ ffffff80021e83ba ===
+symbol_at_address: FUN_ffffff80021e83ba
+entry_point: ffffff80021e83ba
+signature: undefined FUN_ffffff80021e83ba()
+body_size: 51
+callers_count: 2
+  caller: FUN_ffffff800220826d @ ffffff800220826d
+  caller: FUN_ffffff80022d6186 @ ffffff80022d6186
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+DECOMPILE_FAILED: Exception while decompiling ffffff80021e83ba: Decompiler process died
+
+
+=== apple80211setSTA_DEAUTH @ ffffff80021e8464 ===
+symbol_at_address: FUN_ffffff80021e8464
+entry_point: ffffff80021e8464
+signature: undefined FUN_ffffff80021e8464()
+body_size: 51
+callers_count: 1
+  caller: FUN_ffffff80022d6248 @ ffffff80022d6248
+callees_count: 1
+  callee: FUN_ffffff80009ff310 @ ffffff80009ff310
+DECOMPILE_FAILED: Exception while decompiling ffffff80021e8464: Decompiler process died
+
+
+=== AppleBCMWLANJoinAdapter::performJoin @ ffffff8001576df8 ===
+symbol_at_address: AppleBCMWLANJoinAdapter::performJoin(apple80211AssocCandidates*)
+entry_point: ffffff8001576df8
+signature: undefined AppleBCMWLANJoinAdapter::performJoin(apple80211AssocCandidates*)()
+body_size: 77
+callers_count: 1
+  caller: AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*) @ ffffff80015fbacc
+callees_count: 1
+  callee: FUN_ffffff8000101100 @ ffffff8000101100
+DECOMPILE_FAILED: Exception while decompiling ffffff8001576df8: Decompiler process died
+
+
+=== AppleBCMWLANJoinAdapter::handleAuth @ ffffff800157c548 ===
+symbol_at_address: AppleBCMWLANJoinAdapter::handleAuth(wl_event_msg_t*)
+entry_point: ffffff800157c548
+signature: undefined AppleBCMWLANJoinAdapter::handleAuth(wl_event_msg_t*)()
+body_size: 494
+callers_count: 1
+  caller: AppleBCMWLANCore::handleAuthEvent(wl_event_msg_t*) @ ffffff80015bf9b8
+callees_count: 7
+  callee: IO80211_io80211isSensitiveInfoAllowed() @ ffffff800211a97e
+  callee: FUN_ffffff8003222788 @ ffffff8003222788
+  callee: FUN_ffffff8000a3bbe0 @ ffffff8000a3bbe0
+  callee: FUN_ffffff800163ee72 @ ffffff800163ee72
+  callee: FUN_ffffff8000104450 @ ffffff8000104450
+  callee: FUN_ffffff8000307340 @ ffffff8000307340
+  callee: FUN_ffffff8003222728 @ ffffff8003222728
+DECOMPILE_FAILED: Exception while decompiling ffffff800157c548: Decompiler process died
+
+
+=== AppleBCMWLANJoinAdapter::handleAssoc @ ffffff800157c9ca ===
+symbol_at_address: AppleBCMWLANJoinAdapter::handleAssoc(wl_event_msg_t*)
+entry_point: ffffff800157c9ca
+signature: undefined AppleBCMWLANJoinAdapter::handleAssoc(wl_event_msg_t*)()
+body_size: 494
+callers_count: 1
+  caller: AppleBCMWLANCore::handleAssocEvent(wl_event_msg_t*) @ ffffff80015bfb3e
+callees_count: 7
+  callee: IO80211_io80211isSensitiveInfoAllowed() @ ffffff800211a97e
+  callee: FUN_ffffff8003222788 @ ffffff8003222788
+  callee: FUN_ffffff8000a3bbe0 @ ffffff8000a3bbe0
+  callee: FUN_ffffff800163ee72 @ ffffff800163ee72
+  callee: FUN_ffffff8000104450 @ ffffff8000104450
+  callee: FUN_ffffff8000307340 @ ffffff8000307340
+  callee: FUN_ffffff8003222728 @ ffffff8003222728
+DECOMPILE_FAILED: Exception while decompiling ffffff800157c9ca: Decompiler process died
+
+
+=== AppleBCMWLANCore::handleAuthEvent @ ffffff80015bf9b8 ===
+symbol_at_address: AppleBCMWLANCore::handleAuthEvent(wl_event_msg_t*)
+entry_point: ffffff80015bf9b8
+signature: undefined AppleBCMWLANCore::handleAuthEvent(wl_event_msg_t*)()
+body_size: 389
+callers_count: 1
+  caller: (no enclosing function) @ ffffff8001591a71
+callees_count: 5
+  callee: AppleBCMWLANJoinAdapter::handleAuth(wl_event_msg_t*) @ ffffff800157c548
+  callee: __ZNK16AppleBCMWLANCore23handleExtendedEventDataEP14wl_event_msg_t @ ffffff80015b802e
+  callee: FUN_ffffff8000307340 @ ffffff8000307340
+  callee: AppleBCMWLANCore::processAuthEvenData(wl_event_msg_t*) @ ffffff80015dc2b4
+  callee: FUN_ffffff8002219ffe @ ffffff8002219ffe
+DECOMPILE_FAILED: Exception while decompiling ffffff80015bf9b8: Decompiler process died
+
+
+=== AppleBCMWLANCore::handleAssocEvent @ ffffff80015bfb3e ===
+symbol_at_address: AppleBCMWLANCore::handleAssocEvent(wl_event_msg_t*)
+entry_point: ffffff80015bfb3e
+signature: undefined AppleBCMWLANCore::handleAssocEvent(wl_event_msg_t*)()
+body_size: 247
+callers_count: 1
+  caller: (no enclosing function) @ ffffff80015918bc
+callees_count: 4
+  callee: __ZNK16AppleBCMWLANCore23handleExtendedEventDataEP14wl_event_msg_t @ ffffff80015b802e
+  callee: FUN_ffffff8000307340 @ ffffff8000307340
+  callee: AppleBCMWLANJoinAdapter::handleAssoc(wl_event_msg_t*) @ ffffff800157c9ca
+  callee: FUN_ffffff8002219ffe @ ffffff8002219ffe
+DECOMPILE_FAILED: Exception while decompiling ffffff80015bfb3e: Decompiler process died
+
+
+=== WCLNetManager::assocTimer @ ffffff800210fbb2 ===
+symbol_at_address: forced_ffffff800210fbb2
+entry_point: ffffff800210fbb2
+signature: undefined forced_ffffff800210fbb2()
+body_size: 17
+callers_count: 0
+callees_count: 0
+DECOMPILE_FAILED: Exception while decompiling ffffff800210fbb2: Decompiler process died
+
+
+=== WCLNetManager::setDEAUTH @ ffffff80021146e8 ===
+FUNCTION_NOT_FOUND at this address
+
+=== WCLJoinCandidateSelector::getJoinCandidatesList @ ffffff800211aeb2 ===
+symbol_at_address: FUN_ffffff800211aeb2
+entry_point: ffffff800211aeb2
+signature: undefined FUN_ffffff800211aeb2()
+body_size: 620
+callers_count: 1
+  caller: (no enclosing function) @ ffffff80021f8106
+callees_count: 10
+  callee: FUN_ffffff8002126148 @ ffffff8002126148
+  callee: WCLJoinCandidateSelector::removeLowRssiAPs(WCLJoinRequest*) @ ffffff800211b676
+  callee: FUN_ffffff800211b82e @ ffffff800211b82e
+  callee: WCLJoinCandidateSelector::removeFullyLoadedAPs(WCLJoinRequest*) @ ffffff800211b502
+  callee: WCLJoinCandidateSelector::fillCandidateDenyListedStatus(WCLJoinRequest*) @ ffffff800211b760
+  callee: FUN_ffffff8000307340 @ ffffff8000307340
+  callee: FUN_ffffff8003222728 @ ffffff8003222728
+  callee: WCLJoinCandidateSelector::populateJoinCandidates(WCLJoinRequest*) @ ffffff800211b35c
+  callee: WCLJoinCandidateSelector::sortJoinCandidates(WCLJoinRequest*) @ ffffff800211b8fc
+  callee: WCLJoinCandidateSelector::logJoinRequestIfNecessary(WCLJoinRequest*) @ ffffff800211b4b6
+DECOMPILE_FAILED: Exception while decompiling ffffff800211aeb2: Decompiler process died
