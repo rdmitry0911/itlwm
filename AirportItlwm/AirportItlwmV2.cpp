@@ -601,6 +601,86 @@ static constexpr UInt32 kAirportItlwmSkywalkQueueCapacity = 256;
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
 
+// Off-gate link-state publication layer.
+//
+// The inherited IO80211InfraInterface::setLinkState publication reaches
+// IO80211Glue::sendIOUCToWcl, which requires the IO80211 work-queue serial
+// owner to be on its own thread with the work-loop gate released. Invoking it
+// from inside getCommandGate()->runAction holds the recursive work-loop gate,
+// so the publication would observe inGate()==true and take the null-owner
+// panic branch. The publication is therefore deferred to a software
+// IOInterruptEventSource serviced by _fWorkloop (the same IO80211WorkQueue
+// serial owner) outside the command gate. The pending transition is a single
+// coalesced record: the latest accepted link state wins and the action
+// publishes exactly once per coalesced transition (no retry/replay).
+static IOInterruptEventSource *_fLinkStatePublishSource;
+static IOSimpleLock *_fLinkStatePublishLock;
+static bool _fLinkStatePublishPendingValid;
+static IO80211LinkState _fLinkStatePublishPendingState;
+static unsigned int _fLinkStatePublishPendingRawCode;
+
+static void publishLinkStateInterruptAction(OSObject *owner,
+                                            IOInterruptEventSource *sender,
+                                            int count)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == NULL || _fLinkStatePublishLock == NULL)
+        return;
+    IO80211LinkState linkState;
+    unsigned int rawCode;
+    bool valid;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
+    valid = _fLinkStatePublishPendingValid;
+    linkState = _fLinkStatePublishPendingState;
+    rawCode = _fLinkStatePublishPendingRawCode;
+    _fLinkStatePublishPendingValid = false;
+    IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
+    if (!valid)
+        return;
+    AirportItlwm::setLinkStateGated(that, (void *)(uintptr_t)linkState,
+                                    (void *)(uintptr_t)rawCode, NULL, NULL);
+}
+
+static void queueOffGateLinkStatePublish(AirportItlwm *that,
+                                         IO80211LinkState linkState,
+                                         unsigned int rawCode)
+{
+    if (_fLinkStatePublishSource == NULL || _fLinkStatePublishLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
+    _fLinkStatePublishPendingState = linkState;
+    _fLinkStatePublishPendingRawCode = rawCode;
+    _fLinkStatePublishPendingValid = true;
+    IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
+    _fLinkStatePublishSource->interruptOccurred(0, 0, 0);
+}
+
+// Drain and release the off-gate publication source. Idempotent. Must be called
+// before fNetIf is detached/released so a deferred action cannot reach the
+// publication worker after fNetIf's lifetime ends: removeEventSource drains the
+// in-flight action on the work-queue thread, and the pending record is cleared
+// so no further transition can be serviced.
+static void teardownLinkStatePublishSource(void)
+{
+    if (_fWorkloop && _fLinkStatePublishSource) {
+        _fLinkStatePublishSource->disable();
+        _fWorkloop->removeEventSource(_fLinkStatePublishSource);
+    }
+    if (_fLinkStatePublishLock) {
+        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
+        _fLinkStatePublishPendingValid = false;
+        IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
+    }
+    if (_fLinkStatePublishSource) {
+        _fLinkStatePublishSource->release();
+        _fLinkStatePublishSource = NULL;
+    }
+    if (_fLinkStatePublishLock) {
+        IOSimpleLockFree(_fLinkStatePublishLock);
+        _fLinkStatePublishLock = NULL;
+    }
+}
+
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
 RuntimeDiag sRT = {};
 
@@ -2750,6 +2830,7 @@ void AirportItlwm::releaseAll()
         scanSource->release();
         scanSource = NULL;
     }
+    teardownLinkStatePublishSource();
 #if __IO80211_TARGET >= __MAC_26_0
     skywalkTxDrainCompletionPackets(this);
     skywalkRxDrainPendingPackets(this);
@@ -3647,6 +3728,20 @@ bool AirportItlwm::start(IOService *provider)
     _fWorkloop->addEventSource(scanSource);
     scanSource->enable();
 
+    _fLinkStatePublishLock = IOSimpleLockAlloc();
+    _fLinkStatePublishPendingValid = false;
+    _fLinkStatePublishSource = IOInterruptEventSource::interruptEventSource(
+        this, (IOInterruptEventSource::Action)publishLinkStateInterruptAction);
+    if (_fLinkStatePublishLock == NULL || _fLinkStatePublishSource == NULL) {
+        XYLog("DEBUG %s [STEP 7] FAIL: link-state publish source alloc\n", __FUNCTION__);
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    _fWorkloop->addEventSource(_fLinkStatePublishSource);
+    _fLinkStatePublishSource->enable();
+
     SD_SET(10); // watchdog/scan timers OK
     sDiag.step = 7;
     XYLog("DEBUG %s [STEP 7] Skywalk interface init + attach\n", __FUNCTION__);
@@ -4226,6 +4321,10 @@ void AirportItlwm::stop(IOService *provider)
     sRT.stopStep = 3;
     XYLog("DEBUG %s [3] setLinkStatus\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
+    // Drain the off-gate publication source before fNetIf is detached/released
+    // below, so the deferred action cannot dereference fNetIf after its lifetime
+    // ends. releaseAll() calls this again (idempotent).
+    teardownLinkStatePublishSource();
     sRT.stopStep = 4;
     XYLog("DEBUG %s [4] fHalService->detach pciNub=%p\n", __FUNCTION__, pciNub);
     fHalService->detach(pciNub);
@@ -4599,7 +4698,7 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
             bsdInterface->startOutputThread();
 #endif
-            getCommandGate()->runAction(setLinkStateGated, (void *)kIO80211NetworkLinkUp, (void *)0);
+            queueOffGateLinkStatePublish(this, kIO80211NetworkLinkUp, 0);
         } else if (!(status & kIONetworkLinkNoNetworkChange)) {
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
             bsdInterface->stopOutputThread();
@@ -4607,7 +4706,7 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 #endif
             ifq_flush(&ifq->if_snd);
             mq_purge(&fHalService->get80211Controller()->ic_mgtq);
-            getCommandGate()->runAction(setLinkStateGated, (void *)kIO80211NetworkLinkDown, (void *)fHalService->get80211Controller()->ic_deauth_reason);
+            queueOffGateLinkStatePublish(this, kIO80211NetworkLinkDown, fHalService->get80211Controller()->ic_deauth_reason);
         }
     }
     return ret;
@@ -4623,10 +4722,47 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     sRT.lastLinkState = static_cast<int>((uint64_t)arg0);
     sRT.linkSetCount++;
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (that == NULL) {
+        XYLog("DEBUG %s skipped: null target\n", __FUNCTION__);
+        return kIOReturnNotReady;
+    }
     XYLog("DEBUG %s linkState=%u rawCode=%u power_state=%u\n",
           __FUNCTION__, static_cast<unsigned int>(linkState),
           rawCode, that->power_state);
 #if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Off-gate publication precondition guard, evaluated BEFORE any publication
+     * side effect. The inherited IO80211 publication path reaches
+     * IO80211Glue::sendIOUCToWcl, which requires the IO80211 work-queue serial
+     * owner to be on its own thread (onThread() == true) with the work-loop gate
+     * released (inGate() == false); otherwise it takes the null-owner panic
+     * branch. If the off-gate route did not reach this point with that
+     * precondition satisfied, perform NO link-state publication at all (no WCL
+     * link-up indication, reportLinkStatus, setLinkState, setRunningState,
+     * connect-complete, or postMessage) and return kIOReturnNotReady. This is a
+     * precondition guard, not retry/replay/masking/forced-success: when the
+     * precondition fails the link is simply not published (the negative branch).
+     */
+    if (that->fNetIf == NULL) {
+        XYLog("DEBUG %s skipped: null fNetIf\n", __FUNCTION__);
+        return kIOReturnNotReady;
+    }
+    {
+        IOWorkLoop *publishWorkLoop = that->getWorkLoop();
+        const int onThreadPred =
+            publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
+        const int inGatePred =
+            publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
+        const int onDispatchQueuePred =
+            ((IO80211InfraInterface *)that->fNetIf)->onDispatchQueue() ? 1 : 0;
+        XYLog("DEBUG %s linkstate-publish-predicate onThread=%d inGate=%d onDispatchQueue=%d\n",
+              __FUNCTION__, onThreadPred, inGatePred, onDispatchQueuePred);
+        if (!(onThreadPred == 1 && inGatePred == 0)) {
+            XYLog("DEBUG %s off-gate precondition not met (onThread=%d inGate=%d); skipping all link-state publication\n",
+                  __FUNCTION__, onThreadPred, inGatePred);
+            return kIOReturnNotReady;
+        }
+    }
     const unsigned int setLinkCode =
         (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
     that->syncTahoeCurrentApAddress(
@@ -4639,27 +4775,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-setLinkState", that->fNetIf);
     XYLog("DEBUG %s Tahoe: calling IO80211InfraInterface::setLinkState fNetIf=%p\n", __FUNCTION__, that->fNetIf);
-    /*
-     * Capture the work-loop ownership/gate predicates immediately before the
-     * inherited IO80211 link-state publication. The inherited publication path
-     * reaches IO80211Glue::sendIOUCToWcl, which requires execution on the
-     * IO80211 work-queue serial owner (onThread() == true) and NOT holding the
-     * work-loop gate (inGate() == false); otherwise it takes a null-owner panic
-     * branch. This capture is behavior-neutral (predicate reads only) and exists
-     * so the off-gate publication route can be validated against the recovered
-     * sendIOUCToWcl precondition.
-     */
-    {
-        IOWorkLoop *publishWorkLoop = that->getWorkLoop();
-        const int onThreadPred =
-            publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
-        const int inGatePred =
-            publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        const int onDispatchQueuePred =
-            ((IO80211InfraInterface *)that->fNetIf)->onDispatchQueue() ? 1 : 0;
-        XYLog("DEBUG %s linkstate-publish-predicate onThread=%d inGate=%d onDispatchQueue=%d\n",
-              __FUNCTION__, onThreadPred, inGatePred, onDispatchQueuePred);
-    }
+    // The off-gate precondition (onThread==1, inGate==0) was guarded at the top
+    // of this publication path; reaching here means it holds, so the inherited
+    // publication is safe to invoke.
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
     logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-setLinkState", that->fNetIf);
 #else
