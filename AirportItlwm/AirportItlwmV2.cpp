@@ -4639,6 +4639,27 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-setLinkState", that->fNetIf);
     XYLog("DEBUG %s Tahoe: calling IO80211InfraInterface::setLinkState fNetIf=%p\n", __FUNCTION__, that->fNetIf);
+    /*
+     * Capture the work-loop ownership/gate predicates immediately before the
+     * inherited IO80211 link-state publication. The inherited publication path
+     * reaches IO80211Glue::sendIOUCToWcl, which requires execution on the
+     * IO80211 work-queue serial owner (onThread() == true) and NOT holding the
+     * work-loop gate (inGate() == false); otherwise it takes a null-owner panic
+     * branch. This capture is behavior-neutral (predicate reads only) and exists
+     * so the off-gate publication route can be validated against the recovered
+     * sendIOUCToWcl precondition.
+     */
+    {
+        IOWorkLoop *publishWorkLoop = that->getWorkLoop();
+        const int onThreadPred =
+            publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
+        const int inGatePred =
+            publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
+        const int onDispatchQueuePred =
+            ((IO80211InfraInterface *)that->fNetIf)->onDispatchQueue() ? 1 : 0;
+        XYLog("DEBUG %s linkstate-publish-predicate onThread=%d inGate=%d onDispatchQueue=%d\n",
+              __FUNCTION__, onThreadPred, inGatePred, onDispatchQueuePred);
+    }
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
     logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-setLinkState", that->fNetIf);
 #else
