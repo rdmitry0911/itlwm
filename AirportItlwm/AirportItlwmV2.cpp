@@ -9,7 +9,7 @@
 #include "AirportItlwmV2.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
-#include "AirportItlwmAPSTAStage1Owner.hpp"
+#include "AirportItlwmAPSTAOwner.hpp"
 #include <sys/_netstat.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
@@ -2875,7 +2875,7 @@ void AirportItlwm::releaseAll()
     }
     /*
      * Tear down the host APSTA owner before fHalService.
-     * AirportItlwmAPSTAStage1Owner::teardown stops the lower AP
+     * AirportItlwmAPSTAOwner::teardown stops the lower AP
      * backend (if it was ever started) through fHalService and
      * clears the station table; running teardown after fHalService
      * has been released would leave the lower-stop call without a
@@ -2886,15 +2886,18 @@ void AirportItlwm::releaseAll()
      * owner storage is reclaimed. The unregister API requires the
      * cookie passed at register time and is a no-op when no
      * consumer is currently bound, so calling it unconditionally
-     * is safe.
+     * is safe in APSTA station-event opt-out builds. Default Tahoe
+     * builds keep IEEE80211_STA_ONLY and do not bind this bridge.
      */
     if (fAPSTAOwner != NULL) {
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
         if (fHalService != NULL) {
             struct ieee80211com *ic = fHalService->get80211Controller();
             if (ic != NULL) {
                 ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
             }
         }
+#endif
         fAPSTAOwner->release();
         fAPSTAOwner = NULL;
     }
@@ -6631,7 +6634,7 @@ deliverExternalPMK(const struct apple80211_key *key,
  * softapAppleVendorIETail51 and softapAppleVendorIETail59 are
  * pinned to +0x50/+0x51/+0x59 by the compile-time static_asserts
  * in AirportItlwmAPSTAInterface.hpp. The controller-layer selector
- * forwards input through AirportItlwmAPSTAStage1Owner::
+ * forwards input through AirportItlwmAPSTAOwner::
  * setSoftAPExtCaps when the host APSTA owner has been allocated by
  * role-7 create. When the owner is absent (default STA boot before
  * role-7 create) the recovered Apple body still returns success
@@ -6647,7 +6650,7 @@ deliverExternalPMK(const struct apple80211_key *key,
  * gate, the [1, IEEE80211_AID_DEF] clamp, the APSTA state-block
  * fields softapMaxAssoc04/softapMaxAssocLimit08, and the
  * net80211 ic->ic_max_aid mutation all live inside the host
- * APSTA owner (AirportItlwmAPSTAStage1Owner::setMisMaxSta and
+ * APSTA owner (AirportItlwmAPSTAOwner::setMisMaxSta and
  * setMaxAssoc) so the controller-layer selector is purely a
  * forward to the owner. When the owner is absent (default STA
  * boot before role-7 create) the recovered Apple body still
@@ -6674,7 +6677,7 @@ bool AirportItlwm::isHostApRunning() const
      * Recovered Apple AppleBCMWLAN APSTA contract: AP-up is true
      * only when the host APSTA owner is present (allocated by
      * role-7 create) AND the lower HAL backend has reported a
-     * successful startAPMode through AirportItlwmAPSTAStage1Owner::
+     * successful startAPMode through AirportItlwmAPSTAOwner::
      * startLowerIfReady. The iwx and iwm HALs do not currently
      * advertise AP/GO firmware support, so the owner's isApRunning
      * gate stays false in the present runtime; this preserves the
@@ -6696,14 +6699,14 @@ bool AirportItlwm::isHostApRunning() const
  * ensureAPSTAOwner is invoked from the role-7 (APPLE80211_VIF_SOFT_AP)
  * dispatch in AirportItlwmSkywalkInterface::setVIRTUAL_IF_CREATE.
  * It returns the existing owner if role-7 create has been called
- * before; otherwise it allocates a new AirportItlwmAPSTAStage1Owner
+ * before; otherwise it allocates a new AirportItlwmAPSTAOwner
  * and initializes it from the carrier descriptor. The owner stores
  * the carrier role, MAC address, and BSD name, and prepares the
  * APSTA state block (max-assoc default, beacon interval, DTIM)
  * before this function returns. AP-up remains false until a HAL
  * backend advertises AP/GO and startLowerIfReady succeeds.
  */
-AirportItlwmAPSTAStage1Owner *
+AirportItlwmAPSTAOwner *
 AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *create)
 {
     if (create == nullptr) {
@@ -6712,7 +6715,7 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
     if (fAPSTAOwner != NULL) {
         return fAPSTAOwner;
     }
-    AirportItlwmAPSTAStage1Owner *owner = new AirportItlwmAPSTAStage1Owner;
+    AirportItlwmAPSTAOwner *owner = new AirportItlwmAPSTAOwner;
     if (owner == NULL) {
         return nullptr;
     }
@@ -6723,27 +6726,29 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
     fAPSTAOwner = owner;
     /*
      * Bind the host APSTA owner as the net80211 station-event
-     * consumer for this controller. The producer bridge in
-     * ieee80211_node_join / ieee80211_node_leave publishes
+     * consumer only in the scoped APSTA station-event opt-out
+     * build. The producer bridge in ieee80211_node_join /
+     * ieee80211_node_leave publishes
      * IEEE80211_APSTA_EVENT_{ASSOC,REASSOC,LEAVE} when an AP
-     * station transitions; the registration is structurally
-     * inert in default IEEE80211_STA_ONLY builds because those
-     * publish call sites are not compiled. The producer-bridge
-     * register is idempotent for the same (cb, arg) pair and
-     * the bridge snapshots cb/arg at publication, so paired
-     * (un)register around owner lifetime is sufficient. A
-     * register failure is treated as non-fatal because the
-     * owner itself is functional without the bridge binding;
-     * the binding is only load-bearing once an AP-opt-out
-     * build compiles the publish call sites.
+     * station transitions; default Tahoe builds keep
+     * IEEE80211_STA_ONLY, do not compile those publish call sites,
+     * and do not register the bridge consumer. The producer-bridge
+     * register is idempotent for the same (cb, arg) pair and the
+     * bridge snapshots cb/arg at publication, so paired
+     * (un)register around owner lifetime is sufficient for the
+     * admitted opt-out surface. A register failure is treated as
+     * non-fatal because the owner itself is functional without the
+     * bridge binding.
      */
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
     if (fHalService != NULL) {
         struct ieee80211com *ic = fHalService->get80211Controller();
         if (ic != NULL) {
             (void)ieee80211_apsta_event_register(
-                ic, AirportItlwmAPSTAStage1Net80211Event, owner);
+                ic, AirportItlwmAPSTANet80211Event, owner);
         }
     }
+#endif
     return fAPSTAOwner;
 }
 
@@ -6751,14 +6756,14 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
  * Host APSTA owner cleanup.
  *
  * deleteAPSTAOwner is the explicit teardown path. It releases the
- * owner reference, which invokes AirportItlwmAPSTAStage1Owner::free
+ * owner reference, which invokes AirportItlwmAPSTAOwner::free
  * -> teardown -> stopLower, stopping the lower AP backend through
  * fHalService and clearing the station table before the owner
  * memory is reclaimed. The Tahoe Skywalk dispatch surface does
  * not expose a per-role-7 delete entry point, so this function is
- * reached through AirportItlwm::releaseAll during driver release;
- * the legacy AirportSTAIOCTL setVIRTUAL_IF_DELETE wiring will reuse
- * this path when its dispatch is migrated to the host owner in a
+ * reached through AirportItlwm::releaseAll during driver release
+ * and through the switch-only Tahoe VIRTUAL_IF_DELETE carrier
+ * after that dispatch is migrated to the host owner in this
  * follow-up layer.
  */
 void AirportItlwm::deleteAPSTAOwner()
@@ -6771,16 +6776,39 @@ void AirportItlwm::deleteAPSTAOwner()
      * owner so a producer with stale cb/arg cannot dispatch into
      * reclaimed owner storage. The unregister API uses the cookie
      * passed at register time and is a no-op when no consumer is
-     * currently bound.
+     * currently bound. Default Tahoe builds do not bind this bridge.
      */
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
     if (fHalService != NULL) {
         struct ieee80211com *ic = fHalService->get80211Controller();
         if (ic != NULL) {
             ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
         }
     }
+#endif
     fAPSTAOwner->release();
     fAPSTAOwner = NULL;
+}
+
+IOReturn AirportItlwm::deleteAPSTAOwnerForBSDName(const uint8_t *bsdName)
+{
+    /*
+     * The public delete carrier has no role field. Only the existing
+     * APSTA owner can represent role 7 in this driver, so match the
+     * carrier BSD name to that owner before releasing it. Non-matches
+     * and absent owners stay fail-closed and do not allocate, start,
+     * or publish any AP/GO state.
+     */
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+
+    if (!fAPSTAOwner->matchesBSDName(bsdName)) {
+        return kIOReturnUnsupported;
+    }
+
+    deleteAPSTAOwner();
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
@@ -6840,4 +6868,106 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
         return kIOReturnSuccess;
     }
     return fAPSTAOwner->setMisMaxSta(in);
+}
+
+IOReturn AirportItlwm::setAPSTA_SSID(OSObject *object,
+    struct apple80211_ssid_data *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return setSSID(object, in);
+    }
+    return fAPSTAOwner->setSSID(in);
+}
+
+IOReturn AirportItlwm::setAPSTA_CHANNEL(OSObject *object,
+    struct apple80211_channel_data *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return setCHANNEL(object, in);
+    }
+    return fAPSTAOwner->setChannel(in);
+}
+
+IOReturn AirportItlwm::setAPSTA_CIPHER_KEY(OSObject *object,
+    struct apple80211_key *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->setCipherKey(in);
+}
+
+IOReturn AirportItlwm::setHOST_AP_MODE_HIDDEN(OSObject *object,
+    AirportItlwmAPSTAHostApModeHiddenLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenNotUpReturn);
+    }
+    return fAPSTAOwner->setHostAPModeHidden(in);
+}
+
+IOReturn AirportItlwm::setSTA_AUTHORIZE(OSObject *object,
+    AirportItlwmAPSTAStaAuthorizeInputLayout *in)
+{
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAStaAuthorizeNullReturn);
+    }
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    return fAPSTAOwner->setStationAuthorization(in);
+}
+
+IOReturn AirportItlwm::setSTA_DISASSOCIATE(OSObject *object,
+    AirportItlwmAPSTAStaDisassocInputLayout *in,
+    bool deauth)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    return fAPSTAOwner->setStationDisassociation(in, deauth);
+}
+
+IOReturn AirportItlwm::setSOFTAP_PARAMS(OSObject *object,
+    AirportItlwmAPSTASoftAPParamsInputLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    return fAPSTAOwner->setSoftAPParams(in);
+}
+
+IOReturn AirportItlwm::setSOFTAP_TRIGGER_CSA(OSObject *object,
+    AirportItlwmAPSTACsaInputLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnNotReady;
+    }
+    return fAPSTAOwner->triggerCSA(
+        static_cast<uint16_t>(in->channel04.channelNumber04),
+        in->mode10);
+}
+
+IOReturn AirportItlwm::setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,
+    AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    return fAPSTAOwner->setSoftAPWifiNetworkInfoIE(in);
 }

@@ -710,6 +710,9 @@ public:
     // stub on Tahoe.
     virtual IOReturn setTX_MODE_CONFIG(apple80211_tx_mode_config *) override;
 
+    // Switch-only Tahoe APSTA delete carrier; not an IO80211InfraProtocol slot.
+    IOReturn setVIRTUAL_IF_DELETE(apple80211_virt_if_delete_data *);
+
 private:
     AirportItlwm *instance;
     ItlHalService *fHalService;

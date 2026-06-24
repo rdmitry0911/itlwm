@@ -14,14 +14,16 @@
 #    BUILD_OPT_OUT_STA_ONLY=1 ./scripts/build_tahoe.sh [BOOTKC_PATH]
 #
 #  --opt-out / BUILD_OPT_OUT_STA_ONLY=1 selects the AP-mode exploration
-#  build variant. The variant defines IEEE80211_OPT_OUT_STA_ONLY in
-#  GCC_PREPROCESSOR_DEFINITIONS, which the header-level enabler in
-#  itl80211/openbsd/net80211/ieee80211_var.h resolves into an undef
-#  of IEEE80211_STA_ONLY for every translation unit that includes the
-#  header. The result is a kext that compiles the AP/HOSTAP code paths
-#  in net80211 (including the ieee80211_apsta_event_publish call sites
-#  inside ieee80211_node_join and ieee80211_node_leave) without
-#  modifying the Xcode project file. The opt-out variant uses a
+#  build variant. The variant defines IEEE80211_OPT_OUT_STA_ONLY and
+#  IEEE80211_APSTA_STATION_EVENT_OPT_OUT in GCC_PREPROCESSOR_DEFINITIONS.
+#  The header-level enabler in
+#  itl80211/openbsd/net80211/ieee80211_var.h admits only the APSTA
+#  station-event HostAP/net80211 exploration surface to suppress
+#  IEEE80211_STA_ONLY for translation units that include the header.
+#  The result is a kext that compiles the AP/HOSTAP code paths in
+#  net80211 needed by ieee80211_apsta_event_publish call sites inside
+#  ieee80211_node_join and ieee80211_node_leave without modifying the
+#  Xcode project file. The opt-out variant uses a
 #  separate DerivedData directory and a separate staged output root,
 #  so opt-out builds never overwrite the default STA-only artifacts.
 #
@@ -62,7 +64,7 @@ CONFIGURATION="Debug"
 if [ "$OPT_OUT_STA_ONLY" -eq 1 ]; then
     VARIANT_LABEL="Tahoe-OptOut"
     DERIVED_DATA="$PROJECT_DIR/DerivedData-optout"
-    EXTRA_PP=" IEEE80211_OPT_OUT_STA_ONLY"
+    EXTRA_PP=" IEEE80211_OPT_OUT_STA_ONLY IEEE80211_APSTA_STATION_EVENT_OPT_OUT"
 else
     VARIANT_LABEL="Tahoe"
     DERIVED_DATA="$PROJECT_DIR/DerivedData"

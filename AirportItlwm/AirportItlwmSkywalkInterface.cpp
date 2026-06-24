@@ -9,7 +9,7 @@
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
-#include "AirportItlwmAPSTAStage1Owner.hpp"
+#include "AirportItlwmAPSTAOwner.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -1713,7 +1713,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // to airportd during bootstrap.
             return (cmd == SIOCGA80211)
                        ? getSSID((apple80211_ssid_data *)req->req_data)
-                       : kIOReturnUnsupported;
+                       : (instance != NULL
+                              ? instance->setAPSTA_SSID(this, (apple80211_ssid_data *)req->req_data)
+                              : kIOReturnNotReady);
         case APPLE80211_IOC_BSSID:
             // Same bootstrap contract as SSID: airportd queries BSSID during
             // _initInterface and expects success with an all-zero BSSID before
@@ -1737,7 +1739,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return getCHANNEL((apple80211_channel_data *)req->req_data);
             }
             if (cmd == SIOCSA80211)
-                return setCHANNEL((apple80211_channel_data *)req->req_data);
+                return (instance != NULL)
+                    ? instance->setAPSTA_CHANNEL(this, (apple80211_channel_data *)req->req_data)
+                    : kIOReturnNotReady;
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AUTH_TYPE:
             if (cmd == SIOCGA80211)
@@ -1873,8 +1877,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getAP_IE_LIST((apple80211_ap_ie_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_CIPHER_KEY:
-            return (cmd == SIOCSA80211) ? setCIPHER_KEY((apple80211_key *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            if (instance != NULL && instance->fAPSTAOwner != NULL)
+                return instance->setAPSTA_CIPHER_KEY(
+                    this, (apple80211_key *)req->req_data);
+            return setCIPHER_KEY((apple80211_key *)req->req_data);
         case APPLE80211_IOC_CUR_PMK:
             // Tahoe Skywalk current-PMK carrier. The active local
             // ingress for selector 0x168 / IOC 360 is the
@@ -1935,6 +1943,9 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VIRTUAL_IF_CREATE:
             return (cmd == SIOCSA80211) ? setVIRTUAL_IF_CREATE((apple80211_virt_if_create_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_VIRTUAL_IF_DELETE:
+            return (cmd == SIOCSA80211) ? setVIRTUAL_IF_DELETE((apple80211_virt_if_delete_data *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_REQ:
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1990,9 +2001,62 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_LINK_CHANGED_EVENT_DATA:
             return (cmd == SIOCGA80211) ? getLINK_CHANGED_EVENT_DATA((apple80211_link_changed_event_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_STA_AUTHORIZE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setSTA_AUTHORIZE(
+                    this, (AirportItlwmAPSTAStaAuthorizeInputLayout *)req->req_data)
+                : kIOReturnUnsupported;
+        case APPLE80211_IOC_STA_DISASSOCIATE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setSTA_DISASSOCIATE(
+                    this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, false)
+                : kIOReturnUnsupported;
+        case APPLE80211_IOC_STA_DEAUTH:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setSTA_DISASSOCIATE(
+                    this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, true)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_HOST_AP_MODE_HIDDEN:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setHOST_AP_MODE_HIDDEN(
+                    this,
+                    (AirportItlwmAPSTAHostApModeHiddenLayout *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_SOFTAP_PARAMS:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setSOFTAP_PARAMS(
+                    this,
+                    (AirportItlwmAPSTASoftAPParamsInputLayout *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_SOFTAP_TRIGGER_CSA:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setSOFTAP_TRIGGER_CSA(
+                    this,
+                    (AirportItlwmAPSTACsaInputLayout *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCSA80211)
+                return instance->setSOFTAP_WIFI_NETWORK_INFO_IE(
+                    this,
+                    (AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
             if (instance == NULL)
                 return kIOReturnNotReady;
@@ -5437,54 +5501,59 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
             /*
              * Recovered APSTA role-7 acquisition contract.
              *
-             * The recovered Apple AppleBCMWLAN APSTA contract for
-             * role-7 (APPLE80211_VIF_SOFT_AP) decouples owner
-             * lifetime from AP firmware bring-up: role-7 create
-             * allocates a host APSTA owner that owns the APSTA
-             * state block, station table, AP-up gate, and SoftAP
-             * selector mirror, while AP-up remains false until the
-             * lower HAL backend explicitly advertises and starts
-             * AP mode. The host owner therefore reports create
-             * success even when the lower HAL backend is
-             * fail-closed.
+             * Role 7 (APPLE80211_VIF_SOFT_AP) is the only public
+             * create carrier routed into the host APSTA owner. The
+             * owner owns the APSTA state block, station table,
+             * AP-up gate, SoftAP selector mirror, and net80211
+             * station-event binding, but a create request must not
+             * report success until the lower HAL backend explicitly
+             * advertises and starts AP/GO firmware mode.
              *
-             * The owner is controller-stored (instance->fAPSTAOwner)
-             * so its lifetime spans role-7 create through driver
-             * release. ensureAPSTAOwner returns the existing owner
-             * if a previous create call already allocated one;
-             * otherwise it allocates a new owner and initializes it
-             * from the carrier descriptor. Cleanup is performed in
-             * AirportItlwm::releaseAll() before fHalService is
-             * released. The Tahoe Skywalk dispatch surface does not
-             * expose a per-role-7 delete entry point, so explicit
-             * deleteAPSTAOwner() is not called from this handler.
-             *
-             * The lower HAL backend is currently fail-closed: the
-             * iwx and iwm HALs do not advertise AP/GO firmware
-             * support, so AirportItlwmAPSTAStage1Owner::isApRunning
-             * stays false after create. The recovered Apple
-             * contract treats that case as "owner present, AP-up
-             * false". setMIS_MAX_STA,
-             * setSOFTAP_EXTENDED_CAPABILITIES_IE, beacon/key/CSA,
-             * and station-event publication remain structurally
-             * inert until a HAL backend advertises AP/GO and
-             * startLowerIfReady succeeds.
+             * While the lower backend is fail-closed, create builds
+             * and validates the owner shape, attempts the lower
+             * start gate, clears the station-event callback before
+             * releasing the owner, and returns the HAL failure. That
+             * keeps role-7 externally unsupported without leaving a
+             * registered owner behind from a failed create.
              */
             if (instance == nullptr) {
                 return kIOReturnNotReady;
             }
-            AirportItlwmAPSTAStage1Owner *owner =
+            AirportItlwmAPSTAOwner *owner =
                 instance->ensureAPSTAOwner(data);
             if (owner == nullptr) {
                 return static_cast<IOReturn>(
                     kAirportItlwmAPSTARawInvalidArgumentReturn);
             }
-            (void)owner->startLowerIfReady();
+            IOReturn lowerRet = owner->startLowerIfReady();
+            if (lowerRet != kIOReturnSuccess) {
+                instance->deleteAPSTAOwner();
+                return lowerRet;
+            }
             return kIOReturnSuccess;
         }
         default:
             return static_cast<IOReturn>(0xe0000001);
     }
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setVIRTUAL_IF_DELETE(apple80211_virt_if_delete_data *data)
+{
+    /*
+     * Tahoe APSTA lifetime symmetry: VIRTUAL_IF_DELETE is not a
+     * protocol vtable slot here, so route the IOCTL switch directly
+     * to the controller-owned APSTA delete path. The delete carrier
+     * contains only the BSD name; the controller matches that name
+     * against the existing role-7 APSTA owner and otherwise fails
+     * closed without creating AP state or reporting AP/GO support.
+     */
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+    if (instance == nullptr)
+        return kIOReturnNotReady;
+
+    return instance->deleteAPSTAOwnerForBSDName(data->bsd_name);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -69,6 +69,10 @@ int iwn_debug = 1;
 
 #define M_DEVBUF 2
 
+#ifndef IWN_APGO_FIRMWARE_BACKEND_OPT_IN
+#define IWN_APGO_FIRMWARE_BACKEND_OPT_IN 0
+#endif
+
 #ifdef DELAY
 #undef DELAY
 #define DELAY IODelay
@@ -240,6 +244,107 @@ struct ieee80211com *ItlIwn::
 get80211Controller()
 {
     return &com.sc_ic;
+}
+
+bool ItlIwn::supportsAPMode() const
+{
+#if IWN_APGO_FIRMWARE_BACKEND_OPT_IN
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+int ItlIwn::iwn_build_ap_rxon(struct iwn_rxon *rxon,
+    const struct ItlHalApConfig *config)
+{
+    if (rxon == NULL || config == NULL) {
+        return EINVAL;
+    }
+    if (config->channel == 0 || config->channel > IEEE80211_CHAN_MAX) {
+        return EINVAL;
+    }
+    if (IEEE80211_IS_MULTICAST(config->bssid) ||
+        IEEE80211_ADDR_EQ(config->bssid, etheranyaddr)) {
+        return EINVAL;
+    }
+
+    struct ieee80211com *ic = &com.sc_ic;
+    struct ieee80211_channel *chan = NULL;
+    for (struct ieee80211_channel *c = &ic->ic_channels[1];
+         c <= &ic->ic_channels[IEEE80211_CHAN_MAX]; c++) {
+        if (ieee80211_chan2ieee(ic, c) == config->channel) {
+            chan = c;
+            break;
+        }
+    }
+    if (chan == NULL) {
+        return EINVAL;
+    }
+
+    bzero(rxon, sizeof(*rxon));
+    IEEE80211_ADDR_COPY(rxon->myaddr, ic->ic_myaddr);
+    IEEE80211_ADDR_COPY(rxon->bssid, config->bssid);
+    IEEE80211_ADDR_COPY(rxon->wlap, config->bssid);
+    rxon->mode = IWN_MODE_HOSTAP;
+    rxon->chan = static_cast<uint8_t>(config->channel);
+    rxon->flags = htole32(IWN_RXON_TSF | IWN_RXON_CTS_TO_SELF);
+    if (IEEE80211_IS_CHAN_2GHZ(chan)) {
+        rxon->flags |= htole32(IWN_RXON_AUTO | IWN_RXON_24GHZ);
+        if (ic->ic_flags & IEEE80211_F_USEPROT) {
+            rxon->flags |= htole32(IWN_RXON_TGG_PROT);
+        }
+    }
+    rxon->filter = htole32(IWN_FILTER_MULTICAST | IWN_FILTER_BSS |
+                           IWN_FILTER_BEACON);
+    rxon->cck_mask = 0x0f;
+    rxon->ofdm_mask = 0xff;
+    rxon->ht_single_mask = 0xff;
+    rxon->ht_dual_mask = 0xff;
+    rxon->ht_triple_mask = 0xff;
+    rxon->rxchain = htole16(IWN_RXCHAIN_VALID(com.rxchainmask) |
+                            IWN_RXCHAIN_MIMO_COUNT(com.nrxchains) |
+                            IWN_RXCHAIN_IDLE_COUNT(com.nrxchains));
+    return 0;
+}
+
+IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
+{
+    if (!supportsAPMode()) {
+        return kIOReturnUnsupported;
+    }
+    if (config == NULL) {
+        return kIOReturnBadArgument;
+    }
+
+    struct iwn_rxon ap_rxon;
+    int error = iwn_build_ap_rxon(&ap_rxon, config);
+    if (error != 0) {
+        return kIOReturnBadArgument;
+    }
+
+    error = iwn_cmd(&com, IWN_CMD_RXON, &ap_rxon, com.rxonsz, 1);
+    if (error != 0) {
+        return kIOReturnError;
+    }
+    memcpy(&com.rxon, &ap_rxon, sizeof(com.rxon));
+    return kIOReturnSuccess;
+}
+
+IOReturn ItlIwn::stopAPMode()
+{
+    if (!supportsAPMode()) {
+        return kIOReturnUnsupported;
+    }
+    struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
+    if ((ifp->if_flags & IFF_RUNNING) != 0) {
+        iwn_stop(ifp);
+    }
+    return kIOReturnSuccess;
 }
 
 #define    PCI_VENDOR_INTEL    0x8086        /* Intel */
@@ -5830,6 +5935,28 @@ iwn_auth(struct iwn_softc *sc, int arg)
     /* Diagnostic probe (auth-ACK boundary, iwn HAL): RXON OK. */
     IWX_AUTH_DIAG("iwn_auth: RXON OK chan=%u\n",
           (unsigned)sc->rxon.chan);
+    /* Diagnostic publication (auth-ACK boundary, iwn HAL): publish the
+     * post-IWN_CMD_RXON BSSID/channel/filter/flags state to the AirportItlwm
+     * IOService property table so the value survives unified-log TTL=0
+     * eviction that occurs during AUTH mgmt-frame retry bursts. Each
+     * successful RXON ack updates the property; downstream observers read
+     * the latest value via ioreg -l. Behavior-neutral: setProperty
+     * publishes into the IOService property dictionary and does not
+     * change driver/firmware state, control flow, or scheduling. */
+    {
+        char post_rxon_buf[160];
+        snprintf(post_rxon_buf, sizeof(post_rxon_buf),
+            "bssid=%02x:%02x:%02x:%02x:%02x:%02x chan=%u "
+            "filter=0x%08x flags=0x%08x",
+            sc->rxon.bssid[0], sc->rxon.bssid[1],
+            sc->rxon.bssid[2], sc->rxon.bssid[3],
+            sc->rxon.bssid[4], sc->rxon.bssid[5],
+            (unsigned)sc->rxon.chan,
+            (unsigned)le32toh(sc->rxon.filter),
+            (unsigned)le32toh(sc->rxon.flags));
+        getController()->setProperty("itlwm-iwn-auth-post-rxon",
+            post_rxon_buf);
+    }
 
     /* Configuration has changed, set TX power accordingly. */
     if ((error = ops->set_txpower(sc, 1)) != 0) {
@@ -5943,6 +6070,30 @@ iwn_run(struct iwn_softc *sc)
         XYLog("%s: could not update configuration\n",
             sc->sc_dev.dv_xname);
         return error;
+    }
+    /* Diagnostic publication (auth-ACK boundary, iwn HAL): publish the
+     * post-IWN_CMD_RXON BSSID/channel/filter/flags/associd state in
+     * iwn_run to the AirportItlwm IOService property table. Mirrors the
+     * iwn_auth publication but adds associd because iwn_run sets
+     * IWN_FILTER_BSS and the negotiated associd before re-issuing
+     * IWN_CMD_RXON. The property is durable across unified-log
+     * eviction. Behavior-neutral: setProperty publishes into the
+     * IOService property dictionary and does not change driver/firmware
+     * state, control flow, or scheduling. */
+    {
+        char post_rxon_buf[160];
+        snprintf(post_rxon_buf, sizeof(post_rxon_buf),
+            "bssid=%02x:%02x:%02x:%02x:%02x:%02x chan=%u "
+            "filter=0x%08x flags=0x%08x associd=0x%04x",
+            sc->rxon.bssid[0], sc->rxon.bssid[1],
+            sc->rxon.bssid[2], sc->rxon.bssid[3],
+            sc->rxon.bssid[4], sc->rxon.bssid[5],
+            (unsigned)sc->rxon.chan,
+            (unsigned)le32toh(sc->rxon.filter),
+            (unsigned)le32toh(sc->rxon.flags),
+            (unsigned)le16toh(sc->rxon.associd));
+        getController()->setProperty("itlwm-iwn-run-post-rxon",
+            post_rxon_buf);
     }
 
     /* Configuration has changed, set TX power accordingly. */

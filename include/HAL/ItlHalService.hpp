@@ -67,10 +67,33 @@ struct ItlHalApCSA {
     uint8_t count;
 };
 
+struct ItlHalApSoftAPParams {
+    uint32_t param04;
+    uint32_t param08;
+    uint32_t param0c;
+    uint32_t param10;
+    uint16_t beaconInterval;
+    uint8_t mode;
+    uint8_t enabled;
+    uint8_t param18;
+};
+
+struct ItlHalApWifiNetworkInfo {
+    const void *ieBytes;
+    size_t ieLength;
+};
+
 struct ItlHalApStationCommand {
     uint32_t command;
     const uint8_t *station;
     uint32_t flags;
+    uint32_t disassocReason;
+    uint32_t disassocCarrierValue08;
+    uint16_t disassocCarrierValue0c;
+    uint32_t disassocPayloadReason00;
+    uint32_t disassocPayloadValue04;
+    uint16_t disassocPayloadValue08;
+    uint16_t disassocPayloadSentinel0a;
 };
 
 class ItlHalService : public OSObject {
@@ -138,6 +161,18 @@ public:
     }
     virtual IOReturn triggerAPCSA(const struct ItlHalApCSA *csa) {
         (void)csa;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setAPHidden(bool hidden) {
+        (void)hidden;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setAPSoftAPParams(const struct ItlHalApSoftAPParams *params) {
+        (void)params;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setAPWifiNetworkInfo(const struct ItlHalApWifiNetworkInfo *info) {
+        (void)info;
         return kIOReturnUnsupported;
     }
     virtual IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *cmd) {

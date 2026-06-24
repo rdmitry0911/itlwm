@@ -10,6 +10,7 @@
 #define AirportItlwmV2_hpp
 
 #include "Apple80211.h"
+#include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeControllerContracts.hpp"
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeCommanderV2.hpp"
@@ -213,7 +214,7 @@ extern "C" {
 const char *convertApple80211IOCTLToString(signed int cmd);
 }
 
-class AirportItlwmAPSTAStage1Owner;
+class AirportItlwmAPSTAOwner;
 struct apple80211_virt_if_create_data;
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -496,16 +497,34 @@ public:
         struct apple80211_softap_extended_capabilities_info *data);
     IOReturn setMIS_MAX_STA(OSObject *object,
         struct apple80211_mis_max_sta *data);
+    IOReturn setAPSTA_SSID(OSObject *object,
+        struct apple80211_ssid_data *data);
+    IOReturn setAPSTA_CHANNEL(OSObject *object,
+        struct apple80211_channel_data *data);
+    IOReturn setAPSTA_CIPHER_KEY(OSObject *object,
+        struct apple80211_key *data);
+    IOReturn setHOST_AP_MODE_HIDDEN(OSObject *object,
+        AirportItlwmAPSTAHostApModeHiddenLayout *data);
+    IOReturn setSTA_AUTHORIZE(OSObject *object, AirportItlwmAPSTAStaAuthorizeInputLayout *data);
+    IOReturn setSTA_DISASSOCIATE(OSObject *object, AirportItlwmAPSTAStaDisassocInputLayout *data, bool deauth);
+    IOReturn setSOFTAP_PARAMS(OSObject *object,
+        AirportItlwmAPSTASoftAPParamsInputLayout *data);
+    IOReturn setSOFTAP_TRIGGER_CSA(OSObject *object,
+        AirportItlwmAPSTACsaInputLayout *data);
+    IOReturn setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,
+        AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *data);
     bool isHostApRunning() const;
 
     /*
      * Host APSTA owner accessors. Role-7 (APPLE80211_VIF_SOFT_AP)
      * acquisition allocates the owner through ensureAPSTAOwner();
      * driver release tears it down through deleteAPSTAOwner().
+     * VIRTUAL_IF_DELETE tears down only a matching role-7 owner.
      * The owner reports AP-up status through isHostApRunning().
      */
-    AirportItlwmAPSTAStage1Owner *ensureAPSTAOwner(
+    AirportItlwmAPSTAOwner *ensureAPSTAOwner(
         const struct apple80211_virt_if_create_data *create);
+    IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();
 
 public:
@@ -527,7 +546,7 @@ public:
     IO80211SkywalkInterface *fNetIf;
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
-    AirportItlwmAPSTAStage1Owner *fAPSTAOwner;
+    AirportItlwmAPSTAOwner *fAPSTAOwner;
 
     // Skywalk packet pools and queues for proper Sequoia registration
     IOSkywalkPacketBufferPool *fTxPool;

@@ -64,15 +64,21 @@
  *
  * The Tahoe Xcode configurations inject IEEE80211_STA_ONLY through
  * GCC_PREPROCESSOR_DEFINITIONS to compile out AP/HOSTAP code paths
- * by default. An AP-mode exploration configuration sets
- * IEEE80211_OPT_OUT_STA_ONLY before this header is included to
- * suppress that injection without editing the project file. The
- * undef must run after every other path that could define the
- * STA_ONLY macro so the opt-out flag is always authoritative when
- * present, and it must remain a no-op when the flag is unset so
- * client/STA-only builds keep their existing behavior.
+ * by default. AP/APSTA exploration may opt out only through the
+ * APSTA station-event admission gate below. The legacy
+ * IEEE80211_OPT_OUT_STA_ONLY spelling maps to that gate for existing
+ * build scripts, but all code that consumes the opt-out must test
+ * IEEE80211_APSTA_STATION_EVENT_OPT_OUT so the current admitted
+ * scope remains explicit. The undef must run after every other path
+ * that could define the STA_ONLY macro, and it must remain a no-op
+ * when the gate is unset so client/STA-only builds keep their
+ * existing behavior.
  */
-#ifdef IEEE80211_OPT_OUT_STA_ONLY
+#if defined(IEEE80211_OPT_OUT_STA_ONLY) && !defined(IEEE80211_APSTA_STATION_EVENT_OPT_OUT)
+#define IEEE80211_APSTA_STATION_EVENT_OPT_OUT 1
+#endif
+
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
 #undef IEEE80211_STA_ONLY
 #endif
 

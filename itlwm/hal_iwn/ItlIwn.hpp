@@ -82,6 +82,10 @@ public:
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;
+    bool supportsAPMode() const override;
+    IOReturn startAPMode(const struct ItlHalApConfig *config) override;
+    IOReturn stopAPMode() override;
+    int iwn_build_ap_rxon(struct iwn_rxon *, const struct ItlHalApConfig *);
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);

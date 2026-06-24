@@ -6,8 +6,8 @@
  * allocate and tear down the owner, while AP-up remains false unless
  * a HAL backend explicitly advertises and starts AP mode.
  */
-#ifndef AirportItlwmAPSTAStage1Owner_hpp
-#define AirportItlwmAPSTAStage1Owner_hpp
+#ifndef AirportItlwmAPSTAOwner_hpp
+#define AirportItlwmAPSTAOwner_hpp
 
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSObject.h>
@@ -22,24 +22,24 @@ struct ItlHalApCSA;
 struct ItlHalApStationCommand;
 struct ieee80211_node;
 
-extern "C" void AirportItlwmAPSTAStage1Net80211Event(
+extern "C" void AirportItlwmAPSTANet80211Event(
     struct ieee80211com *ic,
     struct ieee80211_node *ni,
     int event,
     void *arg);
 
-enum AirportItlwmAPSTAStage1LifecycleState {
-    kAirportItlwmAPSTAStage1Unallocated = 0,
-    kAirportItlwmAPSTAStage1Allocated,
-    kAirportItlwmAPSTAStage1Created,
-    kAirportItlwmAPSTAStage1LowerBlocked,
-    kAirportItlwmAPSTAStage1Running,
-    kAirportItlwmAPSTAStage1Terminal,
-    kAirportItlwmAPSTAStage1Freed,
+enum AirportItlwmAPSTAOwnerLifecycleState {
+    kAirportItlwmAPSTAOwnerUnallocated = 0,
+    kAirportItlwmAPSTAOwnerAllocated,
+    kAirportItlwmAPSTAOwnerCreated,
+    kAirportItlwmAPSTAOwnerLowerBlocked,
+    kAirportItlwmAPSTAOwnerRunning,
+    kAirportItlwmAPSTAOwnerTerminal,
+    kAirportItlwmAPSTAOwnerFreed,
 };
 
-class AirportItlwmAPSTAStage1Owner : public OSObject {
-    OSDeclareDefaultStructors(AirportItlwmAPSTAStage1Owner)
+class AirportItlwmAPSTAOwner : public OSObject {
+    OSDeclareDefaultStructors(AirportItlwmAPSTAOwner)
 
 public:
     bool initWithController(AirportItlwm *controller,
@@ -50,9 +50,9 @@ public:
     IOReturn stopLower();
     void teardown();
 
-    bool isCreated() const { return lifecycle >= kAirportItlwmAPSTAStage1Created &&
-                                    lifecycle < kAirportItlwmAPSTAStage1Terminal; }
-    bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAStage1Running &&
+    bool isCreated() const { return lifecycle >= kAirportItlwmAPSTAOwnerCreated &&
+                                    lifecycle < kAirportItlwmAPSTAOwnerTerminal; }
+    bool isApRunning() const { return lifecycle == kAirportItlwmAPSTAOwnerRunning &&
                                       state.resetState26c != 0; }
     const char *bsdName() const { return bsdNameStorage; }
     bool matchesBSDName(const uint8_t *name) const;
@@ -60,15 +60,22 @@ public:
     AirportItlwmAPSTAStateBlock *stateBlock() { return &state; }
     const AirportItlwmAPSTAStateBlock *stateBlock() const { return &state; }
 
+    IOReturn setSSID(const struct apple80211_ssid_data *in);
+    IOReturn setChannel(const struct apple80211_channel_data *in);
+    IOReturn setCipherKey(const struct apple80211_key *key);
+    IOReturn setStationAuthorization(const AirportItlwmAPSTAStaAuthorizeInputLayout *in);
+    IOReturn setStationDisassociation(const AirportItlwmAPSTAStaDisassocInputLayout *in, bool deauth);
     IOReturn setSoftAPExtCaps(const struct apple80211_softap_extended_capabilities_info *in);
     IOReturn setMisMaxSta(const struct apple80211_mis_max_sta *in);
     IOReturn setMaxAssoc(uint32_t value);
+    IOReturn setHostAPModeHidden(const AirportItlwmAPSTAHostApModeHiddenLayout *in);
+    IOReturn setSoftAPParams(const AirportItlwmAPSTASoftAPParamsInputLayout *in);
+    IOReturn setSoftAPWifiNetworkInfoIE(const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in);
 
     IOReturn setBeaconTemplate(const void *templateBytes,
                                size_t templateLength,
                                uint16_t beaconInterval,
                                uint8_t dtimPeriod);
-    IOReturn setCipherKey(const void *keyBytes, size_t keyLength);
     IOReturn triggerCSA(uint16_t channel, uint8_t count);
     IOReturn publishStationEventFromNet80211(uint32_t eventType,
                                              const uint8_t *mac,
@@ -83,11 +90,13 @@ private:
     void recomputeStationCount();
 
     AirportItlwm *owner;
-    AirportItlwmAPSTAStage1LifecycleState lifecycle;
+    AirportItlwmAPSTAOwnerLifecycleState lifecycle;
     AirportItlwmAPSTAStateBlock state;
     uint8_t role;
     uint8_t mac[IEEE80211_ADDR_LEN];
     char bsdNameStorage[IFNAMSIZ];
+    uint16_t apChannel;
+    uint32_t apChannelFlags;
 };
 
-#endif /* AirportItlwmAPSTAStage1Owner_hpp */
+#endif /* AirportItlwmAPSTAOwner_hpp */

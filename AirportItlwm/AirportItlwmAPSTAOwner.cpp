@@ -1,0 +1,548 @@
+/*
+ * Host-owned APSTA owner: role-7 lifetime, APSTA state block,
+ * station table, and AP-up gate. See AirportItlwmAPSTAOwner.hpp
+ * for the contract boundary.
+ */
+#include "AirportItlwmV2.hpp"
+#include "AirportItlwmRegDiag.hpp"
+#include "AirportItlwmAPSTAOwner.hpp"
+#include "HAL/ItlHalService.hpp"
+#include <net80211/ieee80211_node.h>
+#include <sys/errno.h>
+
+OSDefineMetaClassAndStructors(AirportItlwmAPSTAOwner, OSObject)
+
+static bool apsta_mac_is_zero(const uint8_t *mac)
+{
+    if (mac == nullptr) {
+        return true;
+    }
+    for (unsigned i = 0; i < IEEE80211_ADDR_LEN; i++) {
+        if (mac[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AirportItlwmAPSTAOwner::initWithController(
+    AirportItlwm *controller,
+    const struct apple80211_virt_if_create_data *create)
+{
+    // Establish a terminal-safe state before any path that can return
+    // false so a failed-init release through free()/teardown()/stopLower()
+    // observes initialized members regardless of where init falls out.
+    owner = nullptr;
+    lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    role = 0;
+    bzero(&state, sizeof(state));
+    bzero(mac, sizeof(mac));
+    apChannel = 0;
+    apChannelFlags = 0;
+    bzero(bsdNameStorage, sizeof(bsdNameStorage));
+
+    if (!OSObject::init()) {
+        return false;
+    }
+    if (controller == nullptr || create == nullptr) {
+        return false;
+    }
+    if (create->role != APPLE80211_VIF_SOFT_AP) {
+        return false;
+    }
+
+    owner = controller;
+    lifecycle = kAirportItlwmAPSTAOwnerCreated;
+    role = create->role;
+
+    memcpy(mac, create->mac, IEEE80211_ADDR_LEN);
+    if (create->bsd_name[0] != 0) {
+        strlcpy(bsdNameStorage, reinterpret_cast<const char *>(create->bsd_name), sizeof(bsdNameStorage));
+    } else {
+        strlcpy(bsdNameStorage, "apsta0", sizeof(bsdNameStorage));
+    }
+
+    state.softapMaxAssoc04 = 1;
+    state.softapMaxAssocLimit08 = IEEE80211_AID_DEF;
+    state.softapBeaconInterval14 = 100;
+    state.softapDtimPeriod16 = 1;
+    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
+    state.softapAppliedDtimPeriod6a = state.softapDtimPeriod16;
+    state.ownerCoreOrInterface = owner;
+    state.initState268 = 1;
+    state.resetState26c = 0;
+    state.hostApTransitionState270 = 0;
+    state.numTxQueues = kAirportItlwmAPSTATxSubQueueCount;
+    state.featureGate0d = 1;
+    state.featureGate0c = 1;
+    return true;
+}
+
+void AirportItlwmAPSTAOwner::free()
+{
+    teardown();
+    lifecycle = kAirportItlwmAPSTAOwnerFreed;
+    owner = nullptr;
+    OSObject::free();
+}
+
+void AirportItlwmAPSTAOwner::resetRuntimeState()
+{
+    state.softapAssociatedStaCount00 = 0;
+    state.resetState26c = 0;
+    state.hostApTransitionState270 = 0;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        clearStation(&state.softapStaTableB8[i]);
+    }
+}
+
+IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
+{
+    if (owner == nullptr || owner->fHalService == nullptr) {
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.resetState26c = 0;
+        return kIOReturnNotReady;
+    }
+
+    if (!owner->fHalService->supportsAPMode()) {
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.resetState26c = 0;
+        return kIOReturnUnsupported;
+    }
+
+    ItlHalApConfig cfg;
+    bzero(&cfg, sizeof(cfg));
+    memcpy(cfg.bssid, mac, IEEE80211_ADDR_LEN);
+    cfg.channel = apChannel;
+    cfg.maxStations = state.softapMaxAssoc04;
+    cfg.beaconInterval = state.softapBeaconInterval14;
+    cfg.dtimPeriod = static_cast<uint8_t>(state.softapDtimPeriod16);
+    IOReturn ret = owner->fHalService->startAPMode(&cfg);
+    if (ret == kIOReturnSuccess) {
+        lifecycle = kAirportItlwmAPSTAOwnerRunning;
+        state.resetState26c = 1;
+        state.hostApTransitionState270 = 1;
+    } else {
+        lifecycle = kAirportItlwmAPSTAOwnerLowerBlocked;
+        state.resetState26c = 0;
+    }
+    return ret;
+}
+
+IOReturn AirportItlwmAPSTAOwner::stopLower()
+{
+    if (owner != nullptr && owner->fHalService != nullptr && owner->fHalService->supportsAPMode()) {
+        (void)owner->fHalService->stopAPMode();
+    }
+    resetRuntimeState();
+    if (lifecycle != kAirportItlwmAPSTAOwnerFreed) {
+        lifecycle = kAirportItlwmAPSTAOwnerTerminal;
+    }
+    return kIOReturnSuccess;
+}
+
+void AirportItlwmAPSTAOwner::teardown()
+{
+    if (lifecycle < kAirportItlwmAPSTAOwnerTerminal) {
+        (void)stopLower();
+    }
+    owner = nullptr;
+}
+
+bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
+{
+    if (name == nullptr || name[0] == 0) {
+        return false;
+    }
+    return strncmp(bsdNameStorage, reinterpret_cast<const char *>(name), sizeof(bsdNameStorage)) == 0;
+}
+
+IOReturn AirportItlwmAPSTAOwner::setSSID(const struct apple80211_ssid_data *in)
+{
+    if (in == nullptr || in->ssid_len > kAirportItlwmAPSTAGetSsidMaxLength) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetSsidInvalidArgumentReturn);
+    }
+    bzero(state.softapSsid278, sizeof(state.softapSsid278));
+    state.softapSsidLength274 = in->ssid_len;
+    if (in->ssid_len != 0) {
+        memcpy(state.softapSsid278, in->ssid_bytes, in->ssid_len);
+    }
+    return static_cast<IOReturn>(kAirportItlwmAPSTASetSsidSuccessReturn);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setChannel(const struct apple80211_channel_data *in)
+{
+    if (in == nullptr || in->channel.channel >= kAirportItlwmAPSTASetChannelTrapThreshold) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidArgumentReturn);
+    }
+    apChannel = static_cast<uint16_t>(in->channel.channel);
+    apChannelFlags = in->channel.flags;
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidSoftAPInfoReturn);
+    }
+    return triggerCSA(apChannel, 0);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
+{
+    if (key == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherNone &&
+        key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted3 &&
+        key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted5) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn);
+    }
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyNotUpReturn);
+    }
+    ItlHalApKey halKey;
+    bzero(&halKey, sizeof(halKey));
+    halKey.station = key->key_ea.octet;
+    halKey.keyIndex = static_cast<uint8_t>(key->key_index);
+    halKey.cipher = static_cast<uint8_t>(key->key_cipher_type);
+    halKey.keyData = key->key;
+    halKey.keyLength = key->key_len;
+    halKey.rsc = key->key_rsc;
+    halKey.rscLength = key->key_rsc_len;
+    return owner->fHalService->setAPKey(&halKey);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setSoftAPExtCaps(
+    const struct apple80211_softap_extended_capabilities_info *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    state.softapAppleVendorIEExtra50 = in->flag00;
+    memcpy(state.softapAppleVendorIETail51, &in->value01,
+           sizeof(state.softapAppleVendorIETail51));
+    memcpy(state.softapAppleVendorIETail59, &in->value09,
+           sizeof(state.softapAppleVendorIETail59));
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::setMaxAssoc(uint32_t value)
+{
+    if (value < 1) {
+        value = 1;
+    }
+    if (value > IEEE80211_AID_DEF) {
+        value = IEEE80211_AID_DEF;
+    }
+    state.softapMaxAssoc04 = value;
+    state.softapMaxAssocLimit08 = IEEE80211_AID_DEF;
+
+    if (owner != nullptr && owner->fHalService != nullptr) {
+        struct ieee80211com *ic = owner->fHalService->get80211Controller();
+        if (ic != nullptr) {
+            ic->ic_max_aid = static_cast<uint16_t>(value);
+        }
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::setMisMaxSta(const struct apple80211_mis_max_sta *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (isApRunning()) {
+        (void)setMaxAssoc(in->value00);
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(
+    const AirportItlwmAPSTAHostApModeHiddenLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (in->hidden00 > kAirportItlwmAPSTAHiddenMaxAcceptedValue) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenInvalidArgumentReturn);
+    }
+    state.hiddenNetworkFlag0d = static_cast<uint8_t>(in->hidden00);
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenNotUpReturn);
+    }
+    return owner->fHalService->setAPHidden(in->hidden00 != 0);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
+    const AirportItlwmAPSTASoftAPParamsInputLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    state.softapParam18 = in->param18;
+    state.softapParam1c = in->param04;
+    state.softapParam20 = in->param08;
+    state.softapParam24 = in->param0c;
+    state.softapParam28 = static_cast<uint8_t>(in->param10);
+    state.softapBeaconInterval14 = in->param14 != 0 ? in->param14 : 100;
+    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
+    state.softapParam0e = in->enabled17;
+    state.softapMode10 = in->mode16;
+
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    ItlHalApSoftAPParams params;
+    bzero(&params, sizeof(params));
+    params.param04 = in->param04;
+    params.param08 = in->param08;
+    params.param0c = in->param0c;
+    params.param10 = in->param10;
+    params.beaconInterval = state.softapBeaconInterval14;
+    params.mode = in->mode16;
+    params.enabled = in->enabled17;
+    params.param18 = in->param18;
+    return owner->fHalService->setAPSoftAPParams(&params);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(
+    const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (in->length03 > kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAInvalidSoftAPInfoReturn);
+    }
+    bzero(state.softapWifiNetworkInfoIE, sizeof(state.softapWifiNetworkInfoIE));
+    state.softapWifiNetworkInfoIE[3] = in->length03;
+    memcpy(&state.softapWifiNetworkInfoIE[4], in->payload04, in->length03);
+
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    ItlHalApWifiNetworkInfo info;
+    bzero(&info, sizeof(info));
+    info.ieBytes = in->payload04;
+    info.ieLength = in->length03;
+    return owner->fHalService->setAPWifiNetworkInfo(&info);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setBeaconTemplate(const void *templateBytes,
+                                                         size_t templateLength,
+                                                         uint16_t beaconInterval,
+                                                         uint8_t dtimPeriod)
+{
+    if (templateBytes == nullptr || templateLength == 0) {
+        return kIOReturnBadArgument;
+    }
+    state.softapBeaconInterval14 = beaconInterval != 0 ? beaconInterval : 100;
+    state.softapDtimPeriod16 = dtimPeriod != 0 ? dtimPeriod : 1;
+    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
+    state.softapAppliedDtimPeriod6a = state.softapDtimPeriod16;
+
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnNotReady;
+    }
+    return owner->fHalService->updateAPBeacon(templateBytes, templateLength,
+                                              state.softapBeaconInterval14,
+                                              static_cast<uint8_t>(state.softapDtimPeriod16));
+}
+
+IOReturn AirportItlwmAPSTAOwner::triggerCSA(uint16_t channel, uint8_t count)
+{
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnNotReady;
+    }
+    ItlHalApCSA csa;
+    bzero(&csa, sizeof(csa));
+    csa.channel = channel;
+    csa.count = count;
+    return owner->fHalService->triggerAPCSA(&csa);
+}
+
+void AirportItlwmAPSTAOwner::clearStation(AirportItlwmAPSTAStationTableEntryLayout *entry)
+{
+    if (entry != nullptr) {
+        bzero(entry, sizeof(*entry));
+    }
+}
+
+AirportItlwmAPSTAStationTableEntryLayout *
+AirportItlwmAPSTAOwner::findStation(const uint8_t *macAddr)
+{
+    if (apsta_mac_is_zero(macAddr)) {
+        return nullptr;
+    }
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        AirportItlwmAPSTAStationTableEntryLayout *entry = &state.softapStaTableB8[i];
+        if (entry->active00 && memcmp(entry->mac01, macAddr, IEEE80211_ADDR_LEN) == 0) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+AirportItlwmAPSTAStationTableEntryLayout *
+AirportItlwmAPSTAOwner::allocateStation(const uint8_t *macAddr)
+{
+    AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(macAddr);
+    if (entry != nullptr) {
+        return entry;
+    }
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        entry = &state.softapStaTableB8[i];
+        if (!entry->active00) {
+            bzero(entry, sizeof(*entry));
+            entry->active00 = 1;
+            memcpy(entry->mac01, macAddr, IEEE80211_ADDR_LEN);
+            entry->sleepState10 = kAirportItlwmAPSTAStationTableDefaultSleepState;
+            recomputeStationCount();
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+void AirportItlwmAPSTAOwner::removeStation(const uint8_t *macAddr)
+{
+    AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(macAddr);
+    if (entry != nullptr) {
+        clearStation(entry);
+        recomputeStationCount();
+    }
+}
+
+void AirportItlwmAPSTAOwner::recomputeStationCount()
+{
+    uint32_t count = 0;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        if (state.softapStaTableB8[i].active00) {
+            count++;
+        }
+    }
+    state.softapAssociatedStaCount00 = count;
+}
+
+IOReturn AirportItlwmAPSTAOwner::setStationAuthorization(
+    const AirportItlwmAPSTAStaAuthorizeInputLayout *in)
+{
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAStaAuthorizeNullReturn);
+    }
+    if (apsta_mac_is_zero(in->mac08)) {
+        return kIOReturnBadArgument;
+    }
+    if (in->authorizeFlag04 != 0) {
+        if (allocateStation(in->mac08) == nullptr) {
+            return static_cast<IOReturn>(0xe00002bc);
+        }
+    } else {
+        removeStation(in->mac08);
+    }
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    ItlHalApStationCommand cmd;
+    bzero(&cmd, sizeof(cmd));
+    cmd.command = (in->authorizeFlag04 != 0)
+        ? kAirportItlwmAPSTAStaAuthorizeSelectorIfAuthorized
+        : kAirportItlwmAPSTAStaAuthorizeSelectorIfNotAuthorized;
+    cmd.station = in->mac08;
+    cmd.flags = in->authorizeFlag04;
+    return owner->fHalService->sendAPStationCommand(&cmd);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setStationDisassociation(
+    const AirportItlwmAPSTAStaDisassocInputLayout *in,
+    bool deauth)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    ItlHalApStationCommand cmd;
+    bzero(&cmd, sizeof(cmd));
+    cmd.command = deauth ? kAirportItlwmAPSTAEventDeauth : kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector;
+    cmd.flags = in->reason04;
+    cmd.disassocReason = in->reason04;
+    cmd.disassocCarrierValue08 = in->value08;
+    cmd.disassocCarrierValue0c = in->value0c;
+    cmd.disassocPayloadReason00 = in->reason04;
+    cmd.disassocPayloadValue04 = in->value08;
+    cmd.disassocPayloadValue08 = in->value0c;
+    cmd.disassocPayloadSentinel0a = kAirportItlwmAPSTAStaDisassocPayloadSentinel0aValue;
+    return owner->fHalService->sendAPStationCommand(&cmd);
+}
+
+IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
+    uint32_t eventType,
+    const uint8_t *macAddr,
+    uint32_t flags)
+{
+    if (apsta_mac_is_zero(macAddr)) {
+        return kIOReturnBadArgument;
+    }
+
+    switch (eventType) {
+        case kAirportItlwmAPSTAEventAuthInd:
+            return kIOReturnSuccess;
+        case kAirportItlwmAPSTAEventAssocInd:
+        case kAirportItlwmAPSTAEventReassocInd: {
+            AirportItlwmAPSTAStationTableEntryLayout *entry = allocateStation(macAddr);
+            if (entry == nullptr) {
+                return static_cast<IOReturn>(0xe00002bc);
+            }
+            entry->aihsFlag20 = (flags & kAirportItlwmAPSTAEventAssocFlagAihs) ? 1 : 0;
+            entry->sharingFlag24 = (flags & kAirportItlwmAPSTAEventAssocFlagSharing) ? 1 : 0;
+            entry->appleStationFlag28 = (flags & kAirportItlwmAPSTAEventAssocFlagAppleStation) ? 1 : 0;
+            recomputeStationCount();
+            if (isApRunning() && owner != nullptr && owner->fHalService != nullptr) {
+                ItlHalApStationCommand cmd;
+                bzero(&cmd, sizeof(cmd));
+                cmd.command = eventType;
+                cmd.station = macAddr;
+                cmd.flags = flags;
+                return owner->fHalService->sendAPStationCommand(&cmd);
+            }
+            return kIOReturnSuccess;
+        }
+        case kAirportItlwmAPSTAEventDeauth:
+        case kAirportItlwmAPSTAEventDeauthInd:
+        case kAirportItlwmAPSTAEventDisassoc:
+        case kAirportItlwmAPSTAEventDisassocInd:
+            removeStation(macAddr);
+            if (isApRunning() && owner != nullptr && owner->fHalService != nullptr) {
+                ItlHalApStationCommand cmd;
+                bzero(&cmd, sizeof(cmd));
+                cmd.command = eventType;
+                cmd.station = macAddr;
+                cmd.flags = flags;
+                return owner->fHalService->sendAPStationCommand(&cmd);
+            }
+            return kIOReturnSuccess;
+        case kAirportItlwmAPSTAEventActionFrame: {
+            AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(macAddr);
+            if (entry != nullptr) {
+                entry->sleepState10 = (flags != 0)
+                    ? kAirportItlwmAPSTAStationTableLowPowerSleepState
+                    : kAirportItlwmAPSTAStationTableAwakeSleepState;
+            }
+            return kIOReturnSuccess;
+        }
+        default:
+            return kIOReturnUnsupported;
+    }
+}
+
+extern "C" void AirportItlwmAPSTANet80211Event(
+    struct ieee80211com *ic,
+    struct ieee80211_node *ni,
+    int event,
+    void *arg)
+{
+    (void)ic;
+    AirportItlwmAPSTAOwner *owner = static_cast<AirportItlwmAPSTAOwner *>(arg);
+    if (owner == nullptr || ni == nullptr) {
+        return;
+    }
+    (void)owner->publishStationEventFromNet80211(static_cast<uint32_t>(event), ni->ni_macaddr, 0);
+}
