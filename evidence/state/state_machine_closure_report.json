@@ -1,0 +1,327 @@
+{
+  "schema_version": "itlwm-state-machine-closure-report/v1",
+  "selected_step_id": "step:itlwm-rm-04",
+  "roadmap_item_id": "itlwm-rm-04",
+  "goal_item_ids": [
+    "itlwm-fg-04-consumer-producer-state-machines"
+  ],
+  "input_head": "abceca0f53d7f9a322de04626373803ed473ed0c",
+  "capture_source": "committed-source-apple-reference-and-contract-header",
+  "source_boundary": {
+    "basis": "Committed Tahoe contract header, local implementation source, and committed recovered Apple WCL FSM/queue references.",
+    "excluded_sources": [
+      "synthetic",
+      "self-reported",
+      "project-gantt",
+      "runtime-db"
+    ]
+  },
+  "state_machines": [
+    {
+      "name": "association-join",
+      "domain": "association",
+      "states": [
+        "INIT",
+        "SCAN",
+        "AUTH",
+        "ASSOC",
+        "RUN",
+        "JOIN_MANAGER_IDLE",
+        "JOIN_MANAGER_IN_PROGRESS",
+        "JOIN_MANAGER_ASSOC_DONE",
+        "JOIN_MANAGER_CONNECT_COMPLETE"
+      ],
+      "ordered_events": [
+        "scan result selection",
+        "APPLE80211_IOC_ASSOCIATE",
+        "WCL_ASSOCIATE",
+        "WCL_LINK_UP_DONE",
+        "WCL_CONNECT_COMPLETE_EVENT"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-join-manager",
+        "apple-wcl-net-manager"
+      ],
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeStateMachineClosure.hpp",
+        "itl80211/openbsd/net80211/ieee80211_proto.c"
+      ],
+      "recovery_case_ids": [
+        "join-abort-halt-timeout",
+        "driver-reset-power-wake"
+      ]
+    },
+    {
+      "name": "auth-pmk",
+      "domain": "authentication",
+      "states": [
+        "NO_TARGET",
+        "TARGET_PUBLISHED",
+        "WAITING_FOR_PMK",
+        "PMK_INSTALLED",
+        "HANDSHAKE_READY",
+        "CLEARED"
+      ],
+      "ordered_events": [
+        "associateSSID target publish",
+        "PLTI user-client open",
+        "generation_echo validate",
+        "deliverExternalPMK install",
+        "EAPOL handshake"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-join-manager"
+      ],
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "auth-generation-clear",
+        "join-abort-halt-timeout"
+      ]
+    },
+    {
+      "name": "scan-wcl",
+      "domain": "scan",
+      "states": [
+        "SCAN_MANAGER_IDLE",
+        "SCAN_MANAGER_IN_PROGRESS",
+        "SCAN_MANAGER_HALTED",
+        "SCAN_MANAGER_ABORTED"
+      ],
+      "ordered_events": [
+        "setWCL_SCAN_REQ",
+        "cache bgscan",
+        "per-BSS WCL_SCAN_RESULT",
+        "terminal WCL_SCAN_DONE"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-scan-manager"
+      ],
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "scan-abort-timeout-power",
+        "driver-reset-power-wake"
+      ]
+    },
+    {
+      "name": "data-path",
+      "domain": "data-path",
+      "states": [
+        "DOWN",
+        "QUEUE_READY",
+        "TX_RUNNING",
+        "RX_RUNNING",
+        "DRAINING",
+        "DOWN"
+      ],
+      "ordered_events": [
+        "ifq_enqueue",
+        "ifq_dequeue",
+        "iwx_tx",
+        "firmware completion",
+        "rx reorder",
+        "net80211 delivery"
+      ],
+      "apple_reference_case_ids": [
+        "apple-tx-queue-space-pending",
+        "apple-rx-completion-producer",
+        "apple-tx-completion-producer"
+      ],
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/AirportItlwmV2.hpp",
+        "AirportItlwm/TahoeStateMachineClosure.hpp",
+        "itl80211/openbsd/sys/_ifq.cpp",
+        "itlwm/hal_iwx/ItlIwx.cpp"
+      ],
+      "recovery_case_ids": [
+        "tx-backpressure-drain",
+        "rx-reorder-reset"
+      ]
+    }
+  ],
+  "producer_consumer_chains": [
+    {
+      "id": "scan-request-to-wcl-done",
+      "machine": "scan-wcl",
+      "producer": "AirportItlwmSkywalkInterface::setWCL_SCAN_REQ / setSCAN_REQ",
+      "queue": "scanSource timer plus ieee80211_begin_cache_bgscan",
+      "consumer": "AirportItlwm::postWclScanResultsGated",
+      "ordered": true,
+      "backpressure_safe": true,
+      "implementation_paths": [
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "scan-abort-timeout-power"
+      ]
+    },
+    {
+      "id": "join-candidate-to-connect-complete",
+      "machine": "association-join",
+      "producer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATE",
+      "queue": "WCL JOIN_MANAGER and net80211 newstate work queue",
+      "consumer": "postTahoeWclConnectCompleteEvent",
+      "ordered": true,
+      "backpressure_safe": true,
+      "implementation_paths": [
+        "AirportItlwm/TahoeStateMachineClosure.hpp",
+        "itlwm/hal_iwx/ItlIwx.cpp"
+      ],
+      "recovery_case_ids": [
+        "join-abort-halt-timeout"
+      ]
+    },
+    {
+      "id": "auth-target-to-pmk-install",
+      "machine": "auth-pmk",
+      "producer": "AirportItlwmSkywalkInterface::associateSSID",
+      "queue": "fAssocTarget generation gate",
+      "consumer": "AirportItlwm::deliverExternalPMK",
+      "ordered": true,
+      "backpressure_safe": true,
+      "implementation_paths": [
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "auth-generation-clear"
+      ]
+    },
+    {
+      "id": "tx-ifqueue-to-firmware-ring",
+      "machine": "data-path",
+      "producer": "ifq_enqueue",
+      "queue": "bounded IOPacketQueue and iwx qfullmsk",
+      "consumer": "iwx_tx",
+      "ordered": true,
+      "backpressure_safe": true,
+      "implementation_paths": [
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "tx-backpressure-drain"
+      ]
+    },
+    {
+      "id": "rx-firmware-ring-to-net80211",
+      "machine": "data-path",
+      "producer": "firmware RX completion ring",
+      "queue": "RX ring plus AMPDU reorder buffer",
+      "consumer": "ieee80211_input path",
+      "ordered": true,
+      "backpressure_safe": true,
+      "implementation_paths": [
+        "AirportItlwm/TahoeStateMachineClosure.hpp"
+      ],
+      "recovery_case_ids": [
+        "rx-reorder-reset"
+      ]
+    }
+  ],
+  "recovery_cases": 6,
+  "recovery_case_details": [
+    {
+      "id": "join-abort-halt-timeout",
+      "description": "Active join states leave forward progress through explicit abort, halt, timeout, driver-reset, and power-off edges.",
+      "paths": [
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/70_WCLJoinManager_fully_symbolic_FSM_checked.yaml",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+      ]
+    },
+    {
+      "id": "scan-abort-timeout-power",
+      "description": "WCL scan request, abort, timeout, driver reset, and power-off transitions drain to ABORTED/HALTED/IDLE.",
+      "paths": [
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/69_WCLScanManager_fully_symbolic_FSM_corrected.yaml",
+        "AirportItlwm/AirportItlwmV2.cpp"
+      ]
+    },
+    {
+      "id": "auth-generation-clear",
+      "description": "PMK producer state is rejected when stale and cleared on disassociate, leave, PMKSA clear, RSN disable, JOIN_ABORT, and REASSOC.",
+      "paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+      ]
+    },
+    {
+      "id": "tx-backpressure-drain",
+      "description": "TX producers are bounded by IOPacketQueue capacity, qfullmsk/oactive, TXFLUSH, timers, and ring reset/free paths.",
+      "paths": [
+        "itl80211/openbsd/sys/_ifq.cpp",
+        "itlwm/hal_iwx/ItlIwx.cpp"
+      ]
+    },
+    {
+      "id": "rx-reorder-reset",
+      "description": "RX producers are bounded by fixed pending capacity and BA/reorder windows, with stale entries cleared on stop and init failure.",
+      "paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "itlwm/hal_iwx/ItlIwx.cpp"
+      ]
+    },
+    {
+      "id": "driver-reset-power-wake",
+      "description": "Recovered Apple NET_MANAGER and local newstate paths make sleep, wake, and driver-reset behavior explicit.",
+      "paths": [
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
+        "itlwm/hal_iwx/ItlIwx.cpp"
+      ]
+    }
+  ],
+  "apple_reference_cases": [
+    {
+      "id": "apple-wcl-join-manager",
+      "path": "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/70_WCLJoinManager_fully_symbolic_FSM_checked.yaml",
+      "assertions_checked": 5
+    },
+    {
+      "id": "apple-wcl-scan-manager",
+      "path": "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/69_WCLScanManager_fully_symbolic_FSM_corrected.yaml",
+      "assertions_checked": 5
+    },
+    {
+      "id": "apple-wcl-net-manager",
+      "path": "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
+      "assertions_checked": 5
+    },
+    {
+      "id": "apple-tx-queue-space-pending",
+      "path": "docs/reference/AppleBCMWLAN_tx_queue_space_pending_2026_04_27.md",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-rx-completion-producer",
+      "path": "docs/reference/AppleBCMWLAN_rx_completion_pending_producer_2026_04_27.md",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-tx-completion-producer",
+      "path": "docs/reference/AppleBCMWLAN_tx_completion_producer_2026_04_27.md",
+      "assertions_checked": 4
+    }
+  ],
+  "ordering_violations": 0,
+  "backpressure_violations": 0,
+  "self_evidence": false,
+  "mismatch_count": 0,
+  "mismatches": [],
+  "metrics": {
+    "state_machine_count": 4,
+    "producer_consumer_chain_count": 5,
+    "recovery_case_count": 6,
+    "apple_reference_case_count": 6
+  },
+  "verification": {
+    "write_command": "python3 scripts/state_machine_closure_report.py --write evidence/state/state_machine_closure_report.json",
+    "check_command": "python3 scripts/state_machine_closure_report.py --check evidence/state/state_machine_closure_report.json"
+  }
+}

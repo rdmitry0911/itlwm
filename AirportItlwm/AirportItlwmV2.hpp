@@ -13,6 +13,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeControllerContracts.hpp"
 #include "TahoeHiddenInterfaceContracts.hpp"
+#include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
 
 #include "IOKit/network/IOGatedOutputQueue.h"
