@@ -1,0 +1,93 @@
+{
+  "build_artifacts": [
+    {
+      "committed": true,
+      "kind": "committed_build_script",
+      "path": "scripts/build_tahoe.sh"
+    },
+    {
+      "committed": true,
+      "kind": "committed_tahoe_xcode_target",
+      "path": "itlwm.xcodeproj/project.pbxproj"
+    },
+    {
+      "committed": true,
+      "kind": "committed_tahoe_info_plist",
+      "path": "AirportItlwm/AirportItlwm-Tahoe-Info.plist"
+    },
+    {
+      "committed": false,
+      "kind": "reproducible_staged_kext_output",
+      "path": "Build/Debug/Tahoe/AirportItlwm.kext",
+      "producer": "scripts/build_tahoe.sh"
+    }
+  ],
+  "host_private_mirror_used": false,
+  "install": {
+    "checks": {
+      "bounded_copy": true,
+      "bounded_ownership": true,
+      "bounded_permissions": true,
+      "bounded_reboot_load": true,
+      "bounded_remove": true,
+      "documented_staged_source": true,
+      "unload_prohibited": true
+    },
+    "commands_documented_in": "docs/tahoe_lineage_build_reproducibility.md",
+    "install_path": "/Library/Extensions/AirportItlwm.kext",
+    "load_path": "load by reboot after /Library/Extensions install",
+    "source_kext": "Build/Debug/Tahoe/AirportItlwm.kext",
+    "substrate_available": true
+  },
+  "lineage": {
+    "anchors": {
+      "airport_bundle_id": true,
+      "airport_bundle_name": true,
+      "license_gpl_v2": true,
+      "readme_openbsd": true,
+      "readme_openintelwireless": true,
+      "readme_zxystd_airportitlwm": true,
+      "upstream_author_history": true
+    },
+    "head_commit": "7a238b2d73b386ca5eb5db4e71c3f519e0089e86",
+    "opensource_airportitlwm_ancestry": true,
+    "opensource_airportitlwm_repo": "https://github.com/OpenIntelWireless/itlwm",
+    "source_repo": "https://github.com/rdmitry0911/itlwm"
+  },
+  "source_boundary": {
+    "actual_toplevel": "/Users/devops/Projects/itlwm",
+    "canonical_guest_toplevel": "/Users/devops/Projects/itlwm",
+    "git_dir": "/Users/devops/Projects/itlwm/.git",
+    "host_mount_view": "<external-control-home>/automation-v20/projects/itlwm/guest-root",
+    "network_fetch_required": false
+  },
+  "tahoe_build": {
+    "bootkc_symbol_gate": "nm -u staged kext binary compared with nm -g BootKC exports",
+    "checks": {
+      "bootkc_default": true,
+      "bootkc_export_extraction": true,
+      "default_staged_kext": true,
+      "default_variant": true,
+      "output_kext_variable": true,
+      "symbol_comparison": true,
+      "symbol_success_gate": true,
+      "syntax_ok": true,
+      "tahoe_info_plist_bundle_id": true,
+      "tahoe_target": true,
+      "target_variable": true,
+      "undefined_symbol_extraction": true
+    },
+    "command": "./scripts/build_tahoe.sh /Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc",
+    "configuration": "Debug",
+    "default_bootkc": "/Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc",
+    "reproducible": true,
+    "staged_kext": "Build/Debug/Tahoe/AirportItlwm.kext",
+    "target": "AirportItlwm-Tahoe"
+  },
+  "verification": {
+    "check_command": "python3 scripts/tahoe_lineage_build_report.py --check evidence/build/tahoe_lineage_build_report.json",
+    "report_command": "python3 scripts/tahoe_lineage_build_report.py --write evidence/build/tahoe_lineage_build_report.json",
+    "smoke_command": "./scripts/tahoe_reproducibility_smoke.sh"
+  },
+  "version": "itlwm-tahoe-lineage-build-report/v1"
+}
