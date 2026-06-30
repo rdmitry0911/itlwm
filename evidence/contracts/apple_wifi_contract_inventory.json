@@ -1,0 +1,2339 @@
+{
+  "schema_version": "itlwm-apple-wifi-contract-inventory/v1",
+  "inventory_source": "committed-source-and-apple-reference-corpus",
+  "selected_step_id": "step:itlwm-rm-02",
+  "roadmap_item_id": "itlwm-rm-02",
+  "goal_item_ids": [
+    "itlwm-fg-02-system-contract-inventory"
+  ],
+  "input_head": "20f855a37557314a625588998d62014f945f397e",
+  "source_boundary": {
+    "basis": "Committed headers, Tahoe contract helpers, local source, and committed reverse-engineering corpus files in this repository.",
+    "excluded_sources": [
+      "project-gantt",
+      "runtime-db",
+      "agent-prose"
+    ],
+    "primary_source_paths": [
+      "AirportItlwm/TahoeAssociationContracts.hpp",
+      "AirportItlwm/TahoePayloadBuilders.hpp",
+      "AirportItlwm/TahoeControllerContracts.hpp",
+      "AirportItlwm/TahoeHiddenInterfaceContracts.hpp",
+      "AirportItlwm/TahoeQosDynsarContracts.hpp",
+      "AirportItlwm/TahoeOwnerRegistry.hpp",
+      "AirportItlwm/TahoeCommanderV2.hpp",
+      "AirportItlwm/TahoeErrorMap.hpp",
+      "AirportItlwm/AirportSTAIOCTL.cpp",
+      "AirportItlwm/AirportVirtualIOCTL.cpp",
+      "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+      "include/Airport/apple80211_var.h",
+      "include/Airport/apple80211_ioctl.h",
+      "include/Airport/IO80211InfraInterface.h",
+      "include/Airport/IO80211NetworkPacket.h",
+      "include/Airport/IOSkywalkNetworkPacket.h",
+      "include/Airport/IOSkywalkPacketBufferPool.h",
+      "include/Airport/apple_private_spi.h",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/90_skywalk_tx_rx_runtime_contracts.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/100_hidden_interface_flow_timestamp_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/101_qos_dynsar_offsets_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/104_network_packet_tag_abi_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/105_rx_completion_input_handoff_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/107_tx_completion_producer_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/111_io80211_network_packet_pool_class_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/114_packet_scratch_field_map_2026_04_27.yaml",
+      "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/126_infra_lqm_wmm_avc_batch_2026_04_28.yaml"
+    ]
+  },
+  "all_gaps_linked_to_roadmap": true,
+  "contracts": [
+    {
+      "id": "awc-apple80211-current-link-probes",
+      "title": "Apple80211 current-link read probes",
+      "domain": "Apple80211 STA ioctl",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_SSID",
+        "APPLE80211_IOC_BSSID",
+        "APPLE80211_IOC_CURRENT_NETWORK",
+        "APPLE80211_IOC_SCAN_RESULT",
+        "APPLE80211_IOC_STATE"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportSTAIOCTL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_ioctl.h"
+      ],
+      "payload_shape": {
+        "required_outputs": [
+          "versioned Apple80211 carrier structs",
+          "zeroed not-associated SSID/channel/current-link fields",
+          "Apple-specific no-cache and no-value errors where the reference does not synthesize state"
+        ],
+        "invalid_payload_behavior": "Null or unsupported carrier paths must return the recovered Apple error code, not generic ENXIO-style failure."
+      },
+      "state_machine": {
+        "states": [
+          "detached",
+          "scanning",
+          "associating",
+          "run",
+          "link-down"
+        ],
+        "transitions": [
+          "not-associated probes publish empty success carriers",
+          "run-state probes publish current BSSID/SSID/channel/rate values",
+          "link-down clears current-link state before consumers poll"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Model current-link producer and consumer transitions explicitly."
+        },
+        {
+          "gap_id": "gap-runtime-equivalence",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Capture Tahoe polling behavior during scan, join, DHCP, roam, and wake."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-apple80211-current-link-probes"
+      ]
+    },
+    {
+      "id": "awc-association-request-candidate-carrier",
+      "title": "Association request and Tahoe WCL candidate carrier",
+      "domain": "Apple80211 association",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_ASSOCIATE",
+        "APPLE80211_IOC_AUTH_TYPE",
+        "hidden selectors 0x45/0x46",
+        "WCL candidate payload length 0x3ad8"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoeAssociationContracts.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
+      ],
+      "payload_shape": {
+        "required_offsets": {
+          "ssid_length": "0x1c",
+          "ssid": "0x20",
+          "rsn_ie_length": "0xd4",
+          "rsn_ie": "0xd6",
+          "context_bssid": "0x1f4",
+          "pmf_capability": "0x217",
+          "candidate_count": "0x218",
+          "first_candidate_bssid": "0x220",
+          "candidate_stride": "0x12"
+        },
+        "invalid_payload_behavior": "Reject non-0x3ad8 hidden candidate carriers and over-capacity RSN IE lengths with Apple-invalid status."
+      },
+      "state_machine": {
+        "states": [
+          "idle",
+          "candidate-selected",
+          "associate-issued",
+          "auth-pending",
+          "link-up-or-failed"
+        ],
+        "transitions": [
+          "candidate-selected -> associate-issued only after BSSID/SSID/auth material is copied",
+          "associate-issued -> auth-pending when RSN/PMF material exists",
+          "auth-pending -> link-up-or-failed by WCL connect complete or abort"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Produce and consume every recovered association carrier field with Apple-compatible invalid-payload behavior."
+        },
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Order association candidate selection, auth, connect-complete, abort, and retry transitions."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-association-request-candidate-carrier"
+      ]
+    },
+    {
+      "id": "awc-auth-rsn-key-pmk-carriers",
+      "title": "Authentication, RSN IE, cipher key, and PMK carriers",
+      "domain": "Apple80211 auth/key path",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_AUTH_TYPE",
+        "APPLE80211_IOC_RSN_IE",
+        "APPLE80211_IOC_CIPHER_KEY",
+        "apple80211setCUR_PMK selector 0x168"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportSTAIOCTL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_var.h",
+        "docs/reference/CR-479-cur-pmk-userclient-dispatch-evidence-20260516.md",
+        "docs/reference/CR-479-active-psk-pmk-static-closure-20260516.md"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "authtype_lower",
+          "authtype_upper",
+          "RSN IE bytes and length",
+          "apple80211_key cipher_type",
+          "key_flags PTK/GTK/PMK",
+          "key index and replay counter"
+        ],
+        "secret_handling": "Inventory requires metadata-only verification; raw PMK/PSK/key bytes must not be logged."
+      },
+      "state_machine": {
+        "states": [
+          "auth-type-cached",
+          "rsn-ie-cached",
+          "pmk-eligible",
+          "ptk-installed",
+          "gtk-installed",
+          "rsn-done"
+        ],
+        "transitions": [
+          "PMK eligibility is cleared on reset, leave, disassoc, join abort, and PMKSA clear",
+          "PTK and GTK installs each publish handshake progress",
+          "RSN done is not forced without observed key-carrier completion"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Cover PMK, PTK, GTK, RSN IE, and invalid cipher/error cases."
+        },
+        {
+          "gap_id": "gap-diagnostics-failure-semantics",
+          "roadmap_item_id": "itlwm-rm-06",
+          "closure_requirement": "Classify key-carrier misses as recoverable or nonrecoverable without silent RSN success."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-auth-rsn-key-pmk-carriers"
+      ]
+    },
+    {
+      "id": "awc-scan-request-result-carriers",
+      "title": "Scan request, scan result, WCL channel, and BSS info carriers",
+      "domain": "Apple80211 scan",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_SCAN_REQ",
+        "APPLE80211_IOC_SCAN_REQ_MULTIPLE",
+        "APPLE80211_IOC_SCAN_RESULT",
+        "APPLE80211_M_WCL_SCAN_RESULT",
+        "getWCL_CHANNELS_INFO",
+        "getWCL_BSS_INFO",
+        "getWCL_BGSCAN_CACHE_RESULT"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportSTAIOCTL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_var.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "scan channel list",
+          "SSID filters",
+          "WCL channel entry array",
+          "BSS info header length 0x44",
+          "BSS IE max length 0x800",
+          "BG scan cached timestamp"
+        ],
+        "invalid_payload_behavior": "Over-capacity IE blobs must truncate or reject according to the recovered carrier boundary; empty scan caches must not fabricate APs."
+      },
+      "state_machine": {
+        "states": [
+          "scan-idle",
+          "scan-requested",
+          "scan-running",
+          "results-published",
+          "scan-aborted"
+        ],
+        "transitions": [
+          "scan-requested -> scan-running only after request carrier validation",
+          "scan-running -> results-published posts WCL scan result and updates cache",
+          "scan-running -> scan-aborted posts abort-complete where required"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-runtime-equivalence",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Capture real Tahoe scan AP count, WCL channels, and BSS info parity."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-scan-request-result-carriers"
+      ]
+    },
+    {
+      "id": "awc-wcl-connect-complete-event",
+      "title": "WCL connect-complete event and join completion bulletin",
+      "domain": "WCL event delivery",
+      "driver_facing_surface": [
+        "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT",
+        "bulletin board topic 0x90002",
+        "WCLJoinManager connectCompleteEventHandler"
+      ],
+      "source_paths": [
+        "include/Airport/apple80211_var.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml",
+        "docs/reference/CR-479-airportd-corewlan-join-event-producer-contract-20260518.md"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "record count",
+          "up to 10 connect-complete records",
+          "status code",
+          "BSSID",
+          "association ID",
+          "channel",
+          "negotiated security summary"
+        ],
+        "consumer_expected_size": "0xa4"
+      },
+      "state_machine": {
+        "states": [
+          "join-pending",
+          "connect-complete-published",
+          "link-up",
+          "join-failed"
+        ],
+        "transitions": [
+          "join-pending -> connect-complete-published when the carrier matches WCL consumer size",
+          "success status advances link-up producers",
+          "failure status advances diagnostics and retry or abort paths"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Validate WCL connect-complete payload bytes and error status mapping."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-wcl-connect-complete-event"
+      ]
+    },
+    {
+      "id": "awc-wcl-action-frame-send-progress",
+      "title": "WCL action-frame send and progress tracking",
+      "domain": "WCL action frame",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_WCL_ACTION_FRAME",
+        "Apple WCL action-frame V1/V2 transport",
+        "action-frame progress offsets"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/97_wcl_action_frame_send_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/98_wcl_action_frame_progress_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "category byte",
+          "channel dword at +0x04",
+          "frame length word at +0x0e",
+          "frame bytes at +0x10",
+          "V1 fixed command size 0x724",
+          "V2 firmware threshold >= 0x15"
+        ],
+        "max_frame_length": "0x707"
+      },
+      "state_machine": {
+        "states": [
+          "idle",
+          "frame-accepted",
+          "tx-in-progress",
+          "completed",
+          "overdue",
+          "scan-rejected"
+        ],
+        "transitions": [
+          "frame-accepted -> tx-in-progress sets action progress",
+          "tx-in-progress -> overdue after 0x12d ms",
+          "scan request rejects while action frame is in progress"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Enforce progress, overdue, completion, and scan-reject transitions."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-wcl-action-frame-send-progress"
+      ]
+    },
+    {
+      "id": "awc-offload-ndp-hidden-callback",
+      "title": "NDP offload payload and hidden callback chain",
+      "domain": "Neighbor discovery offload",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_OFFLOAD_NDP",
+        "hidden callback route 554",
+        "virtual ioctl route 554"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "count dword at +0x04 capped to 4",
+          "up to four 16-byte IPv6 addresses",
+          "derived fe80:: link-local seed"
+        ],
+        "invalid_payload_behavior": "Null carrier returns raw Apple invalid-argument status."
+      },
+      "state_machine": {
+        "states": [
+          "ndp-empty",
+          "ndp-carrier-cached",
+          "hidden-notify-queued",
+          "virtual-ioctl-sent"
+        ],
+        "transitions": [
+          "valid carrier caches address count and link-local seed",
+          "cache update queues hidden notification before virtual ioctl set"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Prove NDP carrier parsing, count clamping, and two-stage transport order."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-offload-ndp-hidden-callback"
+      ]
+    },
+    {
+      "id": "awc-usb-host-notification",
+      "title": "USB host notification payload split",
+      "domain": "Apple80211 coexistence notification",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_USB_HOST_NOTIFICATION",
+        "hidden callback route 579",
+        "IOVar set route 579"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "sequence dword at +0x04",
+          "change dword at +0x08",
+          "present dword at +0x0c"
+        ],
+        "conditional_transport": "A second change payload is emitted only when change < 2."
+      },
+      "state_machine": {
+        "states": [
+          "usb-host-empty",
+          "present-cached",
+          "hidden-callback-sent",
+          "present-iovar-sent",
+          "change-iovar-sent"
+        ],
+        "transitions": [
+          "valid carrier updates present/change caches",
+          "transport order is hidden callback, present IOVar, optional change IOVar"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Verify present/change split and optional second command."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-usb-host-notification"
+      ]
+    },
+    {
+      "id": "awc-btcoex-profile-chain-disable",
+      "title": "BT coexistence profile, active profile, and 2G chain disable",
+      "domain": "Apple80211 BT coexistence",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_BTCOEX_PROFILES",
+        "APPLE80211_IOC_BTCOEX_CONFIG",
+        "APPLE80211_IOC_BTCOEX_OPTIONS",
+        "profile selector 571",
+        "active selector 572",
+        "2G chain disable selector 574"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "profile mode word",
+          "band byte",
+          "profile index byte",
+          "0x38-byte profile entry",
+          "active profile dword at +0x04",
+          "2G chain-disable word at +0x04"
+        ],
+        "invalid_payload_behavior": "Reject band >= 5, mode outside 1..4, and profile index >= 10 with Apple invalid-argument status."
+      },
+      "state_machine": {
+        "states": [
+          "btcoex-empty",
+          "profile-valid",
+          "active-profile-set",
+          "chain-disable-set"
+        ],
+        "transitions": [
+          "profile-valid sets profileValidMask bit for the selected index",
+          "active and chain-disable commands update independent owner state"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-diagnostics-failure-semantics",
+          "roadmap_item_id": "itlwm-rm-06",
+          "closure_requirement": "Classify invalid BT coexistence profile failures without generic fallback."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-btcoex-profile-chain-disable"
+      ]
+    },
+    {
+      "id": "awc-ranging-authenticate-proximity",
+      "title": "Ranging authenticate and proximity owner routing",
+      "domain": "Apple80211 ranging",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_RANGING_AUTHENTICATE",
+        "proximity owner offset 0x2c28",
+        "selector 567"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeHiddenInterfaceContracts.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "role dword at +0x04",
+          "PMK length word at +0x70",
+          "owner id gate for hidden callback"
+        ],
+        "invalid_payload_behavior": "Null carrier or zero PMK length returns Apple ranging invalid status."
+      },
+      "state_machine": {
+        "states": [
+          "ranging-idle",
+          "ranging-carrier-cached",
+          "two-iovar-prime-sent",
+          "virtual-ioctl-sent",
+          "async-command-issued",
+          "hidden-callback-posted"
+        ],
+        "transitions": [
+          "role 4 with valid proximity owner posts hidden callback",
+          "all valid carriers issue the two IOVar primes before the command"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Preserve ranging transport order and hidden-callback gate."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-ranging-authenticate-proximity"
+      ]
+    },
+    {
+      "id": "awc-tx-power-cap-dual-power",
+      "title": "TX power cap bypass and dual-power eligibility",
+      "domain": "Apple80211 power control",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_BYPASS_TX_POWER_CAP",
+        "dual power mode owner",
+        "selector 622"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/AirportSTAIOCTL.cpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "enabled bit from first payload byte",
+          "dual power primary value",
+          "dual power secondary value"
+        ],
+        "send_gate": "Bypass command is sent only when both dual-power values are not -1."
+      },
+      "state_machine": {
+        "states": [
+          "power-owner-empty",
+          "dual-power-incomplete",
+          "bypass-cached",
+          "send-eligible",
+          "bypass-iovar-sent"
+        ],
+        "transitions": [
+          "syncDualPowerMode recomputes send eligibility",
+          "bypass setter caches local state even when command is not eligible"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Verify send gating and cached bypass payload semantics."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-tx-power-cap-dual-power"
+      ]
+    },
+    {
+      "id": "awc-controller-multicast-queue-coalesce",
+      "title": "Controller multicast, promiscuous mode, queue depth, and coalesce properties",
+      "domain": "IO80211Controller contract",
+      "driver_facing_surface": [
+        "promiscuous mode offset 0x4778",
+        "multicast list IOVAR mcast_list",
+        "data queue depth offset 0x1154",
+        "wlan.coalesce.qsize",
+        "wlan.coalesce.timeout"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoeControllerContracts.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/99_controller_queue_multicast_capacity_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "0x20 multicast addresses",
+          "6-byte multicast address entries",
+          "0xca-byte multicast IOVAR payload capacity",
+          "0x200 Apple data queue default",
+          "coalesce queue-size and timeout properties"
+        ],
+        "invalid_payload_behavior": "Oversized multicast payloads and unsupported commands return recovered Apple status codes."
+      },
+      "state_machine": {
+        "states": [
+          "controller-default",
+          "promiscuous-updated",
+          "multicast-updated",
+          "queue-depth-updated",
+          "coalesce-updated"
+        ],
+        "transitions": [
+          "multicast update is atomic with count and address table",
+          "queue and coalesce publication must precede runtime datapath assertions"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Add ordered producer/consumer checks for multicast and queue/coalesce publication."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-controller-multicast-queue-coalesce"
+      ]
+    },
+    {
+      "id": "awc-skywalk-registration-queues-pools",
+      "title": "Skywalk interface registration, queues, pools, and logical link",
+      "domain": "IOSkywalk runtime",
+      "driver_facing_surface": [
+        "IO80211InfraInterface::registerInfraEthernetInterface",
+        "IOSkywalkTxSubmissionQueue",
+        "IOSkywalkRxCompletionQueue",
+        "IOSkywalkPacketBufferPool",
+        "IOSkywalkLogicalLink"
+      ],
+      "source_paths": [
+        "include/Airport/IO80211InfraInterface.h",
+        "include/Airport/IOSkywalkPacketBufferPool.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/90_skywalk_tx_rx_runtime_contracts.yaml"
+      ],
+      "payload_shape": {
+        "required_objects": [
+          "registration info",
+          "queue array",
+          "queue count",
+          "TX packet buffer pool",
+          "RX packet buffer pool"
+        ],
+        "abi_requirements": [
+          "TX callback unsigned int return type",
+          "RX callback unsigned int return type"
+        ]
+      },
+      "state_machine": {
+        "states": [
+          "created",
+          "registered",
+          "enabled",
+          "quiesced",
+          "draining",
+          "stopped",
+          "detached",
+          "released"
+        ],
+        "transitions": [
+          "queue registration precedes BSD visibility",
+          "stop drains queues before logical-link deregistration",
+          "packet pools outlive queue teardown"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-deterministic-verification"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Prove queue and pool lifecycle ordering and backpressure behavior."
+        },
+        {
+          "gap_id": "gap-deterministic-verification",
+          "roadmap_item_id": "itlwm-rm-07",
+          "closure_requirement": "Mutation tests must fail if queue/pool teardown ordering regresses."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-skywalk-registration-queues-pools"
+      ]
+    },
+    {
+      "id": "awc-io80211-network-packet-pool-class",
+      "title": "IO80211 network packet class and packet pool allocation",
+      "domain": "Skywalk packet allocation",
+      "driver_facing_surface": [
+        "IO80211NetworkPacket",
+        "IOSkywalkNetworkPacket",
+        "IOSkywalkPacketBufferPool::newPacket",
+        "AppleBCMWLANPCIeSkywalkPacket reference allocation"
+      ],
+      "source_paths": [
+        "include/Airport/IO80211NetworkPacket.h",
+        "include/Airport/IOSkywalkNetworkPacket.h",
+        "include/Airport/IOSkywalkPacketBufferPool.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/111_io80211_network_packet_pool_class_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/112_ioskywalk_network_packet_size_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "IO80211NetworkPacket size 0x78",
+          "Apple packet scratch pointer at +0x78",
+          "packet type derived from EtherType 0x888e/0x88b4/DHCP/default"
+        ],
+        "invalid_payload_behavior": "Base packet allocation must not be presented as Apple packet scratch support."
+      },
+      "state_machine": {
+        "states": [
+          "pool-created",
+          "packet-allocated",
+          "packet-prepared",
+          "tx-or-rx-owned",
+          "completed-or-returned"
+        ],
+        "transitions": [
+          "allocation validates packet metaclass before input handoff",
+          "packet ownership transfers only through queue/pool APIs"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Validate packet type, packet class, and scratch ownership boundaries."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-io80211-network-packet-pool-class"
+      ]
+    },
+    {
+      "id": "awc-packet-scratch-tag-abi",
+      "title": "Apple packet scratch and packet_info_tag ABI",
+      "domain": "Skywalk packet metadata",
+      "driver_facing_surface": [
+        "packet_info_tag",
+        "PacketSkywalkScratch",
+        "IO80211InfraInterface::inputPacket",
+        "IO80211InfraInterface::logTxPacket",
+        "IO80211PeerManager::skywalkInputPacket"
+      ],
+      "source_paths": [
+        "include/Airport/apple_private_spi.h",
+        "include/Airport/IO80211InfraInterface.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/104_network_packet_tag_abi_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/114_packet_scratch_field_map_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_offsets": {
+          "rx_completion_marker": "0x14",
+          "tid": "0x18",
+          "tx_vlan_tag": "0x1c",
+          "rx_vlan_tag": "0x22",
+          "rx_drop_marker": "0x24",
+          "ac_meta": "0x28",
+          "service_class": "0x29",
+          "bus_address": "0x48",
+          "virtual_address": "0x50",
+          "packet_signature": "0x74",
+          "tx_status": "0x80",
+          "flow_queue_idx": "0x8a",
+          "ac_dup_flags": "0x90"
+        },
+        "struct_size": "0x98"
+      },
+      "state_machine": {
+        "states": [
+          "tag-zeroed",
+          "rx-tag-populated",
+          "tx-tag-populated",
+          "peer-manager-consumed",
+          "completion-accounted"
+        ],
+        "transitions": [
+          "RX path fills service class/TID/VLAN before IO80211 input consumers",
+          "TX path writes AC/VLAN/status before completion accounting"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-deterministic-verification"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-deterministic-verification",
+          "roadmap_item_id": "itlwm-rm-07",
+          "closure_requirement": "Mutation coverage must catch offset, size, and ownership regressions in packet metadata."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-packet-scratch-tag-abi"
+      ]
+    },
+    {
+      "id": "awc-rx-completion-input-handoff",
+      "title": "RX completion producer and IO80211 input handoff",
+      "domain": "Skywalk RX datapath",
+      "driver_facing_surface": [
+        "IOSkywalkRxCompletionQueue",
+        "IO80211InfraInterface::inputPacket",
+        "IO80211PeerManager::inputPacket",
+        "IO80211PeerManager::skywalkInputPacket"
+      ],
+      "source_paths": [
+        "include/Airport/IO80211InfraInterface.h",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/105_rx_completion_input_handoff_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/106_rx_completion_pending_producer_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "IO80211NetworkPacket pointer",
+          "packet_info_tag pointer",
+          "ether_header pointer",
+          "RX completion batch count",
+          "drop/pass bool out-parameters"
+        ],
+        "ownership_rule": "Packets remain owned by queue/pool runtime until accepted upward or returned."
+      },
+      "state_machine": {
+        "states": [
+          "rx-packet-materialized",
+          "rx-tag-populated",
+          "input-called",
+          "peer-manager-consumed",
+          "returned-to-pool-or-forwarded"
+        ],
+        "transitions": [
+          "RX completion may exist before operational link-up",
+          "stop/reset must prevent callbacks after queue destruction"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-runtime-equivalence",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Capture RX EAPOL, DHCP, and data delivery from a real Tahoe Wi-Fi session."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-rx-completion-input-handoff"
+      ]
+    },
+    {
+      "id": "awc-tx-submission-completion-accounting",
+      "title": "TX submission, output, completion, and accounting",
+      "domain": "Skywalk TX datapath",
+      "driver_facing_surface": [
+        "IOSkywalkTxSubmissionQueue",
+        "IO80211InfraInterface::recordOutputPackets",
+        "IO80211InfraInterface::logTxPacket",
+        "IO80211InfraInterface::logTxCompletionPacket",
+        "IO80211InfraInterface::recordCompletionPackets"
+      ],
+      "source_paths": [
+        "include/Airport/IO80211InfraInterface.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/107_tx_completion_producer_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/109_tx_queue_space_pending_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/110_tx_output_accounting_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "TX submission packet array",
+          "submission batch count",
+          "AC metadata",
+          "TX status",
+          "completion stats",
+          "queue space result"
+        ],
+        "backpressure_rule": "Callback return values must represent accepted/deferred/rejected packets consistently; success cannot be reported for packets whose ownership was not transferred."
+      },
+      "state_machine": {
+        "states": [
+          "tx-ready",
+          "submitted",
+          "accepted",
+          "hardware-or-hal-owned",
+          "completed",
+          "accounted-or-dropped"
+        ],
+        "transitions": [
+          "packet accepted by TX callback must reach completion or explicit drop accounting",
+          "backpressure must not reorder producer/consumer visibility"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Prove ordered producer/consumer queues with backpressure-safe TX completion."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-tx-submission-completion-accounting"
+      ]
+    },
+    {
+      "id": "awc-hidden-interface-flow-timestamp-pipes",
+      "title": "Hidden interface flow queues, packet timestamping, and pipe surfaces",
+      "domain": "IO80211 hidden interface",
+      "driver_facing_surface": [
+        "flowIdSupported vtable offset 0xa68",
+        "requestFlowQueue vtable offset 0xa70",
+        "releaseFlowQueue vtable offset 0xa78",
+        "timestamp enable/disable slots",
+        "event/log/snapshot pipes",
+        "virtual interface create/enable/disable slots"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoeHiddenInterfaceContracts.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/100_hidden_interface_flow_timestamp_2026_04_27.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "flow metadata address at +0x06",
+          "service class at +0x0c",
+          "flags at +0x10",
+          "pipe offsets event=0x218 log=0x220 snapshot=0x230"
+        ],
+        "invalid_payload_behavior": "Null virtual interface creation returns the recovered Apple error status."
+      },
+      "state_machine": {
+        "states": [
+          "hidden-iface-empty",
+          "flow-supported",
+          "flow-queue-requested",
+          "flow-queue-released",
+          "timestamping-enabled",
+          "timestamping-disabled",
+          "pipes-present"
+        ],
+        "transitions": [
+          "flow request/release counts must balance",
+          "timestamp enable and disable alter packet timestamping state without tearing down pipes"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Track hidden-interface flow/timestamp state transitions and queue ownership."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-hidden-interface-flow-timestamp-pipes"
+      ]
+    },
+    {
+      "id": "awc-apsta-softap-owner-surface",
+      "title": "APSTA, SoftAP, and HostAP owner surface",
+      "domain": "AP/APSTA",
+      "driver_facing_surface": [
+        "AppleBCMWLANIO80211APSTAInterface",
+        "IO80211SapProtocol",
+        "APPLE80211_IOC_HOST_AP_MODE",
+        "APPLE80211_IOC_HOST_AP_MODE_HIDDEN",
+        "APPLE80211_IOC_SOFTAP_PARAMS",
+        "APPLE80211_IOC_SOFTAP_STATS",
+        "APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE",
+        "APPLE80211_C_FLAG_HOST_AP"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportItlwmAPSTAOwner.hpp",
+        "AirportItlwm/AirportItlwmAPSTAOwner.cpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/94_ap_mode_and_apsta_surface_2026_04_26.yaml",
+        "docs/reference/AP_APSTA_ROLE7_LOCAL_MATERIALIZATION_API_STATUS_PACKAGE_2026_06_25.md"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "APSTA owner object",
+          "state block pointer self+0x130",
+          "SoftAP params fields from owner offsets",
+          "SoftAP stats 0x58-byte block",
+          "HostAP capability flags"
+        ],
+        "publication_rule": "HostAP capability bits may be published only after APSTA owner topology and carriers exist."
+      },
+      "state_machine": {
+        "states": [
+          "sta-only",
+          "apsta-owner-created",
+          "softap-configured",
+          "hostap-enabled",
+          "softap-running",
+          "softap-teardown"
+        ],
+        "transitions": [
+          "primary STA AP_MODE normal path returns unsupported and must not fake AP state",
+          "APSTA lifecycle is separate from primary STA join/auth/data path",
+          "runtime acceptance must close AP/APSTA gaps or prove them out of target scope"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-apsta-owner-scope",
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-release-acceptance"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-apsta-owner-scope",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Runtime evidence must either close AP/APSTA support or prove it outside the selected target scope."
+        },
+        {
+          "gap_id": "gap-release-acceptance",
+          "roadmap_item_id": "itlwm-rm-08",
+          "closure_requirement": "Final acceptance must not advertise HostAP unless APSTA owner evidence exists."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-apsta-softap-owner-surface"
+      ]
+    },
+    {
+      "id": "awc-qos-dynsar-lqm-wmm-avc",
+      "title": "QoS, DynSAR, LQM, WMM, AVC, and congestion control",
+      "domain": "QoS and radio policy",
+      "driver_facing_surface": [
+        "setLQM_CONFIG",
+        "WCL_QOS_PARAMS",
+        "DynSAR fail-safe offsets",
+        "congestion control feature bit",
+        "force AWDL AMPDU offsets",
+        "split TX status",
+        "TX address resolve request counters"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoeQosDynsarContracts.hpp",
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/101_qos_dynsar_offsets_2026_04_27.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/126_infra_lqm_wmm_avc_batch_2026_04_28.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "LQM sample period 1000 or 5000",
+          "seven-byte LQM threshold rejection range",
+          "DynSAR start ticks at 0x74e0",
+          "fail-safe shift 0x0a",
+          "fail-safe window 0x9502f9",
+          "congestion control bit 0x01"
+        ],
+        "invalid_payload_behavior": "Invalid LQM threshold bytes and unsupported congestion-control paths return recovered Apple statuses."
+      },
+      "state_machine": {
+        "states": [
+          "qos-default",
+          "lqm-configured",
+          "dynsar-window-active",
+          "congestion-control-supported",
+          "wmm-avc-updated"
+        ],
+        "transitions": [
+          "LQM config accepts only recovered valid intervals and threshold bytes",
+          "DynSAR fail-safe mode is computed from monotonic tick delta"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Validate LQM, QoS, DynSAR, and congestion-control payload boundaries."
+        },
+        {
+          "gap_id": "gap-diagnostics-failure-semantics",
+          "roadmap_item_id": "itlwm-rm-06",
+          "closure_requirement": "Diagnostics must distinguish unsupported QoS feature from malformed payload."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-qos-dynsar-lqm-wmm-avc"
+      ]
+    },
+    {
+      "id": "awc-power-wow-sleep-wake",
+      "title": "Power, WoW, sleep, and wake contract",
+      "domain": "Power management",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_POWER",
+        "APPLE80211_IOC_POWERSAVE",
+        "APPLE80211_IOC_WOW_PARAMETERS",
+        "WOW low power mode",
+        "SYSTEM_WILL_SLEEP",
+        "SYSTEM_AWAKE"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportSTAIOCTL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "Apple80211 power carrier",
+          "powersave carrier",
+          "WoW parameter carrier",
+          "sleep/wake payload-less bulletin events"
+        ],
+        "invalid_payload_behavior": "Unsupported power carriers must fail explicitly instead of silently mutating runtime state."
+      },
+      "state_machine": {
+        "states": [
+          "awake",
+          "sleep-pending",
+          "quiesced",
+          "waking",
+          "reassociated-or-link-down"
+        ],
+        "transitions": [
+          "systemWillSleep triggers scan/join/net/GAS quiesce events",
+          "systemAwake triggers wake events and requires reconnect evidence",
+          "wake reconnect must not reuse stale key or scan state silently"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-power-wake-roam-runtime",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-power-wake-roam-runtime",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Capture wake reconnect success and power/wake recovery in a real Tahoe session."
+        },
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Model sleep/wake recovery transitions for scan, join, data, and keys."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-power-wow-sleep-wake"
+      ]
+    },
+    {
+      "id": "awc-awdl-p2p-virtual-interface",
+      "title": "AWDL, P2P, and virtual interface Apple80211 surface",
+      "domain": "Virtual Wi-Fi interfaces",
+      "driver_facing_surface": [
+        "apple80211VirtualRequest",
+        "APPLE80211_IOC_AWDL_*",
+        "APPLE80211_IOC_P2P_LISTEN",
+        "APPLE80211_IOC_P2P_SCAN",
+        "APPLE80211_IOC_P2P_GO_CONF",
+        "APPLE80211_IOC_VIRTUAL_IF_CREATE",
+        "APPLE80211_IOC_VIRTUAL_IF_DELETE",
+        "APPLE80211_IOC_VIRTUAL_IF_ROLE",
+        "APPLE80211_IOC_VIRTUAL_IF_PARENT"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportVirtualIOCTL.cpp",
+        "AirportItlwm/AirportSTAIOCTL.cpp",
+        "AirportItlwm/TahoeHiddenInterfaceContracts.hpp",
+        "include/Airport/apple80211_ioctl.h"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "AWDL sync enabled",
+          "sync frame template",
+          "AWDL BSSID",
+          "election ID/metric",
+          "channel sequence",
+          "P2P listen/scan/go carriers",
+          "virtual role/parent unsupported code on primary STA"
+        ],
+        "invalid_payload_behavior": "Primary STA virtual role/parent must return Apple-specific not-virtual-interface status 0xe082280e."
+      },
+      "state_machine": {
+        "states": [
+          "primary-sta",
+          "virtual-create-requested",
+          "virtual-enabled",
+          "awdl-sync-configured",
+          "p2p-operation-requested",
+          "virtual-disabled"
+        ],
+        "transitions": [
+          "primary STA virtual role/parent probes do not create virtual state",
+          "AWDL/P2P carriers update separate virtual-interface caches"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Make virtual/AWDL/P2P state transitions explicit and separate from primary STA."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-awdl-p2p-virtual-interface"
+      ]
+    },
+    {
+      "id": "awc-error-return-semantics",
+      "title": "Apple-compatible error return and status normalization",
+      "domain": "Failure semantics",
+      "driver_facing_surface": [
+        "TahoeErrorMap",
+        "Apple invalid argument raw 0x16",
+        "Apple bad argument 0xe00002bc",
+        "Apple invalid argument 0xe00002c2",
+        "Apple unsupported 0xe00002c7",
+        "Apple no memory 0xe00002bd",
+        "TVPM already set normalization"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoeErrorMap.hpp",
+        "AirportItlwm/TahoeControllerContracts.hpp",
+        "AirportItlwm/TahoeAssociationContracts.hpp",
+        "AirportItlwm/AirportSTAIOCTL.cpp"
+      ],
+      "payload_shape": {
+        "required_statuses": [
+          "0x16",
+          "0xe00002bc",
+          "0xe00002c2",
+          "0xe00002c7",
+          "0xe00002bd",
+          "0xe0000001",
+          "0xe3ff8117 normalized to success where recovered"
+        ],
+        "invalid_payload_behavior": "Each contract reports the recovered status for null, malformed, unsupported, and transport-rejected cases."
+      },
+      "state_machine": {
+        "states": [
+          "request-received",
+          "payload-invalid",
+          "unsupported-feature",
+          "transport-rejected",
+          "normalized-success",
+          "reported-failure"
+        ],
+        "transitions": [
+          "malformed payload never advances producer state",
+          "recoverable errors remain observable by diagnostics",
+          "normalization applies only to documented Apple-compatible cases"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-diagnostics-failure-semantics",
+        "gap-runtime-equivalence",
+        "gap-deterministic-verification"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-diagnostics-failure-semantics",
+          "roadmap_item_id": "itlwm-rm-06",
+          "closure_requirement": "Cover recoverable/nonrecoverable errors and prove no silent degradation."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-error-return-semantics"
+      ]
+    },
+    {
+      "id": "awc-roam-reassoc-user-cache",
+      "title": "Roam, reassociation, roam lock, user cache, and BG scan control",
+      "domain": "Roaming",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_ROAM",
+        "APPLE80211_IOC_ROAM_PROFILE",
+        "setWCL_REASSOC",
+        "setWCL_SET_ROAM_LOCK",
+        "setWCL_ROAM_USER_CACHE",
+        "setWCL_LEGACY_ROAM_PROFILE_CONFIG",
+        "setWCL_ROAM_PROFILE_CONFIG",
+        "setWCL_CONFIG_BGSCAN",
+        "setWCL_CONFIG_BG_PARAMS"
+      ],
+      "source_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_var.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/71_WCLRoamManager_fully_symbolic_FSM_checked.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/79_BGCOMMON_FSM_fully_symbolic_checked.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "roam profile band data",
+          "WCL reassoc request",
+          "roam lock byte",
+          "user roam cache",
+          "BG scan config command",
+          "BG params command"
+        ],
+        "invalid_payload_behavior": "Null or malformed WCL roam controls must return recovered Apple status without stale-link publication."
+      },
+      "state_machine": {
+        "states": [
+          "connected",
+          "roam-locked",
+          "bgscan-configured",
+          "reassoc-requested",
+          "reassoc-sent",
+          "reassoc-failed",
+          "roam-complete"
+        ],
+        "transitions": [
+          "reassoc clears external PMK eligibility before issuing new request",
+          "BG scan config updates scan producer before roam decision",
+          "reassoc failure does not publish link-up success"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-power-wake-roam-runtime",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-power-wake-roam-runtime",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Capture roaming/reconnect scenarios with at least two BSSIDs."
+        },
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Order BG scan, roam lock, reassoc, key reset, and link publication."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-roam-reassoc-user-cache"
+      ]
+    },
+    {
+      "id": "awc-ie-vendor-custom-assoc",
+      "title": "Vendor IE and custom association IE producer",
+      "domain": "Apple80211 IE payloads",
+      "driver_facing_surface": [
+        "APPLE80211_IOC_IE",
+        "apple80211_ie_data",
+        "selector 552",
+        "join owner vs commander owner routing"
+      ],
+      "source_paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeOwners.hpp",
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoeCommandRouter.hpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "frame_type_flags",
+          "add",
+          "ie_len",
+          "IE byte array",
+          "custom-assoc condition frame_type_flags==4 add!=0 ie[0]==0x44"
+        ],
+        "invalid_payload_behavior": "Reject data->ie_len beyond carrier capacity with raw Apple invalid-argument status."
+      },
+      "state_machine": {
+        "states": [
+          "ie-empty",
+          "vendor-ie-cached",
+          "assoc-ie-cached",
+          "commander-route-sent",
+          "join-route-sent"
+        ],
+        "transitions": [
+          "custom association IE routes to join owner",
+          "generic vendor IE routes to commander owner",
+          "cache update precedes transport dispatch"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-payload-parity",
+          "roadmap_item_id": "itlwm-rm-03",
+          "closure_requirement": "Verify IE routing, carrier bounds, and cache-before-dispatch semantics."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-ie-vendor-custom-assoc"
+      ]
+    },
+    {
+      "id": "awc-link-changed-driver-reset-events",
+      "title": "Link changed, link-down, and driver reset event delivery",
+      "domain": "IO80211 event publication",
+      "driver_facing_surface": [
+        "APPLE80211_M_LINK_CHANGED",
+        "Apple 26.x LINK_CHANGED code 0xd8",
+        "DRIVER_RESET code 0xd6",
+        "bulletin board event fanout"
+      ],
+      "source_paths": [
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/86_concrete_event_payload_maps_checked.yaml",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_var.h"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "BSSID low dword",
+          "BSSID high word",
+          "link_state byte",
+          "interface_type byte",
+          "reason_code dword",
+          "reserved dword",
+          "reset event with null payload"
+        ],
+        "invalid_payload_behavior": "Failed link events must publish failure reason rather than silent success."
+      },
+      "state_machine": {
+        "states": [
+          "link-unknown",
+          "link-up-event",
+          "link-down-event",
+          "driver-reset-published",
+          "manager-reset-handled"
+        ],
+        "transitions": [
+          "link up/down events feed WCL net manager and legacy consumers",
+          "driver reset fans out to join, scan, GAS, config, net, BG scan, and nearby managers"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Prove event fanout transitions and reset recovery ordering."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-link-changed-driver-reset-events"
+      ]
+    },
+    {
+      "id": "awc-bss-peer-manager-public-api",
+      "title": "BSS manager, peer manager, peer, and interface monitor primitives",
+      "domain": "IO80211 object model",
+      "driver_facing_surface": [
+        "IO80211BssManager",
+        "IO80211PeerManager",
+        "IO80211Peer",
+        "IO80211InterfaceMonitor",
+        "IO80211BSSBeacon"
+      ],
+      "source_paths": [
+        "include/Airport/IO80211BssManager.h",
+        "include/Airport/IO80211PeerManager.h",
+        "include/Airport/IO80211Peer.h",
+        "include/Airport/IO80211InterfaceMonitor.h",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/116_peermanager_public_api_2026_04_28.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/117_peer_public_api_2026_04_28.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/120_interface_monitor_public_api_2026_04_28.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/136_bssbeacon_primitive_batch_2026_04_28.yaml",
+        "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/137_bssmanager_primitive_batch_2026_04_28.yaml"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "BSS beacon carrier",
+          "peer identity and RSSI/cache fields",
+          "peer capability credit counters",
+          "interface monitor reporter payloads"
+        ],
+        "invalid_payload_behavior": "BSS/peer accessors must return empty or Apple-specific no-value status rather than invented peer state."
+      },
+      "state_machine": {
+        "states": [
+          "no-bss",
+          "bss-cached",
+          "peer-created",
+          "peer-associated",
+          "peer-cached",
+          "peer-removed"
+        ],
+        "transitions": [
+          "BSS cache feeds scan and connect-complete carriers",
+          "peer manager lookup gates RX/TX datapath and monitor reporting"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-payload-parity",
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-state-machine-closure",
+          "roadmap_item_id": "itlwm-rm-04",
+          "closure_requirement": "Represent BSS/peer lifecycle and datapath lookup ordering explicitly."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-bss-peer-manager-public-api"
+      ]
+    },
+    {
+      "id": "awc-hal-openbsd-apple-bridge",
+      "title": "Intel HAL and OpenBSD net80211 bridge to Apple-facing contracts",
+      "domain": "Local backend bridge",
+      "driver_facing_surface": [
+        "ItlIwm",
+        "ItlIwx",
+        "OpenBSD net80211 ieee80211com",
+        "EAPOL input/output",
+        "HAL scan/join/key/data callbacks"
+      ],
+      "source_paths": [
+        "itlwm/hal_iwm/ItlIwm.cpp",
+        "itlwm/hal_iwx/ItlIwx.cpp",
+        "itl80211/openbsd/net80211/ieee80211_proto.c",
+        "itl80211/openbsd/net80211/ieee80211_input.c",
+        "itl80211/openbsd/net80211/ieee80211_output.c",
+        "AirportItlwm/AirportItlwmInterface.cpp"
+      ],
+      "payload_shape": {
+        "required_fields": [
+          "current net80211 state",
+          "desired SSID/BSSID",
+          "auth/key material handoff",
+          "RX/TX EAPOL frames",
+          "rate/channel/RSSI snapshots"
+        ],
+        "invalid_payload_behavior": "Backend misses must surface as explicit Apple-compatible diagnostics and not as fabricated IO80211 success."
+      },
+      "state_machine": {
+        "states": [
+          "hal-detached",
+          "hal-scanning",
+          "hal-auth",
+          "hal-assoc",
+          "hal-run",
+          "hal-recovering"
+        ],
+        "transitions": [
+          "OpenBSD state transitions must drive Apple current-link and WCL event producers",
+          "EAPOL/key lifecycle must bridge host supplicant state to IO80211 RSN completion"
+        ]
+      },
+      "current_gap_ids": [
+        "gap-state-machine-closure",
+        "gap-runtime-equivalence",
+        "gap-diagnostics-failure-semantics"
+      ],
+      "roadmap_work": [
+        {
+          "gap_id": "gap-runtime-equivalence",
+          "roadmap_item_id": "itlwm-rm-05",
+          "closure_requirement": "Prove real scan/join/auth/DHCP/data behavior with Intel-backed HAL in Tahoe."
+        },
+        {
+          "gap_id": "gap-diagnostics-failure-semantics",
+          "roadmap_item_id": "itlwm-rm-06",
+          "closure_requirement": "Classify HAL/backend misses without silent degradation."
+        }
+      ],
+      "payload_state_acceptance_criteria_ids": [
+        "psac-hal-openbsd-apple-bridge"
+      ]
+    }
+  ],
+  "gap_ledger": [
+    {
+      "id": "gap-payload-parity",
+      "title": "Payload and IO80211 carrier parity work",
+      "roadmap_item_id": "itlwm-rm-03",
+      "goal_item_id": "itlwm-fg-03-payload-parity",
+      "closure_artifact": "evidence/parity/payload_parity_report.json",
+      "work_type": "feature_layer",
+      "acceptance_mapping": [
+        "all required payload shapes are produced/consumed",
+        "invalid payload/error semantics match accepted Apple-compatible behavior",
+        "payload evidence is captured in deterministic tests"
+      ]
+    },
+    {
+      "id": "gap-state-machine-closure",
+      "title": "Producer, consumer, and state-machine ordering work",
+      "roadmap_item_id": "itlwm-rm-04",
+      "goal_item_id": "itlwm-fg-04-consumer-producer-state-machines",
+      "closure_artifact": "evidence/state/state_machine_closure_report.json",
+      "work_type": "feature_layer",
+      "acceptance_mapping": [
+        "association/auth/scan/data-path state machines are explicit",
+        "producer/consumer queues are ordered and backpressure-safe",
+        "state recovery after errors/wake is verified"
+      ]
+    },
+    {
+      "id": "gap-runtime-equivalence",
+      "title": "Tahoe runtime scan, join, auth, DHCP, data, roam, and wake evidence",
+      "roadmap_item_id": "itlwm-rm-05",
+      "goal_item_id": "itlwm-fg-05-runtime-wifi-equivalence",
+      "closure_artifact": "evidence/runtime/tahoe_wifi_session.json",
+      "work_type": "validation_layer",
+      "acceptance_mapping": [
+        "scan/join/auth/DHCP/data transfer works in Tahoe",
+        "roaming/reconnect/power/wake scenarios are covered",
+        "runtime equivalence is captured from a real guest Wi-Fi session"
+      ]
+    },
+    {
+      "id": "gap-diagnostics-failure-semantics",
+      "title": "Apple-compatible diagnostics and recoverable/nonrecoverable failure semantics",
+      "roadmap_item_id": "itlwm-rm-06",
+      "goal_item_id": "itlwm-fg-06-diagnostics-and-failure-semantics",
+      "closure_artifact": "evidence/diagnostics/failure_semantics_report.json",
+      "work_type": "defect_isolation",
+      "acceptance_mapping": [
+        "diagnostics match system expectations",
+        "recoverable/nonrecoverable errors are classified",
+        "no silent degradation is accepted"
+      ]
+    },
+    {
+      "id": "gap-deterministic-verification",
+      "title": "Deterministic verification and mutation coverage for contract regressions",
+      "roadmap_item_id": "itlwm-rm-07",
+      "goal_item_id": "itlwm-fg-07-deterministic-verification",
+      "closure_artifact": "evidence/verification/progress_kernel_sim_report.json",
+      "work_type": "validation_layer",
+      "acceptance_mapping": [
+        "Progress kernel simulator and no-paper-closure mutation coverage pass against committed state",
+        "contract regressions are caught by deterministic checks"
+      ]
+    },
+    {
+      "id": "gap-release-acceptance",
+      "title": "Final parity acceptance rollup and rollback evidence",
+      "roadmap_item_id": "itlwm-rm-08",
+      "goal_item_id": "itlwm-fg-08-release-acceptance",
+      "closure_artifact": "evidence/release/apple_wifi_parity_acceptance_report.json",
+      "work_type": "validation_layer",
+      "acceptance_mapping": [
+        "final Apple Wi-Fi parity release acceptance is ready after prior contract evidence",
+        "rollback recovery checks are present"
+      ]
+    },
+    {
+      "id": "gap-apsta-owner-scope",
+      "title": "AP/APSTA owner reconstruction or out-of-scope proof",
+      "roadmap_item_id": "itlwm-rm-05",
+      "goal_item_id": "itlwm-fg-05-runtime-wifi-equivalence",
+      "closure_artifact": "evidence/runtime/tahoe_wifi_session.json",
+      "work_type": "validation_layer",
+      "acceptance_mapping": [
+        "AP/APSTA gaps are either closed or proven out of target scope",
+        "HostAP capability is not published without APSTA owner evidence"
+      ]
+    },
+    {
+      "id": "gap-power-wake-roam-runtime",
+      "title": "Power, wake, reconnect, and roam runtime proof",
+      "roadmap_item_id": "itlwm-rm-05",
+      "goal_item_id": "itlwm-fg-05-runtime-wifi-equivalence",
+      "closure_artifact": "evidence/runtime/tahoe_wifi_session.json",
+      "work_type": "validation_layer",
+      "acceptance_mapping": [
+        "roaming/reconnect/power/wake scenarios are covered",
+        "state recovery after errors/wake is verified"
+      ]
+    }
+  ],
+  "payload_state_acceptance_criteria": [
+    {
+      "id": "psac-apple80211-current-link-probes",
+      "contract_id": "awc-apple80211-current-link-probes",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "SSID, BSSID, current network, scan result, and state carriers are zeroed and versioned before publication.",
+        "Not-associated reads return Apple-compatible empty success or no-value status, never generic transport failure."
+      ],
+      "state_machine_acceptance": [
+        "Consumer polling observes detached -> scanning -> associating -> run/link-down transitions in order.",
+        "Link-down clears current-link payloads before later read probes."
+      ]
+    },
+    {
+      "id": "psac-association-request-candidate-carrier",
+      "contract_id": "awc-association-request-candidate-carrier",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Hidden association carrier length is exactly 0x3ad8 and required offsets match TahoeAssociationContracts.",
+        "Candidate BSSID, SSID, auth, RSN IE, PMF, and hotspot flags are bounded and copied before transport dispatch."
+      ],
+      "state_machine_acceptance": [
+        "Candidate selection precedes association issue.",
+        "Association cannot publish link-up until auth/key and connect-complete producers advance."
+      ]
+    },
+    {
+      "id": "psac-auth-rsn-key-pmk-carriers",
+      "contract_id": "awc-auth-rsn-key-pmk-carriers",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "AUTH_TYPE, RSN_IE, CIPHER_KEY, and CUR_PMK carriers are parsed without logging raw secrets.",
+        "Invalid cipher/key/PMK payloads return recovered Apple status values."
+      ],
+      "state_machine_acceptance": [
+        "PTK and GTK installs are separately observable before RSN done.",
+        "PMK eligibility clears on reset, leave, disassoc, join abort, and PMKSA clear."
+      ]
+    },
+    {
+      "id": "psac-scan-request-result-carriers",
+      "contract_id": "awc-scan-request-result-carriers",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Scan request, channel info, BSS info, and BG scan cache payloads respect recovered length and count limits.",
+        "Empty caches remain empty and do not synthesize AP records."
+      ],
+      "state_machine_acceptance": [
+        "Scan request advances through requested, running, results-published, or aborted states.",
+        "WCL scan result publication and cache updates are ordered."
+      ]
+    },
+    {
+      "id": "psac-wcl-connect-complete-event",
+      "contract_id": "awc-wcl-connect-complete-event",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Connect-complete event matches the WCL consumer 0xa4-byte payload boundary.",
+        "Status, BSSID, association ID, channel, and negotiated security fields are deterministic."
+      ],
+      "state_machine_acceptance": [
+        "Connect-complete success gates link-up publication.",
+        "Connect-complete failure gates retry, abort, and diagnostics without fake link-up."
+      ]
+    },
+    {
+      "id": "psac-wcl-action-frame-send-progress",
+      "contract_id": "awc-wcl-action-frame-send-progress",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Frame length <= 0x707 and V1/V2 transport selection follows firmware generation threshold.",
+        "Scan-reject and overdue statuses match TahoePayloadBuilders constants."
+      ],
+      "state_machine_acceptance": [
+        "Action-frame progress is set when transmit starts and clears on completion or overdue.",
+        "Scan requests reject while action-frame progress is active."
+      ]
+    },
+    {
+      "id": "psac-offload-ndp-hidden-callback",
+      "contract_id": "awc-offload-ndp-hidden-callback",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "NDP count is capped at four and link-local seed is derived from the first address.",
+        "Null carriers return raw Apple invalid-argument status."
+      ],
+      "state_machine_acceptance": [
+        "Carrier cache update precedes hidden callback.",
+        "Hidden callback precedes virtual ioctl set."
+      ]
+    },
+    {
+      "id": "psac-usb-host-notification",
+      "contract_id": "awc-usb-host-notification",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Sequence, change, and present dwords are read from recovered offsets.",
+        "Second change payload is emitted only when change < 2."
+      ],
+      "state_machine_acceptance": [
+        "Present/change cache update precedes hidden callback and IOVar sends.",
+        "Transport order is deterministic."
+      ]
+    },
+    {
+      "id": "psac-btcoex-profile-chain-disable",
+      "contract_id": "awc-btcoex-profile-chain-disable",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Mode, band, profile index, active profile, and chain-disable fields match Tahoe payload builders.",
+        "Invalid mode, band, or index returns Apple invalid-argument status."
+      ],
+      "state_machine_acceptance": [
+        "Profile valid mask changes only after profile validation.",
+        "Active profile and chain-disable updates are independent and observable."
+      ]
+    },
+    {
+      "id": "psac-ranging-authenticate-proximity",
+      "contract_id": "awc-ranging-authenticate-proximity",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Role and PMK length offsets match recovered payload shape.",
+        "Zero PMK length returns Apple ranging invalid status."
+      ],
+      "state_machine_acceptance": [
+        "Two IOVar primes precede virtual ioctl and async command.",
+        "Hidden callback posts only for role 4 with valid proximity owner."
+      ]
+    },
+    {
+      "id": "psac-tx-power-cap-dual-power",
+      "contract_id": "awc-tx-power-cap-dual-power",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Enabled bit and dual-power eligibility are represented explicitly.",
+        "Bypass send is suppressed until primary and secondary dual-power values are present."
+      ],
+      "state_machine_acceptance": [
+        "Bypass payload cache updates even while send-ineligible.",
+        "Eligibility recomputes when dual-power owner state changes."
+      ]
+    },
+    {
+      "id": "psac-controller-multicast-queue-coalesce",
+      "contract_id": "awc-controller-multicast-queue-coalesce",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Multicast IOVAR capacity, 0x20 entry limit, and 6-byte entries match TahoeControllerContracts.",
+        "Queue depth and coalesce properties are published with Apple defaults or recovered values."
+      ],
+      "state_machine_acceptance": [
+        "Multicast count and address table update atomically.",
+        "Queue/coalesce publication precedes datapath runtime assertions."
+      ]
+    },
+    {
+      "id": "psac-skywalk-registration-queues-pools",
+      "contract_id": "awc-skywalk-registration-queues-pools",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-07"
+      ],
+      "payload_acceptance": [
+        "Registration info, queue array, queue count, TX pool, and RX pool are all present.",
+        "TX/RX callback ABI uses unsigned int return type."
+      ],
+      "state_machine_acceptance": [
+        "Queues register before BSD visibility.",
+        "Stop drains queues before logical-link teardown and pool release."
+      ]
+    },
+    {
+      "id": "psac-io80211-network-packet-pool-class",
+      "contract_id": "awc-io80211-network-packet-pool-class",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "IO80211NetworkPacket class size and packet type classification match recovered headers.",
+        "Scratch-owner limitations are explicit and not represented as complete Apple packet parity."
+      ],
+      "state_machine_acceptance": [
+        "Packet allocation validates class before input handoff.",
+        "Packet ownership returns through queue/pool completion or drop paths."
+      ]
+    },
+    {
+      "id": "psac-packet-scratch-tag-abi",
+      "contract_id": "awc-packet-scratch-tag-abi",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-07"
+      ],
+      "payload_acceptance": [
+        "Every named packet_info_tag offset and struct size matches compile-time assertions.",
+        "RX/TX metadata fields are not silently ignored by parity tests."
+      ],
+      "state_machine_acceptance": [
+        "RX tag population precedes IO80211 input consumers.",
+        "TX status and accounting metadata precede completion publication."
+      ]
+    },
+    {
+      "id": "psac-rx-completion-input-handoff",
+      "contract_id": "awc-rx-completion-input-handoff",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "RX packet, tag, ether header, count, and pass/drop outputs are all represented.",
+        "Ownership is explicit until handoff, return, or drop."
+      ],
+      "state_machine_acceptance": [
+        "RX completion can exist before IP link-up but not after queue destruction.",
+        "EAPOL, DHCP, and data packets follow the same ownership discipline."
+      ]
+    },
+    {
+      "id": "psac-tx-submission-completion-accounting",
+      "contract_id": "awc-tx-submission-completion-accounting",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "TX submission, AC metadata, TX status, queue space, and completion stats are all covered.",
+        "Backpressure return semantics do not claim transfer for unowned packets."
+      ],
+      "state_machine_acceptance": [
+        "Accepted TX packets reach completion or explicit drop accounting.",
+        "Backpressure does not reorder producer/consumer visibility."
+      ]
+    },
+    {
+      "id": "psac-hidden-interface-flow-timestamp-pipes",
+      "contract_id": "awc-hidden-interface-flow-timestamp-pipes",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "Flow metadata and event/log/snapshot pipe offsets match TahoeHiddenInterfaceContracts.",
+        "Null virtual-interface operations return recovered Apple status."
+      ],
+      "state_machine_acceptance": [
+        "Flow queue request and release counts balance.",
+        "Timestamping enable/disable does not tear down pipe surfaces."
+      ]
+    },
+    {
+      "id": "psac-apsta-softap-owner-surface",
+      "contract_id": "awc-apsta-softap-owner-surface",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-08"
+      ],
+      "payload_acceptance": [
+        "SoftAP params, stats, HostAP mode, and Wi-Fi network info IE carriers require APSTA owner topology.",
+        "Primary STA AP_MODE normal path remains unsupported and does not mutate AP state."
+      ],
+      "state_machine_acceptance": [
+        "HostAP capability is not advertised before APSTA owner creation and carrier support.",
+        "AP/APSTA support is closed or explicitly proven out of target scope before final runtime acceptance."
+      ]
+    },
+    {
+      "id": "psac-qos-dynsar-lqm-wmm-avc",
+      "contract_id": "awc-qos-dynsar-lqm-wmm-avc",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "LQM intervals, invalid threshold range, DynSAR offsets, and congestion-control bit match recovered constants.",
+        "Unsupported QoS features are reported with recovered Apple status values."
+      ],
+      "state_machine_acceptance": [
+        "LQM and QoS updates publish before datapath behavior depends on them.",
+        "DynSAR fail-safe state is computed from tick delta and exits deterministically."
+      ]
+    },
+    {
+      "id": "psac-power-wow-sleep-wake",
+      "contract_id": "awc-power-wow-sleep-wake",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Power, powersave, WoW, and sleep/wake event carriers are represented separately.",
+        "Unsupported power payloads do not silently mutate runtime state."
+      ],
+      "state_machine_acceptance": [
+        "Sleep quiesces scan, join, net, and GAS producers.",
+        "Wake reconnect does not reuse stale key, scan, or link state silently."
+      ]
+    },
+    {
+      "id": "psac-awdl-p2p-virtual-interface",
+      "contract_id": "awc-awdl-p2p-virtual-interface",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "AWDL sync, BSSID, election, channel sequence, P2P, and virtual interface carriers are inventoried.",
+        "Primary STA virtual role/parent probes return 0xe082280e."
+      ],
+      "state_machine_acceptance": [
+        "Primary STA probes do not create virtual state.",
+        "AWDL/P2P operations update virtual-interface state separately from primary STA join state."
+      ]
+    },
+    {
+      "id": "psac-error-return-semantics",
+      "contract_id": "awc-error-return-semantics",
+      "roadmap_item_ids": [
+        "itlwm-rm-05",
+        "itlwm-rm-06",
+        "itlwm-rm-07"
+      ],
+      "payload_acceptance": [
+        "Null, malformed, unsupported, no-memory, and transport-rejected cases use recovered Apple status values.",
+        "Documented success normalization is limited to known Apple-compatible status values."
+      ],
+      "state_machine_acceptance": [
+        "Malformed payloads do not advance producer state.",
+        "Recoverable and nonrecoverable failures remain observable for diagnostics."
+      ]
+    },
+    {
+      "id": "psac-roam-reassoc-user-cache",
+      "contract_id": "awc-roam-reassoc-user-cache",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Roam profile, reassoc, roam lock, user cache, BG scan, and BG params carriers are represented.",
+        "Malformed roam controls do not publish stale link-up success."
+      ],
+      "state_machine_acceptance": [
+        "Reassoc clears external PMK eligibility before issuing a new request.",
+        "BG scan and roam lock state are ordered before roam decision and reconnect evidence."
+      ]
+    },
+    {
+      "id": "psac-ie-vendor-custom-assoc",
+      "contract_id": "awc-ie-vendor-custom-assoc",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "IE length is bounded by the apple80211_ie_data carrier capacity.",
+        "Custom association IE condition routes selector 552 to the join owner; generic vendor IE routes to commander owner."
+      ],
+      "state_machine_acceptance": [
+        "IE cache update precedes transport dispatch.",
+        "Association IE and vendor IE caches remain distinct."
+      ]
+    },
+    {
+      "id": "psac-link-changed-driver-reset-events",
+      "contract_id": "awc-link-changed-driver-reset-events",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "Link-changed payload includes BSSID, link_state, interface_type, reason_code, and reserved fields.",
+        "Driver reset is a null-payload event and does not fabricate link state."
+      ],
+      "state_machine_acceptance": [
+        "Link-up/down events feed WCL and legacy consumers in order.",
+        "Driver reset fans out to join, scan, GAS, config, net, BG scan, and nearby managers."
+      ]
+    },
+    {
+      "id": "psac-bss-peer-manager-public-api",
+      "contract_id": "awc-bss-peer-manager-public-api",
+      "roadmap_item_ids": [
+        "itlwm-rm-03",
+        "itlwm-rm-04",
+        "itlwm-rm-05"
+      ],
+      "payload_acceptance": [
+        "BSS beacon, peer identity, RSSI, capability, credit, and monitor reporter carriers are represented.",
+        "No-BSS and no-peer cases return empty or Apple-specific no-value status rather than invented state."
+      ],
+      "state_machine_acceptance": [
+        "BSS cache feeds scan result and connect-complete carriers.",
+        "Peer lifecycle gates datapath lookup and monitor reporting."
+      ]
+    },
+    {
+      "id": "psac-hal-openbsd-apple-bridge",
+      "contract_id": "awc-hal-openbsd-apple-bridge",
+      "roadmap_item_ids": [
+        "itlwm-rm-04",
+        "itlwm-rm-05",
+        "itlwm-rm-06"
+      ],
+      "payload_acceptance": [
+        "OpenBSD net80211 state, desired SSID/BSSID, keys, EAPOL, rate/channel/RSSI, and HAL callbacks map to Apple-facing carriers.",
+        "Backend misses surface as explicit Apple-compatible diagnostics."
+      ],
+      "state_machine_acceptance": [
+        "OpenBSD state transitions drive Apple current-link and WCL event producers.",
+        "EAPOL/key lifecycle bridges host supplicant state to IO80211 RSN completion."
+      ]
+    }
+  ],
+  "coverage_summary": {
+    "contract_count": 28,
+    "payload_state_acceptance_criteria_count": 28,
+    "gap_count": 8,
+    "distinct_contract_domains": [
+      "Apple80211 STA ioctl",
+      "Apple80211 association",
+      "Apple80211 auth/key path",
+      "Apple80211 scan",
+      "WCL event delivery",
+      "WCL action frame",
+      "Neighbor discovery offload",
+      "Apple80211 coexistence notification",
+      "Apple80211 BT coexistence",
+      "Apple80211 ranging",
+      "Apple80211 power control",
+      "IO80211Controller contract",
+      "IOSkywalk runtime",
+      "Skywalk packet allocation",
+      "Skywalk packet metadata",
+      "Skywalk RX datapath",
+      "Skywalk TX datapath",
+      "IO80211 hidden interface",
+      "AP/APSTA",
+      "QoS and radio policy",
+      "Power management",
+      "Virtual Wi-Fi interfaces",
+      "Failure semantics",
+      "Roaming",
+      "Apple80211 IE payloads",
+      "IO80211 event publication",
+      "IO80211 object model",
+      "Local backend bridge"
+    ]
+  }
+}
