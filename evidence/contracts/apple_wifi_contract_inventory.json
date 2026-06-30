@@ -1,12 +1,12 @@
 {
-  "schema_version": "itlwm-apple-wifi-contract-inventory/v1",
+  "schema_version": "itlwm-apple-wifi-contract-inventory/v2",
   "inventory_source": "committed-source-and-apple-reference-corpus",
   "selected_step_id": "step:itlwm-rm-02",
   "roadmap_item_id": "itlwm-rm-02",
   "goal_item_ids": [
     "itlwm-fg-02-system-contract-inventory"
   ],
-  "input_head": "20f855a37557314a625588998d62014f945f397e",
+  "input_head": "b9f4f7c132356798766b59dc268c060a0a14be3b",
   "source_boundary": {
     "basis": "Committed headers, Tahoe contract helpers, local source, and committed reverse-engineering corpus files in this repository.",
     "excluded_sources": [
@@ -1727,7 +1727,9 @@
         "all required payload shapes are produced/consumed",
         "invalid payload/error semantics match accepted Apple-compatible behavior",
         "payload evidence is captured in deterministic tests"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-state-machine-closure",
@@ -1740,7 +1742,9 @@
         "association/auth/scan/data-path state machines are explicit",
         "producer/consumer queues are ordered and backpressure-safe",
         "state recovery after errors/wake is verified"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-runtime-equivalence",
@@ -1753,7 +1757,9 @@
         "scan/join/auth/DHCP/data transfer works in Tahoe",
         "roaming/reconnect/power/wake scenarios are covered",
         "runtime equivalence is captured from a real guest Wi-Fi session"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-diagnostics-failure-semantics",
@@ -1766,7 +1772,9 @@
         "diagnostics match system expectations",
         "recoverable/nonrecoverable errors are classified",
         "no silent degradation is accepted"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-deterministic-verification",
@@ -1778,7 +1786,9 @@
       "acceptance_mapping": [
         "Progress kernel simulator and no-paper-closure mutation coverage pass against committed state",
         "contract regressions are caught by deterministic checks"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-release-acceptance",
@@ -1790,7 +1800,9 @@
       "acceptance_mapping": [
         "final Apple Wi-Fi parity release acceptance is ready after prior contract evidence",
         "rollback recovery checks are present"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-apsta-owner-scope",
@@ -1802,7 +1814,9 @@
       "acceptance_mapping": [
         "AP/APSTA gaps are either closed or proven out of target scope",
         "HostAP capability is not published without APSTA owner evidence"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     },
     {
       "id": "gap-power-wake-roam-runtime",
@@ -1814,7 +1828,9 @@
       "acceptance_mapping": [
         "roaming/reconnect/power/wake scenarios are covered",
         "state recovery after errors/wake is verified"
-      ]
+      ],
+      "status": "open",
+      "represented_as_roadmap_work": true
     }
   ],
   "payload_state_acceptance_criteria": [
@@ -2334,6 +2350,20 @@
       "IO80211 event publication",
       "IO80211 object model",
       "Local backend bridge"
+    ],
+    "roadmap_bound_gap_count": 8,
+    "contracts_with_payload_state_acceptance": 28,
+    "validation_command": "timeout 20s python3 scripts/validate_apple_wifi_contract_inventory.py evidence/contracts/apple_wifi_contract_inventory.json --expected-step-id step:itlwm-rm-02 --expected-roadmap-item-id itlwm-rm-02 --expected-goal-item-id itlwm-fg-02-system-contract-inventory --expected-input-head b9f4f7c132356798766b59dc268c060a0a14be3b"
+  },
+  "deterministic_validation": {
+    "validator": "scripts/validate_apple_wifi_contract_inventory.py",
+    "inventory_path": "evidence/contracts/apple_wifi_contract_inventory.json",
+    "required_invariants": [
+      "selected step, roadmap item, goal item, and input head match the assignment",
+      "every Apple driver-facing contract has payload and state-machine acceptance criteria",
+      "every current contract gap is represented by roadmap-bound work",
+      "gap ledger entries carry closure artifacts, work type, goal item, and acceptance mapping",
+      "coverage summary counts match the inventory"
     ]
   }
 }
