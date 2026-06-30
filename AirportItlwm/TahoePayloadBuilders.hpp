@@ -9,6 +9,8 @@
 #include <Airport/Apple80211.h>
 #include <stdint.h>
 
+#include "TahoePayloadParity.hpp"
+
 namespace TahoePayloadBuilders {
 
 static constexpr uint16_t kActionFramePayloadCapacity = 0x708;

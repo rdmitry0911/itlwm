@@ -1,0 +1,369 @@
+{
+  "schema_version": "itlwm-payload-parity-report/v1",
+  "selected_step_id": "step:itlwm-rm-03",
+  "roadmap_item_id": "itlwm-rm-03",
+  "goal_item_ids": [
+    "itlwm-fg-03-payload-parity"
+  ],
+  "input_head": "0d32650d5bb669c2556bdad8597a6e944df7e5ff",
+  "capture_source": "committed-source-and-apple-reference-corpus",
+  "source_boundary": {
+    "basis": "Committed implementation headers/source, committed Apple reverse-engineering references, and deterministic token checks.",
+    "excluded_sources": [
+      "synthetic",
+      "self-reported",
+      "project-gantt",
+      "runtime-db"
+    ]
+  },
+  "covered_payload_types": [
+    {
+      "name": "ie-assoc-vendor",
+      "shape": "variable IE bytes, max 2048",
+      "producer": "TahoePayloadBuilders::buildIE",
+      "consumer": "TahoeCommanderV2::runSetIE",
+      "implementation_paths": [
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-ie-custom-assoc",
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null or overlength carrier returns raw 0x16"
+    },
+    {
+      "name": "offload-ndp-ipv6",
+      "shape": "counted IPv6 addresses, clamped to four, link-local seed",
+      "producer": "TahoePayloadBuilders::buildOffloadNdp",
+      "consumer": "AirportItlwmSkywalkInterface::setOFFLOAD_NDP",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null carrier returns raw 0x16 through commander layer"
+    },
+    {
+      "name": "usb-host-notification",
+      "shape": "present/change dwords with conditional change payload",
+      "producer": "TahoePayloadBuilders::buildUsbHostNotification",
+      "consumer": "AirportItlwmSkywalkInterface::setUSB_HOST_NOTIFICATION",
+      "implementation_paths": [
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null carrier returns 0xe00002bc"
+    },
+    {
+      "name": "btcoex-profile",
+      "shape": "0x38-byte profile entry with mode/band/index gates",
+      "producer": "TahoePayloadBuilders::buildBtcoexProfile",
+      "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_PROFILE",
+      "implementation_paths": [
+        "AirportItlwm/TahoeCommander.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null or invalid band/mode/index returns 0xe00002c2"
+    },
+    {
+      "name": "btcoex-profile-active",
+      "shape": "active profile dword at caller +0x4",
+      "producer": "TahoePayloadBuilders::buildBtcoexProfileActive",
+      "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_PROFILE_ACTIVE",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null returns 0xe00002c2"
+    },
+    {
+      "name": "btcoex-2g-chain-disable",
+      "shape": "6-byte chain-disable payload with fixed 0x00060001 header",
+      "producer": "TahoePayloadBuilders::buildBtcoex2GChainDisable",
+      "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_2G_CHAIN_DISABLE",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null returns 0xe00002c2"
+    },
+    {
+      "name": "tx-power-cap-bypass",
+      "shape": "4-byte policy payload, low bit is enabled",
+      "producer": "TahoePayloadBuilders::buildTxPowerCapBypass",
+      "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP",
+      "implementation_paths": [
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null returns 0xe00002bc; send is gated until dual-power values exist"
+    },
+    {
+      "name": "wcl-action-frame-v1-v2",
+      "shape": "V1 fixed 0x724 command payload or V2 dynamic issue-command frame",
+      "producer": "TahoePayloadBuilders::buildActionFrame",
+      "consumer": "TahoeCommanderV2::runSetWCLActionFrame",
+      "implementation_paths": [
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-action-frame-send"
+      ],
+      "invalid_semantics": "null or frameLen > 0x707 returns 0xe00002bc"
+    },
+    {
+      "name": "action-frame-progress",
+      "shape": "progress flag/start-ms owner state plus scan rejection status",
+      "producer": "TahoeOwnerRegistry::setActionFrameProgress",
+      "consumer": "TahoeOwnerRegistry::getActionFrameProgress",
+      "implementation_paths": [
+        "AirportItlwm/TahoeOwnerRegistry.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-action-frame-progress"
+      ],
+      "invalid_semantics": "overdue clears progress; scan reject status remains Apple 0xe00002d5"
+    },
+    {
+      "name": "ranging-authenticate",
+      "shape": "role at +0x4, PMK length at +0x70, optional hidden callback",
+      "producer": "TahoePayloadBuilders::buildRangingAuthenticate",
+      "consumer": "AirportItlwmSkywalkInterface::setRANGING_AUTHENTICATE",
+      "implementation_paths": [
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-ranging-authenticate-thunk",
+        "apple-io80211-selector-surface"
+      ],
+      "invalid_semantics": "null or zero PMK length returns 0xe0000001"
+    },
+    {
+      "name": "association-candidates-hidden",
+      "shape": "0x3ad8 hidden WCL association candidate carrier",
+      "producer": "AirportItlwmSkywalkInterface::setWCL_ASSOCIATE",
+      "consumer": "AirportItlwmSkywalkInterface::getAWDL_PEER_TRAFFIC_STATS",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoeAssociationContracts.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-hidden-association-rsn"
+      ],
+      "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2"
+    },
+    {
+      "name": "link-changed-32",
+      "shape": "32-byte APPLE80211_M_LINK_CHANGED / IOC 156 carrier",
+      "producer": "AirportItlwmSkywalkInterface::setLinkStateInternal",
+      "consumer": "AirportItlwmSkywalkInterface::getLINK_CHANGED_EVENT_DATA",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_ioctl.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-event-three-abis"
+      ],
+      "invalid_semantics": "null IOC getter returns raw 16; event publication is gated on parent transition success"
+    },
+    {
+      "name": "bssid-changed-24",
+      "shape": "24-byte APPLE80211_M_BSSID_CHANGED compact carrier",
+      "producer": "AirportItlwmSkywalkInterface::setCurrentApAddress",
+      "consumer": "IO80211Glue pending event queue",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "include/Airport/apple80211_ioctl.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-event-three-abis"
+      ],
+      "invalid_semantics": "zero BSSID is rejected; same-BSS reason 1 suppresses duplicate publication"
+    },
+    {
+      "name": "wcl-link-state-16",
+      "shape": "16-byte WCL 0xd8 link-state update",
+      "producer": "postTahoeWclLinkUpInd",
+      "consumer": "WCL event 0xd8 consumer",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-event-three-abis"
+      ],
+      "invalid_semantics": "raw reason 0 or out of range maps to 0xff"
+    },
+    {
+      "name": "wcl-scan-result",
+      "shape": "0x44 BeaconMetaData header plus up to 0x800 IE bytes",
+      "producer": "buildTahoeWclScanResultPayload",
+      "consumer": "AirportItlwm::postWclScanDoneGated",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-scan-result"
+      ],
+      "invalid_semantics": "null controller/node/channel rejects before WCL_SCAN_RESULT publication"
+    },
+    {
+      "name": "wcl-connect-complete",
+      "shape": "0xa4 WCL connect-complete event with ten 16-byte records",
+      "producer": "buildTahoeWclConnectCompletePayload",
+      "consumer": "postTahoeWclConnectCompleteEvent",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "include/Airport/apple80211_var.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-connect-complete"
+      ],
+      "invalid_semantics": "missing controller/HAL/RUN/BSS rejects before postMessage"
+    },
+    {
+      "name": "driver-available-0xf8",
+      "shape": "0xf8 DRIVER_AVAILABLE bulletin with available dword polarity",
+      "producer": "postTahoeDriverAvailableBulletin",
+      "consumer": "WCLSystemStateManager driverAvailableEventHandler",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "include/Airport/apple80211_ioctl.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-driver-available"
+      ],
+      "invalid_semantics": "payload length is exact 0xf8 and ready=true publishes available=1"
+    }
+  ],
+  "apple_reference_cases": [
+    {
+      "id": "apple-wcl-action-frame-send",
+      "path": "docs/reference/AppleBCMWLAN_WCL_action_frame_send_2026_04_27.md",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-hidden-association-rsn",
+      "path": "docs/reference/AppleBCMWLAN_hidden_assoc_rsn_carrier_2026_04_27.md",
+      "assertions_checked": 3
+    },
+    {
+      "id": "apple-event-three-abis",
+      "path": "docs/reference/CR-479-event-payload-three-distinct-abis-closure-20260517.md",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-action-frame-progress",
+      "path": "docs/reference/AppleBCMWLAN_WCL_action_frame_progress_2026_04_27.md",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-driver-available",
+      "path": "docs/tahoe_signal_chain_audit.md",
+      "assertions_checked": 3
+    },
+    {
+      "id": "apple-connect-complete",
+      "path": "analysis/cr230_applebcmwlan_sendConnectComplete_2026_04_29.txt",
+      "assertions_checked": 3
+    },
+    {
+      "id": "apple-wcl-scan-result",
+      "path": "analysis/ANALYSIS_REPORT_2026-04-23.md",
+      "assertions_checked": 3
+    },
+    {
+      "id": "apple-io80211-selector-surface",
+      "path": "include/Airport/IO80211InfraProtocol.h",
+      "assertions_checked": 4
+    },
+    {
+      "id": "apple-ranging-authenticate-thunk",
+      "path": "docs/reference/CR-479-gap4-io80211-non-wcl-auth-entries-decomp-20260519.md",
+      "assertions_checked": 2
+    },
+    {
+      "id": "apple-ie-custom-assoc",
+      "path": "docs/tahoe_signal_chain_audit.md",
+      "assertions_checked": 2
+    }
+  ],
+  "error_semantics_cases": 6,
+  "error_semantics_details": [
+    {
+      "id": "action-frame-null-or-oversize",
+      "expected": "0xe00002bc",
+      "paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeErrorMap.hpp",
+        "docs/reference/AppleBCMWLAN_WCL_action_frame_send_2026_04_27.md"
+      ]
+    },
+    {
+      "id": "btcoex-profile-invalid-range",
+      "expected": "0xe00002c2",
+      "paths": [
+        "AirportItlwm/TahoeCommander.hpp"
+      ]
+    },
+    {
+      "id": "ranging-auth-zero-pmk",
+      "expected": "0xe0000001",
+      "paths": [
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "AirportItlwm/TahoeErrorMap.hpp"
+      ]
+    },
+    {
+      "id": "bssid-zero-and-same-bss-suppression",
+      "expected": "suppress-publication",
+      "paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "docs/reference/CR-479-event-payload-three-distinct-abis-closure-20260517.md"
+      ]
+    },
+    {
+      "id": "hidden-assoc-exact-length",
+      "expected": "route-only-0x3ad8",
+      "paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoeAssociationContracts.hpp"
+      ]
+    },
+    {
+      "id": "driver-available-polarity",
+      "expected": "ready-true-available-1",
+      "paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "docs/tahoe_signal_chain_audit.md"
+      ]
+    }
+  ],
+  "mismatch_count": 0,
+  "mismatches": [],
+  "metrics": {
+    "covered_payload_type_count": 17,
+    "apple_reference_case_count": 10,
+    "error_semantics_case_count": 6
+  }
+}
