@@ -5,7 +5,7 @@
   "goal_item_ids": [
     "itlwm-fg-04-consumer-producer-state-machines"
   ],
-  "input_head": "abceca0f53d7f9a322de04626373803ed473ed0c",
+  "input_head": "379e6d1bc7c23d34dac90a93684194841353c07a",
   "capture_source": "committed-source-apple-reference-and-contract-header",
   "source_boundary": {
     "basis": "Committed Tahoe contract header, local implementation source, and committed recovered Apple WCL FSM/queue references.",
@@ -144,7 +144,8 @@
       ],
       "recovery_case_ids": [
         "tx-backpressure-drain",
-        "rx-reorder-reset"
+        "rx-reorder-reset",
+        "driver-reset-power-wake"
       ]
     }
   ],
@@ -254,15 +255,16 @@
     },
     {
       "id": "tx-backpressure-drain",
-      "description": "TX producers are bounded by IOPacketQueue capacity, qfullmsk/oactive, TXFLUSH, timers, and ring reset/free paths.",
+      "description": "TX producers are bounded by IOPacketQueue capacity, qfullmsk/oactive, TXFLUSH, local Skywalk TX-completion drains, timers, and ring reset/free paths.",
       "paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
         "itl80211/openbsd/sys/_ifq.cpp",
         "itlwm/hal_iwx/ItlIwx.cpp"
       ]
     },
     {
       "id": "rx-reorder-reset",
-      "description": "RX producers are bounded by fixed pending capacity and BA/reorder windows, with stale entries cleared on stop and init failure.",
+      "description": "RX producers are bounded by fixed pending capacity and BA/reorder windows, with stale local Skywalk RX entries, BA state, and ring state cleared on disable, stop, error, and init failure.",
       "paths": [
         "AirportItlwm/AirportItlwmV2.cpp",
         "itlwm/hal_iwx/ItlIwx.cpp"
@@ -272,6 +274,7 @@
       "id": "driver-reset-power-wake",
       "description": "Recovered Apple NET_MANAGER and local newstate paths make sleep, wake, and driver-reset behavior explicit.",
       "paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
         "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
         "itlwm/hal_iwx/ItlIwx.cpp"
       ]

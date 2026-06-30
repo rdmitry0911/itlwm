@@ -89,9 +89,10 @@ static const StateMachineContract kStateMachineContracts[] = {
         "ifq_enqueue feeds the bounded IOPacketQueue, ifq_dequeue drains "
         "only while IFF_RUNNING and not TXFLUSH, and firmware RX completion "
         "is reordered before net80211 delivery",
-        "qfullmsk sets ifq_oactive, TXFLUSH stops new dequeue, TX/RX rings "
-        "and reorder buffers are cleared on stop/error, and wake re-enters "
-        "through init/newstate instead of replaying stale packets",
+        "qfullmsk sets ifq_oactive, TXFLUSH stops new dequeue, TX/RX rings, "
+        "reorder buffers, and local Skywalk pending queues are drained on "
+        "disable/stop/error, and wake re-enters through init/newstate "
+        "instead of replaying stale packets",
         kOrderedProducerConsumer | kBackpressureBounded | kRecoverySafe |
             kWakeRecoverySafe | kErrorRecoverySafe,
     },
@@ -142,8 +143,9 @@ static const ProducerConsumerChain kProducerConsumerChains[] = {
         "iwx_tx",
         "lockEnqueueWithDrop bounds producer pressure; qfullmsk marks "
         "ifq_oactive and TXFLUSH blocks dequeue",
-        "iwx_stop clears TXFLUSH, TX timer, TX rings, and queued state before "
-        "init/newstate restarts output",
+        "disableAdapterCore drains staged TX completions, and iwx_stop clears "
+        "TXFLUSH, TX timer, TX rings, and queued state before init/newstate "
+        "restarts output",
         kOrderedProducerConsumer | kBackpressureBounded | kRecoverySafe |
             kWakeRecoverySafe | kErrorRecoverySafe,
     },
@@ -154,7 +156,8 @@ static const ProducerConsumerChain kProducerConsumerChains[] = {
         "ieee80211_input path",
         "RX descriptor validity, duplicate detection, BA window, and reorder "
         "buffer size checks drop invalid or out-of-window frames",
-        "iwx_clear_reorder_buffer and RX ring free/reset paths run on stop, "
+        "disableAdapterCore drains staged RX packets, and "
+        "iwx_clear_reorder_buffer plus RX ring free/reset paths run on stop, "
         "error, and init failure",
         kOrderedProducerConsumer | kBackpressureBounded | kRecoverySafe |
             kWakeRecoverySafe | kErrorRecoverySafe,

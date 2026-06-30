@@ -5630,9 +5630,14 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
         fRxQueue->disable();
     if (fTxCompQueue)
         fTxCompQueue->disable();
+
+    skywalkTxDrainCompletionPackets(this);
+    skywalkRxDrainPendingPackets(this);
+
     if (fTxCompQueue || fRxQueue || fTxQueue || fMultiCastQueue) {
         XYLog("DEBUG %s skywalk queues disabled TX=%p TXenabled=%d "
-              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d\n",
+              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d "
+              "TXpending=%u RXpending=%u\n",
               __FUNCTION__,
               fTxQueue,
               fTxQueue && fTxQueue->isEnabled() ? 1 : 0,
@@ -5641,7 +5646,9 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
               fRxQueue,
               fRxQueue && fRxQueue->isEnabled() ? 1 : 0,
               fMultiCastQueue,
-              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0);
+              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0,
+              fTxCompletionPendingCount,
+              fRxPendingCount);
     }
 #endif
     if (fHalService)

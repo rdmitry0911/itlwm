@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STEP_ID = "step:itlwm-rm-04"
 ROADMAP_ITEM_ID = "itlwm-rm-04"
 GOAL_ITEM_IDS = ["itlwm-fg-04-consumer-producer-state-machines"]
-INPUT_HEAD = "abceca0f53d7f9a322de04626373803ed473ed0c"
+INPUT_HEAD = "379e6d1bc7c23d34dac90a93684194841353c07a"
 CAPTURE_SOURCE = "committed-source-apple-reference-and-contract-header"
 
 REFERENCE_CASES = [
@@ -272,6 +272,7 @@ STATE_MACHINES = [
                     '"data-path"',
                     "ifq_enqueue feeds the bounded IOPacketQueue",
                     "qfullmsk sets ifq_oactive",
+                    "local Skywalk pending queues are drained",
                 ],
             },
             {
@@ -308,12 +309,16 @@ STATE_MACHINES = [
                     "requestEnqueue(nullptr, 0)",
                     "kAirportItlwmRxPendingCapacity",
                     "kAirportItlwmTxCompletionPendingCapacity",
+                    "skywalkTxDrainCompletionPackets(this)",
+                    "skywalkRxDrainPendingPackets(this)",
+                    "TXpending=%u RXpending=%u",
                 ],
             },
         ],
         "recovery_case_ids": [
             "tx-backpressure-drain",
             "rx-reorder-reset",
+            "driver-reset-power-wake",
         ],
     },
 ]
@@ -404,6 +409,7 @@ PRODUCER_CONSUMER_CHAINS = [
                 "tokens": [
                     '"tx-ifqueue-to-firmware-ring"',
                     "lockEnqueueWithDrop bounds producer pressure",
+                    "disableAdapterCore drains staged TX completions",
                     "TXFLUSH blocks dequeue",
                 ],
             },
@@ -424,6 +430,7 @@ PRODUCER_CONSUMER_CHAINS = [
                 "tokens": [
                     '"rx-firmware-ring-to-net80211"',
                     "RX descriptor validity, duplicate detection, BA window",
+                    "disableAdapterCore drains staged RX packets",
                     "iwx_clear_reorder_buffer",
                 ],
             },
@@ -501,8 +508,9 @@ RECOVERY_CASES = [
     },
     {
         "id": "tx-backpressure-drain",
-        "description": "TX producers are bounded by IOPacketQueue capacity, qfullmsk/oactive, TXFLUSH, timers, and ring reset/free paths.",
+        "description": "TX producers are bounded by IOPacketQueue capacity, qfullmsk/oactive, TXFLUSH, local Skywalk TX-completion drains, timers, and ring reset/free paths.",
         "paths": [
+            "AirportItlwm/AirportItlwmV2.cpp",
             "itl80211/openbsd/sys/_ifq.cpp",
             "itlwm/hal_iwx/ItlIwx.cpp",
         ],
@@ -521,11 +529,20 @@ RECOVERY_CASES = [
                     "iwx_free_tx_ring(sc, &sc->txq[txq_i])",
                 ],
             },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": [
+                    "skywalkTxDrainCompletionPackets(this)",
+                    "skywalkTxPopCompletionPacket(that)",
+                    "skywalkTxReleaseCompletedPacket(that, pkt)",
+                    "TXpending=%u RXpending=%u",
+                ],
+            },
         ],
     },
     {
         "id": "rx-reorder-reset",
-        "description": "RX producers are bounded by fixed pending capacity and BA/reorder windows, with stale entries cleared on stop and init failure.",
+        "description": "RX producers are bounded by fixed pending capacity and BA/reorder windows, with stale local Skywalk RX entries, BA state, and ring state cleared on disable, stop, error, and init failure.",
         "paths": [
             "AirportItlwm/AirportItlwmV2.cpp",
             "itlwm/hal_iwx/ItlIwx.cpp",
@@ -537,6 +554,9 @@ RECOVERY_CASES = [
                     "fRxPendingCount < kAirportItlwmRxPendingCapacity",
                     "skywalkRxAction",
                     "fRxQueue->requestEnqueue(nullptr, 0)",
+                    "skywalkRxDrainPendingPackets(this)",
+                    "skywalkRxPopPendingPacket(that, nullptr",
+                    "skywalkRxReleasePreparedPacket(that, rxPkt)",
                 ],
             },
             {
@@ -553,10 +573,22 @@ RECOVERY_CASES = [
         "id": "driver-reset-power-wake",
         "description": "Recovered Apple NET_MANAGER and local newstate paths make sleep, wake, and driver-reset behavior explicit.",
         "paths": [
+            "AirportItlwm/AirportItlwmV2.cpp",
             "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
             "itlwm/hal_iwx/ItlIwx.cpp",
         ],
         "checks": [
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": [
+                    "handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)",
+                    "disableAdapterCore(netif)",
+                    "enableAdapter(netif)",
+                    "postMessage(fNetIf, APPLE80211_M_POWER_CHANGED",
+                    "skywalkTxDrainCompletionPackets(this)",
+                    "skywalkRxDrainPendingPackets(this)",
+                ],
+            },
             {
                 "path": "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
                 "tokens": ["sleep_wake", "driver_reset", "WAKE", "DRIVER_RESET"],
