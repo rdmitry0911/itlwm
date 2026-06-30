@@ -11,8 +11,32 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STEP_ID = "step:itlwm-rm-03"
 ROADMAP_ITEM_ID = "itlwm-rm-03"
 GOAL_ITEM_IDS = ["itlwm-fg-03-payload-parity"]
-INPUT_HEAD = "0d32650d5bb669c2556bdad8597a6e944df7e5ff"
+INPUT_HEAD = "ac3e1077d0fba131256012215e02ca4d8af4cb0b"
 CAPTURE_SOURCE = "committed-source-and-apple-reference-corpus"
+DETERMINISTIC_TESTS = [
+    {
+        "id": "tahoe-payload-builders-standalone",
+        "path": "tests/tahoe_payload_builders_test.cpp",
+        "runner": "scripts/test_payload_builders.sh",
+        "command": "timeout 30s scripts/test_payload_builders.sh",
+        "tokens": [
+            "testIEBuilder",
+            "testNdpBuilder",
+            "testUsbHostBuilder",
+            "testBtcoexBuilders",
+            "testTxPowerAndActionFrameBuilders",
+            "testRangingBuilder",
+            "testPayloadContractInventory",
+            "frameLen > 0x707",
+            "rejects zero PMK length",
+            "17 contracts",
+        ],
+        "runner_tokens": [
+            "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
+            "tests/tahoe_payload_builders_test.cpp",
+        ],
+    },
+]
 
 REFERENCE_CASES = [
     {
@@ -534,6 +558,23 @@ def collect_mismatches():
                     "path": check_path,
                     "missing_tokens": missing,
                 })
+    for test in DETERMINISTIC_TESTS:
+        missing = missing_tokens(test["path"], test["tokens"])
+        if missing:
+            mismatches.append({
+                "kind": "deterministic_test_token_mismatch",
+                "id": test["id"],
+                "path": test["path"],
+                "missing_tokens": missing,
+            })
+        missing = missing_tokens(test["runner"], test["runner_tokens"])
+        if missing:
+            mismatches.append({
+                "kind": "deterministic_test_runner_token_mismatch",
+                "id": test["id"],
+                "path": test["runner"],
+                "missing_tokens": missing,
+            })
     return mismatches
 
 
@@ -585,12 +626,23 @@ def build_report():
             }
             for case in ERROR_CASES
         ],
+        "deterministic_tests": [
+            {
+                "id": test["id"],
+                "path": test["path"],
+                "runner": test["runner"],
+                "command": test["command"],
+                "assertions_checked": len(test["tokens"]),
+            }
+            for test in DETERMINISTIC_TESTS
+        ],
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
         "metrics": {
             "covered_payload_type_count": len({payload["name"] for payload in PAYLOAD_TYPES}),
             "apple_reference_case_count": len(refs),
             "error_semantics_case_count": len(ERROR_CASES),
+            "deterministic_test_count": len(DETERMINISTIC_TESTS),
         },
     }
 
@@ -608,6 +660,8 @@ def assert_typed_requirements(report):
         errors.append("apple_reference_cases[].id must have at least 6 distinct values")
     if report.get("error_semantics_cases", 0) < 4:
         errors.append("error_semantics_cases must be at least 4")
+    if len(report.get("deterministic_tests", [])) < 1:
+        errors.append("deterministic_tests must include at least one committed test")
     if errors:
         raise AssertionError("; ".join(errors))
 
@@ -634,7 +688,8 @@ def check_report(path):
         "payload parity report ok: "
         f"{report['metrics']['covered_payload_type_count']} payloads, "
         f"{report['metrics']['apple_reference_case_count']} reference cases, "
-        f"{report['error_semantics_cases']} error cases"
+        f"{report['error_semantics_cases']} error cases, "
+        f"{report['metrics']['deterministic_test_count']} deterministic tests"
     )
     return 0
 

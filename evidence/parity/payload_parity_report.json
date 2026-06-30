@@ -5,7 +5,7 @@
   "goal_item_ids": [
     "itlwm-fg-03-payload-parity"
   ],
-  "input_head": "0d32650d5bb669c2556bdad8597a6e944df7e5ff",
+  "input_head": "ac3e1077d0fba131256012215e02ca4d8af4cb0b",
   "capture_source": "committed-source-and-apple-reference-corpus",
   "source_boundary": {
     "basis": "Committed implementation headers/source, committed Apple reverse-engineering references, and deterministic token checks.",
@@ -359,11 +359,21 @@
       ]
     }
   ],
+  "deterministic_tests": [
+    {
+      "id": "tahoe-payload-builders-standalone",
+      "path": "tests/tahoe_payload_builders_test.cpp",
+      "runner": "scripts/test_payload_builders.sh",
+      "command": "timeout 30s scripts/test_payload_builders.sh",
+      "assertions_checked": 10
+    }
+  ],
   "mismatch_count": 0,
   "mismatches": [],
   "metrics": {
     "covered_payload_type_count": 17,
     "apple_reference_case_count": 10,
-    "error_semantics_case_count": 6
+    "error_semantics_case_count": 6,
+    "deterministic_test_count": 1
   }
 }

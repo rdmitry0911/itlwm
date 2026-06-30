@@ -6,10 +6,54 @@
 #ifndef TahoePayloadBuilders_hpp
 #define TahoePayloadBuilders_hpp
 
-#include <Airport/Apple80211.h>
 #include <stdint.h>
 
 #include "TahoePayloadParity.hpp"
+
+#ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
+#include <string.h>
+
+struct apple80211_ie_data {
+    uint32_t frame_type_flags;
+    uint32_t add;
+    uint32_t ie_len;
+    uint8_t ie[2048];
+};
+
+struct alignas(4) apple80211_offload_ndp_data {
+    uint8_t bytes[8 + 4 * 16];
+};
+
+struct alignas(4) apple80211_usb_host_notification_data {
+    uint8_t bytes[0x10];
+};
+
+struct alignas(4) apple80211_btcoex_profile {
+    uint8_t bytes[0x38];
+};
+
+struct alignas(4) apple80211_btcoex_profile_active_data {
+    uint8_t bytes[0x8];
+};
+
+struct alignas(4) apple80211_btcoex_2g_chain_disable {
+    uint8_t bytes[0x6];
+};
+
+struct alignas(4) apple80211_bypass_tx_power_cap {
+    uint8_t bytes[0x4];
+};
+
+struct alignas(4) apple80211_wcl_action_frame {
+    uint8_t bytes[0x10 + 0x708];
+};
+
+struct alignas(4) apple80211_ranging_authenticate_request_t {
+    uint8_t bytes[0x80];
+};
+#else
+#include <Airport/Apple80211.h>
+#endif
 
 namespace TahoePayloadBuilders {
 
