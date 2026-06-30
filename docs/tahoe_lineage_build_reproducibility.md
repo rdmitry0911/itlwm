@@ -1,30 +1,30 @@
 # Tahoe Lineage And Build Reproducibility
 
 This note defines the non-runtime source/build surface used to audit the Tahoe
-AirportItlwm build envelope from the canonical guest repository. It is not a
+AirportItlwm build envelope from the current source repository. It is not a
 Wi-Fi runtime procedure and it does not capture final runtime evidence.
 
 ## Source Boundary
 
-The canonical source checkout is the guest repository:
+The source checkout is the current git worktree:
 
 ```bash
-/Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 ```
 
 Source `git`, patch, build, install, and validation commands for this project
-must run from that guest checkout. Host paths are control, scratch, logs, and
-evidence mirrors only; they are not source checkouts. Do not clone, copy,
-mirror, rsync, or move the guest `.git` directory to the host, `/tmp`, or any
-other path to prove lineage or satisfy a preflight.
+must run from that worktree. The git dir must remain inside that worktree; host
+paths, scratch paths, logs, and evidence mirrors are not source checkouts. Do
+not clone, copy, mirror, rsync, or move the project `.git` directory to the
+host, `/tmp`, or any other path to prove lineage or satisfy a preflight.
 
 ## Lineage Anchors
 
-The bounded lineage audit uses only guest-local committed sources and git
+The bounded lineage audit uses only worktree-local committed sources and git
 metadata:
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 git remote -v
 git log --oneline -1
 grep -n "OpenIntelWireless/itlwm\|OpenBSD" README.md
@@ -38,61 +38,75 @@ The expected anchors are:
   the OpenBSD-derived driver base;
 - committed LICENSE is GNU GPL version 2;
 - committed `AirportItlwm/Info.plist` identifies the AirportItlwm bundle;
-- git remote/history are read from the guest checkout only.
+- git remote/history are read from the current worktree only.
 
 A direct configured upstream remote is not required by this audit. Do not fetch
 from the network or substitute a host mirror to fill that gap.
 
 ## Smoke Check
 
-Run the guest-local smoke verifier when the task is only to prove the lineage
+Run the worktree-local smoke verifier when the task is only to prove the lineage
 and Tahoe command surface are present:
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 ./scripts/tahoe_reproducibility_smoke.sh
 ```
 
-The smoke check verifies the guest source boundary, committed lineage anchors,
+The smoke check verifies the source boundary, committed lineage anchors,
 Tahoe target/build-script text, staged kext path, BootKC symbol-check logic, and
 the presence of this install-envelope document. It does not build, install,
 reboot, load, unload, join Wi-Fi, capture runtime evidence, or claim AP/client
 success.
 
-## Tahoe Build Command
+## Report Check
 
-The default Tahoe build command in the guest repository is:
+The deterministic report check is:
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
+timeout 30s python3 scripts/tahoe_lineage_build_report.py --check evidence/build/tahoe_lineage_build_report.json
+```
+
+The JSON report is regenerated only from committed files and same-worktree git
+metadata. It records the configured source remote, verifies that the git dir is
+inside the checked worktree, and rejects file, localhost, synthetic, or private
+mirror origins.
+
+## Tahoe Build Command
+
+The default Tahoe build command in the current git worktree is:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
 timeout 420s ./scripts/build_tahoe.sh
 ```
 
 For an explicit Tahoe BootKC, pass the kernel collection path:
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 timeout 420s ./scripts/build_tahoe.sh /Volumes/macos/System/Library/KernelCollections/BootKernelExtensions.kc
 ```
 
 The script builds the `AirportItlwm-Tahoe` target and stages the default kext at:
 
 ```bash
-/Users/devops/Projects/itlwm/Build/Debug/Tahoe/AirportItlwm.kext
+Build/Debug/Tahoe/AirportItlwm.kext
 ```
 
 The opt-out exploration variant is separate and never overwrites the default
 staged kext:
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 timeout 420s ./scripts/build_tahoe.sh --opt-out /Volumes/macos/System/Library/KernelCollections/BootKernelExtensions.kc
 ```
 
 That variant stages:
 
 ```bash
-/Users/devops/Projects/itlwm/Build/Debug/Tahoe-OptOut/AirportItlwm.kext
+Build/Debug/Tahoe-OptOut/AirportItlwm.kext
 ```
 
 ## BootKC Symbol Gate
@@ -116,7 +130,7 @@ Install and reboot are allowed only after the relevant auditor approval. Do not
 unload the currently loaded driver as part of this envelope.
 
 ```bash
-cd /Users/devops/Projects/itlwm
+cd "$(git rev-parse --show-toplevel)"
 timeout 120s sudo rm -rf /Library/Extensions/AirportItlwm.kext
 timeout 120s sudo cp -R Build/Debug/Tahoe/AirportItlwm.kext /Library/Extensions/AirportItlwm.kext
 timeout 120s sudo chown -R root:wheel /Library/Extensions/AirportItlwm.kext

@@ -10,7 +10,6 @@ from pathlib import Path
 
 
 REPORT_PATH = Path("evidence/build/tahoe_lineage_build_report.json")
-CANONICAL_GUEST_TOPLEVEL = "/Users/devops/Projects/itlwm"
 OPEN_SOURCE_REPO = "https://github.com/OpenIntelWireless/itlwm"
 DEFAULT_BOOTKC = "/Volumes/macos-750/System/Library/KernelCollections/BootKernelExtensions.kc"
 
@@ -47,6 +46,13 @@ def is_private_or_host_mirror(url):
     return False
 
 
+def relative_to_root(path, root):
+    try:
+        return path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+
+
 def literal(path, needle):
     return needle in read_text(path)
 
@@ -54,6 +60,7 @@ def literal(path, needle):
 def generate_report(project_dir, source_head=None):
     root = Path(run(["git", "-C", str(project_dir), "rev-parse", "--show-toplevel"]))
     git_dir = Path(run(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"]))
+    git_dir_relative = relative_to_root(git_dir, root)
     head = source_head or run(["git", "-C", str(root), "rev-parse", "HEAD"])
     origin = remote_url(root)
 
@@ -165,8 +172,7 @@ def generate_report(project_dir, source_head=None):
     require(all(build_checks.values()), f"Tahoe build checks failed: {build_checks}")
     require(all(install_checks.values()), f"install/load checks failed: {install_checks}")
     require(not is_private_or_host_mirror(origin), f"private or host mirror origin: {origin}")
-    require(str(root) == CANONICAL_GUEST_TOPLEVEL, f"not running from guest checkout: {root}")
-    require(str(git_dir) == f"{CANONICAL_GUEST_TOPLEVEL}/.git", f"unexpected git dir: {git_dir}")
+    require(git_dir_relative is not None, f"git dir is outside the audited worktree: {git_dir}")
 
     return {
         "version": "itlwm-tahoe-lineage-build-report/v1",
@@ -178,15 +184,15 @@ def generate_report(project_dir, source_head=None):
             "anchors": lineage_checks,
         },
         "source_boundary": {
-            "canonical_guest_toplevel": CANONICAL_GUEST_TOPLEVEL,
-            "actual_toplevel": str(root),
-            "git_dir": str(git_dir),
-            "host_mount_view": "<external-control-home>/automation-v20/projects/itlwm/guest-root",
+            "checkout": "current git worktree",
+            "git_dir": str(git_dir_relative),
+            "git_dir_inside_worktree": True,
+            "absolute_paths_committed": False,
             "network_fetch_required": False,
         },
         "tahoe_build": {
             "reproducible": True,
-            "command": f"./scripts/build_tahoe.sh {DEFAULT_BOOTKC}",
+            "command": f"timeout 420s ./scripts/build_tahoe.sh {DEFAULT_BOOTKC}",
             "target": "AirportItlwm-Tahoe",
             "configuration": "Debug",
             "default_bootkc": DEFAULT_BOOTKC,
@@ -227,9 +233,9 @@ def generate_report(project_dir, source_head=None):
             },
         ],
         "verification": {
-            "report_command": "python3 scripts/tahoe_lineage_build_report.py --write evidence/build/tahoe_lineage_build_report.json",
-            "check_command": "python3 scripts/tahoe_lineage_build_report.py --check evidence/build/tahoe_lineage_build_report.json",
-            "smoke_command": "./scripts/tahoe_reproducibility_smoke.sh",
+            "report_command": "timeout 30s python3 scripts/tahoe_lineage_build_report.py --write evidence/build/tahoe_lineage_build_report.json",
+            "check_command": "timeout 30s python3 scripts/tahoe_lineage_build_report.py --check evidence/build/tahoe_lineage_build_report.json",
+            "smoke_command": "timeout 30s ./scripts/tahoe_reproducibility_smoke.sh",
         },
     }
 

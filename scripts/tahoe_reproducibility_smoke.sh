@@ -22,10 +22,8 @@ require_literal() {
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-EXPECTED_TOPLEVEL="/Users/devops/Projects/itlwm"
 
 TOPLEVEL="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel)"
-[ "$TOPLEVEL" = "$EXPECTED_TOPLEVEL" ] || fail "unexpected git toplevel: $TOPLEVEL"
 
 if GIT_DIR="$(git -C "$PROJECT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
     :
@@ -36,10 +34,18 @@ else
         *) GIT_DIR="$TOPLEVEL/$RAW_GIT_DIR" ;;
     esac
 fi
-[ "$GIT_DIR" = "$EXPECTED_TOPLEVEL/.git" ] || fail "unexpected git dir: $GIT_DIR"
+case "$GIT_DIR" in
+    "$TOPLEVEL"/*) ;;
+    *) fail "git dir is outside the audited worktree: $GIT_DIR" ;;
+esac
 
 HEAD_COMMIT="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
-git -C "$PROJECT_DIR" remote -v >/dev/null
+ORIGIN_URL="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || true)"
+case "$(printf '%s' "$ORIGIN_URL" | tr '[:upper:]' '[:lower:]')" in
+    ""|/*|file://*|*127.0.0.1*|*localhost*|*host-mirror*|*private-mirror*|*synthetic*)
+        fail "origin is missing or looks like a private/local mirror: $ORIGIN_URL"
+        ;;
+esac
 git -C "$PROJECT_DIR" log --oneline -1 >/dev/null
 
 README="$PROJECT_DIR/README.md"
@@ -82,17 +88,20 @@ require_literal "timeout 120s sudo cp -R Build/Debug/Tahoe/AirportItlwm.kext" "$
 require_literal "timeout 120s sudo shutdown -r now" "$REPRO_DOC" "documented reboot envelope"
 require_literal "unload the currently loaded driver" "$REPRO_DOC" "documented unload prohibition"
 require_literal "does not capture final runtime evidence" "$REPRO_DOC" "documented runtime non-claim"
+require_literal "current git worktree" "$REPRO_DOC" "portable source checkout wording"
+require_literal "git dir must remain inside that worktree" "$REPRO_DOC" "same-worktree git metadata boundary"
 
 bash -n "$BUILD_SCRIPT" >/dev/null
 
 cat <<EOF
 source_toplevel=$TOPLEVEL
 git_dir=$GIT_DIR
+source_repo=$ORIGIN_URL
 head_commit=$HEAD_COMMIT
 lineage_anchors=PASS
 tahoe_target=AirportItlwm-Tahoe
 build_command=timeout 420s ./scripts/build_tahoe.sh [BOOTKC_PATH]
-staged_kext=$EXPECTED_TOPLEVEL/Build/Debug/Tahoe/AirportItlwm.kext
+staged_kext=Build/Debug/Tahoe/AirportItlwm.kext
 bootkc_symbol_gate=PASS_TEXT_VERIFIED
 install_reboot_envelope=docs/tahoe_lineage_build_reproducibility.md
 runtime_evidence_captured=NO
