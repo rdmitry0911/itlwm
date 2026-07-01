@@ -1,0 +1,149 @@
+version: project-final-goal/v1
+project:
+  id: itlwm
+  name: itlwm Tahoe AirportItlwm parity
+final_goal:
+  id: itlwm-final-airportitlwm-tahoe-apple-wifi-parity
+  statement: 'Драйвер на основе opensource airportitlwm, работающий в macOS Tahoe
+    и функционально идентичный оригинальному Wi‑Fi драйверу Apple: закрывает те же
+    системные контракты, payloads, consumer/producer цепочки, state machines, runtime
+    behavior, diagnostics, power/wake и acceptance gates.'
+  target_environment:
+    os: macOS Tahoe
+    base: opensource airportitlwm/itlwm lineage
+    target: Intel Wi‑Fi adapters supported by airportitlwm
+  equivalence_target: Apple original Wi‑Fi driver system contract surface
+  non_goals:
+  - paper-only closure without runtime evidence
+  - host-side git mirror as source of truth
+  - weakened Apple contract compatibility claims
+completion_contract:
+  finish_signal: original_roadmap_finished
+  finish_requires:
+  - all_final_goal_items_done
+  - all_original_roadmap_items_done
+  - acceptance_evidence_for_each_goal_item
+  - no_idle_state_except_proven_operator_gate_or_original_roadmap_finished
+  finish_verification:
+  - deterministic_preflight_reconstructs_state_from_commits_final_goal_and_roadmap
+  - simulator_accepts_no_unproven_idle_or_loop_class
+  - auditor_accepts_goal_item_evidence_and_remaining_work_report
+work_breakdown:
+- id: itlwm-fg-01-lineage-tahoe-build
+  title: airportitlwm lineage and Tahoe build/install substrate
+  status: planned
+  weight: 10
+  acceptance_criteria:
+  - source lineage is auditable to opensource airportitlwm
+  - Tahoe build/install/load path is reproducible from committed sources
+  - host does not substitute a private source mirror
+  original_roadmap_ids:
+  - itlwm-rm-01
+- id: itlwm-fg-02-system-contract-inventory
+  title: Apple Wi‑Fi system contract inventory
+  status: planned
+  weight: 15
+  acceptance_criteria:
+  - Apple driver-facing contracts are inventoried
+  - contract gaps are represented as roadmap work not prose notes
+  - each contract has payload/state-machine acceptance criteria
+  original_roadmap_ids:
+  - itlwm-rm-02
+- id: itlwm-fg-03-payload-parity
+  title: Payload and IOKit/IO80211 contract parity
+  status: planned
+  weight: 15
+  acceptance_criteria:
+  - all required payload shapes are produced/consumed
+  - invalid payload/error semantics match accepted Apple-compatible behavior
+  - payload evidence is captured in deterministic tests
+  original_roadmap_ids:
+  - itlwm-rm-03
+- id: itlwm-fg-04-consumer-producer-state-machines
+  title: Consumer/producer chains and state machines
+  status: planned
+  weight: 20
+  acceptance_criteria:
+  - association/auth/scan/data-path state machines are explicit
+  - producer/consumer queues are ordered and backpressure-safe
+  - state recovery after errors/wake is verified
+  original_roadmap_ids:
+  - itlwm-rm-04
+- id: itlwm-fg-05-runtime-wifi-equivalence
+  title: Functional Wi‑Fi equivalence in Tahoe runtime
+  status: planned
+  weight: 20
+  acceptance_criteria:
+  - runtime-anchored Tahoe guest Wi-Fi session proves scan/join/auth/DHCP/data/reconnect
+    against the lab AP
+  - scan/join/auth/DHCP/data transfer works in Tahoe
+  - roaming/reconnect/power/wake scenarios are covered
+  - AP/APSTA gaps are either closed or proven out of target scope
+  original_roadmap_ids:
+  - itlwm-rm-05
+  requires:
+  - id: itlwm-fg-05-runtime-wifi-equivalence-runtime-wifi-equivalence
+    artifact: evidence/runtime/tahoe_wifi_session.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - driver.kext_loaded
+      - scan.aps_seen
+      - association.authenticated
+      - association.associated
+      - dhcp_lease.acquired
+      - data_transfer.rx_bytes
+      - reconnects.success_count
+      - ap_apsta_scope.status
+      min_number:
+        capture_wallclock_seconds: 60
+        scan.aps_seen: 1
+        data_transfer.rx_bytes: 1048576
+        reconnects.success_count: 1
+      equals:
+        driver.kext_loaded: true
+        association.authenticated: true
+        association.associated: true
+        dhcp_lease.acquired: true
+        data_transfer.host_ap_path: true
+        ap_apsta_scope.status: out_of_target_scope_or_verified
+      forbid_values:
+        data_transfer.source:
+        - synthetic
+        - replay
+        - loopback
+        - static_fixture
+        association.source:
+        - synthetic
+        - replay
+        - static_fixture
+- id: itlwm-fg-06-diagnostics-and-failure-semantics
+  title: Diagnostics, telemetry and failure semantics
+  status: planned
+  weight: 8
+  acceptance_criteria:
+  - diagnostics match system expectations
+  - recoverable/nonrecoverable errors are classified
+  - no silent degradation is accepted
+  original_roadmap_ids:
+  - itlwm-rm-06
+- id: itlwm-fg-07-deterministic-verification
+  title: Deterministic verification and no-paper-closure discipline
+  status: planned
+  weight: 8
+  acceptance_criteria:
+  - preflight rebuilds working state from commits/final goal/roadmap
+  - runtime evidence is required for closure
+  - simulator catches adjacent no-progress and loop classes
+  original_roadmap_ids:
+  - itlwm-rm-07
+- id: itlwm-fg-08-release-acceptance
+  title: Release acceptance and rollback evidence
+  status: planned
+  weight: 4
+  acceptance_criteria:
+  - auditor accepts all contract evidence
+  - remaining work is zero by goal contract
+  - rollback/recovery procedures are documented and tested
+  original_roadmap_ids:
+  - itlwm-rm-08

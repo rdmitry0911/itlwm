@@ -1,0 +1,128 @@
+version: project-original-roadmap/v1
+project:
+  id: itlwm
+tasks:
+- id: itlwm-rm-01
+  title: Tahoe airportitlwm source/build/install substrate
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-01-lineage-tahoe-build
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-02
+  title: Apple Wi‑Fi contract inventory and gap ledger
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-02-system-contract-inventory
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-03
+  title: Payload and IOKit/IO80211 parity implementation
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-03-payload-parity
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-04
+  title: Consumer/producer chains and state-machine closure
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-04-consumer-producer-state-machines
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-05
+  title: Tahoe scan/join/auth/roam/power runtime verification
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-05-runtime-wifi-equivalence
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  - Tahoe runtime scan/join/auth/DHCP/data/reconnect evidence is captured from a real
+    guest Wi-Fi session
+  evidence: []
+  requires:
+  - id: itlwm-rm-05-runtime-wifi-equivalence
+    artifact: evidence/runtime/tahoe_wifi_session.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.host_ap_interface
+      - scan.aps_seen
+      - association.authenticated
+      - association.associated
+      - dhcp_lease.acquired
+      - data_transfer.rx_bytes
+      - data_transfer.throughput_mbps
+      - reconnects.success_count
+      - ap_apsta_scope.status
+      min_number:
+        capture_wallclock_seconds: 60
+        scan.aps_seen: 1
+        data_transfer.rx_bytes: 1048576
+        data_transfer.throughput_mbps: 0.1
+        reconnects.success_count: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.host_ap_interface: wlp0s20f3
+        lab.primary_ap.present: true
+        association.authenticated: true
+        association.associated: true
+        dhcp_lease.acquired: true
+        data_transfer.host_ap_path: true
+        ap_apsta_scope.status: out_of_target_scope_or_verified
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        association.source:
+        - synthetic
+        - replay
+        - static_fixture
+        dhcp_lease.source:
+        - synthetic
+        - replay
+        - static_fixture
+        data_transfer.source:
+        - synthetic
+        - replay
+        - loopback
+        - static_fixture
+- id: itlwm-rm-06
+  title: Diagnostics and failure-semantics parity
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-06-diagnostics-and-failure-semantics
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-07
+  title: Deterministic verification and simulator mutation coverage
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-07-deterministic-verification
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
+- id: itlwm-rm-08
+  title: Final Apple Wi‑Fi parity acceptance and rollback evidence
+  status: planned
+  progress: 0
+  goal_item_ids:
+  - itlwm-fg-08-release-acceptance
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  evidence: []
