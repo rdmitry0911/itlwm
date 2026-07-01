@@ -1703,3 +1703,99 @@ records:
         input_head: f831495fd67051e99a85e54e49472053c13a36ce
         candidate_after_head: 8e11ab315c9b698ddc4c371f429f5b44cd63939f
       errors: []
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  roadmap_item_id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: rejected
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: false
+      verification_method: reference
+      role: validator
+    evidence:
+      status: missing
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_required_committed_runtime_evidence
+      progress_argument: 'Remaining work did not decrease: the committed repository
+        does not contain the required evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json
+        artifact, so the live Tahoe System Settings or syspolicyd approval workflow,
+        approval work-queue clearing, and post-workflow kmutil approval-error clearance
+        are unproven.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: false
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: false
+        criterion_6_the_evidence_exercises_the_live_system_settings_: false
+        criterion_7_the_post_workflow_evidence_proves_kmutil_no_long: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+    statement: A live Tahoe guest run with passthrough Wi-Fi attached starts from
+      the selected rebuilt/installed AirportItlwm bundle and the post-MDM/UAKL approval-required
+      blocker signature.
+    source: selected_step
+  - id: criterion_6_the_evidence_exercises_the_live_system_settings_
+    statement: The evidence exercises the live System Settings or syspolicyd approval
+      alert/workflow for the selected bundle and proves the approval-required work
+      item is cleared rather than only writing policy database rows.
+    source: selected_step
+  - id: criterion_7_the_post_workflow_evidence_proves_kmutil_no_long
+    statement: The post-workflow evidence proves kmutil no longer reports the System
+      Settings approval-required error for the selected bundle before the reboot-durability
+      boundary is retried, and leaves selected loaded-after-reboot, join-trigger/PMK,
+      AUTH, association, DHCP, and final Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: c9362fcbc2aa
+      evidence_path: evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+      sha256: 4c5b0c595b8f18d5295d8812af0dc4db2e28b1040a027b34a8abfe81e2d3fa9e
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 6661a0ae55ac258056ad0c9e99bca283e00fe1a7
+      candidate_after_head: 6661a0ae55ac258056ad0c9e99bca283e00fe1a7
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary!=step:itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary!=itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+    - runtime_capture_anchor_input_head_mismatch:f831495fd67051e99a85e54e49472053c13a36ce!=6661a0ae55ac258056ad0c9e99bca283e00fe1a7
+    - runtime_capture_anchor_after_head_mismatch:8e11ab315c9b698ddc4c371f429f5b44cd63939f!=6661a0ae55ac258056ad0c9e99bca283e00fe1a7
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: e8731aa50213a5051bf1b138
