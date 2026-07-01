@@ -1,0 +1,175 @@
+{
+  "approval_probe": {
+    "command": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "kmutil_approval_error_still_present": true,
+    "kmutil_exit_code": 27,
+    "message_summary": [
+      "Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings."
+    ],
+    "pre_sheet_approval_error_present": true,
+    "source": "live_tahoe_guest_kmutil_probe"
+  },
+  "authorization": {
+    "admin_authorization_sheet_observed": true,
+    "admin_authorization_sheet_surface": {
+      "allow_control_click_attempted": true,
+      "click_returncode": 0,
+      "screenshot_committed": false,
+      "source": "live_qemu_vnc_capture",
+      "system_settings_privacy_security_opened": true,
+      "transient_screenshot_removed": true,
+      "vnc_detection": {
+        "admin_sheet_heuristic": true,
+        "analysis_available": true,
+        "image": {
+          "bytes": 180024,
+          "height": 800,
+          "width": 1280
+        },
+        "modal_region": {
+          "blue_primary_pixels": 6248,
+          "dark_pixels": 1330,
+          "light_pixels": 93180,
+          "pixels": 112000
+        },
+        "primary_button_region": {
+          "blue_primary_pixels": 5758,
+          "dark_pixels": 0,
+          "light_pixels": 9407,
+          "pixels": 16800
+        },
+        "sha256": "80a7f6452a4fd806a81d6ae82f44e1e545b9e732e4f5dc4eb784f877836d736d"
+      }
+    },
+    "admin_group_membership_confirmed": true,
+    "authonly_method": "sudo_stdin_validate_only",
+    "authonly_passed": true,
+    "authorization_rights": {
+      "baseline_sha256": "3582a374261b88739012b5dc22e83d0ced140ab14c29e91527378ab49fdbfef9",
+      "post_probe_sha256": "3582a374261b88739012b5dc22e83d0ced140ab14c29e91527378ab49fdbfef9",
+      "restore_basis": "baseline and post-probe authorizationdb reads match; no authorizationdb write was performed",
+      "right": "system.privilege.admin",
+      "security_authorizationdb_write_performed": false
+    },
+    "authorization_rights_restored": true,
+    "credential_source": "operator_env_redacted",
+    "credential_source_env_present": true,
+    "post_cancel_vnc": {
+      "admin_sheet_heuristic": false,
+      "image": {
+        "bytes": 188884,
+        "height": 800,
+        "width": 1280
+      }
+    },
+    "prior_blocker_signature": "admin_authorization_sheet_blocks_system_settings_approval_workflow",
+    "runtime_admin_credential_available": true,
+    "secret_committed": false,
+    "secret_printed": false,
+    "secret_storage": "operator_env_runtime_only_transient_typefile_removed",
+    "sheet_cancelled_after_probe": true,
+    "source": "live_tahoe_guest_vnc_ssh"
+  },
+  "capture_commands": {
+    "admin_credential": "operator env secret passed over ssh stdin to sudo -S -k -p '' -v",
+    "approval_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext before and after sheet probe",
+    "approval_sheet": "open x-apple.systempreferences:com.apple.PrivacySecurity.extension; vncdotool click Allow; transient VNC capture analysis; cancel sheet",
+    "authorization_rights": "security authorizationdb read system.privilege.admin before and after probe",
+    "guest_os_wifi": "sw_vers, uname, sysctl boot session, networksetup hardware ports, AirportItlwm ioreg",
+    "gui_domain": "stat /dev/console, launchctl print gui/<devops uid>, ps WindowServer/loginwindow/System Settings/SecurityPrivacyExtension"
+  },
+  "capture_finished_utc": "2026-07-01T21:59:28.246972Z",
+  "capture_started_utc": "2026-07-01T21:59:08.021163Z",
+  "capture_wallclock_seconds": 20.226,
+  "command_results": {
+    "cancel_sheet": {
+      "duration_seconds": 2.402,
+      "returncode": 0
+    },
+    "click_allow": {
+      "duration_seconds": 4.633,
+      "returncode": 0
+    },
+    "kmutil_after": {
+      "duration_seconds": 1.751,
+      "returncode": 0,
+      "stderr_lines": 1,
+      "stdout_lines": 4
+    },
+    "kmutil_before": {
+      "duration_seconds": 1.748,
+      "returncode": 0,
+      "stderr_lines": 1,
+      "stdout_lines": 4
+    },
+    "open_privacy": {
+      "duration_seconds": 5.325,
+      "returncode": 0,
+      "stderr_lines": 1,
+      "stdout_lines": 5
+    },
+    "sudo_validate": {
+      "duration_seconds": 0.495,
+      "returncode": 0,
+      "stderr_lines": 1,
+      "stdout_lines": 0
+    }
+  },
+  "gui": {
+    "console_uid": 502,
+    "console_user": "devops",
+    "gui_domain_available": true,
+    "loginwindow_running": true,
+    "process_observations": [
+      "217 _windowserver    Ss   /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon",
+      "221 devops           Ss   /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console",
+      "1285 devops           S    /System/Applications/System Settings.app/Contents/MacOS/System Settings",
+      "1322 devops           Ss   /System/Applications/System Settings.app/Contents/PlugIns/GeneralSettings.appex/Contents/MacOS/GeneralSettings -LaunchArguments eyJ0eXBlIjoyLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5zeXN0ZW1wcmVmZXJlbmNlcy5HZW5lcmFsU2V0dGluZ3MiLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0=",
+      "1803 devops           Ss   /System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex/Contents/MacOS/SecurityPrivacyExtension -LaunchArguments eyJ0eXBlIjoyLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuc2V0dGluZ3MuUHJpdmFjeVNlY3VyaXR5LmV4dGVuc2lvbiJ9"
+    ],
+    "security_privacy_extension_running": true,
+    "source": "live_tahoe_guest_ssh_and_qemu_vnc",
+    "system_settings_running": true,
+    "vnc_unlock": {
+      "attempted": false,
+      "transient_secret_file_removed": true,
+      "unlocked": true
+    },
+    "windowserver_running": true
+  },
+  "input_head": "f831495fd67051e99a85e54e49472053c13a36ce",
+  "roadmap_item_id": "itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary",
+  "runtime_environment": {
+    "guest_os": {
+      "boot_session_uuid": "FECBF351-3E1E-49B1-8EDF-997F01437C78",
+      "build": "25C56",
+      "kernel": "25.2.0",
+      "name": "macOS",
+      "version": "26.2"
+    },
+    "guest_ssh": {
+      "available": true,
+      "port": "3322",
+      "target": "devops@127.0.0.1"
+    },
+    "guest_wifi_interface": "en1",
+    "guest_wifi_interface_present": true,
+    "wifi_passthrough_attached": true
+  },
+  "schema_version": "itlwm-tahoe-admin-authorization-availability-boundary/v1",
+  "selected_step": "step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary",
+  "verdict": {
+    "approval_workflow_cleared_not_claimed": true,
+    "association_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "data_transfer_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "load_admission_not_claimed": true,
+    "loaded_uuid_after_reboot_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_approval_alert_workflow_retry": true,
+    "reconnect_not_claimed": true
+  }
+}
