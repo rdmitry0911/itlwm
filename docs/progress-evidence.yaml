@@ -12,7 +12,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Tahoe airportitlwm source/build/install substrate is restored from committed public evidence.
+  state_delta: Tahoe airportitlwm source/build/install substrate is restored from
+    committed public evidence.
   evidence_paths:
   - evidence/build/tahoe_lineage_build_report.json
   - docs/tahoe_lineage_build_reproducibility.md
@@ -31,7 +32,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Apple Wi-Fi contract inventory and gap ledger are restored from committed public evidence.
+  state_delta: Apple Wi-Fi contract inventory and gap ledger are restored from committed
+    public evidence.
   evidence_paths:
   - evidence/contracts/apple_wifi_contract_inventory.json
   - docs/tahoe_discrepancy_inventory.md
@@ -49,7 +51,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Payload and IOKit/IO80211 parity implementation is restored from committed public evidence.
+  state_delta: Payload and IOKit/IO80211 parity implementation is restored from committed
+    public evidence.
   evidence_paths:
   - evidence/parity/payload_parity_report.json
   changed_files: []
@@ -66,8 +69,101 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Consumer/producer chains and state-machine closure are restored from committed public evidence.
+  state_delta: Consumer/producer chains and state-machine closure are restored from
+    committed public evidence.
   evidence_paths:
   - evidence/state/state_machine_closure_report.json
   changed_files: []
   provenance: restored_from_committed_public_project_evidence_after_public_source_cutover
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05
+  roadmap_item_id: itlwm-rm-05
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: blocked
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: true
+      verification_method: reference
+      role: validator
+    evidence:
+      status: missing
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_committed_runtime_evidence
+      progress_argument: 'No accepted progress: committed HEAD 801a54969214f9397d537c39d48464ad9612e5fc
+        does not contain evidence/runtime/tahoe_wifi_session.json, and the candidate
+        is blocked with no committed evidence, so remaining work for itlwm-rm-05 and
+        linked final-goal item itlwm-fg-05-runtime-wifi-equivalence did not decrease.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_advances_linked_final_goal_item_with_runtime_or_: false
+        criterion_6_tahoe_runtime_scan_join_auth_dhcp_data_reconnect: false
+        criterion_7_runtime_anchored_tahoe_guest_wi_fi_session_prove: false
+        criterion_8_scan_join_auth_dhcp_data_transfer_works_in_tahoe: false
+        criterion_9_roaming_reconnect_power_wake_scenarios_are_cover: false
+        criterion_10_ap_apsta_gaps_are_either_closed_or_proven_out_of: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
+    statement: advances linked final-goal item with runtime or deterministic evidence
+    source: selected_step
+  - id: criterion_6_tahoe_runtime_scan_join_auth_dhcp_data_reconnect
+    statement: Tahoe runtime scan/join/auth/DHCP/data/reconnect evidence is captured
+      from a real guest Wi-Fi session
+    source: selected_step
+  - id: criterion_7_runtime_anchored_tahoe_guest_wi_fi_session_prove
+    statement: runtime-anchored Tahoe guest Wi-Fi session proves scan/join/auth/DHCP/data/reconnect
+      against the lab AP
+    source: selected_step
+  - id: criterion_8_scan_join_auth_dhcp_data_transfer_works_in_tahoe
+    statement: scan/join/auth/DHCP/data transfer works in Tahoe
+    source: selected_step
+  - id: criterion_9_roaming_reconnect_power_wake_scenarios_are_cover
+    statement: roaming/reconnect/power/wake scenarios are covered
+    source: selected_step
+  - id: criterion_10_ap_apsta_gaps_are_either_closed_or_proven_out_of
+    statement: AP/APSTA gaps are either closed or proven out of target scope
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors: []
+    errors:
+    - runtime_capture_anchor_missing:no_independent_runtime_capture_recorded
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 706f590ab7dde0de6ec81e22
