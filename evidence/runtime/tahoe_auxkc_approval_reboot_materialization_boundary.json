@@ -1,0 +1,366 @@
+{
+  "approval_materialization": {
+    "kmutil_load_approval_error_after_reboot": false,
+    "kmutil_load_exit_code_after_reboot": 0,
+    "kmutil_message_summary_after_reboot": [],
+    "kmutil_reboot_required_after_reboot": false,
+    "policy_materialization_inputs": {
+      "post_reboot_kext_load_history_rows": [
+        {
+          "boot_uuid": "70819148-81D9-48E8-8C79-6DEB15321106",
+          "bundle_id": "com.zxystd.AirportItlwm",
+          "cdhash": "a2fd8f5eec29f137327eafdc7e114ed368479e51",
+          "created_at": "2026-05-06 05:53:43",
+          "flags": 16,
+          "last_seen": "2026-07-01 23:20:07",
+          "path": "/Library/Extensions/AirportItlwm.kext",
+          "team_id": "<null>"
+        }
+      ],
+      "pre_reboot_kext_load_history_rows": [
+        {
+          "boot_uuid": "70819148-81D9-48E8-8C79-6DEB15321106",
+          "bundle_id": "com.zxystd.AirportItlwm",
+          "cdhash": "a2fd8f5eec29f137327eafdc7e114ed368479e51",
+          "created_at": "2026-05-06 05:53:43",
+          "flags": 16,
+          "last_seen": "2026-07-01 23:20:07",
+          "path": "/Library/Extensions/AirportItlwm.kext",
+          "team_id": "<null>"
+        }
+      ],
+      "pre_reboot_kext_policy_rows": [
+        {
+          "allowed": true,
+          "bundle_id": "com.zxystd.AirportItlwm",
+          "developer_name": "Unidentified - AirportItlwm",
+          "flags": 0,
+          "team_id": "<null>"
+        },
+        {
+          "allowed": true,
+          "bundle_id": "com.zxystd.AirportItlwm",
+          "developer_name": "Unidentified - AirportItlwm",
+          "flags": 0,
+          "team_id": ""
+        },
+        {
+          "allowed": true,
+          "bundle_id": "com.zxystd.AirportItlwm",
+          "developer_name": "Unidentified - AirportItlwm",
+          "flags": 0,
+          "team_id": "UAKL"
+        }
+      ]
+    },
+    "post_clearance_log_observed": true,
+    "pre_reboot_kmutil_approval_error": false,
+    "pre_reboot_kmutil_load_exit_code": 28,
+    "pre_reboot_kmutil_reboot_required": true,
+    "prior_blocker_log_observed": true,
+    "prior_blocker_signature": "system_settings_approval_required_after_selected_install_and_uakl_materialization",
+    "reboot_boundary": {
+      "after_boot_session_uuid": "1891D34F-D12E-44C4-B81B-331A7A6C22C9",
+      "before_boot_session_uuid": "CE924D70-2F65-460F-BA43-9B30FBC53908",
+      "command": "sudo -n shutdown -r now",
+      "command_result": {
+        "duration_seconds": 0.424,
+        "returncode": 255,
+        "stderr_lines": 2,
+        "stdout_lines": 3
+      },
+      "poll_count": 2,
+      "poll_observations": [
+        {
+          "boot_session_uuid": "",
+          "duration_seconds": 15,
+          "returncode": 124
+        },
+        {
+          "boot_session_uuid": "1891D34F-D12E-44C4-B81B-331A7A6C22C9",
+          "duration_seconds": 6.072,
+          "returncode": 0
+        }
+      ],
+      "saw_ssh_down": true,
+      "ssh_returned": true,
+      "started_utc": "2026-07-01T23:24:07.178534Z",
+      "wallclock_seconds": 34.511
+    },
+    "reboot_performed": true,
+    "selected_bundle_admitted_after_reboot": true,
+    "selected_head_rebuilt_and_installed": true,
+    "source": "live_tahoe_guest_build_install_reboot_ssh_kmutil",
+    "ssh_returned_after_reboot": true,
+    "syspolicyd_or_kernelmanagerd_evidence": [
+      "2026-07-02 02:22:13.167 Df kernelmanagerd[136:2ab3] com.zxystd.AirportItlwm exists in Optional(file:///Library/Extensions/AirportItlwm.kext/), telling kernel to mark as available",
+      "2026-07-02 02:22:13.278 Df kernelmanager_helper[348:2a42] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:22:13.278 Df kernelmanager_helper[348:2a42] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking unstaged bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "repositoryExts: [Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext]",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:22:13.490 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:22:13.512 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:22:13.512 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (Apple Software, com.apple.driver.AppleMobileDevice) version: 3d5015aa42b97b3a152d43f7293baaf163232800",
+      "2026-07-02 02:22:13.514 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointIOP) version: e917a18aeefac30f0249fe451715c48100d5a1fc",
+      "2026-07-02 02:22:13.514 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (Apple Software, com.apple.nke.rvi) version: 219ccc9f8645c4fde5d8d355c53454e7cd253e7e",
+      "2026-07-02 02:22:13.516 Df syspolicyd[287:2ab0] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointRR) version: 4fb1f14d2b3d9639665a4df7e953b63765306616",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext (existing)",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "approvalsRequiredFromSyspolicyd: false",
+      "newAuxiliaryContents: [Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext]",
+      "directLoadAuxiliaryExtensions: [com.highpoint-tech.kext.HighPointIOP v4.4.5 (571AEA63-3845-3A83-B37F-5FD117C0FFDE) in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext signed @team(DX6G69M9N2) (e917a18aeefac30f0249fe451715c48100d5a1fc) entitlements: [com.apple.security.get-task-allow: true] flags [0, 1, 4, 8, 9, 14], com.highpoint-tech.kext.HighPointRR v4.22.1 (6DF47B93-DB65-36BD-9392-0101CFDDDDFF) in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext signed @team(DX6G69M9N2) (4fb1f14d2b3d9639665a4df7e953b63765306616) entitlements: [com.apple.security.get-task-allow: true] flags [0, 1, 4, 8, 9, 14], com.zxystd.AirportItlwm v2.4.0 (CA3B8059-286B-3D9E-913C-A69C5ABBC8B5) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (a2fd8f5eec29f137327eafdc7e114ed368479e51) flags [0, 1, 4, 8, 9, 14]]",
+      "extensionsNeedingApproval: []",
+      "approvedUnbuiltExtensions: []",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:22:13.535 Df kernelmanager_helper[348:2a42] [com.apple.kernelmanagerd.logging:LoadRequestResolution] auxKC filesystem check: Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext found at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:22:13.535 Df kernelmanager_helper[348:2a42] Extension: Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext with UUID CA3B8059-286B-3D9E-913C-A69C5ABBC8B5 being considered for load does not have the same UUID as the one in the kernel (9689858C-E8DE-32B0-81A3-3B00F2EF3048). Cannot direct load.",
+      "approvalsRequiredFromSyspolicyd: false",
+      "newAuxiliaryContents: [Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext]",
+      "directLoadAuxiliaryExtensions: [com.highpoint-tech.kext.HighPointIOP v4.4.5 (571AEA63-3845-3A83-B37F-5FD117C0FFDE) in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext signed @team(DX6G69M9N2) (e917a18aeefac30f0249fe451715c48100d5a1fc) entitlements: [com.apple.security.get-task-allow: true] flags [0, 1, 4, 8, 9, 14], com.highpoint-tech.kext.HighPointRR v4.22.1 (6DF47B93-DB65-36BD-9392-0101CFDDDDFF) in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext signed @team(DX6G69M9N2) (4fb1f14d2b3d9639665a4df7e953b63765306616) entitlements: [com.apple.security.get-task-allow: true] flags [0, 1, 4, 8, 9, 14], com.zxystd.AirportItlwm v2.4.0 (CA3B8059-286B-3D9E-913C-A69C5ABBC8B5) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (a2fd8f5eec29f137327eafdc7e114ed368479e51) flags [0, 1, 4, 8, 9, 14]]",
+      "extensionsNeedingApproval: []",
+      "approvedUnbuiltExtensions: []",
+      "2026-07-02 02:22:13.536 E  kernelmanagerd[136:2ab3] library rebuild request failed: Loading extension(s): com.zxystd.AirportItlwm requires a reboot",
+      "2026-07-02 02:24:06.905 Df kernelmanager_helper[348:3083] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:06.905 Df kernelmanager_helper[348:3083] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking unstaged bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "requestedExts: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:07.060 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointRR) version: 4fb1f14d2b3d9639665a4df7e953b63765306616",
+      "2026-07-02 02:24:07.061 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointIOP) version: e917a18aeefac30f0249fe451715c48100d5a1fc",
+      "2026-07-02 02:24:07.061 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (Apple Software, com.apple.driver.AppleMobileDevice) version: 3d5015aa42b97b3a152d43f7293baaf163232800",
+      "2026-07-02 02:24:07.061 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:24:07.084 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:24:07.084 Df syspolicyd[287:307c] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (Apple Software, com.apple.nke.rvi) version: 219ccc9f8645c4fde5d8d355c53454e7cd253e7e",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext (existing)",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "approvalsRequiredFromSyspolicyd: false",
+      "newAuxiliaryContents: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext]",
+      "directLoadAuxiliaryExtensions: [com.zxystd.AirportItlwm v2.4.0 (CA3B8059-286B-3D9E-913C-A69C5ABBC8B5) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (a2fd8f5eec29f137327eafdc7e114ed368479e51) flags [0, 1, 4, 8, 9, 14]]",
+      "extensionsNeedingApproval: []",
+      "approvedUnbuiltExtensions: []",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:07.095 Df kernelmanager_helper[348:3083] [com.apple.kernelmanagerd.logging:LoadRequestResolution] auxKC filesystem check: Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext found at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:07.095 Df kernelmanager_helper[348:3083] Extension: Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext with UUID CA3B8059-286B-3D9E-913C-A69C5ABBC8B5 being considered for load does not have the same UUID as the one in the kernel (9689858C-E8DE-32B0-81A3-3B00F2EF3048). Cannot direct load.",
+      "approvalsRequiredFromSyspolicyd: false",
+      "newAuxiliaryContents: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext]",
+      "directLoadAuxiliaryExtensions: [com.zxystd.AirportItlwm v2.4.0 (CA3B8059-286B-3D9E-913C-A69C5ABBC8B5) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (a2fd8f5eec29f137327eafdc7e114ed368479e51) flags [0, 1, 4, 8, 9, 14]]",
+      "extensionsNeedingApproval: []",
+      "approvedUnbuiltExtensions: []",
+      "2026-07-02 02:24:07.096 E  kernelmanagerd[136:30be] failed to load/rebuild extensions: Loading extension(s): com.zxystd.AirportItlwm requires a reboot",
+      "2026-07-02 02:24:07.096 E  kmutil[1152:30bc] (KernelManagement) Remote encountered error: Error Domain=KMErrorDomain Code=28 \"Loading extension(s): com.zxystd.AirportItlwm requires a reboot\" UserInfo={NSLocalizedDescription=Loading extension(s): com.zxystd.AirportItlwm requires a reboot}",
+      "2026-07-02 02:24:07.097 E  kmutil[1152:30bc] kmutil encountered error (28): Loading extension(s): com.zxystd.AirportItlwm requires a reboot",
+      "2026-07-02 02:24:07.366 Df launchd[1:30a3] [system:] removing active service: com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:39.971 Df syspolicyd[291:507] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:24:39.994 Df backgroundtaskmanagementd[324:5a6] [com.apple.backgroundtaskmanagement:main]     #1: 16.com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:39.994 Df backgroundtaskmanagementd[324:5a6] [com.apple.backgroundtaskmanagement:main]            Identifier: 16.com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:39.994 Df backgroundtaskmanagementd[324:5a6] [com.apple.backgroundtaskmanagement:main]                   URL: file:///Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:24:39.994 Df backgroundtaskmanagementd[324:5a6] [com.apple.backgroundtaskmanagement:main]     #1: 16.com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:39.994 Df backgroundtaskmanagementd[324:5a6] [com.apple.backgroundtaskmanagement:main]     #1: 16.com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:40.005 Df backgroundtaskmanagementd[324:5ae] [com.apple.backgroundtaskmanagement:main] registerLaunchItem: found existing item: uuid=6ED422F3-4F18-4F74-9C57-521498B3F1F6, name=AirportItlwmAgent, type=legacy daemon, disposition=[enabled, allowed, notified], identifier=16.com.zxystd.airportitlwmagent, url=file:///Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:24:40.005 Df backgroundtaskmanagementd[324:5ae] [com.apple.backgroundtaskmanagement:main] registerLaunchItem: checking for an updated legacy agent or daemon item: uuid=6ED422F3-4F18-4F74-9C57-521498B3F1F6, name=AirportItlwmAgent, type=legacy daemon, disposition=[enabled, allowed, notified], identifier=16.com.zxystd.airportitlwmagent, url=file:///Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:24:40.006 Df backgroundtaskmanagementd[324:5b4] [com.apple.backgroundtaskmanagement:main] effectiveItemDisposition: appURL=(null), type=legacy daemon, url=file:///Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist, config={",
+      "BTMConfigLabel = \"com.zxystd.airportitlwmagent\";",
+      "2026-07-02 02:24:40.103 Df syspolicyd[291:507] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: a2fd8f5eec29f137327eafdc7e114ed368479e51",
+      "2026-07-02 02:24:40.105 Df syspolicyd[291:507] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointIOP) version: e917a18aeefac30f0249fe451715c48100d5a1fc",
+      "2026-07-02 02:24:40.110 Df syspolicyd[291:507] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointRR) version: 4fb1f14d2b3d9639665a4df7e953b63765306616",
+      "2026-07-02 02:24:40.112 Df kernelmanagerd[136:26b] Validate approval for /Library/Extensions/AirportItlwm.kext in auxKC: approved",
+      "2026-07-02 02:24:40.112 Df kernelmanagerd[136:26b] Validate approval for /Library/Extensions/HighPointIOP.kext in auxKC: approved",
+      "2026-07-02 02:24:40.112 Df kernelmanagerd[136:26b] Validate approval for /Library/Extensions/HighPointRR.kext in auxKC: approved",
+      "2026-07-02 02:24:40.112 Df kernelmanagerd[136:26b] installation check: bundle for com.zxystd.AirportItlwm is at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:40.173 E  kernelmanagerd[136:26b] error: tried to insert an invalid codeful kernel extension in the restricted lookup table: Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 02:24:40.704 Df backgroundtaskmanagementd[324:5b4] [com.apple.backgroundtaskmanagement:main] effectiveItemDisposition: appURL=(null), type=legacy daemon, url=file:///Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist, config={",
+      "BTMConfigLabel = \"com.zxystd.airportitlwmagent\";",
+      "2026-07-02 02:24:40.706 Df xpcproxy[326:5c0] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:24:40.708 Df launchd[1:20d] [system/com.zxystd.airportitlwmagent [326]:] Successfully spawned AirportItlwmAgent[326] because speculative",
+      "2026-07-02 02:24:40.716 Df launchd[1:194] [system:] service inactive: com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:41.255 Df kernel[0:729] (corecapture) CCPipe::withOwnerNameCapacity pipeOwner com.zxystd.AirportItlwm pipeName DriverLogs",
+      "2026-07-02 02:24:41.256 Df kernel[0:729] (corecapture) CCLogPipe::createReportersAndLegend() Done Creating Legend for owner: com.zxystd.AirportItlwm pipe DriverLogs",
+      "2026-07-02 02:24:41.256 Df kernel[0:729] (corecapture) Created CCLogPipe (Owner: com.zxystd.AirportItlwm - Name: DriverLogs)",
+      "2026-07-02 02:24:41.256 Df kernel[0:729] (corecapture) withOwnerNameCapacity:158 Pipe Owner:com.zxystd.AirportItlwm Name:DriverLogs LogIdentifier:wlan0",
+      "2026-07-02 02:24:41.256 Df kernel[0:729] (corecapture) CCPipe::withOwnerNameCapacity pipeOwner com.zxystd.AirportItlwm pipeName DatapathEvents",
+      "2026-07-02 02:24:41.256 Df kernel[0:729] (corecapture) CCLogPipe::createReportersAndLegend() Done Creating Legend for owner: com.zxystd.AirportItlwm pipe DatapathEvents",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) Created CCLogPipe (Owner: com.zxystd.AirportItlwm - Name: DatapathEvents)",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) withOwnerNameCapacity:158 Pipe Owner:com.zxystd.AirportItlwm Name:DatapathEvents LogIdentifier:",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) CCPipe::withOwnerNameCapacity pipeOwner com.zxystd.AirportItlwm pipeName StateSnapshots",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) CCDataPipe::createReportersAndLegend() Done Creating Legend for owner: com.zxystd.AirportItlwm pipe StateSnapshots",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) Created CCDataPipe (Owner: com.zxystd.AirportItlwm - Name: StateSnapshots)",
+      "2026-07-02 02:24:41.257 Df kernel[0:729] (corecapture) withOwnerNameCapacity:158 Pipe Owner:com.zxystd.AirportItlwm Name:StateSnapshots LogIdentifier:0",
+      "2026-07-02 02:24:41.990 Df kernelmanagerd[136:742] Received kext load notification: com.zxystd.AirportItlwm",
+      "2026-07-02 02:24:50.725 Df xpcproxy[410:84a] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:24:50.726 Df launchd[1:193] [system/com.zxystd.airportitlwmagent [410]:] Successfully spawned AirportItlwmAgent[410] because inefficient",
+      "2026-07-02 02:24:50.730 Df launchd[1:193] [system:] service inactive: com.zxystd.airportitlwmagent",
+      "2026-07-02 02:24:59.563 Df kernel[0:729] (corecapture) setLevel:340 Pipe Owner:com.zxystd.AirportItlwm Name:DatapathEvents LogIdentifier:",
+      "2026-07-02 02:24:59.597 Df kernel[0:729] [com.zxystd.AirportItlwm:iwx.auth_ack] itlwm: smoke_marker AirportItlwm_start OK",
+      "2026-07-02 02:25:00.738 Df xpcproxy[454:9dc] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 02:25:00.739 Df launchd[1:89a] [system/com.zxystd.airportitlwmagent [454]:] Successfully spawned AirportItlwmAgent[454] because inefficient"
+    ],
+    "uakl_cdhash_present_before_reboot": true
+  },
+  "capture_commands": {
+    "policy_history": "sudo -n sqlite3 /var/db/SystemPolicyConfiguration/KextPolicy selected bundle policy/history queries",
+    "post_reboot_admission_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "pre_reboot_materialization_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "reboot": "sudo -n shutdown -r now; poll SSH on devops@127.0.0.1:3322",
+    "selected_bundle_identity": "guest git head, PlistBuddy, codesign, dwarfdump --uuid, shasum -a 256, strings selected short hash probe",
+    "selected_head_build_install": "cd /Users/devops/Projects/itlwm && ./scripts/build_tahoe.sh && sudo -n rm/cp/chown/chmod /Library/Extensions/AirportItlwm.kext"
+  },
+  "capture_finished_utc": "2026-07-01T23:27:03.510158Z",
+  "capture_started_utc": "2026-07-01T23:22:04.754120Z",
+  "capture_wallclock_seconds": 298.756,
+  "command_results": {
+    "build_install": {
+      "duration_seconds": 7.861,
+      "returncode": 0,
+      "stderr_lines": 4,
+      "stdout_lines": 21
+    },
+    "post_reboot": {
+      "history": {
+        "duration_seconds": 0.282,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 1
+      },
+      "identity": {
+        "duration_seconds": 4.635,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 7
+      },
+      "kmutil": {
+        "duration_seconds": 0.685,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "loaded": {
+        "duration_seconds": 0.737,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "logs": {
+        "duration_seconds": 117.231,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 180
+      },
+      "os": {
+        "duration_seconds": 18.006,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 179
+      },
+      "policy": {
+        "duration_seconds": 0.242,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 3
+      }
+    },
+    "pre_reboot": {
+      "history": {
+        "duration_seconds": 0.251,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 1
+      },
+      "identity": {
+        "duration_seconds": 0.466,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 7
+      },
+      "kmutil": {
+        "duration_seconds": 0.559,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "loaded": {
+        "duration_seconds": 0.694,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "logs": {
+        "duration_seconds": 112.022,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 180
+      },
+      "os": {
+        "duration_seconds": 0.318,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 179
+      },
+      "policy": {
+        "duration_seconds": 0.252,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 3
+      }
+    }
+  },
+  "input_head": "9e83fb02ada3822747f19395b57129f9e4e2fc53",
+  "roadmap_item_id": "itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary",
+  "runtime_environment": {
+    "guest_os": {
+      "boot_session_uuid": "1891D34F-D12E-44C4-B81B-331A7A6C22C9",
+      "boot_time": "{ sec = 1782948265, usec = 162952 } Thu Jul  2 02:24:25 2026",
+      "build": "25C56",
+      "kernel": "25.2.0",
+      "name": "macOS",
+      "version": "26.2"
+    },
+    "guest_ssh": {
+      "available_after_reboot": true,
+      "port": "3322",
+      "target": "devops@127.0.0.1"
+    },
+    "guest_wifi_interface": "en1",
+    "guest_wifi_interface_present": true,
+    "wifi_passthrough_attached": true
+  },
+  "schema_version": "itlwm-tahoe-auxkc-approval-reboot-materialization-boundary/v1",
+  "selected_kext": {
+    "binary_sha256": "d46c3700c88d3ba0d06981469efb82ea3a2e621252387a4ed96d7a95e3306eae",
+    "bundle_id": "com.zxystd.AirportItlwm",
+    "bundle_version": "2.4.0",
+    "guest_project_head": "9e83fb02ada3822747f19395b57129f9e4e2fc53",
+    "input_head": "9e83fb02ada3822747f19395b57129f9e4e2fc53",
+    "installed_build_string": "%s: AirportItlwm build=9e83fb0 entry provider=%p",
+    "installed_uuid": "CA3B8059-286B-3D9E-913C-A69C5ABBC8B5",
+    "path": "/Library/Extensions/AirportItlwm.kext",
+    "pre_reboot_identity": {
+      "binary_sha256": "d46c3700c88d3ba0d06981469efb82ea3a2e621252387a4ed96d7a95e3306eae",
+      "build_string": "%s: AirportItlwm build=9e83fb0 entry provider=%p",
+      "bundle_id": "com.zxystd.AirportItlwm",
+      "bundle_version": "2.4.0",
+      "codesign_cdhash": "",
+      "guest_project_head": "9e83fb02ada3822747f19395b57129f9e4e2fc53",
+      "installed_uuid": "CA3B8059-286B-3D9E-913C-A69C5ABBC8B5",
+      "short_version": "2.4.0"
+    },
+    "selected_cdhash": "a2fd8f5eec29f137327eafdc7e114ed368479e51"
+  },
+  "selected_step": "step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary",
+  "verdict": {
+    "association_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "data_transfer_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "loaded_uuid_after_reboot_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_load_admission_step_retry": true,
+    "reconnect_not_claimed": true
+  }
+}
