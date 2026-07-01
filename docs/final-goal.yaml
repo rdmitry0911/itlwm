@@ -69,6 +69,62 @@ work_breakdown:
   - state recovery after errors/wake is verified
   original_roadmap_ids:
   - itlwm-rm-04
+- id: itlwm-fg-05a0-auth-response-ack-readiness
+  title: Tahoe auth-response ACK readiness
+  status: planned
+  weight: 1
+  acceptance_criteria:
+  - live Tahoe lab evidence proves the station ACKs AP authentication responses
+    before the WCL association/auth rollback gate is retried
+  - the evidence is captured from the guest against an allowed lab AP from external
+    lab/operator configuration, not from synthetic or replayed logs
+  - the step does not claim association, DHCP, data, reconnect, or final Wi-Fi equivalence
+  original_roadmap_ids:
+  - itlwm-rm-05a0-auth-response-ack-readiness
+  requires:
+  - id: itlwm-fg-05a0-auth-response-ack-readiness
+    artifact: evidence/runtime/tahoe_auth_response_ack_readiness.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - scan.aps_seen
+      - association_target.visible_or_directed
+      - auth.started
+      - auth.ap_response_observed
+      - auth.response_acknowledged
+      - auth.did_not_ack_observed
+      - auth.rsn_ie_mismatch_observed
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_wcl_auth_join_retry
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        association_target.visible_or_directed: true
+        auth.started: true
+        auth.ap_response_observed: true
+        auth.response_acknowledged: true
+        auth.did_not_ack_observed: false
+        auth.rsn_ie_mismatch_observed: false
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_wcl_auth_join_retry: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        auth.source:
+        - synthetic
+        - replay
+        - static_fixture
 - id: itlwm-fg-05a-auth-join-readiness
   title: Tahoe WCL association/auth readiness
   status: planned
