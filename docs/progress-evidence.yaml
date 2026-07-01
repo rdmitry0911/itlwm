@@ -2027,3 +2027,124 @@ records:
         input_head: cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70
         candidate_after_head: b6b3b0a90bc69f9ccba83cff74454e61d82473e2
       errors: []
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  input_head_commit: 9e83fb02ada3822747f19395b57129f9e4e2fc53
+  head_commit: ef02974f5cd103ba853bb642ec938972f4f0abf3
+  executor_commit:
+    before_head: 9e83fb02ada3822747f19395b57129f9e4e2fc53
+    after_head: ef02974f5cd103ba853bb642ec938972f4f0abf3
+  state_delta: Commit ef02974f5cd103ba853bb642ec938972f4f0abf3 adds a selected-step
+    Tahoe capture/recapture helper plus committed live runtime evidence proving the
+    selected-head AirportItlwm bundle was rebuilt and installed as UUID CA3B8059-286B-3D9E-913C-A69C5ABBC8B5
+    with build marker 9e83fb0 and cdhash a2fd8f5eec29f137327eafdc7e114ed368479e51,
+    reached the pre-reboot materialized kmutil handoff, rebooted the guest, returned
+    over SSH, and then no longer followed the System Settings approval-required kmutil
+    path.
+  evidence_paths:
+  - evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json
+  - scripts/capture_tahoe_auxkc_approval_reboot_materialization.py
+  kernel_state_digest: 819e9d02acef6e7e536b78a4ba13346071930188052c4bea6441c2583e18a724
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    roadmap_item_id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added a selected-step Tahoe reboot-materialization capture helper
+          and committed the live runtime artifact for the selected-head AirportItlwm
+          bundle.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the helper's non-mutating recapture mode after the artifact
+          was written; it validated the committed artifact and performed fresh live
+          SSH, selected bundle identity, policy/log, and post-reboot kmutil checks
+          without rebuilding, reinstalling, rebooting, or mutating the artifact.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: Committed runtime artifact proves the selected approval
+          materialization survived the reboot/SSH-return boundary and removed the
+          System Settings approval-required kmutil path for the selected installed
+          bundle, decreasing remaining work to later load-admission and Wi-Fi equivalence
+          gates that remain explicitly unclaimed.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_post_reboot_evidence_proves_the_selected_bun: true
+          criterion_7_the_artifact_records_the_selected_installed_uuid: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and
+        installs the selected-head AirportItlwm bundle, materializes the selected
+        approval state, reboots the guest, and returns over SSH.
+      source: selected_step
+    - id: criterion_6_the_post_reboot_evidence_proves_the_selected_bun
+      statement: The post-reboot evidence proves the selected bundle no longer follows
+        the System Settings approval-required path when kmutil evaluates the selected
+        installed bundle.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_selected_installed_uuid
+      statement: The artifact records the selected installed UUID/build/cdhash, the
+        policy materialization inputs, the reboot/SSH-return boundary, and leaves
+        selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and
+        final Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 116172c87958
+        evidence_path: evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json
+        sha256: 64bbf0eef4a8d9c546a30a82493b7f3cd964fb87fbc22d61ae65fd458cbf9c43
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 9e83fb02ada3822747f19395b57129f9e4e2fc53
+        candidate_after_head: ef02974f5cd103ba853bb642ec938972f4f0abf3
+      errors: []
