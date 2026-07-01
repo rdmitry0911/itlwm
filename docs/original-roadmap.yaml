@@ -318,13 +318,15 @@ tasks:
   - A live Tahoe guest run with passthrough Wi-Fi attached starts from the selected
     rebuilt/installed AirportItlwm bundle and the post-MDM/UAKL approval-required
     blocker signature.
-  - The evidence exercises the live System Settings or syspolicyd approval
-    alert/workflow for the selected bundle and proves the approval-required
-    work item is cleared rather than only writing policy database rows.
+  - The evidence exercises or independently observes the live System Settings or
+    syspolicyd approval workflow for the selected bundle and proves the
+    approval-required work item is cleared rather than only writing policy database
+    rows.
   - The post-workflow evidence proves kmutil no longer reports the System Settings
-    approval-required error for the selected bundle before the reboot-durability
-    boundary is retried, and leaves selected loaded-after-reboot, join-trigger/PMK,
-    AUTH, association, DHCP, and final Wi-Fi equivalence criteria unclaimed.
+    approval-required error for the selected bundle and reaches the truthful Tahoe
+    reboot-required handoff before the reboot-durability boundary is retried;
+    selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and
+    final Wi-Fi equivalence criteria remain unclaimed.
   requires:
   - id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
     artifact: evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json
@@ -342,10 +344,11 @@ tasks:
       - selected_kext.selected_cdhash
       - approval_alert.prior_blocker_signature
       - approval_alert.system_settings_or_syspolicyd_alert_surface_observed
-      - approval_alert.workflow_exercised
-      - approval_alert.approval_work_queue_cleared
+      - approval_alert.workflow_exercised_or_observed
+      - approval_alert.approval_required_cleared
       - approval_alert.kmutil_load_exit_code_after_workflow
       - approval_alert.kmutil_approval_error_after_workflow
+      - approval_alert.kmutil_reboot_required_after_workflow
       - verdict.ready_for_reboot_materialization_retry
       - verdict.loaded_uuid_after_reboot_not_claimed
       - verdict.join_trigger_not_claimed
@@ -360,17 +363,17 @@ tasks:
         runtime_environment.wifi_passthrough_attached: true
         approval_alert.prior_blocker_signature: system_settings_alert_work_queue_persists_after_policy_mdm_uakl_materialization_reboot
         approval_alert.system_settings_or_syspolicyd_alert_surface_observed: true
-        approval_alert.workflow_exercised: true
-        approval_alert.approval_work_queue_cleared: true
+        approval_alert.workflow_exercised_or_observed: true
+        approval_alert.approval_required_cleared: true
+        approval_alert.kmutil_load_exit_code_after_workflow: 28
         approval_alert.kmutil_approval_error_after_workflow: false
+        approval_alert.kmutil_reboot_required_after_workflow: true
         verdict.ready_for_reboot_materialization_retry: true
         verdict.loaded_uuid_after_reboot_not_claimed: true
         verdict.join_trigger_not_claimed: true
         verdict.pmk_delivery_not_claimed: true
         verdict.auth_tx_rx_not_claimed: true
         verdict.final_wifi_equivalence_not_claimed: true
-      max_number:
-        approval_alert.kmutil_load_exit_code_after_workflow: 0
       forbid_values:
         approval_alert.source:
         - synthetic
