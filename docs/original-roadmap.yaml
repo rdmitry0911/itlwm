@@ -38,12 +38,84 @@ tasks:
   acceptance_criteria:
   - advances linked final-goal item with runtime or deterministic evidence
   evidence: []
+- id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+  title: Tahoe selected AuxKC boot-safe load boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
+  depends_on:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  description: >-
+    Establish the narrower live-lab load boundary that the selected-head
+    AirportItlwm kext can be rebuilt, installed into the Tahoe Auxiliary Kernel
+    Collection, loaded with the passthrough Wi-Fi adapter attached, and survive
+    reboot back to guest SSH without kernel panic. This step does not claim
+    join-trigger delivery, PMK helper delivery, AUTH TX/RX completion, AUTH
+    response ACK, association, DHCP, data transfer, reconnect, or final Wi-Fi
+    equivalence.
+  acceptance:
+  - A live Tahoe guest run installs the selected-head kext into AuxKC, reboots
+    with passthrough Wi-Fi attached, and returns over SSH.
+  - The loaded kext UUID/version is proven to match the selected input head or
+    candidate commit under test.
+  - The evidence records absence of kernel panic, remote-debugger wait, and
+    stale/replayed boot logs for the selected attempt.
+  - The artifact explicitly leaves join-trigger/PMK, AUTH, association, DHCP,
+    and later Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+    artifact: evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - auxkc.selected_head_installed
+      - auxkc.selected_head_uuid
+      - driver.kext_loaded
+      - driver.loaded_uuid_matches_selected_head
+      - boot.guest_ssh_returned
+      - boot.kernel_panic_observed
+      - panic.waiting_for_remote_debugger_observed
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_join_trigger_pmk_retry
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        auxkc.selected_head_installed: true
+        driver.kext_loaded: true
+        driver.loaded_uuid_matches_selected_head: true
+        boot.guest_ssh_returned: true
+        boot.kernel_panic_observed: false
+        panic.waiting_for_remote_debugger_observed: false
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_join_trigger_pmk_retry: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        boot.source:
+        - synthetic
+        - replay
+        - static_fixture
+        panic.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
   title: Tahoe join-trigger and PMK helper delivery boundary
   goal_item_ids:
   - itlwm-fg-05a0c-join-trigger-pmk-helper-delivery-boundary
   depends_on:
-  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  - itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
   description: >-
     Establish the narrower live-lab boundary that a guest join trigger reaches
     the driver/PLTI association-target path and the PMK helper publishes and
