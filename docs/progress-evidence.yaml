@@ -1006,3 +1006,95 @@ records:
         input_head: e78f3c965bfde16416bf000018113dde2f25efd6
         candidate_after_head: 95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8
       errors: []
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  roadmap_item_id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      commit:
+        before_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+        after_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+        message: ''
+      evidence_paths: []
+    validator: {}
+    evidence: {}
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: '[redacted external agent transport output omitted from public
+        evidence]'
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+    statement: A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and
+      installs the selected-head AirportItlwm bundle, materializes the selected approval
+      state, reboots the guest, and returns over SSH.
+    source: selected_step
+  - id: criterion_6_the_post_reboot_evidence_proves_the_selected_bun
+    statement: The post-reboot evidence proves the selected bundle no longer follows
+      the System Settings approval-required path when kmutil evaluates the selected
+      installed bundle.
+    source: selected_step
+  - id: criterion_7_the_artifact_records_the_selected_installed_uuid
+    statement: The artifact records the selected installed UUID/build/cdhash, the
+      policy materialization inputs, the reboot/SSH-return boundary, and leaves selected
+      loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi
+      equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 3aad6d3d5d9c
+      evidence_path: evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+      sha256: e69fc8ba773f0fe747790b8f4590b005c99405a2f73348acd1ccdc6080d645ec
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+      candidate_after_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+    - anchor_id: 614886429a94
+      evidence_path: scripts/capture_tahoe_auxkc_approval_authority.py
+      sha256: 733f170d78f9346eca0ed04b7cd475a24839d9710e4830621e0e8913396c5299
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+      candidate_after_head: 1c4d52c3850faad1a5d15c013d0dd929444ccac2
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary!=step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary!=itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    - runtime_capture_anchor_input_head_mismatch:e78f3c965bfde16416bf000018113dde2f25efd6!=1c4d52c3850faad1a5d15c013d0dd929444ccac2
+    - runtime_capture_anchor_after_head_mismatch:95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8!=1c4d52c3850faad1a5d15c013d0dd929444ccac2
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: ab7d64f9497c427cad07dcc0
