@@ -69,16 +69,30 @@ work_breakdown:
   - state recovery after errors/wake is verified
   original_roadmap_ids:
   - itlwm-rm-04
+- id: itlwm-fg-05a0c0-auxkc-approval-load-admission-boundary
+  title: Tahoe AuxKC approval and load-admission boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that the selected-head
+    AirportItlwm kext is no longer blocked by the System Settings approval/load
+    admission gate that prevented kmutil from admitting the selected build into
+    the live AuxKC/load path. This step only resolves the approval/admission
+    blocker; selected UUID loaded-after-reboot, join-trigger delivery, PMK
+    delivery, AUTH, association, DHCP, and final Wi-Fi equivalence remain
+    separate gates.
+  criteria:
+  - Typed evidence itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary passes
+    from committed evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json.
+
 - id: itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
   title: Tahoe selected AuxKC boot-safe load boundary
   description: >-
     A committed, runtime-anchored Tahoe lab run proves that the selected-head
     AirportItlwm kext can be rebuilt, installed into the Auxiliary Kernel
-    Collection, loaded with the passthrough Wi-Fi adapter attached, and return
-    the guest to SSH without kernel panic before any join-trigger or PMK-helper
-    claim is attempted. Join-trigger delivery, PMK delivery, AUTH TX/RX, AUTH
-    response ACK, association, DHCP, and final Wi-Fi equivalence remain separate
-    gates.
+    Collection, admitted past the already-proven approval/load gate, loaded with
+    the passthrough Wi-Fi adapter attached, and return the guest to SSH without
+    kernel panic before any join-trigger or PMK-helper claim is attempted.
+    Join-trigger delivery, PMK delivery, AUTH TX/RX, AUTH response ACK,
+    association, DHCP, and final Wi-Fi equivalence remain separate gates.
   criteria:
   - Typed evidence itlwm-rm-05a0c-auxkc-boot-safe-load-boundary passes from
     committed evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json.
