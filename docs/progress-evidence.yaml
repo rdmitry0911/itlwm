@@ -1550,3 +1550,156 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: ea47b13893bc1299dfce19f8
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  input_head_commit: f831495fd67051e99a85e54e49472053c13a36ce
+  head_commit: 8e11ab315c9b698ddc4c371f429f5b44cd63939f
+  executor_commit:
+    before_head: f831495fd67051e99a85e54e49472053c13a36ce
+    after_head: 8e11ab315c9b698ddc4c371f429f5b44cd63939f
+  state_delta: Added a focused Tahoe admin-authorization capture harness and committed
+    fresh live runtime evidence proving the selected AirportItlwm approval workflow
+    reaches the Privacy & Security admin authorization sheet with SSH, the logged-in
+    GUI, VNC, and en1 passthrough still available; the same artifact proves an operator
+    supplied admin credential validates via stdin-only authorization, no secret was
+    committed or printed, authorizationdb rights matched their baseline after probing,
+    and kmutil still reports the approval-required blocker while downstream Wi-Fi
+    milestones remain unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+  - scripts/capture_tahoe_admin_authorization_availability.py
+  kernel_state_digest: b6d4df7d4aff72d8729d10cd155a366cacc74d6cfb8284019c43e23d187e9b33
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    roadmap_item_id: itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Committed scripts/capture_tahoe_admin_authorization_availability.py
+          and the fresh live artifact evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+          for only the selected admin-authorization availability boundary.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the committed artifact validator and a separate bounded JSON
+          typed-field checker; both verified the required live-environment, authorization,
+          kmutil, secret-handling, rights-restoration, and non-claim predicates.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: Remaining work toward the linked final-goal item decreased
+          because HEAD now contains committed runtime-anchored typed evidence for
+          the selected Tahoe admin authorization availability boundary. The artifact
+          records a live macOS 26.2 Tahoe guest with en1 passthrough Wi-Fi, SSH and
+          GUI availability, the AirportItlwm System Settings admin authorization sheet,
+          stdin-only sudo auth validation for the project admin user, restored authorizationdb
+          baseline hashes, and the kmutil approval-required blocker still present
+          while explicitly leaving approval clearing and downstream Wi-Fi milestones
+          unclaimed.
+        acceptance_surface_substitution_rejected: true
+        independently_verified: true
+        verification_method: reference
+        checked_head: 8e11ab315c9b698ddc4c371f429f5b44cd63939f
+        evidence_paths_checked:
+        - evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+        - docs/original-roadmap.yaml
+        - docs/final-goal.yaml
+        - scripts/capture_tahoe_admin_authorization_availability.py
+        supporting_observations:
+        - The required artifact is tracked in HEAD and git status was clean before
+          verdict writing.
+        - The artifact selected_step and roadmap item match only the kernel-selected
+          semantic step.
+        - jq validation against the committed artifact satisfied all required fields,
+          equality checks, minimum wallclock duration, and forbidden-value checks.
+        - The artifact source fields are live_tahoe_guest_vnc_ssh, live_qemu_vnc_capture,
+          and live_tahoe_guest_kmutil_probe, not synthetic, replay, or static_fixture.
+        - The capture script validates the runtime secret with sudo over stdin, redacts
+          command output to counts, refuses payloads containing the runtime secret,
+          and checks tracked files for the secret before setting secret_committed.
+        - The artifact records authorization.secret_committed=false, authorization.secret_printed=false,
+          and authorization.secret_storage=operator_env_runtime_only_transient_typefile_removed.
+        - The artifact records matching authorizationdb baseline/post-probe hashes
+          and security_authorizationdb_write_performed=false.
+        - The artifact records kmutil_approval_error_still_present=true and all downstream
+          approval/load/join/PMK/AUTH/final-equivalence claims remain explicitly unclaimed.
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_evidence_proves_the_project_user_has_a_usabl: true
+          criterion_7_the_artifact_records_that_authorization_rights_a: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached reaches the
+        same System Settings approval authorization sheet for the selected AirportItlwm
+        workflow while SSH and the logged-in GUI session remain available.
+      source: selected_step
+    - id: criterion_6_the_evidence_proves_the_project_user_has_a_usabl
+      statement: The evidence proves the project user has a usable admin authorization
+        mechanism for the GUI sheet or equivalent macOS authorization session; any
+        secret value is kept outside the repository and is redacted from committed
+        artifacts, candidate data, stdout, and commit metadata.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_that_authorization_rights_a
+      statement: The artifact records that authorization rights are restored to their
+        baseline policy after probing, kmutil still reports the approval-required
+        blocker, and approval clearing, load admission, selected loaded-after-reboot,
+        join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence remain
+        unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: c9362fcbc2aa
+        evidence_path: evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+        sha256: 4c5b0c595b8f18d5295d8812af0dc4db2e28b1040a027b34a8abfe81e2d3fa9e
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: f831495fd67051e99a85e54e49472053c13a36ce
+        candidate_after_head: 8e11ab315c9b698ddc4c371f429f5b44cd63939f
+      errors: []
