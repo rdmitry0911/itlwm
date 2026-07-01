@@ -12,7 +12,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Tahoe airportitlwm source/build/install substrate is restored from committed public evidence.
+  state_delta: Tahoe airportitlwm source/build/install substrate is restored from
+    committed public evidence.
   evidence_paths:
   - evidence/build/tahoe_lineage_build_report.json
   - docs/tahoe_lineage_build_reproducibility.md
@@ -31,7 +32,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Apple Wi-Fi contract inventory and gap ledger are restored from committed public evidence.
+  state_delta: Apple Wi-Fi contract inventory and gap ledger are restored from committed
+    public evidence.
   evidence_paths:
   - evidence/contracts/apple_wifi_contract_inventory.json
   - docs/tahoe_discrepancy_inventory.md
@@ -49,7 +51,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Payload and IOKit/IO80211 parity implementation is restored from committed public evidence.
+  state_delta: Payload and IOKit/IO80211 parity implementation is restored from committed
+    public evidence.
   evidence_paths:
   - evidence/parity/payload_parity_report.json
   changed_files: []
@@ -66,7 +69,8 @@ records:
   executor_commit:
     before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
     after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
-  state_delta: Consumer/producer chains and state-machine closure are restored from committed public evidence.
+  state_delta: Consumer/producer chains and state-machine closure are restored from
+    committed public evidence.
   evidence_paths:
   - evidence/state/state_machine_closure_report.json
   changed_files: []
@@ -96,7 +100,10 @@ records:
     auditor:
       accepted: false
       reason_class: missing_committed_runtime_evidence
-      progress_argument: 'No accepted progress: committed HEAD 801a54969214f9397d537c39d48464ad9612e5fc does not contain evidence/runtime/tahoe_wifi_session.json, and the candidate is blocked with no committed evidence, so remaining work for itlwm-rm-05 and linked final-goal item itlwm-fg-05-runtime-wifi-equivalence did not decrease.'
+      progress_argument: 'No accepted progress: committed HEAD 801a54969214f9397d537c39d48464ad9612e5fc
+        does not contain evidence/runtime/tahoe_wifi_session.json, and the candidate
+        is blocked with no committed evidence, so remaining work for itlwm-rm-05 and
+        linked final-goal item itlwm-fg-05-runtime-wifi-equivalence did not decrease.'
       acceptance_surface_substitution_rejected: true
       criteria_verdicts:
         criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
@@ -112,25 +119,31 @@ records:
       role: auditor
   criteria:
   - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
-    statement: Work is exactly the kernel-selected semantic step and does not broaden scope.
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
     source: selected_step
   - id: criterion_2_validator_independently_verifies_or_recaptures_e
-    statement: Validator independently verifies or recaptures evidence rather than trusting implementation claims.
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
     source: selected_step
   - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
-    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests, synthetic fixtures, or acceptance surfaces.
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
     source: selected_step
   - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
-    statement: Auditor provides a progress argument showing remaining work toward linked final-goal items decreased.
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
     source: selected_step
   - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
     statement: advances linked final-goal item with runtime or deterministic evidence
     source: selected_step
   - id: criterion_6_tahoe_runtime_scan_join_auth_dhcp_data_reconnect
-    statement: Tahoe runtime scan/join/auth/DHCP/data/reconnect evidence is captured from a real guest Wi-Fi session
+    statement: Tahoe runtime scan/join/auth/DHCP/data/reconnect evidence is captured
+      from a real guest Wi-Fi session
     source: selected_step
   - id: criterion_7_runtime_anchored_tahoe_guest_wi_fi_session_prove
-    statement: runtime-anchored Tahoe guest Wi-Fi session proves scan/join/auth/DHCP/data/reconnect against the lab AP
+    statement: runtime-anchored Tahoe guest Wi-Fi session proves scan/join/auth/DHCP/data/reconnect
+      against the lab AP
     source: selected_step
   - id: criterion_8_scan_join_auth_dhcp_data_transfer_works_in_tahoe
     statement: scan/join/auth/DHCP/data transfer works in Tahoe
@@ -184,28 +197,35 @@ records:
       stderr_tail: ''
   criteria:
   - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
-    statement: Work is exactly the kernel-selected semantic step and does not broaden scope.
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
     source: selected_step
   - id: criterion_2_validator_independently_verifies_or_recaptures_e
-    statement: Validator independently verifies or recaptures evidence rather than trusting implementation claims.
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
     source: selected_step
   - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
-    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests, synthetic fixtures, or acceptance surfaces.
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
     source: selected_step
   - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
-    statement: Auditor provides a progress argument showing remaining work toward linked final-goal items decreased.
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
     source: selected_step
   - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
     statement: advances linked final-goal item with runtime or deterministic evidence
     source: selected_step
   - id: criterion_6_live_tahoe_lab_evidence_proves_the_wcl_associati
-    statement: live Tahoe lab evidence proves the WCL association/auth path advances past the previous AUTH timeout/JOIN_ABORT rollback
+    statement: live Tahoe lab evidence proves the WCL association/auth path advances
+      past the previous AUTH timeout/JOIN_ABORT rollback
     source: selected_step
   - id: criterion_7_the_evidence_is_captured_from_the_guest_against_
-    statement: the evidence is captured from the guest against an allowed lab AP, not from synthetic or replayed logs
+    statement: the evidence is captured from the guest against an allowed lab AP,
+      not from synthetic or replayed logs
     source: selected_step
   - id: criterion_8_the_fix_is_committed_as_useful_source_delta_and_
-    statement: the fix is committed as useful source delta and does not claim DHCP/data/reconnect closure
+    statement: the fix is committed as useful source delta and does not claim DHCP/data/reconnect
+      closure
     source: selected_step
   source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
   contract_paths:
@@ -233,12 +253,16 @@ records:
     implementation:
       role: implementation
       status: blocked
-      summary: No useful project delta was committed because the live allowed AP did not provide an authentication-response window for the selected ACK-readiness proof.
+      summary: No useful project delta was committed because the live allowed AP did
+        not provide an authentication-response window for the selected ACK-readiness
+        proof.
     validator:
       role: validator
       status: failed
       independent: true
-      summary: Independent guest probes confirmed kext/carrier visibility but no AUTH request, AP AUTH response, or ieee80211_recv_auth records during the bounded directed join attempt.
+      summary: Independent guest probes confirmed kext/carrier visibility but no AUTH
+        request, AP AUTH response, or ieee80211_recv_auth records during the bounded
+        directed join attempt.
       evidence_paths: []
     evidence:
       role: evidence
@@ -247,7 +271,11 @@ records:
     auditor:
       accepted: false
       reason_class: missing_committed_typed_runtime_artifact
-      progress_argument: 'Remaining work did not decrease for itlwm-fg-05a0-auth-response-ack-readiness: HEAD does not contain the required artifact evidence/runtime/tahoe_auth_response_ack_readiness.json, the candidate is blocked with no evidence paths, and the typed fields proving a live Tahoe allowed-AP authentication response ACK before WCL retry cannot be independently verified from committed project evidence.'
+      progress_argument: 'Remaining work did not decrease for itlwm-fg-05a0-auth-response-ack-readiness:
+        HEAD does not contain the required artifact evidence/runtime/tahoe_auth_response_ack_readiness.json,
+        the candidate is blocked with no evidence paths, and the typed fields proving
+        a live Tahoe allowed-AP authentication response ACK before WCL retry cannot
+        be independently verified from committed project evidence.'
       acceptance_surface_substitution_rejected: true
       criteria_verdicts:
         criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
@@ -261,28 +289,35 @@ records:
       role: auditor
   criteria:
   - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
-    statement: Work is exactly the kernel-selected semantic step and does not broaden scope.
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
     source: selected_step
   - id: criterion_2_validator_independently_verifies_or_recaptures_e
-    statement: Validator independently verifies or recaptures evidence rather than trusting implementation claims.
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
     source: selected_step
   - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
-    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests, synthetic fixtures, or acceptance surfaces.
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
     source: selected_step
   - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
-    statement: Auditor provides a progress argument showing remaining work toward linked final-goal items decreased.
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
     source: selected_step
   - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
     statement: advances linked final-goal item with runtime or deterministic evidence
     source: selected_step
   - id: criterion_6_live_tahoe_lab_evidence_proves_the_station_acks_
-    statement: live Tahoe lab evidence proves the station ACKs AP authentication responses before the WCL association/auth rollback gate is retried
+    statement: live Tahoe lab evidence proves the station ACKs AP authentication responses
+      before the WCL association/auth rollback gate is retried
     source: selected_step
   - id: criterion_7_the_evidence_is_captured_from_the_guest_against_
-    statement: the evidence is captured from the guest against an allowed lab AP from external lab/operator configuration, not from synthetic or replayed logs
+    statement: the evidence is captured from the guest against an allowed lab AP from
+      external lab/operator configuration, not from synthetic or replayed logs
     source: selected_step
   - id: criterion_8_the_step_does_not_claim_association_dhcp_data_re
-    statement: the step does not claim association, DHCP, data, reconnect, or final Wi-Fi equivalence
+    statement: the step does not claim association, DHCP, data, reconnect, or final
+      Wi-Fi equivalence
     source: selected_step
   source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
   contract_paths:
@@ -309,7 +344,11 @@ records:
   executor_commit:
     before_head: ed75583ad20d986b7ec985f352a00c3482bd5a5d
     after_head: ccba0cf673dc0e9fb5b5334ba56a455b4349f51f
-  state_delta: Added a bounded Tahoe guest AP visibility capture helper and committed fresh sanitized runtime evidence proving that an operator-selected allowed AP is visible from guest Wi-Fi interface en1 before auth-response ACK work is retried, while leaving authentication response ACK, association, DHCP, data, reconnect, and final Wi-Fi equivalence as separate gates.
+  state_delta: Added a bounded Tahoe guest AP visibility capture helper and committed
+    fresh sanitized runtime evidence proving that an operator-selected allowed AP
+    is visible from guest Wi-Fi interface en1 before auth-response ACK work is retried,
+    while leaving authentication response ACK, association, DHCP, data, reconnect,
+    and final Wi-Fi equivalence as separate gates.
   evidence_paths:
   - evidence/runtime/tahoe_lab_ap_visibility_readiness.json
   - scripts/capture_tahoe_lab_ap_visibility.py
@@ -331,12 +370,16 @@ records:
       implementation:
         role: implementation
         status: implemented
-        summary: Added scripts/capture_tahoe_lab_ap_visibility.py and committed the fresh sanitized runtime JSON it produced for the selected Tahoe lab AP visibility readiness step.
+        summary: Added scripts/capture_tahoe_lab_ap_visibility.py and committed the
+          fresh sanitized runtime JSON it produced for the selected Tahoe lab AP visibility
+          readiness step.
       validator:
         role: validator
         status: passed
         independent: true
-        summary: Reran the bounded live capture against devops@127.0.0.1:3322 and then independently checked the committed JSON fields, minimums, forbidden source values, non-claim gates, and absence of operator SSID/PSK material.
+        summary: Reran the bounded live capture against devops@127.0.0.1:3322 and
+          then independently checked the committed JSON fields, minimums, forbidden
+          source values, non-claim gates, and absence of operator SSID/PSK material.
         evidence_paths:
         - evidence/runtime/tahoe_lab_ap_visibility_readiness.json
       evidence:
@@ -346,7 +389,12 @@ records:
         - evidence/runtime/tahoe_lab_ap_visibility_readiness.json
       auditor:
         accepted: true
-        progress_argument: Committed Tahoe guest evidence captures a 30-second live CoreWLAN scan on en1 with AirportItlwm loaded, shows the operator-provided allowed AP visible without committed secrets, and explicitly leaves auth-response ACK, association, DHCP, data, reconnect, and final Wi-Fi equivalence as remaining gates; this clears only the AP visibility readiness blocker before retrying auth-response ACK.
+        progress_argument: Committed Tahoe guest evidence captures a 30-second live
+          CoreWLAN scan on en1 with AirportItlwm loaded, shows the operator-provided
+          allowed AP visible without committed secrets, and explicitly leaves auth-response
+          ACK, association, DHCP, data, reconnect, and final Wi-Fi equivalence as
+          remaining gates; this clears only the AP visibility readiness blocker before
+          retrying auth-response ACK.
         acceptance_surface_substitution_rejected: true
         criteria_verdicts:
           criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
@@ -363,37 +411,48 @@ records:
         role: auditor
     criteria:
     - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
-      statement: Work is exactly the kernel-selected semantic step and does not broaden scope.
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
       source: selected_step
     - id: criterion_2_validator_independently_verifies_or_recaptures_e
-      statement: Validator independently verifies or recaptures evidence rather than trusting implementation claims.
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
       source: selected_step
     - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
-      statement: Evidence is not only project-gantt, reports, runtime logs, helper tests, synthetic fixtures, or acceptance surfaces.
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
       source: selected_step
     - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
-      statement: Auditor provides a progress argument showing remaining work toward linked final-goal items decreased.
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
       source: selected_step
     - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
       statement: advances linked final-goal item with runtime or deterministic evidence
       source: selected_step
     - id: criterion_6_live_tahoe_lab_evidence_proves_an_allowed_extern
-      statement: live Tahoe lab evidence proves an allowed external lab AP is visible to the guest Wi-Fi interface before the auth-response ACK gate is retried
+      statement: live Tahoe lab evidence proves an allowed external lab AP is visible
+        to the guest Wi-Fi interface before the auth-response ACK gate is retried
       source: selected_step
     - id: criterion_7_evidence_is_captured_from_the_guest_and_driver_r
-      statement: evidence is captured from the guest and driver/runtime logs using external operator-provided AP configuration, with secrets redacted and not committed
+      statement: evidence is captured from the guest and driver/runtime logs using
+        external operator-provided AP configuration, with secrets redacted and not
+        committed
       source: selected_step
     - id: criterion_8_the_step_does_not_claim_authentication_response_
-      statement: the step does not claim authentication response ACK, association, DHCP, data, reconnect, or final Wi-Fi equivalence
+      statement: the step does not claim authentication response ACK, association,
+        DHCP, data, reconnect, or final Wi-Fi equivalence
       source: selected_step
     - id: criterion_9_live_tahoe_lab_evidence_proves_an_allowed_extern
-      statement: live Tahoe lab evidence proves an allowed external lab AP is visible to the guest Wi-Fi interface before auth-response ACK work is retried
+      statement: live Tahoe lab evidence proves an allowed external lab AP is visible
+        to the guest Wi-Fi interface before auth-response ACK work is retried
       source: selected_step
     - id: criterion_10_ap_configuration_is_external_operator_provided_a
-      statement: AP configuration is external/operator-provided and committed evidence does not contain secret material
+      statement: AP configuration is external/operator-provided and committed evidence
+        does not contain secret material
       source: selected_step
     - id: criterion_11_authentication_response_ack_association_dhcp_dat
-      statement: authentication response ACK, association, DHCP, data, reconnect and final Wi-Fi equivalence remain separate gates
+      statement: authentication response ACK, association, DHCP, data, reconnect and
+        final Wi-Fi equivalence remain separate gates
       source: selected_step
     source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
     contract_paths:
@@ -443,32 +502,40 @@ records:
       status: failed
       reason_class: auditor_failed_or_timed_out
       summary: auditor command failed before accepting the selected step
-      stdout_tail: '[redacted external agent transport output omitted from public evidence]'
+      stdout_tail: '[redacted external agent transport output omitted from public
+        evidence]'
       stderr_tail: ''
   criteria:
   - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
-    statement: Work is exactly the kernel-selected semantic step and does not broaden scope.
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
     source: selected_step
   - id: criterion_2_validator_independently_verifies_or_recaptures_e
-    statement: Validator independently verifies or recaptures evidence rather than trusting implementation claims.
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
     source: selected_step
   - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
-    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests, synthetic fixtures, or acceptance surfaces.
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
     source: selected_step
   - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
-    statement: Auditor provides a progress argument showing remaining work toward linked final-goal items decreased.
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
     source: selected_step
   - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
     statement: advances linked final-goal item with runtime or deterministic evidence
     source: selected_step
   - id: criterion_6_live_tahoe_lab_evidence_proves_the_station_acks_
-    statement: live Tahoe lab evidence proves the station ACKs AP authentication responses before the WCL association/auth rollback gate is retried
+    statement: live Tahoe lab evidence proves the station ACKs AP authentication responses
+      before the WCL association/auth rollback gate is retried
     source: selected_step
   - id: criterion_7_the_evidence_is_captured_from_the_guest_against_
-    statement: the evidence is captured from the guest against an allowed lab AP from external lab/operator configuration, not from synthetic or replayed logs
+    statement: the evidence is captured from the guest against an allowed lab AP from
+      external lab/operator configuration, not from synthetic or replayed logs
     source: selected_step
   - id: criterion_8_the_step_does_not_claim_association_dhcp_data_re
-    statement: the step does not claim association, DHCP, data, reconnect, or final Wi-Fi equivalence
+    statement: the step does not claim association, DHCP, data, reconnect, or final
+      Wi-Fi equivalence
     source: selected_step
   source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
   contract_paths:
@@ -500,3 +567,91 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: c9699f70d260a7d4e7b727ac
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+  roadmap_item_id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      commit:
+        before_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+        after_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+        message: ''
+      evidence_paths: []
+    validator: {}
+    evidence: {}
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: '[redacted external agent transport output omitted from public
+        evidence]'
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_committed_source_runtime_changes_make_auth_tx_co
+    statement: Committed source/runtime changes make AUTH TX completion and RX response-window
+      publication observable during a live Tahoe lab attempt.
+    source: selected_step
+  - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+    statement: Runtime evidence is captured from the guest against an allowed operator-configured
+      lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+    source: selected_step
+  - id: criterion_7_the_artifact_explicitly_leaves_auth_response_ack
+    statement: The artifact explicitly leaves AUTH response ACK and later Wi-Fi equivalence
+      criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 08588f7ce9f3
+      evidence_path: evidence/runtime/tahoe_lab_ap_visibility_readiness.json
+      sha256: 0b14eba149d51d017fc02bfd8e071eeb7aabe3c8bfafcc906fba7f278183e0ad
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+      candidate_after_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+    - anchor_id: 091575650428
+      evidence_path: scripts/capture_tahoe_lab_ap_visibility.py
+      sha256: bb3052c802b307328e9dbdf59c99ed2146c852cdaf4a1f3f895185f9d583b463
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+      candidate_after_head: 6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a00-lab-ap-visibility-readiness!=step:itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a00-lab-ap-visibility-readiness!=itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+    - runtime_capture_anchor_input_head_mismatch:ed75583ad20d986b7ec985f352a00c3482bd5a5d!=6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+    - runtime_capture_anchor_after_head_mismatch:ccba0cf673dc0e9fb5b5334ba56a455b4349f51f!=6eb88e552f4f97b756fb18ac426129a2c3cfd50f
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 96b5813e3a0e8ddd3be572e5
