@@ -1,0 +1,95 @@
+{
+  "approval_probe": {
+    "command": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "kmutil_approval_error_still_present": true,
+    "kmutil_exit_code": 27,
+    "message_summary": [
+      "Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings."
+    ],
+    "source": "live_tahoe_guest_kmutil_probe"
+  },
+  "capture_commands": {
+    "approval_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "guest_os_wifi": "sw_vers, uname, sysctl boot session, networksetup hardware ports, AirportItlwm ioreg",
+    "gui_domain": "stat /dev/console, launchctl print gui/<devops uid>, ps WindowServer/loginwindow/System Settings",
+    "system_settings": "open -a 'System Settings' from the logged-in devops SSH session",
+    "vnc_surface": "vncdotool -s 127.0.0.1::5901 capture /tmp/<transient>.png"
+  },
+  "capture_finished_utc": "2026-07-01T21:04:19.912716Z",
+  "capture_started_utc": "2026-07-01T21:04:09.911882Z",
+  "capture_wallclock_seconds": 10.001,
+  "gui": {
+    "console_uid": 502,
+    "console_user": "devops",
+    "expected_uid": "502",
+    "gui_domain_available": true,
+    "loginwindow_running": true,
+    "prior_blocker_signature": "no_logged_in_gui_domain_for_system_settings_approval_workflow",
+    "process_observations": [
+      "217 _windowserver    Ss   /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon",
+      "221 devops           Ss   /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console",
+      "1285 devops           S    /System/Applications/System Settings.app/Contents/MacOS/System Settings",
+      "1322 devops           Ss   /System/Applications/System Settings.app/Contents/PlugIns/GeneralSettings.appex/Contents/MacOS/GeneralSettings -LaunchArguments eyJ0eXBlIjoyLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5zeXN0ZW1wcmVmZXJlbmNlcy5HZW5lcmFsU2V0dGluZ3MiLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0="
+    ],
+    "source": "live_tahoe_guest_ssh_and_qemu_vnc",
+    "system_settings": {
+      "launchable": true,
+      "open_returncode": 0,
+      "process_observations": [
+        "1285 devops           S    /System/Applications/System Settings.app/Contents/MacOS/System Settings",
+        "1322 devops           Ss   /System/Applications/System Settings.app/Contents/PlugIns/GeneralSettings.appex/Contents/MacOS/GeneralSettings -LaunchArguments eyJ0eXBlIjoyLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5zeXN0ZW1wcmVmZXJlbmNlcy5HZW5lcmFsU2V0dGluZ3MiLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0="
+      ],
+      "process_running": true
+    },
+    "system_settings_launchable": true,
+    "vnc_capture": {
+      "available": true,
+      "capture_dimensions": {
+        "bytes": 199361,
+        "height": 800,
+        "width": 1280
+      },
+      "duration_seconds": 0.425,
+      "returncode": 0,
+      "server": "127.0.0.1::5901",
+      "source": "live_qemu_vnc_capture"
+    },
+    "vnc_surface_available": true,
+    "windowserver_running": true
+  },
+  "input_head": "88cba6dbd49cb59c2830f2da8b4bbce501f3469a",
+  "roadmap_item_id": "itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary",
+  "runtime_environment": {
+    "guest_os": {
+      "boot_session_uuid": "FECBF351-3E1E-49B1-8EDF-997F01437C78",
+      "build": "25C56",
+      "kernel": "25.2.0",
+      "name": "macOS",
+      "version": "26.2"
+    },
+    "guest_ssh": {
+      "available": true,
+      "port": "3322",
+      "target": "devops@127.0.0.1"
+    },
+    "guest_wifi_interface": "en1",
+    "guest_wifi_interface_present": true,
+    "wifi_passthrough_attached": true
+  },
+  "schema_version": "itlwm-tahoe-gui-session-availability-boundary/v1",
+  "selected_step": "step:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary",
+  "verdict": {
+    "approval_alert_cleared_not_claimed": true,
+    "association_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "data_transfer_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "load_admission_not_claimed": true,
+    "loaded_uuid_after_reboot_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_approval_alert_workflow_retry": true,
+    "reconnect_not_claimed": true
+  }
+}
