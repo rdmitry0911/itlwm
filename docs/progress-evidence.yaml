@@ -167,3 +167,76 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 706f590ab7dde0de6ec81e22
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a-auth-join-readiness
+  roadmap_item_id: itlwm-rm-05a-auth-join-readiness
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      commit:
+        before_head: d558fb05c8fa0e6455d3529fb78850307aee05d3
+        after_head: d558fb05c8fa0e6455d3529fb78850307aee05d3
+        message: ''
+      evidence_paths: []
+    validator: {}
+    evidence: {}
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: auditor_failed_usage_limit
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_advances_linked_final_goal_item_with_runtime_or_
+    statement: advances linked final-goal item with runtime or deterministic evidence
+    source: selected_step
+  - id: criterion_6_live_tahoe_lab_evidence_proves_the_wcl_associati
+    statement: live Tahoe lab evidence proves the WCL association/auth path advances
+      past the previous AUTH timeout/JOIN_ABORT rollback
+    source: selected_step
+  - id: criterion_7_the_evidence_is_captured_from_the_guest_against_
+    statement: the evidence is captured from the guest against an allowed lab AP,
+      not from synthetic or replayed logs
+    source: selected_step
+  - id: criterion_8_the_fix_is_committed_as_useful_source_delta_and_
+    statement: the fix is committed as useful source delta and does not claim DHCP/data/reconnect
+      closure
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors: []
+    errors:
+    - runtime_capture_anchor_missing:no_independent_runtime_capture_recorded
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 06c303f010564e9bb8fcd0c5
