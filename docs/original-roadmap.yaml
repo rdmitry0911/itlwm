@@ -38,12 +38,88 @@ tasks:
   acceptance_criteria:
   - advances linked final-goal item with runtime or deterministic evidence
   evidence: []
+- id: itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+  title: Tahoe join-trigger and PMK helper delivery boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c-join-trigger-pmk-helper-delivery-boundary
+  depends_on:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  description: >-
+    Establish the narrower live-lab boundary that a guest join trigger reaches
+    the driver/PLTI association-target path and the PMK helper publishes and
+    delivers an external PMK for the allowed AP. This step does not claim AUTH
+    TX completion, AUTH RX response-window publication, AUTH response ACK,
+    association, DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run against an allowed operator-configured lab AP reaches
+    the driver/PLTI join path and publishes a concrete association target.
+  - The PMK helper daemon/keychain path is prepared and delivers the PMK for the
+    same allowed AP without storing AP secrets in committed project files.
+  - The artifact explicitly leaves AUTH TX/RX completion, AUTH response ACK, and
+    later Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+    artifact: evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - scan.aps_seen
+      - scan.allowed_ap_visible
+      - join_trigger.driver_path_entered
+      - join_trigger.interface_active_or_auth_attempt_started
+      - plti.association_target_published
+      - pmk_helper.daemon_running
+      - pmk_helper.keychain_prepared
+      - pmk_helper.pmk_delivered
+      - candidate_fix.project_delta_committed
+      - verdict.ready_for_auth_tx_rx_completion_retry
+      - verdict.auth_tx_completion_not_claimed
+      - verdict.auth_response_ack_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        scan.allowed_ap_visible: true
+        join_trigger.driver_path_entered: true
+        join_trigger.interface_active_or_auth_attempt_started: true
+        plti.association_target_published: true
+        pmk_helper.daemon_running: true
+        pmk_helper.keychain_prepared: true
+        pmk_helper.pmk_delivered: true
+        candidate_fix.project_delta_committed: true
+        verdict.ready_for_auth_tx_rx_completion_retry: true
+        verdict.auth_tx_completion_not_claimed: true
+        verdict.auth_response_ack_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        join_trigger.source:
+        - synthetic
+        - replay
+        - static_fixture
+        pmk_helper.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
   title: Tahoe iwn AUTH TX/RX completion publication boundary
   goal_item_ids:
   - itlwm-fg-05a0b-auth-tx-rx-completion-boundary
   depends_on:
-  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  - itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
   description: >-
     Establish the narrow runtime boundary that the Tahoe iwn path publishes an
     AUTH(seq=1) TX completion and an observable AUTH(seq=2) response window from
