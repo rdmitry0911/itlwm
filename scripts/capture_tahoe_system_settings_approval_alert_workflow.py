@@ -12,7 +12,7 @@ from pathlib import Path
 
 STEP_ID = "step:itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary"
 ROADMAP_ITEM_ID = "itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary"
-INPUT_HEAD = "6872413dcd08c11ba6cf09090b27ba820f9db355"
+INPUT_HEAD = "cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70"
 DEFAULT_OUTPUT = Path("evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json")
 DEFAULT_GUEST = "devops@127.0.0.1"
 DEFAULT_PORT = "3322"
@@ -260,21 +260,8 @@ def log_has_post_clearance(lines):
     )
 
 
-def get_path(data, dotted):
-    current = data
-    for part in dotted.split("."):
-        if not isinstance(current, dict) or part not in current:
-            raise KeyError(dotted)
-        current = current[part]
-    return current
-
-
-def build_capture(args):
-    started_wall = utc_now()
-    started_mono = time.monotonic()
-    expected_short = args.input_head[:7]
-
-    os_command = """
+def build_os_command():
+    return """
 set -u
 printf 'product_name=%s\\n' "$(sw_vers -productName 2>/dev/null || true)"
 printf 'product_version=%s\\n' "$(sw_vers -productVersion 2>/dev/null || true)"
@@ -287,7 +274,11 @@ networksetup -listallhardwareports 2>/dev/null || true
 printf '__IOREG_AIRPORT_BEGIN__\\n'
 ioreg -r -n AirportItlwm -l 2>/dev/null | head -120 || true
 """
-    identity_command = f"""
+
+
+def build_identity_command(args):
+    expected_short = args.input_head[:7]
+    return f"""
 set -u
 p={shlex.quote(args.kext_path)}
 bin="$p/Contents/MacOS/AirportItlwm"
@@ -305,11 +296,60 @@ dwarfdump --uuid "$bin" 2>/dev/null || true
 shasum -a 256 "$bin" 2>/dev/null | awk '{{print "binary_sha256=" $0}}'
 strings "$bin" 2>/dev/null | grep -F {shlex.quote(expected_short)} | head -1 | sed 's/^/build_string=/'
 """
-    loaded_command = """
+
+
+def build_loaded_command():
+    return """
 set -u
 kextstat 2>/dev/null | grep -i 'AirportItlwm\\|itlwm' || true
 kmutil showloaded 2>/dev/null | grep -i 'AirportItlwm\\|itlwm' || true
 """
+
+
+def build_kmutil_command(args):
+    return f"""
+set +e
+out="$(sudo -n kmutil load -p {shlex.quote(args.kext_path)} 2>&1)"
+rc=$?
+printf '%s\\n' "$out"
+printf '__KMUTIL_EXIT__=%s\\n' "$rc"
+exit 0
+"""
+
+
+def build_history_command():
+    return f"""
+set -u
+sudo -n sqlite3 -json {shlex.quote(KEXT_POLICY_DB)} "select path, team_id, bundle_id, boot_uuid, created_at, last_seen, flags, cdhash from kext_load_history_v3 where bundle_id like '%AirportItlwm%' or path like '%AirportItlwm%' order by last_seen desc limit 20;" 2>&1 || true
+"""
+
+
+def build_log_command(args):
+    return f"""
+set -u
+raw="$(sudo -n log show --last {shlex.quote(args.log_last)} --style compact --predicate 'process == "kernelmanagerd" OR process == "kernelmanager_helper" OR process == "syspolicyd" OR eventMessage CONTAINS[c] "AirportItlwm" OR eventMessage CONTAINS[c] "com.zxystd.AirportItlwm" OR eventMessage CONTAINS[c] "not approved to load" OR eventMessage CONTAINS[c] "requires a reboot" OR eventMessage CONTAINS[c] "System Settings" OR eventMessage CONTAINS[c] "approvalsRequiredFromSyspolicyd" OR eventMessage CONTAINS[c] "Holding work until alerts" OR eventMessage CONTAINS[c] "extensionsNeedingApproval"' 2>/dev/null || true)"
+printf '__PRIOR_APPROVAL_LOGS_BEGIN__\\n'
+printf '%s\\n' "$raw" | egrep -i 'not approved|approve using System Settings|Holding work until alerts|approvalsRequiredFromSyspolicyd: true|approvedUnbuiltExtensions|Triggered kext' | tail -120 || true
+printf '__POST_APPROVAL_LOGS_BEGIN__\\n'
+printf '%s\\n' "$raw" | egrep -i 'approvalsRequiredFromSyspolicyd: false|extensionsNeedingApproval: \\[\\]|approvedUnbuiltExtensions: \\[\\]|requires a reboot|directLoadAuxiliaryExtensions|Kernel Extension ALLOWED|Validate approval|AirportItlwm' | tail -120 || true
+"""
+
+
+def get_path(data, dotted):
+    current = data
+    for part in dotted.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(dotted)
+        current = current[part]
+    return current
+
+
+def build_capture(args):
+    started_wall = utc_now()
+    started_mono = time.monotonic()
+    os_command = build_os_command()
+    identity_command = build_identity_command(args)
+    loaded_command = build_loaded_command()
     gui_command = """
 set -u
 console_user="$(stat -f %Su /dev/console 2>/dev/null || true)"
@@ -319,30 +359,13 @@ printf 'console_uid=%s\\n' "$console_uid"
 printf '__GUI_PROCESSES_BEGIN__\\n'
 ps axww -o pid=,user=,stat=,command= | egrep 'WindowServer|loginwindow|System Settings|SecurityPrivacyExtension' | grep -v egrep || true
 """
-    kmutil_command = f"""
-set +e
-out="$(sudo -n kmutil load -p {shlex.quote(args.kext_path)} 2>&1)"
-rc=$?
-printf '%s\\n' "$out"
-printf '__KMUTIL_EXIT__=%s\\n' "$rc"
-exit 0
-"""
-    history_command = f"""
-set -u
-sudo -n sqlite3 -json {shlex.quote(KEXT_POLICY_DB)} "select path, team_id, bundle_id, boot_uuid, created_at, last_seen, flags, cdhash from kext_load_history_v3 where bundle_id like '%AirportItlwm%' or path like '%AirportItlwm%' order by last_seen desc limit 20;" 2>&1 || true
-"""
+    kmutil_command = build_kmutil_command(args)
+    history_command = build_history_command()
     policy_command = f"""
 set -u
 sudo -n sqlite3 -json {shlex.quote(KEXT_POLICY_DB)} "select team_id, bundle_id, allowed, developer_name, flags from kext_policy where bundle_id like '%AirportItlwm%' or team_id='UAKL' order by bundle_id, team_id;" 2>&1 || true
 """
-    log_command = f"""
-set -u
-raw="$(sudo -n log show --last {shlex.quote(args.log_last)} --style compact --predicate 'process == "kernelmanagerd" OR process == "kernelmanager_helper" OR process == "syspolicyd" OR eventMessage CONTAINS[c] "AirportItlwm" OR eventMessage CONTAINS[c] "com.zxystd.AirportItlwm" OR eventMessage CONTAINS[c] "not approved to load" OR eventMessage CONTAINS[c] "requires a reboot" OR eventMessage CONTAINS[c] "System Settings" OR eventMessage CONTAINS[c] "approvalsRequiredFromSyspolicyd" OR eventMessage CONTAINS[c] "Holding work until alerts" OR eventMessage CONTAINS[c] "extensionsNeedingApproval"' 2>/dev/null || true)"
-printf '__PRIOR_APPROVAL_LOGS_BEGIN__\\n'
-printf '%s\\n' "$raw" | egrep -i 'not approved|approve using System Settings|Holding work until alerts|approvalsRequiredFromSyspolicyd: true|approvedUnbuiltExtensions|Triggered kext' | tail -120 || true
-printf '__POST_APPROVAL_LOGS_BEGIN__\\n'
-printf '%s\\n' "$raw" | egrep -i 'approvalsRequiredFromSyspolicyd: false|extensionsNeedingApproval: \\[\\]|approvedUnbuiltExtensions: \\[\\]|requires a reboot|directLoadAuxiliaryExtensions|Kernel Extension ALLOWED|Validate approval|AirportItlwm' | tail -120 || true
-"""
+    log_command = build_log_command(args)
 
     results = {
         "os": run_guest(args.guest, args.port, os_command, args.command_timeout),
@@ -562,6 +585,143 @@ def validate_artifact(path):
     return 0
 
 
+def recapture_existing(args):
+    artifact_path = args.recapture_existing
+    validation_status = validate_artifact(artifact_path)
+    if validation_status:
+        return validation_status
+
+    data = json.loads(Path(artifact_path).read_text())
+    started_wall = utc_now()
+    started_mono = time.monotonic()
+    results = {
+        "os": run_guest(args.guest, args.port, build_os_command(), args.command_timeout),
+        "identity": run_guest(args.guest, args.port, build_identity_command(args), args.command_timeout),
+        "loaded": run_guest(args.guest, args.port, build_loaded_command(), args.command_timeout),
+        "history": run_guest(args.guest, args.port, build_history_command(), args.command_timeout),
+        "logs": run_guest(args.guest, args.port, build_log_command(args), args.log_timeout),
+        "kmutil_after": run_guest(args.guest, args.port, build_kmutil_command(args), args.command_timeout),
+    }
+
+    os_stdout = results["os"]["stdout"]
+    networksetup_output = extract_section(os_stdout, "__NETWORKSETUP_BEGIN__", "__IOREG_AIRPORT_BEGIN__")
+    ioreg_output = extract_section(os_stdout, "__IOREG_AIRPORT_BEGIN__")
+    wifi_present = interface_present(networksetup_output, args.interface)
+    loaded = parse_loaded(results["loaded"]["stdout"])
+    identity = parse_identity(results["identity"]["stdout"])
+    history_rows = extract_json_array(results["history"]["stdout"])
+    selected_cdhash = select_cdhash(identity, history_rows, results["logs"]["stdout"])
+    full_log_lines = bounded_nonempty_lines(results["logs"]["stdout"], 260)
+    kmutil_exit, kmutil_approval_error, kmutil_reboot_required, kmutil_message = parse_kmutil(
+        results["kmutil_after"]["stdout"]
+    )
+
+    artifact_kext = data.get("selected_kext", {})
+    artifact_uuid = artifact_kext.get("installed_uuid", "")
+    artifact_sha256 = artifact_kext.get("binary_sha256", "")
+    artifact_cdhash = artifact_kext.get("selected_cdhash", "")
+    accepted_guest_heads = {
+        head
+        for head in [
+            args.input_head,
+            args.candidate_head,
+            data.get("input_head", ""),
+            artifact_kext.get("input_head", ""),
+            artifact_kext.get("guest_project_head", ""),
+        ]
+        if head
+    }
+
+    errors = []
+    if results["os"]["returncode"] != 0:
+        errors.append("guest ssh/os probe failed")
+    if not wifi_present:
+        errors.append(f"guest Wi-Fi interface {args.interface} not present")
+    if not (wifi_present and ("AirportItlwm" in ioreg_output or loaded["loaded"])):
+        errors.append("wifi passthrough/AirportItlwm attachment not observed")
+    if identity["guest_project_head"] not in accepted_guest_heads:
+        errors.append(
+            "guest project head is not an accepted selected/candidate head: "
+            f"{identity['guest_project_head']}"
+        )
+    if identity["bundle_id"] != BUNDLE_ID:
+        errors.append(f"installed bundle id mismatch: {identity['bundle_id']}")
+    if artifact_uuid and identity["installed_uuid"] != artifact_uuid:
+        errors.append(
+            f"installed uuid mismatch: artifact {artifact_uuid}, live {identity['installed_uuid']}"
+        )
+    if artifact_sha256 and identity["binary_sha256"] != artifact_sha256:
+        errors.append(
+            "installed binary sha256 mismatch: "
+            f"artifact {artifact_sha256}, live {identity['binary_sha256']}"
+        )
+    if artifact_cdhash and selected_cdhash and selected_cdhash != artifact_cdhash:
+        errors.append(
+            f"selected cdhash mismatch: artifact {artifact_cdhash}, live {selected_cdhash}"
+        )
+    if kmutil_exit != 28:
+        errors.append(f"kmutil exit mismatch: expected 28, observed {kmutil_exit}")
+    if kmutil_approval_error:
+        errors.append("kmutil still reports the System Settings approval-required error")
+    if not kmutil_reboot_required:
+        errors.append("kmutil did not report the reboot-required handoff")
+
+    finished_wall = utc_now()
+    summary = {
+        "schema_version": "itlwm-tahoe-system-settings-approval-alert-workflow-boundary/recapture-v1",
+        "selected_step": STEP_ID,
+        "roadmap_item_id": ROADMAP_ITEM_ID,
+        "artifact_path": str(artifact_path),
+        "artifact_mutated": False,
+        "recapture_started_utc": started_wall.isoformat().replace("+00:00", "Z"),
+        "recapture_finished_utc": finished_wall.isoformat().replace("+00:00", "Z"),
+        "recapture_wallclock_seconds": round(time.monotonic() - started_mono, 3),
+        "accepted_guest_heads": sorted(accepted_guest_heads),
+        "fresh_probe": {
+            "guest_project_head": identity["guest_project_head"],
+            "guest_wifi_interface": args.interface,
+            "guest_wifi_interface_present": wifi_present,
+            "wifi_passthrough_attached": bool(
+                wifi_present and ("AirportItlwm" in ioreg_output or loaded["loaded"])
+            ),
+            "installed_uuid": identity["installed_uuid"],
+            "binary_sha256": identity["binary_sha256"],
+            "selected_cdhash": selected_cdhash,
+            "post_clearance_log_observed": log_has_post_clearance(full_log_lines),
+            "prior_blocker_log_observed": log_has_prior_blocker(full_log_lines),
+            "kmutil_load_exit_code_after_workflow": kmutil_exit,
+            "kmutil_approval_error_after_workflow": kmutil_approval_error,
+            "kmutil_reboot_required_after_workflow": kmutil_reboot_required,
+            "kmutil_message_summary": bounded_nonempty_lines(kmutil_message, 4),
+        },
+        "command_results": {
+            name: {
+                "returncode": result["returncode"],
+                "duration_seconds": result["duration_seconds"],
+                "stdout_lines": len((result.get("stdout") or "").splitlines()),
+                "stderr_lines": len((result.get("stderr") or "").splitlines()),
+            }
+            for name, result in results.items()
+        },
+        "verdict": {
+            "committed_artifact_valid": True,
+            "fresh_live_post_workflow_probe_passed": not errors,
+            "ready_for_reboot_materialization_retry": not errors,
+            "loaded_uuid_after_reboot_not_claimed": True,
+            "join_trigger_not_claimed": True,
+            "pmk_delivery_not_claimed": True,
+            "auth_tx_rx_not_claimed": True,
+            "final_wifi_equivalence_not_claimed": True,
+        },
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Capture Tahoe System Settings/syspolicyd approval alert workflow boundary evidence."
@@ -578,10 +738,21 @@ def main():
     parser.add_argument("--log-last", default="90m")
     parser.add_argument("--min-wallclock-seconds", type=float, default=30.0)
     parser.add_argument("--validate-existing", type=Path)
+    parser.add_argument("--recapture-existing", type=Path)
+    parser.add_argument("--candidate-head", default="")
     args = parser.parse_args()
 
     if args.validate_existing:
         return validate_artifact(args.validate_existing)
+    if args.recapture_existing:
+        try:
+            return recapture_existing(args)
+        except subprocess.TimeoutExpired as exc:
+            print(f"recapture failed: command timed out after {exc.timeout}s", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"recapture failed: {exc}", file=sys.stderr)
+            return 2
 
     try:
         artifact = build_capture(args)

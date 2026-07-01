@@ -54,6 +54,8 @@
     "security_privacy_extension_running": true,
     "source": "live_tahoe_guest_syspolicyd_kernelmanagerd_ssh",
     "syspolicyd_or_kernelmanagerd_evidence": [
+      "2026-07-02 00:04:17.226 E  kmutil[1485:4950] (KernelManagement) Remote encountered error: Error Domain=KMErrorDomain Code=27 \"Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.\" UserInfo={NSLocalizedDescription=Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.}",
+      "2026-07-02 00:04:17.227 E  kmutil[1485:4950] kmutil encountered error (27): Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.",
       "approvalsRequiredFromSyspolicyd: true",
       "approvedUnbuiltExtensions: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
       "2026-07-02 00:07:03.293 Df syspolicyd[301:50fc] [com.apple.syspolicy.kext:default] Triggered kext upgrade: Kext ((null), com.zxystd.AirportItlwm) version: c995300b5c7c26266eb500813709ba1f3ecee5ea",
@@ -160,20 +162,18 @@
       "approvedUnbuiltExtensions: []",
       "approvedUnbuiltExtensions: []",
       "approvedUnbuiltExtensions: []",
-      "approvalsRequiredFromSyspolicyd: false",
-      "newAuxiliaryContents: [Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
-      "directLoadAuxiliaryExtensions: [com.zxystd.AirportItlwm v2.4.0 (9689858C-E8DE-32B0-81A3-3B00F2EF3048) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (c995300b5c7c26266eb500813709ba1f3ecee5ea) flags [0, 1, 4, 8, 9, 14]]",
-      "extensionsNeedingApproval: []",
       "approvedUnbuiltExtensions: []",
-      "2026-07-02 01:15:46.450 E  kernelmanagerd[136:13804] failed to load/rebuild extensions: Loading extension(s): com.zxystd.AirportItlwm requires a reboot",
-      "2026-07-02 01:15:46.450 E  kmutil[3118:13939] (KernelManagement) Remote encountered error: Error Domain=KMErrorDomain Code=28 \"Loading extension(s): com.zxystd.AirportItlwm requires a reboot\" UserInfo={NSLocalizedDescription=Loading extension(s): com.zxystd.AirportItlwm requires a reboot}",
-      "2026-07-02 01:15:46.451 E  kmutil[3118:13939] kmutil encountered error (28): Loading extension(s): com.zxystd.AirportItlwm requires a reboot",
-      "2026-07-02 01:25:56.927 Df kernelmanager_helper[360:15bd3] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
-      "2026-07-02 01:25:56.927 Df kernelmanager_helper[360:15bd3] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking unstaged bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
-      "requestedExts: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
-      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
-      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
-      "2026-07-02 01:25:57.093 Df syspolicyd[301:15c00] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext (DX6G69M9N2, com.highpoint-tech.kext.HighPointRR) version: 4fb1f14d2b3d9639665a4df7e953b63765306616"
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []",
+      "approvedUnbuiltExtensions: []"
     ],
     "system_settings_or_syspolicyd_alert_surface_observed": true,
     "system_settings_process_running": true,
@@ -181,66 +181,66 @@
     "workflow_observation_mode": "live_syspolicyd_kernelmanagerd_log_transition"
   },
   "capture_commands": {
-    "approval_workflow_observation": "sudo -n log show --last 90m filtered for syspolicyd/kernelmanagerd approval transition",
+    "approval_workflow_observation": "sudo -n log show --last 120m filtered for syspolicyd/kernelmanagerd approval transition",
     "guest_os_wifi": "sw_vers, uname, sysctl boot state, networksetup hardware ports, AirportItlwm ioreg",
     "policy_history": "sudo -n sqlite3 /var/db/SystemPolicyConfiguration/KextPolicy selected bundle policy/history queries",
     "post_workflow_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
     "selected_bundle_identity": "guest git head, PlistBuddy, codesign, dwarfdump --uuid, shasum -a 256, strings selected short hash probe"
   },
-  "capture_finished_utc": "2026-07-01T22:36:49.240151Z",
-  "capture_started_utc": "2026-07-01T22:36:19.238746Z",
-  "capture_wallclock_seconds": 30.001,
+  "capture_finished_utc": "2026-07-01T22:54:42.305521Z",
+  "capture_started_utc": "2026-07-01T22:53:59.395972Z",
+  "capture_wallclock_seconds": 42.91,
   "command_results": {
     "gui": {
-      "duration_seconds": 0.323,
+      "duration_seconds": 0.313,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 8
     },
     "history": {
-      "duration_seconds": 0.286,
+      "duration_seconds": 0.252,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 1
     },
     "identity": {
-      "duration_seconds": 0.488,
+      "duration_seconds": 0.514,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 6
     },
     "kmutil_after": {
-      "duration_seconds": 0.681,
+      "duration_seconds": 0.645,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 2
     },
     "loaded": {
-      "duration_seconds": 0.717,
+      "duration_seconds": 0.778,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 2
     },
     "logs": {
-      "duration_seconds": 25.359,
+      "duration_seconds": 39.825,
       "returncode": 0,
       "stderr_lines": 1,
-      "stdout_lines": 228
+      "stdout_lines": 242
     },
     "os": {
-      "duration_seconds": 0.333,
+      "duration_seconds": 0.326,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 139
     },
     "policy": {
-      "duration_seconds": 0.254,
+      "duration_seconds": 0.255,
       "returncode": 0,
       "stderr_lines": 1,
       "stdout_lines": 3
     }
   },
-  "input_head": "6872413dcd08c11ba6cf09090b27ba820f9db355",
+  "input_head": "cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70",
   "roadmap_item_id": "itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary",
   "runtime_environment": {
     "guest_os": {
@@ -265,9 +265,9 @@
     "binary_sha256": "e888ec7a4a296334073a66faa2af56f5796b7b9e46c5f961d986f39ed2ee9e30",
     "bundle_id": "com.zxystd.AirportItlwm",
     "bundle_version": "2.4.0",
-    "guest_project_head": "6872413dcd08c11ba6cf09090b27ba820f9db355",
-    "input_head": "6872413dcd08c11ba6cf09090b27ba820f9db355",
-    "installed_build_string": "CFBundleVersion=2.4.0;uuid=9689858C-E8DE-32B0-81A3-3B00F2EF3048;sha256=e888ec7a4a296334073a66faa2af56f5796b7b9e46c5f961d986f39ed2ee9e30;guest_project_head=6872413dcd08c11ba6cf09090b27ba820f9db355",
+    "guest_project_head": "cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70",
+    "input_head": "cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70",
+    "installed_build_string": "CFBundleVersion=2.4.0;uuid=9689858C-E8DE-32B0-81A3-3B00F2EF3048;sha256=e888ec7a4a296334073a66faa2af56f5796b7b9e46c5f961d986f39ed2ee9e30;guest_project_head=cf2d2ab293d85a9b6da1eca91b2fde5bc5c51e70",
     "installed_uuid": "9689858C-E8DE-32B0-81A3-3B00F2EF3048",
     "loaded_state_observed_but_not_claimed": {
       "loaded": true,
