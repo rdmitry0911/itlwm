@@ -871,3 +871,138 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: f78505c79dd5a44bd60205da
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  input_head_commit: e78f3c965bfde16416bf000018113dde2f25efd6
+  head_commit: 95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8
+  executor_commit:
+    before_head: e78f3c965bfde16416bf000018113dde2f25efd6
+    after_head: 95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8
+  state_delta: From e78f3c965bfde16416bf000018113dde2f25efd6, the project now contains
+    a committed, rerunnable Tahoe AuxKC approval-authority capture script and fresh
+    live guest evidence proving the selected AirportItlwm bundle identity, selected
+    cdhash, post-reboot KextPolicy/history surfaces, kmutil exit 27 System Settings
+    blocker, and kernelmanagerd/syspolicyd approval-workflow authority while leaving
+    approval resolved, load admission, selected loaded UUID, join-trigger/PMK, AUTH,
+    association, DHCP, and final Wi-Fi equivalence unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+  - scripts/capture_tahoe_auxkc_approval_authority.py
+  changed_files:
+  - evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+  - scripts/capture_tahoe_auxkc_approval_authority.py
+  kernel_state_digest: 271d332d50fa11e9fc84c3e0306cda3dafcd0f75d0634f9117516dd0f213107c
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+    roadmap_item_id: itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added scripts/capture_tahoe_auxkc_approval_authority.py and committed
+          fresh live Tahoe evidence at evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json.
+          The artifact binds macOS 26.2 guest en1, /Library/Extensions/AirportItlwm.kext,
+          installed UUID EE8EEF25-03C3-3AE4-AF20-4C818DDEE5F4, selected cdhash ac012a93abcb148a5273d4c1c8661ec906a0e351,
+          KextPolicy rows, kext_load_history_v3, kmutil exit 27, and kernelmanagerd/syspolicyd
+          approval-required evidence.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the bounded live capture command, then independently validated
+          the committed JSON with the script's typed-field validator, Python syntax
+          compilation, staged diff hygiene, committed evidence path checks, clean
+          worktree check, and full-history private-name grep.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+        - scripts/capture_tahoe_auxkc_approval_authority.py
+      auditor:
+        accepted: true
+        progress_argument: Committed evidence for the selected Tahoe AuxKC approval
+          authority boundary shows the selected AirportItlwm bundle and cdhash still
+          reach kmutil exit 27 with System Settings approval required even though
+          UAKL/history and kext_policy surfaces contain the selected cdhash/bundle,
+          so the remaining work is reduced from retrying UAKL persistence to the concrete
+          kernelmanagerd/syspolicyd AuxKC approval workflow or kext_policy_mdm approval
+          mechanism while downstream approval/load/Wi-Fi gates remain unclaimed.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_artifact_proves_that_the_remaining_system_se: true
+          criterion_7_the_artifact_records_the_prior_rejection_signatu: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached records the
+        selected installed bundle identity and the relevant post-reboot approval authority
+        surfaces for the selected cdhash and bundle id.
+      source: selected_step
+    - id: criterion_6_the_artifact_proves_that_the_remaining_system_se
+      statement: The artifact proves that the remaining System Settings approval-required
+        blocker has been classified into a concrete autonomous next mechanism, not
+        a retry of the already-failed UAKL persistence route.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_prior_rejection_signatu
+      statement: The artifact records the prior rejection signature, inspected policy/history
+        surfaces, kernelmanagerd/syspolicyd evidence, and leaves approval resolved,
+        load admission, loaded UUID, join-trigger/PMK, AUTH, association, DHCP, and
+        final Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 3aad6d3d5d9c
+        evidence_path: evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+        sha256: e69fc8ba773f0fe747790b8f4590b005c99405a2f73348acd1ccdc6080d645ec
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: e78f3c965bfde16416bf000018113dde2f25efd6
+        candidate_after_head: 95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8
+      - anchor_id: 614886429a94
+        evidence_path: scripts/capture_tahoe_auxkc_approval_authority.py
+        sha256: 733f170d78f9346eca0ed04b7cd475a24839d9710e4830621e0e8913396c5299
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: e78f3c965bfde16416bf000018113dde2f25efd6
+        candidate_after_head: 95e32db2b2c3cf58fc1ae02d13ca9629b40d5ad8
+      errors: []
