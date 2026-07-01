@@ -767,3 +767,107 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 40816b0c43f4a05104eaa5f6
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  roadmap_item_id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: blocked
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: true
+      verification_method: reference
+      role: validator
+    evidence:
+      status: missing
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_committed_required_artifact_and_persistent_approval_required_blocker
+      progress_argument: 'Remaining work did not decrease: committed HEAD 6423d32d4128c0cfd31515436cf3f04648872f43
+        does not contain evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json,
+        and the candidate reports the live post-reboot kmutil evaluation still exited
+        27 with the System Settings approval-required path for the selected installed
+        AirportItlwm bundle. The linked final-goal item still lacks the required runtime-anchored
+        committed artifact, so the dependent load-admission retry remains blocked.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: false
+        criterion_6_the_post_reboot_evidence_proves_the_selected_bun: false
+        criterion_7_the_artifact_records_the_selected_installed_uuid: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+    statement: A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and
+      installs the selected-head AirportItlwm bundle, materializes the selected approval
+      state, reboots the guest, and returns over SSH.
+    source: selected_step
+  - id: criterion_6_the_post_reboot_evidence_proves_the_selected_bun
+    statement: The post-reboot evidence proves the selected bundle no longer follows
+      the System Settings approval-required path when kmutil evaluates the selected
+      installed bundle.
+    source: selected_step
+  - id: criterion_7_the_artifact_records_the_selected_installed_uuid
+    statement: The artifact records the selected installed UUID/build/cdhash, the
+      policy materialization inputs, the reboot/SSH-return boundary, and leaves selected
+      loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi
+      equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 08588f7ce9f3
+      evidence_path: evidence/runtime/tahoe_lab_ap_visibility_readiness.json
+      sha256: 0b14eba149d51d017fc02bfd8e071eeb7aabe3c8bfafcc906fba7f278183e0ad
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 6423d32d4128c0cfd31515436cf3f04648872f43
+      candidate_after_head: 6423d32d4128c0cfd31515436cf3f04648872f43
+    - anchor_id: 091575650428
+      evidence_path: scripts/capture_tahoe_lab_ap_visibility.py
+      sha256: bb3052c802b307328e9dbdf59c99ed2146c852cdaf4a1f3f895185f9d583b463
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 6423d32d4128c0cfd31515436cf3f04648872f43
+      candidate_after_head: 6423d32d4128c0cfd31515436cf3f04648872f43
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a00-lab-ap-visibility-readiness!=step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a00-lab-ap-visibility-readiness!=itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    - runtime_capture_anchor_input_head_mismatch:ed75583ad20d986b7ec985f352a00c3482bd5a5d!=6423d32d4128c0cfd31515436cf3f04648872f43
+    - runtime_capture_anchor_after_head_mismatch:ccba0cf673dc0e9fb5b5334ba56a455b4349f51f!=6423d32d4128c0cfd31515436cf3f04648872f43
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: f78505c79dd5a44bd60205da
