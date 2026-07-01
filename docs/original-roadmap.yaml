@@ -128,12 +128,92 @@ tasks:
         - unclassified
         - prose_only
 
+- id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  title: Tahoe System Settings approval alert workflow boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  depends_on:
+  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  description: >-
+    Resolve the narrower blocker signature proven by the live rejected attempt at
+    6113ba8: selected rebuild/install, policy/UAKL/MDM-row materialization, guest
+    reboot, and SSH return all succeed, but kernelmanagerd/syspolicyd still keep
+    the selected AirportItlwm bundle on the System Settings approval-required
+    alert/work-queue path. This step exercises the live Tahoe System Settings or
+    syspolicyd approval workflow for the selected bundle and proves that the
+    approval alert/work item is cleared for the selected cdhash/bundle before the
+    reboot-durability retry. It does not claim selected loaded UUID after reboot,
+    join-trigger/PMK, AUTH, association, DHCP, data transfer, reconnect, or final
+    Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached starts from the selected
+    rebuilt/installed AirportItlwm bundle and the post-MDM/UAKL approval-required
+    blocker signature.
+  - The evidence exercises the live System Settings or syspolicyd approval
+    alert/workflow for the selected bundle and proves the approval-required
+    work item is cleared rather than only writing policy database rows.
+  - The post-workflow evidence proves kmutil no longer reports the System Settings
+    approval-required error for the selected bundle before the reboot-durability
+    boundary is retried, and leaves selected loaded-after-reboot, join-trigger/PMK,
+    AUTH, association, DHCP, and final Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+    artifact: evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - selected_kext.input_head
+      - selected_kext.installed_uuid
+      - selected_kext.installed_build_string
+      - selected_kext.selected_cdhash
+      - approval_alert.prior_blocker_signature
+      - approval_alert.system_settings_or_syspolicyd_alert_surface_observed
+      - approval_alert.workflow_exercised
+      - approval_alert.approval_work_queue_cleared
+      - approval_alert.kmutil_load_exit_code_after_workflow
+      - approval_alert.kmutil_approval_error_after_workflow
+      - verdict.ready_for_reboot_materialization_retry
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+      equals:
+        selected_step: step:itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        approval_alert.prior_blocker_signature: system_settings_alert_work_queue_persists_after_policy_mdm_uakl_materialization_reboot
+        approval_alert.system_settings_or_syspolicyd_alert_surface_observed: true
+        approval_alert.workflow_exercised: true
+        approval_alert.approval_work_queue_cleared: true
+        approval_alert.kmutil_approval_error_after_workflow: false
+        verdict.ready_for_reboot_materialization_retry: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      max_number:
+        approval_alert.kmutil_load_exit_code_after_workflow: 0
+      forbid_values:
+        approval_alert.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
   title: Tahoe approval materialization across reboot boundary
   goal_item_ids:
   - itlwm-fg-05a0c0a-auxkc-approval-reboot-materialization-boundary
   depends_on:
-  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  - itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
   description: >-
     Resolve the narrower blocker signature proven by rejection 66fd3ed: a
     selected-head AirportItlwm kext can be rebuilt and installed, and the
