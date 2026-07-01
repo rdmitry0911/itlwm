@@ -38,12 +38,93 @@ tasks:
   acceptance_criteria:
   - advances linked final-goal item with runtime or deterministic evidence
   evidence: []
+- id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  title: Tahoe approval materialization across reboot boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a-auxkc-approval-reboot-materialization-boundary
+  depends_on:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  description: >-
+    Resolve the narrower blocker signature proven by rejection 66fd3ed: a
+    selected-head AirportItlwm kext can be rebuilt and installed, and the
+    selected unsigned cdhash can be observed in policy/history state, but kmutil
+    still exits 27 with the System Settings approval-required path until the
+    live approval materialization is tested across a clean guest reboot. This
+    step proves whether materialized selected-bundle approval survives reboot
+    and changes the selected bundle load-admission result. It does not claim
+    selected loaded UUID after reboot, join-trigger/PMK, AUTH, association,
+    DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and installs
+    the selected-head AirportItlwm bundle, materializes the selected approval
+    state, reboots the guest, and returns over SSH.
+  - The post-reboot evidence proves the selected bundle no longer follows the
+    System Settings approval-required path when kmutil evaluates the selected
+    installed bundle.
+  - The artifact records the selected installed UUID/build/cdhash, the policy
+    materialization inputs, the reboot/SSH-return boundary, and leaves selected
+    loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and final
+    Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+    artifact: evidence/runtime/tahoe_auxkc_approval_reboot_materialization_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - selected_kext.input_head
+      - selected_kext.installed_uuid
+      - selected_kext.installed_build_string
+      - selected_kext.selected_cdhash
+      - approval_materialization.prior_blocker_signature
+      - approval_materialization.uakl_cdhash_present_before_reboot
+      - approval_materialization.reboot_performed
+      - approval_materialization.ssh_returned_after_reboot
+      - approval_materialization.kmutil_load_exit_code_after_reboot
+      - approval_materialization.kmutil_load_approval_error_after_reboot
+      - approval_materialization.selected_bundle_admitted_after_reboot
+      - verdict.ready_for_load_admission_step_retry
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+      equals:
+        selected_step: step:itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        approval_materialization.prior_blocker_signature: system_settings_approval_required_after_selected_install_and_uakl_materialization
+        approval_materialization.uakl_cdhash_present_before_reboot: true
+        approval_materialization.reboot_performed: true
+        approval_materialization.ssh_returned_after_reboot: true
+        approval_materialization.kmutil_load_approval_error_after_reboot: false
+        approval_materialization.selected_bundle_admitted_after_reboot: true
+        verdict.ready_for_load_admission_step_retry: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      max_number:
+        approval_materialization.kmutil_load_exit_code_after_reboot: 0
+      forbid_values:
+        approval_materialization.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
   title: Tahoe AuxKC approval and load-admission boundary
   goal_item_ids:
   - itlwm-fg-05a0c0-auxkc-approval-load-admission-boundary
   depends_on:
-  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  - itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
   description: >-
     Resolve the live Tahoe blocker proven by the previous blocked attempt: the
     selected-head AirportItlwm kext is installed on disk, but kmutil reports that
