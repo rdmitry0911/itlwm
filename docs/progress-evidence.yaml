@@ -1,0 +1,73 @@
+version: progress-kernel-ledger/v1
+records:
+- version: progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-01
+  roadmap_item_ids:
+  - itlwm-rm-01
+  goal_item_ids:
+  - itlwm-fg-01-lineage-tahoe-build
+  input_head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  executor_commit:
+    before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+    after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+  state_delta: Tahoe airportitlwm source/build/install substrate is restored from committed public evidence.
+  evidence_paths:
+  - evidence/build/tahoe_lineage_build_report.json
+  - docs/tahoe_lineage_build_reproducibility.md
+  - scripts/build_tahoe.sh
+  changed_files: []
+  provenance: restored_from_committed_public_project_evidence_after_public_source_cutover
+- version: progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-02
+  roadmap_item_ids:
+  - itlwm-rm-02
+  goal_item_ids:
+  - itlwm-fg-02-system-contract-inventory
+  input_head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  executor_commit:
+    before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+    after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+  state_delta: Apple Wi-Fi contract inventory and gap ledger are restored from committed public evidence.
+  evidence_paths:
+  - evidence/contracts/apple_wifi_contract_inventory.json
+  - docs/tahoe_discrepancy_inventory.md
+  changed_files: []
+  provenance: restored_from_committed_public_project_evidence_after_public_source_cutover
+- version: progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-03
+  roadmap_item_ids:
+  - itlwm-rm-03
+  goal_item_ids:
+  - itlwm-fg-03-payload-parity
+  input_head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  executor_commit:
+    before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+    after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+  state_delta: Payload and IOKit/IO80211 parity implementation is restored from committed public evidence.
+  evidence_paths:
+  - evidence/parity/payload_parity_report.json
+  changed_files: []
+  provenance: restored_from_committed_public_project_evidence_after_public_source_cutover
+- version: progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-04
+  roadmap_item_ids:
+  - itlwm-rm-04
+  goal_item_ids:
+  - itlwm-fg-04-consumer-producer-state-machines
+  input_head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  head_commit: bca014bf6a2728650426cde72f0c503766bcf9b7
+  executor_commit:
+    before_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+    after_head: bca014bf6a2728650426cde72f0c503766bcf9b7
+  state_delta: Consumer/producer chains and state-machine closure are restored from committed public evidence.
+  evidence_paths:
+  - evidence/state/state_machine_closure_report.json
+  changed_files: []
+  provenance: restored_from_committed_public_project_evidence_after_public_source_cutover
