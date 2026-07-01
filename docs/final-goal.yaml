@@ -69,6 +69,20 @@ work_breakdown:
   - state recovery after errors/wake is verified
   original_roadmap_ids:
   - itlwm-rm-04
+- id: itlwm-fg-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  title: Tahoe AuxKC approval authority isolation boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves which authoritative
+    approval surface still controls the selected-head AirportItlwm bundle after
+    selected rebuild/install, UAKL cdhash persistence, guest reboot, and the
+    repeated kmutil System Settings approval-required result. The evidence must
+    identify a concrete autonomous next mechanism for the approval/load-admission
+    retry and must not close the approval, load-admission, selected loaded UUID,
+    join-trigger/PMK, AUTH, association, DHCP, or final Wi-Fi equivalence gates.
+  criteria:
+  - Typed evidence itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+    passes from committed evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json.
+
 - id: itlwm-fg-05a0c0-auxkc-approval-load-admission-boundary
   title: Tahoe AuxKC approval and load-admission boundary
   description: >-

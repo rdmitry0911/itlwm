@@ -38,12 +38,102 @@ tasks:
   acceptance_criteria:
   - advances linked final-goal item with runtime or deterministic evidence
   evidence: []
+- id: itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  title: Tahoe AuxKC approval authority isolation boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  depends_on:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  description: >-
+    Resolve the narrower blocker signature proven by rejection ea186f7: the
+    selected-head AirportItlwm kext can be rebuilt and installed, the selected
+    unsigned cdhash is present in the live UAKL/history state before and after
+    reboot, and the installed UUID remains the selected UUID, but the post-reboot
+    kmutil evaluation still exits 27 with the System Settings approval-required
+    path. This step isolates the authoritative Tahoe approval surface that still
+    controls the selected bundle and proves a concrete next autonomous mechanism
+    for the approval/load-admission retry. It does not claim approval resolved,
+    load admission, selected loaded UUID after reboot, join-trigger/PMK, AUTH,
+    association, DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached records the selected
+    installed bundle identity and the relevant post-reboot approval authority
+    surfaces for the selected cdhash and bundle id.
+  - The artifact proves that the remaining System Settings approval-required
+    blocker has been classified into a concrete autonomous next mechanism, not
+    a retry of the already-failed UAKL persistence route.
+  - The artifact records the prior rejection signature, inspected policy/history
+    surfaces, kernelmanagerd/syspolicyd evidence, and leaves approval resolved,
+    load admission, loaded UUID, join-trigger/PMK, AUTH, association, DHCP, and
+    final Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+    artifact: evidence/runtime/tahoe_auxkc_approval_authority_isolation_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - selected_kext.input_head
+      - selected_kext.installed_uuid
+      - selected_kext.selected_cdhash
+      - approval_authority.prior_blocker_signature
+      - approval_authority.uakl_cdhash_present_after_reboot
+      - approval_authority.kmutil_load_exit_code
+      - approval_authority.kmutil_system_settings_approval_required
+      - approval_authority.kext_policy_rows_inspected
+      - approval_authority.kext_load_history_rows_inspected
+      - approval_authority.syspolicyd_or_kernelmanagerd_evidence_present
+      - approval_authority.classification
+      - approval_authority.machine_actionable_surface_found
+      - approval_authority.next_autonomous_mechanism
+      - verdict.ready_for_approval_mechanism_retry
+      - verdict.approval_resolved_not_claimed
+      - verdict.load_admission_not_claimed
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 10
+        approval_authority.kext_load_history_rows_inspected: 1
+      equals:
+        selected_step: step:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        approval_authority.prior_blocker_signature: system_settings_approval_required_after_selected_install_uakl_persistence_and_reboot
+        approval_authority.uakl_cdhash_present_after_reboot: true
+        approval_authority.kmutil_system_settings_approval_required: true
+        approval_authority.syspolicyd_or_kernelmanagerd_evidence_present: true
+        approval_authority.machine_actionable_surface_found: true
+        verdict.ready_for_approval_mechanism_retry: true
+        verdict.approval_resolved_not_claimed: true
+        verdict.load_admission_not_claimed: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        approval_authority.source:
+        - synthetic
+        - replay
+        - static_fixture
+        approval_authority.classification:
+        - unknown
+        - unclassified
+        - prose_only
+
 - id: itlwm-rm-05a0c0a-auxkc-approval-reboot-materialization-boundary
   title: Tahoe approval materialization across reboot boundary
   goal_item_ids:
   - itlwm-fg-05a0c0a-auxkc-approval-reboot-materialization-boundary
   depends_on:
-  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
   description: >-
     Resolve the narrower blocker signature proven by rejection 66fd3ed: a
     selected-head AirportItlwm kext can be rebuilt and installed, and the
