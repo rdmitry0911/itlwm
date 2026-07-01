@@ -209,12 +209,100 @@ tasks:
         - replay
         - static_fixture
 
+
+- id: itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  title: Tahoe admin authorization availability for approval workflow
+  goal_item_ids:
+  - itlwm-fg-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  depends_on:
+  - itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+  description: >-
+    Resolve the narrower blocker signature proven by rejection 02b03eb: the live
+    Tahoe GUI approval workflow reaches the AirportItlwm Allow control and then the
+    macOS Privacy & Security admin authorization sheet, but no usable admin
+    authorization credential/mechanism is available to the runtime, and post-attempt
+    kmutil still reports the System Settings approval-required error. This step
+    proves a lab-only admin authorization mechanism for the project user is available
+    to the runtime without committing, printing, or embedding secret material, and
+    without claiming that the AirportItlwm approval work item was cleared.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached reaches the same System
+    Settings approval authorization sheet for the selected AirportItlwm workflow
+    while SSH and the logged-in GUI session remain available.
+  - The evidence proves the project user has a usable admin authorization mechanism
+    for the GUI sheet or equivalent macOS authorization session; any secret value is
+    kept outside the repository and is redacted from committed artifacts, candidate
+    data, stdout, and commit metadata.
+  - The artifact records that authorization rights are restored to their baseline
+    policy after probing, kmutil still reports the approval-required blocker, and
+    approval clearing, load admission, selected loaded-after-reboot, join-trigger/PMK,
+    AUTH, association, DHCP, and final Wi-Fi equivalence remain unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    artifact: evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - authorization.prior_blocker_signature
+      - authorization.admin_authorization_sheet_observed
+      - authorization.runtime_admin_credential_available
+      - authorization.authonly_passed
+      - authorization.secret_committed
+      - authorization.secret_printed
+      - authorization.authorization_rights_restored
+      - approval_probe.kmutil_approval_error_still_present
+      - verdict.ready_for_approval_alert_workflow_retry
+      - verdict.approval_workflow_cleared_not_claimed
+      - verdict.load_admission_not_claimed
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 10
+      equals:
+        selected_step: step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        authorization.prior_blocker_signature: admin_authorization_sheet_blocks_system_settings_approval_workflow
+        authorization.admin_authorization_sheet_observed: true
+        authorization.runtime_admin_credential_available: true
+        authorization.authonly_passed: true
+        authorization.secret_committed: false
+        authorization.secret_printed: false
+        authorization.authorization_rights_restored: true
+        approval_probe.kmutil_approval_error_still_present: true
+        verdict.ready_for_approval_alert_workflow_retry: true
+        verdict.approval_workflow_cleared_not_claimed: true
+        verdict.load_admission_not_claimed: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        authorization.source:
+        - synthetic
+        - replay
+        - static_fixture
+        authorization.secret_storage:
+        - committed_project_file
+        - candidate_yaml
+        - stdout
+        - commit_message
+
 - id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
   title: Tahoe System Settings approval alert workflow boundary
   goal_item_ids:
   - itlwm-fg-05a0c0a1-system-settings-approval-alert-workflow-boundary
   depends_on:
-  - itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+  - itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
   description: >-
     Resolve the narrower blocker signature proven by the live rejected attempt at
     6113ba8: selected rebuild/install, policy/UAKL/MDM-row materialization, guest

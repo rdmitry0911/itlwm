@@ -111,6 +111,20 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
     passes from committed evidence/runtime/tahoe_gui_session_availability_boundary.json.
 
+
+- id: itlwm-fg-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  title: Tahoe admin authorization availability for approval workflow
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that the live System Settings
+    approval workflow can obtain a usable project-user admin authorization mechanism
+    without committing or printing secret material. This step only resolves the admin
+    authorization prerequisite for the approval workflow; approval cleared, load
+    admission, selected UUID loaded-after-reboot, join-trigger delivery, PMK delivery,
+    AUTH, association, DHCP, and final Wi-Fi equivalence remain separate gates.
+  criteria:
+  - Typed evidence itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    passes from committed evidence/runtime/tahoe_admin_authorization_availability_boundary.json.
+
 - id: itlwm-fg-05a0c0a1-system-settings-approval-alert-workflow-boundary
   title: Tahoe System Settings approval alert workflow boundary
   description: >-
