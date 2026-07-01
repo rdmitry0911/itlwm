@@ -1799,3 +1799,99 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: e8731aa50213a5051bf1b138
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  roadmap_item_id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: implemented
+      summary: Committed the selected runtime artifact and reusable capture helper
+        for the Tahoe approval-alert workflow boundary.
+    validator:
+      role: validator
+      status: passed
+      independent: true
+      summary: Reran the bounded live capture, validated the committed JSON artifact,
+        and independently probed the guest kmutil/syspolicyd post-workflow handoff.
+      evidence_paths:
+      - evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json
+    evidence:
+      role: evidence
+      status: captured
+      evidence_paths:
+      - evidence/runtime/tahoe_system_settings_approval_alert_workflow_boundary.json
+    auditor:
+      accepted: true
+      progress_argument: 'The committed runtime artifact clears only the selected
+        Tahoe System Settings/syspolicyd approval-alert workflow boundary: it binds
+        the selected installed AirportItlwm bundle at input head 6872413dcd08c11ba6cf09090b27ba820f9db355,
+        records the prior post-MDM/UAKL approval-required blocker, observes the approval
+        work item transition to cleared, and proves kmutil now reaches the reboot-required
+        handoff while leaving loaded-after-reboot, join-trigger/PMK, AUTH, association,
+        DHCP, and final Wi-Fi equivalence unclaimed. That removes this approval-alert
+        work item from the remaining path toward the linked final-goal item and hands
+        off truthfully to the reboot-materialization boundary.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: true
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+        criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+        criterion_6_the_evidence_exercises_or_independently_observes: true
+        criterion_7_the_post_workflow_evidence_proves_kmutil_no_long: true
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+    statement: A live Tahoe guest run with passthrough Wi-Fi attached starts from
+      the selected rebuilt/installed AirportItlwm bundle and the post-MDM/UAKL approval-required
+      blocker signature.
+    source: selected_step
+  - id: criterion_6_the_evidence_exercises_or_independently_observes
+    statement: The evidence exercises or independently observes the live System Settings
+      or syspolicyd approval workflow for the selected bundle and proves the approval-required
+      work item is cleared rather than only writing policy database rows.
+    source: selected_step
+  - id: criterion_7_the_post_workflow_evidence_proves_kmutil_no_long
+    statement: The post-workflow evidence proves kmutil no longer reports the System
+      Settings approval-required error for the selected bundle and reaches the truthful
+      Tahoe reboot-required handoff before the reboot-durability boundary is retried;
+      selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and
+      final Wi-Fi equivalence criteria remain unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors: []
+    errors:
+    - runtime_capture_anchor_missing:no_independent_runtime_capture_recorded
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: d022e4630a12c7626985d986
