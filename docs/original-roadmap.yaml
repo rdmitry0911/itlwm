@@ -38,13 +38,80 @@ tasks:
   acceptance_criteria:
   - advances linked final-goal item with runtime or deterministic evidence
   evidence: []
+- id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+  title: Tahoe iwn AUTH TX/RX completion publication boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b-auth-tx-rx-completion-boundary
+  depends_on:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  description: >-
+    Establish the narrow runtime boundary that the Tahoe iwn path publishes an
+    AUTH(seq=1) TX completion and an observable AUTH(seq=2) response window from
+    a live allowed lab AP attempt. This blocker step does not claim AUTH response
+    ACK, association, DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - Committed source/runtime changes make AUTH TX completion and RX response-window
+    publication observable during a live Tahoe lab attempt.
+  - Runtime evidence is captured from the guest against an allowed operator-configured
+    lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+  - The artifact explicitly leaves AUTH response ACK and later Wi-Fi equivalence
+    criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+    artifact: evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - scan.aps_seen
+      - association_target.visible_or_directed
+      - pmk_helper.target_published
+      - pmk_helper.pmk_delivered
+      - auth.started
+      - auth.rxon_filter_bss_enabled
+      - auth.tx_completion_observed
+      - auth.rx_completion_or_response_window_observable
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auth_response_ack_retry
+      - verdict.auth_response_ack_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        association_target.visible_or_directed: true
+        pmk_helper.target_published: true
+        pmk_helper.pmk_delivered: true
+        auth.started: true
+        auth.rxon_filter_bss_enabled: true
+        auth.tx_completion_observed: true
+        auth.rx_completion_or_response_window_observable: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auth_response_ack_retry: true
+        verdict.auth_response_ack_not_claimed: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        auth.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0-auth-response-ack-readiness
   title: Tahoe auth-response ACK readiness before WCL association
   status: planned
   progress: 0
   kind: defect_isolation
   depends_on:
-  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  - itlwm-rm-05a0b-auth-tx-rx-completion-boundary
   goal_item_ids:
   - itlwm-fg-05a0-auth-response-ack-readiness
   acceptance_criteria:

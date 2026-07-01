@@ -69,6 +69,17 @@ work_breakdown:
   - state recovery after errors/wake is verified
   original_roadmap_ids:
   - itlwm-rm-04
+- id: itlwm-fg-05a0b-auth-tx-rx-completion-boundary
+  title: Tahoe iwn AUTH TX/RX completion publication boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that the iwn AUTH path can
+    publish AUTH(seq=1) TX completion and an observable AUTH(seq=2) response
+    window from an allowed operator-configured lab AP attempt without claiming
+    AUTH response ACK, association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b-auth-tx-rx-completion-boundary passes from
+    committed evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json.
+
 - id: itlwm-fg-05a0-auth-response-ack-readiness
   title: Tahoe auth-response ACK readiness
   status: planned
