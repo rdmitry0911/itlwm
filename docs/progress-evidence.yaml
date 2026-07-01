@@ -1213,3 +1213,124 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 502333bef0420724fe14f3cd
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0a1a-tahoe-gui-session-availability-boundary
+  input_head_commit: 88cba6dbd49cb59c2830f2da8b4bbce501f3469a
+  head_commit: b74ddd27a97515fabaaf7f1c7c7d6638d65eba6f
+  executor_commit:
+    before_head: 88cba6dbd49cb59c2830f2da8b4bbce501f3469a
+    after_head: b74ddd27a97515fabaaf7f1c7c7d6638d65eba6f
+  state_delta: Added a bounded Tahoe GUI-session capture script and committed fresh
+    live runtime evidence proving that the passthrough-Wi-Fi Tahoe guest now has SSH
+    available, devops logged into the GUI console, an available gui launchd domain,
+    WindowServer/loginwindow, live QEMU VNC capture, launchable System Settings, and
+    the prior kmutil System Settings approval blocker still present while downstream
+    Wi-Fi/load milestones remain unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_gui_session_availability_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_gui_session_availability_boundary.json
+  - scripts/capture_tahoe_gui_session_availability.py
+  kernel_state_digest: 527d22e111c4f71a3b9a8176d3f77a4cd3f67dd3486f743801acf6e3c79c8a8f
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+    roadmap_item_id: itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added scripts/capture_tahoe_gui_session_availability.py and committed
+          a fresh live Tahoe GUI-session runtime artifact for the selected boundary.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the committed capture to /tmp for non-mutating live recapture,
+          ran the script's validation against the committed artifact, and ran a separate
+          Python typed-field assertion command over the JSON.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_gui_session_availability_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: 'The committed runtime artifact for the selected GUI-session
+          boundary removes the prior no-logged-in-GUI-domain blocker: it proves a
+          live Tahoe guest with passthrough Wi-Fi attached, SSH available, devops
+          on the GUI console, gui/502 available, WindowServer/loginwindow running,
+          live VNC capture, System Settings launchable, and the kmutil System Settings
+          approval-required error still present. Remaining work decreased by closing
+          only the GUI-session prerequisite and leaving the approval alert, load admission,
+          selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP,
+          and final Wi-Fi equivalence gates unclaimed for later steps.'
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_evidence_proves_the_user_gui_domain_exists_w: true
+          criterion_7_the_artifact_records_the_prior_approval_workflow: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached reaches a
+        logged-in GUI console session for the project user while SSH remains available.
+      source: selected_step
+    - id: criterion_6_the_evidence_proves_the_user_gui_domain_exists_w
+      statement: The evidence proves the user GUI domain exists, WindowServer/loginwindow
+        surface is usable, VNC or equivalent display access is live, and System Settings
+        can be launched in that GUI domain.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_prior_approval_workflow
+      statement: The artifact records the prior approval-workflow blocker signature
+        and leaves approval alert cleared, kmutil admission, selected loaded-after-reboot,
+        join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence criteria
+        unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 0ae3b77c5f8e
+        evidence_path: evidence/runtime/tahoe_gui_session_availability_boundary.json
+        sha256: f6109134500bdc87e7e9afc72aab59909190e3dc2633549fd2c2f588e424e3ff
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 88cba6dbd49cb59c2830f2da8b4bbce501f3469a
+        candidate_after_head: b74ddd27a97515fabaaf7f1c7c7d6638d65eba6f
+      errors: []
