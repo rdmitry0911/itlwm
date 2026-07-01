@@ -125,6 +125,57 @@ work_breakdown:
         - synthetic
         - replay
         - static_fixture
+- id: itlwm-fg-05a00-lab-ap-visibility-readiness
+  title: Tahoe lab AP visibility readiness
+  status: planned
+  weight: 1
+  acceptance_criteria:
+  - live Tahoe lab evidence proves an allowed external lab AP is visible to the guest
+    Wi-Fi interface before auth-response ACK work is retried
+  - AP configuration is external/operator-provided and committed evidence does not
+    contain secret material
+  - authentication response ACK, association, DHCP, data, reconnect and final Wi-Fi
+    equivalence remain separate gates
+  original_roadmap_ids:
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
+  requires:
+  - id: itlwm-fg-05a00-lab-ap-visibility-readiness
+    artifact: evidence/runtime/tahoe_lab_ap_visibility_readiness.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - lab.secret_material_committed
+      - scan.source
+      - scan.aps_seen
+      - scan.allowed_ap_visible
+      - scan.allowed_ap_observations
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auth_response_ack_retry
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      min_length:
+        scan.allowed_ap_observations: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        lab.secret_material_committed: false
+        scan.allowed_ap_visible: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auth_response_ack_retry: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        lab.ap_identifier_source:
+        - committed_secret
 - id: itlwm-fg-05a-auth-join-readiness
   title: Tahoe WCL association/auth readiness
   status: planned

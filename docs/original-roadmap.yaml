@@ -44,7 +44,7 @@ tasks:
   progress: 0
   kind: defect_isolation
   depends_on:
-  - itlwm-rm-04
+  - itlwm-rm-05a00-lab-ap-visibility-readiness
   goal_item_ids:
   - itlwm-fg-05a0-auth-response-ack-readiness
   acceptance_criteria:
@@ -99,6 +99,62 @@ tasks:
         - synthetic
         - replay
         - static_fixture
+- id: itlwm-rm-05a00-lab-ap-visibility-readiness
+  title: Tahoe lab AP visibility readiness before auth-response ACK
+  status: planned
+  progress: 0
+  kind: infrastructure_unblocker
+  depends_on:
+  - itlwm-rm-04
+  goal_item_ids:
+  - itlwm-fg-05a00-lab-ap-visibility-readiness
+  acceptance_criteria:
+  - advances linked final-goal item with runtime or deterministic evidence
+  - live Tahoe lab evidence proves an allowed external lab AP is visible to the guest
+    Wi-Fi interface before the auth-response ACK gate is retried
+  - evidence is captured from the guest and driver/runtime logs using external
+    operator-provided AP configuration, with secrets redacted and not committed
+  - the step does not claim authentication response ACK, association, DHCP, data,
+    reconnect, or final Wi-Fi equivalence
+  evidence: []
+  requires:
+  - id: itlwm-rm-05a00-lab-ap-visibility-readiness
+    artifact: evidence/runtime/tahoe_lab_ap_visibility_readiness.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - lab.secret_material_committed
+      - scan.source
+      - scan.aps_seen
+      - scan.allowed_ap_visible
+      - scan.allowed_ap_observations
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auth_response_ack_retry
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      min_length:
+        scan.allowed_ap_observations: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        lab.secret_material_committed: false
+        scan.allowed_ap_visible: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auth_response_ack_retry: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        lab.ap_identifier_source:
+        - committed_secret
 - id: itlwm-rm-05a-auth-join-readiness
   title: Tahoe WCL association/auth rollback isolation and fix
   status: planned
