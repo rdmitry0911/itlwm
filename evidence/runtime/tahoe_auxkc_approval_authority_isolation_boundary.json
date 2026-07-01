@@ -1,0 +1,150 @@
+{
+  "approval_authority": {
+    "classification": "kext_policy_allowed_and_history_cdhash_present_but_kernelmanagerd_syspolicyd_auxkc_rebuild_still_requires_system_settings_approval",
+    "kext_load_history_rows": [
+      {
+        "boot_uuid": "70819148-81D9-48E8-8C79-6DEB15321106",
+        "bundle_id": "com.zxystd.AirportItlwm",
+        "cdhash": "ac012a93abcb148a5273d4c1c8661ec906a0e351",
+        "created_at": "2026-05-06 05:53:43",
+        "flags": 272,
+        "last_seen": "2026-07-01 20:26:56",
+        "path": "/Library/Extensions/AirportItlwm.kext",
+        "team_id": "<null>"
+      }
+    ],
+    "kext_load_history_rows_inspected": 1,
+    "kext_load_history_table": "kext_load_history_v3",
+    "kext_policy_db_tables": [
+      "deprecation_alert_history  kext_policy_mdm",
+      "kext_load_history_v3       settings",
+      "kext_policy"
+    ],
+    "kext_policy_mdm_rows": [],
+    "kext_policy_mdm_rows_inspected": 0,
+    "kext_policy_rows": [
+      {
+        "allowed": true,
+        "bundle_id": "com.zxystd.AirportItlwm",
+        "developer_name": "Unidentified - AirportItlwm",
+        "flags": 0,
+        "team_id": "<null>"
+      },
+      {
+        "allowed": true,
+        "bundle_id": "com.zxystd.AirportItlwm",
+        "developer_name": "Unidentified - AirportItlwm",
+        "flags": 0,
+        "team_id": ""
+      }
+    ],
+    "kext_policy_rows_inspected": 2,
+    "kmutil_load_exit_code": 27,
+    "kmutil_message_summary": [
+      "Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings."
+    ],
+    "kmutil_system_settings_approval_required": true,
+    "machine_actionable_surface": "kernelmanagerd syspolicyd approval work queue plus SystemPolicyConfiguration.KextPolicy kext_policy/kext_policy_mdm approval rows for the selected bundle id and cdhash",
+    "machine_actionable_surface_found": true,
+    "next_autonomous_mechanism": "exercise the kernelmanagerd/syspolicyd AuxKC approval alert/workflow or seed the kext_policy_mdm team-bundle approval surface for com.zxystd.AirportItlwm, then rerun kmutil load; do not retry kext_load_history/UAKL cdhash persistence alone",
+    "post_reboot_basis": {
+      "guest_boot_session_uuid": "7C59A583-061E-4DE6-A4A5-4CDE8A15D6DB",
+      "history_boot_uuids": [
+        "70819148-81D9-48E8-8C79-6DEB15321106"
+      ],
+      "history_last_seen_values": [
+        "2026-07-01 20:26:56"
+      ]
+    },
+    "prior_blocker_signature": "system_settings_approval_required_after_selected_install_uakl_persistence_and_reboot",
+    "source": "live_tahoe_guest_ssh",
+    "syspolicyd_or_kernelmanagerd_evidence": [
+      "2026-07-01 23:26:54.859 E  kernelmanager_helper[362:97ab] [com.apple.libsqlite3:logging-persist] cannot open file at line 51043 of [f0ca7bba1c]",
+      "2026-07-01 23:26:54.860 E  kernelmanager_helper[362:97ab] [com.apple.libsqlite3:logging-persist] cannot open file at line 51043 of [f0ca7bba1c]",
+      "2026-07-01 23:26:54.906 E  kernelmanager_helper[362:97ab] [com.apple.libsqlite3:logging-persist] cannot open file at line 51043 of [f0ca7bba1c]",
+      "2026-07-01 23:26:54.908 E  kernelmanager_helper[362:97ab] [com.apple.libsqlite3:logging-persist] cannot open file at line 51043 of [f0ca7bba1c]",
+      "2026-07-01 23:26:54.916 Df kernelmanager_helper[362:97ab] [com.apple.kernelmanagerd.logging:LoadRequestResolution] requesting latest approval status and kext history from system policy for:",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-01 23:26:54.934 E  syspolicyd[308:9747] [com.apple.libsqlite3:logging-persist] cannot open file at line 51043 of [f0ca7bba1c]",
+      "2026-07-01 23:26:54.934 Df syspolicyd[308:9747] [com.apple.securityd:security_exception] MacOS error: -67062",
+      "2026-07-01 23:26:55.011 Df syspolicyd[308:9747] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: ac012a93abcb148a5273d4c1c8661ec906a0e351",
+      "2026-07-01 23:26:55.033 Df syspolicyd[308:9747] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: ac012a93abcb148a5273d4c1c8661ec906a0e351",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext (new)",
+      "approvalsRequiredFromSyspolicyd: true",
+      "newAuxiliaryContents: [Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext]",
+      "approvedUnbuiltExtensions: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
+      "2026-07-01 23:26:56.205 Df syspolicyd[308:97ca] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: ac012a93abcb148a5273d4c1c8661ec906a0e351",
+      "2026-07-01 23:26:56.226 Df syspolicyd[308:97ca] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: ac012a93abcb148a5273d4c1c8661ec906a0e351",
+      "2026-07-01 23:26:56.226 Df syspolicyd[308:97ca] [com.apple.syspolicy.kext:default] Triggered kext upgrade: Kext ((null), com.zxystd.AirportItlwm) version: ac012a93abcb148a5273d4c1c8661ec906a0e351",
+      "2026-07-01 23:26:56.226 Df syspolicyd[308:97ca] [com.apple.syspolicy.kext:default] Holding work until alerts available: <private>",
+      "approvalsRequiredFromSyspolicyd: true",
+      "newAuxiliaryContents: [Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext]",
+      "approvedUnbuiltExtensions: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
+      "2026-07-01 23:26:56.227 E  kernelmanagerd[136:97c9] failed to load/rebuild extensions: Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.",
+      "2026-07-01 23:26:56.228 E  kmutil[1708:986a] (KernelManagement) Remote encountered error: Error Domain=KMErrorDomain Code=27 \"Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.\" UserInfo={NSLocalizedDescription=Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings.}",
+      "2026-07-01 23:26:56.228 E  kmutil[1708:986a] kmutil encountered error (27): Extension with identifiers com.zxystd.AirportItlwm not approved to load. Please approve using System Settings."
+    ],
+    "syspolicyd_or_kernelmanagerd_evidence_present": true,
+    "uakl_cdhash_present_after_reboot": true
+  },
+  "capture_commands": {
+    "approval_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "guest_os": "sw_vers, uname, sysctl boot state, networksetup hardware ports",
+    "kernelmanagerd_syspolicyd": "sudo -n log show --last 30m filtered for approval authority evidence",
+    "policy_history": "sudo -n sqlite3 /var/db/SystemPolicyConfiguration/KextPolicy policy/history queries",
+    "selected_bundle_identity": "PlistBuddy, dwarfdump --uuid, shasum -a 256"
+  },
+  "capture_finished_utc": "2026-07-01T20:27:03.232465Z",
+  "capture_started_utc": "2026-07-01T20:26:53.230979Z",
+  "capture_wallclock_seconds": 10.001,
+  "input_head": "e78f3c965bfde16416bf000018113dde2f25efd6",
+  "roadmap_item_id": "itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary",
+  "runtime_environment": {
+    "guest_os": {
+      "boot_session_uuid": "7C59A583-061E-4DE6-A4A5-4CDE8A15D6DB",
+      "boot_time": "{ sec = 1782933336, usec = 915350 } Wed Jul  1 22:15:36 2026",
+      "build": "25C56",
+      "kernel": "25.2.0",
+      "name": "macOS",
+      "version": "26.2"
+    },
+    "guest_ssh": {
+      "port": "3322",
+      "target": "devops@127.0.0.1"
+    },
+    "guest_wifi_interface": "en1",
+    "wifi_passthrough_attached": true
+  },
+  "selected_kext": {
+    "binary_sha256": "b06dde353ca3f4f3f479a01fa4b9d438e16c228645633d9384490bab76e9a988",
+    "bundle_id": "com.zxystd.AirportItlwm",
+    "bundle_version": "2.4.0",
+    "input_head": "e78f3c965bfde16416bf000018113dde2f25efd6",
+    "installed_uuid": "EE8EEF25-03C3-3AE4-AF20-4C818DDEE5F4",
+    "loaded_state_observed_but_not_claimed": {
+      "loaded": true,
+      "loaded_uuids_observed": [
+        "86DF104B-E8B1-36B3-8603-3245D3AF7991",
+        "86DF104B-E8B1-36B3-8603-3245D3AF7991"
+      ]
+    },
+    "path": "/Library/Extensions/AirportItlwm.kext",
+    "selected_cdhash": "ac012a93abcb148a5273d4c1c8661ec906a0e351"
+  },
+  "selected_step": "step:itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary",
+  "verdict": {
+    "approval_resolved_not_claimed": true,
+    "association_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "data_transfer_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "load_admission_not_claimed": true,
+    "loaded_uuid_after_reboot_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_approval_mechanism_retry": true,
+    "reconnect_not_claimed": true
+  }
+}
