@@ -128,12 +128,93 @@ tasks:
         - unclassified
         - prose_only
 
+- id: itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+  title: Tahoe GUI session availability for approval workflow
+  goal_item_ids:
+  - itlwm-fg-05a0c0a1a-tahoe-gui-session-availability-boundary
+  depends_on:
+  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  description: >-
+    Resolve the narrower environment blocker proven by rejection a7377f0: the
+    selected AirportItlwm bundle is installed and kmutil still reaches the System
+    Settings approval-required path, but the Tahoe guest has no logged-in Aqua GUI
+    domain for the project user, so System Settings cannot launch and the approval
+    alert/workflow cannot be exercised. This step establishes a live logged-in GUI
+    session and launchable System Settings surface for the selected approval
+    workflow without claiming that the approval alert is cleared, kmutil is
+    admitted, the selected kext is loaded after reboot, join-trigger/PMK, AUTH,
+    association, DHCP, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached reaches a logged-in GUI
+    console session for the project user while SSH remains available.
+  - The evidence proves the user GUI domain exists, WindowServer/loginwindow surface
+    is usable, VNC or equivalent display access is live, and System Settings can
+    be launched in that GUI domain.
+  - The artifact records the prior approval-workflow blocker signature and leaves
+    approval alert cleared, kmutil admission, selected loaded-after-reboot,
+    join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence criteria
+    unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+    artifact: evidence/runtime/tahoe_gui_session_availability_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - gui.prior_blocker_signature
+      - gui.console_user
+      - gui.console_uid
+      - gui.gui_domain_available
+      - gui.windowserver_running
+      - gui.vnc_surface_available
+      - gui.system_settings_launchable
+      - approval_probe.kmutil_approval_error_still_present
+      - verdict.ready_for_approval_alert_workflow_retry
+      - verdict.approval_alert_cleared_not_claimed
+      - verdict.load_admission_not_claimed
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 10
+        gui.console_uid: 1
+      equals:
+        selected_step: step:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        gui.prior_blocker_signature: no_logged_in_gui_domain_for_system_settings_approval_workflow
+        gui.console_user: devops
+        gui.gui_domain_available: true
+        gui.windowserver_running: true
+        gui.vnc_surface_available: true
+        gui.system_settings_launchable: true
+        approval_probe.kmutil_approval_error_still_present: true
+        verdict.ready_for_approval_alert_workflow_retry: true
+        verdict.approval_alert_cleared_not_claimed: true
+        verdict.load_admission_not_claimed: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        gui.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c0a1-system-settings-approval-alert-workflow-boundary
   title: Tahoe System Settings approval alert workflow boundary
   goal_item_ids:
   - itlwm-fg-05a0c0a1-system-settings-approval-alert-workflow-boundary
   depends_on:
-  - itlwm-rm-05a0c0a0-auxkc-approval-authority-isolation-boundary
+  - itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary
   description: >-
     Resolve the narrower blocker signature proven by the live rejected attempt at
     6113ba8: selected rebuild/install, policy/UAKL/MDM-row materialization, guest
