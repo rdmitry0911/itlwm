@@ -1441,3 +1441,112 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: d6d0baa67a7b671f85fbfa77
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  roadmap_item_id: itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: blocked
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: false
+      verification_method: reference
+      role: validator
+    evidence:
+      status: missing
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_committed_typed_evidence_and_runtime_admin_credential
+      progress_argument: 'Remaining work did not decrease. The linked final-goal item
+        still requires committed runtime-anchored typed evidence at evidence/runtime/tahoe_admin_authorization_availability_boundary.json,
+        but that artifact is absent from HEAD at input commit 2eb79586349dffcf22ab5b7ca7c01b97344b6410.
+        The candidate is status: blocked, has no evidence_paths or changed_files,
+        and states that the runtime admin credential/authonly requirements cannot
+        be proven without operator-provided secret material.'
+      acceptance_surface_substitution_rejected: true
+      independently_verified: true
+      verification_method: reference
+      checked_head: 2eb79586349dffcf22ab5b7ca7c01b97344b6410
+      evidence_paths_checked:
+      - evidence/runtime/tahoe_admin_authorization_availability_boundary.json
+      supporting_observations:
+      - assignment selects the same step and typed artifact path.
+      - committed docs/original-roadmap.yaml requires the missing typed artifact.
+      - committed docs/final-goal.yaml requires the same typed artifact to pass.
+      - git cat-file/git show against HEAD reports the typed artifact does not exist.
+      - candidate.yaml is blocked with empty evidence_paths and changed_files.
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: false
+        criterion_6_the_evidence_proves_the_project_user_has_a_usabl: false
+        criterion_7_the_artifact_records_that_authorization_rights_a: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+    statement: A live Tahoe guest run with passthrough Wi-Fi attached reaches the
+      same System Settings approval authorization sheet for the selected AirportItlwm
+      workflow while SSH and the logged-in GUI session remain available.
+    source: selected_step
+  - id: criterion_6_the_evidence_proves_the_project_user_has_a_usabl
+    statement: The evidence proves the project user has a usable admin authorization
+      mechanism for the GUI sheet or equivalent macOS authorization session; any secret
+      value is kept outside the repository and is redacted from committed artifacts,
+      candidate data, stdout, and commit metadata.
+    source: selected_step
+  - id: criterion_7_the_artifact_records_that_authorization_rights_a
+    statement: The artifact records that authorization rights are restored to their
+      baseline policy after probing, kmutil still reports the approval-required blocker,
+      and approval clearing, load admission, selected loaded-after-reboot, join-trigger/PMK,
+      AUTH, association, DHCP, and final Wi-Fi equivalence remain unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 0ae3b77c5f8e
+      evidence_path: evidence/runtime/tahoe_gui_session_availability_boundary.json
+      sha256: f6109134500bdc87e7e9afc72aab59909190e3dc2633549fd2c2f588e424e3ff
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 2eb79586349dffcf22ab5b7ca7c01b97344b6410
+      candidate_after_head: 2eb79586349dffcf22ab5b7ca7c01b97344b6410
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary!=step:itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0c0a1a-tahoe-gui-session-availability-boundary!=itlwm-rm-05a0c0a1b-tahoe-admin-authorization-availability-boundary
+    - runtime_capture_anchor_input_head_mismatch:88cba6dbd49cb59c2830f2da8b4bbce501f3469a!=2eb79586349dffcf22ab5b7ca7c01b97344b6410
+    - runtime_capture_anchor_after_head_mismatch:b74ddd27a97515fabaaf7f1c7c7d6638d65eba6f!=2eb79586349dffcf22ab5b7ca7c01b97344b6410
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: ea47b13893bc1299dfce19f8
