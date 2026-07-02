@@ -220,6 +220,8 @@ public:
                 int);
     static int        iwn5000_add_node(struct iwn_softc *, struct iwn_node_info *,
                 int);
+    int        iwn_add_bss_node(struct iwn_softc *,
+                struct ieee80211_node *);
     int        iwn_set_link_quality(struct iwn_softc *,
                 struct ieee80211_node *);
     int        iwn_add_broadcast_node(struct iwn_softc *, int, int);

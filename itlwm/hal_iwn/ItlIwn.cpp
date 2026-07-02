@@ -3823,6 +3823,10 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     if (type == IEEE80211_FC0_TYPE_CTL &&
         subtype == IEEE80211_FC0_SUBTYPE_BAR)
         tx->id = wn->id;
+    else if (type == IEEE80211_FC0_TYPE_MGT &&
+        subtype == IEEE80211_FC0_SUBTYPE_AUTH &&
+        !IEEE80211_IS_MULTICAST(wh->i_addr1))
+        tx->id = wn->id;
     else if (IEEE80211_IS_MULTICAST(wh->i_addr1) ||
         type != IEEE80211_FC0_TYPE_DATA)
         tx->id = sc->broadcast_id;
@@ -3986,13 +3990,15 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         snprintf(auth_tx_path_buf, sizeof(auth_tx_path_buf),
             "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
             "auth_seq=0x%04x qid=%d idx=%d wrptr=%d queued_before=%d "
-            "flags=0x%08x txid=%u len=%d nsegs=%d",
+            "flags=0x%08x txid=%u broadcast_txid=%u unicast=%u "
+            "len=%d nsegs=%d",
             diag_subtype,
             diag_peer[0], diag_peer[1], diag_peer[2],
             diag_peer[3], diag_peer[4], diag_peer[5],
             (unsigned)diag_auth_seq, ring->qid, cmd->idx, ring->cur,
-            ring->queued, (unsigned)flags, (unsigned)tx->id, totlen,
-            nsegs);
+            ring->queued, (unsigned)flags, (unsigned)tx->id,
+            (unsigned)sc->broadcast_id,
+            (unsigned)(tx->id != sc->broadcast_id), totlen, nsegs);
         IWX_AUTH_DIAG("iwn_tx: MGT ring_kick %s\n", auth_tx_path_buf);
         getController()->setProperty("itlwm-iwn-auth-tx-path",
             auth_tx_path_buf);
@@ -4314,6 +4320,42 @@ iwn5000_add_node(struct iwn_softc *sc, struct iwn_node_info *node, int async)
     
     /* Direct mapping. */
     return that->iwn_cmd(sc, IWN_CMD_ADD_NODE, node, sizeof (*node), async);
+}
+
+int ItlIwn::
+iwn_add_bss_node(struct iwn_softc *sc, struct ieee80211_node *ni)
+{
+    struct iwn_ops *ops = &sc->ops;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwn_node *wn = (struct iwn_node *)ni;
+    struct iwn_node_info node;
+    int error;
+
+    wn->id = IWN_ID_BSS;
+    iwn_newassoc(ic, ni, 1);
+
+    memset(&node, 0, sizeof node);
+    IEEE80211_ADDR_COPY(node.macaddr, ni->ni_macaddr);
+    node.id = IWN_ID_BSS;
+    if (ni->ni_flags & IEEE80211_NODE_HT) {
+        node.htmask = (IWN_AMDPU_SIZE_FACTOR_MASK |
+            IWN_AMDPU_DENSITY_MASK);
+        node.htflags = htole32(
+            IWN_AMDPU_SIZE_FACTOR(
+            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_LE)) |
+            IWN_AMDPU_DENSITY(
+            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_SS) >> 2));
+
+        if (iwn_rxon_ht40_enabled(sc))
+            node.htflags |= htole32(IWN_40MHZ_ENABLE);
+    }
+    error = ops->add_node(sc, &node, 1);
+    if (error != 0)
+        return error;
+
+    IEEE80211_ADDR_COPY(sc->bss_node_addr, ni->ni_macaddr);
+
+    return iwn_set_link_quality(sc, ni);
 }
 
 int ItlIwn::
@@ -6033,6 +6075,29 @@ iwn_auth(struct iwn_softc *sc, int arg)
     /* Diagnostic probe (auth-ACK boundary, iwn HAL): add_broadcast_node OK. */
     IWX_AUTH_DIAG("iwn_auth: add_broadcast_node OK ridx=%d\n", ridx);
 
+    if ((error = iwn_add_bss_node(sc, ni)) != 0) {
+        XYLog("%s: could not add auth BSS node\n",
+            sc->sc_dev.dv_xname);
+        return error;
+    }
+    {
+        char auth_bss_node_buf[128];
+        struct iwn_node *wn = (struct iwn_node *)ni;
+        snprintf(auth_bss_node_buf, sizeof(auth_bss_node_buf),
+            "node_id=%u peer=%02x:%02x:%02x:%02x:%02x:%02x "
+            "broadcast_txid=%u unicast_ready=%u",
+            (unsigned)wn->id,
+            ni->ni_macaddr[0], ni->ni_macaddr[1],
+            ni->ni_macaddr[2], ni->ni_macaddr[3],
+            ni->ni_macaddr[4], ni->ni_macaddr[5],
+            (unsigned)sc->broadcast_id,
+            (unsigned)(wn->id != sc->broadcast_id));
+        IWX_AUTH_DIAG("iwn_auth: add_bss_node OK %s\n",
+            auth_bss_node_buf);
+        getController()->setProperty("itlwm-iwn-auth-bss-node",
+            auth_bss_node_buf);
+    }
+
     /*
      * Make sure the firmware gets to see a beacon before we send
      * the auth request. Otherwise the Tx attempt can fail due to
@@ -6064,7 +6129,6 @@ iwn_run(struct iwn_softc *sc)
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = ic->ic_bss;
     struct iwn_node *wn = (struct iwn_node *)ni;
-    struct iwn_node_info node;
     int error;
 
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
@@ -6156,40 +6220,10 @@ iwn_run(struct iwn_softc *sc)
         return error;
     }
 
-    /* Fake a join to initialize the TX rate. */
-    ((struct iwn_node *)ni)->id = IWN_ID_BSS;
-    iwn_newassoc(ic, ni, 1);
-
-    /* Add BSS node. */
-    memset(&node, 0, sizeof node);
-    IEEE80211_ADDR_COPY(node.macaddr, ni->ni_macaddr);
-    node.id = IWN_ID_BSS;
-    if (ni->ni_flags & IEEE80211_NODE_HT) {
-        node.htmask = (IWN_AMDPU_SIZE_FACTOR_MASK |
-            IWN_AMDPU_DENSITY_MASK);
-        node.htflags = htole32(
-            IWN_AMDPU_SIZE_FACTOR(
-            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_LE)) |
-            IWN_AMDPU_DENSITY(
-            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_SS) >> 2));
-        
-        if (iwn_rxon_ht40_enabled(sc))
-            node.htflags |= htole32(IWN_40MHZ_ENABLE);
-    }
     DPRINTF(("adding BSS node\n"));
-    error = ops->add_node(sc, &node, 1);
+    error = iwn_add_bss_node(sc, ni);
     if (error != 0) {
         XYLog("%s: could not add BSS node\n", sc->sc_dev.dv_xname);
-        return error;
-    }
-
-    /* Cache address of AP in case it changes after a background scan. */
-    IEEE80211_ADDR_COPY(sc->bss_node_addr, ni->ni_macaddr);
-
-    DPRINTF(("setting link quality for node %d\n", node.id));
-    if ((error = iwn_set_link_quality(sc, ni)) != 0) {
-        XYLog("%s: could not setup link quality for node %d\n",
-            sc->sc_dev.dv_xname, node.id);
         return error;
     }
 
