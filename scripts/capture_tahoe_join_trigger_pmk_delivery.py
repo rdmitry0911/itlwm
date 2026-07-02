@@ -15,7 +15,7 @@ from pathlib import Path
 
 STEP_ID = "step:itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary"
 ROADMAP_ITEM_ID = "itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary"
-INPUT_HEAD = "310498ae4a5103b3e752d2da76a75b8032e3df3d"
+INPUT_HEAD = ""
 DEFAULT_OUTPUT = Path("evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json")
 DEFAULT_GUEST = "devops@127.0.0.1"
 DEFAULT_PORT = "3322"
@@ -292,6 +292,87 @@ def ordered_unique(values):
         seen.add(value)
         unique.append(value)
     return unique
+
+
+def read_optional_text(path):
+    if not path:
+        return ""
+    candidate = Path(path)
+    if not candidate.exists():
+        return ""
+    return candidate.read_text(encoding="utf-8")
+
+
+def extract_yaml_hash(text, key):
+    match = re.search(
+        r"(?m)^\s*" + re.escape(key) + r":\s*['\"]?([0-9a-f]{40})['\"]?\s*$",
+        text or "",
+    )
+    return match.group(1) if match else ""
+
+
+def extract_assignment_input_head(text):
+    if not text:
+        return ""
+    step_index = text.find(f"id: {STEP_ID}")
+    if step_index < 0:
+        return ""
+    step_block = text[step_index : step_index + 5000]
+    return extract_yaml_hash(step_block, "input_head")
+
+
+def extract_candidate_input_head(text):
+    return extract_yaml_hash(text, "head_commit") or extract_yaml_hash(text, "before_head")
+
+
+def extract_candidate_after_head(text):
+    return extract_yaml_hash(text, "after_head")
+
+
+def local_project_head():
+    project_root = Path(__file__).resolve().parents[1]
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        return ""
+    head = completed.stdout.strip()
+    return head if re.fullmatch(r"[0-9a-f]{40}", head) else ""
+
+
+def first_consistent_hash(label, values):
+    hashes = ordered_unique(values)
+    if len(hashes) > 1:
+        raise RuntimeError(f"{label} mismatch: " + ", ".join(hashes))
+    return hashes[0] if hashes else ""
+
+
+def resolve_attempt_heads(args):
+    assignment_text = read_optional_text(args.assignment_path)
+    candidate_text = read_optional_text(args.candidate_path)
+
+    args.input_head = first_consistent_hash(
+        "input head",
+        [
+            args.input_head,
+            extract_assignment_input_head(assignment_text),
+            extract_candidate_input_head(candidate_text),
+        ],
+    ) or local_project_head()
+    if not args.input_head:
+        raise RuntimeError("cannot resolve selected input head")
+
+    args.candidate_after_head = first_consistent_hash(
+        "candidate after head",
+        [args.candidate_after_head, extract_candidate_after_head(candidate_text)],
+    )
 
 
 def expected_guest_heads(args):
@@ -1032,7 +1113,20 @@ def main():
     )
     parser.add_argument("--guest-project", default=os.environ.get("ITLWM_GUEST_PROJECT", DEFAULT_GUEST_PROJECT))
     parser.add_argument("--kext-path", default=os.environ.get("ITLWM_KEXT_PATH", DEFAULT_KEXT_PATH))
-    parser.add_argument("--input-head", default=INPUT_HEAD)
+    parser.add_argument(
+        "--assignment-path",
+        default=os.environ.get("ITLWM_PROGRESS_ASSIGNMENT_PATH", ""),
+        help="optional selected-step assignment used to resolve the selected input head",
+    )
+    parser.add_argument(
+        "--candidate-path",
+        default=os.environ.get("ITLWM_PROGRESS_CANDIDATE_PATH", ""),
+        help="optional candidate file used to resolve the candidate after-head",
+    )
+    parser.add_argument(
+        "--input-head",
+        default=os.environ.get("ITLWM_SELECTED_INPUT_HEAD", INPUT_HEAD),
+    )
     parser.add_argument(
         "--candidate-after-head",
         default=os.environ.get("ITLWM_CANDIDATE_AFTER_HEAD", ""),
@@ -1062,6 +1156,7 @@ def main():
     args = parser.parse_args()
 
     try:
+        resolve_attempt_heads(args)
         evidence, payload = build_evidence(args)
     except subprocess.TimeoutExpired as exc:
         print(f"capture failed: guest command timed out after {exc.timeout}s", file=sys.stderr)
