@@ -229,6 +229,20 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary passes
     from committed evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json.
 
+- id: itlwm-fg-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  title: Tahoe AUTH management frame TX enqueue/drain boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that after live join-trigger
+    and PMK delivery the AUTH(seq=1) management frame is enqueued and drained into
+    the iwn TX path during an allowed AP attempt. This split exists because the
+    previous AUTH TX/RX completion attempt proved AUTH start, RXON BSS filter, and
+    response-window observability, but no IWN_TX_DONE completion was observed
+    before the firmware fault. This step does not claim firmware TX completion,
+    AUTH response ACK, association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary passes
+    from committed evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json.
+
 - id: itlwm-fg-05a0b-auth-tx-rx-completion-boundary
   title: Tahoe iwn AUTH TX/RX completion publication boundary
   description: >-
