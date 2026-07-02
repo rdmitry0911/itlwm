@@ -530,12 +530,77 @@ tasks:
         - replay
         - static_fixture
 
+- id: itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+  title: Tahoe source-stable build identity boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0b-source-stable-build-identity-boundary
+  depends_on:
+  - itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+  description: >-
+    Resolve the narrower blocker proven by rejection 1523544: progress evidence
+    and rejection commits changed the selected HEAD without changing driver
+    source, while the Tahoe build embedded git HEAD into the kext build identity.
+    That caused each progress-only commit to produce a fresh cdhash/UUID and to
+    re-enter the System Settings approval queue before the AuxKC boot-safe load
+    boundary could be retried. This step makes the Tahoe kext build identity a
+    deterministic function of committed source-bearing inputs and proves that
+    progress-only docs/evidence commits do not change the selected runtime build
+    identity. It does not claim boot-safe load, join-trigger/PMK, AUTH,
+    association, DHCP, or final Wi-Fi equivalence.
+  acceptance:
+  - The Tahoe build script computes ITLWM_COMMIT_HASH from committed
+    source-bearing inputs rather than raw repository HEAD for normal git builds.
+  - Deterministic evidence proves that the source identity is stable across the
+    previous progress-only evidence/rejection heads that triggered the blocker,
+    while remaining tied to source-bearing paths for real implementation changes.
+  - The artifact explicitly leaves AuxKC boot-safe load, join-trigger/PMK, AUTH,
+    association, DHCP, and later Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+    artifact: evidence/build/tahoe_source_stable_build_identity_report.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - source_identity.previous_progress_heads_equal
+      - source_identity.current_source_identity
+      - source_identity.included_paths_count
+      - source_identity.excluded_progress_paths
+      - build_script.uses_source_identity_not_raw_head
+      - build_script.raw_head_fallback_only
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auxkc_boot_safe_load_retry
+      - verdict.boot_safe_load_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        source_identity.included_paths_count: 1
+      equals:
+        selected_step: step:itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+        source_identity.previous_progress_heads_equal: true
+        build_script.uses_source_identity_not_raw_head: true
+        build_script.raw_head_fallback_only: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auxkc_boot_safe_load_retry: true
+        verdict.boot_safe_load_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        source_identity.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
   title: Tahoe selected AuxKC boot-safe load boundary
   goal_item_ids:
   - itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
   depends_on:
-  - itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+  - itlwm-rm-05a0c0b-source-stable-build-identity-boundary
   description: >-
     Establish the narrower live-lab load boundary that the selected-head
     AirportItlwm kext can be rebuilt, installed into the Tahoe Auxiliary Kernel
