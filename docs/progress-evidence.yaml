@@ -2696,3 +2696,135 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 616fb346c75bb1360f33f9c3
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0c-selected-identity-approval-refresh-boundary
+  input_head_commit: 2d3e4326487e88f4f2e6481e55c3f4dbfc64099e
+  head_commit: c13a7ae02cf98762e3711aa38e627db719b28113
+  executor_commit:
+    before_head: 2d3e4326487e88f4f2e6481e55c3f4dbfc64099e
+    after_head: c13a7ae02cf98762e3711aa38e627db719b28113
+  state_delta: Added committed live Tahoe selected-identity approval-refresh evidence
+    and a step-scoped capture/recapture helper proving that the selected source-stable
+    AirportItlwm bundle at input head 2d3e4326487e88f4f2e6481e55c3f4dbfc64099e was
+    rebuilt and installed in the Tahoe guest, moved through the live System Settings/syspolicyd
+    approval workflow, and reached the restart-required kmutil handoff for selected
+    UUID FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24 and CDHash c55e3d877195e1ddd6bde51611a93db3e0938817
+    while recording the stale pre-refresh loaded UUID 21281E0F-88F3-3F1A-B864-511A360FDE61
+    and leaving post-reboot load admission and Wi-Fi behavior unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
+  - scripts/capture_tahoe_selected_identity_approval_refresh.py
+  kernel_state_digest: 665e675f447ddd0d29ea439c35e455b2b6456b78d93e9de4e08202d5de421030
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+    roadmap_item_id: itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added a selected-identity approval-refresh capture/recapture helper
+          and committed live Tahoe evidence for the current selected AirportItlwm
+          UUID/CDHash restart-required handoff.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the helper's non-mutating recapture after the useful commit
+          with candidate after-head c13a7ae02cf98762e3711aa38e627db719b28113; it validated
+          the committed artifact, left it unmodified, observed guest Wi-Fi interface
+          en1 with passthrough attached, verified installed UUID FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24,
+          binary SHA-256 e8ce1f604a4971919d32de15daf32b445ccba54fa2d05d083ce65a8c26d874d0,
+          CDHash c55e3d877195e1ddd6bde51611a93db3e0938817, and observed kmutil exit
+          28 without the approval-required error.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: Remaining work decreased because the selected source-stable
+          AirportItlwm identity at input head 2d3e4326487e88f4f2e6481e55c3f4dbfc64099e
+          is now evidenced as rebuilt and installed in the live Tahoe guest with passthrough
+          Wi-Fi attached, with selected UUID FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24,
+          binary SHA-256 e8ce1f604a4971919d32de15daf32b445ccba54fa2d05d083ce65a8c26d874d0,
+          and CDHash c55e3d877195e1ddd6bde51611a93db3e0938817. The committed artifact
+          shows the stale prior loaded UUID 21281E0F-88F3-3F1A-B864-511A360FDE61 and
+          approval-required blocker transitioning through live syspolicyd/System Settings
+          evidence to a restart-required kmutil handoff for that same selected UUID/CDHash,
+          while explicitly leaving post-reboot materialization, load admission, join/PMK,
+          AUTH, association, DHCP, and final Wi-Fi equivalence for later steps.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_evidence_proves_that_the_live_system_setting: true
+          criterion_7_the_artifact_records_the_prior_stale_loaded_uuid: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and
+        installs the current selected source-stable AirportItlwm bundle and records
+        its UUID, binary hash, and guest project head.
+      source: selected_step
+    - id: criterion_6_the_evidence_proves_that_the_live_system_setting
+      statement: The evidence proves that the live System Settings or syspolicyd approval
+        workflow is exercised or observed for that current selected identity and reaches
+        the restart-required handoff for the same selected UUID/CDHash, rather than
+        reusing approval for an older loaded UUID.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_prior_stale_loaded_uuid
+      statement: The artifact records the prior stale-loaded-UUID and approval-required
+        blocker signatures and leaves post-reboot load admission, selected loaded-after-reboot,
+        join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence criteria
+        unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: efa1db9c15e5
+        evidence_path: evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
+        sha256: 2aeb501eac2d576d463c298e1259a546883a24f3264ab98a2ffad102848bbf84
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 2d3e4326487e88f4f2e6481e55c3f4dbfc64099e
+        candidate_after_head: c13a7ae02cf98762e3711aa38e627db719b28113
+      errors: []
