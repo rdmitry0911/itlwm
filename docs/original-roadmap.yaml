@@ -595,12 +595,95 @@ tasks:
         - replay
         - static_fixture
 
+
+- id: itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+  title: Tahoe selected identity approval refresh boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0c-selected-identity-approval-refresh-boundary
+  depends_on:
+  - itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+  description: >-
+    Resolve the blocker proven by rejection af46489: after the source-stable build
+    identity change, the live Tahoe guest rebuild/install produced a new selected
+    AirportItlwm UUID and binary identity, but the approved and loaded AuxKC kext
+    remained the prior UUID while kmutil still reported the System Settings
+    approval-required path for the current selected bundle. This step refreshes or
+    proves the approval/load-admission state for the current selected source-stable
+    bundle identity before the AuxKC boot-safe loaded-after-reboot boundary is
+    retried. It does not claim selected UUID loaded after reboot, join-trigger/PMK,
+    AUTH, association, DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and installs the
+    current selected source-stable AirportItlwm bundle and records its UUID, binary
+    hash, and guest project head.
+  - The evidence proves that the current selected bundle identity is no longer on
+    the System Settings approval-required path and reaches the load-admission
+    handoff for that same selected UUID/CDHash, rather than reusing approval for an
+    older loaded UUID.
+  - The artifact records the prior stale-loaded-UUID blocker signature and leaves
+    selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and
+    final Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+    artifact: evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - selected_kext.input_head
+      - selected_kext.installed_uuid
+      - selected_kext.binary_sha256
+      - approval_refresh.prior_blocker_signature
+      - approval_refresh.loaded_uuid_before_refresh
+      - approval_refresh.selected_uuid
+      - approval_refresh.selected_binary_sha256
+      - approval_refresh.kmutil_exit_code
+      - approval_refresh.kmutil_approval_required
+      - approval_refresh.selected_identity_approval_current
+      - approval_refresh.selected_bundle_admitted_for_load
+      - approval_refresh.reboot_required_observed
+      - verdict.ready_for_auxkc_boot_safe_load_retry
+      - verdict.loaded_uuid_after_reboot_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 10
+      equals:
+        selected_step: step:itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        approval_refresh.prior_blocker_signature: selected_identity_not_approved_after_source_identity_change
+        approval_refresh.kmutil_approval_required: false
+        approval_refresh.selected_identity_approval_current: true
+        approval_refresh.selected_bundle_admitted_for_load: true
+        approval_refresh.reboot_required_observed: true
+        verdict.ready_for_auxkc_boot_safe_load_retry: true
+        verdict.loaded_uuid_after_reboot_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        approval_refresh.source:
+        - synthetic
+        - replay
+        - static_fixture
+        approval_refresh.approval_mechanism:
+        - unknown
+        - prose_only
+
 - id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
   title: Tahoe selected AuxKC boot-safe load boundary
   goal_item_ids:
   - itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
   depends_on:
-  - itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+  - itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
   description: >-
     Establish the narrower live-lab load boundary that the selected-head
     AirportItlwm kext can be rebuilt, installed into the Tahoe Auxiliary Kernel
