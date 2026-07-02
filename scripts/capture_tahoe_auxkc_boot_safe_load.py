@@ -12,7 +12,7 @@ from pathlib import Path
 
 STEP_ID = "step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary"
 ROADMAP_ITEM_ID = "itlwm-rm-05a0c-auxkc-boot-safe-load-boundary"
-INPUT_HEAD = "755537b52b5409606a9e4661d51eb2281e59740c"
+INPUT_HEAD = "54c4da4854263dc1fc0416fe2f17180327ef4b0f"
 DEFAULT_OUTPUT = Path("evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json")
 DEFAULT_GUEST = "devops@127.0.0.1"
 DEFAULT_PORT = "3322"
