@@ -4089,7 +4089,7 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 09c1f5f63592eec278bdeb5a
-- version: aiam-progress-role-chain-verdict/v2
+- version: progress-progress-role-chain-verdict/v2
   status: rejected
   step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
   roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
@@ -4121,23 +4121,23 @@ records:
       status: failed
       reason_class: auditor_failed_or_timed_out
       summary: auditor command failed before accepting the selected step
-      stdout_tail: 'tamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":4}
+      stdout_tail: 'tamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","external-agent_events_seen":4}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"running","message":"codex
-        assistant message emitted","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":5}
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"external-agent_journal","status":"running","message":"external-agent
+        assistant message emitted","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","external-agent_events_seen":5}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"heartbeat","message":"codex
-        journal event: user_message","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":6}
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"external-agent_journal","status":"heartbeat","message":"external-agent
+        journal event: user_message","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","external-agent_events_seen":6}
 
         {"type":"error","message":"You''ve hit your usage limit. Upgrade to Plus to
-        continue using Codex (https://chatgpt.com/explore/plus), or try again at Jul
-        30th, 2026 5:06 PM."}
+        continue using ExternalAgent (https://chatgpt.com/explore/plus), or try again
+        at Jul 30th, 2026 5:06 PM."}
 
         {"type":"turn.failed","error":{"message":"You''ve hit your usage limit. Upgrade
-        to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try
-        again at Jul 30th, 2026 5:06 PM."}}
+        to Plus to continue using ExternalAgent (https://chatgpt.com/explore/plus),
+        or try again at Jul 30th, 2026 5:06 PM."}}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"codex
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"external-agent
         auditor exited nonzero","timestamp":"2026-07-02T13:23:10Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary"}
 
         '
@@ -4181,7 +4181,7 @@ records:
     - anchor_id: d2dd61279de6
       evidence_path: evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
       sha256: b0eeacc3818c5a12580c27c4b3fdf404d3a51d777acd0f4ff55d001b3704ccb4
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: 341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
       candidate_after_head: 341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
@@ -4194,7 +4194,7 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 3bd6dbf7fe82d58b17b12b5b
-- version: aiam-progress-evidence/v1
+- version: progress-progress-evidence/v1
   status: accepted
   step_id: step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
   roadmap_item_ids:
@@ -4224,7 +4224,7 @@ records:
   - scripts/capture_tahoe_auth_unicast_tx_node.py
   kernel_state_digest: 4a95cf49b3c33d4b29f14a2958eeff822ffc92ad62de0266517acced990214a1
   semantic_role_chain:
-    version: aiam-progress-role-chain-verdict/v2
+    version: progress-progress-role-chain-verdict/v2
     status: accepted
     step_id: step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
     roadmap_item_id: itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
@@ -4316,26 +4316,26 @@ records:
       - anchor_id: 9de4aae79a48
         evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
         sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
-        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        command: <redacted-runtime-path>
         produced_by_runtime: true
         input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
         candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
       - anchor_id: fbb2a6234952
         evidence_path: itlwm/hal_iwn/ItlIwn.cpp
         sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
-        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        command: <redacted-runtime-path>
         produced_by_runtime: true
         input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
         candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
       - anchor_id: 36fb8885f0db
         evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
         sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
-        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        command: <redacted-runtime-path>
         produced_by_runtime: true
         input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
         candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
       errors: []
-- version: aiam-progress-role-chain-verdict/v2
+- version: progress-progress-role-chain-verdict/v2
   status: rejected
   step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
   roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
@@ -4370,23 +4370,23 @@ records:
       status: failed
       reason_class: auditor_failed_or_timed_out
       summary: auditor command failed before accepting the selected step
-      stdout_tail: 'tamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":4}
+      stdout_tail: 'tamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","external-agent_events_seen":4}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"running","message":"codex
-        assistant message emitted","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":5}
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"external-agent_journal","status":"running","message":"external-agent
+        assistant message emitted","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","external-agent_events_seen":5}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"heartbeat","message":"codex
-        journal event: user_message","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":6}
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"external-agent_journal","status":"heartbeat","message":"external-agent
+        journal event: user_message","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","external-agent_journal":"<redacted-agent-home>-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","external-agent_events_seen":6}
 
         {"type":"error","message":"You''ve hit your usage limit. Upgrade to Plus to
-        continue using Codex (https://chatgpt.com/explore/plus), or try again at Jul
-        30th, 2026 5:06 PM."}
+        continue using ExternalAgent (https://chatgpt.com/explore/plus), or try again
+        at Jul 30th, 2026 5:06 PM."}
 
         {"type":"turn.failed","error":{"message":"You''ve hit your usage limit. Upgrade
-        to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try
-        again at Jul 30th, 2026 5:06 PM."}}
+        to Plus to continue using ExternalAgent (https://chatgpt.com/explore/plus),
+        or try again at Jul 30th, 2026 5:06 PM."}}
 
-        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"codex
+        Progress_PROGRESS_JSON:{"version":"progress-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"external-agent
         auditor exited nonzero","timestamp":"2026-07-02T14:39:05Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary"}
 
         '
@@ -4430,21 +4430,21 @@ records:
     - anchor_id: 9de4aae79a48
       evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
       sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
       candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
     - anchor_id: fbb2a6234952
       evidence_path: itlwm/hal_iwn/ItlIwn.cpp
       sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
       candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
     - anchor_id: 36fb8885f0db
       evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
       sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
       candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
@@ -4457,7 +4457,7 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: dba8a6cf828538aa446bb242
-- version: aiam-progress-role-chain-verdict/v2
+- version: progress-progress-role-chain-verdict/v2
   status: rejected
   step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
   roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
@@ -4536,21 +4536,21 @@ records:
     - anchor_id: 9de4aae79a48
       evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
       sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: 3d39aba6851d523893be66d98b2823240d673747
       candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
     - anchor_id: fbb2a6234952
       evidence_path: itlwm/hal_iwn/ItlIwn.cpp
       sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: 3d39aba6851d523893be66d98b2823240d673747
       candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
     - anchor_id: 36fb8885f0db
       evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
       sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
-      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      command: <redacted-runtime-path>
       produced_by_runtime: true
       input_head: 3d39aba6851d523893be66d98b2823240d673747
       candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
@@ -4563,3 +4563,130 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 84aa8110ffb17f136d8540fd
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b1b-auth-txdone-guard-publication-boundary
+  input_head_commit: 72b47bf2592072a5e7d13928211afe2b981c0a40
+  head_commit: 018953216c93581f495b3c2947e0de73256afd75
+  executor_commit:
+    before_head: 72b47bf2592072a5e7d13928211afe2b981c0a40
+    after_head: 018953216c93581f495b3c2947e0de73256afd75
+  state_delta: From input head 72b47bf2592072a5e7d13928211afe2b981c0a40, the iwn Tahoe
+    AUTH(seq=1) management TX path now publishes a raw firmware TXDONE marker when
+    the pending qid/idx completes, or a pre-retry guard decision for the same pending
+    qid/idx before the next canonical completion retry. The committed live Tahoe evidence
+    proves the selected build preserved a unicast firmware peer node and observed
+    the guard publication for pending qid=0 idx=0 without claiming canonical TX completion,
+    AUTH response-window, AUTH response ACK, association, DHCP, data transfer, reconnect,
+    or final Wi-Fi equivalence.
+  evidence_paths:
+  - evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+  - itlwm/hal_iwn/ItlIwn.cpp
+  - itlwm/hal_iwn/if_iwnvar.h
+  - scripts/capture_tahoe_auth_txdone_guard_publication.py
+  kernel_state_digest: 72da11456bcf728d9cc0b7f976839293d4d574c1dbf6302d0b08b6a34503ed41
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+    roadmap_item_id: itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added narrow iwn AUTH(seq=1) diagnostic state and publication for
+          raw TXDONE matching the pending qid/idx or a guard-before-retry decision,
+          plus a Tahoe live capture/validate helper for this boundary.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Ran a non-mutating validate-only live Tahoe recapture against the
+          committed artifact and final after-head; it re-observed the selected build,
+          allowed AP, PMK delivery, AUTH enqueue/drain/iwn path, unicast txid, and
+          guard publication matching pending qid=0 idx=0.
+        evidence_paths:
+        - evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: The committed source delta publishes an AUTH(seq=1) raw
+          TXDONE or pre-retry guard marker for the pending iwn qid/idx, and the committed
+          live Tahoe guest artifact records the observed guard decision for qid=0
+          idx=0 while preserving unicast peer-node identity with txid=0 instead of
+          broadcast txid=15. This reduces the linked final-goal remainder from making
+          the guard boundary observable to the next canonical AUTH TX completion retry
+          and later response/equivalence work, which the artifact explicitly leaves
+          unclaimed.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_committed_source_runtime_changes_publish_the_raw: true
+          criterion_6_runtime_evidence_is_captured_from_the_guest_agai: true
+          criterion_7_the_artifact_proves_the_unicast_peer_node_identi: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_committed_source_runtime_changes_publish_the_raw
+      statement: Committed source/runtime changes publish the raw firmware TXDONE
+        or guard decision for the live AUTH(seq=1) pending qid/idx before the next
+        canonical TX completion retry.
+      source: selected_step
+    - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+      statement: Runtime evidence is captured from the guest against an allowed operator-configured
+        lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+      source: selected_step
+    - id: criterion_7_the_artifact_proves_the_unicast_peer_node_identi
+      statement: The artifact proves the unicast peer-node identity is preserved,
+        records the raw TXDONE/guard-publication outcome for the pending AUTH qid/idx,
+        and explicitly leaves canonical TX completion, AUTH response-window, AUTH
+        response ACK, and later Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 964c56768cc8
+        evidence_path: evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+        sha256: f6beb6e76d2d685e6a749688f9c29ec159b6bda66508853a04b457e822951105
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 72b47bf2592072a5e7d13928211afe2b981c0a40
+        candidate_after_head: 018953216c93581f495b3c2947e0de73256afd75
+      errors: []
