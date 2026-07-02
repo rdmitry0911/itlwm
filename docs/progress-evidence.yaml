@@ -2270,3 +2270,101 @@ records:
         input_head: da4d0211eaef1211b04d47cc2f81e7751337a787
         candidate_after_head: 9fe1193808638d7d747953510cba51a2f121b4a0
       errors: []
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+  roadmap_item_id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: blocked
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: true
+      verification_method: reference
+      role: validator
+    evidence:
+      status: missing
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_committed_typed_evidence_and_loaded_uuid_mismatch
+      progress_argument: 'Remaining work toward itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
+        did not decrease: HEAD 802f67e942bb316dd381e2c3a34c9d34f5b057dc does not contain
+        committed evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json, the executor
+        candidate is status blocked with no evidence_paths, and the candidate reports
+        the live reboot loaded UUID 21281E0F-88F3-3F1A-B864-511A360FDE61 rather than
+        the selected rebuilt UUID BFC78EAD-9A23-3949-9C1F-36DA8A59A7F2.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_a_live_tahoe_guest_run_installs_the_selected_hea: false
+        criterion_6_the_loaded_kext_uuid_version_is_proven_to_match_: false
+        criterion_7_the_evidence_records_absence_of_kernel_panic_rem: false
+        criterion_8_the_artifact_explicitly_leaves_join_trigger_pmk_: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_installs_the_selected_hea
+    statement: A live Tahoe guest run installs the selected-head kext into AuxKC,
+      reboots with passthrough Wi-Fi attached, and returns over SSH.
+    source: selected_step
+  - id: criterion_6_the_loaded_kext_uuid_version_is_proven_to_match_
+    statement: The loaded kext UUID/version is proven to match the selected input
+      head or candidate commit under test.
+    source: selected_step
+  - id: criterion_7_the_evidence_records_absence_of_kernel_panic_rem
+    statement: The evidence records absence of kernel panic, remote-debugger wait,
+      and stale/replayed boot logs for the selected attempt.
+    source: selected_step
+  - id: criterion_8_the_artifact_explicitly_leaves_join_trigger_pmk_
+    statement: The artifact explicitly leaves join-trigger/PMK, AUTH, association,
+      DHCP, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 00a2d7e20f58
+      evidence_path: evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json
+      sha256: 72f0305f02edaf93439c17d99b1a8850558fa45ab333ef27bea02c7544937f1b
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 802f67e942bb316dd381e2c3a34c9d34f5b057dc
+      candidate_after_head: 802f67e942bb316dd381e2c3a34c9d34f5b057dc
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary!=step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary!=itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+    - runtime_capture_anchor_input_head_mismatch:da4d0211eaef1211b04d47cc2f81e7751337a787!=802f67e942bb316dd381e2c3a34c9d34f5b057dc
+    - runtime_capture_anchor_after_head_mismatch:9fe1193808638d7d747953510cba51a2f121b4a0!=802f67e942bb316dd381e2c3a34c9d34f5b057dc
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 73d5f1a3d8f6b3476ffdb6d2
