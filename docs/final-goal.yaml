@@ -243,6 +243,21 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary passes
     from committed evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json.
 
+- id: itlwm-fg-05a0b1a-auth-unicast-tx-node-boundary
+  title: Tahoe AUTH unicast TX firmware-node boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that live AUTH(seq=1)
+    management frames no longer enter the iwn firmware TX path as the broadcast
+    firmware node (txid=15). The artifact must show the prior blocker signature,
+    the committed source/runtime delta, and the live unicast peer-node TX identity.
+    This split exists because rejection 4775989 proved enqueue, drain, and iwn TX
+    ring entry but showed txid=15 and no firmware TX_DONE. This step does not
+    claim firmware TX_DONE, AUTH response-window reception, AUTH response ACK,
+    association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary passes from
+    committed evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json.
+
 - id: itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
   title: Tahoe AUTH management frame TX completion boundary
   description: >-
