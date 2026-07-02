@@ -3264,3 +3264,98 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 5a6239b20f8f48efa1215241
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+  roadmap_item_id: itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: implemented
+      summary: Implemented the current-attempt validate-only recapture boundary in
+        scripts/capture_tahoe_join_trigger_pmk_delivery.py and refreshed committed
+        live Tahoe evidence at evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json.
+    validator:
+      role: validator
+      status: passed
+      independent: true
+      summary: Reran the helper's static artifact validator, then ran non-mutating
+        validate-only live recapture after the useful commit with the candidate after-head.
+        The fresh live recapture reached generation 28, matched the committed allowed
+        AP identifier and loaded kext UUID/hash, and left the worktree clean.
+      evidence_paths: []
+    evidence:
+      role: evidence
+      status: captured
+      evidence_paths:
+      - evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+      - scripts/capture_tahoe_join_trigger_pmk_delivery.py
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: '[redacted external agent transport output omitted from public
+        evidence]'
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_against_an_allowed_operat
+    statement: A live Tahoe guest run against an allowed operator-configured lab AP
+      reaches the driver/PLTI join path and publishes a concrete association target.
+    source: selected_step
+  - id: criterion_6_the_pmk_helper_daemon_keychain_path_is_prepared_
+    statement: The PMK helper daemon/keychain path is prepared and delivers the PMK
+      for the same allowed AP without storing AP secrets in committed project files.
+    source: selected_step
+  - id: criterion_7_the_artifact_explicitly_leaves_auth_tx_rx_comple
+    statement: The artifact explicitly leaves AUTH TX/RX completion, AUTH response
+      ACK, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 812f0412d49e
+      evidence_path: evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+      sha256: 140d179bf48a4bb3125d7cfe464e38f54b52b527a27e7292d9c0ac4cc8f340ed
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 310498ae4a5103b3e752d2da76a75b8032e3df3d
+      candidate_after_head: 9119c02b63e33e2d3dc66c44a34632ec84c82f2e
+    - anchor_id: 80ed5885b16a
+      evidence_path: scripts/capture_tahoe_join_trigger_pmk_delivery.py
+      sha256: 0a9a80995a2d3e6965a872b691e4a2e4c7ab5a06e3eb84c0e585f723e221ba97
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 310498ae4a5103b3e752d2da76a75b8032e3df3d
+      candidate_after_head: 9119c02b63e33e2d3dc66c44a34632ec84c82f2e
+    errors: []
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 01f0d043607341c862e56edb
