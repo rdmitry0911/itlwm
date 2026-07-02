@@ -3359,3 +3359,136 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 01f0d043607341c862e56edb
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c-join-trigger-pmk-helper-delivery-boundary
+  input_head_commit: feb2b0cf6fef082ca1bc61815c0ce23fe4abdd12
+  head_commit: ebabea8f64cb4722f3470faa08c6aec5feb74bee
+  executor_commit:
+    before_head: feb2b0cf6fef082ca1bc61815c0ce23fe4abdd12
+    after_head: ebabea8f64cb4722f3470faa08c6aec5feb74bee
+  state_delta: The project now commits a fresh sanitized live Tahoe guest evidence
+    artifact for the join-trigger/PMK-helper boundary at the selected input head and
+    updates the capture helper to resolve the selected input and candidate after-head
+    from the current attempt instead of a stale embedded constant. The evidence proves
+    guest en1 saw the allowed operator AP, the driver/PLTI path published a concrete
+    association target, and the AirportItlwmAgent keychain/PMK path delivered the
+    PMK for that same allowed AP while explicitly leaving AUTH TX/RX completion, AUTH
+    response ACK, and final Wi-Fi equivalence unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+  - scripts/capture_tahoe_join_trigger_pmk_delivery.py
+  changed_files:
+  - evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+  - scripts/capture_tahoe_join_trigger_pmk_delivery.py
+  kernel_state_digest: f433a30bcf7642ca948c0ac3f01a1d71943fc1e3210e679ea04828c86497876d
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+    roadmap_item_id: itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added current-attempt head resolution to the Tahoe join-trigger/PMK
+          capture helper and committed fresh live Tahoe evidence for the selected
+          input head.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Reran the non-mutating validate-only live recapture after the useful
+          commit with candidate after-head ebabea8f64cb4722f3470faa08c6aec5feb74bee;
+          it performed a fresh Tahoe guest probe and validated the committed artifact
+          for the same allowed AP identifier with fresh PLTI/PMK generation 44.
+        evidence_paths:
+        - evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+        - scripts/capture_tahoe_join_trigger_pmk_delivery.py
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+        - scripts/capture_tahoe_join_trigger_pmk_delivery.py
+      auditor:
+        accepted: true
+        progress_argument: Committed, runtime-anchored Tahoe evidence for the selected
+          step now shows en1 on macOS 26.2 saw the allowed operator AP, the live CoreWLAN/networksetup
+          join trigger reached the driver/PLTI association-target path, and AirportItlwmAgent's
+          LaunchDaemon/keychain path derived and delivered a PMK for that same allowed
+          AP. This removes the join-trigger/PMK helper delivery blocker and leaves
+          AUTH TX/RX completion, AUTH response ACK, association, DHCP, and final Wi-Fi
+          equivalence as later unclaimed gates.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_against_an_allowed_operat: true
+          criterion_6_the_pmk_helper_daemon_keychain_path_is_prepared_: true
+          criterion_7_the_artifact_explicitly_leaves_auth_tx_rx_comple: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_against_an_allowed_operat
+      statement: A live Tahoe guest run against an allowed operator-configured lab
+        AP reaches the driver/PLTI join path and publishes a concrete association
+        target.
+      source: selected_step
+    - id: criterion_6_the_pmk_helper_daemon_keychain_path_is_prepared_
+      statement: The PMK helper daemon/keychain path is prepared and delivers the
+        PMK for the same allowed AP without storing AP secrets in committed project
+        files.
+      source: selected_step
+    - id: criterion_7_the_artifact_explicitly_leaves_auth_tx_rx_comple
+      statement: The artifact explicitly leaves AUTH TX/RX completion, AUTH response
+        ACK, and later Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 4f5ca28aaa0a
+        evidence_path: evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json
+        sha256: 30c58664cdd90a845bf65e50f65046b38dad8911a3a61197fd2a209372ca9784
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: feb2b0cf6fef082ca1bc61815c0ce23fe4abdd12
+        candidate_after_head: ebabea8f64cb4722f3470faa08c6aec5feb74bee
+      - anchor_id: a8666141544a
+        evidence_path: scripts/capture_tahoe_join_trigger_pmk_delivery.py
+        sha256: 904ba53bac4aa1312b67061c07e7d0656c6fcbc755659d067a1bd5eb7fc8a70f
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: feb2b0cf6fef082ca1bc61815c0ce23fe4abdd12
+        candidate_after_head: ebabea8f64cb4722f3470faa08c6aec5feb74bee
+      errors: []
