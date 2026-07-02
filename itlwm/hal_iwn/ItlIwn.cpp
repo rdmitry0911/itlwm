@@ -3164,6 +3164,37 @@ iwn_notif_intr(struct iwn_softc *sc)
             break;
         case IWN_TX_DONE:
             /* An 802.11 frame has been transmitted. */
+            if (sc->auth_seq1_tx_pending &&
+                ((desc->qid & 0xf) == sc->auth_seq1_tx_qid) &&
+                desc->idx == sc->auth_seq1_tx_idx) {
+                char auth_txdone_guard_buf[256];
+                snprintf(auth_txdone_guard_buf,
+                    sizeof(auth_txdone_guard_buf),
+                    "stage=raw_txdone decision=raw_txdone_observed "
+                    "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                    "auth_seq=0x%04x pending_qid=%u pending_idx=%u "
+                    "qid=%u raw_qid=%u idx=%u desc_flags=0x%02x",
+                    IEEE80211_FC0_SUBTYPE_AUTH,
+                    sc->auth_seq1_tx_bssid[0],
+                    sc->auth_seq1_tx_bssid[1],
+                    sc->auth_seq1_tx_bssid[2],
+                    sc->auth_seq1_tx_bssid[3],
+                    sc->auth_seq1_tx_bssid[4],
+                    sc->auth_seq1_tx_bssid[5],
+                    1,
+                    (unsigned)sc->auth_seq1_tx_qid,
+                    (unsigned)sc->auth_seq1_tx_idx,
+                    (unsigned)(desc->qid & 0xf),
+                    (unsigned)desc->qid,
+                    (unsigned)desc->idx,
+                    (unsigned)desc->flags);
+                IWX_AUTH_DIAG("iwn_notif_intr: AUTH TXDONE raw %s\n",
+                    auth_txdone_guard_buf);
+                getController()->setProperty(
+                    "itlwm-iwn-auth-txdone-guard",
+                    auth_txdone_guard_buf);
+                sc->auth_seq1_tx_pending = 0;
+            }
             ops->tx_done(sc, desc, data);
             break;
 
@@ -4002,6 +4033,40 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         IWX_AUTH_DIAG("iwn_tx: MGT ring_kick %s\n", auth_tx_path_buf);
         getController()->setProperty("itlwm-iwn-auth-tx-path",
             auth_tx_path_buf);
+        if (diag_auth_seq == 1) {
+            if (sc->auth_seq1_tx_pending &&
+                IEEE80211_ADDR_EQ(sc->auth_seq1_tx_bssid, diag_peer)) {
+                char auth_txdone_guard_buf[256];
+                snprintf(auth_txdone_guard_buf,
+                    sizeof(auth_txdone_guard_buf),
+                    "stage=guard_before_retry "
+                    "decision=no_raw_txdone_before_retry "
+                    "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                    "auth_seq=0x%04x pending_qid=%u pending_idx=%u "
+                    "retry_qid=%d retry_idx=%d txid=%u "
+                    "broadcast_txid=%u unicast=%u",
+                    diag_subtype,
+                    diag_peer[0], diag_peer[1], diag_peer[2],
+                    diag_peer[3], diag_peer[4], diag_peer[5],
+                    (unsigned)diag_auth_seq,
+                    (unsigned)sc->auth_seq1_tx_qid,
+                    (unsigned)sc->auth_seq1_tx_idx,
+                    ring->qid, cmd->idx, (unsigned)tx->id,
+                    (unsigned)sc->broadcast_id,
+                    (unsigned)(tx->id != sc->broadcast_id));
+                IWX_AUTH_DIAG("iwn_tx: AUTH TXDONE guard %s\n",
+                    auth_txdone_guard_buf);
+                getController()->setProperty(
+                    "itlwm-iwn-auth-txdone-guard",
+                    auth_txdone_guard_buf);
+            }
+            sc->auth_seq1_tx_pending = 1;
+            sc->auth_seq1_tx_qid = ring->qid;
+            sc->auth_seq1_tx_idx = cmd->idx;
+            IEEE80211_ADDR_COPY(sc->auth_seq1_tx_bssid, diag_peer);
+            getController()->setProperty("itlwm-iwn-auth-tx-pending",
+                auth_tx_path_buf);
+        }
     }
 
     /* Mark TX ring as full if we reach a certain threshold. */

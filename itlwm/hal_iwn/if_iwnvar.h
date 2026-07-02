@@ -331,6 +331,10 @@ struct iwn_softc {
     int            temp;
     int            noise;
     uint32_t        qfullmsk;
+    uint8_t            auth_seq1_tx_pending;
+    uint8_t            auth_seq1_tx_qid;
+    uint8_t            auth_seq1_tx_idx;
+    uint8_t            auth_seq1_tx_bssid[IEEE80211_ADDR_LEN];
 
     uint32_t        prom_base;
     struct iwn4965_eeprom_band
