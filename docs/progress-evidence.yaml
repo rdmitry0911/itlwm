@@ -2368,3 +2368,124 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 73d5f1a3d8f6b3476ffdb6d2
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0b-source-stable-build-identity-boundary
+  input_head_commit: 8c50a5802f072c6fa63c3b3debfa2c8cca3597ef
+  head_commit: 903e70b63c33ad55a97fc4aded3ba9cc4a82f953
+  executor_commit:
+    before_head: 8c50a5802f072c6fa63c3b3debfa2c8cca3597ef
+    after_head: 903e70b63c33ad55a97fc4aded3ba9cc4a82f953
+  state_delta: The Tahoe build now embeds a deterministic source identity computed
+    from committed source-bearing build inputs instead of raw repository HEAD for
+    normal git builds. The committed evidence proves the previous progress-only evidence/rejection
+    heads share one source identity, while this source delta changes that identity
+    and leaves AuxKC boot-safe load, join-trigger/PMK, AUTH, association, DHCP, and
+    final Wi-Fi equivalence unclaimed.
+  evidence_paths:
+  - evidence/build/tahoe_source_stable_build_identity_report.json
+  changed_files:
+  - evidence/build/tahoe_source_stable_build_identity_report.json
+  - scripts/build_tahoe.sh
+  - scripts/tahoe_source_identity.py
+  kernel_state_digest: 9a810084813ca4720aba57ff705311123aa8ce72ec790a342d18cf986f9009ab
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+    roadmap_item_id: itlwm-rm-05a0c0b-source-stable-build-identity-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added scripts/tahoe_source_identity.py and changed scripts/build_tahoe.sh
+          so ITLWM_COMMIT_HASH is derived from committed Tahoe source-bearing inputs
+          for normal git builds, with raw HEAD retained only as a fallback.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Recomputed the committed source identity report against final HEAD,
+          checked build script syntax, compiled the helper, and verified committed
+          history does not contain the private orchestration name.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/build/tahoe_source_stable_build_identity_report.json
+      auditor:
+        accepted: true
+        progress_argument: The committed Tahoe build path now derives ITLWM_COMMIT_HASH
+          from committed source-bearing inputs, and independent recapture shows the
+          previous progress-only heads keep one source identity while the current
+          committed source/build-helper delta changes it. This removes the blocker
+          where docs/evidence-only progress changed the kext build identity and forced
+          a fresh approval cycle before the AuxKC boot-safe load retry, so the linked
+          build-identity final-goal item is advanced while later runtime Wi-Fi gates
+          remain open.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_the_tahoe_build_script_computes_itlwm_commit_has: true
+          criterion_6_deterministic_evidence_proves_that_the_source_id: true
+          criterion_7_the_artifact_explicitly_leaves_auxkc_boot_safe_l: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_the_tahoe_build_script_computes_itlwm_commit_has
+      statement: The Tahoe build script computes ITLWM_COMMIT_HASH from committed
+        source-bearing inputs rather than raw repository HEAD for normal git builds.
+      source: selected_step
+    - id: criterion_6_deterministic_evidence_proves_that_the_source_id
+      statement: Deterministic evidence proves that the source identity is stable
+        across the previous progress-only evidence/rejection heads that triggered
+        the blocker, while remaining tied to source-bearing paths for real implementation
+        changes.
+      source: selected_step
+    - id: criterion_7_the_artifact_explicitly_leaves_auxkc_boot_safe_l
+      statement: The artifact explicitly leaves AuxKC boot-safe load, join-trigger/PMK,
+        AUTH, association, DHCP, and later Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 850cc6c32340
+        evidence_path: evidence/build/tahoe_source_stable_build_identity_report.json
+        sha256: 2fae256f7eedd321bc6ab0df10390f71687cdfe0d44a94ebeab93030e760b13e
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 8c50a5802f072c6fa63c3b3debfa2c8cca3597ef
+        candidate_after_head: 903e70b63c33ad55a97fc4aded3ba9cc4a82f953
+      errors: []
