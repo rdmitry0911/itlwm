@@ -4194,3 +4194,144 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 3bd6dbf7fe82d58b17b12b5b
+- version: aiam-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b1a-auth-unicast-tx-node-boundary
+  input_head_commit: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
+  head_commit: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
+  executor_commit:
+    before_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
+    after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
+  state_delta: The Tahoe iwn AUTH(seq=1) management TX path now installs the BSS peer
+    firmware node during AUTH setup and routes unicast AUTH frames through that peer
+    node instead of the broadcast node txid=15. The committed live guest evidence
+    captures the prior txid=15 blocker signature and proves the new AUTH(seq=1) TX
+    identity as txid=0 with broadcast_txid=15 and unicast=1 against the operator-allowed
+    lab AP, while leaving TX_DONE, AUTH response-window, AUTH response ACK, and later
+    Wi-Fi equivalence criteria unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+  - itlwm/hal_iwn/ItlIwn.cpp
+  - scripts/capture_tahoe_auth_unicast_tx_node.py
+  changed_files:
+  - evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+  - itlwm/hal_iwn/ItlIwn.cpp
+  - itlwm/hal_iwn/ItlIwn.hpp
+  - scripts/capture_tahoe_auth_unicast_tx_node.py
+  kernel_state_digest: 4a95cf49b3c33d4b29f14a2958eeff822ffc92ad62de0266517acced990214a1
+  semantic_role_chain:
+    version: aiam-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+    roadmap_item_id: itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: iwn AUTH setup now adds the BSS peer firmware node before AUTH management
+          TX, and unicast AUTH(seq=1) management frames use the peer node id instead
+          of the broadcast node; a selected-step live capture script and runtime artifact
+          were committed with the source delta.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: The Tahoe guest was rebuilt and loaded with the selected source identity,
+          then the live capture and validate-only recapture were run against the operator
+          allowed lab AP. The typed validator reported no errors and the independent
+          recapture confirmed AUTH(seq=1) txid=0, broadcast_txid=15, and unicast=1.
+        evidence_paths:
+        - evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: 'The committed source now installs the BSS firmware node
+          during iwn AUTH setup and routes unicast AUTH(seq=1) management TX through
+          the peer node; the committed live Tahoe guest artifact proves the prior
+          txid=15 blocker and the new txid=0 unicast peer identity, leaving only later
+          TX_DONE, response-window, ACK, and Wi-Fi equivalence boundaries for subsequent
+          roadmap items.
+
+          '
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_committed_source_runtime_changes_make_live_auth_: true
+          criterion_6_runtime_evidence_is_captured_from_the_guest_agai: true
+          criterion_7_the_artifact_records_the_prior_txid_15_blocker_s: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_committed_source_runtime_changes_make_live_auth_
+      statement: Committed source/runtime changes make live AUTH(seq=1) TX use a unicast
+        peer firmware node rather than the broadcast node txid=15.
+      source: selected_step
+    - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+      statement: Runtime evidence is captured from the guest against an allowed operator-configured
+        lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_prior_txid_15_blocker_s
+      statement: The artifact records the prior txid=15 blocker signature, proves
+        the new unicast TX identity, and explicitly leaves TX_DONE, AUTH response-window,
+        AUTH response ACK, and later Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 9de4aae79a48
+        evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+        sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
+        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        produced_by_runtime: true
+        input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
+        candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
+      - anchor_id: fbb2a6234952
+        evidence_path: itlwm/hal_iwn/ItlIwn.cpp
+        sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
+        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        produced_by_runtime: true
+        input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
+        candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
+      - anchor_id: 36fb8885f0db
+        evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
+        sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
+        command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+        produced_by_runtime: true
+        input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
+        candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
+      errors: []
