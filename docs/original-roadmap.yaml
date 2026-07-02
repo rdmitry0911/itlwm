@@ -597,32 +597,34 @@ tasks:
 
 
 - id: itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
-  title: Tahoe selected identity approval refresh boundary
+  title: Tahoe selected identity GUI approval/restart handoff boundary
   goal_item_ids:
   - itlwm-fg-05a0c0c-selected-identity-approval-refresh-boundary
   depends_on:
   - itlwm-rm-05a0c0b-source-stable-build-identity-boundary
   description: >-
-    Resolve the blocker proven by rejection af46489: after the source-stable build
-    identity change, the live Tahoe guest rebuild/install produced a new selected
-    AirportItlwm UUID and binary identity, but the approved and loaded AuxKC kext
-    remained the prior UUID while kmutil still reported the System Settings
-    approval-required path for the current selected bundle. This step refreshes or
-    proves the approval/load-admission state for the current selected source-stable
-    bundle identity before the AuxKC boot-safe loaded-after-reboot boundary is
-    retried. It does not claim selected UUID loaded after reboot, join-trigger/PMK,
-    AUTH, association, DHCP, data transfer, reconnect, or final Wi-Fi equivalence.
+    Resolve the narrower handoff proven by rejection 17610e1: after the
+    source-stable build identity change, the live Tahoe guest rebuild/install
+    produced a new selected AirportItlwm UUID and binary identity, but the older
+    loaded UUID remained stale and kmutil still reported the System Settings
+    approval-required path. This step exercises or independently observes the live
+    Tahoe System Settings approval workflow for the current selected UUID/CDHash and
+    proves the truthful restart-required handoff for that same selected identity.
+    It does not claim post-reboot load admission, selected UUID loaded after reboot,
+    join-trigger/PMK, AUTH, association, DHCP, data transfer, reconnect, or final
+    Wi-Fi equivalence.
   acceptance:
   - A live Tahoe guest run with passthrough Wi-Fi attached rebuilds and installs the
     current selected source-stable AirportItlwm bundle and records its UUID, binary
     hash, and guest project head.
-  - The evidence proves that the current selected bundle identity is no longer on
-    the System Settings approval-required path and reaches the load-admission
-    handoff for that same selected UUID/CDHash, rather than reusing approval for an
-    older loaded UUID.
-  - The artifact records the prior stale-loaded-UUID blocker signature and leaves
-    selected loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and
-    final Wi-Fi equivalence criteria unclaimed.
+  - The evidence proves that the live System Settings or syspolicyd approval
+    workflow is exercised or observed for that current selected identity and reaches
+    the restart-required handoff for the same selected UUID/CDHash, rather than
+    reusing approval for an older loaded UUID.
+  - The artifact records the prior stale-loaded-UUID and approval-required blocker
+    signatures and leaves post-reboot load admission, selected loaded-after-reboot,
+    join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence criteria
+    unclaimed.
   requires:
   - id: itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
     artifact: evidence/runtime/tahoe_selected_identity_approval_refresh_boundary.json
@@ -643,10 +645,13 @@ tasks:
       - approval_refresh.selected_binary_sha256
       - approval_refresh.kmutil_exit_code
       - approval_refresh.kmutil_approval_required
-      - approval_refresh.selected_identity_approval_current
-      - approval_refresh.selected_bundle_admitted_for_load
-      - approval_refresh.reboot_required_observed
-      - verdict.ready_for_auxkc_boot_safe_load_retry
+      - approval_refresh.system_settings_or_syspolicyd_surface_observed
+      - approval_refresh.workflow_exercised_or_observed
+      - approval_refresh.restart_required_observed
+      - approval_refresh.selected_cdhash_policy_or_history_state_present
+      - approval_refresh.post_reboot_load_admission_not_claimed
+      - verdict.ready_for_selected_identity_post_reboot_materialization
+      - verdict.load_admission_not_claimed
       - verdict.loaded_uuid_after_reboot_not_claimed
       - verdict.join_trigger_not_claimed
       - verdict.pmk_delivery_not_claimed
@@ -659,11 +664,13 @@ tasks:
         runtime_environment.guest_wifi_interface: en1
         runtime_environment.wifi_passthrough_attached: true
         approval_refresh.prior_blocker_signature: selected_identity_not_approved_after_source_identity_change
-        approval_refresh.kmutil_approval_required: false
-        approval_refresh.selected_identity_approval_current: true
-        approval_refresh.selected_bundle_admitted_for_load: true
+        approval_refresh.system_settings_or_syspolicyd_surface_observed: true
+        approval_refresh.workflow_exercised_or_observed: true
         approval_refresh.reboot_required_observed: true
-        verdict.ready_for_auxkc_boot_safe_load_retry: true
+        approval_refresh.selected_cdhash_policy_or_history_state_present: true
+        approval_refresh.post_reboot_load_admission_not_claimed: true
+        verdict.ready_for_selected_identity_post_reboot_materialization: true
+        verdict.load_admission_not_claimed: true
         verdict.loaded_uuid_after_reboot_not_claimed: true
         verdict.join_trigger_not_claimed: true
         verdict.pmk_delivery_not_claimed: true
@@ -678,12 +685,95 @@ tasks:
         - unknown
         - prose_only
 
+- id: itlwm-rm-05a0c0d-selected-identity-post-reboot-approval-materialization-boundary
+  title: Tahoe selected identity post-reboot approval materialization boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0d-selected-identity-post-reboot-approval-materialization-boundary
+  depends_on:
+  - itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+  description: >-
+    Resolve the post-GUI materialization boundary isolated by rejection 17610e1:
+    the live Tahoe System Settings workflow can reach a restart-required handoff
+    for the current selected AirportItlwm UUID/CDHash, but the immediate pre-reboot
+    kmutil probe can still report the approval-required path. This step performs a
+    clean guest reboot from that handoff state, returns over SSH, and proves the
+    selected identity no longer follows the System Settings approval-required path
+    when kmutil evaluates the same selected bundle. It does not claim AuxKC
+    boot-safe loaded UUID, join-trigger/PMK, AUTH, association, DHCP, data transfer,
+    reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - A live Tahoe guest run with passthrough Wi-Fi attached starts from the selected
+    source-stable AirportItlwm bundle and a proven restart-required approval
+    handoff for the same selected UUID/CDHash.
+  - The evidence reboots the guest, returns over SSH, and proves that kmutil no
+    longer reports the System Settings approval-required path for the selected
+    installed bundle after reboot.
+  - The artifact records the selected UUID/CDHash before and after reboot, the
+    reboot/login recovery boundary, and leaves AuxKC boot-safe loaded UUID,
+    join-trigger/PMK, AUTH, association, DHCP, and final Wi-Fi equivalence criteria
+    unclaimed.
+  requires:
+  - id: itlwm-rm-05a0c0d-selected-identity-post-reboot-approval-materialization-boundary
+    artifact: evidence/runtime/tahoe_selected_identity_post_reboot_approval_materialization_boundary.json
+    checks:
+      require_fields:
+      - selected_step
+      - input_head
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.wifi_passthrough_attached
+      - selected_kext.input_head
+      - selected_kext.installed_uuid_before_reboot
+      - selected_kext.selected_uuid_after_reboot
+      - selected_kext.selected_cdhash_after_reboot
+      - approval_materialization.prior_blocker_signature
+      - approval_materialization.reboot_performed
+      - approval_materialization.ssh_returned_after_reboot
+      - approval_materialization.kmutil_load_exit_code_after_reboot
+      - approval_materialization.kmutil_approval_required_after_reboot
+      - approval_materialization.selected_identity_approval_current_after_reboot
+      - approval_materialization.selected_bundle_admitted_for_load_after_reboot
+      - approval_materialization.same_selected_uuid_cdhash_handoff_observed
+      - verdict.ready_for_auxkc_boot_safe_load_retry
+      - verdict.boot_safe_load_not_claimed
+      - verdict.join_trigger_not_claimed
+      - verdict.pmk_delivery_not_claimed
+      - verdict.auth_tx_rx_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+      equals:
+        selected_step: step:itlwm-rm-05a0c0d-selected-identity-post-reboot-approval-materialization-boundary
+        runtime_environment.guest_wifi_interface: en1
+        runtime_environment.wifi_passthrough_attached: true
+        approval_materialization.prior_blocker_signature: selected_identity_restart_required_after_gui_approval_workflow
+        approval_materialization.reboot_performed: true
+        approval_materialization.ssh_returned_after_reboot: true
+        approval_materialization.kmutil_approval_required_after_reboot: false
+        approval_materialization.selected_identity_approval_current_after_reboot: true
+        approval_materialization.selected_bundle_admitted_for_load_after_reboot: true
+        approval_materialization.same_selected_uuid_cdhash_handoff_observed: true
+        verdict.ready_for_auxkc_boot_safe_load_retry: true
+        verdict.boot_safe_load_not_claimed: true
+        verdict.join_trigger_not_claimed: true
+        verdict.pmk_delivery_not_claimed: true
+        verdict.auth_tx_rx_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      max_number:
+        approval_materialization.kmutil_load_exit_code_after_reboot: 0
+      forbid_values:
+        approval_materialization.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
   title: Tahoe selected AuxKC boot-safe load boundary
   goal_item_ids:
   - itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
   depends_on:
-  - itlwm-rm-05a0c0c-selected-identity-approval-refresh-boundary
+  - itlwm-rm-05a0c0d-selected-identity-post-reboot-approval-materialization-boundary
   description: >-
     Establish the narrower live-lab load boundary that the selected-head
     AirportItlwm kext can be rebuilt, installed into the Tahoe Auxiliary Kernel
