@@ -3823,6 +3823,9 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     if (type == IEEE80211_FC0_TYPE_CTL &&
         subtype == IEEE80211_FC0_SUBTYPE_BAR)
         tx->id = wn->id;
+    else if (type == IEEE80211_FC0_TYPE_MGT &&
+        !IEEE80211_IS_MULTICAST(wh->i_addr1))
+        tx->id = wn->id;
     else if (IEEE80211_IS_MULTICAST(wh->i_addr1) ||
         type != IEEE80211_FC0_TYPE_DATA)
         tx->id = sc->broadcast_id;
@@ -3881,7 +3884,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         else
             tx->rflags = 0;
     }
-    if (tx->id == sc->broadcast_id || ic->ic_fixed_mcs != -1 ||
+    if (tx->id == sc->broadcast_id || type == IEEE80211_FC0_TYPE_MGT ||
+        ic->ic_fixed_mcs != -1 ||
         ic->ic_fixed_rate != -1) {
         /* Group or management frame, or fixed Tx rate. */
         tx->linkq = 0;
@@ -5932,6 +5936,8 @@ iwn_auth(struct iwn_softc *sc, int arg)
     struct iwn_ops *ops = &sc->ops;
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = ic->ic_bss;
+    struct iwn_node *wn = (struct iwn_node *)ni;
+    struct iwn_node_info node;
     int error, ridx;
     int bss_switch =
         (!IEEE80211_ADDR_EQ(sc->bss_node_addr, etheranyaddr) &&
@@ -6032,6 +6038,47 @@ iwn_auth(struct iwn_softc *sc, int arg)
     }
     /* Diagnostic probe (auth-ACK boundary, iwn HAL): add_broadcast_node OK. */
     IWX_AUTH_DIAG("iwn_auth: add_broadcast_node OK ridx=%d\n", ridx);
+
+    /*
+     * The AUTH request is a unicast management frame that expects an ACK.
+     * Re-install the peer AP as the BSS firmware node immediately after
+     * RXON so the following net80211 AUTH(seq=1) frame does not fall back
+     * to the broadcast firmware node.
+     */
+    wn->id = IWN_ID_BSS;
+    memset(&node, 0, sizeof node);
+    IEEE80211_ADDR_COPY(node.macaddr, ni->ni_macaddr);
+    node.id = wn->id;
+    if (ni->ni_flags & IEEE80211_NODE_HT) {
+        node.htmask = (IWN_AMDPU_SIZE_FACTOR_MASK |
+            IWN_AMDPU_DENSITY_MASK);
+        node.htflags = htole32(
+            IWN_AMDPU_SIZE_FACTOR(
+            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_LE)) |
+            IWN_AMDPU_DENSITY(
+            (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_SS) >> 2));
+
+        if (iwn_rxon_ht40_enabled(sc))
+            node.htflags |= htole32(IWN_40MHZ_ENABLE);
+    }
+    if ((error = ops->add_node(sc, &node, 1)) != 0) {
+        XYLog("%s: could not add auth BSS node\n",
+            sc->sc_dev.dv_xname);
+        return error;
+    }
+    {
+        char auth_node_buf[160];
+        snprintf(auth_node_buf, sizeof(auth_node_buf),
+            "peer=%02x:%02x:%02x:%02x:%02x:%02x txid=%u ridx=%d",
+            ni->ni_macaddr[0], ni->ni_macaddr[1],
+            ni->ni_macaddr[2], ni->ni_macaddr[3],
+            ni->ni_macaddr[4], ni->ni_macaddr[5],
+            (unsigned)wn->id, ridx);
+        IWX_AUTH_DIAG("iwn_auth: add_unicast_node OK %s\n",
+            auth_node_buf);
+        getController()->setProperty("itlwm-iwn-auth-unicast-node",
+            auth_node_buf);
+    }
 
     /*
      * Make sure the firmware gets to see a beacon before we send
