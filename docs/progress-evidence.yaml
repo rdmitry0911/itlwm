@@ -4089,3 +4089,108 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 09c1f5f63592eec278bdeb5a
+- version: aiam-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      summary: A completion-specific live capture path was attempted but not committed
+        because the live Tahoe attempt did not observe AUTH(seq=1) firmware TX_DONE.
+    validator:
+      role: validator
+      status: failed
+      independent: true
+      summary: The bounded live capture independently reached the prior enqueue/drain
+        boundary predicates but failed auth.tx_completion_observed and verdict.ready_for_auth_rx_response_window_retry.
+      evidence_paths: []
+    evidence:
+      role: evidence
+      status: blocked
+      evidence_paths: []
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: 'tamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":4}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"running","message":"codex
+        assistant message emitted","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":5}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"heartbeat","message":"codex
+        journal event: user_message","timestamp":"2026-07-02T13:23:08Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T16-23-05-019f22ff-512f-7192-8bea-a7e773f20339.jsonl","codex_events_seen":6}
+
+        {"type":"error","message":"You''ve hit your usage limit. Upgrade to Plus to
+        continue using Codex (https://chatgpt.com/explore/plus), or try again at Jul
+        30th, 2026 5:06 PM."}
+
+        {"type":"turn.failed","error":{"message":"You''ve hit your usage limit. Upgrade
+        to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try
+        again at Jul 30th, 2026 5:06 PM."}}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"codex
+        auditor exited nonzero","timestamp":"2026-07-02T13:23:10Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary"}
+
+        '
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_committed_source_runtime_changes_make_auth_seq_1
+    statement: Committed source/runtime changes make AUTH(seq=1) firmware TX completion
+      observable during a live Tahoe lab attempt.
+    source: selected_step
+  - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+    statement: Runtime evidence is captured from the guest against an allowed operator-configured
+      lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+    source: selected_step
+  - id: criterion_7_the_artifact_proves_tx_completion_while_explicit
+    statement: The artifact proves TX completion while explicitly leaving AUTH response-window,
+      AUTH response ACK, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: d2dd61279de6
+      evidence_path: evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+      sha256: b0eeacc3818c5a12580c27c4b3fdf404d3a51d777acd0f4ff55d001b3704ccb4
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: 341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
+      candidate_after_head: 341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary!=step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary!=itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_input_head_mismatch:7f9c4a6fc69a6fb2dda84631b70226fba2a19781!=341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
+    - runtime_capture_anchor_after_head_mismatch:185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a!=341cbae25ab8c0d0d5772eb6ecbbe7fb5343546e
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 3bd6dbf7fe82d58b17b12b5b
