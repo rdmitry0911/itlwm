@@ -1,0 +1,92 @@
+{
+  "build_script": {
+    "raw_head_fallback_only": true,
+    "raw_head_occurrences": [
+      "if hash=$(cd \"$PROJECT_DIR\" && git rev-parse --short HEAD 2>/dev/null); then"
+    ],
+    "uses_source_identity_not_raw_head": true
+  },
+  "candidate_fix": {
+    "changed_paths_from_input": [
+      "scripts/build_tahoe.sh",
+      "scripts/tahoe_source_identity.py"
+    ],
+    "source_delta_committed": true,
+    "source_delta_paths": [
+      "scripts/build_tahoe.sh",
+      "scripts/tahoe_source_identity.py"
+    ],
+    "source_identity_changed_from_input": true
+  },
+  "input_head": "8c50a5802f072c6fa63c3b3debfa2c8cca3597ef",
+  "selected_step": "step:itlwm-rm-05a0c0b-source-stable-build-identity-boundary",
+  "source_identity": {
+    "algorithm": "sha256 over git tree blob object IDs, file modes, and paths for Tahoe build source-bearing inputs",
+    "current_differs_from_input_source_identity": true,
+    "current_source_identity": "281631678abf608eeac5bd0efd2ed48a7f4cedeb77a88016646ac28e1640a9f9",
+    "current_source_identity_short": "281631678abf",
+    "excluded_progress_paths": [
+      "docs/progress-evidence.yaml",
+      "docs/final-goal.yaml",
+      "docs/original-roadmap.yaml",
+      "evidence/runtime",
+      "evidence/build/tahoe_source_stable_build_identity_report.json"
+    ],
+    "included_paths_count": 275,
+    "input_head_source_identity": "f0ef237036089a3674abb58c6f3c8264c15239e96cdbdc70629a32603785b403",
+    "previous_progress_heads": [
+      {
+        "changed_paths": [
+          "docs/progress-evidence.yaml"
+        ],
+        "head": "802f67e942bb316dd381e2c3a34c9d34f5b057dc",
+        "included_paths_count": 274,
+        "source_identity": "f0ef237036089a3674abb58c6f3c8264c15239e96cdbdc70629a32603785b403",
+        "source_identity_short": "f0ef23703608",
+        "subject": "progress evidence: itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary"
+      },
+      {
+        "changed_paths": [
+          "docs/progress-evidence.yaml"
+        ],
+        "head": "1523544e203cc9ec8125c717d03ed22e8387673d",
+        "included_paths_count": 274,
+        "source_identity": "f0ef237036089a3674abb58c6f3c8264c15239e96cdbdc70629a32603785b403",
+        "source_identity_short": "f0ef23703608",
+        "subject": "progress rejection: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary"
+      },
+      {
+        "changed_paths": [
+          "docs/final-goal.yaml",
+          "docs/original-roadmap.yaml"
+        ],
+        "head": "8c50a5802f072c6fa63c3b3debfa2c8cca3597ef",
+        "included_paths_count": 274,
+        "source_identity": "f0ef237036089a3674abb58c6f3c8264c15239e96cdbdc70629a32603785b403",
+        "source_identity_short": "f0ef23703608",
+        "subject": "Split Tahoe source-stable build identity boundary"
+      }
+    ],
+    "previous_progress_heads_equal": true,
+    "source": "committed_source_tree",
+    "source_path_roots": [
+      "AirportItlwm",
+      "include",
+      "itl80211",
+      "itlwm",
+      "itlwm.xcodeproj",
+      "scripts/build_tahoe.sh",
+      "scripts/tahoe_source_identity.py"
+    ]
+  },
+  "verdict": {
+    "association_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "boot_safe_load_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_auxkc_boot_safe_load_retry": true
+  }
+}

@@ -200,7 +200,26 @@ s|\(#endif.*!__PRIVATE_SPI__.*\)\n[[:space:]]*OSMetaClassDeclareReservedUnused( 
 patch_mackernelsdk
 
 # ── Step 2: Build ────────────────────────────────────────────────────
-GIT_HASH=$(cd "$PROJECT_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+source_identity_hash() {
+    local hash
+
+    if command -v python3 >/dev/null 2>&1; then
+        if hash=$(cd "$PROJECT_DIR" && python3 "$PROJECT_DIR/scripts/tahoe_source_identity.py" --short 2>/dev/null); then
+            printf '%s\n' "$hash"
+            return
+        fi
+    fi
+
+    # Raw HEAD is retained only as a fallback when the source-identity helper cannot run.
+    if hash=$(cd "$PROJECT_DIR" && git rev-parse --short HEAD 2>/dev/null); then
+        printf '%s\n' "$hash"
+        return
+    fi
+
+    printf '%s\n' "unknown"
+}
+
+GIT_HASH=$(source_identity_hash)
 BUILD_SETTINGS=$(xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
@@ -212,7 +231,7 @@ if [[ "$BUILD_SETTINGS" != *USE_APPLE_SUPPLICANT* ]]; then
 fi
 
 echo ""
-echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) commit=$GIT_HASH..."
+echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) source-id=$GIT_HASH..."
 xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
