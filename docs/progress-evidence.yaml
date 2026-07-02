@@ -2148,3 +2148,125 @@ records:
         input_head: 9e83fb02ada3822747f19395b57129f9e4e2fc53
         candidate_after_head: ef02974f5cd103ba853bb642ec938972f4f0abf3
       errors: []
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0c0-auxkc-approval-load-admission-boundary
+  input_head_commit: da4d0211eaef1211b04d47cc2f81e7751337a787
+  head_commit: 9fe1193808638d7d747953510cba51a2f121b4a0
+  executor_commit:
+    before_head: da4d0211eaef1211b04d47cc2f81e7751337a787
+    after_head: 9fe1193808638d7d747953510cba51a2f121b4a0
+  state_delta: Added committed, step-scoped Tahoe runtime evidence and a bounded capture/recapture
+    helper proving the selected AirportItlwm bundle from input da4d0211eaef1211b04d47cc2f81e7751337a787
+    was rebuilt, installed with UUID 21281E0F-88F3-3F1A-B864-511A360FDE61, cleared
+    through the live System Settings approval gate, and admitted by kmutil into the
+    load/AuxKC path with reboot required instead of the prior System Settings approval-required
+    blocker.
+  evidence_paths:
+  - evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json
+  - scripts/capture_tahoe_auxkc_approval_load_admission.py
+  kernel_state_digest: 8ed8f1bd0049512efda0fe92e6e3388435fc42a37173526a7441380df278e98e
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+    roadmap_item_id: itlwm-rm-05a0c0-auxkc-approval-load-admission-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added a step-scoped Tahoe load-admission capture helper and committed
+          live runtime evidence for the selected AirportItlwm approval/load gate.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Re-ran the helper in non-mutating recapture mode. It validated the
+          committed artifact, re-probed the live Tahoe guest over SSH with Wi-Fi passthrough
+          attached, confirmed installed UUID 21281E0F-88F3-3F1A-B864-511A360FDE61
+          and binary sha256 9d7927795e49039492ad7811935ed933e0634006c05c914df27079e273d4d126,
+          and observed kmutil exit 28 without the System Settings approval-required
+          error.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: Remaining work decreased because the committed live Tahoe
+          evidence for the selected step proves the selected AirportItlwm bundle was
+          rebuilt from input head da4d0211eaef1211b04d47cc2f81e7751337a787, installed
+          with UUID 21281E0F-88F3-3F1A-B864-511A360FDE61, reached the approval/load-admission
+          path with passthrough Wi-Fi attached on en1, and no longer returns the prior
+          System Settings approval-required kmutil error. The next unresolved boundary
+          is now the AuxKC boot-safe load retry; selected loaded-after-reboot, join-trigger/PMK,
+          AUTH, association, DHCP, and final Wi-Fi equivalence remain explicitly unclaimed.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at: true
+          criterion_6_the_evidence_proves_the_prior_blocker_signature_: true
+          criterion_7_the_artifact_records_the_installed_selected_uuid: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_a_live_tahoe_guest_run_with_passthrough_wi_fi_at
+      statement: A live Tahoe guest run with passthrough Wi-Fi attached reaches the
+        selected bundle approval/load-admission path from committed sources.
+      source: selected_step
+    - id: criterion_6_the_evidence_proves_the_prior_blocker_signature_
+      statement: The evidence proves the prior blocker signature is resolved; kmutil
+        no longer returns the System Settings approval-required error for the selected
+        AirportItlwm bundle.
+      source: selected_step
+    - id: criterion_7_the_artifact_records_the_installed_selected_uuid
+      statement: The artifact records the installed selected UUID and leaves selected
+        loaded-after-reboot, join-trigger/PMK, AUTH, association, DHCP, and final
+        Wi-Fi equivalence criteria unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: 00a2d7e20f58
+        evidence_path: evidence/runtime/tahoe_auxkc_approval_load_admission_boundary.json
+        sha256: 72f0305f02edaf93439c17d99b1a8850558fa45ab333ef27bea02c7544937f1b
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: da4d0211eaef1211b04d47cc2f81e7751337a787
+        candidate_after_head: 9fe1193808638d7d747953510cba51a2f121b4a0
+      errors: []
