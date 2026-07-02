@@ -273,6 +273,22 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary passes
     from committed evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json.
 
+- id: itlwm-fg-05a0b1c-auth-tx-completion-source-classification-boundary
+  title: Tahoe AUTH TX completion-source classification boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run classifies the live gap between
+    repeated AUTH(seq=1) unicast ring entries and the missing canonical firmware
+    TX_DONE completion event. This split exists because the selected-head run after
+    the TXDONE guard-publication boundary reached scan, PMK delivery, AUTH start,
+    RXON BSS filter, management enqueue/drain, iwn TX path entry, and eight live
+    qid=0 idx=0 unicast ring entries, but still observed no firmware TX completion.
+    This step must identify a concrete completion-source absence class and does
+    not claim canonical TX completion, AUTH response-window reception, AUTH
+    response ACK, association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b1c-auth-tx-completion-source-classification-boundary
+    passes from committed evidence/runtime/tahoe_auth_tx_completion_source_classification_boundary.json.
+
 - id: itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
   title: Tahoe AUTH management frame TX completion boundary
   description: >-
