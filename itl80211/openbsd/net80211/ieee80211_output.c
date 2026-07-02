@@ -53,6 +53,10 @@
 #include <sys/errno.h>
 #include <sys/sysctl.h>
 #include <sys/kpi_mbuf.h>
+/* Project-owned auth diagnostic output carrier. See
+ * itl80211/linux/iwx_diag_log.h for the observability and
+ * credential-safety contract. */
+#include <linux/iwx_diag_log.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -194,6 +198,8 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
 {
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	struct ieee80211_frame *wh;
+	uint16_t auth_seq = 0xffff;
+	int enqueue_dropped;
 
 	if (ni == NULL)
             panic("null node");
@@ -267,12 +273,30 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
             }
         }
 
-    #ifndef IEEE80211_STA_ONLY
-        if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
-            ieee80211_pwrsave(ic, m, ni) != 0)
-            return 0;
-    #endif
-        mq_enqueue(&ic->ic_mgtq, m);
+	#ifndef IEEE80211_STA_ONLY
+		if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
+		    ieee80211_pwrsave(ic, m, ni) != 0)
+			return 0;
+	#endif
+        if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_AUTH &&
+            mbuf_len(m) >= sizeof(*wh) + 4) {
+            const u_int8_t *auth_body = (const u_int8_t *)wh + sizeof(*wh);
+            auth_seq = (uint16_t)(auth_body[2] | (auth_body[3] << 8));
+        }
+        enqueue_dropped = mq_enqueue(&ic->ic_mgtq, m);
+        if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
+            IEEE80211_FC0_SUBTYPE_AUTH) {
+            IWX_AUTH_DIAG("ieee80211_mgmt_output: enqueue AUTH "
+                "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                "auth_seq=0x%04x queue=ic_mgtq enqueued=%d dropped=%d\n",
+                type & IEEE80211_FC0_SUBTYPE_MASK,
+                ni->ni_macaddr[0], ni->ni_macaddr[1],
+                ni->ni_macaddr[2], ni->ni_macaddr[3],
+                ni->ni_macaddr[4], ni->ni_macaddr[5],
+                (unsigned)auth_seq,
+                enqueue_dropped ? 0 : 1, enqueue_dropped);
+        }
         ifp->if_timer = 1;
         ifp->if_start(ifp);
         return 0;

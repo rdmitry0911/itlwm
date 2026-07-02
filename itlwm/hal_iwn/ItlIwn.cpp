@@ -3981,6 +3981,22 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     /* Kick TX ring. */
     ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
     IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    if (diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+        char auth_tx_path_buf[224];
+        snprintf(auth_tx_path_buf, sizeof(auth_tx_path_buf),
+            "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+            "auth_seq=0x%04x qid=%d idx=%d wrptr=%d queued_before=%d "
+            "flags=0x%08x txid=%u len=%d nsegs=%d",
+            diag_subtype,
+            diag_peer[0], diag_peer[1], diag_peer[2],
+            diag_peer[3], diag_peer[4], diag_peer[5],
+            (unsigned)diag_auth_seq, ring->qid, cmd->idx, ring->cur,
+            ring->queued, (unsigned)flags, (unsigned)tx->id, totlen,
+            nsegs);
+        IWX_AUTH_DIAG("iwn_tx: MGT ring_kick %s\n", auth_tx_path_buf);
+        getController()->setProperty("itlwm-iwn-auth-tx-path",
+            auth_tx_path_buf);
+    }
 
     /* Mark TX ring as full if we reach a certain threshold. */
     if (++ring->queued > IWN_TX_RING_HIMARK) {
@@ -4023,6 +4039,37 @@ _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         if (m != NULL) {
 //            ni = m->m_pkthdr.ph_cookie;
             ni = (struct ieee80211_node *)mbuf_pkthdr_rcvif(m);
+            {
+                struct ieee80211_frame *mwh =
+                    mtod(m, struct ieee80211_frame *);
+                uint8_t mtype = mwh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
+                uint8_t msubtype = mwh->i_fc[0] &
+                    IEEE80211_FC0_SUBTYPE_MASK;
+                if (mtype == IEEE80211_FC0_TYPE_MGT &&
+                    msubtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+                    uint16_t auth_seq = 0xffff;
+                    u_int hdrlen = ieee80211_get_hdrlen(mwh);
+                    if (mbuf_len(m) >= (size_t)(hdrlen + 4)) {
+                        const u_int8_t *auth_body =
+                            (const u_int8_t *)mwh + hdrlen;
+                        auth_seq = (uint16_t)(auth_body[2] |
+                                              (auth_body[3] << 8));
+                    }
+                    char auth_drain_buf[192];
+                    snprintf(auth_drain_buf, sizeof(auth_drain_buf),
+                        "subtype=0x%02x peer=%02x:%02x:%02x:%02x:%02x:%02x "
+                        "auth_seq=0x%04x queue=ic_mgtq qfullmsk=0x%x",
+                        msubtype,
+                        mwh->i_addr1[0], mwh->i_addr1[1],
+                        mwh->i_addr1[2], mwh->i_addr1[3],
+                        mwh->i_addr1[4], mwh->i_addr1[5],
+                        (unsigned)auth_seq, sc->qfullmsk);
+                    IWX_AUTH_DIAG("iwn_start: ic_mgtq drain MGT %s\n",
+                        auth_drain_buf);
+                    that->getController()->setProperty(
+                        "itlwm-iwn-auth-mgtq-drain", auth_drain_buf);
+                }
+            }
             goto sendit;
         }
         if (
@@ -5924,6 +5971,12 @@ iwn_auth(struct iwn_softc *sc, int arg)
     }
     /* Configure 40MHz early to avoid problems on 6205 devices. */
     iwn_rxon_configure_ht40(ic, ni);
+    /*
+     * Keep the AUTH(seq=2) response window open while still in
+     * IEEE80211_S_AUTH. iwn_run() sets IWN_FILTER_BSS later, but the
+     * first AUTH response arrives before ASSOC/RUN.
+     */
+    sc->rxon.filter |= htole32(IWN_FILTER_BSS);
     DPRINTF(("%s: rxon chan %d flags %x cck %x ofdm %x\n", __func__,
         sc->rxon.chan, le32toh(sc->rxon.flags), sc->rxon.cck_mask,
         sc->rxon.ofdm_mask));
@@ -5933,8 +5986,9 @@ iwn_auth(struct iwn_softc *sc, int arg)
         return error;
     }
     /* Diagnostic probe (auth-ACK boundary, iwn HAL): RXON OK. */
-    IWX_AUTH_DIAG("iwn_auth: RXON OK chan=%u\n",
-          (unsigned)sc->rxon.chan);
+    IWX_AUTH_DIAG("iwn_auth: RXON OK chan=%u filter=0x%08x\n",
+          (unsigned)sc->rxon.chan,
+          (unsigned)le32toh(sc->rxon.filter));
     /* Diagnostic publication (auth-ACK boundary, iwn HAL): publish the
      * post-IWN_CMD_RXON BSSID/channel/filter/flags state to the AirportItlwm
      * IOService property table so the value survives unified-log TTL=0
