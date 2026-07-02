@@ -4457,3 +4457,109 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: dba8a6cf828538aa446bb242
+- version: aiam-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      status: blocked
+      role: implementation
+    validator:
+      status: failed
+      independently_verified: true
+      verification_method: reference
+      role: validator
+    evidence:
+      status: blocked
+      evidence_paths: []
+      role: evidence
+    auditor:
+      accepted: false
+      reason_class: missing_committed_required_runtime_artifact
+      progress_argument: 'Rejected: remaining work toward itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
+        did not decrease because current committed HEAD lacks evidence/runtime/tahoe_auth_mgmt_tx_completion_boundary.json,
+        the current candidate is blocked with no evidence paths, and no committed
+        live Tahoe guest artifact proves AUTH(seq=1) firmware TX completion while
+        leaving later response-window, ACK, and Wi-Fi equivalence claims unclaimed.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_committed_source_runtime_changes_make_auth_seq_1: false
+        criterion_6_runtime_evidence_is_captured_from_the_guest_agai: false
+        criterion_7_the_artifact_proves_tx_completion_while_explicit: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_committed_source_runtime_changes_make_auth_seq_1
+    statement: Committed source/runtime changes make AUTH(seq=1) firmware TX completion
+      observable during a live Tahoe lab attempt.
+    source: selected_step
+  - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+    statement: Runtime evidence is captured from the guest against an allowed operator-configured
+      lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+    source: selected_step
+  - id: criterion_7_the_artifact_proves_tx_completion_while_explicit
+    statement: The artifact proves TX completion while explicitly leaving AUTH response-window,
+      AUTH response ACK, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 9de4aae79a48
+      evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+      sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: 3d39aba6851d523893be66d98b2823240d673747
+      candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
+    - anchor_id: fbb2a6234952
+      evidence_path: itlwm/hal_iwn/ItlIwn.cpp
+      sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: 3d39aba6851d523893be66d98b2823240d673747
+      candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
+    - anchor_id: 36fb8885f0db
+      evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
+      sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: 3d39aba6851d523893be66d98b2823240d673747
+      candidate_after_head: 3d39aba6851d523893be66d98b2823240d673747
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary!=step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary!=itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_input_head_mismatch:fb7df5d873bb7c4ae100a72e855cffeeefbf2823!=3d39aba6851d523893be66d98b2823240d673747
+    - runtime_capture_anchor_after_head_mismatch:63b280fdb33fab4557ac928d6bc93e34f06c0b6b!=3d39aba6851d523893be66d98b2823240d673747
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 84aa8110ffb17f136d8540fd
