@@ -997,12 +997,91 @@ tasks:
         - replay
         - static_fixture
 
+- id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  title: Tahoe iwn AUTH management TX completion boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
+  depends_on:
+  - itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  description: >-
+    Split the failed AUTH TX/RX completion boundary after rejection be12524: the
+    live Tahoe attempt proved AUTH(seq=1) enqueue, drain into the iwn TX path,
+    RXON BSS filter publication, and a response-window precondition, but no
+    firmware TX completion for the AUTH(seq=1) frame was observed. This narrower
+    step proves that the iwn firmware completion path publishes AUTH(seq=1)
+    TX_DONE during a live allowed-AP attempt. It does not claim AUTH(seq=2)
+    response-window reception, AUTH response ACK, association, DHCP, data
+    transfer, reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - Committed source/runtime changes make AUTH(seq=1) firmware TX completion
+    observable during a live Tahoe lab attempt.
+  - Runtime evidence is captured from the guest against an allowed operator-configured
+    lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+  - The artifact proves TX completion while explicitly leaving AUTH response-window,
+    AUTH response ACK, and later Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    artifact: evidence/runtime/tahoe_auth_mgmt_tx_completion_boundary.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - scan.aps_seen
+      - association_target.visible_or_directed
+      - pmk_helper.target_published
+      - pmk_helper.pmk_delivered
+      - auth.started
+      - auth.rxon_filter_bss_enabled
+      - auth.management_frame_enqueue_observed
+      - auth.management_frame_drain_attempt_observed
+      - auth.iwn_tx_path_entered
+      - auth.tx_completion_observed
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auth_rx_response_window_retry
+      - verdict.auth_response_window_not_claimed
+      - verdict.auth_response_ack_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        association_target.visible_or_directed: true
+        pmk_helper.target_published: true
+        pmk_helper.pmk_delivered: true
+        auth.started: true
+        auth.rxon_filter_bss_enabled: true
+        auth.management_frame_enqueue_observed: true
+        auth.management_frame_drain_attempt_observed: true
+        auth.iwn_tx_path_entered: true
+        auth.tx_completion_observed: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auth_rx_response_window_retry: true
+        verdict.auth_response_window_not_claimed: true
+        verdict.auth_response_ack_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        auth.source:
+        - synthetic
+        - replay
+        - static_fixture
+
 - id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
   title: Tahoe iwn AUTH TX/RX completion publication boundary
   goal_item_ids:
   - itlwm-fg-05a0b-auth-tx-rx-completion-boundary
   depends_on:
-  - itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  - itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
   description: >-
     Establish the narrow runtime boundary that the Tahoe iwn path publishes an
     AUTH(seq=1) TX completion and an observable AUTH(seq=2) response window from

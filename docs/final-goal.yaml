@@ -243,6 +243,19 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary passes
     from committed evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json.
 
+- id: itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
+  title: Tahoe AUTH management frame TX completion boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that after live AUTH(seq=1)
+    enqueue/drain into the iwn TX path the firmware TX_DONE completion for that
+    AUTH frame becomes observable. This split exists because the previous broader
+    AUTH TX/RX completion attempt reached the TX ring path but no completion was
+    observed. This step does not claim AUTH response-window reception, AUTH
+    response ACK, association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary passes from
+    committed evidence/runtime/tahoe_auth_mgmt_tx_completion_boundary.json.
+
 - id: itlwm-fg-05a0b-auth-tx-rx-completion-boundary
   title: Tahoe iwn AUTH TX/RX completion publication boundary
   description: >-
