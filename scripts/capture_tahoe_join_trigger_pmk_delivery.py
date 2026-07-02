@@ -15,7 +15,7 @@ from pathlib import Path
 
 STEP_ID = "step:itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary"
 ROADMAP_ITEM_ID = "itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary"
-INPUT_HEAD = "8060b92385538101471dfc2916ab3dbe40b8e427"
+INPUT_HEAD = "310498ae4a5103b3e752d2da76a75b8032e3df3d"
 DEFAULT_OUTPUT = Path("evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json")
 DEFAULT_GUEST = "devops@127.0.0.1"
 DEFAULT_PORT = "3322"
@@ -283,6 +283,23 @@ def ssid_identifier(allowed_ssid):
     return f"operator-env-ssid-sha256:{digest[:16]}"
 
 
+def ordered_unique(values):
+    seen = set()
+    unique = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def expected_guest_heads(args):
+    return ordered_unique(
+        [args.input_head, args.candidate_after_head] + list(args.allow_guest_head or [])
+    )
+
+
 def parse_guest_os(output):
     values = parse_key_values(output)
     return {
@@ -406,14 +423,20 @@ def extract_section(output, marker, next_marker=None):
 
 
 def build_prepare_script(args):
+    allowed_heads = " ".join(expected_guest_heads(args))
     return f"""
 cd {shlex.quote(args.guest_project)}
 head="$(git rev-parse HEAD)"
 printf 'guest_project_head=%s\\n' "$head"
-if [ "$head" != {shlex.quote(args.input_head)} ]; then
-  echo "guest project head mismatch" >&2
-  exit 11
-fi
+allowed_heads={shlex.quote(allowed_heads)}
+case " $allowed_heads " in
+  *" $head "*) ;;
+  *)
+    echo "guest project head mismatch: $head" >&2
+    echo "expected one of: $allowed_heads" >&2
+    exit 11
+    ;;
+esac
 set +e
 sudo -n bash AirportItlwmAgent/scripts/install.sh >/tmp/airportitlwmagent-install.out 2>/tmp/airportitlwmagent-install.err
 agent_install_rc=$?
@@ -728,8 +751,9 @@ def build_evidence(args):
         and identity["installed_uuid"] != "unknown"
         and identity["installed_uuid"] in loaded["loaded_uuids_observed"]
     )
+    identity_guest_head_allowed = identity["guest_project_head"] in expected_guest_heads(args)
     selected_identity_matches = (
-        identity["guest_project_head"] == args.input_head
+        identity_guest_head_allowed
         and identity["source_identity_short"]
         and identity["source_identity_short"] in identity["build_string"]
     )
@@ -847,6 +871,9 @@ def build_evidence(args):
             "guest_wifi_interface": args.interface,
             "guest_wifi_interface_present": interface_ok,
             "guest_project_head": identity["guest_project_head"],
+            "selected_input_head": args.input_head,
+            "candidate_after_head": args.candidate_after_head,
+            "accepted_guest_project_heads": expected_guest_heads(args),
             "selected_source_identity_short": identity["source_identity_short"],
             "allowed_ap_identifier": identifier,
             "allowed_ap_identifier_kind": "sha256_prefix_of_operator_env_ssid",
@@ -862,6 +889,7 @@ def build_evidence(args):
             "selected_head_binary_sha256": identity["binary_sha256"],
             "selected_head_build_string": identity["build_string"],
             "selected_head_installed": selected_identity_matches,
+            "selected_head_guest_project_head_allowed": identity_guest_head_allowed,
             "loaded_uuid_matches_selected_head": loaded_uuid_matches_identity
             and selected_identity_matches,
         },
@@ -1006,6 +1034,17 @@ def main():
     parser.add_argument("--kext-path", default=os.environ.get("ITLWM_KEXT_PATH", DEFAULT_KEXT_PATH))
     parser.add_argument("--input-head", default=INPUT_HEAD)
     parser.add_argument(
+        "--candidate-after-head",
+        default=os.environ.get("ITLWM_CANDIDATE_AFTER_HEAD", ""),
+        help="optional candidate commit accepted as a current-attempt guest project head",
+    )
+    parser.add_argument(
+        "--allow-guest-head",
+        action="append",
+        default=[],
+        help="additional project head accepted for live identity probes",
+    )
+    parser.add_argument(
         "--min-seconds",
         type=float,
         default=float(os.environ.get("ITLWM_CAPTURE_MIN_SECONDS", "30")),
@@ -1043,11 +1082,31 @@ def main():
             print(f"validate-only failed: cannot parse {output}: {exc}", file=sys.stderr)
             return 2
         committed_errors = validate_evidence(committed)
-        if fresh_errors or committed_errors:
+        comparison_errors = []
+        for path in (
+            "input_head",
+            "runtime_environment.guest_wifi_interface",
+            "runtime_environment.allowed_ap_identifier",
+            "driver.selected_head_uuid",
+            "driver.selected_head_binary_sha256",
+        ):
+            try:
+                committed_value = get_path(committed, path)
+                fresh_value = get_path(evidence, path)
+            except KeyError as exc:
+                comparison_errors.append(f"comparison missing field: {exc}")
+                continue
+            if committed_value != fresh_value:
+                comparison_errors.append(
+                    f"{path} mismatch: committed {committed_value!r}, fresh {fresh_value!r}"
+                )
+        if fresh_errors or committed_errors or comparison_errors:
             for error in fresh_errors:
                 print(f"fresh validation error: {error}", file=sys.stderr)
             for error in committed_errors:
                 print(f"committed validation error: {error}", file=sys.stderr)
+            for error in comparison_errors:
+                print(f"fresh/committed comparison error: {error}", file=sys.stderr)
             return 1
         print(
             "validated "
@@ -1056,6 +1115,13 @@ def main():
             + str(evidence["plti"]["selected_generation"])
             + " identifier="
             + evidence["runtime_environment"]["allowed_ap_identifier"]
+            + " selected_input_head="
+            + args.input_head
+            + (
+                " candidate_after_head=" + args.candidate_after_head
+                if args.candidate_after_head
+                else ""
+            )
         )
         return 0
 

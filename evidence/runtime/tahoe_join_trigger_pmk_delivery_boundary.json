@@ -6,12 +6,12 @@
       "evidence/runtime/tahoe_join_trigger_pmk_delivery_boundary.json"
     ]
   },
-  "capture_finished_utc": "2026-07-02T07:14:02.842738Z",
-  "capture_started_utc": "2026-07-02T07:13:01.068063Z",
-  "capture_wallclock_seconds": 61.775,
+  "capture_finished_utc": "2026-07-02T07:32:32.660868Z",
+  "capture_started_utc": "2026-07-02T07:31:31.158314Z",
+  "capture_wallclock_seconds": 61.503,
   "command_results": {
     "join_trigger": {
-      "duration_seconds": 58.218,
+      "duration_seconds": 58.035,
       "redacted_lines": [
         "interface_present=1",
         "set_power_returned=1",
@@ -44,91 +44,91 @@
       "stdout_line_count": 21
     },
     "log_capture": {
-      "duration_seconds": 1.853,
+      "duration_seconds": 1.729,
       "line_count_after_marker": 67,
       "nonce_marker_seen": true,
       "redacted_lines": [
-        "2026-07-02 10:10:00.969 Df AirportItlwmAgent[1292:49c1] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:10:00.971 Df launchd[1:4958] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:10:10.983 Df xpcproxy[1294:4a22] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:10:10.984 Df launchd[1:4958] [system/com.zxystd.airportitlwmagent [1294]:] Successfully spawned AirportItlwmAgent[1294] because inefficient",
-        "2026-07-02 10:10:10.991 Df AirportItlwmAgent[1294:4a23] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:10:10.998 Df AirportItlwmAgent[1294:4a23] AirportItlwmAgent: PLTI user client opened conn=0x100b",
-        "2026-07-02 10:10:10.998 Df AirportItlwmAgent[1294:4a23] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:10:10.998 Df AirportItlwmAgent[1294:4a23] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:10:10.999 Df launchd[1:4958] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:10:21.005 Df xpcproxy[1296:4a3f] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:10:21.005 Df launchd[1:49ef] [system/com.zxystd.airportitlwmagent [1296]:] Successfully spawned AirportItlwmAgent[1296] because inefficient",
-        "2026-07-02 10:10:21.010 Df AirportItlwmAgent[1296:4a40] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)"
+        "2026-07-02 10:27:49.281 Df AirportItlwmAgent[2021:72ee] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:27:49.286 Df AirportItlwmAgent[2021:72ee] AirportItlwmAgent: PLTI user client opened conn=0x1b07",
+        "2026-07-02 10:27:49.286 Df AirportItlwmAgent[2021:72ee] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:27:49.286 Df AirportItlwmAgent[2021:72ee] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:27:49.288 Df launchd[1:727b] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:27:59.295 Df xpcproxy[2023:736e] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:27:59.295 Df launchd[1:727b] [system/com.zxystd.airportitlwmagent [2023]:] Successfully spawned AirportItlwmAgent[2023] because inefficient",
+        "2026-07-02 10:27:59.300 Df AirportItlwmAgent[2023:736f] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:27:59.305 Df AirportItlwmAgent[2023:736f] AirportItlwmAgent: PLTI user client opened conn=0x1b0f",
+        "2026-07-02 10:27:59.305 Df AirportItlwmAgent[2023:736f] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:27:59.305 Df AirportItlwmAgent[2023:736f] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:27:59.307 Df launchd[1:72ef] [system:] service inactive: com.zxystd.airportitlwmagent"
       ],
       "redacted_relevant_lines": [
-        "2026-07-02 10:13:03.372 Df xpcproxy[1555:51de] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:03.373 Df launchd[1:5004] [system/com.zxystd.airportitlwmagent [1555]:] Successfully spawned AirportItlwmAgent[1555] because inefficient",
-        "2026-07-02 10:13:03.377 Df AirportItlwmAgent[1555:51e0] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:03.383 Df AirportItlwmAgent[1555:51e0] AirportItlwmAgent: PLTI user client opened conn=0x1713",
-        "2026-07-02 10:13:03.383 Df AirportItlwmAgent[1555:51e0] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:03.383 Df AirportItlwmAgent[1555:51e0] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:03.385 Df launchd[1:5056] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:13:13.397 Df xpcproxy[1560:520b] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:13.398 Df launchd[1:5075] [system/com.zxystd.airportitlwmagent [1560]:] Successfully spawned AirportItlwmAgent[1560] because inefficient",
-        "2026-07-02 10:13:13.405 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:13.414 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: PLTI user client opened conn=0x1907",
-        "2026-07-02 10:13:13.415 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: WaitAssociationTarget OK generation=9 ssid_len=7 authtype_upper=0x8",
-        "2026-07-02 10:13:13.415 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: handle_target ENTRY generation=9 ssid_len=7 authtype_lower=0x1 authtype_upper=0x8",
-        "2026-07-02 10:13:13.423 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
-        "2026-07-02 10:13:13.425 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
-        "2026-07-02 10:13:13.432 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: DeliverPMK OK generation=9",
-        "2026-07-02 10:13:13.432 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: handle_target DONE generation=9",
-        "2026-07-02 10:13:15.057 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:15.057 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:15.059 Df launchd[1:5056] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:13:24.064 Df xpcproxy[1562:5276] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:24.065 Df launchd[1:5056] [system/com.zxystd.airportitlwmagent [1562]:] Successfully spawned AirportItlwmAgent[1562] because inefficient",
-        "2026-07-02 10:13:24.070 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:24.075 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: PLTI user client opened conn=0xf0b",
-        "2026-07-02 10:13:24.077 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: WaitAssociationTarget OK generation=10 ssid_len=7 authtype_upper=0x8",
-        "2026-07-02 10:13:24.077 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: handle_target ENTRY generation=10 ssid_len=7 authtype_lower=0x1 authtype_upper=0x8",
-        "2026-07-02 10:13:24.082 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
-        "2026-07-02 10:13:24.084 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
-        "2026-07-02 10:13:24.090 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: DeliverPMK OK generation=10",
-        "2026-07-02 10:13:24.090 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: handle_target DONE generation=10",
-        "2026-07-02 10:13:25.521 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:25.521 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:25.526 Df launchd[1:5056] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:13:34.538 Df xpcproxy[1572:533f] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:34.538 Df launchd[1:52ae] [system/com.zxystd.airportitlwmagent [1572]:] Successfully spawned AirportItlwmAgent[1572] because inefficient",
-        "2026-07-02 10:13:34.545 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:34.551 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: PLTI user client opened conn=0xe13",
-        "2026-07-02 10:13:34.553 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: WaitAssociationTarget OK generation=11 ssid_len=7 authtype_upper=0x400",
-        "2026-07-02 10:13:34.553 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: handle_target ENTRY generation=11 ssid_len=7 authtype_lower=0x1 authtype_upper=0x400",
-        "2026-07-02 10:13:34.558 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
-        "2026-07-02 10:13:34.559 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
-        "2026-07-02 10:13:34.566 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: DeliverPMK OK generation=11",
-        "2026-07-02 10:13:34.566 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: handle_target DONE generation=11",
-        "2026-07-02 10:13:36.072 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:36.072 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:36.074 Df launchd[1:52ae] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:13:45.082 Df xpcproxy[1573:535d] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:45.083 Df launchd[1:52ae] [system/com.zxystd.airportitlwmagent [1573]:] Successfully spawned AirportItlwmAgent[1573] because inefficient",
-        "2026-07-02 10:13:45.089 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:45.095 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: PLTI user client opened conn=0x1c0b",
-        "2026-07-02 10:13:45.096 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: WaitAssociationTarget OK generation=12 ssid_len=7 authtype_upper=0x400",
-        "2026-07-02 10:13:45.096 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: handle_target ENTRY generation=12 ssid_len=7 authtype_lower=0x1 authtype_upper=0x400",
-        "2026-07-02 10:13:45.101 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
-        "2026-07-02 10:13:45.103 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
-        "2026-07-02 10:13:45.110 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: DeliverPMK OK generation=12",
-        "2026-07-02 10:13:45.110 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: handle_target DONE generation=12",
-        "2026-07-02 10:13:46.577 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:46.577 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:46.579 Df launchd[1:52ae] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:13:55.594 Df xpcproxy[1579:53e8] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
-        "2026-07-02 10:13:55.595 Df launchd[1:52ae] [system/com.zxystd.airportitlwmagent [1579]:] Successfully spawned AirportItlwmAgent[1579] because inefficient",
-        "2026-07-02 10:13:55.600 Df AirportItlwmAgent[1579:53e9] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
-        "2026-07-02 10:13:55.605 Df AirportItlwmAgent[1579:53e9] AirportItlwmAgent: PLTI user client opened conn=0xd13",
-        "2026-07-02 10:13:55.605 Df AirportItlwmAgent[1579:53e9] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
-        "2026-07-02 10:13:55.605 Df AirportItlwmAgent[1579:53e9] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
-        "2026-07-02 10:13:55.607 Df launchd[1:535f] [system:] service inactive: com.zxystd.airportitlwmagent",
-        "2026-07-02 10:14:01.231 Df log[1587:5419] [com.apple.log:] log run noninteractively, parent: 1585 (sudo), args: 'log' 'show' '--last' '5m' '--style' 'compact' '--predicate' '(eventMessage CONTAINS[c] \"itlwm-join-pmk-cb94ac39b605404d\" OR eventMessage CONTAINS[c] \"plti_publish_assoc_target\" OR eventMessage CONTAINS"
+        "2026-07-02 10:31:39.891 Df xpcproxy[2241:7d2b] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:31:39.892 Df launchd[1:7a05] [system/com.zxystd.airportitlwmagent [2241]:] Successfully spawned AirportItlwmAgent[2241] because inefficient",
+        "2026-07-02 10:31:39.896 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:31:39.906 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: PLTI user client opened conn=0x1107",
+        "2026-07-02 10:31:39.907 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: WaitAssociationTarget OK generation=17 ssid_len=7 authtype_upper=0x8",
+        "2026-07-02 10:31:39.907 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: handle_target ENTRY generation=17 ssid_len=7 authtype_lower=0x1 authtype_upper=0x8",
+        "2026-07-02 10:31:39.914 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "2026-07-02 10:31:39.916 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "2026-07-02 10:31:39.922 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: DeliverPMK OK generation=17",
+        "2026-07-02 10:31:39.922 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: handle_target DONE generation=17",
+        "2026-07-02 10:31:45.081 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:31:45.081 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:31:45.083 Df launchd[1:7b01] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:31:50.100 Df xpcproxy[2242:7d3c] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:31:50.101 Df launchd[1:7b73] [system/com.zxystd.airportitlwmagent [2242]:] Successfully spawned AirportItlwmAgent[2242] because inefficient",
+        "2026-07-02 10:31:50.106 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:31:50.113 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: PLTI user client opened conn=0xd07",
+        "2026-07-02 10:31:50.115 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: WaitAssociationTarget OK generation=18 ssid_len=7 authtype_upper=0x8",
+        "2026-07-02 10:31:50.115 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: handle_target ENTRY generation=18 ssid_len=7 authtype_lower=0x1 authtype_upper=0x8",
+        "2026-07-02 10:31:50.121 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "2026-07-02 10:31:50.123 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "2026-07-02 10:31:50.132 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: DeliverPMK OK generation=18",
+        "2026-07-02 10:31:50.132 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: handle_target DONE generation=18",
+        "2026-07-02 10:31:55.551 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:31:55.551 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:31:55.559 Df launchd[1:7b73] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:32:00.577 Df xpcproxy[2244:7dd1] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:32:00.577 Df launchd[1:7b73] [system/com.zxystd.airportitlwmagent [2244]:] Successfully spawned AirportItlwmAgent[2244] because inefficient",
+        "2026-07-02 10:32:00.585 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:32:00.592 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: PLTI user client opened conn=0x190b",
+        "2026-07-02 10:32:00.593 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: WaitAssociationTarget OK generation=19 ssid_len=7 authtype_upper=0x400",
+        "2026-07-02 10:32:00.593 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: handle_target ENTRY generation=19 ssid_len=7 authtype_lower=0x1 authtype_upper=0x400",
+        "2026-07-02 10:32:00.599 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "2026-07-02 10:32:00.602 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "2026-07-02 10:32:00.615 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: DeliverPMK OK generation=19",
+        "2026-07-02 10:32:00.615 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: handle_target DONE generation=19",
+        "2026-07-02 10:32:06.131 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:32:06.131 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:32:06.133 Df launchd[1:7d72] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:32:11.140 Df xpcproxy[2246:7e52] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:32:11.140 Df launchd[1:7ddc] [system/com.zxystd.airportitlwmagent [2246]:] Successfully spawned AirportItlwmAgent[2246] because inefficient",
+        "2026-07-02 10:32:11.144 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:32:11.150 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: PLTI user client opened conn=0x160b",
+        "2026-07-02 10:32:11.151 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: WaitAssociationTarget OK generation=20 ssid_len=7 authtype_upper=0x400",
+        "2026-07-02 10:32:11.151 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: handle_target ENTRY generation=20 ssid_len=7 authtype_lower=0x1 authtype_upper=0x400",
+        "2026-07-02 10:32:11.158 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "2026-07-02 10:32:11.160 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "2026-07-02 10:32:11.166 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: DeliverPMK OK generation=20",
+        "2026-07-02 10:32:11.166 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: handle_target DONE generation=20",
+        "2026-07-02 10:32:16.583 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:32:16.583 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:32:16.585 Df launchd[1:7d36] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:32:21.591 Df xpcproxy[2251:7e81] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:32:21.591 Df launchd[1:7e61] [system/com.zxystd.airportitlwmagent [2251]:] Successfully spawned AirportItlwmAgent[2251] because inefficient",
+        "2026-07-02 10:32:21.595 Df AirportItlwmAgent[2251:7e82] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:32:21.601 Df AirportItlwmAgent[2251:7e82] AirportItlwmAgent: PLTI user client opened conn=0x160b",
+        "2026-07-02 10:32:21.601 Df AirportItlwmAgent[2251:7e82] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:32:21.601 Df AirportItlwmAgent[2251:7e82] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:32:21.602 Df launchd[1:7d72] [system:] service inactive: com.zxystd.airportitlwmagent",
+        "2026-07-02 10:32:31.143 Df log[2260:7f00] [com.apple.log:] log run noninteractively, parent: 2258 (sudo), args: 'log' 'show' '--last' '5m' '--style' 'compact' '--predicate' '(eventMessage CONTAINS[c] \"itlwm-join-pmk-7ba07495e93b41d9\" OR eventMessage CONTAINS[c] \"plti_publish_assoc_target\" OR eventMessage CONTAINS",
+        "2026-07-02 10:32:31.618 Df xpcproxy[2261:7f02] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+        "2026-07-02 10:32:31.619 Df launchd[1:7e83] [system/com.zxystd.airportitlwmagent [2261]:] Successfully spawned AirportItlwmAgent[2261] because inefficient",
+        "2026-07-02 10:32:31.625 Df AirportItlwmAgent[2261:7f03] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+        "2026-07-02 10:32:31.643 Df AirportItlwmAgent[2261:7f03] AirportItlwmAgent: PLTI user client opened conn=0x1b0f",
+        "2026-07-02 10:32:31.643 Df AirportItlwmAgent[2261:7f03] AirportItlwmAgent: WaitAssociationTarget kr=0xe00002eb (likely aborted on kext teardown)",
+        "2026-07-02 10:32:31.643 Df AirportItlwmAgent[2261:7f03] AirportItlwmAgent: WaitAssociationTarget aborted; closing connection and exiting for relaunch",
+        "2026-07-02 10:32:31.645 Df launchd[1:7d72] [system:] service inactive: com.zxystd.airportitlwmagent"
       ],
       "returncode": 0,
       "source": "guest unified log capture for PLTI and PMK helper markers",
@@ -136,9 +136,9 @@
       "stdout_line_count": 240
     },
     "prepare_helper_keychain": {
-      "duration_seconds": 0.591,
+      "duration_seconds": 0.561,
       "redacted_lines": [
-        "guest_project_head=8060b92385538101471dfc2916ab3dbe40b8e427",
+        "guest_project_head=310498ae4a5103b3e752d2da76a75b8032e3df3d",
         "agent_install_rc=1",
         "agent_install_stdout_lines=9",
         "agent_install_stderr_lines=1",
@@ -154,7 +154,7 @@
       "stdout_line_count": 8
     },
     "probe": {
-      "duration_seconds": 1.111,
+      "duration_seconds": 1.175,
       "redacted_lines": [
         "product_name=macOS",
         "product_version=26.2",
@@ -185,11 +185,12 @@
     ],
     "selected_head_binary_sha256": "e8ce1f604a4971919d32de15daf32b445ccba54fa2d05d083ce65a8c26d874d0",
     "selected_head_build_string": "%s: AirportItlwm build=281631678abf entry provider=%p",
+    "selected_head_guest_project_head_allowed": true,
     "selected_head_installed": true,
     "selected_head_uuid": "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24",
     "source": "live_tahoe_guest_kextstat_kmutil_showloaded"
   },
-  "input_head": "8060b92385538101471dfc2916ab3dbe40b8e427",
+  "input_head": "310498ae4a5103b3e752d2da76a75b8032e3df3d",
   "join_trigger": {
     "allowed_ap_identifier": "operator-env-ssid-sha256:23cdc738785da940",
     "driver_markers": {
@@ -240,31 +241,31 @@
     "helper_wait_events": [
       {
         "authtype_upper": "0x8",
-        "generation": 9,
-        "line": "2026-07-02 10:13:13.415 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: WaitAssociationTarget OK generation=9 ssid_len=7 authtype_upper=0x8",
+        "generation": 17,
+        "line": "2026-07-02 10:31:39.907 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: WaitAssociationTarget OK generation=17 ssid_len=7 authtype_upper=0x8",
         "ssid_len": 7
       },
       {
         "authtype_upper": "0x8",
-        "generation": 10,
-        "line": "2026-07-02 10:13:24.077 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: WaitAssociationTarget OK generation=10 ssid_len=7 authtype_upper=0x8",
+        "generation": 18,
+        "line": "2026-07-02 10:31:50.115 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: WaitAssociationTarget OK generation=18 ssid_len=7 authtype_upper=0x8",
         "ssid_len": 7
       },
       {
         "authtype_upper": "0x400",
-        "generation": 11,
-        "line": "2026-07-02 10:13:34.553 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: WaitAssociationTarget OK generation=11 ssid_len=7 authtype_upper=0x400",
+        "generation": 19,
+        "line": "2026-07-02 10:32:00.593 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: WaitAssociationTarget OK generation=19 ssid_len=7 authtype_upper=0x400",
         "ssid_len": 7
       },
       {
         "authtype_upper": "0x400",
-        "generation": 12,
-        "line": "2026-07-02 10:13:45.096 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: WaitAssociationTarget OK generation=12 ssid_len=7 authtype_upper=0x400",
+        "generation": 20,
+        "line": "2026-07-02 10:32:11.151 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: WaitAssociationTarget OK generation=20 ssid_len=7 authtype_upper=0x400",
         "ssid_len": 7
       }
     ],
     "publish_events": [],
-    "selected_generation": 12,
+    "selected_generation": 20,
     "source": "live_tahoe_guest_driver_plti_logs",
     "target_ssid_len_matches_allowed_ap": true,
     "wait_events": []
@@ -274,76 +275,76 @@
     "daemon_running": true,
     "helper_delivery_events": [
       {
-        "generation": 9,
-        "line": "2026-07-02 10:13:13.432 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: DeliverPMK OK generation=9"
+        "generation": 17,
+        "line": "2026-07-02 10:31:39.922 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: DeliverPMK OK generation=17"
       },
       {
-        "generation": 10,
-        "line": "2026-07-02 10:13:24.090 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: DeliverPMK OK generation=10"
+        "generation": 18,
+        "line": "2026-07-02 10:31:50.132 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: DeliverPMK OK generation=18"
       },
       {
-        "generation": 11,
-        "line": "2026-07-02 10:13:34.566 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: DeliverPMK OK generation=11"
+        "generation": 19,
+        "line": "2026-07-02 10:32:00.615 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: DeliverPMK OK generation=19"
       },
       {
-        "generation": 12,
-        "line": "2026-07-02 10:13:45.110 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: DeliverPMK OK generation=12"
+        "generation": 20,
+        "line": "2026-07-02 10:32:11.166 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: DeliverPMK OK generation=20"
       }
     ],
     "helper_derive_events": [
       {
-        "line": "2026-07-02 10:13:13.425 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "line": "2026-07-02 10:31:39.916 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
         "pmk_len": 32
       },
       {
-        "line": "2026-07-02 10:13:24.084 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "line": "2026-07-02 10:31:50.123 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
         "pmk_len": 32
       },
       {
-        "line": "2026-07-02 10:13:34.559 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "line": "2026-07-02 10:32:00.602 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
         "pmk_len": 32
       },
       {
-        "line": "2026-07-02 10:13:45.103 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
+        "line": "2026-07-02 10:32:11.160 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: AgentDerivePMK_PBKDF2 OK ssid_len=7 passphrase_len=10 pmk_len=32 prf=HMAC-SHA1 iters=4096",
         "pmk_len": 32
       }
     ],
     "helper_done_events": [
       {
-        "generation": 9,
-        "line": "2026-07-02 10:13:13.432 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: handle_target DONE generation=9"
+        "generation": 17,
+        "line": "2026-07-02 10:31:39.922 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: handle_target DONE generation=17"
       },
       {
-        "generation": 10,
-        "line": "2026-07-02 10:13:24.090 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: handle_target DONE generation=10"
+        "generation": 18,
+        "line": "2026-07-02 10:31:50.132 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: handle_target DONE generation=18"
       },
       {
-        "generation": 11,
-        "line": "2026-07-02 10:13:34.566 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: handle_target DONE generation=11"
+        "generation": 19,
+        "line": "2026-07-02 10:32:00.615 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: handle_target DONE generation=19"
       },
       {
-        "generation": 12,
-        "line": "2026-07-02 10:13:45.110 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: handle_target DONE generation=12"
+        "generation": 20,
+        "line": "2026-07-02 10:32:11.166 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: handle_target DONE generation=20"
       }
     ],
     "helper_lookup_events": [
       {
-        "line": "2026-07-02 10:13:13.423 Df AirportItlwmAgent[1560:520c] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "line": "2026-07-02 10:31:39.914 Df AirportItlwmAgent[2241:7d2c] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
         "password_len": 10,
         "ssid_len": 7
       },
       {
-        "line": "2026-07-02 10:13:24.082 Df AirportItlwmAgent[1562:5277] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "line": "2026-07-02 10:31:50.121 Df AirportItlwmAgent[2242:7d3d] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
         "password_len": 10,
         "ssid_len": 7
       },
       {
-        "line": "2026-07-02 10:13:34.558 Df AirportItlwmAgent[1572:5341] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "line": "2026-07-02 10:32:00.599 Df AirportItlwmAgent[2244:7dd2] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
         "password_len": 10,
         "ssid_len": 7
       },
       {
-        "line": "2026-07-02 10:13:45.101 Df AirportItlwmAgent[1573:535e] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
+        "line": "2026-07-02 10:32:11.158 Df AirportItlwmAgent[2246:7e53] AirportItlwmAgent: AgentLookupProjectPSK FOUND ssid_len=7 password_len=10",
         "password_len": 10,
         "ssid_len": 7
       }
@@ -358,13 +359,17 @@
     },
     "keychain_prepared": true,
     "pmk_delivered": true,
-    "selected_generation": 12,
+    "selected_generation": 20,
     "source": "live_tahoe_guest_launchdaemon_keychain_and_logs"
   },
   "roadmap_item_id": "itlwm-rm-05a0c-join-trigger-pmk-helper-delivery-boundary",
   "runtime_environment": {
+    "accepted_guest_project_heads": [
+      "310498ae4a5103b3e752d2da76a75b8032e3df3d"
+    ],
     "allowed_ap_identifier": "operator-env-ssid-sha256:23cdc738785da940",
     "allowed_ap_identifier_kind": "sha256_prefix_of_operator_env_ssid",
+    "candidate_after_head": "",
     "guest_os": {
       "boot_session_uuid": "C3ED8883-C955-4D7C-A4C4-4BB04EC622B0",
       "boot_time": "{ sec = 1782974230, usec = 340616 } Thu Jul  2 09:37:10 2026",
@@ -373,10 +378,11 @@
       "name": "macOS",
       "version": "26.2"
     },
-    "guest_project_head": "8060b92385538101471dfc2916ab3dbe40b8e427",
+    "guest_project_head": "310498ae4a5103b3e752d2da76a75b8032e3df3d",
     "guest_ssh_target": "devops@127.0.0.1:3322",
     "guest_wifi_interface": "en1",
     "guest_wifi_interface_present": true,
+    "selected_input_head": "310498ae4a5103b3e752d2da76a75b8032e3df3d",
     "selected_source_identity_short": "281631678abf"
   },
   "scan": {
