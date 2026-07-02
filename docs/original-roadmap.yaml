@@ -1092,16 +1092,18 @@ tasks:
   goal_item_ids:
   - itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
   depends_on:
-  - itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+  - itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
   description: >-
     Split the failed AUTH TX/RX completion boundary after rejection be12524: the
     live Tahoe attempt proved AUTH(seq=1) enqueue, drain into the iwn TX path,
     RXON BSS filter publication, and a response-window precondition, but no
-    firmware TX completion for the AUTH(seq=1) frame was observed. This narrower
-    step proves that the iwn firmware completion path publishes AUTH(seq=1)
-    TX_DONE during a live allowed-AP attempt. It does not claim AUTH(seq=2)
-    response-window reception, AUTH response ACK, association, DHCP, data
-    transfer, reconnect, or final Wi-Fi equivalence.
+    firmware TX completion for the AUTH(seq=1) frame was observed. The intermediate
+    guard-publication split must first prove the raw TXDONE/guard surface for the
+    pending unicast AUTH qid/idx. This step then proves that the iwn firmware
+    completion path publishes canonical AUTH(seq=1) TX_DONE during a live
+    allowed-AP attempt. It does not claim AUTH(seq=2) response-window reception,
+    AUTH response ACK, association, DHCP, data transfer, reconnect, or final
+    Wi-Fi equivalence.
   acceptance:
   - Committed source/runtime changes make AUTH(seq=1) firmware TX completion
     observable during a live Tahoe lab attempt.
@@ -1153,6 +1155,104 @@ tasks:
         auth.tx_completion_observed: true
         candidate_fix.source_delta_committed: true
         verdict.ready_for_auth_rx_response_window_retry: true
+        verdict.auth_response_window_not_claimed: true
+        verdict.auth_response_ack_not_claimed: true
+        verdict.final_wifi_equivalence_not_claimed: true
+      forbid_values:
+        scan.source:
+        - synthetic
+        - replay
+        - static_fixture
+        auth.source:
+        - synthetic
+        - replay
+        - static_fixture
+
+- id: itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+  title: Tahoe iwn AUTH TXDONE guard-publication boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b1b-auth-txdone-guard-publication-boundary
+  depends_on:
+  - itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary
+  description: >-
+    Split the failed AUTH management TX completion boundary after the selected-head
+    live run proved scan, PMK delivery, AUTH start, RXON BSS filter, management
+    enqueue, management drain, and iwn TX ring entry for AUTH(seq=1), with qid=0
+    idx=0 and a unicast peer firmware node, but no completion marker. This narrower
+    defect-isolation step makes the raw firmware TXDONE/guard decision observable
+    for that pending AUTH qid/idx without reverting the unicast-node boundary to
+    broadcast txid=15. It does not claim canonical TX completion, AUTH response-
+    window reception, AUTH response ACK, association, DHCP, data transfer,
+    reconnect, or final Wi-Fi equivalence.
+  acceptance:
+  - Committed source/runtime changes publish the raw firmware TXDONE or guard
+    decision for the live AUTH(seq=1) pending qid/idx before the next canonical
+    TX completion retry.
+  - Runtime evidence is captured from the guest against an allowed operator-configured
+    lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+  - The artifact proves the unicast peer-node identity is preserved, records the
+    raw TXDONE/guard-publication outcome for the pending AUTH qid/idx, and explicitly
+    leaves canonical TX completion, AUTH response-window, AUTH response ACK, and
+    later Wi-Fi equivalence criteria unclaimed.
+  requires:
+  - id: itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary
+    artifact: evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json
+    checks:
+      require_fields:
+      - capture_wallclock_seconds
+      - runtime_environment.guest_os
+      - runtime_environment.guest_wifi_interface
+      - runtime_environment.allowed_ap_identifier
+      - driver.kext_loaded
+      - lab.ap_allowed
+      - scan.aps_seen
+      - association_target.visible_or_directed
+      - pmk_helper.target_published
+      - pmk_helper.pmk_delivered
+      - auth.started
+      - auth.rxon_filter_bss_enabled
+      - auth.management_frame_enqueue_observed
+      - auth.management_frame_drain_attempt_observed
+      - auth.iwn_tx_path_entered
+      - auth.txid
+      - auth.txid_not_broadcast
+      - auth.tx_peer_unicast
+      - auth.pending_qid
+      - auth.pending_idx
+      - auth.raw_tx_done_publication_observed
+      - auth.raw_tx_done_publication_matches_pending_qid_idx
+      - auth.tx_done_guard_decision_classified
+      - candidate_fix.source_delta_committed
+      - verdict.ready_for_auth_tx_completion_retry
+      - verdict.auth_tx_completion_not_claimed
+      - verdict.auth_response_window_not_claimed
+      - verdict.auth_response_ack_not_claimed
+      - verdict.final_wifi_equivalence_not_claimed
+      min_number:
+        capture_wallclock_seconds: 30
+        scan.aps_seen: 1
+      max_number:
+        auth.txid: 14
+      equals:
+        runtime_environment.guest_wifi_interface: en1
+        driver.kext_loaded: true
+        lab.ap_allowed: true
+        association_target.visible_or_directed: true
+        pmk_helper.target_published: true
+        pmk_helper.pmk_delivered: true
+        auth.started: true
+        auth.rxon_filter_bss_enabled: true
+        auth.management_frame_enqueue_observed: true
+        auth.management_frame_drain_attempt_observed: true
+        auth.iwn_tx_path_entered: true
+        auth.txid_not_broadcast: true
+        auth.tx_peer_unicast: true
+        auth.raw_tx_done_publication_observed: true
+        auth.raw_tx_done_publication_matches_pending_qid_idx: true
+        auth.tx_done_guard_decision_classified: true
+        candidate_fix.source_delta_committed: true
+        verdict.ready_for_auth_tx_completion_retry: true
+        verdict.auth_tx_completion_not_claimed: true
         verdict.auth_response_window_not_claimed: true
         verdict.auth_response_ack_not_claimed: true
         verdict.final_wifi_equivalence_not_claimed: true

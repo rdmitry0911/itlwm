@@ -258,6 +258,21 @@ work_breakdown:
   - Typed evidence itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary passes from
     committed evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json.
 
+- id: itlwm-fg-05a0b1b-auth-txdone-guard-publication-boundary
+  title: Tahoe AUTH TXDONE guard-publication boundary
+  description: >-
+    A committed, runtime-anchored Tahoe lab run proves that the live AUTH(seq=1)
+    unicast TX path publishes the raw firmware TXDONE/guard decision for the
+    pending AUTH qid/idx before the next full completion retry. This split exists
+    because the selected-head run after the unicast-node boundary reached qid=0
+    idx=0 with a unicast peer node but still exposed no completion marker. This
+    step must not revert to the broadcast firmware node and does not claim the
+    final AUTH TX completion, AUTH response-window reception, AUTH response ACK,
+    association, DHCP, or final Wi-Fi equivalence.
+  criteria:
+  - Typed evidence itlwm-rm-05a0b1b-auth-txdone-guard-publication-boundary passes
+    from committed evidence/runtime/tahoe_auth_txdone_guard_publication_boundary.json.
+
 - id: itlwm-fg-05a0b1-auth-mgmt-tx-completion-boundary
   title: Tahoe AUTH management frame TX completion boundary
   description: >-
