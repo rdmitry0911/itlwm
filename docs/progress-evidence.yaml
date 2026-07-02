@@ -2489,3 +2489,107 @@ records:
         input_head: 8c50a5802f072c6fa63c3b3debfa2c8cca3597ef
         candidate_after_head: 903e70b63c33ad55a97fc4aded3ba9cc4a82f953
       errors: []
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+  roadmap_item_id: itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      summary: No useful project delta was committed because the selected rebuilt
+        kext remained unapproved and did not become the loaded AuxKC kext after the
+        live reboot.
+    validator:
+      role: validator
+      status: failed
+      independent: true
+      summary: A non-mutating live SSH probe confirmed the selected installed UUID
+        FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24 differs from the loaded UUID 21281E0F-88F3-3F1A-B864-511A360FDE61
+        and kmutil still reports approval-required exit 27.
+      evidence_paths: []
+    evidence:
+      role: evidence
+      status: missing
+      evidence_paths: []
+    auditor:
+      accepted: false
+      reason_class: missing_committed_typed_evidence
+      progress_argument: 'Remaining work toward itlwm-fg-05a0c-auxkc-boot-safe-load-boundary
+        did not decrease: the canonical typed artifact evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json
+        is neither present in the filesystem nor tracked in the committed project
+        tree at ef6da7591ff807789e071f6633aa4cce8984d0bb, and the candidate is blocked
+        with evidence_paths: [] while reporting that the selected rebuilt kext did
+        not materialize as the loaded AuxKC kext.'
+      acceptance_surface_substitution_rejected: true
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_a_live_tahoe_guest_run_installs_the_selected_hea: false
+        criterion_6_the_loaded_kext_uuid_version_is_proven_to_match_: false
+        criterion_7_the_evidence_records_absence_of_kernel_panic_rem: false
+        criterion_8_the_artifact_explicitly_leaves_join_trigger_pmk_: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_a_live_tahoe_guest_run_installs_the_selected_hea
+    statement: A live Tahoe guest run installs the selected-head kext into AuxKC,
+      reboots with passthrough Wi-Fi attached, and returns over SSH.
+    source: selected_step
+  - id: criterion_6_the_loaded_kext_uuid_version_is_proven_to_match_
+    statement: The loaded kext UUID/version is proven to match the selected input
+      head or candidate commit under test.
+    source: selected_step
+  - id: criterion_7_the_evidence_records_absence_of_kernel_panic_rem
+    statement: The evidence records absence of kernel panic, remote-debugger wait,
+      and stale/replayed boot logs for the selected attempt.
+    source: selected_step
+  - id: criterion_8_the_artifact_explicitly_leaves_join_trigger_pmk_
+    statement: The artifact explicitly leaves join-trigger/PMK, AUTH, association,
+      DHCP, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 850cc6c32340
+      evidence_path: evidence/build/tahoe_source_stable_build_identity_report.json
+      sha256: 2fae256f7eedd321bc6ab0df10390f71687cdfe0d44a94ebeab93030e760b13e
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: ef6da7591ff807789e071f6633aa4cce8984d0bb
+      candidate_after_head: ef6da7591ff807789e071f6633aa4cce8984d0bb
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0c0b-source-stable-build-identity-boundary!=step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0c0b-source-stable-build-identity-boundary!=itlwm-rm-05a0c-auxkc-boot-safe-load-boundary
+    - runtime_capture_anchor_input_head_mismatch:8c50a5802f072c6fa63c3b3debfa2c8cca3597ef!=ef6da7591ff807789e071f6633aa4cce8984d0bb
+    - runtime_capture_anchor_after_head_mismatch:903e70b63c33ad55a97fc4aded3ba9cc4a82f953!=ef6da7591ff807789e071f6633aa4cce8984d0bb
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 226731e1128468d50e09d372
