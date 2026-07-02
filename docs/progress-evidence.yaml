@@ -4335,3 +4335,125 @@ records:
         input_head: fb7df5d873bb7c4ae100a72e855cffeeefbf2823
         candidate_after_head: 63b280fdb33fab4557ac928d6bc93e34f06c0b6b
       errors: []
+- version: aiam-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  roadmap_item_id: itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      summary: A scoped iwn TX_DONE IORegistry publication and completion capture
+        path was attempted, but the selected observability build could not be loaded
+        into the Tahoe guest because kmutil required System Settings approval for
+        the new cdhash.
+    validator:
+      role: validator
+      status: failed
+      independent: true
+      summary: Live capture against the allowed AP independently reached AUTH enqueue/drain/iwn
+        TX path predicates but did not observe AUTH(seq=1) firmware TX completion;
+        the follow-up build and reboot still left the old input-head UUID loaded.
+      evidence_paths: []
+    evidence:
+      role: evidence
+      status: blocked
+      evidence_paths: []
+    auditor:
+      role: auditor
+      accepted: false
+      status: failed
+      reason_class: auditor_failed_or_timed_out
+      summary: auditor command failed before accepting the selected step
+      stdout_tail: 'tamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":4}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"running","message":"codex
+        assistant message emitted","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":5}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"codex_journal","status":"heartbeat","message":"codex
+        journal event: user_message","timestamp":"2026-07-02T14:39:03Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","codex_journal":"/home/dima/.codex-5.5-high1/sessions/2026/07/02/rollout-2026-07-02T17-39-00-019f2344-d2c2-7281-ab15-21df814d9ef3.jsonl","codex_events_seen":6}
+
+        {"type":"error","message":"You''ve hit your usage limit. Upgrade to Plus to
+        continue using Codex (https://chatgpt.com/explore/plus), or try again at Jul
+        30th, 2026 5:06 PM."}
+
+        {"type":"turn.failed","error":{"message":"You''ve hit your usage limit. Upgrade
+        to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try
+        again at Jul 30th, 2026 5:06 PM."}}
+
+        AIAM_PROGRESS_JSON:{"version":"aiam-progress-heartbeat/v1","role":"auditor","phase":"final","status":"failed","message":"codex
+        auditor exited nonzero","timestamp":"2026-07-02T14:39:05Z","step_id":"step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary","roadmap_item_id":"itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary"}
+
+        '
+      stderr_tail: ''
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_committed_source_runtime_changes_make_auth_seq_1
+    statement: Committed source/runtime changes make AUTH(seq=1) firmware TX completion
+      observable during a live Tahoe lab attempt.
+    source: selected_step
+  - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+    statement: Runtime evidence is captured from the guest against an allowed operator-configured
+      lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+    source: selected_step
+  - id: criterion_7_the_artifact_proves_tx_completion_while_explicit
+    statement: The artifact proves TX completion while explicitly leaving AUTH response-window,
+      AUTH response ACK, and later Wi-Fi equivalence criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: 9de4aae79a48
+      evidence_path: evidence/runtime/tahoe_auth_unicast_tx_node_boundary.json
+      sha256: ec5c0fbf14fa1e280248cc04a673370097420fdc113722e426982f85835435b2
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+      candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+    - anchor_id: fbb2a6234952
+      evidence_path: itlwm/hal_iwn/ItlIwn.cpp
+      sha256: 1fc71e65369c76ce479349018bed00d18a1263b15d40d33dc498adf792b3f2fc
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+      candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+    - anchor_id: 36fb8885f0db
+      evidence_path: scripts/capture_tahoe_auth_unicast_tx_node.py
+      sha256: b2ea287518ef7a2210756fadafa3d686b18d037685e64639cf9100710140110f
+      command: /home/dima/Projects/aiam/bin/aiam-progress-capture-runner
+      produced_by_runtime: true
+      input_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+      candidate_after_head: b9c2a456501efb8cc2895b17ed469d4c0728442b
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary!=step:itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0b1a-auth-unicast-tx-node-boundary!=itlwm-rm-05a0b1-auth-mgmt-tx-completion-boundary
+    - runtime_capture_anchor_input_head_mismatch:fb7df5d873bb7c4ae100a72e855cffeeefbf2823!=b9c2a456501efb8cc2895b17ed469d4c0728442b
+    - runtime_capture_anchor_after_head_mismatch:63b280fdb33fab4557ac928d6bc93e34f06c0b6b!=b9c2a456501efb8cc2895b17ed469d4c0728442b
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: dba8a6cf828538aa446bb242
