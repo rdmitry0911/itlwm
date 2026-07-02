@@ -3853,3 +3853,121 @@ records:
   reason_class: semantic_acceptance_criteria_not_met
   reason: semantic role-chain rejected the selected step candidate
   no_progress_signature: 7360068d09da5a77f3736311
+- version: progress-progress-evidence/v1
+  status: accepted
+  step_id: step:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  roadmap_item_ids:
+  - itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  goal_item_ids:
+  - itlwm-fg-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+  input_head_commit: 7f9c4a6fc69a6fb2dda84631b70226fba2a19781
+  head_commit: 185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a
+  executor_commit:
+    before_head: 7f9c4a6fc69a6fb2dda84631b70226fba2a19781
+    after_head: 185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a
+  state_delta: Added Tahoe AUTH(seq=1) management-frame observability at the net80211
+    management queue, iwn management-queue drain, and iwn TX ring entry, enabled the
+    iwn AUTH-state BSS RXON response window, and committed sanitized live Tahoe guest
+    evidence proving the enqueue/drain boundary against the operator-configured allowed
+    AP while leaving firmware TX completion and all later Wi-Fi gates unclaimed.
+  evidence_paths:
+  - evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+  changed_files:
+  - evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+  - itl80211/openbsd/net80211/ieee80211_output.c
+  - itlwm/hal_iwn/ItlIwn.cpp
+  - scripts/capture_tahoe_auth_mgmt_tx_enqueue_drain.py
+  kernel_state_digest: 96d2e76b847df45c277c50ded6027d592ec39a1cbc6834410f32bb8cb9761740
+  semantic_role_chain:
+    version: progress-progress-role-chain-verdict/v2
+    status: accepted
+    step_id: step:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+    roadmap_item_id: itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary
+    required_roles:
+    - implementation
+    - validator
+    - evidence
+    - auditor
+    role_verdicts:
+      implementation:
+        role: implementation
+        status: implemented
+        summary: Added AUTH(seq=1) net80211 enqueue logging, iwn management-queue
+          drain and TX-ring publications, AUTH-state BSS RXON filtering, and a scoped
+          Tahoe live capture helper with committed sanitized runtime evidence.
+      validator:
+        role: validator
+        status: passed
+        independent: true
+        summary: Ran a non-mutating validate-only live Tahoe recapture against final
+          head 185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a; it rebuilt the fresh guest
+          probe/join/log/ioreg observations and validated the committed artifact's
+          required fields plus selected UUID and binary SHA-256.
+        evidence_paths: []
+      evidence:
+        role: evidence
+        status: captured
+        evidence_paths:
+        - evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+      auditor:
+        accepted: true
+        progress_argument: Remaining work decreased because committed live Tahoe evidence
+          now establishes AUTH(seq=1) enqueue to ic_mgtq, drain through iwn_start,
+          entry into the iwn TX ring path, PMK delivery, and BSS-filtered AUTH response-window
+          observability; the next boundary can focus on firmware TX completion and
+          AUTH response ACK, both explicitly unclaimed here.
+        acceptance_surface_substitution_rejected: true
+        criteria_verdicts:
+          criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+          criterion_2_validator_independently_verifies_or_recaptures_e: true
+          criterion_3_evidence_is_not_only_project_gantt_reports_runti: true
+          criterion_4_auditor_provides_a_progress_argument_showing_rem: true
+          criterion_5_committed_source_runtime_changes_make_the_auth_s: true
+          criterion_6_runtime_evidence_is_captured_from_the_guest_agai: true
+          criterion_7_the_artifact_proves_auth_start_rxon_bss_filter_p: true
+        role: auditor
+    criteria:
+    - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+      statement: Work is exactly the kernel-selected semantic step and does not broaden
+        scope.
+      source: selected_step
+    - id: criterion_2_validator_independently_verifies_or_recaptures_e
+      statement: Validator independently verifies or recaptures evidence rather than
+        trusting implementation claims.
+      source: selected_step
+    - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+      statement: Evidence is not only project-gantt, reports, runtime logs, helper
+        tests, synthetic fixtures, or acceptance surfaces.
+      source: selected_step
+    - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+      statement: Auditor provides a progress argument showing remaining work toward
+        linked final-goal items decreased.
+      source: selected_step
+    - id: criterion_5_committed_source_runtime_changes_make_the_auth_s
+      statement: Committed source/runtime changes make the AUTH(seq=1) management
+        frame enqueue/drain path observable during a live Tahoe lab attempt.
+      source: selected_step
+    - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+      statement: Runtime evidence is captured from the guest against an allowed operator-configured
+        lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+      source: selected_step
+    - id: criterion_7_the_artifact_proves_auth_start_rxon_bss_filter_p
+      statement: The artifact proves AUTH start, RXON BSS filter, PMK delivery, and
+        response window observability while explicitly leaving TX completion and later
+        gates unclaimed.
+      source: selected_step
+    source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+    contract_paths:
+    - docs/progress-role-contracts.yaml
+    legacy_acceptance_contract_policy: ignored_not_source_of_truth
+    runtime_capture:
+      required: true
+      anchors:
+      - anchor_id: d2dd61279de6
+        evidence_path: evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+        sha256: b0eeacc3818c5a12580c27c4b3fdf404d3a51d777acd0f4ff55d001b3704ccb4
+        command: <redacted-runtime-path>
+        produced_by_runtime: true
+        input_head: 7f9c4a6fc69a6fb2dda84631b70226fba2a19781
+        candidate_after_head: 185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a
+      errors: []
