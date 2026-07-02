@@ -1,0 +1,278 @@
+{
+  "auxkc": {
+    "installed_path": "/Library/Extensions/AirportItlwm.kext",
+    "post_reboot_kmutil_approval_error": false,
+    "post_reboot_kmutil_load_exit_code": 0,
+    "pre_reboot_kmutil_load_exit_code": 0,
+    "pre_reboot_kmutil_reboot_required": false,
+    "selected_head_binary_sha256": "e8ce1f604a4971919d32de15daf32b445ccba54fa2d05d083ce65a8c26d874d0",
+    "selected_head_build_string": "%s: AirportItlwm build=281631678abf entry provider=%p",
+    "selected_head_cdhash": "",
+    "selected_head_guest_project_head": "755537b52b5409606a9e4661d51eb2281e59740c",
+    "selected_head_installed": true,
+    "selected_head_source_identity_short": "281631678abf",
+    "selected_head_uuid": "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24",
+    "source": "live_tahoe_guest_selected_head_build_install_kmutil_reboot"
+  },
+  "boot": {
+    "guest_ssh_returned": true,
+    "kernel_panic_observed": false,
+    "reboot_boundary": {
+      "after_boot_session_uuid": "AA93C0DB-E2E2-4426-B46A-95563FA210F6",
+      "before_boot_session_uuid": "DDCF94AD-A198-4EBC-ABD1-B65CD160A2AF",
+      "boot_session_changed": true,
+      "command": "sudo -n shutdown -r now",
+      "command_result": {
+        "duration_seconds": 0.338,
+        "returncode": 255,
+        "stderr_lines": 2,
+        "stdout_lines": 3
+      },
+      "poll_count": 2,
+      "poll_observations": [
+        {
+          "boot_session_uuid": "",
+          "duration_seconds": 15,
+          "returncode": 124
+        },
+        {
+          "boot_session_uuid": "AA93C0DB-E2E2-4426-B46A-95563FA210F6",
+          "duration_seconds": 6.048,
+          "returncode": 0
+        }
+      ],
+      "saw_ssh_down": true,
+      "source": "live_tahoe_guest_reboot_ssh_poll",
+      "ssh_returned": true,
+      "started_utc": "2026-07-02T02:58:10.855013Z",
+      "wallclock_seconds": 34.402
+    },
+    "reboot_performed": true,
+    "source": "live_tahoe_guest_reboot_ssh_poll",
+    "stale_or_replayed_boot_logs_rejected": true
+  },
+  "candidate_fix": {
+    "source_delta_committed": true,
+    "source_delta_paths": [
+      "scripts/capture_tahoe_auxkc_boot_safe_load.py",
+      "evidence/runtime/tahoe_auxkc_boot_safe_load_boundary.json"
+    ]
+  },
+  "capture_commands": {
+    "current_boot_panic_probe": "sudo -n log show --last bounded window filtered for AirportItlwm/panic/remote-debugger",
+    "post_reboot_loaded_identity": "kextstat and kmutil showloaded filtered for AirportItlwm plus dwarfdump UUID and binary sha256",
+    "pre_reboot_auxkc_probe": "sudo -n kmutil load -p /Library/Extensions/AirportItlwm.kext",
+    "reboot": "sudo -n shutdown -r now; poll SSH on devops@127.0.0.1:3322",
+    "selected_head_build_install": "cd /Users/devops/Projects/itlwm && ./scripts/build_tahoe.sh && sudo -n rm/cp/chown/chmod/touch /Library/Extensions/AirportItlwm.kext"
+  },
+  "capture_finished_utc": "2026-07-02T02:59:11.193275Z",
+  "capture_started_utc": "2026-07-02T02:58:04.000114Z",
+  "capture_wallclock_seconds": 67.193,
+  "command_results": {
+    "build_install": {
+      "duration_seconds": 3.4,
+      "returncode": 0,
+      "stderr_lines": 4,
+      "stdout_lines": 21
+    },
+    "post_reboot": {
+      "identity": {
+        "duration_seconds": 5.272,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 8
+      },
+      "kmutil": {
+        "duration_seconds": 0.706,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "loaded": {
+        "duration_seconds": 0.711,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "os": {
+        "duration_seconds": 14.65,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 199
+      },
+      "panic_log": {
+        "duration_seconds": 4.594,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 161
+      }
+    },
+    "pre_reboot": {
+      "identity": {
+        "duration_seconds": 0.547,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 8
+      },
+      "kmutil": {
+        "duration_seconds": 0.567,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "loaded": {
+        "duration_seconds": 0.619,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 2
+      },
+      "os": {
+        "duration_seconds": 0.295,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 199
+      },
+      "panic_log": {
+        "duration_seconds": 1.422,
+        "returncode": 0,
+        "stderr_lines": 1,
+        "stdout_lines": 161
+      }
+    }
+  },
+  "driver": {
+    "installed_binary_sha256_after_reboot": "e8ce1f604a4971919d32de15daf32b445ccba54fa2d05d083ce65a8c26d874d0",
+    "installed_uuid_after_reboot": "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24",
+    "kext_loaded": true,
+    "loaded_uuid": "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24",
+    "loaded_uuid_matches_selected_head": true,
+    "loaded_uuids_observed": [
+      "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24",
+      "FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24"
+    ],
+    "source": "live_tahoe_guest_kextstat_kmutil_showloaded"
+  },
+  "input_head": "755537b52b5409606a9e4661d51eb2281e59740c",
+  "panic": {
+    "current_boot_relevant_snippets": [
+      "2026-07-02 05:59:00.794 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.795 Df kernel[0:496] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.796 Df kernel[0:496] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.796 Df kernel[0:8a1] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.797 Df kernel[0:8a1] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.815 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [1] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:00.817 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [1] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:00.877 Df kernel[0:74c] (AirportItlwm) itlwm: iwn_scan flags=256 bgscan=0",
+      "2026-07-02 05:59:00.878 Df kernel[0:74c] (AirportItlwm) itlwm: iwn_scan flags=256 bgscan=0",
+      "2026-07-02 05:59:00.878 Df kernel[0:74c] (AirportItlwm) itlwm: ieee80211_reset_scan",
+      "2026-07-02 05:59:00.878 Df kernel[0:74c] (AirportItlwm) itlwm: ieee80211_reset_scan",
+      "2026-07-02 05:59:00.878 Df kernel[0:74c] (AirportItlwm) itlwm: iwn_updateslot",
+      "2026-07-02 05:59:00.879 Df kernel[0:74c] (AirportItlwm) itlwm: iwn_updateslot",
+      "2026-07-02 05:59:00.913 Df kernel[0:8a1] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.915 Df kernel[0:8a1] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.921 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.923 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.923 Df kernel[0:497] (AirportItlwm) itlwm: DEBUG VTABLE [476] getRSSI ic_state=1 ic_bss=<private>",
+      "2026-07-02 05:59:00.924 Df kernel[0:497] (AirportItlwm) itlwm: DEBUG VTABLE [476] getRSSI ic_state=1 ic_bss=<private>",
+      "2026-07-02 05:59:00.925 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.926 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.926 Df kernel[0:497] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.928 Df kernel[0:497] (AirportItlwm) itlwm: DEBUG getPOWER returning power_state=1 if_flags=0x8847 ic_state=1 pmPowerState=1",
+      "2026-07-02 05:59:00.929 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.929 Df kernel[0:47d] (AirportItlwm) itlwm: DEBUG VTABLE [475] getOP_MODE",
+      "2026-07-02 05:59:00.930 Df kernel[0:8a0] (AirportItlwm) itlwm: DEBUG VTABLE [476] getRSSI ic_state=1 ic_bss=<private>",
+      "2026-07-02 05:59:00.932 Df kernel[0:8a0] (AirportItlwm) itlwm: DEBUG VTABLE [476] getRSSI ic_state=1 ic_bss=<private>",
+      "2026-07-02 05:59:01.026 Df xpcproxy[451:9ea] Launch constraint set on 00000000-0000-0000-0000-000000000000 /Library/LaunchDaemons/com.zxystd.airportitlwmagent.plist",
+      "2026-07-02 05:59:01.027 Df launchd[1:196] [system/com.zxystd.airportitlwmagent [451]:] Successfully spawned AirportItlwmAgent[451] because inefficient",
+      "2026-07-02 05:59:01.033 Df AirportItlwmAgent[451:9eb] AirportItlwmAgent: project-owned PLTI PMK producer starting (uid=0)",
+      "2026-07-02 05:59:01.033 Df kernel[0:9eb] (AirportItlwm) itlwm: CR240 AirportItlwm::newUserClient(type=0x504c5449) AUTHORIZED -- creating AirportItlwmUserClient",
+      "2026-07-02 05:59:01.037 Df kernel[0:9eb] (AirportItlwm) itlwm: CR240 AirportItlwm::newUserClient(type=0x504c5449) AUTHORIZED -- creating AirportItlwmUserClient",
+      "2026-07-02 05:59:01.037 Df kernel[0:9eb] (AirportItlwm) itlwm: CR239 AirportItlwmUserClient::initWithTask type=0x504c5449 task=<private>",
+      "2026-07-02 05:59:01.038 Df kernel[0:9eb] (AirportItlwm) itlwm: CR239 AirportItlwmUserClient::initWithTask type=0x504c5449 task=<private>",
+      "2026-07-02 05:59:01.038 Df kernel[0:9eb] (AirportItlwm) itlwm: CR239 AirportItlwmUserClient::start provider=<private>",
+      "2026-07-02 05:59:01.040 Df kernel[0:9eb] (AirportItlwm) itlwm: CR239 AirportItlwmUserClient::start provider=<private>",
+      "2026-07-02 05:59:01.040 Df AirportItlwmAgent[451:9eb] AirportItlwmAgent: PLTI user client opened conn=0x1107",
+      "2026-07-02 05:59:01.818 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [2] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:01.820 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [2] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:02.820 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [3] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:02.822 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [3] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:03.612 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG eventHandler msgCode=4 ic_state=1 if_flags=0x8847 power_state=1",
+      "2026-07-02 05:59:03.614 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG eventHandler msgCode=4 ic_state=1 if_flags=0x8847 power_state=1",
+      "2026-07-02 05:59:03.614 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG CR231_POST_GATED msg=0xa len=0x4 ic_state=1",
+      "2026-07-02 05:59:03.615 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG CR231_POST_GATED msg=0xa len=0x4 ic_state=1",
+      "2026-07-02 05:59:03.615 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG postMessageGated msg=10 fNetIf=<private> postOffice=<private> ifExpansion=<private> glue=<private> dataLen=4",
+      "2026-07-02 05:59:03.618 Df kernel[0:74c] (AirportItlwm) itlwm: DEBUG postMessageGated msg=10 fNetIf=<private> postOffice=<private> ifExpansion=<private> glue=<private> dataLen=4",
+      "2026-07-02 05:59:03.618 Df kernel[0:74c] (AirportItlwm) itlwm: : end active scan",
+      "2026-07-02 05:59:03.618 Df kernel[0:74c] (AirportItlwm) itlwm: : end active scan",
+      "2026-07-02 05:59:03.618 Df kernel[0:74c] (AirportItlwm) itlwm: ieee80211_switch_ess",
+      "2026-07-02 05:59:03.619 Df kernel[0:74c] (AirportItlwm) itlwm: ieee80211_switch_ess",
+      "2026-07-02 05:59:03.619 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG reportDataPathEvents type=0xa data=<private> dataLen=4 gated=1 ic_state=1 ic_bss=<private> currentStatus=0x1",
+      "2026-07-02 05:59:03.621 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG reportDataPathEvents type=0xa data=<private> dataLen=4 gated=1 ic_state=1 ic_bss=<private> currentStatus=0x1",
+      "2026-07-02 05:59:03.621 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG reportDataPathEvents ret=0x0",
+      "2026-07-02 05:59:03.622 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG reportDataPathEvents ret=0x0",
+      "2026-07-02 05:59:03.822 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [4] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:03.824 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [4] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:04.824 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [5] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:04.826 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [5] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:05.827 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [6] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:05.830 Df kernel[0:14c] (AirportItlwm) itlwm: DEBUG watchdogAction [6] ic_state=1 if_flags=0x8847 power_state=1 pmPowerState=1 link=0x1",
+      "2026-07-02 05:59:06.147 Df kernelmanagerd[136:373] [com.apple.kernelmanagerd.logging:LoadRequestResolution] loadExtensions(withPaths:withIdentifiers:withPersonalityNames:withDependencyAndFolderPaths:options:withReply:): Loading paths: [\"/Library/Extensions/AirportItlwm.kext\"], identifiers: [], personalityNames: []",
+      "paths: [\"/Library/Extensions/AirportItlwm.kext\"],",
+      "paths: [\"/Library/Extensions/AirportItlwm.kext\"],",
+      "paths: [\"/Library/Extensions/AirportItlwm.kext\"],",
+      "paths: [\"/Library/Extensions/AirportItlwm.kext\"],",
+      "2026-07-02 05:59:06.361 Df kernelmanager_helper[360:8b2] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 05:59:06.361 Df kernelmanager_helper[360:8b2] [com.apple.kernelmanagerd.logging:LoadRequestResolution] checking unstaged bundle path /Library/Extensions/AirportItlwm.kext for Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "requestedExts: [Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext]",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "2026-07-02 05:59:06.525 Df syspolicyd[313:aa8] [com.apple.syspolicy.kext:default] canLoadKernelExtension - direct, evaluate, Kext ((null), com.zxystd.AirportItlwm) version: c55e3d877195e1ddd6bde51611a93db3e0938817",
+      "2026-07-02 05:59:06.546 Df syspolicyd[313:aa8] [com.apple.syspolicy.kext:default] Kernel Extension ALLOWED: Kext ((null), com.zxystd.AirportItlwm) version: c55e3d877195e1ddd6bde51611a93db3e0938817",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext (existing)",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext",
+      "newAuxiliaryContents: [Kext com.highpoint-tech.kext.HighPointRR v4.22.1 in executable kext bundle com.highpoint-tech.kext.HighPointRR at /Library/Extensions/HighPointRR.kext, Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext, Kext com.highpoint-tech.kext.HighPointIOP v4.4.5 in executable kext bundle com.highpoint-tech.kext.HighPointIOP at /Library/Extensions/HighPointIOP.kext, Kext com.apple.nke.rvi v2.1.0 in executable kext bundle com.apple.nke.rvi at /Library/Apple/System/Library/Extensions/RemoteVirtualInterface.kext, Kext com.apple.driver.AppleMobileDevice v4.0 in codeless kext bundle com.apple.driver.AppleMobileDevice at /Library/Apple/System/Library/Extensions/AppleMobileDevice.kext]",
+      "directLoadAuxiliaryExtensions: [com.zxystd.AirportItlwm v2.4.0 (FF1FFD1F-D4F7-3D75-BD8F-39173AABAB24) in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext signed @none (c55e3d877195e1ddd6bde51611a93db3e0938817) flags [0, 1, 4, 9, 14]]",
+      "Kext com.zxystd.AirportItlwm v2.4.0 in executable kext bundle com.zxystd.AirportItlwm at /Library/Extensions/AirportItlwm.kext"
+    ],
+    "kernel_panic_observed": false,
+    "log_query_completed": true,
+    "log_window": "5m",
+    "source": "live_tahoe_guest_current_boot_unified_log",
+    "waiting_for_remote_debugger_observed": false
+  },
+  "roadmap_item_id": "itlwm-rm-05a0c-auxkc-boot-safe-load-boundary",
+  "runtime_environment": {
+    "guest_os": {
+      "boot_session_uuid": "AA93C0DB-E2E2-4426-B46A-95563FA210F6",
+      "boot_time": "{ sec = 1782961109, usec = 212652 } Thu Jul  2 05:58:29 2026",
+      "build": "25C56",
+      "kernel": "25.2.0",
+      "name": "macOS",
+      "version": "26.2"
+    },
+    "guest_ssh": {
+      "available_after_reboot": true,
+      "port": "3322",
+      "target": "devops@127.0.0.1"
+    },
+    "guest_wifi_interface": "en1",
+    "guest_wifi_interface_present": true,
+    "wifi_passthrough_attached": true
+  },
+  "schema_version": "itlwm-tahoe-auxkc-boot-safe-load-boundary/v1",
+  "selected_step": "step:itlwm-rm-05a0c-auxkc-boot-safe-load-boundary",
+  "verdict": {
+    "association_not_claimed": true,
+    "auth_response_ack_not_claimed": true,
+    "auth_tx_rx_not_claimed": true,
+    "data_transfer_not_claimed": true,
+    "dhcp_not_claimed": true,
+    "final_wifi_equivalence_not_claimed": true,
+    "join_trigger_not_claimed": true,
+    "pmk_delivery_not_claimed": true,
+    "ready_for_join_trigger_pmk_retry": true,
+    "reconnect_not_claimed": true
+  }
+}
