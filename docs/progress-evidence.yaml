@@ -3971,3 +3971,121 @@ records:
         input_head: 7f9c4a6fc69a6fb2dda84631b70226fba2a19781
         candidate_after_head: 185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a
       errors: []
+- version: progress-progress-role-chain-verdict/v2
+  status: rejected
+  step_id: step:itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+  roadmap_item_id: itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+  required_roles:
+  - implementation
+  - validator
+  - evidence
+  - auditor
+  role_verdicts:
+    implementation:
+      role: implementation
+      status: blocked
+      summary: A source/helper publication attempt was built and booted in the Tahoe
+        guest, but it was reset from the project branch after live validation failed
+        to observe AUTH TX completion.
+    validator:
+      role: validator
+      status: failed
+      independent: true
+      summary: Live guest capture independently reached scan, PMK delivery, AUTH start,
+        RXON BSS filter, and response-window publication, but failed the typed AUTH
+        TX completion predicate.
+      evidence_paths: []
+    evidence:
+      role: evidence
+      status: blocked
+      evidence_paths: []
+    auditor:
+      accepted: false
+      reason_class: candidate_blocked_missing_committed_runtime_artifact
+      progress_argument: 'Remaining work toward itlwm-fg-05a0b-auth-tx-rx-completion-boundary
+        did not decrease in this accepted-progress sense: the selected-step candidate
+        is status=blocked with failed predicates auth.tx_completion_observed and verdict.ready_for_auth_response_ack_retry,
+        evidence_paths is empty, and the candidate records that the failed uncommitted
+        artifact was removed. The canonical committed artifact evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json
+        is absent from HEAD, absent from git ls-files, absent on disk, and has no
+        commits in git log --all for that path. Live Tahoe proof of AUTH(seq=1) TX
+        completion and an observable AUTH(seq=2) response window remains outstanding.'
+      acceptance_surface_substitution_rejected: true
+      independent_verification:
+        method: reference
+        checked:
+        - docs/original-roadmap.yaml defines the selected step and requires evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json.
+        - docs/final-goal.yaml requires typed evidence for itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+          from the committed artifact path.
+        - progress-kernel/assignment.yaml selects step:itlwm-rm-05a0b-auth-tx-rx-completion-boundary.
+        - progress-kernel/candidate.yaml is for the selected step but has status=blocked,
+          evidence_paths=[], and failed predicates auth.tx_completion_observed and
+          verdict.ready_for_auth_response_ack_retry.
+        - git ls-files evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json
+          returned no committed path.
+        - test -f evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json returned
+          exit status 1.
+        - git log --all --oneline -- evidence/runtime/tahoe_auth_tx_rx_completion_boundary.json
+          returned no commits.
+      evidence_paths: []
+      criteria_verdicts:
+        criterion_1_work_is_exactly_the_kernel_selected_semantic_ste: true
+        criterion_2_validator_independently_verifies_or_recaptures_e: false
+        criterion_3_evidence_is_not_only_project_gantt_reports_runti: false
+        criterion_4_auditor_provides_a_progress_argument_showing_rem: false
+        criterion_5_committed_source_runtime_changes_make_auth_tx_co: false
+        criterion_6_runtime_evidence_is_captured_from_the_guest_agai: false
+        criterion_7_the_artifact_explicitly_leaves_auth_response_ack: false
+      role: auditor
+  criteria:
+  - id: criterion_1_work_is_exactly_the_kernel_selected_semantic_ste
+    statement: Work is exactly the kernel-selected semantic step and does not broaden
+      scope.
+    source: selected_step
+  - id: criterion_2_validator_independently_verifies_or_recaptures_e
+    statement: Validator independently verifies or recaptures evidence rather than
+      trusting implementation claims.
+    source: selected_step
+  - id: criterion_3_evidence_is_not_only_project_gantt_reports_runti
+    statement: Evidence is not only project-gantt, reports, runtime logs, helper tests,
+      synthetic fixtures, or acceptance surfaces.
+    source: selected_step
+  - id: criterion_4_auditor_provides_a_progress_argument_showing_rem
+    statement: Auditor provides a progress argument showing remaining work toward
+      linked final-goal items decreased.
+    source: selected_step
+  - id: criterion_5_committed_source_runtime_changes_make_auth_tx_co
+    statement: Committed source/runtime changes make AUTH TX completion and RX response-window
+      publication observable during a live Tahoe lab attempt.
+    source: selected_step
+  - id: criterion_6_runtime_evidence_is_captured_from_the_guest_agai
+    statement: Runtime evidence is captured from the guest against an allowed operator-configured
+      lab AP and excludes synthetic, replay, or static-fixture scan/auth data.
+    source: selected_step
+  - id: criterion_7_the_artifact_explicitly_leaves_auth_response_ack
+    statement: The artifact explicitly leaves AUTH response ACK and later Wi-Fi equivalence
+      criteria unclaimed.
+    source: selected_step
+  source_of_criteria: selected_step.acceptance_criteria_and_evidence_required
+  contract_paths:
+  - docs/progress-role-contracts.yaml
+  legacy_acceptance_contract_policy: ignored_not_source_of_truth
+  runtime_capture:
+    required: true
+    anchors:
+    - anchor_id: d2dd61279de6
+      evidence_path: evidence/runtime/tahoe_auth_mgmt_tx_enqueue_drain_boundary.json
+      sha256: b0eeacc3818c5a12580c27c4b3fdf404d3a51d777acd0f4ff55d001b3704ccb4
+      command: <redacted-runtime-path>
+      produced_by_runtime: true
+      input_head: 9cb5938a438da8a7d22954ccb195d4e687530a53
+      candidate_after_head: 9cb5938a438da8a7d22954ccb195d4e687530a53
+    errors:
+    - runtime_capture_anchor_step_mismatch:step:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary!=step:itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+    - runtime_capture_anchor_roadmap_mismatch:itlwm-rm-05a0b0-auth-mgmt-tx-enqueue-drain-boundary!=itlwm-rm-05a0b-auth-tx-rx-completion-boundary
+    - runtime_capture_anchor_input_head_mismatch:7f9c4a6fc69a6fb2dda84631b70226fba2a19781!=9cb5938a438da8a7d22954ccb195d4e687530a53
+    - runtime_capture_anchor_after_head_mismatch:185c022d8b9132bb0e8402d4dae00fb2f0e1ed9a!=9cb5938a438da8a7d22954ccb195d4e687530a53
+  accepted: false
+  reason_class: semantic_acceptance_criteria_not_met
+  reason: semantic role-chain rejected the selected step candidate
+  no_progress_signature: 09c1f5f63592eec278bdeb5a
