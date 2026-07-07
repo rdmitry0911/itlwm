@@ -122,7 +122,6 @@ ieee80211_proto_attach(struct _ifnet *ifp)
 void
 ieee80211_proto_detach(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 
 	mq_purge(&ic->ic_mgtq);
@@ -132,88 +131,18 @@ ieee80211_proto_detach(struct _ifnet *ifp)
 void
 ieee80211_print_essid(const u_int8_t *essid, int len)
 {
-	int i;
-	const u_int8_t *p;
-
-    XYLog("%s\n", essid);
-//	if (len > IEEE80211_NWID_LEN)
-//		len = IEEE80211_NWID_LEN;
-//	/* determine printable or not */
-//	for (i = 0, p = essid; i < len; i++, p++) {
-//		if (*p < ' ' || *p > 0x7e)
-//			break;
-//	}
-//	if (i == len) {
-//		XYLog("\"");
-//		for (i = 0, p = essid; i < len; i++, p++)
-//			XYLog("%c", *p);
-//		XYLog("\"");
-//	} else {
-//		XYLog("0x");
-//		for (i = 0, p = essid; i < len; i++, p++)
-//			XYLog("%02x", *p);
-//	}
+	(void)essid;
+	(void)len;
 }
 
 #ifdef IEEE80211_DEBUG
 void
 ieee80211_dump_pkt(const u_int8_t *buf, int len, int rate, int rssi)
 {
-	struct ieee80211_frame *wh;
-	int i;
-
-	wh = (struct ieee80211_frame *)buf;
-	switch (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) {
-	case IEEE80211_FC1_DIR_NODS:
-		XYLog("NODS %s", ether_sprintf(wh->i_addr2));
-		XYLog("->%s", ether_sprintf(wh->i_addr1));
-		XYLog("(%s)", ether_sprintf(wh->i_addr3));
-		break;
-	case IEEE80211_FC1_DIR_TODS:
-		XYLog("TODS %s", ether_sprintf(wh->i_addr2));
-		XYLog("->%s", ether_sprintf(wh->i_addr3));
-		XYLog("(%s)", ether_sprintf(wh->i_addr1));
-		break;
-	case IEEE80211_FC1_DIR_FROMDS:
-		XYLog("FRDS %s", ether_sprintf(wh->i_addr3));
-		XYLog("->%s", ether_sprintf(wh->i_addr1));
-		XYLog("(%s)", ether_sprintf(wh->i_addr2));
-		break;
-	case IEEE80211_FC1_DIR_DSTODS:
-		XYLog("DSDS %s", ether_sprintf((u_int8_t *)&wh[1]));
-		XYLog("->%s", ether_sprintf(wh->i_addr3));
-		XYLog("(%s", ether_sprintf(wh->i_addr2));
-		XYLog("->%s)", ether_sprintf(wh->i_addr1));
-		break;
-	}
-	switch (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) {
-	case IEEE80211_FC0_TYPE_DATA:
-		XYLog(" data");
-		break;
-	case IEEE80211_FC0_TYPE_MGT:
-		XYLog(" %s", ieee80211_mgt_subtype_name[
-		    (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK)
-		    >> IEEE80211_FC0_SUBTYPE_SHIFT]);
-		break;
-	default:
-		XYLog(" type#%d", wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK);
-		break;
-	}
-	if (wh->i_fc[1] & IEEE80211_FC1_WEP)
-		XYLog(" WEP");
-	if (rate >= 0)
-		XYLog(" %d%sM", rate / 2, (rate & 1) ? ".5" : "");
-	if (rssi >= 0)
-		XYLog(" +%d", rssi);
-	XYLog("\n");
-	if (len > 0) {
-		for (i = 0; i < len; i++) {
-			if ((i & 1) == 0)
-				XYLog(" ");
-			XYLog("%02x", buf[i]);
-		}
-		XYLog("\n");
-	}
+	(void)buf;
+	(void)len;
+	(void)rate;
+	(void)rssi;
 }
 #endif
 
@@ -375,7 +304,6 @@ ieee80211_set_shortslottime(struct ieee80211com *ic, int on)
 int
 ieee80211_keyrun(struct ieee80211com *ic, u_int8_t *macaddr)
 {
-    XYLog("%s\n", __FUNCTION__);
 	struct ieee80211_node *ni = ic->ic_bss;
 #ifndef IEEE80211_STA_ONLY
 	struct ieee80211_pmk *pmk;
@@ -664,7 +592,6 @@ ieee80211_ht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (ni->ni_chw == IEEE80211_CHAN_WIDTH_40 && ieee80211_node_supports_ht_sgi40(ni))
         ni->ni_flags |= IEEE80211_NODE_HT_SGI40;
     
-    XYLog("%s chan_width=%s\n", __FUNCTION__, ieee80211_chan_width_name[ni->ni_chw]);
 }
 
 void
@@ -817,13 +744,11 @@ ieee80211_vht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (ieee80211_node_supports_vht_sgi160(ni))
         ni->ni_flags |= IEEE80211_NODE_VHT_SGI160;
     
-    XYLog("%s chan_width=%s support_160=%d support_80_80=%d\n", __FUNCTION__, ieee80211_chan_width_name[ni->ni_chw], support_160, support_80_80);
 }
 
 void
 ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     uint8_t ext_nss_bw_supp, supp_chwidth;
     uint16_t cf0, cf1;
     int ccfs0, ccfs1, ccfs2;
@@ -944,7 +869,6 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
             return;
     }
     
-    XYLog("%s chan_width=%s\n", __FUNCTION__, ieee80211_chan_width_name[ni->ni_chw]);
 }
 
 void
@@ -1018,7 +942,6 @@ ieee80211_sta_set_rx_nss(struct ieee80211com *ic, struct ieee80211_node *ni)
     rx_nss = max(vht_rx_nss, ht_rx_nss);
     rx_nss = max(he_rx_nss, rx_nss);
     ni->ni_rx_nss = max_t(u8, 1, rx_nss);
-    XYLog("%s ni_rx_nss: %d\n", __FUNCTION__, ni->ni_rx_nss);
 }
 
 void
@@ -1194,7 +1117,6 @@ ieee80211_auth_open_confirm(struct ieee80211com *ic,
 void
 ieee80211_try_another_bss(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
 	struct ieee80211_node *curbs, *selbs;
 	struct _ifnet *ifp = &ic->ic_if;
 
@@ -1224,11 +1146,6 @@ ieee80211_try_another_bss(struct ieee80211com *ic)
 	    IEEE80211_NWID_LEN) == 0)
 		return;
 
-	if (ifp->if_flags & IFF_DEBUG)
-		XYLog("%s: trying AP %s on channel %d instead\n",
-		    ifp->if_xname, ether_sprintf(selbs->ni_macaddr),
-		    ieee80211_chan2ieee(ic, selbs->ni_chan));
-
 	/* Triggers an AUTH->AUTH transition, avoiding another SCAN. */
 	ieee80211_node_join_bss(ic, selbs);
 }
@@ -1238,7 +1155,6 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
     struct ieee80211_node *ni, struct ieee80211_rxinfo *rxi, u_int16_t seq,
     u_int16_t status)
 {
-    XYLog("%s\n", __FUNCTION__);
 	struct _ifnet *ifp = &ic->ic_if;
 	switch (ic->ic_opmode) {
 #ifndef IEEE80211_STA_ONLY
@@ -1338,8 +1254,6 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 void
 ieee80211_set_beacon_miss_threshold(struct ieee80211com *ic)
 {
-	struct _ifnet *ifp = &ic->ic_if;
-
 	/*
 	 * Scale the missed beacon counter threshold to the AP's actual
      * beacon interval.
@@ -1351,10 +1265,6 @@ ieee80211_set_beacon_miss_threshold(struct ieee80211com *ic)
 	if (ic->ic_bss->ni_intval > 0) /* don't crash if interval is bogus */
 		ic->ic_bmissthres = btimeout / ic->ic_bss->ni_intval;
 
-	if (ifp->if_flags & IFF_DEBUG)
-		XYLog("%s: missed beacon threshold set to %d beacons, "
-		    "beacon interval is %u TU\n", ifp->if_xname,
-		    ic->ic_bmissthres, ic->ic_bss->ni_intval);
 }
 
 /* Tell our peer, and the driver, to stop A-MPDU Tx for all TIDs. */
@@ -1407,15 +1317,11 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 	struct _ifnet *ifp = &ic->ic_if;
 	struct ieee80211_node *ni;
 	enum ieee80211_state ostate;
-	u_int rate;
 #ifndef IEEE80211_STA_ONLY
 	int s;
 #endif
 
 	ostate = ic->ic_state;
-	if (ifp->if_flags & IFF_DEBUG)
-		XYLog("%s: %s -> %s\n", ifp->if_xname,
-		    ieee80211_state_name[ostate], ieee80211_state_name[nstate]);
 	ic->ic_state = nstate;			/* state transition */
 	ni = ic->ic_bss;			/* NB: no reference held */
 	ieee80211_set_link_state(ic, LINK_STATE_DOWN);
@@ -1661,37 +1567,6 @@ justcleanup:
 			if (ni->ni_txrate >= ni->ni_rates.rs_nrates)
 				panic("%s: bogus xmit rate %u setup",
 				    __FUNCTION__, ni->ni_txrate);
-			if (ifp->if_flags & IFF_DEBUG) {
-				XYLog("%s: %s with %s ssid ",
-				    ifp->if_xname,
-				    ic->ic_opmode == IEEE80211_M_STA ?
-				    "associated" : "synchronized",
-				    ether_sprintf(ni->ni_bssid));
-				ieee80211_print_essid(ic->ic_bss->ni_essid,
-				    ni->ni_esslen);
-				rate = ni->ni_rates.rs_rates[ni->ni_txrate] &
-				    IEEE80211_RATE_VAL;
-				XYLog(" channel %d",
-				    ieee80211_chan2ieee(ic, ni->ni_chan));
-				if (ni->ni_flags & IEEE80211_NODE_HT)
-					XYLog(" start MCS %u", ni->ni_txmcs);
-				else
-					XYLog(" start %u%sMb",
-					    rate / 2, (rate & 1) ? ".5" : "");
-				XYLog(" %s preamble %s slot time%s%s%s%s\n",
-				    (ic->ic_flags & IEEE80211_F_SHPREAMBLE) ?
-					"short" : "long",
-				    (ic->ic_flags & IEEE80211_F_SHSLOT) ?
-					"short" : "long",
-				    (ic->ic_flags & IEEE80211_F_USEPROT) ?
-					" protection enabled" : "",
-				    (ni->ni_flags & IEEE80211_NODE_HT) ?
-					" HT enabled" : "",
-                    (ni->ni_flags & IEEE80211_NODE_VHT) ?
-                    " VHT enabled" : "",
-                    (ni->ni_flags & IEEE80211_NODE_HE) ?
-                    " HE enabled" : "");
-			}
 #ifdef USE_APPLE_SUPPLICANT
             {
 #elif (defined IO80211FAMILY_V2)
@@ -1744,10 +1619,8 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
     if (link_state != ifp->if_link_state) {
         ifp->if_link_state = link_state;
         if (link_state == LINK_STATE_UP) {
-            XYLog("%s LINK_STATE_IS_UP\n", __FUNCTION__);
             ifp->controller->setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, ifp->controller->getCurrentMedium());
         } else {
-            XYLog("%s LINK_STATE_IS_DOWN\n", __FUNCTION__);
             ifp->controller->setLinkStatus(kIONetworkLinkValid);
         }
     }

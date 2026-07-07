@@ -1498,8 +1498,6 @@ void rs_drv_mac80211_tx_status(struct iwm_softc *sc,
 void rs_update_last_rssi(struct iwm_softc *mvm,
                          struct ieee80211_rx_status *rx_status);
 
-int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate);
-
 void rs_drv_rate_update(struct iwm_softc *mvm,
                         struct ieee80211_node *sta,
                         enum nl80211_band band, u32 changed);

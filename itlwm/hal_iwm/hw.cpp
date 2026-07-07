@@ -164,8 +164,6 @@ iwm_check_rfkill(struct iwm_softc *sc)
         sc->sc_flags &= ~IWM_FLAG_RFKILL;
     }
     
-    XYLog("%s RF_KILL hw: %d\n", __FUNCTION__, rv);
-
     splx(s);
     return rv;
 }
@@ -272,7 +270,6 @@ iwm_set_hw_ready(struct iwm_softc *sc)
 int ItlIwm::
 iwm_prepare_card_hw(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int t = 0;
     int ntries;
     
@@ -322,10 +319,6 @@ iwm_apm_config(struct iwm_softc *sc)
     cap = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                         sc->sc_cap_off + PCI_PCIE_DCSR2);
     sc->sc_ltr_enabled = (cap & PCI_PCIE_DCSR2_LTREN) ? 1 : 0;
-    XYLog("%s: L1 %sabled - LTR %sabled\n",
-          DEVNAME(sc),
-          (lctl & PCI_PCIE_LCSR_ASPM_L1) ? "En" : "Dis",
-          sc->sc_ltr_enabled ? "En" : "Dis");
 }
 
 /*
@@ -336,7 +329,6 @@ iwm_apm_config(struct iwm_softc *sc)
 int ItlIwm::
 iwm_apm_init(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int err = 0;
     
     /* Disable L0S exit timer (platform NMI workaround) */
@@ -482,7 +474,6 @@ iwm_apm_stop(struct iwm_softc *sc)
 void ItlIwm::
 iwm_init_msix_hw(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     iwm_conf_msix_hw(sc, 0);
     
     if (!sc->sc_msix)
@@ -497,7 +488,6 @@ iwm_init_msix_hw(struct iwm_softc *sc)
 void ItlIwm::
 iwm_conf_msix_hw(struct iwm_softc *sc, int stopped)
 {
-    XYLog("%s\n", __FUNCTION__);
     int vector = 0;
     
     if (!sc->sc_msix) {
@@ -605,7 +595,6 @@ iwm_clear_persistence_bit(struct iwm_softc *sc)
 int ItlIwm::
 iwm_start_hw(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int err;
     
     err = iwm_prepare_card_hw(sc);
@@ -638,7 +627,6 @@ iwm_start_hw(struct iwm_softc *sc)
 void ItlIwm::
 iwm_stop_device(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int chnl, ntries;
     int qid;
     

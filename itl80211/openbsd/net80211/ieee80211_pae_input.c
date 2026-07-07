@@ -90,7 +90,6 @@ void
 ieee80211_eapol_key_input(struct ieee80211com *ic, mbuf_t m,
                           struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct _ifnet *ifp = &ic->ic_if;
     struct ether_header *eh;
     struct ieee80211_eapol_key *key;
@@ -202,7 +201,6 @@ void
 ieee80211_recv_4way_msg1(struct ieee80211com *ic,
                          struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_ptk tptk;
     struct ieee80211_pmk *pmk;
     const u_int8_t *frm, *efrm;
@@ -317,33 +315,9 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
             }
             return;
         }
-        XYLog("%s owner=local ic_psk_nonzero_bytes=%u/%u "
-              "rsnakms=0x%x ic_external_pmk_owner=%u\n",
-              "ieee80211_recv_4way_msg1_owner_route",
-              ic_psk_nonzero, (unsigned)IEEE80211_PMK_LEN,
-              (unsigned)ni->ni_rsnakms,
-              (unsigned)ic->ic_external_pmk_owner);
         memcpy(ni->ni_pmk, ic->ic_psk, IEEE80211_PMK_LEN);
     }
     ni->ni_flags |= IEEE80211_NODE_PMK;
-    /* Structural observation point: report the non-zero byte
-     * count of ni->ni_pmk before ieee80211_derive_ptk consumes
-     * it. The PSK AKM 4-way handshake requires a non-zero PMK; a
-     * zero PMK at this point produces a PTK and an MIC that the
-     * authenticator rejects with a PSK mismatch. No raw key
-     * material is logged; only the count of non-zero bytes and
-     * the AKM mask. */
-    {
-        unsigned int ni_pmk_nonzero = 0;
-        for (size_t pmk_i = 0; pmk_i < IEEE80211_PMK_LEN; ++pmk_i) {
-            if (ni->ni_pmk[pmk_i] != 0) ni_pmk_nonzero++;
-        }
-        XYLog("%s ni_pmk_nonzero_bytes=%u/%u rsnakms=0x%x\n",
-              "ieee80211_recv_4way_msg1_pmk_check",
-              ni_pmk_nonzero, (unsigned)IEEE80211_PMK_LEN,
-              (unsigned)ni->ni_rsnakms);
-    }
-    
     /* save authenticator's nonce (ANonce) */
     memcpy(ni->ni_nonce, key->nonce, EAPOL_KEY_NONCE_LEN);
     
@@ -356,11 +330,6 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
     
     /* We are now expecting a new pairwise key. */
     ni->ni_flags |= IEEE80211_NODE_RSN_NEW_PTK;
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 1, 4, "4-way",
-              ether_sprintf(ni->ni_macaddr));
     
     /* send message 2 to authenticator using TPTK */
     (void)ieee80211_send_4way_msg2(ic, ni, key->replaycnt, &tptk);
@@ -375,7 +344,6 @@ ieee80211_recv_4way_msg2(struct ieee80211com *ic,
                          struct ieee80211_eapol_key *key, struct ieee80211_node *ni,
                          const u_int8_t *rsnie)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_ptk tptk;
     
     if (ic->ic_opmode != IEEE80211_M_HOSTAP &&
@@ -422,11 +390,6 @@ ieee80211_recv_4way_msg2(struct ieee80211com *ic,
         return;
     }
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 2, 4, "4-way",
-              ether_sprintf(ni->ni_macaddr));
-    
     /* send message 3 to supplicant */
     (void)ieee80211_send_4way_msg3(ic, ni);
 }
@@ -442,7 +405,6 @@ int
 ieee80211_must_update_group_key(struct ieee80211_key *k, const uint8_t *gtk,
                                 int len)
 {
-    XYLog("%s\n", __FUNCTION__);
     return (k->k_cipher == IEEE80211_CIPHER_NONE || k->k_len != len ||
             memcmp(k->k_key, gtk, len) != 0);
 }
@@ -454,7 +416,6 @@ void
 ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                          struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_ptk tptk;
     struct ieee80211_key *k;
     const u_int8_t *frm, *efrm;
@@ -619,11 +580,6 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     ni->ni_replaycnt = BE_READ_8(key->replaycnt);
     ni->ni_replaycnt_ok = 1;
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 3, 4, "4-way",
-              ether_sprintf(ni->ni_macaddr));
-    
     /* send message 4 to authenticator */
     if (ieee80211_send_4way_msg4(ic, ni) != 0)
         return;    /* ..authenticator will retry */
@@ -695,8 +651,6 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             k->k_flags = IEEE80211_KEY_GROUP;
             if (gtk[6] & (1 << 2))
                 k->k_flags |= IEEE80211_KEY_TX;
-            XYLog("%s k_len=%d rsc=%02X %02X %02X %02X %02X %02X\n", __FUNCTION__, keylen
-                  , key->rsc[0], key->rsc[1], key->rsc[2], key->rsc[3], key->rsc[4], key->rsc[5]);
             k->k_rsc[0] = LE_READ_6(key->rsc);
             k->k_len = keylen;
             memcpy(k->k_key, &gtk[8], k->k_len);
@@ -761,10 +715,20 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
 #endif
         {
             if (deferlink == 0) {
-                DPRINTF(("marking port %s valid\n",
-                         ether_sprintf(ni->ni_macaddr)));
+                int was_port_valid = ni->ni_port_valid;
                 ni->ni_port_valid = 1;
                 ieee80211_set_link_state(ic, LINK_STATE_UP);
+                /*
+                 * Notify the driver that the in-kernel 4-way handshake
+                 * completed so it can publish RSN_HANDSHAKE_DONE + the WCL
+                 * JoinDone (connect-complete) event to macOS wifid. Fire once,
+                 * on the port_valid 0->1 transition, so msg3 retransmits do not
+                 * re-publish. Without this, wifid never learns the kernel PAE
+                 * finished and aborts the join (setWCL_JOIN_ABORT).
+                 */
+                if (!was_port_valid && ic->ic_event_handler != NULL)
+                    (*ic->ic_event_handler)(ic,
+                        IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE, NULL);
             }
             ni->ni_assoc_fail = 0;
             if (ic->ic_opmode == IEEE80211_M_STA)
@@ -787,7 +751,6 @@ void
 ieee80211_recv_4way_msg4(struct ieee80211com *ic,
                          struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     if (ic->ic_opmode != IEEE80211_M_HOSTAP &&
         ic->ic_opmode != IEEE80211_M_IBSS)
         return;
@@ -835,15 +798,8 @@ ieee80211_recv_4way_msg4(struct ieee80211com *ic,
         ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
     }
     if (ic->ic_opmode != IEEE80211_M_IBSS || ++ni->ni_key_count == 2) {
-        DPRINTF(("marking port %s valid\n",
-                 ether_sprintf(ni->ni_macaddr)));
         ni->ni_port_valid = 1;
     }
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 4, 4, "4-way",
-              ether_sprintf(ni->ni_macaddr));
     
     /* initiate a group key handshake for WPA */
     if (ni->ni_rsnprotos == IEEE80211_PROTO_WPA)
@@ -860,7 +816,6 @@ void
 ieee80211_recv_4way_msg2or4(struct ieee80211com *ic,
                             struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     const u_int8_t *frm, *efrm;
     const u_int8_t *rsnie;
     
@@ -908,7 +863,6 @@ void
 ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
                               struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_key *k;
     const u_int8_t *frm, *efrm;
     const u_int8_t *gtk, *igtk;
@@ -1045,8 +999,6 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             ++ni->ni_key_count == 2)
 #endif
         {
-            DPRINTF(("marking port %s valid\n",
-                     ether_sprintf(ni->ni_macaddr)));
             ni->ni_port_valid = 1;
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
@@ -1054,11 +1006,6 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
     }
     /* update the last seen value of the key replay counter field */
     ni->ni_replaycnt = BE_READ_8(key->replaycnt);
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 1, 2, "group key",
-              ether_sprintf(ni->ni_macaddr));
     
     /* send message 2 to authenticator */
     (void)ieee80211_send_group_msg2(ic, ni, NULL);
@@ -1075,7 +1022,6 @@ void
 ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
                               struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_key *k;
     u_int16_t info;
     u_int8_t kid;
@@ -1155,8 +1101,6 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
             ++ni->ni_key_count == 2)
 #endif
         {
-            DPRINTF(("marking port %s valid\n",
-                     ether_sprintf(ni->ni_macaddr)));
             ni->ni_port_valid = 1;
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
@@ -1164,11 +1108,6 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
     }
     /* update the last seen value of the key replay counter field */
     ni->ni_replaycnt = BE_READ_8(key->replaycnt);
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 1, 2, "group key",
-              ether_sprintf(ni->ni_macaddr));
     
     /* send message 2 to authenticator */
     (void)ieee80211_send_group_msg2(ic, ni, k);
@@ -1182,7 +1121,6 @@ void
 ieee80211_recv_group_msg2(struct ieee80211com *ic,
                           struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     if (ic->ic_opmode != IEEE80211_M_HOSTAP &&
         ic->ic_opmode != IEEE80211_M_IBSS)
         return;
@@ -1221,10 +1159,6 @@ ieee80211_recv_group_msg2(struct ieee80211com *ic,
     ni->ni_rsn_gstate = RSNA_IDLE;
     ni->ni_rsn_retries = 0;
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: received msg %d/%d of the %s handshake from %s\n",
-              ic->ic_if.if_xname, 2, 2, "group key",
-              ether_sprintf(ni->ni_macaddr));
 }
 
 /*
@@ -1236,7 +1170,6 @@ void
 ieee80211_recv_eapol_key_req(struct ieee80211com *ic,
                              struct ieee80211_eapol_key *key, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     u_int16_t info;
     
     if (ic->ic_opmode != IEEE80211_M_HOSTAP &&

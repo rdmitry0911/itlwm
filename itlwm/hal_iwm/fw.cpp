@@ -288,7 +288,6 @@ iwm_read_firmware(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
     fw->fw_rawsize = fwData->getLength() * 4;
     fw->fw_rawdata = malloc(fw->fw_rawsize, 1, 1);
     uncompressFirmware((u_char *)fw->fw_rawdata, (uint *)&fw->fw_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
-    XYLog("load firmware %s done\n", sc->sc_fwname);
     sc->sc_capaflags = 0;
     sc->sc_capa_n_scan_channels = IWM_DEFAULT_SCAN_CHANNELS;
     memset(sc->sc_enabled_capa, 0, sizeof(sc->sc_enabled_capa));
@@ -502,8 +501,6 @@ iwm_read_firmware(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
                 }
                 paging_mem_size = le32toh(*(const uint32_t *)tlv_data);
                 
-                DPRINTF(("%s: Paging: paging enabled (size = %u bytes)\n",
-                      DEVNAME(sc), paging_mem_size));
                 if (paging_mem_size > IWM_MAX_PAGING_IMAGE_SIZE) {
                     XYLog("%s: Driver only supports up to %u"
                           " bytes for paging image (%u requested)\n",
@@ -579,15 +576,12 @@ iwm_read_firmware(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
                 typedef struct {
                     u8 version[32];
                     u8 sha1[20];
-                } SEQVER, *PSEQVER;
-                PSEQVER fseq_ver = (PSEQVER)tlv_data;
+                } SEQVER;
                 
                 if (tlv_len != sizeof(SEQVER)) {
                     err = EINVAL;
                     goto parse_out;
                 }
-                XYLog("TLV_FW_FSEQ_VERSION: %s\n",
-                         fseq_ver->version);
             }
                 break;
             /* TLVs 0x1000-0x2000 are for internal driver usage */
@@ -635,7 +629,6 @@ out:
 int ItlIwm::
 iwm_post_alive(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int nwords;
     int err, chnl;
     uint32_t base;
@@ -986,7 +979,6 @@ iwm_load_firmware_8000(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
 int ItlIwm::
 iwm_load_firmware(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
 {
-    XYLog("%s\n", __FUNCTION__);
     int err/*, w*/;
     
     sc->sc_uc.uc_intr = 0;
@@ -1013,7 +1005,6 @@ iwm_load_firmware(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
 int ItlIwm::
 iwm_start_fw(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
 {
-    XYLog("%s ucode_type=%d\n", __FUNCTION__, ucode_type);
     int err;
     
     IWM_WRITE(sc, IWM_CSR_INT, ~0);
@@ -1044,7 +1035,6 @@ iwm_start_fw(struct iwm_softc *sc, enum iwm_ucode_type ucode_type)
 int ItlIwm::
 iwm_send_tx_ant_cfg(struct iwm_softc *sc, uint8_t valid_tx_ant)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_tx_ant_cfg_cmd tx_ant_cmd = {
         .valid = htole32(valid_tx_ant),
     };
@@ -1057,7 +1047,6 @@ int ItlIwm::
 iwm_load_ucode_wait_alive(struct iwm_softc *sc,
                           enum iwm_ucode_type ucode_type)
 {
-    XYLog("%s ucode_type=%d\n", __FUNCTION__, ucode_type);
     enum iwm_ucode_type old_type = sc->sc_uc_current;
     struct iwm_fw_sects *fw = &sc->sc_fw.fw_sects[ucode_type];
     int err;
@@ -1110,7 +1099,6 @@ iwm_load_ucode_wait_alive(struct iwm_softc *sc,
 int ItlIwm::
 iwm_run_init_mvm_ucode(struct iwm_softc *sc, int justnvm)
 {
-    XYLog("%s justnvm=%d\n", __FUNCTION__, justnvm);
     const int wait_flags = (IWM_INIT_COMPLETE | IWM_CALIB_COMPLETE);
     int err;
     
@@ -1185,7 +1173,6 @@ iwm_run_init_mvm_ucode(struct iwm_softc *sc, int justnvm)
 int ItlIwm::
 iwm_config_ltr(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_ltr_config_cmd cmd = {
         .flags = htole32(IWM_LTR_CFG_FLAG_FEATURE_ENABLE),
     };

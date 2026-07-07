@@ -10,6 +10,8 @@
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "Airport/IO80211BssManager.h"
+#include "Airport/WCLBulletinBoard.h"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -20,17 +22,6 @@
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
-
-const char* hexdump(uint8_t *buf, size_t len) {
-    ssize_t str_len = len * 3 + 1;
-    char *str = (char*)IOMalloc(str_len);
-    if (!str)
-        return nullptr;
-    for (size_t i = 0; i < len; i++)
-    snprintf(str + 3 * i, (len - i) * 3, "%02x ", buf[i]);
-    str[MAX(str_len - 2, 0)] = 0;
-    return str;
-}
 
 static int ieeeChanFlag2appleScanFlagVentura(int flags)
 {
@@ -50,37 +41,8 @@ static constexpr IOReturn kApple80211ErrInvalidArgumentRaw = 0x16;
 static constexpr uint32_t kIo80211InputProbeLimit = 64;
 static constexpr int32_t kIo80211InputStageEntry = 1000;
 static constexpr int32_t kIo80211InputStageReturn = 2000;
+static constexpr uint32_t kExternalPmkWaitTimeoutMs = 3000;
 
-#define CR234_LOG_LIMIT 32
-#define CR234_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr234_n; \
-    unsigned int _v = ++_cr234_n; \
-    if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
-// CR-236: file-scope atomic counter for total getAssocState calls
-// across the entire boot. Uncapped, so it stays accurate past the
-// CR234_LOG_LIMIT=32 helper cap. Dumped from V2.cpp at d5_producer
-// snapshots (separate per-site cap of 32) to give 32 timeline
-// samples across the connect window. Disambiguates the deferred
-// CR-235 question: does airportd poll getAssocState at all after
-// the helper cap exhausts? If counter is invariant across the 32
-// d5 snapshots, airportd does not poll post-cap; if it increases,
-// the rate is observable.
-//
-// extern "C" linkage so the V2.cpp consumer (which is inside an
-// anonymous namespace) can reference it without name-mangling
-// mismatch.
-extern "C" volatile uint64_t cr236GetAssocStateCount = 0;
-
-// CR-237: end-to-end uncapped atomic counters covering every potential
-// PSK/PMK delivery channel airportd/wifid might use on Tahoe with WCL.
-// Per feedback_diagnostic_end_to_end_criterion: instrument ALL hypothesis
-// branches in one boot. Resolves "where does PSK arrive so it can be
-// loaded into ic->ic_psk for the OpenBSD pae_input host supplicant?"
-// Each counter is uncapped (atomic-only). Snapshot via CR234_LOG at
-// d5_producer in V2.cpp gives a timeline-correlated dump.
-extern "C" volatile uint64_t cr237_setCipherKey_count = 0;
 // Counter of successful APPLE80211_CIPHER_PMK installs through
 // setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
 // concurrent IOCTL paths do not lose increments.
@@ -96,173 +58,7 @@ extern "C" volatile uint64_t setCUR_PMK_pmk_install_count = 0;
 // tag so an observer can reconstruct the lifecycle without raw
 // key material appearing in kernel logs.
 extern "C" volatile uint64_t external_pmk_eligibility_clear_count = 0;
-extern "C" volatile uint64_t cr237_setPTK_count = 0;
-extern "C" volatile uint64_t cr237_setGTK_count = 0;
-extern "C" volatile uint64_t cr237_setRSN_IE_count = 0;
-extern "C" volatile uint64_t cr237_setAUTH_TYPE_count = 0;
-extern "C" volatile uint64_t cr237_setWCL_ASSOCIATE_count = 0;
-extern "C" volatile uint64_t cr237_setWCL_LINK_UP_DONE_count = 0;
-extern "C" volatile uint64_t cr237_setWCL_REASSOC_count = 0;
-extern "C" volatile uint64_t cr237_setWCL_LINK_STATE_UPDATE_count = 0;
-extern "C" volatile uint64_t cr237_processApple80211Ioctl_count = 0;
-extern "C" volatile uint64_t cr237_processBSDCommand_count = 0;
-extern "C" volatile uint64_t cr237_associateSSID_count = 0;
-extern "C" volatile uint64_t cr237_eapol_rx_count = 0;
 
-// =========================================================================
-// CR-258: extends CR-237 instrumentation to plausible PMK delivery branches
-// per the "сквозная инструментализация по всем веткам исследуемой гипотезы"
-// criterion. CR-237 covered 13 channels (the "obvious" ones); CR-258
-// closes the remaining gap on the explicitly in-scope branches:
-//   Branch A — Per-opcode counter array indexed by APPLE80211_IOC_* in
-//              processApple80211Ioctl, so we see exactly which opcodes
-//              fire on Tahoe (the wrapper is already instrumented; this
-//              gives the per-opcode breakdown).
-//   Branch B — All uninstrumented setWCL_* methods (the WCL channel
-//              airportd uses on Tahoe).
-//   Branch C — The legacy-form direct PMK carrier setASSOCIATE
-//              (apple80211_assoc_data has an embedded apple80211_key at
-//              ad_key offset 0x38) and the generic carriers that could
-//              embed PMK metadata: setIE, setRSN_XE, setSET_PROPERTY,
-//              setCLEAR_PMKSA_CACHE.
-//
-// Branch D (IORegistry setProperty() override / per-ethertype inputPacket
-// breakdown / direct WCLJoinRequest accessor) is INTENTIONALLY OUT OF
-// SCOPE for this CR. No counter, no snapshot slot, no source coverage
-// is published for any Branch D surface. If Stage 2 evidence shows all
-// in-scope branches silent, a follow-up CR adds Branch D coverage.
-//
-// Each probe records only metadata (count, pointer-non-null, payload size,
-// PMK-shape match). NO raw key bytes ever appear in any log line.
-// PMK-shape detection (cr257_detect_pmk_shape below) returns true only
-// for payloads containing at least one 32-byte run with >=8 distinct
-// byte values (excludes all-zero and trivial repetitive patterns), as
-// PMK is high-entropy 32 bytes. This is a heuristic SIGNAL that the
-// payload may carry a PMK; the actual content is never dumped.
-// =========================================================================
-extern "C" volatile uint64_t cr257_setASSOCIATE_count = 0;
-extern "C" volatile uint64_t cr257_setIE_count = 0;
-extern "C" volatile uint64_t cr257_setRSN_XE_count = 0;
-extern "C" volatile uint64_t cr257_setSET_PROPERTY_count = 0;
-extern "C" volatile uint64_t cr257_setCLEAR_PMKSA_CACHE_count = 0;
-
-extern "C" volatile uint64_t cr257_setWCL_TRIGGER_CC_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_SCAN_REQ_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_LEAVE_NETWORK_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_SCAN_ABORT_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_SET_ROAM_LOCK_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_UPDATE_FAST_LANE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_REAL_TIME_MODE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ACTION_FRAME_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ROAM_USER_CACHE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ROAM_PROFILE_CONFIG_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ARP_MODE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_NETWORK_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BGSCAN_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_PARAMS_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_JOIN_ABORT_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_QOS_PARAMS_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ULOFDMA_STATE_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_LIMITED_AGGREGATION_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_BCN_MUTE_CONFIG_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_ASSOCIATED_SLEEP_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_SOI_CONFIG_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_WNM_OPS_count = 0;
-extern "C" volatile uint64_t cr257_setWCL_WNM_OFFLOAD_count = 0;
-
-// Per-opcode counter array, sized 320 to cover all current APPLE80211_IOC_*
-// opcode values (max ~290 in apple80211_ioctl.h) with safety margin.
-extern "C" volatile uint64_t cr257_apple80211_ioctl_per_op[320] = {};
-
-// PMK-shape detection: returns true if payload contains at least one
-// 32-byte run with >=8 distinct byte values. Matches typical PMK
-// (high-entropy 32-byte derivation) and excludes all-zero, all-0xff,
-// and trivial repetitive patterns. Heuristic only; the actual content
-// is never logged.
-static bool cr257_detect_pmk_shape(const void *p, size_t n)
-{
-    if (p == nullptr || n < 32) return false;
-    const uint8_t *bytes = static_cast<const uint8_t *>(p);
-    for (size_t off = 0; off + 32 <= n; off++) {
-        uint32_t seen[8] = {};   // 256-bit bitmap of seen byte values
-        unsigned distinct = 0;
-        for (size_t i = 0; i < 32; i++) {
-            uint8_t b = bytes[off + i];
-            uint32_t bit = 1u << (b & 31);
-            uint32_t &slot = seen[b >> 5];
-            if (!(slot & bit)) { slot |= bit; distinct++; }
-        }
-        if (distinct >= 8) return true;
-    }
-    return false;
-}
-
-#define CR257_LOG_LIMIT 16
-#define CR257_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr257_n; \
-    unsigned int _v = ++_cr257_n; \
-    if (_v <= CR257_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
-#define CR257_PROBE(name, ptr, len) do { \
-    __atomic_add_fetch(&cr257_##name##_count, 1, __ATOMIC_RELAXED); \
-    const void *_p = (ptr); \
-    size_t _n = (size_t)(len); \
-    bool _pmk = (_p != nullptr) ? cr257_detect_pmk_shape(_p, _n) : false; \
-    CR257_LOG("DEBUG CR257_PROBE name=%s ptr_nonnull=%d len=%zu pmk_shape=%d\n", \
-              #name, _p != nullptr ? 1 : 0, _n, _pmk ? 1 : 0); \
-} while (0)
-
-// CR-237: per-site capped log helper for entry payload dumps. Counter
-// is per-macro-expansion (each call site has its own _cr237_n static).
-// Used for sites that dump non-counter payload (kKeyOffset peek,
-// associateSSID args, etc). Cap=16 to bound log spam.
-#define CR237_LOG_LIMIT 16
-#define CR237_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr237_n; \
-    unsigned int _v = ++_cr237_n; \
-    if (_v <= CR237_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
-// CR-234: dump BOTH reader bytes plus identity-check bssid bytes.
-// - inner_128+0x180 : byte read by IO80211InfraInterface::getAssocState (per
-//                     decomp at ffffff80022e5e2a). Written by
-//                     IO80211InfraInterface::setCurrentApAddress (per decomp
-//                     at ffffff80022e5e40).
-// - inner_120+0x88  : byte read by IO80211SkywalkInterface::getAssocState (per
-//                     decomp at ffffff800227855a). Written by
-//                     IO80211SkywalkInterface::setRunningState (per decomp at
-//                     ffffff8002277284).
-// - inner_128+0x198 : bssid bytes 0..3 (32-bit), written by the framework's
-//                     setCurrentApAddress(non-NULL) — identity proof that
-//                     `this+0x128` matches what the framework's writer used.
-// - inner_128+0x19c : bssid bytes 4..5 (16-bit), same identity proof.
-// All reads are NULL-guarded.
-static void cr234DumpInnerState(const void *thisPtr, const char *tag) {
-    if (thisPtr == nullptr) {
-        CR234_LOG("DEBUG CR234_INNER %s thisPtr=NULL\n", tag);
-        return;
-    }
-    const char *base = reinterpret_cast<const char *>(thisPtr);
-    const void *inner_120 = *reinterpret_cast<const void * const *>(base + 0x120);
-    const void *inner_128 = *reinterpret_cast<const void * const *>(base + 0x128);
-    uint8_t b120_88 = (inner_120 != nullptr)
-        ? *(reinterpret_cast<const uint8_t *>(inner_120) + 0x88) : 0xff;
-    uint8_t b128_180 = (inner_128 != nullptr)
-        ? *(reinterpret_cast<const uint8_t *>(inner_128) + 0x180) : 0xff;
-    uint32_t b128_198 = (inner_128 != nullptr)
-        ? *(reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(inner_128) + 0x198)) : 0;
-    uint16_t b128_19c = (inner_128 != nullptr)
-        ? *(reinterpret_cast<const uint16_t *>(reinterpret_cast<const uint8_t *>(inner_128) + 0x19c)) : 0;
-    CR234_LOG("DEBUG CR234_INNER %s thisPtr=%p i120=%p i128=%p "
-              "i120_88=0x%02x i128_180=0x%02x i128_198=0x%08x i128_19c=0x%04x\n",
-              tag, thisPtr, inner_120, inner_128,
-              (unsigned)b120_88, (unsigned)b128_180,
-              (unsigned)b128_198, (unsigned)b128_19c);
-}
 static volatile uint32_t sIo80211InputProbeCount = 0;
 
 static uint16_t airportItlwmHostEtherType(const ether_header *eh)
@@ -274,32 +70,9 @@ static uint16_t airportItlwmHostEtherType(const ether_header *eh)
     return static_cast<uint16_t>((raw << 8) | (raw >> 8));
 }
 
-static const char *tahoeApple80211ReqName(int reqType)
-{
-    if (reqType >= 0 &&
-        reqType < static_cast<int>(sizeof(IOCTL_NAMES) / sizeof(IOCTL_NAMES[0])))
-        return IOCTL_NAMES[reqType];
-    return "UNKNOWN";
-}
-
 static bool isTahoeHiddenAssocCommand(int command)
 {
     return TahoeAssociationContracts::isHiddenAssocCommand(command);
-}
-
-static bool isTahoeCurrentLinkProbeReq(int reqType)
-{
-    switch (reqType) {
-        case APPLE80211_IOC_SSID:
-        case APPLE80211_IOC_BSSID:
-        case APPLE80211_IOC_SCAN_RESULT:
-        case APPLE80211_IOC_CURRENT_NETWORK:
-        case APPLE80211_IOC_VIRTUAL_IF_ROLE:
-        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
-            return true;
-        default:
-            return false;
-    }
 }
 
 static bool isInvalidTahoeLqmThresholdByte(uint8_t value)
@@ -368,6 +141,29 @@ static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
     return primary;
 }
 
+}
+
+static uint8_t tahoeMimoBandwidthCodeFromWidth(uint8_t width)
+{
+    switch (width) {
+        case IEEE80211_CHAN_WIDTH_20_NOHT:
+        case IEEE80211_CHAN_WIDTH_20:
+            return 1;
+        case IEEE80211_CHAN_WIDTH_40:
+            return 2;
+        case IEEE80211_CHAN_WIDTH_80:
+        case IEEE80211_CHAN_WIDTH_80P80:
+        case IEEE80211_CHAN_WIDTH_160:
+            return 3;
+        default:
+            return 0;
+    }
+}
+
+static uint8_t tahoeMimoBandwidthCarrier(uint8_t code)
+{
+    static constexpr uint8_t kAppleMimoBandwidthTable[4] = {0x50, 0x14, 0x28, 0x50};
+    return code < sizeof(kAppleMimoBandwidthTable) ? kAppleMimoBandwidthTable[code] : 0;
 }
 
 static constexpr uint64_t kAppleTahoeChipPowerDutyCycleFallback[6] = {
@@ -663,6 +459,27 @@ static int ieeeChanFlag2apple(int flags, int bw)
     return ret;
 }
 
+static void postTahoeBssidChangedThroughInfraHelper(
+    AirportItlwmSkywalkInterface *iface, AirportItlwm *controller,
+    apple80211_bssid_changed_event_data *eventData, const char *source)
+{
+    (void)source;
+    if (iface == nullptr || controller == nullptr ||
+        controller->fNetIf == nullptr || eventData == nullptr)
+        return;
+
+    /*
+     * IO80211InfraInterface::postMessage(msg=3) reaches bssidChange(data,len)
+     * before the normal PostOffice delivery path. The local controller-level
+     * postMessage transport intentionally bypasses that virtual infra helper,
+     * so run the recovered side-effect hook explicitly for the same 24-byte
+     * BSSID carrier before queuing the event.
+     */
+    iface->bssidChange(eventData, sizeof(*eventData));
+    controller->postMessage(controller->fNetIf, APPLE80211_M_BSSID_CHANGED,
+                            eventData, sizeof(*eventData), true);
+}
+
 struct triggerCCSnapshot
 {
     uint64_t qword0;
@@ -937,23 +754,7 @@ static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe0
 
 void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
 {
-    __atomic_add_fetch(&cr237_associateSSID_count, 1, __ATOMIC_RELAXED);
-    bool cr237KeyNonZero = false;
-    if (key != nullptr && key_len > 0 && key_len <= 64) {
-        for (uint32_t i = 0; i < key_len; ++i) {
-            if (key[i] != 0) { cr237KeyNonZero = true; break; }
-        }
-    }
-    CR237_LOG("DEBUG CR237_ASSOC_SSID key_ptr_nonnull=%d key_len=%u key_nonzero=%d "
-              "auth_lower=%u auth_upper=%u importLocalPmk=%d externalPmkOwner=%d\n",
-              key != nullptr ? 1 : 0, key_len, cr237KeyNonZero ? 1 : 0,
-              authtype_lower, authtype_upper,
-              importLocalPmk ? 1 : 0, externalPmkOwner ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ssid_len=%u auth_lower=%u auth_upper=%u key_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x ic_state=%d\n",
-          __FUNCTION__, ssid_len, authtype_lower, authtype_upper, key_len,
-          bssid.octet[0], bssid.octet[1], bssid.octet[2],
-          bssid.octet[3], bssid.octet[4], bssid.octet[5], ic->ic_state);
 
     // ieee80211_disable_rsn() zeroes ic->ic_psk along with the
     // RSN config fields. On the WCL/Skywalk externally-owned-PSK
@@ -1025,12 +826,10 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
     }
     
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     }
     
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
@@ -1084,16 +883,9 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
             memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
             ic->ic_flags |= IEEE80211_F_PSK;
             ic->ic_external_pmk_owner = 0;
-            XYLog("associateSSID_owner SELECTED owner=local source=public_ad_key "
-                  "key_len=%u ic_flags=0x%x\n",
-                  key_len, (unsigned)ic->ic_flags);
         } else if (externalPmkOwner || importLocalPmk) {
             ic->ic_flags |= IEEE80211_F_PSK;
             ic->ic_external_pmk_owner = 1;
-            XYLog("associateSSID_owner SELECTED owner=external source=wcl_associate "
-                  "key_len=%u ic_flags=0x%x externalPmkOwner=%d importLocalPmk=%d\n",
-                  key_len, (unsigned)ic->ic_flags,
-                  externalPmkOwner ? 1 : 0, importLocalPmk ? 1 : 0);
 #if __IO80211_TARGET >= __MAC_26_0
             // External-supplicant PSK association edge: no caller PMK
             // bytes arrived (WCL_ASSOCIATE delivers the PMK out of
@@ -1111,9 +903,30 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
             // concurrent lifecycle reset cannot interleave between
             // the check and the ic_psk write.
             if (instance != nullptr) {
-                instance->publishPendingAssocTarget(
+                uint64_t assocGeneration = instance->publishPendingAssocTarget(
                     ssid, ssid_len, bssid.octet,
                     authtype_lower, authtype_upper);
+                if (assocGeneration != 0) {
+                    uint32_t waitedMs = 0;
+                    unsigned int pmkNonZero = 0;
+                    uint32_t externalOwner = 0;
+                    uint32_t sleepResult = 0;
+                    bool inCommandGate = false;
+                    bool pmkReady = instance->waitForExternalPmkReady(
+                        assocGeneration, kExternalPmkWaitTimeoutMs,
+                        &waitedMs, &pmkNonZero, &externalOwner,
+                        &sleepResult, &inCommandGate);
+
+                    if (!pmkReady) {
+                        XYLog("external_pmk_wait TIMEOUT generation=%llu "
+                              "waited_ms=%u ic_psk_nonzero_bytes=%u/%zu "
+                              "external_owner=%u sleep_result=0x%x in_gate=%u\n",
+                              (unsigned long long)assocGeneration,
+                              waitedMs, pmkNonZero, sizeof(ic->ic_psk),
+                              externalOwner, sleepResult,
+                              inCommandGate ? 1U : 0U);
+                    }
+                }
             }
 #endif
         } else {
@@ -1134,14 +947,10 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
             }
 #endif
             ic->ic_external_pmk_owner = 0;
-            XYLog("associateSSID_owner SELECTED owner=none source=no_carrier "
-                  "key_len=%u ic_flags=0x%x\n",
-                  key_len, (unsigned)ic->ic_flags);
         }
         ieee80211_ioctl_setwpaparms(ic, &wpa);
     }
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_SHA256_8021X)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_8021X | IEEE80211_WPA_AKM_SHA256_8021X;
         wpa.i_enabled = 1;
         ieee80211_ioctl_setwpaparms(ic, &wpa);
@@ -1154,7 +963,6 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
     
     if (authtype_upper == APPLE80211_AUTHTYPE_NONE && authtype_lower == APPLE80211_AUTHTYPE_OPEN) { // Open or WEP Open System
         if (key_len > 0) {
-            XYLog("%s %d\n", __FUNCTION__, __LINE__);
             nwkey.i_wepon = IEEE80211_NWKEY_WEP;
             nwkey.i_defkid = key_index + 1;
             nwkey.i_key[key_index].i_keylen = (int)key_len;
@@ -1165,9 +973,6 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
 }
 
 void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
-    __atomic_add_fetch(&cr237_setPTK_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_SET_PTK key_len=%zu key_ptr_nonnull=%d\n",
-              key_len, key != nullptr ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     struct ieee80211_node    * ni = ic->ic_bss;
     struct ieee80211_key *k;
@@ -1198,8 +1003,6 @@ void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
             XYLog("setting PTK failed\n");
             return;
         }
-        else
-            XYLog("setting PTK successfully\n");
         ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_flags |= IEEE80211_NODE_RXPROT;
@@ -1209,9 +1012,6 @@ void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
 }
 
 void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_int8_t *rsc) {
-    __atomic_add_fetch(&cr237_setGTK_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_SET_GTK key_len=%zu kid=%u gtk_ptr_nonnull=%d\n",
-              key_len, (unsigned)kid, gtk != nullptr ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     struct ieee80211_node    * ni = ic->ic_bss;
     struct ieee80211_key *k;
@@ -1241,8 +1041,6 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
                 XYLog("setting GTK failed\n");
                 return;
             }
-            else
-                XYLog("setting GTK successfully\n");
         }
     }
     
@@ -1253,8 +1051,6 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
             ++ni->ni_key_count == 2)
 #endif
         {
-            XYLog("marking port %s valid\n",
-                  ether_sprintf(ni->ni_macaddr));
             ni->ni_port_valid = 1;
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;
@@ -1269,10 +1065,6 @@ free()
 {
     RT_SET(22);
     sRT.skFreeStep = 1;
-    XYLog("DEBUG %s entry mExpansionData=%p mExpansionData2=%p "
-          "instance=%p fHalService=%p rtMask=0x%07x\n",
-          __FUNCTION__, mExpansionData, mExpansionData2,
-          instance, fHalService, sRT.rtMask);
 
     // Panic timer — the previous crash (panic8) was in the destructor chain
     // triggered by super::free() → IO80211SkywalkInterface::free() → D0 → D1.
@@ -1324,7 +1116,6 @@ free()
     scanSource = NULL;
     fNextNodeToSend = NULL;
     sRT.skFreeStep = 5;
-    XYLog("DEBUG %s calling super::free (IO80211InfraProtocol)\n", __FUNCTION__);
     super::free();
     RT_SET(23);
     thread_call_cancel(skFreeTimer);
@@ -1339,19 +1130,11 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
     const uint32_t count = ++sIo80211InputProbeCount;
     const uint16_t etherType = airportItlwmHostEtherType(eh);
     const bool isEapol = etherType == ETHERTYPE_PAE;
-    if (isEapol) {
-        __atomic_add_fetch(&cr237_eapol_rx_count, 1, __ATOMIC_RELAXED);
-    }
-    const bool shouldLog = count <= kIo80211InputProbeLimit || isEapol;
+    const bool shouldTrace = count <= kIo80211InputProbeLimit || isEapol;
     const uint64_t traceArg =
         (static_cast<uint64_t>(etherType) << 32) | static_cast<uint64_t>(count);
 
-    if (shouldLog) {
-        XYLog("ITLWM_IO80211_INPUT stage=entry count=%u packet=%p tag=%p "
-              "eh=%p type=0x%04x eapol=%u accepted=%p arg=%u\n",
-              count, packet, tag, eh, etherType,
-              static_cast<unsigned int>(isEapol),
-              accepted, static_cast<unsigned int>(arg));
+    if (shouldTrace) {
         airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceRx,
                                  kAirportItlwmRegDiagPathRx,
                                  kIOReturnSuccess,
@@ -1364,11 +1147,7 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
     IOReturn ret = IO80211InfraInterface::inputPacket(packet, tag, eh,
                                                       accepted, arg);
 
-    if (shouldLog) {
-        XYLog("ITLWM_IO80211_INPUT stage=return count=%u type=0x%04x "
-              "eapol=%u result=0x%x\n",
-              count, etherType, static_cast<unsigned int>(isEapol),
-              static_cast<uint32_t>(ret));
+    if (shouldTrace) {
         airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceRx,
                                  kAirportItlwmRegDiagPathRx,
                                  ret,
@@ -1566,7 +1345,6 @@ bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 IOReturn AirportItlwmSkywalkInterface::
 processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 {
-    __atomic_add_fetch(&cr237_processBSDCommand_count, 1, __ATOMIC_RELAXED);
     // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the
     // IO80211InfraProtocol vtable. Our driver still implements those semantics
     // as helper methods below, but without an explicit BSD-command bridge they
@@ -1582,60 +1360,16 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     //   dispatcher never runs here; the BSD path must forward these requests.
     if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
         apple80211req *req = static_cast<apple80211req *>(data);
-        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
-            XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p ifnet=%p\n",
-                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
-                  req->req_type, req->req_data, interface);
-        }
         IOReturn ret = processApple80211Ioctl(cmd, req);
-        if (req != nullptr && isTahoeCurrentLinkProbeReq(req->req_type)) {
-            XYLog("DEBUG %s RET cmd=0x%x req=%s(%d) ret=0x%x\n",
-                  __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
-                  req->req_type, ret);
-        }
         if (ret != kIOReturnUnsupported)
             return ret;
     }
     return super::processBSDCommand(interface, cmd, data);
 }
 
-// CR-231 BRANCH 4+5: log every apple80211 IOCTL airportd issues.
-// Centralized at the dispatch entry point so we capture the request
-// type + cmd direction even before the per-handler switch. Per-call
-// rate-limited (16 emissions per process lifetime) to bound log spam
-// during airportd's polling loops.
-#define CR231_IOCTL_LOG_LIMIT 16
-#define CR231_IOCTL_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr231_iocn; \
-    unsigned int _v = ++_cr231_iocn; \
-    if (_v <= CR231_IOCTL_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
 IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
-    __atomic_add_fetch(&cr237_processApple80211Ioctl_count, 1, __ATOMIC_RELAXED);
-    // CR-257: per-opcode counter so we see exactly which APPLE80211_IOC_*
-    // values airportd uses on Tahoe (the wrapper counter alone hides the
-    // distribution). Bounded array index check prevents OOB writes.
-    if (req != nullptr) {
-        int op = req->req_type;
-        if (op >= 0 && op < (int)(sizeof(cr257_apple80211_ioctl_per_op) /
-                                   sizeof(cr257_apple80211_ioctl_per_op[0]))) {
-            __atomic_add_fetch(&cr257_apple80211_ioctl_per_op[op], 1,
-                               __ATOMIC_RELAXED);
-        }
-    }
-    CR237_LOG("DEBUG CR237_IOCTL_ENTRY cmd=0x%x req_type=%d\n",
-              (unsigned)cmd, req ? (int)req->req_type : -1);
-    // CR-231 BRANCH 4: log every IOCTL airportd issues so Stage 2
-    // evidence shows what airportd polls AFTER our connect-complete
-    // post and what we return. The dispatch happens via
-    // `switch (req->req_type)` further down.
-    CR231_IOCTL_LOG("DEBUG CR231_IOCTL cmd=0x%x req_type=%d req_data=%d\n",
-                    (unsigned)cmd,
-                    req ? (int)req->req_type : -1,
-                    req && req->req_data ? 1 : 0);
     // Tahoe's non-virtual interface path still queries VIRTUAL_IF_ROLE/PARENT
     // during airportd/CoreWiFi _initInterface.  Reverse docs record Apple's
     // expected behavior here: non-virtual interfaces do NOT return raw POSIX
@@ -1655,15 +1389,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     // contract directly.
     static const IOReturn kApple80211NotVirtualInterface =
         static_cast<IOReturn>(0xe082280e);
+    static const IOReturn kApple80211ClassOwnerAbsent =
+        static_cast<IOReturn>(0xe082280e);
 
     if (req == NULL)
         return kIOReturnUnsupported;
-
-    if (isTahoeCurrentLinkProbeReq(req->req_type)) {
-        XYLog("DEBUG %s cmd=0x%x req=%s(%d) req_data=%p\n",
-              __FUNCTION__, cmd, tahoeApple80211ReqName(req->req_type),
-              req->req_type, req->req_data);
-    }
 
     switch (req->req_type) {
         case APPLE80211_IOC_VIRTUAL_IF_ROLE:
@@ -1811,6 +1541,24 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setTXPOWER((apple80211_txpower_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_TX_CHAIN_POWER:
+        case APPLE80211_IOC_CHAIN_ACK:
+        case APPLE80211_IOC_DESENSE:
+        case APPLE80211_IOC_DESENSE_LEVEL:
+            /*
+             * Recovered Tahoe wrappers:
+             *   CHAIN_ACK       -> raw selector 0xae, 24-byte carrier
+             *   TX_CHAIN_POWER  -> raw selector 0x6c, 88-byte carrier
+             *   DESENSE         -> raw selector 0xaf, 16-byte carrier
+             *   DESENSE_LEVEL   -> raw selector 0xc2, 8-byte carrier
+             *
+             * The first three jump into AppleBCMWLANCore-specific vtable
+             * slots after the IO80211 gate; DESENSE_LEVEL get-side returns
+             * the same class-owner-absent status directly. This port has no
+             * lifted Broadcom RF-control owner, so preserve the recovered
+             * Apple80211 failure code instead of manufacturing zero carriers.
+             */
+            return kApple80211ClassOwnerAbsent;
         case APPLE80211_IOC_THERMAL_INDEX:
             return (cmd == SIOCGA80211) ? getTHERMAL_INDEX((apple80211_thermal_index_t *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1876,6 +1624,83 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_AP_IE_LIST:
             return (cmd == SIOCGA80211) ? getAP_IE_LIST((apple80211_ap_ie_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_BTCOEX_PROFILES: {
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            auto *data = (apple80211_btc_profiles_data *)req->req_data;
+            if (data == NULL)
+                return kIOReturnError;
+            if (cmd == SIOCGA80211) {
+                if (instance->btcProfile == NULL)
+                    return kIOReturnError;
+                memcpy(data, instance->btcProfile, sizeof(*data));
+                return kIOReturnSuccess;
+            }
+            if (cmd == SIOCSA80211) {
+                if (instance->btcProfile != NULL) {
+                    IOFree(instance->btcProfile,
+                           sizeof(struct apple80211_btc_profiles_data));
+                    instance->btcProfile = NULL;
+                }
+                instance->btcProfile =
+                    (struct apple80211_btc_profiles_data *)IOMalloc(sizeof(*data));
+                if (instance->btcProfile == NULL)
+                    return kIOReturnNoMemory;
+                memcpy(instance->btcProfile, data, sizeof(*data));
+                return kIOReturnSuccess;
+            }
+            return kIOReturnUnsupported;
+        }
+        case APPLE80211_IOC_BTCOEX_CONFIG: {
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            auto *data = (apple80211_btc_config_data *)req->req_data;
+            if (data == NULL)
+                return kIOReturnError;
+            if (cmd == SIOCGA80211) {
+                memcpy(data, &instance->btcConfig, sizeof(*data));
+                return kIOReturnSuccess;
+            }
+            if (cmd == SIOCSA80211) {
+                memcpy(&instance->btcConfig, data, sizeof(*data));
+                return kIOReturnSuccess;
+            }
+            return kIOReturnUnsupported;
+        }
+        case APPLE80211_IOC_BTCOEX_OPTIONS: {
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            auto *data = (apple80211_btc_options_data *)req->req_data;
+            if (data == NULL)
+                return kIOReturnError;
+            if (cmd == SIOCGA80211) {
+                data->version = APPLE80211_VERSION;
+                data->btc_options = instance->btcOptions;
+                return kIOReturnSuccess;
+            }
+            if (cmd == SIOCSA80211) {
+                instance->btcOptions = data->btc_options;
+                return kIOReturnSuccess;
+            }
+            return kIOReturnUnsupported;
+        }
+        case APPLE80211_IOC_BTCOEX_MODE: {
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            auto *data = (apple80211_btc_mode_data *)req->req_data;
+            if (data == NULL)
+                return kIOReturnError;
+            if (cmd == SIOCGA80211) {
+                data->version = APPLE80211_VERSION;
+                data->btc_mode = instance->btcMode;
+                return kIOReturnSuccess;
+            }
+            if (cmd == SIOCSA80211) {
+                instance->btcMode = data->btc_mode;
+                return kIOReturnSuccess;
+            }
+            return kIOReturnUnsupported;
+        }
         case APPLE80211_IOC_CIPHER_KEY:
             if (cmd != SIOCSA80211)
                 return kIOReturnUnsupported;
@@ -2081,7 +1906,6 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 bool AirportItlwmSkywalkInterface::
 init()
 {
-    XYLog("DEBUG %s entry\n", __PRETTY_FUNCTION__);
     // Apple's Tahoe APSTA surface enters construction through subclass
     // no-arg init(), then performs provider/role/address binding on a
     // separate follow-up path. Advertising a local 2-arg init override here
@@ -2092,7 +1916,6 @@ init()
         XYLog("%s IO80211InfraInterface::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s IO80211InfraInterface::init OK\n", __FUNCTION__);
     instance = NULL;
     fHalService = NULL;
     scanSource = NULL;
@@ -2230,7 +2053,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    hasCachedTkoParams = false;
     memset(cachedMwsWifiType7Bitmap, 0, sizeof(cachedMwsWifiType7Bitmap));
     memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
     memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
@@ -2251,7 +2073,6 @@ init()
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider, ether_addr *addr)
 {
-    XYLog("DEBUG %s entry provider=%p addr=%p\n", __PRETTY_FUNCTION__, provider, addr);
     // Tahoe still carries the secondary 2-arg vtable slot, but the kernel does
     // not export IO80211InfraInterface::init(provider, addr), so dropping the
     // local override makes the kext bind against a non-exported symbol and fail
@@ -2263,7 +2084,6 @@ init(IOService *provider, ether_addr *addr)
 bool AirportItlwmSkywalkInterface::
 bindController(AirportItlwm *provider)
 {
-    XYLog("DEBUG %s entry provider=%p\n", __FUNCTION__, provider);
     // Recovered Apple APSTA construction uses a split contract: subclass
     // no-arg init first, then a separate parameter-binding path wires the
     // interface to controller-owned state before attach/start. Keep the local
@@ -2278,100 +2098,191 @@ bindController(AirportItlwm *provider)
     scanSource = instance->scanSource;
     setInterfaceRole(1);
     setInterfaceId(1);
-    XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
-          __FUNCTION__, instance, fHalService, scanSource);
     return true;
 }
 
 int AirportItlwmSkywalkInterface::
 getAssocState(void)
 {
-    // CR-236: uncapped atomic counter — increments on every entry,
-    // independent of the CR-234 helper cap. Read at d5_producer
-    // snapshots from V2.cpp.
-    __atomic_add_fetch(&cr236GetAssocStateCount, 1, __ATOMIC_RELAXED);
-    cr234DumpInnerState(this, "getAssocState");
-    int assocState = IO80211InfraInterface::getAssocState();
-    const unsigned int assocStateRaw = static_cast<unsigned int>(assocState);
-    const unsigned int assocStateLow8 = assocStateRaw & 0xffU;
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s base=%d raw=0x%x low8=0x%02x ic_state=%d ic_bss=%p linkActive=%u currentStatus=0x%x\n",
-          __FUNCTION__, assocState, assocStateRaw, assocStateLow8,
-          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
-          static_cast<unsigned int>(instance != nullptr &&
-                                    (instance->currentStatus & kIONetworkLinkActive) != 0),
-          instance ? instance->currentStatus : 0);
-    return assocState;
+    return IO80211InfraInterface::getAssocState();
 }
 
 void AirportItlwmSkywalkInterface::
 setDataPathState(bool state)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s state=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, state ? 1U : 0U, ic ? ic->ic_state : -1,
-          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
     IO80211InfraInterface::setDataPathState(state);
-    XYLog("DEBUG %s DONE state=%u\n", __FUNCTION__, state ? 1U : 0U);
 }
 
 void AirportItlwmSkywalkInterface::
 updateLinkStatus(void)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, ic ? ic->ic_state : -1,
-          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
     IO80211InfraInterface::updateLinkStatus();
-    XYLog("DEBUG %s DONE\n", __FUNCTION__);
 }
 
 void AirportItlwmSkywalkInterface::
 updateLinkStatusGated(void)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, ic ? ic->ic_state : -1,
-          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
     IO80211InfraInterface::updateLinkStatusGated();
-    XYLog("DEBUG %s DONE\n", __FUNCTION__);
 }
 
 void AirportItlwmSkywalkInterface::
 reportDetailedLinkStatus(if_link_status const *status)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s status=%p linkStatus=0x%x ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, status, status ? status->status : 0U,
-          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
-          instance ? instance->currentStatus : 0);
     IOSkywalkNetworkInterface::reportDetailedLinkStatus(status);
-    XYLog("DEBUG %s DONE\n", __FUNCTION__);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 reportDataPathEvents(UInt type, void *data, unsigned long dataLen, bool gated)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s type=0x%x data=%p dataLen=%lu gated=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, type, data, dataLen, gated ? 1U : 0U,
-          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
-          instance ? instance->currentStatus : 0);
     IOReturn ret = IO80211SkywalkInterface::reportDataPathEvents(type, data, dataLen, gated);
-    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
+    if (fMcsSeedBurst != 0) {
+        fMcsSeedBurst--;
+        seedBssManagerMcs();
+    }
     return ret;
 }
 
-IOReturn AirportItlwmSkywalkInterface::
+void AirportItlwmSkywalkInterface::
+seedBssManagerMcs()
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
+        return;
+
+    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
+    const uintptr_t kWCLConfigManagerId = 1;
+#define AIAM_RD(dst, addr) do { \
+        uintptr_t _a = (addr); \
+        if (_a < kKernelVA) return; \
+        (dst) = *(volatile uintptr_t *)_a; \
+    } while (0)
+    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, cfg;
+    uintptr_t cfgIvars, bss, cacheObj;
+    AIAM_RD(p120,     (uintptr_t)this + 0x120);
+    AIAM_RD(glue,     p120 + 0xd8);
+    AIAM_RD(givars,   glue + 0x18);
+    AIAM_RD(wclglue,  givars + 0x18);
+    AIAM_RD(wivars,   wclglue + 0x18);
+    AIAM_RD(bb,       wivars + 0x8);
+    AIAM_RD(bbh,      bb + 0x10);
+    AIAM_RD(cfg,      bbh + 0xb70 + kWCLConfigManagerId * 0x18);
+    AIAM_RD(cfgIvars, cfg + 0x20);
+    AIAM_RD(bss,      cfgIvars + 0x18);
+    AIAM_RD(cacheObj, bss + 0x10);
+    if (cacheObj < kKernelVA)
+        return;
+#undef AIAM_RD
+
+    apple80211_mcs_index_set_data mcs;
+    if (getMCS_INDEX_SET(&mcs) != kIOReturnSuccess)
+        return;
+
+    ((IO80211BssManager *)bss)->setMCSIndexSet(mcs);
+}
+
+extern "C" uint64_t mach_continuous_time(void);
+extern "C" void     absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
+
+void AirportItlwmSkywalkInterface::
+postLqmUpdateBulletin()
+{
+    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
+        return;
+
+    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
+    const uintptr_t kWCLNetManagerId = 4;
+#define AIAM_RDV(dst, addr) do { \
+        uintptr_t _a = (addr); \
+        (dst) = (_a >= kKernelVA) ? *(volatile uintptr_t *)_a : 0; \
+    } while (0)
+    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, nm, S, s8, s18, sink;
+    AIAM_RDV(p120,    (uintptr_t)this + 0x120);
+    AIAM_RDV(glue,    p120 + 0xd8);
+    AIAM_RDV(givars,  glue + 0x18);
+    AIAM_RDV(wclglue, givars + 0x18);
+    AIAM_RDV(wivars,  wclglue + 0x18);
+    AIAM_RDV(bb,      wivars + 0x8);
+    AIAM_RDV(bbh,     bb + 0x10);
+    AIAM_RDV(nm,      bbh + 0xb70 + kWCLNetManagerId * 0x18);
+    AIAM_RDV(S,       nm + 0x20);
+    AIAM_RDV(s8,      S + 0x8);
+    AIAM_RDV(s18,     s8 + 0x18);
+    AIAM_RDV(sink,    s18);
+    if (nm < kKernelVA || S < kKernelVA)
+        return;
+#undef AIAM_RDV
+
+    struct ieee80211_node *ni = ic->ic_bss;
+    int rssi_c = IWM_MIN_DBM + ni->ni_rssi;
+    if (rssi_c > 0)
+        rssi_c = 0;
+    if (rssi_c < -100)
+        rssi_c = -100;
+    int q = (rssi_c + 100) * 100 / 70;
+    if (q < 0)
+        q = 0;
+    if (q > 100)
+        q = 100;
+
+    unsigned int rate_mbps = 0;
+    if (ni->ni_txrate < ni->ni_rates.rs_nrates)
+        rate_mbps = (ni->ni_rates.rs_rates[ni->ni_txrate] & 0x7f) / 2;
+    if (rate_mbps == 0)
+        rate_mbps = 6;
+    int32_t noise = fHalService->getDriverInfo()->getBSSNoise();
+    bool hasNoise = (noise != 0 && noise != -127);
+    int snr = 0;
+    if (hasNoise) {
+        snr = rssi_c - noise;
+        if (snr < 0)
+            snr = 0;
+        if (snr > 127)
+            snr = 127;
+    }
+
+    unsigned char ev[0x1dc];
+    bzero(ev, sizeof(ev));
+    ev[0x00] = 1;
+    *(int32_t *)(ev + 0x04) = rssi_c;
+    if (hasNoise) {
+        ev[0x0b] = 1;
+        *(int16_t *)(ev + 0x0c) = (int16_t)snr;
+        ev[0x0e] = 1;
+        *(int16_t *)(ev + 0x10) = (int16_t)noise;
+    }
+    ev[0x12] = 1;
+    ev[0x13] = (unsigned char)(signed char)rssi_c;
+    ev[0x1d8] = 1;
+    ev[0x1d9] = 1;
+    ev[0x30] = 1;
+    *(unsigned int *)(ev + 0x28) = 1;
+    *(unsigned int *)(ev + 0x24) = 1;
+
+    bulletinBoardMessage msg;
+    bzero(&msg, sizeof(msg));
+    msg.msgWord0 = (0x27u << 16) | 1u;
+    msg.size = sizeof(ev);
+    msg.payload = ev;
+
+    uint64_t ns = 0;
+    absolutetime_to_nanoseconds(mach_continuous_time(), &ns);
+    uint64_t ts_ms = ns / 1000000ULL;
+
+    if (sink >= kKernelVA) {
+        ((WCLNetManager *)nm)->handleLqmUpdate(msg);
+    } else {
+        *(volatile uint64_t *)(S + 0x150) = ts_ms;
+        *(volatile uint64_t *)(S + 0x158) = ts_ms;
+    }
+}
+
+bool AirportItlwmSkywalkInterface::
 setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce,
                      uint code, uint connectionId)
 {
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s state=%u debounceTimeout=%u debounce=%u code=%u connectionId=%u ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, static_cast<unsigned int>(state), debounceTimeout,
-          debounce ? 1U : 0U, code, connectionId, ic ? ic->ic_state : -1,
-          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
-    IOReturn ret = IO80211InfraInterface::setLinkStateInternal(
+    bool ret = IO80211InfraInterface::setLinkStateInternal(
         state, debounceTimeout, debounce, code, connectionId);
 #if __IO80211_TARGET >= __MAC_26_0
     /*
@@ -2405,20 +2316,11 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
      * the intermediate IO80211LinkState values are framework-internal
      * transitions and do not correspond to APPLE80211_M_LINK_CHANGED.
      *
-     * Additionally gate the publication on the parent transition having
-     * succeeded (ret == kIOReturnSuccess). The IO80211 framework reports
-     * a nonzero IOReturn when an internal step inside the parent
-     * IO80211InfraInterface::setLinkStateInternal aborts the link-state
-     * transition before it is committed (for example a current-BSSID
-     * acquisition failure observed locally on the Tahoe ASSOC->RUN edge).
-     * A failed parent transition is not an accepted state change, so the
-     * userspace APPLE80211_M_LINK_CHANGED carrier is not authorized.
-     * Publishing only on success keeps the on-wire event tied to the
-     * Apple framework view of an accepted link-state transition and
-     * avoids forging a successful-looking notification after the parent
-     * rejected the transition.
+     * Additionally gate publication on the parent bool return. Tahoe's
+     * IO80211InfraInterface::setLinkStateInternal is a bool-return veneer:
+     * true means the transition was accepted, false means it was rejected.
      */
-    if (ret == kIOReturnSuccess &&
+    if (ret &&
         instance != nullptr && instance->fNetIf != nullptr &&
         (state == kIO80211NetworkLinkUp ||
          state == kIO80211NetworkLinkDown)) {
@@ -2437,12 +2339,6 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
             if (ic != nullptr && ic->ic_bss != nullptr)
                 ed.rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
         }
-        XYLog("DEBUG %s Tahoe Skywalk M_LINK_CHANGED isLinkDown=%u "
-              "voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
-              __FUNCTION__, ed.isLinkDown, ed.voluntary_down,
-              ed.voluntary_up,
-              ed.isLinkDown ? (unsigned int)ed.reason
-                            : (unsigned int)ed.rssi);
         instance->postMessage(instance->fNetIf, APPLE80211_M_LINK_CHANGED,
                               &ed, sizeof(ed), true);
 
@@ -2488,11 +2384,6 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                  proposedBssid[3] | proposedBssid[4] |
                  proposedBssid[5]) == 0;
             if (zeroBssidRejected) {
-                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
-                      "bssid=00:00:00:00:00:00 reason=- "
-                      "same_bss_reason_1_suppressed=0 "
-                      "zero_bssid_rejected=1\n",
-                      __FUNCTION__);
             } else {
                 const bool sameBssAsLastPublished =
                     this->fLastPublishedBssidValid &&
@@ -2505,45 +2396,47 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                     (classifiedReason ==
                          APPLE80211_BSSID_CHANGE_REASON_SAME_BSS) &&
                     sameBssAsLastPublished;
-                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
-                      "bssid=%02x:%02x:%02x:%02x:%02x:%02x reason=%u "
-                      "same_bss_reason_1_suppressed=%u "
-                      "zero_bssid_rejected=0\n",
-                      __FUNCTION__,
-                      proposedBssid[0], proposedBssid[1], proposedBssid[2],
-                      proposedBssid[3], proposedBssid[4], proposedBssid[5],
-                      (unsigned)classifiedReason,
-                      sameBssidWithReason1 ? 1 : 0);
                 if (!sameBssidWithReason1) {
                     apple80211_bssid_changed_event_data bd;
                     bzero(&bd, sizeof(bd));
                     memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
                     bd.reason = classifiedReason;
-                    instance->postMessage(instance->fNetIf,
-                                          APPLE80211_M_BSSID_CHANGED,
-                                          &bd, sizeof(bd), true);
+                    postTahoeBssidChangedThroughInfraHelper(
+                        this, instance, &bd, "setLinkStateInternal");
                     memcpy(this->fLastPublishedBssid, proposedBssid,
                            IEEE80211_ADDR_LEN);
                     this->fLastPublishedBssidValid = true;
                 }
             }
         }
+
+        /*
+         * Tahoe APPLE80211_M_SSID_CHANGED zero-length carrier.
+         *
+         * The recovered airportd `ssidChanged` block does not consume
+         * payload bytes; it schedules a fresh `__associatedNetwork` read
+         * and forwards that object through `setAssociatedNetwork:`. Keep
+         * this on the same accepted Skywalk terminal transition edge as
+         * LINK_CHANGED and BSSID_CHANGED so userspace refreshes after the
+         * BSSID/scan-cache publishers have had their chance to update the
+         * framework-visible current network.
+         */
+        instance->postMessage(instance->fNetIf, APPLE80211_M_SSID_CHANGED,
+                              NULL, 0, true);
+    }
+    if (ret && state == kIO80211NetworkLinkUp) {
+        fMcsSeedBurst = 400;
+        seedBssManagerMcs();
+        postLqmUpdateBulletin();
     }
 #endif
-    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
     return ret;
 }
 
 void AirportItlwmSkywalkInterface::
 setCurrentApAddress(ether_addr *addr)
 {
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s addr=%s ic_state=%d ic_bss=%p\n",
-          __FUNCTION__, addr ? ether_sprintf(addr->octet) : "(null)",
-          ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
-    cr234DumpInnerState(this, "setCurrentApAddress_PRE");
     IO80211InfraInterface::setCurrentApAddress(addr);
-    cr234DumpInnerState(this, "setCurrentApAddress_POST");
 
 #if __IO80211_TARGET >= __MAC_26_0
     /* Tahoe APPLE80211_M_BSSID_CHANGED 24-byte compact carrier - producer
@@ -2582,11 +2475,6 @@ setCurrentApAddress(ether_addr *addr)
     if (instance != nullptr && instance->fNetIf != nullptr) {
         if (addr == nullptr) {
             this->fLastPublishedBssidValid = false;
-            XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
-                  "bssid=00:00:00:00:00:00 reason=- "
-                  "same_bss_reason_1_suppressed=0 "
-                  "zero_bssid_rejected=1\n",
-                  __FUNCTION__);
         } else {
             uint8_t proposedBssid[IEEE80211_ADDR_LEN];
             memcpy(proposedBssid, addr->octet, IEEE80211_ADDR_LEN);
@@ -2596,11 +2484,6 @@ setCurrentApAddress(ether_addr *addr)
                  proposedBssid[5]) == 0;
             if (zeroBssidRejected) {
                 this->fLastPublishedBssidValid = false;
-                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
-                      "bssid=00:00:00:00:00:00 reason=- "
-                      "same_bss_reason_1_suppressed=0 "
-                      "zero_bssid_rejected=1\n",
-                      __FUNCTION__);
             } else {
                 const bool sameBssAsLastPublished =
                     this->fLastPublishedBssidValid &&
@@ -2613,23 +2496,13 @@ setCurrentApAddress(ether_addr *addr)
                     (classifiedReason ==
                          APPLE80211_BSSID_CHANGE_REASON_SAME_BSS) &&
                     sameBssAsLastPublished;
-                XYLog("DEBUG %s Tahoe Skywalk M_BSSID_CHANGED "
-                      "bssid=%02x:%02x:%02x:%02x:%02x:%02x reason=%u "
-                      "same_bss_reason_1_suppressed=%u "
-                      "zero_bssid_rejected=0\n",
-                      __FUNCTION__,
-                      proposedBssid[0], proposedBssid[1], proposedBssid[2],
-                      proposedBssid[3], proposedBssid[4], proposedBssid[5],
-                      (unsigned)classifiedReason,
-                      sameBssidWithReason1 ? 1 : 0);
                 if (!sameBssidWithReason1) {
                     apple80211_bssid_changed_event_data bd;
                     bzero(&bd, sizeof(bd));
                     memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
                     bd.reason = classifiedReason;
-                    instance->postMessage(instance->fNetIf,
-                                          APPLE80211_M_BSSID_CHANGED,
-                                          &bd, sizeof(bd), true);
+                    postTahoeBssidChangedThroughInfraHelper(
+                        this, instance, &bd, "setCurrentApAddress");
                     memcpy(this->fLastPublishedBssid, proposedBssid,
                            IEEE80211_ADDR_LEN);
                     this->fLastPublishedBssidValid = true;
@@ -2638,24 +2511,13 @@ setCurrentApAddress(ether_addr *addr)
         }
     }
 #endif
+    seedBssManagerMcs();
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
-    __atomic_add_fetch(&cr237_setWCL_LINK_STATE_UPDATE_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_WCL_LSU data_nonnull=%d\n", data ? 1 : 0);
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    const unsigned int b6 = raw ? raw[6] : 0xff;
-    const unsigned int b7 = raw ? raw[7] : 0xff;
-    const unsigned int b8 = raw ? raw[8] : 0xff;
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    XYLog("DEBUG %s data=%p b6=0x%02x b7=0x%02x b8=0x%02x ic_state=%d ic_bss=%p currentStatus=0x%x\n",
-          __FUNCTION__, data, b6, b7, b8, ic ? ic->ic_state : -1,
-          ic ? ic->ic_bss : nullptr, instance ? instance->currentStatus : 0);
-    IOReturn ret = IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
-    XYLog("DEBUG %s ret=0x%x\n", __FUNCTION__, ret);
-    return ret;
+    return IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
 }
 
 SInt32 AirportItlwmSkywalkInterface::
@@ -2669,20 +2531,19 @@ setInterfaceEnable(bool enable)
     // keep only the base enable on `fNetIf` and reserve link-up for the real
     // association-success path.
     SInt32 ret = IO80211InfraInterface::setInterfaceEnable(enable);
-    XYLog("DEBUG %s enable=%d ret=0x%x instance=%p\n",
-          __FUNCTION__, enable ? 1 : 0, ret, instance);
+    if (ret != kIOReturnSuccess)
+        XYLog("DEBUG %s FAIL: enable=%d ret=0x%x instance=%p\n",
+              __FUNCTION__, enable ? 1 : 0, ret, instance);
     return ret;
 #else
 bool AirportItlwmSkywalkInterface::
 init(IOService *provider)
 {
-    XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     bool ret = super::init(provider);
     if (!ret) {
         XYLog("%s super::init failed\n", __PRETTY_FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s super::init OK\n", __FUNCTION__);
     instance = OSDynamicCast(AirportItlwm, provider);
     if (!instance) {
         XYLog("DEBUG %s FAIL: provider is not AirportItlwm\n", __FUNCTION__);
@@ -2824,7 +2685,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    this->hasCachedTkoParams = false;
     memset(this->cachedMwsWifiType7Bitmap, 0, sizeof(this->cachedMwsWifiType7Bitmap));
     memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
     memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
@@ -2837,8 +2697,6 @@ init(IOService *provider)
     this->hasCachedMwsConditionIdConfig = false;
     memset(this->cachedMwsAntennaSelection, 0, sizeof(this->cachedMwsAntennaSelection));
     RT3_SET(12); // SkywalkInterface::init OK
-    XYLog("DEBUG %s OK: instance=%p fHalService=%p scanSource=%p\n",
-          __FUNCTION__, instance, fHalService, scanSource);
     return true;
 #endif
 }
@@ -2855,7 +2713,6 @@ IOReturn AirportItlwmSkywalkInterface::
 getSSID(struct apple80211_ssid_data *sd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
     // Apple's IO80211Controller::getSSIDData always pre-zeroes and returns success.
     // When not associated, the cached SSID data is zeroed (ssid_len=0).
     // Returning error here causes airportd to abort auto-join with "driver not available".
@@ -2865,7 +2722,6 @@ getSSID(struct apple80211_ssid_data *sd)
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
     }
-    XYLog("DEBUG %s ret=0 ssid_len=%u\n", __FUNCTION__, sd->ssid_len);
     return kIOReturnSuccess;
 }
 
@@ -2893,19 +2749,14 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
                                            kIOReturnUnsupported);
             return kIOReturnUnsupported;
         }
-        XYLog("DEBUG %s routing hidden-assoc carrier len=0x%x into setWCL_ASSOCIATE\n",
-              __FUNCTION__, length);
         return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
     }
 
     if (data != nullptr && length == sizeof(apple80211_set_mac_address_data)) {
-        XYLog("DEBUG %s routing set-mac carrier len=0x%x\n",
-              __FUNCTION__, length);
         return setSET_MAC_ADDRESS(
             reinterpret_cast<apple80211_set_mac_address_data *>(data));
     }
 
-    XYLog("DEBUG VTABLE [470] %s len=0x%x\n", __FUNCTION__, length);
     return kIOReturnUnsupported;
 }
 
@@ -2915,15 +2766,12 @@ getAUTH_TYPE(struct apple80211_authtype_data *ad)
     ad->version = APPLE80211_VERSION;
     ad->authtype_lower = current_authtype_lower;
     ad->authtype_upper = current_authtype_upper;
-    XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, current_authtype_lower, current_authtype_upper);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setAUTH_TYPE(struct apple80211_authtype_data *ad)
 {
-    __atomic_add_fetch(&cr237_setAUTH_TYPE_count, 1, __ATOMIC_RELAXED);
-    XYLog("DEBUG %s lower=%u upper=%u\n", __FUNCTION__, ad->authtype_lower, ad->authtype_upper);
     current_authtype_lower = ad->authtype_lower;
     current_authtype_upper = ad->authtype_upper;
     return kIOReturnSuccess;
@@ -2932,37 +2780,11 @@ setAUTH_TYPE(struct apple80211_authtype_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setCIPHER_KEY(struct apple80211_key *key)
 {
-    __atomic_add_fetch(&cr237_setCipherKey_count, 1, __ATOMIC_RELAXED);
-    // CR-237: structural metadata only. No byte-content boolean, no
-    // raw-key bytes. Caller-identity is not instrumented; counter
-    // increments bundle local internal calls and external/userclient
-    // calls (Stage 2 readout must use ordering/timing to disambiguate).
-    CR237_LOG("DEBUG CR237_SET_CIPHER_KEY key_len=%u cipher=%u flags=%u idx=%u\n",
-              key ? key->key_len : 0,
-              key ? key->key_cipher_type : 0,
-              key ? key->key_flags : 0,
-              key ? key->key_index : 0);
-    XYLog("%s\n", __FUNCTION__);
-    // CR-237: redact the legacy raw-key / raw-rsc hexdump. Logging
-    // those bytes leaks credentials into kernel logs; the structural
-    // fields (len/cipher/flags/index) above are sufficient for
-    // diagnostic purposes. Bssid is non-secret; keep it as eadump.
-    const char* eadump = hexdump(key->key_ea.octet, APPLE80211_ADDR_LEN);
     static_assert(__offsetof(struct apple80211_key, key_ea) == 92, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, key_rsc_len) == 80, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_len) == 100, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kek_len) == 120, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_key) == 104, "struct corrupted");
-    if (eadump)
-        XYLog("Set key request: len=%d cipher_type=%d flags=%d index=%d "
-              "key=[REDACTED %d bytes] rsc_len=%d rsc=[REDACTED] ea=%s\n",
-              key->key_len, key->key_cipher_type, key->key_flags, key->key_index,
-              key->key_len, key->key_rsc_len, eadump);
-    else
-        XYLog("Set key request, but failed to allocate memory for hexdump\n");
-
-    if (eadump)
-        IOFree((void*)eadump, 3 * APPLE80211_ADDR_LEN + 1);
     
     switch (key->key_cipher_type) {
         case APPLE80211_CIPHER_NONE:
@@ -3019,8 +2841,6 @@ setCIPHER_KEY(struct apple80211_key *key)
                                                 key->key_len,
                                                 "CIPHER_KEY_MSK");
             }
-            XYLog("Setting MSK (PMKSA cache add, key_len=%u)\n",
-                  key->key_len);
             ieee80211_pmksa_add(fHalService->get80211Controller(),
                                 IEEE80211_AKM_8021X,
                                 fHalService->get80211Controller()->ic_bss->ni_macaddr,
@@ -3028,7 +2848,6 @@ setCIPHER_KEY(struct apple80211_key *key)
             break;
         }
         case APPLE80211_CIPHER_PMKSA:
-            XYLog("Setting WPA PMKSA\n");
             ieee80211_pmksa_add(fHalService->get80211Controller(), IEEE80211_AKM_8021X,
                                 fHalService->get80211Controller()->ic_bss->ni_macaddr, key->key, 0);
             break;
@@ -3039,7 +2858,6 @@ setCIPHER_KEY(struct apple80211_key *key)
         key->key_cipher_type == APPLE80211_CIPHER_AES_CCM) {
         if (key->key_flags == 0) {
             // GTK installed — 4-way handshake complete, notify Apple supplicant
-            XYLog("%s posting RSN_HANDSHAKE_DONE after GTK install\n", __FUNCTION__);
             postMessage(APPLE80211_M_RSN_HANDSHAKE_DONE, NULL, 0, false);
         }
     }
@@ -3050,8 +2868,6 @@ IOReturn AirportItlwmSkywalkInterface::
 getPHY_MODE(struct apple80211_phymode_data *pd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_curmode=%d ic_flags=0x%x ic_state=%d\n",
-          __FUNCTION__, ic->ic_curmode, ic->ic_flags, ic->ic_state);
     pd->version = APPLE80211_VERSION;
     pd->phy_mode = APPLE80211_MODE_11A
     | APPLE80211_MODE_11B
@@ -3118,7 +2934,6 @@ getSTATE(struct apple80211_state_data *sd)
     memset(sd, 0, sizeof(*sd));
     sd->version = APPLE80211_VERSION;
     sd->state = fHalService->get80211Controller()->ic_state;
-    XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, sd->state);
     return kIOReturnSuccess;
 }
 
@@ -3149,7 +2964,6 @@ getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
     if (!hasAnyMcsBit)
         return kApple80211ErrNoCachedValue;
 
-    XYLog("DEBUG %s OK\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
@@ -3157,10 +2971,8 @@ IOReturn AirportItlwmSkywalkInterface::
 getVHT_MCS_INDEX_SET(struct apple80211_vht_mcs_index_set_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
-        XYLog("DEBUG %s ic_bss=%p ic_curmode=%d → error\n", __FUNCTION__, ic->ic_bss, ic->ic_curmode);
+    if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC)
         return kIOReturnError;
-    }
     memset(data, 0, sizeof(struct apple80211_vht_mcs_index_set_data));
     data->version = APPLE80211_VERSION;
     data->mcs_map = ic->ic_bss->ni_vht_mcsinfo.tx_mcs_map;
@@ -3215,7 +3027,6 @@ getRATE_SET(struct apple80211_rate_set_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getOP_MODE(struct apple80211_opmode_data *od)
 {
-    XYLog("DEBUG VTABLE [475] %s\n", __FUNCTION__);
     od->version = APPLE80211_VERSION;
     od->op_mode = APPLE80211_M_STA;
     return kIOReturnSuccess;
@@ -3289,7 +3100,7 @@ getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data *data)
         return kIOReturnBadArgumentTahoe;
 
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 0x19004);
+    memset(raw + 0x04, 0, 0x19000);
     return kIOReturnSuccess;
 }
 
@@ -3402,7 +3213,7 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
                     IEEE80211_WPA_PROTO_WPA2;
     wpa.i_akms    = IEEE80211_WPA_AKM_PSK |
                     IEEE80211_WPA_AKM_SHA256_PSK;
-    int wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
+    ieee80211_ioctl_setwpaparms(ic, &wpa);
     // Mirror the CIPHER_KEY install counter for backward compatibility
     // and bump the matching source-specific counter so an observer can
     // attribute the install to the correct carrier.
@@ -3413,21 +3224,6 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
         __atomic_add_fetch(&setCUR_PMK_pmk_install_count, 1,
                            __ATOMIC_RELAXED);
     }
-    unsigned int pmkNonZeroBytes = 0;
-    for (size_t i = 0; i < sizeof(ic->ic_psk); ++i) {
-        if (ic->ic_psk[i] != 0) pmkNonZeroBytes++;
-    }
-    XYLog("install_external_pmk INSTALLED source=%s key_len=%u "
-          "ic_psk_nonzero_bytes=%u/%zu ic_flags=0x%x "
-          "ic_rsnprotos=0x%x ic_rsnakms=0x%x "
-          "setwpaparms_rc=%d (ENETRESET=%d expected) "
-          "ic_external_pmk_owner=0\n",
-          source_tag != nullptr ? source_tag : "?",
-          key_len, pmkNonZeroBytes,
-          sizeof(ic->ic_psk), (unsigned)ic->ic_flags,
-          (unsigned)ic->ic_rsnprotos,
-          (unsigned)ic->ic_rsnakms,
-          wparc, (int)ENETRESET);
     return kIOReturnSuccess;
 }
 
@@ -3440,10 +3236,7 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     // RSN disable paths. The recovered Apple WCL contract is that PMK
     // ownership does not survive these edges; carrying a stale PMK into
     // a new association attempt would risk a host-supplicant MIC built
-    // from a wrong PMK on a fresh edge. Logging is credential-safe: the
-    // PMK bytes themselves never appear in kernel logs, only the
-    // structural marker that names the reset reason and reports the
-    // post-clear nonzero-byte count (always 0 by construction here).
+    // from a wrong PMK on a fresh edge.
     struct ieee80211com *ic = fHalService
         ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
@@ -3496,11 +3289,6 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     }
     __atomic_add_fetch(&external_pmk_eligibility_clear_count, 1,
                        __ATOMIC_RELAXED);
-    XYLog("clear_external_pmk CLEARED reason=%s ic_psk_nonzero_bytes=0/%zu "
-          "ic_flags=0x%x ic_external_pmk_owner=0 ni_pmk_cleared=%d\n",
-          reason_tag != nullptr ? reason_tag : "?",
-          sizeof(ic->ic_psk), (unsigned)ic->ic_flags,
-          ic->ic_bss != nullptr ? 1 : 0);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3575,8 +3363,6 @@ getRATE(struct apple80211_rate_data *rd)
         // reports an associated current network. Returning raw 6 here was a
         // local shortcut and confused Tahoe consumers that key off the Apple
         // error code.
-        XYLog("DEBUG %s ic_bss=%p ic_state=%d → 0xe0822403\n",
-              __FUNCTION__, ic->ic_bss, ic->ic_state);
         return kApple80211ErrDriverNotAvailable;
     }
     int nss;
@@ -3628,7 +3414,6 @@ IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
     // Apple's IO80211 framework (FUN_ffffff8002215524) pre-zeroes BSSID and returns success.
     // When not associated, BSSID is all-zero.
     // Returning error here causes airportd to fail during init and abort auto-join.
@@ -3637,7 +3422,6 @@ getBSSID(struct apple80211_bssid_data *bd)
     if (ic->ic_state == IEEE80211_S_RUN) {
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     }
-    XYLog("DEBUG %s ret=0 bssid=%s\n", __FUNCTION__, ether_sprintf(bd->bssid.octet));
     return kIOReturnSuccess;
 }
 
@@ -4068,12 +3852,15 @@ getAWDL_RSDB_CAPS(apple80211_rsdb_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getTKO_PARAMS(apple80211_tko_params *data)
 {
-    if (data == nullptr || !hasCachedTkoParams)
+    if (!cachedTcpkaOffloadSupported)
         return kIOReturnBadArgumentTahoe;
+    if (data == nullptr)
+        return kIOReturnSuccess;
 
     // Tahoe exposes six consecutive u32 fields at caller +0x4..+0x18 when the
-    // keepalive owner exists; otherwise it returns 0xe00002bc. The local port
-    // preserves the same public carrier from cached state.
+    // keepalive owner exists; otherwise it returns 0xe00002bc. A NULL output
+    // pointer is success after the owner gate. The local port preserves the
+    // same public carrier from cached state.
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
     memset(raw, 0, 0x1c);
     for (size_t i = 0; i < 6; i++)
@@ -4134,8 +3921,10 @@ getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
 
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
     memset(raw, 0, 8);
-    // The recovered Tahoe body only writes version=1 at caller +0x4.
-    *reinterpret_cast<uint32_t *>(raw + 4) = 1;
+    // Apple writes the two-byte 2G chain-disable carrier at caller +0x4/+0x5.
+    // Preserve the value accepted by the paired setter instead of returning a
+    // fixed version-like marker.
+    *reinterpret_cast<uint16_t *>(raw + 4) = cachedBtcoex2GChainDisable;
     return kIOReturnSuccess;
 }
 
@@ -4184,14 +3973,21 @@ getMIMO_STATUS(apple80211_mimo_status *data)
 
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
     memset(raw, 0, 10);
-    // Tahoe exposes a compact 10-byte MIMO status carrier. The hidden Broadcom
-    // owner is still absent, but the local port now preserves the same public
-    // ABI using cached MIMO mode plus current NSS-derived limits.
+    // AppleBCMWLANCore::getMIMO_STATUS exposes a compact 10-byte carrier. The
+    // recovered body maps width codes through {0x50,0x14,0x28,0x50} for offsets
+    // +4 and +9, so use the negotiated local channel width instead of treating
+    // those bytes as NSS.
     raw[0] = 1;
     raw[1] = static_cast<uint8_t>(((cachedMimoConfig & 0xff) < 3) ? (cachedMimoConfig & 0xff) : 3);
     int txNss = fHalService->getDriverInfo()->getTxNSS();
     raw[6] = static_cast<uint8_t>(txNss < 3 ? txNss : 3);
-    raw[9] = fHalService->getDriverInfo()->getTxNSS() > 1 ? 0x50 : 0x14;
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    const uint8_t bwCode = (ic != nullptr && ic->ic_bss != nullptr)
+                               ? tahoeMimoBandwidthCodeFromWidth(ic->ic_bss->ni_chw)
+                               : 0;
+    const uint8_t bwCarrier = tahoeMimoBandwidthCarrier(bwCode);
+    raw[4] = bwCarrier;
+    raw[9] = bwCarrier;
     return kIOReturnSuccess;
 }
 
@@ -4477,8 +4273,6 @@ IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG VTABLE [476] %s ic_state=%d ic_bss=%p\n",
-          __FUNCTION__, ic->ic_state, ic->ic_bss);
     if (ic->ic_bss == NULL) {
         // Apple delegates RSSI reads to IO80211BssManager::getCurrentRSSI(),
         // which returns 0xe0822403 when there is no current BSS. Tahoe should
@@ -4522,10 +4316,6 @@ getRSN_IE(struct apple80211_rsn_ie_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setRSN_IE(struct apple80211_rsn_ie_data *data)
 {
-    __atomic_add_fetch(&cr237_setRSN_IE_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_SET_RSN_IE data_nonnull=%d ie_len=%u\n",
-              data ? 1 : 0,
-              data ? data->len : 0);
 #ifdef USE_APPLE_SUPPLICANT
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (!data)
@@ -4574,8 +4364,8 @@ getNOISE(struct apple80211_noise_data *nd)
     if (ic->ic_bss == NULL)
         return kApple80211ErrDriverNotAvailable;
 
-    int32_t noise = -fHalService->getDriverInfo()->getBSSNoise();
-    if (noise == 0)
+    int32_t noise = fHalService->getDriverInfo()->getBSSNoise();
+    if (noise == 0 || noise == -127)
         return 0x66;
 
     memset(nd, 0, sizeof(*nd));
@@ -4583,14 +4373,12 @@ getNOISE(struct apple80211_noise_data *nd)
     nd->num_radios = 1;
     nd->noise[0] = nd->aggregate_noise = noise;
     nd->noise_unit = APPLE80211_UNIT_DBM;
-    XYLog("DEBUG %s noise=%d\n", __FUNCTION__, nd->noise[0]);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 getPOWERSAVE(struct apple80211_powersave_data *pd)
 {
-    XYLog("DEBUG VTABLE [472] %s\n", __FUNCTION__);
     pd->version = APPLE80211_VERSION;
     // AppleBCMWLANCore::getPOWERSAVE on Tahoe reads back a cached power-save
     // mode from core state instead of reporting the IOC as unsupported.  Live
@@ -4605,7 +4393,6 @@ getPOWERSAVE(struct apple80211_powersave_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 setPOWERSAVE(struct apple80211_powersave_data *pd)
 {
-    XYLog("DEBUG VTABLE [547] %s level=%u\n", __FUNCTION__, pd ? pd->powersave_level : 0);
     if (pd == NULL)
         return kIOReturnBadArgument;
 
@@ -4621,7 +4408,6 @@ setPOWERSAVE(struct apple80211_powersave_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 getNSS(struct apple80211_nss_data *data)
 {
-    XYLog("DEBUG VTABLE [510] %s nss=%d\n", __FUNCTION__, fHalService->getDriverInfo()->getTxNSS());
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
@@ -4631,23 +4417,6 @@ getNSS(struct apple80211_nss_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
-    CR257_PROBE(setASSOCIATE, ad, ad ? sizeof(*ad) : 0);
-    // CR-257: setASSOCIATE is the legacy-form direct PMK carrier path.
-    // apple80211_assoc_data has ad_key (apple80211_key) embedded at
-    // offset 0x38. If airportd uses this code path on Tahoe (via
-    // BSD-ioctl SIOCSA80211 IOC_ASSOCIATE), the PMK is right there.
-    // Log ad_key metadata explicitly (no raw key bytes).
-    if (ad != nullptr) {
-        CR257_LOG("DEBUG CR257_setASSOCIATE_KEY ad_key.key_len=%u "
-                  "ad_key.key_cipher_type=%u ad_key.key_flags=0x%x "
-                  "ad_key.key_index=%u ad_auth_upper=0x%x ad_rsn_ie_len=%u\n",
-                  (unsigned)ad->ad_key.key_len,
-                  (unsigned)ad->ad_key.key_cipher_type,
-                  (unsigned)ad->ad_key.key_flags,
-                  (unsigned)ad->ad_key.key_index,
-                  (unsigned)ad->ad_auth_upper,
-                  (unsigned)ad->ad_rsn_ie_len);
-    }
     RT2_SET(3); sRT.assocCount++;
     if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
@@ -4663,15 +4432,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                        kIOReturnUnsupported);
         return kIOReturnUnsupported;
     }
-    XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
-          (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
-          (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 1) ? ", don't disassociate" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 2) ? ", don't blacklist" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 4) ? ", closed Network" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 8) ? ", 802.1X" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 0x20) ? ", force BSSID" : "");
-    
+
     struct apple80211_rsn_ie_data rsn_ie_data;
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -4682,8 +4443,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                        kIOReturnError);
         return kIOReturnError;
     }
-    
-    XYLog("DEBUG %s ic_state=%d ic_opmode=%d\n", __FUNCTION__, ic->ic_state, ic->ic_opmode);
+
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
@@ -4731,7 +4491,6 @@ setDISASSOCIATE(void *ad)
 {
     RT2_SET(7);
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
     // External PMK eligibility does not survive any disassociate
     // edge that this selector represents, including the early-return
@@ -4772,7 +4531,6 @@ setDISASSOCIATE(void *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
 {
-    XYLog("DEBUG VTABLE [477] %s\n", __FUNCTION__);
     if (!ad)
         return kIOReturnError;
     ad->version = APPLE80211_VERSION;
@@ -4785,8 +4543,6 @@ getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
             ad->num_channels++;
         }
     }
-    XYLog("DEBUG %s num_channels=%d ic_state=%d\n",
-          __FUNCTION__, ad->num_channels, ic->ic_state);
     return kIOReturnSuccess;
 }
 
@@ -4809,7 +4565,6 @@ getDEAUTH(struct apple80211_deauth_data *da)
     da->version = APPLE80211_VERSION;
     struct ieee80211com *ic = fHalService->get80211Controller();
     da->deauth_reason = ic->ic_deauth_reason;
-    XYLog("DEBUG %s deauth_reason=%d ic_state=%d\n", __FUNCTION__, da->deauth_reason, ic->ic_state);
     return kIOReturnSuccess;
 }
 
@@ -4837,15 +4592,13 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
         hv->status = APPLE80211_STATUS_UNAVAILABLE;
     }
 #endif
-    XYLog("DEBUG %s status=%d ic_state=%d\n", __FUNCTION__, hv->status, ic->ic_state);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setCLEAR_PMKSA_CACHE(void *req)
 {
-    CR257_PROBE(setCLEAR_PMKSA_CACHE, req, 0);
-    XYLog("%s\n", __FUNCTION__);
+    (void)req;
     struct ieee80211com *ic = fHalService->get80211Controller();
     // PMKSA-cache clear semantically invalidates any held host PMK,
     // so drop external PMK eligibility before touching the node
@@ -4862,7 +4615,6 @@ setCLEAR_PMKSA_CACHE(void *req)
 IOReturn AirportItlwmSkywalkInterface::
 setDEAUTH(struct apple80211_deauth_data *da)
 {
-    XYLog("DEBUG %s reason=%d\n", __FUNCTION__, da ? da->deauth_reason : -1);
     return kIOReturnSuccess;
 }
 
@@ -4883,8 +4635,6 @@ getMCS(struct apple80211_mcs_data* md)
             md->index = index;
     }
 
-    XYLog("DEBUG %s ret=0x%x nrate=0x%x mcs=%u\n",
-          __FUNCTION__, ret, rate, md->index);
     return ret;
 }
 
@@ -4930,10 +4680,6 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
             ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
         }
     }
-    XYLog("Link %s, voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
-          ed->isLinkDown ? "down" : "up",
-          ed->voluntary_down, ed->voluntary_up,
-          ed->isLinkDown ? ed->reason : ed->rssi);
     return kIOReturnSuccess;
 }
 
@@ -4942,16 +4688,6 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
 {
     RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s Type: %u BSS Type: %u PHY Mode: %u Dwell: %u Rest: %u Channels: %u SSID: %s ic_state=%d\n",
-          __FUNCTION__,
-          sd->scan_type,
-          sd->bss_type,
-          sd->phy_mode,
-          sd->dwell_time,
-          sd->rest_time,
-          sd->num_channels,
-          sd->ssid,
-          ic->ic_state);
     if (fScanResultWrapping)
         return 22;
     if (ic->ic_state <= IEEE80211_S_INIT)
@@ -4986,15 +4722,12 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_TRIGGER_CC(triggerCC *data)
 {
-    CR257_PROBE(setWCL_TRIGGER_CC, data, 0);
     if (!data)
         return kIOReturnBadArgument;
 
     const auto *snapshot = reinterpret_cast<const triggerCCSnapshot *>(data);
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
     const uint32_t mode = *reinterpret_cast<const uint32_t *>(raw + 0x8);
-    const uint32_t trigger = *reinterpret_cast<const uint32_t *>(raw + 0x4);
-    const uint32_t channelMetric = *reinterpret_cast<const uint32_t *>(raw + 0x10);
 
     // Tahoe 26.x calls APPLE80211_IOC_WCL_TRIGGER_CC during the scan manager
     // bring-up path.  The Apple producer does not treat it as optional:
@@ -5005,9 +4738,6 @@ setWCL_TRIGGER_CC(triggerCC *data)
     memcpy(cachedTriggerCC, snapshot, sizeof(*snapshot));
     cachedTriggerCCMode = mode;
     hasCachedTriggerCC = true;
-
-    XYLog("DEBUG %s mode=%u trigger=%u channel_metric=%u\n",
-          __FUNCTION__, mode, trigger, channelMetric);
 
     if (mode == 0 || mode == 1)
         return kIOReturnSuccess;
@@ -5029,12 +4759,6 @@ setOS_FEATURE_FLAGS(apple80211_feature_flags *data)
     // success stub; the raw feature word must remain driver-owned state.
     cachedOSFeatureFlags = flags;
 
-    XYLog("WCL [611] %s flags=0x%llx dynsar=%u six_ghz=%u adaptive11r=%u\n",
-          __FUNCTION__,
-          static_cast<unsigned long long>(flags),
-          static_cast<unsigned int>((flags >> 6) & 1ULL),
-          static_cast<unsigned int>((flags >> 7) & 1ULL),
-          static_cast<unsigned int>((flags >> 28) & 1ULL));
     return kIOReturnSuccess;
 }
 
@@ -5048,8 +4772,6 @@ setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data)
     // IOC as disposable. Carry the same state locally so later keepalive / PM
     // work does not lose the DHCP-renewal edge.
     cachedDhcpRenewalData = *reinterpret_cast<const uint8_t *>(data) != 0;
-    XYLog("WCL [612] %s enabled=%u\n", __FUNCTION__,
-          static_cast<unsigned int>(cachedDhcpRenewalData));
     return kIOReturnSuccess;
 }
 
@@ -5063,7 +4785,6 @@ setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data)
     // Even before the deeper power manager parity is finished, this IOC must
     // remain a state carrier rather than a blind success stub.
     cachedBatteryPowerSaveMode = *reinterpret_cast<const uint32_t *>(data);
-    XYLog("WCL [613] %s mode=%u\n", __FUNCTION__, cachedBatteryPowerSaveMode);
     return kIOReturnSuccess;
 }
 
@@ -5077,7 +4798,6 @@ setPOWER_PROFILE(apple80211_power_profile *data)
     // dispatching into its power-policy vtable. Preserve the same cached owner
     // state here instead of dropping the profile on the floor.
     cachedPowerProfile = *reinterpret_cast<const uint32_t *>(data);
-    XYLog("WCL [619] %s profile=%u\n", __FUNCTION__, cachedPowerProfile);
     return kIOReturnSuccess;
 }
 
@@ -5100,10 +4820,6 @@ setIPV4_PARAMS(apple80211_ipv4_params *data)
     cachedIPv4Gateway = ipv4->gateway;
     cachedIPv4GatewayTail = ipv4->gatewayTail;
 
-    XYLog("WCL [624] %s addr=0x%08x mask=0x%08x gw=0x%08x tail=0x%04x keepalive=%u\n",
-          __FUNCTION__, cachedIPv4Address, cachedIPv4Netmask, cachedIPv4Gateway,
-          cachedIPv4GatewayTail,
-          static_cast<unsigned int>(cachedIPv4Address != 0 && cachedIPv4Netmask != 0));
     return kIOReturnSuccess;
 }
 
@@ -5128,13 +4844,6 @@ setIPV6_PARAMS(apple80211_ipv6_params *data)
     if (cachedIPv6Count != 0)
         memcpy(&cachedIPv6LinkLocalAddress[8], &cachedIPv6Addresses[0][8], 8);
 
-    XYLog("WCL [636] %s count=%u first=%02x:%02x:%02x:%02x ll=%02x%02x::\n",
-          __FUNCTION__, cachedIPv6Count,
-          cachedIPv6Count ? cachedIPv6Addresses[0][0] : 0,
-          cachedIPv6Count ? cachedIPv6Addresses[0][1] : 0,
-          cachedIPv6Count ? cachedIPv6Addresses[0][2] : 0,
-          cachedIPv6Count ? cachedIPv6Addresses[0][3] : 0,
-          cachedIPv6LinkLocalAddress[0], cachedIPv6LinkLocalAddress[1]);
     return kIOReturnSuccess;
 }
 
@@ -5147,32 +4856,14 @@ setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
     // Apple's contract here really is minimal: validate non-null and succeed.
     // Our old kIOReturnError path still diverged from that producer shape.
     cachedInfraEnumerated = true;
-    XYLog("WCL [637] %s enumerated=1\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
-    CR257_PROBE(setWCL_SCAN_REQ, req, 0);
     RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(req);
-
-    // Dump key fields from apple80211ScanRequest (total 0x1598 bytes)
-    // Offsets from decompiled AppleBCMWLAN/IO80211Family
-    uint32_t num_channels = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x54) : 0;
-    uint32_t scan_type = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x44) : 0;
-    uint32_t bss_type = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x14) : 0;
-    uint32_t ssid_len = raw ? *reinterpret_cast<const uint32_t *>(raw + 0x20) : 0;
-    XYLog("DEBUG %s ic_state=%d req=%p scan_type=%u bss_type=%u ssid_len=%u num_channels=%u\n",
-          __FUNCTION__, ic->ic_state, req, scan_type, bss_type, ssid_len, num_channels);
-
-    // Dump first 96 bytes of struct for offset verification
-    if (req) {
-        XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
-        XYLog("DEBUG %s hex[0x30-0x5F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x30, 48));
-    }
 
     if (!req)
         return kIOReturnBadArgument;
@@ -5181,22 +4872,27 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
     if (ic->ic_state <= IEEE80211_S_INIT)
         return 22;
 
-    ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
+    /*
+     * WCL scan completion is owned by the Tahoe bulletin path below: the
+     * timer publishes cached WCL_SCAN_RESULT entries followed by WCL_SCAN_DONE.
+     * Starting an independent net80211 bgscan here leaves that scan without a
+     * paired WCL completion owner and can move an associated interface out of
+     * RUN after the WCL request has already completed.
+     */
+    fNextNodeToSend = NULL;
+    fScanResultWrapping = false;
     if (scanSource) {
         scanSource->setTimeoutMS(100);
         scanSource->enable();
     }
-    XYLog("DEBUG %s → scan triggered OK\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 {
-    __atomic_add_fetch(&cr237_setWCL_ASSOCIATE_count, 1, __ATOMIC_RELAXED);
     RT2_SET(3); sRT.assocCount++;
     if (!candidates) {
-        CR237_LOG("DEBUG CR237_WCL_ASSOC candidates=NULL\n");
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                        nullptr, 0, nullptr, 0, 0, 0,
                                        kIOReturnBadArgument);
@@ -5205,45 +4901,6 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 
     struct ieee80211com *ic = fHalService->get80211Controller();
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(candidates);
-
-    // CR-237: observation-only probe of UNKNOWN CARRIER METADATA at
-    // candidate offsets kKeyOffset / kKeyLengthOffset.
-    // TahoeAssociationContracts.hpp declares these offsets, but
-    // primary reference evidence (CR-067, AppleBCMWLANCore decomp)
-    // shows that WCL key ownership is SEPARATE from
-    // apple80211AssocCandidates: WCLJoinRequest::checkValidationFor-
-    // Apple80211Key returns a request-private key pointer at +0x18,
-    // and AppleBCMWLANJoinAdapter::performJoin does NOT copy a PMK
-    // from the candidate buffer. So this probe is observational only;
-    // a non-zero result MUST NOT be interpreted as a confirmed PSK
-    // channel.
-    //
-    // Scan range is strictly [kKeyOffset, kKeyLengthOffset) = 8 bytes
-    // BEFORE the length field, so the scanned region NEVER overlaps
-    // the length field itself (avoids the self-confirming
-    // contamination flagged by CR-237 v1 review).
-    //
-    // No raw bytes are logged; only counts.
-    {
-        const uint32_t cr237KeyLen = *reinterpret_cast<const uint32_t *>(
-            raw + TahoeAssociationContracts::kKeyLengthOffset);
-        unsigned int cr237Pre8NonZero = 0;
-        static_assert(TahoeAssociationContracts::kKeyLengthOffset -
-                      TahoeAssociationContracts::kKeyOffset == 0x08,
-                      "CR-237 probe assumes kKeyOffset+8 == kKeyLengthOffset");
-        for (uint32_t i = 0; i < 8; ++i) {
-            if (raw[TahoeAssociationContracts::kKeyOffset + i] != 0)
-                cr237Pre8NonZero++;
-        }
-        CR237_LOG("DEBUG CR237_WCL_ASSOC_META keyLenField=%u "
-                  "pre8NonZeroBytes=%u/8 "
-                  "kKeyOffset=0x%x kKeyLenOffset=0x%x payloadLen=0x%x "
-                  "interpretation=unknown_carrier_metadata\n",
-                  cr237KeyLen, cr237Pre8NonZero,
-                  TahoeAssociationContracts::kKeyOffset,
-                  TahoeAssociationContracts::kKeyLengthOffset,
-                  TahoeAssociationContracts::kAssocCandidatesPayloadLength);
-    }
 
     // Extract fields from the apple80211AssocCandidates carrier recovered from IO80211Family.
     uint16_t ap_mode = *reinterpret_cast<const uint16_t *>(
@@ -5275,7 +4932,6 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         reinterpret_cast<const struct ether_addr *>(
             raw + TahoeAssociationContracts::kFirstCandidateBssidOffset);
     const struct ether_addr *bssid = candidate_count > 0 ? candidate_bssid : context_bssid;
-    const char *bssid_source = candidate_count > 0 ? "candidate" : "context";
 
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
@@ -5319,28 +4975,6 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
                                        kIOReturnUnsupported);
         return kIOReturnUnsupported;
     }
-
-    char ssid_str[APPLE80211_MAX_SSID_LEN + 1];
-    memcpy(ssid_str, ssid, ssid_len);
-    ssid_str[ssid_len] = '\0';
-
-    XYLog("DEBUG %s [%s] mode=%d auth_lower=%d auth_upper=%d rsn_ie_len=%d ic_state=%d\n",
-          __FUNCTION__, ssid_str, ap_mode, auth_lower, auth_upper, rsn_ie_len, ic->ic_state);
-    XYLog("DEBUG %s BSSID=%02x:%02x:%02x:%02x:%02x:%02x source=%s candidates=%u "
-          "candidate=%02x:%02x:%02x:%02x:%02x:%02x context=%02x:%02x:%02x:%02x:%02x:%02x\n",
-          __FUNCTION__,
-          bssid->octet[0], bssid->octet[1], bssid->octet[2],
-          bssid->octet[3], bssid->octet[4], bssid->octet[5],
-          bssid_source, candidate_count,
-          candidate_bssid->octet[0], candidate_bssid->octet[1], candidate_bssid->octet[2],
-          candidate_bssid->octet[3], candidate_bssid->octet[4], candidate_bssid->octet[5],
-          context_bssid->octet[0], context_bssid->octet[1], context_bssid->octet[2],
-          context_bssid->octet[3], context_bssid->octet[4], context_bssid->octet[5]);
-
-    // Dump first 64 bytes and BSSID region for offset verification
-    XYLog("DEBUG %s hex[0x00-0x2F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw, 48));
-    XYLog("DEBUG %s hex[0x1F0-0x21F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x1F0, 48));
-    XYLog("DEBUG %s hex[0x210-0x23F]: %s\n", __FUNCTION__, hexdump((uint8_t*)raw + 0x210, 48));
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
@@ -5394,12 +5028,10 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 {
-    CR257_PROBE(setWCL_LEAVE_NETWORK, data, 0);
     if (!data)
         return kIOReturnError;
 
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
     // WCL leave is the canonical Apple lifecycle edge that invalidates
     // any externally delivered PMK. Clear before any early return so
@@ -5432,9 +5064,8 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_ABORT(void *data)
 {
-    CR257_PROBE(setWCL_SCAN_ABORT, data, 0);
+    (void)data;
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("%s ic_state=%d\n", __FUNCTION__, ic->ic_state);
 
     // AppleBCMWLANCore::setWCL_SCAN_ABORT is not a no-op: it dispatches into
     // scan-adapter-owned abort work.  The recovered WCLScanManager FSM shows
@@ -5585,7 +5216,6 @@ setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
 {
-    CR257_PROBE(setWCL_SET_ROAM_LOCK, data, data ? sizeof(*data) : 0);
     // WCLRoamManager sends selector 0x1ac with exactly one payload byte.
     // AppleBCMWLANCore rejects NULL with raw 0x16, then forwards data[0] as
     // the `roam_off` bool to AppleBCMWLANRoamAdapter::setRoamLock(bool).
@@ -5594,10 +5224,6 @@ setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
 
     cachedWclRoamLocked = data->roam_off != 0;
     hasCachedWclRoamLock = true;
-    XYLog("WCL [591] %s roam_off=%u cached=%u\n",
-          __FUNCTION__,
-          static_cast<unsigned int>(cachedWclRoamLocked),
-          static_cast<unsigned int>(hasCachedWclRoamLock));
     return kIOReturnSuccess;
 }
 
@@ -5636,7 +5262,6 @@ setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
 {
-    CR257_PROBE(setWCL_UPDATE_FAST_LANE, data, 0);
     // The recovered Tahoe visible contract is minimal: Apple rejects NULL with
     // 0xe00002bc and otherwise reports success from the public setter surface
     // before the deeper traffic-policy owner work.
@@ -5759,8 +5384,6 @@ setTXPOWER(apple80211_txpower_data *data)
     }
 
     setTahoeCachedQTxpowerRaw(fHalService, raw);
-    XYLog("DEBUG [548] %s unit=%u txpower=%d raw=0x%02x\n",
-          __FUNCTION__, data->txpower_unit, data->txpower, raw);
     return kIOReturnSuccess;
 }
 
@@ -5775,7 +5398,6 @@ setRATE(apple80211_rate_data *data)
 
     cachedBgRate = data->rate[0];
     hasCachedBgRate = true;
-    XYLog("DEBUG [549] %s rate=%u\n", __FUNCTION__, cachedBgRate);
     return kIOReturnSuccess;
 }
 
@@ -5804,7 +5426,6 @@ setIBSS_MODE(apple80211_network_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIE(apple80211_ie_data *data)
 {
-    CR257_PROBE(setIE, data, data ? sizeof(*data) : 0);
     TahoeAsyncCommandContext asyncContext{};
     const IOReturn rc =
         (instance != nullptr)
@@ -5839,8 +5460,6 @@ setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
         return kIOReturnUnsupported;
 
     cachedTcpkaOffloadEnabled = data->enabled != 0;
-    XYLog("DEBUG [576] %s enabled=%u\n", __FUNCTION__,
-          static_cast<unsigned int>(cachedTcpkaOffloadEnabled));
     return kIOReturnSuccess;
 }
 
@@ -5884,9 +5503,6 @@ setOFFLOAD_ARP(apple80211_offload_arp_data *data)
     cachedIPv4Gateway = data->gateway;
     cachedIPv4GatewayTail = data->gateway_tail;
 
-    XYLog("DEBUG [557] %s has_ipv4=%u addr=0x%08x keepalive=%u gw=0x%08x tail=0x%04x\n",
-          __FUNCTION__, data->has_ipv4_address, data->ipv4_address,
-          data->keepalive_enabled, data->gateway, data->gateway_tail);
     return kIOReturnSuccess;
 }
 
@@ -6010,7 +5626,6 @@ setTKO_PARAMS(apple80211_tko_params *data)
             cachedTkoParams[i] =
                 *reinterpret_cast<const uint32_t *>(raw + 4 + i * sizeof(uint32_t));
         }
-        hasCachedTkoParams = true;
     }
     return kIOReturnSuccess;
 }
@@ -6026,7 +5641,6 @@ setHP2P_CTRL(apple80211_hp2p_ctrl *)
 IOReturn AirportItlwmSkywalkInterface::
 setSET_PROPERTY(apple80211_set_property_unserialized_data *data)
 {
-    CR257_PROBE(setSET_PROPERTY, data, 0);
     // AppleBCMWLANCore::setSET_PROPERTY runs through a gated property callback
     // path. Preserve the caller-visible "delegated setter" contract instead of
     // reporting generic unsupported.
@@ -6086,7 +5700,6 @@ setPM_MODE(apple80211_pm_mode *data)
     pd.version = APPLE80211_VERSION;
     pd.powersave_level = data->mode;
     const IOReturn rc = setPOWERSAVE(&pd);
-    XYLog("DEBUG [584] %s mode=%u rc=0x%x\n", __FUNCTION__, data->mode, rc);
     return rc;
 }
 
@@ -6117,18 +5730,12 @@ setLQM_CONFIG(apple80211_lqm_config_t *data)
     memcpy(&cachedLqmConfig, data, sizeof(cachedLqmConfig));
     cachedLqmConfig.version = APPLE80211_VERSION;
     hasCachedLqmConfig = true;
-    XYLog("DEBUG [577] %s sample=%u tx_per=%u rx_loss=%u enabled=%u\n",
-          __FUNCTION__, cachedLqmConfig.sample_period_ms,
-          cachedLqmConfig.tx_per_interval_ms,
-          cachedLqmConfig.rx_loss_interval_ms,
-          static_cast<unsigned int>(cachedLqmConfig.enabled));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 {
-    CR257_PROBE(setWCL_REAL_TIME_MODE, data, 0);
     const auto *mode = reinterpret_cast<const tahoeWclRealTimeMode *>(data);
 
     // AppleBCMWLANCore::setWCL_REAL_TIME_MODE is a real producer with two
@@ -6140,15 +5747,12 @@ setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedRealTimeMode = mode->enabled != 0;
-    XYLog("WCL [596] %s realtime=%u\n", __FUNCTION__,
-          static_cast<unsigned int>(cachedRealTimeMode));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 {
-    CR257_PROBE(setWCL_ACTION_FRAME, data, 0);
     const uint32_t firmwareGeneration =
         (instance != nullptr && instance->fNetIf != nullptr)
             ? TahoePayloadBuilders::kActionFrameV2FirmwareThreshold
@@ -6179,7 +5783,6 @@ setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 {
-    CR257_PROBE(setWCL_ROAM_USER_CACHE, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_ROAM_USER_CACHE delegates into the roam adapter
     // `cmdROAM_USER_CACHE(...)`. The recovered helper family shows that the
     // caller-visible payload carries channel entries from offset 0x0 in 0x0c
@@ -6191,30 +5794,37 @@ setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 
     memcpy(cachedUserRoamCache, data, sizeof(*data));
     hasCachedUserRoamCache = true;
-    const auto count = *reinterpret_cast<const uint16_t *>(data->raw + 0x78);
-    const auto overrideState = data->raw[0x7a];
-    XYLog("WCL [594] %s count=%u override=%u cached=%u\n",
-          __FUNCTION__, count, overrideState,
-          static_cast<unsigned int>(hasCachedUserRoamCache));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REASSOC(apple80211_reassoc *data)
 {
-    __atomic_add_fetch(&cr237_setWCL_REASSOC_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_WCL_REASSOC data_nonnull=%d\n",
-              data ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
-    // A reassociation start invalidates any external PMK delivered
-    // before the new association edge. The host supplicant must
-    // begin the reassociation 4-way handshake from a fresh PMK
-    // installed through CIPHER_KEY(PMK), CIPHER_KEY(MSK), or CUR_PMK
-    // on the reassociated network. Clear unconditionally so it
-    // covers both the success and the early-return paths of the
-    // reassociation selector.
-    clearExternalPmkEligibilityLocked("setWCL_REASSOC");
+    // A reassociation start invalidates an EXTERNALLY delivered PMK:
+    // the host supplicant must re-install a fresh PMK through
+    // CIPHER_KEY(PMK), CIPHER_KEY(MSK), or CUR_PMK on the
+    // reassociated network. A locally owned PSK PMK, however, must
+    // SURVIVE this edge: this producer always reassociates to the
+    // CURRENT BSS (ieee80211_send_mgmt(ic->ic_bss, REASSOC_REQ)
+    // below), a PSK PMK is a pure function of passphrase+SSID and
+    // stays valid across it, and wifid does not re-deliver key
+    // material after WCL_REASSOC. Clearing unconditionally left the
+    // post-reassoc 4-way M1 permanently deferred (owner=none,
+    // ic_psk_nonzero_bytes=0) until the AP deauthed with reason 15
+    // (4WAY-HANDSHAKE-TIMEOUT), churning RUN->AUTH every ~24s.
+    bool reassoc_psk_present = false;
+    {
+        for (size_t psk_i = 0; psk_i < sizeof(ic->ic_psk); ++psk_i) {
+            if (ic->ic_psk[psk_i] != 0) {
+                reassoc_psk_present = true;
+                break;
+            }
+        }
+    }
+    if (!reassoc_psk_present)
+        clearExternalPmkEligibilityLocked("setWCL_REASSOC");
 
     // AppleBCMWLANCore::setWCL_REASSOC is not an ack-only stub: it snapshots
     // the recovered reassoc request, refuses NULL with 0xe00002bc, and bails
@@ -6234,6 +5844,27 @@ setWCL_REASSOC(apple80211_reassoc *data)
 
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
         return kIOReturnBadArgumentTahoe;
+
+    /*
+     * Reference parity for steady-state same-BSS reassociation.
+     *
+     * AppleBCMWLANNetAdapter::sendReassocCommand issues firmware WLC_REASSOC
+     * against the current BSS: the host-visible link and PTK stay up, and the
+     * WCL reassoc terminal selector is delivered by the firmware event path.
+     * Sending an OTA REASSOC_REQ to the AP we are already running with makes
+     * hostapd restart key/BA state and opens a data-path hole. For a live
+     * same-BSS RSNA, mirror the firmware path: keep link/key state intact and
+     * publish the WCL terminal success edge without emitting a management
+     * reassociation frame.
+     */
+    if (ic->ic_bss->ni_port_valid &&
+        (ic->ic_bss->ni_flags & IEEE80211_NODE_TXRXPROT)) {
+        ic->ic_wcl_reassoc_owner_active = 1;
+        ic->ic_wcl_reassoc_owner_last_leaf =
+            IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT;
+        ieee80211_wcl_reassoc_post_success(ic);
+        return kIOReturnSuccess;
+    }
 
     /*
      * Recovered host-owned WCL reassociation owner contract: open the
@@ -6272,16 +5903,12 @@ setWCL_REASSOC(apple80211_reassoc *data)
             IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL;
         ieee80211_wcl_reassoc_post_failure(ic, static_cast<u_int32_t>(rc));
     }
-    XYLog("WCL [590] %s channels=%u scores=%u reason=%d flags=0x%02x rc=%d\n",
-          __FUNCTION__, data->channel_count, data->score_count,
-          static_cast<int>(data->roam_reason), data->feature_flags, rc);
     return rc == 0 ? kIOReturnSuccess : static_cast<IOReturn>(rc);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 {
-    CR257_PROBE(setWCL_LEGACY_ROAM_PROFILE_CONFIG, data, data ? sizeof(*data) : 0);
     // WCLRoamProfile::setRoamingProfile(legacy) consumes exactly 0x60 bytes,
     // and AppleBCMWLANRoamAdapter stores that profile before it reconfigures
     // join preferences / Multi-AP state. The local port does not have the
@@ -6293,16 +5920,12 @@ setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 
     memcpy(cachedLegacyRoamProfileConfig, data, sizeof(*data));
     hasCachedLegacyRoamProfileConfig = true;
-    XYLog("WCL [592] %s cached=%u size=0x%zx\n",
-          __FUNCTION__, static_cast<unsigned int>(hasCachedLegacyRoamProfileConfig),
-          sizeof(*data));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 {
-    CR257_PROBE(setWCL_ROAM_PROFILE_CONFIG, data, data ? sizeof(*data) : 0);
     // WCLRoamProfile::setRoamingProfile(modern) ships a 0x23c payload into the
     // roam adapter. Apple's downstream helper fans this out into join
     // preference and per-band policy programming. Persist the exact carrier so
@@ -6313,16 +5936,12 @@ setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 
     memcpy(cachedRoamProfileConfig, data, sizeof(*data));
     hasCachedRoamProfileConfig = true;
-    XYLog("WCL [593] %s cached=%u size=0x%zx\n",
-          __FUNCTION__, static_cast<unsigned int>(hasCachedRoamProfileConfig),
-          sizeof(*data));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
 {
-    CR257_PROBE(setWCL_ARP_MODE, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_ARP_MODE has three distinct pieces:
     // - NULL -> 0xe00002bc
     // - mode 0/1 choose the keepalive/GARP owner path, anything else -> 0xe00002bc
@@ -6352,16 +5971,12 @@ setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
     if (carrierRc != kIOReturnSuccess && carrierRc != kApple80211ErrInvalidArgumentRaw)
         return carrierRc;
 
-    XYLog("WCL [597] %s mode=%u interval=%u enabled=%u wnm=%u/%u\n",
-          __FUNCTION__, data->mode, data->interval, data->enabled,
-          data->wnm_enabled_a, data->wnm_enabled_b);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 {
-    CR257_PROBE(setWCL_CONFIG_BG_MOTIONPROFILE, data, data ? sizeof(*data) : 0);
     // AppleBGScanAdapter first validates its internal motion-profile mapping,
     // then programs PNO/EPNO from the incoming blob. The recovered helper
     // rejects a zero PNO-count byte with a generic error, so keep that gate
@@ -6373,23 +5988,19 @@ setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 
     memcpy(cachedBgMotionProfile, data, sizeof(cachedBgMotionProfile));
     hasCachedBgMotionProfile = true;
-    XYLog("WCL [615] %s pno_count=%u epno_count=%u multi=%u\n",
-          __FUNCTION__, data->raw[1], data->raw[0x1a], data->raw[0]);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
 {
-    CR257_PROBE(setWCL_CONFIG_BG_NETWORK, data, data ? sizeof(*data) : 0);
-    struct ieee80211com *ic = fHalService->get80211Controller();
 
     // Apple clears PFN state, resets its internal "cached network available"
     // flags, and only then copies the full 0x12c0 request into adapter-owned
-    // storage. The local port has no PFN engine, but it does have the same
-    // bgscan cache owner in net80211. Preserve the full request and clear the
-    // current cache iterator so later BGSCAN_CACHE_RESULT consumers observe the
-    // new network set instead of stale cached nodes.
+    // storage. Preserve the full request and clear the current cache iterator
+    // so later BGSCAN_CACHE_RESULT consumers observe the new network set instead
+    // of stale cached nodes. The scan trigger itself belongs to WCL_CONFIG_BGSCAN
+    // or explicit scan requests, not this producer.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -6397,22 +6008,12 @@ setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
     hasCachedBgNetwork = true;
     fNextNodeToSend = nullptr;
     fScanResultWrapping = false;
-    if (ic->ic_state == IEEE80211_S_RUN)
-        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
-
-    const uint32_t whitelistCount = *reinterpret_cast<const uint32_t *>(&data->raw[0x18]);
-    const uint32_t epnoCount = *reinterpret_cast<const uint32_t *>(&data->raw[0x39c]);
-    const uint8_t anyConfig = data->raw[0];
-    XYLog("WCL [616] %s any=%u list=%u epno=%u marker=0x%08x\n",
-          __FUNCTION__, anyConfig, whitelistCount, epnoCount,
-          *reinterpret_cast<const uint32_t *>(&data->raw[0x88c]));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
 {
-    CR257_PROBE(setWCL_CONFIG_BGSCAN, data, data ? sizeof(*data) : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBCMWLANCore::setWCL_CONFIG_BGSCAN is a tiny command multiplexer:
@@ -6446,41 +6047,31 @@ setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
         }
     }
 
-    XYLog("WCL [617] %s reset=%u nprobes=%u/%u suspend=%u/%u rc=0x%x\n",
-          __FUNCTION__, data->raw[0], data->raw[1], data->raw[2],
-          data->raw[3], data->raw[4], rc);
     return rc;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
 {
-    CR257_PROBE(setWCL_CONFIG_BG_PARAMS, data, data ? sizeof(*data) : 0);
-    struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBGScanAdapter::setWCL_CONFIG_BG_PARAMS carries two independent
     // sub-commands out of a 0x20 blob. The local bgscan engine does not expose
-    // those hidden helper entrypoints, but preserving the exact payload and
-    // re-arming cache bgscan when the request is non-empty keeps the owner-side
-    // state reachable instead of acknowledging and discarding it.
+    // those hidden helper entrypoints, but preserving the exact payload keeps the
+    // owner-side state reachable instead of acknowledging and discarding it. This
+    // producer does not start a scan; that belongs to WCL_CONFIG_BGSCAN or an
+    // explicit scan request.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
     memcpy(cachedBgParams, data, sizeof(*data));
     hasCachedBgParams = true;
-    if ((data->raw[0] != 0 || data->raw[0x18] != 0) && ic->ic_state == IEEE80211_S_RUN)
-        ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
 
-    XYLog("WCL [618] %s pno=%u mode=%u epno=%u action=%u dwell=%u\n",
-          __FUNCTION__, data->raw[0], data->raw[1], data->raw[0x18],
-          data->raw[0x19], *reinterpret_cast<const uint32_t *>(&data->raw[0x1c]));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
-    CR257_PROBE(setWCL_JOIN_ABORT, data, 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
@@ -6493,10 +6084,6 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
     // state machine moves so the cleared eligibility is observable
     // to the next association edge.
     clearExternalPmkEligibilityLocked("setWCL_JOIN_ABORT");
-
-    XYLog("WCL [598] %s ic_state=%d completion=%u\n",
-          __FUNCTION__, ic->ic_state,
-          static_cast<unsigned int>(requestCompletion));
 
     // AppleBCMWLANCore::setWCL_JOIN_ABORT does not reject NULL. It maps NULL to
     // `false`, delegates into JoinAdapter::abortFirmwareJoinSync(bool), and
@@ -6537,7 +6124,6 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 {
-    CR257_PROBE(setWCL_QOS_PARAMS, data, 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     const auto *qos = reinterpret_cast<const tahoeWclQosParams *>(data);
 
@@ -6573,18 +6159,12 @@ setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
         setPOWERSAVE(&pd);
     }
 
-    XYLog("WCL [602] %s flags=0x%02x retry=%u rts=%u life3=%u life2=%u ps=%u\n",
-          __FUNCTION__, qos->flags, cachedQosLongRetryLimit, cachedQosRtsThreshold,
-          cachedQosLifetimeAc3, cachedQosLifetimeAc2, cachedPowersaveLevel);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_UP_DONE(void *data)
 {
-    __atomic_add_fetch(&cr237_setWCL_LINK_UP_DONE_count, 1, __ATOMIC_RELAXED);
-    CR237_LOG("DEBUG CR237_WCL_LINK_UP_DONE data_nonnull=%d\n",
-              data ? 1 : 0);
     struct ieee80211com *ic = fHalService->get80211Controller();
     (void)data;
 
@@ -6603,19 +6183,12 @@ setWCL_LINK_UP_DONE(void *data)
     if (ic->ic_updateedca != nullptr)
         ic->ic_updateedca(ic);
 
-    XYLog("WCL [603] %s link_active=%u assoc=%u realtime=%u ps=%u\n",
-          __FUNCTION__,
-          static_cast<unsigned int>((instance->currentStatus & kIONetworkLinkActive) != 0),
-          static_cast<unsigned int>(ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr),
-          static_cast<unsigned int>(cachedRealTimeMode),
-          cachedPowersaveLevel);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 {
-    CR257_PROBE(setWCL_SET_SCAN_HOME_AWAY_TIME, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME consumes a single dword
     // and forwards it into the scan-adapter owner. Preserve the same carrier
     // instead of acknowledging slot [604] and discarding the timing request.
@@ -6623,14 +6196,12 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedScanHomeAwayTime = data->milliseconds;
-    XYLog("WCL [604] %s ms=%u\n", __FUNCTION__, cachedScanHomeAwayTime);
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
 {
-    CR257_PROBE(setWCL_ULOFDMA_STATE, data, 0);
     const auto *state = reinterpret_cast<const tahoeWclUlofdmaState *>(data);
 
     // AppleBCMWLANCore::setWCL_ULOFDMA_STATE is a plain 11ax-adapter producer:
@@ -6642,7 +6213,6 @@ setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedUlofdmaState = state->mode;
-    XYLog("WCL [608] %s mode=%u\n", __FUNCTION__, cachedUlofdmaState);
     return kIOReturnSuccess;
 }
 
@@ -6660,7 +6230,6 @@ setMIMO_CONFIG(apple80211_mimo_config *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedMimoConfig = *config;
-    XYLog("WCL [614] %s mimo_ps=%u\n", __FUNCTION__, cachedMimoConfig);
     return kIOReturnSuccess;
 }
 
@@ -6676,7 +6245,6 @@ setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedFaceTimeWiFiCallingStatus = params->status;
-    XYLog("WCL [623] %s status=%u\n", __FUNCTION__, cachedFaceTimeWiFiCallingStatus);
     return kIOReturnSuccess;
 }
 
@@ -6697,8 +6265,6 @@ setDUAL_POWER_MODE(apple80211_dual_power_mode_params *data)
     cachedDualPowerModeSecondary = params->secondary;
     if (instance != nullptr)
         instance->getTahoeOwnerRegistry().syncDualPowerMode(params->primary, params->secondary);
-    XYLog("WCL [631] %s primary=%d secondary=%d\n",
-          __FUNCTION__, cachedDualPowerModePrimary, cachedDualPowerModeSecondary);
     return kIOReturnSuccess;
 }
 
@@ -6714,8 +6280,6 @@ setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedCongestionControlEnabled = ind->enabled != 0;
-    XYLog("WCL [634] %s enabled=%u\n", __FUNCTION__,
-          static_cast<unsigned int>(cachedCongestionControlEnabled));
     return kIOReturnSuccess;
 }
 
@@ -6731,7 +6295,6 @@ setLMTPC_CONFIG(apple80211_lmtpc_config *data)
         return kIOReturnBadArgumentTahoe;
 
     cachedLmtpcValue = config->value;
-    XYLog("WCL [638] %s value=%u\n", __FUNCTION__, cachedLmtpcValue);
     return kIOReturnSuccess;
 }
 
@@ -6751,9 +6314,6 @@ setLE_SCAN_PARAM(apple80211_le_scan_params *data)
 
     memcpy(cachedLeScanParams, params, sizeof(*params));
     hasCachedLeScanParams = true;
-    XYLog("WCL [640] %s disconnected=%u connect=%u disconnect=%u bucket=%u\n",
-          __FUNCTION__, params->disconnected, params->connectedEvents,
-          params->disconnectedEvents, params->bucket);
     return kIOReturnSuccess;
 }
 
@@ -6815,7 +6375,6 @@ setSET_MAC_ADDRESS(apple80211_set_mac_address_data *data)
     setProperty(kIOMACAddress, const_cast<uint8_t *>(mac), kIOEthernetAddressSize);
     postMessage(APPLE80211_M_LINK_ADDRESS_CHANGED, const_cast<uint8_t *>(mac), 6, true);
 
-    XYLog("DEBUG %s mac=%s\n", __FUNCTION__, ether_sprintf(mac));
     return kIOReturnSuccess;
 }
 
@@ -6851,7 +6410,6 @@ setREALTIME_QOS_MSCS(apple80211_state_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setRSN_XE(apple80211_rsn_xe_data *data)
 {
-    CR257_PROBE(setRSN_XE, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -6876,14 +6434,12 @@ setGAS_ABORT(void *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LIMITED_AGGREGATION(apple80211_limited_aggregation_config *data)
 {
-    CR257_PROBE(setWCL_LIMITED_AGGREGATION, data, 0);
     return data == nullptr ? kIOReturnBadArgumentTahoe : kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config *data)
 {
-    CR257_PROBE(setWCL_BCN_MUTE_CONFIG, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -6905,7 +6461,6 @@ setEAP_FILTER_CONFIG(apple80211_eap_filter_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
 {
-    CR257_PROBE(setWCL_ASSOCIATED_SLEEP, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -6917,7 +6472,6 @@ setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SOI_CONFIG(appl80211_sleep_on_inactivity_config *data)
 {
-    CR257_PROBE(setWCL_SOI_CONFIG, data, 0);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -7084,7 +6638,6 @@ setNDD_REQ(apple80211_ndd_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 {
-    CR257_PROBE(setWCL_WNM_OPS, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_WNM_OPS is a real producer with only one gate
     // visible at the core layer: NULL -> 0xe00002bc, otherwise delegate into
     // WnmAdapter::configureWnmFeatures(...). The WCL-side consumer mutates a
@@ -7095,16 +6648,12 @@ setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 
     memcpy(cachedWnmConfig, data, sizeof(*data));
     hasCachedWnmConfig = true;
-    XYLog("DEBUG [625] %s flags0=0x%02x flags8=0x%02x beacon=0x%02x cached=%u\n",
-          __FUNCTION__, data->raw[0], data->raw[8], data->raw[0x32c],
-          static_cast<unsigned int>(hasCachedWnmConfig));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 {
-    CR257_PROBE(setWCL_WNM_OFFLOAD, data, data ? sizeof(*data) : 0);
     // AppleBCMWLANCore::setWCL_WNM_OFFLOAD has the same core-layer contract:
     // NULL -> 0xe00002bc, otherwise delegate into WnmAdapter
     // configureWnmOffloadFeatures(...). Recovered WCLWnmAgent helpers mutate
@@ -7114,9 +6663,6 @@ setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 
     memcpy(cachedWnmOffload, data, sizeof(*data));
     hasCachedWnmOffload = true;
-    XYLog("DEBUG [626] %s flags0=0x%02x flags4=0x%02x cached=%u\n",
-          __FUNCTION__, data->raw[0], data->raw[4],
-          static_cast<unsigned int>(hasCachedWnmOffload));
     return kIOReturnSuccess;
 }
 
@@ -7149,7 +6695,7 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
     result->asr_channel.version = APPLE80211_VERSION;
     result->asr_channel.channel = ieee80211_chan2ieee(fHalService->get80211Controller(), fNextNodeToSend->ni_chan);
     result->asr_channel.flags = ieeeChanFlag2appleScanFlagVentura(fNextNodeToSend->ni_chan->ic_flags);
-    result->asr_noise = -fHalService->getDriverInfo()->getBSSNoise();
+    result->asr_noise = fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
     result->asr_snr = result->asr_rssi - result->asr_noise;
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
@@ -7163,11 +6709,9 @@ IOReturn AirportItlwmSkywalkInterface::
 getCURRENT_NETWORK(apple80211_scan_result *sr)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p\n", __FUNCTION__, ic->ic_state, ic->ic_bss);
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
         return kIOReturnError;
     convertNodeToScanResult(fHalService, ic->ic_bss, sr);
-    XYLog("DEBUG %s ret=0 ssid_len=%u\n", __FUNCTION__, sr->asr_ssid_len);
     return kIOReturnSuccess;
 }
 
@@ -7191,7 +6735,6 @@ getTIMESYNC_INFO(apple80211_timesync_info *data)
             "TimeSync Capability:\n\tFirmware: HW Timestamping Not capable\n\tHost: Timestamping NOT capable\n",
             sizeof(data->text));
     strlcat(data->text, "TimeSync Engine not-instantiated\n", sizeof(data->text));
-    XYLog("DEBUG [522] %s produced timesync report without engine\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
@@ -7212,7 +6755,6 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
     // is a zeroed payload with version=1 and zero IDs.
     bzero(as, sizeof(*as));
     as->version = 1;
-    XYLog("%s version=%u id1=%u id2=%u\n", __FUNCTION__, as->version, as->id1, as->id2);
     return kIOReturnSuccess;
 }
 
@@ -7223,19 +6765,14 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
     if (fNextNodeToSend == NULL) {
         if (fScanResultWrapping) {
             fScanResultWrapping = false;
-            XYLog("DEBUG %s wrapping done → 5\n", __FUNCTION__);
             return 5;
         } else {
             fNextNodeToSend = RB_MIN(ieee80211_tree, &fHalService->get80211Controller()->ic_tree);
             if (fNextNodeToSend == NULL) {
-                XYLog("DEBUG %s no nodes → 5\n", __FUNCTION__);
                 return 5;
             }
         }
     }
-    XYLog("DEBUG %s ssid=%s rssi=%d ch=%d\n", __FUNCTION__,
-          fNextNodeToSend->ni_essid, fNextNodeToSend->ni_rssi,
-          fNextNodeToSend->ni_chan ? ieee80211_chan2ieee(fHalService->get80211Controller(), fNextNodeToSend->ni_chan) : -1);
     convertNodeToScanResult(fHalService, fNextNodeToSend, sr);
     
     fNextNodeToSend = RB_NEXT(ieee80211_tree, &HalService->get80211Controller()->ic_tree, fNextNodeToSend);
@@ -7278,7 +6815,6 @@ getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
     data->count = count;
     data->timestamp = now;
 
-    XYLog("%s count=%u timestamp=%llu\n", __FUNCTION__, count, now);
     return kIOReturnSuccess;
 }
 
@@ -7321,7 +6857,6 @@ getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
     data->num_channels = count;
     data->support_6e = 0;
 
-    XYLog("WCL [530] %s num_channels=%u\n", __FUNCTION__, count);
     return kIOReturnSuccess;
 }
 
@@ -7332,10 +6867,10 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
         return kIOReturnError;
 
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL) {
-        XYLog("WCL [526] %s not associated ic_state=%d\n", __FUNCTION__, ic->ic_state);
+    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
         return kIOReturnError;
-    }
+
+    seedBssManagerMcs();
 
     struct ieee80211_node *ni = ic->ic_bss;
     const uint16_t chanSpec = buildTahoeWclCurrentBssChanSpec(ic, ni->ni_chan);
@@ -7371,14 +6906,5 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
     payload->meta.beaconInterval = ni->ni_intval;
     payload->meta.capability = ni->ni_capinfo;
 
-    XYLog("WCL [526] %s bssid=%02x:%02x:%02x:%02x:%02x:%02x chan_spec=0x%04x primary=%u rssi=%d ssid_len=%u ie_len=%u\n",
-          __FUNCTION__,
-          ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
-          ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
-          chanSpec, primaryChannel,
-          payload->meta.rssi, payload->meta.ssidLen, ieLen);
-    XYLog("WCL [526] hex[0x00-0x1F]: %s\n", hexdump(data->data, 32));
-    XYLog("WCL [526] hex[0x20-0x43]: %s\n",
-          hexdump(data->data + 0x20, APPLE80211_WCL_BSS_INFO_HEADER_LEN - 0x20));
     return kIOReturnSuccess;
 }

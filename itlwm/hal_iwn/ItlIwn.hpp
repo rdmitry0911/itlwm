@@ -156,7 +156,6 @@ public:
     void        iwn5000_ict_reset(struct iwn_softc *);
     int        iwn_read_eeprom(struct iwn_softc *);
     static void        iwn4965_read_eeprom(struct iwn_softc *);
-    void        iwn4965_print_power_group(struct iwn_softc *, int);
     static void        iwn5000_read_eeprom(struct iwn_softc *);
     void        iwn_read_eeprom_channels(struct iwn_softc *, int, uint32_t);
     void        iwn_read_eeprom_enhinfo(struct iwn_softc *);
@@ -196,6 +195,8 @@ public:
     void        iwn_tx_done_free_txdata(struct iwn_softc *,
                 struct iwn_tx_data *);
     void        iwn_clear_oactive(struct iwn_softc *, struct iwn_tx_ring *);
+    bool        iwn_tx_pending(struct iwn_softc *);
+    void        iwn_refresh_tx_timer(struct iwn_softc *);
     void        iwn_tx_done(struct iwn_softc *, struct iwn_rx_desc *,
                 uint8_t, uint8_t, uint8_t, int, int, uint16_t);
     void        iwn_cmd_done(struct iwn_softc *, struct iwn_rx_desc *);

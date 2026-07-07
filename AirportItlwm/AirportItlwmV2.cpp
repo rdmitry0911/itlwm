@@ -10,7 +10,6 @@
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
-#include <sys/_netstat.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_var.h>
@@ -215,26 +214,6 @@ public:
 
         AirportItlwmIO80211PacketPool *pool =
             new AirportItlwmIO80211PacketPool;
-        XYLog("itlwm: PACKETPOOL[%s] new=0x%x_%x poolVtable=0x%x_%x "
-              "(size=%lu opts=0x%x_%x owner=0x%x_%x ownerVtable=0x%x_%x "
-              "pktCount=%u bufCount=%u bufSize=%u maxBPP=%u memSegSz=%u "
-              "poolFlags=0x%x type=%d)\n",
-              name ? name : "(null)",
-              ptrHi32(pool), ptrLo32(pool),
-              ptrHi32(pool ? *reinterpret_cast<void **>(pool) : nullptr),
-              ptrLo32(pool ? *reinterpret_cast<void **>(pool) : nullptr),
-              sizeof(AirportItlwmIO80211PacketPool),
-              ptrHi32(options), ptrLo32(options),
-              ptrHi32(owner), ptrLo32(owner),
-              ptrHi32(owner ? *reinterpret_cast<void **>(owner) : nullptr),
-              ptrLo32(owner ? *reinterpret_cast<void **>(owner) : nullptr),
-              options ? options->packetCount : 0,
-              options ? options->bufferCount : 0,
-              options ? options->bufferSize : 0,
-              options ? options->maxBuffersPerPacket : 0,
-              options ? options->memorySegmentSize : 0,
-              options ? options->poolFlags : 0,
-              (int)packetType);
         if (pool == nullptr) {
             XYLog("itlwm: PACKETPOOL[%s] FAIL: new returned NULL\n",
                   name ? name : "(null)");
@@ -244,14 +223,13 @@ public:
         }
 
         bool ok = pool->initWithName(name, owner, packetType, options);
+        if (ok)
+            return pool;
 
-        // Read every internal-state slot the framework's initWithName
-        // writes, in chronological order of the writes per its disasm.
-        // Each 64-bit pointer slot is split into hi/lo uint32_t halves
-        // (slotHi32 / slotLo32) to bypass os_log privacy redaction.
+        // Failure classification reads the internal-state slots that
+        // initWithName writes in chronological order of the KDK disasm.
+        // Each 64-bit pointer slot is split into hi/lo uint32_t halves.
         uint8_t *poolBytes = reinterpret_cast<uint8_t *>(pool);
-        uint32_t s_name_hi  = slotHi32(poolBytes, 0x98);  // OSString name (0x9c5f)
-        uint32_t s_name_lo  = slotLo32(poolBytes, 0x98);
         uint32_t s_thC_hi   = slotHi32(poolBytes, 0xb0);  // thread_call (0x9c7f)
         uint32_t s_thC_lo   = slotLo32(poolBytes, 0xb0);
         uint32_t s_seg_hi   = slotHi32(poolBytes, 0x78);  // SegmentStats (0x9c9b)
@@ -270,16 +248,11 @@ public:
         uint32_t s_a2_lo    = slotLo32(poolBytes, 0x60);
         uint32_t s_typeCache  =
             *reinterpret_cast<uint32_t *>(poolBytes + 0x3c);  // packetType cache (0x9cea)
-        uint32_t s_flagsCache =
-            *reinterpret_cast<uint32_t *>(poolBytes + 0x48);  // poolFlags cache (0x9cf6)
-        uint8_t  s_singleSeg  =
-            *reinterpret_cast<uint8_t *>(poolBytes + 0xb8);   // mSingleMemorySegment (0x9d60)
         uint8_t  s_disposed   =
             *reinterpret_cast<uint8_t *>(poolBytes + 0xba);   // mDisposed (0x9ef3)
 
         // Slot non-zero predicates: a 64-bit value is non-zero iff either
         // half is non-zero.
-        bool nz_name  = (s_name_hi  | s_name_lo)  != 0;
         bool nz_thC   = (s_thC_hi   | s_thC_lo)   != 0;
         bool nz_seg   = (s_seg_hi   | s_seg_lo)   != 0;
         bool nz_lk1   = (s_lk1_hi   | s_lk1_lo)   != 0;
@@ -288,38 +261,6 @@ public:
         bool nz_pbp   = (s_pbp_hi   | s_pbp_lo)   != 0;
         bool nz_a1    = (s_a1_hi    | s_a1_lo)    != 0;
         bool nz_a2    = (s_a2_hi    | s_a2_lo)    != 0;
-        (void)nz_name;
-
-        XYLog("itlwm: PACKETPOOL[%s] initWithName=%d (type=%d) slots: "
-              "name=0x%x_%x thCall=0x%x_%x segStats=0x%x_%x "
-              "lock1=0x%x_%x lock2=0x%x_%x owner=0x%x_%x "
-              "pbufpool=0x%x_%x arr1=0x%x_%x arr2=0x%x_%x "
-              "typeCache=%u flagsCache=0x%x singleSeg=%u disposed=%u\n",
-              name ? name : "(null)", ok ? 1 : 0, (int)packetType,
-              s_name_hi, s_name_lo,
-              s_thC_hi,  s_thC_lo,
-              s_seg_hi,  s_seg_lo,
-              s_lk1_hi,  s_lk1_lo,
-              s_lk2_hi,  s_lk2_lo,
-              s_own_hi,  s_own_lo,
-              s_pbp_hi,  s_pbp_lo,
-              s_a1_hi,   s_a1_lo,
-              s_a2_hi,   s_a2_lo,
-              s_typeCache, s_flagsCache,
-              (unsigned)s_singleSeg, (unsigned)s_disposed);
-
-        if (ok) {
-            XYLog("itlwm: PACKETPOOL[%s] FINAL branch=INIT_TRUE "
-                  "return=0x%x_%x pbufpool=0x%x_%x owner=0x%x_%x "
-                  "arr1=0x%x_%x arr2=0x%x_%x\n",
-                  name ? name : "(null)",
-                  ptrHi32(pool), ptrLo32(pool),
-                  s_pbp_hi, s_pbp_lo,
-                  s_own_hi, s_own_lo,
-                  s_a1_hi,  s_a1_lo,
-                  s_a2_hi,  s_a2_lo);
-            return pool;
-        }
 
         // Classify the framework-internal stage where initWithName gave
         // up. Stage labels follow the chronological order of the writes
@@ -366,9 +307,7 @@ public:
     }
 
     // CR-226 newPacket override. Mirrors the AppleBCMWLAN intermediate
-    // dispatch pattern (`newPacket` → `newPacketWithDescriptor`) and
-    // logs both ALLOC_NULL and OK terminal points using the CR-216
-    // split-halves redaction-bypass helpers.
+    // dispatch pattern (`newPacket` -> `newPacketWithDescriptor`).
     virtual IOReturn newPacket(IOSkywalkPacketDescriptor *desc,
                                IOSkywalkPacket **outPacket) override
     {
@@ -383,10 +322,6 @@ public:
             return kIOReturnNoMemory;
         }
         *outPacket = p;
-        XYLog("itlwm: NEWPACKET FINAL branch=OK "
-              "this=0x%x_%x packet=0x%x_%x\n",
-              ptrHi32(this), ptrLo32(this),
-              ptrHi32(p),    ptrLo32(p));
         return kIOReturnSuccess;
     }
 
@@ -1322,6 +1257,23 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
             // The local interface owner already supports both directions via
             // processApple80211Ioctl(...), so keep the selector symmetric here.
             return true;
+        case APPLE80211_IOC_BTCOEX_PROFILES:
+        case APPLE80211_IOC_BTCOEX_CONFIG:
+        case APPLE80211_IOC_BTCOEX_OPTIONS:
+        case APPLE80211_IOC_BTCOEX_MODE:
+            // The Tahoe wrappers keep the legacy BTCoex carriers behind the
+            // Skywalk interface gate. Route them into the local cached owner
+            // instead of falling through to the generic handlerless path.
+            return true;
+        case APPLE80211_IOC_TX_CHAIN_POWER:
+        case APPLE80211_IOC_CHAIN_ACK:
+        case APPLE80211_IOC_DESENSE:
+        case APPLE80211_IOC_DESENSE_LEVEL:
+            // These RF-control raw selectors are AppleBCMWLANCore-specific
+            // vtable carriers. The local port has no equivalent owner, but
+            // the recovered wrapper fail shape is still Apple80211-specific
+            // 0xe082280e rather than the generic handlerless 0x66 fallback.
+            return true;
         case APPLE80211_IOC_ASSOCIATE:
         case APPLE80211_IOC_DISASSOCIATE:
         case APPLE80211_IOC_AUTH_TYPE:
@@ -1359,19 +1311,6 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
         case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
         case APPLE80211_IOC_MIS_MAX_STA:
             return isSet;
-        default:
-            return false;
-    }
-}
-
-static bool isTahoeCurrentLinkProbeSelector(unsigned long cmd)
-{
-    switch (cmd) {
-        case APPLE80211_IOC_SSID:
-        case APPLE80211_IOC_BSSID:
-        case APPLE80211_IOC_SCAN_RESULT:
-        case APPLE80211_IOC_CURRENT_NETWORK:
-            return true;
         default:
             return false;
     }
@@ -1540,9 +1479,6 @@ static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
     payload.interfaceType = kTahoeWclInfraInterfaceType;
     payload.reasonCode = buildTahoeWclLinkReason(rawReason);
 
-    XYLog("DEBUG %s msg=0x%x bssid=%s linkState=%u interfaceType=%u reason=0x%x\n",
-          __FUNCTION__, kTahoeWclLinkChanged, ether_sprintf(payload.bssid),
-          payload.linkState, payload.interfaceType, payload.reasonCode);
     controller->postMessage(controller->fNetIf, kTahoeWclLinkChanged,
                             &payload, sizeof(payload), true);
     return true;
@@ -1569,333 +1505,18 @@ static bool buildTahoeWclConnectCompletePayload(
     return true;
 }
 
-// CR-230 DIAGNOSTIC_INSTRUMENTATION: log a per-byte hex dump of the
-// 0xa4-byte payload we ship to the IO80211 bulletin board so we can
-// verify the on-the-wire bytes match what the AppleBCMWLAN reference
-// (BootKC 0xffffff800158abce sendConnectComplete -> bulletin board
-// subscriber 0xffffff800220a9a2 connectCompleteEventHandler ->
-// 0xffffff8002232ab0 updateConnectCompleteEvent) reads from the same
-// payload offsets. Reference decomp:
-// analysis/cr230_applebcmwlan_sendConnectComplete_2026_04_29.txt.
-//
-// Also captures the postMessage return code to confirm whether the
-// framework accepted, queued, or rejected our event. CR-229 Stage 2
-// proved the next-layer blocker is `ENCAP_BR_PORT_NOT_VALID` because
-// `ni_port_valid` never flips to 1; airportd never issues
-// setCIPHER_KEY because it sees `isAssociated=0`. This event is the
-// only known driver→framework signal that should mark association
-// complete on Tahoe; if airportd isn't acting on it, we need to
-// know whether the issue is (a) wrong payload bytes, (b) the post
-// not reaching the WCL subscriber, or (c) something earlier in the
-// state machine gating. The diagnostic logs the payload + post
-// return value at the only producer site so we can attribute.
-// CR-232: safe payload hex dumper. CR-230's earlier version
-// unconditionally read p[row+0..15] before the trailing-row check,
-// which over-read the 0xa4-byte payload by 12 bytes on the final
-// row (row=0xa0 → reads p[0xa0..0xaf], but valid range is p[0..0xa3]).
-// CR-231 reviewer flagged this as a kernel-safety blocker. Every
-// dereference is now guarded by `idx < sizeof(*payload)`; OOB indices
-// pad with 0 in the format-arg list so the log line keeps a fixed
-// 16-byte-per-row visual structure.
-static void
-cr232LogPayloadHex(const apple80211_wcl_connect_complete_event *payload)
-{
-    const uint8_t *p = reinterpret_cast<const uint8_t *>(payload);
-    const size_t plen = sizeof(*payload);  // 0xa4
-    for (size_t row = 0; row < plen; row += 16) {
-        // Each byte is fetched safely: returns 0 if outside the valid
-        // [0..plen) range. The 16-arg format is preserved so the log
-        // line is always exactly 16 hex pairs.
-        #define BYTE_AT(off) (((row + (off)) < plen) ? p[row + (off)] : (uint8_t)0)
-        XYLog("DEBUG CR230_PAYLOAD off=0x%02zx %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
-              row,
-              BYTE_AT(0),  BYTE_AT(1),  BYTE_AT(2),  BYTE_AT(3),
-              BYTE_AT(4),  BYTE_AT(5),  BYTE_AT(6),  BYTE_AT(7),
-              BYTE_AT(8),  BYTE_AT(9),  BYTE_AT(10), BYTE_AT(11),
-              BYTE_AT(12), BYTE_AT(13), BYTE_AT(14), BYTE_AT(15));
-        #undef BYTE_AT
-    }
-}
-
-// CR-231 end-to-end branch coverage of the WCL connect-complete
-// hypothesis. Adds rate-limited log emitters at every checkpoint our
-// kext can observe between (a) producer entry and (b) airportd-facing
-// IOCTL responses. CR-230 covered branches 1-3 (producer state,
-// payload bytes, post markers); CR-231 adds:
-//   branch 4: every apple80211 IOCTL airportd polls — single log at
-//             processApple80211Ioctl entry with req_type + ic_state.
-//   branch 5: every postMessage call from kext — log msg-code + len
-//             + ic_state at the centralized postMessageGated and at
-//             each direct controller->postMessage() call site near
-//             LINK_UP / ASSOC events.
-//   branch 6: producer entry expansion — log fNetIf + ic_state +
-//             ic_bss + currentStatus + power_state at every entry
-//             into postTahoeWclConnectCompleteEvent.
-//   branch 7: IOREG state snapshot — log CoreWiFiDriverReadyKey and
-//             interface state once per LINK_UP event.
-// Each emitter has a per-site rate limit (16 emissions) to bound log
-// volume during a stalled handshake.
-#define CR231_LOG_LIMIT 16
-#define CR231_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr231_n; \
-    unsigned int _v = ++_cr231_n; \
-    if (_v <= CR231_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
-// CR-234/CR-235: per-site 32-cap logger for the getAssocState
-// reader/writer end-to-end probes. Distinct from CR231_LOG so the
-// rate-limit advertised in the request matches the binary.
-#define CR234_LOG_LIMIT 32
-#define CR234_LOG(fmt, ...) do { \
-    static volatile unsigned int _cr234_n; \
-    unsigned int _v = ++_cr234_n; \
-    if (_v <= CR234_LOG_LIMIT) { XYLog(fmt, ##__VA_ARGS__); } \
-} while (0)
-
-// CR-236: file-scope atomic counter from SkywalkInterface.cpp.
-// Incremented on every entry to our getAssocState override; read
-// here at d5_producer snapshots (capped at 32 events spanning the
-// connect window) so we get periodic samples of cumulative call
-// rate. Resolves the CR-235 deferred polling-frequency question.
-// extern "C" linkage avoids name-mangling mismatch from the
-// surrounding anonymous namespace.
-extern "C" volatile uint64_t cr236GetAssocStateCount;
-
-// CR-237: end-to-end uncapped counters for every potential PSK/PMK
-// delivery channel. Snapshot of all 12 counters at d5_producer below
-// gives a timeline-correlated dump of which channels are firing
-// during the connect window (and which are silent).
-extern "C" volatile uint64_t cr237_setCipherKey_count;
-extern "C" volatile uint64_t cr237_setPTK_count;
-extern "C" volatile uint64_t cr237_setGTK_count;
-extern "C" volatile uint64_t cr237_setRSN_IE_count;
-extern "C" volatile uint64_t cr237_setAUTH_TYPE_count;
-extern "C" volatile uint64_t cr237_setWCL_ASSOCIATE_count;
-extern "C" volatile uint64_t cr237_setWCL_LINK_UP_DONE_count;
-extern "C" volatile uint64_t cr237_setWCL_REASSOC_count;
-extern "C" volatile uint64_t cr237_setWCL_LINK_STATE_UPDATE_count;
-extern "C" volatile uint64_t cr237_processApple80211Ioctl_count;
-extern "C" volatile uint64_t cr237_processBSDCommand_count;
-extern "C" volatile uint64_t cr237_associateSSID_count;
-extern "C" volatile uint64_t cr237_eapol_rx_count;
-
-// CR-258: extended PMK-delivery instrumentation. See SkywalkInterface.cpp
-// for declarations and payload-shape detection rationale. Snapshot at
-// d5_producer dumps the per-channel counters AND the non-zero entries
-// of the per-opcode array, so we see exactly which Apple80211 opcodes
-// fire on Tahoe and which set* methods are reached. Branch D (IORegistry
-// setProperty / non-EAPOL inputPacket / WCLJoinRequest accessor) is OUT
-// OF SCOPE for this CR; no Branch D counters are declared or snapshotted.
-extern "C" volatile uint64_t cr257_setASSOCIATE_count;
-extern "C" volatile uint64_t cr257_setIE_count;
-extern "C" volatile uint64_t cr257_setRSN_XE_count;
-extern "C" volatile uint64_t cr257_setSET_PROPERTY_count;
-extern "C" volatile uint64_t cr257_setCLEAR_PMKSA_CACHE_count;
-extern "C" volatile uint64_t cr257_setWCL_TRIGGER_CC_count;
-extern "C" volatile uint64_t cr257_setWCL_SCAN_REQ_count;
-extern "C" volatile uint64_t cr257_setWCL_LEAVE_NETWORK_count;
-extern "C" volatile uint64_t cr257_setWCL_SCAN_ABORT_count;
-extern "C" volatile uint64_t cr257_setWCL_SET_ROAM_LOCK_count;
-extern "C" volatile uint64_t cr257_setWCL_UPDATE_FAST_LANE_count;
-extern "C" volatile uint64_t cr257_setWCL_REAL_TIME_MODE_count;
-extern "C" volatile uint64_t cr257_setWCL_ACTION_FRAME_count;
-extern "C" volatile uint64_t cr257_setWCL_ROAM_USER_CACHE_count;
-extern "C" volatile uint64_t cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count;
-extern "C" volatile uint64_t cr257_setWCL_ROAM_PROFILE_CONFIG_count;
-extern "C" volatile uint64_t cr257_setWCL_ARP_MODE_count;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_NETWORK_count;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BGSCAN_count;
-extern "C" volatile uint64_t cr257_setWCL_CONFIG_BG_PARAMS_count;
-extern "C" volatile uint64_t cr257_setWCL_JOIN_ABORT_count;
-extern "C" volatile uint64_t cr257_setWCL_QOS_PARAMS_count;
-extern "C" volatile uint64_t cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count;
-extern "C" volatile uint64_t cr257_setWCL_ULOFDMA_STATE_count;
-extern "C" volatile uint64_t cr257_setWCL_LIMITED_AGGREGATION_count;
-extern "C" volatile uint64_t cr257_setWCL_BCN_MUTE_CONFIG_count;
-extern "C" volatile uint64_t cr257_setWCL_ASSOCIATED_SLEEP_count;
-extern "C" volatile uint64_t cr257_setWCL_SOI_CONFIG_count;
-extern "C" volatile uint64_t cr257_setWCL_WNM_OPS_count;
-extern "C" volatile uint64_t cr257_setWCL_WNM_OFFLOAD_count;
-extern "C" volatile uint64_t cr257_apple80211_ioctl_per_op[320];
-
 static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
         return false;
 
-    // CR-231 BRANCH 6: producer entry-state expansion.
-    // Captures all fields that gate buildTahoeWclConnectCompletePayload
-    // and the upstream LinkState/RUN preconditions, so Stage 2 evidence
-    // can attribute "post fired but framework state wrong" vs. "post
-    // skipped because of state".
-    {
-        struct ieee80211com *ic = (controller->fHalService != nullptr)
-            ? controller->fHalService->get80211Controller() : nullptr;
-        const uint8_t *bssid = (ic && ic->ic_bss) ? ic->ic_bss->ni_bssid : nullptr;
-        CR231_LOG("DEBUG CR231_PRODUCER_STATE fNetIf=%d ic=%d ic_state=%d ic_bss=%d "
-                  "ic_flags=0x%x bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                  controller->fNetIf != nullptr ? 1 : 0,
-                  ic != nullptr ? 1 : 0,
-                  ic ? (int)ic->ic_state : -1,
-                  ic && ic->ic_bss ? 1 : 0,
-                  ic ? (unsigned)ic->ic_flags : 0,
-                  bssid ? bssid[0] : 0, bssid ? bssid[1] : 0,
-                  bssid ? bssid[2] : 0, bssid ? bssid[3] : 0,
-                  bssid ? bssid[4] : 0, bssid ? bssid[5] : 0);
-    }
-
     apple80211_wcl_connect_complete_event payload;
     if (!buildTahoeWclConnectCompletePayload(controller, &payload))
         return false;
 
-    XYLog("DEBUG %s msg=0x%x len=0x%zx status=%u reason=%u bssid=%s\n",
-          __FUNCTION__, APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
-          sizeof(payload), payload.status, payload.reason,
-          ether_sprintf(payload.records[0].bssid));
-    // CR-232: dump the actual payload bytes the framework will read.
-    // (CR-230's unsafe original was replaced after the CR-231 reviewer
-    //  flagged out-of-bounds reads on the final row.)
-    cr232LogPayloadHex(&payload);
-    // CR-231 BRANCH 7: IOREG state snapshot at LINK_UP post site.
-    {
-        OSObject *prop = controller->fNetIf
-            ? controller->fNetIf->getProperty("CoreWiFiDriverReadyKey")
-            : nullptr;
-        OSString *propStr = OSDynamicCast(OSString, prop);
-        const char *propVal = propStr ? propStr->getCStringNoCopy() : "<missing>";
-        CR231_LOG("DEBUG CR231_IOREG_STATE CoreWiFiDriverReadyKey=%s fNetIf=%d\n",
-                  propVal, controller->fNetIf != nullptr ? 1 : 0);
-    }
-    // CR-234 BRANCH E: dump BOTH reader bytes + identity check at d5
-    // producer entry. i120_88 is what IO80211SkywalkInterface::
-    // getAssocState reads; i128_180 is what IO80211InfraInterface::
-    // getAssocState reads. i128_198/19c are the bssid bytes the
-    // framework's setCurrentApAddress writes — comparing to the
-    // bssid we passed proves the inner pointer at this+0x128 matches
-    // the framework's view.
-    {
-        const void *thisPtr = controller->fNetIf;
-        if (thisPtr != nullptr) {
-            const char *base = reinterpret_cast<const char *>(thisPtr);
-            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
-            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
-            uint8_t b120_88 = (i120 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
-            uint8_t b128_180 = (i128 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
-            uint32_t b128_198 = (i128 != nullptr)
-                ? *(reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(i128) + 0x198)) : 0;
-            uint16_t b128_19c = (i128 != nullptr)
-                ? *(reinterpret_cast<const uint16_t *>(reinterpret_cast<const uint8_t *>(i128) + 0x19c)) : 0;
-            CR234_LOG("DEBUG CR234_INNER d5_producer thisPtr=%p i120=%p i128=%p "
-                      "i120_88=0x%02x i128_180=0x%02x i128_198=0x%08x i128_19c=0x%04x\n",
-                      thisPtr, i120, i128,
-                      (unsigned)b120_88, (unsigned)b128_180,
-                      (unsigned)b128_198, (unsigned)b128_19c);
-            // CR-236: snapshot of uncapped getAssocState counter.
-            // Resolves CR-235 deferred polling-frequency question.
-            CR234_LOG("DEBUG CR236_POLL d5_producer getAssocState_count=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr236GetAssocStateCount,
-                                                         __ATOMIC_RELAXED));
-            // CR-237: snapshot of all 12 PSK-delivery channel counters.
-            // End-to-end coverage per feedback_diagnostic_end_to_end_criterion:
-            //   - H1 BSD-ioctl path : bsdcmd / ioctl / setCipherKey
-            //   - H2 WCL channels   : wclAssoc / wclLinkUpDone / wclReassoc
-            //   - H3 Pre-associate  : setRSN_IE / setAUTH_TYPE
-            //   - H4 Key install    : setPTK / setGTK
-            //   - H5 Convergence    : associateSSID
-            //   - H6 EAPOL RX       : eapolRX
-            CR234_LOG("DEBUG CR237_POLL d5_producer "
-                      "cipherKey=%llu PTK=%llu GTK=%llu RSN_IE=%llu AUTH_TYPE=%llu "
-                      "wclAssoc=%llu wclLinkUp=%llu wclReassoc=%llu wclLSU=%llu "
-                      "ioctl=%llu bsdcmd=%llu assocSSID=%llu eapolRX=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr237_setCipherKey_count,            __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setPTK_count,                  __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setGTK_count,                  __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setRSN_IE_count,               __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setAUTH_TYPE_count,            __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setWCL_ASSOCIATE_count,        __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setWCL_LINK_UP_DONE_count,     __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setWCL_REASSOC_count,          __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_setWCL_LINK_STATE_UPDATE_count,__ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_processApple80211Ioctl_count,  __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_processBSDCommand_count,       __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_associateSSID_count,           __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr237_eapol_rx_count,                __ATOMIC_RELAXED));
-            // CR-257: extended snapshot covering Tier-1 candidates
-            // (legacy direct PMK carriers + IE channels) and all
-            // uninstrumented setWCL_* methods.
-            CR234_LOG("DEBUG CR257_POLL_TIER1 d5_producer "
-                      "setASSOC=%llu setIE=%llu setRSN_XE=%llu "
-                      "setSET_PROP=%llu setCLEAR_PMKSA=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr257_setASSOCIATE_count,            __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setIE_count,                   __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setRSN_XE_count,               __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setSET_PROPERTY_count,         __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setCLEAR_PMKSA_CACHE_count,    __ATOMIC_RELAXED));
-            CR234_LOG("DEBUG CR257_POLL_WCL_A d5_producer "
-                      "TRIG_CC=%llu SCAN_REQ=%llu LEAVE_NET=%llu SCAN_ABORT=%llu "
-                      "ROAM_LOCK=%llu FAST_LANE=%llu RT_MODE=%llu ACT_FR=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_TRIGGER_CC_count,                __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SCAN_REQ_count,                  __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LEAVE_NETWORK_count,             __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SCAN_ABORT_count,                __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SET_ROAM_LOCK_count,             __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_UPDATE_FAST_LANE_count,          __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_REAL_TIME_MODE_count,            __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ACTION_FRAME_count,              __ATOMIC_RELAXED));
-            CR234_LOG("DEBUG CR257_POLL_WCL_B d5_producer "
-                      "ROAM_UC=%llu LEG_RPC=%llu RPC=%llu ARP=%llu "
-                      "BG_MP=%llu BG_NET=%llu BGSCAN=%llu BG_PRM=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ROAM_USER_CACHE_count,           __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LEGACY_ROAM_PROFILE_CONFIG_count,__ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ROAM_PROFILE_CONFIG_count,       __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ARP_MODE_count,                  __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_MOTIONPROFILE_count,   __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_NETWORK_count,         __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BGSCAN_count,             __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_CONFIG_BG_PARAMS_count,          __ATOMIC_RELAXED));
-            CR234_LOG("DEBUG CR257_POLL_WCL_C d5_producer "
-                      "JOIN_ABT=%llu QOS=%llu HAW_TIME=%llu ULOFDMA=%llu "
-                      "LIM_AGG=%llu BCN_MUTE=%llu ASSOC_SLP=%llu SOI=%llu "
-                      "WNM_OPS=%llu WNM_OFF=%llu\n",
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_JOIN_ABORT_count,                __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_QOS_PARAMS_count,                __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SET_SCAN_HOME_AWAY_TIME_count,   __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ULOFDMA_STATE_count,             __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_LIMITED_AGGREGATION_count,       __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_BCN_MUTE_CONFIG_count,           __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_ASSOCIATED_SLEEP_count,          __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_SOI_CONFIG_count,                __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_WNM_OPS_count,                   __ATOMIC_RELAXED),
-                      (unsigned long long)__atomic_load_n(&cr257_setWCL_WNM_OFFLOAD_count,               __ATOMIC_RELAXED));
-            // Dump non-zero entries of per-opcode counter array. Bounded
-            // emission per d5 fire so logs don't explode if airportd
-            // hammers many opcodes.
-            {
-                int nz_emitted = 0;
-                for (int op = 0;
-                     op < (int)(sizeof(cr257_apple80211_ioctl_per_op) /
-                                sizeof(cr257_apple80211_ioctl_per_op[0]));
-                     op++) {
-                    uint64_t v = __atomic_load_n(&cr257_apple80211_ioctl_per_op[op],
-                                                 __ATOMIC_RELAXED);
-                    if (v == 0) continue;
-                    CR234_LOG("DEBUG CR257_POLL_OP d5_producer op=%d count=%llu\n",
-                              op, (unsigned long long)v);
-                    if (++nz_emitted >= 24) break;  // bound per-fire
-                }
-            }
-        }
-    }
-    XYLog("DEBUG CR230_POST_PRE msg=0x%x size=0x%zx\n",
-          APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT, sizeof(payload));
     controller->postMessage(controller->fNetIf,
                             APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
                             &payload, sizeof(payload), true);
-    XYLog("DEBUG CR230_POST_DONE msg=0x%x\n",
-          APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT);
     return true;
 }
 
@@ -1931,8 +1552,6 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
         controller->fNetIf->setProperty(key, value);
     OSSafeReleaseNULL(value);
     OSSafeReleaseNULL(key);
-    XYLog("DEBUG %s ready=%d fNetIf=%p\n", __FUNCTION__, ready ? 1 : 0,
-          controller->fNetIf);
 }
 
 static void
@@ -1975,9 +1594,6 @@ postTahoeDriverAvailableBulletin(AirportItlwm *controller, bool ready)
 
     controller->postMessage(controller->fNetIf, APPLE80211_M_DRIVER_AVAILABLE,
                             &data, sizeof(data), true);
-    XYLog("DEBUG %s ready=%d len=0x%zx available=%llu fNetIf=%p\n",
-          __FUNCTION__, ready ? 1 : 0, sizeof(data), data.avaliable,
-          controller->fNetIf);
 }
 
 static void
@@ -2001,12 +1617,14 @@ applyTahoeInterfaceReadyEdge(AirportItlwm *controller, bool ready)
     // IOSkywalkNetworkInterface slots.
     if (ready) {
         SInt32 ret = controller->fNetIf->setInterfaceEnable(true);
-        XYLog("DEBUG %s ready-edge ret=0x%x fNetIf=%p\n",
-              __FUNCTION__, ret, controller->fNetIf);
+        if (ret != kIOReturnSuccess)
+            XYLog("DEBUG %s FAIL: ready-edge ret=0x%x fNetIf=%p\n",
+                  __FUNCTION__, ret, controller->fNetIf);
     } else {
         IOReturn ret = controller->fNetIf->interfaceAdvisoryEnable(false);
-        XYLog("DEBUG %s advisory-edge ret=0x%x fNetIf=%p\n",
-              __FUNCTION__, ret, controller->fNetIf);
+        if (ret != kIOReturnSuccess)
+            XYLog("DEBUG %s FAIL: advisory-edge ret=0x%x fNetIf=%p\n",
+                  __FUNCTION__, ret, controller->fNetIf);
     }
 }
 
@@ -2016,28 +1634,6 @@ publishTahoeDriverReadyState(AirportItlwm *controller, bool ready)
     applyTahoeInterfaceReadyEdge(controller, ready);
     setCoreWiFiDriverReadyProperty(controller, ready);
     postTahoeDriverAvailableBulletin(controller, ready);
-}
-
-static void
-logTahoeSkywalkLinkCarrier(const char *tag, IO80211SkywalkInterface *interface)
-{
-    if (interface == nullptr) {
-        XYLog("DEBUG %s fNetIf=(null)\n", tag);
-        return;
-    }
-
-    uint8_t *raw = reinterpret_cast<uint8_t *>(interface);
-    void *expansion = *reinterpret_cast<void **>(raw + 0xC0);
-    uint32_t speed = 0;
-    uint32_t linkStatus = 0xffffffffU;
-    if (expansion != nullptr) {
-        uint8_t *ed = reinterpret_cast<uint8_t *>(expansion);
-        speed = *reinterpret_cast<uint32_t *>(ed + 0x30);
-        linkStatus = *reinterpret_cast<uint32_t *>(ed + 0x38);
-    }
-
-    XYLog("DEBUG %s fNetIf=%p expansion=%p speed=0x%x linkStatus=0x%x bsdIf=%p\n",
-          tag, interface, expansion, speed, linkStatus, interface->getBSDInterface());
 }
 
 // Apple's bootChipImage is triggered asynchronously by AppleBCMWLANUserClient.
@@ -2054,7 +1650,6 @@ static void
 handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 {
     AirportItlwm *self = (AirportItlwm *)param0;
-    XYLog("DEBUG %s entry\n", __FUNCTION__);
     IOCommandGate *gate = self->getCommandGate();
     if (gate) {
         gate->runAction(performTahoeBootChipImageGated);
@@ -2063,21 +1658,12 @@ handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 
 void AirportItlwm::performTahoeBootChipImage()
 {
-    XYLog("DEBUG %s entry power_state=%u\n", __FUNCTION__, power_state);
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     power_state = kWiFiPowerOn;
-    XYLog("DEBUG %s enabling adapter, power_state=%u\n", __FUNCTION__, power_state);
     enableAdapter(NULL);
-    {
-        struct ieee80211com *ic_dbg = fHalService->get80211Controller();
-        struct _ifnet *ifp_dbg = &ic_dbg->ic_ac.ac_if;
-        XYLog("DEBUG %s post-enable: ic_state=%d if_flags=0x%x\n",
-              __FUNCTION__, ic_dbg->ic_state, ifp_dbg->if_flags);
-    }
     publishTahoeDriverReadyState(this, true);
-    XYLog("DEBUG %s readiness published\n", __FUNCTION__);
 }
 
 bool AirportItlwmBootNub::start(IOService *provider)
@@ -2091,10 +1677,8 @@ bool AirportItlwmBootNub::start(IOService *provider)
     // Apple's AppleBCMWLANUserClient triggers bootChipImage after IOKit
     // matches it against the controller.  This nub replicates that pattern:
     // IOKit matched us against AirportItlwm, now trigger the async boot.
-    if (controller->tahoeBootThreadCall) {
-        XYLog("AirportItlwmBootNub: triggering async boot\n");
+    if (controller->tahoeBootThreadCall)
         thread_call_enter(controller->tahoeBootThreadCall);
-    }
     return true;
 }
 
@@ -2329,7 +1913,6 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
         }
         bool txEapol = airportItlwmEthernetBufferIsEapol(
             static_cast<const uint8_t *>(objAddr) + dataOff, dataLen);
-
         // Allocate an mbuf with packet header and copy the Ethernet frame
         mbuf_t m = NULL;
         if (mbuf_allocpacket(MBUF_DONTWAIT, dataLen, NULL, &m) != 0) {
@@ -2384,9 +1967,6 @@ skywalkTxAction(OSObject *owner, IOSkywalkTxSubmissionQueue *queue,
                   "0x%x pending=%u\n",
                   ret, that->fTxCompletionPendingCount);
     }
-    if (sRT.txCbCnt <= 3 && count > 0)
-        XYLog("skywalkTxAction: count=%u consumed=%u delivered=%u (total tx=%u)\n",
-              count, consumed, delivered, sRT.txPktSent);
     return consumed;
 }
 
@@ -2551,7 +2131,6 @@ skywalkRxAction(OSObject *owner, IOSkywalkRxCompletionQueue *queue,
 
         ether_header *eh = reinterpret_cast<ether_header *>(
             static_cast<uint8_t *>(base) + dataOffset);
-
         IOReturn ret = that->fNetIf->inputPacket(
             reinterpret_cast<IO80211NetworkPacket *>(pkt),
             &tag,
@@ -2790,9 +2369,6 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 
 void AirportItlwm::releaseAll()
 {
-    XYLog("DEBUG %s [1] logStream=%p(rc=%d) logPipe=%p dataPath=%p snapshots=%p faultReporter=%p\n",
-          __FUNCTION__, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1,
-          driverLogPipe, driverDataPathPipe, driverSnapshotsPipe, driverFaultReporter);
 #if __IO80211_TARGET >= __MAC_26_0
     // Wake any helper currently blocked in waitAssocTarget so the
     // user client thread can return kIOReturnAborted instead of
@@ -2802,7 +2378,7 @@ void AirportItlwm::releaseAll()
     // zeros ic_psk and drops IEEE80211_F_PSK / ic_external_pmk_owner
     // so a PLTI DeliverPMK racing teardown cannot reinstall a stale
     // PMK after the controller is on its way down.
-    cancelPendingAssocTarget("releaseAll");
+    cancelPendingAssocTarget("releaseAll", true);
 #endif
 
     // CRITICAL: Stop all timers FIRST, before releasing fHalService.
@@ -2812,8 +2388,6 @@ void AirportItlwm::releaseAll()
     // ic_ac.ac_if→if_watchdog dereferences freed memory → panic14
     // (RIP=0x0 via IOTimerEventSource::timeoutSignaled).
     if (fWatchdogWorkLoop && watchdogTimer) {
-        XYLog("DEBUG %s [1a] stopping watchdogTimer=%p on fWatchdogWorkLoop=%p\n",
-              __FUNCTION__, watchdogTimer, fWatchdogWorkLoop);
         watchdogTimer->cancelTimeout();
         watchdogTimer->disable();
         fWatchdogWorkLoop->removeEventSource(watchdogTimer);
@@ -2823,7 +2397,6 @@ void AirportItlwm::releaseAll()
         fWatchdogWorkLoop = NULL;
     }
     if (_fWorkloop && scanSource) {
-        XYLog("DEBUG %s [1b] stopping scanSource=%p\n", __FUNCTION__, scanSource);
         scanSource->cancelTimeout();
         scanSource->disable();
         _fWorkloop->removeEventSource(scanSource);
@@ -2902,24 +2475,19 @@ void AirportItlwm::releaseAll()
         fAPSTAOwner = NULL;
     }
     if (fHalService) {
-        XYLog("DEBUG %s [2] releasing fHalService=%p\n", __FUNCTION__, fHalService);
         fHalService->release();
         fHalService = NULL;
     }
     if (_fWorkloop) {
         if (_fCommandGate) {
-            XYLog("DEBUG %s [3] removing _fCommandGate=%p from _fWorkloop=%p\n", __FUNCTION__, _fCommandGate, _fWorkloop);
             _fWorkloop->removeEventSource(_fCommandGate);
             _fCommandGate->release();
             _fCommandGate = NULL;
         }
-        XYLog("DEBUG %s [6] releasing _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
         _fWorkloop->release();
         _fWorkloop = NULL;
     }
-    XYLog("DEBUG %s [7] unregistPM\n", __FUNCTION__);
     unregistPM();
-    XYLog("DEBUG %s DONE\n", __FUNCTION__);
 }
 
 IOReturn AirportItlwm::
@@ -2936,18 +2504,6 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
     }
     UInt32 msg = (UInt32)(uintptr_t)arg0;
     sRT.lastPostMsg = msg;
-    // CR-231 BRANCH 5: log every event posted through the centralized
-    // workloop dispatcher. Captures msg-code + data-len + ic_state at
-    // post time so Stage 2 evidence can correlate which events the
-    // framework saw between LINK_UP and the airportd `isAssociated=0`
-    // observation.
-    {
-        struct ieee80211com *ic = (that->fHalService != nullptr)
-            ? that->fHalService->get80211Controller() : nullptr;
-        unsigned int dataLen = (unsigned int)(uintptr_t)arg2;
-        CR231_LOG("DEBUG CR231_POST_GATED msg=0x%x len=0x%x ic_state=%d\n",
-                  msg, dataLen, ic ? (int)ic->ic_state : -1);
-    }
     // Use controller-level postMessage — routes through IO80211Controller
     // dispatch (like Apple's postMessageInfra), NOT through
     // IO80211InfraInterface::postMessage which calls
@@ -2970,15 +2526,6 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
      *   mov rax,[rdi+0x120]; mov rdi,[rax+0xb10]; jmp [vtable+0x120]
      * See decompile: FUN_ffffff80022772b2 (postMessageInternal)
      */
-    uint8_t *ctrlBase = (uint8_t *)that;
-    void *ctrlExpansion = *(void **)(ctrlBase + 0x120);
-    void *postOffice = ctrlExpansion ? *(void **)((uint8_t *)ctrlExpansion + 0xb10) : NULL;
-    uint8_t *ifBase = (uint8_t *)that->fNetIf;
-    void *ifExpansion = *(void **)(ifBase + 0x120);
-    void *glueObj = ifExpansion ? *(void **)((uint8_t *)ifExpansion + 0xd8) : NULL;
-    XYLog("DEBUG %s msg=%u fNetIf=%p postOffice=%p ifExpansion=%p glue=%p dataLen=%u\n",
-          __FUNCTION__, msg, that->fNetIf, postOffice, ifExpansion, glueObj,
-          (unsigned int)(uintptr_t)arg2);
     that->postMessage(that->fNetIf, msg, arg1, (unsigned int)(uintptr_t)arg2, true);
     RT_SET(5);
     return kIOReturnSuccess;
@@ -3000,7 +2547,6 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
 
     TahoeWclScanResultPayload payload;
     uint32_t payloadLen = 0;
-    uint32_t posted = 0;
 
     struct ieee80211_node *ni;
     RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
@@ -3008,14 +2554,11 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
             continue;
         that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_RESULT,
                           &payload, payloadLen, true);
-        posted++;
     }
 
     UInt32 status = 0;
     that->postMessage(that->fNetIf, APPLE80211_M_WCL_SCAN_DONE,
                       &status, sizeof(status), true);
-    XYLog("DEBUG %s posted scanResults=%u scanDone=1 nodes=%u\n",
-          __FUNCTION__, posted, ic->ic_nnodes);
     return kIOReturnSuccess;
 }
 
@@ -3028,8 +2571,6 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     sRT.lastEvtCode = msgCode;
     sRT.ic_state = ic->ic_state;
     sRT.if_flags = ic->ic_ac.ac_if.if_flags;
-    XYLog("DEBUG %s msgCode=%d ic_state=%d if_flags=0x%x power_state=%u\n",
-          __FUNCTION__, msgCode, ic->ic_state, ic->ic_ac.ac_if.if_flags, that->power_state);
     if (!that || !that->fNetIf) {
         XYLog("DEBUG %s SKIP: interface=NULL\n", __FUNCTION__);
         return;
@@ -3048,13 +2589,29 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         case IEEE80211_EVT_STA_ASSOC_DONE:
             RT_SET(2);
 #if __IO80211_TARGET >= __MAC_26_0
-            XYLog("DEBUG %s Tahoe: skip legacy zero-payload ASSOC_DONE; WCL JoinDone owns assoc completion\n",
-                  __FUNCTION__);
             return;
 #else
             apple80211Msg = APPLE80211_M_ASSOC_DONE;
             break;
 #endif
+        case IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE:
+            RT_SET(2);
+            // The in-kernel PAE completed the 4-way handshake (PTK+GTK
+            // installed, 802.1X port opened). On the macOS-supplicant path
+            // setCIPHER_KEY posts these on GTK install; the kernel-PAE path
+            // never calls setCIPHER_KEY, so publish them here or wifid's WCL
+            // join state machine times out and fires setWCL_JOIN_ABORT even
+            // though the handshake succeeded on air. All routes below use the
+            // gate-safe controller->postMessage (PostOffice) dispatch, which is
+            // safe to invoke in-gate (unlike IO80211InfraInterface::setLinkState).
+            that->getCommandGate()->runAction(postMessageGated,
+                (void *)(uintptr_t)APPLE80211_M_RSN_HANDSHAKE_DONE, NULL,
+                (void *)(uintptr_t)0);
+#if __IO80211_TARGET >= __MAC_26_0
+            postTahoeWclLinkUpInd(that, 0);
+            postTahoeWclConnectCompleteEvent(that);
+#endif
+            return;
         case IEEE80211_EVT_STA_DEAUTH:
             RT_SET(3);
             apple80211Msg = APPLE80211_M_DEAUTH_RECEIVED;
@@ -3137,15 +2694,12 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     // ic_tree without the command gate is a data race — panic13 CR2=0xc800000000.
     // Reading a single int is safe without locking.
     sRT.nodeCount = (uint32_t)ic->ic_nnodes;
-    static int wd_count = 0;
-    static int wd_last_state = -1;
-    wd_count++;
-    if (wd_count <= 30 || wd_count % 10 == 0 || ic->ic_state != wd_last_state) {
-        XYLog("DEBUG %s [%d] ic_state=%d if_flags=0x%x power_state=%u pmPowerState=%u link=0x%x\n",
-              __FUNCTION__, wd_count, ic->ic_state, ifp->if_flags, power_state, pmPowerState, currentStatus);
-        wd_last_state = ic->ic_state;
-    }
     airportItlwmRegDiagPoll(this);
+#if __IO80211_TARGET >= __MAC_26_0
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL && fNetIf != NULL) {
+        ((AirportItlwmSkywalkInterface *)fNetIf)->postLqmUpdateBulletin();
+    }
+#endif
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
 }
@@ -3155,7 +2709,6 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
     RT_SET(13);
     sRT.scanCount++;
     AirportItlwm *that = (AirportItlwm *)owner;
-    struct ieee80211com *ic = that->fHalService->get80211Controller();
     /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
     that->fNextNodeToSend = NULL;
     that->fScanResultWrapping = false;
@@ -3172,9 +2725,6 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
      * node cache, seed the primary 20 MHz chanSpec, let IO80211 parse the raw
      * HT/VHT/HE operation IEs, then post the real WCL completion bulletin.
      */
-    XYLog("DEBUG %s ic_state=%d nodes=%u posting WCL_SCAN_RESULT (0xC9) + WCL_SCAN_DONE (0xED)\n",
-          __FUNCTION__, ic->ic_state, ic->ic_nnodes);
-
     if (that->getCommandGate() != nullptr) {
         that->getCommandGate()->runAction(postWclScanResultsGated,
             nullptr, nullptr, nullptr, nullptr);
@@ -3233,19 +2783,11 @@ bool AirportItlwm::init(OSDictionary *properties)
         ret = false;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
     RT_SET(15);
-    XYLog("DEBUG %s power_state=%u ret=%d\n", __FUNCTION__, power_state, ret);
     return ret;
 }
 
 IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 {
-    XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
-
-    int delay_secs = 0;
-    if (PE_parse_boot_argn("itlwm_delay", &delay_secs, sizeof(delay_secs)) && delay_secs > 0) {
-        XYLog("DEBUG %s itlwm_delay=%d — pausing before probe...\n", __FUNCTION__, delay_secs);
-        IOSleep(delay_secs * 1000);
-    }
     IOPCIEDeviceWrapper *wrapper = OSDynamicCast(IOPCIEDeviceWrapper, provider);
     if (!wrapper) {
         XYLog("DEBUG %s FAIL: Not a IOPCIEDeviceWrapper instance\n", __FUNCTION__);
@@ -3257,7 +2799,6 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
         XYLog("DEBUG %s FAIL: pciNub=%p fHalService=%p\n", __FUNCTION__, pciNub, fHalService);
         return NULL;
     }
-    XYLog("DEBUG %s OK: pciNub=%p fHalService=%p — calling super::probe (IO80211Controller)\n", __FUNCTION__, pciNub, fHalService);
 
     // Panic timer: catch hangs inside IO80211Controller::probe()
     // Captures global rtMask + key pointers so one crash report is enough.
@@ -3295,7 +2836,6 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
     sPD.returned = true;
     thread_call_cancel(probeTimer);
     thread_call_free(probeTimer);
-    XYLog("DEBUG %s super::probe returned %p\n", __FUNCTION__, result);
     return result;
 }
 
@@ -3442,13 +2982,6 @@ initCCLogs()
         && driverFaultReporter && io80211FaultReporter;
     if (ok) CC_SET(10);
 
-    XYLog("%s mask=0x%03x | logPipe=%p dataPath=%p snap=%p "
-          "faultStream=%p ds=%p wl=%p ccfr=%p io80211fr=%p logStream=%p\n",
-          __FUNCTION__, sCCDiag.mask,
-          sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
-          sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
-          sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream);
-
     if (!ok) {
         panic("AirportItlwm::initCCLogs FAILED  ccMask=0x%03x rtMask=0x%07x rt2=0x%04x | "
               "pci=%p logPipe=%p dataPath=%p snap=%p "
@@ -3468,18 +3001,6 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
-    XYLog("AirportItlwm build=" ITLWM_XSTR(ITLWM_COMMIT_HASH) " entry provider=%p\n",
-          provider);
-
-    // boot-arg "itlwm_delay=N" — pause N seconds so verbose boot output
-    // stays on screen long enough to read/photograph.
-    int delay_secs = 0;
-    if (PE_parse_boot_argn("itlwm_delay", &delay_secs, sizeof(delay_secs)) && delay_secs > 0) {
-        XYLog("DEBUG %s itlwm_delay=%d — pausing to let you read the screen...\n", __FUNCTION__, delay_secs);
-        IOSleep(delay_secs * 1000);
-        XYLog("DEBUG %s delay done, continuing\n", __FUNCTION__);
-    }
-
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
     int boot_value = 0;
 
@@ -3587,7 +3108,6 @@ bool AirportItlwm::start(IOService *provider)
     uint64_t panicDeadline;
     clock_interval_to_deadline(60, kSecondScale, &panicDeadline);
     thread_call_enter_delayed(panicTimer, panicDeadline);
-    XYLog("DEBUG %s panic timer armed (60s)\n", __FUNCTION__);
 #define SD_SET(bit) do { sDiag.mask |= (1u << (bit)); } while(0)
 #define DISARM_PANIC_TIMER() do { SD_SET(17); thread_call_cancel(panicTimer); thread_call_free(panicTimer); } while(0)
 
@@ -3595,7 +3115,6 @@ bool AirportItlwm::start(IOService *provider)
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     setProperty("DriverKitDriver", kOSBooleanFalse);
 #if __IO80211_TARGET >= __MAC_26_0
-    XYLog("DEBUG %s [STEP 1] initCCLogs (Tahoe path)\n", __FUNCTION__);
     SD_SET(0); // initCCLogs entered
     if (!initCCLogs()) {
         XYLog("DEBUG %s [STEP 1] FAIL: CCLog init\n", __FUNCTION__);
@@ -3609,8 +3128,6 @@ bool AirportItlwm::start(IOService *provider)
     if (io80211FaultReporter) SD_SET(3);
     sDiag.step = 1;
 #endif
-    XYLog("DEBUG %s [STEP 2] super::start (logStream=%p faultRep=%p)\n",
-          __FUNCTION__, driverLogStream, io80211FaultReporter);
     SD_SET(4); // super::start entered
     bool superResult = super::start(provider);
     if (!superResult) {
@@ -3620,7 +3137,6 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(5); // super::start OK
     sDiag.step = 2;
-    XYLog("DEBUG %s [STEP 3] PCI setup\n", __FUNCTION__);
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
     pciNub->setMemoryEnable(true);
@@ -3640,7 +3156,6 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(6); // PCI configured
     sDiag.step = 3;
-    XYLog("DEBUG %s [STEP 4] workloop & command gate\n", __FUNCTION__);
     sDiag.workloop = _fWorkloop;
     if (_fWorkloop == NULL) {
         XYLog("DEBUG %s [STEP 4] FAIL: No _fWorkloop\n", __FUNCTION__);
@@ -3667,8 +3182,9 @@ bool AirportItlwm::start(IOService *provider)
     // the helper's WaitAssociationTarget call sleeps under the
     // controller command gate.
     memset(&fAssocTarget, 0, sizeof(fAssocTarget));
-    fAssocGenCounter     = 0;
-    fAssocTargetCanceled = false;
+    fAssocGenCounter       = 0;
+    fAssocTargetCanceled   = false;
+    fAssocTargetTerminating = false;
 #endif
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
@@ -3679,7 +3195,6 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     sDiag.step = 4;
-    XYLog("DEBUG %s [STEP 5] HAL initWithController + attach\n", __FUNCTION__);
     fHalService->initWithController(this, _fWorkloop, _fCommandGate);
     fHalService->get80211Controller()->ic_event_handler = eventHandler;
 #if __IO80211_TARGET >= __MAC_26_0
@@ -3688,8 +3203,6 @@ bool AirportItlwm::start(IOService *provider)
         memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));
         fpNetStats = &tahoeLegacyNetStats;
         ifp->netStat = fpNetStats;
-        XYLog("DEBUG %s Tahoe legacy netStat fallback ifp=%p netStat=%p\n",
-              __FUNCTION__, ifp, fpNetStats);
     }
 #endif
 
@@ -3707,7 +3220,6 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(9); // HAL attached
     sDiag.step = 6;
-    XYLog("DEBUG %s [STEP 6] watchdog + scan timers\n", __FUNCTION__);
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog workloop\n", __FUNCTION__);
@@ -3747,7 +3259,6 @@ bool AirportItlwm::start(IOService *provider)
 
     SD_SET(10); // watchdog/scan timers OK
     sDiag.step = 7;
-    XYLog("DEBUG %s [STEP 7] Skywalk interface init + attach\n", __FUNCTION__);
     fNetIf = new AirportItlwmSkywalkInterface;
 #if __IO80211_TARGET >= __MAC_26_0
     if (!fNetIf->init()) {
@@ -3796,7 +3307,6 @@ bool AirportItlwm::start(IOService *provider)
     }
     SD_SET(12); // fNetIf attach OK
     sDiag.step = 8;
-    XYLog("DEBUG %s [STEP 8] attachInterface + BSD interface\n", __FUNCTION__);
     if (!attachInterface(fNetIf, this)) {
         XYLog("DEBUG %s [STEP 8] FAIL: attachInterface\n", __FUNCTION__);
         super::stop(provider);
@@ -3828,29 +3338,12 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     RT3_SET(0); // initRegistrationInfo OK
-    {
-        uint8_t *p = (uint8_t *)&registInfo;
-        XYLog("DEBUG %s [STEP 8] initRegistrationInfo OK, size=%lu\n",
-              __FUNCTION__, sizeof(registInfo));
-        XYLog("DEBUG %s [STEP 8] regInfo[0-31]: %02x %02x %02x %02x %02x %02x %02x %02x "
-              "%02x %02x %02x %02x %02x %02x %02x %02x "
-              "%02x %02x %02x %02x %02x %02x %02x %02x "
-              "%02x %02x %02x %02x %02x %02x %02x %02x\n",
-              __FUNCTION__,
-              p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
-              p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
-              p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
-              p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
-    }
 
     // mExpansionData / mExpansionData2 are managed by the framework's
     // initRegistrationInfo (called above at STEP 8).  Manual allocation
     // was removed because it wrote to the WRONG offsets when our class
     // size was 0x10 too small (0xD0 vs real 0xE0), corrupting framework state.
     // See plan: "Fix Skywalk Class Layout Mismatch (S1-S4 Architecture)".
-    XYLog("DEBUG %s [STEP 8-post] mExpansionData=%p mExpansionData2=%p "
-          "(should be non-NULL if framework initialized them)\n",
-          __FUNCTION__, fNetIf->mExpansionData, fNetIf->mExpansionData2);
     RT3_SET(1); // post-initRegistrationInfo check
 
     // Create Skywalk packet buffer pools for TX and RX
@@ -3875,38 +3368,13 @@ bool AirportItlwm::start(IOService *provider)
         // the pool.
         poolOpts.poolFlags = 1;
 
-        // CR-216: unredact controller-level pointers via split-halves
-        // (`0x%x_%x`) since CR-215 evidence (12:32 boot) showed the
-        // earlier `0x%llx` form was still privacy-redacted by os_log.
-        XYLog("itlwm: POOLTRACE[STEP8b] BEGIN owner=0x%x_%x opts=0x%x_%x "
-              "pktCount=%u bufCount=%u bufSize=%u maxBPP=%u "
-              "memSegSz=%u poolFlags=0x%x\n",
-              AirportItlwmIO80211PacketPool::ptrHi32(fNetIf),
-              AirportItlwmIO80211PacketPool::ptrLo32(fNetIf),
-              AirportItlwmIO80211PacketPool::ptrHi32(&poolOpts),
-              AirportItlwmIO80211PacketPool::ptrLo32(&poolOpts),
-              poolOpts.packetCount,
-              poolOpts.bufferCount, poolOpts.bufferSize,
-              poolOpts.maxBuffersPerPacket, poolOpts.memorySegmentSize,
-              poolOpts.poolFlags);
         sRT.startStep = 811;
         fTxPool = AirportItlwmIO80211PacketPool::withName(
             "AirportItlwm-TX", fNetIf, &poolOpts);
-        XYLog("itlwm: POOLTRACE[STEP8b] AFTER_TX tx=0x%x_%x rx=0x%x_%x\n",
-              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
         sRT.startStep = 812;
         fRxPool = AirportItlwmIO80211PacketPool::withName(
             "AirportItlwm-RX", fNetIf, &poolOpts);
-        XYLog("itlwm: POOLTRACE[STEP8b] AFTER_RX tx=0x%x_%x rx=0x%x_%x\n",
-              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
         sRT.startStep = 813;
-        XYLog("DEBUG %s [STEP 8b] pools: TX=%p RX=%p\n", __FUNCTION__, fTxPool, fRxPool);
         if (!fTxPool || !fRxPool) {
             uint32_t poolFailMask =
                 (fTxPool ? 0u : 1u) | (fRxPool ? 0u : 2u);
@@ -3930,12 +3398,6 @@ bool AirportItlwm::start(IOService *provider)
             return false;
         }
         sRT.startStep = 815;
-        XYLog("itlwm: POOLTRACE[STEP8b] FINAL branch=BOTH_OK "
-              "tx=0x%x_%x rx=0x%x_%x handoff=STEP8c\n",
-              AirportItlwmIO80211PacketPool::ptrHi32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fTxPool),
-              AirportItlwmIO80211PacketPool::ptrHi32(fRxPool),
-              AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
     }
     RT3_SET(2); // pools created
     sRT.fTxPoolPtr = (uint64_t)(uintptr_t)fTxPool;
@@ -3954,8 +3416,6 @@ bool AirportItlwm::start(IOService *provider)
     fRxQueue = IOSkywalkRxCompletionQueue::withPool(fRxPool, fSkywalkRxQueueCapacity, 0, this,
                                                     skywalkRxAction, NULL, 0);
     fMultiCastQueue = AirportItlwmSkywalkMulticastQueue::withInterface(fNetIf);
-    XYLog("DEBUG %s [STEP 8c] queues: TX=%p TXC=%p RX=%p MC=%p\n",
-          __FUNCTION__, fTxQueue, fTxCompQueue, fRxQueue, fMultiCastQueue);
     if (!fTxQueue || !fTxCompQueue || !fRxQueue || !fMultiCastQueue) {
         uint32_t queueFailMask =
             (fTxQueue ? 0u : 1u) |
@@ -3978,12 +3438,6 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
-    XYLog("itlwm: POOLTRACE[STEP8c] boundary=QUEUES_OK "
-          "poolResult=BOTH_OK TX=0x%llx TXC=0x%llx RX=0x%llx MC=0x%llx\n",
-          (unsigned long long)(uintptr_t)fTxQueue,
-          (unsigned long long)(uintptr_t)fTxCompQueue,
-          (unsigned long long)(uintptr_t)fRxQueue,
-          (unsigned long long)(uintptr_t)fMultiCastQueue);
     RT3_SET(3); // queues created
     sRT.fTxQueuePtr = (uint64_t)(uintptr_t)fTxQueue;
     sRT.fRxQueuePtr = (uint64_t)(uintptr_t)fRxQueue;
@@ -3996,12 +3450,6 @@ bool AirportItlwm::start(IOService *provider)
     IOReturn txCompQueueWorkloopRet = _fWorkloop->addEventSource(fTxCompQueue);
     IOReturn rxQueueWorkloopRet = _fWorkloop->addEventSource(fRxQueue);
     IOReturn multicastQueueWorkloopRet = _fWorkloop->addEventSource(fMultiCastQueue);
-    XYLog("DEBUG %s [STEP 8c-wl] queue addEventSource TX=0x%x TXC=0x%x "
-          "RX=0x%x MC=0x%x TXwl=%p TXCwl=%p RXwl=%p MCwl=%p\n",
-          __FUNCTION__, txQueueWorkloopRet, txCompQueueWorkloopRet,
-          rxQueueWorkloopRet, multicastQueueWorkloopRet,
-          fTxQueue->getWorkLoop(), fTxCompQueue->getWorkLoop(),
-          fRxQueue->getWorkLoop(), fMultiCastQueue->getWorkLoop());
     if (txQueueWorkloopRet != kIOReturnSuccess ||
         txCompQueueWorkloopRet != kIOReturnSuccess ||
         rxQueueWorkloopRet != kIOReturnSuccess ||
@@ -4035,8 +3483,6 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
-    XYLog("itlwm: POOLTRACE[STEP8c-wl] boundary=WORKLOOPS_OK "
-          "poolResult=BOTH_OK handoff=STEP8d\n");
 
     // Wire up Skywalk RX input handler on the internal ifnet before
     // registration, so received frames go through the Skywalk path
@@ -4045,8 +3491,6 @@ bool AirportItlwm::start(IOService *provider)
     {
         struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
         ifp->if_skywalk_rx = skywalkRxInput;
-        XYLog("DEBUG %s [STEP 8c-rx] wired if_skywalk_rx=%p on ifp=%p\n",
-              __FUNCTION__, (void *)(uintptr_t)skywalkRxInput, ifp);
     }
 #endif
 
@@ -4070,7 +3514,6 @@ bool AirportItlwm::start(IOService *provider)
         void *nifCtx      = *(void **)(raw + 0xC0);
         void *nexusProv   = *(void **)(raw + 0xC8);
         void *nexusArena  = *(void **)(raw + 0xD0);
-        void *ethRegCtx   = *(void **)(raw + 0x118);
         void *asyncSent   = *(void **)(raw + 0xB8);
         void *regObj90    = *(void **)(raw + 0x90);
         void *regObj98    = *(void **)(raw + 0x98);
@@ -4084,22 +3527,6 @@ bool AirportItlwm::start(IOService *provider)
         sRT.regObj90      = (uint64_t)(uintptr_t)regObj90;
         sRT.regObj98      = (uint64_t)(uintptr_t)regObj98;
         sRT.regObjA0      = (uint64_t)(uintptr_t)regObjA0;
-
-        XYLog("DEBUG %s [PRE-REG] fNetIf=%p raw offsets:\n"
-              "  +0x90 (queueSet)=%p  +0x98 (queueObj)=%p  +0xA0 (queueMgr)=%p\n"
-              "  +0xB8 (asyncSentinel)=%p\n"
-              "  +0xC0 (NIF_Context)=%p\n"
-              "  +0xC8 (nexusProvider)=%p\n"
-              "  +0xD0 (nexusArena)=%p\n"
-              "  +0x118 (mExpansionData2/EthRegCtx)=%p\n",
-              __FUNCTION__, fNetIf,
-              regObj90, regObj98, regObjA0,
-              asyncSent, nifCtx, nexusProv, nexusArena, ethRegCtx);
-        if (ethRegCtx) {
-            void *regInfoPtr = *(void **)ethRegCtx;
-            XYLog("DEBUG %s [PRE-REG] *(+0x118)->fRegistrationInfo=%p\n",
-                  __FUNCTION__, regInfoPtr);
-        }
     }
 
     {
@@ -4114,13 +3541,10 @@ bool AirportItlwm::start(IOService *provider)
             ->registerInfraEthernetInterface(
                 (IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
                 queues, 2, fTxPool, fRxPool);
-        XYLog("DEBUG %s [STEP 8d] registerInfraEthernetInterface=0x%x\n",
-              __FUNCTION__, regRet);
 #else
         IOReturn regRet = fNetIf->registerEthernetInterface(
             (const IOSkywalkEthernetInterface::RegistrationInfo *)&registInfo,
             queues, 2, fTxPool, fRxPool, 0);
-        XYLog("DEBUG %s [STEP 8d] registerEthernetInterface=0x%x\n", __FUNCTION__, regRet);
 #endif
         if (regRet != kIOReturnSuccess) {
             XYLog("DEBUG %s [STEP 8d] FAIL: Skywalk registration ret=0x%x\n", __FUNCTION__, regRet);
@@ -4142,13 +3566,9 @@ bool AirportItlwm::start(IOService *provider)
         void *nexusProv  = *(void **)(raw + 0xC8);
         void *nexusArena = *(void **)(raw + 0xD0);
         void *asyncSent  = *(void **)(raw + 0xB8);
-        void *regObj90   = *(void **)(raw + 0x90);
         sRT.nexusProvPtr  = (uint64_t)(uintptr_t)nexusProv;
         sRT.nexusArenaPtr = (uint64_t)(uintptr_t)nexusArena;
         sRT.asyncSentinel = (uint64_t)(uintptr_t)asyncSent;
-        XYLog("DEBUG %s [POST-REG] nexusProvider=%p nexusArena=%p "
-              "asyncSentinel=%p queueSet=%p\n",
-              __FUNCTION__, nexusProv, nexusArena, asyncSent, regObj90);
         if (!nexusProv) {
             XYLog("DEBUG %s [POST-REG] WARNING: nexusProvider still NULL "
                   "after Skywalk registration — BSDClient nexus "
@@ -4159,7 +3579,6 @@ bool AirportItlwm::start(IOService *provider)
     // Start the Skywalk interface
     sDiag.step = 81;
     RT3_SET(10); // entering fNetIf->start
-    XYLog("DEBUG %s [STEP 8e] calling fNetIf->start(this=%p)\n", __FUNCTION__, this);
     fNetIf->start(this);
     RT3_SET(11); // fNetIf->start returned
     SD_SET(15); // fNetIf->start OK
@@ -4168,7 +3587,6 @@ bool AirportItlwm::start(IOService *provider)
     // deferBSDAttach(false) removes IODeferBSDAttach property and calls
     // registerService() on fNetIf, causing IOKit to match BSDClient.
     // BSDClient::start creates the nexus channel and BSD ifnet.
-    XYLog("DEBUG %s [STEP 8f] calling deferBSDAttach(false)\n", __FUNCTION__);
     fNetIf->deferBSDAttach(false);
     {
         const char *bsdName = fNetIf->getBSDName();
@@ -4176,8 +3594,6 @@ bool AirportItlwm::start(IOService *provider)
         sRT.bsdIfPtr = (uint64_t)(uintptr_t)bsdIf;
         if (bsdIf) RT2_SET(0);
         if (bsdName && bsdName[0]) RT2_SET(1);
-        XYLog("DEBUG %s [STEP 8f] deferBSDAttach done, bsdName=%s bsdIf=%p rt2=0x%04x rt3=0x%04x\n",
-              __FUNCTION__, bsdName ? bsdName : "(null)", bsdIf, sRT.rtMask2, sRT.rtMask3);
         // NOTE: bsdName may be empty here — the BSD ifnet is created
         // ASYNCHRONOUSLY via the nexus callback chain:
         //   deferBSDAttach(false) → registerService on fNetIf
@@ -4211,7 +3627,6 @@ bool AirportItlwm::start(IOService *provider)
         (thread_call_param_t)this);
     sDiag.step = 9;
     SD_SET(16);
-    XYLog("DEBUG %s [STEP 9] boot thread_call allocated, waiting for boot nub\n", __FUNCTION__);
     sDiag.step = 10;
     // registerService() makes the IO80211Controller visible to airportd and
     // triggers IOKit matching for AirportItlwmBootNub.  The BSD ifnet (en0)
@@ -4219,26 +3634,11 @@ bool AirportItlwm::start(IOService *provider)
     // deferBSDAttach(false) at STEP 8f.
     registerService();
     RT_SET(18);
-    XYLog("DEBUG %s start COMPLETE mask=0x%05x\n", __FUNCTION__, sDiag.mask | 0x20000);
     DISARM_PANIC_TIMER();
 #undef DISARM_PANIC_TIMER
 #undef SD_SET
 
-    /* HAL-independent same-carrier smoke marker: prove the
-     * project-owned os_log carrier is reachable on this VM
-     * regardless of which iwx / iwn / iwm HAL handles the
-     * underlying PCI device. The marker fires exactly once
-     * per successful AirportItlwm::start so the next runtime
-     * cycle can confirm carrier visibility via
-     *   sudo log show --info --debug --predicate
-     *     'subsystem == "com.zxystd.AirportItlwm" AND
-     *      category == "iwx.auth_ack"'
-     * before relying on the auth-ACK Case A-F classification
-     * built on the per-HAL leaf probes. iwx_auth_diag_init()
-     * is idempotent; the same os_log handle is reused by any
-     * subsequent per-HAL attach (iwx_attach, iwn_attach). */
     iwx_auth_diag_init();
-    IWX_AUTH_DIAG("smoke_marker AirportItlwm_start OK\n");
 
     return true;
 }
@@ -4247,9 +3647,6 @@ void AirportItlwm::stop(IOService *provider)
 {
     RT_SET(19);
     sRT.stopStep = 1;
-    XYLog("DEBUG %s [1] entry power_state=%u pmPowerState=%u provider=%p fHalService=%p "
-          "rtMask=0x%07x\n",
-          __PRETTY_FUNCTION__, power_state, pmPowerState, provider, fHalService, sRT.rtMask);
 
     // Panic timer — catches hangs in the teardown path.
     thread_call_t stopTimer = thread_call_allocate(
@@ -4319,52 +3716,39 @@ void AirportItlwm::stop(IOService *provider)
         thread_call_free(tahoeBootThreadCall);
         tahoeBootThreadCall = NULL;
     }
-    XYLog("DEBUG %s [2] disableAdapter\n", __FUNCTION__);
     disableAdapter(NULL);
     sRT.stopStep = 3;
-    XYLog("DEBUG %s [3] setLinkStatus\n", __FUNCTION__);
     setLinkStatus(kIONetworkLinkValid);
     // Drain the off-gate publication source before fNetIf is detached/released
     // below, so the deferred action cannot dereference fNetIf after its lifetime
     // ends. releaseAll() calls this again (idempotent).
     teardownLinkStatePublishSource();
     sRT.stopStep = 4;
-    XYLog("DEBUG %s [4] fHalService->detach pciNub=%p\n", __FUNCTION__, pciNub);
     fHalService->detach(pciNub);
     sRT.stopStep = 5;
-    XYLog("DEBUG %s [5] ether_ifdetach ifp=%p\n", __FUNCTION__, ifp);
 #if __IO80211_TARGET >= __MAC_26_0
     ifp->if_skywalk_rx = NULL;
 #endif
     ether_ifdetach(ifp);
     sRT.stopStep = 6;
     // Release Skywalk queues and pools
-    XYLog("DEBUG %s [6] releasing Skywalk queues/pools\n", __FUNCTION__);
 #if __IO80211_TARGET >= __MAC_26_0
     skywalkTxDrainCompletionPackets(this);
     skywalkRxDrainPendingPackets(this);
 #endif
     if (_fWorkloop && fMultiCastQueue && fMultiCastQueue->getWorkLoop() == _fWorkloop) {
-        XYLog("DEBUG %s [6] removing fMultiCastQueue=%p from _fWorkloop=%p\n",
-              __FUNCTION__, fMultiCastQueue, _fWorkloop);
         fMultiCastQueue->disable();
         _fWorkloop->removeEventSource(fMultiCastQueue);
     }
     if (_fWorkloop && fTxCompQueue && fTxCompQueue->getWorkLoop() == _fWorkloop) {
-        XYLog("DEBUG %s [6] removing fTxCompQueue=%p from _fWorkloop=%p\n",
-              __FUNCTION__, fTxCompQueue, _fWorkloop);
         fTxCompQueue->disable();
         _fWorkloop->removeEventSource(fTxCompQueue);
     }
     if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
-        XYLog("DEBUG %s [6] removing fTxQueue=%p from _fWorkloop=%p\n",
-              __FUNCTION__, fTxQueue, _fWorkloop);
         fTxQueue->disable();
         _fWorkloop->removeEventSource(fTxQueue);
     }
     if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
-        XYLog("DEBUG %s [6] removing fRxQueue=%p from _fWorkloop=%p\n",
-              __FUNCTION__, fRxQueue, _fWorkloop);
         fRxQueue->disable();
         _fWorkloop->removeEventSource(fRxQueue);
     }
@@ -4378,19 +3762,14 @@ void AirportItlwm::stop(IOService *provider)
     fSkywalkRxQueueCapacity = 0;
     sRT.stopStep = 61;
     RT3_SET(15); // detachInterface entered
-    XYLog("DEBUG %s [6b] detachInterface fNetIf=%p\n", __FUNCTION__, fNetIf);
     detachInterface(fNetIf, true);
     sRT.stopStep = 7;
-    XYLog("DEBUG %s [7] release fNetIf\n", __FUNCTION__);
     OSSafeReleaseNULL(fNetIf);    sRT.fNetIfPtr = 0;
     sRT.stopStep = 8;
-    XYLog("DEBUG %s [8] releaseAll\n", __FUNCTION__);
     releaseAll();
     sRT.stopStep = 9;
-    XYLog("DEBUG %s [9] super::stop\n", __FUNCTION__);
     super::stop(provider);
     sRT.stopStep = 10;
-    XYLog("DEBUG %s [10] DONE\n", __FUNCTION__);
     thread_call_cancel(stopTimer);
     thread_call_free(stopTimer);
 }
@@ -4399,9 +3778,6 @@ void AirportItlwm::free()
 {
     RT_SET(20);
     sRT.freeStep = 1;
-    XYLog("DEBUG %s [1] entry fHalService=%p syncFrameTemplate=%p roamProfile=%p btcProfile=%p "
-          "rtMask=0x%07x\n",
-          __PRETTY_FUNCTION__, fHalService, syncFrameTemplate, roamProfile, btcProfile, sRT.rtMask);
 
     // Panic timer — catches hangs in IO80211Controller::free() chain
     thread_call_t freeTimer = thread_call_allocate(
@@ -4452,7 +3828,6 @@ void AirportItlwm::free()
 
     sRT.freeStep = 2;
     if (fHalService != NULL) {
-        XYLog("DEBUG %s [2] releasing fHalService\n", __FUNCTION__);
         fHalService->release();
         fHalService = NULL;
     }
@@ -4481,7 +3856,6 @@ void AirportItlwm::free()
         fRxPendingLock = NULL;
     }
     sRT.freeStep = 4;
-    XYLog("DEBUG %s [3] super::free\n", __FUNCTION__);
     super::free();
     RT_SET(21);
     thread_call_cancel(freeTimer);
@@ -4492,7 +3866,6 @@ bool AirportItlwm::createWorkQueue()
 {
     _fWorkloop = IO80211WorkQueue::workQueue();
     RT_SET(16);
-    XYLog("DEBUG %s created IO80211WorkQueue _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
     return _fWorkloop != 0;
 }
 
@@ -4505,9 +3878,6 @@ IO80211WorkQueue *AirportItlwm::getWorkQueue()
     // getWorkQueue is called multiple times during IO80211Controller::start():
     //  #1 = createWorkQueue phase, #2 = CommandGate alloc (after RangingManager),
     //  #3 = inside CreatePostOffice, #4 = TimerSource alloc, #5 = TimerFactory alloc
-    static int sGetWorkQueueCount = 0;
-    if (++sGetWorkQueueCount <= 20)
-        XYLog("DEBUG %s #%d returning %p\n", __FUNCTION__, sGetWorkQueueCount, _fWorkloop);
     return _fWorkloop;
 }
 
@@ -4542,7 +3912,6 @@ IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 {
     RT_SET(17);
-    XYLog("DEBUG %s entry netif=%p power_state=%u\n", __FUNCTION__, netif, power_state);
     IONetworkData *nd;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
 
@@ -4557,17 +3926,13 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
         return false;
     }
     ifp->netStat = fpNetStats;
-    XYLog("DEBUG %s ether_ifattach ifp=%p netif=%p\n", __FUNCTION__, ifp, netif);
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
     RT_SET(26);
     fpNetStats->collisions = 0;
 
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
     netif->configureOutputPullModel(fHalService->getDriverInfo()->getTxQueueSize(), 0, 0, IOEthernetInterface::kOutputPacketSchedulingModelNormal, 0);
-#else
-    XYLog("DEBUG %s Tahoe: skipping configureOutputPullModel\n", __FUNCTION__);
 #endif
-    XYLog("DEBUG %s DONE\n", __FUNCTION__);
     return true;
 }
 
@@ -4653,9 +4018,6 @@ bool AirportItlwm::syncTahoeCurrentApAddress(bool forceClear, bool allowInitialC
             return false;
         }
 
-        XYLog("DEBUG %s addr=%s ic_state=%d ic_bss=%p forceClear=%d\n",
-              __FUNCTION__, ether_sprintf(targetAp.octet),
-              ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr, forceClear);
         skyIf->setCurrentApAddress(&targetAp);
         IEEE80211_ADDR_COPY(tahoeCurrentApAddress.octet, targetAp.octet);
         tahoeCurrentApKnown = true;
@@ -4668,9 +4030,6 @@ bool AirportItlwm::syncTahoeCurrentApAddress(bool forceClear, bool allowInitialC
     if (!allowInitialClear && !tahoeCurrentApKnown)
         return false;
 
-    XYLog("DEBUG %s addr=(null) ic_state=%d ic_bss=%p forceClear=%d\n",
-          __FUNCTION__, ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr,
-          forceClear);
     skyIf->setCurrentApAddress(nullptr);
     memset(&tahoeCurrentApAddress, 0, sizeof(tahoeCurrentApAddress));
     tahoeCurrentApKnown = true;
@@ -4683,10 +4042,8 @@ bool AirportItlwm::
 setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed, OSData * data)
 {
     RT_SET(6);
+    (void)speed;
     struct _ifnet *ifq = &fHalService->get80211Controller()->ic_ac.ac_if;
-    XYLog("DEBUG %s status=0x%x (prev=0x%x) active=%d speed=%llu if_flags=0x%x ic_state=%d power_state=%u\n",
-          __FUNCTION__, status, currentStatus, (status & kIONetworkLinkActive) != 0, speed,
-          ifq->if_flags, fHalService->get80211Controller()->ic_state, power_state);
     if (status == currentStatus) {
 #if __IO80211_TARGET >= __MAC_26_0
         if ((status & kIONetworkLinkActive) != 0)
@@ -4729,9 +4086,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         XYLog("DEBUG %s skipped: null target\n", __FUNCTION__);
         return kIOReturnNotReady;
     }
-    XYLog("DEBUG %s linkState=%u rawCode=%u power_state=%u\n",
-          __FUNCTION__, static_cast<unsigned int>(linkState),
-          rawCode, that->power_state);
 #if __IO80211_TARGET >= __MAC_26_0
     /*
      * Off-gate publication precondition guard, evaluated BEFORE any publication
@@ -4756,13 +4110,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
             publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
         const int inGatePred =
             publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        const int onDispatchQueuePred =
-            ((IO80211InfraInterface *)that->fNetIf)->onDispatchQueue() ? 1 : 0;
-        XYLog("DEBUG %s linkstate-publish-predicate onThread=%d inGate=%d onDispatchQueue=%d\n",
-              __FUNCTION__, onThreadPred, inGatePred, onDispatchQueuePred);
         if (!(onThreadPred == 1 && inGatePred == 0)) {
-            XYLog("DEBUG %s off-gate precondition not met (onThread=%d inGate=%d); skipping all link-state publication\n",
-                  __FUNCTION__, onThreadPred, inGatePred);
             return kIOReturnNotReady;
         }
     }
@@ -4772,17 +4120,12 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         linkState != kIO80211NetworkLinkUp, true);
     if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclLinkUpInd(that, rawCode);
-        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-reportLinkStatus", that->fNetIf);
         that->fNetIf->reportLinkStatus(3, 0x80);
-        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-reportLinkStatus", that->fNetIf);
     }
-    logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-setLinkState", that->fNetIf);
-    XYLog("DEBUG %s Tahoe: calling IO80211InfraInterface::setLinkState fNetIf=%p\n", __FUNCTION__, that->fNetIf);
     // The off-gate precondition (onThread==1, inGate==0) was guarded at the top
     // of this publication path; reaching here means it holds, so the inherited
     // publication is safe to invoke.
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
-    logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-setLinkState", that->fNetIf);
 #else
     IOReturn ret = that->fNetIf->setLinkState(linkState, rawCode);
 #endif
@@ -4796,50 +4139,8 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
                                  static_cast<int32_t>((uint64_t)arg0),
                                  static_cast<uint64_t>((uint64_t)arg1), 0);
     }
-    XYLog("DEBUG %s setLinkState ret=0x%x\n", __FUNCTION__, ret);
     RT2_SET(13);
-    // CR-234 BRANCH D: PRE/POST setRunningState - probes the
-    // IO80211SkywalkInterface variant byte at (this+0x120)+0x88 (per
-    // decomp at ffffff8002277284 where setRunningState is the writer
-    // and ffffff800227855a where IO80211SkywalkInterface::getAssocState
-    // reads the same byte). Compares against the InfraInterface
-    // variant byte at (this+0x128)+0x180 to disambiguate which reader
-    // path airportd uses.
-    {
-        const void *thisPtr = that->fNetIf;
-        if (thisPtr != nullptr) {
-            const char *base = reinterpret_cast<const char *>(thisPtr);
-            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
-            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
-            uint8_t b120_88 = (i120 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
-            uint8_t b128_180 = (i128 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
-            CR234_LOG("DEBUG CR234_INNER setRunningState_PRE thisPtr=%p i120=%p i128=%p "
-                      "i120_88=0x%02x i128_180=0x%02x linkUp=%d\n",
-                      thisPtr, i120, i128,
-                      (unsigned)b120_88, (unsigned)b128_180,
-                      linkState == kIO80211NetworkLinkUp ? 1 : 0);
-        }
-    }
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
-    {
-        const void *thisPtr = that->fNetIf;
-        if (thisPtr != nullptr) {
-            const char *base = reinterpret_cast<const char *>(thisPtr);
-            const void *i120 = *reinterpret_cast<const void * const *>(base + 0x120);
-            const void *i128 = *reinterpret_cast<const void * const *>(base + 0x128);
-            uint8_t b120_88 = (i120 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i120) + 0x88) : 0xff;
-            uint8_t b128_180 = (i128 != nullptr)
-                ? *(reinterpret_cast<const uint8_t *>(i128) + 0x180) : 0xff;
-            CR234_LOG("DEBUG CR234_INNER setRunningState_POST thisPtr=%p i120=%p i128=%p "
-                      "i120_88=0x%02x i128_180=0x%02x linkUp=%d\n",
-                      thisPtr, i120, i128,
-                      (unsigned)b120_88, (unsigned)b128_180,
-                      linkState == kIO80211NetworkLinkUp ? 1 : 0);
-        }
-    }
 #if __IO80211_TARGET >= __MAC_26_0
     if (linkState == kIO80211NetworkLinkUp)
         postTahoeWclConnectCompleteEvent(that);
@@ -4859,10 +4160,13 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * transition's success edge, so re-publishing here would deliver the
      * same userspace event twice for a single accepted transition.
      *
-     * Keep this branch limited to the link-down zero-length
-     * APPLE80211_M_SSID_CHANGED carrier. The recovered reference does not
-     * contain a payload-bearing writer for that event code, and Tahoe
-     * userspace does not length-reject the zero-length publication.
+     * The zero-length APPLE80211_M_SSID_CHANGED carrier has the same
+     * accepted-edge ownership as LINK_CHANGED and BSSID_CHANGED: Tahoe
+     * `AirportItlwmSkywalkInterface::setLinkStateInternal` publishes it
+     * after the BSSID/scan-cache publishers on both terminal transitions.
+     * The recovered airportd `ssidChanged` block consumes no payload; it
+     * schedules a fresh `__associatedNetwork` read and forwards that
+     * object through `setAssociatedNetwork:`.
      * APPLE80211_M_BSSID_CHANGED has a recovered Apple writer on the
      * WCL/IOUC side (selector 0x1b1) that produces a populated 24-byte
      * BSSID-changed compact carrier with the BSSID at offset 0x00 and
@@ -4880,22 +4184,17 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * call with a non-null, non-zero address, honouring the recovered
      * zero-BSSID rejection and same-BSS reason-1 suppression gates.
      * This Tahoe branch therefore does not emit APPLE80211_M_BSSID_CHANGED
-     * itself; the legacy zero-length BSSID-changed notify remains in
-     * the pre-Tahoe branch below as it predates the Tahoe userspace
-     * length check.
+     * or APPLE80211_M_SSID_CHANGED itself; the legacy zero-length
+     * BSSID/SSID notifies remain in the pre-Tahoe branch below as they
+     * predate the Tahoe userspace length check and Skywalk event split.
      */
-    if (linkState != kIO80211NetworkLinkUp) {
-        that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
-    }
 #else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
 #endif
     if (linkState != kIO80211NetworkLinkUp) {
-        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated pre-reportLinkStatus", that->fNetIf);
         that->fNetIf->reportLinkStatus(1, 0);
-        logTahoeSkywalkLinkCarrier("DEBUG setLinkStateGated post-reportLinkStatus", that->fNetIf);
     }
 #if __IO80211_TARGET < __MAC_26_0
     if (that->bsdInterface) {
@@ -4903,7 +4202,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         that->bsdInterface->setLinkState(linkState);
     }
 #endif
-    XYLog("DEBUG %s DONE ret=0x%x\n", __FUNCTION__, ret);
     return ret;
 }
 
@@ -4932,14 +4230,8 @@ IOReturn AirportItlwm::networkInterfaceNotification(
 }
 #endif
 
-extern const char* hexdump(uint8_t *buf, size_t len);
-
 UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
 {
-    static int sOutputCount = 0;
-    if (++sOutputCount <= 5)
-        XYLog("DEBUG %s #%d m=%p param=%p ic_state=%d\n", __FUNCTION__, sOutputCount, m, param,
-              fHalService->get80211Controller()->ic_state);
     IOReturn ret = kIOReturnOutputSuccess;
     uint32_t diagLength = 0;
     bool diagEapol = false;
@@ -4997,14 +4289,6 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
         XYLog("%s mbuf is FREE!!\n", __FUNCTION__);
         ifp->netStat->outputErrors++;
         ret = kIOReturnOutputDropped;
-    }
-    size_t len = mbuf_len(m);
-    ether_header_t *eh = (ether_header_t *)mbuf_data(m);
-    if (len >= sizeof(ether_header_t) && eh->ether_type == htons(ETHERTYPE_PAE)) { // EAPOL packet
-        const char* dump = hexdump((uint8_t*)mbuf_data(m), len);
-        XYLog("output EAPOL packet, len: %zu, data: %s\n", len, dump ? dump : "Failed to allocate memory");
-        if (dump)
-            IOFree((void*)dump, 3 * len + 1);
     }
     if (!ifp->if_snd.queue->lockEnqueue(m)) {
         freePacket(m);
@@ -5105,7 +4389,6 @@ IOReturn AirportItlwm::getPacketFilters(const OSSymbol *group, UInt32 *filters) 
 SInt32 AirportItlwm::
 enableFeature(IO80211FeatureCode code, void *data)
 {
-    XYLog("DEBUG %s code=%d\n", __FUNCTION__, code);
     if (code == kIO80211Feature80211n) {
         return 0;
     }
@@ -5123,21 +4406,14 @@ void *AirportItlwm::releaseFlowQueue(IO80211FlowQueue *)
 // IO80211Controller::start() calls this to get CCLogStream* for setGlobalLogger(),
 // then createIOReporters() uses it.  Must return valid CCLogStream*.
 // (Dump indexes include 2 RTTI entries, so vptr offset = (431-2)*8 = 0xD68.)
-static int sGetDriverLogStreamCallCount = 0;
 void *AirportItlwm::getDriverLogStream()
 {
-    int n = ++sGetDriverLogStreamCallCount;
-    if (n <= 50)
-        XYLog("DEBUG [vtable431] getDriverLogStream #%d driverLogStream=%p rc=%d\n",
-              n, driverLogStream, driverLogStream ? driverLogStream->getRetainCount() : -1);
     return driverLogStream;
 }
 #endif
 
 bool AirportItlwm::getLogPipes(CCPipe**logPipe, CCPipe**eventPipe, CCPipe**snapshotsPipe)
 {
-    XYLog("DEBUG %s logPipe=%p dataPipe=%p snapPipe=%p\n", __FUNCTION__,
-          driverLogPipe, driverDataPathPipe, driverSnapshotsPipe);
     bool ret = false;
     if (logPipe) {
         *logPipe = driverLogPipe;
@@ -5370,7 +4646,6 @@ getPLATFORM_CONFIG(OSObject *object,
 IOReturn AirportItlwm::
 setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 {
-    XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
         memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
         postMessage(fNetIf, APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, true);
@@ -5427,7 +4702,6 @@ getCHANNEL(OSObject *object, struct apple80211_channel_data *cd)
 IOReturn AirportItlwm::
 setCHANNEL(OSObject *object, struct apple80211_channel_data *data)
 {
-    XYLog("%s channel=%d\n", __FUNCTION__, data->channel.channel);
     return kIOReturnError;
 }
 
@@ -5445,7 +4719,6 @@ getBSSID(OSObject *object, struct apple80211_bssid_data *bd)
 IOReturn AirportItlwm::
 setBSSID(OSObject *object, struct apple80211_bssid_data *data)
 {
-    XYLog("%s bssid=%s\n", __FUNCTION__, ether_sprintf(data->bssid.octet));
     return kIOReturnSuccess;
 }
 
@@ -5461,9 +4734,6 @@ getPOWER(OSObject *object,
     pd->power_state[1] = power_state;
     pd->power_state[2] = power_state;
     pd->power_state[3] = power_state;
-    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    XYLog("DEBUG %s returning power_state=%u if_flags=0x%x ic_state=%d pmPowerState=%u\n",
-          __FUNCTION__, power_state, ifp->if_flags, fHalService->get80211Controller()->ic_state, pmPowerState);
     return kIOReturnSuccess;
 }
 
@@ -5474,9 +4744,6 @@ setPOWER(OSObject *object,
     RT2_SET(6);
     if (!pd)
         return kIOReturnError;
-    XYLog("%s num_radios=%d req=%u cur=%u pmPowerState=%u\n",
-          __FUNCTION__, pd->num_radios,
-          pd->num_radios > 0 ? pd->power_state[0] : 0, power_state, pmPowerState);
     if (pd->num_radios > 0) {
         const uint32_t requestedState = pd->power_state[0];
 
@@ -5489,13 +4756,9 @@ setPOWER(OSObject *object,
         tahoeRequestedPowerState = (uint8_t)requestedState;
         if (tahoeBootstrapPowerWindowOpen) {
             tahoeBootstrapPowerPending = true;
-            XYLog("DEBUG %s deferred bootstrap power req=%u cur=%u pending=%d\n",
-                  __FUNCTION__, requestedState, power_state, tahoeBootstrapPowerPending);
             if (requestedState == power_state) {
                 tahoeBootstrapPowerPending = false;
                 tahoeBootstrapPowerWindowOpen = false;
-                XYLog("DEBUG %s bootstrap power converged on live state=%u; closing deferred path\n",
-                      __FUNCTION__, requestedState);
             }
             return kIOReturnSuccess;
         }
@@ -5509,6 +4772,19 @@ setPOWER(OSObject *object,
 }
 
 #if __IO80211_TARGET < __MAC_26_0
+static bool isTahoeCurrentLinkProbeSelector(unsigned long cmd)
+{
+    switch (cmd) {
+        case APPLE80211_IOC_SSID:
+        case APPLE80211_IOC_BSSID:
+        case APPLE80211_IOC_SCAN_RESULT:
+        case APPLE80211_IOC_CURRENT_NETWORK:
+            return true;
+        default:
+            return false;
+    }
+}
+
 SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigned long cmd,void *data, bool b1, bool b2)
 {
     if (isTahoeCurrentLinkProbeSelector(cmd)) {
@@ -5526,18 +4802,6 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
 
 SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
 {
-    if (isTahoeCurrentLinkProbeSelector(cmd)) {
-        XYLog("DEBUG %s probe cmd=%s(%lu) isSet=%d interface=%p data=%p ic_state=%d interrupt=%d\n",
-              __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
-              isSet ? 1 : 0, interface, data,
-              fHalService ? fHalService->get80211Controller()->ic_state : -1,
-              ml_at_interrupt_context() ? 1 : 0);
-    }
-    if (!ml_at_interrupt_context())
-        XYLog("DEBUG %s cmd=%s(%lu) isSet=%d interface=%p data=%p\n",
-              __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd,
-              isSet, interface, data);
-
     // Keep the carried Tahoe card-specific bridge for the visible set-side and
     // hidden-association selectors that arrive on this controller seam.
     // Public request-number fallback is now tracked separately on interface
@@ -5551,16 +4815,6 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
         req.req_data = data;
         IOReturn ret = routeTahoeSkywalkIoctl(interface, &req,
                                               isSet ? SIOCSA80211 : SIOCGA80211);
-        if (isTahoeCurrentLinkProbeSelector(cmd)) {
-            XYLog("DEBUG %s probe-route cmd=%s(%lu) ret=0x%x ic_state=%d\n",
-                  __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd),
-                  cmd, ret,
-                  fHalService ? fHalService->get80211Controller()->ic_state : -1);
-        }
-        if (!ml_at_interrupt_context()) {
-            XYLog("DEBUG %s local-route cmd=%s(%lu) ret=0x%x\n",
-                  __FUNCTION__, convertApple80211IOCTLToString((unsigned int)cmd), cmd, ret);
-        }
         if (ret != kIOReturnUnsupported)
             return ret;
     }
@@ -5572,9 +4826,6 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
     RT_SET(9);
     sRT.enableCnt++;
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : NULL;
-    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u ic_state=%d\n",
-          __FUNCTION__, netif, power_state, pmPowerState, ic ? ic->ic_state : -1);
     if (!fHalService) {
         XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
         return kIOReturnNotReady;
@@ -5586,24 +4837,8 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
         fRxQueue->enable();
     if (fTxQueue)
         fTxQueue->enable();
-    if (fTxCompQueue || fRxQueue || fTxQueue || fMultiCastQueue) {
-        XYLog("DEBUG %s skywalk queues enabled TX=%p TXenabled=%d "
-              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d\n",
-              __FUNCTION__,
-              fTxQueue,
-              fTxQueue && fTxQueue->isEnabled() ? 1 : 0,
-              fTxCompQueue,
-              fTxCompQueue && fTxCompQueue->isEnabled() ? 1 : 0,
-              fRxQueue,
-              fRxQueue && fRxQueue->isEnabled() ? 1 : 0,
-              fMultiCastQueue,
-              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0);
-    }
 #endif
     fHalService->enable(netif);
-    struct _ifnet *ifp = &ic->ic_ac.ac_if;
-    XYLog("DEBUG %s post-enable: ic_state=%d if_flags=0x%x\n",
-          __FUNCTION__, ic->ic_state, ifp->if_flags);
     if (watchdogTimer) {
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
@@ -5616,7 +4851,6 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 {
     RT_SET(10);
     sRT.disableCnt++;
-    XYLog("DEBUG %s netif=%p power_state=%u pmPowerState=%u\n", __FUNCTION__, netif, power_state, pmPowerState);
     if (watchdogTimer) {
         watchdogTimer->cancelTimeout();
         watchdogTimer->disable();
@@ -5633,23 +4867,6 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 
     skywalkTxDrainCompletionPackets(this);
     skywalkRxDrainPendingPackets(this);
-
-    if (fTxCompQueue || fRxQueue || fTxQueue || fMultiCastQueue) {
-        XYLog("DEBUG %s skywalk queues disabled TX=%p TXenabled=%d "
-              "TXC=%p TXCenabled=%d RX=%p RXenabled=%d MC=%p MCenabled=%d "
-              "TXpending=%u RXpending=%u\n",
-              __FUNCTION__,
-              fTxQueue,
-              fTxQueue && fTxQueue->isEnabled() ? 1 : 0,
-              fTxCompQueue,
-              fTxCompQueue && fTxCompQueue->isEnabled() ? 1 : 0,
-              fRxQueue,
-              fRxQueue && fRxQueue->isEnabled() ? 1 : 0,
-              fMultiCastQueue,
-              fMultiCastQueue && fMultiCastQueue->isEnabled() ? 1 : 0,
-              fTxCompletionPendingCount,
-              fRxPendingCount);
-    }
 #endif
     if (fHalService)
         fHalService->disable(netif);
@@ -5676,13 +4893,10 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     uint8_t prevState = power_state;
     int err = 0;
 
-    XYLog("DEBUG %s cur=%u req=%u\n", __FUNCTION__, prevState, newState);
-
     if ((newState == kWiFiPowerOff && prevState == kWiFiPowerOn) ||
         (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
         // ON→OFF or STANDBY→OFF: power off
         power_state = kWiFiPowerOff;
-        net80211_ifstats(fHalService->get80211Controller());
         disableAdapterCore(netif);
     }
     else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
@@ -5698,12 +4912,10 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
         power_state = kWiFiPowerStandby;
-        net80211_ifstats(fHalService->get80211Controller());
         disableAdapterCore(netif);
     }
     else if (newState == prevState) {
         // Same state — no-op
-        XYLog("DEBUG %s already in state %u, no-op\n", __FUNCTION__, prevState);
     }
     else {
         // Invalid transition
@@ -5727,9 +4939,6 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
             // start() and from no-op 1->1 requests fed false
             // SSM_EVENT_SYSTEM_POWER_OFF/ON edges into WCL.
             postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
-        } else {
-            XYLog("DEBUG %s no state change (%u), suppressing ready/power notifications\n",
-                  __FUNCTION__, newState);
         }
     }
 
@@ -5738,9 +4947,6 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
 
 void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)
 {
-    XYLog("DEBUG %s powerOn=%d power_state=%u pmPowerState=%u netif=%p\n",
-          __FUNCTION__, powerOn ? 1 : 0, power_state, pmPowerState, netif);
-
     // Apple exposes a separate powerOffSystem()/powerOnSystem() path in
     // addition to handlePowerStateChange(). Preserve the logical WiFi
     // power_state across sleep/wake and drive only adapter quiesce/resume plus
@@ -5748,13 +4954,9 @@ void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface
     if (powerOn) {
         if (power_state)
             enableAdapter(netif);
-        else
-            XYLog("DEBUG %s SKIPPED enableAdapter (power_state=0)\n", __FUNCTION__);
     } else {
         if (power_state)
             disableAdapterCore(netif);
-        else
-            XYLog("DEBUG %s SKIPPED disableAdapter (power_state=0)\n", __FUNCTION__);
     }
 
     if (fNetIf)
@@ -5834,11 +5036,8 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
     sRT.pmCount++;
     sRT.lastPmReq = (uint32_t)powerStateOrdinal;
     IOReturn result = IOPMAckImplied;
-    XYLog("DEBUG %s ordinal=%lu pmPowerState=%u power_state=%u\n", __FUNCTION__, powerStateOrdinal, pmPowerState, power_state);
-    if (pmPowerState == powerStateOrdinal) {
-        XYLog("DEBUG %s SKIPPED (already in state %lu)\n", __FUNCTION__, powerStateOrdinal);
+    if (pmPowerState == powerStateOrdinal)
         return result;
-    }
     switch (powerStateOrdinal) {
         case kPowerStateOff:
             if (powerOffThreadCall) {
@@ -5875,10 +5074,6 @@ unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domai
         ret = kPowerStateOn;
     else
         ret = kPowerStateOff;
-    XYLog("DEBUG %s domainState=0x%lx (DeviceUsable=%d PowerOn=%d) -> %lu power_state=%u pmPowerState=%u\n",
-          __FUNCTION__, (unsigned long)domainState,
-          (int)((domainState & kIOPMDeviceUsable) != 0), (int)((domainState & kIOPMPowerOn) != 0),
-          ret, power_state, pmPowerState);
     return ret;
 }
 
@@ -5903,7 +5098,6 @@ static void handleSetPowerStateOff(thread_call_param_t param0,
                             (void *) 1);
         } else {
             sRT.pmOffGateNull++;
-            XYLog("DEBUG handleSetPowerStateOff: gate=NULL, calling directly\n");
             self->setPowerStateOff();
             self->release();
         }
@@ -5930,7 +5124,6 @@ static void handleSetPowerStateOn(thread_call_param_t param0,
                             (void *) 1);
         } else {
             sRT.pmOnGateNull++;
-            XYLog("DEBUG handleSetPowerStateOn: gate=NULL, calling directly\n");
             self->setPowerStateOn();
             self->release();
         }
@@ -5946,7 +5139,6 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
 {
     IOReturn ret;
 
-    XYLog("DEBUG %s entry policyMaker=%p\n", __FUNCTION__, policyMaker);
     pmPowerState = kPowerStateOn;
     pmPolicyMaker = policyMaker;
     sRT.pmPolicyPtr = (uint64_t)(uintptr_t)policyMaker;
@@ -5960,21 +5152,18 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
     ret = pmPolicyMaker->registerPowerDriver(this,
                                              powerStateArray,
                                              kPowerStateCount);
-    XYLog("DEBUG %s registerPowerDriver ret=%d pmPowerState=%u\n", __FUNCTION__, ret, pmPowerState);
     if (ret == kIOReturnSuccess) {
         // Match Apple's pattern: assert device desires ON, external starts at OFF.
         // Without this, PM framework may call setPowerState(0) after registration,
         // disabling the adapter that start() just enabled.
         changePowerStateToPriv(kPowerStateOn);
         changePowerStateTo(kPowerStateOff);
-        XYLog("DEBUG %s changePowerStateToPriv(ON) + changePowerStateTo(OFF) done\n", __FUNCTION__);
     }
     return ret;
 }
 
 void AirportItlwm::setPowerStateOff()
 {
-    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOff;
 #if __IO80211_TARGET >= __MAC_26_0
     handleSystemPowerStateChange(false, NULL);
@@ -5989,7 +5178,6 @@ void AirportItlwm::setPowerStateOff()
 
 void AirportItlwm::setPowerStateOn()
 {
-    XYLog("DEBUG %s power_state=%u pmPowerState=%u\n", __FUNCTION__, power_state, pmPowerState);
     pmPowerState = kPowerStateOn;
 #if __IO80211_TARGET >= __MAC_26_0
     handleSystemPowerStateChange(true, NULL);
@@ -6028,8 +5216,6 @@ initWithTask(task_t owningTask, void *securityID, UInt32 type,
     }
     fOwningTask = owningTask;
     fProvider = nullptr;
-    XYLog("CR239 AirportItlwmUserClient::initWithTask type=0x%x task=%p\n",
-          (unsigned)type, owningTask);
     return true;
 }
 
@@ -6043,14 +5229,12 @@ start(IOService *provider)
         XYLog("CR239 AirportItlwmUserClient::start provider is not AirportItlwm\n");
         return false;
     }
-    XYLog("CR239 AirportItlwmUserClient::start provider=%p\n", provider);
     return true;
 }
 
 void AirportItlwmUserClient::
 stop(IOService *provider)
 {
-    XYLog("CR239 AirportItlwmUserClient::stop\n");
     fProvider = nullptr;
     IOUserClient::stop(provider);
 }
@@ -6058,7 +5242,6 @@ stop(IOService *provider)
 IOReturn AirportItlwmUserClient::
 clientClose(void)
 {
-    XYLog("CR239 AirportItlwmUserClient::clientClose\n");
     if (!isInactive())
         terminate();
     return kIOReturnSuccess;
@@ -6179,9 +5362,6 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
               (unsigned)type, (unsigned)auth);
         return kIOReturnNotPrivileged;
     }
-    XYLog("CR240 AirportItlwm::newUserClient(type=0x%x) AUTHORIZED -- "
-          "creating AirportItlwmUserClient\n",
-          (unsigned)type);
     AirportItlwmUserClient *client = OSTypeAlloc(AirportItlwmUserClient);
     if (client == nullptr) {
         return kIOReturnNoMemory;
@@ -6229,7 +5409,8 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
 //   SINK (kext, AirportItlwm::deliverExternalPMK):
 //     under one IOCommandGate::runAction hold:
 //       validate (generation_echo == fAssocTarget.generation &&
-//                 !fAssocTargetCanceled);
+//                 !fAssocTargetCanceled &&
+//                 !fAssocTargetTerminating);
 //       on mismatch -> kIOReturnNotPermitted, no ic state change;
 //       on match    -> memcpy 32 bytes into ic->ic_psk;
 //                      set IEEE80211_F_PSK;
@@ -6251,10 +5432,29 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
 //   its ic_psk reset through cancelPendingAssocTarget for the same
 //   reason, so the legacy lifecycle edges (disassociate, leave,
 //   PMKSA clear, RSN disable, JOIN_ABORT, REASSOC) all share the
-//   same atomic critical section.
+//   same atomic critical section. Lifecycle cancels leave
+//   WaitAssociationTarget parked for the next published generation;
+//   releaseAll marks fAssocTargetTerminating so teardown still
+//   returns kIOReturnAborted before the command gate disappears.
 // =====================================================================
 
 namespace {
+
+static constexpr uint32_t kAirportItlwmExternalPmkWaitStepMs = 10;
+
+static unsigned int
+airportItlwmPmkNonZeroByteCount(const struct ieee80211com *ic)
+{
+    if (ic == nullptr)
+        return 0;
+
+    unsigned int nonzero = 0;
+    for (size_t i = 0; i < sizeof(ic->ic_psk); ++i) {
+        if (ic->ic_psk[i] != 0)
+            nonzero++;
+    }
+    return nonzero;
+}
 
 struct AirportItlwmPublishAssocArgs {
     AirportItlwm *self;
@@ -6273,15 +5473,16 @@ struct AirportItlwmWaitAssocArgs {
     IOReturn rc;
 };
 
+struct AirportItlwmCancelAssocArgs {
+    AirportItlwm *self;
+    bool terminating;
+};
+
 struct AirportItlwmDeliverPmkArgs {
     AirportItlwm *self;
     const struct apple80211_key *key;
     uint64_t generation_echo;
     IOReturn rc;
-    int wparc;
-    uint32_t ic_flags_after;
-    uint32_t ic_rsnprotos_after;
-    uint32_t ic_rsnakms_after;
 };
 
 static IOReturn
@@ -6307,6 +5508,7 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
     s->fAssocTarget.authtype_lower = a->authtype_lower;
     s->fAssocTarget.authtype_upper = a->authtype_upper;
     s->fAssocTargetCanceled = false;
+    s->fAssocTargetTerminating = false;
     a->out_generation = s->fAssocGenCounter;
     s->getCommandGate()->commandWakeup(&s->fAssocTarget,
                                        /*oneThread=*/false);
@@ -6320,19 +5522,22 @@ airportItlwmWaitAssocAction(OSObject * /*owner*/, void *arg0,
 {
     AirportItlwmWaitAssocArgs *a = (AirportItlwmWaitAssocArgs *)arg0;
     AirportItlwm *s = a->self;
-    while (!s->fAssocTargetCanceled &&
-           (s->fAssocTarget.generation == 0 ||
-            s->fAssocTarget.generation == a->last_acked)) {
+    for (;;) {
+        if (s->fAssocTargetTerminating) {
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+        if (!s->fAssocTargetCanceled &&
+            s->fAssocTarget.generation != 0 &&
+            s->fAssocTarget.generation != a->last_acked) {
+            break;
+        }
         IOReturn sr = s->getCommandGate()->commandSleep(
             &s->fAssocTarget, THREAD_ABORTSAFE);
         if (sr != THREAD_AWAKENED && sr != THREAD_TIMED_OUT) {
             a->rc = kIOReturnAborted;
             return kIOReturnSuccess;
         }
-    }
-    if (s->fAssocTargetCanceled) {
-        a->rc = kIOReturnAborted;
-        return kIOReturnSuccess;
     }
     memcpy(a->out, &s->fAssocTarget,
            sizeof(AirportItlwmAssociationTarget));
@@ -6351,11 +5556,14 @@ airportItlwmCancelAssocAction(OSObject * /*owner*/, void *arg0,
     // under the same gate either (a) ran fully before us and we now
     // wipe its install, or (b) runs after us and sees
     // fAssocTargetCanceled=true / fAssocTarget.generation=0 and
-    // rejects. Used by clearExternalPmkEligibilityLocked and
-    // releaseAll where wiping ic_psk is the intended lifecycle
-    // semantic.
-    AirportItlwm *s = (AirportItlwm *)arg0;
+    // rejects. Lifecycle resets keep WaitAssociationTarget parked
+    // for the next generation; teardown marks terminating so waiters
+    // can return kIOReturnAborted before the command gate disappears.
+    AirportItlwmCancelAssocArgs *a = (AirportItlwmCancelAssocArgs *)arg0;
+    AirportItlwm *s = a->self;
     s->fAssocTargetCanceled = true;
+    if (a->terminating)
+        s->fAssocTargetTerminating = true;
     memset(&s->fAssocTarget, 0, sizeof(s->fAssocTarget));
     if (s->fHalService != nullptr) {
         struct ieee80211com *ic = s->fHalService->get80211Controller();
@@ -6409,12 +5617,9 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     // and our writes because it serializes on the same gate.
     AirportItlwmDeliverPmkArgs *a = (AirportItlwmDeliverPmkArgs *)arg0;
     AirportItlwm *s = a->self;
-    a->wparc            = 0;
-    a->ic_flags_after   = 0;
-    a->ic_rsnprotos_after = 0;
-    a->ic_rsnakms_after = 0;
 
     if (a->generation_echo == 0 ||
+        s->fAssocTargetTerminating ||
         s->fAssocTargetCanceled ||
         s->fAssocTarget.generation == 0 ||
         a->generation_echo != s->fAssocTarget.generation) {
@@ -6432,17 +5637,16 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     memcpy(ic->ic_psk, a->key->key, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
     ic->ic_external_pmk_owner = 0;
+    s->getCommandGate()->commandWakeup(&s->fAssocTarget,
+                                       /*oneThread=*/false);
 
     struct ieee80211_wpaparams wpa;
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
     wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     wpa.i_akms    = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
-    a->wparc = ieee80211_ioctl_setwpaparms(ic, &wpa);
+    ieee80211_ioctl_setwpaparms(ic, &wpa);
 
-    a->ic_flags_after     = (uint32_t)ic->ic_flags;
-    a->ic_rsnprotos_after = (uint32_t)ic->ic_rsnprotos;
-    a->ic_rsnakms_after   = (uint32_t)ic->ic_rsnakms;
     a->rc = kIOReturnSuccess;
     return kIOReturnSuccess;
 }
@@ -6479,13 +5683,86 @@ publishPendingAssocTarget(const uint8_t *ssid,
     a.authtype_upper = authtype_upper;
     a.out_generation = 0;
     gate->runAction(&airportItlwmPublishAssocAction, &a);
-    XYLog("plti_publish_assoc_target PUBLISHED generation=%llu "
-          "ssid_len=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x "
-          "authtype_lower=0x%x authtype_upper=0x%x\n",
-          (unsigned long long)a.out_generation, ssid_len,
-          bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
-          authtype_lower, authtype_upper);
     return a.out_generation;
+}
+
+bool AirportItlwm::
+waitForExternalPmkReady(uint64_t generation,
+                        uint32_t timeout_ms,
+                        uint32_t *waited_ms,
+                        unsigned int *pmk_nonzero_bytes,
+                        uint32_t *external_owner,
+                        uint32_t *sleep_result,
+                        bool *in_gate)
+{
+    if (waited_ms != nullptr)
+        *waited_ms = 0;
+    if (pmk_nonzero_bytes != nullptr)
+        *pmk_nonzero_bytes = 0;
+    if (external_owner != nullptr)
+        *external_owner = 0;
+    if (sleep_result != nullptr)
+        *sleep_result = THREAD_AWAKENED;
+    if (in_gate != nullptr)
+        *in_gate = false;
+
+    struct ieee80211com *ic = (fHalService != nullptr)
+        ? fHalService->get80211Controller() : nullptr;
+    IOCommandGate *gate = getCommandGate();
+    IOWorkLoop *wl = getWorkLoop();
+    const bool gatedContext = wl != nullptr && wl->inGate();
+    if (in_gate != nullptr)
+        *in_gate = gatedContext;
+
+    uint32_t waited = 0;
+    uint32_t lastSleep = THREAD_AWAKENED;
+    unsigned int nonzero = airportItlwmPmkNonZeroByteCount(ic);
+    uint32_t owner = (ic != nullptr)
+        ? (uint32_t)ic->ic_external_pmk_owner : 0;
+
+    while (!(nonzero != 0 && owner == 0) && waited < timeout_ms) {
+        if (generation != 0 &&
+            (fAssocTargetCanceled ||
+             fAssocTarget.generation != generation)) {
+            lastSleep = THREAD_INTERRUPTED;
+            break;
+        }
+
+        uint32_t step = kAirportItlwmExternalPmkWaitStepMs;
+        if (step > timeout_ms - waited)
+            step = timeout_ms - waited;
+
+        if (gatedContext && gate != nullptr) {
+            AbsoluteTime deadline;
+            int deadlineNs = (int)(step * 1000000U);
+            clock_interval_to_deadline(deadlineNs, kNanosecondScale,
+                                       reinterpret_cast<uint64_t *>(&deadline));
+            lastSleep = gate->commandSleep(&fAssocTarget, deadline,
+                                           THREAD_ABORTSAFE);
+            if (lastSleep != THREAD_AWAKENED &&
+                lastSleep != THREAD_TIMED_OUT)
+                break;
+        } else {
+            IOSleep(step);
+            lastSleep = THREAD_TIMED_OUT;
+        }
+
+        waited += step;
+        nonzero = airportItlwmPmkNonZeroByteCount(ic);
+        owner = (ic != nullptr)
+            ? (uint32_t)ic->ic_external_pmk_owner : 0;
+    }
+
+    if (waited_ms != nullptr)
+        *waited_ms = waited;
+    if (pmk_nonzero_bytes != nullptr)
+        *pmk_nonzero_bytes = nonzero;
+    if (external_owner != nullptr)
+        *external_owner = owner;
+    if (sleep_result != nullptr)
+        *sleep_result = lastSleep;
+
+    return nonzero != 0 && owner == 0;
 }
 
 IOReturn AirportItlwm::
@@ -6503,37 +5780,30 @@ waitAssocTarget(uint64_t last_acked,
     a.out = out;
     a.rc = kIOReturnSuccess;
     gate->runAction(&airportItlwmWaitAssocAction, &a);
-    if (a.rc == kIOReturnSuccess) {
-        XYLog("plti_wait_assoc_target RETURNED generation=%llu "
-              "ssid_len=%u\n",
-              (unsigned long long)out->generation, out->ssid_len);
-    }
     return a.rc;
 }
 
 void AirportItlwm::
-cancelPendingAssocTarget(const char *reason)
+cancelPendingAssocTarget(const char *reason, bool terminating)
 {
+    (void)reason;
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr)
         return;
-    gate->runAction(&airportItlwmCancelAssocAction, this);
-    XYLog("plti_cancel_assoc_target CLEARED reason=%s "
-          "ic_psk_zeroed=1 IEEE80211_F_PSK_dropped=1 "
-          "ic_external_pmk_owner=0\n",
-          reason != nullptr ? reason : "?");
+    AirportItlwmCancelAssocArgs a;
+    a.self = this;
+    a.terminating = terminating;
+    gate->runAction(&airportItlwmCancelAssocAction, &a);
 }
 
 void AirportItlwm::
 invalidatePendingAssocTargetOnly(const char *reason)
 {
+    (void)reason;
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr)
         return;
     gate->runAction(&airportItlwmInvalidateAssocOnlyAction, this);
-    XYLog("plti_invalidate_assoc_target_only CLEARED reason=%s "
-          "ic_psk_preserved=1\n",
-          reason != nullptr ? reason : "?");
 }
 
 IOReturn AirportItlwm::
@@ -6559,6 +5829,8 @@ deliverExternalPMK(const struct apple80211_key *key,
     //   - command gate unavailable     -> kIOReturnNotReady
     //   - inside the gated action:
     //     - generation_echo == 0       -> kIOReturnNotPermitted
+    //     - fAssocTargetTerminating
+    //                                  -> kIOReturnNotPermitted
     //     - fAssocTargetCanceled       -> kIOReturnNotPermitted
     //     - fAssocTarget.generation == 0
     //                                  -> kIOReturnNotPermitted
@@ -6573,11 +5845,6 @@ deliverExternalPMK(const struct apple80211_key *key,
         XYLog("deliverExternalPMK REJECT key=NULL\n");
         return kIOReturnBadArgument;
     }
-    XYLog("deliverExternalPMK ENTRY key_len=%u "
-          "cipher=%u flags=%u idx=%u generation_echo=%llu\n",
-          key->key_len, key->key_cipher_type,
-          key->key_flags, key->key_index,
-          (unsigned long long)generation_echo);
     if (key->key_cipher_type != APPLE80211_CIPHER_PMK) {
         XYLog("deliverExternalPMK REJECT_CIPHER cipher=%u expected=%u\n",
               key->key_cipher_type, (unsigned)APPLE80211_CIPHER_PMK);
@@ -6598,10 +5865,6 @@ deliverExternalPMK(const struct apple80211_key *key,
     a.key              = key;
     a.generation_echo  = generation_echo;
     a.rc               = kIOReturnSuccess;
-    a.wparc            = 0;
-    a.ic_flags_after   = 0;
-    a.ic_rsnprotos_after = 0;
-    a.ic_rsnakms_after = 0;
     gate->runAction(&airportItlwmDeliverPmkAction, &a);
     if (a.rc == kIOReturnNotPermitted) {
         XYLog("deliverExternalPMK REJECT_GENERATION echo=%llu\n",
@@ -6612,15 +5875,6 @@ deliverExternalPMK(const struct apple80211_key *key,
         XYLog("deliverExternalPMK NOT_READY ic=NULL\n");
         return a.rc;
     }
-    XYLog("deliverExternalPMK INSTALLED generation_echo=%llu "
-          "ic_psk_len=%zu IEEE80211_F_PSK_set=1 "
-          "ic_external_pmk_owner=0 ic_flags=0x%x "
-          "ic_rsnprotos=0x%x ic_rsnakms=0x%x setwpaparms_rc=%d "
-          "(ENETRESET=%d expected)\n",
-          (unsigned long long)generation_echo,
-          sizeof(((struct ieee80211com *)nullptr)->ic_psk),
-          a.ic_flags_after, a.ic_rsnprotos_after,
-          a.ic_rsnakms_after, a.wparc, (int)ENETRESET);
     return a.rc;
 }
 #endif // __IO80211_TARGET >= __MAC_26_0

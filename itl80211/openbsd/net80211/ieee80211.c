@@ -76,11 +76,9 @@ int	ieee80211_debug = 0;
 
 ///compat for undefined symbols
 int _stop(struct kmod_info*, void*) {
-    IOLog("_stop(struct kmod_info*, void*) has been invoked\n");
     return 0;
 };
 int _start(struct kmod_info*, void*) {
-    IOLog("_start(struct kmod_info*, void*) has been invoked\n");
     return 0;
 };
 ///
@@ -120,9 +118,6 @@ ieee80211_begin_bgscan(struct _ifnet *ifp)
         
         ic->ic_flags |= IEEE80211_F_BGSCAN;
         ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
-        if (ifp->if_flags & IFF_DEBUG)
-            XYLog("%s: begin background scan\n", ifp->if_xname);
-        
         /* Driver calls ieee80211_end_scan() when done. */
     }
 }
@@ -151,7 +146,6 @@ ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
     
     if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic) == 0) {
         ic->ic_flags |= IEEE80211_F_BGSCAN;
-        DPRINTF(("%s: begin cache background scan\n", ifp->if_xname));
     }
 }
 
@@ -166,7 +160,6 @@ ieee80211_bgscan_timeout(void *arg)
 void
 ieee80211_channel_init(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     struct ieee80211_channel *c;
     int i;
@@ -217,7 +210,6 @@ ieee80211_channel_init(struct _ifnet *ifp)
 void
 ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
 {
-    IOLog("ieee80211_ifattach\n");
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
@@ -266,7 +258,6 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
 void
 ieee80211_ifdetach(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     timeout_del(&ic->ic_bgscan_timeout);
@@ -381,7 +372,6 @@ ieee80211_configure_ampdu_tx(struct ieee80211com *ic, int enable)
 void
 ieee80211_media_init(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
 #define    ADD(_ic, _s, _o) \
 ifmedia_add(&(_ic)->ic_media, \
 IFM_MAKEWORD(IFM_IEEE80211, (_s), (_o), 0), 0, NULL)
@@ -1607,11 +1597,12 @@ ieee80211_plcp2rate(u_int8_t plcp, enum ieee80211_phymode mode)
  * The recovered Apple contract reserves the terminal WCL selectors
  * (0x49 success, 0xcf failure) for events that follow an actual lower
  * host-owner reassociation request send/attempt. Publication is gated
- * on ic_wcl_reassoc_owner_active and on a leaf state that proves the
- * lower owner had reached at least the REASSOC_REQ_SENT stage (or one
- * of the post-send-attempt failure leaves SEND_FAIL/TIMEOUT). Pre-send
- * producer abandonment must close the owner state without firing any
- * terminal selector; the gate below enforces that invariant.
+ * on ic_wcl_reassoc_owner_active and on either a transparent same-BSS
+ * firmware-parity leaf or a leaf state that proves the lower owner had
+ * reached at least the REASSOC_REQ_SENT stage (or one of the
+ * post-send-attempt failure leaves SEND_FAIL/TIMEOUT). Pre-send producer
+ * abandonment must close the owner state without firing any terminal
+ * selector; the gate below enforces that invariant.
  */
 void
 ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)

@@ -53,14 +53,12 @@ attach(IOPCIDevice *device)
 void ItlIwm::
 free()
 {
-    XYLog("%s\n", __FUNCTION__);
     super::free();
 }
 
 void ItlIwm::
 releaseAll()
 {
-    XYLog("%s\n", __FUNCTION__);
     pci_intr_handle *intrHandler = com.ih;
     if (com.sc_calib_to) {
         timeout_del(&com.sc_calib_to);
@@ -92,20 +90,13 @@ IOReturn ItlIwm::
 enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x\n",
-          __PRETTY_FUNCTION__, ifp->if_flags,
-          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
-          com.sc_flags);
     if (ifp->if_flags & IFF_UP) {
         XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags |= IFF_UP;
-    XYLog("DEBUG %s calling DVACT_RESUME\n", __FUNCTION__);
     iwm_activate(&com, DVACT_RESUME);
-    XYLog("DEBUG %s calling DVACT_WAKEUP\n", __FUNCTION__);
     iwm_activate(&com, DVACT_WAKEUP);
-    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
@@ -113,16 +104,12 @@ IOReturn ItlIwm::
 disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d)\n",
-          __FUNCTION__, ifp->if_flags,
-          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags &= ~IFF_UP;
     iwm_activate(&com, DVACT_QUIESCE);
-    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
@@ -167,7 +154,6 @@ setMulticastList(IOEthernetAddress *addr, int count)
     if (addr == NULL)
         addr_count = 0;
     len = roundup(sizeof(struct iwm_mcast_filter_cmd) + addr_count * ETHER_ADDR_LEN, 4);
-    XYLog("%s multicast count=%d bssid=%s\n", __FUNCTION__, count, ether_sprintf(ic->ic_bss->ni_bssid));
     cmd = (struct iwm_mcast_filter_cmd *)malloc(len, 0, 0);
     if (!cmd)
         return kIOReturnError;

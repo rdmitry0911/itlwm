@@ -244,7 +244,6 @@ releaseAll()
 
 void ItlIwx::free()
 {
-    XYLog("%s\n", __FUNCTION__);
     super::free();
 }
 
@@ -263,41 +262,30 @@ getDriverController()
 IOReturn ItlIwx::enable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x\n",
-          __PRETTY_FUNCTION__, ifp->if_flags,
-          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
-          com.sc_flags);
     if (ifp->if_flags & IFF_UP) {
         XYLog("DEBUG %s SKIP: already IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags |= IFF_UP;
-    XYLog("DEBUG %s calling DVACT_RESUME\n", __FUNCTION__);
     int err = iwx_activate(&com, DVACT_RESUME);
     if (err) {
         XYLog("DEBUG %s DVACT_RESUME failed err=%d, clearing IFF_UP\n", __FUNCTION__, err);
         ifp->if_flags &= ~IFF_UP;
         return kIOReturnError;
     }
-    XYLog("DEBUG %s calling DVACT_WAKEUP\n", __FUNCTION__);
     iwx_activate(&com, DVACT_WAKEUP);
-    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
 IOReturn ItlIwx::disable(IONetworkInterface *netif)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
-    XYLog("DEBUG %s if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d)\n",
-          __FUNCTION__, ifp->if_flags,
-          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
     if (!(ifp->if_flags & IFF_UP)) {
         XYLog("DEBUG %s SKIP: already !IFF_UP\n", __FUNCTION__);
         return kIOReturnSuccess;
     }
     ifp->if_flags &= ~IFF_UP;
     iwx_activate(&com, DVACT_QUIESCE);
-    XYLog("DEBUG %s done, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return kIOReturnSuccess;
 }
 
@@ -324,7 +312,6 @@ setMulticastList(IOEthernetAddress *addr, int count)
     if (addr == NULL)
         addr_count = 0;
     len = roundup(sizeof(struct iwx_mcast_filter_cmd) + addr_count * ETHER_ADDR_LEN, 4);
-    XYLog("%s multicast count=%d bssid=%s\n", __FUNCTION__, count, ether_sprintf(ic->ic_bss->ni_bssid));
     cmd = (struct iwx_mcast_filter_cmd *)malloc(len, 0, 0);
     if (!cmd)
         return kIOReturnError;
@@ -572,37 +559,6 @@ static const struct iwx_rate_mcs_info iwx_rate_mcs[IWX_RATE_COUNT] = {
 
 #define IWX_MCS_INDEX_PER_STREAM    (8)
 
-static const char *iwx_rs_pretty_ant(u8 ant)
-{
-    static const char * const ant_name[] = {
-        [IWX_ANT_NONE] = "None",
-        [IWX_ANT_A]    = "A",
-        [IWX_ANT_B]    = "B",
-        [IWX_ANT_AB]   = "AB",
-    };
-
-    if (ant > ARRAY_SIZE(ant_name))
-        return "UNKNOWN";
-
-    return ant_name[ant];
-}
-
-static const char *iwx_rs_pretty_bw(u8 bw)
-{
-    static const char * const pretty_bw[] = {
-        "20Mhz",
-        "40Mhz",
-        "80Mhz",
-        "160 Mhz",
-        "320Mhz",
-    };
-
-    if (bw > ARRAY_SIZE(pretty_bw))
-        return "UNKNOWN";
-
-    return pretty_bw[bw];
-}
-
 static uint8_t iwx_rs_extract_rate(uint32_t rate_n_flags)
 {
     /* also works for HT because bits 7:6 are zero there */
@@ -645,118 +601,6 @@ static int iwx_hwrate_to_plcp_idx(uint32_t rate_n_flags)
     }
 
     return IWX_RATE_INVALID;
-}
-
-static int iwx_rs_pretty_print_rate_v1(char *buf, int bufsz, const u32 rate)
-{
-    char *type;
-    uint8_t mcs = 0, nss = 0;
-    uint8_t ant = (rate & IWX_RATE_MCS_ANT_AB_MSK) >> IWX_RATE_MCS_ANT_POS;
-    uint32_t bw = (rate & IWX_RATE_MCS_CHAN_WIDTH_MSK_V1) >>
-        IWX_RATE_MCS_CHAN_WIDTH_POS;
-
-    if (!(rate & IWX_RATE_MCS_HT_MSK_V1) &&
-        !(rate & IWX_RATE_MCS_VHT_MSK_V1) &&
-        !(rate & IWX_RATE_MCS_HE_MSK_V1)) {
-        int index = iwx_hwrate_to_plcp_idx(rate);
-
-        return snprintf(buf, bufsz, "Legacy | ANT: %s Rate: %s Mbps",
-                 iwx_rs_pretty_ant(ant),
-                 index == IWX_RATE_INVALID ? "BAD" :
-                 iwx_rate_mcs[index].mbps);
-    }
-
-    if (rate & IWX_RATE_MCS_VHT_MSK_V1) {
-        type = "VHT";
-        mcs = rate & IWX_RATE_VHT_MCS_RATE_CODE_MSK;
-        nss = ((rate & IWX_RATE_VHT_MCS_NSS_MSK)
-               >> IWX_RATE_VHT_MCS_NSS_POS) + 1;
-    } else if (rate & IWX_RATE_MCS_HT_MSK_V1) {
-        type = "HT";
-        mcs = rate & IWX_RATE_HT_MCS_INDEX_MSK_V1;
-        nss = ((rate & IWX_RATE_HT_MCS_NSS_MSK_V1)
-               >> IWX_RATE_HT_MCS_NSS_POS_V1) + 1;
-    } else if (rate & IWX_RATE_MCS_HE_MSK_V1) {
-        type = "HE";
-        mcs = rate & IWX_RATE_VHT_MCS_RATE_CODE_MSK;
-        nss = ((rate & IWX_RATE_VHT_MCS_NSS_MSK)
-               >> IWX_RATE_VHT_MCS_NSS_POS) + 1;
-    } else {
-        type = "Unknown"; /* shouldn't happen */
-    }
-
-    return snprintf(buf, bufsz,
-             "0x%x: %s | ANT: %s BW: %s MCS: %d NSS: %d %s%s%s%s%s",
-             rate, type, iwx_rs_pretty_ant(ant), iwx_rs_pretty_bw(bw), mcs, nss,
-             (rate & IWX_RATE_MCS_SGI_MSK_V1) ? "SGI " : "NGI ",
-             (rate & IWX_RATE_MCS_STBC_MSK) ? "STBC " : "",
-             (rate & IWX_RATE_MCS_LDPC_MSK_V1) ? "LDPC " : "",
-             (rate & IWX_RATE_HE_DUAL_CARRIER_MODE_MSK) ? "DCM " : "",
-             (rate & IWX_RATE_MCS_BF_MSK) ? "BF " : "");
-}
-
-static bool iwx_he_is_sgi(u32 rate_n_flags)
-{
-    u32 type = rate_n_flags & IWX_RATE_MCS_HE_TYPE_MSK;
-    u32 ltf_gi = rate_n_flags & IWX_RATE_MCS_HE_GI_LTF_MSK;
-
-    if (type == IWX_RATE_MCS_HE_TYPE_SU ||
-        type == IWX_RATE_MCS_HE_TYPE_EXT_SU)
-        return ltf_gi == IWX_RATE_MCS_HE_SU_4_LTF_08_GI;
-    return false;
-}
-
-static int iwx_rs_pretty_print_rate(char *buf, int bufsz, const uint32_t rate)
-{
-    char *type;
-    u8 mcs = 0, nss = 0;
-    u8 ant = (rate & IWX_RATE_MCS_ANT_AB_MSK) >> IWX_RATE_MCS_ANT_POS;
-    u32 bw = (rate & IWX_RATE_MCS_CHAN_WIDTH_MSK) >>
-        IWX_RATE_MCS_CHAN_WIDTH_POS;
-    u32 format = rate & IWX_RATE_MCS_MOD_TYPE_MSK;
-    bool sgi;
-
-    if (format == IWX_RATE_MCS_CCK_MSK ||
-        format == IWX_RATE_MCS_LEGACY_OFDM_MSK) {
-        int legacy_rate = rate & IWX_RATE_LEGACY_RATE_MSK;
-        int index = format == IWX_RATE_MCS_CCK_MSK ?
-            legacy_rate :
-            legacy_rate + IWX_FIRST_OFDM_RATE;
-
-        return snprintf(buf, bufsz, "Legacy | ANT: %s Rate: %s Mbps",
-                 iwx_rs_pretty_ant(ant),
-                 index == IWX_RATE_INVALID ? "BAD" :
-                 iwx_rate_mcs[index].mbps);
-    }
-
-    if (format ==  IWX_RATE_MCS_VHT_MSK)
-        type = "VHT";
-    else if (format == IWX_RATE_MCS_HT_MSK)
-        type = "HT";
-    else if (format == IWX_RATE_MCS_HE_MSK)
-        type = "HE";
-    else if (format == IWX_RATE_MCS_EHT_MSK)
-        type = "EHT";
-    else
-        type = "Unknown"; /* shouldn't happen */
-
-    mcs = format == IWX_RATE_MCS_HT_MSK ?
-        IWX_RATE_HT_MCS_INDEX(rate) :
-        rate & IWX_RATE_MCS_CODE_MSK;
-    nss = ((rate & IWX_RATE_MCS_NSS_MSK)
-           >> IWX_RATE_MCS_NSS_POS) + 1;
-    sgi = format == IWX_RATE_MCS_HE_MSK ?
-        iwx_he_is_sgi(rate) :
-        rate & IWX_RATE_MCS_SGI_MSK;
-
-    return snprintf(buf, bufsz,
-             "0x%x: %s | ANT: %s BW: %s MCS: %d NSS: %d %s%s%s%s%s",
-             rate, type, iwx_rs_pretty_ant(ant), iwx_rs_pretty_bw(bw), mcs, nss,
-             (sgi) ? "SGI " : "NGI ",
-             (rate & IWX_RATE_MCS_STBC_MSK) ? "STBC " : "",
-             (rate & IWX_RATE_MCS_LDPC_MSK) ? "LDPC " : "",
-             (rate & IWX_RATE_HE_DUAL_CARRIER_MODE_MSK) ? "DCM " : "",
-             (rate & IWX_RATE_MCS_BF_MSK) ? "BF " : "");
 }
 
 #if NBPFILTER > 0
@@ -902,9 +746,6 @@ iwx_init_fw_sec(struct iwx_softc *sc, const struct iwx_fw_sects *fws,
             return ret;
         ctxt_dram->lmac_img[i] =
             htole64(dram->fw[fw_cnt].paddr);
-        DPRINTFN(3, ("%s: firmware LMAC section %d at 0x%llx size %lld\n", __func__, i,
-            (unsigned long long)dram->fw[fw_cnt].paddr,
-            (unsigned long long)dram->fw[fw_cnt].size));
         fw_cnt++;
     }
 
@@ -917,9 +758,6 @@ iwx_init_fw_sec(struct iwx_softc *sc, const struct iwx_fw_sects *fws,
             return ret;
         ctxt_dram->umac_img[i] =
             htole64(dram->fw[fw_cnt].paddr);
-        DPRINTFN(3, ("%s: firmware UMAC section %d at 0x%llx size %lld\n", __func__, i,
-            (unsigned long long)dram->fw[fw_cnt].paddr,
-            (unsigned long long)dram->fw[fw_cnt].size));
         fw_cnt++;
     }
 
@@ -943,9 +781,6 @@ iwx_init_fw_sec(struct iwx_softc *sc, const struct iwx_fw_sects *fws,
             return ret;
 
         ctxt_dram->virtual_img[i] = htole64(dram->paging[i].paddr);
-        DPRINTFN(3, ("%s: firmware paging section %d at 0x%llx size %lld\n", __func__, i,
-            (unsigned long long)dram->paging[i].paddr,
-            (unsigned long long)dram->paging[i].size));
     }
 
     return 0;
@@ -984,8 +819,6 @@ iwx_alloc_fw_monitor_block(struct iwx_softc *sc, uint8_t max_power,
         if (err)
             continue;
         
-        DPRINTF(("%s: allocated 0x%08x bytes for firmware monitor.\n",
-                 DEVNAME(sc), size));
         break;
     }
     
@@ -993,11 +826,6 @@ iwx_alloc_fw_monitor_block(struct iwx_softc *sc, uint8_t max_power,
         fw_mon->size = 0;
         return err;
     }
-    
-    if (power != max_power)
-        DPRINTF(("%s: Sorry - debug buffer is only %luK while you requested %luK\n",
-                 DEVNAME(sc), (unsigned long)(1 << (power - 10)),
-                 (unsigned long)(1 << (max_power - 10))));
     
     return 0;
 }
@@ -1040,8 +868,6 @@ iwx_apply_debug_destination(struct iwx_softc *sc)
     base_shift = dest_v1->base_shift;
     end_shift = dest_v1->end_shift;
     
-    DPRINTF(("%s: applying debug destination %d\n", DEVNAME(sc), mon_mode));
-    
     if (mon_mode == EXTERNAL_MODE) {
         err = iwx_alloc_fw_monitor(sc, size_power);
         if (err)
@@ -1059,7 +885,6 @@ iwx_apply_debug_destination(struct iwx_softc *sc)
         val = le32toh(dest_v1->reg_ops[i].val);
         op = dest_v1->reg_ops[i].op;
         
-        DPRINTF(("%s: op=%u addr=%u val=%u\n", __func__, op, addr, val));
         switch (op) {
             case CSR_ASSIGN:
                 IWX_WRITE(sc, addr, val);
@@ -1138,7 +963,6 @@ iwx_set_ltr(struct iwx_softc *sc)
 int ItlIwx::
 iwx_ctxt_info_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_context_info *ctxt_info;
     struct iwx_context_info_rbd_cfg *rx_cfg;
     uint32_t control_flags = 0, rb_size;
@@ -1214,7 +1038,6 @@ iwx_ctxt_info_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
 int ItlIwx::
 iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_context_info_gen3 *ctxt_info_gen3;
     struct iwx_prph_scratch *prph_scratch;
     struct iwx_prph_scratch_ctrl_cfg *prph_sc_ctrl;
@@ -1392,7 +1215,6 @@ iwx_firmware_store_section(struct iwx_softc *sc, enum iwx_ucode_type type,
         return EINVAL;
     
     fws = &sc->sc_fw.fw_sects[type];
-    DPRINTFN(3, ("%s: ucode type %d section %d\n", DEVNAME(sc), type, fws->fw_count));
     if (fws->fw_count >= IWX_UCODE_SECT_MAX)
         return EINVAL;
     
@@ -1487,13 +1309,9 @@ iwx_read_firmware(struct iwx_softc *sc)
     size_t len;
     OSData *fwData = NULL;
     
-    XYLog("DEBUG %s entry fw_status=%d\n", __FUNCTION__, fw->fw_status);
     if (fw->fw_status == IWX_FW_STATUS_DONE)
         return 0;
 
-    if (fw->fw_status == IWX_FW_STATUS_INPROGRESS) {
-        XYLog("DEBUG %s WARNING: fw_status INPROGRESS, waiting (INFSLP)...\n", __FUNCTION__);
-    }
     while (fw->fw_status == IWX_FW_STATUS_INPROGRESS)
         tsleep_nsec(&sc->sc_fw, 0, "iwxfwp", INFSLP);
     fw->fw_status = IWX_FW_STATUS_INPROGRESS;
@@ -1528,7 +1346,6 @@ iwx_read_firmware(struct iwx_softc *sc)
     fw->fw_rawsize = fwData->getLength() * 4;
     fw->fw_rawdata = malloc(fw->fw_rawsize, 1, 1);
     uncompressFirmware((u_char *)fw->fw_rawdata, (uint *)&fw->fw_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
-    XYLog("load firmware %s done\n", sc->sc_fwname);
     
     sc->sc_capaflags = 0;
     sc->sc_capa_n_scan_channels = IWX_DEFAULT_SCAN_CHANNELS;
@@ -1554,7 +1371,6 @@ iwx_read_firmware(struct iwx_softc *sc)
     data = uhdr->data;
     len = fw->fw_rawsize - sizeof(*uhdr);
     
-    XYLog("parsing firmware %s\n", sc->sc_fwname);
     while (len >= sizeof(tlv)) {
         size_t tlv_len;
         void *tlv_data;
@@ -1769,7 +1585,6 @@ iwx_read_firmware(struct iwx_softc *sc)
                 fw->n_dest_reg = tlv_len -
                 offsetof(struct iwx_fw_dbg_dest_tlv_v1, reg_ops);
                 fw->n_dest_reg /= sizeof(dest_v1->reg_ops[0]);
-                DPRINTF(("%s: found debug dest; n_dest_reg=%d\n", __func__, fw->n_dest_reg));
                 break;
             }
                 
@@ -1781,7 +1596,6 @@ iwx_read_firmware(struct iwx_softc *sc)
                     fw->dbg_conf_tlv[conf->id] != NULL)
                     break;
                 
-                DPRINTF(("Found debug configuration: %d\n", conf->id));
                 fw->dbg_conf_tlv[conf->id] = conf;
                 fw->dbg_conf_tlv_len[conf->id] = tlv_len;
                 break;
@@ -1861,12 +1675,10 @@ iwx_read_firmware(struct iwx_softc *sc)
                     uint8_t version[32];
                     uint8_t sha1[20];
                 };
-                sfseq_ver *seq_ver = (sfseq_ver *)tlv_data;
                 if (tlv_len != sizeof(struct sfseq_ver)) {
                     err = EINVAL;
                     goto parse_out;
                 }
-                XYLog("TLV_FW_FSEQ_VERSION: %s\n", seq_ver->version);
             }
                 break;
                 
@@ -1927,8 +1739,6 @@ iwx_read_firmware(struct iwx_softc *sc)
     
     KASSERT(err == 0, "err == 0");
     
-    XYLog("firmware parse done\n");
-    
 parse_out:
     if (err) {
         XYLog("%s: firmware parse error %d, "
@@ -1958,15 +1768,12 @@ int ItlIwx::
 iwx_pnvm_handle_section(struct iwx_softc *sc, const uint8_t *data, size_t len)
 {
     struct iwx_ucode_tlv *tlv;
-    uint32_t sha1 = 0;
     uint16_t mac_type = 0, rf_id = 0;
     uint8_t *pnvm_data = NULL, *tmp;
     bool hw_match = false;
     uint32_t size = 0;
     int err = 0;
     struct iwx_prph_scratch_ctrl_cfg *prph_sc_ctrl;
-    
-    XYLog("Handling PNVM section\n");
     
     while (len >= sizeof(*tlv)) {
         uint32_t tlv_len, tlv_type;
@@ -1993,11 +1800,6 @@ iwx_pnvm_handle_section(struct iwx_softc *sc, const uint8_t *data, size_t len)
                           sizeof(__le32), tlv_len);
                     break;
                 }
-                
-                sha1 = le32_to_cpup((__le32 *)data);
-                
-                XYLog("Got IWL_UCODE_TLV_PNVM_VERSION %0x\n",
-                      sha1);
                 break;
             case IWX_UCODE_TLV_HW_TYPE:
                 if (tlv_len < 2 * sizeof(__le16)) {
@@ -2012,9 +1814,6 @@ iwx_pnvm_handle_section(struct iwx_softc *sc, const uint8_t *data, size_t len)
                 mac_type = le16_to_cpup((__le16 *)data);
                 rf_id = le16_to_cpup((__le16 *)(data + sizeof(__le16)));
                 
-                XYLog("Got IWL_UCODE_TLV_HW_TYPE mac_type 0x%0x rf_id 0x%0x\n",
-                      mac_type, rf_id);
-                
                 if (mac_type == CSR_HW_REV_TYPE(sc->sc_hw_rev) &&
                     rf_id == CSR_HW_RFID_TYPE(sc->sc_hw_rf_id))
                     hw_match = true;
@@ -2023,17 +1822,10 @@ iwx_pnvm_handle_section(struct iwx_softc *sc, const uint8_t *data, size_t len)
                 struct iwx_pnvm_section *section = (struct iwx_pnvm_section *)data;
                 u32 data_len = tlv_len - sizeof(*section);
                 
-                XYLog("Got IWL_UCODE_TLV_SEC_RT len %d\n",
-                      tlv_len);
-                
                 /* TODO: remove, this is a deprecated separator */
                 if (le32_to_cpup((__le32 *)data) == 0xddddeeee) {
-                    XYLog("Ignoring separator.\n");
                     break;
                 }
-                
-                XYLog("Adding data (size %d)\n",
-                      data_len);
                 
                 tmp = (uint8_t *)malloc(size + data_len, 0, 0);
                 if (!tmp) {
@@ -2056,11 +1848,8 @@ iwx_pnvm_handle_section(struct iwx_softc *sc, const uint8_t *data, size_t len)
                 break;
             }
             case IWX_UCODE_TLV_PNVM_SKU:
-                XYLog("New PNVM section started, stop parsing.\n");
                 goto done;
             default:
-                XYLog("Found TLV 0x%0x, len %d\n",
-                      tlv_type, tlv_len);
                 break;
         }
         
@@ -2085,8 +1874,6 @@ done:
         err = -ENOENT;
         goto out;
     }
-    
-    XYLog("loaded PNVM version %08x\n", sha1);
     
     prph_sc_ctrl = &((struct iwx_prph_scratch *)sc->prph_scratch_dma.vaddr)->ctrl_cfg;
     
@@ -2151,9 +1938,6 @@ iwx_read_pnvm(struct iwx_softc *sc)
     fw->pnvm_rawsize = fwData->getLength() * 20;
     fw->pnvm_rawdata = malloc(fw->pnvm_rawsize, 1, 1);
     uncompressFirmware((u_char *)fw->pnvm_rawdata, (uint *)&fw->pnvm_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
-    XYLog("load firmware %s done %zu\n", pnvm_name, fw->pnvm_rawsize);
-    
-    XYLog("Parsing PNVM file\n");
     
     data = (uint8_t *)fw->pnvm_rawdata;
     len = fw->pnvm_rawsize;
@@ -2178,13 +1962,6 @@ iwx_read_pnvm(struct iwx_softc *sc)
             struct iwx_sku_id *sku_id =
                 (struct iwx_sku_id *)(data + sizeof(*tlv));
 
-            XYLog("Got IWL_UCODE_TLV_PNVM_SKU len %d\n",
-                     tlv_len);
-            XYLog("sku_id 0x%0x 0x%0x 0x%0x\n",
-                     le32toh(sku_id->data[0]),
-                     le32toh(sku_id->data[1]),
-                     le32toh(sku_id->data[2]));
-
             data += sizeof(*tlv) + roundup(tlv_len, 4);
             len -= roundup(tlv_len, 4);
 
@@ -2204,8 +1981,6 @@ iwx_read_pnvm(struct iwx_softc *sc)
         }
     }
     
-    XYLog("PNVM parse done\n");
-    
 out:
     OSSafeReleaseNULL(fwData);
     
@@ -2215,13 +1990,10 @@ out:
 int ItlIwx::
 iwx_load_pnvm(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry sku_id=[%u,%u,%u]\n", __FUNCTION__,
-          sc->sku_id[0], sc->sku_id[1], sc->sku_id[2]);
     int err;
 
     /* if the SKU_ID is empty, there's nothing to do */
     if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2]) {
-        XYLog("DEBUG %s SKU_ID empty, skip\n", __FUNCTION__);
         return 0;
     }
 
@@ -2237,10 +2009,10 @@ out:
         iwx_nic_unlock(sc);
     }
 
-    XYLog("DEBUG %s waiting 2s for pnvm init_complete (tsleep)...\n", __FUNCTION__);
     err = tsleep_nsec(&sc->sc_init_complete, 0, "iwxinit", SEC_TO_NSEC(2));
-    XYLog("DEBUG %s tsleep returned err=%d sc_init_complete=0x%x\n",
-          __FUNCTION__, err, sc->sc_init_complete);
+    if (err)
+        XYLog("DEBUG %s pnvm init_complete wait FAILED err=%d sc_init_complete=0x%x\n",
+              __FUNCTION__, err, sc->sc_init_complete);
 
     iwx_pnvm_free(&sc->sc_fw);
 
@@ -2872,8 +2644,6 @@ iwx_check_rfkill(struct iwx_softc *sc)
         sc->sc_flags &= ~IWX_FLAG_RFKILL;
     }
     
-    XYLog("%s RF_KILL hw: %d\n", __FUNCTION__, rv);
-
     splx(s);
     return rv;
 }
@@ -2902,7 +2672,6 @@ void ItlIwx::
 iwx_enable_fwload_interrupt(struct iwx_softc *sc)
 {
     
-    XYLog("%s\n", __FUNCTION__);
     if (!sc->sc_msix) {
         sc->sc_intmask = IWX_CSR_INT_BIT_ALIVE | IWX_CSR_INT_BIT_FH_RX;
         IWX_WRITE(sc, IWX_CSR_INT_MASK, sc->sc_intmask);
@@ -2995,14 +2764,12 @@ iwx_set_hw_ready(struct iwx_softc *sc)
 int ItlIwx::
 iwx_prepare_card_hw(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry\n", __FUNCTION__);
     int t = 0;
     int ntries;
 
     if (iwx_set_hw_ready(sc))
         return 0;
 
-    XYLog("DEBUG %s NIC not ready on first try, retrying with PREPARE\n", __FUNCTION__);
     IWX_SETBITS(sc, IWX_CSR_DBG_LINK_PWR_MGMT_REG,
                 IWX_CSR_RESET_LINK_PWR_MGMT_DISABLED);
     DELAY(1000);
@@ -3014,7 +2781,6 @@ iwx_prepare_card_hw(struct iwx_softc *sc)
 
         do {
             if (iwx_set_hw_ready(sc)) {
-                XYLog("DEBUG %s NIC ready after ntries=%d t=%d\n", __FUNCTION__, ntries, t);
                 return 0;
             }
             DELAY(200);
@@ -3050,10 +2816,6 @@ iwx_apm_config(struct iwx_softc *sc)
     cap = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                         sc->sc_cap_off + PCI_PCIE_DCSR2);
     sc->sc_ltr_enabled = (cap & PCI_PCIE_DCSR2_LTREN) ? 1 : 0;
-    DPRINTF(("%s: L1 %sabled - LTR %sabled\n",
-             DEVNAME(sc),
-             (lctl & PCI_PCIE_LCSR_ASPM_L1) ? "En" : "Dis",
-             sc->sc_ltr_enabled ? "En" : "Dis"));
 }
 
 /*
@@ -3065,7 +2827,6 @@ int ItlIwx::
 iwx_apm_init(struct iwx_softc *sc)
 {
     int err = 0;
-    XYLog("DEBUG %s entry\n", __FUNCTION__);
 
     IWX_SETBITS(sc, IWX_CSR_GIO_CHICKEN_BITS,
                 IWX_CSR_GIO_CHICKEN_BITS_REG_BIT_L1A_NO_L0S_RX);
@@ -3077,7 +2838,6 @@ iwx_apm_init(struct iwx_softc *sc)
 
     IWX_SETBITS(sc, IWX_CSR_GP_CNTRL, IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
 
-    XYLog("DEBUG %s polling MAC_CLOCK_READY...\n", __FUNCTION__);
     if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 25000)) {
@@ -3086,7 +2846,6 @@ iwx_apm_init(struct iwx_softc *sc)
         err = ETIMEDOUT;
         goto out;
     }
-    XYLog("DEBUG %s MAC_CLOCK_READY OK\n", __FUNCTION__);
 out:
     if (err)
         XYLog("%s: apm init error %d\n", DEVNAME(sc), err);
@@ -3226,7 +2985,6 @@ iwx_conf_msix_hw(struct iwx_softc *sc, int stopped)
 int ItlIwx::
 iwx_start_hw(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry device_family=%d integrated=%d\n", __FUNCTION__, sc->sc_device_family, sc->sc_integrated);
     int err;
 
     err = iwx_prepare_card_hw(sc);
@@ -3269,7 +3027,6 @@ iwx_start_hw(struct iwx_softc *sc)
 
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
-    XYLog("DEBUG %s done sc_flags=0x%x rfkill=%d\n", __FUNCTION__, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
 
     return 0;
 }
@@ -3278,7 +3035,6 @@ iwx_start_hw(struct iwx_softc *sc)
 void ItlIwx::
 iwx_stop_device(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int qid;
     
     iwx_disable_interrupts(sc);
@@ -3369,8 +3125,6 @@ iwx_nic_config(struct iwx_softc *sc)
     val |= reg_val;
     IWX_WRITE(sc, IWX_CSR_HW_IF_CONFIG_REG, val);
     
-    XYLog("%s Radio type=0x%x-0x%x-0x%x\n", __FUNCTION__, radio_cfg_type,
-          radio_cfg_step, radio_cfg_dash);
 }
 
 int ItlIwx::
@@ -3389,12 +3143,9 @@ int ItlIwx::
 iwx_nic_init(struct iwx_softc *sc)
 {
     int err;
-    XYLog("DEBUG %s entry\n", __FUNCTION__);
 
     iwx_apm_init(sc);
-    XYLog("DEBUG %s apm_init done, calling nic_config\n", __FUNCTION__);
     iwx_nic_config(sc);
-    XYLog("DEBUG %s nic_config done, calling nic_rx_init\n", __FUNCTION__);
 
     err = iwx_nic_rx_init(sc);
     if (err) {
@@ -3403,7 +3154,6 @@ iwx_nic_init(struct iwx_softc *sc)
     }
 
     IWX_SETBITS(sc, IWX_CSR_MAC_SHADOW_REG_CTRL, 0x800fffff);
-    XYLog("DEBUG %s done\n", __FUNCTION__);
 
     return 0;
 }
@@ -3421,7 +3171,6 @@ iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
                int num_slots)
 {
     
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_tx_queue_cfg_cmd cmd;
     struct iwx_rx_packet *pkt;
     struct iwx_tx_queue_cfg_rsp *resp;
@@ -3632,7 +3381,6 @@ void ItlIwx::
 iwx_post_alive(struct iwx_softc *sc)
 {
     
-    XYLog("%s\n", __FUNCTION__);
     iwx_ict_reset(sc);
     
     /*
@@ -3741,9 +3489,6 @@ iwx_schedule_protect_session(struct iwx_softc *sc, struct iwx_node *in,
     
     cmd.conf_id = IWX_SESSION_PROTECT_CONF_ASSOC;
     
-    DPRINTFN(1, ("Add new session protection, duration %d TU\n",
-             htole32(cmd.duration_tu)));
-    
     err = iwx_send_cmd_pdu(sc, iwx_cmd_id(IWX_SESSION_PROTECTION_CMD, IWX_MAC_CONF_GROUP, 0), 0, sizeof(cmd), &cmd);
     if (err)
         XYLog("Couldn't send the SESSION_PROTECTION_CMD %d\n", err);
@@ -3760,8 +3505,6 @@ iwx_cancel_session_protection(struct iwx_softc *sc, struct iwx_node *in)
         .conf_id = IWX_SESSION_PROTECT_CONF_ASSOC,
     };
     int err;
-    
-    DPRINTFN(1, ("Remove session protection\n"));
     
     err = iwx_send_cmd_pdu(sc, iwx_cmd_id(IWX_SESSION_PROTECTION_CMD, IWX_MAC_CONF_GROUP, 0), 0, sizeof(cmd), &cmd);
     if (err)
@@ -3917,10 +3660,6 @@ uint32_t *channel_profile_v4, int nchan_profile)
 
         channel->ic_freq = ieee80211_ieee2mhz(hw_value, flags);
         
-        DPRINTFN(3, ("Ch. %d Flags %x [%sGHz] - No traffic\n",
-              hw_value,
-              channel->ic_flags,
-              (!IEEE80211_IS_CHAN_2GHZ(channel)) ? "5.2" : "2.4"));
     }
 }
 
@@ -3997,7 +3736,6 @@ iwx_clear_reorder_buffer(struct iwx_softc *sc, struct iwx_rxba_data *rxba)
 void ItlIwx::
 iwx_rx_ba_session_expired(void *arg)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_rxba_data *rxba = (struct iwx_rxba_data *)arg;
     struct iwx_softc *sc = rxba->sc;
     struct ieee80211com *ic = &sc->sc_ic;
@@ -4026,7 +3764,6 @@ iwx_rx_ba_session_expired(void *arg)
 void ItlIwx::
 iwx_reorder_timer_expired(void *arg)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
     struct iwx_reorder_buffer *buf = (struct iwx_reorder_buffer *)arg;
     struct iwx_rxba_data *rxba = iwx_rxba_data_from_reorder_buf(buf);
@@ -4259,7 +3996,6 @@ void ItlIwx::
 iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
                uint16_t ssn, uint16_t winsize, int timeout_val, int start)
 {
-    XYLog("%s start=%d tid=%d ssn=%d winsize=%d\n", __FUNCTION__, start, tid, ssn, winsize);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_add_sta_cmd cmd;
     struct iwx_node *in = (struct iwx_node *)ni;
@@ -4444,7 +4180,6 @@ iwx_update_chw(struct ieee80211com *ic)
 void ItlIwx::
 iwx_updateprot(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
@@ -4455,7 +4190,6 @@ iwx_updateprot(struct ieee80211com *ic)
 void ItlIwx::
 iwx_updateslot(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
@@ -4466,7 +4200,6 @@ iwx_updateslot(struct ieee80211com *ic)
 void ItlIwx::
 iwx_updateedca(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
@@ -4477,7 +4210,6 @@ iwx_updateedca(struct ieee80211com *ic)
 void ItlIwx::
 iwx_updatedtim(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
@@ -4510,7 +4242,6 @@ iwx_ba_task(void *arg)
             break;
         if (sc->ba_rx.start_tidmask & (1 << tid)) {
             struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
-            XYLog("%s ba_rx_start tid=%d, ssn=%d\n", __FUNCTION__, tid, ba->ba_winstart);
             that->iwx_sta_rx_agg(sc, ni, tid, ba->ba_winstart,
                                  ba->ba_winsize, ba->ba_timeout_val, 1);
             sc->ba_rx.start_tidmask &= ~(1 << tid);
@@ -4525,7 +4256,6 @@ iwx_ba_task(void *arg)
             break;
         if (sc->ba_tx.start_tidmask & (1 << tid)) {
             ba = &ni->ni_tx_ba[tid];
-            XYLog("%s ba_tx_start tid=%d, ssn=%d\n", __FUNCTION__, tid, ba->ba_winstart);
             if (!that->iwx_nic_lock(sc)) {
                 err = -1;
                 goto out;
@@ -4539,7 +4269,6 @@ iwx_ba_task(void *arg)
             ba->ba_winend = (ba->ba_winstart + ba->ba_winsize - 1) & 0xfff;
             ba->ba_timeout_val = 0;
             ieee80211_addba_resp_accept(ic, ni, tid);
-            XYLog("%s tx queue alloc succeed qid=%d ssn=%d\n", __FUNCTION__, qid, ba->ba_winstart);
         out:
             that->iwx_nic_unlock(sc);
             if (err)
@@ -4608,8 +4337,6 @@ iwx_ampdu_tx_start(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t t
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
-    XYLog("%s tid=%d ssn=%d\n", __FUNCTION__, tid, ba->ba_winstart);
-
     if (tid < 0 || tid >= IWX_MAX_TID_COUNT) {
         XYLog("%s tx agg refused. tid=%d\n", __FUNCTION__, tid);
         return ENOSPC;
@@ -4631,8 +4358,6 @@ iwx_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t ti
     struct ieee80211_tx_ba *ba = &ni->ni_tx_ba[tid];
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-
-    XYLog("%s tid=%d\n", __FUNCTION__, tid);
 
     if (ba->ba_state != IEEE80211_BA_AGREED) {
         return;
@@ -4786,7 +4511,6 @@ out:
 int ItlIwx::
 iwx_load_firmware(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry device_family=%d\n", __FUNCTION__, sc->sc_device_family);
     struct iwx_fw_sects *fws;
     int err/*, w*/;
 
@@ -4794,25 +4518,20 @@ iwx_load_firmware(struct iwx_softc *sc)
 
     fws = &sc->sc_fw.fw_sects[IWX_UCODE_TYPE_REGULAR];
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
-        XYLog("DEBUG %s calling ctxt_info_gen3_init\n", __FUNCTION__);
         err = iwx_ctxt_info_gen3_init(sc, fws);
     } else {
-        XYLog("DEBUG %s calling ctxt_info_init\n", __FUNCTION__);
         err = iwx_ctxt_info_init(sc, fws);
     }
     if (err) {
         XYLog("%s: could not init context info err=%d\n", DEVNAME(sc), err);
         return err;
     }
-    XYLog("DEBUG %s ctxt_info done, waiting 1s for FW load (tsleep)...\n", __FUNCTION__);
 
     /* wait for the firmware to load */
 //    for (w = 0; !sc->sc_uc.uc_intr && w < 10; w++) {
 //        err = tsleep_nsec(&sc->sc_uc, 0, "iwxuc", MSEC_TO_NSEC(100));
 //    }
     err = tsleep_nsec(&sc->sc_uc, 0, "iwxuc", SEC_TO_NSEC(1));
-    XYLog("DEBUG %s tsleep returned err=%d uc_intr=%d uc_ok=%d\n",
-          __FUNCTION__, err, sc->sc_uc.uc_intr, sc->sc_uc.uc_ok);
     if (err || !sc->sc_uc.uc_ok) {
         if (iwx_nic_lock(sc)) {
             XYLog("SecBoot CPU1 Status: 0x%x, CPU2 Status: 0x%x\n",
@@ -4836,16 +4555,13 @@ iwx_load_firmware(struct iwx_softc *sc)
     
     if (!sc->sc_uc.uc_ok)
         return EINVAL;
-    
-    XYLog("%s: load firmware ok\n", DEVNAME(sc));
-    
+
     return err;
 }
 
 int ItlIwx::
 iwx_start_fw(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     int err;
 
     err = iwx_prepare_card_hw(sc);
@@ -4873,10 +4589,10 @@ iwx_start_fw(struct iwx_softc *sc)
         XYLog("DEBUG %s iwx_nic_init FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_nic_init OK, loading firmware\n", __FUNCTION__);
 
     err = iwx_load_firmware(sc);
-    XYLog("DEBUG %s iwx_load_firmware returned %d\n", __FUNCTION__, err);
+    if (err)
+        XYLog("DEBUG %s iwx_load_firmware FAILED err=%d\n", __FUNCTION__, err);
     return err;
 }
 
@@ -4886,8 +4602,6 @@ iwx_send_tx_ant_cfg(struct iwx_softc *sc, uint8_t valid_tx_ant)
     struct iwx_tx_ant_cfg_cmd tx_ant_cmd = {
         .valid = htole32(valid_tx_ant),
     };
-    
-    XYLog("%s select valid tx ant: %u\n", __FUNCTION__, valid_tx_ant);
     return iwx_send_cmd_pdu(sc, IWX_TX_ANT_CONFIGURATION_CMD,
                             0, sizeof(tx_ant_cmd), &tx_ant_cmd);
 }
@@ -4895,7 +4609,6 @@ iwx_send_tx_ant_cfg(struct iwx_softc *sc, uint8_t valid_tx_ant)
 int ItlIwx::
 iwx_send_phy_cfg_cmd(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_phy_cfg_cmd_v3 phy_cfg_cmd;
     uint8_t cmdver;
     
@@ -4915,7 +4628,6 @@ iwx_send_phy_cfg_cmd(struct iwx_softc *sc)
 int ItlIwx::
 iwx_send_dqa_cmd(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_dqa_enable_cmd dqa_cmd = {
         .cmd_queue = htole32(IWX_DQA_CMD_QUEUE),
     };
@@ -4928,7 +4640,6 @@ iwx_send_dqa_cmd(struct iwx_softc *sc)
 int ItlIwx::
 iwx_load_ucode_wait_alive(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry\n", __FUNCTION__);
     int err;
 
     err = iwx_read_firmware(sc);
@@ -4936,21 +4647,18 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
         XYLog("DEBUG %s iwx_read_firmware FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_read_firmware OK\n", __FUNCTION__);
 
     err = iwx_start_fw(sc);
     if (err) {
         XYLog("DEBUG %s iwx_start_fw FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_start_fw OK\n", __FUNCTION__);
 
     err = iwx_load_pnvm(sc);
     if (err) {
         XYLog("DEBUG %s iwx_load_pnvm FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_load_pnvm OK\n", __FUNCTION__);
 
     iwx_post_alive(sc);
     
@@ -4960,8 +4668,6 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
 int ItlIwx::
 iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
 {
-    XYLog("DEBUG %s entry readnvm=%d sc_flags=0x%x rfkill=%d\n",
-          __FUNCTION__, readnvm, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
     const int wait_flags = IWX_INIT_COMPLETE;
     struct iwx_nvm_access_complete_cmd nvm_complete = {};
     struct iwx_init_extended_cfg_cmd init_cfg = {
@@ -4980,7 +4686,6 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
         XYLog("DEBUG %s iwx_load_ucode_wait_alive FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s ucode alive OK\n", __FUNCTION__);
 
     if (sc->sc_tx_with_siso_diversity)
         init_cfg.init_flags |= htole32(IWX_INIT_PHY);
@@ -5010,7 +4715,6 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
               __FUNCTION__, err, sc->sc_init_complete);
         return err;
     }
-    XYLog("DEBUG %s init_complete OK sc_init_complete=0x%x\n", __FUNCTION__, sc->sc_init_complete);
 
     if (readnvm) {
         err = iwx_nvm_get(sc);
@@ -5023,14 +4727,12 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
                 sc->sc_nvm.hw_addr);
 
     }
-    XYLog("DEBUG %s COMPLETE\n", __FUNCTION__);
     return 0;
 }
 
 int ItlIwx::
 iwx_config_ltr(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_ltr_config_cmd cmd = {
         .flags = htole32(IWX_LTR_CFG_FLAG_FEATURE_ENABLE),
     };
@@ -6070,16 +5772,6 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
 
     sc->sc_tx_timer = 0;
 
-    if (le32toh(ba_res->flags) != IWX_BA_RESP_TX_BAR && le32toh(ba_res->flags) != IWX_BA_RESP_TX_AGG){
-        DPRINTFN(3, ("BA_NOTIFICATION flags %x, sent:%d, acked:%d, tfd_cnt:%d, query_frame_cnt:%d, retry_cnt:%d\n",
-              le32toh(ba_res->flags),
-              le16toh(ba_res->txed),
-              le16toh(ba_res->done),
-                     le16toh(ba_res->tfd_cnt),
-              ba_res->query_frame_cnt,
-              ba_res->retry_cnt));
-    }
-
     if (ic->ic_state != IEEE80211_S_RUN)
         return;
 
@@ -6164,26 +5856,13 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     
     sc->sc_tx_timer = 0;
 
-    if (tx_resp->frame_count > 1) {
-        for (int i = 0; i < tx_resp->frame_count; i++) {
-            uint16_t fstatus = le16_to_cpu((&tx_resp->status)[i].status);
-
-            XYLog("status %s (0x%04x), try-count (%d) qid (%d) seq (0x%x)\n",
-                         iwx_get_agg_tx_status(fstatus),
-                         fstatus & IWX_AGG_TX_STATE_STATUS_MSK,
-                         (fstatus & IWX_AGG_TX_STATE_TRY_CNT_MSK) >>
-                         IWX_AGG_TX_STATE_TRY_CNT_POS,
-                         qid,
-                         le16_to_cpu((&tx_resp->status)[i].sequence));
-        }
-    } else {
+    if (tx_resp->frame_count <= 1) {
         tid = tx_resp->ra_tid & 0x0f;
         memcpy(&ssn, &tx_resp->status + tx_resp->frame_count, sizeof(ssn));
         ssn = le32toh(ssn) & 0xfff;
         idx = IWX_AGG_SSN_TO_TXQ_IDX(ssn, ring->ring_count);
         txd = &ring->data[idx];
         iwx_rx_tx_cmd_single(sc, pkt, txd);
-        DPRINTFN(3, ("%s tid=%d ssn=%d idx=%d\n", __FUNCTION__, tid, ssn, idx));
         iwx_ampdu_txq_advance(sc, ring, idx);
         iwx_clear_oactive(sc, ring);
     }
@@ -6244,11 +5923,9 @@ iwx_binding_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action)
     uint32_t status;
     
     if (action == IWX_FW_CTXT_ACTION_ADD && active) {
-        XYLog("binding already added\n");
         return 0;
     }
     if (action == IWX_FW_CTXT_ACTION_REMOVE && !active) {
-        XYLog("binding already removed\n");
         return 0;
     }
     
@@ -6361,18 +6038,6 @@ iwx_phy_ctxt_cmd_v3(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     cmd.ci.channel = htole32(ieee80211_chan2ieee(ic, chan));
     cmd.ci.width = iwx_get_channel_width(ic, chan);
     cmd.ci.ctrl_pos = iwx_get_ctrl_pos(ic, chan);
-
-    XYLog("%s: 2ghz=%d, channel=%d, channel_width=%d pos=%d chains static=0x%x, dynamic=0x%x, "
-          "rx_ant=0x%x, tx_ant=0x%x\n",
-          __FUNCTION__,
-          cmd.ci.band,
-          cmd.ci.channel,
-          cmd.ci.width,
-          cmd.ci.ctrl_pos,
-          chains_static,
-          chains_dynamic,
-          iwx_fw_valid_rx_ant(sc),
-          iwx_fw_valid_tx_ant(sc));
     
     idle_cnt = chains_static;
     active_cnt = chains_dynamic;
@@ -6417,20 +6082,6 @@ iwx_phy_ctxt_cmd_uhb(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     cmd.ci.channel = htole32(ieee80211_chan2ieee(ic, chan));
     cmd.ci.width = iwx_get_channel_width(ic, chan);
     cmd.ci.ctrl_pos = iwx_get_ctrl_pos(ic, chan);
-
-    XYLog("%s: [%s:%s] 2ghz=%d, channel=%d, channel_width=%d pos=%d chains static=0x%x, dynamic=0x%x, "
-          "rx_ant=0x%x, tx_ant=0x%x\n",
-          __FUNCTION__,
-          ic->ic_bss == NULL ? "" : (const char *)ic->ic_bss->ni_essid,
-          ic->ic_bss == NULL ? "" : ether_sprintf(ic->ic_bss->ni_bssid),
-          cmd.ci.band,
-          cmd.ci.channel,
-          cmd.ci.width,
-          cmd.ci.ctrl_pos,
-          chains_static,
-          chains_dynamic,
-          iwx_fw_valid_rx_ant(sc),
-          iwx_fw_valid_tx_ant(sc));
     
     idle_cnt = chains_static;
     active_cnt = chains_dynamic;
@@ -6449,7 +6100,6 @@ iwx_phy_ctxt_cmd(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
                  uint8_t chains_static, uint8_t chains_dynamic, uint32_t action,
                  uint32_t apply_time)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_phy_context_cmd_v1 cmd;
     uint8_t active_cnt, idle_cnt;
@@ -6638,7 +6288,6 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     //        (char *)(void *)desc - (char *)(void *)ring->desc_dma.vaddr,
     //        sizeof (*desc), BUS_DMASYNC_PREWRITE);
     /* Kick command ring. */
-    DPRINTF(("%s: Sending command (%.2x.%.2x), %d bytes at [%d]:%d ver: %d\n", __func__, group_id, cmd->hdr.cmd, cmd->hdr_wide.length, cmd->hdr.idx, cmd->hdr.qid, cmd->hdr_wide.version));
     ring->queued++;
     ring->cur = (ring->cur + 1) % getTxQueueSize();
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
@@ -6754,7 +6403,6 @@ iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code)
     }
     wakeupOn(&ring->desc[idx]);
     
-    DPRINTF(("%s: command 0x%x done\n", __func__, code));
     if (ring->queued == 0) {
         DPRINTF(("%s: unexpected firmware response to command 0x%x\n",
                  DEVNAME(sc), code));
@@ -6844,7 +6492,6 @@ iwx_tx_fill_cmd(struct iwx_softc *sc, struct iwx_node *in,
         }
     } else if (IWX_RIDX_IS_CCK(ridx))
         rate_flags |= IWX_RATE_MCS_CCK_MSK_V1;
-    XYLog("%s hwrate: %d ridx: %d rate: %d minrate: %d\n", __FUNCTION__, hwrate, ridx, iwx_ridx2rate(rs, ridx) & IEEE80211_RATE_VAL, ieee80211_min_basic_rate(ic));
     *rate_n_flags = htole32(rate_flags | hwrate);
     
     return rinfo;
@@ -7088,10 +6735,6 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     data->diag_auth_seq = diag_auth_seq;
     memcpy(data->diag_peer, diag_peer, sizeof(data->diag_peer));
 
-    DPRINTFN(3, ("sending data: 嘤嘤嘤 tid=%d qid=%d idx=%d queued=%d len=%d nsegs=%d flags=0x%08x rate_n_flags=0x%08x offload_assist=%u\n",
-          tid, ring->qid, ring->cur, ring->queued, totlen, nsegs, le32toh(flags),
-          le32toh(rate_n_flags), offload_assist));
-    
     /* Fill TX descriptor. */
     num_tbs = 2 + nsegs;
     desc->num_tbs = htole16(num_tbs);
@@ -7370,7 +7013,6 @@ iwx_power_mac_update_mode(struct iwx_softc *sc, struct iwx_node *in)
 int ItlIwx::
 iwx_power_update_device(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_device_power_cmd cmd = { };
     struct ieee80211com *ic = &sc->sc_ic;
     
@@ -7401,7 +7043,6 @@ iwx_enable_beacon_filter(struct iwx_softc *sc, struct iwx_node *in)
 int ItlIwx::
 iwx_disable_beacon_filter(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_beacon_filter_cmd cmd;
     int err;
     
@@ -7424,7 +7065,6 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     struct ieee80211com *ic = &sc->sc_ic;
     
     if (!update && (sc->sc_flags & IWX_FLAG_STA_ACTIVE)) {
-        XYLog("STA already added\n");
         return 0;
     }
     
@@ -7536,7 +7176,6 @@ int ItlIwx::
 iwx_add_aux_sta(struct iwx_softc *sc)
 {
     
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_add_sta_cmd cmd;
     int err, qid = IWX_DQA_AUX_QUEUE;
     uint32_t status;
@@ -7580,7 +7219,6 @@ iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     int err;
     
     if ((sc->sc_flags & IWX_FLAG_STA_ACTIVE) == 0) {
-        XYLog("sta already removed\n");
         return 0;
     }
     
@@ -7678,7 +7316,6 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
 int ItlIwx::
 iwx_fill_probe_req_v1(struct iwx_softc *sc, struct iwx_scan_probe_req_v1 *preq1)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_scan_probe_req preq2;
     int err, i;
     
@@ -7697,7 +7334,6 @@ iwx_fill_probe_req_v1(struct iwx_softc *sc, struct iwx_scan_probe_req_v1 *preq1)
 int ItlIwx::
 iwx_fill_probe_req(struct iwx_softc *sc, struct iwx_scan_probe_req *preq)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
     struct ieee80211_frame *wh = (struct ieee80211_frame *)preq->buf;
@@ -7800,7 +7436,6 @@ iwx_fill_probe_req(struct iwx_softc *sc, struct iwx_scan_probe_req *preq)
 int ItlIwx::
 iwx_config_umac_scan(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_scan_config *scan_config;
     int err;
     size_t cmd_size;
@@ -7839,7 +7474,6 @@ iwx_config_umac_scan(struct iwx_softc *sc)
 int ItlIwx::
 iwx_config_legacy_umac_scan(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_scan_config_v2 *scan_config;
     struct ieee80211com *ic = &sc->sc_ic;
     int err, nchan;
@@ -8004,7 +7638,6 @@ iwx_get_scan_req_umac_data(struct iwx_softc *sc, struct iwx_scan_req_umac *req)
 int ItlIwx::
 iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_host_cmd hcmd = {
         .id = iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0),
@@ -8179,7 +7812,6 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 int ItlIwx::
 iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     int err = 0, async = bgscan;
     struct iwx_scan_req_umac_v12 *req;
@@ -8278,7 +7910,6 @@ iwx_umac_scan_v12(struct iwx_softc *sc, int bgscan)
 int ItlIwx::
 iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     int err = 0, async = bgscan;
     struct iwx_scan_req_umac_v14 *req;
@@ -8375,7 +8006,6 @@ void ItlIwx::
 iwx_mcc_update(struct iwx_softc *sc, struct iwx_mcc_chub_notif *notif)
 {
    struct ieee80211com *ic = &sc->sc_ic;
-   struct _ifnet *ifp = IC2IFP(ic);
 
     snprintf(sc->sc_fw_mcc, sizeof(sc->sc_fw_mcc), "%c%c",
              (le16toh(notif->mcc) & 0xff00) >> 8, le16toh(notif->mcc) & 0xff);
@@ -8383,11 +8013,6 @@ iwx_mcc_update(struct iwx_softc *sc, struct iwx_mcc_chub_notif *notif)
         (*sc->sc_ic.ic_event_handler)(&sc->sc_ic, IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
     }
     sc->sc_fw_mcc_int = notif->mcc;
-
-    if (ifp->if_flags & IFF_DEBUG) {
-        DPRINTFN(3, ("%s: firmware has detected regulatory domain '%s' "
-               "(0x%x)\n", DEVNAME(sc), sc->sc_fw_mcc, le16toh(notif->mcc)));
-    }
 
    /* TODO: Schedule a task to send MCC_UPDATE_CMD? */
 }
@@ -8797,11 +8422,9 @@ iwx_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action,
     int active = (sc->sc_flags & IWX_FLAG_MAC_ACTIVE);
     
     if (action == IWX_FW_CTXT_ACTION_ADD && active) {
-        XYLog("MAC already added\n");
         return 0;
     }
     if (action == IWX_FW_CTXT_ACTION_REMOVE && !active) {
-        XYLog("MAC already removed\n");
         return 0;
     }
 
@@ -8950,11 +8573,9 @@ iwx_update_quotas(struct iwx_softc *sc, struct iwx_node *in, int running)
 void ItlIwx::
 iwx_add_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
 {
-    XYLog("%s %s\n", __FUNCTION__, task->name);
     int s = splnet();
     
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
-        XYLog("%s %s sc->sc_flags & IWX_FLAG_SHUTDOWN\n", __FUNCTION__, task->name);
         splx(s);
         return;
     }
@@ -8969,7 +8590,6 @@ iwx_add_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
 void ItlIwx::
 iwx_del_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
 {
-    XYLog("%s %s\n", __FUNCTION__, task->name);
     if (task_del(taskq, task)) {
         //        refcnt_rele(&sc->task_refs);
     }
@@ -8978,9 +8598,7 @@ iwx_del_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
 int ItlIwx::
 iwx_scan(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
-    struct _ifnet *ifp = IC2IFP(ic);
     int err;
     
     if (sc->sc_flags & IWX_FLAG_BGSCAN) {
@@ -9006,10 +8624,6 @@ iwx_scan(struct iwx_softc *sc)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
     sc->sc_flags |= IWX_FLAG_SCANNING;
-    if (ifp->if_flags & IFF_DEBUG)
-        XYLog("%s: %s -> %s\n", ifp->if_xname,
-              ieee80211_state_name[ic->ic_state],
-              ieee80211_state_name[IEEE80211_S_SCAN]);
     if ((sc->sc_flags & IWX_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
         ieee80211_node_cleanup(ic, ic->ic_bss);
@@ -9023,7 +8637,6 @@ iwx_scan(struct iwx_softc *sc)
 int ItlIwx::
 iwx_bgscan(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)IC2IFP(ic)->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     int err;
@@ -9054,7 +8667,6 @@ iwx_umac_scan_abort(struct iwx_softc *sc)
 int ItlIwx::
 iwx_scan_abort(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int err;
     
     err = iwx_umac_scan_abort(sc);
@@ -9364,7 +8976,6 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
 
     cmd_id = iwx_cmd_id(IWX_TLC_MNG_CONFIG_CMD, IWX_DATA_PATH_GROUP, 0);
     cmdver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_TLC_MNG_CONFIG_CMD);
-    XYLog("%s cmdver %d\n", __FUNCTION__, cmdver);
     if (cmdver == 4) {
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC,
                                 sizeof(cfg_cmd), &cfg_cmd);
@@ -9486,7 +9097,6 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
     struct ieee80211_rateset *rs = &ni->ni_rates;
     uint32_t rate_n_flags;
     int i;
-    char pretty_rate[100];
     uint8_t notifver;
     uint32_t format;
 
@@ -9496,15 +9106,8 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
 
     rate_n_flags = le32toh(notif->rate);
     notifver = iwx_lookup_notif_ver(sc, IWX_DATA_PATH_GROUP, IWX_TLC_MNG_UPDATE_NOTIF);
-    if (notifver < 3 || notifver == IWX_FW_CMD_VER_UNKNOWN) {
-        iwx_rs_pretty_print_rate_v1(pretty_rate, sizeof(pretty_rate),
-                                    rate_n_flags);
+    if (notifver < 3 || notifver == IWX_FW_CMD_VER_UNKNOWN)
         rate_n_flags = iwx_new_rate_from_v1(rate_n_flags);
-    } else {
-        iwx_rs_pretty_print_rate(pretty_rate, sizeof(pretty_rate),
-                                 rate_n_flags);
-    }
-    XYLog("%s new rate: %s\n", __FUNCTION__, pretty_rate);
     // AppleBCMWLANCore::getMCS_VHT reads the cached "nrate" config carrier.
     // The firmware TLC update is the Intel-side producer for the same runtime
     // notion of current transmit rate, so preserve the normalized v2 bitfield
@@ -9584,7 +9187,6 @@ iwx_phy_ctxt_update(struct iwx_softc *sc, struct iwx_phy_ctxt *phyctxt,
 int ItlIwx::
 iwx_auth(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     uint32_t duration;
@@ -9606,26 +9208,11 @@ iwx_auth(struct iwx_softc *sc)
                                   ic->ic_ibss_chan, 1, 1, 0);
         if (err)
             return err;
-        /* Diagnostic probe (auth-ACK boundary): phy_ctxt_update
-         * success leaf for monitor opmode. Logged so the iwx_auth
-         * preconditioning trace shows the channel programming
-         * succeeded before any subsequent firmware command. */
-        IWX_AUTH_DIAG("iwx_auth: phy_ctxt_update MONITOR OK chan=%d "
-              "generation=%d\n",
-              ieee80211_chan2ieee(ic, ic->ic_ibss_chan), generation);
     } else {
         err = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[0],
                                   in->in_ni.ni_chan, 1, 1, 0);
         if (err)
             return err;
-        /* Diagnostic probe (auth-ACK boundary): phy_ctxt_update
-         * success leaf for STA opmode. Logged so the iwx_auth
-         * preconditioning trace shows the AP-channel programming
-         * succeeded before mac_ctxt_cmd. The leaf is named in the
-         * analysis report's preconditioning enumeration. */
-        IWX_AUTH_DIAG("iwx_auth: phy_ctxt_update STA OK chan=%d "
-              "generation=%d\n",
-              ieee80211_chan2ieee(ic, in->in_ni.ni_chan), generation);
     }
     in->in_phyctxt = &sc->sc_phyctxt[0];
     IEEE80211_ADDR_COPY(in->in_macaddr, in->in_ni.ni_macaddr);
@@ -9637,11 +9224,6 @@ iwx_auth(struct iwx_softc *sc)
         return err;
     }
     sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
-    /* Diagnostic probe (auth-ACK boundary): step boundary marker,
-     * no behavior change. Emitted at the success path only so the
-     * leaf-level trace shows which iwx_auth step succeeded before
-     * the next firmware command. */
-    IWX_AUTH_DIAG("iwx_auth: mac_ctxt_cmd ADD OK generation=%d\n", generation);
 
     err = iwx_binding_cmd(sc, in, IWX_FW_CTXT_ACTION_ADD);
     if (err) {
@@ -9650,7 +9232,6 @@ iwx_auth(struct iwx_softc *sc)
         goto rm_mac_ctxt;
     }
     sc->sc_flags |= IWX_FLAG_BINDING_ACTIVE;
-    IWX_AUTH_DIAG("iwx_auth: binding_cmd ADD OK generation=%d\n", generation);
 
     err = iwx_add_sta_cmd(sc, in, 0);
     if (err) {
@@ -9658,10 +9239,6 @@ iwx_auth(struct iwx_softc *sc)
               DEVNAME(sc), err);
         goto rm_binding;
     }
-    IWX_AUTH_DIAG("iwx_auth: add_sta_cmd OK generation=%d sta_id=%d\n",
-          generation,
-          (ic->ic_opmode == IEEE80211_M_MONITOR) ? IWX_MONITOR_STA_ID
-                                                : IWX_STATION_ID);
 
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         err = iwx_enable_txq(sc, IWX_MONITOR_STA_ID,
@@ -9669,19 +9246,16 @@ iwx_auth(struct iwx_softc *sc)
                              sc->txq[IWX_DQA_INJECT_MONITOR_QUEUE].ring_count);
         if (err)
             goto rm_sta;
-        IWX_AUTH_DIAG("iwx_auth: enable_txq MONITOR OK generation=%d\n", generation);
         return 0;
     }
 
     err = iwx_enable_mgmt_queue(sc);
     if (err)
         goto rm_sta;
-    IWX_AUTH_DIAG("iwx_auth: enable_mgmt_queue OK generation=%d\n", generation);
 
     err = iwx_clear_statistics(sc);
     if (err)
         goto rm_sta;
-    IWX_AUTH_DIAG("iwx_auth: clear_statistics OK generation=%d\n", generation);
     
     /*
      * Prevent the FW from wandering off channel during association
@@ -9703,26 +9277,16 @@ iwx_auth(struct iwx_softc *sc)
      */
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
         err = iwx_schedule_protect_session(sc, in, duration);
-        /* Diagnostic probe (auth-ACK boundary): SESSION_PROT_CMD
-         * scheduling result. Logs whether the firmware accepted the
-         * channel-protection time event. */
-        IWX_AUTH_DIAG("iwx_auth: schedule_protect_session SESSION_PROT_CMD "
-              "duration_tu=%u err=%d generation=%d\n",
-              duration, err, generation);
+        if (err)
+            IWX_AUTH_DIAG("iwx_auth: schedule_protect_session SESSION_PROT_CMD "
+                  "duration_tu=%u err=%d generation=%d\n",
+                  duration, err, generation);
     } else {
         iwx_protect_session(sc, in, duration, in->in_ni.ni_intval / 2);
-        /* Diagnostic probe (auth-ACK boundary): legacy TIME_EVENT
-         * path on firmwares without SESSION_PROT_CMD capability. */
-        IWX_AUTH_DIAG("iwx_auth: protect_session legacy duration_tu=%u "
-              "min_duration_tu=%u generation=%d\n",
-              duration, in->in_ni.ni_intval / 2, generation);
     }
 
-    /* Diagnostic probe (auth-ACK boundary): iwx_auth return marker.
-     * Logs the final err so the trace bounds a partial-success
-     * iwx_auth (error after some step succeeded) from a
-     * full-success return. */
-    IWX_AUTH_DIAG("iwx_auth: returning err=%d generation=%d\n", err, generation);
+    if (err)
+        IWX_AUTH_DIAG("iwx_auth: returning err=%d generation=%d\n", err, generation);
     return err;
     
 rm_sta:
@@ -9744,7 +9308,6 @@ rm_mac_ctxt:
 int ItlIwx::
 iwx_deauth(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int err;
@@ -9803,7 +9366,6 @@ iwx_deauth(struct iwx_softc *sc)
 int ItlIwx::
 iwx_run(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int err;
@@ -10093,7 +9655,6 @@ iwx_media_change(struct _ifnet *ifp)
 void ItlIwx::
 iwx_newstate_task(void *psc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_softc *sc = (struct iwx_softc *)psc;
     struct ieee80211com *ic = &sc->sc_ic;
     enum ieee80211_state nstate = sc->ns_nstate;
@@ -10102,7 +9663,6 @@ iwx_newstate_task(void *psc)
     int err = 0, s = splnet();
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
-    XYLog("%s sc->sc_flags & IWX_FLAG_SHUTDOWN %s\n", __FUNCTION__, sc->sc_flags & IWX_FLAG_SHUTDOWN ? "true" : "false");
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
         /* iwx_stop() is waiting for us. */
         //        refcnt_rele_wake(&sc->task_refs);
@@ -10380,7 +9940,6 @@ iwx_sf_config(struct iwx_softc *sc, int new_state)
 int ItlIwx::
 iwx_send_bt_init_conf(struct iwx_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_bt_coex_cmd bt_cmd;
     
     bt_cmd.mode = htole32(IWX_BT_COEX_WIFI);
@@ -10432,7 +9991,6 @@ iwx_send_soc_conf(struct iwx_softc *sc)
 int ItlIwx::
 iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwx_mcc_update_cmd mcc_cmd;
     struct iwx_host_cmd hcmd = {
         .id = IWX_MCC_UPDATE_CMD,
@@ -10478,9 +10036,6 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
         goto out;
     }
 
-    DPRINTF(("MCC status=0x%x mcc=0x%x cap=0x%x time=0x%x geo_info=0x%x source_id=0x%d n_channels=%u\n",
-             resp->status, resp->mcc, resp->cap, resp->time, resp->geo_info, resp->source_id, resp->n_channels));
-
     /* Update channel map for net80211 and our scan configuration. */
     iwx_init_channel_map(sc, NULL, resp->channels, resp->n_channels);
     
@@ -10520,7 +10075,6 @@ iwx_send_temp_report_ths_cmd(struct iwx_softc *sc)
 int ItlIwx::
 iwx_init_hw(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     struct ieee80211com *ic = &sc->sc_ic;
     int err, i;
 
@@ -10529,21 +10083,18 @@ iwx_init_hw(struct iwx_softc *sc)
         XYLog("DEBUG %s iwx_preinit FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_preinit OK\n", __FUNCTION__);
 
     err = iwx_start_hw(sc);
     if (err) {
         XYLog("DEBUG %s iwx_start_hw FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_start_hw OK\n", __FUNCTION__);
 
     err = iwx_run_init_mvm_ucode(sc, 0);
     if (err) {
         XYLog("DEBUG %s iwx_run_init_mvm_ucode FAILED err=%d\n", __FUNCTION__, err);
         return err;
     }
-    XYLog("DEBUG %s iwx_run_init_mvm_ucode OK\n", __FUNCTION__);
     
     if (!iwx_nic_lock(sc))
         return EBUSY;
@@ -10691,8 +10242,6 @@ iwx_init(struct _ifnet *ifp)
     int err, generation;
     int i;
 
-    XYLog("DEBUG %s entry: if_flags=0x%x sc_flags=0x%x\n", __FUNCTION__, ifp->if_flags, sc->sc_flags);
-
     memset(sc->sc_tid_data, 0, sizeof(sc->sc_tid_data));
     for (i = 0; i < ARRAY_SIZE(sc->sc_tid_data); i++) {
         sc->sc_tid_data[i].qid = IWX_INVALID_QUEUE;
@@ -10712,7 +10261,6 @@ iwx_init(struct _ifnet *ifp)
             iwx_stop_device(sc);
         return err;
     }
-    XYLog("DEBUG %s iwx_init_hw OK\n", __FUNCTION__);
 
     if (sc->sc_nvm.sku_cap_11n_enable)
         iwx_setup_ht_rates(sc);
@@ -10726,7 +10274,6 @@ iwx_init(struct _ifnet *ifp)
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
     ifp->if_flags |= IFF_RUNNING;
-    XYLog("DEBUG %s IFF_RUNNING set, if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
 
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
@@ -10754,7 +10301,6 @@ iwx_init(struct _ifnet *ifp)
         }
     } while (ic->ic_state != IEEE80211_S_SCAN);
 
-    XYLog("DEBUG %s COMPLETE: ic_state=SCAN if_flags=0x%x\n", __FUNCTION__, ifp->if_flags);
     return 0;
 }
 
@@ -10853,8 +10399,6 @@ iwx_stop(struct _ifnet *ifp)
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int i, s = splnet();
-
-    XYLog("DEBUG %s entry: if_flags=0x%x sc_flags=0x%x\n", __FUNCTION__, ifp->if_flags, sc->sc_flags);
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 
@@ -11324,8 +10868,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
         
         code = IWX_WIDE_ID(pkt->hdr.group_id, pkt->hdr.cmd);
         
-        DPRINTFN(3, ("%s gid=%d cmd=%d code=0x%02x qid=%d idx=%d packet_len=%d payload_len=%d\n", __FUNCTION__, pkt->hdr.group_id, pkt->hdr.cmd, code, qid, idx, iwx_rx_packet_len(pkt), iwx_rx_packet_payload_len(pkt)));
-        
         if (!iwx_rx_pkt_valid(pkt))
             break;
         
@@ -11410,7 +10952,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 struct iwx_alive_resp_v4 *resp4;
                 struct iwx_alive_resp_v5 *resp5;
                 
-                DPRINTF(("%s: firmware alive, size=%d\n", __FUNCTION__, iwx_rx_packet_payload_len(pkt)));
                 if (iwx_rx_packet_payload_len(pkt) == sizeof(*resp4)) {
                     SYNC_RESP_STRUCT(resp4, pkt, struct iwx_alive_resp_v4 *);
                     sc->sc_uc.uc_lmac_error_event_table[0] = le32toh(
@@ -11443,11 +10984,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                     sc->sku_id[0] = le32toh(resp5->sku_id.data[0]);
                     sc->sku_id[1] = le32toh(resp5->sku_id.data[1]);
                     sc->sku_id[2] = le32toh(resp5->sku_id.data[2]);
-                    
-                    XYLog("Got sku_id: 0x0%x 0x0%x 0x0%x\n",
-                                 sc->sku_id[0],
-                                 sc->sku_id[1],
-                                 sc->sku_id[2]);
                 }
                 
                 sc->sc_uc.uc_intr = 1;
@@ -11542,7 +11078,9 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 wakeupOn(&sc->sc_init_complete);
                 struct iwl_pnvm_init_complete_ntfy *pnvm_ntf;
                 SYNC_RESP_STRUCT(pnvm_ntf, pkt, struct iwl_pnvm_init_complete_ntfy *);
-                XYLog("PNVM complete notification received with status 0x%0x\n", le32toh(pnvm_ntf->status));
+                if (le32toh(pnvm_ntf->status) != 0)
+                    XYLog("PNVM init complete notification failed status 0x%0x\n",
+                          le32toh(pnvm_ntf->status));
                 break;
                 
             case IWX_INIT_COMPLETE_NOTIF:
@@ -11651,7 +11189,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                      * and know the dtim period.
                      */
                     sc->sc_flags &= ~IWX_FLAG_TE_ACTIVE;
-                    XYLog("%s finish association\n", __FUNCTION__);
                 }
                 break;
             }
@@ -11739,7 +11276,6 @@ iwx_notif_intr(struct iwx_softc *sc)
     else
         hw = le16toh(((struct iwx_rb_status *)sc->rxq.stat)->closed_rb_num) & 0xfff;
     hw &= (IWX_RX_MQ_RING_COUNT - 1);
-    DPRINTFN(3, ("%s hw=%d\n", __FUNCTION__, hw));
     while (sc->rxq.cur != hw) {
         struct iwx_rx_data *data = &sc->rxq.data[sc->rxq.cur];
         iwx_rx_pkt(sc, data, &ml);
@@ -13205,13 +12741,11 @@ iwx_preinit(struct iwx_softc *sc)
     int err;
     static int attached;
 
-    XYLog("DEBUG iwx_preinit: iwx_prepare_card_hw...\n");
     err = iwx_prepare_card_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
-    XYLog("DEBUG iwx_preinit: iwx_prepare_card_hw done\n");
 
     if (attached) {
         /* Update MAC in case the upper layers changed it. */
@@ -13220,26 +12754,19 @@ iwx_preinit(struct iwx_softc *sc)
         return 0;
     }
 
-    XYLog("DEBUG iwx_preinit: iwx_start_hw...\n");
     err = iwx_start_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
-    XYLog("DEBUG iwx_preinit: iwx_start_hw done\n");
 
-    XYLog("DEBUG iwx_preinit: iwx_run_init_mvm_ucode...\n");
     err = iwx_run_init_mvm_ucode(sc, 1);
-    XYLog("DEBUG iwx_preinit: iwx_run_init_mvm_ucode returned %d\n", err);
     iwx_stop_device(sc);
     if (err)
         return err;
     
-    /* Print version info and MAC address on first successful fw load. */
+    /* Mark first successful firmware load. */
     attached = 1;
-    XYLog("%s: hw rev 0x%x, fw ver %s, address %s\n",
-          DEVNAME(sc), sc->sc_hw_rev & IWX_CSR_HW_REV_TYPE_MSK,
-          sc->sc_fwver, ether_sprintf(sc->sc_nvm.hw_addr));
     
     if (sc->sc_nvm.sku_cap_11n_enable)
         iwx_setup_ht_rates(sc);
@@ -13432,12 +12959,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              dev_info->cores ==
              IWL_SUBDEVICE_CORES(subsystem_device))) {
             sc->sc_cfg = dev_info->cfg;
-            if (dev_info->name)
-                XYLog("Found device: %s fw: %s index: %d:%zu\n", dev_info->name, dev_info->cfg->fwname, i, ARRAY_SIZE(iwl_dev_info_table));
-            else if (dev_info->cfg->name)
-                XYLog("Found device cfg: %s fw: %s index: %d:%zu\n", dev_info->cfg->name, dev_info->cfg->fwname, i, ARRAY_SIZE(iwl_dev_info_table));
-            else
-                XYLog("Found device: No Name fw: %s index: %d:%zu\n", dev_info->cfg->fwname, i, ARRAY_SIZE(iwl_dev_info_table));
         }
     }
     /*
@@ -13480,9 +13001,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
               sc->sc_hw_rev, sc->sc_hw_rf_id);
         return false;
     }
-    XYLog("Found PCI dev %04x/%04x, rev=0x%x, rfid=0x%x fw: %s\n",
-          device, subsystem_device,
-          sc->sc_hw_rev, sc->sc_hw_rf_id, sc->sc_cfg->fwname);
     sc->sc_fwname = sc->sc_cfg->fwname;
     sc->sc_device_family = sc->sc_cfg->device_family;
     sc->sc_integrated = sc->sc_cfg_params->integrated;
@@ -13580,11 +13098,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memcpy(ifp->if_xname, DEVNAME(sc), IFNAMSIZ);
     
     if_attach(ifp);
-    XYLog("DEBUG iwx_attach: ieee80211_ifattach...\n");
     ieee80211_ifattach(ifp, getController());
-    XYLog("DEBUG iwx_attach: ieee80211_media_init...\n");
     ieee80211_media_init(ifp);
-    XYLog("DEBUG iwx_attach: media_init done\n");
 
 #if NBPFILTER > 0
     iwx_radiotap_attach(sc);
@@ -13628,23 +13143,10 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
-    XYLog("DEBUG iwx_attach: calling iwx_preinit...\n");
     if (iwx_preinit(sc)) {
         goto fail5;
     }
-    XYLog("DEBUG iwx_attach: iwx_preinit done OK\n");
-    
-    /* Initialize the project-owned auth-ACK diagnostic carrier
-     * and emit the deterministic smoke marker. The smoke marker
-     * is the carrier-visibility probe: the next approved runtime
-     * cycle must observe this marker via
-     *   sudo log show --info --debug --predicate
-     *     'subsystem == "com.zxystd.AirportItlwm" AND
-     *      category == "iwx.auth_ack"'
-     * before relying on the auth-ACK Case A-F classification
-     * built on the four kext-side leaf probes. */
     iwx_auth_diag_init();
-    IWX_AUTH_DIAG("smoke_marker iwx_attach OK\n");
 
     return true;
     
@@ -13690,11 +13192,6 @@ iwx_init_task(void *arg1)
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL));
 
-    XYLog("DEBUG %s entry: if_flags=0x%x (IFF_UP=%d IFF_RUNNING=%d) sc_flags=0x%x fatal=%d gen=%d/%d\n",
-          __FUNCTION__, ifp->if_flags,
-          !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING),
-          sc->sc_flags, fatal, generation, sc->sc_generation);
-
     //    rw_enter_write(&sc->ioctl_rwl);
     if (generation != sc->sc_generation) {
         XYLog("DEBUG %s SKIP: generation mismatch %d != %d\n", __FUNCTION__, generation, sc->sc_generation);
@@ -13704,17 +13201,13 @@ iwx_init_task(void *arg1)
     }
 
     if (ifp->if_flags & IFF_RUNNING) {
-        XYLog("DEBUG %s stopping (was IFF_RUNNING)\n", __FUNCTION__);
         that->iwx_stop(ifp);
     } else {
         sc->sc_flags &= ~IWX_FLAG_HW_ERR;
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        XYLog("DEBUG %s calling iwx_init\n", __FUNCTION__);
         that->iwx_init(ifp);
-        XYLog("DEBUG %s iwx_init returned, if_flags=0x%x (IFF_RUNNING=%d)\n",
-              __FUNCTION__, ifp->if_flags, !!(ifp->if_flags & IFF_RUNNING));
     } else {
         XYLog("DEBUG %s SKIP iwx_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
@@ -13727,7 +13220,6 @@ iwx_init_task(void *arg1)
 int ItlIwx::
 iwx_resume(struct iwx_softc *sc)
 {
-    XYLog("DEBUG %s entry sc_flags=0x%x\n", __FUNCTION__, sc->sc_flags);
     pcireg_t reg;
     int err;
 
@@ -13740,7 +13232,6 @@ iwx_resume(struct iwx_softc *sc)
         reg = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                             PCI_COMMAND_STATUS_REG);
         if (reg & PCI_COMMAND_INTERRUPT_DISABLE) {
-            XYLog("DEBUG %s clearing PCI_COMMAND_INTERRUPT_DISABLE\n", __FUNCTION__);
             reg &= ~PCI_COMMAND_INTERRUPT_DISABLE;
         }
         pci_conf_write(sc->sc_pct, sc->sc_pcitag,
@@ -13751,8 +13242,9 @@ iwx_resume(struct iwx_softc *sc)
     iwx_check_rfkill(sc);
 
     err = iwx_prepare_card_hw(sc);
-    XYLog("DEBUG %s iwx_prepare_card_hw returned %d, sc_flags=0x%x rfkill=%d\n",
-          __FUNCTION__, err, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
+    if (err)
+        XYLog("DEBUG %s iwx_prepare_card_hw FAILED err=%d sc_flags=0x%x rfkill=%d\n",
+              __FUNCTION__, err, sc->sc_flags, !!(sc->sc_flags & IWX_FLAG_RFKILL));
     return err;
 }
 

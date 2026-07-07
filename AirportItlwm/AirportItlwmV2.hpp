@@ -308,8 +308,15 @@ public:
                                    UInt32 type,
                                    OSDictionary *properties,
                                    IOUserClient **handler) override;
-    IOReturn deliverExternalPMK(const struct apple80211_key *key,
-                                uint64_t generation_echo);
+	IOReturn deliverExternalPMK(const struct apple80211_key *key,
+	                            uint64_t generation_echo);
+	bool waitForExternalPmkReady(uint64_t generation,
+	                             uint32_t timeout_ms,
+	                             uint32_t *waited_ms,
+	                             unsigned int *pmk_nonzero_bytes,
+	                             uint32_t *external_owner,
+	                             uint32_t *sleep_result,
+	                             bool *in_gate);
 #endif
 
 #if __IO80211_TARGET < __MAC_26_0
@@ -424,11 +431,9 @@ public:
     virtual bool isCommandProhibited(int command) override;
     virtual SInt32 handleCardSpecific(IO80211SkywalkInterface *,unsigned long,void *,bool) override;
     virtual IOReturn getDRIVER_VERSION(IO80211SkywalkInterface *interface,apple80211_version_data *data) override {
-        XYLog("%s\n", __FUNCTION__);
         return getDRIVER_VERSION((OSObject *)interface, data);
     };
     virtual IOReturn getHARDWARE_VERSION(IO80211SkywalkInterface *interface,apple80211_version_data *data) override {
-        XYLog("%s\n", __FUNCTION__);
         return getHARDWARE_VERSION((OSObject *)interface, data);
     };
     virtual IOReturn getCARD_CAPABILITIES(IO80211SkywalkInterface *interface,apple80211_capability_data *data) override {
@@ -641,18 +646,18 @@ public:
     //   Blocks under the controller command gate until
     //   fAssocTarget.generation differs from last_acked, then copies
     //   the current target into *out. Returns kIOReturnSuccess on
-    //   success or kIOReturnAborted on cancel.
+    //   success or kIOReturnAborted on controller teardown.
     //
-    // cancelPendingAssocTarget: called on disable / leave / shutdown
-    //   and from clearExternalPmkEligibilityLocked. DESTRUCTIVE
+    // cancelPendingAssocTarget: called on disable / leave / lifecycle
+    //   reset edges and from releaseAll. DESTRUCTIVE
     //   variant. Under the same command gate as deliverExternalPMK,
     //   it zeros the pending generation AND clears ic_psk +
     //   IEEE80211_F_PSK + ic_external_pmk_owner so a concurrent
     //   gated DeliverPMK either ran fully before the cancel (and we
     //   wipe its install) or runs after the cancel (and rejects on
-    //   the now-zero generation). Use only on lifecycle reset
-    //   edges where the host PMK install is intentionally being
-    //   torn down.
+    //   the now-zero generation). Lifecycle reset edges keep the
+    //   helper waiter blocked for the next generation; releaseAll
+    //   marks teardown so waiters return kIOReturnAborted.
     //
     // invalidatePendingAssocTargetOnly: NON-DESTRUCTIVE variant.
     //   Under the same command gate, it zeros only the pending
@@ -678,7 +683,8 @@ public:
                                        uint32_t authtype_upper);
     IOReturn waitAssocTarget(uint64_t last_acked,
                              AirportItlwmAssociationTarget *out);
-    void     cancelPendingAssocTarget(const char *reason);
+    void     cancelPendingAssocTarget(const char *reason,
+                                      bool terminating = false);
     void     invalidatePendingAssocTargetOnly(const char *reason);
 #endif // __IO80211_TARGET >= __MAC_26_0
 
@@ -687,15 +693,18 @@ public:
     // counter, both protected by the controller command gate (mutated
     // only inside file-static airportItlwm*Action helpers run via
     // getCommandGate()->runAction). fAssocTargetCanceled is set when
-    // the kext is going down or the association is reset, causing
-    // waitAssocTarget waiters to abort and deliverExternalPMK to
-    // reject. These fields are intentionally public so the same-
+    // the association is reset, causing deliverExternalPMK to reject
+    // stale echoes while waitAssocTarget keeps waiting for the next
+    // generation. fAssocTargetTerminating is set only when the kext
+    // is going down, causing waitAssocTarget waiters to abort. These
+    // fields are intentionally public so the same-
     // translation-unit action helpers can touch them without needing
     // friend declarations; no external translation unit is expected
     // to read them directly.
     AirportItlwmAssociationTarget fAssocTarget;
     uint64_t                      fAssocGenCounter;
     bool                          fAssocTargetCanceled;
+    bool                          fAssocTargetTerminating;
 #endif
 
 private:

@@ -464,7 +464,6 @@ IOReturn itlwm::selectMedium(const IONetworkMedium *medium) {
 
 void itlwm::stop(IOService *provider)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     super::stop(provider);
     setLinkStatus(kIONetworkLinkValid);
@@ -504,7 +503,6 @@ void itlwm::releaseAll()
 
 void itlwm::free()
 {
-    XYLog("%s\n", __FUNCTION__);
     if (fHalService != NULL) {
         fHalService->release();
         fHalService = NULL;
@@ -514,7 +512,6 @@ void itlwm::free()
 
 IOReturn itlwm::enable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __FUNCTION__);
     super::enable(netif);
     _fCommandGate->enable();
     fHalService->enable(netif);
@@ -525,7 +522,6 @@ IOReturn itlwm::enable(IONetworkInterface *netif)
 
 IOReturn itlwm::disable(IONetworkInterface *netif)
 {
-    XYLog("%s\n", __FUNCTION__);
     super::disable(netif);
     watchdogTimer->cancelTimeout();
     watchdogTimer->disable();

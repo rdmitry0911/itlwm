@@ -246,7 +246,6 @@ fail:    iwm_free_tx_ring(sc, ring);
 int ItlIwm::
 iwm_enable_ac_txq(struct iwm_softc *sc, int qid, int fifo)
 {
-    XYLog("%s\n", __FUNCTION__);
     iwm_nic_assert_locked(sc);
     
     IWM_WRITE(sc, IWM_HBUS_TARG_WRPTR, qid << 8 | 0);
@@ -288,7 +287,6 @@ iwm_enable_ac_txq(struct iwm_softc *sc, int qid, int fifo)
 int ItlIwm::
 iwm_enable_txq(struct iwm_softc *sc, int sta_id, int qid, int fifo, int ssn, int tid, int agg)
 {
-    XYLog("%s qid=%d tid=%d agg=%d\n", __FUNCTION__, qid, tid, agg);
     struct iwm_scd_txq_cfg_cmd cmd;
     int err = 0;
     uint16_t idx;
@@ -424,7 +422,6 @@ iwm_send_soc_conf(struct iwm_softc *sc)
 int ItlIwm::
 iwm_send_update_mcc_cmd(struct iwm_softc *sc, const char *alpha2)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_mcc_update_cmd mcc_cmd;
     struct iwm_host_cmd hcmd = {
         .id = IWM_MCC_UPDATE_CMD,
@@ -527,7 +524,6 @@ iwm_send_temp_report_ths_cmd(struct iwm_softc *sc)
 void ItlIwm::
 iwm_tt_tx_backoff(struct iwm_softc *sc, uint32_t backoff)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_host_cmd cmd = {
         .id = IWM_REPLY_THERMAL_MNG_BACKOFF,
         .len = { sizeof(uint32_t), },
@@ -540,7 +536,6 @@ iwm_tt_tx_backoff(struct iwm_softc *sc, uint32_t backoff)
 void ItlIwm::
 iwm_free_fw_paging(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     int i;
     
     if (sc->fw_paging_db[0].fw_paging_block.vaddr == NULL)
@@ -590,16 +585,10 @@ iwm_fill_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
     }
     
     /* copy the CSS block to the dram */
-    XYLog("%s: Paging: load paging CSS to FW, sec = %d\n",
-          DEVNAME(sc), sec_idx);
-    
     memcpy(sc->fw_paging_db[0].fw_paging_block.vaddr,
            image->fw_sect[sec_idx].fws_data,
            sc->fw_paging_db[0].fw_paging_size);
-    
-    XYLog("%s: Paging: copied %d CSS bytes to first block\n",
-          DEVNAME(sc), sc->fw_paging_db[0].fw_paging_size);
-    
+
     sec_idx++;
     
     /*
@@ -612,10 +601,7 @@ iwm_fill_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
         memcpy(sc->fw_paging_db[idx].fw_paging_block.vaddr,
                (const char *)image->fw_sect[sec_idx].fws_data + offset,
                sc->fw_paging_db[idx].fw_paging_size);
-        
-        XYLog("%s: Paging: copied %d paging bytes to block %d\n",
-              DEVNAME(sc), sc->fw_paging_db[idx].fw_paging_size, idx);
-        
+
         offset += sc->fw_paging_db[idx].fw_paging_size;
     }
     
@@ -624,9 +610,6 @@ iwm_fill_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
         memcpy(sc->fw_paging_db[idx].fw_paging_block.vaddr,
                (const char *)image->fw_sect[sec_idx].fws_data + offset,
                IWM_FW_PAGING_SIZE * sc->num_of_pages_in_last_blk);
-        
-        XYLog("%s: Paging: copied %d pages in the last block %d\n",
-              DEVNAME(sc), sc->num_of_pages_in_last_blk, idx);
     }
     
     return 0;
@@ -667,11 +650,6 @@ iwm_alloc_fw_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
         num_of_pages -
         IWM_NUM_OF_PAGE_PER_GROUP * (sc->num_of_paging_blk - 1);
 
-    XYLog("%s: Paging: allocating mem for %d paging blocks, each block"
-        " holds 8 pages, last block holds %d pages\n", DEVNAME(sc),
-        sc->num_of_paging_blk,
-        sc->num_of_pages_in_last_blk);
-
     /* allocate block of 4Kbytes for paging CSS */
     error = iwm_dma_contig_alloc(sc->sc_dmat,
         &sc->fw_paging_db[blk_idx].fw_paging_block, IWM_FW_PAGING_SIZE,
@@ -683,9 +661,6 @@ iwm_alloc_fw_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
     }
 
     sc->fw_paging_db[blk_idx].fw_paging_size = IWM_FW_PAGING_SIZE;
-
-    XYLog("%s: Paging: allocated 4K(CSS) bytes for firmware paging.\n",
-        DEVNAME(sc));
 
     /*
      * allocate blocks in dram.
@@ -706,9 +681,6 @@ iwm_alloc_fw_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
         sc->fw_paging_db[blk_idx].fw_paging_size =
             IWM_PAGING_BLOCK_SIZE;
 
-        XYLog(
-            "%s: Paging: allocated 32K bytes for firmware paging.\n",
-            DEVNAME(sc));
     }
 
     return 0;
@@ -717,7 +689,6 @@ iwm_alloc_fw_paging_mem(struct iwm_softc *sc, const struct iwm_fw_sects *image)
 int ItlIwm::
 iwm_save_fw_paging(struct iwm_softc *sc, const struct iwm_fw_sects *fw)
 {
-    XYLog("%s\n", __FUNCTION__);
     int ret;
     
     ret = iwm_alloc_fw_paging_mem(sc, fw);
@@ -731,7 +702,6 @@ iwm_save_fw_paging(struct iwm_softc *sc, const struct iwm_fw_sects *fw)
 int ItlIwm::
 iwm_send_paging_cmd(struct iwm_softc *sc, const struct iwm_fw_sects *fw)
 {
-    XYLog("%s\n", __FUNCTION__);
     int blk_idx;
     uint32_t dev_phy_addr;
     struct iwm_fw_paging_cmd fw_paging_cmd = {

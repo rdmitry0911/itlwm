@@ -125,7 +125,6 @@
 int ItlIwm::
 iwm_send_bt_init_conf(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_bt_coex_cmd bt_cmd;
     
     bt_cmd.mode = htole32(IWM_BT_COEX_NW);

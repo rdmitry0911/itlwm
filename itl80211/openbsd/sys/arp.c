@@ -252,50 +252,6 @@ etheraddr_string(const u_char *ep)
 void
 debug_print_arp(const char *tag, mbuf_t m)
 {
-    size_t len = mbuf_len(m);
-    ether_header_t *eh = (ether_header_t *)mbuf_data(m);
-    if (len >= sizeof(ether_header_t) &&
-        (eh->ether_type == htons(ETHERTYPE_ARP) || eh->ether_type == htons(ETHERTYPE_REVARP))) {
-        u_char *p = (u_char *)eh + sizeof(ether_header);
-        len -= sizeof(ether_header);
-        const struct ether_arp *ap = (const struct ether_arp *)p;
-        u_short pro, hrd, op;
-        pro = EXTRACT_16BITS(&ap->arp_pro);
-        hrd = EXTRACT_16BITS(&ap->arp_hrd);
-        op = EXTRACT_16BITS(&ap->arp_op);
-        if ((pro != ETHERTYPE_IP && pro != ETHERTYPE_TRAIL)
-            || ap->arp_hln != sizeof(SHA(ap))
-            || ap->arp_pln != sizeof(SPA(ap))) {
-            XYLog("%s arp-#%d for proto #%d (%d) hardware #%d (%d)\n",
-                tag, op, pro, ap->arp_pln, hrd, ap->arp_hln);
-        }
-        if (pro == ETHERTYPE_TRAIL)
-            XYLog("%s trailer-\n", tag);
-        switch (op) {
-
-        case ARPOP_REQUEST:
-            XYLog("%s arp who-has %s tell %s\n", tag, ipaddr_string(TPA(ap)), ipaddr_string(SPA(ap)));
-            break;
-
-        case ARPOP_REPLY:
-            XYLog("%s arp reply %s is-at %s\n", tag, ipaddr_string(SPA(ap)), etheraddr_string(SHA(ap)));
-            break;
-
-        case ARPOP_REVREQUEST:
-            XYLog("%s rarp who-is %s tell %s\n", tag, etheraddr_string(THA(ap)),
-            etheraddr_string(SHA(ap)));
-            break;
-
-        case ARPOP_REVREPLY:
-            XYLog("%s rarp reply %s at %s\n", tag, etheraddr_string(THA(ap)),
-            ipaddr_string(TPA(ap)));
-            break;
-
-        default:
-            XYLog("%s arp-#%d\n", tag, op);
-            break;
-        }
-        if (hrd != ARPHRD_ETHER)
-            XYLog("%s  hardware #%d\n", tag, hrd);
-    }
+    (void)tag;
+    (void)m;
 }

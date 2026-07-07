@@ -222,7 +222,6 @@ int ItlIwm::
 iwm_nvm_read_section(struct iwm_softc *sc, uint16_t section, uint8_t *data,
                      uint16_t *len, size_t max_len)
 {
-    XYLog("%s\n", __FUNCTION__);
     uint16_t chunklen, seglen;
     int err = 0;
     
@@ -332,7 +331,6 @@ iwm_parse_nvm_data(struct iwm_softc *sc, const uint16_t *nvm_hw,
 int ItlIwm::
 iwm_parse_nvm_sections(struct iwm_softc *sc, struct iwm_nvm_section *sections)
 {
-    XYLog("%s\n", __FUNCTION__);
     const uint16_t *hw, *sw, *calib, *mac_override = NULL, *phy_sku = NULL;
     const uint16_t *regulatory = NULL;
     int n_regulatory = 0;
@@ -397,7 +395,6 @@ iwm_parse_nvm_sections(struct iwm_softc *sc, struct iwm_nvm_section *sections)
 int ItlIwm::
 iwm_nvm_init(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_nvm_section nvm_sections[IWM_NVM_NUM_OF_SECTIONS];
     int i, section, err = 0;
     uint16_t len;

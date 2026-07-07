@@ -403,9 +403,6 @@ ieee80211_ra_next_rateset(struct ieee80211_ra_node *rn, struct ieee80211com *ic,
         panic("%s: invalid probing mode %d", __func__, rn->probing);
     
     if (found) {
-#ifdef RA_DEBUG
-        DPRINTF(("%s rs befor_idx=%d after_idx=%d sgi=%d nss=%d sup_nss=%d bw=%d probing=%d\n", __FUNCTION__, rs->rs_index, rsnext->rs_index, rsnext->sgi, rsnext->nss, support_nss(ni), rsnext->band_width, rn->probing));
-#endif
         return rsnext;
     }
     return NULL;
@@ -647,20 +644,6 @@ ieee80211_ra_best_rate(struct ieee80211_ra_node *rn,
         }
     }
 
-#ifdef RA_DEBUG
-    if (rn->best_mcs != best) {
-        DPRINTF(("MCS %d is best; MCS{cur|avg|loss}:", best));
-        for (i = 0; i < IEEE80211_HT_RATESET_NUM_MCS; i++) {
-            struct ieee80211_ra_goodput_stats *g = &rn->g[i];
-            if ((rn->valid_rates & (1 << i)) == 0)
-                continue;
-            DPRINTF((" %d{%s|", i, ra_fp_sprintf(g->measured)));
-            DPRINTF(("%s|", ra_fp_sprintf(g->average)));
-            DPRINTF(("%s%%}", ra_fp_sprintf(g->loss)));
-        }
-        DPRINTF(("\n"));
-    }
-#endif
     return best;
 }
 
@@ -778,9 +761,6 @@ ieee80211_ra_add_stats_ht(struct ieee80211_ra_node *rn,
     rn->valid_probes |= 1U << mcs;
 
     if (g->nprobe_fail > g->nprobe_pkts) {
-        DPRINTF(("%s fail %u > pkts %u\n",
-            ether_sprintf(ni->ni_macaddr),
-            g->nprobe_fail, g->nprobe_pkts));
         g->nprobe_fail = g->nprobe_pkts;
     }
 
@@ -828,7 +808,6 @@ ieee80211_ra_choose(struct ieee80211_ra_node *rn, struct ieee80211com *ic,
         ieee80211_ra_probe_clear(rn, ni);
         if (!ieee80211_ra_intra_mode_ra_finished(rn, ic, ni)) {
             ieee80211_ra_probe_next_rate(rn, ic, ni);
-            DPRINTFN(3, ("probing MCS %d\n", ni->ni_txmcs));
         } else if (ieee80211_ra_inter_mode_ra_finished(rn, ni)) {
             rn->best_mcs = ieee80211_ra_best_rate(rn, ni);
             ni->ni_txmcs = rn->best_mcs;
@@ -887,21 +866,6 @@ ieee80211_ra_choose(struct ieee80211_ra_node *rn, struct ieee80211com *ic,
     }
 
     splx(s);
-
-    if (rn->probing) {
-        if (rn->probing & IEEE80211_RA_PROBING_UP)
-            DPRINTFN(2, ("channel becomes good; probe up\n"));
-        else
-            DPRINTFN(2, ("channel becomes bad; probe down\n"));
-
-        DPRINTFN(3, ("measured: %s Mbit/s\n",
-            ra_fp_sprintf(g->measured)));
-        DPRINTFN(3, ("average: %s Mbit/s\n",
-            ra_fp_sprintf(g->average)));
-        DPRINTFN(3, ("stddeviation: %s\n",
-            ra_fp_sprintf(g->stddeviation)));
-        DPRINTFN(3, ("loss: %s%%\n", ra_fp_sprintf(g->loss)));
-    }
 }
 
 void

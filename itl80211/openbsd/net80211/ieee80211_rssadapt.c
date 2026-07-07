@@ -64,16 +64,9 @@
 	(parm##_denom - parm##_old) * (new)) / parm##_denom)
 
 #ifdef IEEE80211_DEBUG
-static	struct timeval lastrateadapt;	/* time of last rate adaptation msg */
-static	int currssadaptps = 0;		/* rate-adaptation msgs this second */
-static	int ieee80211_adaptrate = 4;	/* rate-adaptation max msgs/sec */
-
-#define RSSADAPT_DO_PRINT() \
-	((ieee80211_rssadapt_debug > 0) && \
-	 ppsratecheck(&lastrateadapt, &currssadaptps, ieee80211_adaptrate))
+#define RSSADAPT_DO_PRINT() (0)
 #define	RSSADAPT_PRINTF(X) \
-	if (RSSADAPT_DO_PRINT()) \
-		XYLog X
+	do { ; } while (0)
 
 int ieee80211_rssadapt_debug = 0;
 
@@ -98,6 +91,8 @@ ieee80211_rssadapt_choose(struct ieee80211_rssadapt *ra,
 {
 	u_int16_t (*thrs)[IEEE80211_RATE_SIZE];
 	int flags = 0, i, rateidx = 0, thridx, top;
+
+	(void)dvname;
 
 	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_CTL)
 		flags |= IEEE80211_RATE_BASIC;
@@ -133,15 +128,6 @@ ieee80211_rssadapt_choose(struct ieee80211_rssadapt *ra,
 	}
 
 out:
-#ifdef IEEE80211_DEBUG
-	if (ieee80211_rssadapt_debug && dvname != NULL) {
-		XYLog("%s: dst %s threshold[%d, %d.%d] %d < %d\n",
-		    dvname, ether_sprintf((u_int8_t *)wh->i_addr1), len,
-		    (rs->rs_rates[rateidx] & IEEE80211_RATE_VAL) / 2,
-		    (rs->rs_rates[rateidx] & IEEE80211_RATE_VAL) * 5 % 10,
-		    (*thrs)[rateidx], ra->ra_avg_rssi);
-	}
-#endif /* IEEE80211_DEBUG */
 	return rateidx;
 }
 
@@ -166,16 +152,11 @@ void
 ieee80211_rssadapt_input(struct ieee80211com *ic,
     const struct ieee80211_node *ni, struct ieee80211_rssadapt *ra, int rssi)
 {
-#ifdef IEEE80211_DEBUG
-	int last_avg_rssi = ra->ra_avg_rssi;
-#endif
+	(void)ic;
+	(void)ni;
 
 	ra->ra_avg_rssi = interpolate(master_expavgctl.rc_avgrssi,
 	    ra->ra_avg_rssi, (rssi << 8));
-
-	RSSADAPT_PRINTF(("%s: src %s rssi %d avg %d -> %d\n",
-	    ic->ic_if.if_xname, ether_sprintf((u_int8_t *)ni->ni_macaddr),
-	    rssi, last_avg_rssi, ra->ra_avg_rssi));
 }
 
 /*
@@ -193,13 +174,11 @@ ieee80211_rssadapt_lower_rate(struct ieee80211com *ic,
 	u_int16_t last_thr;
 	u_int i, thridx, top;
 
+	(void)ic;
+
 	ra->ra_nfail++;
 
 	if (id->id_rateidx >= rs->rs_nrates) {
-		RSSADAPT_PRINTF(("ieee80211_rssadapt_lower_rate: "
-		    "%s rate #%d > #%d out of bounds\n",
-		    ether_sprintf((u_int8_t *)ni->ni_macaddr), id->id_rateidx,
-		    rs->rs_nrates - 1));
 		return;
 	}
 
@@ -215,13 +194,6 @@ ieee80211_rssadapt_lower_rate(struct ieee80211com *ic,
 	ra->ra_rate_thresh[thridx][id->id_rateidx] =
 	    interpolate(master_expavgctl.rc_thresh, last_thr,
 	    (id->id_rssi << 8));
-
-	RSSADAPT_PRINTF(("%s: dst %s rssi %d threshold[%d, %d.%d] %d -> %d\n",
-	    ic->ic_if.if_xname, ether_sprintf((u_int8_t *)ni->ni_macaddr),
-	    id->id_rssi, id->id_len,
-	    (rs->rs_rates[id->id_rateidx] & IEEE80211_RATE_VAL) / 2,
-	    (rs->rs_rates[id->id_rateidx] & IEEE80211_RATE_VAL) * 5 % 10,
-	    last_thr, ra->ra_rate_thresh[thridx][id->id_rateidx]));
 }
 
 void
@@ -231,10 +203,9 @@ ieee80211_rssadapt_raise_rate(struct ieee80211com *ic,
 	u_int16_t (*thrs)[IEEE80211_RATE_SIZE], newthr, oldthr;
 	const struct ieee80211_node *ni = id->id_node;
 	const struct ieee80211_rateset *rs = &ni->ni_rates;
-	int i, rate, top;
-#ifdef IEEE80211_DEBUG
-	int j;
-#endif
+	int i, top;
+
+	(void)ic;
 
 	ra->ra_nok++;
 
@@ -251,12 +222,6 @@ ieee80211_rssadapt_raise_rate(struct ieee80211com *ic,
 
 	if (id->id_rateidx + 1 < rs->rs_nrates &&
 	    (*thrs)[id->id_rateidx + 1] > (*thrs)[id->id_rateidx]) {
-		rate = (rs->rs_rates[id->id_rateidx + 1] & IEEE80211_RATE_VAL);
-
-		RSSADAPT_PRINTF(("%s: threshold[%d, %d.%d] decay %d ",
-		    ic->ic_if.if_xname, IEEE80211_RSSADAPT_BKT0 <<
-			(IEEE80211_RSSADAPT_BKTPOWER * i),
-		    rate / 2, rate * 5 % 10, (*thrs)[id->id_rateidx + 1]));
 		oldthr = (*thrs)[id->id_rateidx + 1];
 		if ((*thrs)[id->id_rateidx] == 0)
 			newthr = ra->ra_avg_rssi;
@@ -264,24 +229,5 @@ ieee80211_rssadapt_raise_rate(struct ieee80211com *ic,
 			newthr = (*thrs)[id->id_rateidx];
 		(*thrs)[id->id_rateidx + 1] =
 		    interpolate(master_expavgctl.rc_decay, oldthr, newthr);
-
-		RSSADAPT_PRINTF(("-> %d\n", (*thrs)[id->id_rateidx + 1]));
 	}
-
-#ifdef IEEE80211_DEBUG
-	if (RSSADAPT_DO_PRINT()) {
-		XYLog("%s: dst %s thresholds\n", ic->ic_if.if_xname,
-		    ether_sprintf((u_int8_t *)ni->ni_macaddr));
-		for (i = 0; i < IEEE80211_RSSADAPT_BKTS; i++) {
-			XYLog("%d-byte", IEEE80211_RSSADAPT_BKT0 <<
-			    (IEEE80211_RSSADAPT_BKTPOWER * i));
-			for (j = 0; j < rs->rs_nrates; j++) {
-				rate = (rs->rs_rates[j] & IEEE80211_RATE_VAL);
-				XYLog(", T[%d.%d] = %d", rate / 2,
-				    rate * 5 % 10, ra->ra_rate_thresh[i][j]);
-			}
-			XYLog("\n");
-		}
-	}
-#endif /* IEEE80211_DEBUG */
 }

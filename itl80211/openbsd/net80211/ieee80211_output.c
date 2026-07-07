@@ -128,7 +128,6 @@ int
 ieee80211_output(struct _ifnet *ifp, mbuf_t m, struct sockaddr *dst,
     struct rtentry *rt)
 {
-    XYLog("%s 啊啊啊啊\n", __FUNCTION__);
 	struct ieee80211_frame *wh;
 	struct m_tag *mtag;
 	int error = 0;
@@ -246,35 +245,8 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
                 wh->i_fc[1] |= IEEE80211_FC1_PROTECTED;
         }
 
-        if (ifp->if_flags & IFF_DEBUG) {
-            /* avoid to print too many frames */
-            if (
-    #ifndef IEEE80211_STA_ONLY
-                ic->ic_opmode == IEEE80211_M_IBSS ||
-    #endif
-    #ifdef IEEE80211_DEBUG
-                ieee80211_debug > 1 ||
-    #endif
-                (type & IEEE80211_FC0_SUBTYPE_MASK) !=
-                IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
-                const char *subtype_name;
-                if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
-                    IEEE80211_FC0_SUBTYPE_ACTION)
-                    subtype_name = ieee80211_action_name(wh);
-                else
-                    subtype_name = ieee80211_mgt_subtype_name[
-                        (type & IEEE80211_FC0_SUBTYPE_MASK) >>
-                        IEEE80211_FC0_SUBTYPE_SHIFT];
-                XYLog("%s: sending %s to %s on channel %u mode %s\n",
-                    ifp->if_xname, subtype_name,
-                    ether_sprintf(ni->ni_macaddr),
-                    ieee80211_chan2ieee(ic, ni->ni_chan),
-                    ieee80211_phymode_name[ic->ic_curmode]);
-            }
-        }
-
-	#ifndef IEEE80211_STA_ONLY
-		if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
+		#ifndef IEEE80211_STA_ONLY
+			if (ic->ic_opmode == IEEE80211_M_HOSTAP &&
 		    ieee80211_pwrsave(ic, m, ni) != 0)
 			return 0;
 	#endif
@@ -1262,24 +1234,17 @@ ieee80211_add_ht_ie(uint8_t *frm, struct ieee80211com *ic, struct ieee80211_node
     uint16_t cap = ni->ni_htcaps;;
     cap |= ic->ic_htcaps;
     switch (ni->ni_htop0 & IEEE80211_HTOP0_SCO_MASK) {
-            XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
         case IEEE80211_HTOP0_SCO_SCA:
-            XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
             if (ni->ni_chan != NULL) {
-                XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
                 if ((ni->ni_chan->ic_flags & IEEE80211_CHAN_HT40U) == 0) {
-                    XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
                     cap &= ~IEEE80211_HTCAP_CBW20_40;
                     cap &= ~IEEE80211_HTCAP_SGI40;
                 }
             }
             break;
         case IEEE80211_HTOP0_SCO_SCB:
-            XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
             if (ni->ni_chan != NULL) {
-                XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
                 if ((ni->ni_chan->ic_flags & IEEE80211_CHAN_HT40D) == 0) {
-                    XYLog("%s line=%d\n", __FUNCTION__, __LINE__);
                     cap &= ~IEEE80211_HTCAP_CBW20_40;
                     cap &= ~IEEE80211_HTCAP_SGI40;
                 }

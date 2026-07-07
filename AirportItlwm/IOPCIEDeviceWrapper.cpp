@@ -60,7 +60,6 @@ IOWorkLoop *IOPCIEDeviceWrapper::getWorkLoop() const
 IOService* IOPCIEDeviceWrapper::
 probe(IOService *provider, SInt32 *score)
 {
-    XYLog("%s\n", __PRETTY_FUNCTION__);
     bool isMatch = false;
     super::probe(provider, score);
     UInt8 msiCap;
@@ -81,7 +80,6 @@ probe(IOService *provider, SInt32 *score)
         fHalService = new ItlIwn;
     }
     if (isMatch) {
-        XYLog("%s Found\n", __FUNCTION__);
         device->findPCICapability(PCI_CAP_ID_MSIX, &msixCap);
         if (msixCap)
             pciMsiXClearAndSet(device, msixCap, PCI_MSIX_FLAGS_ENABLE, 0);
@@ -103,9 +101,7 @@ probe(IOService *provider, SInt32 *score)
 bool IOPCIEDeviceWrapper::
 start(IOService *provider)
 {
-    XYLog("DEBUG %s entry provider=%p\n", __PRETTY_FUNCTION__, provider);
     _fWorkloop = IO80211WorkQueue::workQueue();
-    XYLog("DEBUG %s _fWorkloop=%p, calling super::start...\n", __FUNCTION__, _fWorkloop);
 
     // Panic timer: catch hangs inside IOService::start()
     static volatile bool wrapperStartReturned = false;
@@ -128,31 +124,24 @@ start(IOService *provider)
         XYLog("DEBUG %s FAIL: super::start\n", __FUNCTION__);
         return false;
     }
-    XYLog("DEBUG %s super::start OK, _fWorkloop=%p\n", __FUNCTION__, _fWorkloop);
     UInt8 builtIn = 0;
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     PMinit();
     registerPowerDriver(this, powerStateArray, 2);
     provider->joinPMtree(this);
     registerService();
-    XYLog("DEBUG %s COMPLETE fHalService=%p pciNub=%p\n", __FUNCTION__, fHalService, pciNub);
     return true;
 }
 
 void IOPCIEDeviceWrapper::
 stop(IOService *provider)
 {
-    XYLog("DEBUG %s [1] entry provider=%p _fWorkloop=%p\n", __PRETTY_FUNCTION__, provider, _fWorkloop);
-    XYLog("DEBUG %s [2] PMstop\n", __FUNCTION__);
     PMstop();
-    XYLog("DEBUG %s [3] super::stop\n", __FUNCTION__);
     super::stop(provider);
-    XYLog("DEBUG %s [4] DONE\n", __FUNCTION__);
 }
 
 IOReturn IOPCIEDeviceWrapper::
 setPowerState(unsigned long powerStateOrdinal, IOService *whatDevice)
 {
-    XYLog("DEBUG %s ordinal=%lu\n", __FUNCTION__, powerStateOrdinal);
     return IOPMAckImplied;
 }

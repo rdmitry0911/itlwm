@@ -225,7 +225,6 @@ iwm_phy_ctxt_cmd_uhb(struct iwm_softc *sc, struct iwm_phy_ctxt *ctxt,
                      uint8_t chains_static, uint8_t chains_dynamic, uint32_t action,
                      uint32_t apply_time)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_phy_context_cmd_uhb cmd;
     uint8_t active_cnt, idle_cnt;
@@ -260,7 +259,6 @@ iwm_phy_ctxt_cmd(struct iwm_softc *sc, struct iwm_phy_ctxt *ctxt,
     uint8_t chains_static, uint8_t chains_dynamic, uint32_t action,
     uint32_t apply_time)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_phy_context_cmd cmd;
     
     /*

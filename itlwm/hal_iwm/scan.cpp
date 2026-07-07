@@ -451,7 +451,6 @@ iwm_lmac_scan(struct iwm_softc *sc, int bgscan)
 int ItlIwm::
 iwm_config_umac_scan(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_scan_config *scan_config;
     int err, nchan;
@@ -580,7 +579,6 @@ iwm_get_scan_req_umac_data(struct iwm_softc *sc, struct iwm_scan_req_umac *req)
 int ItlIwm::
 iwm_umac_scan(struct iwm_softc *sc, int bgscan)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_host_cmd hcmd = {
         .id = iwm_cmd_id(IWM_SCAN_REQ_UMAC, IWM_LONG_GROUP, 0),
@@ -739,7 +737,6 @@ void ItlIwm::
 iwm_mcc_update(struct iwm_softc *sc, struct iwm_mcc_chub_notif *notif)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct _ifnet *ifp = IC2IFP(ic);
     
     snprintf(sc->sc_fw_mcc, sizeof(sc->sc_fw_mcc), "%c%c",
              (le16toh(notif->mcc) & 0xff00) >> 8, le16toh(notif->mcc) & 0xff);
@@ -747,11 +744,6 @@ iwm_mcc_update(struct iwm_softc *sc, struct iwm_mcc_chub_notif *notif)
         (*sc->sc_ic.ic_event_handler)(&sc->sc_ic, IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
     }
     sc->sc_fw_mcc_int = notif->mcc;
-    
-    if (ifp->if_flags & IFF_DEBUG) {
-        DPRINTFN(3, ("%s: firmware has detected regulatory domain '%s' "
-               "(0x%x)\n", DEVNAME(sc), sc->sc_fw_mcc, le16toh(notif->mcc)));
-    }
     
     /* TODO: Schedule a task to send MCC_UPDATE_CMD? */
 }
@@ -860,9 +852,7 @@ iwm_ack_rates(struct iwm_softc *sc, struct iwm_node *in, int *cck_rates,
 int ItlIwm::
 iwm_scan(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
-    struct _ifnet *ifp = IC2IFP(ic);
     int err;
     
     if (sc->sc_flags & IWM_FLAG_BGSCAN) {
@@ -891,10 +881,6 @@ iwm_scan(struct iwm_softc *sc)
         ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
     
     sc->sc_flags |= IWM_FLAG_SCANNING;
-    if (ifp->if_flags & IFF_DEBUG)
-        XYLog("%s: %s -> %s\n", ifp->if_xname,
-              ieee80211_state_name[ic->ic_state],
-              ieee80211_state_name[IEEE80211_S_SCAN]);
     if ((sc->sc_flags & IWM_FLAG_BGSCAN) == 0) {
         ieee80211_set_link_state(ic, LINK_STATE_DOWN);
         ieee80211_node_cleanup(ic, ic->ic_bss);
@@ -909,7 +895,6 @@ iwm_scan(struct iwm_softc *sc)
 int ItlIwm::
 iwm_bgscan(struct ieee80211com *ic)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_softc *sc = (struct iwm_softc *)IC2IFP(ic)->if_softc;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     int err;

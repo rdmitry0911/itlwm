@@ -105,9 +105,6 @@ ieee80211_amrr_choose(struct ieee80211_amrr *amrr, struct ieee80211_node *ni,
             amn->amn_recovery = 1;
             amn->amn_success = 0;
             increase_rate(ni);
-            DPRINTF(("increase rate=%d,#tx=%d,#retries=%d\n",
-                RV(ni->ni_rates.rs_rates[ni->ni_txrate]),
-                amn->amn_txcnt, amn->amn_retrycnt));
             need_change = 1;
         } else {
             amn->amn_recovery = 0;
@@ -126,9 +123,6 @@ ieee80211_amrr_choose(struct ieee80211_amrr *amrr, struct ieee80211_node *ni,
                     amrr->amrr_min_success_threshold;
             }
             decrease_rate(ni);
-            DPRINTF(("decrease rate=%d,#tx=%d,#retries=%d\n",
-                RV(ni->ni_rates.rs_rates[ni->ni_txrate]),
-                amn->amn_txcnt, amn->amn_retrycnt));
             need_change = 1;
         }
         amn->amn_recovery = 0;

@@ -90,7 +90,6 @@ ieee80211_crypto_attach(struct _ifnet *ifp)
 void
 ieee80211_crypto_detach(struct _ifnet *ifp)
 {
-    XYLog("%s\n", __FUNCTION__);
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 	struct ieee80211_pmk *pmk;
 
@@ -176,7 +175,8 @@ ieee80211_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (error == 0)
         k->k_flags |= IEEE80211_KEY_SWCRYPTO;
     
-    XYLog("%s kid=%d cipher=%d, error=%d\n", __FUNCTION__, k->k_id, k->k_cipher, error);
+    if (error != 0)
+        XYLog("%s kid=%d cipher=%d, error=%d\n", __FUNCTION__, k->k_id, k->k_cipher, error);
 
     return error;
 }
@@ -280,8 +280,6 @@ ieee80211_encrypt(struct ieee80211com *ic, mbuf_t m0,
         return NULL;
     }
     
-    XYLog("%s kid=%d cipher=%d\n", __FUNCTION__, k->k_id, k->k_cipher);
-
 	switch (k->k_cipher) {
 	case IEEE80211_CIPHER_WEP40:
 	case IEEE80211_CIPHER_WEP104:
@@ -486,7 +484,6 @@ typedef union _ANY_CTX {
 void
 ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck)
 {
-    XYLog("%s\n", __FUNCTION__);
 	u_int8_t digest[SHA1_DIGEST_LENGTH];
 	ANY_CTX ctx;	/* XXX off stack? */
 	u_int len;

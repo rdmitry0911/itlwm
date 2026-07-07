@@ -334,7 +334,32 @@ struct iwn_softc {
     uint8_t            auth_seq1_tx_pending;
     uint8_t            auth_seq1_tx_qid;
     uint8_t            auth_seq1_tx_idx;
+    uint16_t        auth_seq1_tx_notif_count;
+    uint16_t        auth_seq1_tx_txdone_count;
+    uint16_t        auth_seq1_tx_other_txdone_count;
+    uint16_t        auth_seq1_tx_lastnotif_qid;
+    uint16_t        auth_seq1_tx_lastnotif_type;
+    uint16_t        auth_seq1_tx_last_txdone_qid;
+    uint16_t        auth_seq1_tx_last_txdone_idx;
+    uint16_t        auth_seq1_rx_mpdu_count;
     uint8_t            auth_seq1_tx_bssid[IEEE80211_ADDR_LEN];
+    uint64_t        dbg_sched_paddr;
+    uint64_t        dbg_kw_paddr;
+    uint64_t        dbg_txq0_paddr;
+    uint64_t        dbg_rxq_paddr;
+    uint32_t        dbg_scd_dram_reg;
+    uint32_t        dbg_scd_dram_expect;
+    uint32_t        dbg_scd_q0;
+    uint32_t        dbg_scd_q4;
+    uint32_t        dbg_scd_rd0;
+    uint32_t        dbg_scd_rd4;
+    uint32_t        dbg_scd_q0_now;
+    uint32_t        dbg_bc_entry;
+    uint32_t        dbg_wrptr_reg;
+    uint16_t        dbg_auth_txstatus;
+    uint8_t         dbg_auth_ackfailcnt;
+    uint8_t         dbg_auth_txrate;
+    uint16_t        dbg_auth_txstatus_seen;
 
     uint32_t        prom_base;
     struct iwn4965_eeprom_band

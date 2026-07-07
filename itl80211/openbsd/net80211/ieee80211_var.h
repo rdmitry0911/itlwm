@@ -729,6 +729,17 @@ struct ieee80211_ess {
 #define IEEE80211_EVT_SCAN_DONE                 4
 #define IEEE80211_EVT_WCL_REASSOC_DONE          5
 #define IEEE80211_EVT_WCL_REASSOC_FAIL          6
+/*
+ * Kernel-PAE 4-way handshake completion. Fired once (on the ni_port_valid
+ * 0->1 transition) from the STA supplicant msg3 handler when the PTK+GTK are
+ * installed and the 802.1X port is opened. On Tahoe the macOS supplicant path
+ * (setCIPHER_KEY) posts APPLE80211_M_RSN_HANDSHAKE_DONE + WCL JoinDone, but the
+ * in-kernel PAE path never calls setCIPHER_KEY, so wifid's WCL join state
+ * machine is never told the handshake completed and fires setWCL_JOIN_ABORT
+ * after a timeout. The driver's eventHandler consumes this event to publish the
+ * completion via the gate-safe controller->postMessage (PostOffice) path.
+ */
+#define IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE    7
 
 /*
  * Host-owned WCL reassociation owner contract recovered from the public
@@ -753,6 +764,7 @@ struct ieee80211_ess {
 
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE              0U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_SETUP             1U
+#define IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT 23U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT  24U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL 25U
 #define IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT 26U
@@ -767,6 +779,7 @@ static __inline int
 ieee80211_wcl_reassoc_leaf_is_post_send(u_int32_t leaf)
 {
     switch (leaf) {
+    case IEEE80211_WCL_REASSOC_OWNER_LEAF_SAME_BSS_TRANSPARENT:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SENT:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_SEND_FAIL:
     case IEEE80211_WCL_REASSOC_OWNER_LEAF_REASSOC_REQ_TIMEOUT:

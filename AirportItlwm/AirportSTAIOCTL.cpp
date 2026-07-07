@@ -9,28 +9,12 @@
 #include "AirportItlwm.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeAssociationContracts.hpp"
-#include <sys/_netstat.h>
 
 extern IOCommandGate *_fCommandGate;
-
-const char* hexdump(uint8_t *buf, size_t len);
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
 static constexpr IOReturn kApple80211ErrConfigNoValue = 0xe00002e3;
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
-
-static bool isTahoeCurrentLinkProbeRequestNumber(int request_number)
-{
-    switch (request_number) {
-        case APPLE80211_IOC_SSID:
-        case APPLE80211_IOC_BSSID:
-        case APPLE80211_IOC_SCAN_RESULT:
-        case APPLE80211_IOC_CURRENT_NETWORK:
-            return true;
-        default:
-            return false;
-    }
-}
 
 static constexpr uint16_t kAppleTahoeQTxpowerTable[40] = {
     0x1a1b, 0x1ba7, 0x1d4b, 0x1f07, 0x20de, 0x22d1, 0x24e1, 0x2710,
@@ -182,14 +166,6 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
         return kIOReturnError;
     IOReturn ret = kIOReturnError;
 
-    if (isTahoeCurrentLinkProbeRequestNumber(request_number)) {
-        XYLog("DEBUG %s type=0x%x req=%s(%d) interface=%p data=%p ic_state=%d\n",
-              __FUNCTION__, request_type,
-              IOCTL_NAMES[request_number >= ARRAY_SIZE(IOCTL_NAMES) ? 0 : request_number],
-              request_number, interface, data,
-              fHalService ? fHalService->get80211Controller()->ic_state : -1);
-    }
-    
     switch (request_number) {
         case APPLE80211_IOC_SSID:  // 1
             IOCTL(request_type, SSID, apple80211_ssid_data);
@@ -403,14 +379,6 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
             break;
     }
 
-    if (isTahoeCurrentLinkProbeRequestNumber(request_number)) {
-        XYLog("DEBUG %s RET type=0x%x req=%s(%d) ret=0x%x ic_state=%d\n",
-              __FUNCTION__, request_type,
-              IOCTL_NAMES[request_number >= ARRAY_SIZE(IOCTL_NAMES) ? 0 : request_number],
-              request_number, ret,
-              fHalService ? fHalService->get80211Controller()->ic_state : -1);
-    }
-
     return ret;
 }
 
@@ -427,8 +395,6 @@ getSSID(OSObject *object,
         memcpy(sd->ssid_bytes, ic->ic_des_essid, strlen((const char*)ic->ic_des_essid));
         sd->ssid_len = (uint32_t)strlen((const char*)ic->ic_des_essid);
     }
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p ret=0 ssid_len=%u\n",
-          __FUNCTION__, ic->ic_state, ic->ic_bss, sd->ssid_len);
     return kIOReturnSuccess;
 }
 
@@ -459,27 +425,11 @@ setAUTH_TYPE(OSObject *object, struct apple80211_authtype_data *ad)
 IOReturn AirportItlwm::
 setCIPHER_KEY(OSObject *object, struct apple80211_key *key)
 {
-    XYLog("%s\n", __FUNCTION__);
-    const char* keydump = hexdump(key->key, key->key_len);
-    const char* rscdump = hexdump(key->key_rsc, key->key_rsc_len);
-    const char* eadump = hexdump(key->key_ea.octet, APPLE80211_ADDR_LEN);
     static_assert(__offsetof(struct apple80211_key, key_ea) == 92, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, key_rsc_len) == 80, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_len) == 100, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kek_len) == 120, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_key) == 104, "struct corrupted");
-    if (keydump && rscdump && eadump)
-        XYLog("Set key request: len=%d cipher_type=%d flags=%d index=%d key=%s rsc_len=%d rsc=%s ea=%s\n",
-              key->key_len, key->key_cipher_type, key->key_flags, key->key_index, keydump, key->key_rsc_len, rscdump, eadump);
-    else
-        XYLog("Set key request, but failed to allocate memory for hexdump\n");
-    
-    if (keydump)
-        IOFree((void*)keydump, 3 * key->key_len + 1);
-    if (rscdump)
-        IOFree((void*)rscdump, 3 * key->key_rsc_len + 1);
-    if (eadump)
-        IOFree((void*)eadump, 3 * APPLE80211_ADDR_LEN + 1);
     
     switch (key->key_cipher_type) {
         case APPLE80211_CIPHER_NONE:
@@ -603,7 +553,6 @@ getCHANNEL(OSObject *object,
 IOReturn AirportItlwm::
 setCHANNEL(OSObject *object, struct apple80211_channel_data *data)
 {
-    XYLog("%s channel=%d\n", __FUNCTION__, data->channel.channel);
     return kIOReturnError;
 }
 
@@ -669,7 +618,6 @@ setTX_NSS(OSObject *object, struct apple80211_tx_nss_data *data)
 IOReturn AirportItlwm::
 setROAM(OSObject *object, struct apple80211_sta_roam_data *data)
 {
-    XYLog("%s rcc_channels=%d unk=%d target_channel=%d target_bssid=%s\n", __FUNCTION__, data->rcc_channels, data->unk1, data->taget_channel, ether_sprintf(data->target_bssid));
     return kIOReturnError;
 }
 
@@ -740,7 +688,6 @@ getROAM_PROFILE(OSObject *object, struct apple80211_roam_profile_band_data *data
 IOReturn AirportItlwm::
 setROAM_PROFILE(OSObject *object, struct apple80211_roam_profile_band_data *data)
 {
-    XYLog("%s cnt=%d flags=%d\n", __FUNCTION__, data->profile_cnt, data->flags);
 #if 0
     for (int i = 0; i < data->profile_cnt; i++) {
         struct apple80211_roam_profile *bd = &data->profiles[i];
@@ -768,7 +715,6 @@ setBTCOEX_CONFIG(OSObject *object, struct apple80211_btc_config_data *data)
 {
     if (!data)
         return kIOReturnError;
-    XYLog("%s Setting BTCoex Config: enable_2G:%d, profile_2g:%d, enable_5G:%d, profile_5G:%d\n", __FUNCTION__, data->enable_2G, data->profile_2g, data->enable_5G, data->profile_5G);
     memcpy(&btcConfig, data, sizeof(struct apple80211_btc_config_data));
     return kIOReturnSuccess;
 }
@@ -788,7 +734,6 @@ setBTCOEX_MODE(OSObject *object, struct apple80211_btc_mode_data *data)
 {
     if (!data)
         return kIOReturnError;
-    XYLog("%s mode: %d\n", __FUNCTION__, data->btc_mode);
     btcMode = data->btc_mode;
     return kIOReturnSuccess;
 }
@@ -808,7 +753,6 @@ setBTCOEX_OPTIONS(OSObject *object, struct apple80211_btc_options_data *data)
 {
     if (!data)
         return kIOReturnError;
-    XYLog("%s options: %d\n", __FUNCTION__, data->btc_options);
     btcOptions = data->btc_options;
     return kIOReturnSuccess;
 }
@@ -827,7 +771,6 @@ setBTCOEX_PROFILES(OSObject *object, struct apple80211_btc_profiles_data *data)
 {
     if (!data)
         return kIOReturnError;
-    XYLog("%s profiles: %d\n", __FUNCTION__, data->profile_cnt);
     if (btcProfile)
         IOFree(btcProfile, sizeof(struct apple80211_btc_profiles_data));
     btcProfile = (struct apple80211_btc_profiles_data *)IOMalloc(sizeof(struct apple80211_btc_profiles_data));
@@ -844,7 +787,6 @@ getWOW_PARAMETERS(OSObject *object, struct apple80211_wow_parameter_data *data)
 IOReturn AirportItlwm::
 setWOW_PARAMETERS(OSObject *object, struct apple80211_wow_parameter_data *data)
 {
-    XYLog("%s pattern_count=%d\n", __FUNCTION__, data->pattern_count);
     return kIOReturnError;
 }
 
@@ -860,16 +802,12 @@ getBSSID(OSObject *object,
     if (ic->ic_state == IEEE80211_S_RUN) {
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     }
-    XYLog("DEBUG %s ic_state=%d ic_bss=%p ret=0 bssid=%s\n",
-          __FUNCTION__, ic->ic_state, ic->ic_bss,
-          ether_sprintf(bd->bssid.octet));
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwm::
 setBSSID(OSObject *object, struct apple80211_bssid_data *data)
 {
-    XYLog("%s bssid=%s\n", __FUNCTION__, ether_sprintf(data->bssid.octet));
     return kIOReturnSuccess;
 }
 
@@ -982,7 +920,6 @@ getMCS_VHT(OSObject *object, struct apple80211_mcs_vht_data *data)
 IOReturn AirportItlwm::
 setMCS_VHT(OSObject *object, struct apple80211_mcs_vht_data *data)
 {
-    XYLog("%s gi=%d index=%d nss=%d bw=%d\n", __FUNCTION__, data->guard_interval, data->index, data->nss, data->bw);
     return kIOReturnError;
 }
 
@@ -1167,8 +1104,8 @@ getNOISE(OSObject *object,
     if (ic->ic_bss == NULL)
         return static_cast<IOReturn>(0xe0822403);
 
-    int32_t noise = -fHalService->getDriverInfo()->getBSSNoise();
-    if (noise == 0)
+    int32_t noise = fHalService->getDriverInfo()->getBSSNoise();
+    if (noise == 0 || noise == -127)
         return 0x66;
 
     memset(nd, 0, sizeof(*nd));
@@ -1221,14 +1158,10 @@ setPOWER(OSObject *object,
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     bool isUp = (ifp->if_flags & IFF_UP) != 0;
     bool isRunning = (ifp->if_flags & IFF_RUNNING) != 0;
-    IOLog("DEBUG itlwm: setPOWER: num_radios[%d] power_state(0:%u 1:%u 2:%u 3:%u) cur=%u isUp=%d isRunning=%d pmPowerState=%u\n",
-          pd->num_radios, pd->power_state[0], pd->power_state[1], pd->power_state[2], pd->power_state[3],
-          power_state, isUp, isRunning, pmPowerState);
     if (pd->num_radios > 0) {
         uint32_t reqState = pd->power_state[0];
         // Guard: don't kill an adapter that is still initializing (IFF_UP but not yet IFF_RUNNING)
         if (reqState == kWiFiPowerOff && isUp && !isRunning) {
-            IOLog("DEBUG itlwm: setPOWER OFF: adapter initializing, deferring\n");
             return kIOReturnSuccess;
         }
         handlePowerStateChange(reqState, fNetIf);
@@ -1241,15 +1174,6 @@ IOReturn AirportItlwm::
 setASSOCIATE(OSObject *object,
                              struct apple80211_assoc_data *ad)
 {
-    XYLog("%s [%s] mode=%d ad_auth_lower=%d ad_auth_upper=%d rsn_ie_len=%d%s%s%s%s%s%s%s\n", __FUNCTION__, ad->ad_ssid, ad->ad_mode, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_rsn_ie_len,
-          (ad->ad_flags & 2) ? ", Instant Hotspot" : "",
-          (ad->ad_flags & 4) ? ", Auto Instant Hotspot" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 1) ? ", don't disassociate" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 2) ? ", don't blacklist" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 4) ? ", closed Network" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 8) ? ", 802.1X" : "",
-          (ad->ad_rsn_ie[APPLE80211_MAX_RSN_IE_LEN] & 0x20) ? ", force BSSID" : "");
-    
     struct apple80211_rsn_ie_data rsn_ie_data;
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
@@ -1283,7 +1207,6 @@ setASSOCIATE(OSObject *object,
 IOReturn AirportItlwm::
 getASSOCIATE_RESULT(OSObject *object, struct apple80211_assoc_result_data *ad)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ad && ic->ic_state == IEEE80211_S_RUN) {
         memset(ad, 0, sizeof(struct apple80211_assoc_result_data));
@@ -1296,7 +1219,6 @@ getASSOCIATE_RESULT(OSObject *object, struct apple80211_assoc_result_data *ad)
 
 IOReturn AirportItlwm::setDISASSOCIATE(OSObject *object)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     if (ic->ic_state < IEEE80211_S_SCAN)
@@ -1389,7 +1311,6 @@ getASSOCIATION_STATUS(OSObject *object, struct apple80211_assoc_status_data *hv)
 IOReturn AirportItlwm::
 setSCANCACHE_CLEAR(OSObject *object, struct apple80211req *req)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = fHalService->get80211Controller();
     //if doing background or active scan, don't free nodes.
     if ((ic->ic_flags & IEEE80211_F_BGSCAN) || (ic->ic_flags & IEEE80211_F_ASCAN))
@@ -1402,7 +1323,6 @@ IOReturn AirportItlwm::
 setDEAUTH(OSObject *object,
                           struct apple80211_deauth_data *da)
 {
-    XYLog("%s\n", __FUNCTION__);
     return kIOReturnSuccess;
 }
 
@@ -1501,7 +1421,6 @@ getCOUNTRY_CODE(OSObject *object,
 IOReturn AirportItlwm::
 setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 {
-    XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
         memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
         fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED);
@@ -1663,7 +1582,7 @@ getSCAN_RESULT(OSObject *object, struct apple80211_scan_result **sr)
 #else
     result->asr_channel.flags = ieeeChanFlag2appleScanFlagVentura(fNextNodeToSend->ni_chan->ic_flags);
 #endif
-    result->asr_noise = -fHalService->getDriverInfo()->getBSSNoise();
+    result->asr_noise = fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
     result->asr_ssid_len = fNextNodeToSend->ni_esslen;
@@ -1773,7 +1692,6 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
 IOReturn AirportItlwm::
 setVIRTUAL_IF_DELETE(OSObject *object, struct apple80211_virt_if_delete_data *data)
 {
-    XYLog("%s bsd_name=%s\n", __FUNCTION__, data->bsd_name);
     //TODO find vif according to the bsd_name
     IO80211VirtualInterface *vif = OSDynamicCast(IO80211VirtualInterface, object);
     if (vif == NULL)
@@ -1812,10 +1730,6 @@ getLINK_CHANGED_EVENT_DATA(OSObject *object, struct apple80211_link_changed_even
             ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
         }
     }
-    XYLog("Link %s, voluntary_down=%u voluntary_up=%u reason_or_rssi=0x%x\n",
-          ed->isLinkDown ? "down" : "up",
-          ed->voluntary_down, ed->voluntary_up,
-          ed->isLinkDown ? ed->reason : ed->rssi);
     return kIOReturnSuccess;
 }
 

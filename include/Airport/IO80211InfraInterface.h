@@ -107,7 +107,7 @@ public:
     // Tahoe: setLinkState moved here from IO80211SkywalkInterface [463]
     virtual bool setLinkState(IO80211LinkState,UInt,bool,UInt,UInt);
     // [464]
-    virtual IOReturn setLinkStateInternal(IO80211LinkState,uint,bool,uint,uint);
+    virtual bool setLinkStateInternal(IO80211LinkState,uint,bool,uint,uint);
     // [465]
     virtual void setCurrentApAddress(ether_addr *);
     // [466]

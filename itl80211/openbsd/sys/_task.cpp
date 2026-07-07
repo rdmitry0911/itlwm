@@ -100,8 +100,6 @@ taskq_thread(void *xtq)
 
 //    WITNESS_CHECKORDER(&tq->tq_lock_object, LOP_NEWORDER, NULL);
     
-    IOLog("itlwm: taskq %s schedule task\n", __FUNCTION__);
-
     while (taskq_next_work(tq, &work)) {
 //        WITNESS_LOCK(&tq->tq_lock_object, 0);
 //        IOLog("itlwm: taskq worker thread=%lld work=%s\n", thread_tid(current_thread()), work.name);
@@ -112,8 +110,6 @@ taskq_thread(void *xtq)
         IOSleep(1);
     }
     
-    IOLog("itlwm: taskq %s schedule task done\n", __FUNCTION__);
-
     IORecursiveLockLock(tq->tq_mtx);
     last = (--tq->tq_running == 0);
     IORecursiveLockUnlock(tq->tq_mtx);
@@ -122,7 +118,6 @@ taskq_thread(void *xtq)
 //        KERNEL_LOCK();
 
     if (last) {
-        IOLog("itlwm: taskq %s schedule task wakeup\n", __FUNCTION__);
         IORecursiveLockWakeup(tq->tq_mtx, tq, false);
     }
 
@@ -134,11 +129,9 @@ void taskq_create_thread(void *arg)
 {
     struct taskq *tq = (struct taskq *)arg;
     int rv;
-    IOLog("itlwm: taskq %s lock\n", __FUNCTION__);
     IORecursiveLockLock(tq->tq_mtx);
     switch (tq->tq_state) {
         case TQ_S_DESTROYED:
-            IOLog("itlwm: taskq %s unlock\n", __FUNCTION__);
             IORecursiveLockUnlock(tq->tq_mtx);
             if (tq != systq) {
                 IORecursiveLockFree(tq->tq_mtx);
@@ -162,14 +155,12 @@ void taskq_create_thread(void *arg)
 
     do {
         tq->tq_running++;
-        IOLog("itlwm: taskq %s unlock\n", __FUNCTION__);
         IORecursiveLockUnlock(tq->tq_mtx);
 
         thread_t new_thread;
         rv = kernel_thread_start((thread_continue_t)taskq_thread, tq, &new_thread);
         thread_deallocate(new_thread);
 
-        IOLog("itlwm: taskq %s lock\n", __FUNCTION__);
         IORecursiveLockLock(tq->tq_mtx);
         if (rv != KERN_SUCCESS) {
             IOLog("itlwm: tasq unable to create thread for \"%s\" taskq\n",
@@ -184,7 +175,6 @@ void taskq_create_thread(void *arg)
         }
     } while (tq->tq_running < tq->tq_nthreads);
     
-    IOLog("itlwm: taskq %s unlock\n", __FUNCTION__);
     IORecursiveLockUnlock(tq->tq_mtx);
 }
 

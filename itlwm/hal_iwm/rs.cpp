@@ -2114,8 +2114,6 @@ static void rs_rate_scale_perform(struct iwm_softc *mvm,
     rate = &tbl->rate;
 
     if (prev_agg != lq_sta->is_agg) {
-        XYLog("Aggregation changed: prev %d current %d. Update expected TPT table\n",
-                   prev_agg, lq_sta->is_agg);
         rs_set_expected_tpt_table(lq_sta, tbl);
         rs_rate_scale_clear_tbl_windows(mvm, tbl);
     }
@@ -2979,17 +2977,6 @@ static void rs_drv_rate_init(struct iwm_softc *mvm, struct ieee80211_node *sta,
     lq_sta->max_mimo2_rate_idx =
         rs_get_max_rate_from_mask(lq_sta->active_mimo2_rate);
 
-    XYLog("LEGACY=%lX SISO=%lX MIMO2=%lX VHT=%d LDPC=%d STBC=%d BFER=%d\n",
-               lq_sta->active_legacy_rate,
-               lq_sta->active_siso_rate,
-               lq_sta->active_mimo2_rate,
-               lq_sta->is_vht, lq_sta->ldpc, lq_sta->stbc_capable,
-               lq_sta->bfer_capable);
-    XYLog("MAX RATE: LEGACY=%d SISO=%d MIMO2=%d\n",
-               lq_sta->max_legacy_rate_idx,
-               lq_sta->max_siso_rate_idx,
-               lq_sta->max_mimo2_rate_idx);
-
     /* These values will be overridden later */
     lq_sta->lq.single_stream_ant_msk =
         iwl_mvm_bt_coex_get_single_ant_msk(mvm, that->iwm_fw_valid_tx_ant(mvm));
@@ -3021,7 +3008,6 @@ static void __iwl_mvm_rs_tx_status(struct iwm_softc *mvm,
     int i;
     struct iwm_lq_cmd *table;
     u32 lq_hwrate;
-    uint32_t last_rate;
     struct rs_rate lq_rate, tx_resp_rate;
     struct iwl_scale_tbl_info *curr_tbl, *other_tbl, *tmp_tbl;
     u32 tlc_info = (u32)(uintptr_t)info->status.status_driver_data[0];
@@ -3029,7 +3015,6 @@ static void __iwl_mvm_rs_tx_status(struct iwm_softc *mvm,
     u8 lq_color = RS_DRV_DATA_LQ_COLOR_GET(tlc_info);
     u32 tx_resp_hwrate = (u32)(uintptr_t)info->status.status_driver_data[1];
     struct iwl_lq_sta *lq_sta = &mvm->lq_sta.rs_drv;
-    char pretty_rate[100];
 
     if (!lq_sta->pers.drv) {
         IWL_DEBUG_RATE(mvm, "Rate scaling not initialized yet.\n");
@@ -3205,12 +3190,7 @@ static void __iwl_mvm_rs_tx_status(struct iwm_softc *mvm,
         }
     }
     /* The last TX rate is cached in lq_sta; it's set in if/else above */
-    last_rate = lq_sta->last_rate_n_flags;
     lq_sta->last_rate_n_flags = lq_hwrate;
-    if (last_rate != lq_hwrate) {
-        rs_pretty_print_rate(pretty_rate, sizeof(pretty_rate), lq_sta->last_rate_n_flags);
-        XYLog("%s new rate: %s\n", __FUNCTION__, pretty_rate);
-    }
     if ((lq_sta->last_rate_n_flags & RATE_MCS_VHT_MSK) || (lq_sta->last_rate_n_flags & RATE_MCS_HE_MSK)) {
         sta->ni_txmcs = (lq_sta->last_rate_n_flags & RATE_VHT_MCS_RATE_CODE_MSK);
     } else if (lq_sta->last_rate_n_flags & RATE_MCS_HT_MSK) {
@@ -3522,70 +3502,6 @@ static void rs_fill_lq_cmd(struct iwm_softc *mvm,
 
     lq_cmd->agg_time_limit =
             cpu_to_le16(that->iwm_coex_agg_time_limit(mvm, sta));
-}
-
-int rs_pretty_print_rate(char *buf, int bufsz, const u32 rate)
-{
-
-    char *type, *bw;
-    u8 mcs = 0, nss = 0;
-    u8 ant = (rate & RATE_MCS_ANT_ABC_MSK) >> RATE_MCS_ANT_POS;
-
-    if (!(rate & RATE_MCS_HT_MSK) &&
-        !(rate & RATE_MCS_VHT_MSK) &&
-        !(rate & RATE_MCS_HE_MSK)) {
-        int index = iwl_hwrate_to_plcp_idx(rate);
-
-        return snprintf(buf, bufsz, "Legacy | ANT: %s Rate: %s Mbps",
-                 rs_pretty_ant(ant),
-                 index == IWL_RATE_INVALID ? "BAD" :
-                 iwl_rate_mcs[index].mbps);
-    }
-
-    if (rate & RATE_MCS_VHT_MSK) {
-        type = "VHT";
-        mcs = rate & RATE_VHT_MCS_RATE_CODE_MSK;
-        nss = ((rate & RATE_VHT_MCS_NSS_MSK)
-               >> RATE_VHT_MCS_NSS_POS) + 1;
-    } else if (rate & RATE_MCS_HT_MSK) {
-        type = "HT";
-        mcs = rate & RATE_HT_MCS_INDEX_MSK;
-        nss = ((rate & RATE_HT_MCS_NSS_MSK)
-               >> RATE_HT_MCS_NSS_POS) + 1;
-    } else if (rate & RATE_MCS_HE_MSK) {
-        type = "HE";
-        mcs = rate & RATE_VHT_MCS_RATE_CODE_MSK;
-        nss = ((rate & RATE_VHT_MCS_NSS_MSK)
-               >> RATE_VHT_MCS_NSS_POS) + 1;
-    } else {
-        type = "Unknown"; /* shouldn't happen */
-    }
-
-    switch (rate & RATE_MCS_CHAN_WIDTH_MSK) {
-    case RATE_MCS_CHAN_WIDTH_20:
-        bw = "20Mhz";
-        break;
-    case RATE_MCS_CHAN_WIDTH_40:
-        bw = "40Mhz";
-        break;
-    case RATE_MCS_CHAN_WIDTH_80:
-        bw = "80Mhz";
-        break;
-    case RATE_MCS_CHAN_WIDTH_160:
-        bw = "160Mhz";
-        break;
-    default:
-        bw = "BAD BW";
-    }
-
-    return snprintf(buf, bufsz,
-             "0x%x: %s | ANT: %s BW: %s MCS: %d NSS: %d %s%s%s%s%s",
-             rate, type, rs_pretty_ant(ant), bw, mcs, nss,
-             (rate & RATE_MCS_SGI_MSK) ? "SGI " : "NGI ",
-             (rate & RATE_MCS_STBC_MSK) ? "STBC " : "",
-             (rate & RATE_MCS_LDPC_MSK) ? "LDPC " : "",
-             (rate & RATE_HE_DUAL_CARRIER_MODE_MSK) ? "DCM " : "",
-             (rate & RATE_MCS_BF_MSK) ? "BF " : "");
 }
 
 void iwl_mvm_rs_rate_init(struct iwm_softc *mvm, struct ieee80211_node *sta,

@@ -204,7 +204,6 @@ int ItlIwm::
 iwm_send_phy_db_cmd(struct iwm_softc *sc, uint16_t type, uint16_t length,
                     void *data)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_phy_db_cmd phy_db_cmd;
     struct iwm_host_cmd cmd = {
         .id = IWM_PHY_DB_CMD,
@@ -226,7 +225,6 @@ int ItlIwm::
 iwm_phy_db_send_all_channel_groups(struct iwm_softc *sc, uint16_t type,
                                    uint8_t max_ch_groups)
 {
-    XYLog("%s\n", __FUNCTION__);
     uint16_t i;
     int err;
     struct iwm_phy_db_entry *entry;
@@ -252,7 +250,6 @@ iwm_phy_db_send_all_channel_groups(struct iwm_softc *sc, uint16_t type,
 int ItlIwm::
 iwm_send_phy_db_data(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     uint8_t *data = NULL;
     uint16_t size = 0;
     int err;
@@ -397,7 +394,6 @@ iwm_unprotect_session(struct iwm_softc *sc, struct iwm_node *in)
 int ItlIwm::
 iwm_send_phy_cfg_cmd(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_phy_cfg_cmd phy_cfg_cmd;
     enum iwm_ucode_type ucode_type = sc->sc_uc_current;
     
@@ -434,11 +430,9 @@ iwm_binding_cmd(struct iwm_softc *sc, struct iwm_node *in, uint32_t action)
     size_t len;
     
     if (action == IWM_FW_CTXT_ACTION_ADD && active) {
-        XYLog("binding already added\n");
         return 0;
     }
     if (action == IWM_FW_CTXT_ACTION_REMOVE && !active) {
-        XYLog("binding already removed\n");
         return 0;
     }
     
@@ -624,8 +618,6 @@ iwm_send_cmd(struct iwm_softc *sc, struct iwm_host_cmd *hcmd)
         }
     }
     
-    DPRINTFN(2, ("%s: sending command 0x%x\n", __func__, code));
-
     iwm_update_sched(sc, ring->qid, ring->cur, 0, 0);
     /* Kick command ring. */
     ring->queued++;
@@ -742,8 +734,6 @@ iwm_cmd_done(struct iwm_softc *sc, int qid, int idx, int code)
         data->m = NULL;
     }
     wakeupOn(&ring->desc[idx]);
-    
-    DPRINTFN(2, ("%s: command 0x%x done\n", __func__, code));
     
     if (ring->queued == 0) {
         XYLog("%s: unexpected firmware response to command 0x%x\n",

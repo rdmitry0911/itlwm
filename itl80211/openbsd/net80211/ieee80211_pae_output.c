@@ -75,7 +75,6 @@ int
 ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
                          struct ieee80211_node *ni, const struct ieee80211_ptk *ptk)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct _ifnet *ifp = &ic->ic_if;
     struct ether_header *eh;
     struct ieee80211_eapol_key *key;
@@ -275,7 +274,6 @@ ieee80211_get_eapol_key(int flags, int type, u_int pktlen)
 int
 ieee80211_send_4way_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     mbuf_t m;
     u_int16_t info, keylen;
@@ -316,11 +314,6 @@ ieee80211_send_4way_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",
-               ic->ic_if.if_xname, 1, 4, "4-way",
-               ether_sprintf(ni->ni_macaddr));
-    
     ni->ni_replaycnt++;
     BE_WRITE_8(key->replaycnt, ni->ni_replaycnt);
     
@@ -335,7 +328,6 @@ int
 ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
                          const u_int8_t *replaycnt, const struct ieee80211_ptk *tptk)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     mbuf_t m;
     u_int16_t info;
@@ -364,20 +356,41 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
     /* add the WPA/RSN IE used in the (Re)Association Request */
     if (ni->ni_rsnprotos == IEEE80211_PROTO_WPA) {
         int keylen;
+#ifdef USE_APPLE_SUPPLICANT
+        /*
+         * When Apple's userspace stack supplied the exact RSN/WPA IE for
+         * the (Re)Association Request (ic_rsn_ie_override), the 4-way
+         * handshake M2 MUST carry the byte-identical IE. The
+         * authenticator compares the M2 WPA IE against the one it saw in
+         * the AssocReq and rejects the handshake with "WPA IE from
+         * (Re)AssocReq did not match with msg 2/4" if they differ. The
+         * locally-composed ieee80211_add_wpa() output is not guaranteed
+         * to be byte-identical to Apple's override, so echo the override
+         * here exactly as the association-request path does.
+         */
+        if (ic->ic_rsn_ie_override[1] > 0) {
+            memcpy(frm, ic->ic_rsn_ie_override,
+                   2 + ic->ic_rsn_ie_override[1]);
+            frm += 2 + ic->ic_rsn_ie_override[1];
+        } else
+#endif
         frm = ieee80211_add_wpa(frm, ic, ni);
         /* WPA sets the key length field here */
         keylen = ieee80211_cipher_keylen(ni->ni_rsncipher);
         BE_WRITE_2(key->keylen, keylen);
-    } else	/* RSN */
+    } else {	/* RSN */
+#ifdef USE_APPLE_SUPPLICANT
+        if (ic->ic_rsn_ie_override[1] > 0) {
+            memcpy(frm, ic->ic_rsn_ie_override,
+                   2 + ic->ic_rsn_ie_override[1]);
+            frm += 2 + ic->ic_rsn_ie_override[1];
+        } else
+#endif
         frm = ieee80211_add_rsn(frm, ic, ni);
+    }
     size_t l = frm - (u_int8_t *)key;
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s, type=%s\n",
-               ic->ic_if.if_xname, 2, 4, "4-way",
-              ether_sprintf(ni->ni_macaddr), ni->ni_rsnprotos == IEEE80211_PROTO_WPA ? "WPA" : "RSN");
     
     return ieee80211_send_eapol_key(ic, m, ni, tptk);
 }
@@ -389,7 +402,6 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
 int
 ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     struct ieee80211_key *k = NULL;
     mbuf_t m;
@@ -455,11 +467,6 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",
-               ic->ic_if.if_xname, 3, 4, "4-way",
-               ether_sprintf(ni->ni_macaddr));
-    
     return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
 }
 #endif	/* IEEE80211_STA_ONLY */
@@ -470,7 +477,6 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
 int
 ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     mbuf_t m;
     u_int16_t info;
@@ -502,11 +508,6 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, sizeof(*key));
     mbuf_setlen(m, sizeof(*key));
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",
-               ic->ic_if.if_xname, 4, 4, "4-way",
-               ether_sprintf(ni->ni_macaddr));
-    
     return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
 }
 
@@ -517,7 +518,6 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
 int
 ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    XYLog("%s Send Group Key Handshake Message 1 to the supplicant.\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     const struct ieee80211_key *k;
     mbuf_t m;
@@ -584,11 +584,6 @@ ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",
-               ic->ic_if.if_xname, 1, 2, "group key",
-               ether_sprintf(ni->ni_macaddr));
-    
     return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
 }
 #endif	/* IEEE80211_STA_ONLY */
@@ -600,7 +595,6 @@ int
 ieee80211_send_group_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
                           const struct ieee80211_key *k)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     u_int16_t info;
     mbuf_t m;
@@ -629,11 +623,6 @@ ieee80211_send_group_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
     mbuf_pkthdr_setlen(m, sizeof(*key));
     mbuf_setlen(m, sizeof(*key));
     
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",
-               ic->ic_if.if_xname, 2, 2, "group key",
-               ether_sprintf(ni->ni_macaddr));
-    
     return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
 }
 
@@ -646,7 +635,6 @@ int
 ieee80211_send_eapol_key_req(struct ieee80211com *ic,
                              struct ieee80211_node *ni, u_int16_t info, u_int64_t tsc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct ieee80211_eapol_key *key;
     mbuf_t m;
     
@@ -670,10 +658,6 @@ ieee80211_send_eapol_key_req(struct ieee80211com *ic,
     /* empty key data field */
     mbuf_pkthdr_setlen(m, sizeof(*key));
     mbuf_setlen(m, sizeof(*key));
-    
-    if (ic->ic_if.if_flags & IFF_DEBUG)
-        XYLog("%s: sending EAPOL-Key request to %s\n",
-               ic->ic_if.if_xname, ether_sprintf(ni->ni_macaddr));
     
     return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
 }

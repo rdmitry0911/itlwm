@@ -56,7 +56,7 @@ public:
     virtual void enableDatapath(void) override;
     virtual void disableDatapath(void) override;
     virtual int getNumTxQueues(void) override;
-    virtual IOReturn setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
+    virtual bool setLinkStateInternal(IO80211LinkState, uint, bool, uint, uint) override;
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
     bool bindController(AirportItlwm *);
@@ -97,7 +97,6 @@ public:
     // belongs to AirportItlwm before reasoning from its ioctl results.  en*
     // numbering is not stable and may point at unrelated USB Ethernet devices.
     virtual void *getInterfaceSubFamily(void) override {
-        XYLog("getInterfaceSubFamily: returning 3 (IFNET_SUBFAMILY_WIFI)\n");
         return (void *)3;  // IFNET_SUBFAMILY_WIFI
     }
 
@@ -154,6 +153,9 @@ public:
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
     IOReturn processApple80211Ioctl(UInt, apple80211req *);
+    void seedBssManagerMcs();
+    void postLqmUpdateBulletin();
+    uint32_t fMcsSeedBurst = 0;
 
 public:
     //
@@ -851,11 +853,10 @@ private:
     uint8_t cachedBssBlacklist[0x2b];
     bool hasCachedBssBlacklist;
     uint16_t cachedRsnXeLength;
-    uint8_t cachedRsnXe[0x100];
+    uint8_t cachedRsnXe[APPLE80211_MAX_RSN_IE_LEN];
     bool hasCachedRsnXe;
     uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
-    bool hasCachedTkoParams;
     uint32_t cachedMwsWifiType7Bitmap[9];
     uint32_t cachedMwsCoexBitmap[9];
     uint32_t cachedMwsDisableOclBitmap[9];

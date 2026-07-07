@@ -209,7 +209,6 @@ iwm_power_mac_update_mode(struct iwm_softc *sc, struct iwm_node *in)
 int ItlIwm::
 iwm_power_update_device(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_device_power_cmd cmd = { };
     struct ieee80211com *ic = &sc->sc_ic;
     
@@ -241,7 +240,6 @@ iwm_enable_beacon_filter(struct iwm_softc *sc, struct iwm_node *in)
 int ItlIwm::
 iwm_disable_beacon_filter(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_beacon_filter_cmd cmd;
     int err;
     
@@ -266,7 +264,6 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
     struct ieee80211com *ic = &sc->sc_ic;
     
     if (!update && (sc->sc_flags & IWM_FLAG_STA_ACTIVE)) {
-        XYLog("STA already added\n");
         return 0;
     }
     
@@ -394,7 +391,6 @@ iwm_add_sta_cmd(struct iwm_softc *sc, struct iwm_node *in, int update, unsigned 
 int ItlIwm::
 iwm_add_aux_sta(struct iwm_softc *sc)
 {
-    XYLog("%s\n", __FUNCTION__);
     struct iwm_add_sta_cmd cmd;
     int err, qid;
     uint32_t status;
@@ -466,7 +462,6 @@ iwm_rm_sta_cmd(struct iwm_softc *sc, struct iwm_node *in)
     uint8_t qid;
     
     if ((sc->sc_flags & IWM_FLAG_STA_ACTIVE) == 0) {
-        XYLog("sta already removed\n");
         return 0;
     }
     

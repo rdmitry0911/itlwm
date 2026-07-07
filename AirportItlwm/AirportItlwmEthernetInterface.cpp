@@ -116,21 +116,9 @@ setLinkState(IO80211LinkState state)
     return true;
 }
 
-extern const char* hexdump(uint8_t *buf, size_t len);
-
 UInt32 AirportItlwmEthernetInterface::
 inputPacket(mbuf_t packet, UInt32 length, IOOptionBits options, void *param)
 {
-    ether_header_t *eh;
-    size_t len = mbuf_len(packet);
-    
-    eh = (ether_header_t *)mbuf_data(packet);
-    if (len >= sizeof(ether_header_t) && eh->ether_type == htons(ETHERTYPE_PAE)) { // EAPOL packet
-        const char* dump = hexdump((uint8_t*)mbuf_data(packet), len);
-        XYLog("input EAPOL packet, len: %zu, data: %s\n", len, dump ? dump : "Failed to allocate memory");
-        if (dump)
-            IOFree((void*)dump, 3 * len + 1);
-    }
     return IOEthernetInterface::inputPacket(packet, length, options, param);
 }
 

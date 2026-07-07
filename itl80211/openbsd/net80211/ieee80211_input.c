@@ -464,16 +464,12 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             if (ni->ni_pwrsave == IEEE80211_PS_AWAKE) {
                 /* turn on PS mode */
                 ni->ni_pwrsave = IEEE80211_PS_DOZE;
-                DPRINTF(("PS mode on for %s\n",
-                         ether_sprintf(wh->i_addr2)));
             }
         } else if (ni->ni_pwrsave == IEEE80211_PS_DOZE) {
             mbuf_t m;
             
             /* turn off PS mode */
             ni->ni_pwrsave = IEEE80211_PS_AWAKE;
-            DPRINTF(("PS mode off for %s\n",
-                     ether_sprintf(wh->i_addr2)));
             
             (*ic->ic_set_tim)(ic, ni->ni_associd, 0);
             
@@ -1172,7 +1168,6 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
             // for 8021X (to userspace + kernel) plus kernel pae.
 #ifdef IO80211FAMILY_V2
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
-                XYLog("%s Duplicate EAPOL packet to user space\n", __FUNCTION__);
                 mbuf_dup(m, MBUF_DONTWAIT, &m2);
                 if (m2 != NULL)
                     ifp->iface->inputPacket(m2, mbuf_len(m2));
@@ -1899,21 +1894,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     
-#ifdef IEEE80211_DEBUG
-    if (ieee80211_debug > 1 &&
-        (ni == NULL || ic->ic_state == IEEE80211_S_SCAN ||
-         (ic->ic_flags & IEEE80211_F_BGSCAN))) {
-        XYLog("%s: %s%s on chan %u (bss chan %u) ",
-              __func__, (ni == NULL ? "new " : ""),
-              isprobe ? "probe response" : "beacon",
-              chan, bchan);
-        ieee80211_print_essid(ssid + 2, ssid[1]);
-        XYLog(" from %s\n", ether_sprintf((u_int8_t *)wh->i_addr2));
-        XYLog("%s: caps 0x%x bintval %u erp 0x%x\n",
-              __func__, capinfo, bintval, erp);
-    }
-#endif
-    
     if ((ni = ieee80211_find_node(ic, wh->i_addr2)) == NULL) {
         ni = ieee80211_alloc_node(ic, wh->i_addr2);
         if (ni == NULL)
@@ -1956,9 +1936,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
          * Check if protection mode has changed since last beacon.
          */
         if (ni->ni_erp != erp) {
-            DPRINTF(("[%s] erp change: was 0x%x, now 0x%x\n",
-                     ether_sprintf((u_int8_t *)wh->i_addr2),
-                     ni->ni_erp, erp));
             if ((ic->ic_curmode == IEEE80211_MODE_11G ||
                  (ic->ic_curmode == IEEE80211_MODE_11N &&
                   IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))) &&
@@ -1977,9 +1954,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
             htprot = (enum ieee80211_htprot)((ni->ni_htop1 & IEEE80211_HTOP1_PROT_MASK) >>
                                              IEEE80211_HTOP1_PROT_SHIFT);
             if (htprot_last != htprot) {
-                DPRINTF(("[%s] htprot change: was %d, now %d\n",
-                         ether_sprintf((u_int8_t *)wh->i_addr2),
-                         htprot_last, htprot));
                 ic->ic_stats.is_ht_prot_change++;
                 ic->ic_bss->ni_htop1 = ni->ni_htop1;
                 updateprot = 1;
@@ -2005,9 +1979,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                    IEEE80211_HTOP0_SCO_SHIFT);
             ic->ic_bss->ni_htop0 = ni->ni_htop0;
             if (chw_last != chw || sco_last != sco) {
-                XYLog("[%s] channel mode change: was %d, now %d, sco was: %d, now: %d\n",
-                      ether_sprintf((u_int8_t *)wh->i_addr2),
-                      chw_last, chw, sco_last, sco);
                 if (ic->ic_update_chw != NULL)
                     ic->ic_update_chw(ic);
             }
@@ -2248,8 +2219,6 @@ ieee80211_recv_probe_req(struct ieee80211com *ic, mbuf_t m,
             ni = ieee80211_dup_bss(ic, wh->i_addr2);
         if (ni == NULL)
             return;
-        DPRINTF(("new probe req from %s\n",
-                 ether_sprintf((u_int8_t *)wh->i_addr2)));
     }
     ni->ni_rssi = rxi->rxi_rssi;
     ni->ni_rstamp = rxi->rxi_tstamp;
@@ -2303,9 +2272,6 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     algo   = LE_READ_2(frm); frm += 2;
     seq    = LE_READ_2(frm); frm += 2;
     status = LE_READ_2(frm); frm += 2;
-    DPRINTF(("auth %d seq %d from %s\n", algo, seq,
-             ether_sprintf((u_int8_t *)wh->i_addr2)));
-
     /* Diagnostic probe (auth-ACK boundary): log every AUTH frame
      * that reaches net80211, with the AP-supplied algorithm,
      * transaction sequence, and status code. Combined with the
@@ -2703,7 +2669,6 @@ void
 ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
                           struct ieee80211_node *ni, int reassoc)
 {
-    XYLog("%s reassoc=%d\n", __FUNCTION__, reassoc);
     struct _ifnet *ifp = &ic->ic_if;
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
@@ -2715,12 +2680,23 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     u_int16_t capinfo, status, associd;
     u_int8_t rate;
     
+    /* A WCL-owned reassociation to the CURRENT BSS is sent from RUN
+     * (setWCL_REASSOC delegates ieee80211_send_mgmt(REASSOC_REQ)
+     * without a state transition), so its response arrives while
+     * ic_state == RUN and was previously discarded here as
+     * is_rx_mgtdiscard. That left the old PTK + NODE_RXPROT in place;
+     * the AP, having accepted the reassociation and deleted its PTK,
+     * then started a fresh 4-way whose plaintext M1 the input path
+     * dropped (is_rx_unencrypted) until the AP deauthed reason 15. */
+    int same_bss_wcl_reassoc = (ic->ic_opmode == IEEE80211_M_STA &&
+        reassoc && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_wcl_reassoc_owner_active && ni == ic->ic_bss);
     if (ic->ic_opmode != IEEE80211_M_STA ||
-        ic->ic_state != IEEE80211_S_ASSOC) {
+        (ic->ic_state != IEEE80211_S_ASSOC && !same_bss_wcl_reassoc)) {
         ic->ic_stats.is_rx_mgtdiscard++;
         return;
     }
-    
+
     /* make sure all mandatory fixed fields are present */
     if (mbuf_len(m) < sizeof(*wh) + 6) {
         DPRINTF(("frame too short\n"));
@@ -2756,7 +2732,28 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     associd = LE_READ_2(frm); frm += 2;
-    
+
+    if (same_bss_wcl_reassoc) {
+        /* Accepted reassociation to the BSS we are already running
+         * with: the AP has deleted the old pairwise key and is about
+         * to start a fresh 4-way handshake in the clear. Tear down
+         * our side of the old RSNA (same idiom as the RSN re-auth
+         * path in ieee80211_proto.c) so the plaintext M1 passes the
+         * RXPROT filter and the supplicant restarts cleanly. The PSK
+         * PMK survives (setWCL_REASSOC preserves local ownership),
+         * so the kernel PAE completes the new handshake without any
+         * key re-delivery from wifid. All other association state
+         * (rates, HT/VHT caps, ERP) is unchanged — same AP — so skip
+         * the re-setup and the RUN newstate transition entirely. */
+        ni->ni_associd = associd;
+        ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
+        ni->ni_port_valid = 0;
+        ni->ni_replaycnt_ok = 0;
+        (*ic->ic_delete_key)(ic, ni, &ni->ni_pairwise_key);
+        ni->ni_rsn_supp_state = RSNA_SUPP_PTKSTART;
+        return;
+    }
+
     rates = xrates = edcaie = wmmie = htcaps = htop = vhtcap = vhtopmode = hecap = heopmode = NULL;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm) {
@@ -2928,7 +2925,6 @@ void
 ieee80211_recv_deauth(struct ieee80211com *ic, mbuf_t m,
                       struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     const struct ieee80211_frame *wh;
     const u_int8_t *frm;
     u_int16_t reason;
@@ -2994,7 +2990,6 @@ void
 ieee80211_recv_disassoc(struct ieee80211com *ic, mbuf_t m,
                         struct ieee80211_node *ni)
 {
-    XYLog("%s\n", __FUNCTION__);
     const struct ieee80211_frame *wh;
     const u_int8_t *frm;
     u_int16_t reason;

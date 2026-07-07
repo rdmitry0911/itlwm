@@ -180,12 +180,10 @@ void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct 
     }
     
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     }
     
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
@@ -193,7 +191,6 @@ void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct 
         ieee80211_ioctl_setwpaparms(ic, &wpa);
     }
     if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_SHA256_8021X)) {
-        XYLog("%s %d\n", __FUNCTION__, __LINE__);
         wpa.i_akms |= IEEE80211_WPA_AKM_8021X | IEEE80211_WPA_AKM_SHA256_8021X;	
         wpa.i_enabled = 1;
         ieee80211_ioctl_setwpaparms(ic, &wpa);
@@ -206,7 +203,6 @@ void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct 
     
     if (authtype_upper == APPLE80211_AUTHTYPE_NONE && authtype_lower == APPLE80211_AUTHTYPE_OPEN) { // Open or WEP Open System
         if (key_len > 0) {
-            XYLog("%s %d\n", __FUNCTION__, __LINE__);
             nwkey.i_wepon = IEEE80211_NWKEY_WEP;
             nwkey.i_defkid = key_index + 1;
             nwkey.i_key[key_index].i_keylen = (int)key_len;
@@ -247,8 +243,6 @@ void AirportItlwm::setPTK(const u_int8_t *key, size_t key_len) {
             XYLog("setting PTK failed\n");
             return;
         }
-        else
-            XYLog("setting PTK successfully\n");
         ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_flags |= IEEE80211_NODE_RXPROT;
@@ -287,8 +281,6 @@ void AirportItlwm::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_i
                 XYLog("setting GTK failed\n");
                 return;
             }
-            else
-                XYLog("setting GTK successfully\n");
         }
     }
     
@@ -299,8 +291,6 @@ void AirportItlwm::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_i
             ++ni->ni_key_count == 2)
 #endif
         {
-            XYLog("marking port %s valid\n",
-                  ether_sprintf(ni->ni_macaddr));
             ni->ni_port_valid = 1;
             ieee80211_set_link_state(ic, LINK_STATE_UP);
             ni->ni_assoc_fail = 0;

@@ -45,9 +45,14 @@
 #ifndef IO80211BssManager_h
 #define IO80211BssManager_h
 
+struct apple80211_mcs_index_set_data;
+
 class IO80211BssManager
 {
 public:
+    // Tahoe export used by the native WCL driver to seed the current-BSS MCS
+    // cache consumed by IO80211InfraInterface::getInfraLinkProperties.
+    void setMCSIndexSet(apple80211_mcs_index_set_data &);
     unsigned char isAssociatedOnHighBand();
     bool isAssociatedToAdhoc();
     void resetRateAndIndexSet();

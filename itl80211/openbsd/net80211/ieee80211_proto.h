@@ -126,7 +126,6 @@ extern	int ieee80211_pwrsave(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
-XYLog("%s %d nstate=%d\n", __FUNCTION__, __LINE__, (_nstate));  \
 (((_ic)->ic_newstate)((_ic), (_nstate), (_arg)));   \
 } while (0)
 extern	enum ieee80211_edca_ac ieee80211_up_to_ac(struct ieee80211com *, int);
