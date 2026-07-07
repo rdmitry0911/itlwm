@@ -61,6 +61,7 @@ static constexpr uint16_t kActionFramePayloadCapacity = 0x708;
 static constexpr uint16_t kActionFrameMaximumPayloadLength =
     kActionFramePayloadCapacity - 1;
 static constexpr uint16_t kActionFrameV1TxPayloadSize = 0x724;
+static constexpr uint16_t kActionFrameV2CommandHeaderSize = 0x34;
 static constexpr uint32_t kActionFrameV2FirmwareThreshold = 0x15;
 static constexpr uint32_t kActionFrameProgressFlagOffset = 0x4478;
 static constexpr uint32_t kActionFrameProgressStartMsOffset = 0x4480;
@@ -77,6 +78,8 @@ static_assert(kActionFrameMaximumPayloadLength == 0x707,
               "Apple WCL action-frame V1 accepts total bytes up to 0x707");
 static_assert(kActionFrameV1TxPayloadSize == 0x724,
               "Apple WCL action-frame V1 sends fixed CommandTxPayload size 0x724");
+static_assert(kActionFrameV2CommandHeaderSize == 0x34,
+              "Apple WCL action-frame V2 sends frameLen plus 0x34-byte command header");
 static_assert(kActionFrameV2FirmwareThreshold == 0x15,
               "Apple WCL action-frame V2 threshold is core-private generation > 0x14");
 static_assert(kActionFrameProgressFlagOffset == 0x4478,
@@ -91,6 +94,11 @@ static_assert(kActionFrameProgressScanRejectStatus == 0xe00002d5,
 inline bool isActionFrameProgressOverdue(uint64_t nowMs, uint64_t startMs)
 {
     return static_cast<uint64_t>(nowMs - startMs) >= kActionFrameProgressOverdueMs;
+}
+
+inline uint32_t actionFrameV2CommandSize(uint16_t frameLen)
+{
+    return static_cast<uint32_t>(frameLen) + kActionFrameV2CommandHeaderSize;
 }
 
 struct IEPayloads {

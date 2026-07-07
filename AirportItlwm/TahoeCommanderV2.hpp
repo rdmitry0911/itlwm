@@ -146,7 +146,8 @@ public:
         const auto &owner = registry->actionFrame;
         if (owner.useV2)
             return dispatchIssueCommand(620, TahoeCommandRouter::routeActionFrame(),
-                                        owner.frameLen, 0, asyncContext, true);
+                                        TahoePayloadBuilders::actionFrameV2CommandSize(owner.frameLen),
+                                        0, asyncContext, true);
         return dispatchIOVarSet(620, TahoeCommandRouter::routeActionFrame(),
                                 TahoePayloadBuilders::kActionFrameV1TxPayloadSize,
                                 0, asyncContext, false);

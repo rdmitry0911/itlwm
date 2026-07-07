@@ -159,6 +159,8 @@ void testTxPowerAndActionFrameBuilders()
                 &action, TahoePayloadBuilders::kActionFrameV2FirmwareThreshold, &actionPayload),
             "action-frame builder accepts V2 carrier");
     require(actionPayload.useV2, "action-frame builder selects V2 at threshold");
+    require(TahoePayloadBuilders::actionFrameV2CommandSize(actionPayload.frameLen) == 0x38,
+            "action-frame V2 command size includes the 0x34-byte Apple header");
 
     put16(data, 0xe, TahoePayloadBuilders::kActionFramePayloadCapacity);
     require(!TahoePayloadBuilders::buildActionFrame(
