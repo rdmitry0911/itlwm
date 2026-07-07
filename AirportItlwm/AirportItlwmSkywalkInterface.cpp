@@ -2242,15 +2242,15 @@ IOReturn AirportItlwmSkywalkInterface::
 reportDataPathEvents(UInt type, void *data, unsigned long dataLen, bool gated)
 {
     IOReturn ret = IO80211SkywalkInterface::reportDataPathEvents(type, data, dataLen, gated);
-    if (fMcsSeedBurst != 0) {
-        fMcsSeedBurst--;
-        seedBssManagerMcs();
+    if (fBssManagerSeedBurst != 0) {
+        fBssManagerSeedBurst--;
+        seedBssManagerRateAndMcs();
     }
     return ret;
 }
 
 void AirportItlwmSkywalkInterface::
-seedBssManagerMcs()
+seedBssManagerRateAndMcs()
 {
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
@@ -2280,11 +2280,17 @@ seedBssManagerMcs()
         return;
 #undef AIAM_RD
 
+    IO80211BssManager *bssManager = reinterpret_cast<IO80211BssManager *>(bss);
+
+    apple80211_rate_set_data rates;
+    if (getRATE_SET(&rates) == kIOReturnSuccess)
+        bssManager->setRateSet(rates);
+
     apple80211_mcs_index_set_data mcs;
     if (getMCS_INDEX_SET(&mcs) != kIOReturnSuccess)
         return;
 
-    ((IO80211BssManager *)bss)->setMCSIndexSet(mcs);
+    bssManager->setMCSIndexSet(mcs);
 }
 
 extern "C" uint64_t mach_continuous_time(void);
@@ -2532,8 +2538,8 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                               NULL, 0, true);
     }
     if (ret && state == kIO80211NetworkLinkUp) {
-        fMcsSeedBurst = 400;
-        seedBssManagerMcs();
+        fBssManagerSeedBurst = 400;
+        seedBssManagerRateAndMcs();
         postLqmUpdateBulletin();
     }
 #endif
@@ -2618,7 +2624,7 @@ setCurrentApAddress(ether_addr *addr)
         }
     }
 #endif
-    seedBssManagerMcs();
+    seedBssManagerRateAndMcs();
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6880,7 +6886,7 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
         return kIOReturnError;
 
-    seedBssManagerMcs();
+    seedBssManagerRateAndMcs();
 
     struct ieee80211_node *ni = ic->ic_bss;
     const uint16_t chanSpec = buildTahoeWclCurrentBssChanSpec(ic, ni->ni_chan);

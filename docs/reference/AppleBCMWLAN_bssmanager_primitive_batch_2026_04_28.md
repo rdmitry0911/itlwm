@@ -26,6 +26,13 @@ kext does not allocate, subclass, or take `sizeof` of it. None of the
 IO80211BssManager mentions in the kext are documentation comments (no
 live calls).
 
+2026-07-07 addendum: this document remains the historical CR-201
+primitive-only batch record. Later CR-479 work adds live current-BSS writer
+wiring for `setMCSIndexSet(apple80211_mcs_index_set_data&)` and
+`setRateSet(apple80211_rate_set_data&)`, backed by AppleBCMWLANNetAdapter
+caller-side disassembly and symbol metadata rather than by the CR-201
+primitive-only return-type table.
+
 ## Decomp evidence
 
 The full Ghidra decompile output is captured in

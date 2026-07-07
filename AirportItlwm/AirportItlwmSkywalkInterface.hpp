@@ -155,9 +155,9 @@ public:
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
     IOReturn processApple80211Ioctl(UInt, apple80211req *);
-    void seedBssManagerMcs();
+    void seedBssManagerRateAndMcs();
     void postLqmUpdateBulletin();
-    uint32_t fMcsSeedBurst = 0;
+    uint32_t fBssManagerSeedBurst = 0;
 
 public:
     //

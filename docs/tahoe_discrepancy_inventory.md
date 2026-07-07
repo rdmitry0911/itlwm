@@ -4740,3 +4740,30 @@ under item 200 also remains deferred.
 - no `void *` substitution for any unrecovered kernel-internal return type
 - no promotion of `undefined4`/`undefined8` decompile placeholders to
   concrete C++ return types
+
+## item 202 — IO80211BssManager current-BSS rate/MCS writer seeding
+
+- class: IO80211BssManager
+- header: include/Airport/IO80211BssManager.h
+- implementation: AirportItlwmSkywalkInterface.cpp::seedBssManagerRateAndMcs
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- `AppleBCMWLANNetAdapter::updateRateSetAsyncCallback(...)` builds an
+  `apple80211_rate_set_data` carrier and calls
+  `IO80211BssManager::setRateSet(apple80211_rate_set_data&)`.
+- `AppleBCMWLANNetAdapter::updateMCSSet(...)` calls
+  `IO80211BssManager::setMCSIndexSet(...)`,
+  `setVHTMCSIndexSet(...)`, and `setHEMCSIndexSet(...)`.
+- symbol anchors are captured in
+  `docs/reference/CR-479-bssmanager-rate-mcs-writer-seeding-20260707.md`.
+
+Local closure:
+
+- the previous verified WCLConfigManager/BssManager pointer route is kept;
+- the seeding burst now publishes both the negotiated RATE_SET carrier and the
+  existing MCS_INDEX_SET carrier into the framework-owned BssManager cache;
+- VHT/HE writer calls remain deferred until their local carrier producers are
+  recovered with the same certainty.

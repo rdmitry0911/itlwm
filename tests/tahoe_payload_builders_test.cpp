@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <type_traits>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
@@ -14,6 +15,7 @@
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
+#include "include/Airport/IO80211BssManager.h"
 
 namespace {
 
@@ -766,6 +768,21 @@ void testTahoeLqmContracts()
             "LQM tail helper rejects null carrier");
 }
 
+void testTahoeBssManagerWriterContracts()
+{
+    using MCSWriter =
+        void (IO80211BssManager::*)(apple80211_mcs_index_set_data &);
+    using RateWriter =
+        void (IO80211BssManager::*)(apple80211_rate_set_data &);
+
+    static_assert(std::is_same<decltype(&IO80211BssManager::setMCSIndexSet),
+                               MCSWriter>::value,
+                  "BssManager setMCSIndexSet keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setRateSet),
+                               RateWriter>::value,
+                  "BssManager setRateSet keeps Apple writer signature");
+}
+
 } // namespace
 
 int main()
@@ -786,6 +803,7 @@ int main()
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
-    std::cout << "tahoe payload builders ok: 18 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, OP_MODE, nrate, LE-scan, MIMO and LQM contracts covered\n";
+    testTahoeBssManagerWriterContracts();
+    std::cout << "tahoe payload builders ok: 19 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, OP_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

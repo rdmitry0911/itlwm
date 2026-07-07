@@ -5148,6 +5148,13 @@ allocate, subclass, or take `sizeof` of it. No caller wiring is added
 — pre-existing kext mentions of `IO80211BssManager` are documentation
 comments only.
 
+2026-07-07 addendum: later CR-479 work adds live current-BSS writer wiring for
+`setMCSIndexSet(apple80211_mcs_index_set_data&)` and
+`setRateSet(apple80211_rate_set_data&)`. That addendum is separate from the
+CR-201 fourteen-helper primitive-only batch: it is backed by
+AppleBCMWLANNetAdapter caller-side disassembly and symbol metadata, and it
+does not promote any of the CR-201 deferred opaque-return helpers.
+
 Twenty-seven helpers from the CR-200 forty-one-symbol candidate set
 are deferred:
 - twelve where Ghidra emitted an opaque placeholder return type

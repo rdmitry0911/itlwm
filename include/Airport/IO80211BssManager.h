@@ -41,18 +41,30 @@
 //    ffffff8002268106  IO80211BssManager::get6gStandAloneTopology()       // ulong
 //    ffffff8002268118  IO80211BssManager::set6gStandAloneTopology(bool)   // void
 //
+//  CR-479 writer addendum (BootKC IO80211Family.kc, recovered from
+//  caller-side AppleBCMWLANNetAdapter disassembly and symbol metadata):
+//    ffffff8002266b24  IO80211BssManager::setMCSIndexSet(apple80211_mcs_index_set_data&)
+//    ffffff8002266cb2  IO80211BssManager::setRateSet(apple80211_rate_set_data&)
+//
+//  These writer declarations are not part of the CR-201 primitive-only
+//  fourteen-helper batch. They are live current-BSS cache producers used by
+//  Apple's rate/MCS update path and by the local Tahoe bridge once the
+//  framework-owned BssManager object is recovered from WCLConfigManager.
+//
 
 #ifndef IO80211BssManager_h
 #define IO80211BssManager_h
 
 struct apple80211_mcs_index_set_data;
+struct apple80211_rate_set_data;
 
 class IO80211BssManager
 {
 public:
-    // Tahoe export used by the native WCL driver to seed the current-BSS MCS
-    // cache consumed by IO80211InfraInterface::getInfraLinkProperties.
+    // Tahoe exports used by the native WCL driver to seed current-BSS rate
+    // and MCS caches consumed by IO80211InfraInterface link properties.
     void setMCSIndexSet(apple80211_mcs_index_set_data &);
+    void setRateSet(apple80211_rate_set_data &);
     unsigned char isAssociatedOnHighBand();
     bool isAssociatedToAdhoc();
     void resetRateAndIndexSet();
