@@ -135,12 +135,27 @@ timeout 120s sudo rm -rf /Library/Extensions/AirportItlwm.kext
 timeout 120s sudo cp -R Build/Debug/Tahoe/AirportItlwm.kext /Library/Extensions/AirportItlwm.kext
 timeout 120s sudo chown -R root:wheel /Library/Extensions/AirportItlwm.kext
 timeout 120s sudo chmod -R go-w /Library/Extensions/AirportItlwm.kext
-timeout 120s sudo shutdown -r now || true
+timeout 120s sudo rm -rf /Library/KernelCollections/AuxiliaryKernelExtensions.kc.new
+timeout 300s sudo kmutil create --new aux \
+  --auxiliary-path /Library/KernelCollections/AuxiliaryKernelExtensions.kc.new \
+  --volume-root / \
+  --boot-path /System/Library/KernelCollections/BootKernelExtensions.kc \
+  --system-path /System/Library/KernelCollections/SystemKernelExtensions.kc \
+  --bundle-path /Library/Extensions/AirportItlwm.kext \
+  --allow-missing-kdk
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+timeout 120s sudo mv /Library/KernelCollections/AuxiliaryKernelExtensions.kc \
+  "/Library/KernelCollections/AuxiliaryKernelExtensions.kc.preinstall-bak.${stamp}"
+timeout 120s sudo mv /Library/KernelCollections/AuxiliaryKernelExtensions.kc.new \
+  /Library/KernelCollections/AuxiliaryKernelExtensions.kc
+timeout 120s sudo /sbin/reboot || true
 ```
 
 After reboot, wait for SSH with a bounded loop. If SSH does not return within
 120 seconds, inspect the VM screen through VNC and follow the project boot-panic
-recovery rules before any further Wi-Fi-attached boot attempt.
+recovery rules before any further Wi-Fi-attached boot attempt. Then verify the
+running kext with `kmutil showloaded | grep -i AirportItlwm` and compare the
+loaded UUID or staged binary hash against the just-built artifact.
 
 ## Non-Claims
 
