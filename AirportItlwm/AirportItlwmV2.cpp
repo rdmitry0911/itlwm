@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwmV2.hpp"
+#include "TahoeCapabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
@@ -4416,11 +4417,8 @@ getCARD_CAPABILITIES(OSObject *object,
     // 0xEF / 0x2B / 0x8C advertised exactly those impossible bits into the
     // still-active hidden association path. Sanitize the hard-coded cluster to
     // the Apple-consistent shape before the hidden join queue consumes it.
-    cd->capabilities[2] = 0x6F;
-    cd->capabilities[3] = 0x27;
-    cd->capabilities[5] = 0x40;
-    cd->capabilities[6] = 0x0C;
-    *(uint16_t *)&cd->capabilities[8] = 0x201;
+    TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
+        cd->capabilities);
 //
 //    cd->capabilities[2] |= 0x10;
 //    cd->capabilities[5] |= 0x1;

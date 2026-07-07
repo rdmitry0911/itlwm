@@ -2315,6 +2315,11 @@ cluster to the Apple-consistent shape `cap[2]=0x6F`, `cap[3]=0x27`,
 `cap[6]=0x0C` and keep the broader hidden `0x45/0x3ad8` owner recovery out of
 scope for this diff.
 
+2026-07-07 addendum: the same content contract is now shared between the Tahoe
+controller producer and the legacy STA dispatcher shadow through
+`TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster()`. The
+legacy shadow no longer publishes the old `0xEF / 0x2B / 0x8C` cluster.
+
 After rebooting into the exact `CR-032` runtime, that capability-content fix
 did not change the active failure signature:
 

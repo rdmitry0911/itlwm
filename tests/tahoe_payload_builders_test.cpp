@@ -7,6 +7,7 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
+#include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
@@ -783,6 +784,31 @@ void testTahoeBssManagerWriterContracts()
                   "BssManager setRateSet keeps Apple writer signature");
 }
 
+void testTahoeCapabilityContracts()
+{
+    using namespace TahoeCapabilityContracts;
+
+    uint8_t capabilities[24] = {};
+    applyAppleConsistentCardCapabilityCluster(capabilities);
+
+    require(capabilities[2] == kCardCapabilityByte2,
+            "CARD_CAPABILITIES cap[2] matches Apple-consistent cluster");
+    require(capabilities[3] == kCardCapabilityByte3,
+            "CARD_CAPABILITIES cap[3] matches Apple-consistent cluster");
+    require(capabilities[5] == kCardCapabilityByte5,
+            "CARD_CAPABILITIES cap[5] matches Apple-consistent cluster");
+    require(capabilities[6] == kCardCapabilityByte6,
+            "CARD_CAPABILITIES cap[6] matches Apple-consistent cluster");
+    require(capabilities[8] == kCardCapabilityByte8 &&
+                capabilities[9] == kCardCapabilityByte9,
+            "CARD_CAPABILITIES tail word is little-endian 0x0201");
+    require(!hasAppleImpossibleAdvancedAkmBits(
+                capabilities[2], capabilities[3], capabilities[6]),
+            "CARD_CAPABILITIES cluster clears Apple-impossible AKM bits");
+    require(hasAppleImpossibleAdvancedAkmBits(0xef, 0x2b, 0x8c),
+            "CARD_CAPABILITIES rejects old over-advertised cluster");
+}
+
 } // namespace
 
 int main()
@@ -804,6 +830,7 @@ int main()
     testTahoeMimoContracts();
     testTahoeLqmContracts();
     testTahoeBssManagerWriterContracts();
-    std::cout << "tahoe payload builders ok: 19 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, OP_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    testTahoeCapabilityContracts();
+    std::cout << "tahoe payload builders ok: 20 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, CARD_CAPABILITIES, OP_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

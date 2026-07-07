@@ -9,6 +9,7 @@
 #include "AirportItlwm.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeAssociationContracts.hpp"
+#include "TahoeCapabilityContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
 
@@ -787,6 +788,10 @@ IOReturn AirportItlwm::
 getCARD_CAPABILITIES(OSObject *object,
                                      struct apple80211_capability_data *cd)
 {
+#if __IO80211_TARGET >= __MAC_26_0
+    static_assert(sizeof(struct apple80211_capability_data) == 0x1c,
+                  "Tahoe apple80211_capability_data must be 0x1c bytes");
+#endif
     uint32_t caps = fHalService->get80211Controller()->ic_caps;
     memset(cd, 0, sizeof(struct apple80211_capability_data));
     
@@ -817,18 +822,12 @@ getCARD_CAPABILITIES(OSObject *object,
     // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    cd->capabilities[2] = 0xEF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, TSN (WOW bit cleared — not implemented)
-    cd->capabilities[3] = 0x2B;
-    cd->capabilities[4] = 0xAD;
-    cd->capabilities[5] = 0x80;//isCntryDefaultSupported
-    cd->capabilities[5] |= 0x0C;
-    cd->capabilities[6] = (
-//                           1 |    //MFP capable
-                           0x8 |
-                           0x4 |
-                           0x80
-                           );
-    cd->capabilities[7] = 0x84; // This byte contains Apple Watch unlock
+    // AppleBCMWLANCore::getCARD_CAPABILITIES() never sets cap[2] bit 7,
+    // cap[3] bit 3, or cap[6] bit 7. Keep the legacy dispatcher shadow on the
+    // same Apple-consistent cluster as the Tahoe controller path instead of
+    // advertising the old impossible 0xEF / 0x2B / 0x8C combination.
+    TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
+        cd->capabilities);
     //cd->capabilities[8] = 0x40;
     //cd->capabilities[8] |= 8;//dfs white list
     //cd->capabilities[9] = 0x28;

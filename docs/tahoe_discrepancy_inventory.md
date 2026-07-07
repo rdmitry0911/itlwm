@@ -4767,3 +4767,31 @@ Local closure:
   existing MCS_INDEX_SET carrier into the framework-owned BssManager cache;
 - VHT/HE writer calls remain deferred until their local carrier producers are
   recovered with the same certainty.
+
+## item 203 — CARD_CAPABILITIES legacy shadow content alignment
+
+- producer: `AirportItlwm::getCARD_CAPABILITIES(...)`
+- files:
+  - `AirportItlwm/AirportItlwmV2.cpp`
+  - `AirportItlwm/AirportSTAIOCTL.cpp`
+  - `AirportItlwm/TahoeCapabilityContracts.hpp`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+The Tahoe controller producer was already sanitized to the Apple-consistent
+capability cluster from item 15, but the legacy STA dispatcher shadow still
+published the old `0xef / 0x2b / 0x8c` cluster. That left one public path able
+to re-advertise Apple-impossible advanced capability bits.
+
+This batch moves the deterministic cluster into
+`TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster()` and
+uses it from both producers. The shared helper preserves:
+
+- `cap[2] = 0x6f`
+- `cap[3] = 0x27`
+- `cap[5] = 0x40`
+- `cap[6] = 0x0c`
+- `cap[8..9] = 0x0201`
+
+Reference note:
+`docs/reference/CR-479-card-capabilities-shadow-cluster-20260707.md`.
