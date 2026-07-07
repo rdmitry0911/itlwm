@@ -4852,9 +4852,15 @@ uses it from both producers. The shared helper preserves:
 - `cap[5] = 0x40`
 - `cap[6] = 0x0c`
 - `cap[8..9] = 0x0201`
+- `cap[10] = 0x08` for LQM capability index `0x53`
 
 Reference note:
 `docs/reference/CR-479-card-capabilities-shadow-cluster-20260707.md`.
+
+Follow-up note:
+`docs/reference/CR-479-lqm-create-prerequisites-20260707.md` records why
+`cap[10]` is a separate IO80211 LinkQualityMonitor create prerequisite rather
+than one of the Apple-impossible AKM bits cleared by this item.
 
 ## item 204 — IO80211BssManager VHT/HE MCS writer seeding
 
@@ -4887,3 +4893,30 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-bssmanager-vht-he-mcs-writer-seeding-20260707.md`.
+
+## item 205 — LQM create prerequisite carriers
+
+- class:
+  - `AirportItlwm::getCARD_CAPABILITIES(...)`
+  - `AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED(...)`
+- files:
+  - `AirportItlwm/TahoeCapabilityContracts.hpp`
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+  - `tests/tahoe_payload_builders_test.cpp`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Runtime serial after item 204 still showed repeated
+`IO80211QueueCall::handleEntry - called type 3, error 0xe00002c7`. The type-3
+queue entry is `IO80211InfraInterface::createLinkQualityMonitor`.
+
+This batch restores the two reference-backed prerequisite carriers recovered in
+session `34da2167-3af4-4a61-8925-c015c3ba857c`:
+
+- `capabilities[10] = 0x08`, which loads card-capability index `0x53` into
+  `cap+0xb36 bit3`
+- `getSLOW_WIFI_FEATURE_ENABLED` returns the compact
+  `version + enabled=1` carrier consumed by the LQM option builder
+
+Reference note:
+`docs/reference/CR-479-lqm-create-prerequisites-20260707.md`.
