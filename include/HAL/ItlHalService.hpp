@@ -96,6 +96,27 @@ struct ItlHalApStationCommand {
     uint16_t disassocPayloadSentinel0a;
 };
 
+struct ItlHalApStaIEQuery {
+    const uint8_t *station;
+    uint32_t requestedLength;
+    uint8_t *output;
+    size_t outputCapacity;
+};
+
+struct ItlHalApStaStatsQuery {
+    const uint8_t *station;
+    uint32_t field0c;
+    uint32_t field10;
+    uint32_t field14;
+    uint32_t field18;
+};
+
+struct ItlHalApKeyRscQuery {
+    uint16_t keyIndex;
+    uint8_t *rsc;
+    size_t rscLength;
+};
+
 class ItlHalService : public OSObject {
     OSDeclareAbstractStructors(ItlHalService)
 
@@ -131,9 +152,10 @@ public:
      * A backend that returns true from supportsAPMode() must also
      * implement startAPMode/stopAPMode and at least one of the
      * command methods needed by the AP/GO bring-up flow it advertises
-     * (beacon update, AP key install, CSA, station add/remove). It
-     * must remain re-entry-safe: calling stopAPMode() while AP mode
-     * is not started must succeed without side effects.
+     * (beacon update, AP key install, CSA, station add/remove,
+     * station IE/stat/RSC queries). It must remain re-entry-safe:
+     * calling stopAPMode() while AP mode is not started must succeed
+     * without side effects.
      *
      * All parameter pointers are borrowed for the duration of the
      * call. The HAL must not retain pointers, must not free them, and
@@ -177,6 +199,18 @@ public:
     }
     virtual IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *cmd) {
         (void)cmd;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getAPStationIE(const struct ItlHalApStaIEQuery *query) {
+        (void)query;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getAPStationStats(struct ItlHalApStaStatsQuery *query) {
+        (void)query;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn getAPKeyRSC(const struct ItlHalApKeyRscQuery *query) {
+        (void)query;
         return kIOReturnUnsupported;
     }
 

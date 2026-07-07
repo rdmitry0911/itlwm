@@ -3855,8 +3855,22 @@ Recovered `getKEY_RSC()` sequence:
 - success writes length `8` at output `+0x50` and the RSC qword at output
   `+0x54`
 
-The scaffold records these command-buffer contracts only. It still does not run
-APSTA station/key methods at runtime and does not alter primary STA key paths.
+2026-07-07 runtime boundary update:
+
+- `setCIPHER_KEY()` no longer carries a local NULL guard after the AP-up gate.
+- `getSTA_IE_LIST()` now performs the recovered station-table lookup, copies
+  the station-entry prefix into output `+0x10`, and crosses the AP/GO HAL query
+  boundary for the backend-owned `wpaie` tail before applying the recovered
+  output-length rule.
+- `getSTA_STATS()` now crosses the AP/GO HAL query boundary for the
+  backend-owned `sta_info` tail and publishes the valid bit plus recovered
+  output fields only after backend success.
+- `getKEY_RSC()` now crosses the AP/GO HAL query boundary for the backend-owned
+  RSC query and publishes length `8` only after backend success.
+
+The local boundary still does not fabricate station IE/stat/RSC data and does
+not alter primary STA key paths. Missing AP backend support remains
+fail-closed through default `ItlHalService` unsupported returns.
 
 ## APSTA Event And Station Table Producer Layer
 

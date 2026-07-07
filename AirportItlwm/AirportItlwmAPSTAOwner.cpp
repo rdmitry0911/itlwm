@@ -296,9 +296,6 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyNotUpReturn);
     }
-    if (key == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (key->key_cipher_type == kAirportItlwmAPSTASetCipherKeyCipherNone) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn);
     }
@@ -391,7 +388,32 @@ IOReturn AirportItlwmAPSTAOwner::getStaIEList(AirportItlwmAPSTAStaIEDataLayout *
     if (entry == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNotFoundReturn);
     }
-    return kIOReturnUnsupported;
+
+    memcpy(out->output10, entry, sizeof(out->output10));
+    if (owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnNotReady;
+    }
+
+    ItlHalApStaIEQuery query;
+    bzero(&query, sizeof(query));
+    query.station = out->mac04;
+    query.requestedLength =
+        (out->length0c > kAirportItlwmAPSTAGetStaIEListWpaIeNameLength)
+            ? (out->length0c - kAirportItlwmAPSTAGetStaIEListWpaIeNameLength)
+            : 0;
+    query.output = out->output10;
+    query.outputCapacity = query.requestedLength;
+
+    IOReturn ret = owner->fHalService->getAPStationIE(&query);
+    if (ret != kIOReturnSuccess) {
+        return ret;
+    }
+
+    out->length0c =
+        out->output10[kAirportItlwmAPSTAGetStaIEListReturnedLengthSourceOffset -
+                      kAirportItlwmAPSTAGetStaIEListOutputMacOffset] +
+        kAirportItlwmAPSTAGetStaIEListReturnedLengthBias;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::getStaStats(AirportItlwmAPSTAStaStatsDataLayout *out)
@@ -402,15 +424,46 @@ IOReturn AirportItlwmAPSTAOwner::getStaStats(AirportItlwmAPSTAStaStatsDataLayout
     if (out == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaStatsNullReturn);
     }
-    return kIOReturnUnsupported;
+    if (owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnNotReady;
+    }
+
+    ItlHalApStaStatsQuery query;
+    bzero(&query, sizeof(query));
+    query.station = out->mac04;
+
+    IOReturn ret = owner->fHalService->getAPStationStats(&query);
+    if (ret != kIOReturnSuccess) {
+        return ret;
+    }
+
+    out->valid00 = kAirportItlwmAPSTAGetStaStatsOutputValidValue;
+    out->field0c = query.field0c;
+    out->field10 = query.field10;
+    out->field14 = query.field14;
+    out->field18 = query.field18;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::getKeyRsc(AirportItlwmAPSTAKeyRscDataLayout *out)
 {
-    if (out == nullptr) {
-        return kIOReturnBadArgument;
+    if (owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnNotReady;
     }
-    return kIOReturnUnsupported;
+
+    ItlHalApKeyRscQuery query;
+    bzero(&query, sizeof(query));
+    query.keyIndex = out->keyIndex0e;
+    query.rsc = out->rsc54;
+    query.rscLength = sizeof(out->rsc54);
+
+    IOReturn ret = owner->fHalService->getAPKeyRSC(&query);
+    if (ret != kIOReturnSuccess) {
+        return ret;
+    }
+
+    out->rscLength50 = kAirportItlwmAPSTAGetKeyRscOutputLengthValue;
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::setSoftAPExtCaps(

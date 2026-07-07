@@ -2980,9 +2980,40 @@ reference producer.
   - add static asserts tying state gates, resources, station table bounds,
     names, and carriers to recovered reference values
 - non-claims:
-  - this does not execute APSTA station/key methods at runtime
+  - this does not execute APSTA station/key command tails at runtime
   - this does not change primary STA key programming
   - this does not force AP-up state or command success
+
+### 59A. APSTA station/key public bodies stop at local unsupported tails
+- anomaly_id: `A-APSTA-STATION-KEY-RUNTIME-BOUNDARY-204`
+- layer: APSTA station/key body runtime bridge after CR-149
+- Apple contract:
+  - `setCIPHER_KEY(...)` has no NULL guard after AP-up state passes
+  - `getSTA_IE_LIST(...)` searches the APSTA station table, copies the first
+    six bytes of the station entry into output `+0x10`, runs the `wpaie` IOVAR
+    query, and derives output length from output byte `+0x11` plus `2`
+  - `getSTA_STATS(...)` runs the `sta_info` IOVAR query and publishes the
+    recovered valid bit plus four RX-derived output fields only after success
+  - `getKEY_RSC(...)` has no NULL guard, sends the recovered key index through
+    virtual IOCTL get selector `0xb7`, and publishes an 8-byte RSC only after
+    success
+- local mismatch before this batch:
+  - `getSTA_IE_LIST`, `getSTA_STATS`, and `getKEY_RSC` reached
+    `kIOReturnUnsupported` instead of crossing a backend command boundary
+  - `setCIPHER_KEY` still had a local NULL guard not present in the recovered
+    AppleBCMWLAN body
+- exact correction:
+  - add `ItlHalService` query contracts for AP station IE, station stats, and
+    key RSC
+  - route the three public APSTA bodies through those contracts after their
+    recovered gates and station-table checks
+  - keep HAL defaults fail-closed, so missing AP backend support returns
+    unsupported rather than fabricated data
+  - remove the post-AP-up `setCIPHER_KEY` NULL guard
+- non-claims:
+  - this does not implement the final Intel AP firmware backend
+  - this does not synthesize AP station IE/stat/RSC data
+  - this does not change primary STA key programming
 
 ### 60. APSTA event/station-table producer layer has fixed entry and message contracts
 - anomaly_id: `A-APSTA-EVENT-STATION-TABLE-CONTRACTS-076`
