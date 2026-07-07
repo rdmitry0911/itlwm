@@ -6,6 +6,7 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
+#include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
@@ -589,6 +590,55 @@ void testTahoeMimoContracts()
             "MIMO status initializer rejects null carrier");
 }
 
+void testTahoeLqmContracts()
+{
+    using namespace TahoeLqmContracts;
+
+    uint8_t carrier[kCarrierSize] = {};
+    require(kCarrierSize == 0x24, "LQM config carrier size stays 0x24");
+    require(kVersion == 1, "LQM config public version is 1");
+    require(kInvalidArgumentRaw == 0x16,
+            "LQM invalid carrier paths return raw 0x16");
+    require(kFeatureDisabledStatus == 0x2d,
+            "LQM feature-disabled gate is the only recovered 0x2d path");
+    require(!hasInvalidInterval(kMinimumIntervalMs, kMinimumIntervalMs,
+                                kMinimumIntervalMs),
+            "LQM accepts intervals at the Apple minimum");
+    require(hasInvalidInterval(kMinimumIntervalMs - 1, kMinimumIntervalMs,
+                               kMinimumIntervalMs),
+            "LQM rejects sample interval below the Apple minimum");
+    require(hasInvalidInterval(kMinimumIntervalMs, kMinimumIntervalMs - 1,
+                               kMinimumIntervalMs),
+            "LQM rejects tx interval below the Apple minimum");
+    require(hasInvalidInterval(kMinimumIntervalMs, kMinimumIntervalMs,
+                               kMinimumIntervalMs - 1),
+            "LQM rejects rx interval below the Apple minimum");
+    require(isInvalidThresholdByte(kThresholdInvalidLow),
+            "LQM rejects low threshold boundary");
+    require(isInvalidThresholdByte(kThresholdInvalidHigh),
+            "LQM rejects high threshold boundary");
+    require(!isInvalidThresholdByte(kThresholdInvalidLow - 1),
+            "LQM accepts threshold below invalid window");
+    require(!isInvalidThresholdByte(kThresholdInvalidHigh + 1),
+            "LQM accepts threshold above invalid window");
+    require(!hasInvalidThresholdBytes(carrier),
+            "LQM accepts zero threshold bytes");
+    carrier[kThresholdOffset] = kThresholdInvalidLow;
+    require(hasInvalidThresholdBytes(carrier),
+            "LQM rejects threshold bytes in invalid window");
+    carrier[kThresholdOffset] = 0;
+    carrier[kTailOffset] = kTailMaximumAcceptedValue;
+    require(!hasInvalidTailBytes(carrier),
+            "LQM accepts tail byte 99");
+    carrier[kTailOffset] = kTailMaximumAcceptedValue + 1;
+    require(hasInvalidTailBytes(carrier),
+            "LQM rejects tail byte 100");
+    require(hasInvalidThresholdBytes(nullptr),
+            "LQM threshold helper rejects null carrier");
+    require(hasInvalidTailBytes(nullptr),
+            "LQM tail helper rejects null carrier");
+}
+
 } // namespace
 
 int main()
@@ -606,6 +656,7 @@ int main()
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, nrate, LE-scan and MIMO contracts covered\n";
+    testTahoeLqmContracts();
+    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, nrate, LE-scan, MIMO and LQM contracts covered\n";
     return 0;
 }

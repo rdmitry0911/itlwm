@@ -1682,6 +1682,9 @@ recovered Apple evidence was already strong enough at the family/core boundary:
   mirrors one interval value into the first three dwords
 - `IO80211LQMData::setLQM_CONFIG(...)` validates only two legal primary
   intervals (`1000` / `5000`) and keeps the caller-visible ABI fixed
+- `AppleBCMWLANCore::setLQM_CONFIG(...)` rejects NULL and sub-1000 interval
+  dwords with raw `0x16`; the separate `0x2d` path is the pre-validation
+  feature-disabled gate, not an interval validation return
 - `IO80211LQMData::getLQM_SUMMARY(...)` zeroes a fixed `0x15a0` summary blob
 - `AppleBCMWLANCore::getLQM_CONFIG(...)` / `setLQM_CONFIG(...)` preserve the
   same public carrier shape while sourcing state from the vendor owner
@@ -1692,8 +1695,8 @@ That is enough to make a narrow lift without guessing:
 
 - `getLQM_CONFIG` now exposes the recovered `0x24` carrier instead of generic
   unsupported
-- `setLQM_CONFIG` now follows the recovered Tahoe validation ranges before
-  caching the public blob
+- `setLQM_CONFIG` now follows the recovered Tahoe validation ranges and raw
+  `0x16` invalid-carrier returns before caching the public blob
 - `getLQM_SUMMARY` now returns the fixed zeroed summary payload rather than an
   unsupported error
 - `getLQM_STATISTICS` is no longer treated as an "unknown missing producer":

@@ -11,6 +11,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeLeScanContracts.hpp"
+#include "TahoeLqmContracts.hpp"
 #include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
@@ -78,13 +79,6 @@ static uint16_t airportItlwmHostEtherType(const ether_header *eh)
 static bool isTahoeHiddenAssocCommand(int command)
 {
     return TahoeAssociationContracts::isHiddenAssocCommand(command);
-}
-
-static bool isInvalidTahoeLqmThresholdByte(uint8_t value)
-{
-    // AppleBCMWLANCore::setLQM_CONFIG rejects any byte in the inclusive range
-    // [0x0b, 0x9b] for the seven-byte threshold subfield starting at +0x11.
-    return static_cast<uint8_t>(value - 0x0bU) < 0x91U;
 }
 
 static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
@@ -5706,21 +5700,16 @@ setLQM_CONFIG(apple80211_lqm_config_t *data)
     // Reproduce those exact caller-visible checks so the port no longer
     // advertises slot [577] as unsupported.
     if (data == nullptr)
-        return kIOReturnBadArgument;
-    if (data->sample_period_ms < 1000 || data->tx_per_interval_ms < 1000 ||
-        data->rx_loss_interval_ms < 1000)
-        return static_cast<IOReturn>(0x2d);
+        return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
+    if (TahoeLqmContracts::hasInvalidInterval(
+            data->sample_period_ms, data->tx_per_interval_ms,
+            data->rx_loss_interval_ms))
+        return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
 
-    const uint8_t *thresholdBytes =
-        reinterpret_cast<const uint8_t *>(data) + 0x11;
-    for (size_t i = 0; i < 7; i++) {
-        if (isInvalidTahoeLqmThresholdByte(thresholdBytes[i]))
-            return static_cast<IOReturn>(0x16);
-    }
-    for (size_t i = 0; i < sizeof(data->opaque_tail_19); i++) {
-        if (data->opaque_tail_19[i] > 99)
-            return static_cast<IOReturn>(0x16);
-    }
+    const uint8_t *carrier = reinterpret_cast<const uint8_t *>(data);
+    if (TahoeLqmContracts::hasInvalidThresholdBytes(carrier) ||
+        TahoeLqmContracts::hasInvalidTailBytes(carrier))
+        return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
 
     memcpy(&cachedLqmConfig, data, sizeof(cachedLqmConfig));
     cachedLqmConfig.version = APPLE80211_VERSION;
