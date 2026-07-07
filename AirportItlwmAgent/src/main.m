@@ -73,6 +73,8 @@
  * generous upper bound that still fits comfortably on the stack
  * and bounds the buffer-too-small failure path. */
 #define kAgentPassphraseMaxLen 128u
+#define kAgentPLTIRetrySleepSeconds 1u
+#define kAgentPLTIRetryLogEvery 10u
 
 static void
 agent_zero(void *p, size_t n)
@@ -137,6 +139,44 @@ agent_handle_target(io_connect_t conn,
     return 0;
 }
 
+static void
+agent_prime_keychain_for_first_target(void)
+{
+    int rc = AgentPrimeProjectKeychain();
+    if (rc != 0) {
+        AGENT_ERR("AgentPrimeProjectKeychain failed rc=%d; "
+                  "association lookup will retry", rc);
+    }
+}
+
+static kern_return_t
+agent_open_plti_blocking(io_connect_t *out_conn)
+{
+    if (out_conn == NULL)
+        return kIOReturnBadArgument;
+    *out_conn = MACH_PORT_NULL;
+
+    uint32_t attempt = 0;
+    for (;;) {
+        kern_return_t kr = AgentOpenPLTIQuiet(out_conn);
+        if (kr == kIOReturnSuccess) {
+            if (attempt != 0) {
+                AGENT_LOG("PLTI user client opened after %u retries",
+                          attempt);
+            }
+            return kr;
+        }
+
+        attempt++;
+        if (attempt == 1 || (attempt % kAgentPLTIRetryLogEvery) == 0) {
+            AGENT_LOG("AgentOpenPLTI unavailable kr=0x%x; retrying "
+                      "in %u s", (unsigned)kr,
+                      (unsigned)kAgentPLTIRetrySleepSeconds);
+        }
+        sleep(kAgentPLTIRetrySleepSeconds);
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -147,46 +187,59 @@ main(int argc, char **argv)
         AGENT_LOG("project-owned PLTI PMK producer starting "
                   "(uid=%u)", (unsigned)getuid());
 
-        io_connect_t conn = MACH_PORT_NULL;
-        kern_return_t kr = AgentOpenPLTI(&conn);
-        if (kr != kIOReturnSuccess) {
-            AGENT_ERR("AgentOpenPLTI failed kr=0x%x; daemon will exit "
-                      "and be restarted by launchd KeepAlive",
-                      (unsigned)kr);
-            return 1;
-        }
+        /*
+         * Pay Tahoe's cold securityd / keychain unlock cost before
+         * the first PSK association target can start the kext's
+         * pre-M1 PMK wait window. Lookup still unlocks defensively
+         * on each association edge, so this is a latency warmup, not
+         * a credential cache.
+         */
+        agent_prime_keychain_for_first_target();
 
-        uint64_t last_acked = 0;
         for (;;) {
-            struct AirportItlwmAssociationTarget tgt;
-            kr = AgentWaitAssociationTarget(conn, last_acked, &tgt);
-            if (kr == kIOReturnAborted) {
-                AGENT_LOG("WaitAssociationTarget aborted; closing "
-                          "connection and exiting for relaunch");
-                break;
-            }
+            io_connect_t conn = MACH_PORT_NULL;
+            kern_return_t kr = agent_open_plti_blocking(&conn);
             if (kr != kIOReturnSuccess) {
-                AGENT_ERR("WaitAssociationTarget kr=0x%x; closing "
-                          "connection and exiting for relaunch",
+                AGENT_ERR("agent_open_plti_blocking failed kr=0x%x",
                           (unsigned)kr);
-                break;
+                sleep(kAgentPLTIRetrySleepSeconds);
+                continue;
             }
-            (void)agent_handle_target(conn, &tgt);
-            /*
-             * Always advance last_acked even if the credential
-             * lookup or PMK delivery failed. Otherwise the helper
-             * would re-block on the same generation indefinitely
-             * and never observe the next association edge. A
-             * missing credential is not the kext's problem to
-             * solve; the helper logs it and moves on. The kext-
-             * side replay guard guarantees that an unrelated
-             * later DeliverPMK cannot retroactively land for the
-             * skipped generation.
-             */
-            last_acked = tgt.generation;
-        }
 
-        IOServiceClose(conn);
+            uint64_t last_acked = 0;
+            for (;;) {
+                struct AirportItlwmAssociationTarget tgt;
+                kr = AgentWaitAssociationTarget(conn, last_acked, &tgt);
+                if (kr == kIOReturnAborted) {
+                    AGENT_LOG("WaitAssociationTarget aborted; closing "
+                              "connection and reopening PLTI in-process");
+                    break;
+                }
+                if (kr != kIOReturnSuccess) {
+                    AGENT_ERR("WaitAssociationTarget kr=0x%x; closing "
+                              "connection and reopening PLTI in-process",
+                              (unsigned)kr);
+                    break;
+                }
+                (void)agent_handle_target(conn, &tgt);
+                /*
+                 * Always advance last_acked even if the credential
+                 * lookup or PMK delivery failed. Otherwise the helper
+                 * would re-block on the same generation indefinitely
+                 * and never observe the next association edge. A
+                 * missing credential is not the kext's problem to
+                 * solve; the helper logs it and moves on. The kext-
+                 * side replay guard guarantees that an unrelated
+                 * later DeliverPMK cannot retroactively land for the
+                 * skipped generation.
+                 */
+                last_acked = tgt.generation;
+            }
+
+            if (conn != MACH_PORT_NULL)
+                IOServiceClose(conn);
+            sleep(kAgentPLTIRetrySleepSeconds);
+        }
     }
     return 0;
 }

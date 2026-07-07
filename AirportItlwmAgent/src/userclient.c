@@ -13,6 +13,7 @@
 #include "log.h"
 
 #include <IOKit/IOKitLib.h>
+#include <stdbool.h>
 #include <string.h>
 
 /*
@@ -64,8 +65,8 @@ _Static_assert(sizeof(struct apple80211_key) == 148,
 #define APPLE80211_CIPHER_PMK 6
 #endif
 
-kern_return_t
-AgentOpenPLTI(io_connect_t *out_conn)
+static kern_return_t
+agent_open_plti_impl(io_connect_t *out_conn, bool log_failures)
 {
     if (out_conn == NULL)
         return kIOReturnBadArgument;
@@ -77,14 +78,17 @@ AgentOpenPLTI(io_connect_t *out_conn)
         IOServiceMatching("AirportItlwm"),
         &iter);
     if (kr != kIOReturnSuccess || iter == IO_OBJECT_NULL) {
-        AGENT_ERR("AgentOpenPLTI IOServiceGetMatchingServices kr=0x%x", kr);
+        if (log_failures)
+            AGENT_ERR("AgentOpenPLTI IOServiceGetMatchingServices kr=0x%x",
+                      kr);
         return (kr != kIOReturnSuccess) ? kr : kIOReturnNotFound;
     }
 
     io_service_t svc = IOIteratorNext(iter);
     IOObjectRelease(iter);
     if (svc == IO_OBJECT_NULL) {
-        AGENT_ERR("AgentOpenPLTI no AirportItlwm service registered");
+        if (log_failures)
+            AGENT_ERR("AgentOpenPLTI no AirportItlwm service registered");
         return kIOReturnNotFound;
     }
 
@@ -93,13 +97,26 @@ AgentOpenPLTI(io_connect_t *out_conn)
                        kAirportItlwmUserClientType, &conn);
     IOObjectRelease(svc);
     if (kr != kIOReturnSuccess) {
-        AGENT_ERR("AgentOpenPLTI IOServiceOpen('PLTI') kr=0x%x", kr);
+        if (log_failures)
+            AGENT_ERR("AgentOpenPLTI IOServiceOpen('PLTI') kr=0x%x", kr);
         return kr;
     }
 
     *out_conn = conn;
     AGENT_LOG("PLTI user client opened conn=0x%x", conn);
     return kIOReturnSuccess;
+}
+
+kern_return_t
+AgentOpenPLTI(io_connect_t *out_conn)
+{
+    return agent_open_plti_impl(out_conn, true);
+}
+
+kern_return_t
+AgentOpenPLTIQuiet(io_connect_t *out_conn)
+{
+    return agent_open_plti_impl(out_conn, false);
 }
 
 kern_return_t

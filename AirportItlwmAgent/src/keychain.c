@@ -55,6 +55,11 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
+static const char kProjectKeychainPath[] =
+    "/Library/Keychains/AirportItlwm.keychain";
+static const char kProjectKeychainPasswordPath[] =
+    "/etc/airportitlwm/keychain-password";
+
 /*
  * Maximum project-keychain unlock-password length we accept on
  * read. The install script writes a base64-encoded 32-byte
@@ -150,21 +155,12 @@ agent_zero_local(void *p, size_t n)
         *v++ = 0;
 }
 
-int
-AgentLookupProjectPSK(const uint8_t *ssid, size_t ssid_len,
-                     uint8_t *out_password,
-                     size_t *inout_password_len)
+static int
+agent_open_unlocked_project_keychain(SecKeychainRef *out_keychain)
 {
-    if (ssid == NULL || ssid_len == 0 ||
-        out_password == NULL || inout_password_len == NULL ||
-        *inout_password_len == 0) {
+    if (out_keychain == NULL)
         return -1;
-    }
-
-    static const char kProjectKeychainPath[] =
-        "/Library/Keychains/AirportItlwm.keychain";
-    static const char kProjectKeychainPasswordPath[] =
-        "/etc/airportitlwm/keychain-password";
+    *out_keychain = NULL;
 
     SecKeychainRef proj_kc = NULL;
     OSStatus st = SecKeychainOpen(kProjectKeychainPath, &proj_kc);
@@ -205,6 +201,36 @@ AgentLookupProjectPSK(const uint8_t *ssid, size_t ssid_len,
         return -1;
     }
 
+    *out_keychain = proj_kc;
+    return 0;
+}
+
+int
+AgentPrimeProjectKeychain(void)
+{
+    SecKeychainRef proj_kc = NULL;
+    if (agent_open_unlocked_project_keychain(&proj_kc) != 0)
+        return -1;
+    CFRelease(proj_kc);
+    AGENT_LOG("AgentPrimeProjectKeychain OK");
+    return 0;
+}
+
+int
+AgentLookupProjectPSK(const uint8_t *ssid, size_t ssid_len,
+                     uint8_t *out_password,
+                     size_t *inout_password_len)
+{
+    if (ssid == NULL || ssid_len == 0 ||
+        out_password == NULL || inout_password_len == NULL ||
+        *inout_password_len == 0) {
+        return -1;
+    }
+
+    SecKeychainRef proj_kc = NULL;
+    if (agent_open_unlocked_project_keychain(&proj_kc) != 0)
+        return -1;
+
     /*
      * Project-owned generic-password schema:
      *   service (svce) = "AirportItlwm WiFi PSK"
@@ -220,7 +246,7 @@ AgentLookupProjectPSK(const uint8_t *ssid, size_t ssid_len,
     void *pass_bytes  = NULL;
     SecKeychainItemRef item = NULL;
 
-    st = SecKeychainFindGenericPassword(
+    OSStatus st = SecKeychainFindGenericPassword(
         proj_kc,
         (UInt32)sizeof(kServiceTag) - 1, kServiceTag,
         (UInt32)ssid_len, (const char *)ssid,

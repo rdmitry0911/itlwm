@@ -26,6 +26,13 @@
  * Runs as root so it has read access to both the keychain file
  * and the unlock-password file.
  *
+ * AgentPrimeProjectKeychain opens and unlocks the project keychain
+ * without reading any SSID credential. The LaunchDaemon calls it
+ * before the first association target can arrive so Tahoe's cold
+ * securityd / keychain unlock latency is paid before the kext's
+ * pre-M1 PMK wait window begins. Lookup still unlocks defensively
+ * on every association edge, so keychain auto-lock remains safe.
+ *
  * Returns the password bytes through caller-allocated output
  * buffers; the caller is responsible for zeroing the buffer when
  * done. No password bytes are logged here or in any downstream
@@ -39,6 +46,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+/*
+ * Open and unlock /Library/Keychains/AirportItlwm.keychain using
+ * the root-only per-install unlock password file, then immediately
+ * release the keychain reference. Returns 0 on success, -1 on
+ * keychain open / password-file / unlock failure. No credential
+ * item is read and no secret bytes are logged.
+ */
+int AgentPrimeProjectKeychain(void);
 
 /*
  * AgentLookupProjectPSK: find the generic-password entry in the

@@ -10,12 +10,12 @@
 # AirportItlwm PLTI PMK ingress carrier. It opens the 'PLTI'
 # user client on the kext, blocks in WaitAssociationTarget until
 # the kext's PSK association-start edge publishes a target,
-# looks up the matching System.keychain "AirPort network
-# password" by SSID, derives the 32-byte WPA2 PMK with
-# PBKDF2-HMAC-SHA1 (4096 iterations, ssid as salt), and
-# delivers it back through DeliverPMK with the kext-assigned
-# generation echoed as the scalar argument for the
-# target-identity replay guard.
+# looks up the matching project-owned
+# /Library/Keychains/AirportItlwm.keychain password item by SSID,
+# derives the 32-byte WPA2 PMK with PBKDF2-HMAC-SHA1 (4096
+# iterations, ssid as salt), and delivers it back through
+# DeliverPMK with the kext-assigned generation echoed as the scalar
+# argument for the target-identity replay guard.
 #
 # CoreWLAN is intentionally NOT linked: prior decomp evidence
 # proved the CWWiFiClient join-event path is unreachable for

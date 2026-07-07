@@ -26,10 +26,13 @@
  * on success and writes the connection handle to *out_conn; the
  * caller is responsible for IOServiceClose(*out_conn) on shutdown.
  *
- * Logs the IOServiceMatching probe outcome (service found, open
- * result) but never logs key material.
+ * AgentOpenPLTI logs probe failures. AgentOpenPLTIQuiet returns
+ * the same status without logging expected transient "provider not
+ * published yet" failures; the LaunchDaemon retry loop owns those
+ * rate-limited lifecycle logs.
  */
 kern_return_t AgentOpenPLTI(io_connect_t *out_conn);
+kern_return_t AgentOpenPLTIQuiet(io_connect_t *out_conn);
 
 /*
  * Block in the kext command gate until a new PSK association edge

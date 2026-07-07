@@ -5,16 +5,19 @@
 # Builds the root LaunchDaemon, installs the binary + plist, creates
 # the project-owned credential keychain, and loads the daemon. The
 # helper is the userland half of the project-owned PLTI PMK producer
-# pipeline: it opens the 'PLTI' user client on AirportItlwm, blocks
-# in WaitAssociationTarget under the kext command gate until the
-# kext's PSK association-start edge publishes a target, looks up the
-# matching WPA2 passphrase in /Library/Keychains/AirportItlwm.keychain
-# (service "AirportItlwm WiFi PSK", account = SSID) via
-# SecKeychainFindGenericPassword, derives the 32-byte WPA2 PMK with
-# PBKDF2-HMAC-SHA1 (4096 iterations, ssid as salt) via CommonCrypto,
-# and delivers it back through DeliverPMK with the kext-assigned
-# generation echoed as the scalar argument (target-identity replay
-# guard).
+# pipeline: it stays resident under launchd, unlocks the project
+# keychain before the first association target so Tahoe's cold
+# securityd/keychain latency is paid outside the kext pre-M1 wait
+# window, retries opening the 'PLTI' user client on AirportItlwm
+# until the kext service appears, blocks in WaitAssociationTarget
+# under the kext command gate until the kext's PSK association-start
+# edge publishes a target, looks up the matching WPA2 passphrase in
+# /Library/Keychains/AirportItlwm.keychain (service "AirportItlwm
+# WiFi PSK", account = SSID) via SecKeychainFindGenericPassword,
+# derives the 32-byte WPA2 PMK with PBKDF2-HMAC-SHA1 (4096
+# iterations, ssid as salt) via CommonCrypto, and delivers it back
+# through DeliverPMK with the kext-assigned generation echoed as the
+# scalar argument (target-identity replay guard).
 #
 # Credential acquisition contract:
 #
@@ -262,7 +265,8 @@ fi
 # failed: 17", bootout and retry once.
 if ! launchctl bootstrap system "$PLIST_DST" 2>"$LAUNCHCTL_ERR"; then
     BOOTSTRAP_ERR_TEXT="$(cat "$LAUNCHCTL_ERR")"
-    if echo "$BOOTSTRAP_ERR_TEXT" | /usr/bin/grep -qE "service already loaded|already bootstrapped|Bootstrap failed: 17"; then
+    if launchctl print "system/$LABEL" >/dev/null 2>&1 ||
+       echo "$BOOTSTRAP_ERR_TEXT" | /usr/bin/grep -qE "service already loaded|already bootstrapped|Bootstrap failed: 17"; then
         echo "    LaunchDaemon already bootstrapped; rebootstrapping..."
         launchctl bootout "system/$LABEL" 2>/dev/null || true
         # Short wait for launchd to release the label.
@@ -303,9 +307,9 @@ trap - EXIT
 
 echo
 echo "Done. The PLTI PMK producer daemon is now running as a"
-echo "KeepAlive LaunchDaemon. Without the AirportItlwm kext loaded"
-echo "and matching, IOServiceOpen('PLTI') returns kIOReturnNotFound"
-echo "and launchd will respawn the daemon."
+echo "KeepAlive LaunchDaemon. It stays resident, pre-unlocks the"
+echo "project keychain, and retries IOServiceOpen('PLTI') until the"
+echo "AirportItlwm kext service is published."
 echo
 echo "Logs: sudo log show --last 1m --predicate 'process == \"AirportItlwmAgent\"'"
 echo
@@ -334,6 +338,6 @@ echo "the per-item access list."
 echo
 echo "Operational contract: the daemon ONLY runs when a PSK"
 echo "association-start edge is published by the kext. Each handled"
-echo "target logs plti_wait_assoc_target / deliverExternalPMK"
-echo "INSTALLED structural markers (generation and length only — no"
-echo "passphrase, PMK, or SSID bytes appear in any log line)."
+echo "target logs WaitAssociationTarget / DeliverPMK structural"
+echo "markers (generation and length only — no passphrase, PMK,"
+echo "or SSID bytes appear in any log line)."
