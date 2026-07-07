@@ -96,6 +96,49 @@ void AirportItlwmAPSTAOwner::resetRuntimeState()
     }
 }
 
+void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(uint8_t newState, uint8_t reason)
+{
+    if ((state.softapParam0e & 1) == 0) {
+        return;
+    }
+    if (reason == kAirportItlwmAPSTAPowerStateReasonInfraScan ||
+        newState > kAirportItlwmAPSTAPowerStateMaxKnown) {
+        return;
+    }
+
+    if (state.softapMode10 != newState) {
+        const uint32_t recordOffset =
+            kAirportItlwmAPSTAPowerStateTransitionRecordBaseOffset -
+            kAirportItlwmAPSTASoftAPStatsOffset +
+            newState * kAirportItlwmAPSTAPowerStateTransitionRecordStride;
+        uint32_t transitionCount = 0;
+        memcpy(&transitionCount,
+               &state.softapStats[recordOffset +
+                                   kAirportItlwmAPSTAPowerStateTransitionCountOffset],
+               sizeof(transitionCount));
+        transitionCount++;
+        memcpy(&state.softapStats[recordOffset +
+                                  kAirportItlwmAPSTAPowerStateTransitionCountOffset],
+               &transitionCount, sizeof(transitionCount));
+
+        if (newState == kAirportItlwmAPSTAPowerStateOff) {
+            state.lowTrafficCounter64 = 0;
+            if (reason == kAirportItlwmAPSTAPowerStateReasonReset ||
+                reason == kAirportItlwmAPSTAPowerStateReasonPowerOff) {
+                state.powerAssertionFlag0c = 0;
+            }
+        } else if (newState == kAirportItlwmAPSTAPowerStateOn) {
+            state.powerAssertionFlag0c = 0;
+        } else if (newState == kAirportItlwmAPSTAPowerStateLowPower) {
+            state.powerAssertionFlag0c =
+                static_cast<uint8_t>(kAirportItlwmAPSTAHoldPowerAssertionStateValue);
+            state.lowTrafficCounter64 = 0;
+        }
+    }
+
+    state.softapMode10 = newState;
+}
+
 IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 {
     if (owner == nullptr || owner->fHalService == nullptr) {
@@ -385,6 +428,8 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
     const bool wasEnabled = (state.softapParam0e & 1) != 0;
     const bool disableRequested = in->enabled17 == 0;
     if (wasEnabled && disableRequested && state.resetState26c != 0) {
+        setSoftAPPowerSaveState(kAirportItlwmAPSTASetSoftAPParamsClearPowerState,
+                                kAirportItlwmAPSTASetSoftAPParamsClearPowerReason);
         state.softapParam0e = 0;
     }
     if (in->param14 != kAirportItlwmAPSTASetSoftAPParamsBeaconSentinel &&
@@ -397,6 +442,10 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
     state.softapParam20 = in->param0c;
     state.softapParam24 = in->param10;
     state.softapParam28 = in->param18;
+    if (!wasEnabled || !disableRequested) {
+        setSoftAPPowerSaveState(kAirportItlwmAPSTASetSoftAPParamsHoldPowerState,
+                                kAirportItlwmAPSTASetSoftAPParamsHoldPowerReason);
+    }
     return static_cast<IOReturn>(kAirportItlwmAPSTASetSoftAPParamsReturn);
 }
 

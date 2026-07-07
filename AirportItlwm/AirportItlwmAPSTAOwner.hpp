@@ -92,6 +92,7 @@ public:
 
 private:
     void resetRuntimeState();
+    void setSoftAPPowerSaveState(uint8_t newState, uint8_t reason);
     AirportItlwmAPSTAStationTableEntryLayout *findStation(const uint8_t *mac);
     AirportItlwmAPSTAStationTableEntryLayout *allocateStation(const uint8_t *mac);
     void removeStation(const uint8_t *mac);
