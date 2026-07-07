@@ -203,6 +203,8 @@ void testApstaPublicSetterContracts()
             "APSTA hidden setter reads value at input +0x04");
     require(sizeof(AirportItlwmAPSTAHostApModeHiddenLayout) == 8,
             "APSTA hidden setter carrier includes version dword");
+    require(kAirportItlwmAPSTASetSsidStateMutationCount == 0,
+            "APSTA setSSID does not mutate recovered SSID state");
     require(kAirportItlwmAPSTAHiddenNotUpReturn == 6,
             "APSTA hidden AP-down return is raw 6");
     require(kAirportItlwmAPSTAHiddenInvalidArgumentReturn == 0x16,

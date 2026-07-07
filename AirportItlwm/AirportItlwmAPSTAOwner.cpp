@@ -159,14 +159,7 @@ bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
 
 IOReturn AirportItlwmAPSTAOwner::setSSID(const struct apple80211_ssid_data *in)
 {
-    if (in == nullptr || in->ssid_len > kAirportItlwmAPSTAGetSsidMaxLength) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTAGetSsidInvalidArgumentReturn);
-    }
-    bzero(state.softapSsid278, sizeof(state.softapSsid278));
-    state.softapSsidLength274 = in->ssid_len;
-    if (in->ssid_len != 0) {
-        memcpy(state.softapSsid278, in->ssid_bytes, in->ssid_len);
-    }
+    (void)in;
     return static_cast<IOReturn>(kAirportItlwmAPSTASetSsidSuccessReturn);
 }
 
