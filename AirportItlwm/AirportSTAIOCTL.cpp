@@ -10,6 +10,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeAssociationContracts.hpp"
 #include "TahoeNrateContracts.hpp"
+#include "TahoeOpModeContracts.hpp"
 
 extern IOCommandGate *_fCommandGate;
 
@@ -967,8 +968,8 @@ IOReturn AirportItlwm::
 getOP_MODE(OSObject *object,
                            struct apple80211_opmode_data *od)
 {
-    od->version = APPLE80211_VERSION;
-    od->op_mode = APPLE80211_M_STA;
+    if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
+        return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
     return kIOReturnSuccess;
 }
 

@@ -9,6 +9,7 @@
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
+#include "AirportItlwm/TahoeOpModeContracts.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
@@ -462,6 +463,33 @@ void testTahoeQosDynsarContracts()
             "DynSAR fail-safe window rejects threshold elapsed ticks");
 }
 
+void testTahoeOpModeContracts()
+{
+    using namespace TahoeOpModeContracts;
+
+    struct OpModeProbe {
+        uint32_t version;
+        uint32_t op_mode;
+    } probe{};
+
+    require(kInvalidArgumentStatus == 0x16,
+            "primary OP_MODE null return is raw 0x16");
+    require(kPrimaryVersion == 1,
+            "primary OP_MODE writes version 1");
+    require(kPrimaryInitialMode == 0,
+            "primary OP_MODE starts with no mode bits");
+    require(kPrimaryMonitorBit == 0x10,
+            "primary OP_MODE monitor bit is the recovered late OR bit");
+    require(kPrimaryStaBitMutationCount == 0,
+            "primary OP_MODE does not synthesize STA bit");
+    require(!initializePrimaryCarrier<OpModeProbe>(nullptr),
+            "primary OP_MODE helper rejects null output");
+    require(initializePrimaryCarrier(&probe),
+            "primary OP_MODE helper accepts output carrier");
+    require(probe.version == 1 && probe.op_mode == 0,
+            "primary OP_MODE helper initializes version and zero mode");
+}
+
 void testTahoeNrateContracts()
 {
     using namespace TahoeNrateContracts;
@@ -684,10 +712,11 @@ int main()
     testPayloadContractInventory();
     testTahoeSkywalkIoctlRoutes();
     testTahoeQosDynsarContracts();
+    testTahoeOpModeContracts();
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, nrate, LE-scan, MIMO and LQM contracts covered\n";
+    std::cout << "tahoe payload builders ok: 18 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, OP_MODE, nrate, LE-scan, MIMO and LQM contracts covered\n";
     return 0;
 }

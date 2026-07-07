@@ -14,6 +14,7 @@
 #include "TahoeLqmContracts.hpp"
 #include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
+#include "TahoeOpModeContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include "Airport/WCLBulletinBoard.h"
@@ -3085,8 +3086,11 @@ getRATE_SET(struct apple80211_rate_set_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getOP_MODE(struct apple80211_opmode_data *od)
 {
-    od->version = APPLE80211_VERSION;
-    od->op_mode = APPLE80211_M_STA;
+    // AppleBCMWLANCore::getOP_MODE starts the public carrier as
+    // `version=1, op_mode=0`; APSTA/hidden owners and monitor state OR in
+    // their own bits later. Do not advertise STA from the primary fast path.
+    if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
+        return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
     return kIOReturnSuccess;
 }
 
