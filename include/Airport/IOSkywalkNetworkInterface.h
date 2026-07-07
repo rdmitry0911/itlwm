@@ -132,7 +132,7 @@ public:
     OSMetaClassDeclareReservedUnused( IOSkywalkNetworkInterface,  9);
     
 public:
-    void reportLinkStatus(unsigned int, unsigned int);
+    IOReturn reportLinkStatus(unsigned int, unsigned int);
     
 public:
     void *vptr;

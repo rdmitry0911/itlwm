@@ -556,6 +556,22 @@ static bool _fLinkStatePublishPendingValid;
 static IO80211LinkState _fLinkStatePublishPendingState;
 static unsigned int _fLinkStatePublishPendingRawCode;
 
+#if __IO80211_TARGET >= __MAC_26_0
+static void
+publishTahoeSkywalkLinkCarrier(IOSkywalkNetworkInterface *netIf, bool active)
+{
+    if (netIf == nullptr)
+        return;
+
+    /*
+     * Tahoe's IO80211/WCL link-state publication must stay on the guarded
+     * off-gate path below, but the Skywalk carrier is the reference lower-half
+     * provider state consumed by IOSkywalkLegacyEthernet for the BSD child.
+     */
+    (void)netIf->reportLinkStatus(active ? 3U : 1U, 0x80U);
+}
+#endif
+
 static void publishLinkStateInterruptAction(OSObject *owner,
                                             IOInterruptEventSource *sender,
                                             int count)
@@ -3993,6 +4009,9 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
             bsdInterface->startOutputThread();
 #endif
+#if __IO80211_TARGET >= __MAC_26_0
+            publishTahoeSkywalkLinkCarrier(fNetIf, true);
+#endif
             queueOffGateLinkStatePublish(this, kIO80211NetworkLinkUp, 0);
         } else if (!(status & kIONetworkLinkNoNetworkChange)) {
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
@@ -4001,6 +4020,9 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 #endif
             ifq_flush(&ifq->if_snd);
             mq_purge(&fHalService->get80211Controller()->ic_mgtq);
+#if __IO80211_TARGET >= __MAC_26_0
+            publishTahoeSkywalkLinkCarrier(fNetIf, false);
+#endif
             queueOffGateLinkStatePublish(this, kIO80211NetworkLinkDown, fHalService->get80211Controller()->ic_deauth_reason);
         }
     }
@@ -4029,8 +4051,8 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * owner to be on its own thread (onThread() == true) with the work-loop gate
      * released (inGate() == false); otherwise it takes the null-owner panic
      * branch. If the off-gate route did not reach this point with that
-     * precondition satisfied, perform NO link-state publication at all (no WCL
-     * link-up indication, reportLinkStatus, setLinkState, setRunningState,
+     * precondition satisfied, perform NO WCL/IO80211 link-state publication at
+     * all (no WCL link-up indication, inherited setLinkState, setRunningState,
      * connect-complete, or postMessage) and return kIOReturnNotReady. This is a
      * precondition guard, not retry/replay/masking/forced-success: when the
      * precondition fails the link is simply not published (the negative branch).
@@ -4045,9 +4067,8 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
             publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
         const int inGatePred =
             publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        if (!(onThreadPred == 1 && inGatePred == 0)) {
+        if (!(onThreadPred == 1 && inGatePred == 0))
             return kIOReturnNotReady;
-        }
     }
     const unsigned int setLinkCode =
         (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
@@ -4055,7 +4076,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         linkState != kIO80211NetworkLinkUp, true);
     if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclLinkUpInd(that, rawCode);
-        that->fNetIf->reportLinkStatus(3, 0x80);
     }
     // The off-gate precondition (onThread==1, inGate==0) was guarded at the top
     // of this publication path; reaching here means it holds, so the inherited
@@ -4128,10 +4148,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     that->postMessage(that->fNetIf, APPLE80211_M_BSSID_CHANGED, NULL, 0, true);
     that->postMessage(that->fNetIf, APPLE80211_M_SSID_CHANGED, NULL, 0, true);
 #endif
-    if (linkState != kIO80211NetworkLinkUp) {
-        that->fNetIf->reportLinkStatus(1, 0);
-    }
 #if __IO80211_TARGET < __MAC_26_0
+    if (linkState != kIO80211NetworkLinkUp)
+        that->fNetIf->reportLinkStatus(1, 0);
     if (that->bsdInterface) {
         XYLog("DEBUG %s calling bsdInterface->setLinkState bsdInterface=%p\n", __FUNCTION__, that->bsdInterface);
         that->bsdInterface->setLinkState(linkState);
