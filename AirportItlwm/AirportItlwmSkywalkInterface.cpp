@@ -11,6 +11,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeLeScanContracts.hpp"
+#include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
 #include "Airport/IO80211BssManager.h"
@@ -145,29 +146,6 @@ static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
     return primary;
 }
 
-}
-
-static uint8_t tahoeMimoBandwidthCodeFromWidth(uint8_t width)
-{
-    switch (width) {
-        case IEEE80211_CHAN_WIDTH_20_NOHT:
-        case IEEE80211_CHAN_WIDTH_20:
-            return 1;
-        case IEEE80211_CHAN_WIDTH_40:
-            return 2;
-        case IEEE80211_CHAN_WIDTH_80:
-        case IEEE80211_CHAN_WIDTH_80P80:
-        case IEEE80211_CHAN_WIDTH_160:
-            return 3;
-        default:
-            return 0;
-    }
-}
-
-static uint8_t tahoeMimoBandwidthCarrier(uint8_t code)
-{
-    static constexpr uint8_t kAppleMimoBandwidthTable[4] = {0x50, 0x14, 0x28, 0x50};
-    return code < sizeof(kAppleMimoBandwidthTable) ? kAppleMimoBandwidthTable[code] : 0;
 }
 
 static constexpr uint64_t kAppleTahoeChipPowerDutyCycleFallback[6] = {
@@ -1996,7 +1974,6 @@ init()
     memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
     hasCachedIbssNetwork = false;
     cachedUlofdmaState = 0;
-    cachedMimoConfig = 0;
     cachedFaceTimeWiFiCallingStatus = 0;
     cachedDualPowerModePrimary = -1;
     cachedDualPowerModeSecondary = -1;
@@ -2628,7 +2605,6 @@ init(IOService *provider)
     memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
     this->hasCachedIbssNetwork = false;
     this->cachedUlofdmaState = 0;
-    this->cachedMimoConfig = 0;
     this->cachedFaceTimeWiFiCallingStatus = 0;
     this->cachedDualPowerModePrimary = -1;
     this->cachedDualPowerModeSecondary = -1;
@@ -4011,23 +3987,13 @@ getMIMO_STATUS(apple80211_mimo_status *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 10);
-    // AppleBCMWLANCore::getMIMO_STATUS exposes a compact 10-byte carrier. The
-    // recovered body maps width codes through {0x50,0x14,0x28,0x50} for offsets
-    // +4 and +9, so use the negotiated local channel width instead of treating
-    // those bytes as NSS.
-    raw[0] = 1;
-    raw[1] = static_cast<uint8_t>(((cachedMimoConfig & 0xff) < 3) ? (cachedMimoConfig & 0xff) : 3);
-    int txNss = fHalService->getDriverInfo()->getTxNSS();
-    raw[6] = static_cast<uint8_t>(txNss < 3 ? txNss : 3);
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    const uint8_t bwCode = (ic != nullptr && ic->ic_bss != nullptr)
-                               ? tahoeMimoBandwidthCodeFromWidth(ic->ic_bss->ni_chw)
-                               : 0;
-    const uint8_t bwCarrier = tahoeMimoBandwidthCarrier(bwCode);
-    raw[4] = bwCarrier;
-    raw[9] = bwCarrier;
+    // AppleBCMWLANCore::getMIMO_STATUS writes a 0x21-byte carrier: version
+    // dword +0, an owner dword +4, core dwords +8/+c/+11, word +15, bytes
+    // +17/+18, and qword +19. The Broadcom MIMO owner/core counters are not
+    // available locally, so expose the exact public shape with version 1 and
+    // zeroed hidden-owner fields instead of the previous 10-byte guessed view.
+    TahoeMimoContracts::initializeStatusCarrier(
+        reinterpret_cast<TahoeMimoContracts::StatusCarrier *>(data));
     return kIOReturnSuccess;
 }
 
@@ -6265,17 +6231,13 @@ setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
 IOReturn AirportItlwmSkywalkInterface::
 setMIMO_CONFIG(apple80211_mimo_config *data)
 {
-    const auto *config = reinterpret_cast<const uint32_t *>(data);
-
-    // AppleBCMWLANCore::setMIMO_CONFIG rejects NULL with 0xe00002bc, reads the
-    // first dword as the caller-visible mode, and then pushes that mode into
-    // the MIMO power-save owner. The hidden owner is still outside this batch,
-    // but acknowledging slot [614] without caching the selected mode was still
-    // a producer mismatch.
-    if (config == nullptr)
+    // AppleBCMWLANCore::setMIMO_CONFIG rejects NULL with 0xe00002bc, then
+    // enters the MIMO power-save owner path. The confirmed public path does
+    // not update getMIMO_STATUS' output carrier; the earlier local cache mixed
+    // this selector with the neighboring POWER_PROFILE core field at +0x29f0.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedMimoConfig = *config;
     return kIOReturnSuccess;
 }
 

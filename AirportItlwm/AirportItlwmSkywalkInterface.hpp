@@ -12,6 +12,7 @@
 #include <Airport/Apple80211.h>
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeLeScanContracts.hpp"
+#include "TahoeMimoContracts.hpp"
 #include "TahoePayloadBuilders.hpp"
 
 struct if_link_status;
@@ -290,8 +291,8 @@ public:
     // [515] — Tahoe public contract is `NULL -> 0xe00002c2`, else four one-byte
     // chain masks.
     virtual IOReturn getTXRX_CHAIN_INFO(apple80211_txrx_chain_info *) override;
-    // [516] — Tahoe public contract is a compact 10-byte MIMO status carrier
-    // gated by the MIMO owner.
+    // [516] — Tahoe public contract is a 0x21-byte MIMO status carrier gated
+    // by the hidden MIMO owner.
     virtual IOReturn getMIMO_STATUS(apple80211_mimo_status *) override;
     // [517]
     virtual IOReturn getCUR_PMK(apple80211_pmk *) override;
@@ -760,7 +761,6 @@ private:
     uint8_t cachedIbssSsid[APPLE80211_MAX_SSID_LEN];
     bool hasCachedIbssNetwork;
     uint32_t cachedUlofdmaState;
-    uint32_t cachedMimoConfig;
     uint32_t cachedFaceTimeWiFiCallingStatus;
     int32_t cachedDualPowerModePrimary;
     int32_t cachedDualPowerModeSecondary;

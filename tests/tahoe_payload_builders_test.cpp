@@ -6,6 +6,7 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
+#include "AirportItlwm/TahoeMimoContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
@@ -513,6 +514,51 @@ void testTahoeLeScanContracts()
             "LE-scan owner-state helper rejects null owner state");
 }
 
+void testTahoeMimoContracts()
+{
+    using namespace TahoeMimoContracts;
+
+    require(kBadArgumentStatus == 0xe00002bc,
+            "MIMO null/absent-owner status is Apple bad-argument 0xe00002bc");
+    require(sizeof(StatusCarrier) == kStatusCarrierSize &&
+                kStatusCarrierSize == 0x21,
+            "MIMO status carrier spans Apple writes through output +0x20");
+    require(offsetof(StatusCarrier, version) == 0x00,
+            "MIMO status version dword is at output +0x00");
+    require(offsetof(StatusCarrier, ownerValue04) == 0x04,
+            "MIMO status owner dword is at output +0x04");
+    require(offsetof(StatusCarrier, coreValue08) == 0x08,
+            "MIMO status core +0x4564 dword is output +0x08");
+    require(offsetof(StatusCarrier, coreValue0c) == 0x0c,
+            "MIMO status core +0x4568 dword is output +0x0c");
+    require(offsetof(StatusCarrier, coreValue11) == 0x11,
+            "MIMO status unaligned core dword is output +0x11");
+    require(offsetof(StatusCarrier, coreValue15) == 0x15,
+            "MIMO status core word is output +0x15");
+    require(offsetof(StatusCarrier, coreValue17) == 0x17,
+            "MIMO status core byte is output +0x17");
+    require(offsetof(StatusCarrier, coreValue18) == 0x18,
+            "MIMO status second core byte is output +0x18");
+    require(offsetof(StatusCarrier, coreValue19) == 0x19,
+            "MIMO status core qword is output +0x19");
+    require(kSetConfigStatusMutationCount == 0,
+            "setMIMO_CONFIG does not mutate the MIMO status carrier");
+
+    StatusCarrier status{};
+    std::memset(&status, 0xa5, sizeof(status));
+    require(initializeStatusCarrier(&status),
+            "MIMO status initializer accepts a carrier");
+    require(status.version == kStatusVersion && kStatusVersion == 1,
+            "MIMO status initializer writes Apple version 1");
+    require(status.ownerValue04 == 0 && status.coreValue08 == 0 &&
+                status.coreValue0c == 0 && status.coreValue11 == 0 &&
+                status.coreValue15 == 0 && status.coreValue17 == 0 &&
+                status.coreValue18 == 0 && status.coreValue19 == 0,
+            "MIMO status initializer zeroes hidden owner/core fields");
+    require(!initializeStatusCarrier(nullptr),
+            "MIMO status initializer rejects null carrier");
+}
+
 } // namespace
 
 int main()
@@ -529,6 +575,7 @@ int main()
     testTahoeQosDynsarContracts();
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, nrate and LE-scan contracts covered\n";
+    testTahoeMimoContracts();
+    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, nrate, LE-scan and MIMO contracts covered\n";
     return 0;
 }

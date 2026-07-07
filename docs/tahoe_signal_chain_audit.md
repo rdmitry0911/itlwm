@@ -1098,6 +1098,10 @@ Closed in this zone:
 - `getBSS_BLACKLIST(...)`
 - `getTXRX_CHAIN_INFO(...)`
 - `getMIMO_STATUS(...)`
+  writes a `0x21`-byte carrier: version dword `+0x00`, hidden MIMO owner
+  dword `+0x04`, core dwords `+0x08/+0x0c/+0x11`, word `+0x15`, bytes
+  `+0x17/+0x18`, and qword `+0x19`; the local port publishes version `1`
+  and zeroes unavailable hidden-owner fields
 - `getWCL_FW_HOT_CHANNELS(...)`
 - `getWCL_TRAFFIC_COUNTERS(...)`
 - `getRSN_XE(...)`
@@ -1534,7 +1538,9 @@ Recovered Apple producer contracts:
   rejects `NULL` with `0xe00002bc` and forwards the first dword into the 11ax
   adapter at core `+0x15c8`
 - `AppleBCMWLANCore::setMIMO_CONFIG(...)`
-  rejects `NULL`, reads a single mode dword, and hands it to the MIMO-PS owner
+  rejects `NULL` and enters the MIMO power-save owner path without mutating the
+  public `getMIMO_STATUS` carrier; the neighboring core `+0x29f0` field belongs
+  to `setPOWER_PROFILE`, not MIMO config
 - `AppleBCMWLANCore::setFACETIME_WIFICALLING_PARAMS(...)`
   rejects `NULL`, reads a single status dword, and forwards it into the
   WiFi-call policy owner
