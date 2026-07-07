@@ -17,6 +17,12 @@ static constexpr uint32_t kFamilyVht = 0x02000000;
 static constexpr uint32_t kFamilyHt = 0x03000000;
 static constexpr uint32_t kShortGuardIntervalBit = 1U << 23;
 static constexpr uint32_t kBandwidthMask = 0x00070000;
+static constexpr uint32_t kGuardIntervalShort = 400;
+static constexpr uint32_t kGuardIntervalLong = 800;
+static constexpr uint32_t kGuardIntervalHtWide = 1600;
+static constexpr uint32_t kGuardIntervalHtUltraWide = 3200;
+static constexpr uint32_t kHtGuardIntervalSelectorShift = 10;
+static constexpr uint32_t kHtGuardIntervalSelectorMask = 0x3;
 
 inline bool isAcceptedQueryStatus(uint32_t status)
 {
@@ -41,6 +47,38 @@ inline bool decodeMcsIndexFromNrate(uint32_t rate, uint32_t *index)
     }
 }
 
+inline bool decodeGuardIntervalFromNrate(uint32_t rate, uint32_t *interval)
+{
+    if (interval == nullptr)
+        return false;
+
+    switch (rate & kFamilyMask) {
+        case kFamilyVht:
+            *interval = (rate & kShortGuardIntervalBit) ? kGuardIntervalShort
+                                                        : kGuardIntervalLong;
+            return true;
+        case kFamilyHt:
+            switch ((rate >> kHtGuardIntervalSelectorShift) &
+                    kHtGuardIntervalSelectorMask) {
+                case 2:
+                    *interval = kGuardIntervalHtWide;
+                    break;
+                case 3:
+                    *interval = kGuardIntervalHtUltraWide;
+                    break;
+                case 0:
+                case 1:
+                default:
+                    *interval = kGuardIntervalLong;
+                    break;
+            }
+            return true;
+        default:
+            *interval = kGuardIntervalLong;
+            return true;
+    }
+}
+
 template <typename McsVhtData>
 inline bool fillMcsVhtFromNrate(uint32_t rate, McsVhtData *data)
 {
@@ -51,7 +89,7 @@ inline bool fillMcsVhtFromNrate(uint32_t rate, McsVhtData *data)
 
     data->index = rate & 0xf;
     data->nss = (rate >> 4) & 0xf;
-    data->guard_interval = (rate & kShortGuardIntervalBit) ? 400 : 800;
+    decodeGuardIntervalFromNrate(rate, &data->guard_interval);
     switch (rate & kBandwidthMask) {
         case 0x00010000:
             data->bw = 20;

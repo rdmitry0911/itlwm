@@ -355,6 +355,18 @@ static IOReturn fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mc
     return ret;
 }
 
+static IOReturn fillTahoeGuardIntervalFromCachedNrate(ItlHalService *hal, apple80211_guard_interval_data *data)
+{
+    if (data == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    uint32_t rate = 0;
+    IOReturn ret = getTahoeCachedNrate(hal, &rate);
+    if (TahoeNrateContracts::isAcceptedQueryStatus(static_cast<uint32_t>(ret)))
+        TahoeNrateContracts::decodeGuardIntervalFromNrate(rate, &data->interval);
+    return ret;
+}
+
 static int ieeeChanFlag2apple(int flags, int bw)
 {
     int ret = 0;
@@ -3664,46 +3676,17 @@ getHE_CAPABILITY(struct apple80211_he_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getGUARD_INTERVAL(apple80211_guard_interval_data *data)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    struct ieee80211_node *ni = ic->ic_bss;
-
-    // AppleBCMWLANCore::getGUARD_INTERVAL is a real producer, not a generic
-    // unsupported slot: NULL returns 0xe00002c2, and the normal path derives
-    // the interval from cached "nrate" state with a deterministic fallback to
-    // long GI (800 ns) when no recognized short-GI encoding is available.
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
-    data->interval = APPLE80211_GI_LONG;
-
-    if (ni == nullptr)
-        return kIOReturnSuccess;
-
-    switch (ni->ni_chw) {
-        case IEEE80211_CHAN_WIDTH_40:
-            if (ieee80211_node_supports_ht_sgi40(ni))
-                data->interval = APPLE80211_GI_SHORT;
-            break;
-        case IEEE80211_CHAN_WIDTH_80:
-            if (ieee80211_node_supports_vht_sgi80(ni))
-                data->interval = APPLE80211_GI_SHORT;
-            break;
-        case IEEE80211_CHAN_WIDTH_80P80:
-        case IEEE80211_CHAN_WIDTH_160:
-            if (ieee80211_node_supports_vht_sgi160(ni))
-                data->interval = APPLE80211_GI_SHORT;
-            break;
-        case IEEE80211_CHAN_WIDTH_20:
-        case IEEE80211_CHAN_WIDTH_20_NOHT:
-        default:
-            if (ieee80211_node_supports_ht_sgi20(ni))
-                data->interval = APPLE80211_GI_SHORT;
-            break;
-    }
-
-    return kIOReturnSuccess;
+    // AppleBCMWLANCore::getGUARD_INTERVAL reads cached "nrate" through the
+    // same config path as getMCS_VHT. Accepted query statuses (success and
+    // 0xe00002e3) decode the interval from the nrate word; other query errors
+    // are returned unchanged without rebuilding the value from peer capability
+    // flags.
+    return fillTahoeGuardIntervalFromCachedNrate(fHalService, data);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -462,7 +462,7 @@ void testTahoeNrateContracts()
                                 &probe),
             "nrate VHT family populates MCS_VHT carrier");
     require(probe.index == 5 && probe.nss == 2 && probe.bw == 80 &&
-                probe.guard_interval == 400,
+                probe.guard_interval == kGuardIntervalShort,
             "nrate VHT carrier decodes index, NSS, bandwidth, and guard interval");
 
     McsVhtProbe nonVht{};
@@ -471,6 +471,36 @@ void testTahoeNrateContracts()
     require(nonVht.index == 0 && nonVht.nss == 0 && nonVht.bw == 0 &&
                 nonVht.guard_interval == 0,
             "nrate non-VHT carrier remains zeroed");
+
+    uint32_t interval = 0;
+    require(decodeGuardIntervalFromNrate(kFamilyVht, &interval) &&
+                interval == kGuardIntervalLong,
+            "guard interval VHT family defaults to long GI without bit 23");
+    require(decodeGuardIntervalFromNrate(kFamilyVht | kShortGuardIntervalBit,
+                                         &interval) &&
+                interval == kGuardIntervalShort,
+            "guard interval VHT family uses bit 23 for short GI");
+    require(decodeGuardIntervalFromNrate(kFamilyHt | (0U << kHtGuardIntervalSelectorShift),
+                                         &interval) &&
+                interval == kGuardIntervalLong,
+            "guard interval HT selector 0 maps to 800 ns");
+    require(decodeGuardIntervalFromNrate(kFamilyHt | (1U << kHtGuardIntervalSelectorShift),
+                                         &interval) &&
+                interval == kGuardIntervalLong,
+            "guard interval HT selector 1 maps to 800 ns");
+    require(decodeGuardIntervalFromNrate(kFamilyHt | (2U << kHtGuardIntervalSelectorShift),
+                                         &interval) &&
+                interval == kGuardIntervalHtWide,
+            "guard interval HT selector 2 maps to 1600 ns");
+    require(decodeGuardIntervalFromNrate(kFamilyHt | (3U << kHtGuardIntervalSelectorShift),
+                                         &interval) &&
+                interval == kGuardIntervalHtUltraWide,
+            "guard interval HT selector 3 maps to 3200 ns");
+    require(decodeGuardIntervalFromNrate(0, &interval) &&
+                interval == kGuardIntervalLong,
+            "guard interval unknown accepted nrate falls back to 800 ns");
+    require(!decodeGuardIntervalFromNrate(0, nullptr),
+            "guard interval decoder rejects null output");
 }
 
 void testTahoeLeScanContracts()

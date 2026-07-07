@@ -1252,21 +1252,26 @@ This batch still does **not** justify lifting the setter side:
 
 ## Q13 Confirmed Producer Mini-Batch: `getGUARD_INTERVAL`
 
-`getGUARD_INTERVAL` is also a recoverable Tahoe getter.
+`getGUARD_INTERVAL` is also a recoverable Tahoe getter, but the old symbol note
+for `0xffffff800162176c` was stale: that address is a label inside
+`getMCS_VHT`, not the standalone producer. The real Core entry recovered from
+the target symbol map / pointer-scan decompile is
+`AppleBCMWLANCore::getGUARD_INTERVAL(...) @ 0xffffff80016217bc`.
 
 Recovered Apple producer contract:
 
-- `AppleBCMWLANCore::getGUARD_INTERVAL(apple80211_guard_interval_data*)`
-  rejects `NULL` with `0xe00002c2`
-- otherwise it queries `"nrate"` from the commander/config path
-- if that query returns success or `0xe00002e3`, Apple still completes the IOC
-  and derives the output interval from the cached rate word
-- when the cached rate word does not describe a recognized short-GI mode, the
-  producer falls back to `800`
+- rejects `NULL` with `0xe00002c2`
+- queries cached `"nrate"` from the same config path as `getMCS_VHT`
+- returns the original nrate-query status unchanged
+- if that query returns success or `0xe00002e3`, writes interval at caller
+  offset `+0x04`
+- VHT family `0x02000000` uses nrate bit 23: set -> `400`, clear -> `800`
+- HT family `0x03000000` uses `(rate >> 10) & 3`: `0/1 -> 800`,
+  `2 -> 1600`, `3 -> 3200`
+- any other accepted nrate family falls back to `800`
 
-The important architectural point for Tahoe is that slot `[478]` is not a
-generic unsupported IOC. It is a real producer with a deterministic fallback to
-the long-guard interval when no cached short-GI encoding is available.
+The important architectural point for Tahoe is that slot `[478]` is a cached
+nrate producer, not a peer-capability query and not a generic unsupported IOC.
 
 This still does **not** justify lifting `HT_CAPABILITY`: `getGUARD_INTERVAL`
 only proves the current-rate-to-interval policy, not the full HT capability IE
