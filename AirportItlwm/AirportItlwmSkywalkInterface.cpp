@@ -6774,8 +6774,12 @@ IOReturn AirportItlwmSkywalkInterface::
 getCURRENT_NETWORK(apple80211_scan_result *sr)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
-        return kIOReturnError;
+    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL) {
+        // AppleBCMWLANCore::getCURRENT_NETWORK gates on
+        // IO80211BssManager::isAssociated() and returns this status when the
+        // current-BSS manager is not associated.
+        return kApple80211ErrDriverNotAvailable;
+    }
     convertNodeToScanResult(fHalService, ic->ic_bss, sr);
     return kIOReturnSuccess;
 }

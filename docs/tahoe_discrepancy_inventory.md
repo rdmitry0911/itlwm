@@ -4971,3 +4971,27 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-bssmanager-current-bss-identity-writer-seeding-20260707.md`.
+
+## item 207 — CURRENT_NETWORK not-associated status
+
+- producer: `AirportItlwmSkywalkInterface::getCURRENT_NETWORK(...)`
+- file: `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- `AppleBCMWLANCore::getCURRENT_NETWORK(apple80211_scan_result*)` at
+  `0xffffff80015e6384` calls `IO80211BssManager::isAssociated()`.
+- the false branch returns `0xe0822403`; the true branch tail-calls the
+  BssManager current-network copier.
+
+Local closure:
+
+- the local not-associated/current-BSS-missing branch now returns
+  `0xe0822403` instead of generic `kIOReturnError`;
+- the associated success path remains the existing current-node
+  `apple80211_scan_result` producer and is not used to fabricate association.
+
+Reference note:
+`docs/reference/CR-479-current-network-not-associated-status-20260707.md`.
