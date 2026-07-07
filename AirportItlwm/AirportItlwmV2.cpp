@@ -5910,24 +5910,25 @@ deliverExternalPMK(const struct apple80211_key *key,
  * when AP is up it forwards the input dword +0x00 to the maxassoc
  * backend, ignores the helper result, and returns success, and
  * when AP is down the body silently returns success. That AP-up
- * gate, the [1, IEEE80211_AID_DEF] clamp, the APSTA state-block
- * fields softapMaxAssoc04/softapMaxAssocLimit08, and the
- * net80211 ic->ic_max_aid mutation all live inside the host
- * APSTA owner (AirportItlwmAPSTAOwner::setMisMaxSta and
- * setMaxAssoc) so the controller-layer selector is purely a
- * forward to the owner. When the owner is absent (default STA
- * boot before role-7 create) the recovered Apple body still
- * returns success without firmware interaction, so the selector
- * returns success without touching driver state.
+ * gate, the APSTA state-block fields softapAssociatedStaCount00/
+ * softapMaxAssoc04/softapMaxAssocLimit08, and the net80211
+ * ic->ic_max_aid mutation all live inside the host APSTA owner
+ * (AirportItlwmAPSTAOwner::setMisMaxSta and setMaxAssoc) so the
+ * controller-layer selector is purely a forward to the owner.
+ * When the owner is absent (default STA boot before role-7 create)
+ * the recovered Apple body still returns success without firmware
+ * interaction, so the selector returns success without touching
+ * driver state.
  *
  * The local backend for the maxassoc admission limit is the
  * OpenBSD net80211 ic->ic_max_aid field, consumed by the existing
  * AID allocation loop in ieee80211_node_join() (rejects beyond
  * limit with IEEE80211_REASON_ASSOC_TOOMANY = 17). The AID/TIM
  * bitmap allocated at attach time covers IEEE80211_AID_DEF
- * entries; raising ic_max_aid above that capacity would overrun
- * ic_aid_bitmap and ic_tim_bitmap, so writes are clamped to
- * [1, IEEE80211_AID_DEF] inside the owner's setMaxAssoc body.
+ * entries. The owner follows the recovered Apple cap gate:
+ * same requested count is a no-op, otherwise associated + requested
+ * must fit within softapMaxAssocLimit08 before state or backend
+ * publication changes.
  *
  * Functional AP-mode operation requires separate iwx/iwm HAL work
  * (both currently panic on IEEE80211_M_HOSTAP). This wiring stops
@@ -6112,11 +6113,12 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
      * Apple AP-up gate (only an owner whose lifecycle is Running
      * and whose lower-HAL startAPMode has reported success
      * publishes AP-up true), and on AP-up forwards the input
-     * dword +0x00 through the owner's setMaxAssoc, which writes
-     * softapMaxAssoc04/softapMaxAssocLimit08 in the APSTA state
-     * block and updates the net80211 ic->ic_max_aid admission
-     * limit while preserving the AID/TIM bitmap invariant. The
-     * recovered Apple body returns success without firmware
+     * dword +0x00 through the owner's setMaxAssoc, which applies
+     * the recovered associated + requested <= limit gate, writes
+     * softapMaxAssoc04 in the APSTA state block, and publishes the
+     * same computed payload through the net80211 ic->ic_max_aid
+     * admission limit. The recovered Apple body returns success
+     * without firmware
      * interaction whether AP is up or down, so the absence of
      * the owner (default STA boot before role-7 create) is not
      * an error: the controller-layer selector returns success

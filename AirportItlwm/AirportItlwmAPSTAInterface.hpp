@@ -518,6 +518,7 @@ enum {
     kAirportItlwmAPSTASetSoftAPExtCapsStateClear50Offset = 0x50,
     kAirportItlwmAPSTASetSoftAPExtCapsStateClear58Offset = 0x58,
     kAirportItlwmAPSTASetSoftAPExtCapsStateClear60Offset = 0x60,
+    kAirportItlwmAPSTASetSoftAPExtCapsStateClear61Offset = 0x61,
     kAirportItlwmAPSTASetSoftAPExtCapsStateFlag50Offset = 0x50,
     kAirportItlwmAPSTASetSoftAPExtCapsStateTail51Offset = 0x51,
     kAirportItlwmAPSTASetSoftAPExtCapsStateTail59Offset = 0x59,
@@ -731,6 +732,9 @@ enum {
     kAirportItlwmAPSTACsaResetFlagBit = 0x01,
     kAirportItlwmAPSTACsaNotUpReturn = 6,
     kAirportItlwmAPSTACsaInvalidArgumentReturn = 0x16,
+    kAirportItlwmAPSTACsaMinimumPrimaryChannel = 1,
+    kAirportItlwmAPSTACsaMaximumExcludedPrimaryChannel =
+        kAirportItlwmAPSTASetChannelTrapThreshold,
     kAirportItlwmAPSTACsaInputChannelOffset = 0x04,
     kAirportItlwmAPSTACsaInputModeOffset = 0x10,
     kAirportItlwmAPSTACsaInputFeatureGateOffset = 0x14,
@@ -744,6 +748,8 @@ enum {
     kAirportItlwmAPSTACsaPayloadChanspecOffset = 0x02,
     kAirportItlwmAPSTACsaPayloadReservedOffset = 0x04,
     kAirportItlwmAPSTACsaPayloadSize = 0x06,
+    kAirportItlwmAPSTASetMaxAssocNoLocalClamp = 1,
+    kAirportItlwmAPSTASetMaxAssocPayloadAddsAssociatedCount = 1,
     kAirportItlwmAPSTAStaAuthorizeNullReturn = 0xe00002c2,
     kAirportItlwmAPSTAStaAuthorizePreAPUpTableMutationCount = 0,
     kAirportItlwmAPSTAStaAuthorizeFlagOffset = 0x04,
@@ -1945,6 +1951,14 @@ static_assert(offsetof(AirportItlwmAPSTACsaIovarPayloadLayout, reserved04) ==
               "APSTA CSA payload reserved offset mismatch");
 static_assert(kAirportItlwmAPSTACsaMaximumExcludedChannelSpec == 0x10000,
               "APSTA CSA accepts parsed chanspec values below 0x10000 only");
+static_assert(kAirportItlwmAPSTACsaMinimumPrimaryChannel == 1,
+              "APSTA CSA helper rejects primary channel zero");
+static_assert(kAirportItlwmAPSTACsaMaximumExcludedPrimaryChannel == 0x100,
+              "APSTA CSA helper accepts primary channels below 0x100 only");
+static_assert(kAirportItlwmAPSTASetMaxAssocNoLocalClamp == 1,
+              "APSTA setMaxAssoc must not clamp requested count locally");
+static_assert(kAirportItlwmAPSTASetMaxAssocPayloadAddsAssociatedCount == 1,
+              "APSTA setMaxAssoc payload adds associated count");
 static_assert(sizeof(AirportItlwmAPSTAStaAuthorizeInputLayout) ==
               kAirportItlwmAPSTAStaAuthorizeMacOffset +
               kAirportItlwmAPSTAStaAuthorizeMacPayloadSize,
@@ -2129,6 +2143,9 @@ static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapAppleVendorIETail59) =
 static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapAppleVendorIETail59) ==
               kAirportItlwmAPSTASetSoftAPExtCapsStateTail59Offset,
               "APSTA SoftAP ext-cap state +0x59 tail offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAStateBlock, reserved0061) ==
+              kAirportItlwmAPSTASetSoftAPExtCapsStateClear61Offset,
+              "APSTA SoftAP ext-cap clear byte +0x61 offset mismatch");
 static_assert(kAirportItlwmAPSTASetSoftAPExtCapsStateClear58Offset == 0x58,
               "APSTA SoftAP ext-cap clear qword +0x58 offset mismatch");
 static_assert(kAirportItlwmAPSTASetSoftAPExtCapsStateClear60Offset == 0x60,

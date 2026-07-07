@@ -377,24 +377,26 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPExtCaps(
            sizeof(state.softapAppleVendorIETail51));
     memcpy(state.softapAppleVendorIETail59, &in->value09,
            sizeof(state.softapAppleVendorIETail59));
+    state.reserved0061 = 0;
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::setMaxAssoc(uint32_t value)
 {
-    if (value < 1) {
-        value = 1;
+    if (state.softapMaxAssoc04 == value) {
+        return kIOReturnSuccess;
     }
-    if (value > IEEE80211_AID_DEF) {
-        value = IEEE80211_AID_DEF;
+    const uint32_t payload = state.softapAssociatedStaCount00 + value;
+    if (payload > state.softapMaxAssocLimit08) {
+        return kIOReturnSuccess;
     }
+
     state.softapMaxAssoc04 = value;
-    state.softapMaxAssocLimit08 = IEEE80211_AID_DEF;
 
     if (owner != nullptr && owner->fHalService != nullptr) {
         struct ieee80211com *ic = owner->fHalService->get80211Controller();
         if (ic != nullptr) {
-            ic->ic_max_aid = static_cast<uint16_t>(value);
+            ic->ic_max_aid = static_cast<uint16_t>(payload);
         }
     }
     return kIOReturnSuccess;
@@ -536,7 +538,8 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPTriggerCSA(
     if (in == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTACsaInvalidArgumentReturn);
     }
-    if (in->channel04.channelNumber04 >= kAirportItlwmAPSTASetChannelTrapThreshold ||
+    if (in->channel04.channelNumber04 < kAirportItlwmAPSTACsaMinimumPrimaryChannel ||
+        in->channel04.channelNumber04 >= kAirportItlwmAPSTACsaMaximumExcludedPrimaryChannel ||
         in->channel04.channelNumber04 >= kAirportItlwmAPSTACsaMaximumExcludedChannelSpec) {
         return static_cast<IOReturn>(kAirportItlwmAPSTACsaInvalidArgumentReturn);
     }
