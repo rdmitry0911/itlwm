@@ -207,6 +207,8 @@ void testApstaPublicSetterContracts()
             "APSTA setSSID does not mutate recovered SSID state");
     require(kAirportItlwmAPSTASetMisMaxStaReturn == 0,
             "APSTA MIS_MAX_STA AP-down/no-owner path returns success");
+    require(kAirportItlwmAPSTASetSoftAPExtCapsReturn == 0,
+            "APSTA SoftAP ext-cap no-owner path returns success");
     require(kAirportItlwmAPSTAHiddenNotUpReturn == 6,
             "APSTA hidden AP-down return is raw 6");
     require(kAirportItlwmAPSTAHiddenInvalidArgumentReturn == 0x16,

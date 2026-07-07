@@ -6076,9 +6076,6 @@ IOReturn AirportItlwm::
 setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
     struct apple80211_softap_extended_capabilities_info *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     /*
      * Forward the selector input through the host APSTA owner's
      * setSoftAPExtCaps entry point, which mirrors flag00/value01/
@@ -6096,7 +6093,10 @@ setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
      * side effect.
      */
     if (fAPSTAOwner == NULL) {
-        return kIOReturnSuccess;
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetSoftAPExtCapsReturn);
+    }
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
     }
     return fAPSTAOwner->setSoftAPExtCaps(in);
 }
