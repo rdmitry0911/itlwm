@@ -5114,3 +5114,36 @@ WCL/static path evidence:
 
 Reference note:
 `docs/reference/CR-479-phy-mode-hw-supported-active-bss-20260707.md`.
+
+## item 211 — association auth mapping stops rewriting pure WPA3 carriers
+
+- producers:
+  - `AirportItlwm::associateSSID(...)`
+  - `AirportItlwmSkywalkInterface::associateSSID(...)`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- the recovered hidden Tahoe association carrier preserves auth policy through
+  the assoc-candidates owner and RSN IE pointer/length fields instead of
+  rewriting AKM bits in the local association backend;
+- public `setRSN_IE` is a success no-op in the reference and is not an AKM
+  rewrite point;
+- the local `CARD_CAPABILITIES` cluster already stopped advertising
+  Apple-impossible advanced AKM support, so pure WPA3 auth carriers must not be
+  silently converted into WPA2 carrier bits downstream.
+
+Local closure:
+
+- `TahoeAssociationAuthContracts` now owns the explicit WPA/WPA2/SHA256 auth
+  masks that are allowed to program local net80211 WPA state;
+- both legacy and Tahoe Skywalk association paths derive the local mapping from
+  those explicit supported bits only;
+- mixed transition carriers that include a WPA2 PSK bit still enter the local
+  WPA2 PSK path;
+- pure WPA3 SAE / WPA3 enterprise carriers no longer mutate into WPA2 PSK or
+  WPA2 enterprise inside `associateSSID(...)`.
+
+Reference note:
+`docs/reference/CR-479-association-auth-no-fallback-rewrite-20260707.md`.

@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
@@ -922,6 +923,34 @@ void testTahoeCapabilityContracts()
             "CARD_CAPABILITIES rejects old over-advertised cluster");
 }
 
+void testTahoeAssociationAuthContracts()
+{
+    using namespace TahoeAssociationAuthContracts;
+
+    const uint32_t mixedTransition = kAuthWpa2Psk | kAuthWpa3Sae;
+    uint32_t local = localAuthMaskWithoutFallbackRewrite(mixedTransition);
+    require(local == kAuthWpa2Psk,
+            "association auth keeps explicit WPA2 PSK from mixed transition auth");
+    require(usesLocalWpaProtocol(local) && usesLocalPskAkm(local),
+            "association auth maps explicit WPA2 PSK to local RSN/PSK");
+    require(!usesLocalEnterpriseAkm(local),
+            "association auth does not add enterprise AKM to PSK auth");
+
+    local = localAuthMaskWithoutFallbackRewrite(kAuthWpa3Sae);
+    require(local == 0,
+            "association auth does not rewrite pure WPA3 SAE to WPA2 PSK");
+    require(!usesLocalWpaProtocol(local) && !usesLocalPskAkm(local),
+            "association auth leaves pure WPA3 SAE outside local WPA mapping");
+
+    local = localAuthMaskWithoutFallbackRewrite(kAuthWpa3Enterprise);
+    require(local == 0,
+            "association auth does not rewrite pure WPA3 enterprise to WPA2");
+    require(isWpa3OnlyAuth(kAuthWpa3FtEnterprise),
+            "association auth identifies WPA3-only carriers without mapping them");
+    require(!isWpa3OnlyAuth(mixedTransition),
+            "association auth does not classify mixed transition auth as WPA3-only");
+}
+
 } // namespace
 
 int main()
@@ -945,6 +974,7 @@ int main()
     testTahoeLqmContracts();
     testTahoeBssManagerWriterContracts();
     testTahoeCapabilityContracts();
-    std::cout << "tahoe payload builders ok: 21 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    testTahoeAssociationAuthContracts();
+    std::cout << "tahoe payload builders ok: 22 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

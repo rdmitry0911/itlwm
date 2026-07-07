@@ -10,6 +10,7 @@
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeLeScanContracts.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeMimoContracts.hpp"
@@ -29,6 +30,13 @@
 
 #define super IO80211InfraProtocol
 OSDefineMetaClassAndStructors(AirportItlwmSkywalkInterface, IO80211InfraProtocol);
+
+static_assert(TahoeAssociationAuthContracts::kAuthWpa2Psk ==
+                  APPLE80211_AUTHTYPE_WPA2_PSK,
+              "association auth contract must match Apple80211 WPA2 PSK bit");
+static_assert(TahoeAssociationAuthContracts::kAuthWpa3Sae ==
+                  APPLE80211_AUTHTYPE_WPA3_SAE,
+              "association auth contract must match Apple80211 WPA3 SAE bit");
 
 static int ieeeChanFlag2appleScanFlagVentura(int flags)
 {
@@ -943,23 +951,14 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
         ic->ic_flags &= ~IEEE80211_F_DESBSSID;
     }
 
-    // AUTHTYPE_WPA3_SAE AUTHTYPE_WPA3_FT_SAE
-    // we don't really support WPA3, but we have announced we support WPA3 in card capability function. so we fake it as WPA2 to support some WPA2/WPA3 mix wifi connection.
-    if (authtype_upper == APPLE80211_AUTHTYPE_WPA3_SAE || authtype_upper == APPLE80211_AUTHTYPE_WPA3_FT_SAE) {
-        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
-        authtype_upper |= APPLE80211_AUTHTYPE_WPA2_PSK;// hack
-    }
-    // AUTHTYPE_WPA3_ENTERPRISE AUTHTYPE_WPA3_FT_ENTERPRISE
-    if (authtype_upper == APPLE80211_AUTHTYPE_WPA3_ENTERPRISE || authtype_upper == APPLE80211_AUTHTYPE_WPA3_FT_ENTERPRISE) {
-        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
-        authtype_upper |= APPLE80211_AUTHTYPE_WPA2;// hack
-    }
-    
-    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X)) {
+    const uint32_t localAuthUpper =
+        TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
+            authtype_upper);
+    if (TahoeAssociationAuthContracts::usesLocalWpaProtocol(localAuthUpper)) {
         wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
     }
     
-    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK | APPLE80211_AUTHTYPE_SHA256_PSK)) {
+    if (TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
         wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
@@ -1080,7 +1079,7 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
         }
         ieee80211_ioctl_setwpaparms(ic, &wpa);
     }
-    if (authtype_upper & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_SHA256_8021X)) {
+    if (TahoeAssociationAuthContracts::usesLocalEnterpriseAkm(localAuthUpper)) {
         wpa.i_akms |= IEEE80211_WPA_AKM_8021X | IEEE80211_WPA_AKM_SHA256_8021X;
         wpa.i_enabled = 1;
         ieee80211_ioctl_setwpaparms(ic, &wpa);
