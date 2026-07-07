@@ -47,6 +47,8 @@
 //    ffffff8002266bc2  IO80211BssManager::setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data&)
 //    ffffff8002266c4a  IO80211BssManager::setHEMCSIndexSet(apple80211_he_mcs_index_set_data&)
 //    ffffff8002266cb2  IO80211BssManager::setRateSet(apple80211_rate_set_data&)
+//    ffffff800226713c  IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)
+//    ffffff8002267afa  IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)
 //
 //  These writer declarations are not part of the CR-201 primitive-only
 //  fourteen-helper batch. They are live current-BSS cache producers used by
@@ -62,6 +64,10 @@ struct apple80211_vht_mcs_index_set_data;
 struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
 
+#ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
+typedef int IOReturn;
+#endif
+
 class IO80211BssManager
 {
 public:
@@ -71,6 +77,8 @@ public:
     void setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data &);
     void setHEMCSIndexSet(apple80211_he_mcs_index_set_data &);
     void setRateSet(apple80211_rate_set_data &);
+    IOReturn setAssocSSID(const unsigned char *, unsigned long);
+    IOReturn setAssocRSNIE(const unsigned char *, unsigned long);
     unsigned char isAssociatedOnHighBand();
     bool isAssociatedToAdhoc();
     void resetRateAndIndexSet();

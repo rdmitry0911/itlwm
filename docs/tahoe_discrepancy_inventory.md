@@ -4937,3 +4937,37 @@ state rather than forcing `enabled=1`.
 
 Reference note:
 `docs/reference/CR-479-lqm-create-prerequisites-20260707.md`.
+
+## item 206 — IO80211BssManager current-BSS identity writer seeding
+
+- class: IO80211BssManager
+- header: `include/Airport/IO80211BssManager.h`
+- implementation: `AirportItlwmSkywalkInterface.cpp::seedBssManagerRateAndMcs`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- BootKC exports
+  `IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)`
+  at `0xffffff800226713c` and
+  `IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)`
+  at `0xffffff8002267afa`.
+- the `setAssocSSID` writer accepts at most 32 bytes, clears the 32-byte
+  associated-SSID buffer, writes the length, and copies only on nonzero length.
+- the `setAssocRSNIE` writer accepts at most `0x101` bytes, writes the length,
+  copies nonzero input into the associated RSN IE cache, and has an explicit
+  zero-length clear path.
+
+Local closure:
+
+- the BssManager direct-call header now declares the two recovered
+  `IOReturn` writer signatures;
+- the existing WCLConfigManager/BssManager seed burst now publishes the
+  current node SSID and RSN IE into the framework-owned BssManager object;
+- overlength local inputs are not truncated before the Apple writer boundary.
+  SSID over 32 is skipped, and missing/empty/overlength RSN IE uses the
+  writer's zero-length clear path.
+
+Reference note:
+`docs/reference/CR-479-bssmanager-current-bss-identity-writer-seeding-20260707.md`.

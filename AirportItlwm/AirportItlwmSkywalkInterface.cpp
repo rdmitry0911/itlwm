@@ -49,6 +49,7 @@ static constexpr uint32_t kIo80211InputProbeLimit = 64;
 static constexpr int32_t kIo80211InputStageEntry = 1000;
 static constexpr int32_t kIo80211InputStageReturn = 2000;
 static constexpr uint32_t kExternalPmkWaitTimeoutMs = 3000;
+static constexpr uint32_t kAppleBssManagerAssocRsnIeMaxLen = 0x101;
 
 // Counter of successful APPLE80211_CIPHER_PMK installs through
 // setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
@@ -2273,6 +2274,7 @@ seedBssManagerRateAndMcs()
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
         return;
+    struct ieee80211_node *ni = ic->ic_bss;
 
     const uintptr_t kKernelVA = 0xffffff8000000000ULL;
     const uintptr_t kWCLConfigManagerId = 1;
@@ -2300,6 +2302,17 @@ seedBssManagerRateAndMcs()
 
     IO80211BssManager *bssManager = reinterpret_cast<IO80211BssManager *>(bss);
 
+    if (ni->ni_esslen <= IEEE80211_NWID_LEN)
+        (void)bssManager->setAssocSSID(ni->ni_essid, ni->ni_esslen);
+
+    if (ni->ni_rsnie_tlv != nullptr &&
+        ni->ni_rsnie_tlv_len != 0 &&
+        ni->ni_rsnie_tlv_len <= kAppleBssManagerAssocRsnIeMaxLen) {
+        (void)bssManager->setAssocRSNIE(ni->ni_rsnie_tlv, ni->ni_rsnie_tlv_len);
+    } else {
+        (void)bssManager->setAssocRSNIE(nullptr, 0);
+    }
+
     apple80211_rate_set_data rates;
     if (getRATE_SET(&rates) == kIOReturnSuccess)
         bssManager->setRateSet(rates);
@@ -2324,7 +2337,7 @@ seedBssManagerRateAndMcs()
     he.mcs_map = 0xffff;
     if ((ic->ic_flags & IEEE80211_F_HEON) != 0 &&
         ic->ic_curmode >= IEEE80211_MODE_11AX) {
-        he.mcs_map = ic->ic_bss->ni_he_mcs_nss_supp.tx_mcs_80;
+        he.mcs_map = ni->ni_he_mcs_nss_supp.tx_mcs_80;
     }
     bssManager->setHEMCSIndexSet(he);
 }
