@@ -211,6 +211,14 @@ void testApstaPublicSetterContracts()
             "APSTA Wi-Fi network info length trap threshold is 0x21");
     require(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,
             "APSTA Wi-Fi network info accepts lengths below 0x21");
+    require(kAirportItlwmAPSTASetCipherKeyNotUpReturn == 6,
+            "APSTA CIPHER_KEY AP-down return is raw 6");
+    require(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn == 0,
+            "APSTA CIPHER_KEY unsupported cipher returns success after AP-up gate");
+    require(kAirportItlwmAPSTAStaDeauthTailcallVtableOffset == 0x1040,
+            "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
+    require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
+            "APSTA STA_DEAUTH and STA_DISASSOCIATE share the recovered selector");
 }
 
 void testPayloadContractInventory()

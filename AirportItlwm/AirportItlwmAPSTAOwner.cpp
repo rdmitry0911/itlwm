@@ -185,6 +185,9 @@ IOReturn AirportItlwmAPSTAOwner::setChannel(const struct apple80211_channel_data
 
 IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
 {
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyNotUpReturn);
+    }
     if (key == nullptr) {
         return kIOReturnBadArgument;
     }
@@ -192,9 +195,6 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
         key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted3 &&
         key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted5) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn);
-    }
-    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyNotUpReturn);
     }
     ItlHalApKey halKey;
     bzero(&halKey, sizeof(halKey));
@@ -475,7 +475,8 @@ IOReturn AirportItlwmAPSTAOwner::setStationDisassociation(
     }
     ItlHalApStationCommand cmd;
     bzero(&cmd, sizeof(cmd));
-    cmd.command = deauth ? kAirportItlwmAPSTAEventDeauth : kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector;
+    (void)deauth;
+    cmd.command = kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector;
     cmd.flags = in->reason04;
     cmd.disassocReason = in->reason04;
     cmd.disassocCarrierValue08 = in->value08;
