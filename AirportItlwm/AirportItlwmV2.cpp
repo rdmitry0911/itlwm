@@ -6194,6 +6194,42 @@ IOReturn AirportItlwm::getAPSTA_STA_STATS(OSObject *object,
     return fAPSTAOwner->getStaStats(in);
 }
 
+IOReturn AirportItlwm::getHOST_AP_MODE_HIDDEN(OSObject *object,
+    AirportItlwmAPSTAHostApModeHiddenOutputLayout *in)
+{
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetHostApModeHiddenInvalidArgumentReturn);
+    }
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getHostAPModeHidden(in);
+}
+
+IOReturn AirportItlwm::getSOFTAP_PARAMS(OSObject *object,
+    AirportItlwmAPSTASoftAPParamsOutputLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getSoftAPParams(in);
+}
+
+IOReturn AirportItlwm::getSOFTAP_STATS(OSObject *object,
+    AirportItlwmAPSTASoftAPStatsLayout *in)
+{
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getSoftAPStats(in);
+}
+
 IOReturn AirportItlwm::setHOST_AP_MODE_HIDDEN(OSObject *object,
     AirportItlwmAPSTAHostApModeHiddenLayout *in)
 {

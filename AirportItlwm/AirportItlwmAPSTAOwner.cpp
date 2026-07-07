@@ -211,6 +211,43 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
     return owner->fHalService->setAPKey(&halKey);
 }
 
+IOReturn AirportItlwmAPSTAOwner::getHostAPModeHidden(
+    AirportItlwmAPSTAHostApModeHiddenOutputLayout *out) const
+{
+    if (out == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetHostApModeHiddenInvalidArgumentReturn);
+    }
+    out->hidden00 = kAirportItlwmAPSTAGetHostApModeHiddenValue;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getSoftAPParams(
+    AirportItlwmAPSTASoftAPParamsOutputLayout *out) const
+{
+    if (out == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    out->param04 = state.softapParam18;
+    out->param08 = state.softapParam1c;
+    out->param0c = state.softapParam20;
+    out->param10 = state.softapParam24;
+    out->param14 = state.softapAppliedBeaconInterval68;
+    out->mode16 = state.softapMode10;
+    out->enabled17 = state.softapParam0e & 1;
+    out->param18 = state.softapParam28;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getSoftAPStats(
+    AirportItlwmAPSTASoftAPStatsLayout *out) const
+{
+    if (out == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    memcpy(out->stats, state.softapStats, kAirportItlwmAPSTAGetSoftAPStatsCopySize);
+    return kIOReturnSuccess;
+}
+
 IOReturn AirportItlwmAPSTAOwner::getStationList(struct apple80211_sta_data *out)
 {
     if (out == nullptr) {

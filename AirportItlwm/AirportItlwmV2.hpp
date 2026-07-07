@@ -517,6 +517,12 @@ public:
         AirportItlwmAPSTAKeyRscDataLayout *data);
     IOReturn getAPSTA_STA_STATS(OSObject *object,
         AirportItlwmAPSTAStaStatsDataLayout *data);
+    IOReturn getHOST_AP_MODE_HIDDEN(OSObject *object,
+        AirportItlwmAPSTAHostApModeHiddenOutputLayout *data);
+    IOReturn getSOFTAP_PARAMS(OSObject *object,
+        AirportItlwmAPSTASoftAPParamsOutputLayout *data);
+    IOReturn getSOFTAP_STATS(OSObject *object,
+        AirportItlwmAPSTASoftAPStatsLayout *data);
     IOReturn setHOST_AP_MODE_HIDDEN(OSObject *object,
         AirportItlwmAPSTAHostApModeHiddenLayout *data);
     IOReturn setSTA_AUTHORIZE(OSObject *object, AirportItlwmAPSTAStaAuthorizeInputLayout *data);

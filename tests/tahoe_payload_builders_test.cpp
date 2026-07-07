@@ -195,6 +195,10 @@ void testApstaPublicSetterContracts()
 {
     require(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) == 0,
             "APSTA hidden getter writes value at output +0x00");
+    require(kAirportItlwmAPSTAGetHostApModeHiddenValue == 1,
+            "APSTA hidden getter writes fixed value 1");
+    require(kAirportItlwmAPSTAGetHostApModeHiddenInvalidArgumentReturn == 0x16,
+            "APSTA hidden getter null return is raw 0x16");
     require(offsetof(AirportItlwmAPSTAHostApModeHiddenLayout, hidden04) == 4,
             "APSTA hidden setter reads value at input +0x04");
     require(sizeof(AirportItlwmAPSTAHostApModeHiddenLayout) == 8,
@@ -221,6 +225,16 @@ void testApstaPublicSetterContracts()
             "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
     require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
             "APSTA STA_DEAUTH and STA_DISASSOCIATE share the recovered selector");
+    require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, param14) == 0x14,
+            "APSTA SoftAP params getter writes beacon interval at output +0x14");
+    require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, mode16) == 0x16,
+            "APSTA SoftAP params getter writes mode at output +0x16");
+    require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, enabled17) == 0x17,
+            "APSTA SoftAP params getter writes enabled bit at output +0x17");
+    require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, param18) == 0x18,
+            "APSTA SoftAP params getter writes byte field at output +0x18");
+    require(kAirportItlwmAPSTAGetSoftAPStatsCopySize == 0x58,
+            "APSTA SoftAP stats getter copies 0x58 bytes");
     require(kAirportItlwmAPSTAGetStationListNullReturn == 0x16,
             "APSTA getSTATION_LIST null return is raw 0x16");
     require(kAirportItlwmAPSTAGetStationListNotUpReturn == 0x39,

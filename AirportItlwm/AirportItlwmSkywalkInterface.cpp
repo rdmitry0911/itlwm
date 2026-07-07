@@ -1881,6 +1881,10 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_HOST_AP_MODE_HIDDEN:
             if (instance == NULL)
                 return kIOReturnNotReady;
+            if (cmd == SIOCGA80211)
+                return instance->getHOST_AP_MODE_HIDDEN(
+                    this,
+                    (AirportItlwmAPSTAHostApModeHiddenOutputLayout *)req->req_data);
             if (cmd == SIOCSA80211)
                 return instance->setHOST_AP_MODE_HIDDEN(
                     this,
@@ -1889,10 +1893,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_SOFTAP_PARAMS:
             if (instance == NULL)
                 return kIOReturnNotReady;
+            if (cmd == SIOCGA80211)
+                return instance->getSOFTAP_PARAMS(
+                    this,
+                    (AirportItlwmAPSTASoftAPParamsOutputLayout *)req->req_data);
             if (cmd == SIOCSA80211)
                 return instance->setSOFTAP_PARAMS(
                     this,
                     (AirportItlwmAPSTASoftAPParamsInputLayout *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_SOFTAP_STATS:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCGA80211)
+                return instance->getSOFTAP_STATS(
+                    this,
+                    (AirportItlwmAPSTASoftAPStatsLayout *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_SOFTAP_TRIGGER_CSA:
             if (instance == NULL)
