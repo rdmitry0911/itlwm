@@ -503,8 +503,16 @@ public:
         struct apple80211_softap_extended_capabilities_info *data);
     IOReturn setMIS_MAX_STA(OSObject *object,
         struct apple80211_mis_max_sta *data);
+    IOReturn getAPSTA_SSID(OSObject *object,
+        AirportItlwmAPSTASsidDataLayout *data);
     IOReturn setAPSTA_SSID(OSObject *object,
         struct apple80211_ssid_data *data);
+    IOReturn getAPSTA_STATE(OSObject *object,
+        AirportItlwmAPSTAStateDataLayout *data);
+    IOReturn getAPSTA_OP_MODE(OSObject *object,
+        AirportItlwmAPSTAOpModeDataLayout *data);
+    IOReturn getAPSTA_PEER_CACHE_MAXIMUM_SIZE(OSObject *object,
+        AirportItlwmAPSTAPeerCacheMaximumSizeLayout *data);
     IOReturn setAPSTA_CHANNEL(OSObject *object,
         struct apple80211_channel_data *data);
     IOReturn setAPSTA_CIPHER_KEY(OSObject *object,

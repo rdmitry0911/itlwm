@@ -1385,11 +1385,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // can rely on its internal cache layer to absorb the low-level
             // 0xe0822403; our Tahoe bridge cannot leak that low-level status
             // to airportd during bootstrap.
-            return (cmd == SIOCGA80211)
-                       ? getSSID((apple80211_ssid_data *)req->req_data)
-                       : (instance != NULL
-                              ? instance->setAPSTA_SSID(this, (apple80211_ssid_data *)req->req_data)
-                              : kIOReturnNotReady);
+            if (cmd == SIOCGA80211) {
+                if (instance != NULL && instance->fAPSTAOwner != NULL) {
+                    return instance->getAPSTA_SSID(
+                        this,
+                        (AirportItlwmAPSTASsidDataLayout *)req->req_data);
+                }
+                return getSSID((apple80211_ssid_data *)req->req_data);
+            }
+            return (instance != NULL)
+                       ? instance->setAPSTA_SSID(this, (apple80211_ssid_data *)req->req_data)
+                       : kIOReturnNotReady;
         case APPLE80211_IOC_BSSID:
             // Same bootstrap contract as SSID: airportd queries BSSID during
             // _initInterface and expects success with an all-zero BSSID before
@@ -1441,8 +1447,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return setPOWERSAVE((apple80211_powersave_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_STATE:
-            return (cmd == SIOCGA80211) ? getSTATE((apple80211_state_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211) {
+                if (instance != NULL && instance->fAPSTAOwner != NULL) {
+                    return instance->getAPSTA_STATE(
+                        this,
+                        (AirportItlwmAPSTAStateDataLayout *)req->req_data);
+                }
+                return getSTATE((apple80211_state_data *)req->req_data);
+            }
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_PHY_MODE:
             return (cmd == SIOCGA80211) ? getPHY_MODE((apple80211_phymode_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -1532,8 +1545,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return setOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_OP_MODE:
-            return (cmd == SIOCGA80211) ? getOP_MODE((apple80211_opmode_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211) {
+                if (instance != NULL && instance->fAPSTAOwner != NULL) {
+                    return instance->getAPSTA_OP_MODE(
+                        this,
+                        (AirportItlwmAPSTAOpModeDataLayout *)req->req_data);
+                }
+                return getOP_MODE((apple80211_opmode_data *)req->req_data);
+            }
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_SUPPORTED_CHANNELS:
         case APPLE80211_IOC_HW_SUPPORTED_CHANNELS:
             return (cmd == SIOCGA80211) ? getSUPPORTED_CHANNELS((apple80211_sup_channel_data *)req->req_data)
@@ -1677,6 +1697,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 ? instance->getAPSTA_STATION_LIST(
                     this, (apple80211_sta_data *)req->req_data)
                 : kIOReturnUnsupported;
+        case APPLE80211_IOC_PEER_CACHE_MAXIMUM_SIZE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            if (cmd == SIOCGA80211) {
+                if (instance->fAPSTAOwner != NULL) {
+                    return instance->getAPSTA_PEER_CACHE_MAXIMUM_SIZE(
+                        this,
+                        (AirportItlwmAPSTAPeerCacheMaximumSizeLayout *)req->req_data);
+                }
+                apple80211_peer_cache_maximum_size *data =
+                    (apple80211_peer_cache_maximum_size *)req->req_data;
+                data->version = APPLE80211_VERSION;
+                data->max_peers = 255;
+                return kIOReturnSuccess;
+            }
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_CUR_PMK:
             // Tahoe Skywalk current-PMK carrier. The active local
             // ingress for selector 0x168 / IOC 360 is the

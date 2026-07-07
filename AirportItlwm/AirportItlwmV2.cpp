@@ -6064,6 +6064,15 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
     return fAPSTAOwner->setMisMaxSta(in);
 }
 
+IOReturn AirportItlwm::getAPSTA_SSID(OSObject *object,
+    AirportItlwmAPSTASsidDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getSSID(in);
+}
+
 IOReturn AirportItlwm::setAPSTA_SSID(OSObject *object,
     struct apple80211_ssid_data *in)
 {
@@ -6071,6 +6080,33 @@ IOReturn AirportItlwm::setAPSTA_SSID(OSObject *object,
         return setSSID(object, in);
     }
     return fAPSTAOwner->setSSID(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_STATE(OSObject *object,
+    AirportItlwmAPSTAStateDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getState(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_OP_MODE(OSObject *object,
+    AirportItlwmAPSTAOpModeDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getOpMode(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_PEER_CACHE_MAXIMUM_SIZE(OSObject *object,
+    AirportItlwmAPSTAPeerCacheMaximumSizeLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getPeerCacheMaximumSize(in);
 }
 
 IOReturn AirportItlwm::setAPSTA_CHANNEL(OSObject *object,

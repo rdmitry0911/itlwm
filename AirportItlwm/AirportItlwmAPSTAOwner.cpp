@@ -225,6 +225,41 @@ bool AirportItlwmAPSTAOwner::matchesBSDName(const uint8_t *name) const
     return strncmp(bsdNameStorage, reinterpret_cast<const char *>(name), sizeof(bsdNameStorage)) == 0;
 }
 
+IOReturn AirportItlwmAPSTAOwner::getSSID(AirportItlwmAPSTASsidDataLayout *out) const
+{
+    if (state.softapSsidLength274 > kAirportItlwmAPSTAGetSsidMaxLength) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetSsidInvalidArgumentReturn);
+    }
+    out->length04 = state.softapSsidLength274;
+    memcpy(out->ssid08, state.softapSsid278, state.softapSsidLength274);
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getState(AirportItlwmAPSTAStateDataLayout *out) const
+{
+    out->state04 = kAirportItlwmAPSTAGetStateOutputValue;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getOpMode(AirportItlwmAPSTAOpModeDataLayout *out) const
+{
+    if (out == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetOpModeInvalidArgumentReturn);
+    }
+    out->type00 = kAirportItlwmAPSTAGetOpModeTypeValue;
+    out->mode04 = state.resetState26c != 0
+        ? kAirportItlwmAPSTAGetOpModeAPUpValue
+        : kAirportItlwmAPSTAGetOpModeAPDownValue;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getPeerCacheMaximumSize(
+    AirportItlwmAPSTAPeerCacheMaximumSizeLayout *out) const
+{
+    out->maximum04 = kAirportItlwmAPSTAGetPeerCacheMaximumSizeValue;
+    return kIOReturnSuccess;
+}
+
 IOReturn AirportItlwmAPSTAOwner::setSSID(const struct apple80211_ssid_data *in)
 {
     (void)in;

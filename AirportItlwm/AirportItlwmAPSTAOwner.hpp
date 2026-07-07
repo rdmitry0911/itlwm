@@ -60,6 +60,10 @@ public:
     AirportItlwmAPSTAStateBlock *stateBlock() { return &state; }
     const AirportItlwmAPSTAStateBlock *stateBlock() const { return &state; }
 
+    IOReturn getSSID(AirportItlwmAPSTASsidDataLayout *out) const;
+    IOReturn getState(AirportItlwmAPSTAStateDataLayout *out) const;
+    IOReturn getOpMode(AirportItlwmAPSTAOpModeDataLayout *out) const;
+    IOReturn getPeerCacheMaximumSize(AirportItlwmAPSTAPeerCacheMaximumSizeLayout *out) const;
     IOReturn setSSID(const struct apple80211_ssid_data *in);
     IOReturn setChannel(const struct apple80211_channel_data *in);
     IOReturn setCipherKey(const struct apple80211_key *key);

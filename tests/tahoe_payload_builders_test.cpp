@@ -198,7 +198,7 @@ void testRangingBuilder()
     require(!payload.shouldPostCallback, "ranging builder suppresses callback for proximity sentinel owner");
 }
 
-void testApstaPublicSetterContracts()
+void testApstaPublicContracts()
 {
     require(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) == 0,
             "APSTA hidden getter writes value at output +0x00");
@@ -299,6 +299,34 @@ void testApstaPublicSetterContracts()
             "APSTA initSoftAPParameters state +0x24 default is 0x0a");
     require(kAirportItlwmAPSTAInitSoftAPDefaultParam28 == 3,
             "APSTA initSoftAPParameters state +0x28 default is 3");
+    require(offsetof(AirportItlwmAPSTASsidDataLayout, length04) ==
+                kAirportItlwmAPSTAGetSsidOutputLengthOffset,
+            "APSTA getSSID writes length at output +0x04");
+    require(offsetof(AirportItlwmAPSTASsidDataLayout, ssid08) ==
+                kAirportItlwmAPSTAGetSsidOutputBytesOffset,
+            "APSTA getSSID writes SSID bytes at output +0x08");
+    require(kAirportItlwmAPSTAGetSsidInvalidArgumentReturn == 0x16,
+            "APSTA getSSID rejects oversized cached SSIDs with raw 0x16");
+    require(offsetof(AirportItlwmAPSTAStateDataLayout, state04) ==
+                kAirportItlwmAPSTAGetStateOutputValueOffset,
+            "APSTA getSTATE writes state at output +0x04");
+    require(kAirportItlwmAPSTAGetStateOutputValue == 4,
+            "APSTA getSTATE publishes SoftAP state 4");
+    require(offsetof(AirportItlwmAPSTAOpModeDataLayout, type00) ==
+                kAirportItlwmAPSTAGetOpModeOutputTypeOffset,
+            "APSTA getOP_MODE writes type at output +0x00");
+    require(offsetof(AirportItlwmAPSTAOpModeDataLayout, mode04) ==
+                kAirportItlwmAPSTAGetOpModeOutputModeOffset,
+            "APSTA getOP_MODE writes mode at output +0x04");
+    require(kAirportItlwmAPSTAGetOpModeTypeValue == 1 &&
+                kAirportItlwmAPSTAGetOpModeAPUpValue == 8 &&
+                kAirportItlwmAPSTAGetOpModeAPDownValue == 0,
+            "APSTA getOP_MODE publishes type 1 and AP-up mode 8");
+    require(offsetof(AirportItlwmAPSTAPeerCacheMaximumSizeLayout, maximum04) ==
+                kAirportItlwmAPSTAGetPeerCacheMaximumSizeOutputOffset,
+            "APSTA peer-cache maximum getter writes value at output +0x04");
+    require(kAirportItlwmAPSTAGetPeerCacheMaximumSizeValue == 8,
+            "APSTA peer-cache maximum size is 8");
     require(kAirportItlwmAPSTAGetSoftAPStatsCopySize == 0x58,
             "APSTA SoftAP stats getter copies 0x58 bytes");
     require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, command04) == 0x04,
@@ -404,9 +432,12 @@ void testTahoeSkywalkIoctlRoutes()
     require(shouldRoute(kIocBtcoex2GChainDisable, false) &&
                 shouldRoute(kIocBtcoex2GChainDisable, true),
             "Skywalk routes BTCOEX_2G_CHAIN_DISABLE getter/setter pair");
+    require(shouldRoute(kIocPeerCacheMaximumSize, false) &&
+                !shouldRoute(kIocPeerCacheMaximumSize, true),
+            "Skywalk routes APSTA peer-cache maximum getter");
     require(!shouldRoute(kIocPeerCacheControl, false) &&
                 shouldRoute(kIocPeerCacheControl, true),
-            "Skywalk leaves peer-cache maximum/shared getters out of the APSTA route");
+            "Skywalk routes APSTA peer-cache control setter only");
 }
 
 void testTahoeQosDynsarContracts()
@@ -649,7 +680,7 @@ int main()
     testBtcoexBuilders();
     testTxPowerAndActionFrameBuilders();
     testRangingBuilder();
-    testApstaPublicSetterContracts();
+    testApstaPublicContracts();
     testPayloadContractInventory();
     testTahoeSkywalkIoctlRoutes();
     testTahoeQosDynsarContracts();

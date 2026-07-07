@@ -3787,8 +3787,11 @@ Recovered setter body sequence:
   `state+0x26c` is nonzero, ignores the helper result, and returns `0`
 
 The local scaffold now records these body contracts as constants, layouts, APSTA
-state fields, and static asserts. It still does not execute these public APSTA
-methods at runtime.
+state fields, and static asserts. The host-owned APSTA owner now executes the
+simple state/fixed-output getters `getSSID`, `getSTATE`, `getOP_MODE`, and
+`getPEER_CACHE_MAXIMUM_SIZE` when an APSTA owner exists; no-owner traffic still
+uses the primary STA bootstrap/cache path. The command-backed APSTA getters
+remain separate station/channel/key layers.
 
 ## APSTA Station And Key Body Layer
 

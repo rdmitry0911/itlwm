@@ -84,9 +84,11 @@ excludes station/key methods with command buffers and IOVAR/IOCTL datapaths.
 ## Local Scope
 
 The local APSTA scaffold records these offsets, carriers, and fixed returns as
-compiled witnesses only. It still does not define the final APSTA owner class,
-does not route public SAP calls through APSTA methods, and does not enable
-HostAP/APSTA runtime.
+compiled witnesses. The host-owned APSTA owner now routes the simple
+state/fixed-output getters `getSSID`, `getSTATE`, `getOP_MODE`, and
+`getPEER_CACHE_MAXIMUM_SIZE` when the owner exists, while no-owner traffic keeps
+the primary STA bootstrap/cache behavior. It still does not enable HostAP/APSTA
+runtime or the command-backed APSTA channel/station/key datapaths.
 
 ## Local Selector Wiring (AP-mode HostAP, Stage 1 structural)
 
