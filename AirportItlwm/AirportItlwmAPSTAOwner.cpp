@@ -531,16 +531,6 @@ IOReturn AirportItlwmAPSTAOwner::setStationAuthorization(
     if (in == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAStaAuthorizeNullReturn);
     }
-    if (apsta_mac_is_zero(in->mac08)) {
-        return kIOReturnBadArgument;
-    }
-    if (in->authorizeFlag04 != 0) {
-        if (allocateStation(in->mac08) == nullptr) {
-            return static_cast<IOReturn>(0xe00002bc);
-        }
-    } else {
-        removeStation(in->mac08);
-    }
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
     }
@@ -558,11 +548,11 @@ IOReturn AirportItlwmAPSTAOwner::setStationDisassociation(
     const AirportItlwmAPSTAStaDisassocInputLayout *in,
     bool deauth)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
     }
     ItlHalApStationCommand cmd;
     bzero(&cmd, sizeof(cmd));

@@ -734,6 +734,7 @@ enum {
     kAirportItlwmAPSTACsaPayloadReservedOffset = 0x04,
     kAirportItlwmAPSTACsaPayloadSize = 0x06,
     kAirportItlwmAPSTAStaAuthorizeNullReturn = 0xe00002c2,
+    kAirportItlwmAPSTAStaAuthorizePreAPUpTableMutationCount = 0,
     kAirportItlwmAPSTAStaAuthorizeFlagOffset = 0x04,
     kAirportItlwmAPSTAStaAuthorizeMacOffset = 0x08,
     kAirportItlwmAPSTAStaAuthorizeMacPayloadSize = 0x06,

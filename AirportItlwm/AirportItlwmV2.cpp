@@ -6252,11 +6252,11 @@ IOReturn AirportItlwm::setSTA_DISASSOCIATE(OSObject *object,
     AirportItlwmAPSTAStaDisassocInputLayout *in,
     bool deauth)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    }
+    if (in == nullptr) {
+        return kIOReturnBadArgument;
     }
     return fAPSTAOwner->setStationDisassociation(in, deauth);
 }

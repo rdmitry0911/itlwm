@@ -227,6 +227,8 @@ void testApstaPublicSetterContracts()
             "APSTA CIPHER_KEY cipher-none carrier value is zero");
     require(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn == 0,
             "APSTA CIPHER_KEY cipher-none and unsupported cipher return success after AP-up gate");
+    require(kAirportItlwmAPSTAStaAuthorizePreAPUpTableMutationCount == 0,
+            "APSTA STA_AUTHORIZE does not mutate station table before AP-up");
     require(kAirportItlwmAPSTAStaDeauthTailcallVtableOffset == 0x1040,
             "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
     require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
