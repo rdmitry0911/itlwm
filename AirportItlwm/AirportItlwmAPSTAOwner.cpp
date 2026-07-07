@@ -236,12 +236,24 @@ IOReturn AirportItlwmAPSTAOwner::setChannel(const struct apple80211_channel_data
     if (in == nullptr || in->channel.channel >= kAirportItlwmAPSTASetChannelTrapThreshold) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidArgumentReturn);
     }
-    apChannel = static_cast<uint16_t>(in->channel.channel);
-    apChannelFlags = in->channel.flags;
-    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+    if (owner == nullptr || owner->fHalService == nullptr || in->channel.channel == 0) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidSoftAPInfoReturn);
     }
-    return triggerCSA(apChannel, 0);
+    struct ieee80211com *ic = owner->fHalService->get80211Controller();
+    if (ic == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidSoftAPInfoReturn);
+    }
+    for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+        if (ic->ic_channels[i].ic_freq == 0) {
+            continue;
+        }
+        if (ieee80211_chan2ieee(ic, &ic->ic_channels[i]) == in->channel.channel) {
+            apChannel = static_cast<uint16_t>(in->channel.channel);
+            apChannelFlags = in->channel.flags;
+            return kIOReturnSuccess;
+        }
+    }
+    return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidSoftAPInfoReturn);
 }
 
 IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)

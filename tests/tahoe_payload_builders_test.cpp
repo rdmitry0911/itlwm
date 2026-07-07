@@ -224,6 +224,10 @@ void testApstaPublicSetterContracts()
             "APSTA CSA AP-down return is raw 6");
     require(kAirportItlwmAPSTACsaInvalidArgumentReturn == 0x16,
             "APSTA CSA invalid return is raw 0x16");
+    require(kAirportItlwmAPSTASetChannelLocalCsaTriggerCount == 0,
+            "APSTA setCHANNEL does not synthesize a CSA trigger");
+    require(kAirportItlwmAPSTASetChannelNoOwnerRoutesPrimary == 1,
+            "APSTA setCHANNEL no-owner route preserves primary channel setter");
     require(kAirportItlwmAPSTACsaMinimumPrimaryChannel == 1,
             "APSTA CSA helper rejects primary channel zero");
     require(kAirportItlwmAPSTACsaMaximumExcludedPrimaryChannel == 0x100,

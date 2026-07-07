@@ -727,6 +727,8 @@ enum {
     kAirportItlwmAPSTASetChannelBandwidth80MHz = 4,
     kAirportItlwmAPSTASetChannelDefaultBandwidthCorePrivateOffset = 0x408,
     kAirportItlwmAPSTASetChannelChanspecPayloadSize = 4,
+    kAirportItlwmAPSTASetChannelLocalCsaTriggerCount = 0,
+    kAirportItlwmAPSTASetChannelNoOwnerRoutesPrimary = 1,
     kAirportItlwmAPSTACsaRequiredStateOffset = 0x26c,
     kAirportItlwmAPSTACsaResetFlagOffset = 0x329,
     kAirportItlwmAPSTACsaResetFlagBit = 0x01,
@@ -1923,6 +1925,10 @@ static_assert(kAirportItlwmAPSTASetChannelFlag40MHz == 0x04,
               "APSTA setCHANNEL 40 MHz flag mismatch");
 static_assert(kAirportItlwmAPSTASetChannelFlag80MHz == 0x400,
               "APSTA setCHANNEL 80 MHz flag mismatch");
+static_assert(kAirportItlwmAPSTASetChannelLocalCsaTriggerCount == 0,
+              "APSTA setCHANNEL must not trigger CSA locally");
+static_assert(kAirportItlwmAPSTASetChannelNoOwnerRoutesPrimary == 1,
+              "APSTA setCHANNEL no-owner route must preserve primary channel setter");
 static_assert(sizeof(AirportItlwmAPSTACsaInputLayout) == 0x15,
               "APSTA CSA input witness size mismatch");
 static_assert(offsetof(AirportItlwmAPSTACsaInputLayout, channel04) ==

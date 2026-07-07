@@ -6145,6 +6145,11 @@ IOReturn AirportItlwm::setAPSTA_CHANNEL(OSObject *object,
     struct apple80211_channel_data *in)
 {
     if (fAPSTAOwner == NULL) {
+        AirportItlwmSkywalkInterface *interface =
+            OSDynamicCast(AirportItlwmSkywalkInterface, object);
+        if (interface != NULL) {
+            return interface->setCHANNEL(in);
+        }
         return setCHANNEL(object, in);
     }
     return fAPSTAOwner->setChannel(in);
