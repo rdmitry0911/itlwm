@@ -20,7 +20,9 @@ enum : uint32_t {
     kIocDisassociate = 22,
     kIocRsnIe = 46,
     kIocBtcoexMode = 87,
+    kIocBtCoexFlags = 102,
     kIocCurrentNetwork = 103,
+    kIocBtPower = 104,
     kIocTxChainPower = 108,
     kIocPeerCacheMaximumSize = 130,
     kIocPeerCacheControl = 143,
@@ -61,6 +63,10 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
         case kIocMaxNssForAp:
         case kIocPeerCacheMaximumSize:
             return !isSet;
+
+        case kIocBtCoexFlags:
+        case kIocBtPower:
+            return isSet;
 
         case kIocRoamProfile:
         case kIocBtcoexProfiles:

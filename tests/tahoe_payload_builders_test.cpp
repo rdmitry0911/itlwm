@@ -437,6 +437,12 @@ void testTahoeSkywalkIoctlRoutes()
     require(shouldRoute(kIocBtcoex2GChainDisable, false) &&
                 shouldRoute(kIocBtcoex2GChainDisable, true),
             "Skywalk routes BTCOEX_2G_CHAIN_DISABLE getter/setter pair");
+    require(!shouldRoute(kIocBtCoexFlags, false) &&
+                shouldRoute(kIocBtCoexFlags, true),
+            "Skywalk routes BT_COEX_FLAGS setter fixed-fail only");
+    require(!shouldRoute(kIocBtPower, false) &&
+                shouldRoute(kIocBtPower, true),
+            "Skywalk routes BT_POWER setter fixed-fail only");
     require(shouldRoute(kIocPeerCacheMaximumSize, false) &&
                 !shouldRoute(kIocPeerCacheMaximumSize, true),
             "Skywalk routes APSTA peer-cache maximum getter");

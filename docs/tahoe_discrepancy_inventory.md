@@ -862,10 +862,21 @@ Recently closed legacy shadow surfaces:
 - `getMCS`
 - `getAP_IE_LIST`
 - `setVIRTUAL_IF_CREATE`
+- `setBT_COEX_FLAGS`
+- `setBT_POWER`
 
 The remaining open items stay in the inventory because they mirror producer
 semantics that may still be reused. The closed items stay listed only as
 regression markers for future Tahoe/legacy drift audits.
+
+Legacy BT setter note:
+
+- `setBT_COEX_FLAGS` now preserves the recovered direct raw `6` return.
+- `setBT_POWER` now preserves the recovered adjacent wrapper-stub
+  `0xe082280e` return.
+- `getBT_COEX_FLAGS` / `getBT_POWER` stay on the inherited IO80211/WCL path
+  because the list-backed carrier producer behind helper `0xffffff80009ff310`
+  is not recovered yet.
 
 ### 7. APSTA / SoftAP owner layer is a required reconstruction item
 

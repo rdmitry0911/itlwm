@@ -1382,6 +1382,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         static_cast<IOReturn>(0xe082280e);
     static const IOReturn kApple80211ClassOwnerAbsent =
         static_cast<IOReturn>(0xe082280e);
+    static const IOReturn kApple80211RawEnxio =
+        static_cast<IOReturn>(6);
 
     if (req == NULL)
         return kIOReturnUnsupported;
@@ -1634,6 +1636,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AP_IE_LIST:
             return (cmd == SIOCGA80211) ? getAP_IE_LIST((apple80211_ap_ie_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BT_COEX_FLAGS:
+            /*
+             * Recovered Tahoe wrapper setBT_COEX_FLAGS is a direct raw `6`
+             * return. The getter remains on the inherited IO80211/WCL path
+             * until its list-backed producer body is fully recovered.
+             */
+            return (cmd == SIOCSA80211) ? kApple80211RawEnxio
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_BT_POWER:
+            /*
+             * Recovered setBT_POWER target lands in the adjacent fixed
+             * 0xe082280e wrapper stub. Do not manufacture a BT power state
+             * carrier on this path.
+             */
+            return (cmd == SIOCSA80211) ? kApple80211ClassOwnerAbsent
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILES: {
             if (instance == NULL)
