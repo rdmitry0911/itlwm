@@ -2340,6 +2340,7 @@ ieee80211_recv_assoc_req(struct ieee80211com *ic, mbuf_t m,
     struct ieee80211_rsnparams rsn;
     u_int8_t rate;
     const u_int8_t *saveie = NULL;
+    uint32_t tlv_len;
     
     if (ic->ic_opmode != IEEE80211_M_HOSTAP ||
         ic->ic_state != IEEE80211_S_RUN)
@@ -2362,13 +2363,14 @@ ieee80211_recv_assoc_req(struct ieee80211com *ic, mbuf_t m,
     }
     capinfo = LE_READ_2(frm); frm += 2;
     bintval = LE_READ_2(frm); frm += 2;
-//    uint32_t tlv_len = (mtod(m, u_int8_t *) + mbuf_len(m)) - (u_int8_t *)&wh[1] + 1 - 2 - 2;
-//    ieee80211_save_ie_tlv(frm, &ni->ni_rsnie_tlv, &ni->ni_rsnie_tlv_len, tlv_len);
     if (reassoc) {
         frm += IEEE80211_ADDR_LEN;    /* skip current AP address */
         resp = IEEE80211_FC0_SUBTYPE_REASSOC_RESP;
     } else
         resp = IEEE80211_FC0_SUBTYPE_ASSOC_RESP;
+    tlv_len = (uint32_t)(efrm - frm);
+    if (tlv_len != 0)
+        ieee80211_save_ie_tlv(frm, &ni->ni_rsnie_tlv, &ni->ni_rsnie_tlv_len, tlv_len);
     
     ssid = rates = xrates = rsnie = wpaie = wmeie = htcaps = NULL;
     while (frm + 2 <= efrm) {

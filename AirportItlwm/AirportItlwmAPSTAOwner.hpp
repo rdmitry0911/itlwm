@@ -92,7 +92,9 @@ public:
     IOReturn triggerCSA(uint16_t channel, uint8_t count);
     IOReturn publishStationEventFromNet80211(uint32_t eventType,
                                              const uint8_t *mac,
-                                             uint32_t flags);
+                                             uint32_t flags,
+                                             const uint8_t *ies = nullptr,
+                                             uint32_t iesLength = 0);
 
 private:
     void initSoftAPParameters();
@@ -103,6 +105,7 @@ private:
     void removeStation(const uint8_t *mac);
     void clearStation(AirportItlwmAPSTAStationTableEntryLayout *entry);
     void recomputeStationCount();
+    IOReturn postStationMessage(uint32_t messageId, const void *payload, size_t payloadLength);
 
     AirportItlwm *owner;
     AirportItlwmAPSTAOwnerLifecycleState lifecycle;

@@ -793,6 +793,10 @@ static const uint64_t kAirportItlwmAPSTARpsNoaDynamicHeaderValue =
 static const uint64_t kAirportItlwmAPSTASoftAPPeerStatsHeaderValue =
     0x80002ULL;
 
+static const uint8_t kAirportItlwmAPSTAAppleIEOui[] = {0x00, 0x17, 0xf2};
+static const uint8_t kAirportItlwmAPSTAAppleIEBsOui[] = {0x00, 0x03, 0x93};
+static const uint8_t kAirportItlwmAPSTAAppleIEDeviceInfoOui[] = {0x00, 0xa0, 0x40};
+
 static const char kAirportItlwmAPSTAMaxAssocIovarName[] = "maxassoc";
 static const char kAirportItlwmAPSTAVndrIEIovarName[] = "vndr_ie";
 static const char kAirportItlwmAPSTAAppleVendorIEDeleteCommand[] = "del";
@@ -1537,6 +1541,15 @@ static_assert(kAirportItlwmAPSTAEventRemovalQueueNotifyEntryOffset ==
 static_assert(kAirportItlwmAPSTAAppleIEOuiSize ==
               kAirportItlwmAPSTAAppleVendorIEAppleOUILength,
               "APSTA Apple IE OUI length mismatch");
+static_assert(sizeof(kAirportItlwmAPSTAAppleIEOui) ==
+              kAirportItlwmAPSTAAppleIEOuiSize,
+              "APSTA Apple IE OUI byte-array length mismatch");
+static_assert(sizeof(kAirportItlwmAPSTAAppleIEBsOui) ==
+              kAirportItlwmAPSTAAppleIEOuiSize,
+              "APSTA Apple BS IE OUI byte-array length mismatch");
+static_assert(sizeof(kAirportItlwmAPSTAAppleIEDeviceInfoOui) ==
+              kAirportItlwmAPSTAAppleIEOuiSize,
+              "APSTA Apple device-info IE OUI byte-array length mismatch");
 static_assert(offsetof(AirportItlwmAPSTAStaIEDataLayout, mac04) ==
               kAirportItlwmAPSTAGetStaIEListInputMacOffset,
               "APSTA STA IE input MAC offset mismatch");

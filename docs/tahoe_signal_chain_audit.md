@@ -3903,8 +3903,23 @@ Recovered event producer contracts:
 
 The local scaffold now types `state+0xb8` as the five-entry APSTA station table
 and records STA event-message, Apple IE, RSNXE, action-frame, station-list
-mismatch, and removal constants as compiled witnesses. It still does not route
-runtime APSTA events or enable APSTA ownership.
+mismatch, and removal constants as compiled witnesses.
+
+2026-07-07 runtime boundary update:
+
+- the net80211 AP association path preserves the association IE TLV list for
+  the APSTA producer
+- the APSTA owner recognizes the recovered Apple OUI byte triples
+  `00:17:f2`, `00:03:93`, and `00:a0:40`
+- association/reassociation updates `state+0x80/+0x84`, derives Apple
+  station flags from IE TLVs, copies RSNXE element `0xf4`, and posts the packed
+  `0x114` `STA_ARRIVE` carrier
+- removal clears/recounts the station entry and posts the packed `0x0c`
+  `STA_LEAVE` carrier
+
+This still does not enable AP firmware mode or remove the scoped APSTA
+station-event opt-out gate. The auth-ind `0x98` body remains unimplemented
+until its payload layout is recovered.
 
 ## APSTA Power/Offload/Datapath Tail
 

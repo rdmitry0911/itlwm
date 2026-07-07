@@ -3049,6 +3049,35 @@ reference producer.
   - this does not enable APSTA/HostAP ownership
   - this does not alter primary STA association or key paths
 
+### 60A. APSTA net80211 station-event bridge misses recovered message carriers
+- anomaly_id: `A-APSTA-EVENT-STATION-MESSAGE-RUNTIME-205`
+- layer: APSTA event/station-table runtime producer after CR-150
+- Apple contract:
+  - association/reassociation posts message id `0x0c` with a `0x114` byte
+    payload containing MAC, associated count, flags, and RSNXE at `+0x10`
+  - removal posts message id `0x0d` with a `0x0c` byte payload containing MAC
+    and the post-removal associated count
+  - `updateSTAAssocInfo(...)` derives Apple station flags from association IE
+    TLVs, including the recovered Apple, Apple BS, and Apple device-info OUIs
+  - `parseRSNXE(...)` copies full RSNXE element `0xf4` into the association
+    message output area
+- local mismatch before this batch:
+  - AP association IE TLVs were not preserved for the APSTA producer
+  - the net80211 bridge updated the station table but did not build/post the
+    recovered STA association/removal message carriers
+  - `state+0x80/+0x84` event MAC shadow was not updated on association
+- exact correction:
+  - preserve AP association IE TLVs in `ni_rsnie_tlv`
+  - pass those TLVs into `AirportItlwmAPSTAOwner`
+  - add compiled OUI witnesses for `00:17:f2`, `00:03:93`, and `00:a0:40`
+  - build and post the packed association/removal message carriers through the
+    existing IO80211 `postMessage` boundary
+- non-claims:
+  - this does not enable AP firmware mode or remove the APSTA station-event
+    opt-out gate
+  - this does not synthesize the not-yet-recovered auth-ind payload body
+  - this does not alter primary STA association or key paths
+
 ### 61. APSTA power/offload/datapath tail has fixed payload and return contracts
 - anomaly_id: `A-APSTA-POWER-OFFLOAD-DATAPATH-TAIL-077`
 - layer: APSTA power/offload/datapath tail scaffold after CR-150
