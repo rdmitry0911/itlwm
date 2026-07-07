@@ -344,6 +344,13 @@ IOReturn AirportItlwmAPSTAOwner::setMisMaxSta(const struct apple80211_mis_max_st
     return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
 }
 
+IOReturn AirportItlwmAPSTAOwner::setPeerCacheControl(
+    const AirportItlwmAPSTAPeerCacheControlLayout *in)
+{
+    (void)in;
+    return static_cast<IOReturn>(kAirportItlwmAPSTASetPeerCacheControlReturn);
+}
+
 IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(
     const AirportItlwmAPSTAHostApModeHiddenLayout *in)
 {

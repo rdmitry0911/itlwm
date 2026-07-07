@@ -482,6 +482,14 @@ enum {
     kAirportItlwmAPSTASetSsidSuccessReturn = 0,
     kAirportItlwmAPSTASetSsidStateMutationCount = 0,
     kAirportItlwmAPSTASetPeerCacheControlCoreOffset = 0x218,
+    kAirportItlwmAPSTASetPeerCacheControlCommandOffset = 0x04,
+    kAirportItlwmAPSTASetPeerCacheControlValue08Offset = 0x08,
+    kAirportItlwmAPSTASetPeerCacheControlValue0cOffset = 0x0c,
+    kAirportItlwmAPSTASetPeerCacheControlValue0eOffset = 0x0e,
+    kAirportItlwmAPSTASetPeerCacheControlPayloadSize = 0x1d0,
+    kAirportItlwmAPSTASetPeerCacheControlEventId = 0x33,
+    kAirportItlwmAPSTASetPeerCacheControlNotifyFlag = 1,
+    kAirportItlwmAPSTASetPeerCacheControlLocalEventPostCount = 0,
     kAirportItlwmAPSTASetPeerCacheControlReturn = 0,
     kAirportItlwmAPSTASetSoftAPParamsInputParam04Offset = 0x04,
     kAirportItlwmAPSTASetSoftAPParamsInputParam08Offset = 0x08,
@@ -868,6 +876,14 @@ struct AirportItlwmAPSTAOpModeDataLayout {
 struct AirportItlwmAPSTAPeerCacheMaximumSizeLayout {
     uint8_t  reserved0000[0x04];
     uint32_t maximum04;
+} __attribute__((packed));
+
+struct AirportItlwmAPSTAPeerCacheControlLayout {
+    uint8_t  reserved0000[0x04];
+    uint32_t command04;
+    uint32_t value08;
+    uint16_t value0c;
+    uint16_t value0e;
 } __attribute__((packed));
 
 struct AirportItlwmAPSTAHostApModeHiddenOutputLayout {
@@ -1334,6 +1350,18 @@ static_assert(offsetof(AirportItlwmAPSTAPeerCacheMaximumSizeLayout, maximum04) =
 static_assert(kAirportItlwmAPSTAGetPeerCacheMaximumSizeValue ==
               kAirportItlwmAPSTAPeerCacheMaximumSize,
               "APSTA peer-cache maximum-size value mismatch");
+static_assert(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, command04) ==
+              kAirportItlwmAPSTASetPeerCacheControlCommandOffset,
+              "APSTA peer-cache control command offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value08) ==
+              kAirportItlwmAPSTASetPeerCacheControlValue08Offset,
+              "APSTA peer-cache control +0x08 offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value0c) ==
+              kAirportItlwmAPSTASetPeerCacheControlValue0cOffset,
+              "APSTA peer-cache control +0x0c offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value0e) ==
+              kAirportItlwmAPSTASetPeerCacheControlValue0eOffset,
+              "APSTA peer-cache control +0x0e offset mismatch");
 static_assert(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) ==
               kAirportItlwmAPSTAGetHostApModeHiddenOutputOffset,
               "APSTA HostAP hidden output offset mismatch");

@@ -1910,6 +1910,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this,
                     (AirportItlwmAPSTASoftAPStatsLayout *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_PEER_CACHE_CONTROL:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setPEER_CACHE_CONTROL(
+                    this, (AirportItlwmAPSTAPeerCacheControlLayout *)req->req_data)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_SOFTAP_TRIGGER_CSA:
             if (instance == NULL)
                 return kIOReturnNotReady;

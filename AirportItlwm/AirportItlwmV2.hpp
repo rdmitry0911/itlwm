@@ -523,6 +523,8 @@ public:
         AirportItlwmAPSTASoftAPParamsOutputLayout *data);
     IOReturn getSOFTAP_STATS(OSObject *object,
         AirportItlwmAPSTASoftAPStatsLayout *data);
+    IOReturn setPEER_CACHE_CONTROL(OSObject *object,
+        AirportItlwmAPSTAPeerCacheControlLayout *data);
     IOReturn setHOST_AP_MODE_HIDDEN(OSObject *object,
         AirportItlwmAPSTAHostApModeHiddenLayout *data);
     IOReturn setSTA_AUTHORIZE(OSObject *object, AirportItlwmAPSTAStaAuthorizeInputLayout *data);

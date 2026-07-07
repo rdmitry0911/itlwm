@@ -75,6 +75,7 @@ public:
     IOReturn setSoftAPExtCaps(const struct apple80211_softap_extended_capabilities_info *in);
     IOReturn setMisMaxSta(const struct apple80211_mis_max_sta *in);
     IOReturn setMaxAssoc(uint32_t value);
+    IOReturn setPeerCacheControl(const AirportItlwmAPSTAPeerCacheControlLayout *in);
     IOReturn setHostAPModeHidden(const AirportItlwmAPSTAHostApModeHiddenLayout *in);
     IOReturn setSoftAPParams(const AirportItlwmAPSTASoftAPParamsInputLayout *in);
     IOReturn setSoftAPTriggerCSA(const AirportItlwmAPSTACsaInputLayout *in);

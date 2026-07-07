@@ -1308,6 +1308,8 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
             // failure 0xe00002c7 from getCUR_PMK and never snapshots
             // PMK material into the caller buffer.
             return true;
+        case APPLE80211_IOC_PEER_CACHE_CONTROL:
+            return isSet;
         case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
         case APPLE80211_IOC_MIS_MAX_STA:
             return isSet;
@@ -6225,6 +6227,15 @@ IOReturn AirportItlwm::getSOFTAP_STATS(OSObject *object,
         return kIOReturnUnsupported;
     }
     return fAPSTAOwner->getSoftAPStats(in);
+}
+
+IOReturn AirportItlwm::setPEER_CACHE_CONTROL(OSObject *object,
+    AirportItlwmAPSTAPeerCacheControlLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->setPeerCacheControl(in);
 }
 
 IOReturn AirportItlwm::setHOST_AP_MODE_HIDDEN(OSObject *object,

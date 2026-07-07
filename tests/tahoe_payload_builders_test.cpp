@@ -249,6 +249,20 @@ void testApstaPublicSetterContracts()
             "APSTA SoftAP params getter writes byte field at output +0x18");
     require(kAirportItlwmAPSTAGetSoftAPStatsCopySize == 0x58,
             "APSTA SoftAP stats getter copies 0x58 bytes");
+    require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, command04) == 0x04,
+            "APSTA peer-cache control reads command at input +0x04");
+    require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value08) == 0x08,
+            "APSTA peer-cache control reads dword at input +0x08");
+    require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value0c) == 0x0c,
+            "APSTA peer-cache control reads word at input +0x0c");
+    require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value0e) == 0x0e,
+            "APSTA peer-cache control reads word at input +0x0e");
+    require(kAirportItlwmAPSTASetPeerCacheControlEventId == 0x33,
+            "APSTA peer-cache control helper posts event 0x33");
+    require(kAirportItlwmAPSTASetPeerCacheControlLocalEventPostCount == 0,
+            "APSTA peer-cache control does not synthesize local event posts");
+    require(kAirportItlwmAPSTASetPeerCacheControlReturn == 0,
+            "APSTA peer-cache control returns success");
     require(kAirportItlwmAPSTAGetStationListNullReturn == 0x16,
             "APSTA getSTATION_LIST null return is raw 0x16");
     require(kAirportItlwmAPSTAGetStationListNotUpReturn == 0x39,
