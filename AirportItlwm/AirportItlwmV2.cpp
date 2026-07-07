@@ -4601,10 +4601,15 @@ getSSID(OSObject *object, struct apple80211_ssid_data *sd)
     struct ieee80211com *ic = fHalService->get80211Controller();
     memset(sd, 0, sizeof(*sd));
     sd->version = APPLE80211_VERSION;
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memcpy(sd->ssid_bytes, ic->ic_des_essid,
-               strlen((const char *)ic->ic_des_essid));
-        sd->ssid_len = (uint32_t)strlen((const char *)ic->ic_des_essid);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_bss->ni_esslen <= APPLE80211_MAX_SSID_LEN) {
+        sd->ssid_len = ic->ic_bss->ni_esslen;
+        if (sd->ssid_len != 0)
+            memcpy(sd->ssid_bytes, ic->ic_bss->ni_essid, sd->ssid_len);
+    } else if (ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_des_esslen > 0 && ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
+        sd->ssid_len = static_cast<uint32_t>(ic->ic_des_esslen);
+        memcpy(sd->ssid_bytes, ic->ic_des_essid, sd->ssid_len);
     }
     return kIOReturnSuccess;
 }

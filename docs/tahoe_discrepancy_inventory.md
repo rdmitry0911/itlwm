@@ -4995,3 +4995,33 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-current-network-not-associated-status-20260707.md`.
+
+## item 208 — STA SSID GET current-BSS byte carrier
+
+- producers:
+  - `AirportItlwmSkywalkInterface::getSSID(...)`
+  - `AirportItlwm::getSSID(...)` in the Tahoe V2 source
+  - legacy `AirportSTAIOCTL.cpp::getSSID(...)`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- `IO80211Controller::getSSIDData(apple80211_ssid_data*)` is classified at
+  `0xffffff8002214f12` in the BootKC target list.
+- the static slice at that address routes the SSID carrier through the primary
+  Skywalk interface and controller cache owners.
+- the recovered `IO80211BssManager::setAssocSSID(...)` associated-SSID writer
+  is byte-length based, not C-string based.
+
+Local closure:
+
+- associated STA GET SSID now prefers the current BSS `ni_essid/ni_esslen`;
+- desired `ic_des_essid/ic_des_esslen` is retained only as a bounded RUN-state
+  fallback;
+- all STA GET SSID copies continue returning success with a zeroed carrier
+  before association, matching the bootstrap contract;
+- all `strlen(ic_des_essid)` SSID carrier production was removed.
+
+Reference note:
+`docs/reference/CR-479-ssid-current-bss-byte-carrier-20260707.md`.
