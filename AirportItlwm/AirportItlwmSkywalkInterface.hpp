@@ -320,7 +320,7 @@ public:
     virtual IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *) override;
     // [526]
     virtual IOReturn getWCL_BSS_INFO(apple80211_beacon_msg *) override;
-    // [527] — Tahoe public contract is `NULL -> 0xe00002bc`, else six u64
+    // [527] — Tahoe public contract is `NULL -> 0xe00002bc`, else seven u64
     // counters.
     virtual IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *) override;
     // [528] — tx-blanking status belongs to the dedicated Q11-C2
