@@ -1547,8 +1547,10 @@ Recovered Apple producer contracts:
   rejects `NULL`, stores a single byte at core `+0x4594`, and then re-enters
   the LMTPC owner
 - `AppleBCMWLANCore::setLE_SCAN_PARAM(...)`
-  consumes a fixed `0x10` payload:
-  byte `+0x0`, dwords `+0x4/+0x8/+0xc`
+  requires the BTLE reporting owner at core `+0x15a8` and, when that owner is
+  present, treats `NULL` as a successful no-op while copying six dwords from
+  caller offsets `+0x4/+0x8/+0xc/+0x10/+0x14/+0x18` into owner offsets
+  `+0x24..+0x38`; caller dword `+0x0` is ignored
 
 That is strong enough to move these slots out of the generic
 `kIOReturnUnsupported` bucket:

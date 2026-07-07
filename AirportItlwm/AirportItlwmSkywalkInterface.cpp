@@ -10,6 +10,7 @@
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "TahoeLeScanContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
 #include "Airport/IO80211BssManager.h"
@@ -546,17 +547,6 @@ struct tahoeLmtpcConfig
 } __attribute__((packed));
 static_assert(sizeof(tahoeLmtpcConfig) == 0x1,
               "tahoeLmtpcConfig must match Apple byte carrier");
-
-struct tahoeLeScanParams
-{
-    uint8_t disconnected;
-    uint8_t reserved01[3];
-    uint32_t connectedEvents;
-    uint32_t disconnectedEvents;
-    uint32_t bucket;
-} __attribute__((packed));
-static_assert(sizeof(tahoeLeScanParams) == 0x10,
-              "tahoeLeScanParams must match the recovered Apple 0x10 payload");
 
 struct tahoeDynsarDetailRequest
 {
@@ -2012,7 +2002,7 @@ init()
     cachedDualPowerModeSecondary = -1;
     cachedCongestionControlEnabled = false;
     cachedLmtpcValue = 0;
-    memset(cachedLeScanParams, 0, sizeof(cachedLeScanParams));
+    memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
     cachedRealTimeMode = false;
     cachedQosLongRetryLimit = 0;
@@ -2644,7 +2634,7 @@ init(IOService *provider)
     this->cachedDualPowerModeSecondary = -1;
     this->cachedCongestionControlEnabled = false;
     this->cachedLmtpcValue = 0;
-    memset(this->cachedLeScanParams, 0, sizeof(this->cachedLeScanParams));
+    memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
     this->cachedRealTimeMode = false;
     this->cachedQosLongRetryLimit = 0;
@@ -6357,19 +6347,20 @@ setLMTPC_CONFIG(apple80211_lmtpc_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setLE_SCAN_PARAM(apple80211_le_scan_params *data)
 {
-    const auto *params = reinterpret_cast<const tahoeLeScanParams *>(data);
+    const auto *params =
+        reinterpret_cast<const TahoeLeScanContracts::Carrier *>(data);
 
-    // AppleBCMWLANCore::setLE_SCAN_PARAM consumes a fixed 0x10 carrier:
-    // byte 0 selects disconnect-vs-connect accounting, dwords +4/+8 feed the
-    // per-event counters, and dword +0xc indexes one of seven histogram
-    // buckets. The local port has no BTLE reporting owner yet, but it still
-    // needs to retain the exact request blob instead of leaving slot [640]
-    // unreachable.
+    // AppleBCMWLANCore::setLE_SCAN_PARAM first requires the BTLE reporting
+    // owner at core +0x15a8; once present, NULL is a successful no-op and the
+    // request copies only six dwords from +0x4..+0x18 into owner +0x24..+0x38.
+    // Model the owner-present state locally instead of preserving the ignored
+    // caller dword at +0x0.
     if (params == nullptr)
-        return kIOReturnBadArgumentTahoe;
+        return kIOReturnSuccess;
 
-    memcpy(cachedLeScanParams, params, sizeof(*params));
-    hasCachedLeScanParams = true;
+    if (TahoeLeScanContracts::copyOwnerStateFromCarrier(params,
+            &cachedLeScanOwnerState))
+        hasCachedLeScanParams = true;
     return kIOReturnSuccess;
 }
 

@@ -11,6 +11,7 @@
 
 #include <Airport/Apple80211.h>
 #include "AirportItlwmAPSTAInterface.hpp"
+#include "TahoeLeScanContracts.hpp"
 #include "TahoePayloadBuilders.hpp"
 
 struct if_link_status;
@@ -765,7 +766,7 @@ private:
     int32_t cachedDualPowerModeSecondary;
     bool cachedCongestionControlEnabled;
     uint32_t cachedLmtpcValue;
-    uint8_t cachedLeScanParams[0x10];
+    TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
     bool cachedRealTimeMode;
     uint32_t cachedQosLongRetryLimit;
