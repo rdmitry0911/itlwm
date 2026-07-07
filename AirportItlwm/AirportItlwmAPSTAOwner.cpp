@@ -62,12 +62,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
         strlcpy(bsdNameStorage, "apsta0", sizeof(bsdNameStorage));
     }
 
-    state.softapMaxAssoc04 = 1;
-    state.softapMaxAssocLimit08 = IEEE80211_AID_DEF;
     state.softapBeaconInterval14 = 100;
-    state.softapDtimPeriod16 = 1;
-    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
-    state.softapAppliedDtimPeriod6a = state.softapDtimPeriod16;
     state.ownerCoreOrInterface = owner;
     state.initState268 = 1;
     state.resetState26c = 0;
@@ -75,6 +70,7 @@ bool AirportItlwmAPSTAOwner::initWithController(
     state.numTxQueues = kAirportItlwmAPSTATxSubQueueCount;
     state.featureGate0d = 1;
     state.featureGate0c = 1;
+    initSoftAPParameters();
     return true;
 }
 
@@ -86,14 +82,43 @@ void AirportItlwmAPSTAOwner::free()
     OSObject::free();
 }
 
-void AirportItlwmAPSTAOwner::resetRuntimeState()
+void AirportItlwmAPSTAOwner::initSoftAPParameters()
 {
-    state.softapAssociatedStaCount00 = 0;
-    state.resetState26c = 0;
-    state.hostApTransitionState270 = 0;
+    bzero(state.softapStats, sizeof(state.softapStats));
+    state.softapRuntime1a8 = 0;
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
         clearStation(&state.softapStaTableB8[i]);
     }
+    state.softapAssociatedStaCount00 = 0;
+    state.softapMaxAssoc04 = 1;
+    state.softapMaxAssocLimit08 = IEEE80211_AID_DEF;
+    state.softapDtimPeriod16 = kAirportItlwmAPSTAInitSoftAPDefaultDtimPeriod;
+    state.softapParam18 = kAirportItlwmAPSTAInitSoftAPDefaultParam18;
+    state.softapParam1c = kAirportItlwmAPSTAInitSoftAPDefaultParam1c;
+    state.softapParam20 = kAirportItlwmAPSTAInitSoftAPDefaultParam20;
+    state.softapParam24 = kAirportItlwmAPSTAInitSoftAPDefaultParam24;
+    state.softapParam28 = kAirportItlwmAPSTAInitSoftAPDefaultParam28;
+    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
+    state.softapAppliedDtimPeriod6a = state.softapDtimPeriod16;
+}
+
+void AirportItlwmAPSTAOwner::resetRuntimeState()
+{
+    state.resetState26c = 0;
+    state.resetFlag329 = 0;
+    state.hostApTransitionState270 = 0;
+    state.softapAssociatedStaCount00 = 0;
+    state.softapRuntimeB0 = 0;
+    state.softapPowerStateB4 = 0;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
+        clearStation(&state.softapStaTableB8[i]);
+    }
+    setSoftAPPowerSaveState(kAirportItlwmAPSTAResetPowerSaveState,
+                            kAirportItlwmAPSTAResetPowerSaveReason);
+    bzero(state.softapStats, sizeof(state.softapStats));
+    state.softapRuntime90 = 0;
+    state.softapRuntime98 = 0;
+    state.softapRuntimeA0 = 0;
 }
 
 void AirportItlwmAPSTAOwner::setSoftAPPowerSaveState(uint8_t newState, uint8_t reason)
@@ -411,6 +436,8 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(
     if (ret == kIOReturnSuccess) {
         state.hiddenNetworkFlag0d = static_cast<uint8_t>(in->hidden04 != 0);
         if (in->hidden04 == 0 && isApRunning()) {
+            setSoftAPPowerSaveState(kAirportItlwmAPSTAHiddenClearPowerSaveState,
+                                    kAirportItlwmAPSTAHiddenClearPowerSaveReason);
             state.softapParam0e = 0;
             state.powerAssertionFlag0c =
                 static_cast<uint8_t>(kAirportItlwmAPSTAHoldPowerAssertionStateValue);

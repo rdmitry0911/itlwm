@@ -213,6 +213,11 @@ void testApstaPublicSetterContracts()
             "APSTA hidden AP-down return is raw 6");
     require(kAirportItlwmAPSTAHiddenInvalidArgumentReturn == 0x16,
             "APSTA hidden invalid return is raw 0x16");
+    require(kAirportItlwmAPSTAHiddenClearPowerSaveState ==
+            kAirportItlwmAPSTAPowerStateOff,
+            "APSTA hidden clear tail clears power-save state");
+    require(kAirportItlwmAPSTAHiddenClearPowerSaveReason == 9,
+            "APSTA hidden clear tail uses reason 9");
     require(kAirportItlwmAPSTACsaNotUpReturn == 6,
             "APSTA CSA AP-down return is raw 6");
     require(kAirportItlwmAPSTACsaInvalidArgumentReturn == 0x16,
@@ -255,6 +260,24 @@ void testApstaPublicSetterContracts()
             "APSTA SoftAP params hold path enters power-save state 1");
     require(kAirportItlwmAPSTASetSoftAPParamsHoldPowerReason == 0,
             "APSTA SoftAP params hold path uses reason 0");
+    require(kAirportItlwmAPSTAResetPowerSaveState ==
+            kAirportItlwmAPSTAPowerStateOff,
+            "APSTA reset drives power-save state off");
+    require(kAirportItlwmAPSTAResetPowerSaveReason ==
+            kAirportItlwmAPSTAPowerStateReasonReset,
+            "APSTA reset uses the recovered power-save reset reason");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultDtimPeriod == 1,
+            "APSTA initSoftAPParameters default DTIM is 1");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultParam18 == 0x0f,
+            "APSTA initSoftAPParameters state +0x18 default is 0x0f");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultParam1c == 0x1e,
+            "APSTA initSoftAPParameters state +0x1c default is 0x1e");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultParam20 == 0x708,
+            "APSTA initSoftAPParameters state +0x20 default is 0x708");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultParam24 == 0x0a,
+            "APSTA initSoftAPParameters state +0x24 default is 0x0a");
+    require(kAirportItlwmAPSTAInitSoftAPDefaultParam28 == 3,
+            "APSTA initSoftAPParameters state +0x28 default is 3");
     require(kAirportItlwmAPSTAGetSoftAPStatsCopySize == 0x58,
             "APSTA SoftAP stats getter copies 0x58 bytes");
     require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, command04) == 0x04,
