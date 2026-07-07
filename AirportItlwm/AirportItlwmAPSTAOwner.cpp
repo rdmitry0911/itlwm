@@ -557,9 +557,6 @@ IOReturn AirportItlwmAPSTAOwner::getKeyRsc(AirportItlwmAPSTAKeyRscDataLayout *ou
 IOReturn AirportItlwmAPSTAOwner::setSoftAPExtCaps(
     const struct apple80211_softap_extended_capabilities_info *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     state.softapAppleVendorIEExtra50 = in->flag00;
     memcpy(state.softapAppleVendorIETail51, &in->value01,
            sizeof(state.softapAppleVendorIETail51));
@@ -594,9 +591,6 @@ IOReturn AirportItlwmAPSTAOwner::setMisMaxSta(const struct apple80211_mis_max_st
 {
     if (!isApRunning()) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
-    }
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
     }
     (void)setMaxAssoc(in->value00);
     return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
@@ -639,9 +633,6 @@ IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(
 IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
     const AirportItlwmAPSTASoftAPParamsInputLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     const bool wasEnabled = (state.softapParam0e & 1) != 0;
     const bool disableRequested = in->enabled17 == 0;
     if (wasEnabled && disableRequested && state.resetState26c != 0) {

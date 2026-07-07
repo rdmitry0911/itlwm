@@ -223,6 +223,10 @@ void testApstaPublicContracts()
             "APSTA MIS_MAX_STA AP-down/no-owner path returns success");
     require(kAirportItlwmAPSTASetSoftAPExtCapsReturn == 0,
             "APSTA SoftAP ext-cap no-owner path returns success");
+    require(kAirportItlwmAPSTASetSoftAPExtCapsHasNullGuard == 0,
+            "APSTA SoftAP ext-cap setter has no reference null guard");
+    require(kAirportItlwmAPSTASetMisMaxStaHasNullGuardAfterAPUp == 0,
+            "APSTA MIS_MAX_STA AP-up path has no reference null guard");
     require(kAirportItlwmAPSTASetSoftAPExtCapsStateClear61Offset == 0x61,
             "APSTA SoftAP ext-cap setter clears state byte +0x61");
     require(kAirportItlwmAPSTAHiddenNotUpReturn == 6,
@@ -250,6 +254,8 @@ void testApstaPublicContracts()
             "APSTA setMaxAssoc uses cap gate instead of local clamp");
     require(kAirportItlwmAPSTASetMaxAssocPayloadAddsAssociatedCount == 1,
             "APSTA setMaxAssoc payload includes associated station count");
+    require(kAirportItlwmAPSTASetSoftAPParamsHasNullGuard == 0,
+            "APSTA setSOFTAP_PARAMS has no reference null guard");
     require(kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold == 0x21,
             "APSTA Wi-Fi network info length trap threshold is 0x21");
     require(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,

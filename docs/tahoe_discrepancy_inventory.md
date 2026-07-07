@@ -5147,3 +5147,44 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-association-auth-no-fallback-rewrite-20260707.md`.
+
+## item 212 — APSTA simple setters no-null-guard contracts
+
+- producer:
+  - `AirportItlwmAPSTAOwner::setSoftAPParams(...)`
+  - `AirportItlwmAPSTAOwner::setSoftAPExtCaps(...)`
+  - `AirportItlwmAPSTAOwner::setMisMaxSta(...)`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_PARAMS(...)` at
+  `0xffffff800168e536` reads the input fields directly and has no null guard;
+- the recovered simple-body layer already records that this setter uses input
+  offsets `+0x04/+0x08/+0x0c/+0x10/+0x14/+0x17/+0x18`, APSTA state offsets
+  `+0x0e/+0x18/+0x1c/+0x20/+0x24/+0x28/+0x68/+0x26c`, sentinel `0xffff`,
+  power-save calls `(0,0)` and `(1,0)`, and returns `0`.
+- `AppleBCMWLANIO80211APSTAInterface::setSOFTAP_EXTENDED_CAPABILITIES_IE(...)`
+  at `0xffffff800168e7b8` clears state `+0x50..+0x61`, then copies input
+  `+0x00/+0x01/+0x09` directly into state `+0x50/+0x51/+0x59` and returns `0`;
+- `AppleBCMWLANIO80211APSTAInterface::setMIS_MAX_STA(...)` at
+  `0xffffff8001693a80` reads AP-up state `+0x26c`; when AP is up it reads
+  input dword `+0x00`, calls `setMaxAssoc(value)`, ignores that helper result,
+  and returns `0`.
+
+Local closure:
+
+- the local APSTA owner no longer inserts non-reference
+  `nullptr -> kIOReturnBadArgument` branches before those simple-body field
+  reads;
+- `kAirportItlwmAPSTASetSoftAPParamsHasNullGuard == 0` is now a compiled
+  regression witness.
+- `kAirportItlwmAPSTASetSoftAPExtCapsHasNullGuard == 0` and
+  `kAirportItlwmAPSTASetMisMaxStaHasNullGuardAfterAPUp == 0` are compiled
+  regression witnesses for the adjacent simple setters.
+
+Non-claims:
+
+- this does not enable APSTA/HostAP runtime, force AP-up state, send SoftAP
+  IOVARs, or change the primary STA datapath.
