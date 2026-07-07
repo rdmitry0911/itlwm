@@ -191,6 +191,9 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
     if (key == nullptr) {
         return kIOReturnBadArgument;
     }
+    if (key->key_cipher_type == kAirportItlwmAPSTASetCipherKeyCipherNone) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn);
+    }
     if (key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherNone &&
         key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted3 &&
         key->key_cipher_type != kAirportItlwmAPSTASetCipherKeyCipherAccepted5) {

@@ -213,8 +213,10 @@ void testApstaPublicSetterContracts()
             "APSTA Wi-Fi network info accepts lengths below 0x21");
     require(kAirportItlwmAPSTASetCipherKeyNotUpReturn == 6,
             "APSTA CIPHER_KEY AP-down return is raw 6");
+    require(kAirportItlwmAPSTASetCipherKeyCipherNone == 0,
+            "APSTA CIPHER_KEY cipher-none carrier value is zero");
     require(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn == 0,
-            "APSTA CIPHER_KEY unsupported cipher returns success after AP-up gate");
+            "APSTA CIPHER_KEY cipher-none and unsupported cipher return success after AP-up gate");
     require(kAirportItlwmAPSTAStaDeauthTailcallVtableOffset == 0x1040,
             "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
     require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
