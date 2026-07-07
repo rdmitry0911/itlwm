@@ -44,6 +44,8 @@
 //  CR-479 writer addendum (BootKC IO80211Family.kc, recovered from
 //  caller-side AppleBCMWLANNetAdapter disassembly and symbol metadata):
 //    ffffff8002266b24  IO80211BssManager::setMCSIndexSet(apple80211_mcs_index_set_data&)
+//    ffffff8002266bc2  IO80211BssManager::setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data&)
+//    ffffff8002266c4a  IO80211BssManager::setHEMCSIndexSet(apple80211_he_mcs_index_set_data&)
 //    ffffff8002266cb2  IO80211BssManager::setRateSet(apple80211_rate_set_data&)
 //
 //  These writer declarations are not part of the CR-201 primitive-only
@@ -56,6 +58,8 @@
 #define IO80211BssManager_h
 
 struct apple80211_mcs_index_set_data;
+struct apple80211_vht_mcs_index_set_data;
+struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
 
 class IO80211BssManager
@@ -64,6 +68,8 @@ public:
     // Tahoe exports used by the native WCL driver to seed current-BSS rate
     // and MCS caches consumed by IO80211InfraInterface link properties.
     void setMCSIndexSet(apple80211_mcs_index_set_data &);
+    void setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data &);
+    void setHEMCSIndexSet(apple80211_he_mcs_index_set_data &);
     void setRateSet(apple80211_rate_set_data &);
     unsigned char isAssociatedOnHighBand();
     bool isAssociatedToAdhoc();

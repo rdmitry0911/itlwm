@@ -773,12 +773,22 @@ void testTahoeBssManagerWriterContracts()
 {
     using MCSWriter =
         void (IO80211BssManager::*)(apple80211_mcs_index_set_data &);
+    using VHTMCSWriter =
+        void (IO80211BssManager::*)(apple80211_vht_mcs_index_set_data &);
+    using HEMCSWriter =
+        void (IO80211BssManager::*)(apple80211_he_mcs_index_set_data &);
     using RateWriter =
         void (IO80211BssManager::*)(apple80211_rate_set_data &);
 
     static_assert(std::is_same<decltype(&IO80211BssManager::setMCSIndexSet),
                                MCSWriter>::value,
                   "BssManager setMCSIndexSet keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setVHTMCSIndexSet),
+                               VHTMCSWriter>::value,
+                  "BssManager setVHTMCSIndexSet keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setHEMCSIndexSet),
+                               HEMCSWriter>::value,
+                  "BssManager setHEMCSIndexSet keeps Apple writer signature");
     static_assert(std::is_same<decltype(&IO80211BssManager::setRateSet),
                                RateWriter>::value,
                   "BssManager setRateSet keeps Apple writer signature");

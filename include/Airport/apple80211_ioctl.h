@@ -1078,8 +1078,23 @@ struct apple80211_mcs_index_set_data
 struct apple80211_vht_mcs_index_set_data
 {
     u_int32_t   version;
-    u_int16_t    mcs_map;
-} __attribute__((packed));
+    u_int16_t   mcs_map;
+    u_int16_t   reserved;
+};
+
+struct apple80211_he_mcs_index_set_data
+{
+    u_int32_t   version;
+    u_int16_t   mcs_map;
+    u_int16_t   reserved;
+};
+
+#ifdef __cplusplus
+static_assert(sizeof(apple80211_vht_mcs_index_set_data) == 0x08,
+              "Tahoe VHT MCS index carrier is copied as one qword");
+static_assert(sizeof(apple80211_he_mcs_index_set_data) == 0x08,
+              "Tahoe HE MCS index carrier is copied as one qword");
+#endif
 
 struct apple80211_mcs_vht_data 
 {

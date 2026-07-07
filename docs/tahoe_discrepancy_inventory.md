@@ -4855,3 +4855,35 @@ uses it from both producers. The shared helper preserves:
 
 Reference note:
 `docs/reference/CR-479-card-capabilities-shadow-cluster-20260707.md`.
+
+## item 204 — IO80211BssManager VHT/HE MCS writer seeding
+
+- class: IO80211BssManager
+- header:
+  - `include/Airport/apple80211_ioctl.h`
+  - `include/Airport/IO80211BssManager.h`
+- implementation: `AirportItlwmSkywalkInterface.cpp::seedBssManagerRateAndMcs`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- `AppleBCMWLANNetAdapter::updateMCSSet(...)` calls
+  `IO80211BssManager::setMCSIndexSet(...)`,
+  `setVHTMCSIndexSet(...)`, and `setHEMCSIndexSet(...)`.
+- `setVHTMCSIndexSet(...)` and `setHEMCSIndexSet(...)` both copy one qword
+  from their public carrier into the BssManager/current-beacon cache path.
+- the Apple producer initializes unsupported VHT/HE maps as `0xffff` before
+  capability-gated map updates.
+
+Local closure:
+
+- `apple80211_vht_mcs_index_set_data` now has the recovered 8-byte qword
+  carrier shape;
+- `apple80211_he_mcs_index_set_data` is added with the same qword shape;
+- the BssManager header declares the recovered VHT/HE writer exports;
+- the current-BSS seeding burst publishes MCS, VHT MCS, and HE MCS carriers
+  through the framework-owned BssManager object recovered from WCLConfigManager.
+
+Reference note:
+`docs/reference/CR-479-bssmanager-vht-he-mcs-writer-seeding-20260707.md`.

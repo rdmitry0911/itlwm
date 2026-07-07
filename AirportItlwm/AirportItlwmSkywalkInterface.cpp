@@ -2287,10 +2287,28 @@ seedBssManagerRateAndMcs()
         bssManager->setRateSet(rates);
 
     apple80211_mcs_index_set_data mcs;
-    if (getMCS_INDEX_SET(&mcs) != kIOReturnSuccess)
-        return;
+    if (getMCS_INDEX_SET(&mcs) == kIOReturnSuccess)
+        bssManager->setMCSIndexSet(mcs);
 
-    bssManager->setMCSIndexSet(mcs);
+    apple80211_vht_mcs_index_set_data vht;
+    memset(&vht, 0, sizeof(vht));
+    vht.version = APPLE80211_VERSION;
+    vht.mcs_map = 0xffff;
+    if (getVHT_MCS_INDEX_SET(&vht) != kIOReturnSuccess) {
+        vht.version = APPLE80211_VERSION;
+        vht.mcs_map = 0xffff;
+    }
+    bssManager->setVHTMCSIndexSet(vht);
+
+    apple80211_he_mcs_index_set_data he;
+    memset(&he, 0, sizeof(he));
+    he.version = APPLE80211_VERSION;
+    he.mcs_map = 0xffff;
+    if ((ic->ic_flags & IEEE80211_F_HEON) != 0 &&
+        ic->ic_curmode >= IEEE80211_MODE_11AX) {
+        he.mcs_map = ic->ic_bss->ni_he_mcs_nss_supp.tx_mcs_80;
+    }
+    bssManager->setHEMCSIndexSet(he);
 }
 
 extern "C" uint64_t mach_continuous_time(void);
