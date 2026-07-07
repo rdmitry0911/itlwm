@@ -256,17 +256,26 @@ IOReturn AirportItlwmAPSTAOwner::setMisMaxSta(const struct apple80211_mis_max_st
 IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(
     const AirportItlwmAPSTAHostApModeHiddenLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
-    if (in->hidden00 > kAirportItlwmAPSTAHiddenMaxAcceptedValue) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenInvalidArgumentReturn);
-    }
-    state.hiddenNetworkFlag0d = static_cast<uint8_t>(in->hidden00);
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenNotUpReturn);
     }
-    return owner->fHalService->setAPHidden(in->hidden00 != 0);
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenInvalidArgumentReturn);
+    }
+    if (in->hidden04 > kAirportItlwmAPSTAHiddenMaxAcceptedValue) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenInvalidArgumentReturn);
+    }
+
+    IOReturn ret = owner->fHalService->setAPHidden(in->hidden04 != 0);
+    if (ret == kIOReturnSuccess) {
+        state.hiddenNetworkFlag0d = static_cast<uint8_t>(in->hidden04 != 0);
+        if (in->hidden04 == 0 && isApRunning()) {
+            state.softapParam0e = 0;
+            state.powerAssertionFlag0c =
+                static_cast<uint8_t>(kAirportItlwmAPSTAHoldPowerAssertionStateValue);
+        }
+    }
+    return ret;
 }
 
 IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
@@ -275,30 +284,22 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
     if (in == nullptr) {
         return kIOReturnBadArgument;
     }
-    state.softapParam18 = in->param18;
-    state.softapParam1c = in->param04;
-    state.softapParam20 = in->param08;
-    state.softapParam24 = in->param0c;
-    state.softapParam28 = static_cast<uint8_t>(in->param10);
-    state.softapBeaconInterval14 = in->param14 != 0 ? in->param14 : 100;
-    state.softapAppliedBeaconInterval68 = state.softapBeaconInterval14;
-    state.softapParam0e = in->enabled17;
-    state.softapMode10 = in->mode16;
-
-    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
+    const bool wasEnabled = (state.softapParam0e & 1) != 0;
+    const bool disableRequested = in->enabled17 == 0;
+    if (wasEnabled && disableRequested && state.resetState26c != 0) {
+        state.softapParam0e = 0;
     }
-    ItlHalApSoftAPParams params;
-    bzero(&params, sizeof(params));
-    params.param04 = in->param04;
-    params.param08 = in->param08;
-    params.param0c = in->param0c;
-    params.param10 = in->param10;
-    params.beaconInterval = state.softapBeaconInterval14;
-    params.mode = in->mode16;
-    params.enabled = in->enabled17;
-    params.param18 = in->param18;
-    return owner->fHalService->setAPSoftAPParams(&params);
+    if (in->param14 != kAirportItlwmAPSTASetSoftAPParamsBeaconSentinel &&
+        in->param14 != state.softapAppliedBeaconInterval68) {
+        state.softapAppliedBeaconInterval68 = in->param14;
+        state.softapBeaconInterval14 = in->param14;
+    }
+    state.softapParam18 = in->param04;
+    state.softapParam1c = in->param08;
+    state.softapParam20 = in->param0c;
+    state.softapParam24 = in->param10;
+    state.softapParam28 = in->param18;
+    return static_cast<IOReturn>(kAirportItlwmAPSTASetSoftAPParamsReturn);
 }
 
 IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(
@@ -310,18 +311,9 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(
     if (in->length03 > kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAInvalidSoftAPInfoReturn);
     }
-    bzero(state.softapWifiNetworkInfoIE, sizeof(state.softapWifiNetworkInfoIE));
-    state.softapWifiNetworkInfoIE[3] = in->length03;
-    memcpy(&state.softapWifiNetworkInfoIE[4], in->payload04, in->length03);
-
-    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
-    }
-    ItlHalApWifiNetworkInfo info;
-    bzero(&info, sizeof(info));
-    info.ieBytes = in->payload04;
-    info.ieLength = in->length03;
-    return owner->fHalService->setAPWifiNetworkInfo(&info);
+    memcpy(state.softapWifiNetworkInfoIE, in,
+           kAirportItlwmAPSTAWifiNetworkInfoIESize);
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmAPSTAOwner::setBeaconTemplate(const void *templateBytes,
@@ -354,6 +346,28 @@ IOReturn AirportItlwmAPSTAOwner::triggerCSA(uint16_t channel, uint8_t count)
     bzero(&csa, sizeof(csa));
     csa.channel = channel;
     csa.count = count;
+    return owner->fHalService->triggerAPCSA(&csa);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setSoftAPTriggerCSA(
+    const AirportItlwmAPSTACsaInputLayout *in)
+{
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr ||
+        (state.resetFlag329 & kAirportItlwmAPSTACsaResetFlagBit) == 0) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTACsaNotUpReturn);
+    }
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTACsaInvalidArgumentReturn);
+    }
+    if (in->channel04.channelNumber04 >= kAirportItlwmAPSTASetChannelTrapThreshold ||
+        in->channel04.channelNumber04 >= kAirportItlwmAPSTACsaMaximumExcludedChannelSpec) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTACsaInvalidArgumentReturn);
+    }
+
+    ItlHalApCSA csa;
+    bzero(&csa, sizeof(csa));
+    csa.channel = static_cast<uint16_t>(in->channel04.channelNumber04);
+    csa.count = in->mode10;
     return owner->fHalService->triggerAPCSA(&csa);
 }
 

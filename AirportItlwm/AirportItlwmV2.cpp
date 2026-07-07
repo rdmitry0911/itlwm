@@ -6161,9 +6161,6 @@ IOReturn AirportItlwm::setAPSTA_CIPHER_KEY(OSObject *object,
 IOReturn AirportItlwm::setHOST_AP_MODE_HIDDEN(OSObject *object,
     AirportItlwmAPSTAHostApModeHiddenLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAHiddenNotUpReturn);
     }
@@ -6210,15 +6207,10 @@ IOReturn AirportItlwm::setSOFTAP_PARAMS(OSObject *object,
 IOReturn AirportItlwm::setSOFTAP_TRIGGER_CSA(OSObject *object,
     AirportItlwmAPSTACsaInputLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
-        return kIOReturnNotReady;
+        return static_cast<IOReturn>(kAirportItlwmAPSTACsaNotUpReturn);
     }
-    return fAPSTAOwner->triggerCSA(
-        static_cast<uint16_t>(in->channel04.channelNumber04),
-        in->mode10);
+    return fAPSTAOwner->setSoftAPTriggerCSA(in);
 }
 
 IOReturn AirportItlwm::setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,

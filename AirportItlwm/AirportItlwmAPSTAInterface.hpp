@@ -36,7 +36,9 @@ enum {
     kAirportItlwmAPSTAPeerCacheMaximumSize = 8,
     kAirportItlwmAPSTAHostApModeHiddenValue = 1,
     kAirportItlwmAPSTAWifiNetworkInfoIESize = 0x24,
-    kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength = 0x21,
+    kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold = 0x21,
+    kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength =
+        kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold - 1,
     kAirportItlwmAPSTACsaMaximumExcludedChannelSpec = 0x10000,
     kAirportItlwmAPSTASoftAPStatsSize = 0x58,
     kAirportItlwmAPSTARSNConfGateBit = 0x10,
@@ -253,6 +255,7 @@ enum {
     kAirportItlwmAPSTAHiddenAPRequiredStateValue = 1,
     kAirportItlwmAPSTAHiddenNotUpReturn = 6,
     kAirportItlwmAPSTAHiddenInputValueOffset = 0x04,
+    kAirportItlwmAPSTAHiddenInputCarrierSize = 0x08,
     kAirportItlwmAPSTAHiddenMaxAcceptedValue = 1,
     kAirportItlwmAPSTAHiddenInvalidArgumentReturn = 0x16,
     kAirportItlwmAPSTAHiddenClosedNetPayloadSize = 4,
@@ -863,8 +866,13 @@ struct AirportItlwmAPSTAPeerCacheMaximumSizeLayout {
     uint32_t maximum04;
 } __attribute__((packed));
 
-struct AirportItlwmAPSTAHostApModeHiddenLayout {
+struct AirportItlwmAPSTAHostApModeHiddenOutputLayout {
     uint32_t hidden00;
+} __attribute__((packed));
+
+struct AirportItlwmAPSTAHostApModeHiddenLayout {
+    uint32_t version00;
+    uint32_t hidden04;
 } __attribute__((packed));
 
 struct AirportItlwmAPSTASoftAPStatsLayout {
@@ -1322,12 +1330,18 @@ static_assert(offsetof(AirportItlwmAPSTAPeerCacheMaximumSizeLayout, maximum04) =
 static_assert(kAirportItlwmAPSTAGetPeerCacheMaximumSizeValue ==
               kAirportItlwmAPSTAPeerCacheMaximumSize,
               "APSTA peer-cache maximum-size value mismatch");
-static_assert(offsetof(AirportItlwmAPSTAHostApModeHiddenLayout, hidden00) ==
+static_assert(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) ==
               kAirportItlwmAPSTAGetHostApModeHiddenOutputOffset,
               "APSTA HostAP hidden output offset mismatch");
 static_assert(kAirportItlwmAPSTAGetHostApModeHiddenValue ==
               kAirportItlwmAPSTAHostApModeHiddenValue,
               "APSTA HostAP hidden output value mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeHiddenLayout, hidden04) ==
+              kAirportItlwmAPSTAHiddenInputValueOffset,
+              "APSTA setHOST_AP_MODE_HIDDEN input value offset mismatch");
+static_assert(sizeof(AirportItlwmAPSTAHostApModeHiddenLayout) ==
+              kAirportItlwmAPSTAHiddenInputCarrierSize,
+              "APSTA setHOST_AP_MODE_HIDDEN input carrier size mismatch");
 static_assert(sizeof(AirportItlwmAPSTASoftAPStatsLayout) ==
               kAirportItlwmAPSTAGetSoftAPStatsCopySize,
               "APSTA SoftAP stats output witness size mismatch");
@@ -1571,6 +1585,10 @@ static_assert(offsetof(AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout, payl
 static_assert(sizeof(AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout) ==
               kAirportItlwmAPSTAWifiNetworkInfoIESize,
               "APSTA SoftAP Wi-Fi network info carrier size mismatch");
+static_assert(kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold == 0x21,
+              "APSTA SoftAP Wi-Fi network info length trap threshold mismatch");
+static_assert(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,
+              "APSTA SoftAP Wi-Fi network info max accepted length mismatch");
 static_assert(offsetof(AirportItlwmAPSTACommandPayloadHeadLayout, data) ==
               kAirportItlwmAPSTACommandPayloadDataOffset,
               "APSTA command payload data offset mismatch");

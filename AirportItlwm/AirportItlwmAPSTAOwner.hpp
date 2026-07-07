@@ -70,6 +70,7 @@ public:
     IOReturn setMaxAssoc(uint32_t value);
     IOReturn setHostAPModeHidden(const AirportItlwmAPSTAHostApModeHiddenLayout *in);
     IOReturn setSoftAPParams(const AirportItlwmAPSTASoftAPParamsInputLayout *in);
+    IOReturn setSoftAPTriggerCSA(const AirportItlwmAPSTACsaInputLayout *in);
     IOReturn setSoftAPWifiNetworkInfoIE(const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in);
 
     IOReturn setBeaconTemplate(const void *templateBytes,

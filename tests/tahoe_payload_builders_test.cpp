@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 
+#include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 
 namespace {
@@ -190,6 +191,28 @@ void testRangingBuilder()
     require(!payload.shouldPostCallback, "ranging builder suppresses callback for proximity sentinel owner");
 }
 
+void testApstaPublicSetterContracts()
+{
+    require(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) == 0,
+            "APSTA hidden getter writes value at output +0x00");
+    require(offsetof(AirportItlwmAPSTAHostApModeHiddenLayout, hidden04) == 4,
+            "APSTA hidden setter reads value at input +0x04");
+    require(sizeof(AirportItlwmAPSTAHostApModeHiddenLayout) == 8,
+            "APSTA hidden setter carrier includes version dword");
+    require(kAirportItlwmAPSTAHiddenNotUpReturn == 6,
+            "APSTA hidden AP-down return is raw 6");
+    require(kAirportItlwmAPSTAHiddenInvalidArgumentReturn == 0x16,
+            "APSTA hidden invalid return is raw 0x16");
+    require(kAirportItlwmAPSTACsaNotUpReturn == 6,
+            "APSTA CSA AP-down return is raw 6");
+    require(kAirportItlwmAPSTACsaInvalidArgumentReturn == 0x16,
+            "APSTA CSA invalid return is raw 0x16");
+    require(kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold == 0x21,
+            "APSTA Wi-Fi network info length trap threshold is 0x21");
+    require(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,
+            "APSTA Wi-Fi network info accepts lengths below 0x21");
+}
+
 void testPayloadContractInventory()
 {
     uint32_t count = 0;
@@ -243,7 +266,8 @@ int main()
     testBtcoexBuilders();
     testTxPowerAndActionFrameBuilders();
     testRangingBuilder();
+    testApstaPublicSetterContracts();
     testPayloadContractInventory();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, invalid carriers covered\n";
+    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers covered\n";
     return 0;
 }
