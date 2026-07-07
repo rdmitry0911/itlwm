@@ -334,8 +334,8 @@ public:
     // [531] — AppleBCMWLANCore copies an opaque XE blob with length at +0x4 and
     // payload at +0x6.
     virtual IOReturn getRSN_XE(apple80211_rsn_xe_data *) override;
-    // [532] — Tahoe public contract is `NULL -> 0xe00002c2`, else two dwords
-    // from core state.
+    // [532] — Tahoe public contract is raw `NULL -> 0x16`, else version=1 at
+    // +0; the hidden SIB owner may fill dwords at +4/+8 when present.
     virtual IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status *) override;
     // [533]
     virtual IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *) override;
