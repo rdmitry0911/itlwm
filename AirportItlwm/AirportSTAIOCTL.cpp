@@ -129,6 +129,33 @@ static IOReturn getTahoeCurrentRateMbps(ItlHalService *hal, uint32_t *rateMbps)
     return kIOReturnSuccess;
 }
 
+static IOReturn storeAssocRsnIeOverride(struct ieee80211com *ic,
+                                        const uint8_t *ie,
+                                        uint16_t length)
+{
+#ifdef USE_APPLE_SUPPLICANT
+    if (ic == nullptr || (length > 0 && ie == nullptr))
+        return kIOReturnError;
+
+    static_assert(sizeof(ic->ic_rsn_ie_override) == APPLE80211_MAX_RSN_IE_LEN,
+                  "Max RSN IE length mismatch");
+    const uint16_t copyLen = TahoeAssociationContracts::boundedRsnIeLength(
+        length, APPLE80211_MAX_RSN_IE_LEN);
+    memset(ic->ic_rsn_ie_override, 0, sizeof(ic->ic_rsn_ie_override));
+    if (copyLen > 0)
+        memcpy(ic->ic_rsn_ie_override, ie, copyLen);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+        copyLen >= 2 && ic->ic_rsn_ie_override[1] > 0)
+        ieee80211_save_ie(ic->ic_rsn_ie_override, &ic->ic_bss->ni_rsnie);
+    return kIOReturnSuccess;
+#else
+    (void)ic;
+    (void)ie;
+    (void)length;
+    return kIOReturnUnsupported;
+#endif
+}
+
 static bool decodeTahoeMcsIndexFromCachedNrate(uint32_t rate, uint32_t *index)
 {
     return TahoeNrateContracts::decodeMcsIndexFromNrate(rate, index);
@@ -548,15 +575,10 @@ setCHANNEL(OSObject *object, struct apple80211_channel_data *data)
 IOReturn AirportItlwm::
 getPROTMODE(OSObject *object, struct apple80211_protmode_data *pd)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
-        memset(pd, 0, sizeof(*pd));
-        pd->version = APPLE80211_VERSION;
-        pd->threshold = 0;
-        pd->protmode = 0;
-        return kIOReturnSuccess;
-    }
-    return 6;
+    (void)object;
+    (void)pd;
+    return static_cast<IOReturn>(
+        TahoeAssociationContracts::kPublicProtmodeUnsupportedStatus);
 }
 
 IOReturn AirportItlwm::
@@ -1000,23 +1022,10 @@ getRSN_IE(OSObject *object, struct apple80211_rsn_ie_data *data)
 IOReturn AirportItlwm::
 setRSN_IE(OSObject *object, struct apple80211_rsn_ie_data *data)
 {
-#ifdef USE_APPLE_SUPPLICANT
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    if (!data)
-        return kIOReturnError;
-    static_assert(sizeof(ic->ic_rsn_ie_override) == APPLE80211_MAX_RSN_IE_LEN, "Max RSN IE length mismatch");
-    const uint16_t copyLen = TahoeAssociationContracts::boundedRsnIeLength(
-        data->len, APPLE80211_MAX_RSN_IE_LEN);
-    memset(ic->ic_rsn_ie_override, 0, sizeof(ic->ic_rsn_ie_override));
-    if (copyLen > 0)
-        memcpy(ic->ic_rsn_ie_override, data->ie, copyLen);
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
-        copyLen >= 2 && ic->ic_rsn_ie_override[1] > 0)
-        ieee80211_save_ie(ic->ic_rsn_ie_override, &ic->ic_bss->ni_rsnie);
-    return kIOReturnSuccess;
-#else
-    return kIOReturnUnsupported;
-#endif
+    (void)object;
+    (void)data;
+    return static_cast<IOReturn>(
+        TahoeAssociationContracts::kPublicSetRsnIeReturn);
 }
 
 IOReturn AirportItlwm::
@@ -1123,7 +1132,6 @@ IOReturn AirportItlwm::
 setASSOCIATE(OSObject *object,
                              struct apple80211_assoc_data *ad)
 {
-    struct apple80211_rsn_ie_data rsn_ie_data;
     struct apple80211_authtype_data auth_type_data;
     struct ieee80211com *ic = fHalService->get80211Controller();
 
@@ -1142,11 +1150,8 @@ setASSOCIATE(OSObject *object,
         auth_type_data.authtype_upper = ad->ad_auth_upper;
         auth_type_data.authtype_lower = ad->ad_auth_lower;
         setAUTH_TYPE(object, &auth_type_data);
-        memset(&rsn_ie_data, 0, sizeof(rsn_ie_data));
-        rsn_ie_data.version = APPLE80211_VERSION;
-        rsn_ie_data.len = ad->ad_rsn_ie[1] + 2;
-        memcpy(rsn_ie_data.ie, ad->ad_rsn_ie, rsn_ie_data.len);
-        setRSN_IE(object, &rsn_ie_data);
+        const uint16_t rsnIeLen = static_cast<uint16_t>(ad->ad_rsn_ie[1] + 2);
+        storeAssocRsnIeOverride(ic, ad->ad_rsn_ie, rsnIeLen);
 
         associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index);
     }

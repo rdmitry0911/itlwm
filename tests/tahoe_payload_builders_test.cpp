@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwm/TahoeAssociationContracts.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
@@ -441,6 +442,32 @@ void testTahoeSkywalkIoctlRoutes()
             "Skywalk routes APSTA peer-cache control setter only");
 }
 
+void testTahoeAssociationContracts()
+{
+    using namespace TahoeAssociationContracts;
+
+    require(kHiddenAssociateSelector == 0x45,
+            "hidden associate selector is 0x45");
+    require(kHiddenAssociateCompleteSelector == 0x46,
+            "hidden associate complete selector is 0x46");
+    require(kAssocCandidatesPayloadLength == 0x3ad8,
+            "hidden associate carrier length is 0x3ad8");
+    require(kPublicProtmodeUnsupportedStatus == 0xe00002c7,
+            "public PROTMODE getter is an Apple unsupported shim");
+    require(kPublicRsnIeGateSelector == 0x29 &&
+                kPublicRsnIeVendorVirtualOffset == 0x398,
+            "public RSN_IE getter gates then calls vendor virtual +0x398");
+    require(kPublicRsnIeNoOwnerStatus == 0xe082280e,
+            "public RSN_IE getter no-owner failure is 0xe082280e");
+    require(kPublicSetRsnIeReturn == 0 &&
+                kPublicSetRsnIeMutationCount == 0,
+            "public setRSN_IE is a success no-op");
+    require(boundedRsnIeLength(7, 11) == 7,
+            "RSN IE helper keeps in-bounds length");
+    require(boundedRsnIeLength(17, 11) == 11,
+            "RSN IE helper clamps overlength copy");
+}
+
 void testTahoeQosDynsarContracts()
 {
     using namespace TahoeQosDynsarContracts;
@@ -752,12 +779,13 @@ int main()
     testApstaPublicContracts();
     testPayloadContractInventory();
     testTahoeSkywalkIoctlRoutes();
+    testTahoeAssociationContracts();
     testTahoeQosDynsarContracts();
     testTahoeOpModeContracts();
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
-    std::cout << "tahoe payload builders ok: 18 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, OP_MODE, nrate, LE-scan, MIMO and LQM contracts covered\n";
+    std::cout << "tahoe payload builders ok: 18 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, OP_MODE, nrate, LE-scan, MIMO and LQM contracts covered\n";
     return 0;
 }

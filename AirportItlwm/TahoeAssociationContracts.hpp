@@ -44,6 +44,12 @@ static constexpr uint32_t kJoinIoctlAssocSelector = 0x1a;
 static constexpr uint32_t kSetAssocWsecInfoSelector = 0x107;
 static constexpr uint32_t kFinalAssocWsecInfoSelector = 0x10c;
 static constexpr uint32_t kInvalidCarrierStatus = 0xe00002c2;
+static constexpr uint32_t kPublicProtmodeUnsupportedStatus = 0xe00002c7;
+static constexpr uint32_t kPublicRsnIeGateSelector = 0x29;
+static constexpr uint32_t kPublicRsnIeVendorVirtualOffset = 0x398;
+static constexpr uint32_t kPublicRsnIeNoOwnerStatus = 0xe082280e;
+static constexpr uint32_t kPublicSetRsnIeReturn = 0;
+static constexpr uint32_t kPublicSetRsnIeMutationCount = 0;
 
 static constexpr uint8_t kPmfCapableBit = 0x40;
 static constexpr uint16_t kInstantHotspotFlagMask = 0x0006;

@@ -846,15 +846,17 @@ surfaces that still need separate proof.
 
 Remaining raw-`6` legacy getters:
 
-- `getPROTMODE`
+- none
 
 Remaining legacy unsupported/gated surfaces needing classification:
 
-- `getRSN_IE`
-- `setRSN_IE`
+- none
 
 Recently closed legacy shadow surfaces:
 
+- `getPROTMODE`
+- `getRSN_IE`
+- `setRSN_IE`
 - `getMCS_INDEX_SET`
 - `getNOISE`
 - `getMCS`
