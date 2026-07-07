@@ -623,6 +623,16 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     ic->ic_htxcaps = 0;
     ic->ic_txbfcaps = 0;
     ic->ic_aselcaps = 0;
+    ic->ic_vhtcaps = 0;
+    ic->ic_hecaps = 0;
+    ic->ic_vht_tx_mcs_map = 0;
+    ic->ic_vht_rx_mcs_map = 0;
+    ic->ic_vht_tx_highest = 0;
+    ic->ic_vht_rx_highest = 0;
+    memset(ic->ic_vht_sup_mcs, 0, sizeof(ic->ic_vht_sup_mcs));
+    memset(&ic->ic_he_cap_elem, 0, sizeof(ic->ic_he_cap_elem));
+    memset(&ic->ic_he_mcs_nss_supp, 0, sizeof(ic->ic_he_mcs_nss_supp));
+    memset(ic->ic_ppe_thres, 0, sizeof(ic->ic_ppe_thres));
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     if (sc->sc_flags & IWN_FLAG_HAS_11N) {
         ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);

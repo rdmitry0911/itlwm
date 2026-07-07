@@ -14,6 +14,7 @@
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoeOpModeContracts.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
+#include "AirportItlwm/TahoePhyModeContracts.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 #include "include/Airport/IO80211BssManager.h"
@@ -543,6 +544,69 @@ void testTahoeOpModeContracts()
             "primary OP_MODE ORs associated IBSS mode");
 }
 
+void testTahoePhyModeContracts()
+{
+    using namespace TahoePhyModeContracts;
+
+    struct PhyModeProbe {
+        uint32_t version;
+        uint32_t phy_mode;
+        uint32_t active_phy_mode;
+    } probe{};
+
+    const uint32_t iwnSupported =
+        kModeAuto | kMode11A | kMode11B | kMode11G | kMode11N;
+    require(buildSupportedPhyMode(true, true, true, true, false, false) ==
+                iwnSupported,
+            "PHY_MODE iwn-class HT hardware excludes unsupported 11ac/11ax");
+    require(buildSupportedPhyMode(true, true, true, true, true, false) ==
+                (iwnSupported | kMode11AC),
+            "PHY_MODE VHT hardware adds 11ac to the supported vector");
+    require(buildSupportedPhyMode(true, true, true, true, true, true) ==
+                (iwnSupported | kMode11AC | kMode11AX),
+            "PHY_MODE HE hardware adds 11ax without dropping legacy modes");
+    require(!hasCompleteVhtCapability(0x12345678, false),
+            "PHY_MODE VHT requires a populated MCS/support carrier");
+    require(hasCompleteVhtCapability(0x12345678, true),
+            "PHY_MODE VHT accepts populated capability plus MCS carrier");
+    require(!hasCompleteHeCapability(true, false),
+            "PHY_MODE HE requires both capability and MCS carriers");
+    require(hasCompleteHeCapability(true, true),
+            "PHY_MODE HE accepts complete HE capability publication");
+
+    require(initializePhyModeCarrier(&probe, iwnSupported),
+            "PHY_MODE carrier initializes with supported vector");
+    require(probe.version == kVersion && probe.phy_mode == iwnSupported,
+            "PHY_MODE carrier writes version and supported modes");
+    require(probe.active_phy_mode == kModeUnknown,
+            "PHY_MODE active mode remains unknown before association");
+
+    publishAssociatedActiveMode(
+        &probe,
+        activePhyModeForAssociatedBss(false, false, true, false, true));
+    require(probe.active_phy_mode == kMode11N,
+            "PHY_MODE active BSS publishes HT before legacy 2 GHz rates");
+
+    require(activePhyModeForAssociatedBss(true, true, true, false, true) ==
+                kMode11AX,
+            "PHY_MODE active BSS prefers HE over VHT and HT");
+    require(activePhyModeForAssociatedBss(false, true, true, false, true) ==
+                kMode11AC,
+            "PHY_MODE active BSS prefers VHT over HT");
+    require(activePhyModeForAssociatedBss(false, false, false, true, false) ==
+                kMode11A,
+            "PHY_MODE active legacy 5 GHz maps to 11a");
+    require(activePhyModeForAssociatedBss(false, false, false, false, true) ==
+                kMode11G,
+            "PHY_MODE active legacy 2 GHz OFDM maps to 11g");
+    require(activePhyModeForAssociatedBss(false, false, false, false, false) ==
+                kMode11B,
+            "PHY_MODE active legacy 2 GHz CCK maps to 11b");
+
+    require(!initializePhyModeCarrier<PhyModeProbe>(nullptr, iwnSupported),
+            "PHY_MODE carrier rejects null output");
+}
+
 void testTahoeNrateContracts()
 {
     using namespace TahoeNrateContracts;
@@ -874,12 +938,13 @@ int main()
     testTahoeAssociationContracts();
     testTahoeQosDynsarContracts();
     testTahoeOpModeContracts();
+    testTahoePhyModeContracts();
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
     testTahoeBssManagerWriterContracts();
     testTahoeCapabilityContracts();
-    std::cout << "tahoe payload builders ok: 20 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, CARD_CAPABILITIES, OP_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 21 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

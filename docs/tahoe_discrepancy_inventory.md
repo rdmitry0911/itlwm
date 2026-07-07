@@ -5061,3 +5061,56 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-primary-opmode-carrier-20260707.md`.
+
+## item 210 — public PHY_MODE hardware-supported vector and active BSS carrier
+
+- producers:
+  - `AirportItlwmSkywalkInterface::getPHY_MODE(...)`
+  - legacy `AirportSTAIOCTL.cpp::getPHY_MODE(...)`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- `AppleBCMWLANCore::getPHY_MODE(apple80211_phymode_data*)` at
+  `0xffffff80015f7cc6` initializes `version=1` and starts `phy_mode` with
+  `APPLE80211_MODE_AUTO`.
+- the same body calls `getSupportedBand(unsigned int*)` at
+  `0xffffff80015ab73a` and `getSupportedPhyModeFromHW()` at
+  `0xffffff80015ab880` before adding public supported PHY bits;
+- `active_phy_mode` is written only through the associated BSS path, using
+  `AppleBCMWLANCore::getBssPhyModde(AppleBCMWLANBSSBeacon*)` at
+  `0xffffff80015dad80`.
+
+Local closure:
+
+- supported `PHY_MODE` now starts with AUTO and derives bands from the
+  controller channel table;
+- `11n`, `11ac`, and `11ax` are gated by real HT/VHT/HE capability and
+  MCS/support carrier data rather than `IEEE80211_F_VHTON` /
+  `IEEE80211_F_HEON` current-mode flags;
+- the iwn attach path explicitly clears VHT/HE capability carriers before
+  publishing its HT-only capability set;
+- the active PHY carrier is left UNKNOWN before association and is derived from
+  the current BSS after `IEEE80211_S_RUN`;
+- direct bound Apple80211 key14 probes now return
+  `PHYMODE_SUPPORTED=0x1f` and associated `PHYMODE_ACTIVE=0x10` on the
+  active iwn-6030 HT-only link.
+
+WCL/static path evidence:
+
+- `system_profiler -detailLevel full SPAirPortDataType -xml` is handled by
+  `IO80211Glue::sendIOUCToWcl(..., 0xe, payload, 0xc, handled)` and does not
+  call the local Skywalk `getPHY_MODE` producer;
+- `WCLConfigManager::getPHY_MODE(bulletinBoardMessage&)` at
+  `0xffffff8002123cc2` writes `phy_mode=0x9f` as its baseline and only extends
+  the vector from the internal device-configuration byte at `+0xcad`;
+- live tracing on 2026-07-07 showed `cfg_cad=0x0` and WCL returned
+  `supported=0x9f, active=0x10`, so `system_profiler` still prints
+  `802.11 a/b/g/n/ac`;
+- because the Apple WCL handler has no branch that removes the `11ac` baseline,
+  this batch does not force WCL fallback or otherwise bypass the reference
+  static path.
+
+Reference note:
+`docs/reference/CR-479-phy-mode-hw-supported-active-bss-20260707.md`.

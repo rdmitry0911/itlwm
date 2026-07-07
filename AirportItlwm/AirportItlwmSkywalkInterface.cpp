@@ -15,6 +15,7 @@
 #include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
+#include "TahoePhyModeContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include "Airport/WCLBulletinBoard.h"
@@ -38,6 +39,135 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
         ret |= APPLE80211_C_FLAG_5GHZ;
     ret |= (APPLE80211_C_FLAG_ACTIVE | APPLE80211_C_FLAG_20MHZ);
     return ret;
+}
+
+static bool tahoeComHasVhtMcsCarrier(const ieee80211com *ic)
+{
+    if (ic == nullptr)
+        return false;
+
+    if (ic->ic_vht_rx_mcs_map != 0 || ic->ic_vht_tx_mcs_map != 0)
+        return true;
+
+    for (size_t i = 0; i < sizeof(ic->ic_vht_sup_mcs) /
+        sizeof(ic->ic_vht_sup_mcs[0]); i++) {
+        if (ic->ic_vht_sup_mcs[i] != 0)
+            return true;
+    }
+
+    return false;
+}
+
+static bool tahoeComHasVhtCapability(const ieee80211com *ic)
+{
+    return ic != nullptr &&
+        TahoePhyModeContracts::hasCompleteVhtCapability(
+            ic->ic_vhtcaps, tahoeComHasVhtMcsCarrier(ic));
+}
+
+static bool tahoeComHasHeCapsCarrier(const ieee80211com *ic)
+{
+    if (ic == nullptr)
+        return false;
+    if (ic->ic_hecaps != 0)
+        return true;
+
+    for (size_t i = 0; i < sizeof(ic->ic_he_cap_elem.mac_cap_info); i++) {
+        if (ic->ic_he_cap_elem.mac_cap_info[i] != 0)
+            return true;
+    }
+    for (size_t i = 0; i < sizeof(ic->ic_he_cap_elem.phy_cap_info); i++) {
+        if (ic->ic_he_cap_elem.phy_cap_info[i] != 0)
+            return true;
+    }
+
+    return false;
+}
+
+static bool tahoeComHasHeMcsCarrier(const ieee80211com *ic)
+{
+    if (ic == nullptr)
+        return false;
+
+    const uint8_t *mcs =
+        reinterpret_cast<const uint8_t *>(&ic->ic_he_mcs_nss_supp);
+    for (size_t i = 0; i < sizeof(ic->ic_he_mcs_nss_supp); i++) {
+        if (mcs[i] != 0)
+            return true;
+    }
+
+    return false;
+}
+
+static bool tahoeComHasHeCapability(const ieee80211com *ic)
+{
+    if (ic == nullptr)
+        return false;
+
+    return TahoePhyModeContracts::hasCompleteHeCapability(
+        tahoeComHasHeCapsCarrier(ic), tahoeComHasHeMcsCarrier(ic));
+}
+
+static uint32_t tahoeSupportedPhyModeForController(const ieee80211com *ic)
+{
+    bool supports5GHz = false;
+    bool supports2GHzCck = false;
+    bool supports2GHzOfdm = false;
+
+    if (ic != nullptr) {
+        for (uint32_t i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+            const ieee80211_channel *channel = &ic->ic_channels[i];
+            if (channel->ic_flags == 0)
+                continue;
+
+            if (IEEE80211_IS_CHAN_5GHZ(channel))
+                supports5GHz = true;
+            if (IEEE80211_IS_CHAN_B(channel))
+                supports2GHzCck = true;
+            if (IEEE80211_IS_CHAN_PUREG(channel) ||
+                IEEE80211_IS_CHAN_G(channel))
+                supports2GHzOfdm = true;
+        }
+    }
+
+    return TahoePhyModeContracts::buildSupportedPhyMode(
+        supports5GHz, supports2GHzCck, supports2GHzOfdm,
+        ic != nullptr && ic->ic_htcaps != 0,
+        tahoeComHasVhtCapability(ic),
+        tahoeComHasHeCapability(ic));
+}
+
+static bool tahoeNodeHas2GHzOfdmRate(const ieee80211_node *ni)
+{
+    if (ni == nullptr)
+        return false;
+
+    for (uint8_t i = 0; i < ni->ni_rates.rs_nrates; i++) {
+        if ((ni->ni_rates.rs_rates[i] & IEEE80211_RATE_VAL) >= 12)
+            return true;
+    }
+
+    return false;
+}
+
+static uint32_t tahoeActivePhyModeForBss(const ieee80211com *ic,
+                                         const ieee80211_node *ni)
+{
+    const bool hasHe = ic != nullptr && ni != nullptr &&
+        tahoeComHasHeCapability(ic) &&
+        (ni->ni_flags & IEEE80211_NODE_HE) != 0;
+    const bool hasVht = ic != nullptr && ni != nullptr &&
+        tahoeComHasVhtCapability(ic) &&
+        ieee80211_node_supports_vht(const_cast<ieee80211_node *>(ni));
+    const bool hasHt = ic != nullptr && ni != nullptr &&
+        ic->ic_htcaps != 0 &&
+        ieee80211_node_supports_ht(const_cast<ieee80211_node *>(ni));
+    const bool is5GHz = ni != nullptr && ni->ni_chan != nullptr &&
+        ni->ni_chan != IEEE80211_CHAN_ANYC &&
+        IEEE80211_IS_CHAN_5GHZ(ni->ni_chan);
+
+    return TahoePhyModeContracts::activePhyModeForAssociatedBss(
+        hasHe, hasVht, hasHt, is5GHz, tahoeNodeHas2GHzOfdmRate(ni));
 }
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
@@ -3042,45 +3172,18 @@ setCIPHER_KEY(struct apple80211_key *key)
 IOReturn AirportItlwmSkywalkInterface::
 getPHY_MODE(struct apple80211_phymode_data *pd)
 {
+    if (pd == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
     struct ieee80211com *ic = fHalService->get80211Controller();
-    pd->version = APPLE80211_VERSION;
-    pd->phy_mode = APPLE80211_MODE_11A
-    | APPLE80211_MODE_11B
-    | APPLE80211_MODE_11G
-    | APPLE80211_MODE_11N;
-    
-    if (ic->ic_flags & IEEE80211_F_VHTON)
-        pd->phy_mode |= APPLE80211_MODE_11AC;
-    
-    if (ic->ic_flags & IEEE80211_F_HEON)
-        pd->phy_mode |= APPLE80211_MODE_11AX;
-    
-    switch (fHalService->get80211Controller()->ic_curmode) {
-        case IEEE80211_MODE_AUTO:
-            pd->active_phy_mode = APPLE80211_MODE_AUTO;
-            break;
-        case IEEE80211_MODE_11A:
-            pd->active_phy_mode = APPLE80211_MODE_11A;
-            break;
-        case IEEE80211_MODE_11B:
-            pd->active_phy_mode = APPLE80211_MODE_11B;
-            break;
-        case IEEE80211_MODE_11G:
-            pd->active_phy_mode = APPLE80211_MODE_11G;
-            break;
-        case IEEE80211_MODE_11N:
-            pd->active_phy_mode = APPLE80211_MODE_11N;
-            break;
-        case IEEE80211_MODE_11AC:
-            pd->active_phy_mode = APPLE80211_MODE_11AC;
-            break;
-        case IEEE80211_MODE_11AX:
-            pd->active_phy_mode = APPLE80211_MODE_11AX;
-            break;
-            
-        default:
-            pd->active_phy_mode = APPLE80211_MODE_AUTO;
-            break;
+    if (!TahoePhyModeContracts::initializePhyModeCarrier(
+            pd, tahoeSupportedPhyModeForController(ic)))
+        return kApple80211ErrInvalidArgumentRaw;
+
+    if (ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_bss != nullptr) {
+        TahoePhyModeContracts::publishAssociatedActiveMode(
+            pd, tahoeActivePhyModeForBss(ic, ic->ic_bss));
     }
     
     return kIOReturnSuccess;
