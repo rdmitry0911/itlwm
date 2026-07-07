@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
@@ -426,6 +427,49 @@ void testTahoeQosDynsarContracts()
             "DynSAR fail-safe window rejects threshold elapsed ticks");
 }
 
+void testTahoeNrateContracts()
+{
+    using namespace TahoeNrateContracts;
+
+    struct McsVhtProbe {
+        uint32_t index;
+        uint32_t nss;
+        uint32_t bw;
+        uint32_t guard_interval;
+    } probe{};
+
+    require(kConfigNoValueStatus == 0xe00002e3,
+            "nrate no-value status is Apple 0xe00002e3");
+    require(isAcceptedQueryStatus(0),
+            "nrate success status is accepted for decode");
+    require(isAcceptedQueryStatus(kConfigNoValueStatus),
+            "nrate no-value status is accepted for zero-output decode");
+    require(!isAcceptedQueryStatus(0xe00002c7),
+            "nrate unsupported status is returned without decode");
+
+    uint32_t index = 0;
+    require(decodeMcsIndexFromNrate(kFamilyLegacy | 0x5a, &index) && index == 0x5a,
+            "nrate legacy family publishes low byte MCS index");
+    require(decodeMcsIndexFromNrate(kFamilyHt | 0x1d, &index) && index == 0x0d,
+            "nrate HT family publishes low nibble MCS index");
+    require(!decodeMcsIndexFromNrate(0, &index),
+            "nrate unknown family does not publish MCS index");
+
+    require(fillMcsVhtFromNrate(kFamilyVht | 0x00030000 | kShortGuardIntervalBit | 0x25,
+                                &probe),
+            "nrate VHT family populates MCS_VHT carrier");
+    require(probe.index == 5 && probe.nss == 2 && probe.bw == 80 &&
+                probe.guard_interval == 400,
+            "nrate VHT carrier decodes index, NSS, bandwidth, and guard interval");
+
+    McsVhtProbe nonVht{};
+    require(!fillMcsVhtFromNrate(kFamilyHt | 0x00010000 | 0x03, &nonVht),
+            "nrate non-VHT family leaves MCS_VHT carrier untouched");
+    require(nonVht.index == 0 && nonVht.nss == 0 && nonVht.bw == 0 &&
+                nonVht.guard_interval == 0,
+            "nrate non-VHT carrier remains zeroed");
+}
+
 } // namespace
 
 int main()
@@ -440,6 +484,7 @@ int main()
     testPayloadContractInventory();
     testTahoeSkywalkIoctlRoutes();
     testTahoeQosDynsarContracts();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes covered\n";
+    testTahoeNrateContracts();
+    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes and nrate contracts covered\n";
     return 0;
 }

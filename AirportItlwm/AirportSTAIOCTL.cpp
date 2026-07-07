@@ -9,11 +9,13 @@
 #include "AirportItlwm.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "TahoeAssociationContracts.hpp"
+#include "TahoeNrateContracts.hpp"
 
 extern IOCommandGate *_fCommandGate;
 
 static constexpr IOReturn kApple80211ErrDriverNotAvailable = 0xe0822403;
-static constexpr IOReturn kApple80211ErrConfigNoValue = 0xe00002e3;
+static constexpr IOReturn kApple80211ErrConfigNoValue =
+    static_cast<IOReturn>(TahoeNrateContracts::kConfigNoValueStatus);
 static constexpr IOReturn kApple80211ErrNoCachedValue = 0xe00002f0;
 
 static constexpr uint16_t kAppleTahoeQTxpowerTable[40] = {
@@ -109,52 +111,19 @@ static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
 
 static bool decodeTahoeMcsIndexFromCachedNrate(uint32_t rate, uint32_t *index)
 {
-    if (index == nullptr)
-        return false;
-
-    switch (rate & 0x07000000U) {
-        case 0x01000000U:
-            *index = rate & 0xff;
-            return true;
-        case 0x02000000U:
-        case 0x03000000U:
-            *index = rate & 0xf;
-            return true;
-        default:
-            return false;
-    }
+    return TahoeNrateContracts::decodeMcsIndexFromNrate(rate, index);
 }
 
-static void fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
+static IOReturn fillTahoeMcsVhtFromCachedNrate(ItlHalService *hal, apple80211_mcs_vht_data *data)
 {
     if (data == nullptr)
-        return;
+        return kIOReturnBadArgument;
 
     uint32_t rate = 0;
-    if (getTahoeCachedNrate(hal, &rate) != kIOReturnSuccess)
-        return;
-    if ((rate & 0x07000000U) != 0x02000000U)
-        return;
-
-    data->index = rate & 0xf;
-    data->nss = (rate >> 4) & 0xf;
-    data->guard_interval = (rate & (1U << 23)) ? 400 : 800;
-    switch (rate & 0x00070000U) {
-        case 0x00010000U:
-            data->bw = 20;
-            break;
-        case 0x00020000U:
-            data->bw = 40;
-            break;
-        case 0x00030000U:
-            data->bw = 80;
-            break;
-        case 0x00040000U:
-            data->bw = 160;
-            break;
-        default:
-            break;
-    }
+    IOReturn ret = getTahoeCachedNrate(hal, &rate);
+    if (TahoeNrateContracts::isAcceptedQueryStatus(static_cast<uint32_t>(ret)))
+        TahoeNrateContracts::fillMcsVhtFromNrate(rate, data);
+    return ret;
 }
 
 SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
@@ -913,8 +882,7 @@ getMCS_VHT(OSObject *object, struct apple80211_mcs_vht_data *data)
         return kIOReturnBadArgument;
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
     data->version = APPLE80211_VERSION;
-    fillTahoeMcsVhtFromCachedNrate(fHalService, data);
-    return kIOReturnSuccess;
+    return fillTahoeMcsVhtFromCachedNrate(fHalService, data);
 }
 
 IOReturn AirportItlwm::
