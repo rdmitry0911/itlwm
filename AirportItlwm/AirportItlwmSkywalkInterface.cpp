@@ -3194,10 +3194,15 @@ IOReturn AirportItlwmSkywalkInterface::
 getOP_MODE(struct apple80211_opmode_data *od)
 {
     // AppleBCMWLANCore::getOP_MODE starts the public carrier as
-    // `version=1, op_mode=0`; APSTA/hidden owners and monitor state OR in
-    // their own bits later. Do not advertise STA from the primary fast path.
+    // `version=1, op_mode=0`. It then ORs in APSTA bits, current-BSS
+    // STA/IBSS mode via IO80211BssManager when associated, and monitor bits
+    // from the core-private monitor byte. The local primary path owns only the
+    // current-BSS STA/IBSS piece; APSTA remains routed through its owner.
     if (!TahoeOpModeContracts::initializePrimaryCarrier(od))
         return static_cast<IOReturn>(TahoeOpModeContracts::kInvalidArgumentStatus);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        TahoeOpModeContracts::publishAssociatedBssMode(od, ic->ic_bss->ni_capinfo);
     return kIOReturnSuccess;
 }
 

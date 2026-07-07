@@ -5025,3 +5025,32 @@ Local closure:
 
 Reference note:
 `docs/reference/CR-479-ssid-current-bss-byte-carrier-20260707.md`.
+
+## item 209 — Primary OP_MODE associated STA/IBSS publication
+
+- producers:
+  - `AirportItlwmSkywalkInterface::getOP_MODE(...)`
+  - legacy `AirportSTAIOCTL.cpp::getOP_MODE(...)`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference evidence:
+
+- `AppleBCMWLANCore::getOP_MODE(apple80211_opmode_data*)` at
+  `0xffffff80015e564a` initializes the output qword to `1`
+  (`version=1`, `op_mode=0`).
+- the same body calls `IO80211BssManager::isAssociated()` and, on true, calls
+  the BssManager current-BSS mode helper at `0xffffff8002266a9c`.
+- that helper tests current-BSS bit `0x2`, returning `1` for infrastructure
+  STA and `2` for IBSS.
+
+Local closure:
+
+- primary OP_MODE still starts from `version=1, op_mode=0`;
+- associated local primary STA now ORs `APPLE80211_M_STA` when the current BSS
+  is infrastructure and `APPLE80211_M_IBSS` when `ni_capinfo` has bit `0x2`;
+- the APSTA SoftAP mode and monitor bit remain separate owner paths and are not
+  fabricated by this primary STA closure.
+
+Reference note:
+`docs/reference/CR-479-primary-opmode-carrier-20260707.md`.
