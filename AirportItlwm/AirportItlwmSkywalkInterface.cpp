@@ -4147,13 +4147,12 @@ getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *data)
     if (raw == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // IO80211PeerMonitor::createLinkQualityMonitor consumes this compact
-    // `version + u32 enabled` carrier through the WCL slow-wifi option build.
-    // Live dtrace showed opts[0] is derived from this selector's success and
-    // the non-zero enabled dword; Apple reports it enabled to instantiate the
-    // LQM/link-recovery path.
+    // AppleBCMWLANCore writes a compact `version + u32 enabled` carrier here.
+    // Keep that exact public shape from local state instead of exposing the
+    // selector as unsupported while the deeper hidden policy owner remains
+    // unrecovered.
     raw->version = APPLE80211_VERSION;
-    raw->enabled = 1U;
+    raw->enabled = cachedSlowWifiFeatureEnabled ? 1U : 0U;
     return kIOReturnSuccess;
 }
 

@@ -812,8 +812,6 @@ void testTahoeCapabilityContracts()
     require(capabilities[8] == kCardCapabilityByte8 &&
                 capabilities[9] == kCardCapabilityByte9,
             "CARD_CAPABILITIES tail word is little-endian 0x0201");
-    require(capabilities[10] == kCardCapabilityByte10,
-            "CARD_CAPABILITIES exposes LQM capability index 0x53");
     require(!hasAppleImpossibleAdvancedAkmBits(
                 capabilities[2], capabilities[3], capabilities[6]),
             "CARD_CAPABILITIES cluster clears Apple-impossible AKM bits");

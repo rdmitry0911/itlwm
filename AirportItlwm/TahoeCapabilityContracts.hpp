@@ -17,18 +17,17 @@ static constexpr uint8_t kCardCapabilityByte5 = 0x40;
 static constexpr uint8_t kCardCapabilityByte6 = 0x0c;
 static constexpr uint8_t kCardCapabilityByte8 = 0x01;
 static constexpr uint8_t kCardCapabilityByte9 = 0x02;
-static constexpr uint8_t kCardCapabilityByte10 = 0x08;
 
 static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
 static constexpr uint8_t kAppleImpossibleCap6Mask = 0x80;
-static constexpr size_t kRequiredCardCapabilityBytes = 11;
+static constexpr size_t kRequiredCardCapabilityBytes = 10;
 
 template <size_t N>
 inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N])
 {
     static_assert(N >= kRequiredCardCapabilityBytes,
-                  "CARD_CAPABILITIES carrier must expose bytes through cap[10]");
+                  "CARD_CAPABILITIES carrier must expose bytes through cap[9]");
 
     capabilities[2] = kCardCapabilityByte2;
     capabilities[3] = kCardCapabilityByte3;
@@ -36,7 +35,6 @@ inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N]
     capabilities[6] = kCardCapabilityByte6;
     capabilities[8] = kCardCapabilityByte8;
     capabilities[9] = kCardCapabilityByte9;
-    capabilities[10] = kCardCapabilityByte10;
 }
 
 inline bool hasAppleImpossibleAdvancedAkmBits(uint8_t cap2,

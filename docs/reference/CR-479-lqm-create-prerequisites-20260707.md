@@ -33,21 +33,47 @@ The older CARD_CAPABILITIES shadow fix remains valid for clearing Apple-
 impossible AKM bits. This layer adds the separate LQM capability bit instead of
 reintroducing any of the rejected `cap[2]`, `cap[3]`, or `cap[6]` bits.
 
-## Local closure
+## Runtime falsification
 
-`TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster()` now
-also sets:
+The reference prerequisite analysis above is still useful, but the local
+closure that forced those carriers was wrong for the current bridged driver.
+Runtime on 2026-07-07 loaded builds with:
 
 - `cap[10] = 0x08`
+- `getSLOW_WIFI_FEATURE_ENABLED() -> enabled = 1`
 
-Both Tahoe and legacy `getCARD_CAPABILITIES` producers use that helper, so the
-framework's loaded capability bitmap satisfies the LQM gate consistently.
+Those builds passed association and started the IO80211 LQM queue path, but
+then repeatedly panicked in:
 
-`AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED()` returns the
-Apple-compatible compact carrier:
+- `IO80211QueueCall::handleEntry`
+- `___stack_chk_fail`
+- `Kernel stack memory corruption detected`
 
-- `version = APPLE80211_VERSION`
-- `enabled = 1`
+The panic occurred after the framework's own LQM queue work ran, so satisfying
+the two public gates is not sufficient. The missing layer is the exact Apple
+provider/work-queue/link-quality-monitor wiring behind that QueueCall path.
 
-This restores the two prerequisite selector answers required before the next
-layer, where the LQM monitor can be created and fed with real link statistics.
+## Corrective closure
+
+This layer is reverted for the current Tahoe bridge:
+
+- CARD_CAPABILITIES keeps the recovered Apple-consistent cluster through
+  `cap[8..9] = 0x0201`; it does not advertise local `cap[10] = 0x08`.
+- `AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED()` returns the
+  compact `version + enabled` carrier, but `enabled` comes from the local
+  cached policy state instead of being forced to `1`.
+
+Validation after the corrective revert:
+
+- build succeeded and all 936 undefined symbols resolved against BootKC;
+- 120/120 ping to `10.77.0.1`, 0% loss, avg 1.432 ms;
+- bidirectional TCP stress for 120 seconds while associated:
+  guest->host 580,862,008 bytes at 38.683 Mbit/s sender /
+  37.471 Mbit/s receiver; host->guest 106,299,392 bytes at
+  7.086 Mbit/s sender / 6.913 Mbit/s receiver;
+- concurrent stress ping 150/150, 0% loss;
+- post-stress ping 10/10, 0% loss, avg 1.944 ms;
+- serial panic count did not increase during the corrected run.
+
+The LQM create prerequisite gates should only be re-enabled with a batch that
+also restores the exact safe Apple QueueCall/provider wiring.
