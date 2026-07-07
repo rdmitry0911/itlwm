@@ -10,6 +10,7 @@
 #include "AirportItlwmSkywalkInterface.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "TahoeQosDynsarContracts.hpp"
 #include "Airport/IO80211BssManager.h"
 #include "Airport/WCLBulletinBoard.h"
 #include <sys/CTimeout.hpp>
@@ -4344,11 +4345,16 @@ setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple only accepts this selector when an internal feature bit at core
-    // +0x7584 is set; otherwise the public contract is a direct 0xe00002c7.
-    // That hidden feature owner is still not recovered locally, so keep the
-    // exact visible fail shape instead of inventing a bogus feature probe.
-    return static_cast<IOReturn>(0xe00002c7);
+    // Apple only accepts this selector when core-private +0x7584 bit 0 is set;
+    // otherwise the public contract is a direct 0xe00002c7. The local owner
+    // registry carries that recovered feature byte without enabling the deeper
+    // traffic-engine backend.
+    if (instance == nullptr ||
+        !instance->getTahoeOwnerRegistry().isCongestionControlSupported()) {
+        return static_cast<IOReturn>(TahoeQosDynsarContracts::kUnsupportedStatus);
+    }
+
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

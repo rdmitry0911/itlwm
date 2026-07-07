@@ -5,6 +5,7 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
+#include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 
 namespace {
@@ -403,6 +404,28 @@ void testTahoeSkywalkIoctlRoutes()
             "Skywalk leaves peer-cache maximum/shared getters out of the APSTA route");
 }
 
+void testTahoeQosDynsarContracts()
+{
+    using namespace TahoeQosDynsarContracts;
+
+    require(kCongestionControlFeatureOffset == 0x7584,
+            "QoS/DynSAR congestion feature byte is core-private +0x7584");
+    require(kCongestionControlFeatureBit == 0x01,
+            "QoS/DynSAR congestion feature uses bit 0");
+    require(kUnsupportedStatus == 0xe00002c7,
+            "QoS/DynSAR unsupported gate returns Apple status 0xe00002c7");
+    require(!congestionControlSupported(0),
+            "QoS/DynSAR congestion gate rejects a clear feature byte");
+    require(congestionControlSupported(kCongestionControlFeatureBit),
+            "QoS/DynSAR congestion gate accepts bit 0");
+    require(congestionControlSupported(0xff),
+            "QoS/DynSAR congestion gate ignores unrelated high bits");
+    require(isDynSarFailSafeMode(0x400, 0),
+            "DynSAR fail-safe window accepts elapsed ticks below threshold");
+    require(!isDynSarFailSafeMode((kDynSarFailSafeWindow << kDynSarFailSafeShift), 0),
+            "DynSAR fail-safe window rejects threshold elapsed ticks");
+}
+
 } // namespace
 
 int main()
@@ -416,6 +439,7 @@ int main()
     testApstaPublicSetterContracts();
     testPayloadContractInventory();
     testTahoeSkywalkIoctlRoutes();
+    testTahoeQosDynsarContracts();
     std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes covered\n";
     return 0;
 }
