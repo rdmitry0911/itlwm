@@ -221,6 +221,12 @@ void testApstaPublicSetterContracts()
             "APSTA Wi-Fi network info length trap threshold is 0x21");
     require(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,
             "APSTA Wi-Fi network info accepts lengths below 0x21");
+    require(kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 == 0x46,
+            "APSTA Wi-Fi network info is gated by feature 0x46");
+    require(kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled == 0,
+            "APSTA Wi-Fi network info feature gate is unavailable locally");
+    require(kAirportItlwmAPSTAWifiNetworkInfoFeatureDisabledCopyCount == 0,
+            "APSTA Wi-Fi network info disabled-feature path does not copy state");
     require(kAirportItlwmAPSTASetCipherKeyNotUpReturn == 6,
             "APSTA CIPHER_KEY AP-down return is raw 6");
     require(kAirportItlwmAPSTASetCipherKeyCipherNone == 0,

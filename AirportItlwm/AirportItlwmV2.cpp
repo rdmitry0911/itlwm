@@ -6285,11 +6285,11 @@ IOReturn AirportItlwm::setSOFTAP_TRIGGER_CSA(OSObject *object,
 IOReturn AirportItlwm::setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,
     AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in)
 {
+    if (fAPSTAOwner != NULL) {
+        return fAPSTAOwner->setSoftAPWifiNetworkInfoIE(in);
+    }
     if (in == nullptr) {
         return kIOReturnBadArgument;
     }
-    if (fAPSTAOwner == NULL) {
-        return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
-    }
-    return fAPSTAOwner->setSoftAPWifiNetworkInfoIE(in);
+    return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
 }

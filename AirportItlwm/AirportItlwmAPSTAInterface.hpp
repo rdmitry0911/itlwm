@@ -36,6 +36,9 @@ enum {
     kAirportItlwmAPSTAPeerCacheMaximumSize = 8,
     kAirportItlwmAPSTAHostApModeHiddenValue = 1,
     kAirportItlwmAPSTAWifiNetworkInfoIESize = 0x24,
+    kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 = 0x46,
+    kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled = 0,
+    kAirportItlwmAPSTAWifiNetworkInfoFeatureDisabledCopyCount = 0,
     kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold = 0x21,
     kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength =
         kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold - 1,

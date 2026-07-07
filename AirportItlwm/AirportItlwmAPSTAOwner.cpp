@@ -396,6 +396,9 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
 IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(
     const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in)
 {
+    if (kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled == 0) {
+        return kIOReturnSuccess;
+    }
     if (in == nullptr) {
         return kIOReturnBadArgument;
     }
