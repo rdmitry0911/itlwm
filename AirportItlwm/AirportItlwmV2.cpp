@@ -6104,9 +6104,6 @@ setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
 IOReturn AirportItlwm::
 setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     /*
      * Forward the selector input through the host APSTA owner's
      * setMisMaxSta entry point. The owner enforces the recovered
@@ -6126,7 +6123,7 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
      * side effect.
      */
     if (fAPSTAOwner == NULL) {
-        return kIOReturnSuccess;
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
     }
     return fAPSTAOwner->setMisMaxSta(in);
 }

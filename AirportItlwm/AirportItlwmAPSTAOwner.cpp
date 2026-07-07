@@ -334,13 +334,14 @@ IOReturn AirportItlwmAPSTAOwner::setMaxAssoc(uint32_t value)
 
 IOReturn AirportItlwmAPSTAOwner::setMisMaxSta(const struct apple80211_mis_max_sta *in)
 {
+    if (!isApRunning()) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
+    }
     if (in == nullptr) {
         return kIOReturnBadArgument;
     }
-    if (isApRunning()) {
-        (void)setMaxAssoc(in->value00);
-    }
-    return kIOReturnSuccess;
+    (void)setMaxAssoc(in->value00);
+    return static_cast<IOReturn>(kAirportItlwmAPSTASetMisMaxStaReturn);
 }
 
 IOReturn AirportItlwmAPSTAOwner::setHostAPModeHidden(

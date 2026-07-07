@@ -205,6 +205,8 @@ void testApstaPublicSetterContracts()
             "APSTA hidden setter carrier includes version dword");
     require(kAirportItlwmAPSTASetSsidStateMutationCount == 0,
             "APSTA setSSID does not mutate recovered SSID state");
+    require(kAirportItlwmAPSTASetMisMaxStaReturn == 0,
+            "APSTA MIS_MAX_STA AP-down/no-owner path returns success");
     require(kAirportItlwmAPSTAHiddenNotUpReturn == 6,
             "APSTA hidden AP-down return is raw 6");
     require(kAirportItlwmAPSTAHiddenInvalidArgumentReturn == 0x16,
