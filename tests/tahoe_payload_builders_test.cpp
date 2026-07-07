@@ -221,6 +221,16 @@ void testApstaPublicSetterContracts()
             "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
     require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
             "APSTA STA_DEAUTH and STA_DISASSOCIATE share the recovered selector");
+    require(kAirportItlwmAPSTAGetStationListNullReturn == 0x16,
+            "APSTA getSTATION_LIST null return is raw 0x16");
+    require(kAirportItlwmAPSTAGetStationListNotUpReturn == 0x39,
+            "APSTA getSTATION_LIST AP-down return is 0x39");
+    require(kAirportItlwmAPSTAGetStaIEListNotFoundReturn == 2,
+            "APSTA getSTA_IE_LIST missing station return is 2");
+    require(kAirportItlwmAPSTAGetStaStatsNotUpReturn == 0x39,
+            "APSTA getSTA_STATS AP-down return is 0x39");
+    require(kAirportItlwmAPSTAGetKeyRscOutputLengthValue == 8,
+            "APSTA getKEY_RSC writes an 8-byte RSC length");
 }
 
 void testPayloadContractInventory()

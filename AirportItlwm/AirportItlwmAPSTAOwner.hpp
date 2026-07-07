@@ -63,6 +63,10 @@ public:
     IOReturn setSSID(const struct apple80211_ssid_data *in);
     IOReturn setChannel(const struct apple80211_channel_data *in);
     IOReturn setCipherKey(const struct apple80211_key *key);
+    IOReturn getStationList(struct apple80211_sta_data *out);
+    IOReturn getStaIEList(AirportItlwmAPSTAStaIEDataLayout *out);
+    IOReturn getStaStats(AirportItlwmAPSTAStaStatsDataLayout *out);
+    IOReturn getKeyRsc(AirportItlwmAPSTAKeyRscDataLayout *out);
     IOReturn setStationAuthorization(const AirportItlwmAPSTAStaAuthorizeInputLayout *in);
     IOReturn setStationDisassociation(const AirportItlwmAPSTAStaDisassocInputLayout *in, bool deauth);
     IOReturn setSoftAPExtCaps(const struct apple80211_softap_extended_capabilities_info *in);

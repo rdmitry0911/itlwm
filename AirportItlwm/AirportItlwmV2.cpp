@@ -6158,6 +6158,42 @@ IOReturn AirportItlwm::setAPSTA_CIPHER_KEY(OSObject *object,
     return fAPSTAOwner->setCipherKey(in);
 }
 
+IOReturn AirportItlwm::getAPSTA_STATION_LIST(OSObject *object,
+    struct apple80211_sta_data *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStationListNotUpReturn);
+    }
+    return fAPSTAOwner->getStationList(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_STA_IE_LIST(OSObject *object,
+    AirportItlwmAPSTAStaIEDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNotFoundReturn);
+    }
+    return fAPSTAOwner->getStaIEList(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_KEY_RSC(OSObject *object,
+    AirportItlwmAPSTAKeyRscDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->getKeyRsc(in);
+}
+
+IOReturn AirportItlwm::getAPSTA_STA_STATS(OSObject *object,
+    AirportItlwmAPSTAStaStatsDataLayout *in)
+{
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaStatsNotUpReturn);
+    }
+    return fAPSTAOwner->getStaStats(in);
+}
+
 IOReturn AirportItlwm::setHOST_AP_MODE_HIDDEN(OSObject *object,
     AirportItlwmAPSTAHostApModeHiddenLayout *in)
 {

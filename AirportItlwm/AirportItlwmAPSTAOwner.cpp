@@ -211,6 +211,63 @@ IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
     return owner->fHalService->setAPKey(&halKey);
 }
 
+IOReturn AirportItlwmAPSTAOwner::getStationList(struct apple80211_sta_data *out)
+{
+    if (out == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStationListNullReturn);
+    }
+    if (!isApRunning()) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStationListNotUpReturn);
+    }
+
+    uint32_t count = 0;
+    for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount &&
+                         count < APPLE80211_MAX_STATIONS; i++) {
+        AirportItlwmAPSTAStationTableEntryLayout *entry = &state.softapStaTableB8[i];
+        if (!entry->active00) {
+            continue;
+        }
+        out->station_list[count].version = APPLE80211_VERSION;
+        memcpy(out->station_list[count].sta_mac.octet, entry->mac01,
+               kAirportItlwmAPSTAStationTableMacSize);
+        out->station_list[count].sta_rssi = 0;
+        count++;
+    }
+    out->num_stations = count;
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getStaIEList(AirportItlwmAPSTAStaIEDataLayout *out)
+{
+    if (out == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNullReturn);
+    }
+    AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(out->mac04);
+    if (entry == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNotFoundReturn);
+    }
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getStaStats(AirportItlwmAPSTAStaStatsDataLayout *out)
+{
+    if (!isApRunning()) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaStatsNotUpReturn);
+    }
+    if (out == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaStatsNullReturn);
+    }
+    return kIOReturnUnsupported;
+}
+
+IOReturn AirportItlwmAPSTAOwner::getKeyRsc(AirportItlwmAPSTAKeyRscDataLayout *out)
+{
+    if (out == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    return kIOReturnUnsupported;
+}
+
 IOReturn AirportItlwmAPSTAOwner::setSoftAPExtCaps(
     const struct apple80211_softap_extended_capabilities_info *in)
 {

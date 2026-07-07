@@ -509,6 +509,14 @@ public:
         struct apple80211_channel_data *data);
     IOReturn setAPSTA_CIPHER_KEY(OSObject *object,
         struct apple80211_key *data);
+    IOReturn getAPSTA_STATION_LIST(OSObject *object,
+        struct apple80211_sta_data *data);
+    IOReturn getAPSTA_STA_IE_LIST(OSObject *object,
+        AirportItlwmAPSTAStaIEDataLayout *data);
+    IOReturn getAPSTA_KEY_RSC(OSObject *object,
+        AirportItlwmAPSTAKeyRscDataLayout *data);
+    IOReturn getAPSTA_STA_STATS(OSObject *object,
+        AirportItlwmAPSTAStaStatsDataLayout *data);
     IOReturn setHOST_AP_MODE_HIDDEN(OSObject *object,
         AirportItlwmAPSTAHostApModeHiddenLayout *data);
     IOReturn setSTA_AUTHORIZE(OSObject *object, AirportItlwmAPSTAStaAuthorizeInputLayout *data);

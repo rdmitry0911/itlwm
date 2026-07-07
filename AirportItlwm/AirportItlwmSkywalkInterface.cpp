@@ -1708,6 +1708,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return instance->setAPSTA_CIPHER_KEY(
                     this, (apple80211_key *)req->req_data);
             return setCIPHER_KEY((apple80211_key *)req->req_data);
+        case APPLE80211_IOC_STATION_LIST:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCGA80211)
+                ? instance->getAPSTA_STATION_LIST(
+                    this, (apple80211_sta_data *)req->req_data)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_CUR_PMK:
             // Tahoe Skywalk current-PMK carrier. The active local
             // ingress for selector 0x168 / IOC 360 is the
@@ -1826,6 +1833,27 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_LINK_CHANGED_EVENT_DATA:
             return (cmd == SIOCGA80211) ? getLINK_CHANGED_EVENT_DATA((apple80211_link_changed_event_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_STA_IE_LIST:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCGA80211)
+                ? instance->getAPSTA_STA_IE_LIST(
+                    this, (AirportItlwmAPSTAStaIEDataLayout *)req->req_data)
+                : kIOReturnUnsupported;
+        case APPLE80211_IOC_KEY_RSC:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCGA80211)
+                ? instance->getAPSTA_KEY_RSC(
+                    this, (AirportItlwmAPSTAKeyRscDataLayout *)req->req_data)
+                : kIOReturnUnsupported;
+        case APPLE80211_IOC_STA_STATS:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCGA80211)
+                ? instance->getAPSTA_STA_STATS(
+                    this, (AirportItlwmAPSTAStaStatsDataLayout *)req->req_data)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_STA_AUTHORIZE:
             if (instance == NULL)
                 return kIOReturnNotReady;
