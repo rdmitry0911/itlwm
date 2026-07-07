@@ -95,7 +95,9 @@ static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
 
     if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
         struct iwm_softc *sc = &iwm->com;
-        *rate = sc->lq_sta.rs_drv.last_rate_n_flags;
+        if (!TahoeNrateContracts::normalizeIwmRateNFlagsToAppleNrate(
+                sc->lq_sta.rs_drv.last_rate_n_flags, rate))
+            return kApple80211ErrConfigNoValue;
         return kIOReturnSuccess;
     }
 
@@ -103,11 +105,28 @@ static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
         struct iwx_softc *sc = &iwx->com;
         if (!sc->sc_has_last_rate_n_flags)
             return kApple80211ErrConfigNoValue;
-        *rate = sc->sc_last_rate_n_flags;
+        if (!TahoeNrateContracts::normalizeIwxRateNFlagsToAppleNrate(
+                sc->sc_last_rate_n_flags, rate))
+            return kApple80211ErrConfigNoValue;
         return kIOReturnSuccess;
     }
 
     return kApple80211ErrConfigNoValue;
+}
+
+static IOReturn getTahoeCurrentRateMbps(ItlHalService *hal, uint32_t *rateMbps)
+{
+    if (rateMbps == nullptr)
+        return kIOReturnBadArgument;
+
+    uint32_t nrate = 0;
+    IOReturn ret = getTahoeCachedNrate(hal, &nrate);
+    if (ret != kIOReturnSuccess)
+        return ret;
+
+    if (!TahoeNrateContracts::decodeRateMbpsFromNrate(nrate, rateMbps))
+        return kApple80211ErrConfigNoValue;
+    return kIOReturnSuccess;
 }
 
 static bool decodeTahoeMcsIndexFromCachedNrate(uint32_t rate, uint32_t *index)
@@ -595,53 +614,14 @@ IOReturn AirportItlwm::
 getRATE(OSObject *object, struct apple80211_rate_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    if (rd == nullptr)
+        return kIOReturnBadArgument;
     // Legacy STA dispatch must match the same Apple not-associated contract as
     // the Tahoe Skywalk path: AppleBCMWLANCore::getRATE() returns 0xe0822403
     // until the current BSS is associated, not raw POSIX 6.
     if (ic->ic_bss == NULL || ic->ic_state != IEEE80211_S_RUN)
         return kApple80211ErrDriverNotAvailable;
-    int nss;
-    int sgi;
-    int index = 0;
-    memset(rd, 0, sizeof(*rd));
-    rd->version = APPLE80211_VERSION;
-    rd->num_radios = 1;
-    sgi = ieee80211_node_supports_sgi(ic->ic_bss);
-    if (ic->ic_curmode == IEEE80211_MODE_11AC) {
-        if (sgi)
-            index += 1;
-        nss = fHalService->getDriverInfo()->getTxNSS();
-        switch (ic->ic_bss->ni_chw) {
-            case IEEE80211_CHAN_WIDTH_40:
-                index += 4;
-                break;
-            case IEEE80211_CHAN_WIDTH_80:
-                index += 8;
-                break;
-            case IEEE80211_CHAN_WIDTH_80P80:
-            case IEEE80211_CHAN_WIDTH_160:
-                index += 12;
-                break;
-
-            default:
-                break;
-        }
-        index += 2 * (nss - 1);
-        const struct ieee80211_vht_rateset *rs = &ieee80211_std_ratesets_11ac[index];
-        rd->rate[0] = rs->rates[ic->ic_bss->ni_txmcs % rs->nrates] / 2;
-    } else if (ic->ic_curmode == IEEE80211_MODE_11N) {
-        int is_40mhz = ic->ic_bss->ni_chw == IEEE80211_CHAN_WIDTH_40;
-        if (sgi)
-            index += 1;
-        if (is_40mhz)
-            index += (IEEE80211_HT_RATESET_MIMO4_SGI + 1);
-        index += (ic->ic_bss->ni_txmcs / 16);
-        nss = ic->ic_bss->ni_txmcs / 8 + 1;
-        index += 2 * (nss - 1);
-        rd->rate[0] = ieee80211_std_ratesets_11n[index].rates[ic->ic_bss->ni_txmcs % 8] / 2;
-    } else
-        rd->rate[0] = ic->ic_bss->ni_rates.rs_rates[ic->ic_bss->ni_txrate];
-    return kIOReturnSuccess;
+    return getTahoeCurrentRateMbps(fHalService, &rd->rate[0]);
 }
 
 IOReturn AirportItlwm::

@@ -796,18 +796,23 @@ What was reclassified out of the queue:
 
 So this is no longer carried as open discrepancy debt inside `Q13`.
 
-### 5. `getRATE` nvram-backed query contract is not yet Apple-shaped
+### 5. `getRATE` transport-rate query contract is Apple-shaped
 
 Apple decompile indicates:
 
 - `getRATE` checks association and returns `0xe0822403` if not associated
+- associated success writes only `apple80211_rate_data::rate[0]` at caller
+  offset `+0x08`, as an integer Mbps value derived from the current transport
+  rate; it does not initialize `version` / `num_radios`
 
-The `getTXPOWER` / `getMCS_VHT` config-backed source lift is closed in the
-current batch. `getRATE` remains here because it still terminates in the local
-association helper rather than a lifted Apple config/helper producer route.
+The `getTXPOWER` / `getMCS_VHT` config-backed source lift is closed, and
+`getRATE` now uses the same normalized transport-rate cache instead of
+rebuilding the value from `ic_bss->ni_txmcs`, channel width, SGI, and NSS side
+fields. See `docs/reference/CR-479-rate-nrate-normalization-20260707.md`.
 
-This does not automatically mean they are wrong in all cases, but it is a real
-architectural discrepancy and needs a dedicated lift.
+Status:
+
+- closed
 
 ### 5a. LQM config / summary public ABI is no longer part of the open tail
 

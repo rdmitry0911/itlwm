@@ -559,6 +559,47 @@ void testTahoeNrateContracts()
     require(decodeGuardIntervalFromNrate(0, &interval) &&
                 interval == kGuardIntervalLong,
             "guard interval unknown accepted nrate falls back to 800 ns");
+
+    uint32_t nrate = 0;
+    uint32_t mbps = 0;
+    require(normalizeIwmRateNFlagsToAppleNrate(
+                kIwmRateMcsVhtMask | (1U << 4) | (2U << 11) |
+                    kIwmRateMcsSgiMask | 0x05,
+                &nrate),
+            "iwm VHT raw rate normalizes to Apple nrate");
+    require(nrate == (kFamilyVht | kBandwidth80 |
+                      kShortGuardIntervalBit | (2U << 4) | 0x05),
+            "iwm VHT nrate carries family, NSS, bandwidth, SGI, and MCS");
+    require(decodeRateMbpsFromNrate(nrate, &mbps) && mbps == 520,
+            "Apple nrate VHT rate decodes to integer Mbps");
+
+    require(normalizeIwxRateNFlagsToAppleNrate(
+                kIwxRateModVht | (1U << 4) | (2U << 11) |
+                    kIwxRateMcsSgiMask | 0x05,
+                &nrate),
+            "iwx VHT raw rate normalizes to Apple nrate");
+    require(nrate == (kFamilyVht | kBandwidth80 |
+                      kShortGuardIntervalBit | (2U << 4) | 0x05),
+            "iwx VHT nrate matches the Apple VHT carrier");
+
+    require(normalizeIwmRateNFlagsToAppleNrate(
+                kIwmRateMcsHtMask | (1U << 11) | 0x0b, &nrate),
+            "iwm HT raw rate normalizes to Apple nrate");
+    require(nrate == (kFamilyHt | kBandwidth40 | 0x0b),
+            "iwm HT nrate carries family, bandwidth, and MCS");
+    require(decodeRateMbpsFromNrate(nrate, &mbps) && mbps == 108,
+            "Apple nrate HT rate decodes to integer Mbps");
+
+    require(normalizeIwmRateNFlagsToAppleNrate(3, &nrate) &&
+                nrate == (kFamilyLegacy | 108),
+            "iwm legacy 54M PLCP normalizes to Apple legacy nrate");
+    require(normalizeIwxRateNFlagsToAppleNrate(kIwxRateModLegacyOfdm | 7,
+                                               &nrate) &&
+                nrate == (kFamilyLegacy | 108),
+            "iwx legacy 54M index normalizes to Apple legacy nrate");
+    require(decodeRateMbpsFromNrate(nrate, &mbps) && mbps == 54,
+            "Apple legacy nrate decodes half-Mbps carrier to Mbps");
+
     require(!decodeGuardIntervalFromNrate(0, nullptr),
             "guard interval decoder rejects null output");
 }
