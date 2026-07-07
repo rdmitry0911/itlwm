@@ -10,6 +10,7 @@
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "TahoeSkywalkIoctlRoutes.hpp"
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_var.h>
@@ -1246,76 +1247,7 @@ static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet
     if (req == nullptr || req->req_data == nullptr)
         return false;
 
-    switch (req->req_type) {
-        case APPLE80211_IOC_SSID:
-        case APPLE80211_IOC_BSSID:
-        case APPLE80211_IOC_CHANNEL:
-        case APPLE80211_IOC_CURRENT_NETWORK:
-            return !isSet;
-        case APPLE80211_IOC_ROAM_PROFILE:
-            // Apple exposes both visible GET and SET wrappers for ROAM_PROFILE.
-            // The local interface owner already supports both directions via
-            // processApple80211Ioctl(...), so keep the selector symmetric here.
-            return true;
-        case APPLE80211_IOC_BTCOEX_PROFILES:
-        case APPLE80211_IOC_BTCOEX_CONFIG:
-        case APPLE80211_IOC_BTCOEX_OPTIONS:
-        case APPLE80211_IOC_BTCOEX_MODE:
-            // The Tahoe wrappers keep the legacy BTCoex carriers behind the
-            // Skywalk interface gate. Route them into the local cached owner
-            // instead of falling through to the generic handlerless path.
-            return true;
-        case APPLE80211_IOC_TX_CHAIN_POWER:
-        case APPLE80211_IOC_CHAIN_ACK:
-        case APPLE80211_IOC_DESENSE:
-        case APPLE80211_IOC_DESENSE_LEVEL:
-            // These RF-control raw selectors are AppleBCMWLANCore-specific
-            // vtable carriers. The local port has no equivalent owner, but
-            // the recovered wrapper fail shape is still Apple80211-specific
-            // 0xe082280e rather than the generic handlerless 0x66 fallback.
-            return true;
-        case APPLE80211_IOC_ASSOCIATE:
-        case APPLE80211_IOC_DISASSOCIATE:
-        case APPLE80211_IOC_AUTH_TYPE:
-        case APPLE80211_IOC_RSN_IE:
-        case APPLE80211_IOC_SET_MAC_ADDRESS:
-            return isSet;
-        case APPLE80211_IOC_CIPHER_KEY:
-            // Tahoe Skywalk PMK / pairwise / group / PMKSA key ingress
-            // through the card-specific bridge. The recovered Apple
-            // delivery for APPLE80211_IOC_CIPHER_KEY = 3 with
-            // key_cipher_type = APPLE80211_CIPHER_PMK (6) or
-            // APPLE80211_CIPHER_MSK (9) reaches the driver as a
-            // card-specific SIOCSA80211 IOCTL on the Skywalk
-            // interface. Without an explicit route here the IOCTL
-            // falls back to the default IO80211 path and never
-            // reaches the local setCIPHER_KEY handler, so the
-            // shared external-PMK ingestion sink is never invoked
-            // and ieee80211com::ic_psk stays empty before the host
-            // supplicant consumes its first 4-way M1. Route the
-            // SET-side here so case 6 / case 9 converge on
-            // installExternalPmkLocked the same way Apple
-            // AppleBCMWLANCore PMK owner state is populated.
-            return isSet;
-        case APPLE80211_IOC_CUR_PMK:
-            // Tahoe Skywalk current-PMK ingress through the
-            // card-specific bridge. The recovered Apple delivery for
-            // selector 0x168 / IOC 360 reaches the driver as a
-            // card-specific IOCTL on the Skywalk interface; routing
-            // both SIOCSA80211 and SIOCGA80211 through processApple80211Ioctl
-            // gives the local sink a single concrete entry point.
-            // The SIOCGA80211 path keeps the credential-safe Apple
-            // failure 0xe00002c7 from getCUR_PMK and never snapshots
-            // PMK material into the caller buffer.
-            return true;
-        case APPLE80211_IOC_PEER_CACHE_CONTROL:
-            return isSet;
-        case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
-        case APPLE80211_IOC_MIS_MAX_STA:
-            return isSet;
-        default:
-            return false;
-    }
+    return TahoeSkywalkIoctlRoutes::shouldRoute(req->req_type, isSet);
 }
 
 static IOReturn routeTahoeSkywalkIoctl(IO80211SkywalkInterface *interface, void *data, UInt cmd)

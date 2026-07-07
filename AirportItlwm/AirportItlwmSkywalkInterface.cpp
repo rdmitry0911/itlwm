@@ -1701,6 +1701,24 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return kIOReturnUnsupported;
         }
+        case APPLE80211_IOC_BGSCAN_CACHE_RESULTS:
+            return (cmd == SIOCGA80211) ? getWCL_BGSCAN_CACHE_RESULT((apple80211_bgscan_cached_network_data_list *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_CHIP_COUNTER_STATS:
+            return (cmd == SIOCGA80211) ? getCHIP_COUNTER_STATS((apple80211_chip_stats *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_DBG_GUARD_TIME_PARAMS:
+            if (cmd == SIOCGA80211)
+                return getDBG_GUARD_TIME_PARAMS((apple80211_dbg_guard_time_params *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setDBG_GUARD_TIME_PARAMS((apple80211_dbg_guard_time_params *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_RSDB_CAPS:
+            return (cmd == SIOCGA80211) ? getAWDL_RSDB_CAPS((apple80211_rsdb_capability *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_TKO_DUMP:
+            return (cmd == SIOCGA80211) ? getTKO_DUMP((apple80211_tko_dump *)req->req_data)
+                                        : kIOReturnUnsupported;
         case APPLE80211_IOC_CIPHER_KEY:
             if (cmd != SIOCSA80211)
                 return kIOReturnUnsupported;
@@ -1812,14 +1830,26 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCSA80211) ? setRANGING_AUTHENTICATE((apple80211_ranging_authenticate_request_t *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILE:
-            return (cmd == SIOCSA80211) ? setBTCOEX_PROFILE((apple80211_btcoex_profile *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getBTCOEX_PROFILE((apple80211_btcoex_profile *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setBTCOEX_PROFILE((apple80211_btcoex_profile *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILE_ACTIVE:
-            return (cmd == SIOCSA80211) ? setBTCOEX_PROFILE_ACTIVE((apple80211_btcoex_profile_active_data *)req->req_data)
+            if (cmd == SIOCGA80211)
+                return getBTCOEX_PROFILE_ACTIVE((apple80211_btcoex_profile_active_data *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setBTCOEX_PROFILE_ACTIVE((apple80211_btcoex_profile_active_data *)req->req_data);
+            return kIOReturnUnsupported;
+        case APPLE80211_IOC_MAX_NSS_FOR_AP:
+            return (cmd == SIOCGA80211) ? getMAX_NSS_FOR_AP((apple80211_btcoex_max_nss_for_ap_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_2G_CHAIN_DISABLE:
-            return (cmd == SIOCSA80211) ? setBTCOEX_2G_CHAIN_DISABLE((apple80211_btcoex_2g_chain_disable *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211)
+                return getBTCOEX_2G_CHAIN_DISABLE((apple80211_btcoex_2g_chain_disable *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setBTCOEX_2G_CHAIN_DISABLE((apple80211_btcoex_2g_chain_disable *)req->req_data);
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_TKO_PARAMS:
             return (cmd == SIOCGA80211) ? getTKO_PARAMS((apple80211_tko_params *)req->req_data)
                                         : (cmd == SIOCSA80211 ? setTKO_PARAMS((apple80211_tko_params *)req->req_data)

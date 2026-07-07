@@ -5,6 +5,7 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
+#include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 
 namespace {
 
@@ -363,6 +364,45 @@ void testPayloadContractInventory()
     }
 }
 
+void testTahoeSkywalkIoctlRoutes()
+{
+    using namespace TahoeSkywalkIoctlRoutes;
+
+    require(shouldRoute(kIocChipCounterStats, false) &&
+                !shouldRoute(kIocChipCounterStats, true),
+            "Skywalk routes CHIP_COUNTER_STATS getter to fixed Apple fail contract");
+    require(shouldRoute(kIocBgscanCacheResults, false) &&
+                !shouldRoute(kIocBgscanCacheResults, true),
+            "Skywalk routes BGSCAN_CACHE_RESULTS getter to cached network producer");
+    require(shouldRoute(kIocDbgGuardTimeParams, false) &&
+                shouldRoute(kIocDbgGuardTimeParams, true),
+            "Skywalk routes DBG_GUARD_TIME_PARAMS getter/setter pair");
+    require(shouldRoute(kIocAwdlRsdbCaps, false) &&
+                !shouldRoute(kIocAwdlRsdbCaps, true),
+            "Skywalk routes AWDL_RSDB_CAPS getter only");
+    require(shouldRoute(kIocTkoParams, false) &&
+                shouldRoute(kIocTkoParams, true),
+            "Skywalk routes TKO_PARAMS getter/setter pair");
+    require(shouldRoute(kIocTkoDump, false) &&
+                !shouldRoute(kIocTkoDump, true),
+            "Skywalk routes TKO_DUMP getter only");
+    require(shouldRoute(kIocBtcoexProfile, false) &&
+                shouldRoute(kIocBtcoexProfile, true),
+            "Skywalk routes BTCOEX_PROFILE getter/setter pair");
+    require(shouldRoute(kIocBtcoexProfileActive, false) &&
+                shouldRoute(kIocBtcoexProfileActive, true),
+            "Skywalk routes BTCOEX_PROFILE_ACTIVE getter/setter pair");
+    require(shouldRoute(kIocMaxNssForAp, false) &&
+                !shouldRoute(kIocMaxNssForAp, true),
+            "Skywalk routes MAX_NSS_FOR_AP getter only");
+    require(shouldRoute(kIocBtcoex2GChainDisable, false) &&
+                shouldRoute(kIocBtcoex2GChainDisable, true),
+            "Skywalk routes BTCOEX_2G_CHAIN_DISABLE getter/setter pair");
+    require(!shouldRoute(kIocPeerCacheControl, false) &&
+                shouldRoute(kIocPeerCacheControl, true),
+            "Skywalk leaves peer-cache maximum/shared getters out of the APSTA route");
+}
+
 } // namespace
 
 int main()
@@ -375,6 +415,7 @@ int main()
     testRangingBuilder();
     testApstaPublicSetterContracts();
     testPayloadContractInventory();
-    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers covered\n";
+    testTahoeSkywalkIoctlRoutes();
+    std::cout << "tahoe payload builders ok: 17 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes covered\n";
     return 0;
 }
