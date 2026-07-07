@@ -146,6 +146,25 @@ inline uint32_t appleBandwidthFromIntelSelector(uint32_t selector)
     }
 }
 
+inline bool buildLegacyNrateFromHalfMbps(uint32_t halfMbps, uint32_t *nrate)
+{
+    if (nrate == nullptr || halfMbps == 0 || halfMbps > 0xff)
+        return false;
+
+    *nrate = kFamilyLegacy | halfMbps;
+    return true;
+}
+
+inline bool buildHtNrateFromMcs(uint32_t mcs, bool ht40, uint32_t *nrate)
+{
+    if (nrate == nullptr || mcs > kIwmRateHtMcsIndexMask)
+        return false;
+
+    *nrate = kFamilyHt | (ht40 ? kBandwidth40 : kBandwidth20) |
+        (mcs & kIwmRateHtMcsIndexMask);
+    return true;
+}
+
 inline bool normalizeIwmRateNFlagsToAppleNrate(uint32_t raw, uint32_t *nrate)
 {
     if (nrate == nullptr)
@@ -176,8 +195,7 @@ inline bool normalizeIwmRateNFlagsToAppleNrate(uint32_t raw, uint32_t *nrate)
     uint32_t halfMbps = 0;
     if (!legacyHalfMbpsFromIntelPlcp(raw & kIwmRateLegacyMask, &halfMbps))
         return false;
-    *nrate = kFamilyLegacy | halfMbps;
-    return true;
+    return buildLegacyNrateFromHalfMbps(halfMbps, nrate);
 }
 
 inline bool normalizeIwxRateNFlagsToAppleNrate(uint32_t raw, uint32_t *nrate)
@@ -213,8 +231,7 @@ inline bool normalizeIwxRateNFlagsToAppleNrate(uint32_t raw, uint32_t *nrate)
             uint32_t halfMbps = 0;
             if (!legacyHalfMbpsFromIwxV2(raw, &halfMbps))
                 return false;
-            *nrate = kFamilyLegacy | halfMbps;
-            return true;
+            return buildLegacyNrateFromHalfMbps(halfMbps, nrate);
         }
     }
 }

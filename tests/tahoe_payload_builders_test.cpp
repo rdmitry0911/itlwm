@@ -642,6 +642,9 @@ void testTahoeNrateContracts()
             "iwm HT nrate carries family, bandwidth, and MCS");
     require(decodeRateMbpsFromNrate(nrate, &mbps) && mbps == 108,
             "Apple nrate HT rate decodes to integer Mbps");
+    require(buildHtNrateFromMcs(0x0f, true, &nrate) &&
+                nrate == (kFamilyHt | kBandwidth40 | 0x0f),
+            "iwn HT MCS carrier builds Apple HT nrate");
 
     require(normalizeIwmRateNFlagsToAppleNrate(3, &nrate) &&
                 nrate == (kFamilyLegacy | 108),
@@ -650,6 +653,9 @@ void testTahoeNrateContracts()
                                                &nrate) &&
                 nrate == (kFamilyLegacy | 108),
             "iwx legacy 54M index normalizes to Apple legacy nrate");
+    require(buildLegacyNrateFromHalfMbps(108, &nrate) &&
+                nrate == (kFamilyLegacy | 108),
+            "iwn legacy half-Mbps carrier builds Apple legacy nrate");
     require(decodeRateMbpsFromNrate(nrate, &mbps) && mbps == 54,
             "Apple legacy nrate decodes half-Mbps carrier to Mbps");
 

@@ -810,6 +810,13 @@ The `getTXPOWER` / `getMCS_VHT` config-backed source lift is closed, and
 rebuilding the value from `ic_bss->ni_txmcs`, channel width, SGI, and NSS side
 fields. See `docs/reference/CR-479-rate-nrate-normalization-20260707.md`.
 
+Current-lab follow-up: the active Tahoe hardware is on `ItlIwn` (`iwn-6030`),
+while the original cache reader only covered `ItlIwm` and `ItlIwx`. The iwn
+HAL now publishes the same Apple-shaped cached `nrate` from its TX command,
+TX_DONE, and A-MPDU/BlockAck producer path, and both Tahoe Skywalk and legacy
+Apple80211 getter paths consume it. See
+`docs/reference/CR-479-iwn-nrate-cache-20260707.md`.
+
 Status:
 
 - closed

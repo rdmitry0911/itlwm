@@ -92,6 +92,9 @@ struct iwn_tx_data {
     int ampdu_txmcs;
     int ampdu_nframes;
 
+    uint32_t tx_apple_nrate;
+    uint8_t tx_apple_nrate_valid;
+
     /*
      * Diagnostic identity captured by iwn_tx() BEFORE the
      * existing mbuf_adj() trim that strips the 802.11 header
@@ -360,6 +363,8 @@ struct iwn_softc {
     uint8_t         dbg_auth_ackfailcnt;
     uint8_t         dbg_auth_txrate;
     uint16_t        dbg_auth_txstatus_seen;
+    uint32_t        sc_last_apple_nrate;
+    uint8_t         sc_has_last_apple_nrate;
 
     uint32_t        prom_base;
     struct iwn4965_eeprom_band

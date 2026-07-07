@@ -35,6 +35,7 @@
  */
 
 #include "ItlIwn.hpp"
+#include "../../AirportItlwm/TahoeNrateContracts.hpp"
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -68,6 +69,11 @@ int iwn_debug = 1;
 #endif
 
 #define M_DEVBUF 2
+
+static void iwn_clear_apple_nrate_cache(struct iwn_softc *sc);
+static void iwn_publish_apple_nrate(struct iwn_softc *sc, uint32_t nrate);
+static bool iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags,
+                                     uint32_t *nrate);
 
 #ifndef IWN_APGO_FIRMWARE_BACKEND_OPT_IN
 #define IWN_APGO_FIRMWARE_BACKEND_OPT_IN 0
@@ -1475,6 +1481,8 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
 
         data->cmd_paddr = paddr;
         data->scratch_paddr = paddr + 12;
+        data->tx_apple_nrate = 0;
+        data->tx_apple_nrate_valid = 0;
         paddr += sizeof (struct iwn_tx_cmd);
 
         error = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
@@ -1507,6 +1515,8 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
             mbuf_freem(data->m);
             data->m = NULL;
         }
+        data->tx_apple_nrate = 0;
+        data->tx_apple_nrate_valid = 0;
     }
     /* Clear TX descriptors. */
     memset(ring->desc, 0, ring->desc_dma.size);
@@ -1535,6 +1545,8 @@ iwn_free_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
             mbuf_freem(data->m);
             data->m = NULL;
         }
+        data->tx_apple_nrate = 0;
+        data->tx_apple_nrate_valid = 0;
         if (data->map != NULL) {
             bus_dmamap_destroy(sc->sc_dmat, data->map);
             data->map = NULL;
@@ -1838,6 +1850,8 @@ iwn_newassoc(struct ieee80211com *ic, struct ieee80211_node *ni, int isnew)
     if ((ni->ni_flags & IEEE80211_NODE_HT) == 0)
         ieee80211_amrr_node_init(&sc->amrr, &wn->amn);
 
+    iwn_clear_apple_nrate_cache(sc);
+
     /* Start at lowest available bit-rate, AMRR/MiRA will raise. */
     ni->ni_txrate = 0;
     ni->ni_txmcs = 0;
@@ -1924,6 +1938,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     if (ic->ic_state >= IEEE80211_S_ASSOC &&
         nstate <= IEEE80211_S_ASSOC) {
         /* Reset state to handle re- and disassociations. */
+        iwn_clear_apple_nrate_cache(sc);
         sc->rxon.associd = 0;
         sc->rxon.filter &= ~htole32(IWN_FILTER_BSS);
         sc->rxon.flags &= ~htole32(IWN_RXON_HT_CHANMODE_MIXED2040 |
@@ -2406,6 +2421,8 @@ iwn_ampdu_rate_control(struct iwn_softc *sc, struct ieee80211_node *ni,
     while (idx != end_idx) {
         struct iwn_tx_data *txdata = &txq->data[idx];
         if (txdata->m != NULL && txdata->ampdu_nframes > 1) {
+            if (txdata->tx_apple_nrate_valid)
+                iwn_publish_apple_nrate(sc, txdata->tx_apple_nrate);
             /*
              * We can assume that this subframe has been ACKed
              * because ACK failures come as single frames and
@@ -2739,6 +2756,9 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
                 continue;
             
             /* The Tx rate was the same for all subframes. */
+            if (iwn_build_ht_apple_nrate(rate, rflags,
+                                         &txdata->tx_apple_nrate))
+                txdata->tx_apple_nrate_valid = 1;
             txdata->ampdu_txmcs = rate;
             txdata->ampdu_nframes = nframes;
         }
@@ -2747,6 +2767,13 @@ iwn_ampdu_tx_done(struct iwn_softc *sc, struct iwn_tx_ring *txq,
 
     if (ni == NULL)
         return;
+
+    if (txdata->tx_apple_nrate_valid)
+        iwn_publish_apple_nrate(sc, txdata->tx_apple_nrate);
+    if (iwn_build_ht_apple_nrate(rate, rflags, &txdata->tx_apple_nrate)) {
+        txdata->tx_apple_nrate_valid = 1;
+        iwn_publish_apple_nrate(sc, txdata->tx_apple_nrate);
+    }
 
     ba = &ni->ni_tx_ba[tid];
     if (ba->ba_state != IEEE80211_BA_AGREED)
@@ -2937,6 +2964,8 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->totlen = 0;
     data->ampdu_nframes = 0;
     data->ampdu_txmcs = 0;
+    data->tx_apple_nrate = 0;
+    data->tx_apple_nrate_valid = 0;
 }
 
 void ItlIwn::
@@ -2998,6 +3027,13 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
     if (data->ni == NULL) {
         iwn_refresh_tx_timer(sc);
         return;
+    }
+
+    if (data->tx_apple_nrate_valid)
+        iwn_publish_apple_nrate(sc, data->tx_apple_nrate);
+    if (iwn_build_ht_apple_nrate(rate, rflags, &data->tx_apple_nrate)) {
+        data->tx_apple_nrate_valid = 1;
+        iwn_publish_apple_nrate(sc, data->tx_apple_nrate);
     }
 
     if (data->ni->ni_flags & IEEE80211_NODE_HT) {
@@ -3633,6 +3669,30 @@ iwn_is_mimo_mcs(int mcs)
     
 }
 
+static void
+iwn_clear_apple_nrate_cache(struct iwn_softc *sc)
+{
+    sc->sc_last_apple_nrate = 0;
+    sc->sc_has_last_apple_nrate = 0;
+}
+
+static void
+iwn_publish_apple_nrate(struct iwn_softc *sc, uint32_t nrate)
+{
+    sc->sc_last_apple_nrate = nrate;
+    sc->sc_has_last_apple_nrate = 1;
+}
+
+static bool
+iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags, uint32_t *nrate)
+{
+    if ((rflags & IWN_RFLAG_MCS) == 0 || rate > IWN_RATE_HT_MIMO2_MCS_15_PLCP)
+        return false;
+
+    return TahoeNrateContracts::buildHtNrateFromMcs(
+        rate, (rflags & IWN_RFLAG_HT40) != 0, nrate);
+}
+
 int ItlIwn::
 iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
 {
@@ -3655,6 +3715,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     IOPhysicalSegment *seg;
     IOPhysicalSegment segs[IWN_MAX_SCATTER - 1];
     int nsegs = 0;
+    uint32_t tx_apple_nrate = 0;
+    bool tx_apple_nrate_valid = false;
     uint8_t *ivp, tid, ridx, txant, type, subtype;
     int i, totlen, hasqos, error, pad;
 
@@ -3943,6 +4005,19 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         tx->linkq = 0; /* initial index into firmware LQ retry table */
         flags |= IWN_TX_LINKQ;    /* enable multi-rate retry */
     }
+
+    if (tx->id != sc->broadcast_id && type == IEEE80211_FC0_TYPE_DATA) {
+        if (tx->rflags & IWN_RFLAG_MCS) {
+            tx_apple_nrate_valid =
+                iwn_build_ht_apple_nrate(tx->plcp, tx->rflags,
+                                         &tx_apple_nrate);
+        } else {
+            tx_apple_nrate_valid =
+                TahoeNrateContracts::buildLegacyNrateFromHalfMbps(
+                    rinfo->rate, &tx_apple_nrate);
+        }
+    }
+
     /* Set physical address of "scratch area". */
     tx->loaddr = htole32(IWN_LOADDR(data->scratch_paddr));
     tx->hiaddr = IWN_HIADDR(data->scratch_paddr);
@@ -3990,6 +4065,10 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     data->m = m;
     data->ni = ni;
     data->ampdu_txmcs = ni->ni_txmcs; /* updated upon Tx interrupt */
+    data->tx_apple_nrate = tx_apple_nrate;
+    data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
+    if (data->tx_apple_nrate_valid)
+        iwn_publish_apple_nrate(sc, data->tx_apple_nrate);
     /* Store captured diagnostic identity onto the per-tx-buffer
      * entry. The captured locals diag_subtype / diag_auth_seq /
      * diag_peer above are the load-bearing copies for the

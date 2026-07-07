@@ -335,6 +335,14 @@ static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
         return kIOReturnSuccess;
     }
 
+    if (auto *iwn = OSDynamicCast(ItlIwn, hal)) {
+        struct iwn_softc *sc = &iwn->com;
+        if (!sc->sc_has_last_apple_nrate)
+            return kApple80211ErrConfigNoValue;
+        *rate = sc->sc_last_apple_nrate;
+        return kIOReturnSuccess;
+    }
+
     return kApple80211ErrConfigNoValue;
 }
 
