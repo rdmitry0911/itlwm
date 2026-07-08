@@ -85,7 +85,7 @@ required):
 - `setLinkStateGated` evaluates the recovered predicates (`getWorkLoop()->onThread()`,
   `getWorkLoop()->inGate()`, `onDispatchQueue()`) as a precondition GUARD at the
   TOP of the Tahoe publication path — before ANY publication side effect
-  (`syncTahoeCurrentApAddress`, `postTahoeWclLinkUpInd`, `reportLinkStatus`,
+  (`postTahoeWclLinkUpInd`, `reportLinkStatus`,
   `setLinkState`, `setRunningState`, the connect-complete event, and `postMessage`).
   The publication proceeds only when `onThread()==1 && inGate()==0` (the recovered
   `sendIOUCToWcl` precondition). When the precondition is not satisfied — i.e. the

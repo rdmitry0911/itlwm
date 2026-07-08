@@ -904,6 +904,32 @@ void testTahoeBssManagerWriterContracts()
                   "BssManager setAssocRSNIE keeps Apple writer signature");
 }
 
+void testTahoeBssidChangedCarrierLayout()
+{
+    struct Channel {
+        uint32_t version;
+        uint32_t channel;
+        uint32_t flags;
+    };
+    struct BssidChangedCarrier {
+        uint8_t bssid[6];
+        uint8_t pad06[2];
+        Channel channel;
+        uint32_t reason;
+    };
+
+    require(sizeof(BssidChangedCarrier) == 0x18,
+            "BSSID_CHANGED compact carrier remains 24 bytes");
+    require(offsetof(BssidChangedCarrier, bssid) == 0x00,
+            "BSSID_CHANGED carrier stores BSSID at +0x00");
+    require(offsetof(BssidChangedCarrier, channel) == 0x08,
+            "BSSID_CHANGED carrier stores apple80211_channel at +0x08");
+    require(sizeof(Channel) == 0x0c,
+            "apple80211_channel remains the 12-byte embedded channel carrier");
+    require(offsetof(BssidChangedCarrier, reason) == 0x14,
+            "BSSID_CHANGED carrier stores reason at +0x14");
+}
+
 void testTahoeCapabilityContracts()
 {
     using namespace TahoeCapabilityContracts;
@@ -979,8 +1005,9 @@ int main()
     testTahoeMimoContracts();
     testTahoeLqmContracts();
     testTahoeBssManagerWriterContracts();
+    testTahoeBssidChangedCarrierLayout();
     testTahoeCapabilityContracts();
     testTahoeAssociationAuthContracts();
-    std::cout << "tahoe payload builders ok: 22 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 23 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

@@ -352,9 +352,6 @@ public:
                                const IONetworkMedium * activeMedium = 0,
                                UInt64                  speed        = 0,
                                OSData *                data         = 0) override;
-#if __IO80211_TARGET >= __MAC_26_0
-    bool syncTahoeCurrentApAddress(bool forceClear, bool allowInitialClear);
-#endif
     static IOReturn setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -564,9 +561,6 @@ public:
     IONetworkStats *fpNetStats;
 #if __IO80211_TARGET >= __MAC_26_0
     IONetworkStats tahoeLegacyNetStats;
-    struct ether_addr tahoeCurrentApAddress;
-    bool tahoeCurrentApKnown;
-    bool tahoeCurrentApValid;
 #endif
     // On Sequoia (26.x), BSD ifnet is created by IOSkywalkNetworkBSDClient
     // after deferBSDAttach(false). The legacy IOEthernetInterface shim is dead.

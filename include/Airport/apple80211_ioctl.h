@@ -763,19 +763,21 @@ static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up
  *      path APPLE80211_IOC_LINK_CHANGED_EVENT_DATA = 156.
  *   2. 24-byte BSSID-changed compact carrier (APPLE80211_M_BSSID_CHANGED
  *      = 3) carried by struct apple80211_bssid_changed_event_data below.
- *      The carrier was recovered with length 0x18 and reason at offset
- *      0x14 from the Apple WCL writer reached through the IOUC selector
- *      0x1b1 path (a separate 0x844-byte IOUC envelope, current-BSS plus
- *      WCLBSSBeacon validation, zero-BSSID rejected, default and failure
- *      statuses 0xe0822403 / pass-through IOUC failure / wrapper
- *      bad-envelope 0xe00002bc). The recovered Apple suppression rule is:
- *      a publication whose reason field equals 1 and whose bssid matches
- *      the last published bssid is suppressed; any other reason or any
- *      bssid transition publishes the populated 24-byte payload through
- *      the standard IO80211Controller::postMessage / IO80211Glue
- *      pending-queue routing. Tahoe userspace length-checks this carrier
- *      and rejects zero-length publications, so the populated 24-byte
- *      payload is the only valid Tahoe shape for this event.
+ *      The carrier was recovered with length 0x18, BSSID at offset +0x00,
+ *      apple80211_channel at offset +0x08, and reason at offset +0x14.
+ *      IO80211InfraInterface::bssidChange(data, 0x18) consumes the embedded
+ *      channel before normal event delivery, calling
+ *      IO80211Controller::setInfraChannel(data + 0x08) and updating the
+ *      framework-visible channel properties. The WCL writer reached through
+ *      IOUC selector 0x1b1 still owns the current-BSS validation,
+ *      WCLBSSBeacon validation, zero-BSSID rejection, and same-BSS reason-1
+ *      suppression rule: a publication whose reason field equals 1 and whose
+ *      bssid matches the last published bssid is suppressed; any other
+ *      reason or bssid transition publishes the populated 24-byte payload
+ *      through the standard IO80211Controller::postMessage / IO80211Glue
+ *      pending-queue routing. Tahoe userspace length-checks this carrier and
+ *      rejects zero-length publications, so the populated 24-byte payload is
+ *      the only valid Tahoe shape for this event.
  *   3. 16-byte WCL link-state update carrier (WCL event code 0xd8) carried
  *      by struct TahoeWclLinkChangedPayload defined in AirportItlwmV2.cpp.
  *      This is a direct WCL link-state update path produced by
@@ -801,8 +803,8 @@ static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up
 struct apple80211_bssid_changed_event_data
 {
     uint8_t  bssid[6];        // +0x00..+0x05
-    uint8_t  _pad_06[0x0e];   // +0x06..+0x13 (Apple-internal fields not
-                              //                yet field-named)
+    uint8_t  _pad_06[0x02];   // +0x06..+0x07
+    struct apple80211_channel channel; // +0x08..+0x13
     uint32_t reason;          // +0x14..+0x17 (Apple BSSID change reason;
                               //                value 1 is the suppression
                               //                marker when bssid is
@@ -814,6 +816,8 @@ static_assert(sizeof(struct apple80211_bssid_changed_event_data) == 0x18,
               "(Tahoe compact carrier ABI)");
 static_assert(__offsetof(struct apple80211_bssid_changed_event_data, bssid) == 0x00,
               "bssid must live at +0x00 per Tahoe IOCTL ABI");
+static_assert(__offsetof(struct apple80211_bssid_changed_event_data, channel) == 0x08,
+              "channel must live at +0x08 per Tahoe IOCTL ABI");
 static_assert(__offsetof(struct apple80211_bssid_changed_event_data, reason) == 0x14,
               "reason must live at +0x14 per Tahoe IOCTL ABI");
 

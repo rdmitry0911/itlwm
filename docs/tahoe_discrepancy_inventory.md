@@ -5197,3 +5197,57 @@ Non-claims:
 
 - this does not enable APSTA/HostAP runtime, force AP-up state, send SoftAP
   IOVARs, or change the primary STA datapath.
+
+## item 213 — BSSID_CHANGED embedded infra-channel carrier layout
+
+- producers:
+  - WCL current-BSS route remains open
+  - passive `AirportItlwmSkywalkInterface::setCurrentApAddress(...)` hook only
+  - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` only if the
+    inherited success gate opens
+- status: open
+- justification: REFERENCE_LAYOUT_RECOVERED_PRODUCER_ROUTE_OPEN
+
+Reference evidence:
+
+- 25C56 `IO80211InfraInterface::bssidChange(void*, unsigned long)` accepts
+  length `0x18`, then calls
+  `IO80211Controller::setInfraChannel(controller, payload + 0x08)`;
+- the same body reads channel number from payload `+0x0c`, channel flags from
+  payload `+0x10`, and reason from payload `+0x14`;
+- `IO80211InfraInterface::getInfraLinkProperties(...)` later reads the
+  controller infra-channel cache at controller ivars `+0x1c0/+0x1c8` when
+  building LQM `Options`.
+
+Local closure:
+
+- `apple80211_bssid_changed_event_data` now names the embedded
+  `apple80211_channel` at `+0x08..+0x13` while preserving the 24-byte carrier,
+  BSSID at `+0x00`, and reason at `+0x14`;
+- the rejected local `syncTahoeCurrentApAddress()` cache-seeding route has been
+  removed and is no longer an active producer;
+- any passive local publisher still zero-initializes the full carrier and
+  populates only the BSSID and reason fields;
+- the same-BSS and zero-BSSID gates remain unchanged.
+
+Runtime validation:
+
+- 2026-07-08 after-fix guest build loaded UUID
+  `5051C320-D887-3608-A16D-9F5C4A5F83D5`, CDHash
+  `98202cb923d839e23a62f276426d8074e2a1511a`;
+- controlled lab AP join reached DHCP `10.77.0.157`; hostapd reported the STA
+  `authenticated=yes associated=yes authorized=yes`;
+- 240-second concurrent load passed: ping to `10.77.0.1` reported
+  `240 packets transmitted, 240 packets received, 0.0% packet loss`, while
+  iperf3 reported `675 MBytes` sent at `23.6 Mbits/sec`;
+- `networksetup -getairportnetwork en1` still returned
+  `You are not associated with an AirPort network.`, proving the removed
+  `syncTahoeCurrentApAddress()` route was not the reference current-BSS fix and
+  must not be reintroduced as a mask.
+
+Non-claims:
+
+- this does not claim the framework infra-channel state layer is closed;
+- this does not re-enable the LQM card-capability or slow-wifi gates;
+- a direct local nonzero-channel `bssidChange(data, 0x18)` call is not accepted
+  as the dispatch-safe current-BSS/WCL ownership route.

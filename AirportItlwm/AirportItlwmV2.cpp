@@ -2701,9 +2701,6 @@ bool AirportItlwm::init(OSDictionary *properties)
     fpNetStats = NULL;
 #if __IO80211_TARGET >= __MAC_26_0
     memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));
-    memset(&tahoeCurrentApAddress, 0, sizeof(tahoeCurrentApAddress));
-    tahoeCurrentApKnown = false;
-    tahoeCurrentApValid = false;
 #endif
     tahoeRequestedPowerState = kWiFiPowerOff;
     tahoeBootstrapPowerPending = false;
@@ -3944,51 +3941,6 @@ IOReturn AirportItlwm::selectMedium(const IONetworkMedium *medium) {
     return kIOReturnSuccess;
 }
 
-#if __IO80211_TARGET >= __MAC_26_0
-bool AirportItlwm::syncTahoeCurrentApAddress(bool forceClear, bool allowInitialClear)
-{
-    AirportItlwmSkywalkInterface *skyIf =
-        OSDynamicCast(AirportItlwmSkywalkInterface, fNetIf);
-    if (skyIf == nullptr)
-        return false;
-
-    struct ieee80211com *ic = fHalService != nullptr
-        ? fHalService->get80211Controller()
-        : nullptr;
-    struct ether_addr targetAp;
-    bool targetValid = false;
-    if (!forceClear && ic != nullptr &&
-        ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr) {
-        IEEE80211_ADDR_COPY(targetAp.octet, ic->ic_bss->ni_bssid);
-        targetValid = true;
-    }
-
-    if (targetValid) {
-        if (tahoeCurrentApKnown && tahoeCurrentApValid &&
-            IEEE80211_ADDR_EQ(tahoeCurrentApAddress.octet, targetAp.octet)) {
-            return false;
-        }
-
-        skyIf->setCurrentApAddress(&targetAp);
-        IEEE80211_ADDR_COPY(tahoeCurrentApAddress.octet, targetAp.octet);
-        tahoeCurrentApKnown = true;
-        tahoeCurrentApValid = true;
-        return true;
-    }
-
-    if (tahoeCurrentApKnown && !tahoeCurrentApValid)
-        return false;
-    if (!allowInitialClear && !tahoeCurrentApKnown)
-        return false;
-
-    skyIf->setCurrentApAddress(nullptr);
-    memset(&tahoeCurrentApAddress, 0, sizeof(tahoeCurrentApAddress));
-    tahoeCurrentApKnown = true;
-    tahoeCurrentApValid = false;
-    return true;
-}
-#endif
-
 bool AirportItlwm::
 setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed, OSData * data)
 {
@@ -3996,10 +3948,6 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
     (void)speed;
     struct _ifnet *ifq = &fHalService->get80211Controller()->ic_ac.ac_if;
     if (status == currentStatus) {
-#if __IO80211_TARGET >= __MAC_26_0
-        if ((status & kIONetworkLinkActive) != 0)
-            syncTahoeCurrentApAddress(false, false);
-#endif
         return true;
     }
     bool ret = super::setLinkStatus(status, activeMedium, speed, data);
@@ -4072,8 +4020,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     }
     const unsigned int setLinkCode =
         (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
-    that->syncTahoeCurrentApAddress(
-        linkState != kIO80211NetworkLinkUp, true);
     if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclLinkUpInd(that, rawCode);
     }
