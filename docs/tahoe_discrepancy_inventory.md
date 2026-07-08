@@ -5201,12 +5201,13 @@ Non-claims:
 ## item 213 — BSSID_CHANGED embedded infra-channel carrier layout
 
 - producers:
-  - WCL current-BSS route remains open
-  - passive `AirportItlwmSkywalkInterface::setCurrentApAddress(...)` hook only
+  - passive `AirportItlwmSkywalkInterface::setCurrentApAddress(...)` hook
+    fills the compact carrier from the current associated BSS when the proposed
+    BSSID matches that BSS
   - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` only if the
-    inherited success gate opens
-- status: open
-- justification: REFERENCE_LAYOUT_RECOVERED_PRODUCER_ROUTE_OPEN
+    inherited success gate opens, with the same BSSID/channel/reason writer
+- status: closed
+- justification: REFERENCE_COMPACT_CARRIER_LAYOUT_MATCHED
 
 Reference evidence:
 
@@ -5226,31 +5227,44 @@ Local closure:
   BSSID at `+0x00`, and reason at `+0x14`;
 - the rejected local `syncTahoeCurrentApAddress()` cache-seeding route has been
   removed and is no longer an active producer;
-- any passive local publisher still zero-initializes the full carrier and
-  populates only the BSSID and reason fields;
+- passive local publishers still zero-initialize the full carrier and now fill
+  BSSID, embedded `apple80211_channel.version/channel/flags`, and reason. The
+  embedded channel is copied only from the current associated net80211 BSS when
+  the proposed BSSID matches `ic->ic_bss->ni_bssid`; non-current proposals keep
+  the zeroed channel sub-structure;
 - the same-BSS and zero-BSSID gates remain unchanged.
 
 Runtime validation:
 
 - 2026-07-08 after-fix guest build loaded UUID
-  `5051C320-D887-3608-A16D-9F5C4A5F83D5`, CDHash
-  `98202cb923d839e23a62f276426d8074e2a1511a`;
-- controlled lab AP join reached DHCP `10.77.0.157`; hostapd reported the STA
-  `authenticated=yes associated=yes authorized=yes`;
-- 240-second concurrent load passed: ping to `10.77.0.1` reported
-  `240 packets transmitted, 240 packets received, 0.0% packet loss`, while
-  iperf3 reported `675 MBytes` sent at `23.6 Mbits/sec`;
+  `4AEB8F29-2E45-3E58-8B18-54E385ED3E6F`, CDHash
+  `9129080554d4384bcc0ee9e562a75a3f5369f7f3`;
+- controlled lab AP join reached DHCP `10.77.0.47`; IORegistry retained
+  `IO80211SSID = "AIAMlab6235"`, `IO80211BSSID = <80e4ba20eff9>`, and
+  `IO80211Channel = 6`; `system_profiler SPAirPortDataType` reported
+  `Status: Connected` and current channel `6 (2GHz, 20MHz)`;
+- two 240-second full TCP-stress runs completed without disconnecting the link:
+  the first run reported `819 MBytes` at `28.6 Mbits/sec` with ICMP
+  `239/240` (`0.4% packet loss`), and the repeat reported `749 MBytes` at
+  `26.2 Mbits/sec` with ICMP `238/240` (`0.8% packet loss`);
+- a post-stress no-load control ping reported `20 packets transmitted,
+  20 packets received, 0.0% packet loss`;
+- the validation log window had no CoreCapture, missed-beacon, stack-corruption,
+  panic, deauth, disassoc, or kext-fault entries, and `en1` remained `active`
+  after both stress windows;
 - `networksetup -getairportnetwork en1` still returned
-  `You are not associated with an AirPort network.`, proving the removed
-  `syncTahoeCurrentApAddress()` route was not the reference current-BSS fix and
-  must not be reintroduced as a mask.
+  `You are not associated with an AirPort network.`, and public CoreWLAN still
+  returned nil SSID/BSSID while reporting channel 6. The observed Tahoe public
+  client gate is therefore still separate from the compact event-3 carrier.
 
 Non-claims:
 
-- this does not claim the framework infra-channel state layer is closed;
+- this does not claim the broader WCL/current-BSS ownership route is closed;
 - this does not re-enable the LQM card-capability or slow-wifi gates;
-- a direct local nonzero-channel `bssidChange(data, 0x18)` call is not accepted
-  as the dispatch-safe current-BSS/WCL ownership route.
+- this does not revive `syncTahoeCurrentApAddress()` or any forced
+  `setCurrentApAddress(NULL/BSSID)` cache seed; the explicit local
+  `bssidChange(data, 0x18)` side-effect remains limited to the recovered
+  compact event-3 carrier before normal PostOffice delivery.
 
 ## item 214 — SSID_CHANGED join-edge producer and raw current-link carriers
 

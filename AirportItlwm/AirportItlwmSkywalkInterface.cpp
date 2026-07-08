@@ -608,6 +608,28 @@ static int ieeeChanFlag2apple(int flags, int bw)
     return ret;
 }
 
+static bool fillTahoeBssidChangedChannelFromCurrentBss(
+    struct ieee80211com *ic, const uint8_t *bssid,
+    apple80211_bssid_changed_event_data *eventData)
+{
+    if (ic == nullptr || bssid == nullptr || eventData == nullptr ||
+        ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr ||
+        ic->ic_bss->ni_chan == nullptr ||
+        ic->ic_bss->ni_chan == IEEE80211_CHAN_ANYC)
+        return false;
+
+    if (memcmp(bssid, ic->ic_bss->ni_bssid, IEEE80211_ADDR_LEN) != 0)
+        return false;
+
+    eventData->channel.version = APPLE80211_VERSION;
+    eventData->channel.channel =
+        ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+    eventData->channel.flags =
+        ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags,
+                           ic->ic_bss->ni_chw);
+    return eventData->channel.channel != 0;
+}
+
 static void postTahoeBssidChangedThroughInfraHelper(
     AirportItlwmSkywalkInterface *iface, AirportItlwm *controller,
     apple80211_bssid_changed_event_data *eventData, const char *source)
@@ -2682,6 +2704,8 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                     apple80211_bssid_changed_event_data bd;
                     bzero(&bd, sizeof(bd));
                     memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
+                    fillTahoeBssidChangedChannelFromCurrentBss(
+                        ic, proposedBssid, &bd);
                     bd.reason = classifiedReason;
                     postTahoeBssidChangedThroughInfraHelper(
                         this, instance, &bd, "setLinkStateInternal");
@@ -2715,6 +2739,9 @@ setCurrentApAddress(ether_addr *addr)
     IO80211InfraInterface::setCurrentApAddress(addr);
 
 #if __IO80211_TARGET >= __MAC_26_0
+    struct ieee80211com *ic =
+        fHalService ? fHalService->get80211Controller() : nullptr;
+
     /* Tahoe APPLE80211_M_BSSID_CHANGED 24-byte compact carrier - producer
      * hook on the natural Apple framework setCurrentApAddress entry.
      *
@@ -2776,6 +2803,8 @@ setCurrentApAddress(ether_addr *addr)
                     apple80211_bssid_changed_event_data bd;
                     bzero(&bd, sizeof(bd));
                     memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
+                    fillTahoeBssidChangedChannelFromCurrentBss(
+                        ic, proposedBssid, &bd);
                     bd.reason = classifiedReason;
                     postTahoeBssidChangedThroughInfraHelper(
                         this, instance, &bd, "setCurrentApAddress");

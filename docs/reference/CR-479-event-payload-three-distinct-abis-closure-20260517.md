@@ -35,9 +35,9 @@ Tahoe userspace length-checks this carrier (prior runtime evidence: `APPLE80211_
 
 Static enforcement: `static_assert(sizeof(apple80211_bssid_changed_event_data) == 0x18, ...)`, `__offsetof(bssid) == 0x00`, `__offsetof(channel) == 0x08`, `__offsetof(reason) == 0x14`.
 
-Local status: the previously carried Tahoe `syncTahoeCurrentApAddress()` route forced `IO80211InfraInterface::setCurrentApAddress(NULL/BSSID)` from the local link-state path. Earlier review rejected that as guessed current-AP cache seeding, and the 2026-07-08 cleanup removes the forced route and its local cache state. The remaining `AirportItlwmSkywalkInterface::setCurrentApAddress` override is therefore only a passive framework entry hook; it is no longer claimed as the active local producer for accepted association edges.
+Local status: the previously carried Tahoe `syncTahoeCurrentApAddress()` route forced `IO80211InfraInterface::setCurrentApAddress(NULL/BSSID)` from the local link-state path. Earlier review rejected that as guessed current-AP cache seeding, and the 2026-07-08 cleanup removes the forced route and its local cache state. The remaining local BSSID-changed publishers now zero-initialize the 24-byte carrier, fill the BSSID and reason fields through the existing same-BSS / zero-BSSID gates, and populate the recovered embedded `apple80211_channel` only from the current associated net80211 BSS when the proposed BSSID matches `ic->ic_bss->ni_bssid`. This closes the local carrier field shape without reviving the rejected current-AP cache seed.
 
-A secondary publisher with the same gate logic also exists inside `AirportItlwmSkywalkInterface::setLinkStateInternal` behind the inherited `ret == kIOReturnSuccess` gate that the prior committed 32-byte `APPLE80211_M_LINK_CHANGED` publisher uses. On the live Tahoe Skywalk runtime that gate stays closed (the parent `IO80211InfraInterface::setLinkStateInternal` returns `0x1` on every observed call), so the secondary publisher does not fire in practice; if the parent gate ever opens on a future Tahoe runtime, the shared `fLastPublishedBssid` / `fLastPublishedBssidValid` tracker will classify the secondary call as `APPLE80211_BSSID_CHANGE_REASON_SAME_BSS` and suppress double publication. The credential-safe marker `Tahoe Skywalk M_BSSID_CHANGED bssid=... reason=<0|1> same_bss_reason_1_suppressed=<0|1> zero_bssid_rejected=<0|1>` reports the classification on every publisher entry: a normal first call with a non-zero address emits `reason=0 same_bss_reason_1_suppressed=0 zero_bssid_rejected=0` plus a published payload; a repeated call with the same address without an intervening link-down or null clear emits `reason=1 same_bss_reason_1_suppressed=1 zero_bssid_rejected=0` and no payload; a null or all-zero address emits `zero_bssid_rejected=1` and no payload.
+A secondary publisher with the same gate logic also exists inside `AirportItlwmSkywalkInterface::setLinkStateInternal` behind the inherited `ret == kIOReturnSuccess` gate that the prior committed 32-byte `APPLE80211_M_LINK_CHANGED` publisher uses. On the live Tahoe Skywalk runtime that gate stays closed (the parent `IO80211InfraInterface::setLinkStateInternal` returns `0x1` on every observed call), so the secondary publisher does not fire in practice; if the parent gate ever opens on a future Tahoe runtime, the shared `fLastPublishedBssid` / `fLastPublishedBssidValid` tracker will classify the secondary call as `APPLE80211_BSSID_CHANGE_REASON_SAME_BSS` and suppress double publication. The credential-safe marker `Tahoe Skywalk M_BSSID_CHANGED bssid=... reason=<0|1> same_bss_reason_1_suppressed=<0|1> zero_bssid_rejected=<0|1>` reports the classification on every publisher entry: a normal first call with a non-zero address emits `reason=0 same_bss_reason_1_suppressed=0 zero_bssid_rejected=0` plus a published payload; a repeated call with the same address without an intervening link-down or null clear emits `reason=1 same_bss_reason_1_suppressed=1 zero_bssid_rejected=0` and no payload; a null or all-zero address emits `zero_bssid_rejected=1` and no payload. The embedded channel writer is conditional on the same current-BSS match and leaves the zeroed channel sub-structure intact when the proposed address is not the associated BSS.
 
 ### 2a. Zero-length SSID-changed join event (APPLE80211_M_SSID_CHANGED = 2)
 
@@ -85,23 +85,31 @@ The local kext's diagnostic instrumentation in `AirportItlwm::postWclScanDoneGat
 | --- | --- | --- | --- |
 | 32-byte link-changed (event 4 / IOC 156) | `include/Airport/apple80211_ioctl.h` `struct apple80211_link_changed_event_data` | `AirportItlwmSkywalkInterface::setLinkStateInternal` (inline 32-byte publication on parent transition success; same struct is the SIOCGA80211 IOC 156 response) | `AirportItlwmSkywalkInterface::getLINK_CHANGED_EVENT_DATA` (returns 32 bytes on SIOCGA80211) |
 | zero-length SSID-changed (event 2) | no payload; airportd re-reads associated/current network state | `AirportItlwm::setLinkStateGated` on the accepted Tahoe join-up edge after WCL connect-complete, mirroring `AppleBCMWLANJoinAdapter::handleSetSSID`'s code-2 producer | airportd `CWXPCInterfaceContext::ssidChanged` schedules `__associatedNetwork` and `setAssociatedNetwork:` |
-| 24-byte BSSID-changed (event 3 compact) | `include/Airport/apple80211_ioctl.h` `struct apple80211_bssid_changed_event_data` (named fields `bssid +0x00`, `_pad_06 +0x06..+0x07`, `channel +0x08`, `reason +0x14`) | Open current-BSS/WCL producer route. The rejected forced `syncTahoeCurrentApAddress()` seeding path has been removed; the `setCurrentApAddress` override remains only as a passive framework entry hook. The secondary `AirportItlwmSkywalkInterface::setLinkStateInternal` publisher is still behind the inherited `ret == kIOReturnSuccess` gate, currently closed on live Tahoe Skywalk. | `IO80211InfraInterface::bssidChange(data, 0x18)` consumes the embedded channel when the framework's InfraInterface message path invokes it |
+| 24-byte BSSID-changed (event 3 compact) | `include/Airport/apple80211_ioctl.h` `struct apple80211_bssid_changed_event_data` (named fields `bssid +0x00`, `_pad_06 +0x06..+0x07`, `channel +0x08`, `reason +0x14`) | The rejected forced `syncTahoeCurrentApAddress()` seeding path has been removed. The passive `setCurrentApAddress` hook and the secondary `AirportItlwmSkywalkInterface::setLinkStateInternal` publisher fill BSSID, embedded channel, and reason from the current associated BSS only after the existing BSSID gates accept the edge; the secondary publisher remains behind the inherited `ret == kIOReturnSuccess` gate, currently closed on live Tahoe Skywalk. | `IO80211InfraInterface::bssidChange(data, 0x18)` consumes the embedded channel when the framework's InfraInterface message path invokes it |
 | 16-byte WCL 0xd8 link-state | `AirportItlwm/AirportItlwmV2.cpp` `struct TahoeWclLinkChangedPayload` | `postTahoeWclLinkUpInd` (posts 0x10-byte payload with `postMessage(... kTahoeWclLinkChanged, &payload, 0x10, true)`) | n/a (consumer is Apple userland event handler for WCL event 0xd8) |
 
 ## Non-claims
 
 - This iteration does not change the 32-byte link-changed inline publication or the SIOCGA80211 IOC 156 getter; the existing committed behavior at `d43f4d9d238c80c019ec2c3f31e30fa633c9ebfb` for `APPLE80211_M_LINK_CHANGED` is preserved byte-for-byte.
 - This iteration does not change the 16-byte WCL 0xd8 publisher or the `TahoeWclLinkChangedPayload` definition; the existing committed behavior is preserved byte-for-byte and the WCL payload is never byte-synthesised into a legacy 3/4 payload.
-- This iteration names only the recovered `apple80211_channel` at `+0x08..+0x13`; the two bytes at `+0x06..+0x07` remain reserved padding.
-- This iteration does not claim a dispatch-safe local producer for a nonzero
-  embedded channel. The direct local `bssidChange` side-effect is not the
-  final WCL/current-BSS ownership fix.
+- This iteration writes only the recovered `apple80211_channel` at
+  `+0x08..+0x13` when the accepted BSSID matches the current associated BSS;
+  the two bytes at `+0x06..+0x07` remain reserved padding.
+- This iteration does not claim the final WCL/current-BSS ownership route; it
+  only makes the already-active local compact event-3 carrier match the
+  recovered field layout before the framework `bssidChange(data, 0x18)`
+  side-effect and PostOffice delivery path consume it.
 - This iteration does not modify the IO80211Glue / PostOffice framework code; it relies on the documented `postMessage` entry to perform copy / filter / route / drain / free.
 
 ## Residual uncertainty (does not block Stage 1 approval)
 
-- The two bytes at offset `+0x06..+0x07` of the 24-byte BSSID-changed payload remain reserved opaque pad. The local publisher zeroes them and populates the named BSSID and reason fields; the dispatch-safe channel writer remains part of the open current-BSS/WCL route.
-- The passive `setCurrentApAddress` hook still classifies a framework-supplied BSSID against the tracker if the framework enters that slot. The local driver no longer manufactures such entries from net80211 state; the dispatch-safe producer remains the open WCL current-BSS route.
+- The two bytes at offset `+0x06..+0x07` of the 24-byte BSSID-changed payload
+  remain reserved opaque pad. The local publisher zeroes them and populates only
+  the named BSSID, embedded channel, and reason fields.
+- The passive `setCurrentApAddress` hook still classifies a framework-supplied
+  BSSID against the tracker if the framework enters that slot. The local driver
+  no longer manufactures such entries through `syncTahoeCurrentApAddress()`;
+  the broader WCL current-BSS ownership route remains a separate layer.
 
 ## Provenance
 
