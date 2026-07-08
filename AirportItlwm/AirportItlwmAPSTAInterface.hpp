@@ -514,6 +514,7 @@ enum {
     kAirportItlwmAPSTASetSoftAPParamsStateParam20Offset = 0x20,
     kAirportItlwmAPSTASetSoftAPParamsStateParam24Offset = 0x24,
     kAirportItlwmAPSTASetSoftAPParamsStateParam28Offset = 0x28,
+    kAirportItlwmAPSTASetSoftAPParamsStateParam28Size = 4,
     kAirportItlwmAPSTASetSoftAPParamsStateEnabledFlagOffset = 0x0e,
     kAirportItlwmAPSTASetSoftAPParamsStateAPUpOffset = 0x26c,
     kAirportItlwmAPSTASetSoftAPParamsStateAppliedBeaconIntervalOffset = 0x68,
@@ -1203,8 +1204,7 @@ struct AirportItlwmAPSTAStateBlock {
     uint32_t softapParam1c;
     uint32_t softapParam20;
     uint32_t softapParam24;
-    uint8_t  softapParam28;
-    uint8_t  reserved0029[0x03];
+    uint32_t softapParam28;
     uint8_t  softapWifiNetworkInfoIE[kAirportItlwmAPSTAWifiNetworkInfoIESize];
     uint8_t  softapAppleVendorIEExtra50;
     uint8_t  softapAppleVendorIETail51[8];
@@ -2148,6 +2148,9 @@ static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapParam28) == 0x28,
 static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapParam28) ==
               kAirportItlwmAPSTASetSoftAPParamsStateParam28Offset,
               "APSTA setSOFTAP_PARAMS state +0x28 offset mismatch");
+static_assert(sizeof(((AirportItlwmAPSTAStateBlock *)0)->softapParam28) ==
+              kAirportItlwmAPSTASetSoftAPParamsStateParam28Size,
+              "APSTA setSOFTAP_PARAMS state +0x28 dword size mismatch");
 static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapWifiNetworkInfoIE) == 0x2c,
               "APSTA state +0x2c offset mismatch");
 static_assert(offsetof(AirportItlwmAPSTAStateBlock, softapWifiNetworkInfoIE) ==

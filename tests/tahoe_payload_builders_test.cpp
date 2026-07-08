@@ -305,6 +305,9 @@ void testApstaPublicContracts()
             "APSTA SoftAP params getter writes enabled bit at output +0x17");
     require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, param18) == 0x18,
             "APSTA SoftAP params getter writes byte field at output +0x18");
+    require(sizeof(((AirportItlwmAPSTAStateBlock *)0)->softapParam28) ==
+                kAirportItlwmAPSTASetSoftAPParamsStateParam28Size,
+            "APSTA SoftAP params state +0x28 stores zero-extended input byte as dword");
     require(kAirportItlwmAPSTASetSoftAPParamsClearPowerState ==
             kAirportItlwmAPSTAPowerStateOff,
             "APSTA SoftAP params disable path clears power-save state");

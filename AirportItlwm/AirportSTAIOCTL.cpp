@@ -1866,9 +1866,6 @@ IOReturn AirportItlwm::
 setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
     struct apple80211_softap_extended_capabilities_info *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     /*
      * Recovered Apple body clears state qword +0x50, qword +0x58
      * and word +0x60 (covering bytes 0x50..0x61), and then writes
@@ -1900,9 +1897,6 @@ setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
 IOReturn AirportItlwm::
 setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     /*
      * Recovered Apple body: AP-up gate; when AP is operational
      * forward input dword +0x00 to setMaxAssoc and ignore its

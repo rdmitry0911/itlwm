@@ -6075,9 +6075,6 @@ setSOFTAP_EXTENDED_CAPABILITIES_IE(OSObject *object,
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASetSoftAPExtCapsReturn);
     }
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     return fAPSTAOwner->setSoftAPExtCaps(in);
 }
 
@@ -6315,9 +6312,6 @@ IOReturn AirportItlwm::setSTA_DISASSOCIATE(OSObject *object,
 IOReturn AirportItlwm::setSOFTAP_PARAMS(OSObject *object,
     AirportItlwmAPSTASoftAPParamsInputLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
     }

@@ -454,7 +454,7 @@ IOReturn AirportItlwmAPSTAOwner::getSoftAPParams(
     out->param14 = state.softapAppliedBeaconInterval68;
     out->mode16 = state.softapMode10;
     out->enabled17 = state.softapParam0e & 1;
-    out->param18 = state.softapParam28;
+    out->param18 = static_cast<uint8_t>(state.softapParam28);
     return kIOReturnSuccess;
 }
 
@@ -676,7 +676,7 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
     state.softapParam1c = in->param08;
     state.softapParam20 = in->param0c;
     state.softapParam24 = in->param10;
-    state.softapParam28 = in->param18;
+    state.softapParam28 = static_cast<uint32_t>(in->param18);
     if (!wasEnabled || !disableRequested) {
         setSoftAPPowerSaveState(kAirportItlwmAPSTASetSoftAPParamsHoldPowerState,
                                 kAirportItlwmAPSTASetSoftAPParamsHoldPowerReason);
