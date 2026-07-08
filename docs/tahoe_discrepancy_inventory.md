@@ -5020,6 +5020,40 @@ Local closure:
 Reference note:
 `docs/reference/CR-479-bssmanager-band-rssi-writer-seeding-20260708.md`.
 
+## item 206b — IO80211BssManager auth-context writer seeding
+
+- class: IO80211BssManager
+- header: `include/Airport/IO80211BssManager.h`
+- implementation:
+  - `AirportItlwmSkywalkInterface.cpp::setWCL_ASSOCIATE`
+  - `AirportItlwmSkywalkInterface.cpp::seedBssManagerRateAndMcs`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- `AppleBCMWLANCore::setWCL_ASSOCIATE(apple80211AssocCandidates*)` at
+  `0xffffff80015fbacc` copies dwords from hidden-carrier offsets `+0x10`,
+  `+0x14`, `+0x18`, and `+0x214` into a 16-byte auth context.
+- It then calls `IO80211BssManager::setAuthContext(IO80211AuthContext&)` at
+  `0xffffff800226701e`.
+- The BssManager writer copies two qwords from the caller context into the
+  BssManager ivars.
+
+Local closure:
+
+- `IO80211AuthContext` is declared as the recovered four-dword carrier;
+- hidden WCL association now seeds the framework-owned BssManager auth context
+  from the exact stored carrier dwords;
+- the post-RUN BssManager seed burst repeats the same write when a hidden
+  association carrier is available, preserving the context if the BssManager
+  route was not materialized at the initial WCL edge;
+- `setNetworkFlags(...)` and `setAssociatedAuthType(...)` remain deferred until
+  their exact source values are proven.
+
+Reference note:
+`docs/reference/CR-479-bssmanager-auth-context-writer-seeding-20260708.md`.
+
 ## item 207 — CURRENT_NETWORK not-associated status
 
 - producer: `AirportItlwmSkywalkInterface::getCURRENT_NETWORK(...)`

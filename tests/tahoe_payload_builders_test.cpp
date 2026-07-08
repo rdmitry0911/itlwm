@@ -479,6 +479,13 @@ void testTahoeAssociationContracts()
     require(kPublicSetRsnIeReturn == 0 &&
                 kPublicSetRsnIeMutationCount == 0,
             "public setRSN_IE is a success no-op");
+    require(sizeof(IO80211AuthContext) == 0x10,
+            "BssManager auth context is four dwords");
+    require(offsetof(IO80211AuthContext, authLower) == 0x00 &&
+                offsetof(IO80211AuthContext, authUpper) == 0x04 &&
+                offsetof(IO80211AuthContext, authFlags) == 0x08 &&
+                offsetof(IO80211AuthContext, bssInfoFlags) == 0x0c,
+            "BssManager auth context offsets match WCL carrier copy");
     require(boundedRsnIeLength(7, 11) == 7,
             "RSN IE helper keeps in-bounds length");
     require(boundedRsnIeLength(17, 11) == 11,

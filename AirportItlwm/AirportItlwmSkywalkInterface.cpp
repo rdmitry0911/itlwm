@@ -234,6 +234,64 @@ static uint32_t tahoeBssManagerBandInfoBitmap(uint32_t band)
     return kAppleBssManagerBandInfoBitmapTable[band - 1];
 }
 
+static IO80211AuthContext
+tahoeBssManagerAuthContext(
+    const TahoeOwnerRegistry::AssociationOwner &associationOwner)
+{
+    IO80211AuthContext context{};
+    context.authLower = associationOwner.authLower;
+    context.authUpper = associationOwner.authUpper;
+    context.authFlags = associationOwner.authFlags;
+    context.bssInfoFlags = associationOwner.bssInfoFlags;
+    return context;
+}
+
+static void
+tahoeSeedBssManagerAuthContext(
+    IO80211BssManager *bssManager,
+    const TahoeOwnerRegistry::AssociationOwner &associationOwner)
+{
+    if (bssManager == nullptr || !associationOwner.hasCarrier)
+        return;
+
+    IO80211AuthContext context =
+        tahoeBssManagerAuthContext(associationOwner);
+    bssManager->setAuthContext(context);
+}
+
+static IO80211BssManager *
+tahoeRecoverWclBssManager(AirportItlwmSkywalkInterface *interface)
+{
+    if (interface == nullptr)
+        return nullptr;
+
+    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
+    const uintptr_t kWCLConfigManagerId = 1;
+#define AIAM_RD_BSS_MANAGER(dst, addr) do { \
+        uintptr_t _a = (addr); \
+        if (_a < kKernelVA) return nullptr; \
+        (dst) = *(volatile uintptr_t *)_a; \
+    } while (0)
+    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, cfg;
+    uintptr_t cfgIvars, bss, bssIvars;
+    AIAM_RD_BSS_MANAGER(p120,     (uintptr_t)interface + 0x120);
+    AIAM_RD_BSS_MANAGER(glue,     p120 + 0xd8);
+    AIAM_RD_BSS_MANAGER(givars,   glue + 0x18);
+    AIAM_RD_BSS_MANAGER(wclglue,  givars + 0x18);
+    AIAM_RD_BSS_MANAGER(wivars,   wclglue + 0x18);
+    AIAM_RD_BSS_MANAGER(bb,       wivars + 0x8);
+    AIAM_RD_BSS_MANAGER(bbh,      bb + 0x10);
+    AIAM_RD_BSS_MANAGER(cfg,      bbh + 0xb70 + kWCLConfigManagerId * 0x18);
+    AIAM_RD_BSS_MANAGER(cfgIvars, cfg + 0x20);
+    AIAM_RD_BSS_MANAGER(bss,      cfgIvars + 0x18);
+    AIAM_RD_BSS_MANAGER(bssIvars, bss + 0x10);
+    if (bssIvars < kKernelVA)
+        return nullptr;
+#undef AIAM_RD_BSS_MANAGER
+
+    return reinterpret_cast<IO80211BssManager *>(bss);
+}
+
 static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
 {
     memset(config, 0, sizeof(*config));
@@ -2448,31 +2506,13 @@ seedBssManagerRateAndMcs()
         return;
     struct ieee80211_node *ni = ic->ic_bss;
 
-    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
-    const uintptr_t kWCLConfigManagerId = 1;
-#define AIAM_RD(dst, addr) do { \
-        uintptr_t _a = (addr); \
-        if (_a < kKernelVA) return; \
-        (dst) = *(volatile uintptr_t *)_a; \
-    } while (0)
-    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, cfg;
-    uintptr_t cfgIvars, bss, cacheObj;
-    AIAM_RD(p120,     (uintptr_t)this + 0x120);
-    AIAM_RD(glue,     p120 + 0xd8);
-    AIAM_RD(givars,   glue + 0x18);
-    AIAM_RD(wclglue,  givars + 0x18);
-    AIAM_RD(wivars,   wclglue + 0x18);
-    AIAM_RD(bb,       wivars + 0x8);
-    AIAM_RD(bbh,      bb + 0x10);
-    AIAM_RD(cfg,      bbh + 0xb70 + kWCLConfigManagerId * 0x18);
-    AIAM_RD(cfgIvars, cfg + 0x20);
-    AIAM_RD(bss,      cfgIvars + 0x18);
-    AIAM_RD(cacheObj, bss + 0x10);
-    if (cacheObj < kKernelVA)
+    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
+    if (bssManager == nullptr)
         return;
-#undef AIAM_RD
-
-    IO80211BssManager *bssManager = reinterpret_cast<IO80211BssManager *>(bss);
+    if (instance != nullptr) {
+        tahoeSeedBssManagerAuthContext(
+            bssManager, instance->getTahoeOwnerRegistry().association);
+    }
     Bands band = static_cast<Bands>(0);
     if (bssManager->getCurrentBand(band) == kIOReturnSuccess) {
         bssManager->setBandInfoBitmap(
@@ -5195,6 +5235,9 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
                                        kIOReturnUnsupported);
         return kIOReturnUnsupported;
     }
+
+    tahoeSeedBssManagerAuthContext(
+        tahoeRecoverWclBssManager(this), associationOwner);
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);

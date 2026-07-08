@@ -50,6 +50,7 @@
 //    ffffff800226682e  IO80211BssManager::setLastBSSRssi()
 //    ffffff8002266884  IO80211BssManager::getCurrentBand(Bands&)
 //    ffffff8002266fee  IO80211BssManager::setBandInfoBitmap(unsigned int)
+//    ffffff800226701e  IO80211BssManager::setAuthContext(IO80211AuthContext&)
 //    ffffff800226713c  IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)
 //    ffffff8002267afa  IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)
 //
@@ -62,11 +63,23 @@
 #ifndef IO80211BssManager_h
 #define IO80211BssManager_h
 
+#include <stdint.h>
+
 struct apple80211_mcs_index_set_data;
 struct apple80211_vht_mcs_index_set_data;
 struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
 enum Bands : unsigned int;
+
+struct IO80211AuthContext {
+    uint32_t authLower;
+    uint32_t authUpper;
+    uint32_t authFlags;
+    uint32_t bssInfoFlags;
+};
+
+static_assert(sizeof(IO80211AuthContext) == 0x10,
+              "IO80211AuthContext must match the BssManager qword-copy ABI");
 
 #ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
 typedef int IOReturn;
@@ -84,6 +97,7 @@ public:
     void setLastBSSRssi();
     IOReturn getCurrentBand(Bands &);
     void setBandInfoBitmap(unsigned int);
+    void setAuthContext(IO80211AuthContext &);
     IOReturn setAssocSSID(const unsigned char *, unsigned long);
     IOReturn setAssocRSNIE(const unsigned char *, unsigned long);
     unsigned char isAssociatedOnHighBand();
