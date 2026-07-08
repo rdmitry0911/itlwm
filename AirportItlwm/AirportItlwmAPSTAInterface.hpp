@@ -274,9 +274,20 @@ enum {
     kAirportItlwmAPSTAHoldPowerAssertionEventId = 0x8d,
     kAirportItlwmAPSTAHoldPowerAssertionNotifyFlag = 1,
     kAirportItlwmAPSTAHostApModeNetworkDataFlagsOffset = 0x04,
-    kAirportItlwmAPSTAHostApModeNetworkDataModeOffset = 0x1c,
+    kAirportItlwmAPSTAHostApModeNetworkDataSsidLengthOffset = 0x1c,
+    kAirportItlwmAPSTAHostApModeNetworkDataSsidBytesOffset = 0x20,
     kAirportItlwmAPSTAHostApModeNetworkDataVendorIELengthOffset = 0x2dc,
     kAirportItlwmAPSTAHostApModeNetworkDataVendorIEDataOffset = 0x2e0,
+    kAirportItlwmAPSTAHostApModeSsidLengthTrapThreshold = 0x21,
+    kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted =
+        kAirportItlwmAPSTAHostApModeSsidLengthTrapThreshold - 1,
+    kAirportItlwmAPSTAHostApModeVendorIELengthTrapThreshold = 0x101,
+    kAirportItlwmAPSTAHostApModeVendorIELengthMaxAccepted =
+        kAirportItlwmAPSTAHostApModeVendorIELengthTrapThreshold - 1,
+    kAirportItlwmAPSTASetHostApModeNotUpReturn =
+        kAirportItlwmAPSTASoftAPNotReadyReturn,
+    kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn =
+        kAirportItlwmAPSTARawInvalidArgumentReturn,
     kAirportItlwmAPSTAHostApModeFeatureGate46 = 0x46,
     kAirportItlwmAPSTAHostApModeNanOwnerOffset = 0x74f0,
     kAirportItlwmAPSTAHostApModeNanDataOwnerOffset = 0x74f8,
@@ -1167,8 +1178,9 @@ struct AirportItlwmAPSTAHostApModeNetworkDataLayout {
     uint8_t  reserved0000[0x04];
     uint32_t flags04;
     uint8_t  reserved0008[0x14];
-    uint32_t mode1c;
-    uint8_t  reserved0020[0x2bc];
+    uint32_t ssidLength1c;
+    uint8_t  ssid20[kAirportItlwmAPSTAGetSsidMaxLength];
+    uint8_t  reserved0040[0x29c];
     uint32_t vendorIELength2dc;
     uint8_t  vendorIEData2e0[1];
 } __attribute__((packed));
@@ -2027,9 +2039,15 @@ static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, flags04) ==
 static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, flags04) ==
               kAirportItlwmAPSTAHostApNetworkDataFlagsOffset,
               "APSTA HostAP success-tail flags offset mismatch");
-static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, mode1c) ==
-              kAirportItlwmAPSTAHostApModeNetworkDataModeOffset,
-              "APSTA HostAP network-data mode offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, ssidLength1c) ==
+              kAirportItlwmAPSTAHostApModeNetworkDataSsidLengthOffset,
+              "APSTA HostAP network-data SSID length offset mismatch");
+static_assert(kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted ==
+              kAirportItlwmAPSTAGetSsidMaxLength,
+              "APSTA HostAP accepted SSID length must match cached SSID capacity");
+static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, ssid20) ==
+              kAirportItlwmAPSTAHostApModeNetworkDataSsidBytesOffset,
+              "APSTA HostAP network-data SSID bytes offset mismatch");
 static_assert(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, vendorIELength2dc) ==
               kAirportItlwmAPSTAHostApModeNetworkDataVendorIELengthOffset,
               "APSTA HostAP network-data vendor IE length offset mismatch");

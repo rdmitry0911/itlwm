@@ -6150,6 +6150,26 @@ IOReturn AirportItlwm::setAPSTA_CHANNEL(OSObject *object,
     return fAPSTAOwner->setChannel(in);
 }
 
+IOReturn AirportItlwm::setHOST_AP_MODE(OSObject *object,
+    AirportItlwmAPSTAHostApModeNetworkDataLayout *in)
+{
+    /*
+     * Selector 25 is the public HostAP profile boundary. The recovered
+     * APSTA body validates the apple80211_network_data SSID length at
+     * +0x1c and vendor-IE length at +0x2dc before entering the AP-up
+     * firmware path. This driver has no persistent APSTA owner on the
+     * default STA path because role-7 create tears the owner back down
+     * when the HAL AP/GO gate rejects the lower start. Preserve that
+     * owner/not-up failure shape here instead of falling through to a
+     * generic unsupported BSD route.
+     */
+    (void)object;
+    if (fAPSTAOwner == NULL) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetHostApModeNotUpReturn);
+    }
+    return fAPSTAOwner->setHostAPMode(in);
+}
+
 IOReturn AirportItlwm::setAPSTA_CIPHER_KEY(OSObject *object,
     struct apple80211_key *in)
 {

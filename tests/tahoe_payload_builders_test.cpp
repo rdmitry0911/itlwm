@@ -246,6 +246,25 @@ void testApstaPublicContracts()
             "APSTA setCHANNEL does not synthesize a CSA trigger");
     require(kAirportItlwmAPSTASetChannelNoOwnerRoutesPrimary == 1,
             "APSTA setCHANNEL no-owner route preserves primary channel setter");
+    require(kAirportItlwmAPSTASetHostApModeNotUpReturn == 6,
+            "APSTA HOST_AP_MODE AP-down return is raw 6");
+    require(kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn == 0x16,
+            "APSTA HOST_AP_MODE invalid carrier return is raw 0x16");
+    require(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, ssidLength1c) ==
+                kAirportItlwmAPSTAHostApModeNetworkDataSsidLengthOffset,
+            "APSTA HOST_AP_MODE reads SSID length at input +0x1c");
+    require(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, ssid20) ==
+                kAirportItlwmAPSTAHostApModeNetworkDataSsidBytesOffset,
+            "APSTA HOST_AP_MODE reads SSID bytes at input +0x20");
+    require(offsetof(AirportItlwmAPSTAHostApModeNetworkDataLayout, vendorIELength2dc) ==
+                kAirportItlwmAPSTAHostApModeNetworkDataVendorIELengthOffset,
+            "APSTA HOST_AP_MODE reads vendor IE length at input +0x2dc");
+    require(kAirportItlwmAPSTAHostApModeSsidLengthTrapThreshold == 0x21 &&
+                kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted == 0x20,
+            "APSTA HOST_AP_MODE accepts SSID lengths below 0x21");
+    require(kAirportItlwmAPSTAHostApModeVendorIELengthTrapThreshold == 0x101 &&
+                kAirportItlwmAPSTAHostApModeVendorIELengthMaxAccepted == 0x100,
+            "APSTA HOST_AP_MODE accepts vendor IE lengths below 0x101");
     require(kAirportItlwmAPSTACsaMinimumPrimaryChannel == 1,
             "APSTA CSA helper rejects primary channel zero");
     require(kAirportItlwmAPSTACsaMaximumExcludedPrimaryChannel == 0x100,
@@ -457,6 +476,9 @@ void testTahoeSkywalkIoctlRoutes()
     require(!shouldRoute(kIocPeerCacheControl, false) &&
                 shouldRoute(kIocPeerCacheControl, true),
             "Skywalk routes APSTA peer-cache control setter only");
+    require(!shouldRoute(kIocHostApMode, false) &&
+                shouldRoute(kIocHostApMode, true),
+            "Skywalk routes HOST_AP_MODE setter through APSTA owner");
 }
 
 void testTahoeAssociationContracts()

@@ -512,6 +512,8 @@ public:
         AirportItlwmAPSTAPeerCacheMaximumSizeLayout *data);
     IOReturn setAPSTA_CHANNEL(OSObject *object,
         struct apple80211_channel_data *data);
+    IOReturn setHOST_AP_MODE(OSObject *object,
+        AirportItlwmAPSTAHostApModeNetworkDataLayout *data);
     IOReturn setAPSTA_CIPHER_KEY(OSObject *object,
         struct apple80211_key *data);
     IOReturn getAPSTA_STATION_LIST(OSObject *object,

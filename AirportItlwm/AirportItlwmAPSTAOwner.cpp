@@ -379,6 +379,33 @@ IOReturn AirportItlwmAPSTAOwner::setChannel(const struct apple80211_channel_data
     return static_cast<IOReturn>(kAirportItlwmAPSTASetChannelInvalidSoftAPInfoReturn);
 }
 
+IOReturn AirportItlwmAPSTAOwner::setHostAPMode(
+    const AirportItlwmAPSTAHostApModeNetworkDataLayout *in)
+{
+    if (in != nullptr) {
+        if (in->vendorIELength2dc >
+                kAirportItlwmAPSTAHostApModeVendorIELengthMaxAccepted ||
+            in->ssidLength1c >
+                kAirportItlwmAPSTAHostApModeSsidLengthMaxAccepted) {
+            return static_cast<IOReturn>(
+                kAirportItlwmAPSTASetHostApModeInvalidArgumentReturn);
+        }
+    }
+
+    if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTASetHostApModeNotUpReturn);
+    }
+
+    if (in == nullptr || in->ssidLength1c == 0) {
+        return stopLower();
+    }
+
+    state.softapSsidLength274 = in->ssidLength1c;
+    bzero(state.softapSsid278, sizeof(state.softapSsid278));
+    memcpy(state.softapSsid278, in->ssid20, in->ssidLength1c);
+    return kIOReturnSuccess;
+}
+
 IOReturn AirportItlwmAPSTAOwner::setCipherKey(const struct apple80211_key *key)
 {
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {

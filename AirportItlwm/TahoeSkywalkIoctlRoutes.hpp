@@ -18,6 +18,7 @@ enum : uint32_t {
     kIocBssid = 9,
     kIocAssociate = 20,
     kIocDisassociate = 22,
+    kIocHostApMode = 25,
     kIocRsnIe = 46,
     kIocBtcoexMode = 87,
     kIocBtCoexFlags = 102,
@@ -87,6 +88,7 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
 
         case kIocAssociate:
         case kIocDisassociate:
+        case kIocHostApMode:
         case kIocAuthType:
         case kIocRsnIe:
         case kIocSetMacAddress:

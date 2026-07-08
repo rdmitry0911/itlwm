@@ -66,6 +66,7 @@ public:
     IOReturn getPeerCacheMaximumSize(AirportItlwmAPSTAPeerCacheMaximumSizeLayout *out) const;
     IOReturn setSSID(const struct apple80211_ssid_data *in);
     IOReturn setChannel(const struct apple80211_channel_data *in);
+    IOReturn setHostAPMode(const AirportItlwmAPSTAHostApModeNetworkDataLayout *in);
     IOReturn setCipherKey(const struct apple80211_key *key);
     IOReturn getHostAPModeHidden(AirportItlwmAPSTAHostApModeHiddenOutputLayout *out) const;
     IOReturn getSoftAPParams(AirportItlwmAPSTASoftAPParamsOutputLayout *out) const;

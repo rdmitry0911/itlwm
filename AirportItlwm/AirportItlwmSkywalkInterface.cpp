@@ -1717,6 +1717,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_HOST_AP_MODE:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setHOST_AP_MODE(
+                    this,
+                    (AirportItlwmAPSTAHostApModeNetworkDataLayout *)req->req_data)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_AP_MODE:
             return (cmd == SIOCSA80211) ? setAP_MODE((apple80211_apmode_data *)req->req_data)
                                         : kIOReturnUnsupported;
