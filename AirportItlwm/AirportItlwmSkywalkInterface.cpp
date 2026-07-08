@@ -3391,14 +3391,11 @@ getBEACON_INFO(apple80211_beacon_info_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 getCHIP_DIAGS(appl80211_chip_diags_data *data)
 {
-    // AppleBCMWLANCore::getCHIP_DIAGS drives a fixed-size diagnostic carrier
-    // through a gated callback path. Even without the hidden owner, keeping
-    // the public 0x14-byte carrier is more faithful than generic unsupported.
-    if (data == nullptr)
-        return kIOReturnBadArgumentTahoe;
-
-    memset(reinterpret_cast<uint8_t *>(data), 0, 0x14);
-    return kIOReturnSuccess;
+    // AppleBCMWLANCore only opens this diagnostic carrier behind a private
+    // owner. Without that owner the WCL query must miss and write nothing;
+    // createLQM probes this selector with a 4-byte stack buffer.
+    (void)data;
+    return static_cast<IOReturn>(0xe00002c7);
 }
 
 IOReturn AirportItlwmSkywalkInterface::

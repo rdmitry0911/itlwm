@@ -4911,6 +4911,7 @@ Reference note:
 - class:
   - `AirportItlwm::getCARD_CAPABILITIES(...)`
   - `AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED(...)`
+  - `AirportItlwmSkywalkInterface::getCHIP_DIAGS(...)`
 - files:
   - `AirportItlwm/TahoeCapabilityContracts.hpp`
   - `AirportItlwm/AirportItlwmSkywalkInterface.cpp`
@@ -4929,18 +4930,26 @@ The attempted prerequisite restoration was:
 - `getSLOW_WIFI_FEATURE_ENABLED` returns the compact
   `version + enabled=1` carrier consumed by the LQM option builder
 
-Runtime on 2026-07-07 falsified that layer for the current bridge. With those
-prerequisites enabled, association repeatedly panicked in
+Runtime on 2026-07-07 falsified the first implementation of that layer. With
+only those two prerequisites enabled, association repeatedly panicked in
 `IO80211QueueCall::handleEntry` with `Kernel stack memory corruption detected`
-after the framework's LQM queue path ran. Reverting both carriers restored a
-stable association: 120/120 ping before stress, bidirectional TCP stress for
-120 seconds, 150/150 ping during stress, and 10/10 post-stress ping with no new
-panic entries.
+after the framework's LQM queue path ran. Later session notes corrected the
+cause: the QueueCall probes `APPLE80211_IOC_CHIP_DIAGS` with a 4-byte stack
+buffer, while the local getter wrote the public 0x14-byte carrier and smashed
+the canary.
 
-Until the exact Apple LQM QueueCall/provider wiring is recovered, the local
-CARD_CAPABILITIES cluster must stop at `cap[8..9] = 0x0201`, and
+The corrected diagnostic probe is now closed:
+
+- `getCHIP_DIAGS` returns `0xe00002c7` and writes nothing.
+
+Runtime on 2026-07-08 re-enabled the two public LQM gates together with that
+safe diagnostic miss. The stack-smash did not recur, but the QueueCall still
+failed at `IO80211PeerMonitor::createLinkQualityMonitor(3511)`, destroyed the
+new LQM object, and the guest later panicked from CoreCapture `[FG] IP timed
+out (NoCTL)`. Therefore this item remains superseded for the create gates:
+CARD_CAPABILITIES must continue stopping at `cap[8..9] = 0x0201`, and
 `getSLOW_WIFI_FEATURE_ENABLED` must continue reporting the local cached policy
-state rather than forcing `enabled=1`.
+state until the exact line-3511 PeerMonitor prerequisite is recovered.
 
 Reference note:
 `docs/reference/CR-479-lqm-create-prerequisites-20260707.md`.
