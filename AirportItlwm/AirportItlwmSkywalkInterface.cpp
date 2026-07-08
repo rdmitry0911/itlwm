@@ -2693,18 +2693,12 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         }
 
         /*
-         * Tahoe APPLE80211_M_SSID_CHANGED zero-length carrier.
-         *
-         * The recovered airportd `ssidChanged` block does not consume
-         * payload bytes; it schedules a fresh `__associatedNetwork` read
-         * and forwards that object through `setAssociatedNetwork:`. Keep
-         * this on the same accepted Skywalk terminal transition edge as
-         * LINK_CHANGED and BSSID_CHANGED so userspace refreshes after the
-         * BSSID/scan-cache publishers have had their chance to update the
-         * framework-visible current network.
+         * APPLE80211_M_SSID_CHANGED is owned by the accepted SET_SSID/join
+         * producer, not this parent-link-state gate. The local Tahoe bridge
+         * publishes it from AirportItlwm::setLinkStateGated after the WCL
+         * connect-complete edge; keeping it here would double-publish if the
+         * inherited parent gate opens on a future Tahoe build.
          */
-        instance->postMessage(instance->fNetIf, APPLE80211_M_SSID_CHANGED,
-                              NULL, 0, true);
     }
     if (ret && state == kIO80211NetworkLinkUp) {
         fBssManagerSeedBurst = 400;

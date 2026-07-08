@@ -5251,3 +5251,68 @@ Non-claims:
 - this does not re-enable the LQM card-capability or slow-wifi gates;
 - a direct local nonzero-channel `bssidChange(data, 0x18)` call is not accepted
   as the dispatch-safe current-BSS/WCL ownership route.
+
+## item 214 — SSID_CHANGED join-edge producer and raw current-link carriers
+
+- producers:
+  - `AirportItlwm::setLinkStateGated(...)`
+  - `AirportItlwm::handleCardSpecific(...)`
+  - `AirportItlwm::getCARD_CAPABILITIES(...)`
+  - `AirportSTAIOCTL.cpp::getCARD_CAPABILITIES(...)`
+- status: closed
+- justification: REFERENCE_PRODUCER_AND_PAYLOAD_CONTRACT
+
+Reference evidence:
+
+- 25C56 `AppleBCMWLANJoinAdapter::handleSetSSID(wl_event_msg_t*)` copies the
+  firmware SET_SSID event BSSID bytes from `wl_event_msg + 0x18` into
+  join-adapter state, then calls the two-argument framework event producer
+  with event code `2` (`APPLE80211_M_SSID_CHANGED`);
+- `CWXPCInterfaceContext::ssidChanged` does not consume payload bytes from
+  that event; it schedules `__associatedNetwork` and forwards the resulting
+  object through `setAssociatedNetwork:`;
+- direct `Apple80211CopyValue` probes showed the raw type 1, 9, and 103
+  carriers are byte buffers, not local synthesized dictionary/current-network
+  objects;
+- Tahoe `AppleBCMWLANCore::getCARD_CAPABILITIES(...)` writes the legacy
+  cluster through `cap[9]` and does not derive `cap[0]` / `cap[1]` from local
+  device `ic_caps` bits.
+
+Local closure:
+
+- `AirportItlwm::setLinkStateGated(...)` now posts zero-length
+  `APPLE80211_M_SSID_CHANGED` on the accepted Tahoe join-up edge after
+  `setRunningState(true)` and WCL connect-complete publication;
+- the old secondary SSID publisher behind
+  `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` was removed, so a
+  future inherited parent-success gate cannot double-publish the same join
+  edge;
+- `Apple80211CopyValue` SSID/BSSID carriers now return raw joined BSS bytes
+  directly from net80211 state while associated, with the desired SSID fallback
+  retained before RUN for SSID only;
+- both CARD_CAPABILITIES getters now use the same recovered Apple-consistent
+  helper, including `cap[0] = 0xef` and `cap[1] = 0xe6`.
+
+Runtime validation:
+
+- 2026-07-08 after-fix guest build loaded CDHash
+  `c14ddbe0ab5e77d5e8ee257769b72d48b3b11002`;
+- airportd logged `Driver Event: ... SSID_CHANGED/2 (en1)` after the join
+  edge, followed by `airportdProcessDpsEvent` carrying the current network
+  name, BSSID, and channel tuple;
+- controlled lab AP join reached DHCP `10.77.0.47`;
+- 240-second concurrent load passed: ping to `10.77.0.1` reported
+  `240 packets transmitted, 240 packets received, 0.0% packet loss`, while
+  iperf3 reported `838 MBytes` sent at `29.3 Mbits/sec` and received at
+  `29.2 Mbits/sec`;
+- no CoreCapture, missed-beacon, stack-corruption, panic, or kext-fault log
+  entries appeared in the validation window.
+
+Non-claims:
+
+- this does not close the public CoreWLAN/networksetup associated-network gate;
+  `/usr/sbin/networksetup -getairportnetwork en1` still reports
+  `You are not associated with an AirPort network.`;
+- this does not modify TCC, LocationServices, or client entitlements as a
+  workaround. The remaining layer is the framework current-network/profile
+  path after the now-delivered code-2 event.

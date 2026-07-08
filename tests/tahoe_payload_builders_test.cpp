@@ -937,6 +937,10 @@ void testTahoeCapabilityContracts()
     uint8_t capabilities[24] = {};
     applyAppleConsistentCardCapabilityCluster(capabilities);
 
+    require(capabilities[0] == kCardCapabilityByte0,
+            "CARD_CAPABILITIES cap[0] matches Apple request bitmap byte");
+    require(capabilities[1] == kCardCapabilityByte1,
+            "CARD_CAPABILITIES cap[1] matches Apple request bitmap base");
     require(capabilities[2] == kCardCapabilityByte2,
             "CARD_CAPABILITIES cap[2] matches Apple-consistent cluster");
     require(capabilities[3] == kCardCapabilityByte3,

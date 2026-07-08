@@ -1489,6 +1489,26 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     return true;
 }
 
+static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
+{
+    if (controller == nullptr || controller->fNetIf == nullptr ||
+        controller->fHalService == nullptr)
+        return false;
+
+    struct ieee80211com *ic = controller->fHalService->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr ||
+        ic->ic_bss->ni_esslen > APPLE80211_MAX_SSID_LEN) {
+        XYLog("DEBUG %s SKIP ic=%p ic_state=%d ic_bss=%p\n", __FUNCTION__, ic,
+              ic ? ic->ic_state : -1, ic ? ic->ic_bss : nullptr);
+        return false;
+    }
+
+    controller->postMessage(controller->fNetIf, APPLE80211_M_SSID_CHANGED,
+                            NULL, 0, true);
+    return true;
+}
+
 } // namespace
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
@@ -4064,8 +4084,10 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     RT2_SET(13);
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
 #if __IO80211_TARGET >= __MAC_26_0
-    if (linkState == kIO80211NetworkLinkUp)
+    if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclConnectCompleteEvent(that);
+        postTahoeJoinAcceptedSsidChangedEvent(that);
+    }
 #endif
 #if __IO80211_TARGET >= __MAC_26_0
     /*
@@ -4082,13 +4104,17 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * transition's success edge, so re-publishing here would deliver the
      * same userspace event twice for a single accepted transition.
      *
-     * The zero-length APPLE80211_M_SSID_CHANGED carrier has the same
-     * accepted-edge ownership as LINK_CHANGED and BSSID_CHANGED: Tahoe
-     * `AirportItlwmSkywalkInterface::setLinkStateInternal` publishes it
-     * after the BSSID/scan-cache publishers on both terminal transitions.
-     * The recovered airportd `ssidChanged` block consumes no payload; it
-     * schedules a fresh `__associatedNetwork` read and forwards that
-     * object through `setAssociatedNetwork:`.
+     * The zero-length APPLE80211_M_SSID_CHANGED carrier has a separate
+     * Apple producer: `AppleBCMWLANJoinAdapter::handleSetSSID` updates the
+     * accepted-BSSID slot from the firmware SET_SSID event and then calls
+     * the two-argument event producer with code 2. The recovered airportd
+     * `ssidChanged` block consumes no payload; it schedules a fresh
+     * `__associatedNetwork` read and forwards that object through
+     * `setAssociatedNetwork:`. The local net80211 bridge has no
+     * JoinAdapter, so the corresponding accepted join edge is the Tahoe
+     * link-up path above, after running-state publication and WCL
+     * connect-complete.
+     *
      * APPLE80211_M_BSSID_CHANGED has a recovered Apple writer on the
      * WCL/IOUC side (selector 0x1b1) that produces a populated 24-byte
      * BSSID-changed compact carrier with the BSSID at offset 0x00 and
@@ -4106,9 +4132,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * call with a non-null, non-zero address, honouring the recovered
      * zero-BSSID rejection and same-BSS reason-1 suppression gates.
      * This Tahoe branch therefore does not emit APPLE80211_M_BSSID_CHANGED
-     * or APPLE80211_M_SSID_CHANGED itself; the legacy zero-length
-     * BSSID/SSID notifies remain in the pre-Tahoe branch below as they
-     * predate the Tahoe userspace length check and Skywalk event split.
+     * with a NULL/0 payload; the legacy zero-length BSSID notify remains
+     * only in the pre-Tahoe branch below. SSID_CHANGED is published by
+     * `postTahoeJoinAcceptedSsidChangedEvent` on the accepted join-up edge.
      */
 #else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
@@ -4362,47 +4388,17 @@ getCARD_CAPABILITIES(OSObject *object,
     static_assert(sizeof(struct apple80211_capability_data) == 0x1c,
                   "Tahoe apple80211_capability_data must be 0x1c bytes");
 #endif
-    uint32_t caps = fHalService->get80211Controller()->ic_caps;
-
     // Tahoe AppleBCMWLANCore writes advanced capability bytes through offset
     // +0x17. The old short local header only zeroed the prefix and leaked
     // uninitialized tail bytes into IO80211Family/WCL, which could advertise
     // arbitrary advanced AKM/capability state on hidden join paths.
     memset(cd, 0, sizeof(struct apple80211_capability_data));
-    
-    if (caps & IEEE80211_C_WEP)
-        cd->capabilities[0] |= 1 << APPLE80211_CAP_WEP;
-    if (caps & IEEE80211_C_RSN)
-        cd->capabilities[0] |= 1 << APPLE80211_CAP_TKIP | 1 << APPLE80211_CAP_AES_CCM;
-    // Disable not implemented capabilities
-    // if (caps & IEEE80211_C_PMGT)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_PMGT;
-    // if (caps & IEEE80211_C_IBSS)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_IBSS;
-    // if (caps & IEEE80211_C_HOSTAP)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_HOSTAP;
-    // AES not enabled, like on Apple cards
-    
-    if (caps & IEEE80211_C_SHSLOT)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_SHSLOT - 8);
-    if (caps & IEEE80211_C_SHPREAMBLE)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_SHPREAMBLE - 8);
-    if (caps & IEEE80211_C_RSN)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_WPA1 - 8) | 1 << (APPLE80211_CAP_WPA2 - 8) | 1 << (APPLE80211_CAP_TKIPMIC - 8);
-    // Disable not implemented capabilities
-    // if (caps & IEEE80211_C_TXPMGT)
-    //     cd->capabilities[1] |= 1 << (APPLE80211_CAP_TXPMGT - 8);
-    // if (caps & IEEE80211_C_MONITOR)
-    //     cd->capabilities[1] |= 1 << (APPLE80211_CAP_MONITOR - 8);
-    // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    // CR-032: after the Tahoe carrier-size fix, the next mismatch was content.
-    // AppleBCMWLANCore::getCARD_CAPABILITIES() never sets cap[2] bit 7,
-    // cap[3] bit 3, or cap[6] bit 7, but the old local constants
-    // 0xEF / 0x2B / 0x8C advertised exactly those impossible bits into the
-    // still-active hidden association path. Sanitize the hard-coded cluster to
-    // the Apple-consistent shape before the hidden join queue consumes it.
+    // AppleBCMWLANCore seeds cap[0..1] from fixed request-capability bytes,
+    // not from the local net80211 ic_caps mask. CoreWiFi gates current-link
+    // properties directly on those request bits before it asks the driver.
+    // Keep the advanced-byte sanitation from CR-032 in the same helper.
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
 //
@@ -4725,6 +4721,48 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
 
 SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
 {
+    // Apple80211CopyValue handles SSID/BSSID as raw CF carriers, not as the
+    // public apple80211_{ssid,bssid}_data structs used by BSD SIOCGA80211.
+    // Its recovered Tahoe path asks the IOUserClient for 32 SSID bytes or
+    // six BSSID octets, then appends/converts those bytes in userspace.
+    // Keep that ABI separate from processApple80211Ioctl(), whose SSID/BSSID
+    // producers intentionally retain the versioned struct contract.
+    if (!isSet && data != nullptr && interface != nullptr) {
+        struct ieee80211com *ic = fHalService
+            ? fHalService->get80211Controller() : nullptr;
+        if (ic == nullptr)
+            return kIOReturnNotReady;
+
+        switch (cmd) {
+            case APPLE80211_IOC_SSID: {
+                auto *ssidBytes = static_cast<uint8_t *>(data);
+                memset(ssidBytes, 0, APPLE80211_MAX_SSID_LEN);
+                if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
+                    ic->ic_bss->ni_esslen <= APPLE80211_MAX_SSID_LEN) {
+                    if (ic->ic_bss->ni_esslen != 0)
+                        memcpy(ssidBytes, ic->ic_bss->ni_essid,
+                               ic->ic_bss->ni_esslen);
+                } else if (ic->ic_state == IEEE80211_S_RUN &&
+                    ic->ic_des_esslen > 0 &&
+                    ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
+                    memcpy(ssidBytes, ic->ic_des_essid, ic->ic_des_esslen);
+                }
+                return kIOReturnSuccess;
+            }
+
+            case APPLE80211_IOC_BSSID: {
+                auto *bssid = static_cast<uint8_t *>(data);
+                memset(bssid, 0, APPLE80211_ADDR_LEN);
+                if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr)
+                    memcpy(bssid, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
+                return kIOReturnSuccess;
+            }
+
+            default:
+                break;
+        }
+    }
+
     // Keep the carried Tahoe card-specific bridge for the visible set-side and
     // hidden-association selectors that arrive on this controller seam.
     // Public request-number fallback is now tracked separately on interface

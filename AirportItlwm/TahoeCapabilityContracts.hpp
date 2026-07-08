@@ -11,6 +11,11 @@
 
 namespace TahoeCapabilityContracts {
 
+static constexpr uint8_t kCardCapabilityByte0AppleBase = 0x6f;
+static constexpr uint8_t kCardCapabilityShouldSupportTetheringMask = 0x80;
+static constexpr uint8_t kCardCapabilityByte0 =
+    kCardCapabilityByte0AppleBase | kCardCapabilityShouldSupportTetheringMask;
+static constexpr uint8_t kCardCapabilityByte1 = 0xe6;
 static constexpr uint8_t kCardCapabilityByte2 = 0x6f;
 static constexpr uint8_t kCardCapabilityByte3 = 0x27;
 static constexpr uint8_t kCardCapabilityByte5 = 0x40;
@@ -29,6 +34,8 @@ inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N]
     static_assert(N >= kRequiredCardCapabilityBytes,
                   "CARD_CAPABILITIES carrier must expose bytes through cap[9]");
 
+    capabilities[0] = kCardCapabilityByte0;
+    capabilities[1] = kCardCapabilityByte1;
     capabilities[2] = kCardCapabilityByte2;
     capabilities[3] = kCardCapabilityByte3;
     capabilities[5] = kCardCapabilityByte5;

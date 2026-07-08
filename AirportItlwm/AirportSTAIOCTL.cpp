@@ -937,40 +937,13 @@ getCARD_CAPABILITIES(OSObject *object,
     static_assert(sizeof(struct apple80211_capability_data) == 0x1c,
                   "Tahoe apple80211_capability_data must be 0x1c bytes");
 #endif
-    uint32_t caps = fHalService->get80211Controller()->ic_caps;
     memset(cd, 0, sizeof(struct apple80211_capability_data));
-    
-    if (caps & IEEE80211_C_WEP)
-        cd->capabilities[0] |= 1 << APPLE80211_CAP_WEP;
-    if (caps & IEEE80211_C_RSN)
-        cd->capabilities[0] |= 1 << APPLE80211_CAP_TKIP | 1 << APPLE80211_CAP_AES_CCM;
-    // Disable not implemented capabilities
-    // if (caps & IEEE80211_C_PMGT)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_PMGT;
-    // if (caps & IEEE80211_C_IBSS)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_IBSS;
-    // if (caps & IEEE80211_C_HOSTAP)
-    //     cd->capabilities[0] |= 1 << APPLE80211_CAP_HOSTAP;
-    // AES not enabled, like on Apple cards
-    
-    if (caps & IEEE80211_C_SHSLOT)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_SHSLOT - 8);
-    if (caps & IEEE80211_C_SHPREAMBLE)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_SHPREAMBLE - 8);
-    if (caps & IEEE80211_C_RSN)
-        cd->capabilities[1] |= 1 << (APPLE80211_CAP_WPA1 - 8) | 1 << (APPLE80211_CAP_WPA2 - 8) | 1 << (APPLE80211_CAP_TKIPMIC - 8);
-    // Disable not implemented capabilities
-    // if (caps & IEEE80211_C_TXPMGT)
-    //     cd->capabilities[1] |= 1 << (APPLE80211_CAP_TXPMGT - 8);
-    // if (caps & IEEE80211_C_MONITOR)
-    //     cd->capabilities[1] |= 1 << (APPLE80211_CAP_MONITOR - 8);
-    // WPA not enabled, like on Apple cards
 
     cd->version = APPLE80211_VERSION;
-    // AppleBCMWLANCore::getCARD_CAPABILITIES() never sets cap[2] bit 7,
-    // cap[3] bit 3, or cap[6] bit 7. Keep the legacy dispatcher shadow on the
-    // same Apple-consistent cluster as the Tahoe controller path instead of
-    // advertising the old impossible 0xEF / 0x2B / 0x8C combination.
+    // Keep the legacy dispatcher shadow on the same Apple-consistent bitmap
+    // as the Tahoe controller path, including the fixed cap[0..1] request
+    // capability bytes that CoreWiFi consults before issuing current-link
+    // property requests.
     TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(
         cd->capabilities);
     //cd->capabilities[8] = 0x40;

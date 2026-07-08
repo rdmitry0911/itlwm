@@ -40,11 +40,23 @@ Current symbol metadata on the decompile host:
 `TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster()` now
 owns the deterministic cluster shared by both producers:
 
+- `cap[0] = 0xef`
+- `cap[1] = 0xe6`
 - `cap[2] = 0x6f`
 - `cap[3] = 0x27`
 - `cap[5] = 0x40`
 - `cap[6] = 0x0c`
 - `cap[8..9] = 0x0201` in little-endian byte order
+
+The `cap[0..1]` prefix is also fixed, not derived from net80211 `ic_caps`.
+Tahoe CoreWiFi treats these bytes as a request-capability bitmap: for example,
+`CWFInterface_SSID` returns `nil` before asking the driver unless request type
+7 is present. AppleBCMWLANCore seeds the prefix with `0x6f, 0xe6`, then
+`OR`s `cap[0]` with `0x80` when
+`AppleBCMWLANCore::shouldSupportTethering()` is true. That function returns
+`featureFlag(0x10)` when `featureFlag(0xb)` is clear. Publishing the resulting
+`0xef, 0xe6` pair exposes current-link properties without advertising the
+separate local `cap[10] = 0x08` LQM-create gate.
 
 Both `AirportItlwmV2.cpp::getCARD_CAPABILITIES` and
 `AirportSTAIOCTL.cpp::getCARD_CAPABILITIES` call the helper, so the Tahoe and

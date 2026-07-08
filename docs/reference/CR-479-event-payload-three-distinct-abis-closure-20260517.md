@@ -39,6 +39,25 @@ Local status: the previously carried Tahoe `syncTahoeCurrentApAddress()` route f
 
 A secondary publisher with the same gate logic also exists inside `AirportItlwmSkywalkInterface::setLinkStateInternal` behind the inherited `ret == kIOReturnSuccess` gate that the prior committed 32-byte `APPLE80211_M_LINK_CHANGED` publisher uses. On the live Tahoe Skywalk runtime that gate stays closed (the parent `IO80211InfraInterface::setLinkStateInternal` returns `0x1` on every observed call), so the secondary publisher does not fire in practice; if the parent gate ever opens on a future Tahoe runtime, the shared `fLastPublishedBssid` / `fLastPublishedBssidValid` tracker will classify the secondary call as `APPLE80211_BSSID_CHANGE_REASON_SAME_BSS` and suppress double publication. The credential-safe marker `Tahoe Skywalk M_BSSID_CHANGED bssid=... reason=<0|1> same_bss_reason_1_suppressed=<0|1> zero_bssid_rejected=<0|1>` reports the classification on every publisher entry: a normal first call with a non-zero address emits `reason=0 same_bss_reason_1_suppressed=0 zero_bssid_rejected=0` plus a published payload; a repeated call with the same address without an intervening link-down or null clear emits `reason=1 same_bss_reason_1_suppressed=1 zero_bssid_rejected=0` and no payload; a null or all-zero address emits `zero_bssid_rejected=1` and no payload.
 
+### 2a. Zero-length SSID-changed join event (APPLE80211_M_SSID_CHANGED = 2)
+
+The follow-up BootKC read for `AppleBCMWLANJoinAdapter::handleSetSSID(wl_event_msg_t*)` shows that Apple's SSID-changed event is not owned by `IO80211InfraInterface::setLinkStateInternal`. The reference body copies six BSSID bytes from the SET_SSID firmware event (`wl_event_msg + 0x18`) into the join-adapter state, then calls the two-argument framework event producer with code `2` (`APPLE80211_M_SSID_CHANGED`). The recovered airportd `CWXPCInterfaceContext::ssidChanged` block does not consume payload bytes; it schedules a fresh `__associatedNetwork` read and forwards the returned object through `setAssociatedNetwork:`.
+
+The local Tahoe bridge has no AppleBCMWLAN `JoinAdapter`, so the equivalent accepted producer is the controller link-up path after `setRunningState(true)` and WCL connect-complete publication. `AirportItlwm::setLinkStateGated` now posts the zero-length code-2 event there through `IO80211Controller::postMessage`. The old secondary SSID publisher in `AirportItlwmSkywalkInterface::setLinkStateInternal` was removed so a future Tahoe build whose inherited parent gate returns success does not double-publish SSID_CHANGED for the same accepted join edge.
+
+Runtime validation on 2026-07-08 loaded CDHash
+`c14ddbe0ab5e77d5e8ee257769b72d48b3b11002` and confirmed airportd
+delivery of `Driver Event: ... SSID_CHANGED/2 (en1)`. The following
+`airportdProcessDpsEvent` log carried the joined network name, BSSID, and
+channel tuple, proving the code-2 event now wakes the internal DPS associated
+network refresh. The same build held a concurrent 240-second validation run:
+ping to `10.77.0.1` reported `240 packets transmitted, 240 packets received,
+0.0% packet loss`, and TCP iperf3 reported `838 MBytes` at
+`29.3 Mbits/sec` sender / `29.2 Mbits/sec` receiver. Public
+CoreWLAN/networksetup still returned nil / "not associated"; that is a
+separate current-network/profile authorization gate, not the code-2 event
+producer layer.
+
 ### 3. 16-byte WCL link-state update carrier (WCL event code 0xd8)
 
 The 16-byte WCL link-state update payload is carried by `struct TahoeWclLinkChangedPayload` defined in `AirportItlwm/AirportItlwmV2.cpp`. The recovered Apple producers are `AppleBCMWLANNetAdapter::handleLink`, `sendInternalLinkDownInd`, `AppleBCMWLANCore::handleLinkEvent`, and `AppleBCMWLANCore::postMessageInfra`. The local mirror is `postTahoeWclLinkUpInd` in `AirportItlwmV2.cpp` which posts the 0x10-byte payload through `postMessage(controller->fNetIf, kTahoeWclLinkChanged = 0xd8, &payload, sizeof(payload), true)`.
@@ -65,6 +84,7 @@ The local kext's diagnostic instrumentation in `AirportItlwm::postWclScanDoneGat
 | Event ABI | Local source | Producer in local kext | Consumer in local kext |
 | --- | --- | --- | --- |
 | 32-byte link-changed (event 4 / IOC 156) | `include/Airport/apple80211_ioctl.h` `struct apple80211_link_changed_event_data` | `AirportItlwmSkywalkInterface::setLinkStateInternal` (inline 32-byte publication on parent transition success; same struct is the SIOCGA80211 IOC 156 response) | `AirportItlwmSkywalkInterface::getLINK_CHANGED_EVENT_DATA` (returns 32 bytes on SIOCGA80211) |
+| zero-length SSID-changed (event 2) | no payload; airportd re-reads associated/current network state | `AirportItlwm::setLinkStateGated` on the accepted Tahoe join-up edge after WCL connect-complete, mirroring `AppleBCMWLANJoinAdapter::handleSetSSID`'s code-2 producer | airportd `CWXPCInterfaceContext::ssidChanged` schedules `__associatedNetwork` and `setAssociatedNetwork:` |
 | 24-byte BSSID-changed (event 3 compact) | `include/Airport/apple80211_ioctl.h` `struct apple80211_bssid_changed_event_data` (named fields `bssid +0x00`, `_pad_06 +0x06..+0x07`, `channel +0x08`, `reason +0x14`) | Open current-BSS/WCL producer route. The rejected forced `syncTahoeCurrentApAddress()` seeding path has been removed; the `setCurrentApAddress` override remains only as a passive framework entry hook. The secondary `AirportItlwmSkywalkInterface::setLinkStateInternal` publisher is still behind the inherited `ret == kIOReturnSuccess` gate, currently closed on live Tahoe Skywalk. | `IO80211InfraInterface::bssidChange(data, 0x18)` consumes the embedded channel when the framework's InfraInterface message path invokes it |
 | 16-byte WCL 0xd8 link-state | `AirportItlwm/AirportItlwmV2.cpp` `struct TahoeWclLinkChangedPayload` | `postTahoeWclLinkUpInd` (posts 0x10-byte payload with `postMessage(... kTahoeWclLinkChanged, &payload, 0x10, true)`) | n/a (consumer is Apple userland event handler for WCL event 0xd8) |
 
