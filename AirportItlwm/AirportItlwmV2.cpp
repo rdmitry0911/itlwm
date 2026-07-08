@@ -2521,6 +2521,25 @@ postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg
 }
 
 IOReturn AirportItlwm::
+postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (!that || !that->fNetIf) {
+        XYLog("DEBUG %s SKIP: that=%p fNetIf=%p\n", __FUNCTION__, that,
+              that ? that->fNetIf : NULL);
+        return kIOReturnNotReady;
+    }
+
+#if __IO80211_TARGET >= __MAC_26_0
+    const bool rekey = (uintptr_t)arg0 != 0;
+    ((IO80211InfraInterface *)that->fNetIf)->handleKeyDone(true, rekey);
+#endif
+    return postMessageGated(target,
+        (void *)(uintptr_t)APPLE80211_M_RSN_HANDSHAKE_DONE, NULL,
+        (void *)(uintptr_t)0, NULL);
+}
+
+IOReturn AirportItlwm::
 postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
@@ -2588,14 +2607,13 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             // The in-kernel PAE completed the 4-way handshake (PTK+GTK
             // installed, 802.1X port opened). On the macOS-supplicant path
             // setCIPHER_KEY posts these on GTK install; the kernel-PAE path
-            // never calls setCIPHER_KEY, so publish them here or wifid's WCL
-            // join state machine times out and fires setWCL_JOIN_ABORT even
-            // though the handshake succeeded on air. All routes below use the
-            // gate-safe controller->postMessage (PostOffice) dispatch, which is
-            // safe to invoke in-gate (unlike IO80211InfraInterface::setLinkState).
-            that->getCommandGate()->runAction(postMessageGated,
-                (void *)(uintptr_t)APPLE80211_M_RSN_HANDSHAKE_DONE, NULL,
-                (void *)(uintptr_t)0);
+            // never calls setCIPHER_KEY, so publish the reference completion
+            // state here or wifid's WCL join state machine times out and fires
+            // setWCL_JOIN_ABORT even though the handshake succeeded on air.
+            // The RSN key-done path is command-gated, and the WCL routes below
+            // use the gate-safe controller->postMessage (PostOffice) dispatch.
+            that->getCommandGate()->runAction(postRsnHandshakeDoneGated,
+                (void *)(uintptr_t)false, NULL, NULL);
 #if __IO80211_TARGET >= __MAC_26_0
             postTahoeWclLinkUpInd(that, 0);
             postTahoeWclConnectCompleteEvent(that);

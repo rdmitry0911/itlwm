@@ -5425,3 +5425,60 @@ Non-claims:
 - this does not modify TCC, LocationServices, or client entitlements as a
   workaround. The remaining layer is the framework current-network/profile
   path after the now-delivered code-2 event.
+
+## item 215 — Kernel PAE RSN completion did not reach IO80211 key-done state
+
+- producers:
+  - `itl80211/openbsd/net80211/ieee80211_pae_input.c`
+  - `AirportItlwm::eventHandler(...)`
+  - `AirportItlwm::postRsnHandshakeDoneGated(...)`
+- status: validated on Tahoe runtime
+- justification: REFERENCE_CONSUMER_WIRING
+
+Reference evidence:
+
+- 25C56 `IO80211InfraInterface::handleKeyDone(bool, bool)` is exported at
+  `0xffffff80022e6f9c`;
+- raw disassembly recovery proves the C++ signature
+  `void handleKeyDone(bool, bool)`;
+- forced Ghidra decompile shows the first bool selects the
+  `IO80211RSNDone` property value and the second bool is logged as the rekey
+  marker;
+- `IO80211InfraInterface::handleSupplicantEvent(void*, unsigned long)` calls
+  `handleKeyDone(true, status == 0xe0822c15)` on its successful 0x28-byte
+  supplicant event path;
+- `IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(...)` calls
+  `handleKeyDone(false, false)` on its reset/update path.
+
+Local closure:
+
+- the lower OpenBSD-derived PAE path still owns key installation and only emits
+  `IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE` after `EAPOL_KEY_SECURE`, PTK/GTK
+  install, and the `ni_port_valid` 0->1 transition;
+- the Tahoe event handler now runs a command-gated key-done action that calls
+  `IO80211InfraInterface::handleKeyDone(true, false)` before the existing
+  `APPLE80211_M_RSN_HANDSHAKE_DONE` PostOffice publication;
+- the reset side remains delegated to the inherited
+  `IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(...)` through the existing
+  Skywalk interface override.
+
+Runtime validation:
+
+- built against Tahoe BootKC with all 946 undefined symbols resolved;
+- loaded kext UUID `9AD9C19E-131D-3C3C-B7FD-0695645BA626`;
+- controlled AP join showed hostapd `EAPOL-4WAY-HS-COMPLETED` and DHCP
+  `10.77.0.157`;
+- IORegistry after join and after stress showed `IO80211RSNDone = Yes` with
+  SSID `ITLWM-Lab-3c95c7`, BSSID `<80e4ba20eff9>`, and channel 1;
+- 240-second ping plus concurrent iperf3 stress retained the association:
+  `240/240` ping replies, `0.0%` loss, and `718 MBytes` over `240.59`
+  seconds at about `25.0 Mbits/sec` receiver throughput;
+- hostapd retained the station as authenticated, associated, and authorized
+  after the stress window.
+
+Non-claims:
+
+- this does not fabricate keys, replay EAPOL, retry association, suppress
+  deauth, or set `IO80211RSNDone` outside the real lower handshake completion;
+- this does not close the public CoreWLAN/networksetup associated-network gate
+  by itself.
