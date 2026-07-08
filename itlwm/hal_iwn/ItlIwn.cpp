@@ -339,7 +339,7 @@ IOReturn ItlIwn::startAPMode(const struct ItlHalApConfig *config)
 IOReturn ItlIwn::stopAPMode()
 {
     if (!supportsAPMode()) {
-        return kIOReturnUnsupported;
+        return kIOReturnSuccess;
     }
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     if ((ifp->if_flags & IFF_RUNNING) != 0) {

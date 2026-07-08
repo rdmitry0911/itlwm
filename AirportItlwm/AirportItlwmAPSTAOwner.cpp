@@ -287,7 +287,7 @@ IOReturn AirportItlwmAPSTAOwner::startLowerIfReady()
 
 IOReturn AirportItlwmAPSTAOwner::stopLower()
 {
-    if (owner != nullptr && owner->fHalService != nullptr && owner->fHalService->supportsAPMode()) {
+    if (owner != nullptr && owner->fHalService != nullptr) {
         (void)owner->fHalService->stopAPMode();
     }
     resetRuntimeState();

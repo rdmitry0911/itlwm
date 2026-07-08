@@ -5482,3 +5482,58 @@ Non-claims:
   deauth, or set `IO80211RSNDone` outside the real lower handshake completion;
 - this does not close the public CoreWLAN/networksetup associated-network gate
   by itself.
+
+## item 216 — APSTA lower-stop teardown skipped the HAL stop boundary
+
+- producers:
+  - `AirportItlwmAPSTAOwner::stopLower()`
+  - `ItlIwn::stopAPMode()`
+  - `ItlIwx::attach()`
+- status: validated on Tahoe runtime
+- justification: APGO_TEARDOWN_CONTRACT
+
+Reference evidence:
+
+- the AP/GO HAL surface requires `stopAPMode()` to be re-entry-safe: stopping
+  while AP mode is not started must succeed without side effects;
+- the iwx AP/GO MAC-context layer already treats a closed AP/GO gate as
+  "no AP context to remove" and returns success from `stopAPMode()`;
+- the host APSTA owner teardown contract requires the lower-stop edge to run
+  while the controller still has a live `ItlHalService *`, rather than being
+  skipped by a caller-side capability prefilter.
+
+Local closure:
+
+- `AirportItlwmAPSTAOwner::stopLower()` now calls `fHalService->stopAPMode()`
+  whenever a live HAL pointer exists, and still ignores the result because the
+  owner cleanup must proceed through station-table/state reset;
+- `ItlIwn::stopAPMode()` now matches the idempotent closed-gate behavior:
+  when APGO backend admission is disabled, it returns success without touching
+  firmware state;
+- the retired iwx attach-time `ap-hal-probe` diagnostic no longer calls
+  `startAPMode(NULL)` / `stopAPMode()` from `ItlIwx::attach()`.
+
+Runtime validation:
+
+- Tahoe guest build succeeded against `/System/Library/KernelCollections/BootKernelExtensions.kc`
+  with all 946 undefined symbols resolved;
+- installed binary SHA-256
+  `e039675822772c364153e48338700b6d134930dbaad6a63258d47eded15debba`;
+- loaded kext UUID `522D34D7-B801-3412-8B5B-48E726129C21`;
+- controlled AP join reached DHCP `10.77.0.157`;
+- 240-second host-to-guest ping while guest-to-host iperf3 saturated the link
+  reported `240/240` replies, `0%` packet loss, and RTT
+  `5.080/636.087/946.078/103.241 ms`;
+- concurrent iperf3 transferred `645 MBytes` over `240.63` seconds at
+  `22.5 Mbits/sec` receiver throughput;
+- post-stress `system_profiler` still reported Wi-Fi `Status: Connected`;
+- kernel log and serial checks found no panic, stack corruption, `NoCTL`,
+  `IO80211QueueCall`, fatal marker, or revived `ap-hal-probe` line.
+
+Non-claims:
+
+- this does not enable AP/GO firmware operation, HostAP net80211 runtime,
+  beaconing, AP station association, AP DHCP, or AP traffic;
+- this does not change the existing public CoreWLAN/networksetup symptom:
+  `networksetup -getairportnetwork en1` still reports
+  `You are not associated with an AirPort network.` while the data path is up.

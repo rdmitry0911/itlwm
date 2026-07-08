@@ -174,31 +174,6 @@ bool ItlIwx::attach(IOPCIDevice *device)
         return false;
     }
 
-    /*
-     * One-shot AP/GO HAL boundary self-test.
-     *
-     * Exercises the ItlHalService virtual dispatch on the iwx
-     * backend so observable IOReturn values for startAPMode and
-     * stopAPMode are recorded once per attach. The call is made
-     * through an ItlHalService * to land on the abstract HAL
-     * boundary; on every iwx device today the fail-closed
-     * iwx_softc_supports_ap_go() gate keeps the firmware command
-     * path unreachable, so startAPMode must observe
-     * kIOReturnUnsupported and stopAPMode must be idempotent
-     * (kIOReturnSuccess). The single log line is read from
-     * kernel logs to verify the AP/GO HAL boundary contract
-     * without altering any STA, monitor, AP-mode firmware
-     * command, or APSTA owner code path.
-     */
-    {
-        ItlHalService *hal = static_cast<ItlHalService *>(this);
-        IOReturn ap_start_ret = hal->startAPMode(NULL);
-        IOReturn ap_stop_ret = hal->stopAPMode();
-        XYLog("itlwm: ap-hal-probe gate=%d startAPMode=0x%08x stopAPMode=0x%08x\n",
-              iwx_softc_supports_ap_go(&com) ? 1 : 0,
-              ap_start_ret, ap_stop_ret);
-    }
-
     return true;
 }
 

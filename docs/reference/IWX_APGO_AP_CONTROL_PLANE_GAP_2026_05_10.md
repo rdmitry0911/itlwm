@@ -89,7 +89,14 @@ Layer D below will reuse its semantics and the Linux iwlwifi `ieee80211_beacon_g
 
 ### 2.6 HAL boundary observable today
 
-The CR-463 attach-time HAL boundary self-test invokes `startAPMode(NULL)` and `stopAPMode()` exactly once per attach and prints a single line of the form `itlwm: ap-hal-probe gate=0 startAPMode=0xe00002c7 stopAPMode=0x00000000`. With the iwx AP/GO capability gate fail-closed, that line is the only AP HAL boundary observable today; no AP profile-driven HAL call can occur until the gap below is closed.
+The retired CR-463 attach-time HAL boundary self-test no longer calls
+`startAPMode(NULL)` / `stopAPMode()` from `ItlIwx::attach()` and no
+longer prints `itlwm: ap-hal-probe ...`. With the AP/GO capability
+gate fail-closed, the live HAL boundary observable is now the absence
+of attach-time AP/GO calls, plus the linked `startAPMode` /
+`stopAPMode` symbols and the APSTA owner teardown path that issues
+`stopAPMode()` only as cleanup while a live HAL pointer exists. No AP
+profile-driven HAL call can occur until the gap below is closed.
 
 ## 3. The gap
 
@@ -119,9 +126,9 @@ Each layer below is its own future Stage 1 + Stage 2 cycle. This batch only file
 This batch is documentation-only and therefore needs no build / install / reboot / runtime evidence as part of its own Stage 2 acceptance. The runtime plan that this blocker schedules belongs to each subsequent layer's individual Stage 1 + Stage 2 cycle, not to CR-464:
 
 - **Layer A** runtime plan: header-only build + Tahoe symbol-check; no install required because the new typedefs are not yet consumed.
-- **Layer B** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK; the closed-gate AP HAL boundary observable from `itlwm: ap-hal-probe gate=0 startAPMode=0xe00002c7 stopAPMode=0x00000000` must remain unchanged because the AP/GO capability gate is still fail-closed.
-- **Layer C** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK + selector-driven owner-state mutations observable through the new per-selector setters; the closed-gate AP HAL boundary observable must remain unchanged.
-- **Layer D** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK + carrier-to-`ItlHalApConfig` observable; the closed-gate AP HAL boundary observable must remain unchanged.
+- **Layer B** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK; there must be no revived `ap-hal-probe` attach-time call because the AP/GO capability gate is still fail-closed.
+- **Layer C** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK + selector-driven owner-state mutations observable through the new per-selector setters; the closed-gate AP HAL boundary must remain free of attach-time AP/GO calls.
+- **Layer D** runtime plan: build + install + reboot + STA regression on CONTROL_STA_NETWORK + carrier-to-`ItlHalApConfig` observable; the closed-gate AP HAL boundary must remain free of attach-time AP/GO calls.
 - **Layer E** runtime plan: stop the host lab AP via `<project-root>/stop-fast_lab_ap-ap.sh` so the host MT7612U adapter (`Bus 002 Device 003`, USB id `0e8d:7612`, host interface `wlxe84e062bc4f5`) is free; build + install + reboot; lift the iwx AP/GO capability gate; issue an AP MAC-context command; use the MT7612U adapter as the AP-mode client/test peer under the controlled profile from `commit-approval/status/ITLWM_AP_MODE_TEST_PROFILE.env` (SSID `CONTROL_AP_MODE_PROFILE`, passphrase `<REDACTED:WIFI_PSK>`, security `wpa2-psk`, channel 6); record host `lsusb` identity, host wireless interface identity, AP scan/association from the MT7612U side, and DHCP/IP assignment; finish with an CONTROL_STA_NETWORK STA regression after the lab AP is stopped.
 
 ## 7. Non-claims

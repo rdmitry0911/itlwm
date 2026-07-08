@@ -267,54 +267,17 @@ slice on every supported iwx device. Every existing STA / monitor
 path through `iwx_mac_ctxt_cmd_common` and `iwx_mac_ctxt_cmd` is
 byte-identical.
 
-## Attach-time AP/GO HAL boundary self-test
+## Attach-time AP/GO HAL boundary probe retirement
 
-`ItlIwx::attach()` runs a single one-shot AP/GO HAL probe after the
-underlying `iwx_attach()` returns success. The probe casts `this`
-to `ItlHalService *` and invokes the abstract HAL boundary entries
-`startAPMode(NULL)` and `stopAPMode()` exactly once per attach. It
-records the resulting `IOReturn` values together with the current
-state of `iwx_softc_supports_ap_go(&com)` to the kernel log via the
-existing `XYLog` macro, in the format:
-
-```
-itlwm: ap-hal-probe gate=<0|1> startAPMode=0x<hex> stopAPMode=0x<hex>
-```
-
-Expected values on every iwx device today (gate is closed):
-
-- `gate=0`
-- `startAPMode=0xe00002c7` (`kIOReturnUnsupported`)
-- `stopAPMode=0x00000000` (`kIOReturnSuccess`)
-
-Internal call chain:
-
-- `ItlHalService *hal = static_cast<ItlHalService *>(this)`
-- `hal->startAPMode(NULL)` resolves through C++ virtual dispatch
-  to `ItlIwx::startAPMode(NULL)`, which forwards to
-  `iwx_start_ap_mode(&com, NULL)`. The lifecycle helper short-
-  circuits at `iwx_softc_supports_ap_go(&com) == false` with
-  `EOPNOTSUPP`; the override translates that to
-  `kIOReturnUnsupported`.
-- `hal->stopAPMode()` resolves through C++ virtual dispatch to
-  `ItlIwx::stopAPMode()`, which forwards to
-  `iwx_stop_ap_mode(&com)`. The lifecycle helper short-circuits at
-  the same gate with `0` (idempotent); the override translates
-  that to `kIOReturnSuccess`.
-
-The probe runs unconditionally on every attach but its observable
-effect is exactly one log line. It does not allocate, mutate the
-softc, change interface state, send any firmware command, or
-alter any STA / monitor / APSTA owner code path; gate closure
-guarantees `iwx_mac_ctxt_cmd_ap_send` is never reached.
-
-If a future per-family helper arm is promoted to `true`, the same
-probe will instead see `gate=1`, `startAPMode=0xe00002c2`
-(`kIOReturnBadArgument`, because `config == NULL` reaches the
-lifecycle helper after the gate admits the call), and `stopAPMode`
-will issue `IWX_FW_CTXT_ACTION_REMOVE`. That future change is out
-of scope for this slice and forbidden by the unchanged fail-closed
-gate.
+The original CR-463 slice temporarily verified the closed-gate HAL
+boundary by calling `startAPMode(NULL)` and `stopAPMode()` once from
+`ItlIwx::attach()` and logging `itlwm: ap-hal-probe ...`. That probe
+was diagnostic instrumentation, not part of the recovered Apple attach
+contract. The APSTA owner now exercises the lower-stop boundary through
+its teardown path while a live `ItlHalService *` is still present, and
+the iwx/iwn backend `stopAPMode()` implementations are idempotent on a
+closed AP/GO gate. The attach-time probe is therefore retired: iwx
+attach no longer calls AP/GO HAL methods just to publish a log line.
 
 ## Stage 2 runtime plan (concrete, after Stage 1 approval)
 
@@ -332,20 +295,17 @@ path.
 3. Capture initial driver evidence: `kextstat | grep -i AirportItlwm`,
    `ioreg -p IOService -w 0 | grep -i AirportItlwm`, `dmesg | head`.
 4. **AP/GO HAL boundary observation (primary Stage 2 evidence)**:
-   capture the probe line emitted at attach. Use both
-   `dmesg | grep ap-hal-probe` and
-   `log show --last 5m --predicate 'process == "kernel" AND eventMessage CONTAINS "ap-hal-probe"'`.
-   The line must show `gate=0`, `startAPMode=0xe00002c7`
-   (`kIOReturnUnsupported`), and `stopAPMode=0x00000000`
-   (`kIOReturnSuccess`). Save raw command output to
-   `commit-approval/runtime_evidence/CR-462-stage2-ap-hal-probe.log`.
-5. **Symbol presence cross-check (secondary)**: confirm the
+   confirm that the retired attach-time diagnostic is absent from
+   fresh boot logs: `dmesg | grep ap-hal-probe` and
+   `log show --last 5m --predicate 'process == "kernel" AND eventMessage CONTAINS "ap-hal-probe"'`
+   must produce no new probe line.
+5. **Symbol presence cross-check (primary static evidence)**: confirm the
    override symbols are linked into the loaded kext binary via
    `nm /Library/Extensions/AirportItlwm.kext/Contents/MacOS/AirportItlwm | grep -E 'startAPMode|stopAPMode'`.
    The presence of `_ZN6ItlIwx11startAPModeEPK15ItlHalApConfig`
    and `_ZN6ItlIwx10stopAPModeEv` together with the parent
    `ItlHalService` defaults provides the durable static evidence
-   complementing the runtime IOReturn observation.
+   for the fail-closed AP/GO HAL boundary.
 6. **STA regression test against FAST_LAB_AP**: start the host lab
    AP (`./start-fast_lab_ap-ap.sh`, `SSID=FAST_LAB_AP`,
    `password=<REDACTED:WIFI_PSK>`, gateway/DHCP `10.77.0.1/24`); scan,
@@ -365,9 +325,8 @@ command issuance because the gate keeps every command path
 unreachable on the current iwx fleet. This is the documented
 fail-closed contract. Stage 2 evidence therefore consists of:
 
-- the attach-time probe log line proving the AP/GO HAL boundary
-  returns `kIOReturnUnsupported` for `startAPMode(NULL)` and
-  `kIOReturnSuccess` for `stopAPMode()` under the closed gate;
+- no attach-time `ap-hal-probe` line, proving the diagnostic
+  self-test is no longer part of the driver attach contract;
 - HAL boundary symbol presence in the loaded kext binary;
 - STA-mode association + DHCP + stability against FAST_LAB_AP and
   CONTROL_STA_NETWORK;
