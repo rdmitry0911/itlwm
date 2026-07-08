@@ -42,8 +42,10 @@ offsets `+0x10`, `+0x14`, `+0x18`, and `+0x214`, then calls
 `setAuthContext`, computes `IO80211GetBandInfoBitmap(payload +0x3d4)`, calls
 `setBandInfoBitmap`, and finally calls `setAssocSSID`. Only the band/RSSI part
 is closed here because the exact local producer values for the four auth-context
-fields, `setNetworkFlags(...)`, and `setAssociatedAuthType(...)` are not yet
-proven.
+fields were handled by the auth-context layer, while producer values for
+`setNetworkFlags(...)` and `setAssociatedAuthType(...)` remain unproven. Their
+direct-call ABIs are covered separately by
+`docs/reference/CR-479-bssmanager-network-auth-writer-abi-20260709.md`.
 
 ## Local Mapping
 

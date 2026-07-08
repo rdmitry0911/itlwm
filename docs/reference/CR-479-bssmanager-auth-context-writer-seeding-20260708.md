@@ -57,9 +57,13 @@ post-association seed burst when a saved hidden association carrier exists, so
 the context is restored if BssManager materialization was not available at the
 initial hidden-association edge.
 
-`setNetworkFlags(...)` and `setAssociatedAuthType(...)` remain deferred. The
-former needs a proven bit mask and producer polarity; the latter needs its
-exact byte-array source, not just the public auth dwords.
+`setNetworkFlags(...)` and `setAssociatedAuthType(...)` are ABI-declared in the
+follow-up 25C56 writer note, but producer seeding remains deferred. The former
+needs a proven bit mask and producer polarity; the latter needs its exact
+byte-array source, not just the public auth dwords.
+
+Follow-up ABI note:
+`docs/reference/CR-479-bssmanager-network-auth-writer-abi-20260709.md`.
 
 ## Validation
 

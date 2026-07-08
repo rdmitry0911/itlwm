@@ -911,8 +911,12 @@ void testTahoeBssManagerWriterContracts()
         void (IO80211BssManager::*)(apple80211_he_mcs_index_set_data &);
     using RateWriter =
         void (IO80211BssManager::*)(apple80211_rate_set_data &);
+    using NetworkFlagsWriter =
+        void (IO80211BssManager::*)(bool, unsigned int);
     using AssocSsidWriter =
         IOReturn (IO80211BssManager::*)(const unsigned char *, unsigned long);
+    using AssociatedAuthTypeWriter =
+        void (IO80211BssManager::*)(unsigned char *, unsigned short);
     using AssocRsnIeWriter =
         IOReturn (IO80211BssManager::*)(const unsigned char *, unsigned long);
     using AdHocCreatedWriter = void (IO80211BssManager::*)(bool);
@@ -929,9 +933,15 @@ void testTahoeBssManagerWriterContracts()
     static_assert(std::is_same<decltype(&IO80211BssManager::setRateSet),
                                RateWriter>::value,
                   "BssManager setRateSet keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setNetworkFlags),
+                               NetworkFlagsWriter>::value,
+                  "BssManager setNetworkFlags keeps Apple writer signature");
     static_assert(std::is_same<decltype(&IO80211BssManager::setAssocSSID),
                                AssocSsidWriter>::value,
                   "BssManager setAssocSSID keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setAssociatedAuthType),
+                               AssociatedAuthTypeWriter>::value,
+                  "BssManager setAssociatedAuthType keeps Apple writer signature");
     static_assert(std::is_same<decltype(&IO80211BssManager::setAssocRSNIE),
                                AssocRsnIeWriter>::value,
                   "BssManager setAssocRSNIE keeps Apple writer signature");

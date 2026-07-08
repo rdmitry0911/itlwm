@@ -54,6 +54,10 @@
 //    ffffff800226713c  IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)
 //    ffffff8002267afa  IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)
 //
+//  CR-479 25C56 writer ABI addendum (guest BootKC macOS 26.2 build 25C56):
+//    ffffff8002242562  IO80211BssManager::setNetworkFlags(bool, unsigned int)
+//    ffffff8002243084  IO80211BssManager::setAssociatedAuthType(unsigned char*, unsigned short)
+//
 //  These writer declarations are not part of the CR-201 primitive-only
 //  fourteen-helper batch. They are live current-BSS cache producers used by
 //  Apple's rate/MCS update path and by the local Tahoe bridge once the
@@ -97,8 +101,10 @@ public:
     void setLastBSSRssi();
     IOReturn getCurrentBand(Bands &);
     void setBandInfoBitmap(unsigned int);
+    void setNetworkFlags(bool, unsigned int);
     void setAuthContext(IO80211AuthContext &);
     IOReturn setAssocSSID(const unsigned char *, unsigned long);
+    void setAssociatedAuthType(unsigned char *, unsigned short);
     IOReturn setAssocRSNIE(const unsigned char *, unsigned long);
     unsigned char isAssociatedOnHighBand();
     bool isAssociatedToAdhoc();

@@ -5048,11 +5048,16 @@ Local closure:
 - the post-RUN BssManager seed burst repeats the same write when a hidden
   association carrier is available, preserving the context if the BssManager
   route was not materialized at the initial WCL edge;
-- `setNetworkFlags(...)` and `setAssociatedAuthType(...)` remain deferred until
-  their exact source values are proven.
+- `setNetworkFlags(...)` and `setAssociatedAuthType(...)` now have declared
+  and type-checked 25C56 writer ABIs, but local producer seeding remains
+  deferred until the exact source mask/polarity and byte-array source are
+  proven.
 
 Reference note:
 `docs/reference/CR-479-bssmanager-auth-context-writer-seeding-20260708.md`.
+
+ABI reference note:
+`docs/reference/CR-479-bssmanager-network-auth-writer-abi-20260709.md`.
 
 ## item 206c — IO80211BssManager ad-hoc-created teardown
 
