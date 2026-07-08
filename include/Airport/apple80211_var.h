@@ -33,9 +33,20 @@
 #error "Please define __IO80211_TARGET to the requested version"
 #endif
 
+#ifndef __MAC_26_0
+#define __MAC_26_0 260000
+#endif
+
 // Sizes and limits
 #define APPLE80211_ADDR_LEN            6
 #define APPLE80211_MAX_RATES           15
+#if __IO80211_TARGET >= __MAC_26_0
+#define APPLE80211_SCAN_RESULT_MAX_RATES 14
+#define APPLE80211_SCAN_RESULT_IE_DATA_LEN 2120
+#else
+#define APPLE80211_SCAN_RESULT_MAX_RATES APPLE80211_MAX_RATES
+#define APPLE80211_SCAN_RESULT_IE_DATA_LEN 1024
+#endif
 #define APPLE80211_MAX_SSID_LEN        32
 #define APPLE80211_MAX_ANTENNAE        4
 #define APPLE80211_MAX_RADIO           4
@@ -507,7 +518,6 @@ struct apple80211_rate
 #define APPLE80211_MBUF_SET_WME_AC( m, ac ) mbuf_pkthdr_setrcvif( m, (ifnet_t)ac )
 #define APPLE80211_MBUF_WME_AC( m ) (int)mbuf_pkthdr_rcvif( m )
 
-// FIXME: seems that rates array starts at 0x24, immediately after
 struct apple80211_scan_result
 {
     u_int32_t             version;        // 0x00 - 0x03
@@ -525,22 +535,36 @@ struct apple80211_scan_result
     u_int8_t              asr_bssid[ APPLE80211_ADDR_LEN ]; // 0x1c 0x1d 0x1e 0x1f 0x20 0x21
     u_int8_t              asr_nrates;     // 0x22
     u_int8_t              asr_nr_unk;     // 0x23
-    u_int32_t             asr_rates[ APPLE80211_MAX_RATES ]; // 0x24 - 0x5f
-    u_int8_t              asr_ssid_len;   // 0x60
-    u_int8_t              asr_ssid[ APPLE80211_MAX_SSID_LEN ]; // 0x61 - 0x80
+    u_int32_t             asr_rates[ APPLE80211_SCAN_RESULT_MAX_RATES ]; // Tahoe: 0x24 - 0x5b
+    u_int8_t              asr_ssid_len;   // Tahoe: 0x5c
+    u_int8_t              asr_ssid[ APPLE80211_MAX_SSID_LEN ]; // Tahoe: 0x5d - 0x7c
     int16_t               unk;
     uint8_t               unk2;
-    u_int32_t             asr_age;        // (ms) non-zero for cached scan result // 0x84
+    u_int32_t             asr_age;        // (ms) non-zero for cached scan result
 
-    u_int16_t             unk3;             // 0x88
-    int16_t               asr_ie_len;       // 0x8A
+    u_int16_t             unk3;
+#if __IO80211_TARGET >= __MAC_26_0
+    uint8_t               asr_reserved_86[4];
+#endif
+    int16_t               asr_ie_len;       // Tahoe: 0x8a
 #if __IO80211_TARGET < __MAC_12_0
     uint32_t              asr_unk3;         // 0x8C
     void*                 asr_ie_data;      // 90
 #else
-    uint8_t               asr_ie_data[1024];    // 0x8C
+    uint8_t               asr_ie_data[APPLE80211_SCAN_RESULT_IE_DATA_LEN]; // Tahoe: 0x8c
 #endif
 } __attribute__((packed));
+
+#if __IO80211_TARGET >= __MAC_26_0
+static_assert(__offsetof(struct apple80211_scan_result, asr_ssid_len) == 0x5c,
+              "Tahoe scan-result SSID length must live at +0x5c");
+static_assert(__offsetof(struct apple80211_scan_result, asr_ie_len) == 0x8a,
+              "Tahoe scan-result IE length must live at +0x8a");
+static_assert(__offsetof(struct apple80211_scan_result, asr_ie_data) == 0x8c,
+              "Tahoe scan-result IE data must live at +0x8c");
+static_assert(sizeof(struct apple80211_scan_result) == 0x8d4,
+              "Tahoe scan-result carrier must match WCL current-network size");
+#endif
 
 // WCL channel info entry — 8 bytes per channel
 // Reverse-engineered from AppleBCMWLAN::getWCL_CHANNELS_INFO (macOS 26.x)

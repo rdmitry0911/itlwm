@@ -6856,9 +6856,10 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
     bzero(result, sizeof(*result));
     result->version = APPLE80211_VERSION;
     if (fNextNodeToSend->ni_rsnie_tlv && fNextNodeToSend->ni_rsnie_tlv_len > 0) {
-        result->asr_ie_len = fNextNodeToSend->ni_rsnie_tlv_len;
+        result->asr_ie_len = MIN(fNextNodeToSend->ni_rsnie_tlv_len,
+                                 sizeof(result->asr_ie_data));
         memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv,
-               MIN(result->asr_ie_len, sizeof(result->asr_ie_data)));
+               result->asr_ie_len);
     } else {
         result->asr_ie_len = 0;
     }
@@ -6868,7 +6869,7 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
     // immediately after bzero(), so nrates stayed 0 until after the copy.
     // That produces a malformed candidate even when the BSS is present in ic_tree.
     result->asr_nrates = MIN((uint8_t)fNextNodeToSend->ni_rates.rs_nrates,
-                             (uint8_t)APPLE80211_MAX_RATES);
+                             (uint8_t)APPLE80211_SCAN_RESULT_MAX_RATES);
     for (uint8_t i = 0; i < result->asr_nrates; i++)
         result->asr_rates[i] = fNextNodeToSend->ni_rates.rs_rates[i];
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);

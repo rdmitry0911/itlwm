@@ -1631,11 +1631,12 @@ getSCAN_RESULT(OSObject *object, struct apple80211_scan_result **sr)
     bzero(result, sizeof(*result));
     result->version = APPLE80211_VERSION;
     if (fNextNodeToSend->ni_rsnie_tlv && fNextNodeToSend->ni_rsnie_tlv_len > 0) {
-        result->asr_ie_len = fNextNodeToSend->ni_rsnie_tlv_len;
 #if __IO80211_TARGET < __MAC_12_0
+        result->asr_ie_len = fNextNodeToSend->ni_rsnie_tlv_len;
         result->asr_ie_data = fNextNodeToSend->ni_rsnie_tlv;
 #else
-        memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv, MIN(result->asr_ie_len, sizeof(result->asr_ie_data)));
+        result->asr_ie_len = MIN(fNextNodeToSend->ni_rsnie_tlv_len, sizeof(result->asr_ie_data));
+        memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv, result->asr_ie_len);
 #endif
     } else {
         result->asr_ie_len = 0;
@@ -1644,9 +1645,10 @@ getSCAN_RESULT(OSObject *object, struct apple80211_scan_result **sr)
 #endif
     }
     result->asr_beacon_int = fNextNodeToSend->ni_intval;
-    for (int i = 0; i < result->asr_nrates; i++ )
+    result->asr_nrates = MIN((uint8_t)fNextNodeToSend->ni_rates.rs_nrates,
+                             (uint8_t)APPLE80211_SCAN_RESULT_MAX_RATES);
+    for (uint8_t i = 0; i < result->asr_nrates; i++)
         result->asr_rates[i] = fNextNodeToSend->ni_rates.rs_rates[i];
-    result->asr_nrates = fNextNodeToSend->ni_rates.rs_nrates;
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);
     result->asr_cap = fNextNodeToSend->ni_capinfo;
     result->asr_channel.version = APPLE80211_VERSION;
