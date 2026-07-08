@@ -188,6 +188,9 @@ static constexpr int32_t kIo80211InputStageEntry = 1000;
 static constexpr int32_t kIo80211InputStageReturn = 2000;
 static constexpr uint32_t kExternalPmkWaitTimeoutMs = 3000;
 static constexpr uint32_t kAppleBssManagerAssocRsnIeMaxLen = 0x101;
+static constexpr uint32_t kAppleBssManagerBandInfoBitmapTable[4] = {
+    0x1, 0x8, 0x2, 0x9
+};
 
 // Counter of successful APPLE80211_CIPHER_PMK installs through
 // setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
@@ -219,6 +222,16 @@ static uint16_t airportItlwmHostEtherType(const ether_header *eh)
 static bool isTahoeHiddenAssocCommand(int command)
 {
     return TahoeAssociationContracts::isHiddenAssocCommand(command);
+}
+
+static uint32_t tahoeBssManagerBandInfoBitmap(uint32_t band)
+{
+    if (band == 0 ||
+        band > sizeof(kAppleBssManagerBandInfoBitmapTable) /
+            sizeof(kAppleBssManagerBandInfoBitmapTable[0]))
+        return 0;
+
+    return kAppleBssManagerBandInfoBitmapTable[band - 1];
 }
 
 static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
@@ -2460,6 +2473,12 @@ seedBssManagerRateAndMcs()
 #undef AIAM_RD
 
     IO80211BssManager *bssManager = reinterpret_cast<IO80211BssManager *>(bss);
+    Bands band = static_cast<Bands>(0);
+    if (bssManager->getCurrentBand(band) == kIOReturnSuccess) {
+        bssManager->setBandInfoBitmap(
+            tahoeBssManagerBandInfoBitmap(static_cast<uint32_t>(band)));
+    }
+    bssManager->setLastBSSRssi();
 
     if (ni->ni_esslen <= IEEE80211_NWID_LEN)
         (void)bssManager->setAssocSSID(ni->ni_essid, ni->ni_esslen);

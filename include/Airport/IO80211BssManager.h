@@ -47,6 +47,9 @@
 //    ffffff8002266bc2  IO80211BssManager::setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data&)
 //    ffffff8002266c4a  IO80211BssManager::setHEMCSIndexSet(apple80211_he_mcs_index_set_data&)
 //    ffffff8002266cb2  IO80211BssManager::setRateSet(apple80211_rate_set_data&)
+//    ffffff800226682e  IO80211BssManager::setLastBSSRssi()
+//    ffffff8002266884  IO80211BssManager::getCurrentBand(Bands&)
+//    ffffff8002266fee  IO80211BssManager::setBandInfoBitmap(unsigned int)
 //    ffffff800226713c  IO80211BssManager::setAssocSSID(unsigned char const*, unsigned long)
 //    ffffff8002267afa  IO80211BssManager::setAssocRSNIE(unsigned char const*, unsigned long)
 //
@@ -63,6 +66,7 @@ struct apple80211_mcs_index_set_data;
 struct apple80211_vht_mcs_index_set_data;
 struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
+enum Bands : unsigned int;
 
 #ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
 typedef int IOReturn;
@@ -77,6 +81,9 @@ public:
     void setVHTMCSIndexSet(apple80211_vht_mcs_index_set_data &);
     void setHEMCSIndexSet(apple80211_he_mcs_index_set_data &);
     void setRateSet(apple80211_rate_set_data &);
+    void setLastBSSRssi();
+    IOReturn getCurrentBand(Bands &);
+    void setBandInfoBitmap(unsigned int);
     IOReturn setAssocSSID(const unsigned char *, unsigned long);
     IOReturn setAssocRSNIE(const unsigned char *, unsigned long);
     unsigned char isAssociatedOnHighBand();

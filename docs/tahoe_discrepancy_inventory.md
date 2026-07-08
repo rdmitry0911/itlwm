@@ -4988,6 +4988,38 @@ Local closure:
 Reference note:
 `docs/reference/CR-479-bssmanager-current-bss-identity-writer-seeding-20260707.md`.
 
+## item 206a — IO80211BssManager current-BSS band/RSSI writer seeding
+
+- class: IO80211BssManager
+- header: `include/Airport/IO80211BssManager.h`
+- implementation: `AirportItlwmSkywalkInterface.cpp::seedBssManagerRateAndMcs`
+- status: closed
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- BootKC exports `IO80211BssManager::getCurrentBand(Bands&)` at
+  `0xffffff8002266884`, `setBandInfoBitmap(unsigned int)` at
+  `0xffffff8002266fee`, and `setLastBSSRssi()` at `0xffffff800226682e`.
+- `IO80211GetBandInfoBitmap(unsigned int)` at `0xffffff800211cfb3` maps
+  one-based band values through the four-dword table `{ 0x1, 0x8, 0x2, 0x9 }`
+  and returns zero outside 1..4.
+- `setLastBSSRssi()` derives the cached RSSI from the BssManager current-BSS
+  object and stores zero when the object is absent.
+
+Local closure:
+
+- the BssManager direct-call header now declares the recovered band/RSSI writer
+  helpers with the exact `Bands&` mangling for `getCurrentBand`;
+- the existing seed burst now writes band-info bitmap through the recovered
+  Apple table and lets IO80211Family refresh last-BSS RSSI from its own
+  current-BSS object;
+- auth context, network flags, and associated auth type remain deferred because
+  their exact local source values are not proven by this layer.
+
+Reference note:
+`docs/reference/CR-479-bssmanager-band-rssi-writer-seeding-20260708.md`.
+
 ## item 207 — CURRENT_NETWORK not-associated status
 
 - producer: `AirportItlwmSkywalkInterface::getCURRENT_NETWORK(...)`
