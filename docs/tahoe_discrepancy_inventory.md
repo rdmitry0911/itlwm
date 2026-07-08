@@ -5054,6 +5054,35 @@ Local closure:
 Reference note:
 `docs/reference/CR-479-bssmanager-auth-context-writer-seeding-20260708.md`.
 
+## item 206c — IO80211BssManager ad-hoc-created teardown
+
+- class: IO80211BssManager
+- implementation:
+  - `AirportItlwmSkywalkInterface.cpp::setDISASSOCIATE`
+  - `AirportItlwmSkywalkInterface.cpp::setWCL_LEAVE_NETWORK`
+- status: closed-for-teardown
+- justification: REFERENCE_ALIGNMENT_FIX
+
+Reference producer evidence:
+
+- `AppleBCMWLANNetAdapter::leaveNetworkSync(...)` at
+  `0xffffff8001546ada` calls
+  `IO80211BssManager::setAdHocCreated(false)` at `0xffffff800154711d`.
+- The positive `setAdHocCreated(true)` call sites are tied to successful
+  Apple ad-hoc creation paths, including `candidate +0x0c == 1` after join
+  and `AppleBCMWLANJoinAdapter::createAdhocNetwork(...)`.
+
+Local closure:
+
+- local disassociate and WCL leave now clear the recovered framework-owned
+  BssManager ad-hoc-created bit through the existing WCLConfigManager route;
+- the true edge remains deferred until the local IBSS/create-adhoc owner is
+  implemented, because setting it without real IBSS creation would fabricate
+  framework state.
+
+Reference note:
+`docs/reference/CR-479-bssmanager-ad-hoc-created-teardown-20260708.md`.
+
 ## item 207 — CURRENT_NETWORK not-associated status
 
 - producer: `AirportItlwmSkywalkInterface::getCURRENT_NETWORK(...)`

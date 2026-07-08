@@ -890,6 +890,7 @@ void testTahoeBssManagerWriterContracts()
         IOReturn (IO80211BssManager::*)(const unsigned char *, unsigned long);
     using AssocRsnIeWriter =
         IOReturn (IO80211BssManager::*)(const unsigned char *, unsigned long);
+    using AdHocCreatedWriter = void (IO80211BssManager::*)(bool);
 
     static_assert(std::is_same<decltype(&IO80211BssManager::setMCSIndexSet),
                                MCSWriter>::value,
@@ -909,6 +910,9 @@ void testTahoeBssManagerWriterContracts()
     static_assert(std::is_same<decltype(&IO80211BssManager::setAssocRSNIE),
                                AssocRsnIeWriter>::value,
                   "BssManager setAssocRSNIE keeps Apple writer signature");
+    static_assert(std::is_same<decltype(&IO80211BssManager::setAdHocCreated),
+                               AdHocCreatedWriter>::value,
+                  "BssManager setAdHocCreated keeps Apple writer signature");
 }
 
 void testTahoeBssidChangedCarrierLayout()

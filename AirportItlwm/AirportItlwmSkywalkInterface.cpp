@@ -292,6 +292,14 @@ tahoeRecoverWclBssManager(AirportItlwmSkywalkInterface *interface)
     return reinterpret_cast<IO80211BssManager *>(bss);
 }
 
+static void
+tahoeClearBssManagerAdHocCreated(AirportItlwmSkywalkInterface *interface)
+{
+    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(interface);
+    if (bssManager != nullptr)
+        bssManager->setAdHocCreated(false);
+}
+
 static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
 {
     memset(config, 0, sizeof(*config));
@@ -4767,6 +4775,8 @@ setDISASSOCIATE(void *ad)
         return kIOReturnSuccess;
     }
 
+    tahoeClearBssManagerAdHocCreated(this);
+
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
 
@@ -5300,6 +5310,8 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;
+
+    tahoeClearBssManagerAdHocCreated(this);
 
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
