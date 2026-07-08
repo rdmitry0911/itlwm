@@ -2479,9 +2479,6 @@ seedBssManagerRateAndMcs()
     bssManager->setHEMCSIndexSet(he);
 }
 
-extern "C" uint64_t mach_continuous_time(void);
-extern "C" void     absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
-
 void AirportItlwmSkywalkInterface::
 postLqmUpdateBulletin()
 {
@@ -2508,7 +2505,7 @@ postLqmUpdateBulletin()
     AIAM_RDV(s8,      S + 0x8);
     AIAM_RDV(s18,     s8 + 0x18);
     AIAM_RDV(sink,    s18);
-    if (nm < kKernelVA || S < kKernelVA)
+    if (nm < kKernelVA || S < kKernelVA || sink < kKernelVA)
         return;
 #undef AIAM_RDV
 
@@ -2564,16 +2561,7 @@ postLqmUpdateBulletin()
     msg.size = sizeof(ev);
     msg.payload = ev;
 
-    uint64_t ns = 0;
-    absolutetime_to_nanoseconds(mach_continuous_time(), &ns);
-    uint64_t ts_ms = ns / 1000000ULL;
-
-    if (sink >= kKernelVA) {
-        ((WCLNetManager *)nm)->handleLqmUpdate(msg);
-    } else {
-        *(volatile uint64_t *)(S + 0x150) = ts_ms;
-        *(volatile uint64_t *)(S + 0x158) = ts_ms;
-    }
+    ((WCLNetManager *)nm)->handleLqmUpdate(msg);
 }
 
 bool AirportItlwmSkywalkInterface::
