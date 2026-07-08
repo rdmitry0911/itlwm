@@ -557,6 +557,24 @@ static IO80211LinkState _fLinkStatePublishPendingState;
 static unsigned int _fLinkStatePublishPendingRawCode;
 
 #if __IO80211_TARGET >= __MAC_26_0
+static bool
+seedTahoeInitialMacAddress(IO80211SkywalkInterface *netIf,
+                           struct ieee80211com *ic)
+{
+    if (netIf == nullptr || ic == nullptr)
+        return false;
+
+    const uint8_t *mac = ic->ic_myaddr;
+    if ((mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0)
+        return false;
+
+    ether_addr initMac;
+    memcpy(initMac.octet, mac, IEEE80211_ADDR_LEN);
+    netIf->setInitMacAddress(initMac);
+    netIf->setProperty(kIOMACAddress, initMac.octet, kIOEthernetAddressSize);
+    return true;
+}
+
 static void
 publishTahoeSkywalkLinkCarrier(IOSkywalkNetworkInterface *netIf, bool active)
 {
@@ -3235,6 +3253,9 @@ bool AirportItlwm::start(IOService *provider)
 #if __IO80211_TARGET < __MAC_26_0
     fNetIf->setInterfaceRole(1);
     fNetIf->setInterfaceId(1);
+#else
+    (void)seedTahoeInitialMacAddress(
+        fNetIf, fHalService->get80211Controller());
 #endif
 
 #if __IO80211_TARGET < __MAC_26_0

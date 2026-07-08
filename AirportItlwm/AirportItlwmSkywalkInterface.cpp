@@ -6543,7 +6543,17 @@ setSET_MAC_ADDRESS(apple80211_set_mac_address_data *data)
 
     IEEE80211_ADDR_COPY(ic->ic_myaddr, mac);
     if_setlladdr(&ic->ic_ac.ac_if, mac);
+    if (mExpansionData2 != nullptr && mExpansionData2->fBSDInterface != nullptr) {
+        ether_addr linkMac;
+        memcpy(linkMac.octet, mac, IEEE80211_ADDR_LEN);
+        setLinkLayerAddress(&linkMac);
+    }
     setProperty(kIOMACAddress, const_cast<uint8_t *>(mac), kIOEthernetAddressSize);
+    IORegistryEntry *legacy = getChildEntry(gIOServicePlane);
+    if (legacy != nullptr &&
+        legacy->metaCast("IOSkywalkLegacyEthernet") != nullptr)
+        legacy->setProperty(kIOMACAddress, const_cast<uint8_t *>(mac),
+                            kIOEthernetAddressSize);
     postMessage(APPLE80211_M_LINK_ADDRESS_CHANGED, const_cast<uint8_t *>(mac), 6, true);
 
     return kIOReturnSuccess;
