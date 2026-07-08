@@ -2,7 +2,7 @@
 //  WCLBulletinBoard.h
 //  itlwm
 //
-//  Forward declarations for the Tahoe WCL LQM bulletin terminal path.
+//  Forward declarations for the Tahoe WCL bulletin terminal path.
 //
 
 #ifndef WCLBulletinBoard_h
@@ -11,11 +11,15 @@
 #include <stdint.h>
 
 enum WCLBulletinBoardManagerId : int {
-    kWCLBulletinBoardManagerNet = 4,
+    kWCLBulletinBoardManagerDriver = 13,
 };
 
-// 0x30-byte WCL message object. WCLNetManager::handleLqmUpdate reads
-// msg+0x8 as payload size and msg+0x10 as the 0x1dc LQM payload.
+enum WCLBulletinBoardMsgKind : uint32_t {
+    kWCLBulletinBoardMsgKindDriverEvent = 2,
+};
+
+// 0x30-byte WCL message object. WCLGlue::receiveMessageInternal builds
+// msgWord0 as (eventId << 16) | kind, then copies len/payload at +0x8/+0x10.
 struct bulletinBoardMessage {
     uint32_t msgWord0;
     uint32_t _pad0;
@@ -30,15 +34,7 @@ struct bulletinBoardMessage {
 class WCLBulletinBoard
 {
 public:
-    void sendMessage(WCLBulletinBoardManagerId, bulletinBoardMessage &);
-    int routeMsg(WCLBulletinBoardManagerId, bulletinBoardMessage &,
-                 unsigned int mask, void *, unsigned int);
-};
-
-class WCLNetManager
-{
-public:
-    void handleLqmUpdate(bulletinBoardMessage &);
+    int sendMessage(WCLBulletinBoardManagerId, bulletinBoardMessage &);
 };
 
 #endif /* WCLBulletinBoard_h */

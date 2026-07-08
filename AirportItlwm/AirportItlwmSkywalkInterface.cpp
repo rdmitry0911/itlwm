@@ -2487,12 +2487,11 @@ postLqmUpdateBulletin()
         return;
 
     const uintptr_t kKernelVA = 0xffffff8000000000ULL;
-    const uintptr_t kWCLNetManagerId = 4;
 #define AIAM_RDV(dst, addr) do { \
         uintptr_t _a = (addr); \
         (dst) = (_a >= kKernelVA) ? *(volatile uintptr_t *)_a : 0; \
     } while (0)
-    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, nm, S, s8, s18, sink;
+    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh;
     AIAM_RDV(p120,    (uintptr_t)this + 0x120);
     AIAM_RDV(glue,    p120 + 0xd8);
     AIAM_RDV(givars,  glue + 0x18);
@@ -2500,12 +2499,7 @@ postLqmUpdateBulletin()
     AIAM_RDV(wivars,  wclglue + 0x18);
     AIAM_RDV(bb,      wivars + 0x8);
     AIAM_RDV(bbh,     bb + 0x10);
-    AIAM_RDV(nm,      bbh + 0xb70 + kWCLNetManagerId * 0x18);
-    AIAM_RDV(S,       nm + 0x20);
-    AIAM_RDV(s8,      S + 0x8);
-    AIAM_RDV(s18,     s8 + 0x18);
-    AIAM_RDV(sink,    s18);
-    if (nm < kKernelVA || S < kKernelVA || sink < kKernelVA)
+    if (bb < kKernelVA || bbh < kKernelVA)
         return;
 #undef AIAM_RDV
 
@@ -2557,11 +2551,12 @@ postLqmUpdateBulletin()
 
     bulletinBoardMessage msg;
     bzero(&msg, sizeof(msg));
-    msg.msgWord0 = (0x27u << 16) | 1u;
+    msg.msgWord0 = (APPLE80211_M_RSSI_CHANGED << 16) |
+                   kWCLBulletinBoardMsgKindDriverEvent;
     msg.size = sizeof(ev);
     msg.payload = ev;
 
-    ((WCLNetManager *)nm)->handleLqmUpdate(msg);
+    ((WCLBulletinBoard *)bb)->sendMessage(kWCLBulletinBoardManagerDriver, msg);
 }
 
 bool AirportItlwmSkywalkInterface::
