@@ -13,11 +13,18 @@
 #ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
 #include <string.h>
 
+#define APPLE80211_MAX_CC_LEN 3
+
 struct apple80211_ie_data {
     uint32_t frame_type_flags;
     uint32_t add;
     uint32_t ie_len;
     uint8_t ie[2048];
+};
+
+struct apple80211_country_code_data {
+    uint32_t version;
+    uint8_t cc[APPLE80211_MAX_CC_LEN];
 };
 
 struct alignas(4) apple80211_offload_ndp_data {

@@ -1097,6 +1097,18 @@ void testTahoeAssociationAuthContracts()
             "association auth does not classify mixed transition auth as WPA3-only");
 }
 
+void testTahoeCountryCodeCarrierContracts()
+{
+    require(APPLE80211_MAX_CC_LEN == 3,
+            "country-code compact Apple80211 carrier is three alpha2 bytes");
+    require(offsetof(apple80211_country_code_data, version) == 0,
+            "country-code full struct keeps version at +0");
+    require(offsetof(apple80211_country_code_data, cc) == 4,
+            "country-code full struct keeps alpha2 bytes after version");
+    require(sizeof(apple80211_country_code_data) == 8,
+            "country-code full struct remains distinct from compact CFString carrier");
+}
+
 } // namespace
 
 int main()
@@ -1123,6 +1135,7 @@ int main()
     testTahoeCapabilityContracts();
     testTahoeScanResultLayout();
     testTahoeAssociationAuthContracts();
-    std::cout << "tahoe payload builders ok: 24 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan-result layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    testTahoeCountryCodeCarrierContracts();
+    std::cout << "tahoe payload builders ok: 25 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan-result layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

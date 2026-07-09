@@ -2211,8 +2211,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_COUNTRY_CODE:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            if (cmd == SIOCGA80211)
+            if (cmd == SIOCGA80211) {
+                if (req->req_len == APPLE80211_MAX_CC_LEN) {
+                    apple80211_country_code_data country{};
+                    IOReturn ret = instance->getCOUNTRY_CODE(this, &country);
+                    if (ret != kIOReturnSuccess)
+                        return ret;
+                    memcpy(req->req_data, country.cc, APPLE80211_MAX_CC_LEN);
+                    return kIOReturnSuccess;
+                }
                 return instance->getCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
+            }
             if (cmd == SIOCSA80211)
                 return instance->setCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
             return kIOReturnUnsupported;
