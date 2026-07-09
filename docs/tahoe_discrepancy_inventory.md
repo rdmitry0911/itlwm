@@ -5551,3 +5551,64 @@ Non-claims:
 - this does not change the existing public CoreWLAN/networksetup symptom:
   `networksetup -getairportnetwork en1` still reports
   `You are not associated with an AirPort network.` while the data path is up.
+
+## item 217 — BssManager associated-auth-type writer was not seeded
+
+- producers:
+  - `AirportItlwmSkywalkInterface::setWCL_ASSOCIATE(...)`
+  - `AirportItlwmSkywalkInterface::seedBssManagerRateAndMcs()`
+  - `IO80211BssManager::setAssociatedAuthType(unsigned char *, unsigned short)`
+- status: validated on Tahoe runtime
+- justification: REFERENCE_WRITER_EDGE
+
+Reference evidence:
+
+- 25C56 `IO80211BssManager::setAssociatedAuthType(unsigned char *, unsigned short)`
+  accepts a non-null byte carrier up to `0x101` bytes and stores both the byte
+  array and accepted `uint16_t` length in BssManager ivars;
+- `IO80211BssManager::addToEnvBssInfo(...)` and the associated-auth-type getter
+  consume that stored carrier while building current-network/environment
+  publication data;
+- the local hidden association carrier already provides `authLower` at
+  `+0x10` and `authUpper` at `+0x14`, and the non-hidden path stores the same
+  dwords through `setAUTH_TYPE(...)`;
+- `apple80211_authtype_data` is the 12-byte `{ version, authtype_lower,
+  authtype_upper }` carrier used at this edge.
+
+Local closure:
+
+- `TahoeAssociationContracts.hpp` now records the associated-auth-type carrier
+  offsets and length;
+- `AirportItlwmSkywalkInterface.cpp` statically verifies those constants
+  against the real `apple80211_authtype_data` layout;
+- `seedBssManagerRateAndMcs()` seeds `setAssociatedAuthType(...)` through the
+  already recovered framework-owned BssManager, using hidden association owner
+  auth dwords when present and `current_authtype_*` otherwise;
+- `setWCL_ASSOCIATE(...)` also seeds the same writer on the early hidden-carrier
+  edge, matching the existing auth-context writer timing;
+- `tests/tahoe_payload_builders_test.cpp` locks the standalone layout contract.
+
+Runtime validation:
+
+- Tahoe guest build succeeded against `/System/Library/KernelCollections/BootKernelExtensions.kc`
+  with all 947 undefined symbols resolved;
+- installed binary SHA-256
+  `9d025fb997a0f84f7ae71c9ecbf348da2fdcb800a24aa4c7d8b29424b1104023`;
+- loaded kext UUID `072E1763-4FB8-3EC0-8BAD-BCA0F7CD24E1`;
+- controlled AP join reached DHCP `10.77.0.157`;
+- 240-second guest-to-host ping while guest-to-host iperf3 saturated the link
+  reported `240/240` replies, `0.0%` packet loss, and RTT
+  `1.568/678.022/1442.828/204.252 ms`;
+- concurrent iperf3 transferred `630 MBytes` sent at `22.0 Mbits/sec`; the
+  receiver saw `629 MBytes` at `21.9 Mbits/sec`;
+- post-stress IORegistry kept `IO80211SSID`, `IO80211BSSID`,
+  `IO80211RSNDone = Yes`, controller `IOLinkStatus = 3`, and DHCP active.
+
+Non-claims:
+
+- this does not seed `IO80211BssManager::setNetworkFlags(...)`; its writer ABI
+  is proven, but the reference producer mask and polarity remain unproven;
+- this does not close the existing public CoreWLAN/networksetup symptom:
+  `networksetup -getairportnetwork en1` still reports
+  `You are not associated with an AirPort network.`, and CoreWLAN still reports
+  `ssid=(null) bssid=(null)` while the data path is up.

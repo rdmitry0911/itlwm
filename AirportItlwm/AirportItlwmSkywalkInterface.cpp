@@ -189,9 +189,21 @@ static constexpr int32_t kIo80211InputStageEntry = 1000;
 static constexpr int32_t kIo80211InputStageReturn = 2000;
 static constexpr uint32_t kExternalPmkWaitTimeoutMs = 3000;
 static constexpr uint32_t kAppleBssManagerAssocRsnIeMaxLen = 0x101;
+static constexpr uint16_t kAppleBssManagerAssociatedAuthTypeLen =
+    static_cast<uint16_t>(sizeof(apple80211_authtype_data));
 static constexpr uint32_t kAppleBssManagerBandInfoBitmapTable[4] = {
     0x1, 0x8, 0x2, 0x9
 };
+static_assert(sizeof(apple80211_authtype_data) ==
+                  TahoeAssociationContracts::kAssociatedAuthTypePayloadLength,
+              "associated auth type carrier length must match Apple ABI");
+static_assert(__offsetof(apple80211_authtype_data, version) ==
+                  TahoeAssociationContracts::kAssociatedAuthTypeVersionOffset &&
+                  __offsetof(apple80211_authtype_data, authtype_lower) ==
+                      TahoeAssociationContracts::kAssociatedAuthTypeLowerOffset &&
+                  __offsetof(apple80211_authtype_data, authtype_upper) ==
+                      TahoeAssociationContracts::kAssociatedAuthTypeUpperOffset,
+              "associated auth type carrier offsets must match Apple ABI");
 
 // Counter of successful APPLE80211_CIPHER_PMK installs through
 // setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
@@ -258,6 +270,25 @@ tahoeSeedBssManagerAuthContext(
     IO80211AuthContext context =
         tahoeBssManagerAuthContext(associationOwner);
     bssManager->setAuthContext(context);
+}
+
+static void
+tahoeSeedBssManagerAssociatedAuthType(
+    IO80211BssManager *bssManager,
+    uint32_t authLower,
+    uint32_t authUpper)
+{
+    if (bssManager == nullptr || (authLower == 0 && authUpper == 0))
+        return;
+
+    apple80211_authtype_data authType;
+    memset(&authType, 0, sizeof(authType));
+    authType.version = APPLE80211_VERSION;
+    authType.authtype_lower = authLower;
+    authType.authtype_upper = authUpper;
+    bssManager->setAssociatedAuthType(
+        reinterpret_cast<unsigned char *>(&authType),
+        kAppleBssManagerAssociatedAuthTypeLen);
 }
 
 static IO80211BssManager *
@@ -2537,8 +2568,19 @@ seedBssManagerRateAndMcs()
     if (bssManager == nullptr)
         return;
     if (instance != nullptr) {
-        tahoeSeedBssManagerAuthContext(
-            bssManager, instance->getTahoeOwnerRegistry().association);
+        const auto &association =
+            instance->getTahoeOwnerRegistry().association;
+        tahoeSeedBssManagerAuthContext(bssManager, association);
+        if (association.hasCarrier) {
+            tahoeSeedBssManagerAssociatedAuthType(
+                bssManager, association.authLower, association.authUpper);
+        } else {
+            tahoeSeedBssManagerAssociatedAuthType(
+                bssManager, current_authtype_lower, current_authtype_upper);
+        }
+    } else {
+        tahoeSeedBssManagerAssociatedAuthType(
+            bssManager, current_authtype_lower, current_authtype_upper);
     }
     Bands band = static_cast<Bands>(0);
     if (bssManager->getCurrentBand(band) == kIOReturnSuccess) {
@@ -5265,8 +5307,10 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         return kIOReturnUnsupported;
     }
 
-    tahoeSeedBssManagerAuthContext(
-        tahoeRecoverWclBssManager(this), associationOwner);
+    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
+    tahoeSeedBssManagerAuthContext(bssManager, associationOwner);
+    tahoeSeedBssManagerAssociatedAuthType(
+        bssManager, associationOwner.authLower, associationOwner.authUpper);
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);

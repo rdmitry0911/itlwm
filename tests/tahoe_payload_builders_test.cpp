@@ -514,6 +514,12 @@ void testTahoeAssociationContracts()
                 offsetof(IO80211AuthContext, authFlags) == 0x08 &&
                 offsetof(IO80211AuthContext, bssInfoFlags) == 0x0c,
             "BssManager auth context offsets match WCL carrier copy");
+    require(kAssociatedAuthTypePayloadLength == 0x0c,
+            "associated auth type carrier is three dwords");
+    require(kAssociatedAuthTypeVersionOffset == 0x00 &&
+                kAssociatedAuthTypeLowerOffset == 0x04 &&
+                kAssociatedAuthTypeUpperOffset == 0x08,
+            "associated auth type offsets match Apple getter/writer ABI");
     require(boundedRsnIeLength(7, 11) == 7,
             "RSN IE helper keeps in-bounds length");
     require(boundedRsnIeLength(17, 11) == 11,
