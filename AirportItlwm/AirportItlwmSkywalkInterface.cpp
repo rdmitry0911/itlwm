@@ -1688,37 +1688,52 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 IOReturn AirportItlwmSkywalkInterface::
 processApple80211Ioctl(UInt cmd, apple80211req *req)
 {
-    // Tahoe's non-virtual interface path still queries VIRTUAL_IF_ROLE/PARENT
-    // during airportd/CoreWiFi _initInterface.  Reverse docs record Apple's
-    // expected behavior here: non-virtual interfaces do NOT return raw POSIX
-    // ENXIO/6, they return the Apple80211-specific -3903 (0xe082280e) code.
-    //
-    // Important Tahoe-specific detail from the live 853f68e logs:
-    // our earlier source already had these switch cases, yet the framework
-    // still logged raw `6` for both IOCTLs.  The reason is that these Apple
-    // wrappers are payload-less safe-to-fail requests, while our bridge used
-    // to reject *all* req_data == NULL requests before the switch.  That sent
-    // VIRTUAL_IF_ROLE/PARENT straight back into the framework fallback path,
-    // which is exactly where the raw POSIX-style ENXIO/6 surfaced.
-    //
-    // So the real 1:1 fix is not "add cases somewhere in the switch".  The
-    // fix is to intercept these payload-less Tahoe IOCTLs *before* the generic
-    // req_data validation and return the Apple-specific not-a-virtual-interface
-    // contract directly.
     static const IOReturn kApple80211NotVirtualInterface =
         static_cast<IOReturn>(0xe082280e);
     static const IOReturn kApple80211ClassOwnerAbsent =
         static_cast<IOReturn>(0xe082280e);
     static const IOReturn kApple80211RawEnxio =
         static_cast<IOReturn>(6);
+    static const IOReturn kApple80211RawInvalidArgument =
+        static_cast<IOReturn>(0x16);
 
     if (req == NULL)
         return kIOReturnUnsupported;
 
     switch (req->req_type) {
         case APPLE80211_IOC_VIRTUAL_IF_ROLE:
-        case APPLE80211_IOC_VIRTUAL_IF_PARENT:
-            return kApple80211NotVirtualInterface;
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            if (req->req_data == NULL)
+                return kApple80211NotVirtualInterface;
+            if (req->req_len != sizeof(uint32_t))
+                return kApple80211RawInvalidArgument;
+            *(uint32_t *)req->req_data =
+                static_cast<uint32_t>(getInterfaceRole());
+            return kIOReturnSuccess;
+        case APPLE80211_IOC_VIRTUAL_IF_PARENT: {
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            if (req->req_data == NULL)
+                return kApple80211NotVirtualInterface;
+
+            IO80211SkywalkInterface *parent =
+                (instance != NULL) ? instance->getPrimarySkywalkInterface()
+                                   : NULL;
+            if (parent == NULL)
+                return kApple80211RawEnxio;
+
+            const char *bsdName = parent->getBSDName();
+            if (bsdName == NULL)
+                return kApple80211RawEnxio;
+
+            const size_t bsdNameLen = strlen(bsdName);
+            if (req->req_len < bsdNameLen)
+                return kApple80211RawInvalidArgument;
+
+            memmove(req->req_data, bsdName, bsdNameLen);
+            return kIOReturnSuccess;
+        }
         case APPLE80211_IOC_STATE:
             if (cmd == SIOCGA80211) {
                 struct ieee80211com *ic =

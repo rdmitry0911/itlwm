@@ -22,6 +22,8 @@ enum : uint32_t {
     kIocHostApMode = 25,
     kIocRsnIe = 46,
     kIocBtcoexMode = 87,
+    kIocVirtualIfRole = 96,
+    kIocVirtualIfParent = 97,
     kIocBtCoexFlags = 102,
     kIocCurrentNetwork = 103,
     kIocBtPower = 104,
@@ -59,6 +61,8 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
         case kIocBssid:
         case kIocCardCapabilities:
         case kIocChannel:
+        case kIocVirtualIfRole:
+        case kIocVirtualIfParent:
         case kIocCurrentNetwork:
         case kIocBgscanCacheResults:
         case kIocAwdlRsdbCaps:

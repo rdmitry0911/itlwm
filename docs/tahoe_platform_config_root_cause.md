@@ -289,6 +289,44 @@ with a specific Apple failure code.  Returning a raw POSIX-style `6` diverges
 from the framework contract and is called out in the reverse docs as the wrong
 shape of failure.
 
+### 2026-07-09 25C56 correction
+
+The payload-less public wrapper contract above is not the whole Tahoe ABI.
+Fresh 25C56 decompilation splits the selector pair into two observable paths:
+
+- public `apple80211getVIRTUAL_IF_ROLE` and
+  `apple80211getVIRTUAL_IF_PARENT` are tiny wrappers that return
+  `0xe082280e` directly;
+- controller payload handlers `getVIRTUAL_IF_ROLE` and
+  `getVIRTUAL_IF_PARENT` return real data when the caller supplies the
+  expected carrier.
+
+The recovered payload handler for selector `96` requires a 4-byte destination
+and writes `IO80211SkywalkInterface::getInterfaceRole()`; bad length returns
+raw `0x16`, and a missing interface returns raw `6`.
+
+The recovered payload handler for selector `97` calls the controller's primary
+Skywalk-interface accessor, obtains that interface's BSD name, requires the
+destination length to cover `strlen(name)`, and copies exactly those bytes with
+no terminating NUL.  Bad length returns raw `0x16`; missing parent/interface
+returns raw `6`.
+
+Therefore a Tahoe-compatible implementation must not collapse all
+`VIRTUAL_IF_ROLE/PARENT` requests into a fallback-style `0xe082280e`.  It must
+preserve the public no-payload failure while routing payload-bearing requests to
+the recovered role and parent-name producers.
+
+Runtime validation on the loaded Tahoe build with binary SHA-256
+`2c280b8e25e52279391e02c317ee1bc5438074973bbe2be79a909c10dd5265c3` confirmed
+the split: selector `96` with a 4-byte payload returned `role=1`, selector `97`
+with an `IFNAMSIZ` payload returned parent `en1`, short payloads returned raw
+`22`, and payload-less calls still surfaced the Apple-specific
+`0xe082280e`.  The same build completed a 240-second ping plus concurrent
+`iperf3` run with `240/240` replies, `0.0%` packet loss, and `851 MBytes`
+received at about `29.7 Mbits/sec`.  Post-stress IORegistry on
+`AirportItlwmSkywalkInterface` exposed the real SSID/BSSID,
+`CoreWiFiDriverReadyKey=true`, and `IO80211RSNDone=Yes`.
+
 ## VIRTUAL_IF_* Root Cause
 
 Our Tahoe-specific `processApple80211Ioctl()` bridge did not cover either IOC

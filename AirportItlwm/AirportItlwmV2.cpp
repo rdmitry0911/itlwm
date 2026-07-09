@@ -1541,7 +1541,8 @@ static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
     return true;
 }
 
-static bool postTahoeJoinAcceptedBssidChangedEvent(AirportItlwm *controller)
+static bool postTahoeJoinAcceptedBssidChangedEvent(AirportItlwm *controller,
+                                                   const char *source)
 {
     if (controller == nullptr || controller->fNetIf == nullptr)
         return false;
@@ -1551,7 +1552,19 @@ static bool postTahoeJoinAcceptedBssidChangedEvent(AirportItlwm *controller)
     if (iface == nullptr)
         return false;
 
-    return iface->publishTahoeBssidChangedFromCurrentBss("setLinkStateGated");
+    return iface->publishTahoeBssidChangedFromCurrentBss(source);
+}
+
+static bool postTahoeAcceptedJoinProfileEvents(AirportItlwm *controller,
+                                               const char *source)
+{
+    if (!postTahoeWclConnectCompleteEvent(controller))
+        return false;
+
+    const bool bssidPublished =
+        postTahoeJoinAcceptedBssidChangedEvent(controller, source);
+    const bool ssidPublished = postTahoeJoinAcceptedSsidChangedEvent(controller);
+    return bssidPublished || ssidPublished;
 }
 
 } // namespace
@@ -2662,7 +2675,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                 (void *)(uintptr_t)false, NULL, NULL);
 #if __IO80211_TARGET >= __MAC_26_0
             postTahoeWclLinkUpInd(that, 0);
-            postTahoeWclConnectCompleteEvent(that);
+            postTahoeAcceptedJoinProfileEvents(that,
+                "IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE");
 #endif
             return;
         case IEEE80211_EVT_STA_DEAUTH:
@@ -4149,9 +4163,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
 #if __IO80211_TARGET >= __MAC_26_0
     if (linkState == kIO80211NetworkLinkUp) {
-        postTahoeWclConnectCompleteEvent(that);
-        postTahoeJoinAcceptedBssidChangedEvent(that);
-        postTahoeJoinAcceptedSsidChangedEvent(that);
+        postTahoeAcceptedJoinProfileEvents(that, "setLinkStateGated");
     }
 #endif
 #if __IO80211_TARGET >= __MAC_26_0
@@ -4810,7 +4822,7 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
         req.req_data = data;
         // The card-specific virtual does not carry apple80211req::req_len.
         // Preserve Tahoe's recovered compact CopyValue lengths before entering
-        // the shared BSD bridge so SSID/BSSID cannot fall through to the
+        // the shared BSD bridge so compact carriers cannot fall through to
         // legacy versioned-struct writers with an unknown destination size.
         if (!isSet) {
             switch (cmd) {
@@ -4819,6 +4831,12 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
                     break;
                 case APPLE80211_IOC_BSSID:
                     req.req_len = APPLE80211_ADDR_LEN;
+                    break;
+                case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+                    req.req_len = sizeof(uint32_t);
+                    break;
+                case APPLE80211_IOC_VIRTUAL_IF_PARENT:
+                    req.req_len = IFNAMSIZ;
                     break;
                 default:
                     break;
