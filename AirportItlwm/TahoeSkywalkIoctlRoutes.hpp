@@ -47,6 +47,7 @@ enum : uint32_t {
     kIocCurPmk = 360,
     kIocSetMacAddress = 368,
     kIocSoftapExtendedCapabilitiesIe = 403,
+    kIocWclBssInfo = 0x1b1,
     kIocMisMaxSta = 508,
 };
 
@@ -63,6 +64,7 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
         case kIocTkoDump:
         case kIocMaxNssForAp:
         case kIocPeerCacheMaximumSize:
+        case kIocWclBssInfo:
             return !isSet;
 
         case kIocBtCoexFlags:

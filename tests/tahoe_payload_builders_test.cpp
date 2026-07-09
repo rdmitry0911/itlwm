@@ -476,6 +476,9 @@ void testTahoeSkywalkIoctlRoutes()
     require(shouldRoute(kIocPeerCacheMaximumSize, false) &&
                 !shouldRoute(kIocPeerCacheMaximumSize, true),
             "Skywalk routes APSTA peer-cache maximum getter");
+    require(shouldRoute(kIocWclBssInfo, false) &&
+                !shouldRoute(kIocWclBssInfo, true),
+            "Skywalk routes WCL BSS_INFO selector 0x1b1 getter only");
     require(!shouldRoute(kIocPeerCacheControl, false) &&
                 shouldRoute(kIocPeerCacheControl, true),
             "Skywalk routes APSTA peer-cache control setter only");

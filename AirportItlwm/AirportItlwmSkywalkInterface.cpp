@@ -18,6 +18,7 @@
 #include "TahoeOpModeContracts.hpp"
 #include "TahoePhyModeContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
+#include "TahoeSkywalkIoctlRoutes.hpp"
 #include "Airport/IO80211BssManager.h"
 #include "Airport/WCLBulletinBoard.h"
 #include <sys/CTimeout.hpp>
@@ -1980,6 +1981,16 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_BGSCAN_CACHE_RESULTS:
             return (cmd == SIOCGA80211) ? getWCL_BGSCAN_CACHE_RESULT((apple80211_bgscan_cached_network_data_list *)req->req_data)
                                         : kIOReturnUnsupported;
+        case TahoeSkywalkIoctlRoutes::kIocWclBssInfo:
+            /*
+             * WCLNetManager::updateBss() requests selector 0x1b1 into a
+             * 0x844 BeaconMetaData+IE buffer before constructing the
+             * framework-owned current WCLBSSBeacon. Route that raw get-side
+             * selector to the recovered current-BSS producer.
+             */
+            return (cmd == SIOCGA80211)
+                       ? getWCL_BSS_INFO((apple80211_beacon_msg *)req->req_data)
+                       : kIOReturnUnsupported;
         case APPLE80211_IOC_CHIP_COUNTER_STATS:
             return (cmd == SIOCGA80211) ? getCHIP_COUNTER_STATS((apple80211_chip_stats *)req->req_data)
                                         : kIOReturnUnsupported;
