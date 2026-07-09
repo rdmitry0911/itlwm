@@ -250,6 +250,20 @@ static bool isTahoeHiddenAssocCommand(int command)
     return TahoeAssociationContracts::isHiddenAssocCommand(command);
 }
 
+static bool isTahoePublicFallbackCommand(int command)
+{
+    switch (static_cast<uint32_t>(command)) {
+        case TahoeSkywalkIoctlRoutes::kIocSsid:
+        case TahoeSkywalkIoctlRoutes::kIocChannel:
+        case TahoeSkywalkIoctlRoutes::kIocBssid:
+        case TahoeSkywalkIoctlRoutes::kIocCurrentNetwork:
+        case TahoeSkywalkIoctlRoutes::kIocRoamProfile:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static uint32_t tahoeBssManagerBandInfoBitmap(uint32_t band)
 {
     if (band == 0 ||
@@ -1647,12 +1661,11 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // Only the hidden association carriers are proven owners for this gate.
-    // CR-068 runtime showed that admitting public request numbers here leaks
-    // raw `1` for CHANNEL/ROAM_PROFILE and still leaves SSID/BSSID/CURRENT_NETWORK
-    // on `0xe0822403`, so public current-link state must be produced by the
-    // recovered setCurrentApAddress(NULL/BSSID) path instead.
-    if (isTahoeHiddenAssocCommand(command))
+    // IO80211Family's Tahoe fallback helpers use slot [411] with inverted
+    // polarity on this seam: non-zero lets the proven WCL/public fallback
+    // request continue, while zero aborts with the pre-helper 0xe0822403 shape.
+    if (isTahoeHiddenAssocCommand(command) ||
+        isTahoePublicFallbackCommand(command))
         return true;
 
     return super::isCommandProhibited(command);

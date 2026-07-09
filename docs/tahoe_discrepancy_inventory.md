@@ -6046,3 +6046,53 @@ Non-claims:
   non-driver or TCC-only;
 - this does not change the CARD_CAPABILITIES byte cluster recovered in items
   214, 222, and the CR-479 CARD_CAPABILITIES reference notes.
+
+## item 224 - Tahoe interface public request-gate polarity for current-link fallbacks
+
+- producers:
+  - `AirportItlwmSkywalkInterface::isCommandProhibited(int)`
+  - IO80211Family fallback helpers for request numbers `1`, `4`, `9`,
+    `0x67`, and `0xd8`
+  - hidden association carriers `0x45` / `0x46`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: REFERENCE_SLOT_411_POLARITY_AND_LIVE_ROAM_PROFILE_ABORT
+- reference note:
+  - `docs/reference/CR-479-interface-public-request-gate-polarity-20260709.md`
+
+Reference evidence:
+
+- 25C56 vtable evidence maps interface slot `+0xcc8` to
+  `IO80211SkywalkInterface::isCommandProhibited(int)`;
+- recovered IO80211Family fallback helpers call that slot with public request
+  numbers `1`, `4`, `9`, `0x67`, and `0xd8`;
+- the exact helper polarity is inverted for this seam: non-zero continues past
+  the fallback gate, while zero takes the pre-helper abort path.
+
+Local closure:
+
+- `AirportItlwmSkywalkInterface::isCommandProhibited(int)` now returns
+  non-zero for only the decompile-proven hidden association commands
+  `0x45` / `0x46` and public fallback request numbers
+  `1`, `4`, `9`, `0x67`, `0xd8`;
+- unrelated commands still delegate to inherited family behavior;
+- the existing `APPLE80211_IOC_ROAM_PROFILE` dispatcher remains the local
+  Apple-unsupported producer for selector `216`.
+
+Runtime validation:
+
+- loaded kext UUID `29EBEA3E-19C7-37AB-A1A2-0F21FEC7A5E3`, binary SHA-256
+  `a17d9d8593023e25edc5c5e9b802789bf8d216c7e8a4f505a4bc9ca14b60de99`;
+- raw BSD Apple80211 probe on associated `en1` returned state `4`, SSID
+  `ITLWM-Lab-3c95c7`, BSSID `80:e4:ba:20:ef:f9`, the recovered
+  CARD_CAPABILITIES bytes, and `CURRENT_NETWORK` with 16-byte SSID and IE
+  length `168`;
+- raw `ROAM_PROFILE` SET returned the normal unsupported BSD shape
+  `rc=-1 errno=102`, and the post-probe/post-stress logs did not show
+  `0xe0822403` or `driver not available`;
+- the accepted 240-second concurrent stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: ping reported `240 packets transmitted, 240 packets received,
+  0.0% packet loss`, RTT `3.916/784.199/1694.944/304.509 ms`, and iperf3
+  transferred `559 MBytes` sent and received at `19.5 Mbits/sec`;
+- the known public CoreWLAN/`networksetup` symptom remains open:
+  `networksetup -getairportnetwork en1` still printed
+  `You are not associated with an AirPort network.` on the same runtime.
