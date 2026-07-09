@@ -3093,14 +3093,20 @@ setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 SInt32 AirportItlwmSkywalkInterface::
 setInterfaceEnable(bool enable)
 {
-    // Apple performs the lifted subclass body on a hidden low-latency object.
-    // The local Tahoe port currently aliases that identity to `fNetIf`, so
-    // replaying the subclass link-up side effects here poisons the main infra
-    // interface before any association exists.  Driver visibility is already
-    // recovered by the surrounding ready-edge property/bulletin publication;
-    // keep only the base enable on `fNetIf` and reserve link-up for the real
-    // association-success path.
+    /*
+     * Recovered AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)
+     * continues past the base enable: it publishes the Skywalk carrier and
+     * then raises the infra link state.  IOSkywalkLegacyEthernet reads its
+     * visible IOLinkStatus from this provider context, so keep the lifted
+     * body on the modeled low-latency object instead of faking registry
+     * properties on the legacy child.
+     */
     SInt32 ret = IO80211InfraInterface::setInterfaceEnable(enable);
+    if (enable && ret == kIOReturnSuccess) {
+        (void)reportLinkStatus(3, 0x80);
+        (void)IO80211InfraInterface::setLinkState(
+            kIO80211NetworkLinkUp, 1, false, 0, 0);
+    }
     if (ret != kIOReturnSuccess)
         XYLog("DEBUG %s FAIL: enable=%d ret=0x%x instance=%p\n",
               __FUNCTION__, enable ? 1 : 0, ret, instance);

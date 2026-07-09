@@ -6322,3 +6322,55 @@ Non-claim:
 - airportd logs still contain the known `0xe0822403` / `driver not available`
   surface for public SSID/BSSID/current-network handling, so this batch is only
   the locale-property layer closure.
+
+## item 228 - Tahoe low-latency enable omits Skywalk carrier publication
+
+- producers:
+  - `AppleBCMWLANLowLatencyInterface::setInterfaceEnable(bool)`
+  - `IOSkywalkNetworkInterface::reportLinkStatus(unsigned int, unsigned int)`
+  - `IO80211InfraInterface::setLinkState(...)`
+  - `IOSkywalkLegacyEthernet::getProperty("IOLinkStatus")`
+- status: implemented, runtime validated
+- justification: REFERENCE_LOW_LATENCY_ENABLE_CARRIER
+- reference note:
+  - `docs/reference/CR-479-low-latency-enable-carrier-20260709.md`
+
+Reference evidence:
+
+- 25C56 `IOSkywalkLegacyEthernet` derives its public `IOLinkStatus` property
+  from the provider context written by
+  `IOSkywalkNetworkInterface::reportLinkStatus(...)`;
+- the recovered low-latency enable body calls base enable, then
+  `reportLinkStatus(3, 0x80)`, then
+  `setLinkState(kIO80211NetworkLinkUp, 1, false, 0, 0)`;
+- the local implementation had removed those recovered side effects under an
+  old diagnostic "poisons main infra" comment, leaving the modeled hidden slot
+  non-identical to the reference.
+
+Local closure:
+
+- restore the recovered side effects in
+  `AirportItlwmSkywalkInterface::setInterfaceEnable(true)`;
+- keep direct `IOSkywalkLegacyEthernet` registry-property mirroring out of the
+  implementation because the reference reads provider carrier state instead.
+
+Runtime validation:
+
+- keyed `ioreg -l -w0 -r -c IOSkywalkLegacyEthernet -k IOLinkStatus`
+  on the loaded Tahoe guest reports dynamic `IOLinkStatus = 3`, matching the
+  provider-context getter path recovered from `IOSkywalkLegacyEthernet`;
+- `Apple80211CopyCurrentNetwork`, `CWFApple80211 currentNetwork:`,
+  `system_profiler SPAirPortDataType`, and `wdutil info` all expose the real
+  associated network on the same boot;
+- a 240-second ping plus `iperf3` stress pass was run on the loaded build.
+
+Non-claim:
+
+- public `networksetup -getairportnetwork en1` / `CWInterface.ssid` still
+  return the Tahoe "not associated" / nil surface. The current log for that
+  path shows `airportd` denying the public `GET SSID` XPC request in
+  `CWFXPCConnection::__allowXPCRequestWithType:error:` before a visible
+  Apple80211 ioctl reaches the driver, while the lower driver-backed
+  Apple80211 current-network path returns success. That public CoreWiFi/XPC
+  surface remains the next open layer, not part of the low-latency carrier
+  closure.
