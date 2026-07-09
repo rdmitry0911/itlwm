@@ -7256,17 +7256,6 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
     return 0;
 }
 
-static int convertNodeToCurrentNetworkResult(struct ieee80211_node *node,
-                                             apple80211_scan_result *result)
-{
-    bzero(result, sizeof(*result));
-    result->asr_ssid_len = scanResultSsidLengthForNode(node);
-    if (result->asr_ssid_len != 0)
-        memcpy(&result->asr_ssid, node->ni_essid, result->asr_ssid_len);
-    memcpy(result->asr_bssid, node->ni_bssid, IEEE80211_ADDR_LEN);
-    return 0;
-}
-
 IOReturn AirportItlwmSkywalkInterface::
 getCURRENT_NETWORK(apple80211_scan_result *sr)
 {
@@ -7277,7 +7266,7 @@ getCURRENT_NETWORK(apple80211_scan_result *sr)
         // current-BSS manager is not associated.
         return kApple80211ErrDriverNotAvailable;
     }
-    convertNodeToCurrentNetworkResult(ic->ic_bss, sr);
+    convertNodeToScanResult(fHalService, ic->ic_bss, sr);
     return kIOReturnSuccess;
 }
 

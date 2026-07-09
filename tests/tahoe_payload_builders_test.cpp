@@ -1100,12 +1100,20 @@ void testTahoeScanResultLayout()
 
 void testTahoeCurrentNetworkCarrierContract()
 {
+    require(offsetof(TahoeScanResultLayoutProbe, asr_channel) == 0x04,
+            "CURRENT_NETWORK BssManager writer preserves scan channel at +0x4");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_rssi) == 0x16,
+            "CURRENT_NETWORK BssManager writer preserves RSSI at +0x16");
     require(offsetof(TahoeScanResultLayoutProbe, asr_bssid) == 0x1c,
             "CURRENT_NETWORK BssManager writer publishes BSSID at +0x1c");
     require(offsetof(TahoeScanResultLayoutProbe, asr_ssid_len) == 0x60,
             "CURRENT_NETWORK BssManager writer publishes SSID length at +0x60");
     require(offsetof(TahoeScanResultLayoutProbe, asr_ssid) == 0x61,
             "CURRENT_NETWORK BssManager writer publishes SSID bytes at +0x61");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ie_len) == 0x8a,
+            "CURRENT_NETWORK BssManager writer preserves IE length at +0x8a");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ie_data) == 0x8c,
+            "CURRENT_NETWORK BssManager writer preserves IE data at +0x8c");
     require(kTahoeScanResultMaxSsidLength == 0x20,
             "CURRENT_NETWORK BssManager writer clamps SSID length to 0x20");
 }
