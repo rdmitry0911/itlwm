@@ -4749,48 +4749,6 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
 
 SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
 {
-    // Apple80211CopyValue handles SSID/BSSID as raw CF carriers, not as the
-    // public apple80211_{ssid,bssid}_data structs used by BSD SIOCGA80211.
-    // Its recovered Tahoe path asks the IOUserClient for 32 SSID bytes or
-    // six BSSID octets, then appends/converts those bytes in userspace.
-    // Keep that ABI separate from processApple80211Ioctl(), whose SSID/BSSID
-    // producers intentionally retain the versioned struct contract.
-    if (!isSet && data != nullptr && interface != nullptr) {
-        struct ieee80211com *ic = fHalService
-            ? fHalService->get80211Controller() : nullptr;
-        if (ic == nullptr)
-            return kIOReturnNotReady;
-
-        switch (cmd) {
-            case APPLE80211_IOC_SSID: {
-                auto *ssidBytes = static_cast<uint8_t *>(data);
-                memset(ssidBytes, 0, APPLE80211_MAX_SSID_LEN);
-                if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr &&
-                    ic->ic_bss->ni_esslen <= APPLE80211_MAX_SSID_LEN) {
-                    if (ic->ic_bss->ni_esslen != 0)
-                        memcpy(ssidBytes, ic->ic_bss->ni_essid,
-                               ic->ic_bss->ni_esslen);
-                } else if (ic->ic_state == IEEE80211_S_RUN &&
-                    ic->ic_des_esslen > 0 &&
-                    ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
-                    memcpy(ssidBytes, ic->ic_des_essid, ic->ic_des_esslen);
-                }
-                return kIOReturnSuccess;
-            }
-
-            case APPLE80211_IOC_BSSID: {
-                auto *bssid = static_cast<uint8_t *>(data);
-                memset(bssid, 0, APPLE80211_ADDR_LEN);
-                if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != nullptr)
-                    memcpy(bssid, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
-                return kIOReturnSuccess;
-            }
-
-            default:
-                break;
-        }
-    }
-
     // Keep the carried Tahoe card-specific bridge for the visible set-side and
     // hidden-association selectors that arrive on this controller seam.
     // Public request-number fallback is now tracked separately on interface
@@ -4802,6 +4760,22 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
         bzero(&req, sizeof(req));
         req.req_type = (UInt)cmd;
         req.req_data = data;
+        // The card-specific virtual does not carry apple80211req::req_len.
+        // Preserve Tahoe's recovered compact CopyValue lengths before entering
+        // the shared BSD bridge so SSID/BSSID cannot fall through to the
+        // legacy versioned-struct writers with an unknown destination size.
+        if (!isSet) {
+            switch (cmd) {
+                case APPLE80211_IOC_SSID:
+                    req.req_len = APPLE80211_MAX_SSID_LEN;
+                    break;
+                case APPLE80211_IOC_BSSID:
+                    req.req_len = APPLE80211_ADDR_LEN;
+                    break;
+                default:
+                    break;
+            }
+        }
         IOReturn ret = routeTahoeSkywalkIoctl(interface, &req,
                                               isSet ? SIOCSA80211 : SIOCGA80211);
         if (ret != kIOReturnUnsupported)

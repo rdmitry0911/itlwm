@@ -55,6 +55,10 @@ compact payload and writes past the length requested by the framework.
   offset zero.
 - Legacy versioned struct callers remain on the existing
   `getSSID(...)`/`getBSSID(...)` path.
+- The Tahoe card-specific virtual no longer owns separate SSID/BSSID raw
+  writers. Its get-side selector 1/9 ingress only supplies the recovered
+  compact `req_len` values before entering the same Skywalk BSD bridge, which
+  prevents no-length fallback into the legacy versioned structs.
 - Selector `0xd` is intentionally unchanged because the reference lower
   ioctl carrier is still the 8-byte versioned state struct.
 
@@ -75,6 +79,23 @@ ping replies, `0%` packet loss, RTT `1.680/660.536/968.354/129.385 ms`, and
 `iperf3` `606 MBytes` sent at `21.2 Mbits/sec` with `605 MBytes` received at
 `21.1 Mbits/sec`. Post-stress IORegistry still carried the real SSID/BSSID,
 `CoreWiFiDriverReadyKey = true`, and `IO80211RSNDone = Yes`.
+
+Follow-up cleanup build
+`05555661-F35D-3449-A801-1B647CC9577B`
+(`AirportItlwm` binary SHA-256
+`cb85ca345aa60f6f32c4559d7c3c5374b34b4583ea6f101417048730005c04a7`)
+removed the duplicate `handleCardSpecific(...)` SSID/BSSID raw writers while
+keeping the compact bridge valid: direct `Apple80211CopyValue` probes returned
+selector `1` as `CFData` length `16` with the joined SSID bytes, selector `9`
+as `CFString` BSSID `80:e4:ba:20:ef:f9`, and selectors `13` and `103` with
+`err=0`. The same loaded kext passed the required 240-second concurrent stress:
+`240/240` ping replies, `0%` packet loss, RTT
+`1.603/730.552/1550.276/272.483 ms`, and `iperf3` `581 MBytes` sent at
+`20.3 Mbits/sec` with `580 MBytes` received at `20.2 Mbits/sec`. Post-stress
+`en1` remained `active` at DHCP `10.77.0.157`, `system_profiler` reported
+`Status: Connected`, channel `1 (2GHz, 20MHz)`, rate `104`, MCS `13`, and the
+stress-window log filter had no panic, stack-corruption, NoCTL,
+IO80211QueueCall, missed-beacon, deauth, disassoc, or CoreCapture hits.
 
 Public external clients remain a separate Tahoe privacy surface. In the same
 runtime window, `networksetup -getairportnetwork en1` logged

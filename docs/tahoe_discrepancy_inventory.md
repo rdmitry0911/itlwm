@@ -5379,7 +5379,6 @@ Non-claims:
 
 - producers:
   - `AirportItlwm::setLinkStateGated(...)`
-  - `AirportItlwm::handleCardSpecific(...)`
   - `AirportItlwm::getCARD_CAPABILITIES(...)`
   - `AirportSTAIOCTL.cpp::getCARD_CAPABILITIES(...)`
 - status: closed
@@ -5394,9 +5393,10 @@ Reference evidence:
 - `CWXPCInterfaceContext::ssidChanged` does not consume payload bytes from
   that event; it schedules `__associatedNetwork` and forwards the resulting
   object through `setAssociatedNetwork:`;
-- direct `Apple80211CopyValue` probes showed the raw type 1, 9, and 103
+- direct `Apple80211CopyValue` probes showed the type 1, 9, and 103 current-link
   carriers are byte buffers, not local synthesized dictionary/current-network
-  objects;
+  objects. The selector 1/9 compact SSID/BSSID ownership is narrowed by
+  item 219 to the `apple80211req::req_len`-keyed Skywalk BSD bridge;
 - Tahoe `AppleBCMWLANCore::getCARD_CAPABILITIES(...)` writes the legacy
   cluster through `cap[9]` and does not derive `cap[0]` / `cap[1]` from local
   device `ic_caps` bits.
@@ -5410,9 +5410,9 @@ Local closure:
   `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` was removed, so a
   future inherited parent-success gate cannot double-publish the same join
   edge;
-- `Apple80211CopyValue` SSID/BSSID carriers now return raw joined BSS bytes
-  directly from net80211 state while associated, with the desired SSID fallback
-  retained before RUN for SSID only;
+- the duplicate `handleCardSpecific(...)` SSID/BSSID raw writers were removed;
+  get-side card-specific selector 1/9 ingress now only annotates the recovered
+  compact lengths before entering the shared Skywalk BSD bridge from item 219;
 - both CARD_CAPABILITIES getters now use the same recovered Apple-consistent
   helper, including `cap[0] = 0xef` and `cap[1] = 0xe6`.
 
@@ -5430,6 +5430,21 @@ Runtime validation:
   `29.2 Mbits/sec`;
 - no CoreCapture, missed-beacon, stack-corruption, panic, or kext-fault log
   entries appeared in the validation window.
+- 2026-07-09 cleanup build loaded UUID
+  `05555661-F35D-3449-A801-1B647CC9577B`, binary SHA-256
+  `cb85ca345aa60f6f32c4559d7c3c5374b34b4583ea6f101417048730005c04a7`;
+- direct `Apple80211CopyValue` probes after removing the duplicate
+  `handleCardSpecific(...)` raw writers still returned selector `1` as
+  `CFData` SSID bytes, selector `9` as BSSID string `80:e4:ba:20:ef:f9`, and
+  selectors `13`/`103` with `err=0`;
+- the cleanup build passed the required 240-second concurrent load:
+  ping reported `240 packets transmitted, 240 packets received, 0.0% packet
+  loss`, while iperf3 reported `581 MBytes` sent at `20.3 Mbits/sec` and
+  `580 MBytes` received at `20.2 Mbits/sec`;
+- post-stress `en1` remained `active` at DHCP `10.77.0.157`, `system_profiler`
+  reported `Status: Connected`, and the stress-window log filter had no panic,
+  stack-corruption, NoCTL, IO80211QueueCall, missed-beacon, deauth, disassoc,
+  or CoreCapture hits.
 
 Non-claims:
 
