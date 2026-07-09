@@ -2617,6 +2617,21 @@ init(IOService *provider, ether_addr *addr)
     return init();
 }
 
+void AirportItlwmSkywalkInterface::
+setBSDName(char const *bsdName)
+{
+    IO80211InfraProtocol::setBSDName(bsdName);
+
+    if (instance == nullptr || bsdName == nullptr || bsdName[0] == '\0')
+        return;
+
+    OSString *value = OSString::withCString(bsdName);
+    if (value != nullptr) {
+        instance->setProperty("BSD Name", value);
+        value->release();
+    }
+}
+
 bool AirportItlwmSkywalkInterface::
 bindController(AirportItlwm *provider)
 {

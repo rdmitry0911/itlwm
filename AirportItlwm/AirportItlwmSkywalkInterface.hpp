@@ -38,6 +38,7 @@ public:
     virtual bool init() override;
     virtual bool init(IOService *, ether_addr *) override;
     virtual int getAssocState(void) override;
+    virtual void setBSDName(char const *) override;
     virtual void setDataPathState(bool) override;
     virtual void updateLinkStatus(void) override;
     virtual void updateLinkStatusGated(void) override;

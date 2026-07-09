@@ -6178,3 +6178,71 @@ Runtime validation:
 - the known public CoreWLAN/`networksetup` symptom remains open:
   `networksetup -getairportnetwork en1` still printed
   `You are not associated with an AirPort network.` on the same runtime.
+
+## item 226 - CoreWiFi controller-side BSD Name seed
+
+- producers:
+  - `AirportItlwmSkywalkInterface::setBSDName(char const *)`
+  - CoreWiFi `___findWiFiController`
+  - CoreWiFi `___io80211ControllerInfo`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: REFERENCE_COREWIFI_CONTROLLER_BSD_NAME_SEED
+- reference note:
+  - `docs/reference/CR-479-corewifi-controller-bsd-name-publication-20260709.md`
+
+Reference evidence:
+
+- `-[CWFIO80211 IO80211InterfaceInfo:error:]` at `0x7ff81ee6acc0` uses
+  `IOPropertyMatch = { IOInterfaceName = <name> }`; the live direct method
+  call succeeded for `en1`, so that path was already present;
+- `___findWiFiController` at `0x7ff81ee6a980` reads `BSD Name` from each
+  `IO80211Controller`;
+- `___io80211ControllerInfo` at `0x7ff81ee6bf60` then requires a recursive
+  `IOSkywalkEthernetInterface` match whose `BSD Name` equals that controller
+  seed and whose `IOClassNameOverride` equals `IO80211Controller`;
+- a live mimic showed `AirportItlwm` had `ctrl.BSD Name=(nil)`, while the
+  Skywalk descendant already had recursive `BSD Name=en1` and
+  `IOClassNameOverride=IO80211Controller`.
+
+Local closure:
+
+- override the existing `IOSkywalkNetworkInterface::setBSDName(char const *)`
+  slot in `AirportItlwmSkywalkInterface`;
+- call `IO80211InfraProtocol::setBSDName(...)` first;
+- publish the same non-empty BSD name as controller property `BSD Name` on
+  the bound `AirportItlwm` instance.
+
+Runtime validation:
+
+- loaded kext UUID `13055703-139A-3837-98EF-23034DD8CDE5`, binary SHA-256
+  `4264668a4a679dc664f7b05a2f4a639ac4b1efaa97595c15ae9010735a9ba09e`;
+- IORegistry now exposes controller-side `"BSD Name" = "en1"` on
+  `AirportItlwm`;
+- the CoreWiFi controller mimic now reports `ctrl.BSD Name=en1`,
+  recursive `BSD Name=en1`, `IOClassNameOverride=IO80211Controller`, and
+  `match bsd=1 cls=1 both=1`;
+- direct `CWFIO80211 IO80211InterfaceInfo:@"en1"` returns the associated
+  dictionary with `CoreWiFiDriverReadyKey`, `IO80211SSID`, `IO80211BSSID`,
+  `IO80211Channel`, `IO80211CountryCode`, and `IO80211RSNDone`;
+- public Apple80211 bind/current-network probes returned associated payloads
+  for SSID, BSSID, CARD_CAPABILITIES, STATE, interface name, and current
+  network;
+- concurrent 240-second ping plus iperf3 stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: ping `240/240`, `0.0% packet loss`, RTT
+  `1.209/542.608/940.242/139.723 ms`; iperf3 transferred `778 MBytes` at
+  `27.2 Mbits/sec` sender and `27.1 Mbits/sec` receiver;
+- post-stress `en1` stayed active at DHCP `10.77.0.47`,
+  `system_profiler SPAirPortDataType` reported `Status: Connected`, and
+  IORegistry still exposed controller `"BSD Name" = "en1"` plus the associated
+  `IO80211*` keys;
+- the stress-window `kernel`/`AirportItlwm` fault filter found no panic, crash,
+  NoCTL, missed beacon, stack, deauth, disassoc, `driver not available`,
+  `0xe0822403`, or `IO80211QueueCall` signature.
+
+Non-claim:
+
+- this does not close the remaining public `networksetup` current-network
+  symptom; on the same runtime `networksetup -getairportnetwork en1` still
+  printed `You are not associated with an AirPort network.`;
+- captured airportd logs for `networksetup` show `GET INTF CAPS err=0`, then
+  `GET SSID err=1`, which is a separate open layer.
