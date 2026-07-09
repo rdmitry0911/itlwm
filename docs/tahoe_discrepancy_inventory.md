@@ -4869,6 +4869,7 @@ uses it from both producers. The shared helper preserves:
 - `cap[3] = 0x27`
 - `cap[5] = 0x40`
 - `cap[6] = 0x0c`
+- `cap[7] = 0x06`
 - `cap[8..9] = 0x0201`
 
 Reference note:
@@ -4947,9 +4948,10 @@ safe diagnostic miss. The stack-smash did not recur, but the QueueCall still
 failed at `IO80211PeerMonitor::createLinkQualityMonitor(3511)`, destroyed the
 new LQM object, and the guest later panicked from CoreCapture `[FG] IP timed
 out (NoCTL)`. Therefore this item remains superseded for the create gates:
-CARD_CAPABILITIES must continue stopping at `cap[8..9] = 0x0201`, and
-`getSLOW_WIFI_FEATURE_ENABLED` must continue reporting the local cached policy
-state until the exact line-3511 PeerMonitor prerequisite is recovered.
+CARD_CAPABILITIES must continue not advertising the unrelated
+`cap[10] = 0x08` LQM-create gate, and `getSLOW_WIFI_FEATURE_ENABLED` must
+continue reporting the local cached policy state until the exact line-3511
+PeerMonitor prerequisite is recovered.
 
 Reference note:
 `docs/reference/CR-479-lqm-create-prerequisites-20260707.md`.
@@ -5897,3 +5899,73 @@ Non-claims:
 - this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
 - this does not claim public external-client SSID/BSSID exposure complete;
 - this does not change firmware regulatory programming.
+
+## item 222 - Tahoe current-network scan-result ABI and request capability bits
+
+- producers:
+  - `AirportItlwm::getCARD_CAPABILITIES(...)`
+  - `AirportSTAIOCTL.cpp::getCARD_CAPABILITIES(...)`
+  - `struct apple80211_scan_result`
+  - `AirportItlwmSkywalkInterface::getSCAN_RESULT(...)`
+  - `AirportSTAIOCTL.cpp::getSCAN_RESULT(...)`
+- status: implemented and runtime-classified
+- justification: REFERENCE_SCAN_RESULT_ABI_AND_CARD_CAPABILITY_BITS
+
+Reference evidence:
+
+- Tahoe `AppleBCMWLANCore::getCARD_CAPABILITIES(...)` ORs
+  `capabilities[7]` with `0x02` for request type `0x39`
+  (`currentScanResult`) and with `0x04` for request type `0x3a`
+  (`currentNetworkProfile`);
+- Tahoe `IO80211BssManager::getCurrentNet(...)` writes scan-result SSID length
+  at carrier offset `+0x60` and SSID bytes at `+0x61`, while preserving BSSID
+  at `+0x1c`, IE length at `+0x8a`, and IE bytes at `+0x8c`;
+- local Tahoe had kept the IE offsets stable by shrinking the rates array to
+  14 entries and adding an artificial four-byte hole, which moved SSID length
+  to `+0x5c` and made Apple's current-network parser read malformed SSID data.
+
+Local closure:
+
+- the shared CARD_CAPABILITIES helper now publishes `cap[7] = 0x06` from both
+  Tahoe and legacy getter paths without enabling the unrelated
+  `cap[10] = 0x08` LQM-create gate;
+- Tahoe `apple80211_scan_result` now keeps 15 rates before the SSID, removes
+  the artificial reserved hole, and locks BSSID `+0x1c`, SSID length `+0x60`,
+  SSID bytes `+0x61`, IE length `+0x8a`, IE bytes `+0x8c`, and total size
+  `0x8d4`;
+- compile-time header asserts and the standalone payload-builder test cover
+  the recovered layout.
+
+Runtime evidence:
+
+- loaded Tahoe build `1F012C39-0D8D-3254-9C76-3CA7037033D1`, binary SHA-256
+  `05cdf28f080ccdbae94bfaa52532a3df4a208e4ed020802cd344fda403a9af69`;
+- after controlled join to `ITLWM-Lab-3c95c7`, en1 reached DHCP
+  `10.77.0.157`;
+- `Apple80211CopyValue(12)` advertised capability request types `57` and
+  `58`;
+- raw `CURRENT_NETWORK`, `Apple80211CopyCurrentNetwork`, and
+  `CWFApple80211 currentNetwork:` all returned SSID `ITLWM-Lab-3c95c7`, BSSID
+  `80:e4:ba:20:ef:f9`, channel `1`, and the expected 16-byte SSID instead of
+  the previous malformed 87-byte SSID/IE overlap;
+- the same loaded build passed the required 240-second concurrent stress:
+  ping reported `240/240` replies, `0.0%` packet loss, RTT
+  `4.127/740.237/1473.066/256.531 ms`, and iperf3 transferred `590 MBytes`
+  sent at `20.6 Mbits/sec` with `589 MBytes` received at `20.6 Mbits/sec`;
+- post-stress `en1` remained `active` at DHCP `10.77.0.157`,
+  `system_profiler SPAirPortDataType` reported `Status: Connected`, country
+  `US`, channel `1`, rate `104`, MCS `13`, and the stress-window log filter
+  had no panic, stack-corruption, NoCTL, IO80211QueueCall, missed-beacon,
+  deauth, disassoc, CoreCapture, or firmware-crash hits.
+
+Non-claims:
+
+- this does not close public CoreWLAN/`networksetup`: `CWInterface.ssid` and
+  `CWInterface.bssid` still return nil, and
+  `networksetup -getairportnetwork en1` still reports
+  `You are not associated with an AirPort network.`;
+- this does not classify that remaining symptom as non-driver or TCC-only.
+  Live CoreWiFi still returned `allowRequestType(57) == 0`,
+  `allowRequestType(58) == 0`, `currentScanResult == nil`, and
+  `currentKnownNetworkProfile == nil`; the next layer must close that public
+  driver-facing model gap against the reference.

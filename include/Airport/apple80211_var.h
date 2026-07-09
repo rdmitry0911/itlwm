@@ -41,7 +41,7 @@
 #define APPLE80211_ADDR_LEN            6
 #define APPLE80211_MAX_RATES           15
 #if __IO80211_TARGET >= __MAC_26_0
-#define APPLE80211_SCAN_RESULT_MAX_RATES 14
+#define APPLE80211_SCAN_RESULT_MAX_RATES APPLE80211_MAX_RATES
 #define APPLE80211_SCAN_RESULT_IE_DATA_LEN 2120
 #else
 #define APPLE80211_SCAN_RESULT_MAX_RATES APPLE80211_MAX_RATES
@@ -535,17 +535,14 @@ struct apple80211_scan_result
     u_int8_t              asr_bssid[ APPLE80211_ADDR_LEN ]; // 0x1c 0x1d 0x1e 0x1f 0x20 0x21
     u_int8_t              asr_nrates;     // 0x22
     u_int8_t              asr_nr_unk;     // 0x23
-    u_int32_t             asr_rates[ APPLE80211_SCAN_RESULT_MAX_RATES ]; // Tahoe: 0x24 - 0x5b
-    u_int8_t              asr_ssid_len;   // Tahoe: 0x5c
-    u_int8_t              asr_ssid[ APPLE80211_MAX_SSID_LEN ]; // Tahoe: 0x5d - 0x7c
+    u_int32_t             asr_rates[ APPLE80211_SCAN_RESULT_MAX_RATES ]; // Tahoe: 0x24 - 0x5f
+    u_int8_t              asr_ssid_len;   // Tahoe: 0x60
+    u_int8_t              asr_ssid[ APPLE80211_MAX_SSID_LEN ]; // Tahoe: 0x61 - 0x80
     int16_t               unk;
     uint8_t               unk2;
     u_int32_t             asr_age;        // (ms) non-zero for cached scan result
 
     u_int16_t             unk3;
-#if __IO80211_TARGET >= __MAC_26_0
-    uint8_t               asr_reserved_86[4];
-#endif
     int16_t               asr_ie_len;       // Tahoe: 0x8a
 #if __IO80211_TARGET < __MAC_12_0
     uint32_t              asr_unk3;         // 0x8C
@@ -556,8 +553,10 @@ struct apple80211_scan_result
 } __attribute__((packed));
 
 #if __IO80211_TARGET >= __MAC_26_0
-static_assert(__offsetof(struct apple80211_scan_result, asr_ssid_len) == 0x5c,
-              "Tahoe scan-result SSID length must live at +0x5c");
+static_assert(__offsetof(struct apple80211_scan_result, asr_ssid_len) == 0x60,
+              "Tahoe scan-result SSID length must live at +0x60");
+static_assert(__offsetof(struct apple80211_scan_result, asr_ssid) == 0x61,
+              "Tahoe scan-result SSID bytes must live at +0x61");
 static_assert(__offsetof(struct apple80211_scan_result, asr_ie_len) == 0x8a,
               "Tahoe scan-result IE length must live at +0x8a");
 static_assert(__offsetof(struct apple80211_scan_result, asr_ie_data) == 0x8c,

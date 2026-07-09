@@ -20,6 +20,11 @@ static constexpr uint8_t kCardCapabilityByte2 = 0x6f;
 static constexpr uint8_t kCardCapabilityByte3 = 0x27;
 static constexpr uint8_t kCardCapabilityByte5 = 0x40;
 static constexpr uint8_t kCardCapabilityByte6 = 0x0c;
+static constexpr uint8_t kCardCapabilityCurrentScanResultMask = 0x02;
+static constexpr uint8_t kCardCapabilityCurrentNetworkProfileMask = 0x04;
+static constexpr uint8_t kCardCapabilityByte7 =
+    kCardCapabilityCurrentScanResultMask |
+    kCardCapabilityCurrentNetworkProfileMask;
 static constexpr uint8_t kCardCapabilityByte8 = 0x01;
 static constexpr uint8_t kCardCapabilityByte9 = 0x02;
 
@@ -40,6 +45,7 @@ inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N]
     capabilities[3] = kCardCapabilityByte3;
     capabilities[5] = kCardCapabilityByte5;
     capabilities[6] = kCardCapabilityByte6;
+    capabilities[7] = kCardCapabilityByte7;
     capabilities[8] = kCardCapabilityByte8;
     capabilities[9] = kCardCapabilityByte9;
 }

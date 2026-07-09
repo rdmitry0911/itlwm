@@ -1004,6 +1004,8 @@ void testTahoeCapabilityContracts()
             "CARD_CAPABILITIES cap[5] matches Apple-consistent cluster");
     require(capabilities[6] == kCardCapabilityByte6,
             "CARD_CAPABILITIES cap[6] matches Apple-consistent cluster");
+    require(capabilities[7] == kCardCapabilityByte7,
+            "CARD_CAPABILITIES cap[7] exposes current scan/profile request gates");
     require(capabilities[8] == kCardCapabilityByte8 &&
                 capabilities[9] == kCardCapabilityByte9,
             "CARD_CAPABILITIES tail word is little-endian 0x0201");
@@ -1012,6 +1014,57 @@ void testTahoeCapabilityContracts()
             "CARD_CAPABILITIES cluster clears Apple-impossible AKM bits");
     require(hasAppleImpossibleAdvancedAkmBits(0xef, 0x2b, 0x8c),
             "CARD_CAPABILITIES rejects old over-advertised cluster");
+}
+
+static constexpr size_t kTahoeScanResultMaxRates = 15;
+static constexpr size_t kTahoeScanResultMaxSsidLength = 32;
+static constexpr size_t kTahoeScanResultIeDataLength = 2120;
+
+struct TahoeScanResultChannelProbe {
+    uint32_t version;
+    uint32_t channel;
+    uint32_t flags;
+};
+
+struct TahoeScanResultLayoutProbe {
+    uint32_t version;
+    TahoeScanResultChannelProbe asr_channel;
+    int16_t asr_unk;
+    int16_t asr_noise;
+    int16_t asr_snr;
+    int16_t asr_rssi;
+    int16_t asr_beacon_int;
+    int16_t asr_cap;
+    uint8_t asr_bssid[6];
+    uint8_t asr_nrates;
+    uint8_t asr_nr_unk;
+    uint32_t asr_rates[kTahoeScanResultMaxRates];
+    uint8_t asr_ssid_len;
+    uint8_t asr_ssid[kTahoeScanResultMaxSsidLength];
+    int16_t unk;
+    uint8_t unk2;
+    uint32_t asr_age;
+    uint16_t unk3;
+    int16_t asr_ie_len;
+    uint8_t asr_ie_data[kTahoeScanResultIeDataLength];
+} __attribute__((packed));
+
+void testTahoeScanResultLayout()
+{
+    require(kTahoeScanResultMaxRates == 15,
+            "Tahoe scan-result carrier preserves 15 legacy rates before SSID");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_bssid) == 0x1c,
+            "Tahoe scan-result BSSID stays at +0x1c");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ssid_len) == 0x60,
+            "Tahoe scan-result SSID length matches Apple BssManager +0x60 writer");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ssid) == 0x61,
+            "Tahoe scan-result SSID bytes match Apple BssManager +0x61 writer");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ie_len) == 0x8a,
+            "Tahoe scan-result IE length remains at +0x8a");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ie_data) == 0x8c,
+            "Tahoe scan-result IE data remains at +0x8c");
+    require(sizeof(TahoeScanResultLayoutProbe) == 0x8d4,
+            "Tahoe scan-result carrier size remains 0x8d4");
 }
 
 void testTahoeAssociationAuthContracts()
@@ -1066,7 +1119,8 @@ int main()
     testTahoeBssManagerWriterContracts();
     testTahoeBssidChangedCarrierLayout();
     testTahoeCapabilityContracts();
+    testTahoeScanResultLayout();
     testTahoeAssociationAuthContracts();
-    std::cout << "tahoe payload builders ok: 23 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 24 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan-result layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM and BssManager writer contracts covered\n";
     return 0;
 }

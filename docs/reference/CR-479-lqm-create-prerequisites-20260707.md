@@ -72,8 +72,8 @@ prerequisites are still incomplete for the bridged driver:
 
 Therefore the stable bridge policy remains:
 
-- CARD_CAPABILITIES keeps the recovered Apple-consistent cluster through
-  `cap[8..9] = 0x0201`; it does not advertise local `cap[10] = 0x08`.
+- CARD_CAPABILITIES keeps the recovered Apple-consistent request bitmap but
+  does not advertise local `cap[10] = 0x08`.
 - `AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED()` returns the
   compact `version + enabled` carrier, but `enabled` comes from the local
   cached policy state instead of being forced to `1`.
