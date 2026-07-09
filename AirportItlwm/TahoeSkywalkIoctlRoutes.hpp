@@ -16,6 +16,7 @@ enum : uint32_t {
     kIocCipherKey = 3,
     kIocChannel = 4,
     kIocBssid = 9,
+    kIocCardCapabilities = 12,
     kIocAssociate = 20,
     kIocDisassociate = 22,
     kIocHostApMode = 25,
@@ -56,6 +57,7 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
     switch (reqType) {
         case kIocSsid:
         case kIocBssid:
+        case kIocCardCapabilities:
         case kIocChannel:
         case kIocCurrentNetwork:
         case kIocBgscanCacheResults:

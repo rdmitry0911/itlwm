@@ -5987,3 +5987,62 @@ Non-claims:
   `allowRequestType(58) == 0`, `currentScanResult == nil`, and
   `currentKnownNetworkProfile == nil`; the next layer must close that public
   driver-facing model gap against the reference.
+
+## item 223 - Tahoe Skywalk BSD route for CARD_CAPABILITIES selector 12
+
+- producers:
+  - `AirportItlwm::getCARD_CAPABILITIES(...)`
+  - `AirportSTAIOCTL.cpp::getCARD_CAPABILITIES(...)`
+  - `TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(...)`
+- status: closed
+- justification: SKY_WALK_BSD_ROUTE_REACHABILITY_GAP
+
+Reference evidence:
+
+- Tahoe `AppleBCMWLANCore::getCARD_CAPABILITIES(...)` owns the payload
+  producer and writes the recovered public capability bytes through `cap[9]`;
+- the local Tahoe and legacy producers already shared the Apple-consistent
+  cluster from item 222;
+- live raw `APPLE80211_IOC_CARD_CAPABILITIES` on the associated interface still
+  returned `errno=102`, showing that Tahoe user-space could not reach the
+  recovered producer through the Skywalk BSD bridge.
+
+Local closure:
+
+- `TahoeSkywalkIoctlRoutes::shouldRoute(...)` now admits get-side selector
+  `12`;
+- `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)` dispatches
+  `APPLE80211_IOC_CARD_CAPABILITIES` to
+  `AirportItlwm::getCARD_CAPABILITIES(...)`;
+- the fix does not change the recovered capability payload, and only rejects a
+  nonzero caller buffer shorter than `apple80211_capability_data`.
+
+Runtime validation:
+
+- loaded kext UUID `05E03C3E-4C0D-34C5-B105-E8839AD901D7`, binary SHA-256
+  `e4ae370aa0de18532b8593d684321c7c709147f9cb0fcc386ba9e6fcb58b1caa`;
+- raw `APPLE80211_IOC_CARD_CAPABILITIES` returned `ret=0` and the recovered
+  capability prefix `ef:e6:6f:27:00:40:0c:06:01:02`;
+- raw `STATE`, `SSID`, `BSSID`, `CHANNEL`, and `CURRENT_NETWORK` remained
+  valid on `en1`, with DHCP `10.77.0.157`, SSID `ITLWM-Lab-3c95c7`, BSSID
+  `80:e4:ba:20:ef:f9`, channel `1`, and current-network IE length `168`;
+- the first 240-second ping plus iperf3 stress pass kept the link up and
+  preserved the selector-12 route, but ping reported `239/240` replies. It was
+  therefore not used as the commit-grade validation pass;
+- the repeated 240-second concurrent stress passed cleanly:
+  `PING_RC=0`, `IPERF_RC=0`, ping `240/240` with `0.0% packet loss`, RTT
+  `1.393/862.723/2040.640/366.388 ms`, and iperf3 `590 MBytes` sent and
+  received at `20.6 Mbits/sec`;
+- post-stress `system_profiler SPAirPortDataType` reported `Status:
+  Connected`, IORegistry published `IO80211SSID`, `IO80211BSSID`,
+  `CoreWiFiDriverReadyKey`, `IO80211RSNDone`, and `IO80211CountryCode`, and
+  the fault log filter for panic, stack corruption, missed beacon, NoCTL,
+  IO80211QueueCall, firmware crash, deauth, and disassoc signatures was empty.
+
+Non-claims:
+
+- this does not close public CoreWLAN/`networksetup`;
+- this does not classify the remaining public current-network symptom as
+  non-driver or TCC-only;
+- this does not change the CARD_CAPABILITIES byte cluster recovered in items
+  214, 222, and the CR-479 CARD_CAPABILITIES reference notes.

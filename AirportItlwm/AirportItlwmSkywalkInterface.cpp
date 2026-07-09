@@ -1863,6 +1863,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setPOWERSAVE((apple80211_powersave_data *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_CARD_CAPABILITIES:
+            if (instance == NULL || cmd != SIOCGA80211)
+                return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
+            if (req->req_len != 0 &&
+                req->req_len < sizeof(apple80211_capability_data))
+                return kIOReturnBadArgument;
+            return instance->getCARD_CAPABILITIES(
+                this,
+                (apple80211_capability_data *)req->req_data);
         case APPLE80211_IOC_STATE:
             if (cmd == SIOCGA80211) {
                 if (instance != NULL && instance->fAPSTAOwner != NULL) {
