@@ -7211,6 +7211,13 @@ setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);
 
+static uint8_t scanResultSsidLengthForNode(const struct ieee80211_node *node)
+{
+    return (node != nullptr)
+        ? MIN(static_cast<uint8_t>(APPLE80211_MAX_SSID_LEN), node->ni_esslen)
+        : 0;
+}
+
 static int convertNodeToScanResult(ItlHalService *fHalService,
                                    struct ieee80211_node *fNextNodeToSend,
                                    apple80211_scan_result *result)
@@ -7243,9 +7250,20 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
     result->asr_snr = result->asr_rssi - result->asr_noise;
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
-    result->asr_ssid_len = fNextNodeToSend->ni_esslen;
+    result->asr_ssid_len = scanResultSsidLengthForNode(fNextNodeToSend);
     if (result->asr_ssid_len != 0)
         memcpy(&result->asr_ssid, fNextNodeToSend->ni_essid, result->asr_ssid_len);
+    return 0;
+}
+
+static int convertNodeToCurrentNetworkResult(struct ieee80211_node *node,
+                                             apple80211_scan_result *result)
+{
+    bzero(result, sizeof(*result));
+    result->asr_ssid_len = scanResultSsidLengthForNode(node);
+    if (result->asr_ssid_len != 0)
+        memcpy(&result->asr_ssid, node->ni_essid, result->asr_ssid_len);
+    memcpy(result->asr_bssid, node->ni_bssid, IEEE80211_ADDR_LEN);
     return 0;
 }
 
@@ -7259,7 +7277,7 @@ getCURRENT_NETWORK(apple80211_scan_result *sr)
         // current-BSS manager is not associated.
         return kApple80211ErrDriverNotAvailable;
     }
-    convertNodeToScanResult(fHalService, ic->ic_bss, sr);
+    convertNodeToCurrentNetworkResult(ic->ic_bss, sr);
     return kIOReturnSuccess;
 }
 

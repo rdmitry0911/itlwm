@@ -1690,7 +1690,8 @@ getSCAN_RESULT(OSObject *object, struct apple80211_scan_result **sr)
     result->asr_noise = fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
-    result->asr_ssid_len = fNextNodeToSend->ni_esslen;
+    result->asr_ssid_len = MIN(static_cast<uint8_t>(APPLE80211_MAX_SSID_LEN),
+                               fNextNodeToSend->ni_esslen);
     if (result->asr_ssid_len != 0)
         memcpy(&result->asr_ssid, fNextNodeToSend->ni_essid, result->asr_ssid_len);
 

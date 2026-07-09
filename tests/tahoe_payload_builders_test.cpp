@@ -1082,6 +1082,8 @@ void testTahoeScanResultLayout()
 {
     require(kTahoeScanResultMaxRates == 15,
             "Tahoe scan-result carrier preserves 15 legacy rates before SSID");
+    require(kTahoeScanResultMaxSsidLength == 0x20,
+            "Tahoe scan-result SSID writer clamps to Apple BssManager max length");
     require(offsetof(TahoeScanResultLayoutProbe, asr_bssid) == 0x1c,
             "Tahoe scan-result BSSID stays at +0x1c");
     require(offsetof(TahoeScanResultLayoutProbe, asr_ssid_len) == 0x60,
@@ -1094,6 +1096,18 @@ void testTahoeScanResultLayout()
             "Tahoe scan-result IE data remains at +0x8c");
     require(sizeof(TahoeScanResultLayoutProbe) == 0x8d4,
             "Tahoe scan-result carrier size remains 0x8d4");
+}
+
+void testTahoeCurrentNetworkCarrierContract()
+{
+    require(offsetof(TahoeScanResultLayoutProbe, asr_bssid) == 0x1c,
+            "CURRENT_NETWORK BssManager writer publishes BSSID at +0x1c");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ssid_len) == 0x60,
+            "CURRENT_NETWORK BssManager writer publishes SSID length at +0x60");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_ssid) == 0x61,
+            "CURRENT_NETWORK BssManager writer publishes SSID bytes at +0x61");
+    require(kTahoeScanResultMaxSsidLength == 0x20,
+            "CURRENT_NETWORK BssManager writer clamps SSID length to 0x20");
 }
 
 void testTahoeAssociationAuthContracts()
@@ -1161,8 +1175,9 @@ int main()
     testTahoeBssidChangedCarrierLayout();
     testTahoeCapabilityContracts();
     testTahoeScanResultLayout();
+    testTahoeCurrentNetworkCarrierContract();
     testTahoeAssociationAuthContracts();
     testTahoeCountryCodeCarrierContracts();
-    std::cout << "tahoe payload builders ok: 25 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan-result layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 26 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }
