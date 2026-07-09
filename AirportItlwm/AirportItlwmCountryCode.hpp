@@ -50,6 +50,28 @@ inline void copyAlpha2(uint8_t out[APPLE80211_MAX_CC_LEN], const char *cc)
     out[1] = static_cast<uint8_t>(cc[1]);
 }
 
+inline const char *localePropertyString(uint32_t locale)
+{
+    switch (locale) {
+        case APPLE80211_LOCALE_FCC:
+            return "FCC";
+        case APPLE80211_LOCALE_ETSI:
+            return "ETSI";
+        case APPLE80211_LOCALE_JAPAN:
+            return "Japan";
+        case APPLE80211_LOCALE_KOREA:
+            return "Korea";
+        case APPLE80211_LOCALE_APAC:
+            return "APAC";
+        case APPLE80211_LOCALE_ROW:
+            return "RoW";
+        case APPLE80211_LOCALE_INDONESIA:
+            return "Indonesia";
+        default:
+            return "Unknown";
+    }
+}
+
 inline bool copyCurrentBss80211dCountry(
     ItlHalService *halService,
     uint8_t out[APPLE80211_MAX_CC_LEN])

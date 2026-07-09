@@ -6246,3 +6246,79 @@ Non-claim:
   printed `You are not associated with an AirPort network.`;
 - captured airportd logs for `networksetup` show `GET INTF CAPS err=0`, then
   `GET SSID err=1`, which is a separate open layer.
+
+## item 227 - Tahoe locale property publication remains Unknown after country-code refresh
+
+- producers:
+  - `IO80211InfraInterface::updateCountryCodeProperty(bool)`
+  - `IO80211InfraInterface::updateLocaleProperty()`
+  - `AirportItlwm::getLOCALE(...)`
+  - `AirportItlwmSkywalkInterface::getLOCALE(...)`
+  - direct local `IO80211CountryCode` registry publication paths
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: REFERENCE_COUNTRY_CODE_LOCALE_PROPERTY_PAIRING
+- reference note:
+  - `docs/reference/CR-479-locale-property-publication-20260709.md`
+
+Reference evidence:
+
+- 25C56 `IO80211InfraInterface::updateCountryCodeProperty(bool)` at
+  `0xffffff80022bc5a8` publishes `IO80211CountryCode` and then calls
+  `IO80211InfraInterface::updateLocaleProperty()` at `0xffffff80022bcf1c`;
+- `updateLocaleProperty()` publishes `IO80211Locale` from the recovered
+  enum table: `1=FCC`, `2=ETSI`, `3=Japan`, `4=Korea`, `5=APAC`, `6=RoW`,
+  `7=Indonesia`, otherwise `Unknown`;
+- local `getLOCALE` producers already return `APPLE80211_LOCALE_FCC`.
+
+Runtime mismatch before this closure:
+
+- live Tahoe 25C56 IORegistry on associated `en1` exposed
+  `IO80211CountryCode = "US"` but `IO80211Locale = "Unknown"`;
+- `system_profiler SPAirPortDataType` reported `Country Code: US` and
+  `Locale: Unknown`;
+- the split exists because local country-code repair publishes
+  `IO80211CountryCode` directly and bypasses the family helper that also calls
+  `updateLocaleProperty()`.
+
+Local closure:
+
+- add the recovered locale enum-to-string table to
+  `AirportItlwmCountryCode`;
+- publish `IO80211Locale = "FCC"` beside each direct
+  `IO80211CountryCode` update in the legacy STA and Tahoe V2 paths;
+- keep the public request gate unchanged and do not add retry, polling,
+  fallback, or CoreWLAN result masking.
+
+Runtime validation:
+
+- loaded kext UUID `E736151C-C298-392D-AE5E-E0FA76C496AE`, binary SHA-256
+  `9e8f685a94f64f4cf97ca26da18d493a614fa11ebb10d5c9b84fbb49b1e8e9a2`,
+  build source id `79886c005985`;
+- before association, IORegistry already exposed
+  `IO80211Locale = "FCC"` instead of `Unknown`;
+- after saved-profile join to `AIAMlab6235`, IORegistry exposed
+  `IO80211Locale = "FCC"`, `IO80211CountryCode = "US"`, real SSID/BSSID,
+  channel `6`, `CoreWiFiDriverReadyKey = "true"`, and `IO80211RSNDone = Yes`;
+- `system_profiler SPAirPortDataType` reported `Locale: FCC`,
+  `Country Code: US`, `Status: Connected`, channel `6`, rate `117`, and
+  MCS `14`;
+- concurrent 240-second ping plus iperf3 stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: ping reported `240 packets transmitted, 240 packets received,
+  0.0% packet loss`, RTT `0.808/544.595/1615.601/173.862 ms`; guest iperf3
+  transferred `772 MBytes` at `27.0 Mbits/sec` sender and `771 MBytes` at
+  `26.9 Mbits/sec` receiver; host iperf3 received `771 MBytes` at
+  `26.9 Mbits/sec`;
+- post-stress `en1` remained active at DHCP `10.77.0.47`, and the locale,
+  country, SSID/BSSID, channel, RSN, and driver-ready registry properties
+  remained present;
+- the stress-window severe fault filter found no panic, firmware crash, NoCTL,
+  missed beacon, stack corruption, or `IO80211QueueCall` signatures.
+
+Non-claim:
+
+- the remaining public `networksetup` / CoreWLAN current-network symptom is
+  still open: `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.`;
+- airportd logs still contain the known `0xe0822403` / `driver not available`
+  surface for public SSID/BSSID/current-network handling, so this batch is only
+  the locale-property layer closure.

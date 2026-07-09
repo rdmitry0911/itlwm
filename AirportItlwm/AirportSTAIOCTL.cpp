@@ -45,6 +45,9 @@ static void publishResolvedCountryCodeProperty(AirportItlwm *controller)
         controller->fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE, value);
         value->release();
     }
+    controller->fNetIf->setProperty(
+        APPLE80211_REGKEY_LOCALE,
+        AirportItlwmCountryCode::localePropertyString(APPLE80211_LOCALE_FCC));
 }
 
 static bool tahoeComHasVhtMcsCarrier(const ieee80211com *ic)
@@ -1497,9 +1500,13 @@ getCOUNTRY_CODE(OSObject *object,
      */
     AirportItlwmCountryCode::selectCountryCode(
         fHalService, user_override_cc, cc_fw, geo_location_cc, cd->cc);
-    if (fNetIf != nullptr)
+    if (fNetIf != nullptr) {
         fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE,
                             reinterpret_cast<const char *>(cd->cc));
+        fNetIf->setProperty(
+            APPLE80211_REGKEY_LOCALE,
+            AirportItlwmCountryCode::localePropertyString(APPLE80211_LOCALE_FCC));
+    }
     return kIOReturnSuccess;
 }
 
@@ -1511,9 +1518,13 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
         AirportItlwmCountryCode::copyAlpha2(
             normalizedCc, reinterpret_cast<const char *>(data->cc));
         memcpy(geo_location_cc, normalizedCc, sizeof(geo_location_cc));
-        if (fNetIf != nullptr)
+        if (fNetIf != nullptr) {
             fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE,
                                 reinterpret_cast<const char *>(normalizedCc));
+            fNetIf->setProperty(
+                APPLE80211_REGKEY_LOCALE,
+                AirportItlwmCountryCode::localePropertyString(APPLE80211_LOCALE_FCC));
+        }
         fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED);
     }
     return kIOReturnSuccess;
