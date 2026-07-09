@@ -1,82 +1,82 @@
-# CR-479 Tahoe interface public request-gate polarity
+# CR-479 Tahoe interface request-gate public fallback correction
 
 Date: 2026-07-09
 
 ## Scope
 
-This batch restores only the decompile-proven Tahoe slot `[411]` request
-subset that IO80211Family uses after the WCL-first public fallback path:
+This correction narrows `AirportItlwmSkywalkInterface::isCommandProhibited(int)`
+back to the only decompile- and runtime-proven slot `[411]` owners:
 
-- `0x45`, `0x46` hidden association carriers;
-- `1` `APPLE80211_IOC_SSID`;
-- `4` `APPLE80211_IOC_CHANNEL`;
-- `9` `APPLE80211_IOC_BSSID`;
-- `0x67` `APPLE80211_IOC_CURRENT_NETWORK`;
-- `0xd8` `APPLE80211_IOC_ROAM_PROFILE`.
+- hidden association carrier `0x45`;
+- hidden association carrier `0x46`.
 
-It does not widen `isCommandProhibited(...)` to unrelated public request
-numbers.
+Public current-link selectors `1`, `4`, `9`, `0x67`, and `0xd8` must not be
+admitted through this gate. Their payloads are already produced by the recovered
+Tahoe Skywalk BSD Apple80211 dispatcher.
 
-## Reference Evidence
+## Evidence
 
-The recovered IO80211Family fallback helpers call interface slot `+0xcc8`,
-mapped in the 25C56 vtable to
-`IO80211SkywalkInterface::isCommandProhibited(int)`.
+The 25C56 vtable still maps interface slot `+0xcc8` to
+`IO80211SkywalkInterface::isCommandProhibited(int)`, and IO80211Family fallback
+helpers call that slot with both hidden and public request numbers. The mistake
+was treating the public-helper branch result as if it were a successful
+Apple80211 payload-producing route.
 
-The helpers for request numbers `1`, `9`, `0x67`, and `0xd8` all branch with
-the same polarity: a non-zero slot result survives the fallback edge, while
-zero takes the pre-helper abort path. Existing CR-479 inventory item 31 records
-the exact helper names and request numbers.
+Older CR-068 runtime evidence had already rejected that interpretation:
 
-## Runtime Trigger
+- public request-number admission leaked raw `1` for `CHANNEL` and
+  `ROAM_PROFILE`;
+- `SSID`, `BSSID`, and `CURRENT_NETWORK` still did not become valid through
+  that route;
+- the correct current-link owner was the explicit link-edge/current-BSS state
+  publication plus the BSD Apple80211 dispatcher.
 
-The loaded Tahoe runtime still logged:
-
-- `APPLE80211_IOC_ROAM_PROFILE -> 0xe0822403`;
-- immediate `AUTO-JOIN ... error=(37 'driver not available')`.
-
-The local dispatcher already routed selector `216` bidirectionally and
-`setROAM_PROFILE(...)` already returned the Apple unsupported contract
-`0xe00002c7`. Therefore the failure was before the local helper plane, at the
-interface request-gate polarity.
+The same regression reproduced on the 2026-07-09 Tahoe runtime after commit
+`9cc31e4`: public CoreWLAN `GET CHANNEL` reached Apple80211, but
+`Apple80211IOCTLGetWrapper` returned `1/0x00000001` for
+`APPLE80211_IOC_CHANNEL`, and `CWFInterface.channel` remained nil. The local
+`getCHANNEL(...)` producer itself returns `kIOReturnSuccess`, so the raw `1`
+was leaked by the gate/fallback route before the payload producer owned the
+request.
 
 ## Local Closure
 
 `AirportItlwmSkywalkInterface::isCommandProhibited(int)` now returns non-zero
-directly for exactly the recovered hidden-association and public fallback
-request subset. All other commands continue to use the inherited family
-behavior.
+only for hidden Tahoe association commands `0x45` and `0x46`. Public
+current-link request numbers fall back to inherited family behavior and remain
+owned by `processApple80211Ioctl(...)`.
 
 ## Runtime Validation
 
 Validated on the Tahoe 25C56 guest after AuxKC install and reboot:
 
-- loaded kext UUID `29EBEA3E-19C7-37AB-A1A2-0F21FEC7A5E3`, binary SHA-256
-  `a17d9d8593023e25edc5c5e9b802789bf8d216c7e8a4f505a4bc9ca14b60de99`;
-- raw BSD Apple80211 probe on associated `en1` returned:
-  - `STATE state=4`;
-  - `SSID len=16 value=ITLWM-Lab-3c95c7`;
-  - `BSSID 80:e4:ba:20:ef:f9`;
-  - `CARD_CAPABILITIES ef:e6:6f:27:00:40:0c:06:01:02:00:00:00:00:00:00:00:00:00:00:00:00:00:00`;
-  - `CURRENT_NETWORK ssidLen=16 ssid=ITLWM-Lab-3c95c7 bssid=80:e4:ba:20:ef:f9 ieLen=168`;
-  - `ROAM_PROFILE` SET returned normal BSD unsupported shape
-    `rc=-1 errno=102`, with no same-window `0xe0822403` /
-    `driver not available` log hit.
-- `en1` remained active with DHCP `10.77.0.157`;
-- `system_profiler SPAirPortDataType` reported connected infrastructure WPA2,
-  country `US`, transmit rate `104`, and MCS `13` after stress;
+- loaded kext UUID `DF37D5FE-928C-361F-93A4-A0A394CC2806`, binary SHA-256
+  `a2c3c2a4e284c42e5598e52f3b51c10445ed334d81508d6078b576c3ae18c0d9`;
+- controlled public CoreWLAN probe returned `CWInterface.channel == 1`,
+  active `CWChannel` channel `1`/20 MHz, and `CWFInterface.channel == 2g1/20`;
+- the same controlled log window showed `GET CHANNEL err=0` and no
+  `APPLE80211_IOC_CHANNEL ... return 1/0x00000001` hit;
+- raw BSD Apple80211 probe on associated `en1` returned state `4`, SSID
+  `ITLWM-Lab-3c95c7`, BSSID `80:e4:ba:20:ef:f9`, channel `1` flags `0x8a`,
+  the recovered CARD_CAPABILITIES bytes, and `CURRENT_NETWORK` with 16-byte
+  SSID and IE length `168`;
 - concurrent 240-second stress passed with `PING_RC=0` and `IPERF_RC=0`:
   `240 packets transmitted, 240 packets received, 0.0% packet loss`, RTT
-  `3.916/784.199/1694.944/304.509 ms`, and iperf3 transferred `559 MBytes`
-  at `19.5 Mbits/sec` sent/received;
-- the post-stress log filter for panic, firmware crash, NoCTL, missed beacon,
-  stack corruption, deauth, disassoc, `driver not available`, and
-  `0xe0822403` signatures was empty.
+  `1.724/763.861/1633.649/289.603 ms`, and iperf3 transferred `567 MBytes`
+  sent at `19.8 Mbits/sec` with `566 MBytes` received at `19.7 Mbits/sec`;
+- post-stress `en1` remained active at DHCP `10.77.0.157`, IORegistry
+  published real `IO80211SSID`, `IO80211BSSID`, `IO80211Channel`,
+  `IO80211CountryCode`, `IO80211RSNDone`, and `CoreWiFiDriverReadyKey`, and
+  `system_profiler SPAirPortDataType` reported connected infrastructure WPA2,
+  country `US`, channel `1`, rate `104`, and MCS `13`;
+- the stress-window fault filter found no panic, firmware crash, NoCTL, missed
+  beacon, stack corruption, deauth, disassoc, `driver not available`,
+  `0xe0822403`, or `IO80211QueueCall` signatures.
 
 Non-claims:
 
 - this does not bypass CoreWLAN, LocationServices, TCC, or `networksetup`;
 - this does not mark public `CWInterface.ssid` / `bssid` complete;
-- the same runtime still had `networksetup -getairportnetwork en1` print
-  `You are not associated with an AirPort network.`;
-- this does not add logging or instrumentation.
+- this does not remove the hidden association-carrier gate;
+- `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.` on the same runtime.

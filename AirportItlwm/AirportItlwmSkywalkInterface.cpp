@@ -250,20 +250,6 @@ static bool isTahoeHiddenAssocCommand(int command)
     return TahoeAssociationContracts::isHiddenAssocCommand(command);
 }
 
-static bool isTahoePublicFallbackCommand(int command)
-{
-    switch (static_cast<uint32_t>(command)) {
-        case TahoeSkywalkIoctlRoutes::kIocSsid:
-        case TahoeSkywalkIoctlRoutes::kIocChannel:
-        case TahoeSkywalkIoctlRoutes::kIocBssid:
-        case TahoeSkywalkIoctlRoutes::kIocCurrentNetwork:
-        case TahoeSkywalkIoctlRoutes::kIocRoamProfile:
-            return true;
-        default:
-            return false;
-    }
-}
-
 static uint32_t tahoeBssManagerBandInfoBitmap(uint32_t band)
 {
     if (band == 0 ||
@@ -1661,11 +1647,11 @@ void *AirportItlwmSkywalkInterface::getController(void)
 
 bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 {
-    // IO80211Family's Tahoe fallback helpers use slot [411] with inverted
-    // polarity on this seam: non-zero lets the proven WCL/public fallback
-    // request continue, while zero aborts with the pre-helper 0xe0822403 shape.
-    if (isTahoeHiddenAssocCommand(command) ||
-        isTahoePublicFallbackCommand(command))
+    // Only the hidden association carriers are proven owners for this gate.
+    // Public current-link requests are already routed through the recovered
+    // BSD Apple80211 dispatcher; admitting them here returns the family helper
+    // boolean as a raw Apple80211 status for callers such as CoreWLAN GET CHANNEL.
+    if (isTahoeHiddenAssocCommand(command))
         return true;
 
     return super::isCommandProhibited(command);
