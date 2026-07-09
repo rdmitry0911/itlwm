@@ -992,6 +992,8 @@ void testTahoeCapabilityContracts()
     uint8_t capabilities[24] = {};
     applyAppleConsistentCardCapabilityCluster(capabilities);
 
+    require(kApple80211BindCardCapabilitiesLength == 0x15,
+            "Apple80211 bind CARD_CAPABILITIES compact length remains 21 bytes");
     require(capabilities[0] == kCardCapabilityByte0,
             "CARD_CAPABILITIES cap[0] matches Apple request bitmap byte");
     require(capabilities[1] == kCardCapabilityByte1,

@@ -6047,6 +6047,68 @@ Non-claims:
 - this does not change the CARD_CAPABILITIES byte cluster recovered in items
   214, 222, and the CR-479 CARD_CAPABILITIES reference notes.
 
+## item 225 - Apple80211 bind CARD_CAPABILITIES compact length
+
+- producers:
+  - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+  - `AirportItlwm::handleCardSpecific(...)`
+  - `AirportItlwm::getCARD_CAPABILITIES(...)`
+  - `TahoeCapabilityContracts::applyAppleConsistentCardCapabilityCluster(...)`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: REFERENCE_APPLE80211_BIND_CARD_CAPABILITIES_COMPACT_ABI
+- reference note:
+  - `docs/reference/CR-479-apple80211-bind-cardcap-compact-20260709.md`
+
+Reference evidence:
+
+- Tahoe IO80211 `Apple80211BindToInterfaceWithService` constructs a legacy
+  ioctl `APPLE80211_IOC_CARD_CAPABILITIES` request with `req_len = 0x15`
+  before binding the fallback Apple80211 handle;
+- local pre-fix runtime returned success for full `0x1c`
+  `CARD_CAPABILITIES`, but rejected the bind-sized `0x15` carrier with
+  `0xe00002c2`;
+- the public `Apple80211BindToInterface(en1)` probe therefore failed after
+  DriverKit user-client denial forced the legacy IOCTL fallback.
+
+Local closure:
+
+- `processApple80211Ioctl(...)` accepts the recovered `0x15` compact carrier,
+  builds the same full Apple-consistent capability payload, and copies only the
+  requested compact prefix;
+- full `0x1c` callers keep the existing full payload;
+- nonzero lengths shorter than `0x15` still fail with bad argument;
+- `handleCardSpecific(...)` seeds selector `0x0c` with the same compact length
+  when IO80211Family enters through the card-specific virtual without carrying
+  `apple80211req::req_len`.
+
+Runtime validation:
+
+- loaded kext UUID `04FF242B-3AE8-3A29-AC0D-E82C554FD5AB`, binary SHA-256
+  `5cee1265f5f353b9353da083ebc6ff974736cbb14ad617daac04855443b60a2e`;
+- raw BSD Apple80211 `CARD_CAPABILITIES len=0x15` returned success for both
+  Tahoe and legacy ioctl command numbers, while `len=0x14` still returned
+  `0xe00002c2`;
+- `Apple80211BindToInterface(en1)` returned `0`;
+- `Apple80211CopyCurrentNetwork`, SSID, BSSID, CARD_CAPABILITIES, STATE, and
+  CURRENT_NETWORK returned associated-network payloads.
+- concurrent 240-second ping plus iperf3 stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: `240 packets transmitted, 240 packets received, 0.0% packet
+  loss`; iperf3 transferred `824 MBytes` at `28.8 Mbits/sec`;
+- post-stress `en1` remained active at DHCP `10.77.0.47`, and
+  `system_profiler SPAirPortDataType` reported connected WPA2 infrastructure
+  on channel `6`, country `US`, transmit rate `104`, and MCS `13`;
+- the stress-window fault filter found no panic, firmware crash, NoCTL, missed
+  beacon, stack corruption, deauth, disassoc, `driver not available`,
+  `0xe0822403`, or `IO80211QueueCall` signature.
+
+Non-claim:
+
+- `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.` because airportd rejects
+  its CoreWLAN `GET SSID` request with
+  `APP NOT AUTHORIZED FOR LOCATION SERVICES` before any Apple80211 payload
+  query.
+
 ## item 224 - Tahoe interface request gate must not own public current-link fallbacks
 
 - producers:

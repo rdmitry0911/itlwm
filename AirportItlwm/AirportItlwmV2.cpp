@@ -4832,6 +4832,10 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
                 case APPLE80211_IOC_BSSID:
                     req.req_len = APPLE80211_ADDR_LEN;
                     break;
+                case APPLE80211_IOC_CARD_CAPABILITIES:
+                    req.req_len =
+                        TahoeCapabilityContracts::kApple80211BindCardCapabilitiesLength;
+                    break;
                 case APPLE80211_IOC_VIRTUAL_IF_ROLE:
                     req.req_len = sizeof(uint32_t);
                     break;

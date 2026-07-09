@@ -11,6 +11,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeAssociationAuthContracts.hpp"
+#include "TahoeCapabilityContracts.hpp"
 #include "TahoeLeScanContracts.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeMimoContracts.hpp"
@@ -1881,8 +1882,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL || cmd != SIOCGA80211)
                 return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
             if (req->req_len != 0 &&
-                req->req_len < sizeof(apple80211_capability_data))
+                req->req_len < TahoeCapabilityContracts::kApple80211BindCardCapabilitiesLength)
                 return kIOReturnBadArgument;
+            if (req->req_len != 0 &&
+                req->req_len < sizeof(apple80211_capability_data)) {
+                apple80211_capability_data cd;
+                IOReturn ret = instance->getCARD_CAPABILITIES(this, &cd);
+                if (ret != kIOReturnSuccess)
+                    return ret;
+                memcpy(req->req_data, &cd, req->req_len);
+                return kIOReturnSuccess;
+            }
             return instance->getCARD_CAPABILITIES(
                 this,
                 (apple80211_capability_data *)req->req_data);

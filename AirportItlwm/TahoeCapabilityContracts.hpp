@@ -32,6 +32,7 @@ static constexpr uint8_t kAppleImpossibleCap2Mask = 0x80;
 static constexpr uint8_t kAppleImpossibleCap3Mask = 0x08;
 static constexpr uint8_t kAppleImpossibleCap6Mask = 0x80;
 static constexpr size_t kRequiredCardCapabilityBytes = 10;
+static constexpr size_t kApple80211BindCardCapabilitiesLength = 0x15;
 
 template <size_t N>
 inline void applyAppleConsistentCardCapabilityCluster(uint8_t (&capabilities)[N])
