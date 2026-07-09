@@ -5695,16 +5695,20 @@ Non-claims:
 - this does not add userland `networksetup`, LocationServices, TCC, or
   CoreWLAN workarounds;
 - this does not claim the BssManager network-flags writer producer;
-- the external `networksetup` output is not used as a kernel current-BSS
-  validation oracle unless the client is first authorized past the Tahoe
-  Location/TCC gate.
+- the external `networksetup` output is not used as the sole kernel current-BSS
+  validation oracle, but its persistent not-associated answer remains an open
+  public driver-surface mismatch until the CoreWLAN/networksetup model consumes
+  the same driver-originated associated state as the internal paths.
 
-## item 219 — Apple80211CopyValue SSID/BSSID compact carriers used legacy structs
+## item 219 — Apple80211CopyValue current-link carriers used legacy structs/zero compact state
 
 - producers:
   - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
   - `AirportItlwmSkywalkInterface::getTahoeCompactSSID(...)`
   - `AirportItlwmSkywalkInterface::getTahoeCompactBSSID(...)`
+  - legacy Apple80211 GET ioctl `0xc02869c9` normalizer
+  - 4-byte compact state word for `APPLE80211_IOC_STATE`
+  - `apple80211req::req_val` for payload-less `APPLE80211_IOC_STATE`
 - status: implemented and runtime-classified
 - justification: REFERENCE_IO80211API_COPYVALUE_COMPACT_CARRIERS
 - reference note:
@@ -5720,9 +5724,17 @@ Reference evidence:
 - Tahoe `IO80211::_Apple80211CopyValue` maps selector `9` (`BSSID`) to a
   mutable `CFString`, then `_Apple80211GetWithIOCTL` requests exactly six
   octets and formats them with `ether_ntoa(...)`;
-- Tahoe selector `0xd` (`STATE`) is not a four-byte ioctl carrier: the
-  lower request remains the 8-byte `{ version, state }` layout and copies
-  the second dword into the caller's number slot.
+- Tahoe `IO80211::_Apple80211CopyValue` maps selector `0xd` (`STATE`) to a
+  dedicated compact branch: it initializes a four-byte local word, calls
+  `_Apple80211GetWithIOCTL(handle, 0xd, 0, &word, 4)`, then creates the
+  returned `CFNumber` from that word;
+- the `_Apple80211GetWithIOCTL` selector `0xd` branch expands that compact word
+  into an 8-byte `{ version, state }` request and submits it through the legacy
+  Apple80211 GET ioctl number `0xc02869c9`; live `dtruss` on the
+  `CopyValue(0xd)` probe showed this older ioctl, while the local raw BSD probe
+  used the newer `0xc03069c9` form;
+- full-struct BSD callers of selector `0xd` still use the 8-byte
+  `{ version, state }` layout.
 
 Local closure:
 
@@ -5732,8 +5744,15 @@ Local closure:
   octets at offset zero;
 - legacy full-length `apple80211_ssid_data` and `apple80211_bssid_data`
   callers keep the existing versioned-struct behavior;
-- selector `0xd` remains on the existing versioned state carrier because
-  that is the recovered Tahoe lower ioctl ABI.
+- `APPLE80211_IOC_STATE` GET now keys `req_len == 4` as the compact state
+  carrier and writes the current STA state word at offset zero;
+- the payload-less form publishes current STA state through
+  `apple80211req::req_val` and returns immediately after that publication;
+- legacy full-length `apple80211_state_data` callers keep the existing
+  versioned-struct behavior.
+- the Skywalk BSD bridge now accepts legacy Apple80211 GET ioctl `0xc02869c9`
+  and normalizes it to the same local `SIOCGA80211` dispatcher used by the
+  newer raw BSD probes.
 
 Validation:
 
@@ -5743,27 +5762,46 @@ Validation:
   SSID data, BSSID, channel, security, and RSSI;
 - the rebuilt current tree matched the loaded kext SHA-256 and passed the same
   240-second concurrent ping/iperf3 data-path stress without packet loss;
-- external `networksetup -getairportnetwork en1` did not exercise these compact
-  carriers in the captured run: airportd logged a
+- legacy-ioctl state closure build
+  `6209127B-42C6-352B-AF7B-44ACC924BA34`
+  (`AirportItlwm` binary SHA-256
+  `374688728451815cbd2b5e84838696c2ef53c5e582356ee602738b0e1d01a4c4`)
+  returned associated state `4` through `Apple80211CopyValue(STATE)`, raw
+  legacy compact ioctl `0xc02869c9`, raw legacy full-state
+  `{ version=1, state=4 }`, and raw new compact ioctl `0xc03069c9`;
+- the same loaded kext passed the required 240-second concurrent stress:
+  `240/240` ping replies, `0%` packet loss, RTT
+  `1.702/761.184/1505.895/261.870 ms`, and `iperf3` transferred
+  `576 MBytes` at `20.1 Mbits/sec` sender/receiver; post-stress `en1`
+  remained active at DHCP `10.77.0.157`, `system_profiler` still reported
+  `Status: Connected`, channel `1`, country `US`, rate `104`, MCS `13`, and the
+  stress-window log filter had no panic, NoCTL, IO80211QueueCall,
+  missed-beacon, deauth, disassoc, CoreCapture, or firmware-crash hits;
+- external `networksetup -getairportnetwork en1` remains an open driver
+  user-space surface. The captured run logged a
   `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken` check and
-  returned `err=1` before any `APPLE80211_IOC_SSID` ioctl reached the driver.
+  returned `err=1` before any `APPLE80211_IOC_SSID` ioctl reached the driver,
+  but that only classifies the observed entry path; the public answer is still
+  expected to derive from driver-originated associated-state publication.
 
 Non-claims:
 
 - this does not change WCL current-BSS publication or scan-result ABI;
 - this does not add a CoreWLAN/networksetup workaround;
 - public `CWInterface.ssid`, `CWInterface.bssid`, and
-  `networksetup -getairportnetwork` remain privacy-gated external-client
-  surfaces on this Tahoe install.
+  `networksetup -getairportnetwork` remain open external-client driver
+  surfaces on this Tahoe install; a privacy/TCC gate was observed on one
+  request path, but it is not a closure or exemption for the driver layer.
 
-## item 220 — external GET SSID is Location/TCC-gated before driver IOCTL
+## item 220 — public CoreWLAN/networksetup current-network surface remains open
 
 - producers:
   - `networksetup -getairportnetwork en1`
   - `airportd` request handling for external `GET SSID`
   - CoreLocation/TCC authorization gate
-- status: classified as pre-IOCTL for this external GET SSID request
-- justification: RUNTIME_LOG_PRE_IOCTL_PRIVACY_GATE
+  - airportd/CoreWLAN associated-network model built from driver-originated state
+- status: open, request-path narrowed
+- justification: RUNTIME_LOG_PRE_IOCTL_PRIVACY_GATE_AND_DRIVER_SURFACE_GAP
 
 Runtime evidence:
 
@@ -5783,14 +5821,17 @@ Runtime evidence:
 
 Local closure:
 
-- the long-standing Tahoe `networksetup` "not associated" output is a public
-  privacy/authorization surface for that client; by itself it is not a direct
-  indicator that the kernel current-BSS, BSSID_CHANGED, or compact SSID/BSSID
-  ioctl carriers are absent;
-- this classification is intentionally narrow: it only describes the captured
-  external `GET SSID` request that failed before the Apple80211 IOCTL bridge,
-  and it does not prove that all public CoreWLAN/user-space driver surfaces are
-  already identical to the reference;
+- the long-standing Tahoe `networksetup` "not associated" output is not a
+  closed non-driver/TCC issue; it remains a public user-space driver-surface
+  mismatch until the public CoreWLAN/current-network model matches the
+  reference;
+- the captured log only narrows one request path: this external `GET SSID`
+  request failed before the Apple80211 IOCTL bridge and therefore did not test
+  the compact SSID/BSSID ioctl carriers fixed in item 219;
+- because `networksetup` and public CoreWLAN ultimately consume
+  driver-originated state, any persistent nil/not-associated answer still
+  implies a missing or non-identical driver-facing surface somewhere in the
+  airportd/CoreWLAN model path;
 - future driver validation must prefer decompiled ABI, IORegistry, airportd
   internal requests, low-level `CWFApple80211` probes, data-path stress, and
   logs proving that a request actually reached the Apple80211 IOCTL bridge.
@@ -5799,7 +5840,9 @@ Non-claims:
 
 - this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
 - this does not mark public external-client SSID/BSSID exposure complete;
-- this does not change any driver code by itself.
+- this does not absolve the driver layer; it records that the next patch must
+  target the still-missing public CoreWLAN/current-network surface rather than
+  reworking the already validated compact IOCTL carriers blindly.
 
 ## item 221 - current-BSS country code stayed on `ZZ` across public registry surfaces
 

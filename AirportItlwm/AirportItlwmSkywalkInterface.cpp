@@ -39,6 +39,19 @@ static_assert(TahoeAssociationAuthContracts::kAuthWpa3Sae ==
                   APPLE80211_AUTHTYPE_WPA3_SAE,
               "association auth contract must match Apple80211 WPA3 SAE bit");
 
+static constexpr UInt kApple80211LegacyGetIoctl = 3223873993U; // 0xc02869c9
+static constexpr UInt kApple80211LegacySetIoctl = 2150132168U; // 0x802869c8
+
+static bool isApple80211GetIoctl(UInt cmd)
+{
+    return cmd == SIOCGA80211 || cmd == kApple80211LegacyGetIoctl;
+}
+
+static bool isApple80211SetIoctl(UInt cmd)
+{
+    return cmd == SIOCSA80211 || cmd == kApple80211LegacySetIoctl;
+}
+
 static int ieeeChanFlag2appleScanFlagVentura(int flags)
 {
     int ret = 0;
@@ -1661,9 +1674,12 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     //   matching IO80211Controller cache semantics (success + zeroed data).
     // - Our Tahoe target does not build AirportSTAIOCTL.cpp, so the old ioctl
     //   dispatcher never runs here; the BSD path must forward these requests.
-    if ((cmd == SIOCGA80211 || cmd == SIOCSA80211) && data != NULL) {
+    if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
+        data != NULL) {
         apple80211req *req = static_cast<apple80211req *>(data);
-        IOReturn ret = processApple80211Ioctl(cmd, req);
+        UInt normalizedCmd =
+            isApple80211GetIoctl(cmd) ? SIOCGA80211 : SIOCSA80211;
+        IOReturn ret = processApple80211Ioctl(normalizedCmd, req);
         if (ret != kIOReturnUnsupported)
             return ret;
     }
@@ -1704,6 +1720,21 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VIRTUAL_IF_ROLE:
         case APPLE80211_IOC_VIRTUAL_IF_PARENT:
             return kApple80211NotVirtualInterface;
+        case APPLE80211_IOC_STATE:
+            if (cmd == SIOCGA80211) {
+                struct ieee80211com *ic =
+                    fHalService ? fHalService->get80211Controller() : NULL;
+                uint32_t state =
+                    (ic != NULL) ? ic->ic_state : IEEE80211_S_INIT;
+                req->req_val = state;
+                if (req->req_data == NULL)
+                    return kIOReturnSuccess;
+                if (req->req_len == sizeof(state)) {
+                    *(uint32_t *)req->req_data = state;
+                    return kIOReturnSuccess;
+                }
+            }
+            break;
         default:
             break;
     }

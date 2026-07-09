@@ -24,10 +24,17 @@ CoreWiFi/CoreWLAN current-link getters that are backed by BSD
 - `CoreWiFi::-[CWFApple80211 BSSID:]` calls
   `_Apple80211CopyValue(handle, 9, 0, &value)`, converts the returned
   string, and normalizes it with `CWFCorrectEthernetAddressString(...)`.
-- `IO80211::_Apple80211CopyValue` maps selector `0xd` (`STATE`) to a
-  `CFNumber`, but the lower `_Apple80211GetWithIOCTL` carrier remains the
-  8-byte `{ version, state }` layout and copies the second dword into the
-  caller's 4-byte number slot.
+- `IO80211::_Apple80211CopyValue` maps selector `0xd` (`STATE`) to a dedicated
+  compact branch: it initializes a four-byte local word, calls
+  `_Apple80211GetWithIOCTL(handle, 0xd, 0, &word, 4)`, then creates the
+  returned `CFNumber` from that word.
+- The `_Apple80211GetWithIOCTL` selector `0xd` branch expands that compact
+  word into an 8-byte `{ version, state }` request and submits it through the
+  legacy Apple80211 GET ioctl number `0xc02869c9`; live `dtruss` showed this
+  ioctl on the `CopyValue(0xd)` path, while the local raw BSD probe had been
+  exercising the newer `0xc03069c9` form.
+- Full-struct BSD callers of selector `0xd` still use the 8-byte
+  `{ version, state }` layout.
 
 ## Local Delta
 
@@ -59,8 +66,15 @@ compact payload and writes past the length requested by the framework.
   writers. Its get-side selector 1/9 ingress only supplies the recovered
   compact `req_len` values before entering the same Skywalk BSD bridge, which
   prevents no-length fallback into the legacy versioned structs.
-- Selector `0xd` is intentionally unchanged because the reference lower
-  ioctl carrier is still the 8-byte versioned state struct.
+- Selector `0xd` now treats `req_len == 4` as the Tahoe compact state carrier
+  and writes the associated state word at offset zero for `Apple80211CopyValue`.
+- Payload-less selector `0xd` GET still publishes the associated state through
+  `apple80211req::req_val`.
+- Full-length `apple80211_state_data` callers remain on the existing versioned
+  state carrier.
+- The Skywalk BSD bridge now accepts the legacy Apple80211 GET ioctl
+  `0xc02869c9` and normalizes it to the same local `SIOCGA80211` dispatcher, so
+  framework `Apple80211CopyValue` and raw BSD probes consume the same handlers.
 
 ## Validation Status
 
@@ -97,10 +111,30 @@ as `CFString` BSSID `80:e4:ba:20:ef:f9`, and selectors `13` and `103` with
 stress-window log filter had no panic, stack-corruption, NoCTL,
 IO80211QueueCall, missed-beacon, deauth, disassoc, or CoreCapture hits.
 
-Public external clients remain a separate Tahoe privacy surface. In the same
-runtime window, `networksetup -getairportnetwork en1` logged
+Legacy-ioctl state closure build
+`6209127B-42C6-352B-AF7B-44ACC924BA34`
+(`AirportItlwm` binary SHA-256
+`374688728451815cbd2b5e84838696c2ef53c5e582356ee602738b0e1d01a4c4`)
+closed the remaining low-level state carrier: `Apple80211CopyValue(STATE)`
+returned a `CFNumber` value `4`, raw legacy compact ioctl `0xc02869c9` returned
+`req_val=4` and data word `4`, raw legacy full-state returned
+`version=1 state=4`, and raw new compact ioctl `0xc03069c9` returned the same
+state word. The same loaded kext passed the required 240-second concurrent
+stress: `240/240` ping replies, `0%` packet loss, RTT
+`1.702/761.184/1505.895/261.870 ms`, and `iperf3` `576 MBytes` sent and
+received at `20.1 Mbits/sec`. Post-stress `en1` stayed active at
+`10.77.0.157`; `system_profiler` still reported `Status: Connected`, channel
+`1 (2GHz, 20MHz)`, country `US`, rate `104`, MCS `13`; the stress-window log
+filter had no panic, NoCTL, IO80211QueueCall, missed-beacon, deauth, disassoc,
+CoreCapture, or firmware-crash hits.
+
+Public CoreWLAN/`networksetup` remains open as a driver user-space surface, not
+as a closed privacy/TCC-only finding. The captured `networksetup
+-getairportnetwork en1` run did log
 `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken` and returned
 `err=1` before any `Apple80211GetWithIOCTL ... APPLE80211_IOC_SSID` reached the
-driver. That result does not validate or invalidate the compact ioctl carriers;
-it proves that this external client is stopped by Location/TCC before the BSD
-Apple80211 path is consulted.
+driver, but that only classifies the observed entry path. Because the source of
+truth for associated SSID/BSSID is still the driver's published state, any
+public-client nil/not-associated result remains a non-identical driver surface
+until the CoreWLAN/networksetup path consumes the same current-link state as the
+low-level Apple80211 probes.

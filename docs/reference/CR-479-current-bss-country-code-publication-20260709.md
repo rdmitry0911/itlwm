@@ -66,9 +66,11 @@ country code `US`, and the log filter found no panic, stack-corruption,
 CoreCapture, missed-beacon, deauth, disassoc, NoCTL, or IO80211QueueCall hits.
 
 `networksetup -getairportnetwork en1` still printed
-`You are not associated with an AirPort network.` That remains a public
-CoreWLAN/Location authorization surface for that external client, not evidence
-that this country-code driver surface failed.
+`You are not associated with an AirPort network.` That remains an open public
+CoreWLAN/airportd current-network surface. The captured request did not prove
+that this country-code publication failed, but it also must not be treated as
+non-driver: CoreWLAN's public answer is still built from driver-originated
+state.
 
 ## Non-claims
 

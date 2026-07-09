@@ -75,6 +75,9 @@ The same run showed the important Tahoe split:
   any `Apple80211GetWithIOCTL ... APPLE80211_IOC_SSID` request reached the
   driver.
 
-Therefore the old public `networksetup` "not associated" output is classified
-as a Tahoe Location/TCC pre-IOCTL redaction path for that external client, not
-as evidence that the accepted join BSSID/current-BSS publication failed.
+Therefore this specific `networksetup` request is narrowed to an airportd /
+CoreLocation path that failed before the external Apple80211 SSID ioctl bridge.
+That is not evidence that the accepted join BSSID/current-BSS publication
+failed, but it is still an open driver-surface discrepancy: public CoreWLAN and
+`networksetup` ultimately report state synthesized from driver-originated
+objects.

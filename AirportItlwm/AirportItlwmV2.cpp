@@ -1280,7 +1280,13 @@ static int ieeeChanFlag2apple(int flags, int bw)
 
 static bool shouldRouteTahoeSkywalkIoctlReq(const apple80211req *req, bool isSet)
 {
-    if (req == nullptr || req->req_data == nullptr)
+    if (req == nullptr)
+        return false;
+
+    if (!isSet && req->req_type == APPLE80211_IOC_STATE)
+        return true;
+
+    if (req->req_data == nullptr)
         return false;
 
     return TahoeSkywalkIoctlRoutes::shouldRoute(req->req_type, isSet);
