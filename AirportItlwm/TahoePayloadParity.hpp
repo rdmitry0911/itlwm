@@ -119,7 +119,7 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "AirportItlwmSkywalkInterface::getLINK_CHANGED_EVENT_DATA",
             "apple-event-three-abis",
             0x20,
-            "null getter returns raw 16; publication is gated on parent link-state success"
+            "null getter returns raw 16; publication is gated on parent link-state success; SNR/NF publish only with valid HAL noise"
         },
         {
             "bssid-changed-24",

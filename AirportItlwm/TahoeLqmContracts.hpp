@@ -25,6 +25,15 @@ static constexpr uint32_t kThresholdInvalidHigh = 0x9b;
 static constexpr uint32_t kTailOffset = 0x19;
 static constexpr uint32_t kTailLength = 8;
 static constexpr uint32_t kTailMaximumAcceptedValue = 99;
+static constexpr uint32_t kWclLqmEventSnrFlagOffset = 0x0b;
+static constexpr uint32_t kWclLqmEventSnrValueOffset = 0x0c;
+static constexpr uint32_t kWclLqmEventNfFlagOffset = 0x0e;
+static constexpr uint32_t kWclLqmEventNfValueOffset = 0x10;
+static constexpr uint32_t kLinkChangedSnrOffset = 0x08;
+static constexpr uint32_t kLinkChangedNfOffset = 0x0a;
+static constexpr int32_t kInvalidNoiseZero = 0;
+static constexpr int32_t kInvalidNoiseSentinel = -127;
+static constexpr int32_t kMaximumSnr = 127;
 
 inline bool isInvalidThresholdByte(uint8_t value)
 {
@@ -62,6 +71,24 @@ inline bool hasInvalidTailBytes(const uint8_t *carrier)
             return true;
     }
     return false;
+}
+
+inline bool buildLinkChangedSignalMetrics(int32_t rssiDbm, int32_t noiseDbm,
+                                          uint16_t *snrOut, uint16_t *nfOut)
+{
+    if (noiseDbm == kInvalidNoiseZero || noiseDbm == kInvalidNoiseSentinel ||
+        snrOut == nullptr || nfOut == nullptr)
+        return false;
+
+    int32_t snr = rssiDbm - noiseDbm;
+    if (snr < 0)
+        snr = 0;
+    if (snr > kMaximumSnr)
+        snr = kMaximumSnr;
+
+    *snrOut = static_cast<uint16_t>(snr);
+    *nfOut = static_cast<uint16_t>(static_cast<int16_t>(noiseDbm));
+    return true;
 }
 
 } // namespace TahoeLqmContracts

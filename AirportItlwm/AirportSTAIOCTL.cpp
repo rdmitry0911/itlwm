@@ -11,6 +11,7 @@
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeAssociationContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
+#include "TahoeLqmContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
 #include "TahoePhyModeContracts.hpp"
@@ -1809,8 +1810,8 @@ setVIRTUAL_IF_DELETE(OSObject *object, struct apple80211_virt_if_delete_data *da
  * V1 controller mirror of the Tahoe-shape link-changed-event-data
  * publisher. The V1 IOCTL path must produce the same 32-byte
  * response shape as the V2 / Skywalk interface so the upper layer
- * reads voluntary and reason at the same offsets regardless of
- * which controller class is bound.
+ * reads voluntary, reason, SNR, and NF at the same offsets regardless
+ * of which controller class is bound.
  */
 IOReturn AirportItlwm::
 getLINK_CHANGED_EVENT_DATA(OSObject *object, struct apple80211_link_changed_event_data *ed)
@@ -1831,7 +1832,15 @@ getLINK_CHANGED_EVENT_DATA(OSObject *object, struct apple80211_link_changed_even
     } else {
         ed->voluntary_up = 1;
         if (ic != nullptr && ic->ic_bss != nullptr) {
-            ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+            int32_t rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+            ed->rssi = (uint32_t)rssi;
+            uint16_t snr = 0;
+            uint16_t nf = 0;
+            if (TahoeLqmContracts::buildLinkChangedSignalMetrics(
+                    rssi, fHalService->getDriverInfo()->getBSSNoise(), &snr, &nf)) {
+                ed->snr = snr;
+                ed->nf = nf;
+            }
         }
     }
     return kIOReturnSuccess;

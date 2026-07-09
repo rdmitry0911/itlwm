@@ -872,6 +872,14 @@ void testTahoeLqmContracts()
             "LQM invalid carrier paths return raw 0x16");
     require(kFeatureDisabledStatus == 0x2d,
             "LQM feature-disabled gate is the only recovered 0x2d path");
+    require(kWclLqmEventSnrFlagOffset == 0x0b &&
+                kWclLqmEventSnrValueOffset == 0x0c,
+            "WCL LQM update stores SNR at flag/value +0x0b/+0x0c");
+    require(kWclLqmEventNfFlagOffset == 0x0e &&
+                kWclLqmEventNfValueOffset == 0x10,
+            "WCL LQM update stores noise floor at flag/value +0x0e/+0x10");
+    require(kLinkChangedSnrOffset == 0x08 && kLinkChangedNfOffset == 0x0a,
+            "link-changed carrier exposes SNR/NF at +0x08/+0x0a");
     require(!hasInvalidInterval(kMinimumIntervalMs, kMinimumIntervalMs,
                                 kMinimumIntervalMs),
             "LQM accepts intervals at the Apple minimum");
@@ -908,6 +916,25 @@ void testTahoeLqmContracts()
             "LQM threshold helper rejects null carrier");
     require(hasInvalidTailBytes(nullptr),
             "LQM tail helper rejects null carrier");
+
+    uint16_t snr = 0;
+    uint16_t nf = 0;
+    require(buildLinkChangedSignalMetrics(-63, -95, &snr, &nf),
+            "link-changed signal helper accepts valid noise floor");
+    require(snr == 32, "link-changed signal helper derives SNR from RSSI minus NF");
+    require(static_cast<int16_t>(nf) == -95,
+            "link-changed signal helper preserves signed NF in raw carrier word");
+    require(buildLinkChangedSignalMetrics(-10, -200, &snr, &nf) &&
+                snr == kMaximumSnr,
+            "link-changed signal helper clamps SNR to Apple byte-range maximum");
+    require(!buildLinkChangedSignalMetrics(-63, kInvalidNoiseZero, &snr, &nf),
+            "link-changed signal helper rejects zero noise sentinel");
+    require(!buildLinkChangedSignalMetrics(-63, kInvalidNoiseSentinel, &snr, &nf),
+            "link-changed signal helper rejects -127 noise sentinel");
+    require(!buildLinkChangedSignalMetrics(-63, -95, nullptr, &nf),
+            "link-changed signal helper rejects null SNR output");
+    require(!buildLinkChangedSignalMetrics(-63, -95, &snr, nullptr),
+            "link-changed signal helper rejects null NF output");
 }
 
 void testTahoeBssManagerWriterContracts()

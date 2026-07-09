@@ -2816,26 +2816,22 @@ postLqmUpdateBulletin()
         rate_mbps = (ni->ni_rates.rs_rates[ni->ni_txrate] & 0x7f) / 2;
     if (rate_mbps == 0)
         rate_mbps = 6;
-    int32_t noise = fHalService->getDriverInfo()->getBSSNoise();
-    bool hasNoise = (noise != 0 && noise != -127);
-    int snr = 0;
-    if (hasNoise) {
-        snr = rssi_c - noise;
-        if (snr < 0)
-            snr = 0;
-        if (snr > 127)
-            snr = 127;
-    }
+    uint16_t snr = 0;
+    uint16_t nf = 0;
+    const bool hasNoise = TahoeLqmContracts::buildLinkChangedSignalMetrics(
+        rssi_c, fHalService->getDriverInfo()->getBSSNoise(), &snr, &nf);
 
     unsigned char ev[0x1dc];
     bzero(ev, sizeof(ev));
     ev[0x00] = 1;
     *(int32_t *)(ev + 0x04) = rssi_c;
     if (hasNoise) {
-        ev[0x0b] = 1;
-        *(int16_t *)(ev + 0x0c) = (int16_t)snr;
-        ev[0x0e] = 1;
-        *(int16_t *)(ev + 0x10) = (int16_t)noise;
+        ev[TahoeLqmContracts::kWclLqmEventSnrFlagOffset] = 1;
+        *(int16_t *)(ev + TahoeLqmContracts::kWclLqmEventSnrValueOffset) =
+            (int16_t)snr;
+        ev[TahoeLqmContracts::kWclLqmEventNfFlagOffset] = 1;
+        *(int16_t *)(ev + TahoeLqmContracts::kWclLqmEventNfValueOffset) =
+            (int16_t)nf;
     }
     ev[0x12] = 1;
     ev[0x13] = (unsigned char)(signed char)rssi_c;
@@ -2884,11 +2880,12 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
      * exactly once per accepted parent transition. Build the payload
      * inline from state already owned by the V1 and V2
      * APPLE80211_IOC_LINK_CHANGED_EVENT_DATA publishers: on link-up
-     * `voluntary_up = 1` and `rssi` from the current node; on link-down
-     * `voluntary_down` from the locally tracked disassociation
-     * initiator, `reason = APPLE80211_LINK_DOWN_REASON_DEAUTH`, and the
-     * current BSSID copied into `last_assoc[0..5]`. Fields itlwm does
-     * not produce remain zero per the bzero entry contract.
+     * `voluntary_up = 1`, `rssi` from the current node, and SNR/NF from a
+     * valid HAL noise-floor sample; on link-down `voluntary_down` from the
+     * locally tracked disassociation initiator, `reason =
+     * APPLE80211_LINK_DOWN_REASON_DEAUTH`, and the current BSSID copied into
+     * `last_assoc[0..5]`. Fields itlwm does not produce remain zero per the
+     * bzero entry contract.
      *
      * Only the link-up and link-down terminal states publish the carrier;
      * the intermediate IO80211LinkState values are framework-internal
@@ -2914,8 +2911,17 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                        IEEE80211_ADDR_LEN);
         } else {
             ed.voluntary_up = 1;
-            if (ic != nullptr && ic->ic_bss != nullptr)
-                ed.rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+            if (ic != nullptr && ic->ic_bss != nullptr) {
+                int32_t rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+                ed.rssi = (uint32_t)rssi;
+                uint16_t snr = 0;
+                uint16_t nf = 0;
+                if (TahoeLqmContracts::buildLinkChangedSignalMetrics(
+                        rssi, fHalService->getDriverInfo()->getBSSNoise(), &snr, &nf)) {
+                    ed.snr = snr;
+                    ed.nf = nf;
+                }
+            }
         }
         instance->postMessage(instance->fNetIf, APPLE80211_M_LINK_CHANGED,
                               &ed, sizeof(ed), true);
@@ -5178,9 +5184,9 @@ getMCS(struct apple80211_mcs_data* md)
  *   - on link-up: voluntary_up is 1 because every itlwm STA path
  *     reaches RUN through an explicit setASSOCIATE / setSCAN_REQ
  *     join sequence; rssi published from the current node.
- * snr / nf / cca remain zero because itlwm does not currently
- * expose per-beacon noise-floor or channel CCA metrics from the
- * iwx / iwm HAL; populating them is a separate parity layer.
+ * snr / nf are populated when the HAL exposes a valid scalar
+ * noise-floor sample; CCA remains zero because itlwm does not
+ * currently expose channel CCA metrics from the iwx / iwm HAL.
  */
 IOReturn AirportItlwmSkywalkInterface::
 getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
@@ -5201,7 +5207,15 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
     } else {
         ed->voluntary_up = 1;
         if (ic != nullptr && ic->ic_bss != nullptr) {
-            ed->rssi = (uint32_t)(-(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi));
+            int32_t rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+            ed->rssi = (uint32_t)rssi;
+            uint16_t snr = 0;
+            uint16_t nf = 0;
+            if (TahoeLqmContracts::buildLinkChangedSignalMetrics(
+                    rssi, fHalService->getDriverInfo()->getBSSNoise(), &snr, &nf)) {
+                ed->snr = snr;
+                ed->nf = nf;
+            }
         }
     }
     return kIOReturnSuccess;
