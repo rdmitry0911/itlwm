@@ -5612,3 +5612,172 @@ Non-claims:
   `networksetup -getairportnetwork en1` still reports
   `You are not associated with an AirPort network.`, and CoreWLAN still reports
   `ssid=(null) bssid=(null)` while the data path is up.
+
+## item 218 — accepted join edge did not actively publish BSSID_CHANGED
+
+- producers:
+  - `AirportItlwm::setLinkStateGated(...)`
+  - `AirportItlwmSkywalkInterface::publishTahoeBssidChangedFromCurrentBss(...)`
+  - `AirportItlwmSkywalkInterface::setCurrentApAddress(...)`
+- status: implemented and runtime-classified
+- justification: REFERENCE_EVENT_ORDER_AND_CURRENT_BSS_STATE
+
+Reference evidence:
+
+- Tahoe `CWXPCInterfaceContext::ssidChanged` schedules `__associatedNetwork`
+  and forwards the returned object through `setAssociatedNetwork:`;
+- `__associatedNetwork` requires current interface `ssidData` and compares it
+  with the internal current/associated network object before returning a
+  CoreWiFi scan result;
+- Tahoe `CWXPCInterfaceContext::bssidChanged` refreshes current-BSS side state
+  from `wifiClient -> interfaceWithName:`, `queryBSSIDForInterfaceWithName`,
+  current `ssidData`, `wlanChannel`, BSSID, and RSSI before the associated
+  network publication path runs;
+- the event-3 kernel/userland ABI remains the recovered 24-byte compact carrier
+  with BSSID at `+0x00`, embedded `apple80211_channel` at `+0x08`, and reason
+  at `+0x14`.
+
+Local closure:
+
+- the previous Tahoe implementation published the populated event-3 carrier
+  only through passive framework paths (`setCurrentApAddress(...)` and the
+  parent-success branch of `setLinkStateInternal(...)`);
+- live Tahoe evidence showed the parent-success branch stays closed and no
+  BSSID_CHANGED runtime marker appeared in the current validation window, while
+  low-level `CWFApple80211 currentNetwork:` returned a valid `CWFScanResult`
+  and public CoreWLAN/networksetup still remained nil/not-associated;
+- the accepted join-up path now publishes populated `APPLE80211_M_BSSID_CHANGED`
+  from the current associated BSS after WCL connect-complete and before
+  zero-length `APPLE80211_M_SSID_CHANGED`;
+- the new active publisher uses the same Skywalk carrier writer, embedded
+  channel fill, last-published BSSID tracker, zero-BSSID rejection, and
+  same-BSS reason-1 suppression as `setCurrentApAddress(...)`;
+- the rejected `setCurrentApAddress(NULL/BSSID)` cache seed and zero-length
+  BSSID event are not restored.
+
+Validation:
+
+- Tahoe runtime build `C79923D0-EA57-3121-8439-6124496AC777`
+  (`AirportItlwm` binary SHA-256
+  `458df8e577497acb8790e3f66c3e1f6a61f937aab351eccd8e799936ec6d5b32`)
+  completed a controlled rejoin, kept DHCP `10.77.0.157`, en1 `status: active`,
+  and IORegistry `IO80211SSID`/`IO80211BSSID`/`IO80211RSNDone = Yes`;
+- `system_profiler SPAirPortDataType` reported the interface connected with
+  current-network information;
+- airportd's own `GET SSID` path returned `err=0` and logged
+  `AUTO-JOIN: Updated associated network ...`, while external `networksetup`
+  failed after a CoreLocation/TCC authorization check before any driver SSID
+  IOCTL was issued.
+- the current tree rebuilt successfully with the same SHA-256 as the loaded
+  kext, then passed the required concurrent stress window: `240/240` ping
+  replies, `0%` packet loss, RTT `1.680/660.536/968.354/129.385 ms`, and
+  `iperf3` `606 MBytes` sent at `21.2 Mbits/sec` with `605 MBytes` received at
+  `21.1 Mbits/sec`; post-stress IORegistry still exposed the real SSID/BSSID
+  and `IO80211RSNDone = Yes`.
+
+Non-claims:
+
+- this does not add userland `networksetup`, LocationServices, TCC, or
+  CoreWLAN workarounds;
+- this does not claim the BssManager network-flags writer producer;
+- the external `networksetup` output is not used as a kernel current-BSS
+  validation oracle unless the client is first authorized past the Tahoe
+  Location/TCC gate.
+
+## item 219 — Apple80211CopyValue SSID/BSSID compact carriers used legacy structs
+
+- producers:
+  - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+  - `AirportItlwmSkywalkInterface::getTahoeCompactSSID(...)`
+  - `AirportItlwmSkywalkInterface::getTahoeCompactBSSID(...)`
+- status: implemented and runtime-classified
+- justification: REFERENCE_IO80211API_COPYVALUE_COMPACT_CARRIERS
+- reference note:
+  - `docs/reference/CR-479-copyvalue-compact-current-link-carriers-20260709.md`
+
+Reference evidence:
+
+- Tahoe `IO80211::_Apple80211CopyValue` maps selector `1` (`SSID`) to a
+  mutable `CFData`, then `_Apple80211GetWithIOCTL` requests exactly
+  `0x20` bytes and appends those bytes to the returned data object;
+- Tahoe `CoreWiFi::-[CWFApple80211 SSID:]` consumes that returned object
+  directly through the CoreWiFi string-conversion path;
+- Tahoe `IO80211::_Apple80211CopyValue` maps selector `9` (`BSSID`) to a
+  mutable `CFString`, then `_Apple80211GetWithIOCTL` requests exactly six
+  octets and formats them with `ether_ntoa(...)`;
+- Tahoe selector `0xd` (`STATE`) is not a four-byte ioctl carrier: the
+  lower request remains the 8-byte `{ version, state }` layout and copies
+  the second dword into the caller's number slot.
+
+Local closure:
+
+- the Skywalk BSD bridge now keys selector `1` on `req_len == 0x20` and
+  returns zero-padded raw SSID bytes at offset zero;
+- the same bridge keys selector `9` on `req_len == 6` and returns raw BSSID
+  octets at offset zero;
+- legacy full-length `apple80211_ssid_data` and `apple80211_bssid_data`
+  callers keep the existing versioned-struct behavior;
+- selector `0xd` remains on the existing versioned state carrier because
+  that is the recovered Tahoe lower ioctl ABI.
+
+Validation:
+
+- the installed Tahoe runtime build kept the low-level current-link path valid:
+  controlled rejoin succeeded, DHCP stayed active, IORegistry carried real
+  SSID/BSSID properties, and `CWFApple80211 currentNetwork:` returned the real
+  SSID data, BSSID, channel, security, and RSSI;
+- the rebuilt current tree matched the loaded kext SHA-256 and passed the same
+  240-second concurrent ping/iperf3 data-path stress without packet loss;
+- external `networksetup -getairportnetwork en1` did not exercise these compact
+  carriers in the captured run: airportd logged a
+  `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken` check and
+  returned `err=1` before any `APPLE80211_IOC_SSID` ioctl reached the driver.
+
+Non-claims:
+
+- this does not change WCL current-BSS publication or scan-result ABI;
+- this does not add a CoreWLAN/networksetup workaround;
+- public `CWInterface.ssid`, `CWInterface.bssid`, and
+  `networksetup -getairportnetwork` remain privacy-gated external-client
+  surfaces on this Tahoe install.
+
+## item 220 — external GET SSID is Location/TCC-gated before driver IOCTL
+
+- producers:
+  - `networksetup -getairportnetwork en1`
+  - `airportd` request handling for external `GET SSID`
+  - CoreLocation/TCC authorization gate
+- status: classified as non-driver oracle
+- justification: RUNTIME_LOG_PRE_IOCTL_PRIVACY_GATE
+
+Runtime evidence:
+
+- `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.`;
+- the corresponding airportd log begins `REQ [GET SSID]` for
+  `codesignID=com.apple.networksetup`, calls
+  `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken`, and ends
+  with `err=1`;
+- in that request window there is no matching
+  `Apple80211GetWithIOCTL ... APPLE80211_IOC_SSID`, so the driver is not asked
+  for SSID data;
+- airportd's own internal `GET SSID` request on the same associated interface
+  returns `err=0` and updates the associated-network object;
+- IORegistry and `system_profiler SPAirPortDataType` both show the interface as
+  associated while the external client is redacted.
+
+Local closure:
+
+- the long-standing Tahoe `networksetup` "not associated" output is a public
+  privacy/authorization surface for that client, not a direct indicator that
+  the kernel current-BSS, BSSID_CHANGED, or compact SSID/BSSID ioctl carriers
+  are absent;
+- future driver validation must prefer decompiled ABI, IORegistry, airportd
+  internal requests, low-level `CWFApple80211` probes, data-path stress, and
+  logs proving that a request actually reached the Apple80211 IOCTL bridge.
+
+Non-claims:
+
+- this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
+- this does not mark public external-client SSID/BSSID exposure complete;
+- this does not change any driver code by itself.

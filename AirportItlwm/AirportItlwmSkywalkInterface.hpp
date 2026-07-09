@@ -62,6 +62,7 @@ public:
     virtual void setCurrentApAddress(ether_addr *) override;
     virtual IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *) override;
     bool bindController(AirportItlwm *);
+    bool publishTahoeBssidChangedFromCurrentBss(const char *);
 #else
     virtual bool init(IOService *) override;
 #endif
@@ -110,9 +111,11 @@ public:
     // These are handled by IO80211Controller/WCL internally on Tahoe, but
     // our driver still needs them for internal state management.
     IOReturn getSSID(apple80211_ssid_data *);
+    IOReturn getTahoeCompactSSID(void *, uint32_t);
     IOReturn getAUTH_TYPE(apple80211_authtype_data *);
     IOReturn setAUTH_TYPE(apple80211_authtype_data *);
     IOReturn getBSSID(apple80211_bssid_data *);
+    IOReturn getTahoeCompactBSSID(void *, uint32_t);
     IOReturn getSCAN_RESULT(apple80211_scan_result *);
     IOReturn getSTATE(apple80211_state_data *);
     IOReturn getPHY_MODE(apple80211_phymode_data *);

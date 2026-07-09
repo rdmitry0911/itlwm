@@ -1509,6 +1509,19 @@ static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
     return true;
 }
 
+static bool postTahoeJoinAcceptedBssidChangedEvent(AirportItlwm *controller)
+{
+    if (controller == nullptr || controller->fNetIf == nullptr)
+        return false;
+
+    AirportItlwmSkywalkInterface *iface =
+        OSDynamicCast(AirportItlwmSkywalkInterface, controller->fNetIf);
+    if (iface == nullptr)
+        return false;
+
+    return iface->publishTahoeBssidChangedFromCurrentBss("setLinkStateGated");
+}
+
 } // namespace
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
@@ -4104,6 +4117,7 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
 #if __IO80211_TARGET >= __MAC_26_0
     if (linkState == kIO80211NetworkLinkUp) {
         postTahoeWclConnectCompleteEvent(that);
+        postTahoeJoinAcceptedBssidChangedEvent(that);
         postTahoeJoinAcceptedSsidChangedEvent(that);
     }
 #endif
@@ -4141,17 +4155,13 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * length-checks this carrier (prior zero-length publication
      * produced an `expected=24 actual=0` CoreWiFi rejection), so the
      * Tahoe branch must not republish APPLE80211_M_BSSID_CHANGED with
-     * a NULL/0 payload. The populated 24-byte publication is owned by
-     * the Tahoe Skywalk override
-     * `AirportItlwmSkywalkInterface::setCurrentApAddress`, which is
-     * the natural Apple framework producer of BSSID transitions and
-     * which publishes the populated payload through the standard
-     * IO80211Controller::postMessage / IO80211Glue routing on every
-     * call with a non-null, non-zero address, honouring the recovered
-     * zero-BSSID rejection and same-BSS reason-1 suppression gates.
-     * This Tahoe branch therefore does not emit APPLE80211_M_BSSID_CHANGED
-     * with a NULL/0 payload; the legacy zero-length BSSID notify remains
-     * only in the pre-Tahoe branch below. SSID_CHANGED is published by
+     * a NULL/0 payload. The accepted join-up path publishes the populated
+     * carrier from the current associated BSS before SSID_CHANGED, and
+     * the Tahoe Skywalk `setCurrentApAddress` override remains the passive
+     * framework-supplied BSSID-transition hook. Both paths share the same
+     * last-published tracker, zero-BSSID rejection, and same-BSS reason-1
+     * suppression gates. The legacy zero-length BSSID notify remains only
+     * in the pre-Tahoe branch below. SSID_CHANGED is published by
      * `postTahoeJoinAcceptedSsidChangedEvent` on the accepted join-up edge.
      */
 #else

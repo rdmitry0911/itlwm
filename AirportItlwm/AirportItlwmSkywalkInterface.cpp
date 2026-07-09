@@ -762,6 +762,47 @@ static void postTahoeBssidChangedThroughInfraHelper(
                             eventData, sizeof(*eventData), true);
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwmSkywalkInterface::
+publishTahoeBssidChangedFromCurrentBss(const char *source)
+{
+    struct ieee80211com *ic =
+        fHalService ? fHalService->get80211Controller() : nullptr;
+    if (instance == nullptr || instance->fNetIf == nullptr ||
+        ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr)
+        return false;
+
+    uint8_t proposedBssid[IEEE80211_ADDR_LEN];
+    memcpy(proposedBssid, ic->ic_bss->ni_bssid, IEEE80211_ADDR_LEN);
+    const bool zeroBssidRejected =
+        (proposedBssid[0] | proposedBssid[1] | proposedBssid[2] |
+         proposedBssid[3] | proposedBssid[4] | proposedBssid[5]) == 0;
+    if (zeroBssidRejected)
+        return false;
+
+    const bool sameBssAsLastPublished =
+        fLastPublishedBssidValid &&
+        memcmp(proposedBssid, fLastPublishedBssid, IEEE80211_ADDR_LEN) == 0;
+    const uint32_t classifiedReason = sameBssAsLastPublished
+        ? APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
+        : APPLE80211_BSSID_CHANGE_REASON_INITIAL;
+    if (classifiedReason == APPLE80211_BSSID_CHANGE_REASON_SAME_BSS &&
+        sameBssAsLastPublished)
+        return false;
+
+    apple80211_bssid_changed_event_data bd;
+    bzero(&bd, sizeof(bd));
+    memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
+    fillTahoeBssidChangedChannelFromCurrentBss(ic, proposedBssid, &bd);
+    bd.reason = classifiedReason;
+    postTahoeBssidChangedThroughInfraHelper(this, instance, &bd, source);
+    memcpy(fLastPublishedBssid, proposedBssid, IEEE80211_ADDR_LEN);
+    fLastPublishedBssidValid = true;
+    return true;
+}
+#endif
+
 struct triggerCCSnapshot
 {
     uint64_t qword0;
@@ -1706,6 +1747,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // 0xe0822403; our Tahoe bridge cannot leak that low-level status
             // to airportd during bootstrap.
             if (cmd == SIOCGA80211) {
+                if (req->req_len == APPLE80211_MAX_SSID_LEN)
+                    return getTahoeCompactSSID(req->req_data, req->req_len);
+                if (req->req_len != 0 &&
+                    req->req_len < sizeof(apple80211_ssid_data))
+                    return kIOReturnBadArgument;
                 if (instance != NULL && instance->fAPSTAOwner != NULL) {
                     return instance->getAPSTA_SSID(
                         this,
@@ -1722,9 +1768,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // association. Letting the active WCL path leak 0xe0822403 keeps
             // the interface in "driver not available" state even though the
             // interface itself is already attached as Wi-Fi en0.
-            return (cmd == SIOCGA80211)
-                       ? getBSSID((apple80211_bssid_data *)req->req_data)
-                       : kIOReturnUnsupported;
+            if (cmd == SIOCGA80211) {
+                if (req->req_len == APPLE80211_ADDR_LEN)
+                    return getTahoeCompactBSSID(req->req_data, req->req_len);
+                if (req->req_len != 0 &&
+                    req->req_len < sizeof(apple80211_bssid_data))
+                    return kIOReturnBadArgument;
+                return getBSSID((apple80211_bssid_data *)req->req_data);
+            }
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_RESULT:
             return (cmd == SIOCGA80211)
                        ? getSCAN_RESULT((struct apple80211_scan_result *)req->req_data)
@@ -3164,6 +3216,27 @@ getSSID(struct apple80211_ssid_data *sd)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
+getTahoeCompactSSID(void *data, uint32_t length)
+{
+    if (data == nullptr || length != APPLE80211_MAX_SSID_LEN)
+        return kIOReturnBadArgument;
+
+    uint8_t *ssidBytes = static_cast<uint8_t *>(data);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    memset(ssidBytes, 0, APPLE80211_MAX_SSID_LEN);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
+        ic->ic_bss->ni_esslen <= APPLE80211_MAX_SSID_LEN) {
+        if (ic->ic_bss->ni_esslen != 0)
+            memcpy(ssidBytes, ic->ic_bss->ni_essid, ic->ic_bss->ni_esslen);
+    } else if (ic->ic_state == IEEE80211_S_RUN &&
+        ic->ic_des_esslen > 0 && ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
+        memcpy(ssidBytes, ic->ic_des_essid, ic->ic_des_esslen);
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
 getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
 {
     // Tahoe visible APPLE80211_IOC_ASSOCIATE does not fall into the public
@@ -3802,6 +3875,21 @@ getBSSID(struct apple80211_bssid_data *bd)
     if (ic->ic_state == IEEE80211_S_RUN) {
         memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     }
+    return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getTahoeCompactBSSID(void *data, uint32_t length)
+{
+    if (data == nullptr || length != APPLE80211_ADDR_LEN)
+        return kIOReturnBadArgument;
+
+    uint8_t *bssid = static_cast<uint8_t *>(data);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    memset(bssid, 0, APPLE80211_ADDR_LEN);
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL)
+        memcpy(bssid, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
     return kIOReturnSuccess;
 }
 
