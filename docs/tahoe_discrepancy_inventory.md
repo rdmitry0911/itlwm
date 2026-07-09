@@ -5762,7 +5762,7 @@ Non-claims:
   - `networksetup -getairportnetwork en1`
   - `airportd` request handling for external `GET SSID`
   - CoreLocation/TCC authorization gate
-- status: classified as non-driver oracle
+- status: classified as pre-IOCTL for this external GET SSID request
 - justification: RUNTIME_LOG_PRE_IOCTL_PRIVACY_GATE
 
 Runtime evidence:
@@ -5784,9 +5784,13 @@ Runtime evidence:
 Local closure:
 
 - the long-standing Tahoe `networksetup` "not associated" output is a public
-  privacy/authorization surface for that client, not a direct indicator that
-  the kernel current-BSS, BSSID_CHANGED, or compact SSID/BSSID ioctl carriers
-  are absent;
+  privacy/authorization surface for that client; by itself it is not a direct
+  indicator that the kernel current-BSS, BSSID_CHANGED, or compact SSID/BSSID
+  ioctl carriers are absent;
+- this classification is intentionally narrow: it only describes the captured
+  external `GET SSID` request that failed before the Apple80211 IOCTL bridge,
+  and it does not prove that all public CoreWLAN/user-space driver surfaces are
+  already identical to the reference;
 - future driver validation must prefer decompiled ABI, IORegistry, airportd
   internal requests, low-level `CWFApple80211` probes, data-path stress, and
   logs proving that a request actually reached the Apple80211 IOCTL bridge.
@@ -5796,3 +5800,57 @@ Non-claims:
 - this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
 - this does not mark public external-client SSID/BSSID exposure complete;
 - this does not change any driver code by itself.
+
+## item 221 - current-BSS country code stayed on `ZZ` across public registry surfaces
+
+- producers:
+  - `AirportItlwm::getCOUNTRY_CODE(...)`
+  - Tahoe WCL connect-complete/current-link publication
+  - interface-side `IO80211CountryCode` registry property
+  - associated-BSS 802.11d country IE in `ic_bss->ni_rsnie_tlv`
+- status: fixed and runtime-validated
+- justification: CODE_AND_RUNTIME_CR_479_CURRENT_BSS_COUNTRY_CODE_20260709
+
+Reference evidence:
+
+- AppleBCMWLANCore keeps a real current-country alpha2 state and updates it
+  from firmware/event country-code paths;
+- Tahoe airportd has scan-cache country-code update paths, and CoreWLAN has a
+  country-code changed consumer;
+- the local joined BSS scan record already carried a valid 802.11d country
+  code while the IWN firmware info path returned the local fallback `ZZ`.
+
+Local closure:
+
+- country-code selection now uses `itlwm_cc` boot override, non-fallback
+  firmware alpha2, associated-BSS 802.11d alpha2, geolocation alpha2, firmware
+  fallback, then `ZZ`;
+- both STA implementations share the same resolver and publish the same value
+  through `APPLE80211_IOC_COUNTRY_CODE`;
+- Tahoe WCL connect-complete and explicit country-code update paths refresh
+  the interface-side `IO80211CountryCode` OSString property before user-space
+  current-network consumers read it.
+
+Runtime evidence:
+
+- loaded Tahoe build `856B1DD8-977D-3BFF-B1D1-98826A10C030`, binary SHA-256
+  `ada010d6d694c79f059a376496d2e0a7eb981d46c7e5616542974fe6fcc075d2`;
+- after controlled join, en1 reached DHCP `10.77.0.157`;
+- `wdutil info`, `system_profiler SPAirPortDataType`, and IORegistry all
+  reported country code `US`, with real `IO80211SSID`, `IO80211BSSID`,
+  `CoreWiFiDriverReadyKey = "true"`, and `IO80211RSNDone = Yes`;
+- the same loaded build passed the 240-second concurrent stress:
+  `240/240` ping replies, `0%` packet loss, RTT
+  `1.636/711.920/1453.550/255.094 ms`, and guest-to-host `iperf3`
+  `604 MBytes` sent at `21.1 Mbits/sec` with `603 MBytes` received at
+  `21.0 Mbits/sec`;
+- post-stress country-code surfaces remained `US`, Wi-Fi faults/recoveries
+  were empty, and the log filter found no panic, stack-corruption,
+  CoreCapture, missed-beacon, deauth, disassoc, NoCTL, or IO80211QueueCall
+  hits.
+
+Non-claims:
+
+- this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
+- this does not claim public external-client SSID/BSSID exposure complete;
+- this does not change firmware regulatory programming.

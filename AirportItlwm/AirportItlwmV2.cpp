@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwmV2.hpp"
+#include "AirportItlwmCountryCode.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
@@ -1453,6 +1454,30 @@ static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
     return true;
 }
 
+static void publishResolvedCountryCodeProperty(AirportItlwm *controller)
+{
+    if (controller == nullptr || controller->fNetIf == nullptr ||
+        controller->fHalService == nullptr)
+        return;
+
+    char userOverrideCc[APPLE80211_MAX_CC_LEN];
+    uint8_t resolvedCc[APPLE80211_MAX_CC_LEN];
+    memset(userOverrideCc, 0, sizeof(userOverrideCc));
+    PE_parse_boot_argn("itlwm_cc", userOverrideCc, sizeof(userOverrideCc));
+
+    AirportItlwmCountryCode::selectCountryCode(
+        controller->fHalService, userOverrideCc,
+        controller->fHalService->getDriverInfo()->getFirmwareCountryCode(),
+        controller->geo_location_cc, resolvedCc);
+
+    OSString *value =
+        OSString::withCString(reinterpret_cast<const char *>(resolvedCc));
+    if (value != nullptr) {
+        controller->fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE, value);
+        value->release();
+    }
+}
+
 static bool buildTahoeWclConnectCompletePayload(
     AirportItlwm *controller,
     apple80211_wcl_connect_complete_event *payload)
@@ -1483,6 +1508,7 @@ static bool postTahoeWclConnectCompleteEvent(AirportItlwm *controller)
     if (!buildTahoeWclConnectCompletePayload(controller, &payload))
         return false;
 
+    publishResolvedCountryCodeProperty(controller);
     controller->postMessage(controller->fNetIf,
                             APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT,
                             &payload, sizeof(payload), true);
@@ -2605,6 +2631,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
             RT_SET(1);
+            publishResolvedCountryCodeProperty(that);
             apple80211Msg = APPLE80211_M_COUNTRY_CODE_CHANGED;
             break;
         case IEEE80211_EVT_STA_ASSOC_DONE:
@@ -4505,8 +4532,17 @@ getCOUNTRY_CODE(OSObject *object,
     cd->version = APPLE80211_VERSION;
     memset(user_override_cc, 0, sizeof(user_override_cc));
     PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
-    /* user_override_cc > firmware_cc > geo_location_cc */
-    strncpy((char*)cd->cc, user_override_cc[0] ? user_override_cc : ((cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0]) ? geo_location_cc : cc_fw), sizeof(cd->cc));
+    /*
+     * Apple keeps a real current-country state and airportd also derives
+     * 802.11d country codes from scan cache. When firmware only exposes the
+     * local "ZZ" fallback, prefer the associated BSS' 802.11d alpha2 carrier
+     * before falling back to a geolocation value or the firmware placeholder.
+     */
+    AirportItlwmCountryCode::selectCountryCode(
+        fHalService, user_override_cc, cc_fw, geo_location_cc, cd->cc);
+    if (fNetIf != nullptr)
+        fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE,
+                            reinterpret_cast<const char *>(cd->cc));
     return kIOReturnSuccess;
 }
 
@@ -4589,7 +4625,13 @@ IOReturn AirportItlwm::
 setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 {
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
-        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+        uint8_t normalizedCc[APPLE80211_MAX_CC_LEN];
+        AirportItlwmCountryCode::copyAlpha2(
+            normalizedCc, reinterpret_cast<const char *>(data->cc));
+        memcpy(geo_location_cc, normalizedCc, sizeof(geo_location_cc));
+        if (fNetIf != nullptr)
+            fNetIf->setProperty(APPLE80211_REGKEY_COUNTRY_CODE,
+                                reinterpret_cast<const char *>(normalizedCc));
         postMessage(fNetIf, APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, true);
     }
     return kIOReturnSuccess;
