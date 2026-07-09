@@ -111,7 +111,7 @@ public:
     // These are handled by IO80211Controller/WCL internally on Tahoe, but
     // our driver still needs them for internal state management.
     IOReturn getSSID(apple80211_ssid_data *);
-    IOReturn getTahoeCompactSSID(void *, uint32_t);
+    IOReturn getTahoeCompactSSID(void *, uint32_t, uint32_t *);
     IOReturn getAUTH_TYPE(apple80211_authtype_data *);
     IOReturn setAUTH_TYPE(apple80211_authtype_data *);
     IOReturn getBSSID(apple80211_bssid_data *);

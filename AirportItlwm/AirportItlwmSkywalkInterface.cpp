@@ -1778,8 +1778,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // 0xe0822403; our Tahoe bridge cannot leak that low-level status
             // to airportd during bootstrap.
             if (cmd == SIOCGA80211) {
-                if (req->req_len == APPLE80211_MAX_SSID_LEN)
-                    return getTahoeCompactSSID(req->req_data, req->req_len);
+                if (req->req_len == APPLE80211_MAX_SSID_LEN) {
+                    uint32_t returnedLength = req->req_len;
+                    IOReturn ret = getTahoeCompactSSID(
+                        req->req_data, req->req_len, &returnedLength);
+                    if (ret == kIOReturnSuccess)
+                        req->req_len = returnedLength;
+                    return ret;
+                }
                 if (req->req_len != 0 &&
                     req->req_len < sizeof(apple80211_ssid_data))
                     return kIOReturnBadArgument;
@@ -3247,23 +3253,28 @@ getSSID(struct apple80211_ssid_data *sd)
 }
 
 IOReturn AirportItlwmSkywalkInterface::
-getTahoeCompactSSID(void *data, uint32_t length)
+getTahoeCompactSSID(void *data, uint32_t length, uint32_t *returnedLength)
 {
     if (data == nullptr || length != APPLE80211_MAX_SSID_LEN)
         return kIOReturnBadArgument;
 
     uint8_t *ssidBytes = static_cast<uint8_t *>(data);
     struct ieee80211com *ic = fHalService->get80211Controller();
+    uint32_t ssidLength = 0;
 
     memset(ssidBytes, 0, APPLE80211_MAX_SSID_LEN);
     if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL &&
         ic->ic_bss->ni_esslen <= APPLE80211_MAX_SSID_LEN) {
-        if (ic->ic_bss->ni_esslen != 0)
-            memcpy(ssidBytes, ic->ic_bss->ni_essid, ic->ic_bss->ni_esslen);
+        ssidLength = static_cast<uint32_t>(ic->ic_bss->ni_esslen);
+        if (ssidLength != 0)
+            memcpy(ssidBytes, ic->ic_bss->ni_essid, ssidLength);
     } else if (ic->ic_state == IEEE80211_S_RUN &&
         ic->ic_des_esslen > 0 && ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
-        memcpy(ssidBytes, ic->ic_des_essid, ic->ic_des_esslen);
+        ssidLength = static_cast<uint32_t>(ic->ic_des_esslen);
+        memcpy(ssidBytes, ic->ic_des_essid, ssidLength);
     }
+    if (returnedLength != nullptr)
+        *returnedLength = ssidLength;
     return kIOReturnSuccess;
 }
 

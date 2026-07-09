@@ -5719,8 +5719,9 @@ Non-claims:
 Reference evidence:
 
 - Tahoe `IO80211::_Apple80211CopyValue` maps selector `1` (`SSID`) to a
-  mutable `CFData`, then `_Apple80211GetWithIOCTL` requests exactly
-  `0x20` bytes and appends those bytes to the returned data object;
+  mutable `CFData`; `_Apple80211GetWithIOCTL` submits a 32-byte compact
+  carrier, then appends `apple80211req::req_len` bytes after the ioctl
+  returns, so the driver must update that field to the actual SSID length;
 - Tahoe `CoreWiFi::-[CWFApple80211 SSID:]` consumes that returned object
   directly through the CoreWiFi string-conversion path;
 - Tahoe `IO80211::_Apple80211CopyValue` maps selector `9` (`BSSID`) to a
@@ -5740,8 +5741,9 @@ Reference evidence:
 
 Local closure:
 
-- the Skywalk BSD bridge now keys selector `1` on `req_len == 0x20` and
-  returns zero-padded raw SSID bytes at offset zero;
+- the Skywalk BSD bridge now keys selector `1` on input `req_len == 0x20`,
+  writes raw SSID bytes at offset zero, clears the remaining capacity, and
+  returns the actual SSID length through `apple80211req::req_len`;
 - the same bridge keys selector `9` on `req_len == 6` and returns raw BSSID
   octets at offset zero;
 - legacy full-length `apple80211_ssid_data` and `apple80211_bssid_data`
@@ -5779,6 +5781,22 @@ Validation:
   `Status: Connected`, channel `1`, country `US`, rate `104`, MCS `13`, and the
   stress-window log filter had no panic, NoCTL, IO80211QueueCall,
   missed-beacon, deauth, disassoc, CoreCapture, or firmware-crash hits;
+- returned-length closure build
+  `26CE31A5-2280-3F07-A233-CF27786488D7`
+  (`AirportItlwm` binary SHA-256
+  `69decdab356789dceb0ffec4eea268f8675be83f4b93d186d4781632d85dfdfd`)
+  returned the joined SSID as an exact-length 16-byte compact carrier:
+  raw ioctl reported `SSID len=16 ssid=ITLWM-Lab-3c95c7`,
+  `CWFApple80211 SSID:` returned 16 bytes with no zero padding, and
+  `CWFApple80211 currentNetwork:` returned the same SSID/BSSID/channel/security
+  state. The same loaded kext passed the required 240-second concurrent
+  ping/iperf3 stress with `240/240` ping replies, `0.0%` packet loss, RTT
+  `59.122/818.467/1708.437/301.947 ms`, and `iperf3` `589 MBytes` at
+  `20.6 Mbits/sec` sender / `20.5 Mbits/sec` receiver; post-stress `en1`
+  stayed active at DHCP `10.77.0.157`, IORegistry kept real
+  `IO80211SSID`, `IO80211BSSID`, `CoreWiFiDriverReadyKey = "true"`,
+  `IO80211RSNDone = Yes`, and `IO80211CountryCode = "US"`, and
+  `system_profiler SPAirPortDataType` reported `Status: Connected`;
 - external `networksetup -getairportnetwork en1` remains an open driver
   user-space surface. The captured run logged a
   `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken` check and

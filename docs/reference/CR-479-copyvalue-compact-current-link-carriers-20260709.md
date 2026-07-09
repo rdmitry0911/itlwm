@@ -11,8 +11,11 @@ CoreWiFi/CoreWLAN current-link getters that are backed by BSD
 - `IO80211::_Apple80211CopyValue` maps selector `1` (`SSID`) to a
   mutable `CFData` and then calls `_Apple80211GetWithIOCTL`.
 - `IO80211::_Apple80211GetWithIOCTL` case `1` zeroes a 32-byte local
-  carrier, sets the ioctl request length to `0x20`, and appends exactly
-  that byte count to the returned `CFData`.
+  carrier and submits the ioctl with request length `0x20`, but the
+  post-ioctl `CFDataAppendBytes(...)` length is the returned
+  `apple80211req::req_len`.  The driver must therefore leave the 32-byte
+  carrier as the destination capacity and write back the actual SSID byte
+  length before returning success.
 - `CoreWiFi::-[CWFApple80211 SSID:]` calls
   `_Apple80211CopyValue(handle, 1, 0, &value)` and converts the returned
   object through the same Objective-C selector used by the BSSID path.
@@ -54,8 +57,11 @@ compact payload and writes past the length requested by the framework.
 
 - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)` now treats
   `req_len == 0x20` on selector `1` as the Tahoe compact SSID carrier.
-- The compact SSID carrier is zero-padded raw SSID bytes starting at
-  offset zero.
+- The compact SSID carrier is raw SSID bytes starting at offset zero, with
+  the remaining destination capacity cleared.  On success, the bridge writes
+  the actual SSID byte length back to `apple80211req::req_len` so
+  `Apple80211CopyValue(1)` publishes a `CFData` of the real SSID length
+  rather than the whole zero-padded 32-byte capacity.
 - `req_len == 6` on selector `9` is treated as the Tahoe compact BSSID
   carrier.
 - The compact BSSID carrier is the raw six-octet current BSSID starting at
@@ -127,6 +133,24 @@ received at `20.1 Mbits/sec`. Post-stress `en1` stayed active at
 `1 (2GHz, 20MHz)`, country `US`, rate `104`, MCS `13`; the stress-window log
 filter had no panic, NoCTL, IO80211QueueCall, missed-beacon, deauth, disassoc,
 CoreCapture, or firmware-crash hits.
+
+Returned-length closure build
+`26CE31A5-2280-3F07-A233-CF27786488D7`
+(`AirportItlwm` binary SHA-256
+`69decdab356789dceb0ffec4eea268f8675be83f4b93d186d4781632d85dfdfd`)
+closed the zero-padded SSID `CFData` mismatch: direct raw ioctl returned
+`SSID len=16 ssid=ITLWM-Lab-3c95c7`, `CWFApple80211 SSID:` returned a
+16-byte `NSData` containing only the joined SSID bytes, and
+`CWFApple80211 currentNetwork:` returned the same 16-byte SSID, BSSID
+`80:e4:ba:20:ef:f9`, channel `1`, WPA2 security, and RSSI. The same loaded
+kext passed the required 240-second concurrent stress: `240/240` ping replies,
+`0.0%` packet loss, RTT `59.122/818.467/1708.437/301.947 ms`, and `iperf3`
+transferred `589 MBytes` at `20.6 Mbits/sec` sender with `20.5 Mbits/sec`
+receiver. Post-stress `en1` stayed active at DHCP `10.77.0.157`; IORegistry
+kept `IO80211SSID = "ITLWM-Lab-3c95c7"`, `IO80211BSSID =
+<80e4ba20eff9>`, `CoreWiFiDriverReadyKey = "true"`, `IO80211RSNDone = Yes`,
+and `IO80211CountryCode = "US"`; `system_profiler SPAirPortDataType` reported
+`Status: Connected`.
 
 Public CoreWLAN/`networksetup` remains open as a driver user-space surface, not
 as a closed privacy/TCC-only finding. The captured `networksetup
