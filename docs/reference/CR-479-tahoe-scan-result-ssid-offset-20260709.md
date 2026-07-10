@@ -25,6 +25,16 @@ Recovered offset evidence:
 - `LEA RDI, [RBX + 0x61]` copies SSID bytes into carrier offset `+0x61`;
 - Tahoe still consumes IE length at `+0x8a` and IE bytes at `+0x8c`.
 
+Apple80211 userland then extends the same carrier with timestamp data:
+
+- `Apple80211GetWithIOCTL` zeroes and submits a `0x8d8` scan-result scratch
+  buffer before calling `__addScanResultToList`;
+- `__addScanResultToList` reads scan-result age from `+0x84` and creates the
+  timestamp dictionary value from the 64-bit field at `+0x8d0`;
+- `Apple80211ParseFILSDiscoveryFrame` stores the same timestamp key from the
+  802.11 frame timestamp, so the driver-side source is the beacon/TSF timestamp,
+  not host wall-clock time.
+
 The local Tahoe layout had artificially reduced the scan-result rate array to
 14 entries and added a four-byte reserved hole before `asr_ie_len`. That kept
 the IE offsets stable, but moved `asr_ssid_len` to `+0x5c` and
@@ -40,8 +50,9 @@ carrier:
 - `asr_ssid_len` is at `+0x60`;
 - `asr_ssid` starts at `+0x61`;
 - `asr_ie_len` remains at `+0x8a`;
-- `asr_ie_data` remains at `+0x8c`;
-- total carrier size remains `0x8d4`.
+- `asr_ie_data` occupies `+0x8c..+0x8cf`;
+- `asr_timestamp` is the 64-bit beacon TSF at `+0x8d0`;
+- total carrier size is `0x8d8`.
 
 Compile-time Tahoe asserts and `tests/tahoe_payload_builders_test.cpp` now lock
 those offsets and the total size.
@@ -76,6 +87,28 @@ loss`, RTT `4.127/740.237/1473.066/256.531 ms`; iperf3 transferred
 stress-window log filter had no panic, stack-corruption, NoCTL,
 IO80211QueueCall, missed-beacon, deauth, disassoc, CoreCapture, or
 firmware-crash hits.
+
+The 2026-07-10 timestamp follow-up loaded Tahoe build
+`F446D499-55BE-32FC-8D44-E96E01CB18CD`
+(`AirportItlwm` SHA-256
+`ce092585f737ea8c0c6f6e97009a5c86ff6e10c8b5942cafcd7d1e8035888564`)
+on the same lab AP.  After controlled join to `ITLWM-Lab-3c95c7`,
+raw and CWF paths reported SSID `ITLWM-Lab-3c95c7`, BSSID
+`80:e4:ba:20:ef:f9`, state `4`, channel `6`, IE length `168`, and
+`CWFApple80211 currentNetwork:` returned successfully.  The CWF scan record now
+contains a non-zero Apple80211 timestamp: `TIMESTAMP = 10151475231` with a
+non-zero `AGE`.
+
+That build passed the required concurrent stress from
+`2026-07-10T08:07:54Z` to `2026-07-10T08:11:54Z`: ping to `10.77.0.1`
+reported `240/240` replies and `0.0%` packet loss, RTT
+`0.571/14.956/101.493/17.033 ms`; `/usr/local/bin/iperf3 -c 10.77.0.1
+-t 240 -b 20M` transferred `572 MBytes` at `20.0 Mbits/sec`.  Post-stress
+`en1` remained `active` at DHCP `10.77.0.157`, `system_profiler` reported
+`Status: Connected`, country `US`, channel `6`, rate `104`, and MCS `13`; the
+stress-window fault filter had no panic, stack-corruption, NoCTL,
+IO80211QueueCall, missed-beacon, deauth, disassoc, CoreCapture, firmware-crash,
+or watchdog hits.
 
 Public CoreWLAN still reported `CWInterface.ssid == nil` and
 `CWInterface.bssid == nil`, and `networksetup -getairportnetwork en1` still

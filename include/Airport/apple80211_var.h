@@ -42,7 +42,7 @@
 #define APPLE80211_MAX_RATES           15
 #if __IO80211_TARGET >= __MAC_26_0
 #define APPLE80211_SCAN_RESULT_MAX_RATES APPLE80211_MAX_RATES
-#define APPLE80211_SCAN_RESULT_IE_DATA_LEN 2120
+#define APPLE80211_SCAN_RESULT_IE_DATA_LEN 2116
 #else
 #define APPLE80211_SCAN_RESULT_MAX_RATES APPLE80211_MAX_RATES
 #define APPLE80211_SCAN_RESULT_IE_DATA_LEN 1024
@@ -547,8 +547,11 @@ struct apple80211_scan_result
 #if __IO80211_TARGET < __MAC_12_0
     uint32_t              asr_unk3;         // 0x8C
     void*                 asr_ie_data;      // 90
+#elif __IO80211_TARGET >= __MAC_26_0
+    uint8_t               asr_ie_data[APPLE80211_SCAN_RESULT_IE_DATA_LEN]; // Tahoe: 0x8c - 0x8cf
+    u_int64_t             asr_timestamp;    // Tahoe: 0x8d0 - 0x8d7, beacon TSF
 #else
-    uint8_t               asr_ie_data[APPLE80211_SCAN_RESULT_IE_DATA_LEN]; // Tahoe: 0x8c
+    uint8_t               asr_ie_data[APPLE80211_SCAN_RESULT_IE_DATA_LEN];
 #endif
 } __attribute__((packed));
 
@@ -561,8 +564,10 @@ static_assert(__offsetof(struct apple80211_scan_result, asr_ie_len) == 0x8a,
               "Tahoe scan-result IE length must live at +0x8a");
 static_assert(__offsetof(struct apple80211_scan_result, asr_ie_data) == 0x8c,
               "Tahoe scan-result IE data must live at +0x8c");
-static_assert(sizeof(struct apple80211_scan_result) == 0x8d4,
-              "Tahoe scan-result carrier must match WCL current-network size");
+static_assert(__offsetof(struct apple80211_scan_result, asr_timestamp) == 0x8d0,
+              "Tahoe scan-result timestamp must live at +0x8d0");
+static_assert(sizeof(struct apple80211_scan_result) == 0x8d8,
+              "Tahoe scan-result carrier must match Apple80211GetWithIOCTL size");
 #endif
 
 // WCL channel info entry — 8 bytes per channel

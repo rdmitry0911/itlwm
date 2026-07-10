@@ -1675,6 +1675,9 @@ getSCAN_RESULT(OSObject *object, struct apple80211_scan_result **sr)
     for (uint8_t i = 0; i < result->asr_nrates; i++)
         result->asr_rates[i] = fNextNodeToSend->ni_rates.rs_rates[i];
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);
+#if __IO80211_TARGET >= __MAC_26_0
+    memcpy(&result->asr_timestamp, fNextNodeToSend->ni_tstamp, sizeof(result->asr_timestamp));
+#endif
     result->asr_cap = fNextNodeToSend->ni_capinfo;
     result->asr_channel.version = APPLE80211_VERSION;
     result->asr_channel.channel = ieee80211_chan2ieee(ic, fNextNodeToSend->ni_chan);

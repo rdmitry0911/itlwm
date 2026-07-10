@@ -1059,7 +1059,7 @@ void testTahoeCapabilityContracts()
 
 static constexpr size_t kTahoeScanResultMaxRates = 15;
 static constexpr size_t kTahoeScanResultMaxSsidLength = 32;
-static constexpr size_t kTahoeScanResultIeDataLength = 2120;
+static constexpr size_t kTahoeScanResultIeDataLength = 2116;
 
 struct TahoeScanResultChannelProbe {
     uint32_t version;
@@ -1088,6 +1088,7 @@ struct TahoeScanResultLayoutProbe {
     uint16_t unk3;
     int16_t asr_ie_len;
     uint8_t asr_ie_data[kTahoeScanResultIeDataLength];
+    uint64_t asr_timestamp;
 } __attribute__((packed));
 
 void testTahoeScanResultLayout()
@@ -1111,8 +1112,10 @@ void testTahoeScanResultLayout()
             "Tahoe scan-result IE length remains at +0x8a");
     require(offsetof(TahoeScanResultLayoutProbe, asr_ie_data) == 0x8c,
             "Tahoe scan-result IE data remains at +0x8c");
-    require(sizeof(TahoeScanResultLayoutProbe) == 0x8d4,
-            "Tahoe scan-result carrier size remains 0x8d4");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_timestamp) == 0x8d0,
+            "Tahoe scan-result timestamp matches Apple80211 +0x8d0 reader");
+    require(sizeof(TahoeScanResultLayoutProbe) == 0x8d8,
+            "Tahoe scan-result carrier size matches Apple80211GetWithIOCTL 0x8d8 buffer");
     require(TahoeScanContracts::kWclScanResultMetaFlags == 0x2,
             "WCL scan-result BeaconMetaData flags match Apple bit-1-only builder");
     require((TahoeScanContracts::kWclScanResultMetaFlags &
@@ -1142,6 +1145,8 @@ void testTahoeCurrentNetworkCarrierContract()
             "CURRENT_NETWORK BssManager writer preserves IE length at +0x8a");
     require(offsetof(TahoeScanResultLayoutProbe, asr_ie_data) == 0x8c,
             "CURRENT_NETWORK BssManager writer preserves IE data at +0x8c");
+    require(offsetof(TahoeScanResultLayoutProbe, asr_timestamp) == 0x8d0,
+            "CURRENT_NETWORK preserves Apple80211 timestamp at +0x8d0");
     require(kTahoeScanResultMaxSsidLength == 0x20,
             "CURRENT_NETWORK BssManager writer clamps SSID length to 0x20");
 }

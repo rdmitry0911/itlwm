@@ -5984,6 +5984,9 @@ Reference evidence:
 - Tahoe `IO80211BssManager::getCurrentNet(...)` writes scan-result SSID length
   at carrier offset `+0x60` and SSID bytes at `+0x61`, while preserving BSSID
   at `+0x1c`, IE length at `+0x8a`, and IE bytes at `+0x8c`;
+- Apple80211's `Apple80211GetWithIOCTL` submits a `0x8d8` scan-result buffer,
+  and `__addScanResultToList` reads the timestamp dictionary field as a 64-bit
+  value from carrier offset `+0x8d0`;
 - local Tahoe had kept the IE offsets stable by shrinking the rates array to
   14 entries and adding an artificial four-byte hole, which moved SSID length
   to `+0x5c` and made Apple's current-network parser read malformed SSID data.
@@ -5995,8 +5998,8 @@ Local closure:
   `cap[10] = 0x08` LQM-create gate;
 - Tahoe `apple80211_scan_result` now keeps 15 rates before the SSID, removes
   the artificial reserved hole, and locks BSSID `+0x1c`, SSID length `+0x60`,
-  SSID bytes `+0x61`, IE length `+0x8a`, IE bytes `+0x8c`, and total size
-  `0x8d4`;
+  SSID bytes `+0x61`, IE length `+0x8a`, IE bytes `+0x8c..+0x8cf`, timestamp
+  `+0x8d0`, and total size `0x8d8`;
 - compile-time header asserts and the standalone payload-builder test cover
   the recovered layout.
 
@@ -6021,6 +6024,29 @@ Runtime evidence:
   `US`, channel `1`, rate `104`, MCS `13`, and the stress-window log filter
   had no panic, stack-corruption, NoCTL, IO80211QueueCall, missed-beacon,
   deauth, disassoc, CoreCapture, or firmware-crash hits.
+
+2026-07-10 timestamp follow-up:
+
+- loaded Tahoe build `F446D499-55BE-32FC-8D44-E96E01CB18CD`, binary SHA-256
+  `ce092585f737ea8c0c6f6e97009a5c86ff6e10c8b5942cafcd7d1e8035888564`;
+- `scripts/build_tahoe.sh /System/Library/KernelCollections/BootKernelExtensions.kc`
+  passed the BootKC symbol gate with `949` undefined symbols resolved;
+- after controlled join to `ITLWM-Lab-3c95c7`, raw Tahoe probes reported
+  `STATE=4`, SSID `ITLWM-Lab-3c95c7`, BSSID `80:e4:ba:20:ef:f9`,
+  `CURRENT_NETWORK` channel `6`, flags `0x8a`, RSSI `-33`, noise `-91`, and
+  IE length `168`;
+- `CWFApple80211 currentNetwork:` returned successfully and the scan record now
+  contains `TIMESTAMP = 10151475231` with non-zero `AGE`;
+- the required concurrent stress from `2026-07-10T08:07:54Z` to
+  `2026-07-10T08:11:54Z` passed with `PING_RC=0` and `IPERF_RC=0`: ping
+  reported `240/240`, `0.0%` packet loss, RTT
+  `0.571/14.956/101.493/17.033 ms`, and iperf3 transferred `572 MBytes` at
+  `20.0 Mbits/sec`;
+- post-stress `en1` remained `active` at DHCP `10.77.0.157`,
+  `system_profiler SPAirPortDataType` reported `Status: Connected`, country
+  `US`, channel `6`, rate `104`, MCS `13`, and the stress-window log filter had
+  no panic, stack-corruption, NoCTL, IO80211QueueCall, missed-beacon, deauth,
+  disassoc, CoreCapture, firmware-crash, or watchdog hits.
 
 Non-claims:
 
