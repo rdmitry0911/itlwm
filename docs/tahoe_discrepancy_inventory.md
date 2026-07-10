@@ -5335,11 +5335,8 @@ Non-claims:
 ## item 213 — BSSID_CHANGED embedded infra-channel carrier layout
 
 - producers:
-  - passive `AirportItlwmSkywalkInterface::setCurrentApAddress(...)` hook
-    fills the compact carrier from the current associated BSS when the proposed
-    BSSID matches that BSS
-  - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` only if the
-    inherited success gate opens, with the same BSSID/channel/reason writer
+  - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` parent-success
+    accepted identity owner, with BSSID/channel/reason writer
 - status: closed
 - justification: REFERENCE_COMPACT_CARRIER_LAYOUT_MATCHED
 
@@ -5361,7 +5358,7 @@ Local closure:
   BSSID at `+0x00`, and reason at `+0x14`;
 - the rejected local `syncTahoeCurrentApAddress()` cache-seeding route has been
   removed and is no longer an active producer;
-- passive local publishers still zero-initialize the full carrier and now fill
+- the accepted identity publisher zero-initializes the full carrier and fills
   BSSID, embedded `apple80211_channel.version/channel/flags`, and reason. The
   embedded channel is copied only from the current associated net80211 BSS when
   the proposed BSSID matches `ic->ic_bss->ni_bssid`; non-current proposals keep
@@ -5397,8 +5394,8 @@ Non-claims:
 - this does not re-enable the LQM card-capability or slow-wifi gates;
 - this does not revive `syncTahoeCurrentApAddress()` or any forced
   `setCurrentApAddress(NULL/BSSID)` cache seed; the explicit local
-  `bssidChange(data, 0x18)` side-effect remains limited to the recovered
-  compact event-3 carrier before normal PostOffice delivery.
+  `bssidChange(data, 0x18)` side-effect remains limited to the accepted
+  identity event-3 carrier before normal PostOffice delivery.
 
 ## item 214 — SSID_CHANGED join-edge producer and raw current-link carriers
 
@@ -5656,9 +5653,8 @@ Non-claims:
 ## item 218 — accepted join edge did not actively publish BSSID_CHANGED
 
 - producers:
-  - `AirportItlwm::setLinkStateGated(...)`
   - `AirportItlwmSkywalkInterface::publishTahoeBssidChangedFromCurrentBss(...)`
-  - `AirportItlwmSkywalkInterface::setCurrentApAddress(...)`
+  - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)`
 - status: implemented and runtime-classified
 - justification: REFERENCE_EVENT_ORDER_AND_CURRENT_BSS_STATE
 
@@ -5680,20 +5676,23 @@ Reference evidence:
 Local closure:
 
 - the previous Tahoe implementation published the populated event-3 carrier
-  only through passive framework paths (`setCurrentApAddress(...)` and the
-  parent-success branch of `setLinkStateInternal(...)`);
-- live Tahoe evidence showed the parent-success branch stays closed and no
-  BSSID_CHANGED runtime marker appeared in the current validation window, while
-  low-level `CWFApple80211 currentNetwork:` returned a valid `CWFScanResult`
-  and public CoreWLAN/networksetup still remained nil/not-associated;
+  through passive framework paths, including `setCurrentApAddress(...)`;
+- live Tahoe evidence on 2026-07-10 corrected the parent-success
+  classification: `setLinkStateInternal(...)` returns with the low success bit
+  set on link-up and is active;
+- fresh BootKC evidence for
+  `AppleBCMWLANSkywalkInterface::setCurrentApAddress(...)` shows no
+  `bssidChange(...)` or `postMessageInfra(...)` call, so the local passive
+  `setCurrentApAddress(...)` event-3 hook is removed;
 - the accepted join-up path now publishes populated `APPLE80211_M_BSSID_CHANGED`
   from the current associated BSS after WCL connect-complete and before
   zero-length `APPLE80211_M_SSID_CHANGED`;
-- the new active publisher uses the same Skywalk carrier writer, embedded
-  channel fill, last-published BSSID tracker, zero-BSSID rejection, and
-  same-BSS reason-1 suppression as `setCurrentApAddress(...)`;
-- the rejected `setCurrentApAddress(NULL/BSSID)` cache seed and zero-length
-  BSSID event are not restored.
+- the active publisher uses the Skywalk carrier writer, embedded channel fill,
+  last-published BSSID tracker, zero-BSSID rejection, and same-BSS reason-1
+  suppression;
+- the rejected `setCurrentApAddress(NULL/BSSID)` cache seed, passive
+  setCurrentApAddress event-3 hook, and zero-length BSSID event are not
+  restored.
 
 Validation:
 
@@ -6611,26 +6610,33 @@ Local closure:
   on the parent-success link-up edge after the inherited IO80211 transition has
   accepted;
 - the duplicate accepted-identity call in `setLinkStateGated(...)` is removed;
+- the passive `setCurrentApAddress(...)` event-3 hook is removed because the
+  25C56 Apple implementation does not publish BSSID_CHANGED there;
 - duplicate BSSID publication remains governed by the existing
-  last-published-BSSID tracker and same-BSS reason-1 suppression.
+  last-published-BSSID tracker and same-BSS reason-1 suppression on the
+  accepted identity publisher and link-down reset path.
 
 Runtime validation:
 
-- loaded Tahoe kext UUID `3A9F0DDD-EC3A-3274-A11D-CB91E71A12FA`, binary
-  SHA-256 `265b38eed9b0990c3659ef8d2308cc064393868567501137b94c53b5881a738d`;
+- loaded Tahoe kext UUID `880DAF86-B329-3ED6-B2ED-CBB4826DBA26`, binary
+  SHA-256 `e369434157dce4de6c88b2f99c602bd4ba9cbb835de810fa93f4b5d005abadd7`;
 - host and guest payload-builder tests passed, Tahoe build passed, and all 949
   undefined symbols resolved against BootKC;
 - controlled rejoin reached DHCP `10.77.0.47`, raw Apple80211 current network
   returned SSID `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, and channel 6;
 - FBT showed WCL link-up/connect-complete on RSN key-done, then
+  `setCurrentApAddress(...)` entry/return without a BSSID helper, then
   `publishTahoeAcceptedJoinIdentityEvents(...)` inside the accepted
-  `setLinkStateInternal(link=2)` edge;
+  `setLinkStateInternal(link=2)` edge; the first BSSID helper call is now
+  inside `ACCEPT_BSSID`, before `ACCEPT_SSID`;
 - required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
   passed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
-  loss, RTT `0.571/15.376/146.618/17.904 ms`; iperf3 `572 MBytes` at
+  loss, RTT `0.582/28.069/245.362/38.885 ms`; iperf3 `572 MBytes` at
   `20.0 Mbits/sec` sender and receiver;
 - post-stress `en1` stayed active at DHCP `10.77.0.47`, raw current-network
-  stayed valid, and the fault filter found no panic, CoreCapture, NoCTL,
+  stayed valid, `Apple80211CopyCurrentNetwork` / compact `CopyValue(1, 9, 0xd,
+  0x67)` / `CWFApple80211 currentNetwork:` returned the same associated state,
+  and the post-stress 4-minute fault filter found no panic, CoreCapture, NoCTL,
   missed beacon, deauth, disassoc, `driver not available`, `0xe0822403`, or
   `IO80211QueueCall` signatures.
 

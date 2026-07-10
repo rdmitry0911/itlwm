@@ -20,22 +20,24 @@
 
 ## Local closure
 
-The previous Tahoe implementation only published the populated event-3 carrier
-from passive framework entry points: `setCurrentApAddress(...)` and the
-`setLinkStateInternal(...)` parent-success gate. Later FBT on 2026-07-10
-corrected the runtime classification: the parent bool return's low bit is set
-on the accepted link-up transition, so that branch is active. The remaining
-public symptom persisted because the accepted-profile sequence was still being
-posted earlier from RSN key-done, before the parent current-state transition.
+The previous Tahoe implementation published the populated event-3 carrier from
+passive framework entry points, including `setCurrentApAddress(...)`. Later FBT
+on 2026-07-10 corrected the runtime classification: the parent bool return's
+low bit is set on the accepted link-up transition, so the active accepted
+identity owner can publish from `setLinkStateInternal(...)`. Fresh BootKC
+evidence then corrected the passive path: `AppleBCMWLANSkywalkInterface::
+setCurrentApAddress(...)` does not call `bssidChange(...)` or
+`postMessageInfra(...)`, so it is not an event-3 producer.
 
 The local accepted-join path now publishes the same populated 24-byte
 `APPLE80211_M_BSSID_CHANGED` carrier from the current associated BSS after WCL
 connect-complete and before `APPLE80211_M_SSID_CHANGED`. The new
 publisher uses the same `AirportItlwmSkywalkInterface` writer, embedded-channel
 fill, last-published BSSID tracker, zero-BSSID rejection, and same-BSS
-reason-1 suppression as the passive `setCurrentApAddress(...)` hook. It does
-not call `setCurrentApAddress(...)`, does not seed any current-AP cache, and
-does not restore the rejected zero-length BSSID event.
+reason-1 suppression. It does not call `setCurrentApAddress(...)`, does not
+seed any current-AP cache, and does not restore the rejected zero-length BSSID
+event. The local passive `setCurrentApAddress(...)` event-3 hook has been
+removed.
 
 ## Non-claims
 
@@ -82,3 +84,17 @@ That is not evidence that the accepted join BSSID/current-BSS publication
 failed, but it is still an open driver-surface discrepancy: public CoreWLAN and
 `networksetup` ultimately report state synthesized from driver-originated
 objects.
+
+Follow-up validation on 2026-07-10 loaded kext UUID
+`880DAF86-B329-3ED6-B2ED-CBB4826DBA26` (binary SHA-256
+`e369434157dce4de6c88b2f99c602bd4ba9cbb835de810fa93f4b5d005abadd7`) after
+removing the local passive `setCurrentApAddress(...)` event-3 hook. Controlled
+FBT showed `setCurrentApAddress(...)` entry/return with no BSSID helper, then
+the first BSSID helper call inside `ACCEPT_BSSID` on the accepted
+`setLinkStateInternal(link=2)` edge. The same run passed the required
+240-second ping plus `/usr/local/bin/iperf3 -b 20M` stress with `240/240`
+ping replies, `0.0%` packet loss, RTT `0.582/28.069/245.362/38.885 ms`, and
+iperf3 `572 MBytes` at `20.0 Mbits/sec` sender/receiver. Post-stress raw
+ioctl, `Apple80211CopyCurrentNetwork`, compact `CopyValue`, and
+`CWFApple80211 currentNetwork:` stayed associated to `AIAMlab6235` on channel
+6; public `CWInterface.ssid/bssid` and `networksetup` remained open.
