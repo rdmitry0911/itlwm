@@ -5720,9 +5720,9 @@ Non-claims:
   CoreWLAN workarounds;
 - this does not claim the BssManager network-flags writer producer;
 - the external `networksetup` output is not used as the sole kernel current-BSS
-  validation oracle, but its persistent not-associated answer remains an open
-  public driver-surface mismatch until the CoreWLAN/networksetup model consumes
-  the same driver-originated associated state as the internal paths.
+  validation oracle. Item 220 later classifies the observed top-level Dynamic
+  Store SSID/BSSID redaction behind that output as reference airportd pruning,
+  so future driver work must target a separately proven driver-facing mismatch.
 
 ## item 219 — Apple80211CopyValue current-link carriers used legacy structs/zero compact state
 
@@ -6073,11 +6073,13 @@ Non-claims:
   `CWInterface.bssid` still return nil, and
   `networksetup -getairportnetwork en1` still reports
   `You are not associated with an AirPort network.`;
-- this does not classify that remaining symptom as non-driver or TCC-only.
-  Live CoreWiFi still returned `allowRequestType(57) == 0`,
-  `allowRequestType(58) == 0`, `currentScanResult == nil`, and
-  `currentKnownNetworkProfile == nil`; the next layer must close that public
-  driver-facing model gap against the reference.
+- item 220 later classifies the observed top-level Dynamic Store
+  `SSID`/`BSSID` redaction as reference airportd pruning through
+  `wifi_allow_sensitive_info`; live CoreWiFi still returned
+  `allowRequestType(57) == 0`, `allowRequestType(58) == 0`,
+  `currentScanResult == nil`, and `currentKnownNetworkProfile == nil`, so any
+  future driver patch still needs separate proof that a driver-facing path
+  differs from the reference.
 
 ## item 223 - Tahoe Skywalk BSD route for CARD_CAPABILITIES selector 12
 
@@ -6133,8 +6135,9 @@ Runtime validation:
 Non-claims:
 
 - this does not close public CoreWLAN/`networksetup`;
-- this does not classify the remaining public current-network symptom as
-  non-driver or TCC-only;
+- item 220 later classifies the observed top-level Dynamic Store
+  `SSID`/`BSSID` redaction as reference airportd pruning, not as a standalone
+  driver-patch trigger;
 - this does not change the CARD_CAPABILITIES byte cluster recovered in items
   214, 222, and the CR-479 CARD_CAPABILITIES reference notes.
 
@@ -6266,9 +6269,9 @@ Runtime validation:
 - the stress-window fault filter found no panic, firmware crash, NoCTL, missed
   beacon, stack corruption, deauth, disassoc, `driver not available`,
   `0xe0822403`, or `IO80211QueueCall` signatures;
-- the known public CoreWLAN/`networksetup` symptom remains open:
-  `networksetup -getairportnetwork en1` still printed
-  `You are not associated with an AirPort network.` on the same runtime.
+- the known public CoreWLAN/`networksetup` symptom was still observed on the
+  same runtime; item 220 later classifies the top-level Dynamic Store
+  SSID/BSSID redaction behind that symptom as reference airportd pruning.
 
 ## item 229 - Accepted SET_SSID must publish the Tahoe SSID_CHANGED status carrier
 
@@ -6329,8 +6332,10 @@ Non-claim:
 - this does not synthesize Dynamic Store values, does not broaden
   `isCommandProhibited(...)`, and does not change the raw Apple80211 SSID,
   BSSID, or current-network IOCTL producers;
-- public CoreWLAN/`networksetup` closure remains open after validating this
-  carrier layer.
+- public CoreWLAN/`networksetup` was still observed after validating this
+  carrier layer, and item 220 later classifies its top-level Dynamic Store
+  SSID/BSSID redaction as reference airportd pruning rather than a standalone
+  driver-patch target.
 
 ## item 226 - CoreWiFi controller-side BSD Name seed
 
@@ -6398,7 +6403,9 @@ Non-claim:
   symptom; on the same runtime `networksetup -getairportnetwork en1` still
   printed `You are not associated with an AirPort network.`;
 - captured airportd logs for `networksetup` show `GET INTF CAPS err=0`, then
-  `GET SSID err=1`, which is a separate open layer.
+  `GET SSID err=1`; item 220 later classifies the matching top-level Dynamic
+  Store SSID/BSSID redaction as reference airportd pruning, so this log is not
+  a standalone driver-patch target without a driver-facing mismatch.
 
 ## item 227 - Tahoe locale property publication remains Unknown after country-code refresh
 
@@ -6472,9 +6479,10 @@ Non-claim:
 - the remaining public `networksetup` / CoreWLAN current-network symptom is
   still open: `networksetup -getairportnetwork en1` still prints
   `You are not associated with an AirPort network.`;
-- airportd logs still contain the known `0xe0822403` / `driver not available`
-  surface for public SSID/BSSID/current-network handling, so this batch is only
-  the locale-property layer closure.
+- item 220 later classifies the observed top-level Dynamic Store SSID/BSSID
+  redaction as reference airportd pruning, so this batch remains only the
+  locale-property layer closure and does not create a new driver-patch target
+  from the public `networksetup` output alone.
 
 ## item 228 - Tahoe low-latency enable omits Skywalk carrier publication
 
@@ -6524,9 +6532,9 @@ Non-claim:
   path shows `airportd` denying the public `GET SSID` XPC request in
   `CWFXPCConnection::__allowXPCRequestWithType:error:` before a visible
   Apple80211 ioctl reaches the driver, while the lower driver-backed
-  Apple80211 current-network path returns success. That public CoreWiFi/XPC
-  surface remains the next open layer, not part of the low-latency carrier
-  closure.
+  Apple80211 current-network path returns success. Item 220 later classifies
+  the top-level Dynamic Store SSID/BSSID redaction as reference airportd
+  pruning; a later driver patch still needs a separate driver-facing mismatch.
 
 ## item 229 - Tahoe STA_ASSOC_DONE suppresses WCL auth/assoc-complete bulletin
 
@@ -6585,7 +6593,9 @@ Non-claim:
   remain open on this build: `networksetup` still prints
   `You are not associated with an AirPort network.`, while raw Apple80211 and
   CoreWiFi direct scan/profile matching continue to expose the real associated
-  network.
+  network. Item 220 later classifies the top-level Dynamic Store SSID/BSSID
+  redaction as reference airportd pruning, not as a standalone driver-patch
+  target.
 
 ## item 230 - Accepted identity events published before parent link-up state
 
@@ -6692,6 +6702,7 @@ Non-claim:
   surface by itself;
 - this does not add a userspace workaround, Dynamic Store synthesis, or broad
   Apple80211/CoreWLAN fallback gate;
-- the persistent `networksetup` "not associated" output remains a public
-  driver-surface mismatch until the airportd/CoreWLAN model consumes the same
-  driver-originated associated state as the raw Apple80211 path.
+- item 220 later classifies the persistent top-level Dynamic Store
+  SSID/BSSID redaction behind the `networksetup` "not associated" output as
+  reference airportd pruning through `wifi_allow_sensitive_info`; future driver
+  work must therefore target only a separately proven driver-facing mismatch.
