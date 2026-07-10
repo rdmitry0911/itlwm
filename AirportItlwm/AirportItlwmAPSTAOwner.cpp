@@ -687,11 +687,9 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
 IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(
     const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in)
 {
-    if (kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled == 0) {
+    if (!owner->isAPSTACoreFeatureFlagSet(
+            kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46)) {
         return kIOReturnSuccess;
-    }
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
     }
     if (in->length03 > kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAInvalidSoftAPInfoReturn);

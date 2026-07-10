@@ -2926,6 +2926,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
     fAPSTAOwner = NULL;
+    memset(fAPSTACoreFeatureFlags, 0, sizeof(fAPSTACoreFeatureFlags));
     if (fRxPendingLock == NULL || fTxCompletionPendingLock == NULL)
         ret = false;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
@@ -6064,6 +6065,19 @@ bool AirportItlwm::isHostApRunning() const
         return false;
     }
     return fAPSTAOwner->isApRunning();
+}
+
+bool AirportItlwm::isAPSTACoreFeatureFlagSet(uint32_t bit) const
+{
+    if (bit >= kAirportItlwmAPSTACoreFeatureFlagMaxExclusive) {
+        return false;
+    }
+    const uint32_t byteIndex =
+        bit >> kAirportItlwmAPSTACoreFeatureFlagIndexShift;
+    const uint8_t bitMask =
+        static_cast<uint8_t>(1U << (bit &
+            kAirportItlwmAPSTACoreFeatureFlagIndexMask));
+    return (fAPSTACoreFeatureFlags[byteIndex] & bitMask) != 0;
 }
 
 /*

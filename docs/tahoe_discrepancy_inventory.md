@@ -6782,3 +6782,80 @@ Non-claim:
   backend remains fail-closed;
 - this does not touch primary STA association, BSSID/SSID event production,
   CoreWLAN privacy/TCC behavior, or any Dynamic Store/networksetup fallback.
+
+## item 232 - APSTA SoftAP Wi-Fi network-info IE used a compile-time disabled gate
+
+- producers:
+  - `AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(...)`
+  - `AirportItlwm::isAPSTACoreFeatureFlagSet(...)`
+  - `AirportItlwm::setSOFTAP_WIFI_NETWORK_INFO_IE(...)`
+- status: implemented, runtime validated
+- justification: APSTA_CORE_FEATURE_GATE_PARITY
+- reference note:
+  - `docs/reference/IWX_APGO_AP_CONTROL_PLANE_WIRE_STRUCT_EVIDENCE_2026_05_10.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_OWNER_SKELETON_2026_05_09.md`
+
+Reference and local evidence:
+
+- the exact APSTA consumer decompile for selector 352 calls
+  `AppleBCMWLANCore::featureFlagIsBitSet(*(state+0x218), 0x46)`;
+- `AppleBCMWLANCore::featureFlagIsBitSet` bounds feature indexes against a
+  16-byte bitmap (`0x80` bits) rooted at core-expansion offset `+0x45a8`;
+- when feature bit `0x46` is clear, the reference setter returns success
+  without reading the carrier;
+- when feature bit `0x46` is set, reference accepts only `input+0x03 < 0x21`,
+  copies exactly `0x24` bytes into APSTA state `+0x2c`, and returns
+  `0xe00002c2` for invalid lengths;
+- local code previously hardcoded
+  `kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled == 0`, so the
+  setter could never follow the recovered enabled-gate copy/reject path even
+  if a future core-feature producer set bit `0x46`.
+
+Local closure:
+
+- `AirportItlwmAPSTAInterface.hpp` now records the recovered APSTA core-feature
+  bitmap size, maximum bit, store offset, and the byte-index/bit-mask mapping
+  for feature `0x46`;
+- `AirportItlwm` owns a 16-byte APSTA core-feature bitmap initialized clear and
+  exposes `isAPSTACoreFeatureFlagSet(...)` with the recovered `0x80`-bit bound;
+- `AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(...)` now gates through
+  controller core-feature state, then follows the reference enabled-gate
+  length/copy/reject path; the unreferenced owner-local null guard was removed.
+
+Runtime validation:
+
+- loaded Tahoe kext UUID `27931A73-4EFD-3336-9E34-27A7679ACE88`, binary
+  SHA-256 `38c0147272fb84e3a50f4fa2d095a7a518ca926fd1f5ddd5ef1690782c89ec3f`,
+  CDHash `5f407314a32ebddc065fcf8f17f9621d47f4e6b1`;
+- host and guest payload-builder tests passed, reproducibility smoke passed,
+  guest Tahoe build passed, and all 949 undefined symbols resolved against
+  BootKC;
+- controlled join to `AIAMlab6235` / `aa00bb0900` reached DHCP `10.77.0.47`;
+- required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
+  passed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
+  loss, RTT `0.554/19.251/184.419/24.057 ms`; iperf3 transferred
+  `572 MBytes` at `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` remained active at DHCP `10.77.0.47`; IORegistry kept
+  `IO80211SSID = "AIAMlab6235"`, `IO80211BSSID = <80e4ba20eff9>`,
+  `IO80211Channel = 6`, `IO80211RSNDone = Yes`,
+  `CoreWiFiDriverReadyKey = "true"`, `IO80211Locale = "FCC"`, and
+  `IO80211CountryCode = "US"`;
+- `system_profiler SPAirPortDataType` reported `Status: Connected` on `en1`
+  with current channel 6, country `US`, WPA2 Personal, RSSI `-33 dBm`, and
+  transmit rate `104`;
+- host AP station dump retained the guest MAC as authenticated, associated,
+  and authorized with `tx failed: 0`;
+- the post-stress 8-minute kernel fault filter found no panic, CoreCapture,
+  NoCTL, missed beacon, deauth, disassoc, driver-not-available, `e0822403`, or
+  `IO80211QueueCall` signatures;
+- public `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.`, preserving the item-220
+  privacy/TCC classification rather than introducing a public-client fallback.
+
+Non-claim:
+
+- this does not prove or set feature bit `0x46` for Intel backends;
+- this does not enable AP/GO firmware operation, HostAP mode, beacon emission,
+  vendor-IE programming, AP traffic, or role-7 success;
+- this does not touch primary STA association, public `networksetup`, CoreWLAN,
+  Dynamic Store, or any fallback gate.

@@ -559,6 +559,7 @@ public:
         const struct apple80211_virt_if_create_data *create);
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();
+    bool isAPSTACoreFeatureFlagSet(uint32_t bit) const;
 
 public:
     IOInterruptEventSource* fInterrupt;
@@ -577,6 +578,7 @@ public:
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
     AirportItlwmAPSTAOwner *fAPSTAOwner;
+    uint8_t fAPSTACoreFeatureFlags[kAirportItlwmAPSTACoreFeatureFlagByteCount];
 
     // Skywalk packet pools and queues for proper Sequoia registration
     IOSkywalkPacketBufferPool *fTxPool;

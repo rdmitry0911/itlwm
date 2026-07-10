@@ -35,10 +35,20 @@ enum {
     kAirportItlwmAPSTASoftAPState = 4,
     kAirportItlwmAPSTAPeerCacheMaximumSize = 8,
     kAirportItlwmAPSTAHostApModeHiddenValue = 1,
+    kAirportItlwmAPSTACoreFeatureFlagStoreOffset = 0x45a8,
+    kAirportItlwmAPSTACoreFeatureFlagByteCount = 0x10,
+    kAirportItlwmAPSTACoreFeatureFlagMaxExclusive =
+        kAirportItlwmAPSTACoreFeatureFlagByteCount * 8,
+    kAirportItlwmAPSTACoreFeatureFlagIndexShift = 3,
+    kAirportItlwmAPSTACoreFeatureFlagIndexMask = 0x07,
     kAirportItlwmAPSTAWifiNetworkInfoIESize = 0x24,
     kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 = 0x46,
-    kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled = 0,
-    kAirportItlwmAPSTAWifiNetworkInfoFeatureDisabledCopyCount = 0,
+    kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46ByteIndex =
+        kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 >>
+        kAirportItlwmAPSTACoreFeatureFlagIndexShift,
+    kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46BitMask =
+        1 << (kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 &
+              kAirportItlwmAPSTACoreFeatureFlagIndexMask),
     kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold = 0x21,
     kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength =
         kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold - 1,
@@ -1653,6 +1663,16 @@ static_assert(offsetof(AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout, payl
 static_assert(sizeof(AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout) ==
               kAirportItlwmAPSTAWifiNetworkInfoIESize,
               "APSTA SoftAP Wi-Fi network info carrier size mismatch");
+static_assert(kAirportItlwmAPSTACoreFeatureFlagStoreOffset == 0x45a8,
+              "APSTA core feature-flag store offset mismatch");
+static_assert(kAirportItlwmAPSTACoreFeatureFlagByteCount == 0x10,
+              "APSTA core feature-flag bitmap byte count mismatch");
+static_assert(kAirportItlwmAPSTACoreFeatureFlagMaxExclusive == 0x80,
+              "APSTA core feature-flag max bit mismatch");
+static_assert(kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46ByteIndex == 0x08,
+              "APSTA Wi-Fi network info feature-gate byte index mismatch");
+static_assert(kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46BitMask == 0x40,
+              "APSTA Wi-Fi network info feature-gate bit mask mismatch");
 static_assert(kAirportItlwmAPSTAWifiNetworkInfoLengthTrapThreshold == 0x21,
               "APSTA SoftAP Wi-Fi network info length trap threshold mismatch");
 static_assert(kAirportItlwmAPSTAWifiNetworkInfoMaxAcceptedLength == 0x20,

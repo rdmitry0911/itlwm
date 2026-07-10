@@ -284,10 +284,14 @@ void testApstaPublicContracts()
             "APSTA Wi-Fi network info accepts lengths below 0x21");
     require(kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46 == 0x46,
             "APSTA Wi-Fi network info is gated by feature 0x46");
-    require(kAirportItlwmAPSTAWifiNetworkInfoLocalFeatureGate46Enabled == 0,
-            "APSTA Wi-Fi network info feature gate is unavailable locally");
-    require(kAirportItlwmAPSTAWifiNetworkInfoFeatureDisabledCopyCount == 0,
-            "APSTA Wi-Fi network info disabled-feature path does not copy state");
+    require(kAirportItlwmAPSTACoreFeatureFlagStoreOffset == 0x45a8,
+            "APSTA core feature flags live at core-expansion +0x45a8");
+    require(kAirportItlwmAPSTACoreFeatureFlagByteCount == 0x10 &&
+                kAirportItlwmAPSTACoreFeatureFlagMaxExclusive == 0x80,
+            "APSTA core feature flag bitmap covers 128 bits");
+    require(kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46ByteIndex == 0x08 &&
+                kAirportItlwmAPSTAWifiNetworkInfoFeatureGate46BitMask == 0x40,
+            "APSTA Wi-Fi network-info feature 0x46 maps to byte 8 bit 6");
     require(kAirportItlwmAPSTASetCipherKeyNotUpReturn == 6,
             "APSTA CIPHER_KEY AP-down return is raw 6");
     require(kAirportItlwmAPSTASetCipherKeyCipherNone == 0,

@@ -254,3 +254,23 @@ carrier matcher, `deleteAPSTAOwnerForBSDName()`, as the Skywalk switch-only
 delete path. `AirportItlwmAPSTAInterface.hpp` no longer defines the obsolete
 stack-local skeleton class or the always-false readiness gate; it remains the
 recovered APSTA layout/ABI witness header consumed by `AirportItlwmAPSTAOwner`.
+
+## APSTA SoftAP Wi-Fi Network-Info Feature Gate - 2026-07-10
+
+The recovered `setSOFTAP_WIFI_NETWORK_INFO_IE(...)` body first reads the core
+pointer stored at APSTA state `+0x218` and calls
+`AppleBCMWLANCore::featureFlagIsBitSet(core, 0x46)`. That helper bounds the
+feature index to a 16-byte bitmap (`0x80` bits) rooted in the core expansion
+feature store at `+0x45a8`. Only when bit `0x46` is set does the setter read
+input byte `+0x03`, require it to be below `0x21`, and copy exactly `0x24`
+bytes into APSTA state `+0x2c`; invalid lengths on the enabled path return
+`0xe00002c2`. When bit `0x46` is clear, the setter returns success without
+reading the input carrier.
+
+The local owner no longer uses the stale compile-time
+`LocalFeatureGate46Enabled == 0` bypass. `AirportItlwm` now owns a 16-byte
+APSTA core-feature bitmap and `AirportItlwmAPSTAOwner` routes the network-info
+setter through `isAPSTACoreFeatureFlagSet(0x46)`. The bitmap is initialized
+clear until a separately recovered producer sets individual bits, so this slice
+does not guess feature `0x46`, enable AP/GO runtime, or synthesize SoftAP
+vendor-IE programming.

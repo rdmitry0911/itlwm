@@ -740,6 +740,13 @@ softap_public_carriers:
       if feature gate 0x46 is disabled, return success; if enabled and input
       byte at +3 is below 0x21, copy 0x24 bytes into APSTA state+0x2c; otherwise
       return 0xe00002c2.
+    feature_gate_source:
+      function: "AppleBCMWLANCore::featureFlagIsBitSet(core, 0x46)"
+      core_pointer_source: "APSTA state+0x218"
+      bitmap_store_offset: "core expansion +0x45a8"
+      bitmap_bytes: "0x10"
+      byte_index: "0x08"
+      bit_mask: "0x40"
     input_layout:
       local_type: "AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout"
       length_offset: "0x03"
