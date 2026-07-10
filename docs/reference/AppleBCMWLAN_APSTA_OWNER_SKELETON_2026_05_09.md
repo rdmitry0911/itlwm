@@ -235,3 +235,22 @@ After the APSTA profile/key/station producer routes reached the HAL surface, the
 The helper validates `ItlHalApConfig` channel and BSSID, finds the local net80211 channel, and composes an `IWN_MODE_HOSTAP` RXON payload with AP BSSID/WLAP, multicast/BSS/beacon filters, inherited 2 GHz protection flags, rate masks, and rxchain fields. This is only a firmware-context payload owner. It does not implement beacon template upload, AP key installation, station add/remove, CSA, AP datapath queues, HostAP runtime, client association, DHCP, AP traffic, or iwx/iwm AP support.
 
 The current build deliberately keeps backend admission off. `IWN_APGO_FIRMWARE_BACKEND_OPT_IN` is not defined by the Tahoe build envelopes, so default and opt-out builds keep `ItlIwn::supportsAPMode() == false`, `startAPMode()` returns `kIOReturnUnsupported` before touching firmware state, and role-7 create still fails closed through the existing APSTA owner lower-start gate. `stopAPMode()` is still idempotent on that closed gate and returns success without touching firmware, so `AirportItlwmAPSTAOwner::stopLower()` can always issue the contractual lower-stop call while teardown has a live HAL pointer. A later backend admission slice must explicitly define the opt-in only after the remaining AP/GO firmware prerequisites are implemented and reviewed.
+
+## V1 role-7 owner parity - 2026-07-10
+
+The old V1 `AirportItlwm::setVIRTUAL_IF_CREATE` role-7 branch still used the
+first-slice stack-local `AirportItlwmAPSTAInterface::isLowerBackendReady()`
+gate after the Tahoe/Skywalk path had moved to the persistent
+`AirportItlwmAPSTAOwner` lifetime. That was a stale local path: it validated
+and cleared a temporary owner instead of allocating the controller-owned APSTA
+owner, attempting `startLowerIfReady()`, and running the unregister/release
+teardown edge on lower failure.
+
+The V1 create/delete pair now mirrors the Skywalk APSTA lifetime contract:
+role 7 allocates through `ensureAPSTAOwner()`, calls `startLowerIfReady()`,
+deletes the owner on any lower failure, and can return success only after a
+HAL backend truthfully starts AP/GO mode. V1 delete uses the same BSD-name
+carrier matcher, `deleteAPSTAOwnerForBSDName()`, as the Skywalk switch-only
+delete path. `AirportItlwmAPSTAInterface.hpp` no longer defines the obsolete
+stack-local skeleton class or the always-false readiness gate; it remains the
+recovered APSTA layout/ABI witness header consumed by `AirportItlwmAPSTAOwner`.

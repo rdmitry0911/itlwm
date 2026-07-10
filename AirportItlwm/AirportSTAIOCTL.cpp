@@ -8,6 +8,7 @@
 
 #include "AirportItlwm.hpp"
 #include "AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwmAPSTAOwner.hpp"
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeAssociationContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
@@ -1719,35 +1720,24 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
             return static_cast<IOReturn>(0xe00002bd);
         case APPLE80211_VIF_SOFT_AP: {
             /*
-             * Recovered APSTA role-7 acquisition contract: validate
-             * the carrier through the host APSTA owner skeleton and
-             * fail closed at the lower-backend gate.
-             *
-             * The lower-backend gate is structurally false on this
-             * driver: the iwx/iwm HALs do not expose AP/GO firmware
-             * MAC-context support, the OpenBSD net80211 build keeps
-             * IEEE80211_STA_ONLY in scope, and there is no AP
-             * firmware event producer bridge. While those surfaces
-             * are absent, role-7 acquisition fails closed at the
-             * gate with the recovered Apple "create-failed" return
-             * code (0xe00002bd).
+             * V1 parity with the Tahoe Skywalk role-7 owner path:
+             * allocate/validate the controller-owned APSTA owner,
+             * attempt the lower AP/GO start gate, and tear the owner
+             * back down on any lower failure. Role-7 success remains
+             * impossible until a HAL backend advertises and starts
+             * AP/GO mode.
              */
-            AirportItlwmAPSTAInterface tentativeOwner;
-            if (!tentativeOwner.initWithCarrier(
-                    static_cast<uint32_t>(data->role), data->mac,
-                    reinterpret_cast<const char *>(data->bsd_name))) {
-                tentativeOwner.clear();
+            AirportItlwmAPSTAOwner *owner = ensureAPSTAOwner(data);
+            if (owner == nullptr) {
                 return static_cast<IOReturn>(
                     kAirportItlwmAPSTARawInvalidArgumentReturn);
             }
-            const bool lowerReady =
-                AirportItlwmAPSTAInterface::isLowerBackendReady();
-            tentativeOwner.clear();
-            if (!lowerReady)
-                return static_cast<IOReturn>(
-                    kAirportItlwmAPSTACreateFailedReturn);
-            return static_cast<IOReturn>(
-                kAirportItlwmAPSTACreateFailedReturn);
+            IOReturn lowerRet = owner->startLowerIfReady();
+            if (lowerRet != kIOReturnSuccess) {
+                deleteAPSTAOwner();
+                return lowerRet;
+            }
+            return kIOReturnSuccess;
         }
         default:
             return static_cast<IOReturn>(0xe0000001);
@@ -1797,6 +1787,16 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
 IOReturn AirportItlwm::
 setVIRTUAL_IF_DELETE(OSObject *object, struct apple80211_virt_if_delete_data *data)
 {
+#if __IO80211_TARGET >= __MAC_13_0
+    /*
+     * The Tahoe delete carrier has only a BSD name. Match it against
+     * the controller-owned role-7 APSTA owner and otherwise fail
+     * closed without allocating or publishing AP state.
+     */
+    if (data == nullptr)
+        return kIOReturnBadArgument;
+    return deleteAPSTAOwnerForBSDName(data->bsd_name);
+#else
     //TODO find vif according to the bsd_name
     IO80211VirtualInterface *vif = OSDynamicCast(IO80211VirtualInterface, object);
     if (vif == NULL)
@@ -1804,6 +1804,7 @@ setVIRTUAL_IF_DELETE(OSObject *object, struct apple80211_virt_if_delete_data *da
     detachVirtualInterface(vif, false);
     vif->release();
     return kIOReturnSuccess;
+#endif
 }
 
 /*

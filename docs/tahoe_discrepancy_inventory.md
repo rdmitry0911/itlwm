@@ -6712,3 +6712,73 @@ Non-claim:
   SSID/BSSID redaction behind the `networksetup` "not associated" output as
   reference airportd pruning through `wifi_allow_sensitive_info`; future driver
   work must therefore target only a separately proven driver-facing mismatch.
+
+## item 231 - V1 APSTA role-7 create/delete still used the obsolete stack-local gate
+
+- producers:
+  - `AirportItlwm::setVIRTUAL_IF_CREATE(...)`
+  - `AirportItlwm::setVIRTUAL_IF_DELETE(...)`
+  - `AirportItlwm::ensureAPSTAOwner(...)`
+  - `AirportItlwmAPSTAOwner::startLowerIfReady()`
+- status: implemented, runtime validated
+- justification: APSTA_OWNER_LIFETIME_PARITY
+- reference note:
+  - `docs/reference/AppleBCMWLAN_APSTA_OWNER_SKELETON_2026_05_09.md`
+
+Reference and local evidence:
+
+- reference role 7 creates an `AppleBCMWLANIO80211APSTAInterface`, stores the
+  owner in the core expansion owner slot, and then starts the APSTA owner/lower
+  AP path;
+- the local Tahoe/Skywalk `setVIRTUAL_IF_CREATE` path already mirrored this
+  as `ensureAPSTAOwner(data)` followed by `startLowerIfReady()` and
+  unregister/release teardown on lower failure;
+- the V1 controller `setVIRTUAL_IF_CREATE` path still validated a temporary
+  `AirportItlwmAPSTAInterface`, queried the always-false
+  `isLowerBackendReady()` gate, cleared the stack object, and returned without
+  exercising the controller-owned APSTA owner lifetime;
+- V1 delete still tried to downcast the `OSObject` to an
+  `IO80211VirtualInterface`, even though the Tahoe delete carrier supplies only
+  a BSD name and the local APSTA owner lifetime is controller-owned.
+
+Local closure:
+
+- V1 role-7 create now allocates/validates through `ensureAPSTAOwner(data)`,
+  calls `AirportItlwmAPSTAOwner::startLowerIfReady()`, deletes the owner on any
+  lower failure, and returns success only if the lower AP/GO HAL starts;
+- V1 role-7 delete now delegates the Tahoe BSD-name carrier to
+  `deleteAPSTAOwnerForBSDName(data->bsd_name)`;
+- the obsolete stack-local `AirportItlwmAPSTAInterface` class and its
+  always-false `isLowerBackendReady()` gate were removed from
+  `AirportItlwmAPSTAInterface.hpp`; that header remains the recovered APSTA
+  layout/ABI witness header consumed by `AirportItlwmAPSTAOwner`.
+
+Runtime validation:
+
+- loaded Tahoe kext UUID `5BBB3E87-ABDB-3678-A71E-B7DB016FEEC3`, binary
+  SHA-256 `6f089c13c86252f90ae4174073d701339e7548f7bf406b35006f9c609035b1c9`,
+  CDHash `66e0f72da2a0e6b69b08306cc7680d6ac3af95c4`;
+- host payload-builder tests passed, reproducibility smoke passed, guest
+  Tahoe build passed, and all 949 undefined symbols resolved against BootKC;
+- controlled join to `AIAMlab6235` / `aa00bb0900` reached DHCP `10.77.0.47`;
+- required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
+  passed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
+  loss, RTT `0.572/16.797/146.394/23.700 ms`; iperf3 transferred
+  `572 MBytes` at `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` remained active at DHCP `10.77.0.47`; hostapd retained the
+  station as authenticated, associated, and authorized with `tx failed: 0`;
+- post-stress IORegistry kept `IO80211SSID = "AIAMlab6235"`,
+  `IO80211BSSID = <80e4ba20eff9>`, `IO80211Channel = 6`,
+  `IO80211Locale = "FCC"`, and `IO80211CountryCode = "US"`;
+- public `networksetup -getairportnetwork en1` still prints
+  `You are not associated with an AirPort network.`, preserving the item-220
+  classification rather than introducing a public-client workaround.
+
+Non-claim:
+
+- this does not enable AP/GO firmware operation, HostAP net80211 runtime,
+  beacon emission, AP key install, CSA, AP station association, DHCP, AP
+  traffic, peer-cache publication, or role-7 success while the lower HAL
+  backend remains fail-closed;
+- this does not touch primary STA association, BSSID/SSID event production,
+  CoreWLAN privacy/TCC behavior, or any Dynamic Store/networksetup fallback.
