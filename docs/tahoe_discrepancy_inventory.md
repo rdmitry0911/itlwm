@@ -6935,3 +6935,106 @@ Runtime validation:
 - public `networksetup -getairportnetwork en1` still printed Tahoe
   `not associated`, preserving item-220 classification rather than adding any
   fallback.
+
+## item 234 - APSTA RSN_CONF selector stopped at a slot witness
+
+- producers:
+  - `apple80211_rsn_conf_data`
+  - `AirportItlwmAPSTAOwner::setRsnConf(...)`
+  - `AirportItlwm::setRSN_CONF(...)`
+  - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+  - `ItlHalService::setAPRSNConfig(...)`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: APSTA_RSN_CONF_CONSUMER_HAL_BOUNDARY
+- reference note:
+  - `docs/reference/IWX_APGO_AP_CONTROL_PLANE_WIRE_STRUCT_EVIDENCE_2026_05_10.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_OWNER_SKELETON_2026_05_09.md`
+  - remote supplement:
+    `10.7.6.112:~/Projects/ghidra_output/cr467_remaining_layer_supplement_20260513T105035Z/90_full_archival_material/full_layer_20260510/05_field_maps/selector_077_RSN_CONF.md`
+
+Reference and local evidence:
+
+- selector 77 previously had only the SAP slot/byte-offset witness while the
+  local public request surface did not define the RSN_CONF carrier or route set
+  requests to the APSTA owner;
+- the recovered APSTA body rejects with `0xe00002d5` when APSTA state byte
+  `+0x29b` has bit `0x10` set;
+- the non-rejected path has no recovered local null guard before reading the
+  input carrier;
+- the consumer reads pairwise version count/list at `+0x08/+0x0c`, pairwise
+  cipher count/list at `+0x2c/+0x30`, group version count/list at
+  `+0x58/+0x5c`, group cipher count/list at `+0x7c/+0x80`, and the MFP word at
+  `+0xa0`;
+- pairwise and group cipher loops clamp to eight entries and build the
+  recovered masks `1 -> 0x02`, `2 -> 0x04`, `4 -> 0x40`, `8 -> 0x80`, and
+  `0x1000 -> 0x40000`;
+- the recovered BootKC `mapAppleCipherToBcomWsecFlags::map` table for indexes
+  `0..8` is `{0, 1, 1, 2, 4, 4, 0, 0, 0x100}`; version-list loops clamp to
+  eight entries and OR that table into the owner-to-HAL mask.
+
+Local closure:
+
+- `include/Airport/apple80211_ioctl.h` now defines the packed
+  `apple80211_rsn_conf_data` carrier with the recovered `0xa4` size and pinned
+  field offsets;
+- both V1 and Tahoe/Skywalk controller surfaces route
+  `APPLE80211_IOC_RSN_CONF` set requests to `AirportItlwm::setRSN_CONF(...)`,
+  and then to the APSTA owner when present;
+- `AirportItlwmAPSTAOwner::setRsnConf(...)` preserves the reference reject
+  gate, direct-read/no-null-guard body, count clamps, cipher masks, recovered
+  table mask, and MFP word;
+- `ItlHalService` exposes `ItlHalApRSNConfig` and a fail-closed
+  `setAPRSNConfig(...)` default method so a future AP/GO backend can own the
+  device-specific RSN firmware mapper without controller fallback logic;
+- host `./scripts/test_payload_builders.sh` now compiles the real
+  `apple80211_ioctl.h` through a non-Darwin host-only compatibility include
+  and validates the RSN_CONF carrier offsets, reject gate, no-null-guard
+  witness, cipher masks, table values, and Skywalk IOC set-only route.
+
+Non-claim:
+
+- this does not implement the AP/GO backend RSN firmware mapper, producer
+  defaults, or AP runtime RSN publication;
+- this does not enable role-7 success, AP/GO firmware operation, beacon
+  emission, AP key install, station association, DHCP, AP traffic, or
+  peer-cache publication;
+- this does not touch primary STA association, public `networksetup`, CoreWLAN,
+  Dynamic Store, or any fallback gate.
+
+Runtime validation:
+
+- host `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` passed;
+- Tahoe guest `./scripts/test_payload_builders.sh` passed;
+- Tahoe guest clean build completed with all 949 undefined symbols resolved
+  against `/System/Library/KernelCollections/BootKernelExtensions.kc`;
+- installed and booted `AirportItlwm.kext` UUID
+  `57873521-1C5A-3DD2-8812-A0CCFFAD970B`, SHA-256
+  `857275f92014d54ba9eecd1964669244e7fb6342aa7095372ee7d7b6ea7d16a6`,
+  CDHash `cc4fcc735fc6486bffcd7dc9a594a835736b54c9`;
+- joined `AIAMlab6235/aa00bb0900`, received DHCP `10.77.0.47`;
+- required concurrent stress passed: ping `240/240`, 0.0% packet loss, RTT
+  `0.552/17.506/125.641/18.496 ms`; iperf3 transferred `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` remained active at `10.77.0.47`; IORegistry kept
+  `IO80211SSID = "AIAMlab6235"`, `IO80211BSSID = <80e4ba20eff9>`,
+  `IO80211Channel = 6`, `IO80211RSNDone = Yes`,
+  `CoreWiFiDriverReadyKey = "true"`, `IO80211Locale = "FCC"`, and
+  `IO80211CountryCode = "US"`;
+- `system_profiler SPAirPortDataType` reported `Status: Connected` with
+  current network channel 6, country `US`, WPA2 Personal, RSSI `-33 dBm`, and
+  transmit rate `104`;
+- host AP station dump retained the guest MAC as authenticated, associated, and
+  authorized with `tx failed: 0`;
+- a narrow post-stress 4-minute kernel fault filter found no panic,
+  CoreCapture, NoCTL, missed beacon, deauth, disassoc, driver-not-available,
+  `e0822403`, or `IO80211QueueCall` signatures;
+- the wider 8-minute filter intentionally captured pre-stress join noise:
+  airportd/configd public Apple80211 `SSID`/`BSSID`/`CURRENT_NETWORK` probes
+  returned `0xe0822403`, and `IO80211QueueCall type 3` returned `0xe00002c7`.
+  That is not a 240-second data-path regression, but it remains evidence for
+  the open public Apple80211/current-network surface outside this RSN_CONF
+  APSTA consumer batch;
+- public `networksetup -getairportnetwork en1` still printed
+  `You are not associated with an AirPort network.`, preserving the open
+  item-220/public CoreWLAN exposure rather than adding any fallback.

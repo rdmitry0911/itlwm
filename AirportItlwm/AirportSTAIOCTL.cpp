@@ -454,6 +454,9 @@ SInt32 AirportItlwm::apple80211Request(unsigned int request_type,
         case APPLE80211_IOC_RSN_IE: // 46
             IOCTL(request_type, RSN_IE, apple80211_rsn_ie_data);
             break;
+        case APPLE80211_IOC_RSN_CONF:
+            IOCTL_SET(request_type, RSN_CONF, apple80211_rsn_conf_data);
+            break;
         case APPLE80211_IOC_AP_IE_LIST: // 48
             if (request_type != SIOCGA80211)
                 return kIOReturnError;
@@ -1973,4 +1976,14 @@ setMIS_MAX_STA(OSObject *object, struct apple80211_mis_max_sta *in)
         (void)setMaxAssoc(in->value00);
     }
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwm::setRSN_CONF(OSObject *object,
+    struct apple80211_rsn_conf_data *in)
+{
+    (void)object;
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->setRsnConf(in);
 }

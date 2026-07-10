@@ -167,6 +167,7 @@ public:
     FUNC_IOCTL_GET(DRIVER_VERSION, apple80211_version_data)
     FUNC_IOCTL_GET(HARDWARE_VERSION, apple80211_version_data)
     FUNC_IOCTL(RSN_IE, apple80211_rsn_ie_data)
+    FUNC_IOCTL_SET(RSN_CONF, apple80211_rsn_conf_data)
     FUNC_IOCTL_GET(AP_IE_LIST, apple80211_ap_ie_data)
     FUNC_IOCTL_GET(LINK_CHANGED_EVENT_DATA, apple80211_link_changed_event_data)
     FUNC_IOCTL_GET(ASSOCIATION_STATUS, apple80211_assoc_status_data)

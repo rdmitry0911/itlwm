@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+#include "include/Airport/apple80211_ioctl.h"
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
 #include "AirportItlwm/TahoeBeaconIeBuilder.hpp"
@@ -298,6 +299,56 @@ void testApstaPublicContracts()
             "APSTA CIPHER_KEY cipher-none carrier value is zero");
     require(kAirportItlwmAPSTASetCipherKeyUnsupportedCipherReturn == 0,
             "APSTA CIPHER_KEY cipher-none and unsupported cipher return success after AP-up gate");
+    require(sizeof(apple80211_rsn_conf_data) ==
+                kAirportItlwmAPSTARSNConfCarrierSize,
+            "APSTA RSN_CONF carrier is 0xa4 bytes");
+    require(offsetof(apple80211_rsn_conf_data, pairwiseVersionCount08) ==
+                kAirportItlwmAPSTARSNConfVersionCountOffset,
+            "APSTA RSN_CONF reads pairwise version/count at input +0x08");
+    require(offsetof(apple80211_rsn_conf_data, pairwiseVersionList0c) ==
+                kAirportItlwmAPSTARSNConfVersionListOffset,
+            "APSTA RSN_CONF reads pairwise version list at input +0x0c");
+    require(offsetof(apple80211_rsn_conf_data, pairwiseCipherCount2c) ==
+                kAirportItlwmAPSTARSNConfPairwiseCipherCountOffset,
+            "APSTA RSN_CONF reads pairwise cipher count at input +0x2c");
+    require(offsetof(apple80211_rsn_conf_data, pairwiseCipherList30) ==
+                kAirportItlwmAPSTARSNConfPairwiseCipherListOffset,
+            "APSTA RSN_CONF reads pairwise ciphers at input +0x30");
+    require(offsetof(apple80211_rsn_conf_data, groupVersionCount58) ==
+                kAirportItlwmAPSTARSNConfGroupVersionCountOffset,
+            "APSTA RSN_CONF reads group version/count at input +0x58");
+    require(offsetof(apple80211_rsn_conf_data, groupVersionList5c) ==
+                kAirportItlwmAPSTARSNConfGroupVersionListOffset,
+            "APSTA RSN_CONF reads group version list at input +0x5c");
+    require(offsetof(apple80211_rsn_conf_data, groupCipherCount7c) ==
+                kAirportItlwmAPSTARSNConfGroupCipherCountOffset,
+            "APSTA RSN_CONF reads group cipher count at input +0x7c");
+    require(offsetof(apple80211_rsn_conf_data, groupCipherList80) ==
+                kAirportItlwmAPSTARSNConfGroupCipherListOffset,
+            "APSTA RSN_CONF reads group ciphers at input +0x80");
+    require(offsetof(apple80211_rsn_conf_data, mfpA0) ==
+                kAirportItlwmAPSTARSNConfMfpWordOffset,
+            "APSTA RSN_CONF reads MFP word at input +0xa0");
+    require(kAirportItlwmAPSTARSNConfRejectedReturn == 0xe00002d5 &&
+                kAirportItlwmAPSTARSNConfGateBit == 0x10,
+            "APSTA RSN_CONF rejected gate is state +0x29b bit 0x10");
+    require(kAirportItlwmAPSTARSNConfHasNullGuard == 0,
+            "APSTA RSN_CONF has no recovered local null guard");
+    require(kAirportItlwmAPSTARSNConfPairwiseCipherValue1Mask == 0x02 &&
+                kAirportItlwmAPSTARSNConfPairwiseCipherValue2Mask == 0x04,
+            "APSTA RSN_CONF pairwise cipher mask values match disasm");
+    require(kAirportItlwmAPSTARSNConfGroupCipherValue4Mask == 0x40 &&
+                kAirportItlwmAPSTARSNConfGroupCipherValue8Mask == 0x80 &&
+                kAirportItlwmAPSTARSNConfGroupCipherValue1000Mask == 0x40000,
+            "APSTA RSN_CONF group cipher mask values match disasm");
+    require(kAirportItlwmAPSTARSNConfAppleCipherMap[0] == 0 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[1] == 1 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[2] == 1 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[3] == 2 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[4] == 4 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[5] == 4 &&
+                kAirportItlwmAPSTARSNConfAppleCipherMap[8] == 0x100,
+            "APSTA RSN_CONF Apple cipher map table matches recovered BootKC data");
     require(kAirportItlwmAPSTAStaAuthorizePreAPUpTableMutationCount == 0,
             "APSTA STA_AUTHORIZE does not mutate station table before AP-up");
     require(kAirportItlwmAPSTAStaDeauthTailcallVtableOffset == 0x1040,
@@ -499,6 +550,9 @@ void testTahoeSkywalkIoctlRoutes()
     require(!shouldRoute(kIocHostApMode, false) &&
                 shouldRoute(kIocHostApMode, true),
             "Skywalk routes HOST_AP_MODE setter through APSTA owner");
+    require(!shouldRoute(kIocRsnConf, false) &&
+                shouldRoute(kIocRsnConf, true),
+            "Skywalk routes RSN_CONF setter through APSTA owner");
 }
 
 void testTahoeAssociationContracts()

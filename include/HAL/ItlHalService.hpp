@@ -83,6 +83,20 @@ struct ItlHalApWifiNetworkInfo {
     size_t ieLength;
 };
 
+struct ItlHalApRSNConfig {
+    const uint32_t *pairwiseCipherList;
+    uint32_t pairwiseCipherCount;
+    const uint32_t *groupCipherList;
+    uint32_t groupCipherCount;
+    const uint32_t *pairwiseVersionList;
+    uint32_t pairwiseVersionCount;
+    const uint32_t *groupVersionList;
+    uint32_t groupVersionCount;
+    uint32_t cipherMask;
+    uint32_t authMask;
+    uint16_t mfp;
+};
+
 struct ItlHalApStationCommand {
     uint32_t command;
     const uint8_t *station;
@@ -195,6 +209,10 @@ public:
     }
     virtual IOReturn setAPWifiNetworkInfo(const struct ItlHalApWifiNetworkInfo *info) {
         (void)info;
+        return kIOReturnUnsupported;
+    }
+    virtual IOReturn setAPRSNConfig(const struct ItlHalApRSNConfig *config) {
+        (void)config;
         return kIOReturnUnsupported;
     }
     virtual IOReturn sendAPStationCommand(const struct ItlHalApStationCommand *cmd) {

@@ -292,3 +292,29 @@ they no longer preempt `getSOFTAP_PARAMS`, `getSOFTAP_STATS`, or
 the APSTA owner. This does not remove the separate reference-proven null
 returns for methods such as `getOP_MODE`, `getHOST_AP_MODE_HIDDEN`,
 `setSTA_AUTHORIZE`, CSA, or station-list/stat getters.
+
+## APSTA RSN_CONF Consumer And HAL Boundary - 2026-07-10
+
+The recovered APSTA selector 77 body first checks APSTA state byte `+0x29b`
+bit `0x10`; when set it returns `0xe00002d5`. The non-rejected path reads the
+RSN_CONF carrier directly, with no recovered local null guard. The carrier
+fields used by the APSTA consumer are pinned at input `+0x08/+0x0c`
+(pairwise version count/list), `+0x2c/+0x30` (pairwise cipher count/list),
+`+0x58/+0x5c` (group version count/list), `+0x7c/+0x80` (group cipher
+count/list), and `+0xa0` (MFP word). Cipher/version loops clamp to eight
+entries. The recovered mask rules are pairwise cipher `1 -> 0x02`, pairwise
+cipher `2 -> 0x04`, group cipher `4 -> 0x40`, group cipher `8 -> 0x80`, and
+group cipher `0x1000 -> 0x40000`; the recovered BootKC table for version
+values `0..8` is `{0, 1, 1, 2, 4, 4, 0, 0, 0x100}`.
+
+The local implementation adds the packed `apple80211_rsn_conf_data` carrier,
+routes `APPLE80211_IOC_RSN_CONF` set requests through both V1 and Tahoe/Skywalk
+controller surfaces, and centralizes the consumer body in
+`AirportItlwmAPSTAOwner::setRsnConf(...)`. The owner preserves the APSTA gate,
+direct carrier reads, count clamps, cipher masks, version-table mask, and MFP
+publication into `ItlHalApRSNConfig`. The HAL method `setAPRSNConfig(...)`
+defaults to `kIOReturnUnsupported`, so current Intel backends remain
+fail-closed until a separately recovered AP/GO RSN firmware mapper is
+implemented. This slice does not claim AP/GO runtime, beacon/key/station
+firmware operation, or a producer/default RSN_CONF closure beyond the recovered
+APSTA consumer and local HAL boundary.

@@ -542,6 +542,8 @@ public:
     IOReturn setSTA_DISASSOCIATE(OSObject *object, AirportItlwmAPSTAStaDisassocInputLayout *data, bool deauth);
     IOReturn setSOFTAP_PARAMS(OSObject *object,
         AirportItlwmAPSTASoftAPParamsInputLayout *data);
+    IOReturn setRSN_CONF(OSObject *object,
+        struct apple80211_rsn_conf_data *data);
     IOReturn setSOFTAP_TRIGGER_CSA(OSObject *object,
         AirportItlwmAPSTACsaInputLayout *data);
     IOReturn setSOFTAP_WIFI_NETWORK_INFO_IE(OSObject *object,

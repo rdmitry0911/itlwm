@@ -113,6 +113,80 @@ static void apsta_copy_rsnxe(const uint8_t *ies,
     }
 }
 
+static uint32_t apsta_rsn_clamp_count(uint32_t count)
+{
+    return count < kAirportItlwmAPSTARSNConfListMaxCount
+        ? count
+        : kAirportItlwmAPSTARSNConfListMaxCount;
+}
+
+static uint32_t apsta_rsn_version_list_count(uint32_t value)
+{
+    if (value == 0) {
+        return 0;
+    }
+    uint32_t count = value - 1;
+    if (count > kAirportItlwmAPSTARSNConfVersionClampLimit) {
+        count = kAirportItlwmAPSTARSNConfVersionClampLimit;
+    }
+    return count + 1;
+}
+
+static uint32_t apsta_rsn_pairwise_cipher_mask(
+    const struct apple80211_rsn_conf_data *in)
+{
+    uint32_t mask = 0;
+    const uint32_t count = apsta_rsn_clamp_count(in->pairwiseCipherCount2c);
+    for (uint32_t i = 0; i < count; i++) {
+        switch (in->pairwiseCipherList30[i]) {
+            case kAirportItlwmAPSTARSNConfPairwiseCipherValue1:
+                mask |= kAirportItlwmAPSTARSNConfPairwiseCipherValue1Mask;
+                break;
+            case kAirportItlwmAPSTARSNConfPairwiseCipherValue2:
+                mask |= kAirportItlwmAPSTARSNConfPairwiseCipherValue2Mask;
+                break;
+            default:
+                break;
+        }
+    }
+    return mask;
+}
+
+static uint32_t apsta_rsn_group_cipher_mask(
+    const struct apple80211_rsn_conf_data *in)
+{
+    uint32_t mask = 0;
+    const uint32_t count = apsta_rsn_clamp_count(in->groupCipherCount7c);
+    for (uint32_t i = 0; i < count; i++) {
+        switch (in->groupCipherList80[i]) {
+            case kAirportItlwmAPSTARSNConfGroupCipherValue4:
+                mask |= kAirportItlwmAPSTARSNConfGroupCipherValue4Mask;
+                break;
+            case kAirportItlwmAPSTARSNConfGroupCipherValue8:
+                mask |= kAirportItlwmAPSTARSNConfGroupCipherValue8Mask;
+                break;
+            case kAirportItlwmAPSTARSNConfGroupCipherValue1000:
+                mask |= kAirportItlwmAPSTARSNConfGroupCipherValue1000Mask;
+                break;
+            default:
+                break;
+        }
+    }
+    return mask;
+}
+
+static uint32_t apsta_rsn_auth_mask(const uint32_t *values, uint32_t count)
+{
+    uint32_t mask = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        const uint32_t value = values[i];
+        if (value <= kAirportItlwmAPSTARSNConfMapMaxIndex) {
+            mask |= kAirportItlwmAPSTARSNConfAppleCipherMap[value];
+        }
+    }
+    return mask;
+}
+
 bool AirportItlwmAPSTAOwner::initWithController(
     AirportItlwm *controller,
     const struct apple80211_virt_if_create_data *create)
@@ -676,6 +750,45 @@ IOReturn AirportItlwmAPSTAOwner::setSoftAPParams(
                                 kAirportItlwmAPSTASetSoftAPParamsHoldPowerReason);
     }
     return static_cast<IOReturn>(kAirportItlwmAPSTASetSoftAPParamsReturn);
+}
+
+IOReturn AirportItlwmAPSTAOwner::setRsnConf(
+    const struct apple80211_rsn_conf_data *in)
+{
+    if ((state.rsnConfGate29b & kAirportItlwmAPSTARSNConfGateBit) != 0) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTARSNConfRejectedReturn);
+    }
+
+    ItlHalApRSNConfig config;
+    bzero(&config, sizeof(config));
+    config.pairwiseCipherList = in->pairwiseCipherList30;
+    config.pairwiseCipherCount =
+        apsta_rsn_clamp_count(in->pairwiseCipherCount2c);
+    config.groupCipherList = in->groupCipherList80;
+    config.groupCipherCount =
+        apsta_rsn_clamp_count(in->groupCipherCount7c);
+    config.cipherMask =
+        apsta_rsn_pairwise_cipher_mask(in) | apsta_rsn_group_cipher_mask(in);
+    if (in->pairwiseCipherCount2c != 0 && in->pairwiseVersionCount08 != 0) {
+        config.pairwiseVersionList = in->pairwiseVersionList0c;
+        config.pairwiseVersionCount =
+            apsta_rsn_version_list_count(in->pairwiseVersionCount08);
+        config.authMask |= apsta_rsn_auth_mask(
+            in->pairwiseVersionList0c, config.pairwiseVersionCount);
+    }
+    if (in->groupCipherCount7c != 0 && in->groupVersionCount58 != 0) {
+        config.groupVersionList = in->groupVersionList5c;
+        config.groupVersionCount =
+            apsta_rsn_version_list_count(in->groupVersionCount58);
+        config.authMask |= apsta_rsn_auth_mask(
+            in->groupVersionList5c, config.groupVersionCount);
+    }
+    config.mfp = in->mfpA0;
+
+    if (owner == nullptr || owner->fHalService == nullptr) {
+        return kIOReturnUnsupported;
+    }
+    return owner->fHalService->setAPRSNConfig(&config);
 }
 
 IOReturn AirportItlwmAPSTAOwner::setSoftAPWifiNetworkInfoIE(

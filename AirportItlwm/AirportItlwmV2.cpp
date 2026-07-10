@@ -6455,6 +6455,16 @@ IOReturn AirportItlwm::setSOFTAP_PARAMS(OSObject *object,
     return fAPSTAOwner->setSoftAPParams(in);
 }
 
+IOReturn AirportItlwm::setRSN_CONF(OSObject *object,
+    struct apple80211_rsn_conf_data *in)
+{
+    (void)object;
+    if (fAPSTAOwner == NULL) {
+        return kIOReturnUnsupported;
+    }
+    return fAPSTAOwner->setRsnConf(in);
+}
+
 IOReturn AirportItlwm::setSOFTAP_TRIGGER_CSA(OSObject *object,
     AirportItlwmAPSTACsaInputLayout *in)
 {

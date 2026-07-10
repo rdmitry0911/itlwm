@@ -13,6 +13,7 @@
 #ifdef TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST
 #include <string.h>
 
+#ifndef ITLWM_STANDALONE_REAL_APPLE80211_IOCTL
 #define APPLE80211_MAX_CC_LEN 3
 
 struct apple80211_ie_data {
@@ -33,6 +34,7 @@ struct apple80211_wcl_auth_assoc_complete_event {
     uint32_t status;
     uint32_t reason;
 };
+#endif /* ITLWM_STANDALONE_REAL_APPLE80211_IOCTL */
 
 struct alignas(4) apple80211_offload_ndp_data {
     uint8_t bytes[8 + 4 * 16];

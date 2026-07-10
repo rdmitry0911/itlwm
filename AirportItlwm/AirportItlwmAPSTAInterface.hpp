@@ -55,6 +55,30 @@ enum {
     kAirportItlwmAPSTACsaMaximumExcludedChannelSpec = 0x10000,
     kAirportItlwmAPSTASoftAPStatsSize = 0x58,
     kAirportItlwmAPSTARSNConfGateBit = 0x10,
+    kAirportItlwmAPSTARSNConfHasNullGuard = 0,
+    kAirportItlwmAPSTARSNConfVersionCountOffset = 0x08,
+    kAirportItlwmAPSTARSNConfVersionListOffset = 0x0c,
+    kAirportItlwmAPSTARSNConfPairwiseCipherCountOffset = 0x2c,
+    kAirportItlwmAPSTARSNConfPairwiseCipherListOffset = 0x30,
+    kAirportItlwmAPSTARSNConfGroupVersionCountOffset = 0x58,
+    kAirportItlwmAPSTARSNConfGroupVersionListOffset = 0x5c,
+    kAirportItlwmAPSTARSNConfGroupCipherCountOffset = 0x7c,
+    kAirportItlwmAPSTARSNConfGroupCipherListOffset = 0x80,
+    kAirportItlwmAPSTARSNConfMfpWordOffset = 0xa0,
+    kAirportItlwmAPSTARSNConfCarrierSize = 0xa4,
+    kAirportItlwmAPSTARSNConfListMaxCount = 8,
+    kAirportItlwmAPSTARSNConfVersionClampLimit = 7,
+    kAirportItlwmAPSTARSNConfMapMaxIndex = 8,
+    kAirportItlwmAPSTARSNConfPairwiseCipherValue1 = 1,
+    kAirportItlwmAPSTARSNConfPairwiseCipherValue2 = 2,
+    kAirportItlwmAPSTARSNConfPairwiseCipherValue1Mask = 0x02,
+    kAirportItlwmAPSTARSNConfPairwiseCipherValue2Mask = 0x04,
+    kAirportItlwmAPSTARSNConfGroupCipherValue4 = 4,
+    kAirportItlwmAPSTARSNConfGroupCipherValue8 = 8,
+    kAirportItlwmAPSTARSNConfGroupCipherValue1000 = 0x1000,
+    kAirportItlwmAPSTARSNConfGroupCipherValue4Mask = 0x40,
+    kAirportItlwmAPSTARSNConfGroupCipherValue8Mask = 0x80,
+    kAirportItlwmAPSTARSNConfGroupCipherValue1000Mask = 0x40000,
     kAirportItlwmAPSTATxSubQueueCount = 4,
     kAirportItlwmAPSTARegisterExtraQueueCount = 2,
     kAirportItlwmAPSTARegisterQueueCount =
@@ -820,6 +844,12 @@ static const uint64_t kAirportItlwmAPSTARpsNoaDynamicHeaderValue =
     0x300180101ULL;
 static const uint64_t kAirportItlwmAPSTASoftAPPeerStatsHeaderValue =
     0x80002ULL;
+
+static const uint32_t kAirportItlwmAPSTARSNConfAppleCipherMap[] = {
+    0x00000000, 0x00000001, 0x00000001,
+    0x00000002, 0x00000004, 0x00000004,
+    0x00000000, 0x00000000, 0x00000100
+};
 
 static const uint8_t kAirportItlwmAPSTAAppleIEOui[] = {0x00, 0x17, 0xf2};
 static const uint8_t kAirportItlwmAPSTAAppleIEBsOui[] = {0x00, 0x03, 0x93};

@@ -952,6 +952,45 @@ struct apple80211_rsn_ie_data
     u_int8_t     ie[ APPLE80211_MAX_RSN_IE_LEN ];
 };
 
+struct apple80211_rsn_conf_data
+{
+    u_int32_t version00;
+    u_int32_t reserved04;
+    u_int32_t pairwiseVersionCount08;
+    u_int32_t pairwiseVersionList0c[8];
+    u_int32_t pairwiseCipherCount2c;
+    u_int32_t pairwiseCipherList30[8];
+    u_int32_t reserved50;
+    u_int32_t reserved54;
+    u_int32_t groupVersionCount58;
+    u_int32_t groupVersionList5c[8];
+    u_int32_t groupCipherCount7c;
+    u_int32_t groupCipherList80[8];
+    u_int16_t mfpA0;
+    u_int16_t reservedA2;
+} __attribute__((packed));
+
+static_assert(__offsetof(struct apple80211_rsn_conf_data, pairwiseVersionCount08) == 0x08,
+              "apple80211_rsn_conf_data pairwise version/count offset must be 0x08");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, pairwiseVersionList0c) == 0x0c,
+              "apple80211_rsn_conf_data pairwise version list offset must be 0x0c");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, pairwiseCipherCount2c) == 0x2c,
+              "apple80211_rsn_conf_data pairwise cipher count offset must be 0x2c");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, pairwiseCipherList30) == 0x30,
+              "apple80211_rsn_conf_data pairwise cipher list offset must be 0x30");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, groupVersionCount58) == 0x58,
+              "apple80211_rsn_conf_data group version/count offset must be 0x58");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, groupVersionList5c) == 0x5c,
+              "apple80211_rsn_conf_data group version list offset must be 0x5c");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, groupCipherCount7c) == 0x7c,
+              "apple80211_rsn_conf_data group cipher count offset must be 0x7c");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, groupCipherList80) == 0x80,
+              "apple80211_rsn_conf_data group cipher list offset must be 0x80");
+static_assert(__offsetof(struct apple80211_rsn_conf_data, mfpA0) == 0xa0,
+              "apple80211_rsn_conf_data MFP word offset must be 0xa0");
+static_assert(sizeof(struct apple80211_rsn_conf_data) == 0xa4,
+              "apple80211_rsn_conf_data packed payload must be 0xa4 bytes");
+
 struct apple80211_ap_ie_data
 {
     u_int32_t    version;

@@ -19,6 +19,7 @@ class AirportItlwm;
 struct ItlHalApConfig;
 struct ItlHalApKey;
 struct ItlHalApCSA;
+struct ItlHalApRSNConfig;
 struct ItlHalApStationCommand;
 struct ieee80211_node;
 
@@ -83,6 +84,7 @@ public:
     IOReturn setPeerCacheControl(const AirportItlwmAPSTAPeerCacheControlLayout *in);
     IOReturn setHostAPModeHidden(const AirportItlwmAPSTAHostApModeHiddenLayout *in);
     IOReturn setSoftAPParams(const AirportItlwmAPSTASoftAPParamsInputLayout *in);
+    IOReturn setRsnConf(const struct apple80211_rsn_conf_data *in);
     IOReturn setSoftAPTriggerCSA(const AirportItlwmAPSTACsaInputLayout *in);
     IOReturn setSoftAPWifiNetworkInfoIE(const AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *in);
 

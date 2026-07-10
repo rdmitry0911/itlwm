@@ -2372,6 +2372,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 ? instance->setSTA_DISASSOCIATE(
                     this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, true)
                 : kIOReturnUnsupported;
+        case APPLE80211_IOC_RSN_CONF:
+            if (instance == NULL)
+                return kIOReturnNotReady;
+            return (cmd == SIOCSA80211)
+                ? instance->setRSN_CONF(
+                    this, (apple80211_rsn_conf_data *)req->req_data)
+                : kIOReturnUnsupported;
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;

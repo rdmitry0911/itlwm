@@ -21,6 +21,7 @@ enum : uint32_t {
     kIocDisassociate = 22,
     kIocHostApMode = 25,
     kIocRsnIe = 46,
+    kIocRsnConf = 77,
     kIocBtcoexMode = 87,
     kIocVirtualIfRole = 96,
     kIocVirtualIfParent = 97,
@@ -99,6 +100,7 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
         case kIocHostApMode:
         case kIocAuthType:
         case kIocRsnIe:
+        case kIocRsnConf:
         case kIocSetMacAddress:
         case kIocCipherKey:
         case kIocPeerCacheControl:
