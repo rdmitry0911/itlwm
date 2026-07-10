@@ -1316,6 +1316,9 @@ constexpr uint32_t kTahoeWclScanResultHeaderLen = 0x44;
 constexpr UInt32 kTahoeWclLinkChanged = 0xd8;
 constexpr uint8_t kTahoeWclInfraInterfaceType = 1;
 constexpr uint32_t kTahoeWclInvalidLinkReason = 0xff;
+constexpr uint32_t kTahoeAssocStatusErrorBase = 0xe0820400;
+constexpr uint32_t kTahoeAssocReasonErrorBase = 0xe0821000;
+constexpr uint32_t kTahoeAssocGenericError = 0xe3ff8100;
 
 struct TahoeWclBeaconMetaData {
     uint32_t ieLen;               // 0x00
@@ -1346,6 +1349,10 @@ struct TahoeWclScanResultPayload {
 static_assert(sizeof(apple80211_wcl_connect_complete_event) ==
               APPLE80211_WCL_CONNECT_COMPLETE_LEN,
               "Tahoe WCL connect-complete payload must match Apple 0xA4 layout");
+
+static_assert(sizeof(apple80211_wcl_auth_assoc_complete_event) ==
+              APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN,
+              "Tahoe WCL auth/assoc payload must match Apple 0x08 layout");
 
 struct TahoeWclLinkChangedPayload {
     uint8_t bssid[IEEE80211_ADDR_LEN]; // 0x00
@@ -1447,6 +1454,37 @@ static uint32_t buildTahoeWclLinkReason(unsigned int rawReason)
     const uint32_t mapped = static_cast<uint32_t>(rawReason - 1);
     return (mapped < 9) ? mapped : kTahoeWclInvalidLinkReason;
 }
+
+static uint32_t mapTahoeWclAssocStatus(uint32_t rawStatus)
+{
+    if (rawStatus == 0)
+        return 0;
+    if (rawStatus < 0x100)
+        return rawStatus | kTahoeAssocStatusErrorBase;
+    return kTahoeAssocGenericError;
+}
+
+static uint32_t mapTahoeWclAssocReason(uint32_t rawReason)
+{
+    if (rawReason == 0)
+        return 0;
+    if (rawReason < 0x45)
+        return rawReason | kTahoeAssocReasonErrorBase;
+    return kTahoeAssocGenericError;
+}
+
+static void buildTahoeWclAuthAssocCompletePayload(
+    uint32_t rawStatus,
+    uint32_t rawReason,
+    apple80211_wcl_auth_assoc_complete_event *payload)
+{
+    if (payload == nullptr)
+        return;
+
+    payload->status = mapTahoeWclAssocStatus(rawStatus);
+    payload->reason = mapTahoeWclAssocReason(rawReason);
+}
+
 static bool postTahoeWclLinkUpInd(AirportItlwm *controller,
                                   unsigned int rawReason)
 {
@@ -2673,6 +2711,7 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
     static UInt32 scanStatus;  // static — must survive until postMessageGated runs
     static UInt32 reassocEventStatus[2];
     static UInt32 reassocFailureStatus;
+    static apple80211_wcl_auth_assoc_complete_event authAssocStatus;
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
             RT_SET(1);
@@ -2682,7 +2721,11 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         case IEEE80211_EVT_STA_ASSOC_DONE:
             RT_SET(2);
 #if __IO80211_TARGET >= __MAC_26_0
-            return;
+            buildTahoeWclAuthAssocCompletePayload(0, 0, &authAssocStatus);
+            apple80211Msg = APPLE80211_M_WCL_AUTH_ASSOC_EVENT;
+            msgData = &authAssocStatus;
+            msgDataLen = sizeof(authAssocStatus);
+            break;
 #else
             apple80211Msg = APPLE80211_M_ASSOC_DONE;
             break;

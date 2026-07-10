@@ -29,7 +29,7 @@ DETERMINISTIC_TESTS = [
             "testPayloadContractInventory",
             "frameLen > 0x707",
             "rejects zero PMK length",
-            "17 contracts",
+            "27 contracts",
         ],
         "runner_tokens": [
             "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
@@ -73,6 +73,11 @@ REFERENCE_CASES = [
         "id": "apple-wcl-scan-result",
         "path": "analysis/ANALYSIS_REPORT_2026-04-23.md",
         "tokens": ["0x844", "BeaconMetaData + IE", "BSSID at `0x29`"],
+    },
+    {
+        "id": "apple-wcl-auth-assoc-complete",
+        "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
+        "tokens": ["handleAssocEvent", "0x4e", "length `0x08`", "associationStatusHandler"],
     },
     {
         "id": "apple-io80211-selector-surface",
@@ -326,7 +331,7 @@ PAYLOAD_TYPES = [
             },
             {
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["same_bss_reason_1_suppressed", "zero_bssid_rejected", "APPLE80211_M_BSSID_CHANGED"],
+                "tokens": ["sameBssAsLastPublished", "zeroBssidRejected", "APPLE80211_M_BSSID_CHANGED"],
             },
         ],
         "invalid_semantics": "zero BSSID is rejected; same-BSS reason 1 suppresses duplicate publication",
@@ -358,6 +363,24 @@ PAYLOAD_TYPES = [
             },
         ],
         "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication",
+    },
+    {
+        "name": "wcl-auth-assoc-complete",
+        "shape": "0x08 WCL auth/assoc status and reason carrier",
+        "producer": "buildTahoeWclAuthAssocCompletePayload",
+        "consumer": "WCLJoinManager association/auth-complete path",
+        "reference_ids": ["apple-wcl-auth-assoc-complete"],
+        "implementation_checks": [
+            {
+                "path": "include/Airport/apple80211_var.h",
+                "tokens": ["APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN", "struct apple80211_wcl_auth_assoc_complete_event", "APPLE80211_M_WCL_AUTH_ASSOC_EVENT"],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": ["buildTahoeWclAuthAssocCompletePayload", "mapTahoeWclAssocStatus", "APPLE80211_M_WCL_AUTH_ASSOC_EVENT", "IEEE80211_EVT_STA_ASSOC_DONE"],
+            },
+        ],
+        "invalid_semantics": "zero status/reason maps to zero dwords; out-of-range status/reason maps to 0xe3ff8100",
     },
     {
         "name": "wcl-connect-complete",
@@ -446,7 +469,7 @@ ERROR_CASES = [
         "checks": [
             {
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["zero_bssid_rejected", "same_bss_reason_1_suppressed"],
+                "tokens": ["zeroBssidRejected", "sameBssAsLastPublished"],
             },
             {
                 "path": "docs/reference/CR-479-event-payload-three-distinct-abis-closure-20260517.md",

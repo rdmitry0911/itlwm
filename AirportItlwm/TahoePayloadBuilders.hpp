@@ -27,6 +27,13 @@ struct apple80211_country_code_data {
     uint8_t cc[APPLE80211_MAX_CC_LEN];
 };
 
+#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 8
+#define APPLE80211_M_WCL_AUTH_ASSOC_EVENT 78
+struct apple80211_wcl_auth_assoc_complete_event {
+    uint32_t status;
+    uint32_t reason;
+};
+
 struct alignas(4) apple80211_offload_ndp_data {
     uint8_t bytes[8 + 4 * 16];
 };

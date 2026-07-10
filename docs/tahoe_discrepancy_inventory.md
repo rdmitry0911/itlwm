@@ -6482,3 +6482,62 @@ Non-claim:
   Apple80211 current-network path returns success. That public CoreWiFi/XPC
   surface remains the next open layer, not part of the low-latency carrier
   closure.
+
+## item 229 - Tahoe STA_ASSOC_DONE suppresses WCL auth/assoc-complete bulletin
+
+- producer: `AppleBCMWLANCore::handleAssocEvent(wl_event_msg_t *)`
+- consumer:
+  - `WCLJoinManager::associationStatusHandler(bulletinBoardMessage&)`
+  - `WCLJoinManager::handleJoinAssocComplete(void *)`
+- status: implemented, runtime validated
+- justification: REFERENCE_WCL_AUTH_ASSOC_COMPLETE_PUBLICATION
+- reference note:
+  - `docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md`
+
+Reference evidence:
+
+- Tahoe `AppleBCMWLANCore::handleAssocEvent` maps firmware status/reason
+  dwords from `wl_event_msg_t +0x08/+0x0c` into Apple error domains;
+- it posts message `0x4e` with length `0x08`, async flag `1`, and the two
+  mapped dwords through `IO80211Controller::postMessage(...)`;
+- `WCLJoinManager::associationStatusHandler` accepts only a present 8-byte
+  payload;
+- `WCLJoinManager::handleJoinAssocComplete` consumes that status through
+  `WCLJoinRequest::updateAuthAssocStatus(...)` and advances the join FSM
+  through the `AUTH_ASSOC_COMPLETE` layer.
+
+Local closure:
+
+- Tahoe `IEEE80211_EVT_STA_ASSOC_DONE` no longer returns without publication;
+- the local path builds the Apple-shaped 8-byte WCL auth/assoc carrier and
+  publishes message `0x4e` with success `{status = 0, reason = 0}`;
+- the legacy non-Tahoe `APPLE80211_M_ASSOC_DONE` path remains unchanged.
+
+Runtime validation:
+
+- loaded Tahoe kext UUID `AE04EF54-A240-3B1F-A22A-75A6F73D92C2`, binary
+  SHA-256 `a5d7b05639ed31c0848f6c0cfd04443f2f10d10da67fa68d05ca3306a0ec346a`;
+- host and guest `scripts/test_payload_builders.sh` passed;
+- payload parity report `--write/--check` passed with zero mismatches;
+- guest `scripts/build_tahoe.sh
+  /System/Library/KernelCollections/BootKernelExtensions.kc` passed and
+  resolved all 949 undefined symbols against BootKC;
+- controlled join to `ITLWM-Lab-3c95c7` reached DHCP `10.77.0.157`;
+- raw Tahoe and legacy Apple80211 probes returned real SSID/BSSID/state/current
+  network for `ITLWM-Lab-3c95c7` / `80:e4:ba:20:ef:f9`;
+- required 240-second concurrent ping plus `iperf3 -b 20M` stress passed with
+  `PING_RC=0` and `IPERF_RC=0`: ping reported `240/240`, `0.0%` packet loss,
+  RTT `0.601/16.968/146.453/18.794 ms`; iperf3 transferred `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` remained active at DHCP `10.77.0.157`;
+- the stress-window fault filter found no panic, CoreCapture, missed beacon,
+  deauth, disassoc, `driver not available`, `0xe0822403`, or
+  `IO80211QueueCall` signatures.
+
+Non-claim:
+
+- public `networksetup -getairportnetwork en1` and `CWInterface.ssid/bssid`
+  remain open on this build: `networksetup` still prints
+  `You are not associated with an AirPort network.`, while raw Apple80211 and
+  CoreWiFi direct scan/profile matching continue to expose the real associated
+  network.

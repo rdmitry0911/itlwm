@@ -622,6 +622,23 @@ struct apple80211_wcl_connect_complete_event {
         records[APPLE80211_WCL_CONNECT_COMPLETE_MAX_RECORDS]; // 0x04
 } __attribute__((packed));    // 0xA4 total
 
+// WCL auth/assoc complete event — producer ABI recovered from
+// AppleBCMWLANCore::handleAssocEvent on Tahoe.
+// Payload layout is two mapped firmware dwords: association status and reason.
+#define APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN 8
+struct apple80211_wcl_auth_assoc_complete_event {
+    uint32_t status;          // 0x00
+    uint32_t reason;          // 0x04
+} __attribute__((packed));    // 0x08 total
+
+static_assert(sizeof(struct apple80211_wcl_auth_assoc_complete_event) ==
+                  APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN,
+              "apple80211_wcl_auth_assoc_complete_event must be 8 bytes");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, status) == 0x00,
+              "WCL auth/assoc status must live at +0x00 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_wcl_auth_assoc_complete_event, reason) == 0x04,
+              "WCL auth/assoc reason must live at +0x04 per Tahoe ABI");
+
 // BGScan cached network entry — 0x14 (20) bytes each
 // Reverse-engineered from IO80211Family/WCLBGScanManager (macOS 26.x)
 #define APPLE80211_BGSCAN_MAX_NETWORKS 140
@@ -828,6 +845,7 @@ struct apple80211_status_msg_hdr
 // processScanResults(...) posts 0xC9 with a variable-length
 // BeaconMetaData+IE payload per discovered BSS, and scanComplete(wl_event_msg_t*)
 // then posts 0xED with a 4-byte status payload.
+#define APPLE80211_M_WCL_AUTH_ASSOC_EVENT    78
 #define APPLE80211_M_WCL_SCAN_RESULT         201
 #define APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT 213
 #define APPLE80211_M_WCL_JOIN_ABORT_COMPLETE 214

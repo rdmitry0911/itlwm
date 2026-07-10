@@ -416,6 +416,7 @@ void testPayloadContractInventory()
         "link-changed-32",
         "bssid-changed-24",
         "wcl-link-state-16",
+        "wcl-auth-assoc-complete",
         "wcl-scan-result",
         "wcl-connect-complete",
         "driver-available-0xf8",
@@ -1229,6 +1230,20 @@ void testTahoeCountryCodeCarrierContracts()
             "country-code full struct remains distinct from compact CFString carrier");
 }
 
+void testTahoeWclAuthAssocCarrierContracts()
+{
+    require(APPLE80211_M_WCL_AUTH_ASSOC_EVENT == 0x4e,
+            "WCL auth/assoc complete uses AppleBCMWLAN handleAssocEvent selector 0x4e");
+    require(APPLE80211_WCL_AUTH_ASSOC_COMPLETE_LEN == 0x08,
+            "WCL auth/assoc complete carrier length is 8 bytes");
+    require(sizeof(apple80211_wcl_auth_assoc_complete_event) == 0x08,
+            "WCL auth/assoc complete carrier is two dwords");
+    require(offsetof(apple80211_wcl_auth_assoc_complete_event, status) == 0x00,
+            "WCL auth/assoc status lives at +0x00");
+    require(offsetof(apple80211_wcl_auth_assoc_complete_event, reason) == 0x04,
+            "WCL auth/assoc reason lives at +0x04");
+}
+
 } // namespace
 
 int main()
@@ -1258,6 +1273,7 @@ int main()
     testTahoeBeaconIeBuilder();
     testTahoeAssociationAuthContracts();
     testTahoeCountryCodeCarrierContracts();
-    std::cout << "tahoe payload builders ok: 26 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
+    testTahoeWclAuthAssocCarrierContracts();
+    std::cout << "tahoe payload builders ok: 27 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }
