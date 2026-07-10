@@ -3399,6 +3399,9 @@ reference producer.
   - hardware feature flags live at `+0x458c`
   - split-TX status is bit `0` at `+0x00dc`
   - TX address resolution counters live at `+0x2aa4/+0x2aa8`
+  - adjacent public carriers read slow-wifi enabled at `+0x7569`,
+    low-latency owner state at `+0x2c28`, tx-blanking bit at `+0x4ce8`,
+    and congestion indication bool at `+0x79d2`
 - local mismatch before CR-159:
   - these helper offsets and return/status contracts were not compiled local
     witnesses
@@ -3408,6 +3411,9 @@ reference producer.
   - add `TahoeOwnerRegistry::QosDynsarOwner`
   - add pure helper semantics for DynSAR fail-safe window and congestion
     feature gate
+  - route slow-wifi, low-latency, tx-blanking, and congestion-indication
+    public carriers through the QosDynsar owner instead of interface-local
+    cache fields
 - non-claims:
   - this does not call QoS IOVARs
   - this does not enable DynSAR policy
@@ -4944,7 +4950,7 @@ new LQM object, and the guest later panicked from CoreCapture `[FG] IP timed
 out (NoCTL)`. Therefore this item remains superseded for the create gates:
 CARD_CAPABILITIES must continue not advertising the unrelated
 `cap[10] = 0x08` LQM-create gate, and `getSLOW_WIFI_FEATURE_ENABLED` must
-continue reporting the local cached policy state until the exact line-3511
+continue reporting the QosDynsar owner policy state until the exact line-3511
 PeerMonitor prerequisite is recovered.
 
 Reference note:

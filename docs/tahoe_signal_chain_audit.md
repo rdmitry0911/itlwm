@@ -4247,6 +4247,9 @@ Recovered contracts:
 - Hardware feature flags live at `+0x458c`.
 - Split-TX status returns bit `0` from `+0x00dc`.
 - TX address resolution counters live at `+0x2aa4` and `+0x2aa8`.
+- The neighboring public status carriers use the same core/private owner
+  family: slow-wifi enabled at `+0x7569`, low-latency owner state at `+0x2c28`,
+  tx-blanking bit at `+0x4ce8`, and congestion indication bool at `+0x79d2`.
 
 Local corrections in this batch:
 
@@ -4254,6 +4257,9 @@ Local corrections in this batch:
 - Added `QosDynsarOwner` witnesses to `TahoeOwnerRegistry`.
 - Added pure helper semantics for DynSAR fail-safe window and congestion
   feature gate.
+- Routed `getSLOW_WIFI_FEATURE_ENABLED`, `getWCL_LOW_LATENCY_INFO`,
+  `getWCL_GET_TX_BLANKING_STATUS`, and `setCONGESTION_CTRL_IND` through the
+  QosDynsar owner state instead of separate interface-local caches.
 
 This batch does not execute QoS IOVARs, does not enable DynSAR policy, and does
 not force congestion/AMPDU/split-TX/address-resolution state.

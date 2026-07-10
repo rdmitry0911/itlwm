@@ -35,6 +35,8 @@ Observed behavior:
 - Both functions test core-private byte `+0x7584` bit `0`.
 - If the bit is set, return `0`.
 - If the bit is clear, return `0xe00002c7`.
+- `AppleBCMWLANCore::setCONGESTION_CTRL_IND(...)` stores the caller bool at
+  core-private `+0x79d2`.
 
 ## AWDL AMPDU and feature flag accessors
 
@@ -76,12 +78,29 @@ Observed behavior:
 - `getTxAddrResolveReqV4()` reads core-private `+0x2aa4`.
 - `getTxAddrResolveReqV6()` reads core-private `+0x2aa8`.
 
+## Slow-wifi / low-latency / tx-blanking carriers
+
+Functions:
+
+- `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED(...)`
+- `AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO(...)`
+- `AppleBCMWLANCore::getWCL_GET_TX_BLANKING_STATUS(...)`
+
+Observed behavior:
+
+- slow-wifi enabled reads core-private `+0x7569`.
+- low-latency info is sourced from the owner at `+0x2c28`.
+- tx-blanking status returns bit 0 of core-private `+0x4ce8`.
+
 ## Local alignment
 
 - Adds `TahoeQosDynsarContracts.hpp` with recovered offsets, bit masks, status,
   threshold, and helper semantics.
 - Adds `TahoeOwnerRegistry::QosDynsarOwner` as a local owner-state witness for
   the recovered fields.
+- Moves slow-wifi, low-latency, tx-blanking, and congestion-indication
+  carriers onto `TahoeOwnerRegistry::QosDynsarOwner` so the interface surface
+  reads and writes the same core/private owner state family.
 - Does not call QoS IOVARs locally.
 - Does not enable DynSAR policy or congestion-control runtime paths.
 
@@ -92,3 +111,18 @@ Observed behavior:
 - This batch does not implement QoS IOVAR dispatch.
 - This batch does not force DynSAR, congestion, AMPDU, split-TX, or address
   resolution state.
+
+## Runtime validation
+
+2026-07-10 follow-up:
+
+- guest Tahoe build passed `scripts/test_payload_builders.sh`.
+- guest Tahoe build passed BootKC symbol gate:
+  `OK: all 949 undefined symbols resolve against BootKC`.
+- installed kext cdhash: `b29629c243493fcb05ed639b5e9826eb4590e7f1`.
+- lab association used `AIAMlab6235` / `aa00bb0900`; en1 received
+  `10.77.0.47`.
+- 240-second stress: ping to `10.77.0.1` returned `240/240` with `0.0%`
+  packet loss while iperf3 ran for the same window at `20.0 Mbits/sec`
+  (`572 MBytes`).
+- post-stress `wdutil` reported no Wi-Fi faults, recoveries, or link tests.

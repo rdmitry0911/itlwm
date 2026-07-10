@@ -15,6 +15,7 @@
 #include "AirportItlwm/TahoeMimoContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoeOpModeContracts.hpp"
+#include "AirportItlwm/TahoeOwnerRegistry.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoePhyModeContracts.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
@@ -539,6 +540,8 @@ void testTahoeQosDynsarContracts()
             "QoS/DynSAR congestion feature uses bit 0");
     require(kUnsupportedStatus == 0xe00002c7,
             "QoS/DynSAR unsupported gate returns Apple status 0xe00002c7");
+    require(kCongestionControlIndicationOffset == 0x79d2,
+            "QoS/DynSAR congestion indication bool is core-private +0x79d2");
     require(!congestionControlSupported(0),
             "QoS/DynSAR congestion gate rejects a clear feature byte");
     require(congestionControlSupported(kCongestionControlFeatureBit),
@@ -549,6 +552,38 @@ void testTahoeQosDynsarContracts()
             "DynSAR fail-safe window accepts elapsed ticks below threshold");
     require(!isDynSarFailSafeMode((kDynSarFailSafeWindow << kDynSarFailSafeShift), 0),
             "DynSAR fail-safe window rejects threshold elapsed ticks");
+    require(kSlowWifiFeatureEnabledOffset == 0x7569,
+            "slow-wifi enabled carrier is core-private +0x7569");
+    require(kLowLatencyOwnerOffset == 0x2c28,
+            "low-latency carrier is sourced from owner +0x2c28");
+    require(kTxBlankingStatusOffset == 0x4ce8,
+            "tx-blanking status carrier reads core-private +0x4ce8");
+    require(!txBlankingStatusEnabled(0) &&
+                txBlankingStatusEnabled(kTxBlankingStatusBit),
+            "tx-blanking status exposes bit 0 only");
+
+    TahoeOwnerRegistry registry;
+    require(!registry.isSlowWifiFeatureEnabled(),
+            "QoS/DynSAR owner starts with slow-wifi disabled");
+    require(!registry.isTxBlankingStatusEnabled(),
+            "QoS/DynSAR owner starts with tx-blanking disabled");
+    registry.qosDynsar.slowWifiFeatureEnabled = 1;
+    registry.qosDynsar.lowLatencyEnabled = 1;
+    registry.qosDynsar.lowLatencyPowerSave = 2;
+    registry.qosDynsar.lowLatencyWindow = 0x1234;
+    registry.qosDynsar.txBlankingStatus = kTxBlankingStatusBit;
+    registry.syncCongestionControlIndication(true);
+    require(registry.isSlowWifiFeatureEnabled(),
+            "QoS/DynSAR owner exposes slow-wifi enabled state");
+    require(registry.isTxBlankingStatusEnabled(),
+            "QoS/DynSAR owner exposes tx-blanking bit 0");
+    require(registry.qosDynsar.congestionControlIndication == 1,
+            "QoS/DynSAR owner stores congestion indication as a bool carrier");
+    registry.reset();
+    require(!registry.isSlowWifiFeatureEnabled() &&
+                !registry.isTxBlankingStatusEnabled() &&
+                registry.qosDynsar.congestionControlIndication == 0,
+            "QoS/DynSAR owner reset restores Apple default zero carriers");
 }
 
 void testTahoeOpModeContracts()

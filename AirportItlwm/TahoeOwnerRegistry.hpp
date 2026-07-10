@@ -110,12 +110,18 @@ struct TahoeOwnerRegistry {
     struct QosDynsarOwner {
         uint64_t dynSarFailSafeStartTicks = 0;
         uint8_t congestionControlFeature = 0;
+        uint8_t congestionControlIndication = 0;
         uint32_t forceAwdlAmpdu = 0;
         uint32_t forceDisableAwdlAmpdu = 0;
         uint32_t hwFeatureFlags = 0;
         uint8_t splitTxStatus = 0;
         uint32_t txAddrResolveReqV4 = 0;
         uint32_t txAddrResolveReqV6 = 0;
+        uint8_t slowWifiFeatureEnabled = 0;
+        uint8_t lowLatencyEnabled = 0;
+        uint8_t lowLatencyPowerSave = 0;
+        uint16_t lowLatencyWindow = 0;
+        uint8_t txBlankingStatus = 0;
     } qosDynsar;
 
     struct AssociationOwner {
@@ -149,6 +155,23 @@ struct TahoeOwnerRegistry {
     {
         return TahoeQosDynsarContracts::congestionControlSupported(
             qosDynsar.congestionControlFeature);
+    }
+
+    bool isSlowWifiFeatureEnabled() const
+    {
+        return qosDynsar.slowWifiFeatureEnabled != 0;
+    }
+
+    bool isTxBlankingStatusEnabled() const
+    {
+        return TahoeQosDynsarContracts::txBlankingStatusEnabled(
+            qosDynsar.txBlankingStatus);
+    }
+
+    void syncCongestionControlIndication(bool enabled)
+    {
+        qosDynsar.congestionControlIndication =
+            TahoeQosDynsarContracts::boolCarrier(enabled);
     }
 
     void reset()

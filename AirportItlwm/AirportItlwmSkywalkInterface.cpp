@@ -2477,11 +2477,6 @@ init()
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
     memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
     memset(cachedDynsarPayload, 0, sizeof(cachedDynsarPayload));
-    cachedSlowWifiFeatureEnabled = false;
-    cachedLowLatencyEnabled = 0;
-    cachedLowLatencyPowerSave = 0;
-    cachedLowLatencyWindow = 0;
-    cachedTxBlankingStatus = false;
     cachedPrivateMacState = 0;
     cachedPrivateMacTimeoutSeconds = 0;
     memset(cachedPrivateMacPrimary, 0, sizeof(cachedPrivateMacPrimary));
@@ -2506,7 +2501,6 @@ init()
     cachedFaceTimeWiFiCallingStatus = 0;
     cachedDualPowerModePrimary = -1;
     cachedDualPowerModeSecondary = -1;
-    cachedCongestionControlEnabled = false;
     cachedLmtpcValue = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
@@ -3042,11 +3036,6 @@ init(IOService *provider)
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
     memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
     memset(this->cachedDynsarPayload, 0, sizeof(this->cachedDynsarPayload));
-    this->cachedSlowWifiFeatureEnabled = false;
-    this->cachedLowLatencyEnabled = 0;
-    this->cachedLowLatencyPowerSave = 0;
-    this->cachedLowLatencyWindow = 0;
-    this->cachedTxBlankingStatus = false;
     this->cachedPrivateMacState = 0;
     this->cachedPrivateMacTimeoutSeconds = 0;
     memset(this->cachedPrivateMacPrimary, 0, sizeof(this->cachedPrivateMacPrimary));
@@ -3071,7 +3060,6 @@ init(IOService *provider)
     this->cachedFaceTimeWiFiCallingStatus = 0;
     this->cachedDualPowerModePrimary = -1;
     this->cachedDualPowerModeSecondary = -1;
-    this->cachedCongestionControlEnabled = false;
     this->cachedLmtpcValue = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
@@ -4516,7 +4504,11 @@ getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *data)
     // selector as unsupported while the deeper hidden policy owner remains
     // unrecovered.
     raw->version = APPLE80211_VERSION;
-    raw->enabled = cachedSlowWifiFeatureEnabled ? 1U : 0U;
+    raw->enabled =
+        (instance != nullptr &&
+         instance->getTahoeOwnerRegistry().isSlowWifiFeatureEnabled())
+            ? 1U
+            : 0U;
     return kIOReturnSuccess;
 }
 
@@ -4529,9 +4521,15 @@ getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *data)
 
     // Apple returns zeros with success when the low-latency owner is absent,
     // and otherwise exposes exactly `u8 enabled, u8 powersave, u16 window`.
-    raw->enabled = cachedLowLatencyEnabled;
-    raw->power_save = cachedLowLatencyPowerSave;
-    raw->window = cachedLowLatencyWindow;
+    if (instance == nullptr) {
+        memset(raw, 0, sizeof(*raw));
+        return kIOReturnSuccess;
+    }
+
+    const auto &owner = instance->getTahoeOwnerRegistry().qosDynsar;
+    raw->enabled = owner.lowLatencyEnabled;
+    raw->power_save = owner.lowLatencyPowerSave;
+    raw->window = owner.lowLatencyWindow;
     return kIOReturnSuccess;
 }
 
@@ -4540,8 +4538,13 @@ getWCL_GET_TX_BLANKING_STATUS(uint *data)
 {
     // Apple accepts NULL and simply skips the store. Preserve that visible
     // contract instead of forcing an argument error.
-    if (data != nullptr)
-        *data = cachedTxBlankingStatus ? 1U : 0U;
+    if (data != nullptr) {
+        *data =
+            (instance != nullptr &&
+             instance->getTahoeOwnerRegistry().isTxBlankingStatusEnabled())
+                ? 1U
+                : 0U;
+    }
     return kIOReturnSuccess;
 }
 
@@ -6693,7 +6696,9 @@ setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *data)
     if (ind == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedCongestionControlEnabled = ind->enabled != 0;
+    if (instance != nullptr)
+        instance->getTahoeOwnerRegistry().syncCongestionControlIndication(
+            ind->enabled != 0);
     return kIOReturnSuccess;
 }
 

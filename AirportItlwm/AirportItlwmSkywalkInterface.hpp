@@ -739,11 +739,6 @@ private:
     uint32_t cachedDynsarHeader0[4];
     uint32_t cachedDynsarHeader1[4];
     uint8_t cachedDynsarPayload[4][0x2d00];
-    bool cachedSlowWifiFeatureEnabled;
-    uint8_t cachedLowLatencyEnabled;
-    uint8_t cachedLowLatencyPowerSave;
-    uint16_t cachedLowLatencyWindow;
-    bool cachedTxBlankingStatus;
     uint32_t cachedPrivateMacState;
     uint32_t cachedPrivateMacTimeoutSeconds;
     uint8_t cachedPrivateMacPrimary[6];
@@ -768,7 +763,6 @@ private:
     uint32_t cachedFaceTimeWiFiCallingStatus;
     int32_t cachedDualPowerModePrimary;
     int32_t cachedDualPowerModeSecondary;
-    bool cachedCongestionControlEnabled;
     uint32_t cachedLmtpcValue;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
