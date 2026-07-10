@@ -7038,3 +7038,82 @@ Runtime validation:
 - public `networksetup -getairportnetwork en1` still printed
   `You are not associated with an AirPort network.`, preserving the open
   item-220/public CoreWLAN exposure rather than adding any fallback.
+
+## item 235 - APSTA station/key getter wrappers preempted reference null order
+
+- producers:
+  - `AirportItlwm::getAPSTA_STATION_LIST(...)`
+  - `AirportItlwm::getAPSTA_STA_IE_LIST(...)`
+  - `AirportItlwmAPSTAOwner::getStationList(...)`
+  - `AirportItlwmAPSTAOwner::getStaIEList(...)`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: APSTA_STATION_KEY_GETTER_NULL_ORDER
+- reference note:
+  - `docs/reference/AppleBCMWLAN_APSTA_station_key_bodies_2026_04_27.md`
+
+Reference and local evidence:
+
+- `AppleBCMWLANIO80211APSTAInterface::getSTATION_LIST(...)` first rejects NULL
+  input with raw `0x16`; only after that does AP-down state
+  `state+0x26c == 0` return `0x39`;
+- `AppleBCMWLANIO80211APSTAInterface::getSTA_IE_LIST(...)` first rejects NULL
+  input with raw `0x16`; only after that does station-table search return
+  `2` for a missing station;
+- local Tahoe controller wrappers checked `fAPSTAOwner == NULL` first, so the
+  no-owner controller path returned `0x39` for `getSTATION_LIST(NULL)` and
+  `2` for `getSTA_IE_LIST(NULL)` before the reference raw `0x16` could
+  surface.
+
+Local closure:
+
+- `AirportItlwm::getAPSTA_STATION_LIST(...)` now returns raw `0x16` for NULL
+  input before checking APSTA owner/AP-down state;
+- `AirportItlwm::getAPSTA_STA_IE_LIST(...)` now returns raw `0x16` for NULL
+  input before checking APSTA owner/station lookup state;
+- compiled witnesses
+  `kAirportItlwmAPSTAGetStationListNullBeforeAPDown == 1` and
+  `kAirportItlwmAPSTAGetStaIEListNullBeforeStationSearch == 1` pin the
+  recovered ordering in the payload-builder contract test.
+
+Non-claim:
+
+- this does not implement AP/GO firmware mode, AP station-list production,
+  `wpaie` firmware reads, AP station association, AP traffic, or role-7
+  success;
+- this does not alter reference-proven returns for AP-down/non-null
+  `getSTATION_LIST`, missing-station/non-null `getSTA_IE_LIST`,
+  `getSTA_STATS`, `getKEY_RSC`, or APSTA simple setters;
+- this does not touch primary STA association, public `networksetup`, CoreWLAN,
+  Dynamic Store, or any fallback gate.
+
+Runtime validation:
+
+- host `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` passed;
+- Tahoe guest `./scripts/test_payload_builders.sh` passed;
+- Tahoe guest clean build completed with all 949 BootKC symbols resolved
+  against `/System/Library/KernelCollections/BootKernelExtensions.kc`;
+- installed and booted `AirportItlwm.kext` UUID
+  `6670A165-B155-3861-A29A-B32801164F76`, SHA-256
+  `3cfabc622b6c5ac24f886644c7fe232b1e9b712281cc426b94e2082e5b2a7b1f`,
+  CDHash `0d890e8b204a9668292aa9d833dcbccd0d1a4f78`;
+- joined `AIAMlab6235/aa00bb0900`, received DHCP `10.77.0.47`;
+- required concurrent stress passed: ping `240/240`, 0.0% packet loss, RTT
+  `0.593/13.933/95.817/16.529 ms`; iperf3 transferred `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` remained active at `10.77.0.47`; IORegistry kept
+  `IO80211SSID = "AIAMlab6235"`, `IO80211BSSID = <80e4ba20eff9>`,
+  `IO80211Channel = 6`, `IO80211RSNDone = Yes`,
+  `CoreWiFiDriverReadyKey = "true"`, `IO80211Locale = "FCC"`, and
+  `IO80211CountryCode = "US"`;
+- `system_profiler SPAirPortDataType` reported `Status: Connected` with
+  current network channel 6, country `US`, WPA2 Personal, RSSI `-33 dBm`, and
+  transmit rate `104`;
+- host AP station dump retained the guest MAC as authenticated, associated,
+  and authorized with `tx failed: 0`;
+- the stress-window fault filter found no panic, CoreCapture, NoCTL, missed
+  beacon, deauth, disassoc, driver-not-available, `e0822403`,
+  `IO80211QueueCall`, firmware-crash, or stack-corruption signatures;
+- public `networksetup -getairportnetwork en1` still printed
+  `You are not associated with an AirPort network.`, preserving the open
+  item-220/public CoreWLAN exposure rather than adding any fallback.

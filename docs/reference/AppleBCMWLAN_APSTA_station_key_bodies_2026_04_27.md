@@ -105,5 +105,13 @@ Address: `0xffffff800168f9e6`.
 ## Local Scope
 
 The local scaffold records selectors, payload sizes, allocation sizes, offsets,
-return values, and carrier witnesses only. It still does not define a final
-APSTA owner class and does not execute these APSTA public methods at runtime.
+return values, and carrier witnesses only. It is not an AP/GO firmware runtime
+enablement note.
+
+As of 2026-07-10, the local controller/owner wrappers preserve the recovered
+caller-visible null ordering for the already-routed station/key getters:
+
+- `getSTATION_LIST(...)` checks NULL input before AP-down/owner state and
+  returns raw `0x16`;
+- `getSTA_IE_LIST(...)` checks NULL input before station-table/owner lookup and
+  returns raw `0x16`.

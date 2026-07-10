@@ -6343,6 +6343,9 @@ IOReturn AirportItlwm::setAPSTA_CIPHER_KEY(OSObject *object,
 IOReturn AirportItlwm::getAPSTA_STATION_LIST(OSObject *object,
     struct apple80211_sta_data *in)
 {
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStationListNullReturn);
+    }
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAGetStationListNotUpReturn);
     }
@@ -6352,6 +6355,9 @@ IOReturn AirportItlwm::getAPSTA_STATION_LIST(OSObject *object,
 IOReturn AirportItlwm::getAPSTA_STA_IE_LIST(OSObject *object,
     AirportItlwmAPSTAStaIEDataLayout *in)
 {
+    if (in == nullptr) {
+        return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNullReturn);
+    }
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNotFoundReturn);
     }

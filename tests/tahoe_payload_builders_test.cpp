@@ -444,8 +444,14 @@ void testApstaPublicContracts()
             "APSTA peer-cache control returns success");
     require(kAirportItlwmAPSTAGetStationListNullReturn == 0x16,
             "APSTA getSTATION_LIST null return is raw 0x16");
+    require(kAirportItlwmAPSTAGetStationListNullBeforeAPDown == 1,
+            "APSTA getSTATION_LIST checks null before AP-down state");
     require(kAirportItlwmAPSTAGetStationListNotUpReturn == 0x39,
             "APSTA getSTATION_LIST AP-down return is 0x39");
+    require(kAirportItlwmAPSTAGetStaIEListNullReturn == 0x16,
+            "APSTA getSTA_IE_LIST null return is raw 0x16");
+    require(kAirportItlwmAPSTAGetStaIEListNullBeforeStationSearch == 1,
+            "APSTA getSTA_IE_LIST checks null before station search");
     require(kAirportItlwmAPSTAGetStaIEListNotFoundReturn == 2,
             "APSTA getSTA_IE_LIST missing station return is 2");
     require(kAirportItlwmAPSTAGetStaStatsNotUpReturn == 0x39,
