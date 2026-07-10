@@ -4829,11 +4829,9 @@ SInt32 AirportItlwm::apple80211_ioctl(IO80211SkywalkInterface *interface,unsigne
 SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsigned long cmd,void *data,bool isSet)
 {
     // Keep the carried Tahoe card-specific bridge for the visible set-side and
-    // hidden-association selectors that arrive on this controller seam.
-    // Public request-number fallback is now tracked separately on interface
-    // slot `[411] isCommandProhibited(int)`, so `handleCardSpecific(...)`
-    // remains only the supplementary ingress for selectors that never use that
-    // public request gate.
+    // hidden-association selectors that arrive on this controller seam. Public
+    // current-link selectors stay owned by the BSD Apple80211 dispatcher; slot
+    // `[411] isCommandProhibited(int)` is not a public payload ingress.
     if (data != nullptr && interface != nullptr) {
         apple80211req req;
         bzero(&req, sizeof(req));

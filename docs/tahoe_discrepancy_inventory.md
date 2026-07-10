@@ -99,10 +99,10 @@ This inventory is intentionally split into:
   controller cache `+0x188` and peer-manager refs `+0x550/+0x558`. That is
   one real Tahoe bootstrap exposure gap for
   `SSID/BSSID/CHANNEL/VIRTUAL_IF_ROLE/VIRTUAL_IF_PARENT`.
-  Later decomp/runtime work proved Tahoe public selector fallback also still
-  uses interface slot `[411] isCommandProhibited(int)` with the same request
-  numbers after IOUC/WCL miss, so both the primary-interface seam and the
-  public request gate matter on 26.x.
+  Later decomp/runtime work found Tahoe public helper calls into interface slot
+  `[411] isCommandProhibited(int)` after IOUC/WCL miss, but item 224 supersedes
+  the early interpretation: public current-link selectors must not be admitted
+  through that gate because it is not a payload producer.
 
 - `Tahoe driver-available producer contract`:
   live build `2820901` showed that `CoreWiFiDriverReadyKey = "true"` in
@@ -2016,19 +2016,13 @@ reference producer.
     only the carried hidden association commands `0x45/0x46`
   - the public fallback request numbers were therefore still left on inherited
     family filtering before the helper plane
-- exact correction:
-  - keep `isCommandProhibited(...)` narrow to proven selectors only
-  - retain the already approved hidden association commands `0x45/0x46`
-  - additionally admit only the proven public fallback request numbers:
-    `1`, `4`, `9`, `0x67`, `0xd8`
-  - continue delegating those admitted selectors to the already permissive
-    controller policy
-- why this is narrower and more provable than `CR-049`:
-  - it follows the exact public request-number seam already shown in family
-    decomp
-  - it removes the contradicted hidden `0x103/0x104/0x15e` classification from
-    the runtime diff
-  - it restores the exact interface gate Apple already uses for that fallback
+- superseded correction:
+  - this interpretation was rejected by item 224;
+  - keep `isCommandProhibited(...)` narrow to the proven hidden association
+    commands `0x45/0x46`;
+  - do not admit public current-link request numbers `1`, `4`, `9`, `0x67`, or
+    `0xd8` through slot `[411]`;
+  - leave public current-link payloads owned by the BSD Apple80211 dispatcher.
 
 ### 31. Slot `[411]` still returns the aborting polarity for the proven public selector subset
 - anomaly_id: `TAHOE-INTERFACE-REQUEST-GATE-POLARITY-024`
@@ -5838,6 +5832,25 @@ Runtime evidence:
   returns `err=0` and updates the associated-network object;
 - IORegistry and `system_profiler SPAirPortDataType` both show the interface as
   associated while the external client is redacted.
+- fresh post-restore probes on `AIAMlab6235` show the low-level current-network
+  model is consumable by userland object constructors:
+  - raw Tahoe and legacy BSD `SSID`, `BSSID`, `STATE`, and `CURRENT_NETWORK`
+    all return success, with state `4`, SSID `AIAMlab6235`, BSSID
+    `80:e4:ba:20:ef:f9`, channel `6`, and current-network IE length `163`;
+  - `CWFApple80211 currentNetwork:` returns a real `CWFScanResult` with the same
+    SSID/BSSID/channel/security/RSSI;
+  - `CWNetwork initWithScanRecord:` built from that scan record produces valid
+    `ssidData`, `bssidData`, `scanRecord`, and `coreWiFiScanResult`;
+  - known-network matching can match the current scan result to the stored
+    `AIAMlab6235` profile;
+  - `State:/Network/Interface/en1/AirPort` carries a real archived
+    `CachedScanRecord`, but its public top-level `SSID`, `SSID_STR`, and `BSSID`
+    values remain blank/redacted;
+  - `CWInterface.corewifi` still reports nil `SSID`, `BSSID`,
+    `currentScanResult`, and `currentKnownNetworkProfile`;
+  - `CWFXPCClient` service-type matrix shows privileged service types allow
+    request types `57`/`58`, while the public CoreWLAN service path used by
+    `CWInterface.corewifi` does not.
 
 Local closure:
 
@@ -5855,6 +5868,10 @@ Local closure:
 - future driver validation must prefer decompiled ABI, IORegistry, airportd
   internal requests, low-level `CWFApple80211` probes, data-path stress, and
   logs proving that a request actually reached the Apple80211 IOCTL bridge.
+- the next candidate patch must target the missing public associated/current
+  publication seam above the already-valid raw scan record. It must not broaden
+  `isCommandProhibited(...)`, rewrite compact current-link carriers, or synthesize
+  Dynamic Store values.
 
 Non-claims:
 

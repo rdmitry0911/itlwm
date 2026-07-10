@@ -43,8 +43,9 @@ request.
 
 `AirportItlwmSkywalkInterface::isCommandProhibited(int)` now returns non-zero
 only for hidden Tahoe association commands `0x45` and `0x46`. Public
-current-link request numbers fall back to inherited family behavior and remain
-owned by `processApple80211Ioctl(...)`.
+current-link request numbers continue through the inherited family path and
+remain owned by `processApple80211Ioctl(...)`; the gate is not a public payload
+producer.
 
 ## Runtime Validation
 
