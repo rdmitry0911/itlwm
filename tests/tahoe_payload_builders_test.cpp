@@ -541,6 +541,10 @@ void testTahoeSkywalkIoctlRoutes()
     require(shouldRoute(kIocPeerCacheMaximumSize, false) &&
                 !shouldRoute(kIocPeerCacheMaximumSize, true),
             "Skywalk routes APSTA peer-cache maximum getter");
+    require(kIocNanphsAssociation == APPLE80211_IOC_NANPHS_ASSOCIATION &&
+                shouldRoute(kIocNanphsAssociation, false) &&
+                !shouldRoute(kIocNanphsAssociation, true),
+            "Skywalk routes NANPHS_ASSOCIATION getter for LQM options");
     require(shouldRoute(kIocWclBssInfo, false) &&
                 !shouldRoute(kIocWclBssInfo, true),
             "Skywalk routes WCL BSS_INFO selector 0x1b1 getter only");
@@ -625,6 +629,9 @@ void testTahoeQosDynsarContracts()
     require(!txBlankingStatusEnabled(0) &&
                 txBlankingStatusEnabled(kTxBlankingStatusBit),
             "tx-blanking status exposes bit 0 only");
+    require(sizeof(apple80211_nan_link_association_info) == 0x08 &&
+                offsetof(apple80211_nan_link_association_info, associated) == 0x04,
+            "NANPHS association carrier is version + associated dword");
 
     TahoeOwnerRegistry registry;
     require(!registry.isSlowWifiFeatureEnabled(),

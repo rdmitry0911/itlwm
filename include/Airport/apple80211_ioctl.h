@@ -375,6 +375,7 @@ struct apple80211req
 #define APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE  352
 #define APPLE80211_IOC_NSS  353
 #define APPLE80211_IOC_SET_MAC_ADDRESS 368
+#define APPLE80211_IOC_NANPHS_ASSOCIATION 391
 #define APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE 403
 #define APPLE80211_IOC_MIS_MAX_STA                     508
 
@@ -484,6 +485,14 @@ struct apple80211_offload_tcpka_enable_t {
 
 static_assert(sizeof(struct apple80211_offload_tcpka_enable_t) == 0x08,
               "apple80211_offload_tcpka_enable_t must match Apple version + u32 ABI");
+
+struct apple80211_nan_link_association_info {
+    uint32_t    version;
+    uint32_t    associated;
+} __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_nan_link_association_info) == 0x08,
+              "apple80211_nan_link_association_info must match Apple version + u32 ABI");
 
 struct apple80211_lqm_config_t {
     uint32_t    version;

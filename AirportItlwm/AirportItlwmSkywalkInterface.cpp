@@ -1983,6 +1983,27 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setLQM_CONFIG((apple80211_lqm_config_t *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_NANPHS_ASSOCIATION: {
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            if (req->req_len != 0 &&
+                req->req_len < sizeof(apple80211_nan_link_association_info))
+                return kIOReturnBadArgumentTahoe;
+
+            auto *data =
+                (apple80211_nan_link_association_info *)req->req_data;
+            memset(data, 0, sizeof(*data));
+            data->version = 1;
+
+            struct ieee80211com *ic =
+                fHalService ? fHalService->get80211Controller() : nullptr;
+            data->associated =
+                (ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
+                 ic->ic_bss != nullptr)
+                    ? 1U
+                    : 0U;
+            return kIOReturnSuccess;
+        }
         case APPLE80211_IOC_PRIVATE_MAC:
             return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
                                         : kIOReturnUnsupported;
