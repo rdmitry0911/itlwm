@@ -20,6 +20,7 @@
 #include "TahoeOpModeContracts.hpp"
 #include "TahoePhyModeContracts.hpp"
 #include "TahoeQosDynsarContracts.hpp"
+#include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include "Airport/IO80211BssManager.h"
 #include "Airport/WCLBulletinBoard.h"
@@ -7236,6 +7237,23 @@ static uint8_t scanResultSsidLengthForNode(const struct ieee80211_node *node)
         : 0;
 }
 
+static bool isRenderableScanNode(const struct ieee80211_node *node)
+{
+    if (node == nullptr || node->ni_chan == nullptr ||
+        node->ni_chan == IEEE80211_CHAN_ANYC)
+        return false;
+
+    return TahoeScanContracts::hasRenderableBssid(node->ni_bssid);
+}
+
+static struct ieee80211_node *nextRenderableScanNode(struct ieee80211com *ic,
+                                                     struct ieee80211_node *node)
+{
+    while (node != nullptr && !isRenderableScanNode(node))
+        node = RB_NEXT(ieee80211_tree, &ic->ic_tree, node);
+    return node;
+}
+
 static uint32_t buildTahoeCurrentBssIeStream(const struct ieee80211_node *node,
                                              uint8_t *dst,
                                              uint32_t capacity)
@@ -7356,7 +7374,10 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
             fScanResultWrapping = false;
             return 5;
         } else {
-            fNextNodeToSend = RB_MIN(ieee80211_tree, &fHalService->get80211Controller()->ic_tree);
+            struct ieee80211com *ic = fHalService->get80211Controller();
+            fNextNodeToSend = nextRenderableScanNode(
+                ic,
+                RB_MIN(ieee80211_tree, &ic->ic_tree));
             if (fNextNodeToSend == NULL) {
                 return 5;
             }
@@ -7364,7 +7385,10 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
     }
     convertNodeToScanResult(fHalService, fNextNodeToSend, sr);
     
-    fNextNodeToSend = RB_NEXT(ieee80211_tree, &HalService->get80211Controller()->ic_tree, fNextNodeToSend);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    fNextNodeToSend = nextRenderableScanNode(
+        ic,
+        RB_NEXT(ieee80211_tree, &ic->ic_tree, fNextNodeToSend));
     if (fNextNodeToSend == NULL)
         fScanResultWrapping = true;
 
@@ -7387,7 +7411,7 @@ getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
     RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
         if (count >= APPLE80211_BGSCAN_MAX_NETWORKS)
             break;
-        if (ni->ni_chan == NULL || ni->ni_chan == IEEE80211_CHAN_ANYC)
+        if (!isRenderableScanNode(ni))
             continue;
 
         struct apple80211_bgscan_cached_network_entry *entry = &data->entries[count];

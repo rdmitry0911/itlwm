@@ -13,6 +13,7 @@
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
@@ -1392,6 +1393,14 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
     if (ic == nullptr || ni == nullptr || payload == nullptr || payloadLen == nullptr ||
         ni->ni_chan == nullptr || ni->ni_chan == IEEE80211_CHAN_ANYC)
         return false;
+    /*
+     * Apple WCLNetManager::updateBss rejects BeaconMetaData.bssid == 00:00:00:00:00:00
+     * before constructing WCLBSSBeacon. The OpenBSD scan cursor can carry a
+     * channel with no BSS identity; publishing it as a WCL scan result gives
+     * CoreWLAN a candidate with nil SSID/BSSID.
+     */
+    if (!TahoeScanContracts::hasRenderableBssid(ni->ni_bssid))
+        return false;
 
     const uint16_t chanSpec = buildTahoePrimaryChanSpec(ic, ni->ni_chan);
     if (chanSpec == 0)
@@ -1413,12 +1422,11 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
     payload->meta.ieLen = ieLen;
     payload->meta.chanSpec = chanSpec;
     payload->meta.ssidLen = ssidLen;
-    if (payload->meta.ssidLen != 0) {
+    // AppleBCMWLANScanAdapter's BeaconMetaData builder sets bit 1 and
+    // explicitly clears bit 2; bit 2 is not an SSID-present marker.
+    payload->meta.flags |= TahoeScanContracts::kWclScanResultMetaFlags;
+    if (payload->meta.ssidLen != 0)
         memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
-        // Consumer-side setBeaconDataFromMsg uses bits 1|2 as the "header SSID
-        // is present" hint before it parses the raw beacon IEs.
-        payload->meta.flags |= 0x6;
-    }
     const uint16_t primaryChannel =
         static_cast<uint16_t>(ieee80211_chan2ieee(ic, ni->ni_chan));
     payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));

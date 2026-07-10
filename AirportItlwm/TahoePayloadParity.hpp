@@ -143,7 +143,7 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "AirportItlwm::postWclScanDoneGated",
             "apple-wcl-scan-result",
             kVariablePayloadLength,
-            "null controller/node/channel rejects before postMessage; metadata header is 0x44"
+            "null controller/node/channel and zero BSSID reject before postMessage; metadata header is 0x44; flags are 0x2"
         },
         {
             "wcl-connect-complete",

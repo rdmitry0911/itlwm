@@ -18,6 +18,7 @@
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoePhyModeContracts.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
+#include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 #include "include/Airport/IO80211BssManager.h"
 
@@ -1090,6 +1091,11 @@ struct TahoeScanResultLayoutProbe {
 
 void testTahoeScanResultLayout()
 {
+    const uint8_t zeroBssid[TahoeScanContracts::kBssidLength] = {};
+    const uint8_t validBssid[TahoeScanContracts::kBssidLength] = {
+        0x80, 0xe4, 0xba, 0x20, 0xef, 0xf9,
+    };
+
     require(kTahoeScanResultMaxRates == 15,
             "Tahoe scan-result carrier preserves 15 legacy rates before SSID");
     require(kTahoeScanResultMaxSsidLength == 0x20,
@@ -1106,6 +1112,17 @@ void testTahoeScanResultLayout()
             "Tahoe scan-result IE data remains at +0x8c");
     require(sizeof(TahoeScanResultLayoutProbe) == 0x8d4,
             "Tahoe scan-result carrier size remains 0x8d4");
+    require(TahoeScanContracts::kWclScanResultMetaFlags == 0x2,
+            "WCL scan-result BeaconMetaData flags match Apple bit-1-only builder");
+    require((TahoeScanContracts::kWclScanResultMetaFlags &
+             TahoeScanContracts::kWclScanResultSsidPresentLegacyMask) == 0,
+            "WCL scan-result BeaconMetaData clears the legacy bit-2 SSID hint");
+    require(!TahoeScanContracts::hasRenderableBssid(nullptr),
+            "scan renderability rejects null BSSID");
+    require(!TahoeScanContracts::hasRenderableBssid(zeroBssid),
+            "scan renderability rejects zero BSSID");
+    require(TahoeScanContracts::hasRenderableBssid(validBssid),
+            "scan renderability accepts nonzero BSSID");
 }
 
 void testTahoeCurrentNetworkCarrierContract()
@@ -1241,6 +1258,6 @@ int main()
     testTahoeBeaconIeBuilder();
     testTahoeAssociationAuthContracts();
     testTahoeCountryCodeCarrierContracts();
-    std::cout << "tahoe payload builders ok: 26 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 26 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

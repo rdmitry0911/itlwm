@@ -354,10 +354,10 @@ PAYLOAD_TYPES = [
         "implementation_checks": [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
-                "tokens": ["kTahoeWclScanResultHeaderLen = 0x44", "kTahoeWclScanResultMaxIELen = 0x800", "buildTahoeWclScanResultPayload", "APPLE80211_M_WCL_SCAN_RESULT"],
+                "tokens": ["kTahoeWclScanResultHeaderLen = 0x44", "kTahoeWclScanResultMaxIELen = 0x800", "buildTahoeWclScanResultPayload", "APPLE80211_M_WCL_SCAN_RESULT", "TahoeScanContracts::kWclScanResultMetaFlags"],
             },
         ],
-        "invalid_semantics": "null controller/node/channel rejects before WCL_SCAN_RESULT publication",
+        "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication",
     },
     {
         "name": "wcl-connect-complete",
