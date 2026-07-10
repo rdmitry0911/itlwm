@@ -24,6 +24,13 @@ with `{status = 0, reason = 0}` for the successful local SET_SSID edge. It does
 not copy SSID bytes into the event, does not synthesize Dynamic Store values,
 and does not broaden any request gate.
 
+Follow-up runtime evidence on 2026-07-10 moved this BSSID/SSID identity
+publisher from the early RSN key-done edge to the parent-success Skywalk
+link-up edge. That preserves the same 8-byte carrier while making airportd's
+`__associatedNetwork` re-read run after the inherited IO80211 interface state
+transition has accepted. `WCL_CONNECT_COMPLETE` remains on RSN key-done because
+the WCL join FSM times out before link-up without it.
+
 ## Runtime validation
 
 Tahoe 25C56 loaded the rebuilt kext with UUID

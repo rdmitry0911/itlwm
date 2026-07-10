@@ -2904,6 +2904,17 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         apple80211_link_changed_event_data ed;
         bzero(&ed, sizeof(ed));
         const bool isLinkDown = (state != kIO80211NetworkLinkUp);
+        if (!isLinkDown) {
+            /*
+             * Accepted SET_SSID-equivalent identity events must run after the
+             * inherited parent link-up transition accepts, not on the earlier
+             * RSN key-done edge. The BSSID writer below shares the same
+             * last-published tracker, so this active accepted-join publication
+             * naturally suppresses its passive duplicate.
+             */
+            instance->publishTahoeAcceptedJoinIdentityEvents(
+                "setLinkStateInternal");
+        }
         ed.isLinkDown = isLinkDown ? 1 : 0;
         if (isLinkDown) {
             ed.voluntary_down = instance->disassocIsVoluntary ? 1 : 0;

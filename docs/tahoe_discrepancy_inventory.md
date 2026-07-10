@@ -6567,3 +6567,79 @@ Non-claim:
   `You are not associated with an AirPort network.`, while raw Apple80211 and
   CoreWiFi direct scan/profile matching continue to expose the real associated
   network.
+
+## item 230 - Accepted identity events published before parent link-up state
+
+- producers:
+  - `AirportItlwm::eventHandler(IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE)`
+  - `AirportItlwmSkywalkInterface::setLinkStateInternal(...)`
+  - `AirportItlwm::publishTahoeAcceptedJoinIdentityEvents(...)`
+- status: implemented, runtime validated
+- justification: REFERENCE_EVENT_ORDER_AND_PARENT_STATE
+- reference note:
+  - `docs/reference/CR-479-accepted-identity-parent-linkstate-owner-20260710.md`
+
+Reference and runtime evidence:
+
+- Tahoe airportd `CWXPCInterfaceContext::ssidChanged` schedules
+  `__associatedNetwork`, and `__associatedNetwork` first requires non-null
+  interface `ssidData` before comparing it with the current/associated network
+  object;
+- live Tahoe 25C56 FBT during a controlled rejoin showed the previous local
+  BSSID/SSID identity sequence running on `IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE`
+  before `setCurrentApAddress(...)` and before
+  `AirportItlwmSkywalkInterface::setLinkStateInternal(...)`;
+- the same FBT window showed `setLinkStateInternal` returning with low bit set
+  on link-up, so older notes that classified that branch as closed were
+  incorrect;
+- a follow-up run proved `WCL_CONNECT_COMPLETE` cannot move with BSSID/SSID:
+  without connect-complete on RSN key-done, the AP saw the station
+  associated/authorized but macOS kept `en1` inactive and no link-up
+  `setLinkStateInternal` occurred before the later down transition;
+- raw driver-backed Apple80211 current-link probes returned SSID
+  `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, and channel 6 while public
+  `CWInterface.ssid/bssid`, Dynamic Store top-level SSID/BSSID, and
+  `networksetup -getairportnetwork en1` still reported nil/not-associated.
+
+Local closure:
+
+- RSN key-done publishes RSN completion plus WCL link-up and WCL
+  connect-complete for the WCL join FSM;
+- the exact existing BSSID/SSID identity carrier sequence is exposed as
+  `AirportItlwm::publishTahoeAcceptedJoinIdentityEvents(...)`;
+- `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` calls that sequence
+  on the parent-success link-up edge after the inherited IO80211 transition has
+  accepted;
+- the duplicate accepted-identity call in `setLinkStateGated(...)` is removed;
+- duplicate BSSID publication remains governed by the existing
+  last-published-BSSID tracker and same-BSS reason-1 suppression.
+
+Runtime validation:
+
+- loaded Tahoe kext UUID `3A9F0DDD-EC3A-3274-A11D-CB91E71A12FA`, binary
+  SHA-256 `265b38eed9b0990c3659ef8d2308cc064393868567501137b94c53b5881a738d`;
+- host and guest payload-builder tests passed, Tahoe build passed, and all 949
+  undefined symbols resolved against BootKC;
+- controlled rejoin reached DHCP `10.77.0.47`, raw Apple80211 current network
+  returned SSID `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, and channel 6;
+- FBT showed WCL link-up/connect-complete on RSN key-done, then
+  `publishTahoeAcceptedJoinIdentityEvents(...)` inside the accepted
+  `setLinkStateInternal(link=2)` edge;
+- required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
+  passed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
+  loss, RTT `0.571/15.376/146.618/17.904 ms`; iperf3 `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress `en1` stayed active at DHCP `10.77.0.47`, raw current-network
+  stayed valid, and the fault filter found no panic, CoreCapture, NoCTL,
+  missed beacon, deauth, disassoc, `driver not available`, `0xe0822403`, or
+  `IO80211QueueCall` signatures.
+
+Non-claim:
+
+- this does not close the public `networksetup`/CoreWLAN current-network
+  surface by itself;
+- this does not add a userspace workaround, Dynamic Store synthesis, or broad
+  Apple80211/CoreWLAN fallback gate;
+- the persistent `networksetup` "not associated" output remains a public
+  driver-surface mismatch until the airportd/CoreWLAN model consumes the same
+  driver-originated associated state as the raw Apple80211 path.

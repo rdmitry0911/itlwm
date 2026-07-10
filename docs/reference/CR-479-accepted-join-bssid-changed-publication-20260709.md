@@ -22,14 +22,15 @@
 
 The previous Tahoe implementation only published the populated event-3 carrier
 from passive framework entry points: `setCurrentApAddress(...)` and the
-`setLinkStateInternal(...)` parent-success gate. Runtime showed that the parent
-gate stayed closed on Tahoe, and the current public symptom persisted after
-`SSID_CHANGED` was delivered and low-level `CWFApple80211 currentNetwork:`
-returned a valid `CWFScanResult`.
+`setLinkStateInternal(...)` parent-success gate. Later FBT on 2026-07-10
+corrected the runtime classification: the parent bool return's low bit is set
+on the accepted link-up transition, so that branch is active. The remaining
+public symptom persisted because the accepted-profile sequence was still being
+posted earlier from RSN key-done, before the parent current-state transition.
 
 The local accepted-join path now publishes the same populated 24-byte
 `APPLE80211_M_BSSID_CHANGED` carrier from the current associated BSS after WCL
-connect-complete and before zero-length `APPLE80211_M_SSID_CHANGED`. The new
+connect-complete and before `APPLE80211_M_SSID_CHANGED`. The new
 publisher uses the same `AirportItlwmSkywalkInterface` writer, embedded-channel
 fill, last-published BSSID tracker, zero-BSSID rejection, and same-BSS
 reason-1 suppression as the passive `setCurrentApAddress(...)` hook. It does

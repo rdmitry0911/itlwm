@@ -1619,12 +1619,9 @@ static bool postTahoeJoinAcceptedBssidChangedEvent(AirportItlwm *controller,
     return iface->publishTahoeBssidChangedFromCurrentBss(source);
 }
 
-static bool postTahoeAcceptedJoinProfileEvents(AirportItlwm *controller,
-                                               const char *source)
+static bool postTahoeAcceptedJoinIdentityEvents(AirportItlwm *controller,
+                                                const char *source)
 {
-    if (!postTahoeWclConnectCompleteEvent(controller))
-        return false;
-
     const bool bssidPublished =
         postTahoeJoinAcceptedBssidChangedEvent(controller, source);
     const bool ssidPublished = postTahoeJoinAcceptedSsidChangedEvent(controller);
@@ -1632,6 +1629,14 @@ static bool postTahoeAcceptedJoinProfileEvents(AirportItlwm *controller,
 }
 
 } // namespace
+
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwm::
+publishTahoeAcceptedJoinIdentityEvents(const char *source)
+{
+    return postTahoeAcceptedJoinIdentityEvents(this, source);
+}
+#endif
 
 // Skywalk TX submission callback — called when BSD stack has packets to transmit.
 // Must match poolOpts.bufferSize in AirportItlwm::start() pool creation.
@@ -2744,8 +2749,15 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
                 (void *)(uintptr_t)false, NULL, NULL);
 #if __IO80211_TARGET >= __MAC_26_0
             postTahoeWclLinkUpInd(that, 0);
-            postTahoeAcceptedJoinProfileEvents(that,
-                "IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE");
+            postTahoeWclConnectCompleteEvent(that);
+            /*
+             * Keep RSN_HANDSHAKE_DONE limited to key-completion and WCL join
+             * FSM completion. The BSSID/SSID identity events that wake
+             * airportd's __associatedNetwork path are owned by the
+             * parent-accepted Skywalk link-up transition, after IO80211 has
+             * made the interface current-state model coherent for that
+             * re-read.
+             */
 #endif
             return;
         case IEEE80211_EVT_STA_DEAUTH:
@@ -4233,11 +4245,6 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     RT2_SET(13);
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);
 #if __IO80211_TARGET >= __MAC_26_0
-    if (linkState == kIO80211NetworkLinkUp) {
-        postTahoeAcceptedJoinProfileEvents(that, "setLinkStateGated");
-    }
-#endif
-#if __IO80211_TARGET >= __MAC_26_0
     /*
      * Tahoe legacy event-publication ownership.
      *
@@ -4259,8 +4266,8 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * `ssidChanged` block schedules a fresh `__associatedNetwork` read and
      * forwards that object through `setAssociatedNetwork:`. The local
      * net80211 bridge has no JoinAdapter, so the corresponding accepted join
-     * edge is the Tahoe link-up path above, after running-state publication
-     * and WCL connect-complete.
+     * edge is the Tahoe Skywalk `setLinkStateInternal` parent-success link-up
+     * transition, after the inherited IO80211 state change has been accepted.
      *
      * APPLE80211_M_BSSID_CHANGED has a recovered Apple writer on the
      * WCL/IOUC side (selector 0x1b1) that produces a populated 24-byte
@@ -4271,13 +4278,14 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * produced an `expected=24 actual=0` CoreWiFi rejection), so the
      * Tahoe branch must not republish APPLE80211_M_BSSID_CHANGED with
      * a NULL/0 payload. The accepted join-up path publishes the populated
-     * carrier from the current associated BSS before SSID_CHANGED, and
-     * the Tahoe Skywalk `setCurrentApAddress` override remains the passive
-     * framework-supplied BSSID-transition hook. Both paths share the same
+     * carrier from the current associated BSS before SSID_CHANGED from that
+     * same parent-success link-up transition, and the Tahoe Skywalk
+     * `setCurrentApAddress` override remains the passive framework-supplied
+     * BSSID-transition hook. Both paths share the same
      * last-published tracker, zero-BSSID rejection, and same-BSS reason-1
      * suppression gates. The legacy zero-length BSSID notify remains only
      * in the pre-Tahoe branch below. SSID_CHANGED is published by
-     * `postTahoeJoinAcceptedSsidChangedEvent` on the accepted join-up edge.
+     * `publishTahoeAcceptedJoinIdentityEvents` on the accepted join-up edge.
      */
 #else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);
