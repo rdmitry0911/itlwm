@@ -129,7 +129,7 @@ STATE_MACHINES = [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
                 "tokens": [
-                    "WCL JoinDone owns assoc completion",
+                    "buildTahoeWclAuthAssocCompletePayload(0, 0, &authAssocStatus)",
                     "postTahoeWclConnectCompleteEvent",
                     "APPLE80211_M_WCL_CONNECT_COMPLETE_EVENT",
                 ],
@@ -174,7 +174,8 @@ STATE_MACHINES = [
                     "Project-owned PLTI PMK producer trigger surface",
                     "PRODUCER (kext, AirportItlwmSkywalkInterface::associateSSID)",
                     "generation_echo == fAssocTarget.generation",
-                    "deliverExternalPMK INSTALLED generation_echo",
+                    "gate->runAction(&airportItlwmDeliverPmkAction, &a)",
+                    "memcpy(ic->ic_psk, a->key->key, sizeof(ic->ic_psk))",
                 ],
             },
             {
@@ -311,7 +312,8 @@ STATE_MACHINES = [
                     "kAirportItlwmTxCompletionPendingCapacity",
                     "skywalkTxDrainCompletionPackets(this)",
                     "skywalkRxDrainPendingPackets(this)",
-                    "TXpending=%u RXpending=%u",
+                    "fTxCompletionPendingCount <",
+                    "fRxPendingCount < kAirportItlwmRxPendingCapacity",
                 ],
             },
         ],
@@ -535,7 +537,8 @@ RECOVERY_CASES = [
                     "skywalkTxDrainCompletionPackets(this)",
                     "skywalkTxPopCompletionPacket(that)",
                     "skywalkTxReleaseCompletedPacket(that, pkt)",
-                    "TXpending=%u RXpending=%u",
+                    "fTxCompletionPendingCount <",
+                    "kAirportItlwmTxCompletionPendingCapacity",
                 ],
             },
         ],
