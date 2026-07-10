@@ -1545,8 +1545,17 @@ static bool postTahoeJoinAcceptedSsidChangedEvent(AirportItlwm *controller)
         return false;
     }
 
+    /*
+     * AppleBCMWLANCore::handleSetSSIDEvent posts APPLE80211_M_SSID_CHANGED
+     * with an 8-byte status/reason carrier before JoinAdapter handling. For
+     * the accepted local join-up edge both firmware event fields are success,
+     * so the Apple-identical carrier is two zero dwords. This is status data,
+     * not SSID string material.
+     */
+    apple80211_ssid_changed_event_data payload;
+    bzero(&payload, sizeof(payload));
     controller->postMessage(controller->fNetIf, APPLE80211_M_SSID_CHANGED,
-                            NULL, 0, true);
+                            &payload, sizeof(payload), true);
     return true;
 }
 
@@ -4192,16 +4201,15 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * transition's success edge, so re-publishing here would deliver the
      * same userspace event twice for a single accepted transition.
      *
-     * The zero-length APPLE80211_M_SSID_CHANGED carrier has a separate
-     * Apple producer: `AppleBCMWLANJoinAdapter::handleSetSSID` updates the
-     * accepted-BSSID slot from the firmware SET_SSID event and then calls
-     * the two-argument event producer with code 2. The recovered airportd
-     * `ssidChanged` block consumes no payload; it schedules a fresh
-     * `__associatedNetwork` read and forwards that object through
-     * `setAssociatedNetwork:`. The local net80211 bridge has no
-     * JoinAdapter, so the corresponding accepted join edge is the Tahoe
-     * link-up path above, after running-state publication and WCL
-     * connect-complete.
+     * APPLE80211_M_SSID_CHANGED has a separate Apple producer:
+     * `AppleBCMWLANCore::handleSetSSIDEvent` publishes the 8-byte successful
+     * status/reason carrier before handing the SET_SSID event to
+     * `AppleBCMWLANJoinAdapter::handleSetSSID`. The recovered airportd
+     * `ssidChanged` block schedules a fresh `__associatedNetwork` read and
+     * forwards that object through `setAssociatedNetwork:`. The local
+     * net80211 bridge has no JoinAdapter, so the corresponding accepted join
+     * edge is the Tahoe link-up path above, after running-state publication
+     * and WCL connect-complete.
      *
      * APPLE80211_M_BSSID_CHANGED has a recovered Apple writer on the
      * WCL/IOUC side (selector 0x1b1) that produces a populated 24-byte

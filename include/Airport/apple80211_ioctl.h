@@ -761,7 +761,13 @@ static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up
  *      length-checked inline payload for APPLE80211_M_LINK_CHANGED
  *      publication and the on-demand response for the SIOCGA80211 ioctl
  *      path APPLE80211_IOC_LINK_CHANGED_EVENT_DATA = 156.
- *   2. 24-byte BSSID-changed compact carrier (APPLE80211_M_BSSID_CHANGED
+ *   2. 8-byte SSID-changed status carrier (APPLE80211_M_SSID_CHANGED = 2)
+ *      carried by struct apple80211_ssid_changed_event_data below.
+ *      AppleBCMWLANCore::handleSetSSIDEvent builds this carrier from
+ *      wl_event_msg_t status/reason dwords before handing the event to the
+ *      JoinAdapter. A successful accepted SET_SSID edge therefore publishes
+ *      two zero dwords, not a zero-length event and not SSID string bytes.
+ *   3. 24-byte BSSID-changed compact carrier (APPLE80211_M_BSSID_CHANGED
  *      = 3) carried by struct apple80211_bssid_changed_event_data below.
  *      The carrier was recovered with length 0x18, BSSID at offset +0x00,
  *      apple80211_channel at offset +0x08, and reason at offset +0x14.
@@ -799,6 +805,20 @@ static_assert(__offsetof(struct apple80211_link_changed_event_data, voluntary_up
 
 #define APPLE80211_BSSID_CHANGE_REASON_INITIAL  0
 #define APPLE80211_BSSID_CHANGE_REASON_SAME_BSS 1
+
+struct apple80211_ssid_changed_event_data
+{
+    uint32_t status;          // +0x00, successful SET_SSID event publishes 0
+    uint32_t reason;          // +0x04, successful SET_SSID event publishes 0
+};
+
+static_assert(sizeof(struct apple80211_ssid_changed_event_data) == 0x08,
+              "apple80211_ssid_changed_event_data must be 8 bytes "
+              "(Tahoe status carrier ABI)");
+static_assert(__offsetof(struct apple80211_ssid_changed_event_data, status) == 0x00,
+              "SSID_CHANGED status must live at +0x00 per Tahoe ABI");
+static_assert(__offsetof(struct apple80211_ssid_changed_event_data, reason) == 0x04,
+              "SSID_CHANGED reason must live at +0x04 per Tahoe ABI");
 
 struct apple80211_bssid_changed_event_data
 {

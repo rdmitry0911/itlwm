@@ -6196,6 +6196,68 @@ Runtime validation:
   `networksetup -getairportnetwork en1` still printed
   `You are not associated with an AirPort network.` on the same runtime.
 
+## item 229 - Accepted SET_SSID must publish the Tahoe SSID_CHANGED status carrier
+
+- producers:
+  - `AppleBCMWLANCore::handleSetSSIDEvent(wl_event_msg_t *)`
+  - `AirportItlwm::setLinkStateGated(...)` accepted local join-up edge
+  - `APPLE80211_M_SSID_CHANGED`
+- status: implemented, runtime validated on Tahoe 25C56; public surface still
+  open
+- justification: REFERENCE_SETSSID_EVENT_STATUS_CARRIER
+- reference note:
+  - `docs/reference/CR-479-accepted-join-ssid-changed-status-carrier-20260710.md`
+
+Reference evidence:
+
+- recovered Tahoe `AppleBCMWLANCore::handleSetSSIDEvent(wl_event_msg_t *)`
+  reads firmware event dwords at `+0x08` and `+0x0c`;
+- nonzero firmware values are mapped into Apple error domains, while a
+  successful SET_SSID edge keeps both output dwords zero;
+- the producer posts `APPLE80211_M_SSID_CHANGED` with event length `0x08`
+  before calling `AppleBCMWLANJoinAdapter::handleSetSSID(...)`.
+
+Local closure:
+
+- the local accepted-join path no longer publishes
+  `APPLE80211_M_SSID_CHANGED` as `NULL/0`;
+- it now posts the Apple-shaped 8-byte successful status carrier
+  `{status = 0, reason = 0}`;
+- the event still carries status/reason only, not SSID string bytes.
+
+Runtime validation:
+
+- loaded kext UUID `5F603693-8E18-322B-8169-31879650C6C9`, signed CDHash
+  `0599bebd76c46b176d598c1ce2ce7d243994225b`, and signed binary SHA-256
+  `ee19ec36bd0e4beb05e6a296919ea7e508582267e401571e57bb2c4bb14680e3`;
+- lab join completed on `en1` with DHCP `10.77.0.47`;
+- raw Tahoe and legacy Apple80211 probes returned SSID `AIAMlab6235`, BSSID
+  `80:e4:ba:20:ef:f9`, `STATE=4`, and a populated `CURRENT_NETWORK` record
+  on channel `6`;
+- public surfaces remained open: `networksetup -getairportnetwork en1` still
+  printed `You are not associated with an AirPort network.`,
+  `CWInterface.ssid` and `CWInterface.bssid` remained `nil`, and Dynamic
+  Store still published top-level `SSID = 0x00` and
+  `BSSID = 02:00:00:00:00:00` while `CachedScanRecord` contained the real BSS;
+- logs showed airportd's own `GET SSID` requests returning `err=0`, while
+  external clients such as `networksetup` and the probes still received
+  `err=1`;
+- concurrent 240-second ping plus iperf3 stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: ping reported `240 packets transmitted, 240 packets
+  received, 0.0% packet loss`, RTT `2.234/489.441/718.374/81.824 ms`, and
+  iperf3 transferred `813 MBytes` at `28.4 Mbits/sec`;
+- the stress-window fault filter found no panic, CoreCapture, NoCTL, missed
+  beacon, deauth, disassoc, `driver not available`, `0xe0822403`, or
+  `IO80211QueueCall` signature.
+
+Non-claim:
+
+- this does not synthesize Dynamic Store values, does not broaden
+  `isCommandProhibited(...)`, and does not change the raw Apple80211 SSID,
+  BSSID, or current-network IOCTL producers;
+- public CoreWLAN/`networksetup` closure remains open after validating this
+  carrier layer.
+
 ## item 226 - CoreWiFi controller-side BSD Name seed
 
 - producers:
