@@ -3102,7 +3102,32 @@ setCurrentApAddress(ether_addr *addr)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
-    return IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
+    IOReturn ret = IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
+
+    const uint8_t *payload = reinterpret_cast<const uint8_t *>(data);
+    const bool linkUp = payload[6] != 0;
+    const bool refreshCurrentBss = payload[8] != 0;
+    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
+    if (bssManager == nullptr)
+        return ret;
+
+    if (!linkUp) {
+        bssManager->setCurrentBSS(nullptr, false);
+        return ret;
+    }
+
+    if (refreshCurrentBss) {
+        IO80211BSSBeacon *currentBss = bssManager->getCurrentBSS();
+        if (currentBss != nullptr) {
+            bssManager->setCurrentBSS(currentBss, true);
+            seedBssManagerRateAndMcs();
+            postLqmUpdateBulletin();
+        }
+    }
+
+    return ret;
 }
 
 SInt32 AirportItlwmSkywalkInterface::

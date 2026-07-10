@@ -57,6 +57,8 @@
 //  CR-479 25C56 writer ABI addendum (guest BootKC macOS 26.2 build 25C56):
 //    ffffff8002242562  IO80211BssManager::setNetworkFlags(bool, unsigned int)
 //    ffffff8002243084  IO80211BssManager::setAssociatedAuthType(unsigned char*, unsigned short)
+//    ffffff8002266334  IO80211BssManager::setCurrentBSS(IO80211BSSBeacon*, bool)
+//    ffffff800226631e  IO80211BssManager::getCurrentBSS() const
 //
 //  These writer declarations are not part of the CR-201 primitive-only
 //  fourteen-helper batch. They are live current-BSS cache producers used by
@@ -74,6 +76,7 @@ struct apple80211_vht_mcs_index_set_data;
 struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
 enum Bands : unsigned int;
+class IO80211BSSBeacon;
 
 struct IO80211AuthContext {
     uint32_t authLower;
@@ -102,6 +105,8 @@ public:
     IOReturn getCurrentBand(Bands &);
     void setBandInfoBitmap(unsigned int);
     void setNetworkFlags(bool, unsigned int);
+    IO80211BSSBeacon *getCurrentBSS() const;
+    void setCurrentBSS(IO80211BSSBeacon *, bool);
     void setAuthContext(IO80211AuthContext &);
     IOReturn setAssocSSID(const unsigned char *, unsigned long);
     void setAssociatedAuthType(unsigned char *, unsigned short);
