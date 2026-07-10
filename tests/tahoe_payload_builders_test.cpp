@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwm/AirportItlwmAPSTAEventContracts.hpp"
 #include "include/Airport/apple80211_ioctl.h"
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
@@ -211,6 +212,8 @@ void testRangingBuilder()
 
 void testApstaPublicContracts()
 {
+    using namespace AirportItlwmAPSTAEventContracts;
+
     require(offsetof(AirportItlwmAPSTAHostApModeHiddenOutputLayout, hidden00) == 0,
             "APSTA hidden getter writes value at output +0x00");
     require(kAirportItlwmAPSTAGetHostApModeHiddenValue == 1,
@@ -484,6 +487,72 @@ void testApstaPublicContracts()
             offsetof(AirportItlwmAPSTAAuthIndMessageLayout, chunkType2Data54) ==
                 kAirportItlwmAPSTAEventAuthIndChunkType2OutputOffset,
             "APSTA auth-ind chunk outputs live at +0x18 and +0x54");
+    require(associationIsAdmitted(0, 0, false, 0),
+            "APSTA association admits non-Apple stations on an open SSID");
+    require(!associationIsAdmitted(1, 0, true, 0) &&
+                !associationIsAdmitted(0, 1, true, 0),
+            "APSTA association requires success status and reason");
+    require(!associationIsAdmitted(0, 0, false, 1) &&
+                associationIsAdmitted(0, 0, true, 1),
+            "APSTA hidden association requires a recognized Apple IE");
+    require(isRecognizedAppleOUI(kAirportItlwmAPSTAAppleIEOui) &&
+                isRecognizedAppleOUI(kAirportItlwmAPSTAAppleIEBsOui) &&
+                isRecognizedAppleOUI(kAirportItlwmAPSTAAppleIEDeviceInfoOui),
+            "APSTA association admission recognizes all three Apple OUI families");
+    require(isInstantHotspotOUI(kAirportItlwmAPSTAAppleIEOui) &&
+                !isInstantHotspotOUI(kAirportItlwmAPSTAAppleIEBsOui) &&
+                !isInstantHotspotOUI(kAirportItlwmAPSTAAppleIEDeviceInfoOui),
+            "APSTA Instant Hotspot flags accept only the primary Apple OUI");
+    require(kAirportItlwmAPSTAEventAssocFullTableStillPosts == 1 &&
+                kAirportItlwmAPSTAEventAssocMessageAppleFlagUsesCurrentIE == 1,
+            "APSTA association message survives a full table and uses current Apple IE state");
+    require(kAirportItlwmAPSTAEventRemovalCopiesMacShadow == 1 &&
+                kAirportItlwmAPSTAEventIncomingHalEchoCommandCount == 0,
+            "APSTA removal updates the event MAC without echoing incoming events to HAL");
+
+    uint8_t category = 0;
+    uint8_t action = 0;
+    uint8_t actionV1[kAirportItlwmAPSTAActionFrameMinimumLength] = {};
+    actionV1[1] = 1;
+    actionV1[kAirportItlwmAPSTAActionFrameVersion1CategoryOffset] =
+        kAirportItlwmAPSTAActionFrameLphsCategory;
+    actionV1[kAirportItlwmAPSTAActionFrameVersion1ActionOffset] =
+        kAirportItlwmAPSTAActionFrameLphsActionSleep;
+    require(parseActionFrame(actionV1, sizeof(actionV1), &category, &action) &&
+                isLphsStateAction(category, action) &&
+                action == kAirportItlwmAPSTAStationTableLowPowerSleepState,
+            "APSTA LPHS v1 parser reads category/action at +0x10/+0x11");
+
+    uint8_t actionV2[kAirportItlwmAPSTAActionFrameVersion2MinimumLength] = {};
+    actionV2[1] = 2;
+    actionV2[kAirportItlwmAPSTAActionFrameVersion2CategoryOffset] =
+        kAirportItlwmAPSTAActionFrameLphsCategory;
+    actionV2[kAirportItlwmAPSTAActionFrameVersion2ActionOffset] =
+        kAirportItlwmAPSTAActionFrameLphsActionAwake;
+    require(!parseActionFrame(actionV2, sizeof(actionV2) - 1,
+                              &category, &action),
+            "APSTA LPHS v2 parser requires 0x1a payload bytes");
+    require(parseActionFrame(actionV2, sizeof(actionV2), &category, &action) &&
+                isLphsStateAction(category, action) &&
+                action == kAirportItlwmAPSTAStationTableAwakeSleepState,
+            "APSTA LPHS v2 parser reads category/action at +0x18/+0x19");
+
+    uint8_t rejectedVersion[kAirportItlwmAPSTAActionFrameMinimumLength] = {};
+    rejectedVersion[1] = 3;
+    require(!parseActionFrame(rejectedVersion, sizeof(rejectedVersion),
+                              &category, &action),
+            "APSTA action-frame parser rejects byte-swapped version 3");
+    uint8_t unknownVersion[kAirportItlwmAPSTAActionFrameMinimumLength] = {};
+    require(parseActionFrame(unknownVersion, sizeof(unknownVersion),
+                             &category, &action) &&
+                category == kAirportItlwmAPSTAActionFrameUnknownCategoryAction &&
+                action == kAirportItlwmAPSTAActionFrameUnknownCategoryAction,
+            "APSTA action-frame parser preserves 0xaa for unknown version zero");
+    require(!softAPConcurrencyIsEnabled(false, 0x1b) &&
+                softAPConcurrencyIsEnabled(true, 0x01) &&
+                softAPConcurrencyIsEnabled(true, 0x10) &&
+                !softAPConcurrencyIsEnabled(true, 0x20),
+            "APSTA concurrency requires feature 0x46 and private mask 0x1b");
     require(kAirportItlwmAPSTAGetStaStatsNotUpReturn == 0x39,
             "APSTA getSTA_STATS AP-down return is 0x39");
     require(kAirportItlwmAPSTAGetKeyRscOutputLengthValue == 8,

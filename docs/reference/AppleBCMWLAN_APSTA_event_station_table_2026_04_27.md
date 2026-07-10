@@ -2,6 +2,19 @@
 
 Source: `/tmp/AppleBCMWLANCoreMac`, Tahoe symbols.
 
+Tahoe 25C56 reconfirmation on 2026-07-10:
+
+- `handleEvent`: `0xffffff800166f880`
+- `checkForAppleIE`: `0xffffff8001671aa6`
+- `updateSTAAssocInfo`: `0xffffff8001671b4a`
+- `parseRSNXE`: `0xffffff8001671f5e`
+- `removeStaFromStaTable`: `0xffffff800167230a`
+- raw evidence on `10.7.6.112`:
+  `~/Projects/ghidra_output/aiam_apsta_handle_event_25C56_20260710.c`,
+  `aiam_apsta_removal_25C56_20260710.range.tsv`,
+  `aiam_apsta_assoc_tail_25C56_20260710.range.tsv`, and
+  `aiam_apsta_update_assoc_25C56_20260710.range.tsv`
+
 This note records APSTA producer-side station table contracts. It is a local
 reference note only; it does not authorize runtime APSTA enablement.
 
@@ -38,6 +51,12 @@ copies the event MAC to APSTA state metadata at `state+0x80/+0x84`, calls
 `state+0x70`, parses RSNXE from event data into the outgoing message, and posts
 STA message id `0x0c` with payload size `0x114`.
 
+Before mutating the station table, the path calls `checkForAppleIE`. A hidden
+network (`state+0x0d & 1`) rejects a station when no recognized Apple IE is
+present. A full five-entry station table does not suppress the outgoing
+association message: the message is still posted with the current count and
+without per-entry AIHS/sharing flags.
+
 The association message stores:
 
 - `+0x00`: first four MAC bytes
@@ -53,9 +72,16 @@ Association flags are derived from the station table and Apple vendor IE:
 - bit `0x04`: Apple IE was present in the association data; APSTA also writes
   station table entry `+0x28 = 1`
 
+Bit `0x04` in each outgoing message follows Apple IE presence in that event,
+not a stale table flag. The table `+0x28` field is set on Apple presence and is
+not cleared by a later event without an Apple IE.
+
 STA removal events decrement `state+0x00` when nonzero, notify every APSTA TX
 subqueue via vtable `+0x358` with the entry MAC pointer, clear the station-table
 entry, and post STA message id `0x0d` with payload size `0x0c`.
+They also copy the removal event MAC to `state+0x80/+0x84` before the table
+search. Missing stations still produce the removal message with the unchanged
+count.
 
 ## Station Table
 
@@ -106,6 +132,10 @@ present, the byte at IE `+0x09` supplies station flags:
 
 - bit `0`: written to entry `+0x20`
 - bit `1`: written to entry `+0x24`
+
+The outer admission helper recognizes Apple OUI `00:17:f2`, Apple BS OUI
+`00:03:93`, and device-info OUI `00:a0:40`. The Instant Hotspot subtype/flag
+path inside `updateSTAAssocInfo` accepts only the primary `00:17:f2` OUI.
 
 ## `parseRSNXE(unsigned char *, unsigned int, unsigned char *)`
 

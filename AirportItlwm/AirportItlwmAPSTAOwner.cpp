@@ -6,6 +6,7 @@
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
+#include "AirportItlwmAPSTAEventContracts.hpp"
 #include "HAL/ItlHalService.hpp"
 #include <net80211/ieee80211_node.h>
 #include <sys/errno.h>
@@ -34,25 +35,15 @@ static void apsta_copy_mac_prefix(
     memcpy(tailOut, mac + sizeof(*dwordOut), sizeof(*tailOut));
 }
 
-static bool apsta_oui_matches(const uint8_t *oui, const uint8_t *expected)
-{
-    return memcmp(oui, expected, kAirportItlwmAPSTAAppleIEOuiSize) == 0;
-}
-
 static bool apsta_ie_has_apple_oui(const uint8_t *ie)
 {
     const uint8_t *oui = ie + kAirportItlwmAPSTAAppleIEOuiOffset;
-    return apsta_oui_matches(oui, kAirportItlwmAPSTAAppleIEOui) ||
-           apsta_oui_matches(oui, kAirportItlwmAPSTAAppleIEBsOui) ||
-           apsta_oui_matches(oui, kAirportItlwmAPSTAAppleIEDeviceInfoOui);
+    return AirportItlwmAPSTAEventContracts::isRecognizedAppleOUI(oui);
 }
 
-static bool apsta_extract_apple_assoc_flags(const uint8_t *ies,
-                                            uint32_t iesLength,
-                                            uint32_t *flagsOut)
+static bool apsta_check_for_apple_ie(const uint8_t *ies, uint32_t iesLength)
 {
     bool foundAppleIE = false;
-    uint32_t flags = 0;
 
     while (ies != nullptr && iesLength >= kAirportItlwmAPSTAAppleIEMinScanRemaining) {
         const uint32_t elementLength =
@@ -67,28 +58,53 @@ static bool apsta_extract_apple_assoc_flags(const uint8_t *ies,
                 kAirportItlwmAPSTAAppleIEVendorElementId &&
             apsta_ie_has_apple_oui(ies)) {
             foundAppleIE = true;
-            if (totalLength > kAirportItlwmAPSTAAppleIEInstantHotspotFlagsOffset &&
-                ies[kAirportItlwmAPSTAAppleIEInstantHotspotSubtypeOffset] ==
-                    kAirportItlwmAPSTAAppleIEInstantHotspotSubtype) {
-                const uint8_t appleFlags =
-                    ies[kAirportItlwmAPSTAAppleIEInstantHotspotFlagsOffset];
-                if ((appleFlags & (1U << kAirportItlwmAPSTAAppleIEAihsFlagBit)) != 0) {
-                    flags |= kAirportItlwmAPSTAEventAssocFlagAihs;
-                }
-                if ((appleFlags & (1U << kAirportItlwmAPSTAAppleIESharingFlagBit)) != 0) {
-                    flags |= kAirportItlwmAPSTAEventAssocFlagSharing;
-                }
-            }
+            break;
         }
 
         ies += totalLength;
         iesLength -= totalLength;
     }
 
-    if (flagsOut != nullptr) {
-        *flagsOut = flags;
-    }
     return foundAppleIE;
+}
+
+static uint32_t apsta_extract_instant_hotspot_flags(const uint8_t *ies,
+                                                    uint32_t iesLength)
+{
+    uint32_t flags = 0;
+    while (ies != nullptr && iesLength >= kAirportItlwmAPSTAAppleIEMinScanRemaining) {
+        const uint32_t elementLength =
+            static_cast<uint32_t>(ies[kAirportItlwmAPSTAAppleIELengthOffset]);
+        const uint32_t totalLength =
+            elementLength + kAirportItlwmAPSTAVendorIEListHeaderSize;
+        if (totalLength > iesLength) {
+            break;
+        }
+
+        if (ies[kAirportItlwmAPSTAVendorIEListElementIdOffset] ==
+                kAirportItlwmAPSTAAppleIEVendorElementId &&
+            AirportItlwmAPSTAEventContracts::isInstantHotspotOUI(
+                ies + kAirportItlwmAPSTAAppleIEOuiOffset) &&
+            totalLength > kAirportItlwmAPSTAAppleIEInstantHotspotFlagsOffset &&
+            ies[kAirportItlwmAPSTAAppleIEInstantHotspotSubtypeOffset] ==
+                kAirportItlwmAPSTAAppleIEInstantHotspotSubtype) {
+            const uint8_t appleFlags =
+                ies[kAirportItlwmAPSTAAppleIEInstantHotspotFlagsOffset];
+            if ((appleFlags &
+                 (1U << kAirportItlwmAPSTAAppleIEAihsFlagBit)) != 0) {
+                flags |= kAirportItlwmAPSTAEventAssocFlagAihs;
+            }
+            if ((appleFlags &
+                 (1U << kAirportItlwmAPSTAAppleIESharingFlagBit)) != 0) {
+                flags |= kAirportItlwmAPSTAEventAssocFlagSharing;
+            }
+            break;
+        }
+
+        ies += totalLength;
+        iesLength -= totalLength;
+    }
+    return flags;
 }
 
 static void apsta_copy_rsnxe(const uint8_t *ies,
@@ -994,7 +1010,7 @@ AirportItlwmAPSTAOwner::allocateStation(const uint8_t *macAddr)
             entry->active00 = 1;
             memcpy(entry->mac01, macAddr, IEEE80211_ADDR_LEN);
             entry->sleepState10 = kAirportItlwmAPSTAStationTableDefaultSleepState;
-            recomputeStationCount();
+            state.softapAssociatedStaCount00++;
             return entry;
         }
     }
@@ -1005,20 +1021,24 @@ void AirportItlwmAPSTAOwner::removeStation(const uint8_t *macAddr)
 {
     AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(macAddr);
     if (entry != nullptr) {
+        if (state.softapAssociatedStaCount00 != 0) {
+            state.softapAssociatedStaCount00--;
+        }
         clearStation(entry);
-        recomputeStationCount();
     }
 }
 
-void AirportItlwmAPSTAOwner::recomputeStationCount()
+bool AirportItlwmAPSTAOwner::areAllStationsInLowPowerMode() const
 {
-    uint32_t count = 0;
     for (unsigned i = 0; i < kAirportItlwmAPSTAStationTableEntryCount; i++) {
-        if (state.softapStaTableB8[i].active00) {
-            count++;
+        const AirportItlwmAPSTAStationTableEntryLayout *entry =
+            &state.softapStaTableB8[i];
+        if ((entry->active00 & 1U) != 0 &&
+            entry->sleepState10 == kAirportItlwmAPSTACheckAllStaBlockingSleepState) {
+            return false;
         }
     }
-    state.softapAssociatedStaCount00 = count;
+    return true;
 }
 
 IOReturn AirportItlwmAPSTAOwner::postStationMessage(
@@ -1079,7 +1099,6 @@ IOReturn AirportItlwmAPSTAOwner::setStationDisassociation(
 IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
     uint32_t eventType,
     const uint8_t *macAddr,
-    uint32_t flags,
     const uint8_t *ies,
     uint32_t iesLength,
     uint32_t status,
@@ -1088,7 +1107,7 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
     const uint8_t *eventData,
     uint32_t eventDataLength)
 {
-    if (apsta_mac_is_zero(macAddr)) {
+    if (macAddr == nullptr) {
         return kIOReturnBadArgument;
     }
 
@@ -1110,53 +1129,55 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
         }
         case kAirportItlwmAPSTAEventAssocInd:
         case kAirportItlwmAPSTAEventReassocInd: {
-            AirportItlwmAPSTAStationTableEntryLayout *entry = allocateStation(macAddr);
-            if (entry == nullptr) {
-                return static_cast<IOReturn>(0xe00002bc);
+            if (!AirportItlwmAPSTAEventContracts::associationStatusIsSuccessful(
+                    status, reason)) {
+                return kIOReturnSuccess;
             }
-            uint32_t appleFlags = 0;
             const bool foundAppleIE =
-                apsta_extract_apple_assoc_flags(ies, iesLength, &appleFlags);
-            flags |= appleFlags;
-            if (foundAppleIE) {
-                flags |= kAirportItlwmAPSTAEventAssocFlagAppleStation;
+                apsta_check_for_apple_ie(ies, iesLength);
+            if (!AirportItlwmAPSTAEventContracts::associationIsAdmitted(
+                    status, reason, foundAppleIE, state.hiddenNetworkFlag0d)) {
+                return kIOReturnSuccess;
             }
-            entry->aihsFlag20 =
-                (flags & kAirportItlwmAPSTAEventAssocFlagAihs) ? 1 : 0;
-            entry->sharingFlag24 =
-                (flags & kAirportItlwmAPSTAEventAssocFlagSharing) ? 1 : 0;
-            entry->appleStationFlag28 =
-                (flags & kAirportItlwmAPSTAEventAssocFlagAppleStation) ? 1 : 0;
-            recomputeStationCount();
+
             apsta_copy_mac_prefix(&state.softapEvent80, &state.softapEvent84, macAddr);
+            AirportItlwmAPSTAStationTableEntryLayout *entry = allocateStation(macAddr);
+            if (entry != nullptr) {
+                const uint32_t appleFlags =
+                    apsta_extract_instant_hotspot_flags(ies, iesLength);
+                entry->aihsFlag20 =
+                    (appleFlags & kAirportItlwmAPSTAEventAssocFlagAihs) ? 1 : 0;
+                entry->sharingFlag24 =
+                    (appleFlags & kAirportItlwmAPSTAEventAssocFlagSharing) ? 1 : 0;
+                if (foundAppleIE) {
+                    entry->appleStationFlag28 = 1;
+                }
+            }
 
             AirportItlwmAPSTAStaAssocMessageLayout message;
             bzero(&message, sizeof(message));
             apsta_copy_mac_prefix(&message.macDword00, &message.macTail04, macAddr);
             message.associatedCount08 = state.softapAssociatedStaCount00;
-            message.assocFlags0c = static_cast<uint8_t>(
-                (entry->aihsFlag20 ? kAirportItlwmAPSTAEventAssocFlagAihs : 0) |
-                (entry->sharingFlag24 ? kAirportItlwmAPSTAEventAssocFlagSharing : 0) |
-                (entry->appleStationFlag28 ?
-                    kAirportItlwmAPSTAEventAssocFlagAppleStation : 0));
+            if (entry != nullptr) {
+                message.assocFlags0c = static_cast<uint8_t>(
+                    (entry->aihsFlag20 ? kAirportItlwmAPSTAEventAssocFlagAihs : 0) |
+                    (entry->sharingFlag24 ?
+                        kAirportItlwmAPSTAEventAssocFlagSharing : 0));
+            }
+            if (foundAppleIE) {
+                message.assocFlags0c |=
+                    kAirportItlwmAPSTAEventAssocFlagAppleStation;
+            }
             apsta_copy_rsnxe(ies, iesLength, message.rsnxe10, sizeof(message.rsnxe10));
             (void)postStationMessage(kAirportItlwmAPSTAEventAssocMessageId,
                                      &message, sizeof(message));
-
-            if (isApRunning() && owner != nullptr && owner->fHalService != nullptr) {
-                ItlHalApStationCommand cmd;
-                bzero(&cmd, sizeof(cmd));
-                cmd.command = eventType;
-                cmd.station = macAddr;
-                cmd.flags = flags;
-                return owner->fHalService->sendAPStationCommand(&cmd);
-            }
             return kIOReturnSuccess;
         }
         case kAirportItlwmAPSTAEventDeauth:
         case kAirportItlwmAPSTAEventDeauthInd:
         case kAirportItlwmAPSTAEventDisassoc:
         case kAirportItlwmAPSTAEventDisassocInd: {
+            apsta_copy_mac_prefix(&state.softapEvent80, &state.softapEvent84, macAddr);
             removeStation(macAddr);
             AirportItlwmAPSTAStaRemoveMessageLayout message;
             bzero(&message, sizeof(message));
@@ -1164,23 +1185,31 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
             message.associatedCount08 = state.softapAssociatedStaCount00;
             (void)postStationMessage(kAirportItlwmAPSTAEventRemoveMessageId,
                                      &message, sizeof(message));
-
-            if (isApRunning() && owner != nullptr && owner->fHalService != nullptr) {
-                ItlHalApStationCommand cmd;
-                bzero(&cmd, sizeof(cmd));
-                cmd.command = eventType;
-                cmd.station = macAddr;
-                cmd.flags = flags;
-                return owner->fHalService->sendAPStationCommand(&cmd);
-            }
             return kIOReturnSuccess;
         }
         case kAirportItlwmAPSTAEventActionFrame: {
             AirportItlwmAPSTAStationTableEntryLayout *entry = findStation(macAddr);
-            if (entry != nullptr) {
-                entry->sleepState10 = (flags != 0)
-                    ? kAirportItlwmAPSTAStationTableLowPowerSleepState
-                    : kAirportItlwmAPSTAStationTableAwakeSleepState;
+            if (entry == nullptr) {
+                return kIOReturnSuccess;
+            }
+
+            uint8_t category = kAirportItlwmAPSTAActionFrameUnknownCategoryAction;
+            uint8_t action = kAirportItlwmAPSTAActionFrameUnknownCategoryAction;
+            if (!AirportItlwmAPSTAEventContracts::parseActionFrame(
+                    eventData, eventDataLength, &category, &action)) {
+                return kIOReturnSuccess;
+            }
+            if (AirportItlwmAPSTAEventContracts::isLphsStateAction(
+                    category, action)) {
+                entry->sleepState10 = action;
+            }
+
+            const bool concurrencyEnabled = owner != nullptr &&
+                owner->isAPSTASoftAPConcurrencyEnabled();
+            if (areAllStationsInLowPowerMode() && !concurrencyEnabled) {
+                setSoftAPPowerSaveState(
+                    kAirportItlwmAPSTAActionFrameAllStaPowerSaveState,
+                    kAirportItlwmAPSTAActionFrameAllStaPowerSaveReason);
             }
             return kIOReturnSuccess;
         }
@@ -1201,6 +1230,6 @@ extern "C" void AirportItlwmAPSTANet80211Event(
         return;
     }
     (void)owner->publishStationEventFromNet80211(
-        static_cast<uint32_t>(event), ni->ni_macaddr, 0,
+        static_cast<uint32_t>(event), ni->ni_macaddr,
         ni->ni_rsnie_tlv, ni->ni_rsnie_tlv_len);
 }

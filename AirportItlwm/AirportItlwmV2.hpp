@@ -11,6 +11,7 @@
 
 #include "Apple80211.h"
 #include "AirportItlwmAPSTAInterface.hpp"
+#include "AirportItlwmAPSTAEventContracts.hpp"
 #include "TahoeControllerContracts.hpp"
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeStateMachineClosure.hpp"
@@ -562,6 +563,7 @@ public:
     IOReturn deleteAPSTAOwnerForBSDName(const uint8_t *bsdName);
     void deleteAPSTAOwner();
     bool isAPSTACoreFeatureFlagSet(uint32_t bit) const;
+    bool isAPSTASoftAPConcurrencyEnabled() const;
 
 public:
     IOInterruptEventSource* fInterrupt;
@@ -581,6 +583,8 @@ public:
     ItlHalService *fHalService;
     AirportItlwmAPSTAOwner *fAPSTAOwner;
     uint8_t fAPSTACoreFeatureFlags[kAirportItlwmAPSTACoreFeatureFlagByteCount];
+    // Mirrors Apple core-private +0x4d59; current Intel backends publish zero.
+    uint8_t fAPSTACorePrivateFeatureByte4d59;
 
     // Skywalk packet pools and queues for proper Sequoia registration
     IOSkywalkPacketBufferPool *fTxPool;

@@ -3,6 +3,14 @@
 Source: Tahoe `AppleBCMWLANCoreMac`, APSTA `handleEvent` action-frame branch
 and adjacent LPHS power-state helpers.
 
+Tahoe 25C56 reconfirmation on 2026-07-10 uses `handleEvent` at
+`0xffffff800166f880`, action branch `0xffffff800167029f`, and
+`isSoftAPConcurrencyEnabled` at `0xffffff8001672676`. Raw evidence is stored on
+`10.7.6.112` as
+`~/Projects/ghidra_output/aiam_apsta_action_current_25C56_20260710.range.tsv`,
+`aiam_apsta_action_tail_25C56_20260710.range.tsv`, and
+`aiam_apsta_helpers_25C56_20260710.c`.
+
 ## Recovered Entry Points
 
 - `AppleBCMWLANIO80211APSTAInterface::handleEvent(wl_event_msg_t*)`
@@ -55,7 +63,9 @@ and adjacent LPHS power-state helpers.
 
 ## Local Reconstruction Scope
 
-The local scaffold records these constants, aliases, and static asserts only.
-It does not enable APSTA runtime ownership, does not synthesize action frames,
-does not force a power-save state, and does not alter the primary STA
-association or data path.
+`AirportItlwmAPSTAOwner::publishStationEventFromNet80211` now parses the
+recovered v1/v2 payload forms, writes accepted LPHS action values to the
+matching station entry, checks all five entries, and invokes the existing
+power-state transition only when feature `0x46` plus private byte
+`+0x4d59 & 0x1b` report concurrency disabled. It does not synthesize action
+frames, enable AP/GO runtime, or alter the primary STA association/data path.

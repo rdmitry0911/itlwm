@@ -7270,3 +7270,93 @@ Non-claim:
 - this does not fabricate auth chunks when no event payload is available;
 - this does not touch primary STA association, public `networksetup`,
   CoreWLAN, Dynamic Store, or any fallback gate.
+
+## item 238 - APSTA station events bypassed reference admission and LPHS parsing
+
+- producers:
+  - `AirportItlwmAPSTAOwner::publishStationEventFromNet80211(...)`
+  - `AirportItlwmAPSTAEventContracts`
+  - `AirportItlwm::isAPSTASoftAPConcurrencyEnabled()`
+- status: implemented, static validation complete, Tahoe runtime regression validated
+- justification: APSTA_EVENT_ADMISSION_LPHS_CONSUMER
+- reference notes:
+  - `docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_action_frame_lphs_2026_04_27.md`
+- Tahoe 25C56 evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_apsta_handle_event_25C56_20260710.c`
+  - `~/Projects/ghidra_output/aiam_apsta_removal_25C56_20260710.range.tsv`
+  - `~/Projects/ghidra_output/aiam_apsta_action_current_25C56_20260710.range.tsv`
+  - `~/Projects/ghidra_output/aiam_apsta_action_tail_25C56_20260710.range.tsv`
+  - `~/Projects/ghidra_output/aiam_apsta_assoc_tail_25C56_20260710.range.tsv`
+  - `~/Projects/ghidra_output/aiam_apsta_update_assoc_25C56_20260710.range.tsv`
+  - `~/Projects/ghidra_output/aiam_apsta_helpers_25C56_20260710.c`
+
+Reference and prior local divergence:
+
+- association/reassociation events `8/10` must have status `0` and reason `0`;
+  hidden mode additionally admits only an event containing one of the three
+  recognized Apple OUIs;
+- only primary Apple OUI `00:17:f2` can supply Instant Hotspot subtype `0x0b`
+  AIHS/sharing flags, while message bit `0x04` follows recognized Apple IE
+  presence in the current event;
+- the reference still posts message `0x0c` when all five station slots are
+  occupied, and it does not clear a previously stored table Apple flag merely
+  because a later event lacks an Apple IE;
+- removal events update the event-MAC shadow before table lookup;
+- action event `0x4b` parses payload versions `0x0100/0x0200`, writes LPHS
+  actions `1/2` directly to station sleep state, and transitions to power state
+  `3`, reason `0x0b` only after all active stations leave blocking state `2`
+  and exact concurrency gate `feature 0x46 && private[0x4d59] & 0x1b` is false;
+- the local handler previously admitted every assoc status/reason, treated all
+  Apple OUI families as Instant Hotspot, returned early on a full table, used a
+  synthetic `flags != 0` action state, omitted removal shadow updates, and sent
+  incoming station events back through `sendAPStationCommand`.
+
+Local closure:
+
+- added directly tested association, OUI, action parser, LPHS action, and
+  concurrency contracts;
+- station count now follows reference increment/decrement edges rather than a
+  table recount, full-table associations still publish, and outgoing Apple bit
+  `0x04` follows current event presence;
+- removal updates `state+0x80/+0x84`; incoming association/removal events no
+  longer synthesize reverse HAL station commands;
+- v1/v2 action payloads now drive the matching station state and the existing
+  power-state machine through the recovered all-station/concurrency gates.
+
+Validation:
+
+- host `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` pass.
+- deterministic payload parity and Apple Wi-Fi contract inventory validators
+  pass; guest payload builders pass against the synchronized current tree;
+- clean Tahoe build passed with all 949 BootKC undefined symbols resolved;
+  the installed kext loaded as UUID
+  `F73FEC4C-CEDD-365B-9445-C38A92FB1D4F`, signed binary SHA-256
+  `f75b7eb3e45cf91c7a4b44601198020570980558c1e1ec80959be7ae4c43a937`,
+  CDHash `537a89a4c8ba2cfbc060d9e81a821180e3568a04`;
+- controlled join to `AIAMlab6235/aa00bb0900` reached DHCP `10.77.0.47`;
+  `system_profiler` reported Connected, IORegistry retained real
+  SSID/BSSID/channel/RSN state, and hostapd/`iw` kept the station associated,
+  authenticated, and authorized with `tx failed: 0`;
+- concurrent 240-second ping plus `/usr/local/bin/iperf3 -b 20M` passed with
+  `240/240`, 0% loss, RTT `0.568/16.944/203.278/20.648 ms`, and iperf3
+  `572 MBytes` at `20.0 Mbits/sec` sender/receiver; stress-window serial and
+  kernel/airportd fault filters were empty.
+
+Runtime scope:
+
+- this validates that the APSTA consumer changes do not regress the loaded
+  Tahoe primary-STA path; dormant Intel AP/GO mode did not produce live APSTA
+  station/action events, so the recovered event semantics remain proven by
+  current-BootKC decompilation and direct contract tests.
+
+Non-claim:
+
+- this does not enable Intel AP/GO firmware mode, create APSTA queues, fabricate
+  station events/action frames, or remove the default station-event opt-out;
+- this does not add a public CoreWLAN, `networksetup`, Dynamic Store, or
+  Apple80211 fallback and does not change item 220; on this build
+  `networksetup -getairportnetwork en1` still reports `not associated`;
+- APSTA TX-subqueue removal notification remains owned by the dormant APSTA
+  queue-construction/data-path layer and is not replaced with a HAL surrogate.
