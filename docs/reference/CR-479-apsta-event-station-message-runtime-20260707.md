@@ -26,6 +26,10 @@ Recovered body facts used here:
   message id `0x0c` with payload size `0x114`
 - removal events `5/6/11/12` clear the entry and post STA message id `0x0d`
   with payload size `0x0c`
+- auth-ind event `4` with success status and auth type `3` posts STA message
+  id `0x98` with payload size `0x6c`; the carrier type dword is `5`, the
+  status/reason dword is written at `+0x08`, the MAC at `+0x0c/+0x10`, chunk
+  type `1` data at `+0x18`, and 16-byte chunk type `2` data at `+0x54`
 - association message fields are MAC `+0x00/+0x04`, associated count `+0x08`,
   association flags `+0x0c`, and RSNXE output area `+0x10`
 - association flags combine station-table AIHS/sharing fields and Apple IE
@@ -57,10 +61,14 @@ host `10.7.6.112`, file
   message id `0x0c` through the existing IO80211 `postMessage` boundary.
 - removal now clears/recounts the station entry, builds the packed `0x0c`
   removal message with the post-removal count, and publishes message id `0x0d`.
+- auth-ind now builds the recovered packed `0x6c` carrier for the reference
+  success/auth-type gate and publishes message id `0x98`; malformed optional
+  auth chunks simply leave the zeroed carrier tail unchanged, matching the
+  recovered zero-initialized message shape.
 
 ## Non-claims
 
 This does not enable role-7 AP firmware mode, does not remove the
-`IEEE80211_APSTA_STATION_EVENT_OPT_OUT` gate, and does not synthesize unknown
-`WLC_E_AUTH_IND` payload contents. AP backend station commands remain governed
-by the existing `isApRunning()` / HAL gates.
+`IEEE80211_APSTA_STATION_EVENT_OPT_OUT` gate, and does not fabricate auth
+chunks that are absent from the event payload. AP backend station commands
+remain governed by the existing `isApRunning()` / HAL gates.

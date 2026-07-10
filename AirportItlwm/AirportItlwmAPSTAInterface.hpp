@@ -691,6 +691,35 @@ enum {
     kAirportItlwmAPSTAEventRemoveMessageSize = 0x0c,
     kAirportItlwmAPSTAEventAuthIndMessageId = 0x98,
     kAirportItlwmAPSTAEventAuthIndMessageSize = 0x6c,
+    kAirportItlwmAPSTAEventAuthIndRequiredStatus = 0,
+    kAirportItlwmAPSTAEventAuthIndRequiredAuthType = 3,
+    kAirportItlwmAPSTAEventAuthIndTypeValue = 5,
+    kAirportItlwmAPSTAEventAuthIndSuccessStatus = 0,
+    kAirportItlwmAPSTAEventAuthIndReasonAppleBase = 0xe0823000,
+    kAirportItlwmAPSTAEventAuthIndReasonTrapThreshold = 0x2e,
+    kAirportItlwmAPSTAEventAuthIndReasonFallback = 0xe3ff8100,
+    kAirportItlwmAPSTAEventAuthIndTypeOffset = 0x00,
+    kAirportItlwmAPSTAEventAuthIndStatusOffset = 0x08,
+    kAirportItlwmAPSTAEventAuthIndMacDwordOffset = 0x0c,
+    kAirportItlwmAPSTAEventAuthIndMacTailOffset = 0x10,
+    kAirportItlwmAPSTAEventAuthIndChunkType1OutputOffset = 0x18,
+    kAirportItlwmAPSTAEventAuthIndChunkType2OutputOffset = 0x54,
+    kAirportItlwmAPSTAEventAuthIndChunkType2Size = 0x10,
+    kAirportItlwmAPSTAEventAuthIndDataMinimumLength = 0x04,
+    kAirportItlwmAPSTAEventAuthIndDataHeaderTypeOffset = 0x00,
+    kAirportItlwmAPSTAEventAuthIndDataHeaderLengthOffset = 0x02,
+    kAirportItlwmAPSTAEventAuthIndDataHeaderTypeValue = 1,
+    kAirportItlwmAPSTAEventAuthIndDataChunkListOffset = 0x04,
+    kAirportItlwmAPSTAEventAuthIndChunkTypeOffset = 0x00,
+    kAirportItlwmAPSTAEventAuthIndChunkLengthOffset = 0x02,
+    kAirportItlwmAPSTAEventAuthIndChunkDataOffset = 0x04,
+    kAirportItlwmAPSTAEventAuthIndChunkHeaderSize = 0x04,
+    kAirportItlwmAPSTAEventAuthIndChunkType1 = 1,
+    kAirportItlwmAPSTAEventAuthIndChunkType2 = 2,
+    kAirportItlwmAPSTAEventAuthIndChunkType1MinSize = 0x20,
+    kAirportItlwmAPSTAEventAuthIndChunkType1MaxSize = 0x40,
+    kAirportItlwmAPSTAEventAuthIndChunkAlignment = 0x04,
+    kAirportItlwmAPSTAEventAuthIndChunkAlignedLengthMax = 0xfffa,
     kAirportItlwmAPSTAEventPostDispatchVtableOffset = 0xb18,
     kAirportItlwmAPSTAEventPostNotifyOwnerOffset = 0x2c20,
     kAirportItlwmAPSTAEventPostNotifyFlag = 1,
@@ -1017,6 +1046,18 @@ struct AirportItlwmAPSTAStaAssocMessageLayout {
     uint8_t  reserved000d[0x03];
     uint8_t  rsnxe10[kAirportItlwmAPSTAEventAssocMessageSize -
                     kAirportItlwmAPSTAEventRsnxeOutputOffset];
+} __attribute__((packed));
+
+struct AirportItlwmAPSTAAuthIndMessageLayout {
+    uint32_t type00;
+    uint32_t reserved04;
+    uint32_t status08;
+    uint32_t macDword0c;
+    uint16_t macTail10;
+    uint8_t  reserved12[0x06];
+    uint8_t  chunkType1Data18[0x3c];
+    uint8_t  chunkType2Data54[kAirportItlwmAPSTAEventAuthIndChunkType2Size];
+    uint8_t  reserved64[0x08];
 } __attribute__((packed));
 
 struct AirportItlwmAPSTAWlEventMsgLayout {
@@ -1512,6 +1553,27 @@ static_assert(offsetof(AirportItlwmAPSTAStaAssocMessageLayout, assocFlags0c) ==
 static_assert(offsetof(AirportItlwmAPSTAStaAssocMessageLayout, rsnxe10) ==
               kAirportItlwmAPSTAEventRsnxeOutputOffset,
               "APSTA STA association RSNXE output offset mismatch");
+static_assert(sizeof(AirportItlwmAPSTAAuthIndMessageLayout) ==
+              kAirportItlwmAPSTAEventAuthIndMessageSize,
+              "APSTA auth-ind message size mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, type00) ==
+              kAirportItlwmAPSTAEventAuthIndTypeOffset,
+              "APSTA auth-ind message type offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, status08) ==
+              kAirportItlwmAPSTAEventAuthIndStatusOffset,
+              "APSTA auth-ind status offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, macDword0c) ==
+              kAirportItlwmAPSTAEventAuthIndMacDwordOffset,
+              "APSTA auth-ind MAC dword offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, macTail10) ==
+              kAirportItlwmAPSTAEventAuthIndMacTailOffset,
+              "APSTA auth-ind MAC tail offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, chunkType1Data18) ==
+              kAirportItlwmAPSTAEventAuthIndChunkType1OutputOffset,
+              "APSTA auth-ind chunk type 1 output offset mismatch");
+static_assert(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, chunkType2Data54) ==
+              kAirportItlwmAPSTAEventAuthIndChunkType2OutputOffset,
+              "APSTA auth-ind chunk type 2 output offset mismatch");
 static_assert(offsetof(AirportItlwmAPSTAWlEventMsgLayout, eventType04) ==
               kAirportItlwmAPSTAEventTypeOffset,
               "APSTA wl_event_msg_t event type offset mismatch");

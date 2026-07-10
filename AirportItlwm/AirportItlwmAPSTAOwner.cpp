@@ -113,6 +113,102 @@ static void apsta_copy_rsnxe(const uint8_t *ies,
     }
 }
 
+static uint16_t apsta_load_le16(const uint8_t *input)
+{
+    uint16_t value = 0;
+    memcpy(&value, input, sizeof(value));
+    return value;
+}
+
+static uint32_t apsta_auth_ind_status_from_reason(uint32_t reason)
+{
+    if (reason == 0) {
+        return kAirportItlwmAPSTAEventAuthIndSuccessStatus;
+    }
+    if (reason < kAirportItlwmAPSTAEventAuthIndReasonTrapThreshold) {
+        return reason | kAirportItlwmAPSTAEventAuthIndReasonAppleBase;
+    }
+    return kAirportItlwmAPSTAEventAuthIndReasonFallback;
+}
+
+static uint32_t apsta_auth_ind_aligned_chunk_length(uint16_t length)
+{
+    if (length == 0) {
+        return kAirportItlwmAPSTAEventAuthIndChunkAlignment;
+    }
+    return ((static_cast<uint32_t>(length) - 1) &
+            ~(kAirportItlwmAPSTAEventAuthIndChunkAlignment - 1)) +
+           kAirportItlwmAPSTAEventAuthIndChunkAlignment;
+}
+
+static void apsta_copy_auth_ind_chunks(
+    const uint8_t *data,
+    uint32_t dataLength,
+    AirportItlwmAPSTAAuthIndMessageLayout *message)
+{
+    if (data == nullptr ||
+        dataLength < kAirportItlwmAPSTAEventAuthIndDataMinimumLength) {
+        return;
+    }
+
+    const uint16_t headerType =
+        apsta_load_le16(data + kAirportItlwmAPSTAEventAuthIndDataHeaderTypeOffset);
+    const uint16_t headerLength =
+        apsta_load_le16(data + kAirportItlwmAPSTAEventAuthIndDataHeaderLengthOffset);
+    if (headerType != kAirportItlwmAPSTAEventAuthIndDataHeaderTypeValue ||
+        headerLength > dataLength ||
+        headerLength < kAirportItlwmAPSTAEventAuthIndDataMinimumLength) {
+        return;
+    }
+
+    uint32_t remaining = headerLength -
+        kAirportItlwmAPSTAEventAuthIndDataMinimumLength;
+    if (remaining < kAirportItlwmAPSTAEventAuthIndChunkHeaderSize) {
+        return;
+    }
+    const uint8_t *chunk = data + kAirportItlwmAPSTAEventAuthIndDataChunkListOffset;
+    uint8_t *rawMessage = reinterpret_cast<uint8_t *>(message);
+
+    while (remaining >= kAirportItlwmAPSTAEventAuthIndChunkHeaderSize) {
+        const uint16_t chunkType =
+            apsta_load_le16(chunk + kAirportItlwmAPSTAEventAuthIndChunkTypeOffset);
+        const uint16_t chunkLength =
+            apsta_load_le16(chunk + kAirportItlwmAPSTAEventAuthIndChunkLengthOffset);
+        const uint32_t alignedLength =
+            apsta_auth_ind_aligned_chunk_length(chunkLength);
+        if (alignedLength > kAirportItlwmAPSTAEventAuthIndChunkAlignedLengthMax ||
+            alignedLength > remaining -
+                kAirportItlwmAPSTAEventAuthIndChunkHeaderSize) {
+            return;
+        }
+
+        const uint8_t *chunkData =
+            chunk + kAirportItlwmAPSTAEventAuthIndChunkDataOffset;
+        if (chunkType == kAirportItlwmAPSTAEventAuthIndChunkType1) {
+            if (chunkLength >= kAirportItlwmAPSTAEventAuthIndChunkType1MinSize &&
+                chunkLength <= kAirportItlwmAPSTAEventAuthIndChunkType1MaxSize) {
+                memcpy(rawMessage +
+                           kAirportItlwmAPSTAEventAuthIndChunkType1OutputOffset,
+                       chunkData, chunkLength);
+            }
+        } else if (chunkType == kAirportItlwmAPSTAEventAuthIndChunkType2) {
+            if (chunkLength == kAirportItlwmAPSTAEventAuthIndChunkType2Size) {
+                memcpy(rawMessage +
+                           kAirportItlwmAPSTAEventAuthIndChunkType2OutputOffset,
+                       chunkData, chunkLength);
+            }
+        }
+
+        const uint32_t advance =
+            alignedLength + kAirportItlwmAPSTAEventAuthIndChunkHeaderSize;
+        if (advance > remaining) {
+            return;
+        }
+        remaining -= advance;
+        chunk += advance;
+    }
+}
+
 static uint32_t apsta_rsn_clamp_count(uint32_t count)
 {
     return count < kAirportItlwmAPSTARSNConfListMaxCount
@@ -985,15 +1081,33 @@ IOReturn AirportItlwmAPSTAOwner::publishStationEventFromNet80211(
     const uint8_t *macAddr,
     uint32_t flags,
     const uint8_t *ies,
-    uint32_t iesLength)
+    uint32_t iesLength,
+    uint32_t status,
+    uint32_t reason,
+    uint32_t authType,
+    const uint8_t *eventData,
+    uint32_t eventDataLength)
 {
     if (apsta_mac_is_zero(macAddr)) {
         return kIOReturnBadArgument;
     }
 
     switch (eventType) {
-        case kAirportItlwmAPSTAEventAuthInd:
+        case kAirportItlwmAPSTAEventAuthInd: {
+            if (status != kAirportItlwmAPSTAEventAuthIndRequiredStatus ||
+                authType != kAirportItlwmAPSTAEventAuthIndRequiredAuthType) {
+                return kIOReturnSuccess;
+            }
+            AirportItlwmAPSTAAuthIndMessageLayout message;
+            bzero(&message, sizeof(message));
+            message.type00 = kAirportItlwmAPSTAEventAuthIndTypeValue;
+            message.status08 = apsta_auth_ind_status_from_reason(reason);
+            apsta_copy_mac_prefix(&message.macDword0c, &message.macTail10, macAddr);
+            apsta_copy_auth_ind_chunks(eventData, eventDataLength, &message);
+            (void)postStationMessage(kAirportItlwmAPSTAEventAuthIndMessageId,
+                                     &message, sizeof(message));
             return kIOReturnSuccess;
+        }
         case kAirportItlwmAPSTAEventAssocInd:
         case kAirportItlwmAPSTAEventReassocInd: {
             AirportItlwmAPSTAStationTableEntryLayout *entry = allocateStation(macAddr);

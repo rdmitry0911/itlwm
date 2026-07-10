@@ -7196,3 +7196,77 @@ Runtime validation:
   `networksetup -getairportnetwork en1` still reported the known nil /
   not-associated public-client symptom, preserving item-220 rather than adding
   any fallback.
+
+## item 237 - APSTA AUTH_IND event returned without the recovered STA message
+
+- producers:
+  - `AirportItlwmAPSTAOwner::publishStationEventFromNet80211(...)`
+  - `AirportItlwmAPSTAAuthIndMessageLayout`
+- status: implemented, Tahoe runtime validated
+- justification: APSTA_AUTH_IND_MESSAGE_CARRIER
+- reference note:
+  - `docs/reference/AppleBCMWLAN_APSTA_event_station_table_2026_04_27.md`
+  - `docs/reference/CR-479-apsta-event-station-message-runtime-20260707.md`
+  - remote decompile:
+    `10.7.6.112:~/Projects/ghidra_output/ap_ctrl_plane_full_layer_20260510/03_decomp_bootkc/life_handleEvent.c`
+
+Reference and local evidence:
+
+- `AppleBCMWLANIO80211APSTAInterface::handleEvent(...)` event type `4`
+  requires event status `0` and auth type `3` before building the auth-ind
+  station message;
+- the recovered body zero-initializes a `0x6c` byte carrier, writes type dword
+  `5` at `+0x00`, maps event reason into status dword `+0x08`
+  (`0 -> 0`, `<0x2e -> reason|0xe0823000`, otherwise `0xe3ff8100`), and copies
+  the event MAC at `+0x0c/+0x10`;
+- optional auth event data starts with a type/length header, then four-byte
+  aligned chunks; chunk type `1` copies lengths `0x20..0x40` to output
+  `+0x18`, and chunk type `2` copies exactly `0x10` bytes to output `+0x54`;
+- local runtime previously returned success for `kAirportItlwmAPSTAEventAuthInd`
+  without publishing message id `0x98`.
+
+Local closure:
+
+- added the packed `AirportItlwmAPSTAAuthIndMessageLayout` and compiled
+  witnesses for the recovered size, message id, type, MAC/status offsets,
+  reason mapping, auth gate, and chunk output offsets;
+- extended the APSTA event bridge signature so reference status/reason/auth
+  and event-data operands can be carried without synthesizing missing data;
+- `publishStationEventFromNet80211(...)` now builds and posts message id
+  `0x98` only for the recovered success/auth-type gate, leaving absent or
+  malformed optional auth chunks as zeroed carrier bytes.
+
+Runtime validation:
+
+- host `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` passed;
+- Tahoe guest payload builders and clean build passed with all 949 BootKC
+  undefined symbols resolved;
+- installed ad-hoc signed kext loaded as
+  `com.zxystd.AirportItlwm (2.4.0)`, UUID
+  `0353B2B6-F0C8-3741-B666-21AA35B776C1`, signed binary SHA-256
+  `51539e71810c509acd2d122533305fba8af7f2afe9d6f6a4ab4912fc4795ba2a`,
+  CDHash `0ae3ba456918c5b8271fe058d0ce37ae478f4575`;
+- joined `AIAMlab6235/aa00bb0900` at `10.77.0.47`; 240 second ping plus
+  concurrent iperf3 passed (`240/240`, 0% loss, RTT
+  `0.580/22.374/152.477/26.143 ms`, iperf3 `572 MBytes` at
+  `20.0 Mbits/sec`);
+- raw Apple80211 and `CWFApple80211` returned current SSID `AIAMlab6235`,
+  BSSID `80:e4:ba:20:ef:f9`, current-network dictionary, channel 6, and
+  WPA2 Personal; `system_profiler SPAirPortDataType` reported Status
+  Connected;
+- AP side `iw dev wlp0s20f3 station dump` showed the guest MAC
+  `8e:73:35:97:e4:e5` associated/authenticated/authorized with
+  `tx failed: 0`;
+- the post-stress 3-minute kernel/airportd fault filter was clean; the wider
+  boot-window filter still contains pre-association public Apple80211
+  `0xe0822403` / `IO80211QueueCall` noise, which remains tracked under
+  item 220 rather than this APSTA AUTH_IND carrier.
+
+Non-claim:
+
+- this does not enable AP/GO firmware mode, AP station authentication, role-7
+  success, AP traffic, or APSTA station-event registration in default builds;
+- this does not fabricate auth chunks when no event payload is available;
+- this does not touch primary STA association, public `networksetup`,
+  CoreWLAN, Dynamic Store, or any fallback gate.

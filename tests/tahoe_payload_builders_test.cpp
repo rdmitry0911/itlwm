@@ -458,6 +458,32 @@ void testApstaPublicContracts()
                 kAirportItlwmAPSTAStationTableFirstEntryOffset &&
             kAirportItlwmAPSTAGetStaIEListOutputSkipsActiveFlag == 1,
             "APSTA getSTA_IE_LIST copies MAC bytes, not station active flag");
+    require(sizeof(AirportItlwmAPSTAAuthIndMessageLayout) ==
+                kAirportItlwmAPSTAEventAuthIndMessageSize,
+            "APSTA auth-ind message payload is 0x6c bytes");
+    require(kAirportItlwmAPSTAEventAuthIndMessageId == 0x98 &&
+                kAirportItlwmAPSTAEventAuthIndTypeValue == 5,
+            "APSTA auth-ind posts message 0x98 with type value 5");
+    require(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, status08) ==
+                kAirportItlwmAPSTAEventAuthIndStatusOffset,
+            "APSTA auth-ind status lives at payload +0x08");
+    require(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, macDword0c) ==
+                kAirportItlwmAPSTAEventAuthIndMacDwordOffset &&
+            offsetof(AirportItlwmAPSTAAuthIndMessageLayout, macTail10) ==
+                kAirportItlwmAPSTAEventAuthIndMacTailOffset,
+            "APSTA auth-ind MAC is copied at payload +0x0c/+0x10");
+    require(kAirportItlwmAPSTAEventAuthIndRequiredStatus == 0 &&
+                kAirportItlwmAPSTAEventAuthIndRequiredAuthType == 3,
+            "APSTA auth-ind body requires success status and auth type 3");
+    require(kAirportItlwmAPSTAEventAuthIndReasonTrapThreshold == 0x2e &&
+                kAirportItlwmAPSTAEventAuthIndReasonAppleBase == 0xe0823000 &&
+                kAirportItlwmAPSTAEventAuthIndReasonFallback == 0xe3ff8100,
+            "APSTA auth-ind reason mapping matches recovered branch");
+    require(offsetof(AirportItlwmAPSTAAuthIndMessageLayout, chunkType1Data18) ==
+                kAirportItlwmAPSTAEventAuthIndChunkType1OutputOffset &&
+            offsetof(AirportItlwmAPSTAAuthIndMessageLayout, chunkType2Data54) ==
+                kAirportItlwmAPSTAEventAuthIndChunkType2OutputOffset,
+            "APSTA auth-ind chunk outputs live at +0x18 and +0x54");
     require(kAirportItlwmAPSTAGetStaStatsNotUpReturn == 0x39,
             "APSTA getSTA_STATS AP-down return is 0x39");
     require(kAirportItlwmAPSTAGetKeyRscOutputLengthValue == 8,

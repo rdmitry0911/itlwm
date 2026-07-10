@@ -97,7 +97,12 @@ public:
                                              const uint8_t *mac,
                                              uint32_t flags,
                                              const uint8_t *ies = nullptr,
-                                             uint32_t iesLength = 0);
+                                             uint32_t iesLength = 0,
+                                             uint32_t status = 0,
+                                             uint32_t reason = 0,
+                                             uint32_t authType = 0,
+                                             const uint8_t *eventData = nullptr,
+                                             uint32_t eventDataLength = 0);
 
 private:
     void initSoftAPParameters();
