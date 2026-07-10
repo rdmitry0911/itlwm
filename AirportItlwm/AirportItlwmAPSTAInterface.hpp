@@ -498,8 +498,10 @@ enum {
     kAirportItlwmAPSTAGetHostApModeHiddenOutputOffset = 0x00,
     kAirportItlwmAPSTAGetHostApModeHiddenValue = 1,
     kAirportItlwmAPSTAGetHostApModeHiddenInvalidArgumentReturn = 0x16,
+    kAirportItlwmAPSTAGetSoftAPParamsHasNullGuard = 0,
     kAirportItlwmAPSTAGetSoftAPStatsStateOffset = 0x1b0,
     kAirportItlwmAPSTAGetSoftAPStatsCopySize = 0x58,
+    kAirportItlwmAPSTAGetSoftAPStatsHasNullGuard = 0,
     kAirportItlwmAPSTASetSsidSuccessReturn = 0,
     kAirportItlwmAPSTASetSsidStateMutationCount = 0,
     kAirportItlwmAPSTASetPeerCacheControlCoreOffset = 0x218,
@@ -796,6 +798,7 @@ enum {
     kAirportItlwmAPSTAStaDisassocPayloadValue08Offset = 0x08,
     kAirportItlwmAPSTAStaDisassocPayloadSentinel0aOffset = 0x0a,
     kAirportItlwmAPSTAStaDisassocPayloadSentinel0aValue = 0xaaaa,
+    kAirportItlwmAPSTAStaDisassocHasNullGuard = 0,
     kAirportItlwmAPSTAStaDeauthTailcallVtableOffset = 0x1040,
 };
 

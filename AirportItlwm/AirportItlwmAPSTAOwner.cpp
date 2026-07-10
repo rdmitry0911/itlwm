@@ -444,9 +444,6 @@ IOReturn AirportItlwmAPSTAOwner::getHostAPModeHidden(
 IOReturn AirportItlwmAPSTAOwner::getSoftAPParams(
     AirportItlwmAPSTASoftAPParamsOutputLayout *out) const
 {
-    if (out == nullptr) {
-        return kIOReturnBadArgument;
-    }
     out->param04 = state.softapParam18;
     out->param08 = state.softapParam1c;
     out->param0c = state.softapParam20;
@@ -461,9 +458,6 @@ IOReturn AirportItlwmAPSTAOwner::getSoftAPParams(
 IOReturn AirportItlwmAPSTAOwner::getSoftAPStats(
     AirportItlwmAPSTASoftAPStatsLayout *out) const
 {
-    if (out == nullptr) {
-        return kIOReturnBadArgument;
-    }
     memcpy(out->stats, state.softapStats, kAirportItlwmAPSTAGetSoftAPStatsCopySize);
     return kIOReturnSuccess;
 }
@@ -857,9 +851,6 @@ IOReturn AirportItlwmAPSTAOwner::setStationDisassociation(
 {
     if (!isApRunning() || owner == nullptr || owner->fHalService == nullptr) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
-    }
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
     }
     ItlHalApStationCommand cmd;
     bzero(&cmd, sizeof(cmd));

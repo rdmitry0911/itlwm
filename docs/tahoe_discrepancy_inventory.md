@@ -6859,3 +6859,79 @@ Non-claim:
   vendor-IE programming, AP traffic, or role-7 success;
 - this does not touch primary STA association, public `networksetup`, CoreWLAN,
   Dynamic Store, or any fallback gate.
+
+## item 233 - APSTA simple getter and STA-disassociate wrappers kept unreferenced null guards
+
+- producers:
+  - `AirportItlwmAPSTAOwner::getSoftAPParams(...)`
+  - `AirportItlwmAPSTAOwner::getSoftAPStats(...)`
+  - `AirportItlwmAPSTAOwner::setStationDisassociation(...)`
+  - `AirportItlwm::getSOFTAP_PARAMS(...)`
+  - `AirportItlwm::getSOFTAP_STATS(...)`
+  - `AirportItlwm::setSTA_DISASSOCIATE(...)`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: APSTA_SIMPLE_BODY_NULL_GUARD_PARITY
+- reference note:
+  - `docs/reference/AppleBCMWLAN_APSTA_public_simple_bodies_2026_04_27.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_channel_csa_sta_control_2026_04_27.md`
+  - `docs/reference/AppleBCMWLAN_APSTA_OWNER_SKELETON_2026_05_09.md`
+
+Reference and local evidence:
+
+- `getSOFTAP_PARAMS(...)` copies APSTA state fields to fixed output offsets
+  and returns `0`; no local null guard is present in the recovered simple body;
+- `getSOFTAP_STATS(...)` copies `0x58` bytes from state `+0x1b0` to the output
+  and returns `0`; no local null guard is present in the recovered simple body;
+- `setSTA_DISASSOCIATE(...)` builds the 0x0c-byte payload from input
+  `+0x04/+0x08/+0x0c`, writes sentinel word `0xaaaa`, and calls virtual IOCTL
+  selector `0xc9`; the channel/STA-control reference note explicitly records
+  no local null guard before input reads;
+- local owner and controller wrappers still returned
+  `kIOReturnBadArgument` for null carriers before these reference direct-read
+  paths could execute.
+
+Local closure:
+
+- removed the owner-local `nullptr -> kIOReturnBadArgument` branches from
+  `getSoftAPParams(...)`, `getSoftAPStats(...)`, and
+  `setStationDisassociation(...)`;
+- removed the controller-wrapper null preemption from `getSOFTAP_PARAMS(...)`,
+  `getSOFTAP_STATS(...)`, and `setSTA_DISASSOCIATE(...)`;
+- added compiled witnesses
+  `kAirportItlwmAPSTAGetSoftAPParamsHasNullGuard == 0`,
+  `kAirportItlwmAPSTAGetSoftAPStatsHasNullGuard == 0`, and
+  `kAirportItlwmAPSTAStaDisassocHasNullGuard == 0`.
+
+Non-claim:
+
+- this does not remove reference-proven null returns for `getOP_MODE`,
+  `getHOST_AP_MODE_HIDDEN`, `setSTA_AUTHORIZE`, CSA, station-list/stat
+  getters, or unrelated public carriers;
+- this does not enable AP/GO firmware operation, station association, AP
+  traffic, role-7 success, or any public `networksetup`/CoreWLAN fallback.
+
+Runtime validation:
+
+- host `./scripts/test_payload_builders.sh` passed with the three compiled
+  null-guard witnesses above;
+- host `./scripts/tahoe_reproducibility_smoke.sh` passed;
+- Tahoe guest clean build completed with all 949 BootKC symbols resolved;
+- installed and booted `AirportItlwm.kext` UUID
+  `3EF924B2-2B67-3D9A-9C13-757E0A1A593A`, SHA-256
+  `6ed594b8f22360c6223f4dabdd3ac2b544c7372cad9728f3d0f80241842b8a52`,
+  CDHash `7fb550ef4cb688812a9d03a5b7e44f81b5b9e034`;
+- joined `AIAMlab6235/aa00bb0900`, received DHCP `10.77.0.47`;
+- concurrent stress passed: ping `240/240`, 0.0% loss, RTT
+  `0.573/22.702/298.489/35.262 ms`; iperf3 `572 MB` at `20.0 Mbit/s`;
+- IORegistry kept `IO80211SSID = "AIAMlab6235"`, BSSID
+  `80:e4:ba:20:ef:f9`, channel 6, `IO80211RSNDone = Yes`, and
+  `CoreWiFiDriverReadyKey = "true"`;
+- `system_profiler SPAirPortDataType` reported `Status: Connected` and
+  current network channel 6 / WPA2 Personal;
+- AP station dump kept the STA associated/authenticated/authorized with
+  `tx failed: 0`;
+- 8-minute kernel fault filter for panic/CoreCapture/NoCTL/missed beacon/
+  deauth/disassoc/driver-not-available/e0822403/IO80211QueueCall was clean;
+- public `networksetup -getairportnetwork en1` still printed Tahoe
+  `not associated`, preserving item-220 classification rather than adding any
+  fallback.

@@ -274,3 +274,21 @@ setter through `isAPSTACoreFeatureFlagSet(0x46)`. The bitmap is initialized
 clear until a separately recovered producer sets individual bits, so this slice
 does not guess feature `0x46`, enable AP/GO runtime, or synthesize SoftAP
 vendor-IE programming.
+
+## APSTA Simple Getter And STA-Disassociate Null-Guard Parity - 2026-07-10
+
+The recovered APSTA simple bodies do not install local null guards on every
+carrier. `getSOFTAP_PARAMS(...)` directly writes the fixed output fields from
+APSTA state `+0x18/+0x1c/+0x20/+0x24/+0x68/+0x10/+0x0e/+0x28` and returns
+success. `getSOFTAP_STATS(...)` copies exactly `0x58` bytes from state
+`+0x1b0` and returns success. `setSTA_DISASSOCIATE(...)` reads input
+`+0x04/+0x08/+0x0c`, builds the 0x0c-byte payload ending in sentinel
+`0xaaaa`, and calls virtual IOCTL set selector `0xc9`; no local null guard is
+present before those carrier reads.
+
+The local owner/controller wrappers now preserve those direct-read contracts:
+they no longer preempt `getSOFTAP_PARAMS`, `getSOFTAP_STATS`, or
+`setSTA_DISASSOCIATE` with `nullptr -> kIOReturnBadArgument` before reaching
+the APSTA owner. This does not remove the separate reference-proven null
+returns for methods such as `getOP_MODE`, `getHOST_AP_MODE_HIDDEN`,
+`setSTA_AUTHORIZE`, CSA, or station-list/stat getters.

@@ -304,6 +304,8 @@ void testApstaPublicContracts()
             "APSTA STA_DEAUTH tailcalls STA_DISASSOCIATE vtable slot");
     require(kAirportItlwmAPSTAStaDisassocVirtualIoctlSelector == 0xc9,
             "APSTA STA_DEAUTH and STA_DISASSOCIATE share the recovered selector");
+    require(kAirportItlwmAPSTAStaDisassocHasNullGuard == 0,
+            "APSTA STA_DISASSOCIATE has no reference null guard");
     require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, param14) == 0x14,
             "APSTA SoftAP params getter writes beacon interval at output +0x14");
     require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, mode16) == 0x16,
@@ -312,6 +314,8 @@ void testApstaPublicContracts()
             "APSTA SoftAP params getter writes enabled bit at output +0x17");
     require(offsetof(AirportItlwmAPSTASoftAPParamsOutputLayout, param18) == 0x18,
             "APSTA SoftAP params getter writes byte field at output +0x18");
+    require(kAirportItlwmAPSTAGetSoftAPParamsHasNullGuard == 0,
+            "APSTA getSOFTAP_PARAMS has no reference null guard");
     require(sizeof(((AirportItlwmAPSTAStateBlock *)0)->softapParam28) ==
                 kAirportItlwmAPSTASetSoftAPParamsStateParam28Size,
             "APSTA SoftAP params state +0x28 stores zero-extended input byte as dword");
@@ -371,6 +375,8 @@ void testApstaPublicContracts()
             "APSTA peer-cache maximum size is 8");
     require(kAirportItlwmAPSTAGetSoftAPStatsCopySize == 0x58,
             "APSTA SoftAP stats getter copies 0x58 bytes");
+    require(kAirportItlwmAPSTAGetSoftAPStatsHasNullGuard == 0,
+            "APSTA getSOFTAP_STATS has no reference null guard");
     require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, command04) == 0x04,
             "APSTA peer-cache control reads command at input +0x04");
     require(offsetof(AirportItlwmAPSTAPeerCacheControlLayout, value08) == 0x08,

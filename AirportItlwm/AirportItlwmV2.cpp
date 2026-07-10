@@ -6391,9 +6391,6 @@ IOReturn AirportItlwm::getHOST_AP_MODE_HIDDEN(OSObject *object,
 IOReturn AirportItlwm::getSOFTAP_PARAMS(OSObject *object,
     AirportItlwmAPSTASoftAPParamsOutputLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
         return kIOReturnUnsupported;
     }
@@ -6403,9 +6400,6 @@ IOReturn AirportItlwm::getSOFTAP_PARAMS(OSObject *object,
 IOReturn AirportItlwm::getSOFTAP_STATS(OSObject *object,
     AirportItlwmAPSTASoftAPStatsLayout *in)
 {
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
-    }
     if (fAPSTAOwner == NULL) {
         return kIOReturnUnsupported;
     }
@@ -6448,9 +6442,6 @@ IOReturn AirportItlwm::setSTA_DISASSOCIATE(OSObject *object,
 {
     if (fAPSTAOwner == NULL) {
         return static_cast<IOReturn>(kAirportItlwmAPSTASoftAPNotReadyReturn);
-    }
-    if (in == nullptr) {
-        return kIOReturnBadArgument;
     }
     return fAPSTAOwner->setStationDisassociation(in, deauth);
 }
