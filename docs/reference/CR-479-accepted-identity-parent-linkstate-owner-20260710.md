@@ -76,8 +76,11 @@ public CoreWLAN surface:
   `BSSID = 02:00:00:00:00:00`, while `CachedScanRecord` contained the real
   BSS.
 
-That public symptom remains a driver-facing model mismatch, not a reason to
-add a userspace answer or broad request fallback.
+A later item-220 follow-up classifies the matching top-level Dynamic Store
+SSID/BSSID redaction as reference airportd pruning through
+`wifi_allow_sensitive_info`. That public symptom is not a reason to add a
+userspace answer or broad request fallback, and future driver work requires a
+separately proven driver-facing mismatch.
 
 ## Local Closure
 
@@ -155,8 +158,8 @@ Data-path regression gate:
   missed beacon, deauth, disassoc, `driver not available`, `0xe0822403`, or
   `IO80211QueueCall` signatures. A wider 15-minute filter still captures the
   known rejoin/public-CoreWLAN `0xe0822403` and auto-join
-  `driver not available` noise, which remains part of the open public-surface
-  mismatch.
+  `driver not available` noise; item 220 later classifies the matching
+  top-level Dynamic Store redaction as reference airportd pruning.
 
 Public CoreWLAN and `networksetup` remain open after this layer:
 `CWInterface.ssid/bssid` and `CWFInterface.ssid/bssid` are still nil,
@@ -188,5 +191,6 @@ Follow-up single-producer cleanup validation on the same Tahoe 26.2 25C56 lab:
   `You are not associated with an AirPort network.`;
 - CoreWiFi admission probes still showed `core.capabilities` containing
   request types `57` and `58`, but the service-type-4 `_XPCClient` returned
-  `allowRequestType(57) == 0` and `allowRequestType(58) == 0`; this is the
-  next open public-interface model layer, not a reason to add a fallback gate.
+  `allowRequestType(57) == 0` and `allowRequestType(58) == 0`; this admission
+  observation is not a reason to add a fallback gate without a separately
+  proven driver-facing mismatch.

@@ -81,9 +81,10 @@ The same run showed the important Tahoe split:
 Therefore this specific `networksetup` request is narrowed to an airportd /
 CoreLocation path that failed before the external Apple80211 SSID ioctl bridge.
 That is not evidence that the accepted join BSSID/current-BSS publication
-failed, but it is still an open driver-surface discrepancy: public CoreWLAN and
-`networksetup` ultimately report state synthesized from driver-originated
-objects.
+failed. A later item-220 follow-up classifies the matching top-level Dynamic
+Store SSID/BSSID redaction as reference airportd pruning through
+`wifi_allow_sensitive_info`; future driver work on this public surface therefore
+requires a separately proven driver-facing mismatch.
 
 Follow-up validation on 2026-07-10 loaded kext UUID
 `880DAF86-B329-3ED6-B2ED-CBB4826DBA26` (binary SHA-256

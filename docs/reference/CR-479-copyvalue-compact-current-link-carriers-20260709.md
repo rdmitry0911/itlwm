@@ -152,13 +152,12 @@ kept `IO80211SSID = "ITLWM-Lab-3c95c7"`, `IO80211BSSID =
 and `IO80211CountryCode = "US"`; `system_profiler SPAirPortDataType` reported
 `Status: Connected`.
 
-Public CoreWLAN/`networksetup` remains open as a driver user-space surface, not
-as a closed privacy/TCC-only finding. The captured `networksetup
--getairportnetwork en1` run did log
+Public CoreWLAN/`networksetup` remained observed after this layer, but a later
+item-220 follow-up classifies the matching top-level Dynamic Store SSID/BSSID
+redaction as reference airportd pruning through `wifi_allow_sensitive_info`.
+The captured `networksetup -getairportnetwork en1` run did log
 `CoreLocation CLInternalGetAuthorizationStatusForAppWithAuditToken` and returned
 `err=1` before any `Apple80211GetWithIOCTL ... APPLE80211_IOC_SSID` reached the
-driver, but that only classifies the observed entry path. Because the source of
-truth for associated SSID/BSSID is still the driver's published state, any
-public-client nil/not-associated result remains a non-identical driver surface
-until the CoreWLAN/networksetup path consumes the same current-link state as the
-low-level Apple80211 probes.
+driver, which classifies that observed entry path as pre-IOCTL. Future driver
+work on this public surface requires a separate reference-faithful
+driver-facing mismatch, not the redacted public value alone.

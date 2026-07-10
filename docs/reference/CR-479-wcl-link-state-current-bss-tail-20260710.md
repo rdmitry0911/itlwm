@@ -98,6 +98,8 @@ This closes the WCL link-state current-BSS association tail only.
 `networksetup -getairportnetwork en1` still prints
 `You are not associated with an AirPort network.` on the same runtime, even
 after DTrace proves `IO80211BssManager::setCurrentBSS(..., true)` was called.
-The remaining discrepancy is therefore a higher read-path/user-space surface
-above the now-confirmed BssManager association flag, not a reason to re-add the
-rejected public fallback gate.
+A later item-220 follow-up classifies the matching top-level Dynamic Store
+SSID/BSSID redaction as reference airportd pruning through
+`wifi_allow_sensitive_info`. This note therefore remains limited to the WCL
+link-state current-BSS tail and is not a reason to re-add the rejected public
+fallback gate.

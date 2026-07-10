@@ -76,7 +76,8 @@ Live CoreWiFi admission still returned
 `CWFXPCClient::allowRequestType(57) == 0` and
 `CWFXPCClient::allowRequestType(58) == 0`, with
 `CWFInterface.currentScanResult == nil` and
-`currentKnownNetworkProfile == nil`. Therefore public CoreWLAN/
-`networksetup` remains an open driver-facing surface; the next layer must
-explain why CoreWiFi's live allow/profile model does not consume the now
-advertised request bits.
+`currentKnownNetworkProfile == nil`. A later item-220 follow-up classifies the
+matching top-level Dynamic Store SSID/BSSID redaction as reference airportd
+pruning through `wifi_allow_sensitive_info`; any future driver patch for the
+public CoreWLAN allow/profile model still requires a separate driver-facing
+mismatch beyond the redacted public value.
