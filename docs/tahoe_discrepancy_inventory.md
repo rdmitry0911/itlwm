@@ -5842,8 +5842,8 @@ Non-claims:
   - `airportd` request handling for external `GET SSID`
   - CoreLocation/TCC authorization gate
   - airportd/CoreWLAN associated-network model built from driver-originated state
-- status: open, request-path narrowed
-- justification: RUNTIME_LOG_PRE_IOCTL_PRIVACY_GATE_AND_DRIVER_SURFACE_GAP
+- status: open for public-client exposure, top-level Dynamic Store pruning classified
+- justification: AIRPORTD_BOOTARG_PRUNING_AND_PUBLIC_SERVICE_POLICY
 
 Runtime evidence:
 
@@ -5879,35 +5879,55 @@ Runtime evidence:
   - `CWFXPCClient` service-type matrix shows privileged service types allow
     request types `57`/`58`, while the public CoreWLAN service path used by
     `CWInterface.corewifi` does not.
+- 2026-07-10 airportd decompile/asm follow-up identified the top-level
+  Dynamic Store producer:
+  - `airportdUpdateDynamicStore` calls `FUN_100062d24(interfaceName)`;
+  - `FUN_100062d24` obtains `wifiClient -> interfaceWithName:`, then reads
+    `powerOn`, `ssidData`, `ssid`, `wlanChannel`, and
+    `queryBSSIDForInterfaceWithName:connection:error:`;
+  - before storing `SSID`, `SSID_STR`, and `BSSID`, the function scans
+    `bootargs` for `wifi_allow_sensitive_info=` and sets the use-real-data flag
+    only when the parsed integer value is non-zero;
+  - with the default flag clear, the reference code stores the pruned values
+    that match the live guest surface: `SSID` data `0x00`, empty `SSID_STR`,
+    and `BSSID` data `02:00:00:00:00:00`, while retaining the real
+    `CachedScanRecord`;
+  - the running guest bootargs are
+    `keepsyms=1 amfi=0x80 debug=0x14e serial=3`; an attempted diagnostic
+    `nvram boot-args=... wifi_allow_sensitive_info=1` was rejected by the guest
+    with `(iokit/common) not permitted`, and no bootarg change persisted.
 
 Local closure:
 
-- the long-standing Tahoe `networksetup` "not associated" output is not a
-  closed non-driver/TCC issue; it remains a public user-space driver-surface
-  mismatch until the public CoreWLAN/current-network model matches the
-  reference;
+- the long-standing Tahoe `networksetup` "not associated" output is no longer
+  valid by itself as a driver-patch trigger: the reference airportd top-level
+  Dynamic Store writer explicitly prunes SSID/BSSID unless
+  `wifi_allow_sensitive_info` is enabled;
 - the captured log only narrows one request path: this external `GET SSID`
   request failed before the Apple80211 IOCTL bridge and therefore did not test
   the compact SSID/BSSID ioctl carriers fixed in item 219;
 - because `networksetup` and public CoreWLAN ultimately consume
-  driver-originated state, any persistent nil/not-associated answer still
-  implies a missing or non-identical driver-facing surface somewhere in the
-  airportd/CoreWLAN model path;
+  driver-originated state, a future driver patch still requires a decompiled or
+  logged path that actually reaches a driver-facing selector/property/event and
+  proves a non-identical local response; redacted public top-level values alone
+  do not satisfy that bar;
 - future driver validation must prefer decompiled ABI, IORegistry, airportd
   internal requests, low-level `CWFApple80211` probes, data-path stress, and
   logs proving that a request actually reached the Apple80211 IOCTL bridge.
-- the next candidate patch must target the missing public associated/current
-  publication seam above the already-valid raw scan record. It must not broaden
-  `isCommandProhibited(...)`, rewrite compact current-link carriers, or synthesize
-  Dynamic Store values.
+- the next candidate patch must not broaden `isCommandProhibited(...)`, rewrite
+  compact current-link carriers, synthesize Dynamic Store values, or chase
+  `networksetup` output unless a reference-faithful driver-facing seam is
+  identified.
 
 Non-claims:
 
 - this does not bypass LocationServices, TCC, CoreWLAN, or `networksetup`;
-- this does not mark public external-client SSID/BSSID exposure complete;
-- this does not absolve the driver layer; it records that the next patch must
-  target the still-missing public CoreWLAN/current-network surface rather than
-  reworking the already validated compact IOCTL carriers blindly.
+- this does not mark public external-client SSID/BSSID exposure complete under
+  all possible bootargs or authorization states;
+- this does not absolve every driver-facing public CoreWLAN path; it records
+  that the observed `networksetup`/top-level Dynamic Store symptom is explained
+  by reference airportd pruning and is not a standalone reason for another
+  driver patch.
 
 ## item 221 - current-BSS country code stayed on `ZZ` across public registry surfaces
 
