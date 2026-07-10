@@ -572,7 +572,7 @@ IOReturn AirportItlwmAPSTAOwner::getStaIEList(AirportItlwmAPSTAStaIEDataLayout *
         return static_cast<IOReturn>(kAirportItlwmAPSTAGetStaIEListNotFoundReturn);
     }
 
-    memcpy(out->output10, entry, sizeof(out->output10));
+    memcpy(out->output10, entry->mac01, sizeof(out->output10));
     if (owner == nullptr || owner->fHalService == nullptr) {
         return kIOReturnNotReady;
     }

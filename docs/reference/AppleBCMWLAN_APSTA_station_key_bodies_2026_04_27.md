@@ -58,6 +58,8 @@ Address: `0xffffff800168f59c`.
 - not found returns `2`.
 - when found, the first four bytes of the station entry are copied to output
   `+0x10` and the next two bytes to output `+0x14`.
+- the station-entry copy source is the search cursor at `state+0xb9`, i.e. the
+  six MAC bytes, not the active byte at entry base `state+0xb8`.
 - IOVAR name is `wpaie`.
 - requested length is derived from input/output `+0x0c` minus the command-name
   overhead visible in the reference body.
@@ -114,4 +116,6 @@ caller-visible null ordering for the already-routed station/key getters:
 - `getSTATION_LIST(...)` checks NULL input before AP-down/owner state and
   returns raw `0x16`;
 - `getSTA_IE_LIST(...)` checks NULL input before station-table/owner lookup and
-  returns raw `0x16`.
+  returns raw `0x16`;
+- `getSTA_IE_LIST(...)` copies the found station MAC bytes from the recovered
+  `state+0xb9` search cursor into output `+0x10/+0x14`.

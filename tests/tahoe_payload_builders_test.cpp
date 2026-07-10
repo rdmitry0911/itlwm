@@ -454,6 +454,10 @@ void testApstaPublicContracts()
             "APSTA getSTA_IE_LIST checks null before station search");
     require(kAirportItlwmAPSTAGetStaIEListNotFoundReturn == 2,
             "APSTA getSTA_IE_LIST missing station return is 2");
+    require(kAirportItlwmAPSTAGetStaIEListOutputSourceOffset ==
+                kAirportItlwmAPSTAStationTableFirstEntryOffset &&
+            kAirportItlwmAPSTAGetStaIEListOutputSkipsActiveFlag == 1,
+            "APSTA getSTA_IE_LIST copies MAC bytes, not station active flag");
     require(kAirportItlwmAPSTAGetStaStatsNotUpReturn == 0x39,
             "APSTA getSTA_STATS AP-down return is 0x39");
     require(kAirportItlwmAPSTAGetKeyRscOutputLengthValue == 8,

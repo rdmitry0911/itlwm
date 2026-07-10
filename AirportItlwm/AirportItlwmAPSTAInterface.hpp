@@ -610,6 +610,9 @@ enum {
     kAirportItlwmAPSTAGetStaIEListInputLengthOffset = 0x0c,
     kAirportItlwmAPSTAGetStaIEListOutputMacOffset = 0x10,
     kAirportItlwmAPSTAGetStaIEListOutputMacTailOffset = 0x14,
+    kAirportItlwmAPSTAGetStaIEListOutputSourceOffset =
+        kAirportItlwmAPSTAStationTableFirstEntryOffset,
+    kAirportItlwmAPSTAGetStaIEListOutputSkipsActiveFlag = 1,
     kAirportItlwmAPSTAGetStaIEListReturnedLengthSourceOffset = 0x11,
     kAirportItlwmAPSTAGetStaIEListReturnedLengthBias = 2,
     kAirportItlwmAPSTAGetStaIEListWpaIeNameLength = 5,
@@ -1622,6 +1625,10 @@ static_assert(offsetof(AirportItlwmAPSTAStaIEDataLayout, output10) ==
 static_assert(kAirportItlwmAPSTAGetStaIEListOutputMacTailOffset ==
               kAirportItlwmAPSTAGetStaIEListOutputMacOffset + 0x04,
               "APSTA STA IE output MAC tail offset mismatch");
+static_assert(kAirportItlwmAPSTAGetStaIEListOutputSourceOffset ==
+              offsetof(AirportItlwmAPSTAStateBlock, softapStaTableB8) +
+              offsetof(AirportItlwmAPSTAStationTableEntryLayout, mac01),
+              "APSTA STA IE output source must start at station MAC bytes");
 static_assert(offsetof(AirportItlwmAPSTAStaStatsDataLayout, valid00) ==
               kAirportItlwmAPSTAGetStaStatsOutputValidOffset,
               "APSTA STA stats valid offset mismatch");

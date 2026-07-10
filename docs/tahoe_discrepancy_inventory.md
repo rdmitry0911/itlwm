@@ -7117,3 +7117,82 @@ Runtime validation:
 - public `networksetup -getairportnetwork en1` still printed
   `You are not associated with an AirPort network.`, preserving the open
   item-220/public CoreWLAN exposure rather than adding any fallback.
+
+## item 236 - APSTA STA_IE_LIST output copied the station active byte
+
+- producers:
+  - `AirportItlwmAPSTAOwner::getStaIEList(...)`
+  - `AirportItlwmAPSTAStationTableEntryLayout`
+  - `AirportItlwmAPSTAStaIEDataLayout`
+- status: implemented, runtime validated on Tahoe 25C56
+- justification: APSTA_STA_IE_LIST_OUTPUT_MAC_SOURCE
+- reference note:
+  - `docs/reference/AppleBCMWLAN_APSTA_station_key_bodies_2026_04_27.md`
+
+Reference and local evidence:
+
+- `AppleBCMWLANIO80211APSTAInterface::getSTA_IE_LIST(...)` reads the requested
+  station MAC from input `+0x04`;
+- the recovered station-table search cursor starts at `state+0xb9`, compares
+  six MAC bytes, advances by stride `0x30`, and stops before `state+0x1a9`;
+- after a match, the reference body copies the first four bytes from that
+  search cursor to output `+0x10`, then the next two bytes to output `+0x14`;
+- local `AirportItlwmAPSTAStationTableEntryLayout` correctly models entry base
+  `state+0xb8` with `active00` at `+0x00` and `mac01` at `+0x01`, but
+  `getStaIEList(...)` copied from the entry base. That exposed
+  `active00 + mac[0..4]` in output `+0x10` instead of the six MAC bytes from
+  the recovered `state+0xb9` cursor.
+
+Local closure:
+
+- `AirportItlwmAPSTAOwner::getStaIEList(...)` now copies
+  `entry->mac01` into output `+0x10/+0x14`;
+- `kAirportItlwmAPSTAGetStaIEListOutputSourceOffset` pins the source to
+  `kAirportItlwmAPSTAStationTableFirstEntryOffset`;
+- `kAirportItlwmAPSTAGetStaIEListOutputSkipsActiveFlag == 1` and the new
+  static assert prevent the station active byte from becoming part of the
+  caller-visible STA IE MAC prefix again.
+
+Non-claim:
+
+- this does not implement the Intel AP firmware `wpaie` backend;
+- this does not synthesize AP station IE data, AP station association, AP
+  traffic, role-7 success, or any public `networksetup`/CoreWLAN fallback;
+- this does not alter primary STA association, data path, key programming, or
+  the open item-220 public-client exposure.
+
+Runtime validation:
+
+- host `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` passed;
+- Tahoe guest `./scripts/test_payload_builders.sh` passed;
+- Tahoe guest clean build completed with all 949 BootKC symbols resolved
+  against `/System/Library/KernelCollections/BootKernelExtensions.kc`;
+- installed and booted `AirportItlwm.kext` UUID
+  `E5312455-F606-35DC-BFE0-7F59DA530813`, SHA-256
+  `2b998b2f3bd5636f8681892efee4d09fa1a0a2a1460b5efd90eb70241105911a`,
+  CDHash `5229f50439b6209dc1557cf091c91c1a5077aa1c`;
+- joined `AIAMlab6235/aa00bb0900`, received DHCP `10.77.0.47`;
+- required concurrent stress passed: ping `240/240`, 0.0% packet loss, RTT
+  `0.573/19.929/223.136/23.270 ms`; iperf3 transferred `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress raw Apple80211 and `CWFApple80211` probes returned SSID
+  `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, current network channel 6,
+  RSSI `-33`, and WPA2 Personal RSN data;
+- post-stress `en1` remained active at `10.77.0.47`; IORegistry kept
+  `IO80211SSID = "AIAMlab6235"`, `IO80211BSSID = <80e4ba20eff9>`,
+  `IO80211Channel = 6`, `IO80211RSNDone = Yes`,
+  `CoreWiFiDriverReadyKey = "true"`, `IO80211Locale = "FCC"`, and
+  `IO80211CountryCode = "US"`;
+- `system_profiler SPAirPortDataType` reported `Status: Connected` with
+  current network channel 6, country `US`, WPA2 Personal, RSSI `-33 dBm`, and
+  transmit rate `104`;
+- host AP station dump retained the guest MAC as authenticated, associated,
+  and authorized with `tx failed: 0`;
+- the stress-window fault filter found no panic, CoreCapture, NoCTL, missed
+  beacon, deauth, disassoc, driver-not-available, `e0822403`,
+  `IO80211QueueCall`, firmware-crash, or stack-corruption signatures;
+- public `CWInterface.ssid/bssid` and
+  `networksetup -getairportnetwork en1` still reported the known nil /
+  not-associated public-client symptom, preserving item-220 rather than adding
+  any fallback.
