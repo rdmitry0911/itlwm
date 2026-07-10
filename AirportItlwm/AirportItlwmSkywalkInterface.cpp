@@ -2908,9 +2908,9 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
             /*
              * Accepted SET_SSID-equivalent identity events must run after the
              * inherited parent link-up transition accepts, not on the earlier
-             * RSN key-done edge. The BSSID writer below shares the same
-             * last-published tracker, so this active accepted-join publication
-             * naturally suppresses its passive duplicate.
+             * RSN key-done edge. The accepted-join identity publisher is the
+             * single local Tahoe owner for both populated BSSID_CHANGED and
+             * SSID_CHANGED on this edge.
              */
             instance->publishTahoeAcceptedJoinIdentityEvents(
                 "setLinkStateInternal");
@@ -2939,82 +2939,13 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
         instance->postMessage(instance->fNetIf, APPLE80211_M_LINK_CHANGED,
                               &ed, sizeof(ed), true);
 
-        /* Tahoe APPLE80211_M_BSSID_CHANGED 24-byte compact carrier.
-         *
-         * The recovered Apple writer for the BSSID-changed event delivers
-         * a 24-byte payload through the IOUC 0x1b1 selector path with the
-         * BSSID at offset 0x00 and the reason at offset 0x14, after
-         * applying two producer-side gates:
-         *
-         *   1. Zero-BSSID rejection. A proposed BSSID whose six octets
-         *      are all zero is rejected before publication. Mirror this
-         *      gate locally: an all-zero ni_bssid does not produce a
-         *      BSSID-changed publication and does not update the
-         *      last-published-BSSID tracker.
-         *   2. Same-BSS reason-1 suppression. A publication whose reason
-         *      field equals APPLE80211_BSSID_CHANGE_REASON_SAME_BSS (1)
-         *      and whose BSSID matches the last published BSSID is
-         *      suppressed. Mirror this gate locally by classifying the
-         *      proposed BSSID against the tracker: if the tracker is
-         *      valid and the proposed BSSID matches the last published
-         *      BSSID, the reason is APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
-         *      and the publication is suppressed; otherwise the reason
-         *      is APPLE80211_BSSID_CHANGE_REASON_INITIAL (0) and the
-         *      24-byte payload is published exactly once.
-         *
-         * Tahoe userspace length-checks this carrier (prior zero-length
-         * publication produced an `expected=24 actual=0` CoreWiFi
-         * rejection), so the populated 24-byte payload is the only valid
-         * shape. After a non-suppressed publication, the tracker is
-         * updated to the published BSSID and marked valid. On link-down
-         * the tracker is invalidated so the next link-up always
-         * republishes for a fresh association edge.
-         */
-        if (isLinkDown) {
+        if (isLinkDown)
             this->fLastPublishedBssidValid = false;
-        } else if (ic != nullptr && ic->ic_bss != nullptr) {
-            uint8_t proposedBssid[IEEE80211_ADDR_LEN];
-            memcpy(proposedBssid, ic->ic_bss->ni_bssid,
-                   IEEE80211_ADDR_LEN);
-            const bool zeroBssidRejected =
-                (proposedBssid[0] | proposedBssid[1] | proposedBssid[2] |
-                 proposedBssid[3] | proposedBssid[4] |
-                 proposedBssid[5]) == 0;
-            if (zeroBssidRejected) {
-            } else {
-                const bool sameBssAsLastPublished =
-                    this->fLastPublishedBssidValid &&
-                    memcmp(proposedBssid, this->fLastPublishedBssid,
-                           IEEE80211_ADDR_LEN) == 0;
-                const uint32_t classifiedReason = sameBssAsLastPublished
-                    ? APPLE80211_BSSID_CHANGE_REASON_SAME_BSS
-                    : APPLE80211_BSSID_CHANGE_REASON_INITIAL;
-                const bool sameBssidWithReason1 =
-                    (classifiedReason ==
-                         APPLE80211_BSSID_CHANGE_REASON_SAME_BSS) &&
-                    sameBssAsLastPublished;
-                if (!sameBssidWithReason1) {
-                    apple80211_bssid_changed_event_data bd;
-                    bzero(&bd, sizeof(bd));
-                    memcpy(bd.bssid, proposedBssid, IEEE80211_ADDR_LEN);
-                    fillTahoeBssidChangedChannelFromCurrentBss(
-                        ic, proposedBssid, &bd);
-                    bd.reason = classifiedReason;
-                    postTahoeBssidChangedThroughInfraHelper(
-                        this, instance, &bd, "setLinkStateInternal");
-                    memcpy(this->fLastPublishedBssid, proposedBssid,
-                           IEEE80211_ADDR_LEN);
-                    this->fLastPublishedBssidValid = true;
-                }
-            }
-        }
 
         /*
-         * APPLE80211_M_SSID_CHANGED is owned by the accepted SET_SSID/join
-         * producer, not this parent-link-state gate. The local Tahoe bridge
-         * publishes it from AirportItlwm::setLinkStateGated after the WCL
-         * connect-complete edge; keeping it here would double-publish if the
-         * inherited parent gate opens on a future Tahoe build.
+         * The accepted identity publisher above owns the local SSID_CHANGED
+         * carrier for this parent-success edge; keep this gate limited to the
+         * link-changed carrier and the BSSID tracker reset on link-down.
          */
     }
     if (ret && state == kIO80211NetworkLinkUp) {

@@ -190,7 +190,7 @@
     {
       "name": "bssid-changed-24",
       "shape": "24-byte APPLE80211_M_BSSID_CHANGED compact carrier",
-      "producer": "AirportItlwmSkywalkInterface::setCurrentApAddress",
+      "producer": "AirportItlwmSkywalkInterface::publishTahoeBssidChangedFromCurrentBss",
       "consumer": "IO80211Glue pending event queue",
       "implementation_paths": [
         "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
@@ -225,7 +225,21 @@
       "apple_reference_case_ids": [
         "apple-wcl-scan-result"
       ],
-      "invalid_semantics": "null controller/node/channel rejects before WCL_SCAN_RESULT publication"
+      "invalid_semantics": "null controller/node/channel and zero BSSID reject before WCL_SCAN_RESULT publication"
+    },
+    {
+      "name": "wcl-auth-assoc-complete",
+      "shape": "0x08 WCL auth/assoc status and reason carrier",
+      "producer": "buildTahoeWclAuthAssocCompletePayload",
+      "consumer": "WCLJoinManager association/auth-complete path",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "include/Airport/apple80211_var.h"
+      ],
+      "apple_reference_case_ids": [
+        "apple-wcl-auth-assoc-complete"
+      ],
+      "invalid_semantics": "zero status/reason maps to zero dwords; out-of-range status/reason maps to 0xe3ff8100"
     },
     {
       "name": "wcl-connect-complete",
@@ -291,6 +305,11 @@
       "id": "apple-wcl-scan-result",
       "path": "analysis/ANALYSIS_REPORT_2026-04-23.md",
       "assertions_checked": 3
+    },
+    {
+      "id": "apple-wcl-auth-assoc-complete",
+      "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
+      "assertions_checked": 4
     },
     {
       "id": "apple-io80211-selector-surface",
@@ -371,8 +390,8 @@
   "mismatch_count": 0,
   "mismatches": [],
   "metrics": {
-    "covered_payload_type_count": 17,
-    "apple_reference_case_count": 10,
+    "covered_payload_type_count": 18,
+    "apple_reference_case_count": 11,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

@@ -9,6 +9,14 @@ WCL join FSM, and moves the accepted identity publication edge for populated
 `BSSID_CHANGED` and status-carrier `SSID_CHANGED` to the accepted Skywalk
 parent link-up transition.
 
+A follow-up cleanup in the same functional layer removes the leftover inline
+`BSSID_CHANGED` producer from `AirportItlwmSkywalkInterface::
+setLinkStateInternal(...)`; that gate now owns only the 32-byte link-changed
+carrier and the link-down reset of the last-published-BSSID tracker. The only
+local populated event-3 publisher left on the accepted join edge is
+`publishTahoeBssidChangedFromCurrentBss(...)`, called through
+`publishTahoeAcceptedJoinIdentityEvents(...)`.
+
 It does not add a public CoreWLAN/networksetup fallback, does not synthesize
 Dynamic Store values, and does not change the raw Apple80211 SSID, BSSID, or
 current-network IOCTL producers.
@@ -85,6 +93,9 @@ add a userspace answer or broad request fallback.
   25C56 Apple implementation does not publish BSSID_CHANGED there. The existing
   last-published BSSID tracker remains only on the accepted identity publisher
   and link-down reset path.
+- The later inline BSSID producer that remained after `APPLE80211_M_LINK_CHANGED`
+  in `setLinkStateInternal(...)` is removed, so the accepted identity sequence
+  has one local event-3 owner instead of a tracker-suppressed duplicate edge.
 
 ## Validation
 
@@ -151,3 +162,31 @@ Public CoreWLAN and `networksetup` remain open after this layer:
 `CWInterface.ssid/bssid` and `CWFInterface.ssid/bssid` are still nil,
 CoreWLAN channel is 6, and `networksetup -getairportnetwork en1` still prints
 `You are not associated with an AirPort network.`
+
+Follow-up single-producer cleanup validation on the same Tahoe 26.2 25C56 lab:
+
+- loaded kext UUID `1F52D8AB-B572-3FE6-99C1-A924490B10B8`;
+- installed binary SHA-256
+  `16d725a98ab1ffa1ac0a77d0a22897053697e1248b0091169a0ea6379b253e12`;
+- host and guest `scripts/test_payload_builders.sh` passed, the deterministic
+  payload parity report regenerated and checked cleanly, and the Tahoe build
+  resolved all 949 undefined symbols against BootKC;
+- controlled rejoin to `AIAMlab6235` reached DHCP `10.77.0.47`;
+- required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
+  completed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
+  loss, RTT `0.575/15.482/143.609/21.766 ms`; iperf3 transferred
+  `572 MBytes` at `20.0 Mbits/sec` sender and receiver;
+- post-stress IORegistry still exposed `IO80211SSID = "AIAMlab6235"`,
+  `IO80211BSSID = <80e4ba20eff9>`, `IO80211Channel = 6`,
+  `IO80211RSNDone = Yes`, and `CoreWiFiDriverReadyKey = "true"`;
+- `Apple80211CopyCurrentNetwork`, compact `CopyValue(1)`, `CopyValue(9)`,
+  `CopyValue(0xd)`, and `CopyValue(0x67)` returned the associated SSID/BSSID,
+  state `4`, channel `6`, RSSI `-33`, noise `-88`, and IE length `163`;
+- `CWFApple80211 SSID:`, `BSSID:`, and `currentNetwork:` returned the same
+  associated state; public `CWInterface.ssid/bssid` remained nil and
+  `networksetup -getairportnetwork en1` still printed
+  `You are not associated with an AirPort network.`;
+- CoreWiFi admission probes still showed `core.capabilities` containing
+  request types `57` and `58`, but the service-type-4 `_XPCClient` returned
+  `allowRequestType(57) == 0` and `allowRequestType(58) == 0`; this is the
+  next open public-interface model layer, not a reason to add a fallback gate.

@@ -6612,9 +6612,13 @@ Local closure:
 - the duplicate accepted-identity call in `setLinkStateGated(...)` is removed;
 - the passive `setCurrentApAddress(...)` event-3 hook is removed because the
   25C56 Apple implementation does not publish BSSID_CHANGED there;
-- duplicate BSSID publication remains governed by the existing
-  last-published-BSSID tracker and same-BSS reason-1 suppression on the
-  accepted identity publisher and link-down reset path.
+- the later inline BSSID producer after `APPLE80211_M_LINK_CHANGED` in
+  `AirportItlwmSkywalkInterface::setLinkStateInternal(...)` is removed, leaving
+  `publishTahoeBssidChangedFromCurrentBss(...)` as the single local populated
+  event-3 owner on the accepted identity path;
+- BSSID publication remains governed by the existing last-published-BSSID
+  tracker and same-BSS reason-1 suppression on the accepted identity publisher
+  plus the link-down reset path.
 
 Runtime validation:
 
@@ -6639,6 +6643,28 @@ Runtime validation:
   and the post-stress 4-minute fault filter found no panic, CoreCapture, NoCTL,
   missed beacon, deauth, disassoc, `driver not available`, `0xe0822403`, or
   `IO80211QueueCall` signatures.
+
+Follow-up single-producer cleanup validation:
+
+- loaded Tahoe kext UUID `1F52D8AB-B572-3FE6-99C1-A924490B10B8`, binary
+  SHA-256 `16d725a98ab1ffa1ac0a77d0a22897053697e1248b0091169a0ea6379b253e12`;
+- host and guest payload-builder tests passed, the deterministic payload parity
+  report regenerated and checked cleanly, Tahoe build passed, and all 949
+  undefined symbols resolved against BootKC;
+- required 240-second concurrent ping plus `/usr/local/bin/iperf3 -b 20M`
+  passed with `PING_RC=0` and `IPERF_RC=0`: ping `240/240`, `0.0%` packet
+  loss, RTT `0.575/15.482/143.609/21.766 ms`; iperf3 `572 MBytes` at
+  `20.0 Mbits/sec` sender and receiver;
+- post-stress IORegistry kept `IO80211SSID = "AIAMlab6235"`,
+  `IO80211BSSID = <80e4ba20eff9>`, `IO80211Channel = 6`, `IO80211RSNDone =
+  Yes`, and `CoreWiFiDriverReadyKey = "true"`;
+- raw Apple80211 and `CWFApple80211` current-network probes returned SSID
+  `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, state `4`, channel `6`, RSSI
+  `-33`, noise `-88`, and IE length `163`;
+- public `CWInterface.ssid/bssid` and `networksetup -getairportnetwork en1`
+  remained open; CoreWiFi admission still exposes request types `57` and `58`
+  in `core.capabilities`, while the service-type-4 `_XPCClient` returns
+  `allowRequestType(57) == 0` and `allowRequestType(58) == 0`.
 
 Non-claim:
 

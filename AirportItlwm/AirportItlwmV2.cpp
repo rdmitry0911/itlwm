@@ -4278,14 +4278,12 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      * produced an `expected=24 actual=0` CoreWiFi rejection), so the
      * Tahoe branch must not republish APPLE80211_M_BSSID_CHANGED with
      * a NULL/0 payload. The accepted join-up path publishes the populated
-     * carrier from the current associated BSS before SSID_CHANGED from that
-     * same parent-success link-up transition, and the Tahoe Skywalk
-     * `setCurrentApAddress` override remains the passive framework-supplied
-     * BSSID-transition hook. Both paths share the same
-     * last-published tracker, zero-BSSID rejection, and same-BSS reason-1
-     * suppression gates. The legacy zero-length BSSID notify remains only
-     * in the pre-Tahoe branch below. SSID_CHANGED is published by
-     * `publishTahoeAcceptedJoinIdentityEvents` on the accepted join-up edge.
+     * carrier from the current associated BSS through
+     * `publishTahoeAcceptedJoinIdentityEvents` on the same parent-success
+     * link-up transition that publishes SSID_CHANGED. The Tahoe Skywalk
+     * `setCurrentApAddress` override remains only a passive parent cache/rate
+     * hook and is not a local event-3 producer. The legacy zero-length BSSID
+     * notify remains only in the pre-Tahoe branch below.
      */
 #else
     that->postMessage(that->fNetIf, APPLE80211_M_LINK_CHANGED, NULL, 0, true);

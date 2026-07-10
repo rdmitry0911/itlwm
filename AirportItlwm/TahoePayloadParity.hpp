@@ -123,7 +123,7 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
         },
         {
             "bssid-changed-24",
-            "AirportItlwmSkywalkInterface::setCurrentApAddress",
+            "AirportItlwmSkywalkInterface::publishTahoeBssidChangedFromCurrentBss",
             "IO80211Glue pending event queue",
             "apple-event-three-abis",
             0x18,

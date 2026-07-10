@@ -321,7 +321,7 @@ PAYLOAD_TYPES = [
     {
         "name": "bssid-changed-24",
         "shape": "24-byte APPLE80211_M_BSSID_CHANGED compact carrier",
-        "producer": "AirportItlwmSkywalkInterface::setCurrentApAddress",
+        "producer": "AirportItlwmSkywalkInterface::publishTahoeBssidChangedFromCurrentBss",
         "consumer": "IO80211Glue pending event queue",
         "reference_ids": ["apple-event-three-abis"],
         "implementation_checks": [
