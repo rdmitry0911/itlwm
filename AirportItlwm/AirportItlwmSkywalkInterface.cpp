@@ -11,6 +11,7 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeAssociationAuthContracts.hpp"
+#include "TahoeBeaconIeBuilder.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeLeScanContracts.hpp"
 #include "TahoeLqmContracts.hpp"
@@ -7243,20 +7244,36 @@ static uint8_t scanResultSsidLengthForNode(const struct ieee80211_node *node)
         : 0;
 }
 
+static uint32_t buildTahoeCurrentBssIeStream(const struct ieee80211_node *node,
+                                             uint8_t *dst,
+                                             uint32_t capacity)
+{
+    if (node == nullptr)
+        return 0;
+
+    const uint8_t ssidLen = scanResultSsidLengthForNode(node);
+    return TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        node->ni_essid,
+        ssidLen,
+        node->ni_dtimcount,
+        node->ni_dtimperiod,
+        node->ni_rsnie_tlv,
+        node->ni_rsnie_tlv_len,
+        dst,
+        capacity);
+}
+
 static int convertNodeToScanResult(ItlHalService *fHalService,
                                    struct ieee80211_node *fNextNodeToSend,
                                    apple80211_scan_result *result)
 {
     bzero(result, sizeof(*result));
     result->version = APPLE80211_VERSION;
-    if (fNextNodeToSend->ni_rsnie_tlv && fNextNodeToSend->ni_rsnie_tlv_len > 0) {
-        result->asr_ie_len = MIN(fNextNodeToSend->ni_rsnie_tlv_len,
-                                 sizeof(result->asr_ie_data));
-        memcpy(result->asr_ie_data, fNextNodeToSend->ni_rsnie_tlv,
-               result->asr_ie_len);
-    } else {
-        result->asr_ie_len = 0;
-    }
+    result->asr_ie_len = static_cast<int16_t>(
+        buildTahoeCurrentBssIeStream(
+            fNextNodeToSend,
+            result->asr_ie_data,
+            static_cast<uint32_t>(sizeof(result->asr_ie_data))));
     result->asr_beacon_int = fNextNodeToSend->ni_intval;
     // Tahoe airportd candidate ingestion is sensitive to scan-result shape.
     // V16 left asr_rates empty because the loop iterated result->asr_nrates
@@ -7462,13 +7479,10 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
     bzero(data, sizeof(*data));
 
     auto *payload = reinterpret_cast<TahoeWclCurrentBssPayload *>(data->data);
-    uint32_t ieLen = 0;
-    if (ni->ni_rsnie_tlv != nullptr && ni->ni_rsnie_tlv_len != 0) {
-        ieLen = ni->ni_rsnie_tlv_len;
-        if (ieLen > APPLE80211_WCL_BSS_INFO_MAX_IE_LEN)
-            ieLen = APPLE80211_WCL_BSS_INFO_MAX_IE_LEN;
-        memcpy(payload->ie, ni->ni_rsnie_tlv, ieLen);
-    }
+    const uint32_t ieLen = buildTahoeCurrentBssIeStream(
+        ni,
+        payload->ie,
+        static_cast<uint32_t>(sizeof(payload->ie)));
 
     payload->meta.ieLen = ieLen;
     payload->meta.chanSpec = chanSpec;

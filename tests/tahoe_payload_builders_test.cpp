@@ -8,6 +8,7 @@
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
+#include "AirportItlwm/TahoeBeaconIeBuilder.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
@@ -1127,6 +1128,50 @@ void testTahoeCurrentNetworkCarrierContract()
             "CURRENT_NETWORK BssManager writer clamps SSID length to 0x20");
 }
 
+void testTahoeBeaconIeBuilder()
+{
+    const uint8_t completeTail[] = {
+        0x00, 0x03, 'f', 'o', 'o',
+        0x05, 0x04, 0x02, 0x03, 0x00, 0x00,
+        0x30, 0x02, 0xaa, 0xbb,
+    };
+    uint8_t out[64] = {};
+    uint32_t len = TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        reinterpret_cast<const uint8_t *>("bar"), 3, 7, 1,
+        completeTail, sizeof(completeTail), out, sizeof(out));
+    require(len == sizeof(completeTail),
+            "beacon IE builder preserves full raw tagged tail length");
+    require(std::memcmp(out, completeTail, sizeof(completeTail)) == 0,
+            "beacon IE builder preserves full raw tagged tail bytes");
+
+    const uint8_t rsnOnlyTail[] = { 0x30, 0x02, 0xaa, 0xbb };
+    std::memset(out, 0, sizeof(out));
+    len = TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        reinterpret_cast<const uint8_t *>("AIAM"), 4, 6, 0,
+        rsnOnlyTail, sizeof(rsnOnlyTail), out, sizeof(out));
+    const uint8_t expectedRebuilt[] = {
+        0x00, 0x04, 'A', 'I', 'A', 'M',
+        0x05, 0x04, 0x06, 0x01, 0x00, 0x00,
+        0x30, 0x02, 0xaa, 0xbb,
+    };
+    require(len == sizeof(expectedRebuilt),
+            "beacon IE builder rebuilds SSID/TIM before RSN tail");
+    require(std::memcmp(out, expectedRebuilt, sizeof(expectedRebuilt)) == 0,
+            "beacon IE builder emits CoreWLAN-visible SSID and TIM IEs");
+
+    const uint8_t malformedTail[] = { 0x30, 0x04, 0xaa };
+    std::memset(out, 0, sizeof(out));
+    len = TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        reinterpret_cast<const uint8_t *>("x"), 1, 0, 1,
+        malformedTail, sizeof(malformedTail), out, sizeof(out));
+    require(len == 9,
+            "beacon IE builder drops malformed raw tail instead of copying a partial IE");
+    require(out[0] == 0x00 && out[1] == 0x01 && out[2] == 'x',
+            "beacon IE builder keeps reconstructed SSID when raw tail is malformed");
+    require(out[3] == 0x05 && out[4] == 0x04,
+            "beacon IE builder keeps reconstructed TIM when raw tail is malformed");
+}
+
 void testTahoeAssociationAuthContracts()
 {
     using namespace TahoeAssociationAuthContracts;
@@ -1193,8 +1238,9 @@ int main()
     testTahoeCapabilityContracts();
     testTahoeScanResultLayout();
     testTahoeCurrentNetworkCarrierContract();
+    testTahoeBeaconIeBuilder();
     testTahoeAssociationAuthContracts();
     testTahoeCountryCodeCarrierContracts();
-    std::cout << "tahoe payload builders ok: 26 contracts, 9 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 26 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

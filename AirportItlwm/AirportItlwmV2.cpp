@@ -8,6 +8,7 @@
 
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmCountryCode.hpp"
+#include "TahoeBeaconIeBuilder.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
@@ -1398,15 +1399,20 @@ static bool buildTahoeWclScanResultPayload(struct ieee80211com *ic,
 
     bzero(payload, sizeof(*payload));
 
-    uint32_t ieLen = 0;
-    if (ni->ni_rsnie_tlv != nullptr && ni->ni_rsnie_tlv_len != 0) {
-        ieLen = MIN(ni->ni_rsnie_tlv_len,
-                    static_cast<uint32_t>(kTahoeWclScanResultMaxIELen));
-        memcpy(payload->ie, ni->ni_rsnie_tlv, ieLen);
-    }
+    const uint8_t ssidLen = MIN(static_cast<uint8_t>(sizeof(payload->meta.ssid)),
+                                ni->ni_esslen);
+    const uint32_t ieLen = TahoeBeaconIeBuilder::buildCurrentBssIeStream(
+        ni->ni_essid,
+        ssidLen,
+        ni->ni_dtimcount,
+        ni->ni_dtimperiod,
+        ni->ni_rsnie_tlv,
+        ni->ni_rsnie_tlv_len,
+        payload->ie,
+        static_cast<uint32_t>(sizeof(payload->ie)));
     payload->meta.ieLen = ieLen;
     payload->meta.chanSpec = chanSpec;
-    payload->meta.ssidLen = MIN(static_cast<uint8_t>(sizeof(payload->meta.ssid)), ni->ni_esslen);
+    payload->meta.ssidLen = ssidLen;
     if (payload->meta.ssidLen != 0) {
         memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
         // Consumer-side setBeaconDataFromMsg uses bits 1|2 as the "header SSID
@@ -2790,10 +2796,12 @@ void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
      * completion bulletin (0xED, 4-byte status).  0xED alone leaves the
      * framework scan cache empty even when ic_tree already has nodes.
      *
-     * The local port already preserves the full tagged-IE tail in
-     * ni_rsnie_tlv. Rebuild the Apple-shaped 0x44 metadata carrier from the
-     * node cache, seed the primary 20 MHz chanSpec, let IO80211 parse the raw
-     * HT/VHT/HE operation IEs, then post the real WCL completion bulletin.
+     * Apple copies the firmware wl_bss_info tagged-IE tail into this carrier.
+     * The local node cache may only retain the RSN tail, so rebuild the
+     * mandatory beacon SSID/TIM elements from node fields before appending the
+     * retained raw IEs. Seed the primary 20 MHz chanSpec, let IO80211 parse the
+     * raw HT/VHT/HE operation IEs when present, then post the real WCL
+     * completion bulletin.
      */
     if (that->getCommandGate() != nullptr) {
         that->getCommandGate()->runAction(postWclScanResultsGated,
