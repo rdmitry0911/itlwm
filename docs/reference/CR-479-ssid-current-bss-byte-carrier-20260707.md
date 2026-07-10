@@ -41,10 +41,39 @@ That is not the Apple carrier contract:
 
 The three STA GET SSID producers now keep the existing Apple bootstrap
 contract, success with a zeroed carrier before association, but when the local
-state is RUN they fill the carrier from:
+state is RUN they fill the carrier only from:
 
 1. `ic->ic_bss->ni_essid` and `ni_esslen` when a current BSS exists and the
-   length is within `APPLE80211_MAX_SSID_LEN`;
-2. `ic->ic_des_essid` and `ic_des_esslen` only as a bounded fallback.
+   length is within `APPLE80211_MAX_SSID_LEN`.
 
 No producer now uses `strlen` for SSID length.
+
+The earlier bounded `ic_des_essid/ic_des_esslen` fallback was removed in the
+2026-07-10 follow-up. The desired SSID is a join target, not an associated-BSS
+identity source; the reference-associated cache is seeded through
+`IO80211BssManager::setAssocSSID(...)`.
+
+## Runtime Validation
+
+The 2026-07-10 follow-up was loaded on Tahoe 25C56 as
+`com.zxystd.AirportItlwm` UUID `5834C5A1-C828-3AFC-85CA-5929EF2C4E90`,
+binary SHA-256
+`cf622092fb2af3e2eae36a677aa7c899b96678b01161ad00358385d3e3e4f3df`.
+
+After joining `AIAMlab6235`, raw Tahoe and legacy Apple80211 probes both
+returned SSID `AIAMlab6235`, BSSID `80:e4:ba:20:ef:f9`, `STATE=4`, and a
+populated `CURRENT_NETWORK` carrier on channel `6`. `CWFApple80211` direct
+queries also returned the same SSID/BSSID/current network, while the known
+public CoreWLAN wrapper symptom remained open.
+
+The accepted 240-second concurrent stress passed with `PING_RC=0` and
+`IPERF_RC=0`: ping reported `240 packets transmitted, 240 packets received,
+0.0% packet loss`, RTT `0.550/3.798/37.910/5.359 ms`, and iperf3 UDP reported
+`572 MBytes` received at `20.0 Mbits/sec` with `0/414365` datagrams lost.
+Post-stress `en1` remained active at DHCP `10.77.0.47`, and
+`system_profiler SPAirPortDataType` reported `Status: Connected`, channel `6`,
+signal/noise `-33 dBm / -92 dBm`, transmit rate `104`, and MCS `13`.
+
+The stress-window fault filter found no panic, firmware crash, NoCTL, missed
+beacon, deauth, disassoc, CoreCapture, `driver not available`, `0xe0822403`,
+or `IO80211QueueCall` signatures.

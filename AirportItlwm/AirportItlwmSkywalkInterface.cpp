@@ -3339,10 +3339,6 @@ getSSID(struct apple80211_ssid_data *sd)
         sd->ssid_len = ic->ic_bss->ni_esslen;
         if (sd->ssid_len != 0)
             memcpy(sd->ssid_bytes, ic->ic_bss->ni_essid, sd->ssid_len);
-    } else if (ic->ic_state == IEEE80211_S_RUN &&
-        ic->ic_des_esslen > 0 && ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
-        sd->ssid_len = static_cast<uint32_t>(ic->ic_des_esslen);
-        memcpy(sd->ssid_bytes, ic->ic_des_essid, sd->ssid_len);
     }
     return kIOReturnSuccess;
 }
@@ -3363,10 +3359,6 @@ getTahoeCompactSSID(void *data, uint32_t length, uint32_t *returnedLength)
         ssidLength = static_cast<uint32_t>(ic->ic_bss->ni_esslen);
         if (ssidLength != 0)
             memcpy(ssidBytes, ic->ic_bss->ni_essid, ssidLength);
-    } else if (ic->ic_state == IEEE80211_S_RUN &&
-        ic->ic_des_esslen > 0 && ic->ic_des_esslen <= APPLE80211_MAX_SSID_LEN) {
-        ssidLength = static_cast<uint32_t>(ic->ic_des_esslen);
-        memcpy(ssidBytes, ic->ic_des_essid, ssidLength);
     }
     if (returnedLength != nullptr)
         *returnedLength = ssidLength;

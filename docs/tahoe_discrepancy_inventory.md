@@ -5128,15 +5128,44 @@ Reference evidence:
 
 Local closure:
 
-- associated STA GET SSID now prefers the current BSS `ni_essid/ni_esslen`;
-- desired `ic_des_essid/ic_des_esslen` is retained only as a bounded RUN-state
-  fallback;
+- associated STA GET SSID now uses the current BSS `ni_essid/ni_esslen`;
+- desired `ic_des_essid/ic_des_esslen` is not used as an associated-SSID
+  fallback; the reference associated-SSID cache is seeded through
+  `IO80211BssManager::setAssocSSID(...)`;
 - all STA GET SSID copies continue returning success with a zeroed carrier
   before association, matching the bootstrap contract;
 - all `strlen(ic_des_essid)` SSID carrier production was removed.
 
 Reference note:
 `docs/reference/CR-479-ssid-current-bss-byte-carrier-20260707.md`.
+
+Runtime validation:
+
+- loaded Tahoe 25C56 kext UUID
+  `5834C5A1-C828-3AFC-85CA-5929EF2C4E90`, binary SHA-256
+  `cf622092fb2af3e2eae36a677aa7c899b96678b01161ad00358385d3e3e4f3df`;
+- lab join completed on `en1` with DHCP `10.77.0.47`;
+- raw Tahoe and legacy Apple80211 probes returned SSID `AIAMlab6235`, BSSID
+  `80:e4:ba:20:ef:f9`, `STATE=4`, and a populated `CURRENT_NETWORK` carrier
+  on channel `6`;
+- direct `CWFApple80211` queries returned the same SSID/BSSID/current network;
+- concurrent 240-second ping plus iperf3 stress passed with `PING_RC=0` and
+  `IPERF_RC=0`: ping reported `240 packets transmitted, 240 packets
+  received, 0.0% packet loss`, RTT `0.550/3.798/37.910/5.359 ms`, and iperf3
+  UDP reported `572 MBytes` at `20.0 Mbits/sec` with `0/414365` datagrams
+  lost;
+- post-stress `en1` remained active and `system_profiler SPAirPortDataType`
+  reported `Status: Connected`, country `US`, channel `6`, signal/noise
+  `-33 dBm / -92 dBm`, transmit rate `104`, and MCS `13`;
+- the stress-window fault filter found no panic, firmware crash, NoCTL, missed
+  beacon, deauth, disassoc, CoreCapture, `driver not available`,
+  `0xe0822403`, or `IO80211QueueCall` signatures.
+
+Non-claim:
+
+- this does not synthesize Dynamic Store values, does not broaden
+  `isCommandProhibited(...)`, and does not close the known public
+  `networksetup`/`CWInterface.ssid` wrapper symptom.
 
 ## item 209 — Primary OP_MODE associated STA/IBSS publication
 
