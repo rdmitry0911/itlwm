@@ -129,9 +129,20 @@ This matches another local producer drift:
 - and also posted it from `handlePowerStateChange(...)` even for no-op
   `req == cur` calls
 
-The reverse event maps mark `POWER_CHANGED` as mandatory only for real power
-transitions. So posting it on bootstrap and on no-op `1 -> 1` requests is not
-`1:1` with the Apple producer path and feeds false system-power edges into SSM.
+That pass correctly removed bootstrap and no-op publication, but still
+conflated two power domains. Exact current decompilation later proved that
+radio `handlePowerStateChange(...)` never posts `POWER_CHANGED`; only the
+separate IOPM system sleep/wake path owns it. Removing the radio post did not
+stop the next replayed-WAKE panic. The local IOPM owner itself was still
+asynchronous and posted selector `1` on both OFF and ON. The current reference
+runs the transition synchronously under the command gate, emits the ordinary
+unavailable `0x37` carrier but no selector `1` on system OFF, and emits the
+ordinary available `0x37` carrier before one selector `1` after system ON. The
+alignment restores the shared atomic state word, its `0x30 == 0x20` gate, boot
+bit `0x10`, and wake-property cleanup. Clean-build UUID
+`8AFE24EC-4859-33BD-9E12-452F4DC24A90` passed real sleep/wake, four post-wake
+radio cycles, and concurrent `240/240` ping/240-second iperf3 without a fault.
+This is not a sole-root-cause claim.
 
 ## Symptom
 

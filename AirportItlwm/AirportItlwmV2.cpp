@@ -23,6 +23,7 @@
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSymbol.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/OSAtomic.h>
 
 // CR-226: extern "C" asm-named declarations for the BootKC-exported
 // IO80211NetworkPacket allocator and constructor. Direct asm-named
@@ -44,6 +45,11 @@ AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
     __asm("__ZN20IO80211NetworkPacketC1EPK11OSMetaClass");
 
 #if __IO80211_TARGET >= __MAC_26_0
+// Tahoe's AppleBCMWLANCore OFF path calls this exported IOService helper before
+// clearing its system-power bit.  It removes the named service property through
+// the same IOService property transport used by the reference controller.
+extern bool removePropertyHelper(IOService *service, const char *key);
+
 extern "C" void *
 AirportItlwm_IO80211BssManager_operatorNew(unsigned long size)
     __asm("__ZN17IO80211BssManagernwEm");
@@ -980,7 +986,8 @@ airportItlwmRegDiagFillSnapshot(AirportItlwm *driver)
     snap.rtMask2 = sRT.rtMask2;
     snap.rtMask3 = sRT.rtMask3;
     snap.powerState = driver != nullptr ? driver->power_state : 0;
-    snap.pmPowerState = driver != nullptr ? driver->pmPowerState : 0;
+    snap.pmPowerState = driver != nullptr ?
+        (driver->pmPowerStateFlags & kAirportItlwmPmSystemOnBit) : 0;
     snap.currentStatus = driver != nullptr ? driver->currentStatus : 0;
     snap.currentSpeed = driver != nullptr ? driver->currentSpeed : 0;
 
@@ -1793,15 +1800,20 @@ handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 
 void AirportItlwm::performTahoeBootChipImage()
 {
+    OSBitOrAtomic(kAirportItlwmPmBootInProgressBit, &pmPowerStateFlags);
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     power_state = kWiFiPowerOn;
     const IOReturn enableResult = enableAdapter(NULL);
     if (enableResult == kIOReturnSuccess) {
+        OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmBootInProgressBit),
+                       &pmPowerStateFlags);
         publishTahoeBootReadyState(this);
     } else {
         power_state = kWiFiPowerOff;
+        OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmBootInProgressBit),
+                       &pmPowerStateFlags);
         publishTahoeBootFailureState(this);
     }
 }
@@ -2643,7 +2655,6 @@ void AirportItlwm::releaseAll()
         _fWorkloop->release();
         _fWorkloop = NULL;
     }
-    unregistPM();
 }
 
 IOReturn AirportItlwm::
@@ -3030,6 +3041,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     power_state = 0;
+    pmPowerStateFlags = 0;
     fpNetStats = NULL;
 #if __IO80211_TARGET >= __MAC_26_0
     memset(&tahoeLegacyNetStats, 0, sizeof(tahoeLegacyNetStats));
@@ -3455,8 +3467,8 @@ bool AirportItlwm::start(IOService *provider)
                       "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                       "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
                       "bsdFl=0x%x bsdMtu=%u | "
-                      "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
-                      "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
+                      "pmPol=%p pmGate=%u pmNoop=%u txDrop=%u "
+                      "sysOff=%u sysOn=%u invalid=%u gateErr=%u | "
                       "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p | "
                       "txCb=%u txS=%u txD=%u rxIn=%u rxOK=%u rxAF=%u rxEF=%u rxCb=%u | "
                       "nxProv=%p nifCtx=%p nxArena=%p async=%p "
@@ -3481,10 +3493,10 @@ bool AirportItlwm::start(IOService *provider)
                       sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
                       sRT.bsdIfFlags, sRT.bsdIfMtu,
                       (void *)(uintptr_t)sRT.pmPolicyPtr,
-                      sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                      sRT.pmGateCount, sRT.pmNoopCount,
                       sRT.outputDropPwr,
-                      sRT.pmOffGateNull, sRT.pmOnGateNull,
-                      sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                      sRT.pmSystemOffCnt, sRT.pmSystemOnCnt,
+                      sRT.pmInvalidCount, sRT.pmGateErrorCnt,
                       (void *)(uintptr_t)sRT.fNetIfPtr,
                       (void *)(uintptr_t)sRT.fTxPoolPtr,
                       (void *)(uintptr_t)sRT.fRxPoolPtr,
@@ -4087,8 +4099,8 @@ void AirportItlwm::stop(IOService *provider)
                   "icfl=0x%x esslen=%u nodes=%u mfail=0x%x | "
                   "fVars=%p bsdIf=%p enCnt=%u disCnt=%u enRet=0x%x | "
                   "bsdFl=0x%x bsdMtu=%u | "
-                  "pmPol=%p pmOffC=%u pmOnC=%u txDrop=%u "
-                  "gateNullOff=%u gateNullOn=%u ackOff=%u ackOn=%u | "
+                  "pmPol=%p pmGate=%u pmNoop=%u txDrop=%u "
+                  "sysOff=%u sysOn=%u invalid=%u gateErr=%u | "
                   "skNif=%p txP=%p rxP=%p txQ=%p rxQ=%p | "
                   "txCb=%u txS=%u txD=%u rxIn=%u rxOK=%u rxAF=%u rxEF=%u rxCb=%u | "
                   "nxProv=%p nifCtx=%p nxArena=%p async=%p "
@@ -4111,10 +4123,10 @@ void AirportItlwm::stop(IOService *provider)
                   sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
                   sRT.bsdIfFlags, sRT.bsdIfMtu,
                   (void *)(uintptr_t)sRT.pmPolicyPtr,
-                  sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                  sRT.pmGateCount, sRT.pmNoopCount,
                   sRT.outputDropPwr,
-                  sRT.pmOffGateNull, sRT.pmOnGateNull,
-                  sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                  sRT.pmSystemOffCnt, sRT.pmSystemOnCnt,
+                  sRT.pmInvalidCount, sRT.pmGateErrorCnt,
                   (void *)(uintptr_t)sRT.fNetIfPtr,
                   (void *)(uintptr_t)sRT.fTxPoolPtr,
                   (void *)(uintptr_t)sRT.fRxPoolPtr,
@@ -4238,10 +4250,10 @@ void AirportItlwm::free()
                       sRT.enableCnt, sRT.disableCnt, sRT.lastEnableRet,
                       sRT.bsdIfFlags, sRT.bsdIfMtu,
                       (void *)(uintptr_t)sRT.pmPolicyPtr,
-                      sRT.pmOffCancelRet, sRT.pmOnCancelRet,
+                      sRT.pmGateCount, sRT.pmNoopCount,
                       sRT.outputDropPwr,
-                      sRT.pmOffGateNull, sRT.pmOnGateNull,
-                      sRT.pmAckOffCnt, sRT.pmAckOnCnt,
+                      sRT.pmSystemOffCnt, sRT.pmSystemOnCnt,
+                      sRT.pmInvalidCount, sRT.pmGateErrorCnt,
                       (void *)(uintptr_t)sRT.fNetIfPtr,
                       (void *)(uintptr_t)sRT.fTxPoolPtr,
                       (void *)(uintptr_t)sRT.fRxPoolPtr,
@@ -4610,7 +4622,7 @@ UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
     if (airportItlwmRegDiagPacketProbeEnabled())
         diagEapol = airportItlwmRegDiagMbufIsEapol(m, &diagLength);
 
-    if (pmPowerState != kPowerStateOn) {
+    if ((pmPowerStateFlags & kAirportItlwmPmSystemOnBit) == 0) {
         sRT.outputDropPwr++;
         airportItlwmRegDiagRecordData(kAirportItlwmRegDiagPathTx, diagLength,
                                       diagEapol, kIOReturnOutputDropped);
@@ -5330,20 +5342,12 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         XYLog("DEBUG %s FAILED, rollback %u → %u\n", __FUNCTION__, power_state, prevState);
         power_state = prevState;
     }
-    else if (fNetIf) {
-        if (newState != prevState) {
-            // Apple separates generic WiFi power transitions from the
-            // signalDriverReady producer. handlePowerStateChange() drives only
-            // powerOn()/powerOff() and the POWER_CHANGED bulletin.
-            // The recovered event maps mark POWER_CHANGED as mandatory for real
-            // setPowerState transitions, not as a bootstrap sticky event and
-            // not for no-op req==cur calls. Live build 36e4cc3 proved the
-            // earlier local behavior was wrong: posting POWER_CHANGED from
-            // start() and from no-op 1->1 requests fed false
-            // SSM_EVENT_SYSTEM_POWER_OFF/ON edges into WCL.
-            postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
-        }
-    }
+
+    // Current 25C56 AppleBCMWLANCore::handlePowerStateChange updates the
+    // logical radio state and calls powerOff()/powerOn(); it does not publish
+    // APPLE80211_M_POWER_CHANGED. That bulletin belongs to the separate IOPM
+    // system sleep/wake path below. Publishing it for a radio toggle makes SSM
+    // replay WAKE while WCLNetManager can still be WAITING_FOR_IP.
 
     return err;
 }
@@ -5351,19 +5355,25 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
 void AirportItlwm::handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)
 {
     // Apple exposes a separate powerOffSystem()/powerOnSystem() path in
-    // addition to handlePowerStateChange(). Preserve the logical WiFi
-    // power_state across sleep/wake and drive only adapter quiesce/resume plus
-    // the system POWER_CHANGED bulletin here.
+    // addition to handlePowerStateChange().  Those helpers preserve the
+    // logical radio state, but powerOffSystem() enters powerOff(true) and
+    // powerOnSystem() enters powerOn(): the normal unavailable/available 0x37
+    // carriers therefore still bracket the physical sleep/wake transition.
+    // powerOnSystem() publishes selector 1 only after powerOn() has completed.
     if (powerOn) {
-        if (power_state)
-            enableAdapter(netif);
+        if (power_state && enableAdapter(netif) == kIOReturnSuccess) {
+            postTahoeDriverAvailabilityTransition(
+                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+        }
+        if (fNetIf)
+            postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
     } else {
-        if (power_state)
+        if (power_state) {
+            postTahoeDriverAvailabilityTransition(
+                this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
             disableAdapterCore(netif);
+        }
     }
-
-    if (fNetIf)
-        postMessage(fNetIf, APPLE80211_M_POWER_CHANGED, NULL, 0, true);
 }
 
 IOReturn AirportItlwm::
@@ -5419,50 +5429,86 @@ static IOPMPowerState powerStateArray[kPowerStateCount] =
     {1, kIOPMDeviceUsable, kIOPMPowerOn, kIOPMPowerOn, 0, 0, 0, 0, 0, 0, 0, 0}
 };
 
-void AirportItlwm::unregistPM()
-{
-    if (powerOffThreadCall) {
-        sRT.pmOffCancelRet = thread_call_cancel(powerOffThreadCall);
-        thread_call_free(powerOffThreadCall);
-        powerOffThreadCall = NULL;
-    }
-    if (powerOnThreadCall) {
-        sRT.pmOnCancelRet = thread_call_cancel(powerOnThreadCall);
-        thread_call_free(powerOnThreadCall);
-        powerOnThreadCall = NULL;
-    }
-}
-
 IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService *policyMaker)
 {
     RT_SET(12);
     sRT.pmCount++;
     sRT.lastPmReq = (uint32_t)powerStateOrdinal;
-    IOReturn result = IOPMAckImplied;
-    if (pmPowerState == powerStateOrdinal)
-        return result;
-    switch (powerStateOrdinal) {
+
+    IOReturn result = getCommandGate()->runAction(
+        setPowerStateGated,
+        reinterpret_cast<void *>(powerStateOrdinal),
+        policyMaker);
+
+    // AppleBCMWLANCore conditionally updates its private
+    // AppleBCMWLANIOReportingCore owner here.  AirportItlwm has no equivalent
+    // private reporter owner; generic inherited IOReport entry points are not
+    // that state machine.  The applicable reference branch is therefore the
+    // explicit owner-null path, with no substitute publication.
+    if (result != kIOReturnSuccess)
+        sRT.pmGateErrorCnt++;
+    return result;
+}
+
+IOReturn AirportItlwm::setPowerStateGated(OSObject *target, void *arg0,
+                                           void *, void *, void *)
+{
+    AirportItlwm *self = OSDynamicCast(AirportItlwm, target);
+    if (self == nullptr)
+        return kIOReturnBadArgument;
+
+    sRT.pmGateCount++;
+    unsigned long ordinal = reinterpret_cast<unsigned long>(arg0);
+
+    const UInt32 state = self->pmPowerStateFlags;
+    if ((state & kAirportItlwmPmTransitionGateMask) ==
+        kAirportItlwmPmTransitionBlockedValue) {
+        sRT.pmNoopCount++;
+        return kIOReturnSuccess;
+    }
+
+    switch (ordinal) {
         case kPowerStateOff:
-            if (powerOffThreadCall) {
-                retain();
-                if (thread_call_enter(powerOffThreadCall))
-                    release();
-                result = 5000000;
+            if ((state & kAirportItlwmPmSystemOnBit) == 0) {
+                sRT.pmNoopCount++;
+                break;
             }
+#if __IO80211_TARGET >= __MAC_26_0
+            removePropertyHelper(self, "IO80211WokeSystem");
+#else
+            self->removeProperty("IO80211WokeSystem");
+#endif
+            OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmSystemOnBit),
+                           &self->pmPowerStateFlags);
+            sRT.pmSystemOffCnt++;
+#if __IO80211_TARGET >= __MAC_26_0
+            self->handleSystemPowerStateChange(false, NULL);
+#else
+            self->handleSystemPowerStateChange(false, self->bsdInterface);
+#endif
             break;
+
         case kPowerStateOn:
-            if (powerOnThreadCall) {
-                retain();
-                if (thread_call_enter(powerOnThreadCall))
-                    release();
-                result = 5000000;
+            if ((state & kAirportItlwmPmSystemOnBit) != 0) {
+                sRT.pmNoopCount++;
+                break;
             }
+            OSBitOrAtomic(kAirportItlwmPmSystemOnBit,
+                          &self->pmPowerStateFlags);
+            sRT.pmSystemOnCnt++;
+#if __IO80211_TARGET >= __MAC_26_0
+            self->handleSystemPowerStateChange(true, NULL);
+#else
+            self->handleSystemPowerStateChange(true, self->bsdInterface);
+#endif
             break;
-            
+
         default:
+            sRT.pmInvalidCount++;
             break;
     }
-    return result;
+
+    return kIOReturnSuccess;
 }
 
 unsigned long AirportItlwm::initialPowerStateForDomainState(IOPMPowerFlags domainState)
@@ -5486,75 +5532,19 @@ IOReturn AirportItlwm::setWakeOnMagicPacket(bool active)
     return kIOReturnSuccess;
 }
 
-static void handleSetPowerStateOff(thread_call_param_t param0,
-                             thread_call_param_t param1)
-{
-    AirportItlwm *self = (AirportItlwm *)param0;
-    if (!self) return;
-
-    if (param1 == 0)
-    {
-        IOCommandGate *gate = self->getCommandGate();
-        if (gate) {
-            gate->runAction((IOCommandGate::Action)
-                            handleSetPowerStateOff,
-                            (void *) 1);
-        } else {
-            sRT.pmOffGateNull++;
-            self->setPowerStateOff();
-            self->release();
-        }
-    }
-    else
-    {
-        self->setPowerStateOff();
-        self->release();
-    }
-}
-
-static void handleSetPowerStateOn(thread_call_param_t param0,
-                            thread_call_param_t param1)
-{
-    AirportItlwm *self = (AirportItlwm *)param0;
-    if (!self) return;
-
-    if (param1 == 0)
-    {
-        IOCommandGate *gate = self->getCommandGate();
-        if (gate) {
-            gate->runAction((IOCommandGate::Action)
-                            handleSetPowerStateOn,
-                            (void *) 1);
-        } else {
-            sRT.pmOnGateNull++;
-            self->setPowerStateOn();
-            self->release();
-        }
-    }
-    else
-    {
-        self->setPowerStateOn();
-        self->release();
-    }
-}
-
 IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
 {
     IOReturn ret;
 
-    pmPowerState = kPowerStateOn;
-    pmPolicyMaker = policyMaker;
+    // The reference state bit is zero-initialized before policy registration.
+    // Consequently the framework's initial external OFF request is a no-op;
+    // the first real ON request performs powerOnSystem synchronously.
+    pmPowerStateFlags = 0;
     sRT.pmPolicyPtr = (uint64_t)(uintptr_t)policyMaker;
 
-    powerOffThreadCall = thread_call_allocate(
-                                            (thread_call_func_t)handleSetPowerStateOff,
-                                            (thread_call_param_t)this);
-    powerOnThreadCall  = thread_call_allocate(
-                                            (thread_call_func_t)handleSetPowerStateOn,
-                                              (thread_call_param_t)this);
-    ret = pmPolicyMaker->registerPowerDriver(this,
-                                             powerStateArray,
-                                             kPowerStateCount);
+    ret = policyMaker->registerPowerDriver(this,
+                                           powerStateArray,
+                                           kPowerStateCount);
     if (ret == kIOReturnSuccess) {
         // Match Apple's pattern: assert device desires ON, external starts at OFF.
         // Without this, PM framework may call setPowerState(0) after registration,
@@ -5563,34 +5553,6 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
         changePowerStateTo(kPowerStateOff);
     }
     return ret;
-}
-
-void AirportItlwm::setPowerStateOff()
-{
-    pmPowerState = kPowerStateOff;
-#if __IO80211_TARGET >= __MAC_26_0
-    handleSystemPowerStateChange(false, NULL);
-#else
-    handleSystemPowerStateChange(false, bsdInterface);
-#endif
-    if (pmPolicyMaker) {
-        sRT.pmAckOffCnt++;
-        pmPolicyMaker->acknowledgeSetPowerState();
-    }
-}
-
-void AirportItlwm::setPowerStateOn()
-{
-    pmPowerState = kPowerStateOn;
-#if __IO80211_TARGET >= __MAC_26_0
-    handleSystemPowerStateChange(true, NULL);
-#else
-    handleSystemPowerStateChange(true, bsdInterface);
-#endif
-    if (pmPolicyMaker) {
-        sRT.pmAckOnCnt++;
-        pmPolicyMaker->acknowledgeSetPowerState();
-    }
 }
 
 #if __IO80211_TARGET >= __MAC_26_0

@@ -86,9 +86,23 @@ places where Apple does not:
 1. unconditionally from `start()`
 2. from `handlePowerStateChange(...)` even on no-op `req == cur`
 
-The reverse event map marks `POWER_CHANGED` as mandatory only for real
-`setPowerState transitions`, not as a sticky bring-up bulletin. So the local
-port must stop publishing it on bootstrap and on no-op `1 -> 1` requests.
+That result removed the bootstrap and no-op producers, but the surviving real
+radio-transition producer was still not reference behavior. Exact current
+`AppleBCMWLANCore::handlePowerStateChange` decompilation contains no
+`POWER_CHANGED` post. The selector is owned by the separate IOPM system
+sleep/wake path. Removing the radio producer proved necessary but incomplete:
+FBT saw no system-power call during radio-off, and the next radio-on still
+replayed WAKE into NetManager `WAITING_FOR_IP`. Exact IOPM decompilation then
+showed the remaining drift: local deferred thread calls, manual PM ack, ON
+initial state, and an extra system-OFF selector `1`; reference transitions are
+synchronous on the command gate, preserve a shared atomic state word, apply
+the `0x30 == 0x20` transition gate, remove `IO80211WokeSystem` before OFF,
+publish unavailable/available `0x37` through `powerOff(true)`/`powerOn()`, and
+publish selector `1` only after system ON. Corrected UUID
+`8AFE24EC-4859-33BD-9E12-452F4DC24A90` executed real framework sleep/wake,
+four independent post-wake radio cycles, and concurrent `240/240` ping with
+240-second iperf3 without a fault. It remains a confirmed producer deviation,
+not the sole replay-panic root.
 
 ## Tahoe Driver-Available Producer Correction
 

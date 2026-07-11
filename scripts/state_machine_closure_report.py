@@ -574,7 +574,7 @@ RECOVERY_CASES = [
     },
     {
         "id": "driver-reset-power-wake",
-        "description": "Recovered Apple NET_MANAGER and local newstate paths make sleep, wake, and driver-reset behavior explicit.",
+        "description": "Recovered Apple NET_MANAGER and local newstate paths make radio power, atomic system PM, sleep, wake, and driver-reset behavior explicit.",
         "paths": [
             "AirportItlwm/AirportItlwmV2.cpp",
             "docs/wifi_reverse_yaml_bundle_FULL_FIXED_v15/wifi_bundle_full_v3/72_WCLNetManager_fully_symbolic_FSM_checked.yaml",
@@ -583,11 +583,123 @@ RECOVERY_CASES = [
         "checks": [
             {
                 "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "int AirportItlwm::handlePowerStateChange",
+                "scope_end": "void AirportItlwm::handleSystemPowerStateChange",
+                "tokens": [
+                    "postTahoeDriverAvailabilityTransition(",
+                    "disableAdapterCore(netif)",
+                ],
+                "forbidden_tokens": [
+                    "postMessage(fNetIf, APPLE80211_M_POWER_CHANGED",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "void AirportItlwm::handleSystemPowerStateChange",
+                "scope_end": "IOReturn AirportItlwm::\ntsleepHandler",
                 "tokens": [
                     "handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif)",
                     "disableAdapterCore(netif)",
                     "enableAdapter(netif)",
+                    "TahoeDriverAvailabilityContracts::Transition::PowerOff",
+                    "TahoeDriverAvailabilityContracts::Transition::PowerOn",
                     "postMessage(fNetIf, APPLE80211_M_POWER_CHANGED",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "} else {\n        if (power_state) {",
+                "scope_end": "}\n}\n\nIOReturn AirportItlwm::\ntsleepHandler",
+                "tokens": [
+                    "TahoeDriverAvailabilityContracts::Transition::PowerOff",
+                    "disableAdapterCore(netif)",
+                ],
+                "forbidden_tokens": [
+                    "APPLE80211_M_POWER_CHANGED",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "IOReturn AirportItlwm::setPowerState(",
+                "scope_end": "IOReturn AirportItlwm::setPowerStateGated",
+                "tokens": [
+                    "getCommandGate()->runAction(",
+                    "setPowerStateGated",
+                    "AppleBCMWLANIOReportingCore owner",
+                    "explicit owner-null path",
+                ],
+                "forbidden_tokens": [
+                    "thread_call",
+                    "IOPMAckImplied",
+                    "5000000",
+                    "acknowledgeSetPowerState",
+                    "reportSystemPowerState(",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "IOReturn AirportItlwm::setPowerStateGated",
+                "scope_end": "unsigned long AirportItlwm::initialPowerStateForDomainState",
+                "tokens": [
+                    "const UInt32 state = self->pmPowerStateFlags;",
+                    "kAirportItlwmPmTransitionGateMask",
+                    "kAirportItlwmPmTransitionBlockedValue",
+                    "removePropertyHelper(self, \"IO80211WokeSystem\")",
+                    "OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmSystemOnBit)",
+                    "self->handleSystemPowerStateChange(false",
+                    "OSBitOrAtomic(kAirportItlwmPmSystemOnBit",
+                    "self->handleSystemPowerStateChange(true",
+                    "return kIOReturnSuccess",
+                ],
+                "forbidden_tokens": [
+                    "thread_call",
+                    "acknowledgeSetPowerState",
+                    "self->pmPowerState =",
+                    "pmPowerState == ordinal",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "void AirportItlwm::performTahoeBootChipImage()",
+                "scope_end": "bool AirportItlwmBootNub::start",
+                "tokens": [
+                    "OSBitOrAtomic(kAirportItlwmPmBootInProgressBit",
+                    "OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmBootInProgressBit)",
+                ],
+                "minimum_token_counts": {
+                    "OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmBootInProgressBit)": 2,
+                },
+                "forbidden_tokens": [
+                    "OSBitOrAtomic(kAirportItlwmPmPermanentFailureBit",
+                    "OSBitOrAtomic(kAirportItlwmPmWatchdogFailureBit",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.hpp",
+                "tokens": [
+                    "volatile UInt32 pmPowerStateFlags;",
+                    "kAirportItlwmPmSystemOnBit = 0x01",
+                    "kAirportItlwmPmBootInProgressBit = 0x10",
+                    "kAirportItlwmPmPermanentFailureBit = 0x20",
+                    "kAirportItlwmPmWatchdogFailureBit = 0x40",
+                    "kAirportItlwmPmTransitionGateMask = 0x30",
+                    "kAirportItlwmPmTransitionBlockedValue = 0x20",
+                ],
+                "forbidden_tokens": [
+                    "UInt32 pmPowerState;",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "scope_start": "bool AirportItlwm::init(OSDictionary *properties)",
+                "scope_end": "IOService* AirportItlwm::probe",
+                "tokens": [
+                    "pmPowerStateFlags = 0;",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": [
                     "skywalkTxDrainCompletionPackets(this)",
                     "skywalkRxDrainPendingPackets(this)",
                 ],
@@ -619,6 +731,15 @@ def read_text(project_relative_path):
 def missing_tokens(project_relative_path, tokens):
     text = read_text(project_relative_path)
     return [token for token in tokens if token not in text]
+
+
+def scoped_check_text(check):
+    text = read_text(check["path"])
+    if "scope_start" in check:
+        text = text[text.index(check["scope_start"]):]
+    if "scope_end" in check:
+        text = text[:text.index(check["scope_end"])]
+    return text
 
 
 def parse_contract_names(marker):
@@ -704,13 +825,29 @@ def collect_mismatches():
 
     for case in RECOVERY_CASES:
         for check in case["checks"]:
-            missing = missing_tokens(check["path"], check["tokens"])
-            if missing:
+            check_text = scoped_check_text(check)
+            missing = [token for token in check["tokens"] if token not in check_text]
+            forbidden = [
+                token for token in check.get("forbidden_tokens", [])
+                if token in check_text
+            ]
+            count_mismatches = [
+                {
+                    "token": token,
+                    "minimum": minimum,
+                    "actual": check_text.count(token),
+                }
+                for token, minimum in check.get("minimum_token_counts", {}).items()
+                if check_text.count(token) < minimum
+            ]
+            if missing or forbidden or count_mismatches:
                 mismatches.append({
                     "kind": "recovery_token_mismatch",
                     "id": case["id"],
                     "path": check["path"],
                     "missing_tokens": missing,
+                    "forbidden_tokens_present": forbidden,
+                    "minimum_token_count_mismatches": count_mismatches,
                 })
 
     return mismatches

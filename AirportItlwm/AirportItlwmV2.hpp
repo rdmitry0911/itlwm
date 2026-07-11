@@ -52,6 +52,19 @@ enum
     kPowerStateCount
 };
 
+// Shared system-PM state word.  The low masks are recovered from the current
+// AppleBCMWLANCore owner and deliberately remain a word rather than a scalar
+// ordinal so independent lifecycle bits survive each PM transition.
+enum
+{
+    kAirportItlwmPmSystemOnBit = 0x01,
+    kAirportItlwmPmBootInProgressBit = 0x10,
+    kAirportItlwmPmPermanentFailureBit = 0x20,
+    kAirportItlwmPmWatchdogFailureBit = 0x40,
+    kAirportItlwmPmTransitionGateMask = 0x30,
+    kAirportItlwmPmTransitionBlockedValue = 0x20
+};
+
 enum
 {
     kAirportItlwmRxPendingCapacity = 256,
@@ -177,15 +190,15 @@ struct RuntimeDiag {
     volatile uint32_t bsdIfMtu;     // last seen ifnet_mtu on BSD interface
     volatile uint32_t lastEnableRet;// last enableAdapter return code
     volatile uint32_t lastPmReq;    // last setPowerState requested state
-    // --- PM diagnostics (thread_call / power path) ---
+    // --- PM diagnostics (synchronous command-gate power path) ---
     volatile uint64_t pmPolicyPtr;  // raw pmPolicyMaker pointer
-    volatile uint32_t pmOffCancelRet;// thread_call_cancel result for powerOff
-    volatile uint32_t pmOnCancelRet; // thread_call_cancel result for powerOn
+    volatile uint32_t pmGateCount;   // setPowerStateGated invocations
+    volatile uint32_t pmNoopCount;   // blocked or already-in-state gated requests
     volatile uint32_t outputDropPwr; // packets dropped in outputPacket (power off)
-    volatile uint32_t pmOffGateNull; // handleSetPowerStateOff gate==NULL count
-    volatile uint32_t pmOnGateNull;  // handleSetPowerStateOn gate==NULL count
-    volatile uint32_t pmAckOffCnt;   // acknowledgeSetPowerState calls from Off path
-    volatile uint32_t pmAckOnCnt;    // acknowledgeSetPowerState calls from On path
+    volatile uint32_t pmSystemOffCnt;// real system OFF transitions
+    volatile uint32_t pmSystemOnCnt; // real system ON transitions
+    volatile uint32_t pmInvalidCount;// invalid gated ordinals
+    volatile uint32_t pmGateErrorCnt;// non-success runAction results
     // --- Skywalk object pointers (for stop/free hang diagnosis) ---
     volatile uint64_t fNetIfPtr;     // raw fNetIf pointer
     volatile uint64_t fTxPoolPtr;    // raw fTxPool pointer
@@ -498,11 +511,10 @@ public:
     virtual IOReturn registerWithPolicyMaker( IOService * policyMaker ) override;
     virtual IOReturn setPowerState( unsigned long powerStateOrdinal,
                                     IOService *   policyMaker) override;
+    static IOReturn setPowerStateGated(OSObject *target, void *arg0,
+                                       void *arg1, void *arg2, void *arg3);
     virtual unsigned long initialPowerStateForDomainState( IOPMPowerFlags domainState ) override;
     virtual IOReturn setWakeOnMagicPacket( bool active ) override;
-    void setPowerStateOff(void);
-    void setPowerStateOn(void);
-    void unregistPM();
     bool initPCIPowerManagment(IOPCIDevice *provider);
 
     FUNC_IOCTL_GET(CARD_CAPABILITIES, apple80211_capability_data)
@@ -651,11 +663,8 @@ public:
     char geo_location_cc[3];
     
     //pm
-    thread_call_t powerOnThreadCall;
-    thread_call_t powerOffThreadCall;
     thread_call_t tahoeBootThreadCall;
-    UInt32 pmPowerState;
-    IOService *pmPolicyMaker;
+    volatile UInt32 pmPowerStateFlags;
     UInt8 pmPCICapPtr;
     bool magicPacketEnabled;
     bool magicPacketSupported;

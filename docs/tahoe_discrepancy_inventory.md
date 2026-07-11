@@ -144,9 +144,21 @@ This inventory is intentionally split into:
   not enough. The local port still posted `APPLE80211_M_POWER_CHANGED` from
   `start()` and from no-op `handlePowerStateChange(cur=1, req=1)`, which fed
   false `SSM_EVENT_SYSTEM_POWER_OFF/ON` edges into WCL before availability
-  settled. Reverse event maps mark `POWER_CHANGED` as mandatory only for real
-  `setPowerState transitions`. The Tahoe local path must therefore stop posting
-  it on bootstrap and on no-op requests.
+  settled. That correction was incomplete: current 25C56 decompilation proves
+  radio `handlePowerStateChange` has no `POWER_CHANGED` producer at all. The
+  selector belongs only to IOPM system sleep/wake. Removing the radio producer
+  did not by itself stop the replayed-WAKE panic. The remaining IOPM path also
+  differed: it was asynchronous, manually acknowledged transitions, began in
+  ON, and posted the bulletin on system OFF as well as ON. Current 25C56 uses a
+  zero-initialized synchronous command-gate state, a shared atomic word with a
+  `0x30 == 0x20` gate, wake-property removal before OFF, and selector `1` only
+  after system ON. The same system helpers call normal `powerOff(true)` and
+  `powerOn()`, so exact unavailable/available `0x37` carriers also bracket the
+  IOPM cycle before the asymmetric selector rule. The corrected UUID
+  `8AFE24EC-4859-33BD-9E12-452F4DC24A90` completed real sleep/wake, four
+  post-wake radio cycles, and concurrent `240/240` ping/240-second iperf3
+  without a fault. This inventory still does not classify the PM deviation as
+  the sole panic root.
 
 - `Tahoe driver-available payload polarity`:
   live build `eea599b` proves the restored `APPLE80211_M_DRIVER_AVAILABLE`
