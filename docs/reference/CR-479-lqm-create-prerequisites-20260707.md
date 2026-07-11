@@ -116,3 +116,14 @@ miss is `CARD_CAPABILITIES[10] & 0x08`; the line-3511 PeerMonitor prerequisite
 comes only after that bit is correctly owned. The producer-to-getter edge
 therefore remains absent, and CARD_CAPABILITIES index `0x53` remains
 unadvertised.
+
+## 2026-07-11 card-capability producer closure
+
+`CR-479-lqm-card-capability-producer-closure-20260711.md` recovers the
+upstream producer of the first LQM gate exactly. Apple derives
+`capabilities[10] bit 0x08` from controller IOVAR `wlc_ver`: generation
+greater than `5`, or generation `5` plus controller ID `0x110c` (BCM4364).
+The Intel bridge has neither owner and the historical forced-capability run
+already reached the incomplete PeerMonitor path. `cap[10]` must therefore
+remain clear; do not substitute a PCI ID, Intel ucode API, firmware-name
+string, hardware revision, NSS, or chain mask for the Apple predicate.

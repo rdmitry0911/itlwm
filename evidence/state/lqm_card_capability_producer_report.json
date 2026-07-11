@@ -1,0 +1,51 @@
+{
+  "checks": {
+    "card_producer": true,
+    "contracts": true,
+    "legacy_producer": true,
+    "no_unsafe_local_lqm_capability": true,
+    "reference": true
+  },
+  "forbidden_local_tokens": [],
+  "local": {
+    "active_adapter": "8086:4060 / iwn-6030",
+    "apple_chip_id_virtual_present": false,
+    "apple_wlc_ver_owner_present": false,
+    "lqm_capability_advertised": false,
+    "substitute_inputs_forbidden": [
+      "pci_id",
+      "firmware_name",
+      "intel_ucode_api",
+      "hardware_revision",
+      "nss",
+      "chain_masks"
+    ]
+  },
+  "missing_tokens": {
+    "card_producer": [],
+    "contracts": [],
+    "legacy_producer": [],
+    "reference": []
+  },
+  "reference": {
+    "build": "macOS 26.2 (25C56)",
+    "card_capability": {
+      "chip_id": "0x110c",
+      "chip_name": "BCM4364",
+      "entry": "0xffffff80015c4a9e",
+      "generation_eq_chip_id": 5,
+      "generation_gt": 5,
+      "mask": "0x08",
+      "public_index": 10
+    },
+    "setup_firmware": {
+      "entry": "0xffffff800157617e",
+      "generation_store": "0xffffff80015763d0",
+      "iovar": "wlc_ver",
+      "unavailable_fallback_error": "0xe3ff8117",
+      "unavailable_fallback_generation": 3
+    }
+  },
+  "schema": "itlwm-lqm-card-capability-producer-closure-v1",
+  "source_base_revision": "cfc5575e822772b933b90b7a71353d143071210c"
+}
