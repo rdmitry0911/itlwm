@@ -1,0 +1,23 @@
+{
+  "checks": {
+    "active_v2_propagates_owner_failure": true,
+    "generic_commander_drops_without_mutation": true,
+    "owner_drops_without_mutation": true,
+    "reference_note": true,
+    "skywalk_propagates_before_cache": true
+  },
+  "local": {
+    "backend_action_frame_injector": false,
+    "generic_false_success": false,
+    "owner_false_success": false,
+    "selector": 620
+  },
+  "reference": {
+    "core_owner": "AppleBCMWLANCore::setWCL_ACTION_FRAME",
+    "transport": "actframe",
+    "v1": "AppleBCMWLANNetAdapter::sendActionFrame",
+    "v2": "AppleBCMWLANNetAdapter::sendActionFrameV2"
+  },
+  "schema": "itlwm-wcl-action-frame-quarantine-v1",
+  "source_base_revision": "e4ab286c593717a7874d9ad805a6d0135565d21d"
+}

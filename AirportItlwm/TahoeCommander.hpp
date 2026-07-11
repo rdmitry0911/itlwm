@@ -222,7 +222,7 @@ public:
 
     IOReturn runSetWCLActionFrame(const apple80211_wcl_action_frame *data,
                                   uint32_t firmwareGeneration,
-                                  TahoeAsyncCommandContext *asyncContext = nullptr)
+                                  TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleBadArgumentTahoe;
@@ -231,23 +231,8 @@ public:
         if (!TahoePayloadBuilders::buildActionFrame(data, firmwareGeneration, &payload))
             return TahoeErrorMap::kAppleBadArgumentTahoe;
 
-        registry->actionFrame.category = payload.category;
-        registry->actionFrame.channel = payload.channel;
-        registry->actionFrame.frameLen = payload.frameLen;
-        memset(registry->actionFrame.frame, 0, sizeof(registry->actionFrame.frame));
-        if (payload.frameLen != 0)
-            memcpy(registry->actionFrame.frame, payload.frame, payload.frameLen);
-        registry->actionFrame.useV2 = payload.useV2;
-        registry->actionFrame.hasFrame = true;
-
-        if (asyncContext != nullptr) {
-            asyncContext->selector = 620;
-            asyncContext->owner = 0x15e0;
-            asyncContext->status = 0;
-            asyncContext->async = false;
-            asyncContext->completed = true;
-        }
-        return kIOReturnSuccess;
+        // This legacy path has the same missing Intel firmware transport.
+        return TahoeErrorMap::kAppleUnsupported;
     }
 
     IOReturn runSetRangingAuthenticate(const apple80211_ranging_authenticate_request_t *data,

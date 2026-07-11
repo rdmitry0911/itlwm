@@ -218,7 +218,7 @@ public:
 
     IOReturn apply(const apple80211_wcl_action_frame *data,
                    uint32_t firmwareGeneration,
-                   TahoeAsyncCommandContext *asyncContext = nullptr)
+                   TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleBadArgumentTahoe;
@@ -227,17 +227,9 @@ public:
         if (!TahoePayloadBuilders::buildActionFrame(data, firmwareGeneration, &payload))
             return TahoeErrorMap::kAppleBadArgumentTahoe;
 
-        registry->actionFrame.category = payload.category;
-        registry->actionFrame.channel = payload.channel;
-        registry->actionFrame.frameLen = payload.frameLen;
-        memset(registry->actionFrame.frame, 0, sizeof(registry->actionFrame.frame));
-        if (payload.frameLen != 0)
-            memcpy(registry->actionFrame.frame, payload.frame, payload.frameLen);
-        registry->actionFrame.useV2 = payload.useV2;
-        registry->actionFrame.hasFrame = true;
-
-        completeSync(asyncContext, 620, TahoeCommandRouter::routeActionFrame());
-        return kIOReturnSuccess;
+        // The Intel port has no actframe transport; do not publish a
+        // completion for a payload that firmware never received.
+        return TahoeErrorMap::kAppleUnsupported;
     }
 
 private:
