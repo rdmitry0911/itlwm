@@ -1,0 +1,46 @@
+{
+  "checks": {
+    "contracts": true,
+    "no_unsafe_local_mapping": true,
+    "reference": true,
+    "registry": true,
+    "skywalk": true,
+    "tests": true
+  },
+  "forbidden_local_tokens": [],
+  "local": {
+    "producer_to_getter_mapping_implemented": false,
+    "raw_feature_word_cached": true,
+    "reason": "dependent LQM PeerMonitor owner is unrecovered",
+    "slow_wifi_null_owner_initial_enabled": 0
+  },
+  "missing_tokens": {
+    "contracts": [],
+    "reference": [],
+    "registry": [],
+    "skywalk": [],
+    "tests": []
+  },
+  "reference": {
+    "build": "macOS 26.2 (25C56)",
+    "initial_store": {
+      "address": "0xffffff80015638e1",
+      "slow_wifi_low_byte": 1,
+      "value": "0x01010001"
+    },
+    "runtime_producer": {
+      "caller_thunk": "0xffffff8001522d90",
+      "entry": "0xffffff8001616a46",
+      "input_bit": 2,
+      "store": "0xffffff8001616ad0"
+    }
+  },
+  "runtime_falsification": {
+    "ping_result": "239/240",
+    "producer_map_uuid": "17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8",
+    "queue_error": "IO80211QueueCall type 3 / 0xe00002c7",
+    "startup_copy_uuid": "EACC3D4B-4773-30D1-83FF-CB21BE2A7DF8"
+  },
+  "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v1",
+  "source_base_revision": "beb4a475a253c44d5a84282c4ad808854c840d83"
+}

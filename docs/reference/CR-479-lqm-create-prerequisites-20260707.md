@@ -103,5 +103,14 @@ intercepted the slow-wifi request before the inherited InfraProtocol wrapper
 and returned current association state as the enabled bit. That route and its
 invented NANPHS carrier are removed. The local slow-wifi getter now preserves
 the caller-owned version dword and writes only the reference-owned enabled
-dword. This correction does not enable card capability index `0x53`, force the
-slow-wifi owner bit, or re-enable LQM creation.
+dword.
+
+## 2026-07-11 producer quarantine
+
+The initial and update producers are recovered in
+`CR-479-lqm-slow-wifi-producer-closure-20260711.md`: the Apple owner starts
+as `1`, and OS feature word bit 2 replaces it. Two direct local reproductions
+reached the incomplete type-3 LQM QueueCall (`0xe00002c7`) and lost one packet
+during the required 240-second concurrent gate. The producer-to-getter edge
+therefore remains absent locally until the line-3511 PeerMonitor prerequisite
+is recovered. CARD_CAPABILITIES index `0x53` remains unadvertised.
