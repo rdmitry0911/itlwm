@@ -81,3 +81,36 @@ matching top-level Dynamic Store SSID/BSSID redaction as reference airportd
 pruning through `wifi_allow_sensitive_info`; any future driver patch for the
 public CoreWLAN allow/profile model still requires a separate driver-facing
 mismatch beyond the redacted public value.
+
+## 2026-07-11 CoreWLAN service-policy proof
+
+The current Tahoe 25C56 guest was checked again with the PM-corrected kext
+UUID `8AFE24EC-4859-33BD-9E12-452F4DC24A90`. Its `CWFInterface` owns a
+`CWFXPCClient` with `_serviceType == 5`, the CoreWLAN service type. The live
+driver-sourced `CWFInterface.capabilities` array includes both `57` and `58`,
+but the CoreWLAN client's `allowRequestType:` returns zero for both while it
+continues to admit ordinary types `7`, `9`, `22`, and `73`.
+
+This is the expected framework policy boundary, not another
+CARD_CAPABILITIES route or payload mismatch. In the exact 25C56 CoreWiFi
+image, `CWFSupportedRequestTypesForServiceType` at `0x7ff81edd3980` maps
+service type `5` to `CWFSupportedRequestTypesForCoreWLANServiceType` at
+`0x7ff81edd6920`. That function returns the immutable object at
+`0x7ff842f30648`; the live object is a 74-element `NSConstantArray` that
+excludes `57` and `58`. `CWFXPCClient::allowRequestType:` at
+`0x7ff81f01d533` tests that static object before it registers protocol classes
+or sends any request.
+
+Therefore `CWFInterface.currentScanResult` and
+`currentNetworkProfile` are intentionally stopped above airportd and above
+Apple80211 despite the driver correctly advertising their capability bits. On
+the same live client, `SSID`, `BSSID`, and `currentScanResult` all return nil;
+the first two request types remain admitted by the static set and stay subject
+to the separate airportd/location-authorization privacy path. No driver-side
+fallback, capability inflation, request-gate expansion, Dynamic Store update,
+or synthetic current-network event is justified by this evidence.
+
+The read-only live probe is
+`/home/dima/Projects/aiam/scratch/corewifi_admission_probe.m`; the recovered
+CoreWiFi functions are retained at
+`10.7.6.112:~/Projects/ghidra_output/aiam_corewifi_request_sets_20260710.c`.
