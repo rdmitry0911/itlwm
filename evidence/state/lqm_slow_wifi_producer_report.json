@@ -11,7 +11,7 @@
   "local": {
     "producer_to_getter_mapping_implemented": false,
     "raw_feature_word_cached": true,
-    "reason": "dependent LQM PeerMonitor owner is unrecovered",
+    "reason": "dependent LQM capability and PeerMonitor owners are unrecovered",
     "slow_wifi_null_owner_initial_enabled": 0
   },
   "missing_tokens": {
@@ -36,11 +36,17 @@
     }
   },
   "runtime_falsification": {
+    "fbt_first_gate": {
+      "enabled_return": "0xe00002c7",
+      "function": "IO80211InfraInterface::createLinkQualityMonitor",
+      "lqm_init_entered": false,
+      "peer_monitor_entered": false
+    },
     "ping_result": "239/240",
     "producer_map_uuid": "17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8",
     "queue_error": "IO80211QueueCall type 3 / 0xe00002c7",
     "startup_copy_uuid": "EACC3D4B-4773-30D1-83FF-CB21BE2A7DF8"
   },
-  "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v1",
+  "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v2",
   "source_base_revision": "beb4a475a253c44d5a84282c4ad808854c840d83"
 }

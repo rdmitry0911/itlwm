@@ -111,6 +111,8 @@ The initial and update producers are recovered in
 `CR-479-lqm-slow-wifi-producer-closure-20260711.md`: the Apple owner starts
 as `1`, and OS feature word bit 2 replaces it. Two direct local reproductions
 reached the incomplete type-3 LQM QueueCall (`0xe00002c7`) and lost one packet
-during the required 240-second concurrent gate. The producer-to-getter edge
-therefore remains absent locally until the line-3511 PeerMonitor prerequisite
-is recovered. CARD_CAPABILITIES index `0x53` remains unadvertised.
+during the required 240-second concurrent gate. FBT proves the current first
+miss is `CARD_CAPABILITIES[10] & 0x08`; the line-3511 PeerMonitor prerequisite
+comes only after that bit is correctly owned. The producer-to-getter edge
+therefore remains absent, and CARD_CAPABILITIES index `0x53` remains
+unadvertised.

@@ -57,8 +57,21 @@ Both candidates completed iperf3, but neither outcome passes the required
 zero-loss runtime gate. The raw artifacts are retained outside the source
 tree at `runtime-captures/itlwm-lqm-slow-wifi-osflags-20260711T193821Z/` and
 `runtime-captures/itlwm-lqm-slow-wifi-osflags-nullowner-20260711T195333Z/`.
-The known line-3511 `IO80211PeerMonitor::createLinkQualityMonitor`
-prerequisite, not a selector ABI error, is the next kernel-facing layer.
+
+A focused FBT run on rejected UUID `17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8`
+then recorded `IO80211InfraInterface::createLinkQualityMonitor` itself:
+
+```text
+requested=1 -> return=3758097095 (0xe00002c7)
+```
+
+No `IO80211PeerMonitor::createLinkQualityMonitor` or
+`IO80211LinkQualityMonitor::initWithProviderAndOptions` probe fired. This
+matches the direct 25C56 `cap+0xb36 & 0x08` branch, proving that the first
+local consumer gate is the intentionally absent `CARD_CAPABILITIES[10]` bit.
+The line-3511 PeerMonitor prerequisite is the next gate only after that
+capability is correctly owned. The FBT artifact is retained at
+`runtime-captures/itlwm-lqm-peer-prereq-trace-20260711T200800Z/`.
 
 ## Local disposition
 
@@ -70,8 +83,9 @@ no startup copy of the private Apple core byte.
 
 This is not a substitute value or a compatibility gate: it is the reference
 null-owner branch for a driver that does not yet own the dependent LQM
-PeerMonitor state. Adding the recovered producer before recovering that owner
-would turn a known queue failure into an externally visible regression.
+capability and PeerMonitor state. Adding the recovered producer before
+recovering those owners would turn a known queue failure into an externally
+visible regression.
 
 `scripts/lqm_slow_wifi_producer_report.py` checks the reference anchors,
 the retained raw feature-word carrier, and the absence of the unsafe local

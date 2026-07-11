@@ -26,6 +26,8 @@ REFERENCE_TOKENS = [
     "17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8",
     "239/240",
     "type-3 `0xe00002c7`",
+    "3758097095 (0xe00002c7)",
+    "cap+0xb36 & 0x08",
 ]
 SOURCE_TOKENS = {
     "contracts": ["kSlowWifiFeatureEnabledOffset = 0x7569"],
@@ -76,7 +78,7 @@ def build_report():
     }
     forbidden = present_tokens([CONTRACTS, REGISTRY, SKYWALK], FORBIDDEN_LOCAL_TOKENS)
     return {
-        "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v1",
+        "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v2",
         "source_base_revision": "beb4a475a253c44d5a84282c4ad808854c840d83",
         "reference": {
             "build": "macOS 26.2 (25C56)",
@@ -97,12 +99,18 @@ def build_report():
             "producer_map_uuid": "17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8",
             "queue_error": "IO80211QueueCall type 3 / 0xe00002c7",
             "ping_result": "239/240",
+            "fbt_first_gate": {
+                "function": "IO80211InfraInterface::createLinkQualityMonitor",
+                "enabled_return": "0xe00002c7",
+                "peer_monitor_entered": False,
+                "lqm_init_entered": False,
+            },
         },
         "local": {
             "raw_feature_word_cached": True,
             "slow_wifi_null_owner_initial_enabled": 0,
             "producer_to_getter_mapping_implemented": False,
-            "reason": "dependent LQM PeerMonitor owner is unrecovered",
+            "reason": "dependent LQM capability and PeerMonitor owners are unrecovered",
         },
         "checks": {
             **{key: not value for key, value in missing.items()},
