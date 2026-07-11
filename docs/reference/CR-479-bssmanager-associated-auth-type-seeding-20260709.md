@@ -1,5 +1,11 @@
 # CR-479 BssManager associated-auth-type seeding
 
+> **2026-07-11 ownership correction:** The runtime evidence below remains
+> historical, but its WCLConfigManager ownership claim and local pointer walk
+> are superseded by
+> `CR-479-driver-owned-bssmanager-lifecycle-20260711.md`. Apple owns a separate
+> driver BssManager; current code never traverses or mutates WCL private state.
+
 Date: 2026-07-09
 
 ## Scope

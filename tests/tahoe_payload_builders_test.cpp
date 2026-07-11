@@ -11,7 +11,9 @@
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
 #include "AirportItlwm/TahoeBeaconIeBuilder.hpp"
+#include "AirportItlwm/TahoeBssManagerContracts.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
+#include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
 #include "AirportItlwm/TahoeLeScanContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
@@ -23,6 +25,7 @@
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
+#include "AirportItlwm/TahoeTxRxChainContracts.hpp"
 #include "include/Airport/IO80211BssManager.h"
 
 namespace {
@@ -580,6 +583,7 @@ void testPayloadContractInventory()
         "action-frame-progress",
         "ranging-authenticate",
         "association-candidates-hidden",
+        "txrx-chain-info",
         "link-changed-32",
         "bssid-changed-24",
         "wcl-link-state-16",
@@ -646,10 +650,10 @@ void testTahoeSkywalkIoctlRoutes()
     require(shouldRoute(kIocPeerCacheMaximumSize, false) &&
                 !shouldRoute(kIocPeerCacheMaximumSize, true),
             "Skywalk routes APSTA peer-cache maximum getter");
-    require(kIocNanphsAssociation == APPLE80211_IOC_NANPHS_ASSOCIATION &&
-                shouldRoute(kIocNanphsAssociation, false) &&
-                !shouldRoute(kIocNanphsAssociation, true),
-            "Skywalk routes NANPHS_ASSOCIATION getter for LQM options");
+    require(kIocSlowWifiFeatureEnabled == 0x187 &&
+                !shouldRoute(kIocSlowWifiFeatureEnabled, false) &&
+                !shouldRoute(kIocSlowWifiFeatureEnabled, true),
+            "Skywalk leaves slow-wifi selector 0x187 to InfraProtocol");
     require(shouldRoute(kIocWclBssInfo, false) &&
                 !shouldRoute(kIocWclBssInfo, true),
             "Skywalk routes WCL BSS_INFO selector 0x1b1 getter only");
@@ -734,10 +738,6 @@ void testTahoeQosDynsarContracts()
     require(!txBlankingStatusEnabled(0) &&
                 txBlankingStatusEnabled(kTxBlankingStatusBit),
             "tx-blanking status exposes bit 0 only");
-    require(sizeof(apple80211_nan_link_association_info) == 0x08 &&
-                offsetof(apple80211_nan_link_association_info, associated) == 0x04,
-            "NANPHS association carrier is version + associated dword");
-
     TahoeOwnerRegistry registry;
     require(!registry.isSlowWifiFeatureEnabled(),
             "QoS/DynSAR owner starts with slow-wifi disabled");
@@ -1082,16 +1082,14 @@ void testTahoeLqmContracts()
     uint8_t carrier[kCarrierSize] = {};
     require(kCarrierSize == 0x24, "LQM config carrier size stays 0x24");
     require(kVersion == 1, "LQM config public version is 1");
+    require(kDefaultStatsIntervalMs == 5000,
+            "driver-owned LQM stats timer uses the Apple 5000 ms default");
+    require(kEventMessage == 0x27 && kEventSize == 0x1dc,
+            "driver-owned LQM event preserves the Apple selector and size");
     require(kInvalidArgumentRaw == 0x16,
             "LQM invalid carrier paths return raw 0x16");
     require(kFeatureDisabledStatus == 0x2d,
             "LQM feature-disabled gate is the only recovered 0x2d path");
-    require(kWclLqmEventSnrFlagOffset == 0x0b &&
-                kWclLqmEventSnrValueOffset == 0x0c,
-            "WCL LQM update stores SNR at flag/value +0x0b/+0x0c");
-    require(kWclLqmEventNfFlagOffset == 0x0e &&
-                kWclLqmEventNfValueOffset == 0x10,
-            "WCL LQM update stores noise floor at flag/value +0x0e/+0x10");
     require(kLinkChangedSnrOffset == 0x08 && kLinkChangedNfOffset == 0x0a,
             "link-changed carrier exposes SNR/NF at +0x08/+0x0a");
     require(!hasInvalidInterval(kMinimumIntervalMs, kMinimumIntervalMs,
@@ -1149,6 +1147,71 @@ void testTahoeLqmContracts()
             "link-changed signal helper rejects null SNR output");
     require(!buildLinkChangedSignalMetrics(-63, -95, &snr, nullptr),
             "link-changed signal helper rejects null NF output");
+
+    require(sizeof(EventData) == kEventSize,
+            "LQM event carrier remains 0x1dc bytes");
+    require(offsetof(EventData, rssi) == 0x04 &&
+                offsetof(EventData, snr) == 0x0c &&
+                offsetof(EventData, noise) == 0x10,
+            "LQM signal fields preserve recovered offsets");
+    require(offsetof(EventData, countersValid) == 0x30 &&
+                offsetof(EventData, eventValid) == 0x1d8 &&
+                offsetof(EventData, counterSnapshotChanged) == 0x1d9,
+            "LQM validity fields preserve recovered offsets");
+
+    const CounterSnapshot previous{1, 2, 90, 180, 40};
+    const CounterSnapshot current{2, 3, 100, 200, 50};
+    EventData event{};
+    require(buildEventData(-63, -95, current, &previous, &event),
+            "LQM event builder accepts real signal and changed counters");
+    require(event.hasRssi == 1 && event.rssi == -63 &&
+                event.hasCurrentBssRssi == 1 &&
+                event.currentBssRssi == -63,
+            "LQM event builder carries current BSS RSSI");
+    require(event.hasNoise == 1 && event.noise == -95 &&
+                event.hasSnr == 1 && event.snr == 32,
+            "LQM event builder carries real noise and derived SNR");
+    require(event.txErrors == current.txErrors &&
+                event.rxErrors == current.rxErrors &&
+                event.txFrames == current.txFrames &&
+                event.rxFrames == current.rxFrames &&
+                event.beaconFrames == current.beaconFrames,
+            "LQM event builder carries the changed hardware snapshot");
+    require(event.countersValid == 1 && event.eventValid == 1 &&
+                event.counterSnapshotChanged == 1,
+            "LQM changed snapshot sets only recovered validity gates");
+
+    require(buildEventData(-63, kInvalidNoiseSentinel, current, &current,
+                           &event),
+            "LQM event builder accepts a valid RSSI without noise data");
+    require(event.hasNoise == 0 && event.hasSnr == 0,
+            "LQM event builder does not claim missing noise or SNR");
+    require(event.countersValid == 0 &&
+                event.counterSnapshotChanged == 0 &&
+                event.txErrors == 0 && event.rxErrors == 0 &&
+                event.txFrames == 0 && event.rxFrames == 0 &&
+                event.beaconFrames == 0,
+            "LQM unchanged generation clears counter fields like Apple");
+    require(event.eventValid == 1,
+            "LQM signal event remains valid when counters are unchanged");
+    require(!buildEventData(-101, -95, current, nullptr, &event) &&
+                !buildEventData(1, -95, current, nullptr, &event),
+            "LQM event builder rejects RSSI outside the reference range");
+    require(!buildEventData(-63, -95, current, nullptr, nullptr),
+            "LQM event builder rejects a null output carrier");
+}
+
+void testTahoeTxRxChainContracts()
+{
+    using namespace TahoeTxRxChainContracts;
+
+    const Carrier carrier = build(0x06, 0x03, 0x02, 0x04);
+    require(sizeof(carrier) == 0x04,
+            "TXRX_CHAIN_INFO carrier remains four bytes");
+    require(carrier.hardwareRx == 0x06 && carrier.hardwareTx == 0x03,
+            "TXRX_CHAIN_INFO preserves hardware RX/TX mask order");
+    require(carrier.activeTx == 0x02 && carrier.activeRx == 0x04,
+            "TXRX_CHAIN_INFO preserves independent active TX/RX masks");
 }
 
 void testTahoeBssManagerWriterContracts()
@@ -1406,6 +1469,48 @@ void testTahoeBeaconIeBuilder()
             "beacon IE builder keeps reconstructed TIM when raw tail is malformed");
 }
 
+void testTahoeBssManagerContracts()
+{
+    using namespace TahoeBssManagerContracts;
+
+    require(sizeof(BeaconMetaData) == 0x44,
+            "BssManager BeaconMetaData is the exact 0x44 carrier");
+    require(sizeof(BeaconPayload) == 0x844,
+            "BssManager BeaconPayload is the exact 0x844 carrier");
+    require(kBssManagerObjectSize == 0x18 &&
+                kBssBeaconObjectSize == 0x18,
+            "BssManager and BSSBeacon object sizes match their metaclasses");
+    require(kBaseCurrentBssStateFeatureGate == 0x60 &&
+                kCurrentBssPrivateStateMask == 0x01 &&
+                kCurrentBssChannelMessage == 0x52,
+            "BssManager current-BSS state uses the exact feature and message gates");
+    require(offsetof(BeaconMetaData, channelSpec) == 0x04 &&
+            offsetof(BeaconMetaData, ssid) == 0x06 &&
+            offsetof(BeaconMetaData, ssidLength) == 0x26 &&
+            offsetof(BeaconMetaData, primaryChannel) == 0x27,
+            "BssManager channel and SSID fields preserve reference offsets");
+    require(offsetof(BeaconMetaData, bssid) == 0x29 &&
+            offsetof(BeaconMetaData, rssi) == 0x30 &&
+            offsetof(BeaconMetaData, noise) == 0x34 &&
+            offsetof(BeaconMetaData, snr) == 0x36 &&
+            offsetof(BeaconMetaData, beaconInterval) == 0x38 &&
+            offsetof(BeaconMetaData, flags) == 0x40,
+            "BssManager identity and signal fields preserve reference offsets");
+
+    BeaconPayload payload{};
+    payload.meta.ieLength = 3;
+    payload.meta.channelSpec = 0xc024;
+    payload.meta.ssidLength = 4;
+    payload.meta.flags = kSsidBytesPresentFlags;
+    payload.ie[0] = 0x00;
+    payload.ie[1] = 0x01;
+    payload.ie[2] = 'x';
+    require(raw(payload)[0] == 3 && raw(payload)[4] == 0x24 &&
+            raw(payload)[5] == 0xc0 && raw(payload)[0x26] == 4 &&
+            raw(payload)[0x40] == 0x6 && raw(payload)[0x44 + 2] == 'x',
+            "BssManager payload serializes metadata and IE bytes contiguously");
+}
+
 void testTahoeAssociationAuthContracts()
 {
     using namespace TahoeAssociationAuthContracts;
@@ -1460,6 +1565,44 @@ void testTahoeWclAuthAssocCarrierContracts()
             "WCL auth/assoc reason lives at +0x04");
 }
 
+void testTahoeDriverAvailabilityContracts()
+{
+    using namespace TahoeDriverAvailabilityContracts;
+
+    require(sizeof(apple80211_driver_available_data) == 0xf8,
+            "driver-availability carrier is exactly 0xf8 bytes");
+    require(offsetof(apple80211_driver_available_data, version) == 0x00 &&
+            offsetof(apple80211_driver_available_data, flags) == 0x04 &&
+            offsetof(apple80211_driver_available_data, available) == 0x08 &&
+            offsetof(apple80211_driver_available_data, status) == 0x0c &&
+            offsetof(apple80211_driver_available_data, reason) == 0x10 &&
+            offsetof(apple80211_driver_available_data, sub_reason) == 0x14,
+            "driver-availability prefix keeps six independent dwords");
+
+    const apple80211_driver_available_data boot = build(Transition::BootReady);
+    require(boot.version == 3 && boot.flags == 0x20 && boot.available == 1 &&
+            boot.status == 0 && boot.reason == 0xe0822803 && boot.sub_reason == 0,
+            "boot-ready carrier matches AppleBCMWLANCore::bootChipImage");
+
+    const apple80211_driver_available_data powerOff = build(Transition::PowerOff);
+    require(powerOff.version == 3 && powerOff.flags == 0 && powerOff.available == 0 &&
+            powerOff.status == 0 && powerOff.reason == 0xe0821804 &&
+            powerOff.sub_reason == 0,
+            "power-off carrier matches AppleBCMWLANCore::powerOff");
+
+    const apple80211_driver_available_data powerOn = build(Transition::PowerOn);
+    require(powerOn.version == 3 && powerOn.flags == 0 && powerOn.available == 1 &&
+            powerOn.status == 0 && powerOn.reason == 0xe0821803 &&
+            powerOn.sub_reason == 0,
+            "power-on carrier matches AppleBCMWLANCore::powerOn");
+
+    const uint8_t zeroPad[sizeof(powerOn.pad)] = {};
+    require(std::memcmp(boot.pad, zeroPad, sizeof(zeroPad)) == 0 &&
+            std::memcmp(powerOff.pad, zeroPad, sizeof(zeroPad)) == 0 &&
+            std::memcmp(powerOn.pad, zeroPad, sizeof(zeroPad)) == 0,
+            "normal driver-availability transitions keep fault detail zeroed");
+}
+
 } // namespace
 
 int main()
@@ -1481,15 +1624,18 @@ int main()
     testTahoeLeScanContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
+    testTahoeTxRxChainContracts();
     testTahoeBssManagerWriterContracts();
     testTahoeBssidChangedCarrierLayout();
     testTahoeCapabilityContracts();
     testTahoeScanResultLayout();
     testTahoeCurrentNetworkCarrierContract();
     testTahoeBeaconIeBuilder();
+    testTahoeBssManagerContracts();
     testTahoeAssociationAuthContracts();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
-    std::cout << "tahoe payload builders ok: 27 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, LQM, country-code and BssManager writer contracts covered\n";
+    testTahoeDriverAvailabilityContracts();
+    std::cout << "tahoe payload builders ok: 30 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

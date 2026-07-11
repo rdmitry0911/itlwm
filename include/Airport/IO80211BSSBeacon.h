@@ -7,9 +7,10 @@
 //
 //  All declared methods are non-virtual direct-call BootKC exports, so
 //  the local class declaration deliberately omits any vtable or data
-//  layout. Callers only ever hold an `IO80211BSSBeacon *` returned by
-//  the kernel; the local kext does not allocate, subclass, or take
-//  `sizeof` of this class.
+//  layout. Tahoe constructs genuine framework objects through the exported
+//  class allocator and constructor, then keeps only opaque
+//  `IO80211BSSBeacon *` pointers; the local kext does not subclass this class
+//  or take `sizeof` of its incomplete declaration.
 //
 //  CR-199 — primitive-only batch (BootKC IO80211Family.kc, recovered
 //  2026-04-28). Each declaration is anchored to its BootKC address in

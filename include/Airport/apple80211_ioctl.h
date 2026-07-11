@@ -375,7 +375,6 @@ struct apple80211req
 #define APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE  352
 #define APPLE80211_IOC_NSS  353
 #define APPLE80211_IOC_SET_MAC_ADDRESS 368
-#define APPLE80211_IOC_NANPHS_ASSOCIATION 391
 #define APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE 403
 #define APPLE80211_IOC_MIS_MAX_STA                     508
 
@@ -485,14 +484,6 @@ struct apple80211_offload_tcpka_enable_t {
 
 static_assert(sizeof(struct apple80211_offload_tcpka_enable_t) == 0x08,
               "apple80211_offload_tcpka_enable_t must match Apple version + u32 ABI");
-
-struct apple80211_nan_link_association_info {
-    uint32_t    version;
-    uint32_t    associated;
-} __attribute__((packed));
-
-static_assert(sizeof(struct apple80211_nan_link_association_info) == 0x08,
-              "apple80211_nan_link_association_info must match Apple version + u32 ABI");
 
 struct apple80211_lqm_config_t {
     uint32_t    version;
@@ -1715,18 +1706,22 @@ struct apple80211_btc_options_data {
 } __attribute__((packed));
 
 struct apple80211_driver_available_data {
-    uint64_t event;
-    uint64_t avaliable;
+    uint32_t version;
+    uint32_t flags;
+    uint32_t available;
+    uint32_t status;
     uint32_t reason;
     uint32_t sub_reason;
-    // Tahoe/26.x IO80211Family validates APPLE80211_M_DRIVER_AVAILABLE payload
-    // length against 0xf8 before marking the controller available.  Our older
-    // local header stopped at 0xb8, which matched pre-Tahoe observations but no
-    // longer matches the 26.x family-side ABI.
+    // Tahoe/26.x validates the complete 0xf8-byte carrier. The first six
+    // dwords are populated independently by the lifecycle and fault producers;
+    // the remaining bytes carry fault detail or remain zero for normal power
+    // transitions.
     char pad[224];
 } __attribute__((packed));
 
 static_assert(sizeof(struct apple80211_driver_available_data) == 0xF8, "invalid struct apple80211_driver_available_data");
+static_assert(offsetof(struct apple80211_driver_available_data, available) == 0x08, "invalid driver-available polarity offset");
+static_assert(offsetof(struct apple80211_driver_available_data, reason) == 0x10, "invalid driver-available reason offset");
 
 struct apple80211_platform_config {
     // Tahoe WCL bring-up now calls APPLE80211_IOC_PLATFORM_CONFIG before the

@@ -241,6 +241,24 @@ getTxNSS()
     return com.ntxchains;
 }
 
+uint8_t ItlIwn::
+getTxChainMask()
+{
+    return com.txchainmask;
+}
+
+uint8_t ItlIwn::
+getRxChainMask()
+{
+    return com.rxchainmask;
+}
+
+uint32_t ItlIwn::
+getLqmBeaconCount()
+{
+    return com.lqm_beacon_count;
+}
+
 struct ieee80211com *ItlIwn::
 get80211Controller()
 {
@@ -2672,6 +2690,8 @@ iwn_rx_statistics(struct iwn_softc *sc, struct iwn_rx_desc *desc,
 
     if (desc->type != IWN_BEACON_STATISTICS)
         return;    /* Reply to a statistics request. */
+
+    sc->lqm_beacon_count++;
 
     sc->noise = iwn_get_noise(&stats->rx.general);
 

@@ -12,6 +12,7 @@
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeBeaconIeBuilder.hpp"
+#include "TahoeBssManagerContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeLeScanContracts.hpp"
 #include "TahoeLqmContracts.hpp"
@@ -22,8 +23,8 @@
 #include "TahoeQosDynsarContracts.hpp"
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
+#include "TahoeTxRxChainContracts.hpp"
 #include "Airport/IO80211BssManager.h"
-#include "Airport/WCLBulletinBoard.h"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -307,90 +308,29 @@ tahoeSeedBssManagerAssociatedAuthType(
         kAppleBssManagerAssociatedAuthTypeLen);
 }
 
-static IO80211BssManager *
-tahoeRecoverWclBssManager(AirportItlwmSkywalkInterface *interface)
-{
-    if (interface == nullptr)
-        return nullptr;
-
-    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
-    const uintptr_t kWCLConfigManagerId = 1;
-#define AIAM_RD_BSS_MANAGER(dst, addr) do { \
-        uintptr_t _a = (addr); \
-        if (_a < kKernelVA) return nullptr; \
-        (dst) = *(volatile uintptr_t *)_a; \
-    } while (0)
-    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh, cfg;
-    uintptr_t cfgIvars, bss, bssIvars;
-    AIAM_RD_BSS_MANAGER(p120,     (uintptr_t)interface + 0x120);
-    AIAM_RD_BSS_MANAGER(glue,     p120 + 0xd8);
-    AIAM_RD_BSS_MANAGER(givars,   glue + 0x18);
-    AIAM_RD_BSS_MANAGER(wclglue,  givars + 0x18);
-    AIAM_RD_BSS_MANAGER(wivars,   wclglue + 0x18);
-    AIAM_RD_BSS_MANAGER(bb,       wivars + 0x8);
-    AIAM_RD_BSS_MANAGER(bbh,      bb + 0x10);
-    AIAM_RD_BSS_MANAGER(cfg,      bbh + 0xb70 + kWCLConfigManagerId * 0x18);
-    AIAM_RD_BSS_MANAGER(cfgIvars, cfg + 0x20);
-    AIAM_RD_BSS_MANAGER(bss,      cfgIvars + 0x18);
-    AIAM_RD_BSS_MANAGER(bssIvars, bss + 0x10);
-    if (bssIvars < kKernelVA)
-        return nullptr;
-#undef AIAM_RD_BSS_MANAGER
-
-    return reinterpret_cast<IO80211BssManager *>(bss);
-}
-
-static void
-tahoeClearBssManagerAdHocCreated(AirportItlwmSkywalkInterface *interface)
-{
-    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(interface);
-    if (bssManager != nullptr)
-        bssManager->setAdHocCreated(false);
-}
-
 static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
 {
     memset(config, 0, sizeof(*config));
     config->version = APPLE80211_VERSION;
-    // IO80211LQMData mirrors one interval across the first three dwords of the
-    // public carrier. Tahoe family-side validation only accepts 1000 or 5000
-    // in that role; initialize the local cache to the lower valid interval
-    // instead of inventing a non-Apple default.
-    config->sample_period_ms = 1000;
-    config->tx_per_interval_ms = 1000;
-    config->rx_loss_interval_ms = 1000;
+    // AppleBCMWLANLQM::withDriver initializes its dedicated statistics timer
+    // to 0x1388 ms. Mirror that owner default across the public interval fields
+    // which setLQM_CONFIG later forwards to the same timer owner.
+    config->sample_period_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
+    config->tx_per_interval_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
+    config->rx_loss_interval_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
 }
 
 namespace {
 
-struct TahoeWclCurrentBssMetaData {
-    uint32_t ieLen;               // 0x00
-    uint16_t chanSpec;            // 0x04
-    uint8_t ssid[32];             // 0x06
-    uint8_t ssidLen;              // 0x26
-    uint8_t primaryChannel;       // 0x27
-    uint8_t reserved28;           // 0x28
-    uint8_t bssid[IEEE80211_ADDR_LEN]; // 0x29
-    uint8_t reserved2f;           // 0x2f
-    int32_t rssi;                 // 0x30
-    uint16_t reserved34;          // 0x34
-    uint16_t reserved36;          // 0x36
-    uint16_t beaconInterval;      // 0x38
-    uint16_t capability;          // 0x3a
-    uint32_t reserved3c;          // 0x3c
-    uint32_t flags;               // 0x40
-} __attribute__((packed));
-
-static_assert(sizeof(TahoeWclCurrentBssMetaData) == APPLE80211_WCL_BSS_INFO_HEADER_LEN,
-              "Tahoe WCL current-BSS metadata must match Apple 0x44 header");
-
-struct TahoeWclCurrentBssPayload {
-    TahoeWclCurrentBssMetaData meta;
-    uint8_t ie[APPLE80211_WCL_BSS_INFO_MAX_IE_LEN];
-} __attribute__((packed));
-
-static_assert(sizeof(TahoeWclCurrentBssPayload) == APPLE80211_WCL_BSS_INFO_LEN,
-              "Tahoe WCL current-BSS payload must match Apple 0x844 output");
+static_assert(TahoeBssManagerContracts::kBeaconMetaDataSize ==
+                  APPLE80211_WCL_BSS_INFO_HEADER_LEN,
+              "BSS manager metadata must match the WCL 0x44 header");
+static_assert(TahoeBssManagerContracts::kBeaconIeCapacity ==
+                  APPLE80211_WCL_BSS_INFO_MAX_IE_LEN,
+              "BSS manager IE capacity must match the WCL carrier");
+static_assert(TahoeBssManagerContracts::kBeaconPayloadSize ==
+                  APPLE80211_WCL_BSS_INFO_LEN,
+              "BSS manager payload must match the WCL 0x844 output");
 
 static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
                                                 const struct ieee80211_channel *chan)
@@ -406,6 +346,10 @@ static uint16_t buildTahoeWclCurrentBssChanSpec(struct ieee80211com *ic,
         return static_cast<uint16_t>(0xc000 | primary);
     return primary;
 }
+
+static bool buildTahoeCurrentBssPayload(
+    ItlHalService *hal,
+    TahoeBssManagerContracts::BeaconPayload *payload);
 
 }
 
@@ -1983,27 +1927,6 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setLQM_CONFIG((apple80211_lqm_config_t *)req->req_data);
             return kIOReturnUnsupported;
-        case APPLE80211_IOC_NANPHS_ASSOCIATION: {
-            if (cmd != SIOCGA80211)
-                return kIOReturnUnsupported;
-            if (req->req_len != 0 &&
-                req->req_len < sizeof(apple80211_nan_link_association_info))
-                return kIOReturnBadArgumentTahoe;
-
-            auto *data =
-                (apple80211_nan_link_association_info *)req->req_data;
-            memset(data, 0, sizeof(*data));
-            data->version = 1;
-
-            struct ieee80211com *ic =
-                fHalService ? fHalService->get80211Controller() : nullptr;
-            data->associated =
-                (ic != nullptr && ic->ic_state == IEEE80211_S_RUN &&
-                 ic->ic_bss != nullptr)
-                    ? 1U
-                    : 0U;
-            return kIOReturnSuccess;
-        }
         case APPLE80211_IOC_PRIVATE_MAC:
             return (cmd == SIOCGA80211) ? getPRIVATE_MAC((apple80211_private_mac_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -2161,7 +2084,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             /*
              * WCLNetManager::updateBss() requests selector 0x1b1 into a
              * 0x844 BeaconMetaData+IE buffer before constructing the
-             * framework-owned current WCLBSSBeacon. Route that raw get-side
+             * WCL-owned current WCLBSSBeacon. Route that raw get-side
              * selector to the recovered current-BSS producer.
              */
             return (cmd == SIOCGA80211)
@@ -2715,26 +2638,16 @@ reportDetailedLinkStatus(if_link_status const *status)
     IOSkywalkNetworkInterface::reportDetailedLinkStatus(status);
 }
 
-IOReturn AirportItlwmSkywalkInterface::
-reportDataPathEvents(UInt type, void *data, unsigned long dataLen, bool gated)
-{
-    IOReturn ret = IO80211SkywalkInterface::reportDataPathEvents(type, data, dataLen, gated);
-    if (fBssManagerSeedBurst != 0) {
-        fBssManagerSeedBurst--;
-        seedBssManagerRateAndMcs();
-    }
-    return ret;
-}
-
 void AirportItlwmSkywalkInterface::
-seedBssManagerRateAndMcs()
+updateDriverBssManagerRateAndMcs()
 {
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
         return;
     struct ieee80211_node *ni = ic->ic_bss;
 
-    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
+    IO80211BssManager *bssManager =
+        instance != nullptr ? instance->getBssManager() : nullptr;
     if (bssManager == nullptr)
         return;
     if (instance != nullptr) {
@@ -2797,82 +2710,6 @@ seedBssManagerRateAndMcs()
         he.mcs_map = ni->ni_he_mcs_nss_supp.tx_mcs_80;
     }
     bssManager->setHEMCSIndexSet(he);
-}
-
-void AirportItlwmSkywalkInterface::
-postLqmUpdateBulletin()
-{
-    struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
-        return;
-
-    const uintptr_t kKernelVA = 0xffffff8000000000ULL;
-#define AIAM_RDV(dst, addr) do { \
-        uintptr_t _a = (addr); \
-        (dst) = (_a >= kKernelVA) ? *(volatile uintptr_t *)_a : 0; \
-    } while (0)
-    uintptr_t p120, glue, givars, wclglue, wivars, bb, bbh;
-    AIAM_RDV(p120,    (uintptr_t)this + 0x120);
-    AIAM_RDV(glue,    p120 + 0xd8);
-    AIAM_RDV(givars,  glue + 0x18);
-    AIAM_RDV(wclglue, givars + 0x18);
-    AIAM_RDV(wivars,  wclglue + 0x18);
-    AIAM_RDV(bb,      wivars + 0x8);
-    AIAM_RDV(bbh,     bb + 0x10);
-    if (bb < kKernelVA || bbh < kKernelVA)
-        return;
-#undef AIAM_RDV
-
-    struct ieee80211_node *ni = ic->ic_bss;
-    int rssi_c = IWM_MIN_DBM + ni->ni_rssi;
-    if (rssi_c > 0)
-        rssi_c = 0;
-    if (rssi_c < -100)
-        rssi_c = -100;
-    int q = (rssi_c + 100) * 100 / 70;
-    if (q < 0)
-        q = 0;
-    if (q > 100)
-        q = 100;
-
-    unsigned int rate_mbps = 0;
-    if (ni->ni_txrate < ni->ni_rates.rs_nrates)
-        rate_mbps = (ni->ni_rates.rs_rates[ni->ni_txrate] & 0x7f) / 2;
-    if (rate_mbps == 0)
-        rate_mbps = 6;
-    uint16_t snr = 0;
-    uint16_t nf = 0;
-    const bool hasNoise = TahoeLqmContracts::buildLinkChangedSignalMetrics(
-        rssi_c, fHalService->getDriverInfo()->getBSSNoise(), &snr, &nf);
-
-    unsigned char ev[0x1dc];
-    bzero(ev, sizeof(ev));
-    ev[0x00] = 1;
-    *(int32_t *)(ev + 0x04) = rssi_c;
-    if (hasNoise) {
-        ev[TahoeLqmContracts::kWclLqmEventSnrFlagOffset] = 1;
-        *(int16_t *)(ev + TahoeLqmContracts::kWclLqmEventSnrValueOffset) =
-            (int16_t)snr;
-        ev[TahoeLqmContracts::kWclLqmEventNfFlagOffset] = 1;
-        *(int16_t *)(ev + TahoeLqmContracts::kWclLqmEventNfValueOffset) =
-            (int16_t)nf;
-    }
-    ev[0x12] = 1;
-    ev[0x13] = (unsigned char)(signed char)rssi_c;
-    ev[0x1d8] = 1;
-    ev[0x1d9] = 1;
-    ev[0x30] = 1;
-    *(unsigned int *)(ev + 0x28) = 1;
-    *(unsigned int *)(ev + 0x24) = 1;
-
-    bulletinBoardMessage msg;
-    bzero(&msg, sizeof(msg));
-    msg.msgWord0 = (APPLE80211_M_RSSI_CHANGED << 16) |
-                   kWCLBulletinBoardMsgKindDriverEvent;
-    msg.size = sizeof(ev);
-    msg.payload = ev;
-
-    ((WCLBulletinBoard *)bb)->sendMessage(kWCLBulletinBoardManagerDriver, msg);
 }
 
 bool AirportItlwmSkywalkInterface::
@@ -2970,11 +2807,6 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
          * link-changed carrier and the BSSID tracker reset on link-down.
          */
     }
-    if (ret && state == kIO80211NetworkLinkUp) {
-        fBssManagerSeedBurst = 400;
-        seedBssManagerRateAndMcs();
-        postLqmUpdateBulletin();
-    }
 #endif
     return ret;
 }
@@ -2983,38 +2815,41 @@ void AirportItlwmSkywalkInterface::
 setCurrentApAddress(ether_addr *addr)
 {
     IO80211InfraInterface::setCurrentApAddress(addr);
-    seedBssManagerRateAndMcs();
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
-    IOReturn ret = IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
+    (void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
     const uint8_t *payload = reinterpret_cast<const uint8_t *>(data);
     const bool linkUp = payload[6] != 0;
     const bool refreshCurrentBss = payload[8] != 0;
-    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
-    if (bssManager == nullptr)
-        return ret;
+    if (instance == nullptr || instance->getBssManager() == nullptr)
+        return kIOReturnNotReady;
 
     if (!linkUp) {
-        bssManager->setCurrentBSS(nullptr, false);
-        return ret;
+        instance->stopTahoeLqmStatsTimer();
+        instance->clearTahoeCurrentBss();
+        return kIOReturnSuccess;
     }
 
-    if (refreshCurrentBss) {
-        IO80211BSSBeacon *currentBss = bssManager->getCurrentBSS();
-        if (currentBss != nullptr) {
-            bssManager->setCurrentBSS(currentBss, true);
-            seedBssManagerRateAndMcs();
-            postLqmUpdateBulletin();
-        }
+    if (!refreshCurrentBss) {
+        instance->startTahoeLqmStatsTimer();
+        return kIOReturnSuccess;
     }
 
-    return ret;
+    TahoeBssManagerContracts::BeaconPayload currentBss{};
+    if (!buildTahoeCurrentBssPayload(fHalService, &currentBss))
+        return kIOReturnError;
+    if (!instance->setTahoeCurrentBss(currentBss.meta, currentBss.ie))
+        return kIOReturnError;
+
+    updateDriverBssManagerRateAndMcs();
+    instance->startTahoeLqmStatsTimer();
+    return kIOReturnSuccess;
 }
 
 SInt32 AirportItlwmSkywalkInterface::
@@ -4397,19 +4232,12 @@ getTXRX_CHAIN_INFO(apple80211_txrx_chain_info *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 4);
-    // Apple exposes four one-byte chain masks. The local Intel source does not
-    // have Broadcom iovar owners for hw_rxchain/hw_txchain/txchain/rxchain, but
-    // it does have a stable NSS/antenna view via DriverInfo. Mirror that public
-    // shape rather than reporting generic unsupported.
-    uint8_t nss = static_cast<uint8_t>(MAX(1, fHalService->getDriverInfo()->getTxNSS()));
-    uint8_t limitedNss = nss < 8 ? nss : 8;
-    uint8_t mask = static_cast<uint8_t>((1u << limitedNss) - 1u);
-    raw[0] = mask;
-    raw[1] = mask;
-    raw[2] = mask;
-    raw[3] = mask;
+    ItlDriverInfo *driverInfo = fHalService->getDriverInfo();
+    const uint8_t txMask = driverInfo->getTxChainMask();
+    const uint8_t rxMask = driverInfo->getRxChainMask();
+    const TahoeTxRxChainContracts::Carrier carrier =
+        TahoeTxRxChainContracts::build(rxMask, txMask, txMask, rxMask);
+    memcpy(data, &carrier, sizeof(carrier));
     return kIOReturnSuccess;
 }
 
@@ -4527,11 +4355,8 @@ getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *data)
     if (raw == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // AppleBCMWLANCore writes a compact `version + u32 enabled` carrier here.
-    // Keep that exact public shape from local state instead of exposing the
-    // selector as unsupported while the deeper hidden policy owner remains
-    // unrecovered.
-    raw->version = APPLE80211_VERSION;
+    // AppleBCMWLANCore writes only the enabled dword at +0x04. The framework
+    // owns the carrier version field at +0x00, so preserve it verbatim.
     raw->enabled =
         (instance != nullptr &&
          instance->getTahoeOwnerRegistry().isSlowWifiFeatureEnabled())
@@ -4948,7 +4773,8 @@ setDISASSOCIATE(void *ad)
         return kIOReturnSuccess;
     }
 
-    tahoeClearBssManagerAdHocCreated(this);
+    if (instance != nullptr && instance->getBssManager() != nullptr)
+        instance->getBssManager()->setAdHocCreated(false);
 
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
@@ -5427,7 +5253,8 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
         return kIOReturnUnsupported;
     }
 
-    IO80211BssManager *bssManager = tahoeRecoverWclBssManager(this);
+    IO80211BssManager *bssManager =
+        instance != nullptr ? instance->getBssManager() : nullptr;
     tahoeSeedBssManagerAuthContext(bssManager, associationOwner);
     tahoeSeedBssManagerAssociatedAuthType(
         bssManager, associationOwner.authLower, associationOwner.authUpper);
@@ -5494,7 +5321,8 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;
 
-    tahoeClearBssManagerAdHocCreated(this);
+    if (instance != nullptr && instance->getBssManager() != nullptr)
+        instance->getBssManager()->setAdHocCreated(false);
 
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
@@ -6179,6 +6007,10 @@ setLQM_CONFIG(apple80211_lqm_config_t *data)
     memcpy(&cachedLqmConfig, data, sizeof(cachedLqmConfig));
     cachedLqmConfig.version = APPLE80211_VERSION;
     hasCachedLqmConfig = true;
+#if __IO80211_TARGET >= __MAC_26_0
+    if (instance != nullptr)
+        instance->setTahoeLqmStatsInterval(data->sample_period_ms);
+#endif
     return kIOReturnSuccess;
 }
 
@@ -7169,6 +7001,50 @@ static uint32_t buildTahoeCurrentBssIeStream(const struct ieee80211_node *node,
         capacity);
 }
 
+namespace {
+
+static bool buildTahoeCurrentBssPayload(
+    ItlHalService *hal,
+    TahoeBssManagerContracts::BeaconPayload *payload)
+{
+    if (hal == nullptr || payload == nullptr)
+        return false;
+
+    struct ieee80211com *ic = hal->get80211Controller();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == nullptr)
+        return false;
+
+    struct ieee80211_node *node = ic->ic_bss;
+    const uint16_t channelSpec =
+        buildTahoeWclCurrentBssChanSpec(ic, node->ni_chan);
+    if (channelSpec == 0)
+        return false;
+
+    bzero(payload, sizeof(*payload));
+    payload->meta.ieLength = buildTahoeCurrentBssIeStream(
+        node, payload->ie, static_cast<uint32_t>(sizeof(payload->ie)));
+    payload->meta.channelSpec = channelSpec;
+    payload->meta.ssidLength = MIN(
+        static_cast<uint8_t>(sizeof(payload->meta.ssid)), node->ni_esslen);
+    if (payload->meta.ssidLength != 0) {
+        memcpy(payload->meta.ssid, node->ni_essid, payload->meta.ssidLength);
+        payload->meta.flags |=
+            TahoeBssManagerContracts::kSsidBytesPresentFlags;
+    }
+
+    const uint16_t primaryChannel =
+        static_cast<uint16_t>(ieee80211_chan2ieee(ic, node->ni_chan));
+    payload->meta.primaryChannel =
+        static_cast<uint8_t>(MIN(primaryChannel, 0xff));
+    memcpy(payload->meta.bssid, node->ni_bssid, sizeof(payload->meta.bssid));
+    payload->meta.rssi = -(0 - IWM_MIN_DBM - node->ni_rssi);
+    payload->meta.beaconInterval = node->ni_intval;
+    payload->meta.capability = node->ni_capinfo;
+    return true;
+}
+
+} // namespace
+
 static int convertNodeToScanResult(ItlHalService *fHalService,
                                    struct ieee80211_node *fNextNodeToSend,
                                    apple80211_scan_result *result)
@@ -7378,42 +7254,14 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
     if (!data)
         return kIOReturnError;
 
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL)
-        return kIOReturnError;
-
-    seedBssManagerRateAndMcs();
-
-    struct ieee80211_node *ni = ic->ic_bss;
-    const uint16_t chanSpec = buildTahoeWclCurrentBssChanSpec(ic, ni->ni_chan);
-    if (chanSpec == 0) {
+    TahoeBssManagerContracts::BeaconPayload payload{};
+    if (!buildTahoeCurrentBssPayload(fHalService, &payload)) {
         XYLog("WCL [526] %s invalid current channel\n", __FUNCTION__);
         return kIOReturnError;
     }
 
     bzero(data, sizeof(*data));
-
-    auto *payload = reinterpret_cast<TahoeWclCurrentBssPayload *>(data->data);
-    const uint32_t ieLen = buildTahoeCurrentBssIeStream(
-        ni,
-        payload->ie,
-        static_cast<uint32_t>(sizeof(payload->ie)));
-
-    payload->meta.ieLen = ieLen;
-    payload->meta.chanSpec = chanSpec;
-    payload->meta.ssidLen = MIN(static_cast<uint8_t>(sizeof(payload->meta.ssid)), ni->ni_esslen);
-    if (payload->meta.ssidLen != 0) {
-        memcpy(payload->meta.ssid, ni->ni_essid, payload->meta.ssidLen);
-        payload->meta.flags |= 0x6;
-    }
-
-    const uint16_t primaryChannel =
-        static_cast<uint16_t>(ieee80211_chan2ieee(ic, ni->ni_chan));
-    payload->meta.primaryChannel = static_cast<uint8_t>(MIN(primaryChannel, 0xff));
-    memcpy(payload->meta.bssid, ni->ni_bssid, sizeof(payload->meta.bssid));
-    payload->meta.rssi = -(0 - IWM_MIN_DBM - ni->ni_rssi);
-    payload->meta.beaconInterval = ni->ni_intval;
-    payload->meta.capability = ni->ni_capinfo;
+    memcpy(data->data, &payload, sizeof(payload));
 
     return kIOReturnSuccess;
 }

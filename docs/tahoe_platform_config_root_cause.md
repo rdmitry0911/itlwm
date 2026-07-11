@@ -1019,3 +1019,47 @@ So the current Tahoe ready chain must be treated as the full sequence:
 
 Without step 3, the port reaches the contradictory state "interface alive and
 scanning, but driver unavailable to external CoreWiFi consumers".
+
+## 2026-07-11 DRIVER_AVAILABLE producer correction
+
+The prior transport diagnosis was correct, but its final payload model was
+not. Current 25C56 decompilation identifies three normal owners:
+`AppleBCMWLANCore::bootChipImage`, `powerOff`, and `powerOn`. They publish
+different prefix dwords and reasons through `IO80211Controller::postMessage`;
+`signalDriverReady()` remains the separate string-property producer.
+
+The corrected local carrier is six dwords plus `0xe0` trailing bytes. Exact
+boot-ready, power-off, and power-on values and current addresses are recorded
+in `docs/reference/CR-479-driver-availability-producers-20260711.md`. The old
+`event=0x37` payload field and generic bool transition helper are rejected as
+consumer-shaped inference rather than reference producer parity.
+
+## 2026-07-11 current-BSS ownership correction
+
+The old current-BSS experiment reached WCL's own BssManager through private
+WCLConfigManager offsets. Decompilation now proves that AppleBCMWLAN owns a
+different manager created during core initialization. Consequently, a trace
+showing `setCurrentBSS(..., true)` on the WCL object did not validate the
+driver-side userspace surface and cannot classify the remaining
+`networksetup` result.
+
+The local driver now creates its own genuine IO80211Family BssManager and
+updates it only from the reference `setWCL_LINK_STATE_UPDATE` lifecycle.
+`IO80211BssManager::isAssociated()` checks whether its current pointer is
+non-null; the setter bool is independent feature state. This removes the
+private pointer walk and the earlier false negative interpretation without
+adding a userspace fallback. Exact ownership, object creation, and producer
+evidence are in
+`docs/reference/CR-479-driver-owned-bssmanager-lifecycle-20260711.md`.
+
+## 2026-07-11 LQM owner correction
+
+The old one-second watchdog bulletin was not the reference LQM producer.
+AppleBCMWLAN owns a dedicated 5000 ms statistics timer tied to its own
+BssManager and posts the real `0x1dc` event `0x27` through the Infra endpoint.
+The local layer now uses the same lifecycle and real net80211/firmware
+counters, with no private WCL traversal or ungated fallback. Runtime FBT on
+final UUID `09663B25-365D-3D90-BE59-D50490351847` observed 50 consumer
+updates in 250 seconds under the full ping/iperf3 stress gate. This closes LQM
+producer ownership but does not classify the still-open public
+`networksetup` result.

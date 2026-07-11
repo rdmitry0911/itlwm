@@ -197,6 +197,12 @@ public:
     virtual bool is5GBandSupport() override;
     
     virtual int getTxNSS() override;
+
+    virtual uint8_t getTxChainMask() override;
+
+    virtual uint8_t getRxChainMask() override;
+
+    virtual uint32_t getLqmBeaconCount() override;
     
     virtual const char *getFirmwareName() override;
     

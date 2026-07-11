@@ -96,6 +96,7 @@ class FlowIdMetadata;
 class IOReporter;
 class IO80211InfraInterface;
 class IO80211PostOffice;
+class CommonFaultReporter;
 extern void IO80211VirtualInterfaceNamerRetain();
 
 
@@ -326,6 +327,7 @@ public:
     UInt getPid();
     IOService *getReporterProvider();
     IOService *GetProvider() const;
+    CommonFaultReporter *getCommonFaultReporter();
 
 protected:
     uint8_t  filler[0x128];

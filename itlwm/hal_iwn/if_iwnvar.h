@@ -330,6 +330,7 @@ struct iwn_softc {
     struct iwn_ucode_info    ucode_info;
     struct iwn_rxon        rxon;
     uint32_t        rx_stats_flags;
+    uint32_t        lqm_beacon_count;
     uint32_t        rawtemp;
     int            temp;
     int            noise;

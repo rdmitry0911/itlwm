@@ -10,6 +10,7 @@
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeBeaconIeBuilder.hpp"
 #include "TahoeCapabilityContracts.hpp"
+#include "TahoeDriverAvailabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include "AirportItlwmAPSTAOwner.hpp"
@@ -42,6 +43,37 @@ extern "C" void
 AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
     __asm("__ZN20IO80211NetworkPacketC1EPK11OSMetaClass");
 
+#if __IO80211_TARGET >= __MAC_26_0
+extern "C" void *
+AirportItlwm_IO80211BssManager_operatorNew(unsigned long size)
+    __asm("__ZN17IO80211BssManagernwEm");
+
+extern "C" void
+AirportItlwm_IO80211BssManager_C1(void *self)
+    __asm("__ZN17IO80211BssManagerC1Ev");
+
+extern "C" void *
+AirportItlwm_IO80211BSSBeacon_operatorNew(unsigned long size)
+    __asm("__ZN16IO80211BSSBeaconnwEm");
+
+extern "C" void
+AirportItlwm_IO80211BSSBeacon_C1(void *self)
+    __asm("__ZN16IO80211BSSBeaconC1Ev");
+
+extern "C" bool
+AirportItlwm_IO80211BSSBeacon_initWithChanSpec(
+    void *self, CCLogStream *logger, CommonFaultReporter *faultReporter)
+    __asm("__ZN16IO80211BSSBeacon16initWithChanSpecEP11CCLogStreamP19CommonFaultReporter");
+
+extern "C" bool
+AirportItlwm_IO80211BSSBeacon_setBeaconDataFromMsg(
+    void *self,
+    TahoeBssManagerContracts::BeaconMetaData *metadata,
+    uint8_t *ie)
+    __asm("__ZN16IO80211BSSBeacon20setBeaconDataFromMsgER14BeaconMetaDataPh");
+
+#endif
+
 // Build identification must print the actual source revision in load logs so the
 // running kext can be matched 1:1 against the workspace and installed binary.
 // Tahoe originally relied on an external script-only ITLWM_COMMIT_HASH define,
@@ -60,6 +92,7 @@ AirportItlwm_IO80211NetworkPacket_C1(void *self, OSMetaClass const *meta)
 #define ITLWM_COMMIT_SUFFIX " (" ITLWM_XSTR(ITLWM_COMMIT_HASH) ")"
 
 #include "AirportItlwmSkywalkInterface.hpp"
+#include "Airport/IO80211BSSBeacon.h"
 #include "Airport/IO80211NetworkPacket.h"
 #include "IOPCIEDeviceWrapper.hpp"
 #include <IOKit/skywalk/IOSkywalkPacketBuffer.h>
@@ -1671,42 +1704,19 @@ setCoreWiFiDriverReadyProperty(AirportItlwm *controller, bool ready)
 }
 
 static void
-postTahoeDriverAvailableBulletin(AirportItlwm *controller, bool ready)
+postTahoeDriverAvailabilityTransition(
+    AirportItlwm *controller,
+    TahoeDriverAvailabilityContracts::Transition transition)
 {
     if (controller == NULL || controller->fNetIf == NULL)
         return;
 
-    // Live 43bf34f runtime proved that the hidden interface-enable subclass
-    // body plus CoreWiFiDriverReadyKey still do not flip Tahoe availability
-    // locally: `setInterfaceEnable(true)` runs, `CoreWiFiDriverReadyKey` is
-    // visible in ioreg, scan reaches WCL_SCAN_DONE, yet IO80211Family keeps
-    // reporting isDriverAvailable=<0> and no APPLE80211_M_DRIVER_AVAILABLE
-    // posts appear in the current-boot kernel log.
-    //
-    // That matches the recovered family-side consumer contract exactly.
-    // WCLSystemStateManager::driverAvailableEventHandler(...) accepts the
-    // bulletin only when:
-    // - message code is APPLE80211_M_DRIVER_AVAILABLE (0x37)
-    // - payload length is exactly 0xf8
-    // - the dword at payload +0x8 is NON-zero for the available edge
-    // - the dword at payload +0x8 is zero for the unavailable edge
-    //
-    // The earlier local port inverted this polarity (`ready=true` published
-    // `available=0`). The family-side handler then called processEvent(...,4),
-    // and the recovered SSM matrix defines event 4 as DRIVER_UNAVAILABLE and
-    // event 5 as DRIVER_AVAILABLE. So the old local bulletin was explicitly
-    // feeding the opposite edge into WCL.
-    //
-    // AppleBCMWLANCore::signalDriverReady() itself only publishes
-    // CoreWiFiDriverReadyKey, so the separate availability bulletin must still
-    // be reproduced at the same ready transition boundary. Deliver it through
-    // controller->postMessage(..., true) so the event flows through
-    // IO80211Controller/PostOffice instead of bypassing the framework.
-    apple80211_driver_available_data data = {};
-    data.event = APPLE80211_M_DRIVER_AVAILABLE;
-    data.avaliable = ready ? 1 : 0;
-    data.reason = 0;
-    data.sub_reason = 0;
+    // Current 25C56 AppleBCMWLANCore has three distinct normal-lifecycle
+    // producers. bootChipImage, powerOff, and powerOn each send an exact 0xf8
+    // carrier through IO80211Controller::postMessage; they do not share a
+    // boolean-only payload shape and signalDriverReady is not this producer.
+    apple80211_driver_available_data data =
+        TahoeDriverAvailabilityContracts::build(transition);
 
     controller->postMessage(controller->fNetIf, APPLE80211_M_DRIVER_AVAILABLE,
                             &data, sizeof(data), true);
@@ -1718,9 +1728,8 @@ applyTahoeInterfaceReadyEdge(AirportItlwm *controller, bool ready)
     if (controller == NULL || controller->fNetIf == NULL)
         return;
 
-    // The newer Tahoe decompile corrected the previous "property+broadcast"
-    // theory.  AppleBCMWLANCore does not synthesize DRIVER_AVAILABLE itself.
-    // The recovered caller order is:
+    // signalDriverReady is separate from the DRIVER_AVAILABLE carrier. The
+    // recovered bootChipImage caller order before its later 0x37 post is:
     //   1) hidden interface-side +0x930 -> setInterfaceEnable(true)
     //   2) AppleBCMWLANCore::signalDriverReady()
     // and on down/error paths:
@@ -1745,11 +1754,21 @@ applyTahoeInterfaceReadyEdge(AirportItlwm *controller, bool ready)
 }
 
 static void
-publishTahoeDriverReadyState(AirportItlwm *controller, bool ready)
+publishTahoeBootReadyState(AirportItlwm *controller)
 {
-    applyTahoeInterfaceReadyEdge(controller, ready);
-    setCoreWiFiDriverReadyProperty(controller, ready);
-    postTahoeDriverAvailableBulletin(controller, ready);
+    applyTahoeInterfaceReadyEdge(controller, true);
+    setCoreWiFiDriverReadyProperty(controller, true);
+    postTahoeDriverAvailabilityTransition(
+        controller, TahoeDriverAvailabilityContracts::Transition::BootReady);
+}
+
+static void
+publishTahoeBootFailureState(AirportItlwm *controller)
+{
+    // bootChipImage's failure tail drives the hidden advisory slot and
+    // signalDriverReady, but does not manufacture a normal power-off bulletin.
+    applyTahoeInterfaceReadyEdge(controller, false);
+    setCoreWiFiDriverReadyProperty(controller, false);
 }
 
 // Apple's bootChipImage is triggered asynchronously by AppleBCMWLANUserClient.
@@ -1778,8 +1797,13 @@ void AirportItlwm::performTahoeBootChipImage()
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
     power_state = kWiFiPowerOn;
-    enableAdapter(NULL);
-    publishTahoeDriverReadyState(this, true);
+    const IOReturn enableResult = enableAdapter(NULL);
+    if (enableResult == kIOReturnSuccess) {
+        publishTahoeBootReadyState(this);
+    } else {
+        power_state = kWiFiPowerOff;
+        publishTahoeBootFailureState(this);
+    }
 }
 
 bool AirportItlwmBootNub::start(IOService *provider)
@@ -2503,12 +2527,22 @@ void AirportItlwm::releaseAll()
     // the use-after-free chain fHalService→get80211Controller()→
     // ic_ac.ac_if→if_watchdog dereferences freed memory → panic14
     // (RIP=0x0 via IOTimerEventSource::timeoutSignaled).
+#if __IO80211_TARGET >= __MAC_26_0
+    stopTahoeLqmStatsTimer();
+    if (fWatchdogWorkLoop && fTahoeLqmStatsTimer) {
+        fWatchdogWorkLoop->removeEventSource(fTahoeLqmStatsTimer);
+        fTahoeLqmStatsTimer->release();
+        fTahoeLqmStatsTimer = nullptr;
+    }
+#endif
     if (fWatchdogWorkLoop && watchdogTimer) {
         watchdogTimer->cancelTimeout();
         watchdogTimer->disable();
         fWatchdogWorkLoop->removeEventSource(watchdogTimer);
         watchdogTimer->release();
         watchdogTimer = NULL;
+    }
+    if (fWatchdogWorkLoop) {
         fWatchdogWorkLoop->release();
         fWatchdogWorkLoop = NULL;
     }
@@ -2553,6 +2587,12 @@ void AirportItlwm::releaseAll()
     fSkywalkRxQueueCapacity = 0;
 #endif
 
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fBssManager != nullptr) {
+        reinterpret_cast<OSObject *>(fBssManager)->release();
+        fBssManager = nullptr;
+    }
+#endif
     OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
     OSSafeReleaseNULL(driverDataPathPipe);
@@ -2843,14 +2883,107 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     // Reading a single int is safe without locking.
     sRT.nodeCount = (uint32_t)ic->ic_nnodes;
     airportItlwmRegDiagPoll(this);
-#if __IO80211_TARGET >= __MAC_26_0
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL && fNetIf != NULL) {
-        ((AirportItlwmSkywalkInterface *)fNetIf)->postLqmUpdateBulletin();
-    }
-#endif
     (*ifp->if_watchdog)(ifp);
     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+IOReturn AirportItlwm::publishTahoeLqmStatsGated(
+    OSObject *target, void *, void *, void *, void *)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
+    if (that == nullptr || !that->fTahoeLqmAssociated ||
+        that->fHalService == nullptr || that->fNetIf == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = that->fHalService->get80211Controller();
+    ItlDriverInfo *driverInfo = that->fHalService->getDriverInfo();
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr || driverInfo == nullptr)
+        return kIOReturnNotReady;
+
+    struct _ifnet *ifp = &ic->ic_ac.ac_if;
+    if (ifp->netStat == nullptr)
+        return kIOReturnNotReady;
+
+    TahoeLqmContracts::CounterSnapshot current{};
+    current.txErrors = ifp->netStat->outputErrors;
+    current.rxErrors = ifp->netStat->inputErrors;
+    current.txFrames = ifp->netStat->outputPackets;
+    current.rxFrames = ifp->netStat->inputPackets;
+    current.beaconFrames = driverInfo->getLqmBeaconCount();
+
+    TahoeLqmContracts::EventData event{};
+    const int32_t rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+    const TahoeLqmContracts::CounterSnapshot *previous =
+        that->fTahoeLqmHasPreviousSnapshot
+            ? &that->fTahoeLqmPreviousSnapshot
+            : nullptr;
+    if (!TahoeLqmContracts::buildEventData(
+            rssi, driverInfo->getBSSNoise(), current, previous, &event))
+        return kIOReturnBadArgument;
+
+    that->fTahoeLqmPreviousSnapshot = current;
+    that->fTahoeLqmHasPreviousSnapshot = true;
+    that->postMessage(that->fNetIf, TahoeLqmContracts::kEventMessage,
+                      &event, sizeof(event), true);
+    return kIOReturnSuccess;
+}
+
+void AirportItlwm::tahoeLqmStatsAction(IOTimerEventSource *timer)
+{
+    if (timer == nullptr || timer != fTahoeLqmStatsTimer ||
+        !fTahoeLqmAssociated || fHalService == nullptr)
+        return;
+
+    IOCommandGate *gate = getCommandGate();
+    if (gate != nullptr)
+        gate->runAction(publishTahoeLqmStatsGated);
+
+    if (fTahoeLqmAssociated && fBssManager != nullptr &&
+        fBssManager->isAssociated() && timer == fTahoeLqmStatsTimer) {
+        timer->setTimeoutMS(fTahoeLqmStatsIntervalMs);
+    }
+}
+
+void AirportItlwm::startTahoeLqmStatsTimer()
+{
+    fTahoeLqmAssociated = true;
+    fTahoeLqmHasPreviousSnapshot = false;
+    fTahoeLqmPreviousSnapshot = TahoeLqmContracts::CounterSnapshot{};
+    if (fTahoeLqmStatsTimer == nullptr)
+        return;
+
+    fTahoeLqmStatsTimer->cancelTimeout();
+    fTahoeLqmStatsTimer->enable();
+    fTahoeLqmStatsTimer->setTimeoutMS(fTahoeLqmStatsIntervalMs);
+}
+
+void AirportItlwm::stopTahoeLqmStatsTimer()
+{
+    fTahoeLqmAssociated = false;
+    fTahoeLqmHasPreviousSnapshot = false;
+    fTahoeLqmPreviousSnapshot = TahoeLqmContracts::CounterSnapshot{};
+    if (fTahoeLqmStatsTimer == nullptr)
+        return;
+
+    fTahoeLqmStatsTimer->cancelTimeout();
+    fTahoeLqmStatsTimer->disable();
+}
+
+void AirportItlwm::setTahoeLqmStatsInterval(uint32_t intervalMs)
+{
+    if (intervalMs < TahoeLqmContracts::kMinimumIntervalMs)
+        return;
+
+    fTahoeLqmStatsIntervalMs = intervalMs;
+    if (fTahoeLqmAssociated && fTahoeLqmStatsTimer != nullptr) {
+        fTahoeLqmStatsTimer->cancelTimeout();
+        fTahoeLqmStatsTimer->enable();
+        fTahoeLqmStatsTimer->setTimeoutMS(intervalMs);
+    }
+}
+#endif
 
 void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
@@ -2905,6 +3038,15 @@ bool AirportItlwm::init(OSDictionary *properties)
     tahoeBootstrapPowerPending = false;
     tahoeBootstrapPowerWindowOpen = true;
     driverLogStream = nullptr;
+    fBssManager = nullptr;
+#if __IO80211_TARGET >= __MAC_26_0
+    fTahoeLqmStatsTimer = nullptr;
+    fTahoeLqmStatsIntervalMs =
+        TahoeLqmContracts::kDefaultStatsIntervalMs;
+    fTahoeLqmAssociated = false;
+    fTahoeLqmHasPreviousSnapshot = false;
+    fTahoeLqmPreviousSnapshot = TahoeLqmContracts::CounterSnapshot{};
+#endif
     fTxPool = NULL;
     fRxPool = NULL;
     fTxQueue = NULL;
@@ -3148,6 +3290,111 @@ initCCLogs()
 #undef CC_SET
 }
 
+#if __IO80211_TARGET >= __MAC_26_0
+bool AirportItlwm::initTahoeBssManager()
+{
+    if (fBssManager != nullptr)
+        return true;
+    if (driverLogStream == nullptr)
+        return false;
+
+    void *storage = AirportItlwm_IO80211BssManager_operatorNew(
+        TahoeBssManagerContracts::kBssManagerObjectSize);
+    if (storage == nullptr)
+        return false;
+
+    AirportItlwm_IO80211BssManager_C1(storage);
+    IO80211BssManager *manager =
+        reinterpret_cast<IO80211BssManager *>(storage);
+    if (!manager->initwithOptions(driverLogStream, nullptr)) {
+        reinterpret_cast<OSObject *>(storage)->release();
+        return false;
+    }
+
+    fBssManager = manager;
+    return true;
+}
+
+bool AirportItlwm::setTahoeCurrentBss(
+    TahoeBssManagerContracts::BeaconMetaData &metadata,
+    uint8_t *ie)
+{
+    if (fBssManager == nullptr || driverLogStream == nullptr || ie == nullptr)
+        return false;
+
+    CommonFaultReporter *faultReporter = getCommonFaultReporter();
+    if (faultReporter == nullptr)
+        return false;
+
+    void *storage = AirportItlwm_IO80211BSSBeacon_operatorNew(
+        TahoeBssManagerContracts::kBssBeaconObjectSize);
+    if (storage == nullptr)
+        return false;
+
+    AirportItlwm_IO80211BSSBeacon_C1(storage);
+    if (!AirportItlwm_IO80211BSSBeacon_initWithChanSpec(
+            storage, driverLogStream, faultReporter) ||
+        !AirportItlwm_IO80211BSSBeacon_setBeaconDataFromMsg(
+            storage, &metadata, ie)) {
+        reinterpret_cast<OSObject *>(storage)->release();
+        return false;
+    }
+
+    IO80211BSSBeacon *beacon =
+        reinterpret_cast<IO80211BSSBeacon *>(storage);
+    fBssManager->setCurrentBSS(
+        beacon,
+        isAPSTACoreFeatureFlagSet(
+            TahoeBssManagerContracts::kBaseCurrentBssStateFeatureGate));
+
+    apple80211_channel channel{};
+    if (fNetIf != nullptr &&
+        fBssManager->getCurrentChannel(&channel) == kIOReturnSuccess) {
+        postMessage(fNetIf, TahoeBssManagerContracts::kCurrentBssChannelMessage,
+                    &channel, sizeof(channel), true);
+    }
+    fAPSTACorePrivateFeatureByte4d59 |=
+        TahoeBssManagerContracts::kCurrentBssPrivateStateMask;
+
+    reinterpret_cast<OSObject *>(storage)->release();
+    return true;
+}
+
+void AirportItlwm::clearTahoeCurrentBss()
+{
+    if (fBssManager == nullptr)
+        return;
+
+    fBssManager->setCurrentBSS(
+        nullptr,
+        isAPSTACoreFeatureFlagSet(
+            TahoeBssManagerContracts::kBaseCurrentBssStateFeatureGate));
+    apple80211_channel channel{};
+    if (fNetIf != nullptr) {
+        postMessage(fNetIf, TahoeBssManagerContracts::kCurrentBssChannelMessage,
+                    &channel, sizeof(channel), true);
+    }
+    fAPSTACorePrivateFeatureByte4d59 &= static_cast<uint8_t>(
+        ~TahoeBssManagerContracts::kCurrentBssPrivateStateMask);
+}
+#else
+bool AirportItlwm::initTahoeBssManager()
+{
+    return false;
+}
+
+bool AirportItlwm::setTahoeCurrentBss(
+    TahoeBssManagerContracts::BeaconMetaData &,
+    uint8_t *)
+{
+    return false;
+}
+
+void AirportItlwm::clearTahoeCurrentBss()
+{
+}
+#endif
+
 bool AirportItlwm::start(IOService *provider)
 {
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
@@ -3285,6 +3532,15 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     SD_SET(5); // super::start OK
+#if __IO80211_TARGET >= __MAC_26_0
+    if (!initTahoeBssManager()) {
+        XYLog("DEBUG %s [STEP 2] FAIL: BssManager init\n", __FUNCTION__);
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+#endif
     sDiag.step = 2;
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
@@ -3388,6 +3644,24 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     fWatchdogWorkLoop->addEventSource(watchdogTimer);
+#if __IO80211_TARGET >= __MAC_26_0
+    fTahoeLqmStatsTimer = IOTimerEventSource::timerEventSource(
+        this,
+        OSMemberFunctionCast(IOTimerEventSource::Action, this,
+                             &AirportItlwm::tahoeLqmStatsAction));
+    if (fTahoeLqmStatsTimer == nullptr ||
+        fWatchdogWorkLoop->addEventSource(fTahoeLqmStatsTimer) !=
+            kIOReturnSuccess) {
+        XYLog("DEBUG %s [STEP 6] FAIL: Tahoe LQM stats timer\n",
+              __FUNCTION__);
+        fHalService->detach(pciNub);
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    fTahoeLqmStatsTimer->disable();
+#endif
     scanSource = IOTimerEventSource::timerEventSource(this, &fakeScanDone);
     _fWorkloop->addEventSource(scanSource);
     scanSource->enable();
@@ -4964,6 +5238,9 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 {
     RT_SET(10);
     sRT.disableCnt++;
+#if __IO80211_TARGET >= __MAC_26_0
+    stopTahoeLqmStatsTimer();
+#endif
     if (watchdogTimer) {
         watchdogTimer->cancelTimeout();
         watchdogTimer->disable();
@@ -4987,8 +5264,9 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
 {
+    postTahoeDriverAvailabilityTransition(
+        this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
     disableAdapterCore(netif);
-    publishTahoeDriverReadyState(this, false);
 }
 
 //
@@ -5010,21 +5288,33 @@ int AirportItlwm::handlePowerStateChange(uint32_t newState, IONetworkInterface *
         (newState == kWiFiPowerOff && prevState == kWiFiPowerStandby)) {
         // ON→OFF or STANDBY→OFF: power off
         power_state = kWiFiPowerOff;
+        postTahoeDriverAvailabilityTransition(
+            this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         disableAdapterCore(netif);
     }
     else if (newState == kWiFiPowerOn && (prevState == kWiFiPowerOff || prevState == kWiFiPowerStandby)) {
         // OFF→ON or STANDBY→ON: power on
         power_state = kWiFiPowerOn;
-        enableAdapter(netif);
+        err = enableAdapter(netif);
+        if (err == kIOReturnSuccess) {
+            postTahoeDriverAvailabilityTransition(
+                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+        }
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOff) {
         // OFF→STANDBY: power on (into standby mode)
         power_state = kWiFiPowerStandby;
-        enableAdapter(netif);
+        err = enableAdapter(netif);
+        if (err == kIOReturnSuccess) {
+            postTahoeDriverAvailabilityTransition(
+                this, TahoeDriverAvailabilityContracts::Transition::PowerOn);
+        }
     }
     else if (newState == kWiFiPowerStandby && prevState == kWiFiPowerOn) {
         // ON→STANDBY: power off (into standby)
         power_state = kWiFiPowerStandby;
+        postTahoeDriverAvailabilityTransition(
+            this, TahoeDriverAvailabilityContracts::Transition::PowerOff);
         disableAdapterCore(netif);
     }
     else if (newState == prevState) {

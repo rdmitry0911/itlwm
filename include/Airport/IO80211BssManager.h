@@ -7,9 +7,10 @@
 //
 //  All declared methods are non-virtual direct-call BootKC exports, so
 //  the local class declaration deliberately omits any vtable or data
-//  layout. Callers only ever hold an `IO80211BssManager *` returned by
-//  the kernel; the local kext does not allocate, subclass, or take
-//  `sizeof` of this class.
+//  layout. Tahoe constructs one genuine framework object through the
+//  exported class allocator and constructor, then keeps only an opaque
+//  `IO80211BssManager *`; the local kext does not subclass the class or take
+//  `sizeof` of its incomplete declaration.
 //
 //  CR-201 — primitive-only batch (BootKC IO80211Family.kc, recovered
 //  2026-04-28). Each declaration's return type is matched verbatim
@@ -57,13 +58,17 @@
 //  CR-479 25C56 writer ABI addendum (guest BootKC macOS 26.2 build 25C56):
 //    ffffff8002242562  IO80211BssManager::setNetworkFlags(bool, unsigned int)
 //    ffffff8002243084  IO80211BssManager::setAssociatedAuthType(unsigned char*, unsigned short)
-//    ffffff8002266334  IO80211BssManager::setCurrentBSS(IO80211BSSBeacon*, bool)
-//    ffffff800226631e  IO80211BssManager::getCurrentBSS() const
+//  Current 25C56 BootKC addresses for the current-BSS pair:
+//    ffffff80022418fc  IO80211BssManager::setCurrentBSS(IO80211BSSBeacon*, bool)
+//    ffffff800224369a  IO80211BssManager::getCurrentBSS() const
+//    ffffff8002241cd8  IO80211BssManager::isAssociated()
+//  The 26.3 KDK LQM tail calls the same export at ffffff8002266710.
 //
 //  These writer declarations are not part of the CR-201 primitive-only
 //  fourteen-helper batch. They are live current-BSS cache producers used by
-//  Apple's rate/MCS update path and by the local Tahoe bridge once the
-//  framework-owned BssManager object is recovered from WCLConfigManager.
+//  Apple's rate/MCS update path and by the local Tahoe driver-owned manager.
+//  WCL owns a separate WCLBssManager instance; it is never recovered through
+//  private object layouts or mutated by the driver.
 //
 
 #ifndef IO80211BssManager_h
@@ -77,6 +82,9 @@ struct apple80211_he_mcs_index_set_data;
 struct apple80211_rate_set_data;
 enum Bands : unsigned int;
 class IO80211BSSBeacon;
+class IO80211ScanCacheStore;
+class CCLogStream;
+struct apple80211_channel;
 
 struct IO80211AuthContext {
     uint32_t authLower;
@@ -95,6 +103,8 @@ typedef int IOReturn;
 class IO80211BssManager
 {
 public:
+    bool initwithOptions(CCLogStream *, IO80211ScanCacheStore *);
+
     // Tahoe exports used by the native WCL driver to seed current-BSS rate
     // and MCS caches consumed by IO80211InfraInterface link properties.
     void setMCSIndexSet(apple80211_mcs_index_set_data &);
@@ -102,11 +112,13 @@ public:
     void setHEMCSIndexSet(apple80211_he_mcs_index_set_data &);
     void setRateSet(apple80211_rate_set_data &);
     void setLastBSSRssi();
+    IOReturn getCurrentChannel(apple80211_channel *);
     IOReturn getCurrentBand(Bands &);
     void setBandInfoBitmap(unsigned int);
     void setNetworkFlags(bool, unsigned int);
     IO80211BSSBeacon *getCurrentBSS() const;
     void setCurrentBSS(IO80211BSSBeacon *, bool);
+    bool isAssociated();
     void setAuthContext(IO80211AuthContext &);
     IOReturn setAssocSSID(const unsigned char *, unsigned long);
     void setAssociatedAuthType(unsigned char *, unsigned short);

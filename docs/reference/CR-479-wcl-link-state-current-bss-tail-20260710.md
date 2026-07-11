@@ -1,5 +1,12 @@
 # CR-479 Tahoe WCL link-state current-BSS association tail
 
+> **2026-07-11 ownership and state correction:** The runtime trace below
+> reached WCL's separate BssManager and is retained only as historical
+> evidence. It is not the Apple driver ownership path. The bool argument to
+> `setCurrentBSS` is stored separately; `isAssociated()` tests the current-BSS
+> pointer itself. The implementation and ownership claims are superseded by
+> `CR-479-driver-owned-bssmanager-lifecycle-20260711.md`.
+
 Date: 2026-07-10
 
 ## Scope

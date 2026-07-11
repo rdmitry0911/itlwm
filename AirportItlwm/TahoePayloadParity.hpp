@@ -114,6 +114,14 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "hidden carrier is accepted only at length 0x3ad8; null direct WCL associate returns 0xe00002c2"
         },
         {
+            "txrx-chain-info",
+            "ItlDriverInfo::getTxChainMask/getRxChainMask",
+            "AirportItlwmSkywalkInterface::getTXRX_CHAIN_INFO",
+            "apple-txrx-chain-info",
+            4,
+            "null returns 0xe00002c2; configured RX/TX masks preserve independent byte order"
+        },
+        {
             "link-changed-32",
             "AirportItlwmSkywalkInterface::setLinkStateInternal",
             "AirportItlwmSkywalkInterface::getLINK_CHANGED_EVENT_DATA",
@@ -163,11 +171,11 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
         },
         {
             "driver-available-0xf8",
-            "postTahoeDriverAvailableBulletin",
+            "postTahoeDriverAvailabilityTransition",
             "WCLSystemStateManager driverAvailableEventHandler",
             "apple-driver-available",
             0xf8,
-            "available dword polarity matches ready edge; payload length is exactly 0xf8"
+            "boot-ready, power-off, and power-on keep distinct flags/reason dwords; available remains at +0x08"
         }
     };
 

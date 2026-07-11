@@ -7360,3 +7360,399 @@ Non-claim:
   `networksetup -getairportnetwork en1` still reports `not associated`;
 - APSTA TX-subqueue removal notification remains owned by the dormant APSTA
   queue-construction/data-path layer and is not replaced with a HAL surrogate.
+
+## item 239 - selector 0x187 was misrouted as NANPHS association state
+
+- producers:
+  - `AirportItlwmSkywalkInterface::processApple80211Ioctl(...)`
+  - `AirportItlwmSkywalkInterface::getSLOW_WIFI_FEATURE_ENABLED(...)`
+  - `TahoeSkywalkIoctlRoutes::shouldRoute(...)`
+- status: implemented, static validation complete, Tahoe runtime regression validated
+- justification: SLOW_WIFI_SELECTOR_0X187_OWNERSHIP
+- reference note:
+  `docs/reference/CR-479-lqm-create-prerequisites-20260707.md`
+- current 25C56 evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_slow_wifi_selector_25C56_20260711.c`
+  - `~/Projects/ghidra_output/aiam_randomisation_wrappers_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_randomisation_status_25C56_20260711.c`
+
+Reference and prior local divergence:
+
+- `apple80211getSLOW_WIFI_FEATURE_ENABLED(...)` gates selector `0x187` and
+  dispatches to the `IO80211InfraProtocol` slow-wifi getter;
+- createLQM requests the same selector with an 8-byte carrier and derives its
+  option from a successful nonzero dword at `+0x04`;
+- `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED(...)` writes only
+  `core-private[0x7569] & 1` to dword `+0x04`, preserving the caller-owned
+  dword at `+0x00`;
+- `apple80211getNANPHS_ASSOCIATION(...)` is a fixed `0xe082280e` stub;
+- the local route incorrectly named selector `0x187` as NANPHS association,
+  intercepted both BSD and card-specific requests, and returned
+  `ic_state == RUN` as dword `+0x04`. A live pre-fix raw GET while associated
+  returned `version=1, enabled=1` without entering either the family slow-wifi
+  wrapper or the local slow-wifi getter, although the local owner bit was 0.
+
+Local closure:
+
+- removed the invented NANPHS selector macro and 8-byte association carrier;
+- removed the local BSD switch body that converted association state into the
+  slow-wifi enabled bit;
+- renamed the route witness to `kIocSlowWifiFeatureEnabled` and explicitly
+  leaves both directions to the inherited InfraProtocol path;
+- aligned the concrete local getter with AppleBCMWLANCore by writing only
+  enabled dword `+0x04` and preserving carrier dword `+0x00`.
+
+Static validation:
+
+- `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` pass;
+- deterministic payload parity and Apple Wi-Fi contract inventory validators
+  pass.
+
+Non-claim:
+
+- this does not enable CARD_CAPABILITIES index `0x53`, force slow-wifi on,
+  create the framework LQM, change the current owner policy bit, or add a
+  fallback route;
+- this does not implement NANPHS association or terminated operations, whose
+  current family wrappers remain fixed class-owner-absent stubs;
+- this does not change public CoreWLAN, `networksetup`, Dynamic Store, AP/GO,
+  or item 220.
+
+## item 240 - TXRX_CHAIN_INFO collapsed hardware masks into Tx NSS
+
+- producers:
+  - `AirportItlwmSkywalkInterface::getTXRX_CHAIN_INFO(...)`
+  - `ItlDriverInfo::{getTxChainMask,getRxChainMask}()`
+  - `ItlIwn`, `ItlIwm`, and `ItlIwx` driver-info implementations
+- status: implemented, static validation complete, Tahoe runtime regression validated
+- justification: TXRX_CHAIN_INFO_HARDWARE_MASK_SOURCE
+- reference note:
+  `docs/reference/CR-479-txrx-chain-info-hardware-masks-20260711.md`
+- current 25C56 evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_txrx_chain_25C56_20260711.c`
+  - `~/Projects/ghidra_output/aiam_txrx_chain_25C56_20260711.disasm.txt`
+  - `~/Projects/ghidra_output/aiam_txrx_chain_refs_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_infra_link_properties_25C56_20260711.c`
+
+Reference and prior local divergence:
+
+- Apple reads one byte from each of `hw_rxchain`, `hw_txchain`, `txchain`,
+  and `rxchain`, in that exact order, into output offsets `+0..+3`;
+- the four fields are independently sourced masks; a successful earlier read
+  remains visible if a later iovar fails;
+- null returns `0xe00002c2`, a non-synchronous controller state returns
+  `0xe00002e2`, and an individual iovar failure returns `0xe00002bc`;
+- `IO80211InfraInterface::getInfraLinkProperties(...)` requests selector
+  `0x176` with four bytes, then derives max NSS as the smaller popcount of
+  `hw_txchain` at `+0x01` and `txchain` at `+0x02`;
+- the local getter instead used associated Tx NSS to construct a contiguous
+  low-bit mask and copied it to every byte, losing hardware antenna identity,
+  non-contiguous masks, and RX/TX asymmetry.
+
+Local closure:
+
+- added a packed, directly tested four-byte carrier in reference byte order;
+- exposed the existing authoritative configured TX/RX masks through
+  `ItlDriverInfo` for all three Intel backend families;
+- IWN reads its EEPROM/device-corrected `txchainmask/rxchainmask`; IWM and IWX
+  read firmware-PHY masks intersected with NVM-valid antenna masks;
+- maps the configured RX mask to `hw_rxchain/rxchain` and the configured TX
+  mask to `hw_txchain/txchain`, matching the masks programmed into each Intel
+  firmware backend without fabricating per-packet state.
+
+Static validation:
+
+- `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` pass;
+- deterministic payload parity covers this carrier and passes with 19 payload
+  surfaces, 12 Apple reference cases, and zero mismatches;
+- Apple Wi-Fi contract inventory validation passes with all 28 contracts and
+  acceptance criteria linked.
+
+Non-claim:
+
+- Intel's local state reads cannot reproduce Broadcom synchronous-iovar state
+  or per-iovar failure branches; they have no fallible command in this getter;
+- this does not change firmware chain configuration, rate-control antenna
+  selection, association, LQM, public CoreWLAN, `networksetup`, Dynamic Store,
+  AP/GO, or item 220.
+
+## item 241 - synthetic watchdog LQM update masked the missing owner producer
+
+- local producer removed:
+  - `AirportItlwmSkywalkInterface::postLqmUpdateBulletin()`
+  - link-up, WCL link-state, and watchdog call sites
+- reference owners:
+  - `AppleBCMWLANCore::postLQMEvent(...)`
+  - `IO80211LQMData::postLQMEvent(...)`
+  - `IO80211LinkQualityMonitor::measurementTimeoutCallback(...)`
+- status: implemented, static validation complete, Tahoe runtime validated
+- justification: LQM_SYNTHETIC_WATCHDOG_PRODUCER_REMOVAL
+- reference note:
+  `docs/reference/CR-479-lqm-sink-only-update-20260708.md`
+- current 25C56 evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_lqm_real_producers_25C56_20260711.c`
+  - `~/Projects/ghidra_output/aiam_lqm_signature_matches_25C56_20260711.txt`
+
+Reference and prior local divergence:
+
+- AppleBCMWLANCore forwards event `0x27` and the caller-owned `0x1dc` payload
+  only after its real Infra message endpoint exists;
+- the framework measurement-timeout callback refreshes monitor-owned state,
+  checks its accumulated validity fields, publishes through owner virtuals,
+  and resets the measurement window after that owner sequence;
+- the local method instead walked undocumented private WCL pointers, invented
+  a `0x1dc` payload with fixed nonzero counters, and sent it at link-up, WCL
+  update, and every one-second driver watchdog tick;
+- prior 240-second stress results proved only that this extra message was
+  tolerated. They did not establish payload provenance or LQM parity.
+
+Local closure:
+
+- removed the entire synthetic producer and all three invocation paths;
+- removed the private pointer offsets, fabricated event offsets/counters, and
+  local WCL bulletin declaration that existed only for that shortcut;
+- did not replace it with a direct sink call, timestamp write, periodic
+  surrogate, or fallback gate;
+- the subsequently recovered driver-owned timer and real statistics producer
+  are tracked separately under item 244.
+
+Static validation:
+
+- `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` pass for the combined selector
+  `0x187`, TXRX chain-mask, and LQM-producer removal batch;
+- deterministic payload parity passes with 19 payload surfaces, 12 Apple
+  reference cases, and zero mismatches;
+- Apple Wi-Fi contract inventory validation passes with all 28 contracts and
+  acceptance criteria linked.
+
+Non-claim:
+
+- this removal does not force the framework slow-wifi capability or policy
+  bit; item 244 restores only the separately recovered driver-owned producer;
+- this does not change public CoreWLAN, `networksetup`, Dynamic Store, AP/GO,
+  or item 220.
+
+## item 242 - DRIVER_AVAILABLE collapsed three producers into a bool payload
+
+- local producers:
+  - `AirportItlwm::performTahoeBootChipImage()`
+  - `AirportItlwm::disableAdapter(...)`
+  - `AirportItlwm::handlePowerStateChange(...)`
+- reference owners:
+  - `AppleBCMWLANCore::bootChipImage(...)`
+  - `AppleBCMWLANCore::powerOff(bool)`
+  - `AppleBCMWLANCore::powerOn()`
+- status: implemented, static validation complete, Tahoe runtime regression validated
+- justification: DRIVER_AVAILABLE_LIFECYCLE_PRODUCER_PARITY
+- reference note:
+  `docs/reference/CR-479-driver-availability-producers-20260711.md`
+- current 25C56 evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_signal_driver_ready_exact_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_bootchip_driver_available_exact2_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_poweroff_driver_available_listing_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_poweron_driver_available_listing_25C56_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_driver_available_setter_exact_25C56_20260711.txt`
+
+Reference and prior local divergence:
+
+- `signalDriverReady()` publishes `CoreWiFiDriverReadyKey` and does not build
+  the `0x37` carrier;
+- the three normal lifecycle owners separately call
+  `IO80211Controller::postMessage` at current `0xffffff80021f58f0` with
+  selector `0x37`, exact length `0xf8`, and async flag `1`;
+- boot-ready prefix dwords are
+  `{3, 0x20, 1, 0, 0xe0822803, 0}`, power-off uses
+  `{3, 0, 0, 0, 0xe0821804, 0}`, and power-on uses
+  `{3, 0, 1, 0, 0xe0821803, 0}`;
+- the previous local carrier stored selector `0x37` in payload `+0x00`, used
+  two 64-bit fields, zeroed the reference reason, and selected the payload from
+  one generic bool helper.
+
+Local closure:
+
+- corrected `apple80211_driver_available_data` to six independent prefix
+  dwords and preserved its exact `0xf8` size;
+- added directly tested `BootReady`, `PowerOff`, and `PowerOn` builders;
+- boot-ready publication now requires successful adapter enable and preserves
+  interface-enable, ready-property, then PostOffice publication order;
+- power-off is published before local teardown and power-on only after local
+  enable succeeds; boot failure does not borrow the normal power-off carrier;
+- removed the generic bool producer and the unreferenced stop-time
+  property/advisory toggle.
+
+Static validation:
+
+- `git diff --check`, `./scripts/test_payload_builders.sh`, and
+  `./scripts/tahoe_reproducibility_smoke.sh` pass for the combined pending
+  batch;
+- payload parity passes with 19 payload surfaces, 12 Apple reference cases,
+  six error cases, and zero mismatches;
+- Apple Wi-Fi contract inventory validation passes with all 28 contracts and
+  acceptance criteria linked.
+
+Runtime validation:
+
+- on final UUID `09663B25-365D-3D90-BE59-D50490351847`, FBT captured exactly
+  one `0x37/0xf8/async` power-off carrier
+  `{3,0,0,0,0xe0821804,0}` and one power-on carrier
+  `{3,0,1,0,0xe0821803,0}`;
+- the guest reassociated, completed 30/30 follow-up pings with zero loss, and
+  resumed the 5000 ms LQM cadence.
+
+Non-claim:
+
+- this does not fabricate the dynamic watchdog/fault payloads used by
+  `AppleBCMWLANCore::watchdog` and `completeFaultReportCallback`;
+- this does not add a fallback availability gate or alter public CoreWLAN,
+  `networksetup`, Dynamic Store, AP/GO, LQM, or item 220.
+
+## item 243 - Apple driver BssManager was confused with WCL ownership
+
+- local owner: `AirportItlwm::fBssManager`
+- lifecycle producer:
+  `AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(...)`
+- reference owners:
+  - `AppleBCMWLANCore::initAfterIORegUpdated()`
+  - `AppleBCMWLANBssManager::withOptions(...)`
+  - `AppleBCMWLANCore::setWCL_LINK_STATE_UPDATE(...)`
+- status: implemented, static validation complete, Tahoe runtime validated
+- justification: DRIVER_OWNED_BSS_MANAGER_LIFECYCLE_PARITY
+- reference note:
+  `docs/reference/CR-479-driver-owned-bssmanager-lifecycle-20260711.md`
+
+Reference and prior local divergence:
+
+- AppleBCMWLAN owns a dedicated BssManager in core state; WCLController owns a
+  separate WCLBssManager retained by WCLConfigManager;
+- the prior local helper walked undocumented WCL object offsets and mutated
+  the WCL-owned manager, although Apple never uses that route;
+- generic link-up and watchdog paths repeatedly seeded that wrong object and
+  also fabricated an LQM bulletin to keep the cache active;
+- base `IO80211BssManager::isAssociated()` checks current-pointer presence;
+  the bool accepted by `setCurrentBSS` is a separate feature-gated state byte.
+
+Local closure:
+
+- creates and owns a genuine `0x18` IO80211Family BssManager for the driver
+  lifetime, initialized with the driver logger and null scan-cache store;
+- creates a fresh genuine `0x18` framework BSSBeacon from the exact
+  `0x44 + 0x800` current-BSS carrier on the recovered WCL link-state refresh;
+- reproduces the subclass channel message `0x52`, feature bit `0x60`, and
+  private state mask `0x01` effects at the local core ownership boundary;
+- directs rate/MCS/auth/band/RSSI/ad-hoc writers to the driver-owned manager;
+- removes all WCL private-layout traversal, generic link-state refresh, retry
+  seed burst, and synthetic LQM producer coupling.
+
+Static validation:
+
+- payload contract tests cover both framework object sizes, the exact carrier
+  layout, feature/message constants, and contiguous serialization;
+- source checks reject every removed private-WCL and synthetic-seed symbol;
+- full static validation is recorded in the reference note;
+- item 244's 250-second LQM trace exercises
+  `IO80211BssManager::isAssociated()` on this exact driver-owned object and
+  proves it remained associated for the full stress window.
+
+Non-claim:
+
+- local composition does not claim to instantiate Apple's private subclass;
+  it uses framework base objects and reproduces the recovered observable
+  subclass effects without inventing private layout;
+- this object layer alone does not claim `networksetup`, Dynamic Store, or
+  AP/GO closure; the separate exact LQM producer is item 244.
+
+## item 244 - LQM statistics lacked the driver-owned reference producer
+
+- local producers:
+  - `AirportItlwm::fTahoeLqmStatsTimer`
+  - `AirportItlwm::publishTahoeLqmStatsGated(...)`
+  - `AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(...)`
+  - `ItlDriverInfo::getLqmBeaconCount()`
+- reference owners:
+  - `AppleBCMWLANLQM::withDriver(...)`
+  - `AppleBCMWLANLQM::handleStatUpdates(...)`
+  - `AppleBCMWLANLQM::updateLQM(...)`
+  - `AppleBCMWLANLQM::setStatsTimerIntervalMS(...)`
+- status: implemented, static validation complete, Tahoe runtime validated
+- justification: DRIVER_OWNED_LQM_STATISTICS_PRODUCER_PARITY
+- reference note:
+  `docs/reference/CR-479-driver-owned-lqm-statistics-producer-20260711.md`
+- current evidence on `10.7.6.112`:
+  - `~/Projects/ghidra_output/aiam_lqm_lifecycle_exact_26_3_20260711.c`
+  - `~/Projects/ghidra_output/aiam_lqm_withdriver_disasm_26_3_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_lqm_stat_tail_disasm_26_3_20260711.txt`
+  - `~/Projects/ghidra_output/aiam_lqm_control_decomp_26_3_20260711.c`
+  - `~/Projects/ghidra_output/aiam_lqm_linkstate_disasm_26_3_20260711.txt`
+
+Reference and prior local divergence:
+
+- Apple owns a dedicated LQM timer at state `+0x2150`, defaults its interval
+  at `+0x11f4` to 5000 ms, starts it on association, and cancels/releases it
+  during owner teardown;
+- the timer's tail rearms only while the driver-owned BssManager remains
+  associated; one failed statistics sample does not terminate all later
+  updates;
+- the driver builds a zero-initialized `0x1dc` event `0x27` from real
+  RSSI/noise and hardware/network counters, then posts asynchronously through
+  its Infra endpoint;
+- event validity is at `+0x1d8`; counter validity and generation-change state
+  are at `+0x30/+0x1d9` and are asserted only when the real snapshot changes;
+- the removed local producer instead ran on the one-second watchdog, traversed
+  private WCL state, and fabricated fixed nonzero counters.
+
+Local closure:
+
+- added a dedicated LQM timer distinct from the net80211 watchdog and tied its
+  start/stop edges to the recovered WCL link-state/BssManager lifecycle;
+- `setLQM_CONFIG` rearms the same owner after exact carrier validation;
+- the callback enters the controller command gate, reads live
+  `IONetworkStats` plus backend firmware beacon statistics, and posts
+  `0x27/0x1dc` through the real `fNetIf` Infra endpoint;
+- IWM reads `channel_beacons`, IWX retains both current/v11 firmware beacon
+  counters, and IWN counts real `IWN_BEACON_STATISTICS` notifications;
+- callback rearm uses the genuine driver-owned
+  `IO80211BssManager::isAssociated()` result and is independent of one sample
+  result;
+- teardown cancels, disables, removes, and releases the timer before the HAL
+  and workloop disappear; no ungated fallback or private WCL route remains.
+
+Validation:
+
+- host `git diff --check`, payload builders, Tahoe reproducibility smoke,
+  deterministic payload parity, and Apple Wi-Fi contract inventory validators
+  pass;
+- synchronized guest payload builders and a clean Tahoe build pass with all
+  957 BootKC undefined symbols resolved;
+- the final built kext has UUID
+  `09663B25-365D-3D90-BE59-D50490351847` and unsigned binary SHA-256
+  `602ff3fabf9a949421820bdd636dff9bf42556d47e9f5301c518d546b2989677`;
+  the installed ad-hoc signed binary has SHA-256
+  `52c41bc8a7a19bc2ea726a8b82d46128fb974e65cfdba7fa86f5ccb9c652a9ea`
+  and CDHash `5a3198c1e7657b00040edc3f6186ea7351206f6e`;
+- the guest joined `AIAMlab6235/aa00bb0900` at `10.77.0.47`;
+  `system_profiler` reported Connected on channel 6 with real RSSI/noise,
+  while hostapd kept the station associated/authenticated/authorized and
+  `iw` reported `tx failed: 0`;
+- FBT observed 3 `WCLNetManager::handleLqmUpdate` entries in a 17-second
+  preflight and 50 entries over the 250-second stress trace, matching the
+  recovered 5000 ms cadence;
+- concurrent 240-second ping plus iperf3 passed with `240/240`, 0% loss, RTT
+  `0.558/50.507/287.697/45.165 ms`, and `572 MBytes` at
+  `20.0 Mbits/sec` sender/receiver;
+- stress and post-stress serial filters contain no CoreCapture,
+  missed-beacon, panic, or QueueCall fault; host logs contain no AER, VFIO,
+  DMAR, or IOMMU fault. Full logs are in
+  `runtime-captures/itlwm-lqm-driver-owned-final-20260711T114819Z` in the
+  host AIAM workspace.
+
+Non-claim:
+
+- this does not force the framework CARD_CAPABILITIES slow-wifi bit, invent
+  unavailable per-antenna measurements, or synthesize a framework monitor;
+- public `networksetup -getairportnetwork en1` still prints Tahoe's
+  `not associated` result, so item 220 remains open;
+- this does not change public CoreWLAN, Dynamic Store, AP/GO, or add a
+  fallback gate.

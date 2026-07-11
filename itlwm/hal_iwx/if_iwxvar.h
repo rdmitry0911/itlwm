@@ -758,6 +758,7 @@ struct iwx_softc {
 	struct iwx_phy_ctxt sc_phyctxt[IWX_NUM_PHY_CTX];
 
 	int sc_noise;
+    uint32_t sc_lqm_beacon_count;
     uint32_t sc_last_rate_n_flags;
     uint8_t sc_last_qtxpower_raw;
     bool sc_has_last_rate_n_flags;

@@ -352,6 +352,24 @@ getTxNSS()
     (com.sc_ic.ic_bss != NULL && com.sc_ic.ic_bss->ni_rx_nss > 1) ? 2 : 1;
 }
 
+uint8_t ItlIwx::
+getTxChainMask()
+{
+    return iwx_fw_valid_tx_ant(&com);
+}
+
+uint8_t ItlIwx::
+getRxChainMask()
+{
+    return iwx_fw_valid_rx_ant(&com);
+}
+
+uint32_t ItlIwx::
+getLqmBeaconCount()
+{
+    return com.sc_lqm_beacon_count;
+}
+
 struct ieee80211com *ItlIwx::
 get80211Controller()
 {
@@ -10972,9 +10990,13 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 if (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_NEW_RX_STATS)) {
                     SYNC_RESP_STRUCT(stats, pkt, struct iwx_notif_statistics *);
                     sc->sc_noise = iwx_get_noise((uint8_t *)&stats->rx.general.beacon_silence_rssi_a);
+                    sc->sc_lqm_beacon_count =
+                        le32toh(stats->general.beacon_counter[0]);
                 } else {
                     SYNC_RESP_STRUCT(stats_v11, pkt, struct iwx_notif_statistics_v11 *);
                     sc->sc_noise = iwx_get_noise((uint8_t *)&stats_v11->rx.general.beacon_silence_rssi_a);
+                    sc->sc_lqm_beacon_count =
+                        le32toh(stats_v11->general.beacon_counter[0]);
                 }
                 break;
             }

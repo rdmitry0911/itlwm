@@ -219,3 +219,21 @@ getTxNSS()
     (com.sc_ic.ic_bss != NULL && com.sc_ic.ic_bss->ni_rx_nss > 1) ?
     2 : 1;
 }
+
+uint8_t ItlIwm::
+getTxChainMask()
+{
+    return iwm_fw_valid_tx_ant(&com);
+}
+
+uint8_t ItlIwm::
+getRxChainMask()
+{
+    return iwm_fw_valid_rx_ant(&com);
+}
+
+uint32_t ItlIwm::
+getLqmBeaconCount()
+{
+    return le32toh(com.sc_stats.rx.general.channel_beacons);
+}

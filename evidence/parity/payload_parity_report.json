@@ -174,6 +174,21 @@
       "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2"
     },
     {
+      "name": "txrx-chain-info",
+      "shape": "four independent one-byte hardware/active RX/TX masks",
+      "producer": "ItlDriverInfo::getTxChainMask/getRxChainMask",
+      "consumer": "AirportItlwmSkywalkInterface::getTXRX_CHAIN_INFO",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoeTxRxChainContracts.hpp",
+        "include/HAL/ItlDriverInfo.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-txrx-chain-info"
+      ],
+      "invalid_semantics": "null returns 0xe00002c2; Intel configured masks have no fallible iovar read"
+    },
+    {
       "name": "link-changed-32",
       "shape": "32-byte APPLE80211_M_LINK_CHANGED / IOC 156 carrier",
       "producer": "AirportItlwmSkywalkInterface::setLinkStateInternal",
@@ -257,17 +272,18 @@
     },
     {
       "name": "driver-available-0xf8",
-      "shape": "0xf8 DRIVER_AVAILABLE bulletin with available dword polarity",
-      "producer": "postTahoeDriverAvailableBulletin",
+      "shape": "0xf8 DRIVER_AVAILABLE lifecycle carrier with six-dword prefix",
+      "producer": "postTahoeDriverAvailabilityTransition",
       "consumer": "WCLSystemStateManager driverAvailableEventHandler",
       "implementation_paths": [
         "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeDriverAvailabilityContracts.hpp",
         "include/Airport/apple80211_ioctl.h"
       ],
       "apple_reference_case_ids": [
         "apple-driver-available"
       ],
-      "invalid_semantics": "payload length is exact 0xf8 and ready=true publishes available=1"
+      "invalid_semantics": "boolean-only payloads are rejected; boot-ready, power-off, and power-on use their distinct reference flags and reason dwords"
     }
   ],
   "apple_reference_cases": [
@@ -293,8 +309,8 @@
     },
     {
       "id": "apple-driver-available",
-      "path": "docs/tahoe_signal_chain_audit.md",
-      "assertions_checked": 3
+      "path": "docs/reference/CR-479-driver-availability-producers-20260711.md",
+      "assertions_checked": 4
     },
     {
       "id": "apple-connect-complete",
@@ -305,6 +321,11 @@
       "id": "apple-wcl-scan-result",
       "path": "analysis/ANALYSIS_REPORT_2026-04-23.md",
       "assertions_checked": 3
+    },
+    {
+      "id": "apple-txrx-chain-info",
+      "path": "docs/reference/CR-479-txrx-chain-info-hardware-masks-20260711.md",
+      "assertions_checked": 5
     },
     {
       "id": "apple-wcl-auth-assoc-complete",
@@ -371,10 +392,10 @@
     },
     {
       "id": "driver-available-polarity",
-      "expected": "ready-true-available-1",
+      "expected": "boot-and-power-on-available-1-power-off-available-0",
       "paths": [
-        "AirportItlwm/AirportItlwmV2.cpp",
-        "docs/tahoe_signal_chain_audit.md"
+        "AirportItlwm/TahoeDriverAvailabilityContracts.hpp",
+        "docs/reference/CR-479-driver-availability-producers-20260711.md"
       ]
     }
   ],
@@ -384,14 +405,14 @@
       "path": "tests/tahoe_payload_builders_test.cpp",
       "runner": "scripts/test_payload_builders.sh",
       "command": "timeout 30s scripts/test_payload_builders.sh",
-      "assertions_checked": 10
+      "assertions_checked": 11
     }
   ],
   "mismatch_count": 0,
   "mismatches": [],
   "metrics": {
-    "covered_payload_type_count": 18,
-    "apple_reference_case_count": 11,
+    "covered_payload_type_count": 19,
+    "apple_reference_case_count": 12,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

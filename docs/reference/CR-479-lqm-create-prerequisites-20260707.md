@@ -82,3 +82,26 @@ Therefore the stable bridge policy remains:
 
 The LQM create gates should only be re-enabled after the exact line-3511
 PeerMonitor prerequisite is recovered from the 25C56 decompile/runtime logs.
+
+## 2026-07-11 selector correction
+
+Current guest 25C56 symbols and decompilation correct a later, mistaken local
+classification of selector `0x187`:
+
+- `apple80211getSLOW_WIFI_FEATURE_ENABLED(...)` calls the command gate with
+  selector `0x187`, then dispatches through `IO80211InfraProtocol`;
+- `IO80211InfraInterface::createLinkQualityMonitor(...)` requests selector
+  `0x187` with the 8-byte slow-wifi carrier and tests dword `+0x04`;
+- `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED(...)` returns
+  `0xe00002c2` for a null carrier and otherwise writes only
+  `core-private[0x7569] & 1` to dword `+0x04`;
+- `apple80211getNANPHS_ASSOCIATION(...)` is a fixed `0xe082280e` stub and
+  does not own selector `0x187`.
+
+The local BSD/card-specific route introduced under the NANPHS name therefore
+intercepted the slow-wifi request before the inherited InfraProtocol wrapper
+and returned current association state as the enabled bit. That route and its
+invented NANPHS carrier are removed. The local slow-wifi getter now preserves
+the caller-owned version dword and writes only the reference-owned enabled
+dword. This correction does not enable card capability index `0x53`, force the
+slow-wifi owner bit, or re-enable LQM creation.

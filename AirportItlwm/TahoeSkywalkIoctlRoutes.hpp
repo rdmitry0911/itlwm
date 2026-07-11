@@ -50,7 +50,7 @@ enum : uint32_t {
     kIocBtcoex2GChainDisable = 260,
     kIocCurPmk = 360,
     kIocSetMacAddress = 368,
-    kIocNanphsAssociation = 0x187,
+    kIocSlowWifiFeatureEnabled = 0x187,
     kIocSoftapExtendedCapabilitiesIe = 403,
     kIocWclBssInfo = 0x1b1,
     kIocMisMaxSta = 508,
@@ -72,7 +72,6 @@ inline bool shouldRoute(uint32_t reqType, bool isSet)
         case kIocTkoDump:
         case kIocMaxNssForAp:
         case kIocPeerCacheMaximumSize:
-        case kIocNanphsAssociation:
         case kIocWclBssInfo:
             return !isSet;
 

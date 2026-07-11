@@ -13,6 +13,8 @@
 #include "AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwmAPSTAEventContracts.hpp"
 #include "TahoeControllerContracts.hpp"
+#include "TahoeBssManagerContracts.hpp"
+#include "TahoeLqmContracts.hpp"
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
@@ -36,6 +38,7 @@
 #include "AirportItlwmEthernetInterface.hpp"
 #endif
 #include "Airport/IO80211FaultReporter.h"
+#include "Airport/IO80211BssManager.h"
 #include <skywalk/packet/os_packet.h>
 #include <IOKit/skywalk/IOSkywalkPacket.h>
 #include <IOKit/skywalk/IOSkywalkTxSubmissionQueue.h>
@@ -369,6 +372,17 @@ public:
     int handlePowerStateChange(uint32_t newState, IONetworkInterface *netif);
     void handleSystemPowerStateChange(bool powerOn, IONetworkInterface *netif);
     bool initCCLogs();
+    bool initTahoeBssManager();
+    IO80211BssManager *getBssManager() const { return fBssManager; }
+    bool setTahoeCurrentBss(
+        TahoeBssManagerContracts::BeaconMetaData &metadata,
+        uint8_t *ie);
+    void clearTahoeCurrentBss();
+#if __IO80211_TARGET >= __MAC_26_0
+    void startTahoeLqmStatsTimer();
+    void stopTahoeLqmStatsTimer();
+    void setTahoeLqmStatsInterval(uint32_t intervalMs);
+#endif
 
 #if __IO80211_TARGET >= __MAC_26_0
     virtual IO80211WorkQueue *getWorkQueue() const override;
@@ -428,6 +442,11 @@ public:
     bool createMediumTables(const IONetworkMedium **primary);
     void releaseAll();
     void watchdogAction(IOTimerEventSource *timer);
+#if __IO80211_TARGET >= __MAC_26_0
+    void tahoeLqmStatsAction(IOTimerEventSource *timer);
+    static IOReturn publishTahoeLqmStatsGated(
+        OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+#endif
 
     virtual SInt32 enableFeature(IO80211FeatureCode, void*) override;
     virtual bool isCommandProhibited(int command) override;
@@ -568,6 +587,13 @@ public:
 public:
     IOInterruptEventSource* fInterrupt;
     IOTimerEventSource *watchdogTimer;
+#if __IO80211_TARGET >= __MAC_26_0
+    IOTimerEventSource *fTahoeLqmStatsTimer;
+    uint32_t fTahoeLqmStatsIntervalMs;
+    bool fTahoeLqmAssociated;
+    bool fTahoeLqmHasPreviousSnapshot;
+    TahoeLqmContracts::CounterSnapshot fTahoeLqmPreviousSnapshot;
+#endif
     IOPCIDevice *pciNub;
     IONetworkStats *fpNetStats;
 #if __IO80211_TARGET >= __MAC_26_0
@@ -655,6 +681,7 @@ public:
     CCPipe *driverSnapshotsPipe;
 
     CCLogStream *driverLogStream;
+    IO80211BssManager *fBssManager;
     CCStream *driverFaultReporter;
     TahoeOwnerRegistry &getTahoeOwnerRegistry() { return tahoeOwnerRegistry; }
     TahoeCommanderV2 &getTahoeCommander() { return tahoeCommander; }

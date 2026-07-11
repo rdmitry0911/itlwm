@@ -15,6 +15,8 @@
 #ifndef ItlDriverInfo_h
 #define ItlDriverInfo_h
 
+#include <stdint.h>
+
 class ItlDriverInfo {
     
 public:
@@ -26,6 +28,12 @@ public:
     virtual bool is5GBandSupport() = 0;
     
     virtual int getTxNSS() = 0;
+
+    virtual uint8_t getTxChainMask() = 0;
+
+    virtual uint8_t getRxChainMask() = 0;
+
+    virtual uint32_t getLqmBeaconCount() = 0;
     
     virtual const char *getFirmwareName() = 0;
     

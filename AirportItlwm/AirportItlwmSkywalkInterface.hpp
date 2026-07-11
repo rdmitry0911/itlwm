@@ -43,7 +43,6 @@ public:
     virtual void updateLinkStatus(void) override;
     virtual void updateLinkStatusGated(void) override;
     virtual void reportDetailedLinkStatus(if_link_status const *) override;
-    virtual IOReturn reportDataPathEvents(UInt, void *, unsigned long, bool) override;
     virtual IOReturn inputPacket(IO80211NetworkPacket *, packet_info_tag *,
                                  ether_header *, bool *, bool) override;
     virtual SInt64 pendingPackets(unsigned char) override;
@@ -159,9 +158,7 @@ public:
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
     IOReturn processApple80211Ioctl(UInt, apple80211req *);
-    void seedBssManagerRateAndMcs();
-    void postLqmUpdateBulletin();
-    uint32_t fBssManagerSeedBurst = 0;
+    void updateDriverBssManagerRateAndMcs();
 
 public:
     //

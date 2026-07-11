@@ -5217,3 +5217,51 @@ Generated binary is bit-identical to CR-189..CR-200 (kext sha256
 UUID `BA3D771F-F079-33FF-94E5-C792E66237D8`, regdiag sha256
 `6915020cdd70a07c4b77b2946dd5605bc378fc0677119506ae691a7968f01fad`).
 CR-201 supersedes CR-200.
+
+## 2026-07-11 correction: DRIVER_AVAILABLE lifecycle producers
+
+The earlier boolean-only `postTahoeDriverAvailableBulletin(ready)` model was
+incomplete. Current 25C56 decompilation proves that
+`AppleBCMWLANCore::signalDriverReady()` only publishes
+`CoreWiFiDriverReadyKey`; separate `bootChipImage`, `powerOff`, and `powerOn`
+paths call `IO80211Controller::postMessage(..., 0x37, ..., 0xf8, true)`.
+
+Their first six dwords are not interchangeable. Boot-ready uses
+`{3, 0x20, 1, 0, 0xe0822803, 0}`, power-off uses
+`{3, 0, 0, 0, 0xe0821804, 0}`, and power-on uses
+`{3, 0, 1, 0, 0xe0821803, 0}`. Selector `0x37` is a call argument, not payload
+dword `+0x00`. The local layer now uses these exact transition builders and
+does not reuse a normal carrier for watchdog/fault publication. See
+`docs/reference/CR-479-driver-availability-producers-20260711.md`.
+
+## 2026-07-11 correction: driver-owned BssManager lifecycle
+
+The previous Tahoe bridge confused two valid but separately owned framework
+objects. `WCLController` creates WCL's BssManager and WCLConfigManager retains
+it. Independently, `AppleBCMWLANCore::initAfterIORegUpdated()` creates an
+`AppleBCMWLANBssManager` and stores it in core state. Apple driver writers use
+the latter and never recover it through WCL private offsets.
+
+The local driver now owns a genuine framework BssManager for its started
+lifetime. Only `setWCL_LINK_STATE_UPDATE` creates or clears its current BSS,
+using a fresh genuine framework beacon built from the exact `0x844` carrier.
+The generic link-state retry burst, private WCL pointer walk, and synthetic LQM
+producer are removed. `isAssociated()` is current-pointer presence; it does
+not consume the separate feature-gated bool passed to `setCurrentBSS`. See
+`docs/reference/CR-479-driver-owned-bssmanager-lifecycle-20260711.md`.
+
+## 2026-07-11 correction: driver-owned LQM statistics producer
+
+Current AppleBCMWLAN decompilation closes the producer below the framework LQM
+consumer. Apple owns a dedicated timer, defaults it to 5000 ms, starts it on
+association, rearms it only while the driver BssManager remains associated,
+and posts a real `0x1dc` event `0x27` through the Infra endpoint.
+
+The local driver now follows that ownership with a separate timer,
+command-gated net80211/HAL snapshots, firmware-derived beacon counters, and
+exact event validity/generation fields. It does not restore the removed
+private-WCL bulletin shortcut. Final UUID
+`09663B25-365D-3D90-BE59-D50490351847` delivered 50
+`WCLNetManager::handleLqmUpdate` calls over 250 seconds while 240-second ping
+plus iperf3 completed with zero loss and no driver/host fault. See
+`docs/reference/CR-479-driver-owned-lqm-statistics-producer-20260711.md`.
