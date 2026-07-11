@@ -997,7 +997,9 @@ outputActionFrame(OSObject *object, mbuf_t m)
 {
     XYLog("%s len=%zu\n", __FUNCTION__, mbuf_len(m));
     mbuf_freem(m);
-    return 0;
+    // This controller has no backend action-frame injector.  Do not report
+    // success after dropping a frame the hardware never received.
+    return kIOReturnOutputDropped;
 }
 
 int AirportItlwm::
@@ -1005,7 +1007,8 @@ bpfOutput80211Radio(OSObject *object, mbuf_t m)
 {
     XYLog("%s len=%zu\n", __FUNCTION__, mbuf_len(m));
     mbuf_freem(m);
-    return 0;
+    // Raw 802.11/radiotap injection is likewise not backed by this driver.
+    return kIOReturnOutputDropped;
 }
 
 SInt32 AirportItlwm::

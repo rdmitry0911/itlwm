@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "action_frame_drops": true,
+    "bpf_routes_are_explicit": true,
+    "radio_frame_drops": true,
+    "raw_packet_drops": true,
+    "reference_note": true
+  },
+  "local": {
+    "backend_action_frame_injector": false,
+    "quarantined_entry_points": [
+      "outputRaw80211Packet",
+      "outputActionFrame",
+      "bpfOutput80211Radio"
+    ],
+    "raw_bpf_success_after_free": false
+  },
+  "reference": {
+    "apple_actframe_owner": "AppleBCMWLANNetAdapter",
+    "transport": "actframe",
+    "v1": "sendActionFrame",
+    "v2": "sendActionFrameV2"
+  },
+  "schema": "itlwm-raw-bpf-tx-quarantine-v1",
+  "source_base_revision": "ef52aa6c2a62ac58d4452348c3953f6c40ff429d"
+}
