@@ -114,3 +114,28 @@ The read-only live probe is
 `/home/dima/Projects/aiam/scratch/corewifi_admission_probe.m`; the recovered
 CoreWiFi functions are retained at
 `10.7.6.112:~/Projects/ghidra_output/aiam_corewifi_request_sets_20260710.c`.
+
+## SSID/BSSID privacy reply chain
+
+The `nil` result for `SSID` and `BSSID` is a different, server-side decision.
+The same `CWFInterface` client admits request types `7` and `9`, then sends
+them through its CoreWLAN XPC connection. The 25C56 server handler
+`CWFXPCConnection::__allowXPCRequestWithType:error:` at `0x7ff81ee31d70`
+first checks the service-type request set, then performs its process and
+entitlement checks, and calls
+`CWFLocationServicesAuthorizationRequiredForXPCRequestType` at
+`0x7ff81edcf850` before it allows the request to continue. A false result from
+that privacy decision exits the allow path before any request-specific
+Apple80211 producer is invoked.
+
+This ordering matches the retained airportd diagnostic
+`APP NOT AUTHORIZED FOR LOCATION SERVICES, will not continue`; the current
+read-only client again observes `CWFInterface.SSID == nil` and
+`CWFInterface.BSSID == nil` while raw Apple80211 and IORegistry carry the
+actual associated BSS. The authorization/audit-token decision belongs to the
+CoreWiFi/airportd framework contract. It is not evidence for modifying
+`getSSID`, `getBSSID`, `CURRENT_NETWORK`, current-BSS ownership, or a
+driver-side Dynamic Store producer.
+
+Relevant recovered instruction ranges are retained in
+`10.7.6.112:~/Projects/ghidra_output/cr479_userland_after_bootkc_static_20260516T1256/07_xrefs/CoreWiFi_STA/0250_0x7ff81ee31d70_-_CWFXPCConnection___allowXPCRequestWithType_error_.asm.txt`.
