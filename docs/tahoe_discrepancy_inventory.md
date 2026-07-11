@@ -5661,8 +5661,10 @@ Runtime validation:
 
 Non-claims:
 
-- this does not seed `IO80211BssManager::setNetworkFlags(...)`; its writer ABI
-  is proven, but the reference producer mask and polarity remain unproven;
+- this does not seed `IO80211BssManager::setNetworkFlags(...)`; the later
+  25C56 direct-reference and raw-address audits found no static Apple producer,
+  so adding a local association mask would fabricate state. See
+  `docs/reference/CR-479-bssmanager-network-flags-closure-20260711.md`;
 - this does not close the existing public CoreWLAN/networksetup symptom:
   `networksetup -getairportnetwork en1` still reports
   `You are not associated with an AirPort network.`, and CoreWLAN still reports

@@ -12,8 +12,10 @@ Date: 2026-07-09
 
 This batch closes the `IO80211BssManager::setAssociatedAuthType(...)` seed
 edge for the Tahoe WCL association path. It does not seed
-`setNetworkFlags(...)`; the reference mask producer and polarity remain
-unproven.
+`setNetworkFlags(...)`; later 25C56 reference analysis proved that the
+inspected BootKC has no static network-flags producer, so a local seed would
+fabricate state. See
+`CR-479-bssmanager-network-flags-closure-20260711.md`.
 
 ## Reference Evidence
 
@@ -89,8 +91,10 @@ seed burst repeats the publication once the BssManager object is materialized.
   `You are not associated with an AirPort network.` and public CoreWLAN still
   returned `ssid=(null) bssid=(null)`.
 
-## Still Open
+## Network-flags disposition
 
-`setNetworkFlags(bool, unsigned int)` remains ABI-declared only. Its writer
-semantics are proven, but no reference producer has proven which bit mask should
-be enabled or cleared from the local association carrier.
+`setNetworkFlags(bool, unsigned int)` remains ABI-declared only by design.
+The 25C56 direct-reference and raw address audits found no static Apple
+producer, so AirportItlwm intentionally has no corresponding association
+seed. The deterministic closure and retained evidence are in
+`CR-479-bssmanager-network-flags-closure-20260711.md`.

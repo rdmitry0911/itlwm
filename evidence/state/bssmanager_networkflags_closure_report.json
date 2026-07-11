@@ -1,0 +1,23 @@
+{
+  "checks": {
+    "missing_reference_tokens": [],
+    "no_local_runtime_calls": true
+  },
+  "local": {
+    "declaration_present": true,
+    "runtime_call_sites": []
+  },
+  "reference": {
+    "build": "macOS 26.2 (25C56)",
+    "direct_xref_count": 0,
+    "only_packed_address_occurrence": {
+      "file_offset": "0x34c2148",
+      "section": "__LINKEDIT",
+      "virtual_address": "0xffffff80035ef038"
+    },
+    "writer": "IO80211BssManager::setNetworkFlags(bool, unsigned int)",
+    "writer_address": "0xffffff8002242562"
+  },
+  "schema": "itlwm-bssmanager-networkflags-closure-v1",
+  "source_revision": "bb75d00446cb7c7916ec296e9bca5a5e0cbb5607"
+}
