@@ -809,13 +809,6 @@ struct tahoeWclRealTimeMode
     uint8_t enabled;
 } __attribute__((packed));
 
-struct tahoeWclUlofdmaState
-{
-    uint32_t mode;
-} __attribute__((packed));
-static_assert(sizeof(tahoeWclUlofdmaState) == 0x4,
-              "tahoeWclUlofdmaState must match the Apple dword carrier");
-
 struct tahoeWclQosParams
 {
     uint32_t long_retry_limit;
@@ -2448,7 +2441,6 @@ init()
     cachedIbssSsidLen = 0;
     memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
     hasCachedIbssNetwork = false;
-    cachedUlofdmaState = 0;
     cachedFaceTimeWiFiCallingStatus = 0;
     cachedDualPowerModePrimary = -1;
     cachedDualPowerModeSecondary = -1;
@@ -2917,7 +2909,6 @@ init(IOService *provider)
     this->cachedIbssSsidLen = 0;
     memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
     this->hasCachedIbssNetwork = false;
-    this->cachedUlofdmaState = 0;
     this->cachedFaceTimeWiFiCallingStatus = 0;
     this->cachedDualPowerModePrimary = -1;
     this->cachedDualPowerModeSecondary = -1;
@@ -6448,18 +6439,12 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
 {
-    const auto *state = reinterpret_cast<const tahoeWclUlofdmaState *>(data);
-
-    // AppleBCMWLANCore::setWCL_ULOFDMA_STATE is a plain 11ax-adapter producer:
-    // NULL -> 0xe00002bc, otherwise forward the first dword to the owner at
-    // core +0x15c8. Even before that hidden owner is lifted 1:1, slot [608]
-    // must preserve the exact dword carrier instead of sitting on generic
-    // kIOReturnUnsupported.
-    if (state == nullptr)
+    // Apple rejects NULL with 0xe00002bc and otherwise invokes its 11ax
+    // adapter. Intel has no equivalent owner or firmware transport.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedUlofdmaState = state->mode;
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

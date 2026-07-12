@@ -756,7 +756,6 @@ private:
     uint32_t cachedIbssSsidLen;
     uint8_t cachedIbssSsid[APPLE80211_MAX_SSID_LEN];
     bool hasCachedIbssNetwork;
-    uint32_t cachedUlofdmaState;
     uint32_t cachedFaceTimeWiFiCallingStatus;
     int32_t cachedDualPowerModePrimary;
     int32_t cachedDualPowerModeSecondary;

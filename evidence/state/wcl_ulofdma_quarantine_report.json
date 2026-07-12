@@ -1,0 +1,22 @@
+{
+  "checks": {
+    "intel_source_has_no_ulofdma_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_preserves_null_and_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_ulofdma_adapter": false,
+    "request_false_success": false,
+    "selector_slot": 608
+  },
+  "reference": {
+    "adapter_offset": "0x15c8",
+    "adapter_setter": "0xffffff80016247b2",
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_setter": "0xffffff8001616876",
+    "null_return": "0xe00002bc"
+  },
+  "schema": "itlwm-wcl-ulofdma-quarantine-v1",
+  "source_base_revision": "f772fda"
+}
