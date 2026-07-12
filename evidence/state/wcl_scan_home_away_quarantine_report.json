@@ -1,0 +1,21 @@
+{
+  "checks": {
+    "intel_source_has_no_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_scan_home_away_adapter": false,
+    "request_false_success": false,
+    "selector_slot": 604
+  },
+  "reference": {
+    "adapter_offset": "0x1530",
+    "adapter_setter": "0xffffff80016ac8a6",
+    "firmware_iovar": "scan_home_away_time",
+    "public_bridge": "0xffffff8001522d28"
+  },
+  "schema": "itlwm-wcl-scan-home-away-quarantine-v1",
+  "source_base_revision": "688b0a4"
+}

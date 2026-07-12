@@ -2470,7 +2470,6 @@ init()
     hasCachedLqmConfig = false;
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
-    cachedScanHomeAwayTime = 0;
     cachedSetPropertyIoctlSeen = false;
     memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
     hasCachedWnmConfig = false;
@@ -2938,7 +2937,6 @@ init(IOService *provider)
     this->hasCachedLqmConfig = false;
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
-    this->cachedScanHomeAwayTime = 0;
     this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
     this->hasCachedWnmConfig = false;
@@ -6432,8 +6430,8 @@ setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedScanHomeAwayTime = data->milliseconds;
-    return kIOReturnSuccess;
+    // The Intel port has no scan-adapter iovar transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

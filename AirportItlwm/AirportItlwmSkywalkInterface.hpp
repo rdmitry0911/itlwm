@@ -785,7 +785,6 @@ private:
     bool hasCachedLqmConfig;
     apple80211_vht_capability cachedVhtCapability;
     bool hasCachedVhtCapability;
-    uint32_t cachedScanHomeAwayTime;
     bool cachedSetPropertyIoctlSeen;
     uint8_t cachedWnmConfig[0x338];
     bool hasCachedWnmConfig;
