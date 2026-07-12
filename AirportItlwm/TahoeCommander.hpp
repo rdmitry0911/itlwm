@@ -236,30 +236,18 @@ public:
     }
 
     IOReturn runSetRangingAuthenticate(const apple80211_ranging_authenticate_request_t *data,
-                                       uint32_t proximityOwnerId,
-                                       TahoeAsyncCommandContext *asyncContext = nullptr)
+                                       uint32_t,
+                                       TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleRangingInvalid;
 
         TahoePayloadBuilders::RangingAuthenticatePayload payload;
-        if (!TahoePayloadBuilders::buildRangingAuthenticate(data, proximityOwnerId, &payload))
+        if (!TahoePayloadBuilders::buildRangingAuthenticate(data, 0, &payload))
             return TahoeErrorMap::kAppleRangingInvalid;
 
-        registry->ranging.pmkLen = payload.pmkLen;
-        registry->ranging.role = payload.role;
-        registry->ranging.proximityOwnerId = proximityOwnerId;
-        registry->ranging.postedCallback = payload.shouldPostCallback;
-        registry->ranging.hasCarrier = true;
-
-        if (asyncContext != nullptr) {
-            asyncContext->selector = 567;
-            asyncContext->owner = 0x2c28;
-            asyncContext->status = 0;
-            asyncContext->async = false;
-            asyncContext->completed = true;
-        }
-        return kIOReturnSuccess;
+        // The legacy entry shares the same missing proximity firmware backend.
+        return TahoeErrorMap::kAppleRangingInvalid;
     }
 
 private:

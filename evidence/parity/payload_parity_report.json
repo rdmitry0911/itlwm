@@ -146,7 +146,7 @@
     },
     {
       "name": "ranging-authenticate",
-      "shape": "role at +0x4, PMK length at +0x70, optional hidden callback",
+      "shape": "role at +0x4 and PMK length at +0x70; local null-owner branch fails closed",
       "producer": "TahoePayloadBuilders::buildRangingAuthenticate",
       "consumer": "AirportItlwmSkywalkInterface::setRANGING_AUTHENTICATE",
       "implementation_paths": [
@@ -155,9 +155,10 @@
       ],
       "apple_reference_case_ids": [
         "apple-ranging-authenticate-thunk",
+        "apple-ranging-authenticate-null-owner",
         "apple-io80211-selector-surface"
       ],
-      "invalid_semantics": "null or zero PMK length returns 0xe0000001"
+      "invalid_semantics": "null, zero PMK length, or absent proximity owner returns 0xe0000001"
     },
     {
       "name": "association-candidates-hidden",
@@ -343,6 +344,11 @@
       "assertions_checked": 2
     },
     {
+      "id": "apple-ranging-authenticate-null-owner",
+      "path": "docs/reference/CR-479-ranging-authentication-quarantine-20260712.md",
+      "assertions_checked": 4
+    },
+    {
       "id": "apple-ie-custom-assoc",
       "path": "docs/tahoe_signal_chain_audit.md",
       "assertions_checked": 2
@@ -412,7 +418,7 @@
   "mismatches": [],
   "metrics": {
     "covered_payload_type_count": 19,
-    "apple_reference_case_count": 12,
+    "apple_reference_case_count": 13,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

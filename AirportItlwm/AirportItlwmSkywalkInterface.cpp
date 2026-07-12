@@ -5953,15 +5953,13 @@ setSENSING_DISABLE(apple80211_sensing_disable_t *)
 IOReturn AirportItlwmSkywalkInterface::
 setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *data)
 {
-    // Apple routes this through the proximity owner family after validating
-    // PMK length and role. The local commander layer now keeps the same public
-    // state transition and owner-targeted callback decision instead of
-    // collapsing the selector into an unconditional failure.
-    constexpr uint32_t kLocalTahoeProximityOwnerId = 1;
+    // Apple routes this through a real proximity owner. AirportItlwm has no
+    // proxd/wsec/ptk_start backend, so the commander takes Apple's null-owner
+    // failure branch after validating the public carrier.
     TahoeAsyncCommandContext asyncContext{};
     return (instance != nullptr)
                ? instance->getTahoeCommander().runSetRangingAuthenticate(
-                     data, kLocalTahoeProximityOwnerId, &asyncContext)
+                     data, 0, &asyncContext)
                : static_cast<IOReturn>(0xe0000001);
 }
 

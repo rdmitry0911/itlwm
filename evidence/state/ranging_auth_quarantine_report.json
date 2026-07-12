@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "generic_fails_without_mutation": true,
+    "intel_source_has_no_proximity_transport": true,
+    "owner_fails_without_mutation": true,
+    "reference_note": true,
+    "skywalk_uses_no_fabricated_owner": true,
+    "v2_only_propagates_owner_result": true
+  },
+  "local": {
+    "backend_proximity_transport": false,
+    "fabricated_proximity_owner": false,
+    "generic_false_success": false,
+    "owner_false_success": false,
+    "selector": 567
+  },
+  "reference": {
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_preflight": "FUN_ffffff80015eaf92",
+    "missing_owner_return": "0xe0000001",
+    "owner_offset": "0x2c28",
+    "transports": [
+      "proxd",
+      "wsec",
+      "ptk_start"
+    ]
+  },
+  "schema": "itlwm-ranging-auth-quarantine-v1",
+  "source_base_revision": "758a35b586d52085f7a9011988baaa49d68511f2"
+}

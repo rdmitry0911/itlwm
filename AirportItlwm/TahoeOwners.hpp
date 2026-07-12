@@ -243,24 +243,19 @@ public:
     void bind(TahoeOwnerRegistry *newRegistry) { registry = newRegistry; }
 
     IOReturn apply(const apple80211_ranging_authenticate_request_t *data,
-                   uint32_t proximityOwnerId,
-                   TahoeAsyncCommandContext *asyncContext = nullptr)
+                   uint32_t,
+                   TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleRangingInvalid;
 
         TahoePayloadBuilders::RangingAuthenticatePayload payload;
-        if (!TahoePayloadBuilders::buildRangingAuthenticate(data, proximityOwnerId, &payload))
+        if (!TahoePayloadBuilders::buildRangingAuthenticate(data, 0, &payload))
             return TahoeErrorMap::kAppleRangingInvalid;
 
-        registry->ranging.pmkLen = payload.pmkLen;
-        registry->ranging.role = payload.role;
-        registry->ranging.proximityOwnerId = proximityOwnerId;
-        registry->ranging.postedCallback = payload.shouldPostCallback;
-        registry->ranging.hasCarrier = true;
-
-        completeSync(asyncContext, 567, TahoeCommandRouter::routeRanging());
-        return kIOReturnSuccess;
+        // Apple returns this exact public failure when its proximity owner is absent.
+        // The Intel port has neither that owner nor proxd/wsec/ptk_start transport.
+        return TahoeErrorMap::kAppleRangingInvalid;
     }
 
 private:

@@ -101,6 +101,12 @@ REFERENCE_CASES = [
         "tokens": ["setRANGING_AUTHENTICATE", "APPLE80211_IOC_RANGING_AUTHENTICATE"],
     },
     {
+        "id": "apple-ranging-authenticate-null-owner",
+        "path": "docs/reference/CR-479-ranging-authentication-quarantine-20260712.md",
+        "tokens": ["FUN_ffffff80015eaf92", "0xe0000001", "+0x2c28", "proxd"],
+    },
+
+    {
         "id": "apple-ie-custom-assoc",
         "path": "docs/tahoe_signal_chain_audit.md",
         "tokens": ["ie_len != 0", "ie[0] == 0x44"],
@@ -272,10 +278,10 @@ PAYLOAD_TYPES = [
     },
     {
         "name": "ranging-authenticate",
-        "shape": "role at +0x4, PMK length at +0x70, optional hidden callback",
+        "shape": "role at +0x4 and PMK length at +0x70; local null-owner branch fails closed",
         "producer": "TahoePayloadBuilders::buildRangingAuthenticate",
         "consumer": "AirportItlwmSkywalkInterface::setRANGING_AUTHENTICATE",
-        "reference_ids": ["apple-ranging-authenticate-thunk", "apple-io80211-selector-surface"],
+        "reference_ids": ["apple-ranging-authenticate-thunk", "apple-ranging-authenticate-null-owner", "apple-io80211-selector-surface"],
         "implementation_checks": [
             {
                 "path": "AirportItlwm/TahoePayloadBuilders.hpp",
@@ -283,10 +289,10 @@ PAYLOAD_TYPES = [
             },
             {
                 "path": "AirportItlwm/TahoeCommanderV2.hpp",
-                "tokens": ["runSetRangingAuthenticate", "dispatchIssueCommand(567", "dispatchHiddenCallback(567"],
+                "tokens": ["runSetRangingAuthenticate", "return rangingOwner.apply(data, proximityOwnerId, asyncContext);"],
             },
         ],
-        "invalid_semantics": "null or zero PMK length returns 0xe0000001",
+        "invalid_semantics": "null, zero PMK length, or absent proximity owner returns 0xe0000001",
     },
     {
         "name": "association-candidates-hidden",

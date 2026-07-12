@@ -157,31 +157,7 @@ public:
                                        uint32_t proximityOwnerId,
                                        TahoeAsyncCommandContext *asyncContext = nullptr)
     {
-        const IOReturn rc = rangingOwner.apply(data, proximityOwnerId, asyncContext);
-        if (rc != kIOReturnSuccess)
-            return rc;
-
-        const auto &owner = registry->ranging;
-        IOReturn transportRc = dispatchIOVarSet(567, TahoeCommandRouter::routeRanging(),
-                                                sizeof(uint32_t), 0, asyncContext, false);
-        if (transportRc != kIOReturnSuccess)
-            return transportRc;
-        transportRc = dispatchIOVarSet(567, TahoeCommandRouter::routeRanging(),
-                                       sizeof(uint32_t), 0, asyncContext, false);
-        if (transportRc != kIOReturnSuccess)
-            return transportRc;
-        transportRc = dispatchVirtualIOCtlSet(567, TahoeCommandRouter::routeRanging(),
-                                              sizeof(uint32_t), 0, asyncContext, false);
-        if (transportRc != kIOReturnSuccess)
-            return transportRc;
-        transportRc = dispatchIssueCommand(567, TahoeCommandRouter::routeRanging(),
-                                           owner.pmkLen + 0x20, 0, asyncContext, true);
-        if (transportRc != kIOReturnSuccess)
-            return transportRc;
-        if (!owner.postedCallback)
-            return kIOReturnSuccess;
-        return dispatchHiddenCallback(567, TahoeCommandRouter::routeRanging(),
-                                      owner.pmkLen, 0, asyncContext, false);
+        return rangingOwner.apply(data, proximityOwnerId, asyncContext);
     }
 
 private:
