@@ -105,6 +105,17 @@ REFERENCE_CASES = [
         "path": "docs/reference/CR-479-ranging-authentication-quarantine-20260712.md",
         "tokens": ["FUN_ffffff80015eaf92", "0xe0000001", "+0x2c28", "proxd"],
     },
+    {
+        "id": "apple-offload-ndp-null-owner",
+        "path": "docs/reference/CR-479-ndp-offload-null-owner-quarantine-20260712.md",
+        "tokens": [
+            "0xffffff80015d9bbe",
+            "+0x2c20",
+            "0x16",
+            "0xffffff80022c0f14",
+            "handleIPv6AddressNotificationGated",
+        ],
+    },
 
     {
         "id": "apple-ie-custom-assoc",
@@ -136,19 +147,19 @@ PAYLOAD_TYPES = [
         "name": "offload-ndp-ipv6",
         "shape": "counted IPv6 addresses, clamped to four, link-local seed",
         "producer": "TahoePayloadBuilders::buildOffloadNdp",
-        "consumer": "AirportItlwmSkywalkInterface::setOFFLOAD_NDP",
-        "reference_ids": ["apple-io80211-selector-surface"],
+        "consumer": "TahoeNdpOwner::apply",
+        "reference_ids": ["apple-io80211-selector-surface", "apple-offload-ndp-null-owner"],
         "implementation_checks": [
             {
-                "path": "AirportItlwm/TahoePayloadBuilders.hpp",
-                "tokens": ["buildOffloadNdp", "payload->count > 4", "payload->linkLocalSeed[0] = 0xfe"],
+                "path": "AirportItlwm/TahoeOwners.hpp",
+                "tokens": ["class TahoeNdpOwner", "return TahoeErrorMap::kAppleInvalidArgumentRaw;"],
             },
             {
-                "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["setOFFLOAD_NDP", "cachedIPv6Count", "cachedIPv6LinkLocalAddress"],
+                "path": "AirportItlwm/TahoeCommanderV2.hpp",
+                "tokens": ["runSetOFFLOADNDP", "return ndpOwner.apply(data, asyncContext);"],
             },
         ],
-        "invalid_semantics": "null carrier returns raw 0x16 through commander layer",
+        "invalid_semantics": "null or locally absent NDP owner returns raw 0x16 without cache mutation, completion, or synthetic dispatch",
     },
     {
         "name": "usb-host-notification",

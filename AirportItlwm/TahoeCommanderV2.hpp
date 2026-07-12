@@ -61,17 +61,7 @@ public:
     IOReturn runSetOFFLOADNDP(const apple80211_offload_ndp_data *data,
                               TahoeAsyncCommandContext *asyncContext = nullptr)
     {
-        const IOReturn rc = ndpOwner.apply(data, asyncContext);
-        if (rc != kIOReturnSuccess)
-            return rc;
-
-        const auto &owner = registry->ndp;
-        IOReturn transportRc = dispatchHiddenCallback(554, TahoeCommandRouter::routeOffloadNdp(),
-                                                      owner.count * 16, 0, asyncContext, false);
-        if (transportRc != kIOReturnSuccess)
-            return transportRc;
-        return dispatchVirtualIOCtlSet(554, TahoeCommandRouter::routeOffloadNdp(),
-                                       owner.count * 16, 0, asyncContext, false);
+        return ndpOwner.apply(data, asyncContext);
     }
 
     IOReturn runSetUSBHostNotification(const apple80211_usb_host_notification_data *data,

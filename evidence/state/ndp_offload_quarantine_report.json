@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "fabricated_ndp_state_has_no_consumer": true,
+    "generic_fails_without_mutation": true,
+    "owner_fails_without_mutation": true,
+    "reference_note": true,
+    "skywalk_has_no_ndp_cache_copy": true,
+    "v2_only_propagates_owner_result": true
+  },
+  "local": {
+    "backend_ndp_owner": false,
+    "generic_false_success": false,
+    "owner_false_success": false,
+    "selector": 554,
+    "synthetic_v2_transport": false
+  },
+  "reference": {
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_setter": "0xffffff80015d9bbe",
+    "gated_notification": "0xffffff80015960ca",
+    "missing_owner_return": "0x16",
+    "owner_call": "0xffffff80022c0f14",
+    "owner_offset": "0x2c20"
+  },
+  "schema": "itlwm-ndp-offload-quarantine-v1",
+  "source_base_revision": "0fc11de"
+}

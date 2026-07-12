@@ -36,10 +36,10 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
         {
             "offload-ndp-ipv6",
             "TahoePayloadBuilders::buildOffloadNdp",
-            "AirportItlwmSkywalkInterface::setOFFLOAD_NDP",
+            "TahoeNdpOwner::apply",
             "apple-io80211-selector-surface",
             kVariablePayloadLength,
-            "null returns raw 0x16; address count is clamped to four IPv6 entries"
+            "null or missing NDP owner returns raw 0x16; no synthetic NDP transport is emitted"
         },
         {
             "usb-host-notification",

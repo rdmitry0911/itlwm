@@ -63,30 +63,12 @@ public:
     }
 
     IOReturn runSetOFFLOADNDP(const apple80211_offload_ndp_data *data,
-                              TahoeAsyncCommandContext *asyncContext = nullptr)
+                              TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleInvalidArgumentRaw;
 
-        TahoePayloadBuilders::NdpPayload payload;
-        if (!TahoePayloadBuilders::buildOffloadNdp(data, &payload))
-            return TahoeErrorMap::kAppleInvalidArgumentRaw;
-
-        registry->ndp.count = payload.count;
-        memset(registry->ndp.addresses, 0, sizeof(registry->ndp.addresses));
-        memcpy(registry->ndp.addresses, payload.addresses, sizeof(payload.addresses));
-        memcpy(registry->ndp.linkLocalSeed, payload.linkLocalSeed, sizeof(payload.linkLocalSeed));
-        registry->ndp.hasCarrier = true;
-        registry->ndp.hiddenNotifyQueued = true;
-
-        if (asyncContext != nullptr) {
-            asyncContext->selector = 554;
-            asyncContext->owner = 0x2c20;
-            asyncContext->status = 0;
-            asyncContext->async = false;
-            asyncContext->completed = true;
-        }
-        return kIOReturnSuccess;
+        return TahoeErrorMap::kAppleInvalidArgumentRaw;
     }
 
     IOReturn runSetUSBHostNotification(const apple80211_usb_host_notification_data *data,

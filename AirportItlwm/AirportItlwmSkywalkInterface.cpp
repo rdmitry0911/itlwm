@@ -5749,20 +5749,9 @@ IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
 {
     TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetOFFLOADNDP(data, &asyncContext)
-            : kApple80211ErrInvalidArgumentRaw;
-    if (rc != kIOReturnSuccess)
-        return rc;
-
-    const auto &owner = instance->getTahoeOwnerRegistry().ndp;
-    cachedIPv6Count = owner.count;
-    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
-    memcpy(cachedIPv6Addresses, owner.addresses, sizeof(owner.addresses));
-    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
-    memcpy(cachedIPv6LinkLocalAddress, owner.linkLocalSeed, sizeof(owner.linkLocalSeed));
-    return rc;
+    return (instance != nullptr)
+               ? instance->getTahoeCommander().runSetOFFLOADNDP(data, &asyncContext)
+               : kApple80211ErrInvalidArgumentRaw;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

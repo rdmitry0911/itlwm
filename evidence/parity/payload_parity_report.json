@@ -36,15 +36,16 @@
       "name": "offload-ndp-ipv6",
       "shape": "counted IPv6 addresses, clamped to four, link-local seed",
       "producer": "TahoePayloadBuilders::buildOffloadNdp",
-      "consumer": "AirportItlwmSkywalkInterface::setOFFLOAD_NDP",
+      "consumer": "TahoeNdpOwner::apply",
       "implementation_paths": [
-        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-        "AirportItlwm/TahoePayloadBuilders.hpp"
+        "AirportItlwm/TahoeCommanderV2.hpp",
+        "AirportItlwm/TahoeOwners.hpp"
       ],
       "apple_reference_case_ids": [
-        "apple-io80211-selector-surface"
+        "apple-io80211-selector-surface",
+        "apple-offload-ndp-null-owner"
       ],
-      "invalid_semantics": "null carrier returns raw 0x16 through commander layer"
+      "invalid_semantics": "null or locally absent NDP owner returns raw 0x16 without cache mutation, completion, or synthetic dispatch"
     },
     {
       "name": "usb-host-notification",
@@ -349,6 +350,11 @@
       "assertions_checked": 4
     },
     {
+      "id": "apple-offload-ndp-null-owner",
+      "path": "docs/reference/CR-479-ndp-offload-null-owner-quarantine-20260712.md",
+      "assertions_checked": 5
+    },
+    {
       "id": "apple-ie-custom-assoc",
       "path": "docs/tahoe_signal_chain_audit.md",
       "assertions_checked": 2
@@ -418,7 +424,7 @@
   "mismatches": [],
   "metrics": {
     "covered_payload_type_count": 19,
-    "apple_reference_case_count": 13,
+    "apple_reference_case_count": 14,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

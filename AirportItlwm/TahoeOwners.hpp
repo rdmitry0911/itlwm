@@ -186,24 +186,14 @@ public:
     void bind(TahoeOwnerRegistry *newRegistry) { registry = newRegistry; }
 
     IOReturn apply(const apple80211_offload_ndp_data *data,
-                   TahoeAsyncCommandContext *asyncContext = nullptr)
+                   TahoeAsyncCommandContext * = nullptr)
     {
         if (data == nullptr || registry == nullptr)
             return TahoeErrorMap::kAppleInvalidArgumentRaw;
 
-        TahoePayloadBuilders::NdpPayload payload;
-        if (!TahoePayloadBuilders::buildOffloadNdp(data, &payload))
-            return TahoeErrorMap::kAppleInvalidArgumentRaw;
-
-        registry->ndp.count = payload.count;
-        memset(registry->ndp.addresses, 0, sizeof(registry->ndp.addresses));
-        memcpy(registry->ndp.addresses, payload.addresses, sizeof(payload.addresses));
-        memcpy(registry->ndp.linkLocalSeed, payload.linkLocalSeed, sizeof(payload.linkLocalSeed));
-        registry->ndp.hasCarrier = true;
-        registry->ndp.hiddenNotifyQueued = true;
-
-        completeSync(asyncContext, 554, TahoeCommandRouter::routeOffloadNdp());
-        return kIOReturnSuccess;
+        // Apple only reaches its state update after a private NDP owner exists.
+        // Intel has no equivalent owner or notification backend.
+        return TahoeErrorMap::kAppleInvalidArgumentRaw;
     }
 
 private:
