@@ -2455,7 +2455,6 @@ init()
     cachedLmtpcValue = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
-    cachedRealTimeMode = false;
     cachedQosLongRetryLimit = 0;
     cachedQosRtsThreshold = 0;
     cachedQosLifetimeAc3 = 0;
@@ -2925,7 +2924,6 @@ init(IOService *provider)
     this->cachedLmtpcValue = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
-    this->cachedRealTimeMode = false;
     this->cachedQosLongRetryLimit = 0;
     this->cachedQosRtsThreshold = 0;
     this->cachedQosLifetimeAc3 = 0;
@@ -5990,18 +5988,12 @@ setLQM_CONFIG(apple80211_lqm_config_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data)
 {
-    const auto *mode = reinterpret_cast<const tahoeWclRealTimeMode *>(data);
-
-    // AppleBCMWLANCore::setWCL_REAL_TIME_MODE is a real producer with two
-    // branches only: NULL -> 0xe00002bc, nonzero first byte -> NetAdapter
-    // real-time mode, zero -> NetAdapter default mode. Keep the same gate and
-    // preserve the selected mode in driver-owned state rather than leaving the
-    // slot as inline success.
-    if (mode == nullptr)
+    // Apple rejects NULL with 0xe00002bc. A valid request selects real-time
+    // or default mode on its NetAdapter. Intel has no matching backend.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedRealTimeMode = mode->enabled != 0;
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

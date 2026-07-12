@@ -1,0 +1,23 @@
+{
+  "checks": {
+    "intel_source_has_no_mode_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_preserves_null_and_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_real_time_mode_adapter": false,
+    "request_false_success": false,
+    "selector_slot": 596
+  },
+  "reference": {
+    "adapter_offset": "0x15e0",
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_setter": "0xffffff800161508c",
+    "null_return": "0xe00002bc",
+    "set_default_mode": "0xffffff800152499c",
+    "set_real_time_mode": "0xffffff8001524c5a"
+  },
+  "schema": "itlwm-wcl-real-time-mode-quarantine-v1",
+  "source_base_revision": "c7427f1"
+}

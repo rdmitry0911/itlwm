@@ -763,7 +763,6 @@ private:
     uint32_t cachedLmtpcValue;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
-    bool cachedRealTimeMode;
     uint32_t cachedQosLongRetryLimit;
     uint32_t cachedQosRtsThreshold;
     uint32_t cachedQosLifetimeAc3;
