@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "abort_remains_separate": true,
+    "intel_source_has_no_gas_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "request_preserves_null_and_quarantines_nonnull": true
+  },
+  "local": {
+    "abort_in_this_change": false,
+    "backend_gas_anqp_adapter": false,
+    "request_false_success": false,
+    "selector": 197
+  },
+  "reference": {
+    "adapter_offset": "0x1560",
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_setter": "0xffffff8001608d72",
+    "null_return": "0xe00002c2",
+    "peer_count_offset": "0x210",
+    "set_params": "0xffffff800151dab8",
+    "start_query": "0xffffff800151dc98"
+  },
+  "schema": "itlwm-gas-request-quarantine-v1",
+  "source_base_revision": "f11cf7f"
+}

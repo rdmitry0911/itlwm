@@ -2480,7 +2480,6 @@ init()
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
     cachedScanHomeAwayTime = 0;
-    cachedGasQueryIssued = false;
     cachedSetPropertyIoctlSeen = false;
     memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
     hasCachedWnmConfig = false;
@@ -2951,7 +2950,6 @@ init(IOService *provider)
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
     this->cachedScanHomeAwayTime = 0;
-    this->cachedGasQueryIssued = false;
     this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
     this->hasCachedWnmConfig = false;
@@ -5768,13 +5766,13 @@ setOFFLOAD_ARP(apple80211_offload_arp_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setGAS_REQ(apple80211_gas_query_t *data)
 {
-    // AppleBCMWLANCore::setGAS_REQ rejects NULL with 0xe00002c2, then
-    // delegates the request into the GAS adapter. Preserve that public gate.
+    // Apple rejects NULL with 0xe00002c2. A valid request is accepted only
+    // after its GAS adapter owns query state, starts ANQP transport, and can
+    // later publish completion. The Intel path has no such backend.
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    cachedGasQueryIssued = true;
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
