@@ -1,0 +1,21 @@
+{
+  "checks": {
+    "intel_source_has_no_bcn_mute_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_beacon_mitigation_adapter": false,
+    "request_false_success": false
+  },
+  "reference": {
+    "adapter_setter": "0xffffff8001528c38",
+    "core_setter": "0xffffff80016176b0",
+    "feature_gate": "0x52",
+    "firmware_iovar": "bcn_mute_miti_config",
+    "net_adapter_offset": "0x128, 0x15e0"
+  },
+  "schema": "itlwm-wcl-bcn-mute-quarantine-v1",
+  "source_base_revision": "bb52a74"
+}

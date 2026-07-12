@@ -832,8 +832,6 @@ private:
     bool hasCachedDbgGuardTimeParams;
     uint32_t cachedDynamicRssiWindowConfig;
     uint32_t cachedRealTimeQosMscs;
-    uint8_t cachedBcnMuteConfig[4];
-    bool hasCachedBcnMuteConfig;
     uint32_t cachedEapFilterConfig;
     bool cachedBypassTxPowerCapEnabled;
     bool cachedWowEnabled;

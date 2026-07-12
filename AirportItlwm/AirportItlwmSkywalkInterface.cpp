@@ -2517,8 +2517,6 @@ init()
     hasCachedDbgGuardTimeParams = false;
     cachedDynamicRssiWindowConfig = 0;
     cachedRealTimeQosMscs = 0;
-    memset(cachedBcnMuteConfig, 0, sizeof(cachedBcnMuteConfig));
-    hasCachedBcnMuteConfig = false;
     cachedEapFilterConfig = 0;
     cachedBypassTxPowerCapEnabled = false;
     cachedWowEnabled = false;
@@ -2984,8 +2982,6 @@ init(IOService *provider)
     this->hasCachedDbgGuardTimeParams = false;
     this->cachedDynamicRssiWindowConfig = 0;
     this->cachedRealTimeQosMscs = 0;
-    memset(this->cachedBcnMuteConfig, 0, sizeof(this->cachedBcnMuteConfig));
-    this->hasCachedBcnMuteConfig = false;
     this->cachedEapFilterConfig = 0;
     this->cachedBypassTxPowerCapEnabled = false;
     this->cachedWowEnabled = false;
@@ -6679,9 +6675,8 @@ setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedBcnMuteConfig, data, sizeof(cachedBcnMuteConfig));
-    hasCachedBcnMuteConfig = true;
-    return kIOReturnSuccess;
+    // Intel has no beacon-mitigation adapter or iovar workqueue transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
