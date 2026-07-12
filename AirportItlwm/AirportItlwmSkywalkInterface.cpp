@@ -5757,24 +5757,12 @@ setOFFLOAD_NDP(apple80211_offload_ndp_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setOFFLOAD_ARP(apple80211_offload_arp_data *data)
 {
-    // AppleBCMWLANCore::setOFFLOAD_ARP rejects NULL and "no Infra owner" with
-    // raw 0x16, then copies the IPv4 / keepalive carrier into core-owned state
-    // before running the hidden IPv4 / keepalive notification hooks. We do not
-    // have those hidden gated callbacks yet, but the same cached IPv4 fields
-    // already back our lifted `setIPV4_PARAMS(...)` path, so keep the exact
-    // field coverage instead of dropping this producer on the floor.
+    // Apple only writes this state after a private keepalive owner accepts the
+    // request and queues its IPv4 notifications. Intel has no counterpart.
     if (data == nullptr || instance == nullptr || instance->fNetIf == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    cachedDhcpRenewalData = data->keepalive_enabled != 0;
-    if (data->has_ipv4_address != 0) {
-        cachedIPv4Address = data->ipv4_address;
-        cachedIPv4Reserved = 0;
-    }
-    cachedIPv4Gateway = data->gateway;
-    cachedIPv4GatewayTail = data->gateway_tail;
-
-    return kIOReturnSuccess;
+    return kApple80211ErrInvalidArgumentRaw;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

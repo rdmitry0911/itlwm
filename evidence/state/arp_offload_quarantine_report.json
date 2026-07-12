@@ -1,0 +1,24 @@
+{
+  "checks": {
+    "intel_source_has_no_private_arp_backend": true,
+    "ipv4_params_remains_independent_producer": true,
+    "reference_note": true,
+    "setter_fails_without_cache_mutation": true
+  },
+  "local": {
+    "backend_arp_keepalive_owner": false,
+    "direct_offload_false_success": false,
+    "selector": 557
+  },
+  "reference": {
+    "core_fileset": "AppleBCMWLANCoreMac",
+    "core_setter": "0xffffff80015d97f0",
+    "gated_notification": "0xffffff8001595a70",
+    "missing_owner_return": "0x16",
+    "optional_owner_offset": "0x2c28",
+    "owner_call": "0xffffff80022c0ed2",
+    "owner_offset": "0x2c20"
+  },
+  "schema": "itlwm-arp-offload-quarantine-v1",
+  "source_base_revision": "cbc7e25"
+}
