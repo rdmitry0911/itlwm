@@ -1,0 +1,20 @@
+{
+  "checks": {
+    "intel_source_has_no_mimo_power_backend": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mimo_power_owner": false,
+    "request_false_success": false
+  },
+  "reference": {
+    "feature_gate": "0x2c",
+    "mimo_power_owner": "Core +0x128, +0x1590",
+    "owner_configure": "0xffffff8001551e88",
+    "owner_helper": "0xffffff800160d426",
+    "setter": "0xffffff8001617250"
+  },
+  "schema": "itlwm-mimo-config-quarantine-v1",
+  "source_base_revision": "a41530b"
+}

@@ -6448,14 +6448,12 @@ setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state *data)
 IOReturn AirportItlwmSkywalkInterface::
 setMIMO_CONFIG(apple80211_mimo_config *data)
 {
-    // AppleBCMWLANCore::setMIMO_CONFIG rejects NULL with 0xe00002bc, then
-    // enters the MIMO power-save owner path. The confirmed public path does
-    // not update getMIMO_STATUS' output carrier; the earlier local cache mixed
-    // this selector with the neighboring POWER_PROFILE core field at +0x29f0.
+    // 25C56 enters a feature-gated MIMO power-owner path for nonnull input.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    return kIOReturnSuccess;
+    // Intel has no corresponding MIMO power owner or configuration transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
