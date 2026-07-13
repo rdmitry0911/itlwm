@@ -2513,7 +2513,6 @@ init()
     hasCachedLastActionFrame = false;
     memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
     hasCachedDbgGuardTimeParams = false;
-    cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
@@ -2932,7 +2931,6 @@ init(IOService *provider)
     this->hasCachedLastActionFrame = false;
     memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
     this->hasCachedDbgGuardTimeParams = false;
-    this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
@@ -6566,8 +6564,9 @@ setEAP_FILTER_CONFIG(apple80211_eap_filter_config *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedEapFilterConfig = *reinterpret_cast<const uint32_t *>(data);
-    return kIOReturnSuccess;
+    // Tahoe defers this state to an EAPOL packet-filter firmware lifecycle.
+    // Intel has no matching EAPOL-filter owner or Commander path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

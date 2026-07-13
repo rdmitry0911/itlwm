@@ -608,8 +608,8 @@ public:
     // [628] — Tahoe public contract is `NULL -> 0xe00002bc`, else preserve the
     // compact 4-byte caller-visible carrier.
     virtual IOReturn setWCL_BCN_MUTE_CONFIG(apple80211_bcn_mute_config *) override;
-    // [629] — Tahoe public contract is `NULL -> 0xe00002bc`, else preserve the
-    // first dword caller-visible carrier.
+    // [629] — Tahoe owns an EAPOL packet-filter firmware lifecycle; locally
+    // quarantined until a matching packet-filter owner and Commander path exist.
     virtual IOReturn setEAP_FILTER_CONFIG(apple80211_eap_filter_config *) override;
     // [630]
     // [630] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -804,7 +804,6 @@ private:
     bool hasCachedLastActionFrame;
     uint8_t cachedDbgGuardTimeParams[8];
     bool hasCachedDbgGuardTimeParams;
-    uint32_t cachedEapFilterConfig;
     bool cachedWowEnabled;
     uint8_t cachedBssBlacklist[0x2b];
     bool hasCachedBssBlacklist;

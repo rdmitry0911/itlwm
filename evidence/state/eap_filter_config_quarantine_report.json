@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_packet_filter_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_cache_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_eap_filter_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "commander_run_iovar_set": "0x10017b6e6",
+    "configure_callsite": "0x10012f788",
+    "configure_filter": "0x100135022",
+    "core_setter": "0x10014294e",
+    "core_state_offset": "0x4d48",
+    "delete_callsite": "0x10012f780",
+    "delete_filter": "0x100135d70",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x1000191ac",
+    "null_status": "0xe00002bc",
+    "packet_filter_iovar": "pkt_filter_add",
+    "packet_filters_owner": "0x10012f310",
+    "state_offset": "0x0"
+  },
+  "schema": "itlwm-eap-filter-config-quarantine-v1",
+  "source_base_revision": "067201ee76159c176b5536e5b86c1c2c5a900a4d"
+}

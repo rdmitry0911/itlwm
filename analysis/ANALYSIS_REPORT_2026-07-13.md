@@ -1600,6 +1600,46 @@ to load the AuxKC; the host was not rebooted.  No direct setter, private IOCTL,
 guessed carrier, or radio OFF/ON was used.  Full immutable evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-realtime-qos-mscs-quarantine-20260713/`.
 
+## VERIFIED RESULT — EAP_FILTER_CONFIG false-success quarantine
+
+The public `setEAP_FILTER_CONFIG` had accepted a non-null
+`apple80211_eap_filter_config`, copied its first dword to a local cache, and
+returned success although that cache had no consumer or packet-filter firmware
+lifecycle. The correction preserves `NULL -> kIOReturnBadArgumentTahoe`,
+returns `kIOReturnUnsupported` for every non-null request before mutation, and
+removes only `cachedEapFilterConfig` plus its two initialization resets.
+Scoped source confirms no matching EAPOL packet-filter owner,
+`configureEapolFilter`, `deleteEapolFilter`, or Commander backend; generic
+local EAPOL RX/TX is a separate data path.
+
+Tahoe 25C56 DEXT SHA-256
+`4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab` dispatches
+from Infra wrapper `0x1000191ac` directly to Core `0x10014294e`. Core returns
+`0xe00002bc` for null and, for non-null, stores the first dword at `+0x4d48`.
+The deferred owner `configurePktFilters` `0x10012f310` calls
+`deleteEapolFilter` and `configureEapolFilter` `0x100135022`; the latter reads
+`+0x4d48` and sends `pkt_filter_add` through Commander `runIOVarSet`
+`0x10017b6e6` when enabled. This recovery proves a packet-filter lifecycle,
+not a complete opaque carrier layout, valid-input return-code parity,
+packet-filter payload ABI, or firmware-completion parity.
+
+The deterministic report, retained contracts, payload parity, 31 payload
+builder contracts, `py_compile`, shell syntax, and staged whitespace check
+passed. A clean Tahoe build resolved all 959 symbols and produced UUID
+`B042AD00-A536-3935-B7AF-97F6D73E6556` with executable SHA-256
+`1eabc510cba473249aafbb3a8743fa8f54dc88ffaaf448d8391be53293b802e0`.
+After explicit guest-only AuxKC rebuild and a normal secret-hidden credentialed
+rejoin, both 240-second traffic directions transferred 572 MiB at 20.0 Mbit/s;
+their concurrent pings were 240/240 with 0.0% loss (mean 3.452 ms uplink,
+6.549 ms reverse), and reverse iperf had zero sender retransmits. AP evidence
+remained authenticated/associated/authorized with zero TX failures, QEMU was
+running, and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal vfio/IOMMU/DMAR/AER marker. The guest rebooted only
+to load the AuxKC; the host was not rebooted. No direct setter, private IOCTL,
+guessed carrier, `pkt_filter_*` IOVAR, generic EAPOL data-path rewrite, or
+radio OFF/ON was used. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-eap-filter-config-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

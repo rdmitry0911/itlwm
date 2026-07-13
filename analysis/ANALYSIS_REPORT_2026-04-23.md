@@ -3231,7 +3231,7 @@
     - focused grep shows no `setCIPHER_KEY`, no `APPLE80211_IOC_CIPHER_KEY`, no `input EAPOL`, and no `output EAPOL` markers in the default log.
   - decomp:
     - `AppleBCMWLANCore::setWCL_REASSOC(...)` delegates to `AppleBCMWLANNetAdapter::sendReassocCommand(...)`; decomp of `sendReassocCommand(...)` contains an associated-state check and returns `0xe00002bc` on not-associated, so the current `WCL_REASSOC -> 0xe00002bc` after deauth is not a safe pre-deauth root fix.
-    - `AppleBCMWLANCore::setEAP_FILTER_CONFIG(...)` rejects NULL with `0xe00002bc`, stores the first dword, and enters a core vtable path; current local handling already satisfies the visible carrier contract and no runtime selector failure is observed.
+    - `AppleBCMWLANCore::setEAP_FILTER_CONFIG(...)` rejects NULL with `0xe00002bc` and stores the first dword.  The historical cache-only conclusion here is superseded by the 2026-07-13 recovery: `configurePktFilters` consumes that state through `deleteEapolFilter`/`configureEapolFilter` and `pkt_filter_add` Commander work, so a local cache write cannot satisfy the contract.  See `docs/reference/CR-479-eap-filter-config-quarantine-20260713.md`.
     - `AppleBCMWLANInfraProtocol::setCIPHER_KEY(...)` / existing local `setCIPHER_KEY(...)` remain the real key-install producer path, but the runtime has no call to that producer.
 - candidate causes:
   - confirmed for a parallel system-facing deviation: `WCL_SET_ROAM_LOCK` is a real one-byte WCL selector and local code returned unsupported; this is covered by `A-WCL-ROAM-LOCK-UNSUPPORTED-037`.
@@ -3266,7 +3266,7 @@
   - `CR-111-control_sta_network-current-focused-20260426-1814.log` shows WCL join-done success, `airportd` association, `IO80211RSNDone set=<0>`, no `setCIPHER_KEY`, no `APPLE80211_IOC_CIPHER_KEY`, and no EAPOL markers.
   - repeated reason-15 deauths prove the failure is in the RSN/key window after association, not scan/UI publication.
 - evidence from decomp:
-  - no decomp evidence is required for a pure diagnostic probe; decomp is used only to reject speculative fixes in nearby selectors (`WCL_REASSOC` and `EAP_FILTER_CONFIG`).
+  - no decomp evidence is required for a pure diagnostic probe; decomp was used to reject speculative nearby fixes at the time.  The later 2026-07-13 recovery independently supersedes the historical `EAP_FILTER_CONFIG` cache-only premise; it does not alter this diagnostic probe's RSN/EAPOL scope.
 - exact semantic mismatch between reference and our code: not claimed; this is `DIAGNOSTIC_INSTRUMENTATION`, not a reference-alignment fix.
 - diagnostic class: DIAGNOSTIC_INSTRUMENTATION
 - if DIAGNOSTIC_INSTRUMENTATION:
@@ -3296,7 +3296,7 @@
 
 ## SELF-CHECK
 
-- Есть ли прямое подтверждение по декомпилу? Для диагностической вставки оно не требуется; декомпил использован для отказа от неподтвержденных фиксов `WCL_REASSOC` и `EAP_FILTER_CONFIG`.
+- Есть ли прямое подтверждение по декомпилу? Для диагностической вставки оно не требуется; декомпил использован для отказа от неподтвержденных фиксов `WCL_REASSOC` и исторически `EAP_FILTER_CONFIG`. Последнее cache-only допущение отменено отдельным recovery 2026-07-13 и не меняет scope этой диагностической вставки.
 - Есть ли прямое подтверждение по runtime-данным? Да: текущий лог локализует сбой после WCL join-done и до `setCIPHER_KEY`/`IO80211RSNDone`, но не содержит RX/TX EAPOL markers.
 - Доказал ли я причинность, а не просто корреляцию? Нет, и поэтому кодовый change class строго `DIAGNOSTIC_INSTRUMENTATION`.
 - Повторяет ли мой фикс архитектуру и семантику эталона 1:1? Поведение не меняется; probe не добавляет producer/consumer path.

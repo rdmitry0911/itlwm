@@ -1065,7 +1065,6 @@ Closed in this zone:
 - `setGAS_ABORT(...)`
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
-- `setEAP_FILTER_CONFIG(...)`
 
 Recovered Apple behavior is consistent enough to lift this as one zone:
 
@@ -1074,7 +1073,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
 - several are opaque state carriers with only a null gate or a small public
   field split:
   `setDBG_GUARD_TIME_PARAMS`, `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`,
-  `setEAP_FILTER_CONFIG`, `setRSN_XE`
+  `setRSN_XE`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1210,6 +1209,26 @@ a non-null request before pseudo-state mutation, and removes the dead cache.
 This does not claim universal Apple null-input or valid-input return parity:
 the reference checks its gates before the null branch. See
 `docs/reference/CR-479-realtime-qos-mscs-quarantine-20260713.md`.
+
+## Q13 correction: `setEAP_FILTER_CONFIG` is packet-filter-backed
+
+`setEAP_FILTER_CONFIG(...)` is not a cache-only public carrier.  Tahoe 25C56
+Infra wrapper `0x1000191ac` directly dispatches to Core `0x10014294e`, which
+rejects null with `0xe00002bc` and stores only the first observed dword at
+Core `+0x4d48`.  The deferred packet-filter owner at
+`configurePktFilters` `0x10012f310` calls `deleteEapolFilter` and then
+`configureEapolFilter` at `0x100135022`.  That configurator reads `+0x4d48`
+and, when enabled, submits `pkt_filter_add` through Commander
+`runIOVarSet` `0x10017b6e6`; its sibling delete path is a separate firmware
+operation.
+
+The port preserves its existing `kIOReturnBadArgumentTahoe` null guard but
+returns `kIOReturnUnsupported` for a non-null request before pseudo-state
+mutation, and removes the dead cache.  The recovery establishes only the
+first effective dword, not a complete opaque carrier layout, valid-input
+return parity, or a replacement packet-filter lifecycle.  Ordinary local
+EAPOL RX/TX data paths are not this firmware filter backend.  See
+`docs/reference/CR-479-eap-filter-config-quarantine-20260713.md`.
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 
