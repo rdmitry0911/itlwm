@@ -2515,8 +2515,6 @@ init()
     cachedVendorIeLen = 0;
     cachedVendorIeFlags = 0;
     hasCachedVendorIe = false;
-    memset(cachedBtcoexProfiles, 0, sizeof(cachedBtcoexProfiles));
-    cachedBtcoexProfileValidMask = 0;
     cachedBtcoexProfileActive = 0;
     cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
@@ -2954,8 +2952,6 @@ init(IOService *provider)
     this->cachedVendorIeLen = 0;
     this->cachedVendorIeFlags = 0;
     this->hasCachedVendorIe = false;
-    memset(this->cachedBtcoexProfiles, 0, sizeof(this->cachedBtcoexProfiles));
-    this->cachedBtcoexProfileValidMask = 0;
     this->cachedBtcoexProfileActive = 0;
     this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
@@ -5707,48 +5703,42 @@ setGAS_REQ(apple80211_gas_query_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_PROFILE(apple80211_btcoex_profile *data)
 {
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetBTCOEXProfile(data, &asyncContext)
-            : static_cast<IOReturn>(0xe00002c2);
-    if (rc != kIOReturnSuccess)
-        return rc;
+    if (data == nullptr || instance == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
 
-    const auto &owner = instance->getTahoeOwnerRegistry().btcoex;
-    memcpy(cachedBtcoexProfiles, owner.profileTable, sizeof(cachedBtcoexProfiles));
-    cachedBtcoexProfileValidMask = owner.profileValidMask;
-    return rc;
+    TahoePayloadBuilders::BtcoexProfilePayload payload;
+    if (!TahoePayloadBuilders::buildBtcoexProfile(data, &payload))
+        return static_cast<IOReturn>(0xe00002c2);
+    if (payload.band >= 5 || payload.mode < 1 || payload.mode > 4 ||
+        payload.profileIndex >= 10)
+        return static_cast<IOReturn>(0xe00002c2);
+
+    // Apple applies this record through mode-specific coexistence work and a
+    // real commander IOVAR. The Intel port has no equivalent backend, so do
+    // not acknowledge a validated carrier after synthetic bookkeeping only.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
 {
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetBTCOEXProfileActive(data, &asyncContext)
-            : static_cast<IOReturn>(0xe00002c2);
-    if (rc != kIOReturnSuccess)
-        return rc;
+    if (data == nullptr || instance == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
 
-    cachedBtcoexProfileActive = instance->getTahoeOwnerRegistry().btcoex.activeProfile;
-    return rc;
+    // Apple programs btc_profile_active through its commander. There is no
+    // Intel-equivalent transport, so leave the paired getter cache untouched.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
 {
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetBTCOEX2GChainDisable(data, &asyncContext)
-            : static_cast<IOReturn>(0xe00002c2);
-    if (rc != kIOReturnSuccess)
-        return rc;
+    if (data == nullptr || instance == nullptr)
+        return static_cast<IOReturn>(0xe00002c2);
 
-    cachedBtcoex2GChainDisable = instance->getTahoeOwnerRegistry().btcoex.chainDisable;
-    return rc;
+    // Apple emits the fixed six-byte chain-disable IOVAR. The Intel port has
+    // no equivalent backend, so leave the paired getter cache untouched.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

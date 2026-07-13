@@ -1,0 +1,43 @@
+{
+  "checks": {
+    "active_and_chain_quarantine_valid": true,
+    "dead_profile_pseudo_state_removed": true,
+    "getter_scope_preserved": true,
+    "no_local_btcoex_commander_transport": true,
+    "profile_preserves_invalid_gates_and_quarantines_valid": true,
+    "reference_note": true
+  },
+  "local": {
+    "backend_btcoex_commander": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "active": {
+      "core_setter": "0x1001e393a",
+      "infra_virtual_offset": "0x698",
+      "infra_wrapper": "0x100018714",
+      "iovar": "btc_profile_active",
+      "payload_bytes": 4
+    },
+    "chain_disable": {
+      "core_setter": "0x1001e3a3e",
+      "header": "0x00060001",
+      "infra_virtual_offset": "0x690",
+      "infra_wrapper": "0x1000187ac",
+      "iovar": "btc_2g_shchain_disable",
+      "payload_bytes": 6
+    },
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "invalid_status": "0xe00002c2",
+    "profile": {
+      "core_setter": "0x100124656",
+      "infra_virtual_offset": "0x670",
+      "infra_wrapper": "0x1000186c8",
+      "iovar": "btc_profile",
+      "record_bytes": 56
+    }
+  },
+  "schema": "itlwm-btcoex-public-quarantine-v1",
+  "source_base_revision": "74fe3ed49eb97759a152fe44c5350ff7a5ce8b57"
+}

@@ -804,8 +804,6 @@ private:
     uint32_t cachedVendorIeLen;
     uint32_t cachedVendorIeFlags;
     bool hasCachedVendorIe;
-    uint8_t cachedBtcoexProfiles[10][0x38];
-    uint16_t cachedBtcoexProfileValidMask;
     uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];

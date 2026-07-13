@@ -1250,3 +1250,68 @@ Radio OFF/ON remains excluded because the restored bit-identical A2DF baseline
 reproduces the same separate WCL lifecycle panic. Full immutable runtime
 evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-usb-host-notification-quarantine-20260713/`.
+
+## FIX_CANDIDATE — BTCOEX public setter false-success quarantine
+
+- anomaly ID: public `BTCOEX_PROFILE`, `BTCOEX_PROFILE_ACTIVE`, and
+  `BTCOEX_2G_CHAIN_DISABLE` valid carriers reach a synthetic commander that
+  updates local registry/cache state, completes status zero, and reports
+  success without an Intel-equivalent coexistence backend.
+- expected reference path: Tahoe 25C56 wrappers `0x1000186c8`/`+0x670`,
+  `0x100018714`/`+0x698`, and `0x1000187ac`/`+0x690` lead to Core
+  `0x100124656`, `0x1001e393a`, and `0x1001e3a3e`. They retain raw invalid
+  `0xe00002c2` branches and perform real `btc_profile`, `btc_profile_active`,
+  and `btc_2g_shchain_disable` commander IOVAR work with transport status.
+- actual local behavior: `TahoeCommanderV2` changes a registry and
+  `dispatchTransport` completes status zero. The setters copy profile state or
+  update active/chain getter caches, but no Intel firmware transport consumes
+  these Tahoe carriers.
+- proposed correction: preserve null/absent-instance raw errors and profile
+  band/mode/index validation; reject valid non-null carriers with
+  `kIOReturnUnsupported` before commander/cache mutation; remove only dead
+  profile cache fields while retaining paired getter caches.
+- scope boundary: no generic commander/registry, getter, MWS, boot-time Intel
+  coex, WCL, radio, power, or association change; no guessed carrier or private
+  setter invocation and no Apple valid-input return-code parity claim.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON remains
+  excluded because the restored bit-identical A2DF baseline reproduces the
+  separate WCL lifecycle panic.
+
+## VERIFIED RESULT — BTCOEX public setter false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`24dcf7bda7ce62d3f3a119244e3ff413ca595d51316427f0e896f4903477da3c`.
+The BTCOEX public quarantine report, retained affected quarantine reports,
+Tahoe payload-builder suite (31 contracts), payload parity, and staged
+whitespace check passed. A clean Tahoe build resolved all 959 undefined
+symbols against BootKC.
+
+The installed candidate loaded as UUID
+`ECBEC631-783C-31FA-97B7-F2439F381810` with executable SHA-256
+`f5db668f7fb739452c762c3dc370c626b000fcf60d49dad9f4c2108c0ed9ac6a` and
+AuxKC SHA-256
+`2ad4a23a8f3c6e313e4dad745aeef8c403f81a3ab0b306f47e573818eb71a6e8`.
+The deployment's informational codesign check reported an unsigned code
+object; the loaded identity is established by kmutil, UUID, and executable
+hash, not a signing claim. After an explicit normal credentialed rejoin,
+capped uplink and reverse 240-second gates each transferred 572 MiB at
+20.0 Mbit/s with 240/240 concurrent ping replies and 0.0% loss (mean RTT
+7.129 ms and 8.122 ms; reverse sender had two retransmits). Hostapd retained
+an authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the bounded guest fault filter had no matching
+panic/WCL/AirportItlwm marker, and the bounded host filter had no fatal
+VFIO/IOMMU/AER match.
+
+The recovered reference proves concrete coexistence firmware work and visible
+invalid branches but does not establish complete public carrier allocations or
+Apple valid-input return-code parity. No guessed carrier or private setter
+ioctl was issued, so this is explicitly not a claim of direct setter runtime
+invocation. The known networksetup association string remains a false
+negative; AP station state, IPv4/gateway route, ping, and traffic gates are
+the connection evidence. Radio OFF/ON remains excluded because the restored
+bit-identical A2DF baseline reproduces the same separate WCL lifecycle panic.
+Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-btcoex-public-quarantine-20260713/`.
