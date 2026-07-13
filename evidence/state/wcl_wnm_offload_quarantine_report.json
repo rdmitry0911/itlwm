@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "opaque_cache_classification_removed": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_wnm_offload_anchor_literals_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "matching_wnm_offload_configurator_implemented": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "configure_dms": "0x1000ae2e0",
+    "configure_offloads": "0x1000a9f60",
+    "configure_wnm_dms_dependency": "0x1000ae160",
+    "core_setter": "0x1001429d2",
+    "dependency_iovar": "wnm_dms_dependency",
+    "dms_iovar": "wnm_dms_set",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019af6",
+    "null_status": "0xe00002bc",
+    "tclas_iovar": "tclas_add",
+    "unconfigure_offloads": "0x1000a9c80",
+    "wnm_adapter_offset": "0x15b0",
+    "wnm_adapter_setter": "0x1000a99e0"
+  },
+  "schema": "itlwm-wcl-wnm-offload-quarantine-v1",
+  "source_base_revision": "d6bb93490bc6f7e51db8626c125238b18d071289"
+}

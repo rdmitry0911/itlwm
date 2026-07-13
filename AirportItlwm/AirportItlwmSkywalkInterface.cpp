@@ -2487,8 +2487,6 @@ init()
     cachedSetPropertyIoctlSeen = false;
     memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
     hasCachedWnmConfig = false;
-    memset(cachedWnmOffload, 0, sizeof(cachedWnmOffload));
-    hasCachedWnmOffload = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
     memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
@@ -2911,8 +2909,6 @@ init(IOService *provider)
     this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
     this->hasCachedWnmConfig = false;
-    memset(this->cachedWnmOffload, 0, sizeof(this->cachedWnmOffload));
-    this->hasCachedWnmOffload = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
     memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
@@ -6780,16 +6776,12 @@ setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)
 {
-    // AppleBCMWLANCore::setWCL_WNM_OFFLOAD has the same core-layer contract:
-    // NULL -> 0xe00002bc, otherwise delegate into WnmAdapter
-    // configureWnmOffloadFeatures(...). Recovered WCLWnmAgent helpers mutate
-    // the caller blob up to offset 0x2c, so keep the full opaque carrier.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedWnmOffload, data, sizeof(*data));
-    hasCachedWnmOffload = true;
-    return kIOReturnSuccess;
+    // Tahoe applies this through WnmAdapter and commander IOVAR work.  No
+    // matching local WNM-offload configurator is implemented.
+    return kIOReturnUnsupported;
 }
 
 extern OSDictionary *convertScanToDictionary(apple80211_scan_result *a1);

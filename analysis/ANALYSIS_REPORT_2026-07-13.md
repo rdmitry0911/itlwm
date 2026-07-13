@@ -1478,6 +1478,45 @@ restored bit-identical A2DF baseline reproduces the separate WCL lifecycle
 panic. Full immutable runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-dynamic-rssi-window-quarantine-20260713/`.
 
+## VERIFIED RESULT — WCL WNM Offload false-success quarantine
+
+The public `setWCL_WNM_OFFLOAD` cache/flag acknowledgement has been removed.
+The local null guard remains, while every non-null carrier now returns
+`kIOReturnUnsupported` before pseudo-state mutation; only its dead `0x30`
+cache, flag, and two reset pairs were removed. Sibling `setWCL_WNM_OPS` and
+`getWCL_WNM_OFFLOAD` remain outside this batch.
+
+The retained Tahoe 25C56 recovery proves the direct
+`0x100019af6` -> `0x1001429d2` -> `+0x15b0` -> `0x1000a99e0` WnmAdapter
+path, including its offload configure/unconfigure work and descendants that
+reach `tclas_add`, `wnm_dms_set`, and `wnm_dms_dependency`. It does not infer
+a complete public carrier allocation or Apple null, valid-input, feature-gate,
+or transport-status parity. The local absence check is correspondingly scoped
+to matching WNM-offload anchors, not generic local IOVAR transport.
+
+The deterministic WNM-offload report plus retained reports, payload contracts,
+whitespace check, and clean Tahoe build all passed; the build resolved
+959/959 symbols. The compiled code delta is
+`595a8b9c5f9fd0b895654beb61798024789b5dbbaa25c9cf20d2790a5b761600`.
+The loaded candidate UUID is `69F07E16-7EF4-39C0-BDC6-F9ECB116BB3C`, its
+executable SHA-256 is
+`2d823655c20ffcd31ccd3972b4618c9b5b3a85010d5dcb9ea9ec280cd9d6cb52`, and
+the rebuilt AuxKC SHA-256 is
+`cba8cfc51c9ffa10f5fa1ef13394d448dba2255edc8499e887b62b0f344a3721`.
+
+After normal credentialed rejoin, `en1` recovered `10.77.0.47` and its route
+to `10.77.0.1`. The bounded 240-second uplink and reverse runs each completed
+572 MiB at 20.0 Mbit/s with concurrent 240/240 ping delivery (3.528 ms and
+6.398 ms mean RTT; reverse sender had one retransmit). Hostapd retained an
+authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the focused guest filter produced
+`no_matching_guest_panic_wcl_airportitlwm_marker`, and the bounded host filter
+produced `no_recent_fatal_vfio_iommu_aer_match`. These are narrowly scoped
+filters, not a generic no-log claim. No direct setter invocation, guessed
+carrier, private IOCTL, or radio OFF/ON occurred. The guest rebooted to load
+the AuxKC; the host did not reboot. Immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-wnm-offload-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
