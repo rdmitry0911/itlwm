@@ -1,0 +1,24 @@
+{
+  "checks": {
+    "bypass_quarantines_nonnull": true,
+    "dual_quarantines_nonnull": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "stale_payload_claim_retired": true,
+    "synthetic_transport_is_not_hardware": true
+  },
+  "local": {
+    "backend_tx_power_cap_owner": false,
+    "bypass_false_success": false,
+    "dual_power_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "dual_power_bridge": "0xffffff8001522f42",
+    "dual_power_core": "0xffffff80016176e2",
+    "firmware_iovar": "txcapstate",
+    "txcap_sender": "0xffffff800160b3e0"
+  },
+  "schema": "itlwm-tx-power-cap-quarantine-v2",
+  "source_base_revision": "fd46c864637321893c56cb36f578ff39f8b0a460"
+}

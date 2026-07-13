@@ -104,18 +104,18 @@
       "invalid_semantics": "null returns 0xe00002c2"
     },
     {
-      "name": "tx-power-cap-bypass",
-      "shape": "4-byte policy payload, low bit is enabled",
-      "producer": "TahoePayloadBuilders::buildTxPowerCapBypass",
-      "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP",
+      "name": "tx-power-cap-quarantine",
+      "shape": "bypass and dual-power carriers are rejected before local pseudo-state",
+      "producer": "no Intel TX-power-cap firmware backend",
+      "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP / setDUAL_POWER_MODE",
       "implementation_paths": [
-        "AirportItlwm/TahoeOwnerRegistry.hpp",
-        "AirportItlwm/TahoePayloadBuilders.hpp"
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
       ],
       "apple_reference_case_ids": [
-        "apple-io80211-selector-surface"
+        "apple-io80211-selector-surface",
+        "apple-tx-power-cap-firmware-owner"
       ],
-      "invalid_semantics": "null returns 0xe00002bc; send is gated until dual-power values exist"
+      "invalid_semantics": "null returns 0xe00002bc; non-null input fails closed before synthetic completion"
     },
     {
       "name": "wcl-action-frame-v1-v2",
@@ -355,6 +355,11 @@
       "assertions_checked": 5
     },
     {
+      "id": "apple-tx-power-cap-firmware-owner",
+      "path": "docs/reference/CR-479-tx-power-cap-quarantine-20260713.md",
+      "assertions_checked": 5
+    },
+    {
       "id": "apple-io80211-selector-surface",
       "path": "include/Airport/IO80211InfraProtocol.h",
       "assertions_checked": 4
@@ -444,7 +449,7 @@
   "mismatches": [],
   "metrics": {
     "covered_payload_type_count": 20,
-    "apple_reference_case_count": 15,
+    "apple_reference_case_count": 16,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

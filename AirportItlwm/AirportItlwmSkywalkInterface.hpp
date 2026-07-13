@@ -756,8 +756,6 @@ private:
     uint8_t cachedIbssSsid[APPLE80211_MAX_SSID_LEN];
     bool hasCachedIbssNetwork;
     uint32_t cachedFaceTimeWiFiCallingStatus;
-    int32_t cachedDualPowerModePrimary;
-    int32_t cachedDualPowerModeSecondary;
     uint32_t cachedLmtpcValue;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
@@ -832,7 +830,6 @@ private:
     uint32_t cachedDynamicRssiWindowConfig;
     uint32_t cachedRealTimeQosMscs;
     uint32_t cachedEapFilterConfig;
-    bool cachedBypassTxPowerCapEnabled;
     bool cachedWowEnabled;
     uint8_t cachedAssociatedSleepConfig[0x58];
     bool hasCachedAssociatedSleepConfig;

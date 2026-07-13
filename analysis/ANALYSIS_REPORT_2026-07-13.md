@@ -141,3 +141,103 @@ and WCL candidate selection remain separate open surfaces. The public
 `networksetup -getairportnetwork en1` false-negative remains a known Tahoe
 framework reporting behavior: hostapd, IP, probe, and traffic evidence prove
 the actual association in this run.
+
+## FIX_VERIFIED — TX-power-cap false-success quarantine
+
+- anomaly_id: `CR-479-TX-POWER-CAP-FALSE-SUCCESS-P0`
+- status: `FIX_VERIFIED`
+- symptom: Tahoe advertises successful `BYPASS_TX_POWER_CAP` and
+  `DUAL_POWER_MODE` requests even though the Intel backend has no equivalent
+  firmware TX-power-cap owner.
+- expected system behavior: 25C56 routes `DUAL_POWER_MODE` from the public
+  bridge at `0xffffff8001522f42` into
+  `AppleBCMWLANCore::setDUAL_POWER_MODE` at `0xffffff80016176e2`. A null
+  carrier returns raw `0xe00002bc`; a valid carrier stores the two signed
+  dwords and immediately enters the `0xffffff800160b3e0` sender, which issues
+  firmware `txcapstate`. The same Core TX-power-cap owner services the bypass
+  policy instead of completing it as a local cache-only request.
+- actual behavior: non-null bypass reaches
+  `TahoeCommanderV2::runSetBypassTxPowerCap`, which updates synthetic registry
+  state and calls a transport helper that only records/completes status zero.
+  Non-null dual-power requests update two interface caches and the same
+  synthetic registry, then return success. The current Intel source contains
+  no `txcapstate` backend or TX-power-cap firmware request.
+- exact divergence point:
+  - local `AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP` and
+    `setDUAL_POWER_MODE`;
+  - local `TahoeCommanderV2::dispatchTransport` and
+    `TahoeTxPowerCapOwner::apply`;
+  - reference public/Core/sender chain named above.
+- evidence from runtime: the previous isolated candidate built and loaded,
+  then passed bidirectional 240-second traffic, 480 ping samples, AP
+  authorization, and serial fault filters. Its first radio OFF/ON panic is
+  non-attributable because the restored bit-identical A2DF baseline immediately
+  reproduced the same WCL chain. See
+  `/home/dima/Projects/aiam/runtime-captures/itlwm-tx-power-cap-quarantine-20260712/`.
+  Consequently radio OFF/ON is explicitly excluded from this layer's gate.
+- evidence from static recovery: the preserved 25C56 chain and prior candidate
+  record are in `ITLWM_CODEX_MEMORY.md` and the rejection record above;
+  current source inspection proves the synthetic success path and absence of a
+  backend. The retained reference note records the exact bridge/Core/sender
+  anchors; this correction does not infer a valid-input Apple return value
+  from the quarantine.
+- confirmed deviation: a public caller observes success even though no Intel
+  radio policy is changed and no firmware completion can occur.
+- fix justification path: `REFERENCE_ALIGNMENT_SAFETY_QUARANTINE`.
+- why this is root cause and not just correlation: it is not a claim about the
+  separate WCL lifecycle panic. It is a direct false-capability violation:
+  local completion succeeds after only local bookkeeping while reference
+  completion owns real firmware `txcapstate` work.
+- proposed fix: retain the reference null error, then fail closed with
+  `kIOReturnUnsupported` for every non-null bypass or dual-power request before
+  any pseudo-state or commander mutation. Remove only their three now-dead
+  interface cache fields and retire the stale payload-parity claim that called
+  this a firmware-send surface.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp` and `.hpp`;
+  - `AirportItlwm/TahoePayloadParity.hpp` and
+    `scripts/payload_parity_report.py`;
+  - a dedicated TX-power-cap quarantine report, reference note, and this
+    analysis record.
+- forbidden alternative fixes considered and rejected:
+  - fabricating `txcapstate` through the generic TahoeCommander transport;
+  - changing PM, radio state, `0x37`, WCL, association, or the generic
+    commander implementation;
+  - claiming `kIOReturnUnsupported` is Apple's valid-input result;
+  - using the baseline-shared radio OFF/ON fault as a candidate gate.
+- verification plan: deterministic source guard plus existing payload checks,
+  clean Tahoe build and symbol resolution, AuxKC install/load identity,
+  bounded setter-ingress observation if callable, and saved-profile rejoin
+  followed by bounded bidirectional traffic/ping with guest and host fault
+  filters. The runtime report will distinguish regression coverage from direct
+  selector invocation if the private setters are not externally callable.
+
+## VERIFIED RESULT — TX-power-cap false-success quarantine
+
+The declared verification plan completed.  The exact compiled source-code
+delta (build inputs only) has SHA-256
+`2c8ecf517e6593ed2d8b9b33b749b5057e60a33bfc7c91f4193b5526f543af1c`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test,
+the dedicated six-invariant quarantine report, and the payload-parity report
+all passed.  A clean Tahoe build resolved all 959 undefined symbols against
+BootKC.
+
+The installed candidate loaded as UUID
+`26FA0214-149C-3125-848E-7CB17E0042F9` with signed executable SHA-256
+`c0c9859281aa3ba3be5339906e0dec1e7c6580590b1809ddf83d1e5950b5e1ac`
+and AuxKC SHA-256
+`bf818ef47ead9755d099e1e7d75ff08fe60f12b9bc82ffbf201381fa7b9f44e0`.
+After saved-profile rejoin, capped uplink and reverse 240-second gates each
+transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping replies and
+0.0% loss (mean RTT 4.805 ms and 6.146 ms respectively; reverse sender had
+one retransmit).  Hostapd kept the station authorized and QEMU remained
+running.
+
+The public root-only ioctl probe stops at an outer unsupported socket gate
+before a private setter; it is explicitly **not** used to claim direct setter
+runtime invocation or Apple valid-input return-code parity.  Radio OFF/ON is
+excluded because the restored bit-identical A2DF baseline reproduces the same
+separate WCL lifecycle panic.  Guest boot `DumpPanic` zero-file bookkeeping,
+codeless `ApplePVPanic` warnings, and one older host correctable AER record
+are not misreported as candidate faults.  Full immutable runtime evidence is
+under `/home/dima/Projects/aiam/runtime-captures/itlwm-tx-power-cap-quarantine-20260713/`.

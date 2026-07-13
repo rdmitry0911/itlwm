@@ -2474,8 +2474,6 @@ init()
     memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
     hasCachedIbssNetwork = false;
     cachedFaceTimeWiFiCallingStatus = 0;
-    cachedDualPowerModePrimary = -1;
-    cachedDualPowerModeSecondary = -1;
     cachedLmtpcValue = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
@@ -2550,7 +2548,6 @@ init()
     cachedDynamicRssiWindowConfig = 0;
     cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
-    cachedBypassTxPowerCapEnabled = false;
     cachedWowEnabled = false;
     memset(cachedAssociatedSleepConfig, 0, sizeof(cachedAssociatedSleepConfig));
     hasCachedAssociatedSleepConfig = false;
@@ -2939,8 +2936,6 @@ init(IOService *provider)
     memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
     this->hasCachedIbssNetwork = false;
     this->cachedFaceTimeWiFiCallingStatus = 0;
-    this->cachedDualPowerModePrimary = -1;
-    this->cachedDualPowerModeSecondary = -1;
     this->cachedLmtpcValue = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
@@ -3015,7 +3010,6 @@ init(IOService *provider)
     this->cachedDynamicRssiWindowConfig = 0;
     this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
-    this->cachedBypassTxPowerCapEnabled = false;
     this->cachedWowEnabled = false;
     memset(this->cachedAssociatedSleepConfig, 0, sizeof(this->cachedAssociatedSleepConfig));
     this->hasCachedAssociatedSleepConfig = false;
@@ -4539,21 +4533,10 @@ setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple stores the first byte as a bool and immediately pushes the new
-    // policy to firmware. The sync-only TahoeCommander layer now owns that
-    // internal state and send-eligibility decision instead of leaving this as
-    // a freestanding interface-side bool cache.
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetBypassTxPowerCap(data, &asyncContext)
-            : kIOReturnBadArgumentTahoe;
-    if (rc != kIOReturnSuccess)
-        return rc;
-
-    cachedBypassTxPowerCapEnabled =
-        instance->getTahoeOwnerRegistry().txPowerCapBypass.enabled;
-    return rc;
+    // Apple immediately sends txcapstate through its firmware owner. The
+    // local Tahoe commander only records a synthetic completion and has no
+    // matching Intel transport, so success here would be a false capability.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6512,19 +6495,12 @@ setDUAL_POWER_MODE(apple80211_dual_power_mode_params *data)
 {
     const auto *params = reinterpret_cast<const tahoeDualPowerModeParams *>(data);
 
-    // AppleBCMWLANCore::setDUAL_POWER_MODE persists two signed dwords at core
-    // offsets +0x4d3c/+0x4d40, conditionally arms a one-byte "type-2 present"
-    // flag at +0x4d44, and always re-enters tx-power-cap state handling. The
-    // local port still lacks that config-owner choreography, but it must stop
-    // advertising slot [631] as entirely unsupported.
     if (params == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedDualPowerModePrimary = params->primary;
-    cachedDualPowerModeSecondary = params->secondary;
-    if (instance != nullptr)
-        instance->getTahoeOwnerRegistry().syncDualPowerMode(params->primary, params->secondary);
-    return kIOReturnSuccess;
+    // The reference stores both values then reevaluates and sends txcapstate.
+    // No Intel firmware command implements that owner path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

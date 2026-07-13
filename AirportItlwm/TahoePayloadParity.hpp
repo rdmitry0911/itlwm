@@ -74,12 +74,12 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "null returns 0xe00002c2; payload carries header 0x00060001 and caller +0x4"
         },
         {
-            "tx-power-cap-bypass",
-            "TahoePayloadBuilders::buildTxPowerCapBypass",
-            "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP",
-            "apple-io80211-selector-surface",
-            4,
-            "null returns 0xe00002bc; firmware send is gated by dual-power owner state"
+            "tx-power-cap-quarantine",
+            "no Intel TX-power-cap firmware backend",
+            "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP / setDUAL_POWER_MODE",
+            "apple-tx-power-cap-firmware-owner",
+            kVariablePayloadLength,
+            "null returns 0xe00002bc; non-null input fails closed before synthetic completion"
         },
         {
             "wcl-action-frame-v1-v2",

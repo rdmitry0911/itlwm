@@ -579,7 +579,7 @@ void testPayloadContractInventory()
         "btcoex-profile",
         "btcoex-profile-active",
         "btcoex-2g-chain-disable",
-        "tx-power-cap-bypass",
+        "tx-power-cap-quarantine",
         "wcl-action-frame-v1-v2",
         "action-frame-progress",
         "ranging-authenticate",

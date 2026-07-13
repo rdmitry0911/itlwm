@@ -97,6 +97,17 @@ REFERENCE_CASES = [
         ],
     },
     {
+        "id": "apple-tx-power-cap-firmware-owner",
+        "path": "docs/reference/CR-479-tx-power-cap-quarantine-20260713.md",
+        "tokens": [
+            "0xffffff8001522f42",
+            "0xffffff80016176e2",
+            "0xffffff800160b3e0",
+            "txcapstate",
+            "not Apple valid-input return-code parity",
+        ],
+    },
+    {
         "id": "apple-io80211-selector-surface",
         "path": "include/Airport/IO80211InfraProtocol.h",
         "tokens": [
@@ -245,22 +256,25 @@ PAYLOAD_TYPES = [
         "invalid_semantics": "null returns 0xe00002c2",
     },
     {
-        "name": "tx-power-cap-bypass",
-        "shape": "4-byte policy payload, low bit is enabled",
-        "producer": "TahoePayloadBuilders::buildTxPowerCapBypass",
-        "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP",
-        "reference_ids": ["apple-io80211-selector-surface"],
+        "name": "tx-power-cap-quarantine",
+        "shape": "bypass and dual-power carriers are rejected before local pseudo-state",
+        "producer": "no Intel TX-power-cap firmware backend",
+        "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP / setDUAL_POWER_MODE",
+        "reference_ids": [
+            "apple-io80211-selector-surface",
+            "apple-tx-power-cap-firmware-owner",
+        ],
         "implementation_checks": [
             {
-                "path": "AirportItlwm/TahoePayloadBuilders.hpp",
-                "tokens": ["buildTxPowerCapBypass", "& 1U", "payload->enabled"],
-            },
-            {
-                "path": "AirportItlwm/TahoeOwnerRegistry.hpp",
-                "tokens": ["syncDualPowerMode", "txPowerCapBypass.sendEligible"],
+                "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+                "tokens": [
+                    "setBYPASS_TX_POWER_CAP",
+                    "setDUAL_POWER_MODE",
+                    "return kIOReturnUnsupported;",
+                ],
             },
         ],
-        "invalid_semantics": "null returns 0xe00002bc; send is gated until dual-power values exist",
+        "invalid_semantics": "null returns 0xe00002bc; non-null input fails closed before synthetic completion",
     },
     {
         "name": "wcl-action-frame-v1-v2",
