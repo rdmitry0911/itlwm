@@ -841,7 +841,6 @@ private:
     bool hasCachedRsnXe;
     uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
-    uint32_t cachedMwsScanFreqMode[4];
     uint8_t cachedMwsConditionIdConfig[0x168];
     uint8_t cachedMwsConditionIdCount;
     bool hasCachedMwsConditionIdConfig;

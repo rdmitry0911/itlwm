@@ -2552,7 +2552,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    memset(cachedMwsScanFreqMode, 0, sizeof(cachedMwsScanFreqMode));
     memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
     cachedMwsConditionIdCount = 0;
     hasCachedMwsConditionIdConfig = false;
@@ -3006,7 +3005,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    memset(this->cachedMwsScanFreqMode, 0, sizeof(this->cachedMwsScanFreqMode));
     memset(this->cachedMwsConditionIdConfig, 0, sizeof(this->cachedMwsConditionIdConfig));
     this->cachedMwsConditionIdCount = 0;
     this->hasCachedMwsConditionIdConfig = false;
@@ -6817,14 +6815,10 @@ setMWS_SCAN_FREQ_MODE_WIFI_ENH(apple80211_mws_scan_freq_mode *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    // AppleBCMWLANCore reorders the public carrier before caching it:
-    // +0x24 -> slot0, then +0x04/+0x08/+0x0c.
-    cachedMwsScanFreqMode[0] = *reinterpret_cast<const uint32_t *>(raw + 0x24);
-    cachedMwsScanFreqMode[1] = *reinterpret_cast<const uint32_t *>(raw + 0x04);
-    cachedMwsScanFreqMode[2] = *reinterpret_cast<const uint32_t *>(raw + 0x08);
-    cachedMwsScanFreqMode[3] = *reinterpret_cast<const uint32_t *>(raw + 0x0c);
-    return kIOReturnSuccess;
+    // AppleBCMWLAN maps this opaque carrier to a firmware-specific
+    // coexistence command. Intel has no equivalent owner or transport, so do
+    // not acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

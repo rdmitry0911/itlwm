@@ -940,3 +940,64 @@ are the connection evidence. Radio OFF/ON remains excluded because the
 restored bit-identical A2DF baseline reproduces the same separate WCL lifecycle
 panic. Full immutable runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-mws-scan-freq-quarantine-20260713/`.
+
+## FIX_CANDIDATE — MWS scan-frequency-mode false-success quarantine
+
+- anomaly ID: public `MWS_SCAN_FREQ_MODE_WIFI_ENH` acknowledged an opaque
+  carrier after only caching four reordered dwords despite no Intel-side MWS
+  owner or transport.
+- expected reference path: slot-[655] wrapper `0x10001973c` tail-dispatches
+  to Core `0x100141910`, which reads raw `+0x24/+0x04/+0x08/+0x0c`, then
+  calls vtable offset `+0x630`. Accounting for the Itanium vptr address
+  point, raw entry `0x1003a1718` resolves to terminal `0x100122a9c`,
+  which constructs the 40-byte `mws` command-`0x1018000`, subcommand-12
+  policy and preserves its enqueue or synchronous transport status.
+- actual local behavior: retain only pseudo-state
+  `cachedMwsScanFreqMode`, report success, and provide neither the MWS
+  iovar nor an equivalent owner, callback, or transport.
+- proposed correction: preserve null-to-`kIOReturnBadArgumentTahoe`, reject
+  non-null input with `kIOReturnUnsupported` before mutation, and delete
+  only the dead cache plus its two reset sites.
+- scope boundary: no inferred full opaque-carrier size, no direct setter
+  invocation, no Apple valid-input return-code parity claim, and no mutation
+  of scan-frequency, Condition-ID, antenna, PM, radio/WCL, association, or
+  generic command semantics.
+- verification plan: source report plus retained payload contracts, clean
+  Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON stays
+  excluded due to the independently reproduced baseline WCL lifecycle panic.
+
+## VERIFIED RESULT — MWS scan-frequency-mode false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`1f6d408a8b571af626c700f56dd277798d3c191dbaf6a9074ca2ca93b47ad045`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test, the
+four-invariant MWS scan-frequency-mode quarantine report, retained
+scan-frequency/association-protection/COEX/RFEM/disable-OCL/Type-7/battery/
+LMTPC/TX-power-cap reports, and payload parity all passed. A clean Tahoe
+build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`536F221F-4868-3B13-9B0A-E65B8055CCFF` with signed executable SHA-256
+`a2d87cb79ccecbb41f4f9f295c1a6207d05e1af6eb8c2c356219fa35cec14dda`
+and AuxKC SHA-256
+`45575e0d64d15e47579d7a10864d874da665f783e59439253b311705a4167219`.
+After explicit saved-profile rejoin, capped uplink and reverse 240-second
+gates each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping
+replies and 0.0% loss (mean RTT 4.306 ms and 5.736 ms respectively; reverse
+sender had three retransmits). Hostapd retained an authorized, authenticated,
+associated station with zero TX failures, QEMU remained running, the bounded
+guest fault filter had no matching panic/WCL/AirportItlwm marker, and the
+bounded host filter had no fatal VFIO/IOMMU/AER match.
+
+The recovered reference establishes the four effective reordered fields and
+terminal transport, but does not prove the complete public-carrier allocation
+size. No guessed opaque carrier or private setter ioctl was issued, so this is
+explicitly not a claim of direct setter runtime invocation or Apple valid-input
+return-code parity. The known `networksetup` association string remains a
+false negative here; the actual AP station state, IPv4 address, route, ping,
+and traffic gates are the connection evidence. Radio OFF/ON remains excluded
+because the restored bit-identical A2DF baseline reproduces the same separate
+WCL lifecycle panic. Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-mws-scan-freq-mode-quarantine-20260713/`.
