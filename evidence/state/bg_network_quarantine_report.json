@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_bgscan_pfn_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q7_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_bgscan_pfn_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_cache_copy_bytes": "0x12c0",
+    "adapter_setter": "0x10000ee46",
+    "bgscan_adapter_offset": "0x1578",
+    "commander_run_iovar_set": "0x10017b6e6",
+    "configure_pfn": "0x10000f516",
+    "configure_pfn_suspend": "0x10000f5c6",
+    "core_setter": "0x100142b68",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019254",
+    "iovars": [
+      "pfnclear",
+      "pfn_set",
+      "pfn_add",
+      "pfn_add_bssid"
+    ],
+    "null_status": "0xe00002bc"
+  },
+  "schema": "itlwm-bg-network-quarantine-v1",
+  "source_base_revision": "894af7ec9c1894954a6a5c2ade3de7216180be94"
+}

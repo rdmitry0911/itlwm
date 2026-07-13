@@ -942,13 +942,6 @@ static_assert(offsetof(apple80211_wcl_arp_mode, enabled) == 0x10,
 static_assert(sizeof(apple80211_wcl_arp_mode) == 0x14,
               "apple80211_wcl_arp_mode must preserve the recovered Tahoe offsets");
 
-struct apple80211_bg_network
-{
-    uint8_t raw[0x12c0];
-} __attribute__((packed));
-static_assert(sizeof(apple80211_bg_network) == 0x12c0,
-              "apple80211_bg_network must preserve the full Apple copy range");
-
 struct apple80211_bg_scan
 {
     uint8_t raw[8];
@@ -2488,8 +2481,6 @@ init()
     hasCachedRoamProfileConfig = false;
     memset(cachedWclArpMode, 0, sizeof(cachedWclArpMode));
     hasCachedWclArpMode = false;
-    memset(cachedBgNetwork, 0, sizeof(cachedBgNetwork));
-    hasCachedBgNetwork = false;
     memset(cachedBgScanConfig, 0, sizeof(cachedBgScanConfig));
     hasCachedBgScanConfig = false;
     memset(cachedBgParams, 0, sizeof(cachedBgParams));
@@ -2904,8 +2895,6 @@ init(IOService *provider)
     this->hasCachedRoamProfileConfig = false;
     memset(this->cachedWclArpMode, 0, sizeof(this->cachedWclArpMode));
     this->hasCachedWclArpMode = false;
-    memset(this->cachedBgNetwork, 0, sizeof(this->cachedBgNetwork));
-    this->hasCachedBgNetwork = false;
     memset(this->cachedBgScanConfig, 0, sizeof(this->cachedBgScanConfig));
     this->hasCachedBgScanConfig = false;
     memset(this->cachedBgParams, 0, sizeof(this->cachedBgParams));
@@ -6097,21 +6086,12 @@ setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
 {
-
-    // Apple clears PFN state, resets its internal "cached network available"
-    // flags, and only then copies the full 0x12c0 request into adapter-owned
-    // storage. Preserve the full request and clear the current cache iterator
-    // so later BGSCAN_CACHE_RESULT consumers observe the new network set instead
-    // of stale cached nodes. The scan trigger itself belongs to WCL_CONFIG_BGSCAN
-    // or explicit scan requests, not this producer.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedBgNetwork, data, sizeof(*data));
-    hasCachedBgNetwork = true;
-    fNextNodeToSend = nullptr;
-    fScanResultWrapping = false;
-    return kIOReturnSuccess;
+    // Tahoe delegates PFN clear/configuration and Commander IOVAR work to
+    // BGScanAdapter. Intel has no matching background-scan owner or transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

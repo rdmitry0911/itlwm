@@ -1679,6 +1679,40 @@ guessed PNO/EPNO carrier or IOVAR, background-scan rewrite, or radio OFF/ON
 was used. Full immutable evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-bg-motion-profile-quarantine-20260713/`.
 
+## VERIFIED RESULT — WCL_CONFIG_BG_NETWORK false-success quarantine
+
+- status: `VERIFIED`
+- public surface: `setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *)`
+- local defect: an invented 0x12c0-byte cache/flag plus scan-iterator mutation
+  acknowledged every non-null carrier despite no matching PFN/BGScanAdapter or
+  Commander transport.
+- proposed boundary: preserve `NULL -> kIOReturnBadArgumentTahoe`; return
+  `kIOReturnUnsupported` for non-null before reading the opaque carrier; remove
+  only the dead pseudo-layout/cache/flag/reset lines and setter-local iterator
+  mutations.
+- reference: Tahoe 25C56 wrapper `0x100019254` -> Core `0x100142b68` ->
+  BGScanAdapter `0x10000ee46`; its real lifecycle invokes `configurePFN(0)`,
+  `pfnclear`, PFN suspend, and `pfn_set`/`pfn_add`/`pfn_add_bssid` Commander
+  requests. Null returns `0xe00002bc`.
+- non-claims: no complete carrier ABI, valid-input/error, PFN IOVAR payload,
+  or completion parity; no direct setter invocation, private IOCTL, guessed
+  firmware request, or radio OFF/ON test.
+
+The deterministic report, retained contracts, payload parity, 31 payload
+builder contracts, `py_compile`, shell syntax, and staged whitespace check
+passed. A clean Tahoe build resolved all 959 symbols and produced UUID
+`0D97D964-AC02-3955-B6DE-DDA597BD9AE9` with executable SHA-256
+`b775c9e2eab4573021ca6eef1d031abf235b85aa709963bc979a426edfc76b1e`.
+After explicit guest-only AuxKC rebuild and normal secret-hidden rejoin, both
+240-second traffic directions transferred 572 MiB at 20.0 Mbit/s; concurrent
+pings were 240/240 with 0.0% loss (mean 3.436 ms uplink, 6.390 ms reverse).
+Reverse iperf reported two sender retransmits, recorded as such. AP evidence
+remained authenticated/associated/authorized with zero TX failures, QEMU was
+running, and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal vfio/IOMMU/DMAR/AER marker. The guest rebooted only
+to load the AuxKC; the host was not rebooted. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-bg-network-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
