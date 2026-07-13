@@ -1342,6 +1342,70 @@ A2DF baseline reproduces the separate WCL lifecycle panic.  Full immutable
 runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-soi-quarantine-20260713/`.
 
+## FIX_CANDIDATE — OS eligibility false-success quarantine
+
+- anomaly ID: public `setOS_ELIGIBILITY` accepted a non-null carrier, copied a
+  dword into a local cache, and returned success although no Intel
+  aggressive-EDCA policy backend consumes that state.
+- expected reference path: Tahoe 25C56 image SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`
+  dispatches Infra wrapper `0x100019830` through virtual `+0x7d0` to Core
+  `0x100143ed6`.  When eligibility bit 0 changes while the commander is awake,
+  Core invokes NetAdapter `+0x15e0` / `0x100014cc8`
+  `configureAggressiveEDCA`; its recovered path sends `wme_ac_sta` and updates
+  the short retry limit before Core stores the carrier word.
+- actual local behavior: the setter only copied a dword cache; no local
+  aggressive-EDCA configurator, `wme_ac_sta` commander path, or retry-limit
+  backend exists, and no consumer observed that pseudo-state.
+- proposed correction: preserve the existing local null safety guard; return
+  `kIOReturnUnsupported` for a non-null carrier before mutation; remove only
+  the dead cache member and its two reset sites.
+- scope boundary: no NetAdapter or power-management lift, no inferred complete
+  carrier allocation, no guessed carrier or private setter invocation, and no
+  Apple null or valid-input return-code parity claim.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and focused bounded guest/host fault filters. Radio OFF/ON
+  remains excluded because the restored bit-identical A2DF baseline reproduces
+  the separate WCL lifecycle panic.
+
+## VERIFIED RESULT — OS eligibility false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build-input `AirportItlwm/` and `include/` files) has SHA-256
+`e95ce30d4305a687a80d4dd9076b77b8202019e4de55db9cfa4418bf6eb38f17`.
+The OS-eligibility report, retained SOI, associated-sleep, BCN-mute, IE, USB,
+and BTCOEX reports, Tahoe payload parity, 31 payload-builder contracts,
+`py_compile`, and staged whitespace check passed. A clean Tahoe build resolved
+all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`E6F4DE9C-47BF-37A5-959F-64B50ADB4BC4` with executable SHA-256
+`ef69b9037d7b2948fb065c091ad533e93ab9bc8d3112cde4b0f9e397bb493ac9` and
+AuxKC SHA-256
+`52781a9010b8a2201ab49e82d087e2374af9e2d12ac8c10c97ea6fa3abf234fa`.
+The deployment's informational codesign check reported an unsigned code
+object; loaded identity is established by kmutil, UUID, and executable hash,
+not a signing claim. After an explicit normal credentialed rejoin, capped
+uplink and reverse 240-second gates each transferred 572 MiB at 20.0 Mbit/s
+with 240/240 concurrent ping replies and 0.0% loss (mean RTT 3.235 ms and
+6.108 ms; reverse sender had three retransmits). Hostapd retained an
+authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the focused bounded guest failure filter produced
+`no_matching_guest_panic_wcl_airportitlwm_marker`, and the bounded host filter
+produced `no_recent_fatal_vfio_iommu_aer_match`.
+
+The recovered reference proves NetAdapter/commander EDCA work, but does not
+establish a complete public carrier allocation or Apple null/valid-input
+return-code parity. No guessed carrier or private setter ioctl was issued, so
+this is explicitly not a claim of direct setter runtime invocation. The known
+networksetup association string remains a false negative; AP station state,
+IPv4/gateway route, ping, and traffic gates are the connection evidence.
+Radio OFF/ON remains excluded because the restored bit-identical A2DF baseline
+reproduces the separate WCL lifecycle panic. Full immutable runtime evidence
+is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-os-eligibility-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

@@ -2521,7 +2521,6 @@ init()
     cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
-    cachedOsEligibility = 0;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
     cachedRsnXeLength = 0;
@@ -2947,7 +2946,6 @@ init(IOService *provider)
     this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
-    this->cachedOsEligibility = 0;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
     this->cachedRsnXeLength = 0;
@@ -6610,8 +6608,9 @@ setOS_ELIGIBILITY(apple80211_os_eligibility *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedOsEligibility = *reinterpret_cast<const uint32_t *>(data);
-    return kIOReturnSuccess;
+    // Tahoe applies an EDCA policy through its network adapter.  Intel has no
+    // equivalent backend, so do not acknowledge an unconsumed request.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

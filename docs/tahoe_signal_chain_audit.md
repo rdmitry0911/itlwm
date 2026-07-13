@@ -1067,7 +1067,6 @@ Closed in this zone:
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
 - `setEAP_FILTER_CONFIG(...)`
-- `setOS_ELIGIBILITY(...)`
 
 Recovered Apple behavior is consistent enough to lift this as one zone:
 
@@ -1077,7 +1076,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   field split:
   `setDBG_GUARD_TIME_PARAMS`, `setDYNAMIC_RSSI_WINDOW_CONFIG`,
   `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setEAP_FILTER_CONFIG`,
-  `setRSN_XE`, `setOS_ELIGIBILITY`
+  `setRSN_XE`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1122,6 +1121,22 @@ non-null request before pseudo-state mutation, and removes the dead SOI
 cache.  This is a no-local-backend quarantine: it does not claim Apple null
 handling, complete carrier allocation, or valid-input return-code parity.
 See `docs/reference/CR-479-wcl-soi-quarantine-20260713.md`.
+
+## Q13 correction: `setOS_ELIGIBILITY` is NetAdapter-backed
+
+`setOS_ELIGIBILITY(...)` is also not an opaque cache carrier.  Tahoe 25C56
+forwards virtual slot `+0x7d0` to Core.  On a change to its eligibility bit,
+and when the commander is awake, Core uses its NetAdapter at `+0x15e0` to
+configure aggressive EDCA before it records the full carrier word.  The
+recovered adapter reaches `wme_ac_sta` and retry-limit work; a local dword
+copy cannot reproduce those effects.
+
+The port keeps its local null guard but returns `kIOReturnUnsupported` for a
+non-null request before pseudo-state mutation, and removes the dead
+eligibility cache.  This is a no-local-backend quarantine: it does not claim
+Apple null handling, complete carrier allocation, or valid-input return-code
+parity.  See
+`docs/reference/CR-479-os-eligibility-quarantine-20260713.md`.
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 

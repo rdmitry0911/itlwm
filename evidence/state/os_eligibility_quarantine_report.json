@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "intel_source_has_no_edca_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true,
+    "stale_cache_claim_corrected": true
+  },
+  "local": {
+    "backend_aggressive_edca": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100143ed6",
+    "core_state_offset": "0x8cec",
+    "edca_iovar": "wme_ac_sta",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x7d0",
+    "infra_wrapper": "0x100019830",
+    "net_adapter_offset": "0x15e0",
+    "net_adapter_setter": "0x100014cc8"
+  },
+  "schema": "itlwm-os-eligibility-quarantine-v1",
+  "source_base_revision": "60f22819afc1dcf88170c6d7444ea6d93be23e27"
+}
