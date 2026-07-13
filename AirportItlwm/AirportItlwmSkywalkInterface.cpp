@@ -847,13 +847,6 @@ struct tahoeCongestionControlIndication
 static_assert(sizeof(tahoeCongestionControlIndication) == 0x1,
               "tahoeCongestionControlIndication must match Apple bool carrier");
 
-struct tahoeLmtpcConfig
-{
-    uint8_t value;
-} __attribute__((packed));
-static_assert(sizeof(tahoeLmtpcConfig) == 0x1,
-              "tahoeLmtpcConfig must match Apple byte carrier");
-
 struct tahoeDynsarDetailRequest
 {
     uint32_t version;
@@ -2474,7 +2467,6 @@ init()
     memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
     hasCachedIbssNetwork = false;
     cachedFaceTimeWiFiCallingStatus = 0;
-    cachedLmtpcValue = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
     cachedQosLongRetryLimit = 0;
@@ -2936,7 +2928,6 @@ init(IOService *provider)
     memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
     this->hasCachedIbssNetwork = false;
     this->cachedFaceTimeWiFiCallingStatus = 0;
-    this->cachedLmtpcValue = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
     this->cachedQosLongRetryLimit = 0;
@@ -6523,16 +6514,13 @@ setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *data)
 IOReturn AirportItlwmSkywalkInterface::
 setLMTPC_CONFIG(apple80211_lmtpc_config *data)
 {
-    const auto *config = reinterpret_cast<const tahoeLmtpcConfig *>(data);
-
-    // AppleBCMWLANCore::setLMTPC_CONFIG rejects NULL, copies one byte into the
-    // core-owned cache at +0x4594, and then re-enters setLMTPC(). Preserve the
-    // same byte carrier so slot [638] no longer diverges at the producer ABI.
-    if (config == nullptr)
+    // Apple rejects NULL, then routes its byte carrier into an LMTPC owner
+    // that sends firmware lpc. Intel has no equivalent owner or transport, so
+    // do not acknowledge a cache-only request.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedLmtpcValue = config->value;
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

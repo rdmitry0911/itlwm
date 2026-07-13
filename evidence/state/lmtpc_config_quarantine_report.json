@@ -1,0 +1,23 @@
+{
+  "checks": {
+    "generic_commander_is_not_hardware": true,
+    "no_local_lmtpc_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_lmtpc_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100142c22",
+    "firmware_gate": "0x1123",
+    "firmware_iovar": "lpc",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "owner": "0x1000fe4c0"
+  },
+  "schema": "itlwm-lmtpc-config-quarantine-v1",
+  "source_base_revision": "3f053b5213f023887376c835ed62f77065cddddb"
+}

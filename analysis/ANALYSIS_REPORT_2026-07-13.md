@@ -241,3 +241,83 @@ separate WCL lifecycle panic.  Guest boot `DumpPanic` zero-file bookkeeping,
 codeless `ApplePVPanic` warnings, and one older host correctable AER record
 are not misreported as candidate faults.  Full immutable runtime evidence is
 under `/home/dima/Projects/aiam/runtime-captures/itlwm-tx-power-cap-quarantine-20260713/`.
+
+## FIX_VERIFIED — LMTPC configuration false-success quarantine
+
+- anomaly_id: `CR-479-LMTPC-CONFIG-FALSE-SUCCESS-P0`
+- status: `FIX_VERIFIED`
+- symptom: a non-null `LMTPC_CONFIG` request reports success although the
+  Intel port does not have an LMTPC owner or an `lpc` firmware transport.
+- expected system behavior: the recovered 25C56 Core setter rejects null with
+  `0xe00002bc`, persists the input byte at Core `+0x4594`, then calls an LMTPC
+  owner. The owner sends a four-byte firmware `lpc` iovar through Commander
+  under the `>= 0x1123` firmware gate.
+- actual behavior: local
+  `AirportItlwmSkywalkInterface::setLMTPC_CONFIG` preserves the null guard,
+  then writes only `cachedLmtpcValue` and returns success. The cache has no
+  consumer; scoped local inventory finds no LMTPC owner, `lpc` iovar,
+  `runSetLMTPC`, or equivalent Intel transport.
+- exact divergence point: local cache-only setter versus
+  `AppleBCMWLANCore::setLMTPC_CONFIG` at `0x100142c22` and its real LMTPC
+  owner at `0x1000fe4c0`; see
+  `docs/reference/CR-479-lmtpc-config-quarantine-20260713.md`.
+- evidence from static recovery: the exact 25C56 reference image has SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`;
+  raw recovery establishes null/carrier/owner/firmware behavior. Scoped local
+  inspection proves the cache-only success path and backend absence.
+- confirmed deviation: callers are told an LMTPC policy was accepted while no
+  Intel firmware policy can be applied.
+- fix justification path: `REFERENCE_ALIGNMENT_SAFETY_QUARANTINE`.
+- why this is root cause and not just correlation: this does not explain the
+  independent WCL lifecycle panic. It is a direct false-capability boundary:
+  local success follows a dead cache write while the reference owner performs
+  real firmware work.
+- proposed fix: retain the recovered null error, reject all non-null requests
+  with `kIOReturnUnsupported` before mutation, and remove only the dead LMTPC
+  cache, its initializers, and its now-unused byte carrier declaration.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp` and `.hpp`;
+  - dedicated LMTPC quarantine report, reference note, and this analysis
+    record.
+- forbidden alternative fixes considered and rejected:
+  - fabricating `lpc` through the generic TahoeCommander transport;
+  - changing PM, radio state, `0x37`, WCL, association, or generic commander
+    semantics;
+  - claiming `kIOReturnUnsupported` is Apple's valid-input result;
+  - using the baseline-shared radio OFF/ON fault as a candidate gate.
+- verification plan: deterministic source guard plus existing payload checks,
+  clean Tahoe build and symbol resolution, AuxKC install/load identity,
+  bounded ingress observation if callable, saved-profile rejoin, bounded
+  bidirectional traffic/ping, and guest/host fault filters. The runtime report
+  will distinguish regression coverage from direct private-setter execution.
+
+## VERIFIED RESULT — LMTPC configuration false-success quarantine
+
+The declared verification plan completed.  The compiled source-code delta
+(build inputs only) has SHA-256
+`cdf819057b42f4a05ef7cc02695aa0ee91c90beb1f12c12ee9c8d8d028377f4e`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test, the
+five-invariant LMTPC quarantine report, the retained TX-power-cap report, and
+the payload-parity report all passed.  A clean Tahoe build resolved all 959
+undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`DA95BC10-2BB8-3CCD-B5A9-D81A374DB12D` with signed executable SHA-256
+`14f8e154e5715521ec1eb02ee24a216046cfe5e9842ec2ca524add541206cb5c`
+and AuxKC SHA-256
+`e6058b390ec54310ca9713ebf1ec81240f8018da34213419be3726e95ab7cc09`.
+After explicit saved-profile rejoin, capped uplink and reverse 240-second
+gates each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping
+replies and 0.0% loss (mean RTT 4.579 ms and 6.385 ms respectively; reverse
+sender had one retransmit).  Hostapd retained an authorized station with zero
+TX failures, QEMU remained running, the bounded guest fault filter had no
+matching panic/WCL/AirportItlwm failure marker, and the bounded host filter had
+no fatal VFIO/IOMMU/AER match.
+
+The recovered reference consumes effective input byte `+0`, but does not prove
+the complete public-carrier allocation size.  No guessed private-setter ioctl
+was issued, so this is explicitly not a claim of direct setter runtime
+invocation or Apple valid-input return-code parity.  Radio OFF/ON remains
+excluded because the restored bit-identical A2DF baseline reproduces the same
+separate WCL lifecycle panic.  Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-lmtpc-config-quarantine-20260713/`.

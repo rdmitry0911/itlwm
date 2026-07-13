@@ -756,7 +756,6 @@ private:
     uint8_t cachedIbssSsid[APPLE80211_MAX_SSID_LEN];
     bool hasCachedIbssNetwork;
     uint32_t cachedFaceTimeWiFiCallingStatus;
-    uint32_t cachedLmtpcValue;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
     uint32_t cachedQosLongRetryLimit;
