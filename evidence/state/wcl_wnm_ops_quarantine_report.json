@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "opaque_cache_classification_removed": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_wnm_configuration_anchor_literals_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "matching_wnm_configuration_backend_implemented": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "commander_run_iovar_set": "0x10017b6e6",
+    "configure_beacon_reporting": "0x1000a9180",
+    "configure_enterprise": "0x1000a8280",
+    "configure_product_info": "0x1000a8480",
+    "configure_wnm": "0x1000aa9e0",
+    "core_setter": "0x1001429b0",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019abe",
+    "null_status": "0xe00002bc",
+    "wnm_adapter_offset": "0x15b0",
+    "wnm_adapter_setter": "0x1000a7ff0",
+    "wnm_iovar": "wnm",
+    "wnm_payload_bytes": 4
+  },
+  "schema": "itlwm-wcl-wnm-ops-quarantine-v1",
+  "source_base_revision": "8f5a854da08b2ada95882532a61302e97d078b22"
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify WCL WNM Offload false-success quarantine evidence."""
+"""Generate and verify WCL WNM OPS false-success quarantine evidence."""
 
 import argparse
 import json
@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "evidence/state/wcl_wnm_offload_quarantine_report.json"
-NOTE = ROOT / "docs/reference/CR-479-wcl-wnm-offload-quarantine-20260713.md"
+OUTPUT = ROOT / "evidence/state/wcl_wnm_ops_quarantine_report.json"
+NOTE = ROOT / "docs/reference/CR-479-wcl-wnm-ops-quarantine-20260713.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 HPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
@@ -43,30 +43,30 @@ def report():
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
     setter = section(
         cpp,
-        "setWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t *data)",
-        "extern OSDictionary *convertScanToDictionary",
+        "setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)",
+        "setWCL_WNM_OFFLOAD",
     )
-    correction_heading = "## Q13 correction: `setWCL_WNM_OFFLOAD` is WnmAdapter-backed"
+    correction_heading = "## Q13 correction: `setWCL_WNM_OPS` is WnmAdapter-backed"
     return {
-        "schema": "itlwm-wcl-wnm-offload-quarantine-v1",
-        "source_base_revision": "d6bb93490bc6f7e51db8626c125238b18d071289",
+        "schema": "itlwm-wcl-wnm-ops-quarantine-v1",
+        "source_base_revision": "8f5a854da08b2ada95882532a61302e97d078b22",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-            "infra_wrapper": "0x100019af6",
-            "core_setter": "0x1001429d2",
+            "infra_wrapper": "0x100019abe",
+            "core_setter": "0x1001429b0",
             "wnm_adapter_offset": "0x15b0",
-            "wnm_adapter_setter": "0x1000a99e0",
-            "unconfigure_offloads": "0x1000a9c80",
-            "configure_offloads": "0x1000a9f60",
-            "configure_dms": "0x1000ae2e0",
-            "configure_wnm_dms_dependency": "0x1000ae160",
-            "tclas_iovar": "tclas_add",
-            "dms_iovar": "wnm_dms_set",
-            "dependency_iovar": "wnm_dms_dependency",
+            "wnm_adapter_setter": "0x1000a7ff0",
+            "configure_enterprise": "0x1000a8280",
+            "configure_product_info": "0x1000a8480",
+            "configure_beacon_reporting": "0x1000a9180",
+            "configure_wnm": "0x1000aa9e0",
+            "wnm_iovar": "wnm",
+            "commander_run_iovar_set": "0x10017b6e6",
+            "wnm_payload_bytes": 4,
             "null_status": "0xe00002bc",
         },
         "local": {
-            "matching_wnm_offload_configurator_implemented": False,
+            "matching_wnm_configuration_backend_implemented": False,
             "request_false_success": False,
             "null_status_is_apple_parity": False,
             "valid_input_return_is_apple_parity": False,
@@ -76,18 +76,18 @@ def report():
                 token in note
                 for token in (
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "0x100019af6",
-                    "0x1001429d2",
+                    "0x100019abe",
+                    "0x1001429b0",
                     "`+0x15b0`",
-                    "0x1000a99e0",
-                    "0x1000a9c80",
-                    "0x1000a9f60",
-                    "0x1000ae2e0",
-                    "0x1000ae160",
+                    "0x1000a7ff0",
+                    "0x1000a8280",
+                    "0x1000a8480",
+                    "0x1000a9180",
+                    "0x1000aa9e0",
+                    "0x10017b6e6",
                     "`0xe00002bc`",
-                    "`tclas_add`",
-                    "`wnm_dms_set`",
-                    "`wnm_dms_dependency`",
+                    "`wnm`",
+                    "four-byte transmit payload",
                     "complete public carrier allocation",
                     "does not claim Apple null-input status",
                     "not Apple valid-input return-code parity",
@@ -104,42 +104,43 @@ def report():
             and all(
                 token not in setter
                 for token in (
-                    "cachedWnmOffload",
-                    "hasCachedWnmOffload",
+                    "cachedWnmConfig",
+                    "hasCachedWnmConfig",
                     "return kIOReturnSuccess;",
                 )
             ),
             "pseudo_state_removed": all(
                 token not in cpp and token not in hpp
-                for token in ("cachedWnmOffload", "hasCachedWnmOffload")
+                for token in ("cachedWnmConfig", "hasCachedWnmConfig")
             ),
-            "scoped_wnm_offload_anchor_literals_absent": all(
+            "scoped_wnm_configuration_anchor_literals_absent": all(
                 not source_contains(token)
                 for token in (
-                    "configureWnmOffloadFeatures(",
-                    "configureDMS(",
-                    "configureWNMDMSDependency(",
-                    '"tclas_add"',
-                    '"wnm_dms_set"',
-                    '"wnm_dms_dependency"',
+                    "configureWnmFeatures(",
+                    "configureEnterpriseFeatures(",
+                    "configureProductInfoReporting(",
+                    "configureBeaconReporting(",
+                    "configureWNM(",
                 )
             ),
             "opaque_cache_classification_removed": all(
                 token in signal_audit
                 for token in (
                     correction_heading,
-                    "`0x100019af6`",
-                    "`0x1001429d2`",
+                    "`0x100019abe`",
+                    "`0x1001429b0`",
                     "`+0x15b0`",
-                    "`0x1000a99e0`",
-                    "tclas_add",
-                    "wnm_dms_set",
-                    "wnm_dms_dependency",
+                    "`0x1000a7ff0`",
+                    "`0x1000aa9e0`",
+                    "wnm",
+                    "runIOVarSet",
                     "kIOReturnUnsupported",
-                    "`setWCL_WNM_OFFLOAD` separately returns `kIOReturnUnsupported` locally",
+                    "`setWCL_WNM_OPS` now returns `kIOReturnUnsupported` locally",
                 )
             )
-            and "setWCL_WNM_OPS` / `setWCL_WNM_OFFLOAD` preserve"
+            and "`setWCL_WNM_OPS` preserves its separately recovered caller blob"
+            not in signal_audit
+            and "`setWCL_WNM_OPS(...)` remains a separately lifted Apple"
             not in signal_audit,
         },
     }
@@ -155,7 +156,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("WCL WNM Offload quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("WCL WNM OPS quarantine checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -169,5 +170,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"WCL WNM Offload quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"WCL WNM OPS quarantine validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

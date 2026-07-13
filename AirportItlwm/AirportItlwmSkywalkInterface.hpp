@@ -597,7 +597,8 @@ public:
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
     virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
-    // [625] — AppleBCMWLAN: delegates to WnmAdapter.
+    // [625] — AppleBCMWLAN is WnmAdapter-backed; locally quarantined until a
+    // matching WNM configuration backend exists.
     virtual IOReturn setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *) override;
     // [626] — AppleBCMWLAN is WnmAdapter-backed; locally quarantined until a
     // matching WNM-offload configurator exists.
@@ -775,8 +776,6 @@ private:
     apple80211_vht_capability cachedVhtCapability;
     bool hasCachedVhtCapability;
     bool cachedSetPropertyIoctlSeen;
-    uint8_t cachedWnmConfig[0x338];
-    bool hasCachedWnmConfig;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
     uint8_t cachedLegacyRoamProfileConfig[0x60];

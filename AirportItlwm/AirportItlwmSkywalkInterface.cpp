@@ -2485,8 +2485,6 @@ init()
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
     cachedSetPropertyIoctlSeen = false;
-    memset(cachedWnmConfig, 0, sizeof(cachedWnmConfig));
-    hasCachedWnmConfig = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
     memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
@@ -2907,8 +2905,6 @@ init(IOService *provider)
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
     this->cachedSetPropertyIoctlSeen = false;
-    memset(this->cachedWnmConfig, 0, sizeof(this->cachedWnmConfig));
-    this->hasCachedWnmConfig = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
     memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
@@ -6760,17 +6756,12 @@ setNDD_REQ(apple80211_ndd_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_WNM_OPS(apple80211_wcl_wnm_config_t *data)
 {
-    // AppleBCMWLANCore::setWCL_WNM_OPS is a real producer with only one gate
-    // visible at the core layer: NULL -> 0xe00002bc, otherwise delegate into
-    // WnmAdapter::configureWnmFeatures(...). The WCL-side consumer mutates a
-    // large opaque blob up to offsets 0x334+, so preserve the recovered full
-    // carrier instead of keeping slot [625] unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedWnmConfig, data, sizeof(*data));
-    hasCachedWnmConfig = true;
-    return kIOReturnSuccess;
+    // Tahoe applies WNM features through its adapter and commander work. No
+    // matching local WNM configuration backend is implemented.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

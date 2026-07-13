@@ -1172,6 +1172,24 @@ claim a complete carrier allocation or Apple null, valid-input, feature-gate,
 or transport-status parity.  See
 `docs/reference/CR-479-wcl-wnm-offload-quarantine-20260713.md`.
 
+## Q13 correction: `setWCL_WNM_OPS` is WnmAdapter-backed
+
+`setWCL_WNM_OPS(...)` is not an opaque cache carrier. Tahoe 25C56 Infra
+wrapper `0x100019abe` tail-jumps to Core `0x1001429b0`, which selects the
+WnmAdapter at Core `+0x15b0` and tail-jumps to `configureWnmFeatures`
+`0x1000a7ff0`. The adapter branches into enterprise, product-info, and beacon
+reporting configuration. Its recovered enterprise path reaches
+`configureWNM` `0x1000aa9e0`, checks WNM support, and sends the `wnm`
+commander IOVAR through `runIOVarSet` `0x10017b6e6`. A local byte copy cannot
+reproduce those effects or their command-status handling.
+
+The port keeps its local null guard but returns `kIOReturnUnsupported` for a
+non-null request before pseudo-state mutation, and removes the dead WNM OPS
+cache and flag. This is a no-local-backend quarantine: it does not claim a
+complete carrier allocation or Apple null, valid-input, feature-gate, or
+transport-status parity. See
+`docs/reference/CR-479-wcl-wnm-ops-quarantine-20260713.md`.
+
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 
 The next `Q13` zone closes fifteen getter slots that already expose a stable
@@ -1277,9 +1295,9 @@ intentional 1:1 Apple match with explicit slot comments rather than an
 unclassified unsupported tail.
 
 As with the getter batch, this does **not** generalize to neighboring WCL or
-timesync setters. `setWCL_WNM_OPS(...)` remains a separately lifted Apple
-producer; `setWCL_WNM_OFFLOAD(...)` is also real in Apple but requires its own
-local no-backend quarantine rather than a generic Apple-unsupported claim.
+timesync setters. `setWCL_WNM_OPS(...)` and `setWCL_WNM_OFFLOAD(...)` are real
+Apple producers, but each requires its own local no-backend quarantine rather
+than a generic Apple-unsupported claim.
 
 ## Q13 Confirmed Producer Mini-Batch: `getVHT_CAPABILITY`
 
@@ -1617,9 +1635,10 @@ The local port now follows that split:
 - `getTIMESYNC_INFO` produces the same "engine not instantiated" style text
   report instead of returning generic unsupported
 - `getWCL_WNM_OFFLOAD` remains explicit unsupported, matching Apple
-- `setWCL_WNM_OPS` preserves its separately recovered caller blob
-- `setWCL_WNM_OFFLOAD` now returns `kIOReturnUnsupported` locally because its
+- `setWCL_WNM_OPS` now returns `kIOReturnUnsupported` locally because its
   real WnmAdapter/commander effects have no matching local configurator
+- `setWCL_WNM_OFFLOAD` separately returns `kIOReturnUnsupported` locally for
+  its own missing WNM-offload configurator
 
 This closes the timesync-facing `+0xad8` hidden-object subpath. The broader
 hidden `+0x1510` object method map still remains a separate `Q13` task.

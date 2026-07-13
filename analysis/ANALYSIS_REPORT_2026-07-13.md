@@ -1517,6 +1517,50 @@ carrier, private IOCTL, or radio OFF/ON occurred. The guest rebooted to load
 the AuxKC; the host did not reboot. Immutable runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-wnm-offload-quarantine-20260713/`.
 
+## VERIFIED RESULT — WCL WNM OPS false-success quarantine
+
+The declared verification plan completed. `setWCL_WNM_OPS` preserves its local
+null safety guard and returns `kIOReturnUnsupported` for every non-null carrier
+before mutation. The change removes only the dead WNM OPS `0x338` cache, its
+acknowledgement flag, and their two reset pairs. `setWCL_WNM_OFFLOAD`,
+`getWCL_WNM_OFFLOAD`, `setWCL_LIMITED_AGGREGATION`, and APSTA behavior are
+unchanged.
+
+Tahoe 25C56 reference recovery (DEXT SHA-256
+`4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`) proves
+the direct Infra-wrapper `0x100019abe` -> Core `0x1001429b0` -> Core `+0x15b0`
+-> WnmAdapter `0x1000a7ff0` path. The adapter branches include enterprise,
+product-information, and beacon-reporting work; recovered WNM support handling
+reaches Commander `runIOVarSet` `0x10017b6e6` for `wnm`. This is evidence of
+real backend work, not a lift: it does not infer a complete public carrier,
+Apple null/valid-input/feature-gate/transport-status return parity, or a
+generic absence of local IOVAR support. No guessed carrier or private setter
+invocation was made.
+
+The deterministic WNM OPS report, retained affected reports and payload
+contracts, `py_compile`, and staged whitespace check passed. The compiled
+build-input code delta SHA-256 is
+`09c36fe84437d52682318cbdaad7166a0936723b248019c946750943fb5cd02f`; a clean
+Tahoe build resolved all 959 undefined symbols. The rebuilt AuxKC loaded UUID
+`B9828396-276B-323E-ABAD-CC8A7D517D74` with executable SHA-256
+`d3c3dbdb16ef7e8d7c391efc08ee7d8fb0dae3ec66834a0d853060cac9593508` and AuxKC
+SHA-256 `26c08de0bd83eeb4bd9465bf36fd4f16c0ef7fd536c01c5269c56cdcfdfdf735`.
+
+After a normal explicit credentialed rejoin, `en1` held `10.77.0.47` and the
+route to `10.77.0.1` used `en1`. Capped 240-second uplink and reverse gates
+each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent pings and
+0.0% loss (mean RTT 4.775 ms uplink, 5.959 ms reverse; three reverse sender
+retransmits). Hostapd retained an authenticated, associated, authorized
+station with final `tx failed: 0`, and QEMU remained running. The exact
+bounded markers were `no_matching_guest_panic_wcl_airportitlwm_marker` and
+`no_recent_fatal_vfio_iommu_aer_match`; they are narrow focused checks, not a
+generic log-cleanliness claim. The known `networksetup` association string is
+a false negative, so AP state, IPv4/route, ping, and traffic are the
+association evidence. The guest rebooted only to load the rebuilt AuxKC; the
+host was not rebooted. No direct setter, private IOCTL, guessed carrier, or
+radio OFF/ON cycle was used. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-wnm-ops-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
