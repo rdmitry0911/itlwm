@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "generic_commander_is_not_hardware": true,
+    "no_local_mrc_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_battery_powersave_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_helper": "0x10013a106",
+    "core_setter": "0x100142544",
+    "firmware_iovar": "mrc_rssi_threshold",
+    "firmware_payload_bytes": 4,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018f44",
+    "mrc_configure": "0x100171452"
+  },
+  "schema": "itlwm-battery-powersave-config-quarantine-v1",
+  "source_base_revision": "877cab54d8c33af81956c389099c2b2109a79567"
+}

@@ -744,7 +744,6 @@ private:
     uint32_t cachedWowTestMode;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
-    uint32_t cachedBatteryPowerSaveMode;
     uint32_t cachedPowerProfile;
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;

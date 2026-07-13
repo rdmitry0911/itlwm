@@ -2455,7 +2455,6 @@ init()
     cachedWowTestMode = 0;
     cachedOSFeatureFlags = 0;
     cachedDhcpRenewalData = false;
-    cachedBatteryPowerSaveMode = 0;
     cachedPowerProfile = 0;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
@@ -2916,7 +2915,6 @@ init(IOService *provider)
     this->cachedWowTestMode = 0;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
-    this->cachedBatteryPowerSaveMode = 0;
     this->cachedPowerProfile = 0;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
@@ -5050,14 +5048,13 @@ setDHCP_RENEWAL_DATA(apple80211_dhcp_renewal_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data)
 {
-    if (!data)
+    // Apple rejects NULL, then conditionally reaches its MIMO-power-save and
+    // MRC-threshold firmware owner. Intel has no matching owner or transport,
+    // so do not acknowledge a cache-only request.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple stores the first dword and hands it into the battery-save path.
-    // Even before the deeper power manager parity is finished, this IOC must
-    // remain a state carrier rather than a blind success stub.
-    cachedBatteryPowerSaveMode = *reinterpret_cast<const uint32_t *>(data);
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
