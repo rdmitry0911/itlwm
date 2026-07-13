@@ -531,7 +531,8 @@ public:
     virtual IOReturn setWCL_SCAN_ABORT(void *) override;
     // [596] — AppleBCMWLAN: sets real-time vs default mode
     virtual IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode *data) override;
-    // [597] — AppleBCMWLAN: configures ARP keepalive/GARP mode.
+    // [597] — Tahoe selects KeepAlive/GARP and optional WNM keepalive owners;
+    // locally quarantined until matching owner and transport paths exist.
     virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override;
     // [598]
     virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override;
@@ -786,8 +787,6 @@ private:
     bool hasCachedLegacyRoamProfileConfig;
     uint8_t cachedRoamProfileConfig[0x23c];
     bool hasCachedRoamProfileConfig;
-    uint8_t cachedWclArpMode[0x14];
-    bool hasCachedWclArpMode;
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;

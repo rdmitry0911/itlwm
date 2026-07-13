@@ -772,11 +772,13 @@ Closed in the latest batch:
 - `setWCL_REASSOC`
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
-- `setWCL_ARP_MODE`
 
 The exact hidden helper choreography behind roam/bgscan/keepalive owners still
 belongs to `Q13`, but the listed slots no longer remain as inline success
-stubs. `setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,
+stubs. `setWCL_ARP_MODE` is excluded from that functional closure: Tahoe
+routes it through hidden KeepAlive/GARP and WnmAdapter owners, so its local
+cache-and-OFFLOAD_ARP bridge is a dedicated no-backend quarantine.
+`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,
 `setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are excluded from that
 functional closure: Tahoe routes them through BGScanAdapter mapping/PNO/EPNO,
 PFN/Commander, BGSCAN PFN/PNO/EPNO lifecycle, and

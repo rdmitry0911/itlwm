@@ -1214,6 +1214,58 @@ panic. Full immutable runtime evidence is under
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
 
+## VERIFIED RESULT — WCL_ARP_MODE false-success quarantine
+
+- status: `VERIFIED`
+- public surface: `setWCL_ARP_MODE(apple80211_wcl_arp_mode *)`
+- local defect: the former local bridge inferred a 0x14-byte ARP-mode carrier,
+  cached it without consumers, reconstructed a different direct OFFLOAD_ARP
+  carrier from unrelated IPv4 state, suppressed that separate no-owner status,
+  and returned success. It did not implement Tahoe's KeepAlive/GARP/WNM owner
+  or transport lifecycle.
+- correction: preserve `NULL -> kIOReturnBadArgumentTahoe`; return
+  `kIOReturnUnsupported` for every non-null request before reading the opaque
+  carrier; and remove only the dead pseudo-layout/cache/flag/reset lines and
+  synthetic direct-OFFLOAD_ARP bridge. The independent direct OFFLOAD_ARP
+  quarantine and `setIPV4_PARAMS` producer are unchanged.
+- reference: Tahoe 25C56 DEXT SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`
+  dispatches wrapper `0x100018cec` -> Core `0x1001e85e8`; null returns
+  `0xe00002bc`. Mode `+0x8` selects Core ARP keepalive or KeepAliveOffload
+  GARP, enabled `+0x10` selects `programARPKeepAlive` `0x1000d9d6e` /
+  `stopARPKeepAlive` `0x1000d9cba` or `programGARP` `0x10009cdea` /
+  `stopGARP` `0x10009d1e6`, and sideband bytes `+0x4/+0x5` conditionally
+  tail-call WnmAdapter `configureWNMKeepAlives` `0x1000ad5a0` with u16s
+  `+0/+0x2`.
+- non-claims: no complete public carrier layout, valid-mode, keepalive/GARP/
+  WNM transport, completion, or valid-input return-status parity; no direct
+  setter invocation, private IOCTL, guessed carrier/IOVAR, radio OFF/ON, or
+  unrelated IPv4/networking-path rewrite.
+
+The deterministic ARP-mode and retained ARP/BG reports, payload parity, 31
+payload-builder contracts, `py_compile`, shell syntax, and staged whitespace
+check passed. The exact compiled source-code delta has SHA-256
+`82b21345d444d9cee234682fa7d25ed7f1677d7cb88a85de912cb88a57c5c37d`.
+A clean Tahoe build resolved all 959 symbols and produced UUID
+`67825703-D005-303E-A55C-3EEA9B7E0ECD` with executable SHA-256
+`9a543ff3971e853be2c2a036706cc0509322369dddc7ab7937a96e7b433852c5`.
+The guest-only AuxKC rebuild changed SHA-256 from
+`916ab70b6719c61521e42dec1becb582d35dfdd1e62dc675638ec78be8b53dc3`
+to `78aef65051d480fbc6d038e3dc6f7d4848b94634a0dee50bd0cffe09ecc82ccf`;
+the loaded identity matched the candidate after reboot.
+
+An ordinary secret-hidden credentialed rejoin restored `en1` `10.77.0.47`
+and the route to `10.77.0.1` through `en1`. Both 240-second directions
+transferred 572 MiB at 20.0 Mbit/s. Concurrent uplink ping was 240/240 with
+0.0% loss and 4.063 ms mean RTT; reverse ping was 240/240 with 0.0% loss and
+6.342 ms mean RTT. Reverse iperf reported one sender retransmit, recorded as
+such. Hostapd retained authenticated/associated/authorized state with zero TX
+failures; QEMU remained running; focused bounded guest and host filters found
+no matching WCL/AirportItlwm panic or fatal VFIO/IOMMU/DMAR/AER marker. The
+guest rebooted only to load the AuxKC; the host was not rebooted. Full
+immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-arp-mode-quarantine-20260713/`.
+
 ## VERIFIED RESULT — WCL_CONFIG_BGSCAN false-success quarantine
 
 - status: `VERIFIED`

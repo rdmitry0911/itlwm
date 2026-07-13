@@ -565,15 +565,14 @@ Recovered Apple contracts show these are not generic unsupported slots:
   IPv4 + keepalive fields into core-owned state
 
 The local Tahoe port still lacks Apple's hidden PowerManager / KeepAlive owner
-objects, but these slots no longer disappear into inline success stubs. They
-now preserve the recovered carrier fields and apply the local owner actions
-that do exist today:
+objects. Locally owned pieces remain lifted, while owner-dependent ARP/
+keepalive requests are explicit no-backend quarantines rather than inline
+successes:
 
 - powersave re-entry through the lifted Tahoe `setPOWERSAVE(...)` path
 - RTS threshold through `ieee80211com::ic_rtsthreshold`
 - post-link MAC-context refresh through `ic_updateedca`
-- persistent keepalive / IPv4 carrier state for the already-lifted IPv4/TCPKA
-  getters
+- independent IPv4 state through the separate `setIPV4_PARAMS(...)` producer
 
 That closes `Q10` as a standalone queue: the net-link plane no longer has
 blind adjunct stubs of its own. The remaining exact helper choreography for
@@ -1586,17 +1585,16 @@ bridge so that `super::processBSDCommand()` preserves the Apple IOUC-first path.
 
 ## Q7 Closure: adapter-plane WCL producers no longer collapse into inline success
 
-The remaining `Q7` gap was the roam/bgscan half of the WCL plane:
+The remaining `Q7` gap was the roam half of the WCL plane:
 
 - `setWCL_REASSOC`
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
-- `setWCL_ARP_MODE`
 
 Recovered Apple paths show these are not disposable validate-and-ack slots.
 They either:
 
-- persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`, `0x14`), or
+- persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`), or
 - delegate into a local-owner-equivalent action we already have (`REASSOC_REQ`)
 
 The port still lacks Apple's hidden roam/bgscan/keepalive helper objects, so
@@ -1611,10 +1609,30 @@ make every copied carrier a complete owner implementation:
 - adapter-owned requests without that owner are reclassified rather than
   acknowledged by a partial local cache
 
-`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,
-`setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are specifically
-reclassified below as no-local-backend quarantines. Any still-missing hidden
-helper exactness belongs under `Q13`, not under the old WCL adapter-stub bucket.
+`setWCL_ARP_MODE`, `setWCL_CONFIG_BG_MOTIONPROFILE`,
+`setWCL_CONFIG_BG_NETWORK`, `setWCL_CONFIG_BGSCAN`, and
+`setWCL_CONFIG_BG_PARAMS` are specifically reclassified below as no-local-
+backend quarantines. Any still-missing hidden helper exactness belongs under
+`Q13`, not under the old WCL adapter-stub bucket.
+
+## Q13 correction: WCL ARP mode is KeepAlive/WnmAdapter-backed
+
+`setWCL_ARP_MODE(...)` is not a reusable direct OFFLOAD_ARP carrier. Tahoe
+25C56 Infra wrapper `0x100018cec` tail-jumps to Core `0x1001e85e8`. Core
+returns `0xe00002bc` for null. Its dword at carrier `+0x8` selects either Core
+ARP keepalive or a KeepAliveOffload GARP owner; its enabled byte at `+0x10`
+selects `programARPKeepAlive` `0x1000d9d6e` / `stopARPKeepAlive`
+`0x1000d9cba` or `programGARP` `0x10009cdea` / `stopGARP` `0x10009d1e6`.
+When both sideband bytes at `+0x4` and `+0x5` are nonzero, it tail-calls
+WnmAdapter `configureWNMKeepAlives` `0x1000ad5a0` with the two u16s at `+0`
+and `+0x2`.
+
+The port preserves the direct null guard and returns `kIOReturnUnsupported`
+for a non-null ARP-mode request before reading the carrier. It removes the
+dead 0x14 pseudo-layout/cache/flag/reset lines and does not reuse the separate
+direct `setOFFLOAD_ARP(...)` quarantine. This makes no complete carrier-layout,
+mode-validity, keepalive/GARP/WNM transport, completion, or return-status
+parity claim. See `docs/reference/CR-479-wcl-arp-mode-quarantine-20260713.md`.
 
 ## Q13 correction: BGScanAdapter-backed producer quarantines
 

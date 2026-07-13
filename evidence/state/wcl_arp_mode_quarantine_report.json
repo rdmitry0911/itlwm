@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "direct_offload_remains_separate_quarantine": true,
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_keepalive_wnm_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q7_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_keepalive_garp_wnm_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "configure_wnm_keepalives": "0x1000ad5a0",
+    "core_setter": "0x1001e85e8",
+    "enabled_offset": "0x10",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018cec",
+    "mode_offset": "0x8",
+    "null_status": "0xe00002bc",
+    "program_arp_keepalive": "0x1000d9d6e",
+    "program_garp": "0x10009cdea",
+    "stop_arp_keepalive": "0x1000d9cba",
+    "stop_garp": "0x10009d1e6",
+    "wnm_adapter_offset": "0x15b0",
+    "wnm_sideband_offsets": [
+      "0x0",
+      "0x2",
+      "0x4",
+      "0x5"
+    ]
+  },
+  "schema": "itlwm-wcl-arp-mode-quarantine-v1",
+  "source_base_revision": "fb8a8d11ee24dae019110795f8cc1658bc3bf7e3"
+}

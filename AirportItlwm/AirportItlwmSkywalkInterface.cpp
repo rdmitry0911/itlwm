@@ -921,27 +921,6 @@ struct apple80211_roam_profile_config
 static_assert(sizeof(apple80211_roam_profile_config) == 0x23c,
               "roam profile config must match WCLRoamProfile payload size");
 
-struct apple80211_wcl_arp_mode
-{
-    uint16_t wnm_interval_a;
-    uint16_t wnm_interval_b;
-    uint8_t wnm_enabled_a;
-    uint8_t wnm_enabled_b;
-    uint16_t reserved06;
-    uint32_t mode;
-    uint32_t interval;
-    uint8_t enabled;
-    uint8_t reserved11[3];
-} __attribute__((packed));
-static_assert(offsetof(apple80211_wcl_arp_mode, mode) == 0x08,
-              "apple80211_wcl_arp_mode::mode must match Apple offset +0x8");
-static_assert(offsetof(apple80211_wcl_arp_mode, interval) == 0x0c,
-              "apple80211_wcl_arp_mode::interval must match Apple offset +0xc");
-static_assert(offsetof(apple80211_wcl_arp_mode, enabled) == 0x10,
-              "apple80211_wcl_arp_mode::enabled must match Apple offset +0x10");
-static_assert(sizeof(apple80211_wcl_arp_mode) == 0x14,
-              "apple80211_wcl_arp_mode must preserve the recovered Tahoe offsets");
-
 struct apple80211_pm_mode
 {
     uint32_t version;
@@ -2467,8 +2446,6 @@ init()
     hasCachedLegacyRoamProfileConfig = false;
     memset(cachedRoamProfileConfig, 0, sizeof(cachedRoamProfileConfig));
     hasCachedRoamProfileConfig = false;
-    memset(cachedWclArpMode, 0, sizeof(cachedWclArpMode));
-    hasCachedWclArpMode = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -2877,8 +2854,6 @@ init(IOService *provider)
     this->hasCachedLegacyRoamProfileConfig = false;
     memset(this->cachedRoamProfileConfig, 0, sizeof(this->cachedRoamProfileConfig));
     this->hasCachedRoamProfileConfig = false;
-    memset(this->cachedWclArpMode, 0, sizeof(this->cachedWclArpMode));
-    this->hasCachedWclArpMode = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -6020,36 +5995,12 @@ setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
 {
-    // AppleBCMWLANCore::setWCL_ARP_MODE has three distinct pieces:
-    // - NULL -> 0xe00002bc
-    // - mode 0/1 choose the keepalive/GARP owner path, anything else -> 0xe00002bc
-    // - optional WNM sideband update consumes the two u16s at offsets +0/+2
-    //
-    // We still lack Apple's hidden keepalive and WNM owners, but the local
-    // port now preserves the exact recovered carrier and reuses the lifted
-    // OFFLOAD_ARP path so the same IPv4/keepalive state is available to later
-    // consumer paths instead of vanishing in an inline success stub.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
-    if (data->mode > 1)
-        return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedWclArpMode, data, sizeof(*data));
-    hasCachedWclArpMode = true;
-
-    apple80211_offload_arp_data arp{};
-    arp.version = APPLE80211_VERSION;
-    arp.has_ipv4_address = cachedIPv4Address != 0 ? 1U : 0U;
-    arp.ipv4_address = cachedIPv4Address;
-    arp.keepalive_enabled = data->enabled != 0 ? 1U : 0U;
-    arp.gateway = cachedIPv4Gateway;
-    arp.gateway_tail = cachedIPv4GatewayTail;
-
-    const IOReturn carrierRc = setOFFLOAD_ARP(&arp);
-    if (carrierRc != kIOReturnSuccess && carrierRc != kApple80211ErrInvalidArgumentRaw)
-        return carrierRc;
-
-    return kIOReturnSuccess;
+    // Tahoe delegates ARP keepalive/GARP and optional WNM keepalive work to
+    // hidden owners. Intel has no matching keepalive, WNM, or transport path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
