@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify BG network false-success quarantine evidence."""
+"""Generate and verify BG params false-success quarantine evidence."""
 
 import argparse
 import json
@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "evidence/state/bg_network_quarantine_report.json"
-NOTE = ROOT / "docs/reference/CR-479-bg-network-quarantine-20260713.md"
+OUTPUT = ROOT / "evidence/state/bg_params_quarantine_report.json"
+NOTE = ROOT / "docs/reference/CR-479-bg-params-quarantine-20260713.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
@@ -45,8 +45,8 @@ def report():
     inventory = INVENTORY.read_text(encoding="utf-8")
     setter = section(
         cpp,
-        "setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)",
-        "setWCL_CONFIG_BGSCAN",
+        "setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)",
+        "setWCL_JOIN_ABORT",
     )
     inventory_q7 = section(
         inventory,
@@ -57,23 +57,26 @@ def report():
         "## Q13 correction: BG motion-profile, BG network, and BG params are BGScanAdapter-backed"
     )
     return {
-        "schema": "itlwm-bg-network-quarantine-v1",
-        "source_base_revision": "894af7ec9c1894954a6a5c2ade3de7216180be94",
+        "schema": "itlwm-bg-params-quarantine-v1",
+        "source_base_revision": "92ff9ea66cf025b671b4ecacddc23b2de3eb5ab1",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-            "infra_wrapper": "0x100019254",
-            "core_setter": "0x100142b68",
+            "infra_wrapper": "0x1000192c4",
+            "core_setter": "0x100142bac",
             "null_status": "0xe00002bc",
             "bgscan_adapter_offset": "0x1578",
-            "adapter_setter": "0x10000ee46",
-            "configure_pfn": "0x10000f516",
-            "configure_pfn_suspend": "0x10000f5c6",
+            "adapter_setter": "0x1000102a2",
+            "configure_dynamic_scan_freq": "0x1000103ec",
+            "dynamic_iovar": "pfn_override",
+            "dynamic_payload_bytes": "0x18",
+            "dynamic_async_transport": "sendIOVarSet",
+            "configure_unassociated_scan_time": "0x100010504",
+            "unassociated_iovar": "scan_unassoc_time",
+            "unassociated_payload_bytes": 4,
             "commander_run_iovar_set": "0x10017b6e6",
-            "iovars": ["pfnclear", "pfn_set", "pfn_add", "pfn_add_bssid"],
-            "adapter_cache_copy_bytes": "0x12c0",
         },
         "local": {
-            "matching_bgscan_pfn_backend_implemented": False,
+            "matching_bgscan_params_backend_implemented": False,
             "request_false_success": False,
             "full_carrier_layout_proven": False,
             "valid_input_or_error_is_apple_parity": False,
@@ -83,17 +86,17 @@ def report():
                 token in note
                 for token in (
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "0x100019254",
-                    "0x100142b68",
+                    "0x1000192c4",
+                    "0x100142bac",
                     "`0xe00002bc`",
                     "`+0x1578`",
-                    "0x10000ee46",
-                    "0x10000f516",
-                    "`pfnclear`",
+                    "0x1000102a2",
+                    "0x1000103ec",
+                    "0x18-byte `pfn_override`",
+                    "`sendIOVarSet`",
+                    "0x100010504",
+                    "`scan_unassoc_time`",
                     "0x10017b6e6",
-                    "`pfn_set`",
-                    "`pfn_add`",
-                    "`pfn_add_bssid`",
                     "complete public carrier layout",
                 )
             ),
@@ -108,38 +111,35 @@ def report():
             and all(
                 token not in setter
                 for token in (
-                    "cachedBgNetwork",
-                    "hasCachedBgNetwork",
-                    "fNextNodeToSend",
-                    "fScanResultWrapping",
+                    "cachedBgParams",
+                    "hasCachedBgParams",
+                    "data->raw",
                     "return kIOReturnSuccess;",
                 )
             ),
             "pseudo_state_and_layout_removed": all(
                 token not in cpp and token not in hpp
                 for token in (
-                    "cachedBgNetwork",
-                    "hasCachedBgNetwork",
-                    "struct apple80211_bg_network",
+                    "cachedBgParams",
+                    "hasCachedBgParams",
+                    "struct apple80211_bg_params",
                 )
             ),
-            "scoped_bgscan_pfn_backend_absent": all(
+            "scoped_bgscan_params_backend_absent": all(
                 not source_contains(token)
                 for token in (
-                    "AppleBCMWLANBGScanAdapter",
-                    "configurePFN(",
-                    "configurePFNSuspend(",
-                    "pfnclear",
-                    "pfn_set",
-                    "pfn_add",
-                    "pfn_add_bssid",
+                    "configureDynamicScanFreq(",
+                    "configureUnAssociatedScanTime(",
+                    "pfn_override",
+                    "scan_unassoc_time",
+                    "sendIOVarSet(",
                     "runIOVarSet(",
                 )
             ),
             "stale_q7_claim_corrected": correction_heading in signal_audit
             and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and\n`setWCL_CONFIG_BG_PARAMS` are excluded from that functional closure"
             in inventory_q7
-            and "- `setWCL_CONFIG_BG_NETWORK`" not in inventory_q7,
+            and "- `setWCL_CONFIG_BG_PARAMS`" not in inventory_q7,
         },
     }
 
@@ -154,7 +154,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("BG network quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("BG params quarantine checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -168,5 +168,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"BG network quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"BG params quarantine validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

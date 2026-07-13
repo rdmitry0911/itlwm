@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_bgscan_params_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q7_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_bgscan_params_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_setter": "0x1000102a2",
+    "bgscan_adapter_offset": "0x1578",
+    "commander_run_iovar_set": "0x10017b6e6",
+    "configure_dynamic_scan_freq": "0x1000103ec",
+    "configure_unassociated_scan_time": "0x100010504",
+    "core_setter": "0x100142bac",
+    "dynamic_async_transport": "sendIOVarSet",
+    "dynamic_iovar": "pfn_override",
+    "dynamic_payload_bytes": "0x18",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x1000192c4",
+    "null_status": "0xe00002bc",
+    "unassociated_iovar": "scan_unassoc_time",
+    "unassociated_payload_bytes": 4
+  },
+  "schema": "itlwm-bg-params-quarantine-v1",
+  "source_base_revision": "92ff9ea66cf025b671b4ecacddc23b2de3eb5ab1"
+}

@@ -774,13 +774,13 @@ Closed in the latest batch:
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_ARP_MODE`
 - `setWCL_CONFIG_BGSCAN`
-- `setWCL_CONFIG_BG_PARAMS`
 
 The exact hidden helper choreography behind roam/bgscan/keepalive owners still
 belongs to `Q13`, but the listed slots no longer remain as inline success
-stubs. `setWCL_CONFIG_BG_MOTIONPROFILE` and `setWCL_CONFIG_BG_NETWORK` are
-excluded from that functional closure: Tahoe routes them through BGScanAdapter
-mapping/PNO/EPNO and PFN/Commander work respectively, so their local
+stubs. `setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and
+`setWCL_CONFIG_BG_PARAMS` are excluded from that functional closure: Tahoe
+routes them through BGScanAdapter mapping/PNO/EPNO, PFN/Commander, and
+dynamic-frequency/unassociated-scan-time work respectively, so their local
 cache-only implementations are dedicated no-backend quarantines.
 
 ### 4. Hidden `+0x1510` object method surface is still only partially lifted

@@ -48,8 +48,13 @@ def report():
         "setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)",
         "setWCL_CONFIG_BG_NETWORK",
     )
+    inventory_q7 = section(
+        inventory,
+        "### 3. Former WCL adapter-plane stub cluster is closed as a queue",
+        "### 4.",
+    )
     correction_heading = (
-        "## Q13 correction: `setWCL_CONFIG_BG_MOTIONPROFILE` is BGScanAdapter-backed"
+        "## Q13 correction: BG motion-profile, BG network, and BG params are BGScanAdapter-backed"
     )
     return {
         "schema": "itlwm-bg-motion-profile-quarantine-v1",
@@ -132,9 +137,9 @@ def report():
                 )
             ),
             "stale_q7_claim_corrected": correction_heading in signal_audit
-            and "adapter-backed\n  no-local-backend quarantine" in inventory
-            and "`setWCL_CONFIG_BG_MOTIONPROFILE`\n- `setWCL_CONFIG_BG_NETWORK`"
-            not in inventory,
+            and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and\n`setWCL_CONFIG_BG_PARAMS` are excluded from that functional closure"
+            in inventory_q7
+            and "- `setWCL_CONFIG_BG_MOTIONPROFILE`" not in inventory_q7,
         },
     }
 

@@ -584,7 +584,8 @@ public:
     virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data) override;
     // [617] — AppleBCMWLAN: handles enable/disable/periodic scan config.
     virtual IOReturn setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data) override;
-    // [618] — AppleBCMWLAN: delegates to BGScanAdapter.
+    // [618] — Tahoe BGScanAdapter owns dynamic PFN override and unassociated
+    // scan-time configuration; locally quarantined until a matching owner exists.
     virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override;
     // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
     virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override;
@@ -788,8 +789,6 @@ private:
     bool hasCachedWclArpMode;
     uint8_t cachedBgScanConfig[8];
     bool hasCachedBgScanConfig;
-    uint8_t cachedBgParams[0x20];
-    bool hasCachedBgParams;
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;

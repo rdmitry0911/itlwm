@@ -947,13 +947,6 @@ struct apple80211_bg_scan
     uint8_t raw[8];
 } __attribute__((packed));
 
-struct apple80211_bg_params
-{
-    uint8_t raw[0x20];
-} __attribute__((packed));
-static_assert(sizeof(apple80211_bg_params) == 0x20,
-              "apple80211_bg_params must preserve the recovered 0x20 payload");
-
 struct apple80211_pm_mode
 {
     uint32_t version;
@@ -2483,8 +2476,6 @@ init()
     hasCachedWclArpMode = false;
     memset(cachedBgScanConfig, 0, sizeof(cachedBgScanConfig));
     hasCachedBgScanConfig = false;
-    memset(cachedBgParams, 0, sizeof(cachedBgParams));
-    hasCachedBgParams = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -2897,8 +2888,6 @@ init(IOService *provider)
     this->hasCachedWclArpMode = false;
     memset(this->cachedBgScanConfig, 0, sizeof(this->cachedBgScanConfig));
     this->hasCachedBgScanConfig = false;
-    memset(this->cachedBgParams, 0, sizeof(this->cachedBgParams));
-    this->hasCachedBgParams = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -6136,20 +6125,12 @@ setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
 {
-
-    // AppleBGScanAdapter::setWCL_CONFIG_BG_PARAMS carries two independent
-    // sub-commands out of a 0x20 blob. The local bgscan engine does not expose
-    // those hidden helper entrypoints, but preserving the exact payload keeps the
-    // owner-side state reachable instead of acknowledging and discarding it. This
-    // producer does not start a scan; that belongs to WCL_CONFIG_BGSCAN or an
-    // explicit scan request.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedBgParams, data, sizeof(*data));
-    hasCachedBgParams = true;
-
-    return kIOReturnSuccess;
+    // Tahoe delegates dynamic PFN override and unassociated-scan timing to
+    // BGScanAdapter. Intel has no matching background-scan owner or transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

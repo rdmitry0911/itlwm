@@ -1593,13 +1593,11 @@ The remaining `Q7` gap was the roam/bgscan half of the WCL plane:
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_ARP_MODE`
 - `setWCL_CONFIG_BGSCAN`
-- `setWCL_CONFIG_BG_PARAMS`
 
 Recovered Apple paths show these are not disposable validate-and-ack slots.
 They either:
 
-- persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`, `0x14`,
-  `0x20`), or
+- persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`, `0x14`), or
 - delegate into local-owner-equivalent actions we already have
   (`REASSOC_REQ`, bgscan start/stop)
 
@@ -1615,12 +1613,12 @@ make every copied carrier a complete owner implementation:
 - adapter-owned requests without that owner are reclassified rather than
   acknowledged by a partial local cache
 
-`setWCL_CONFIG_BG_MOTIONPROFILE` and `setWCL_CONFIG_BG_NETWORK` are
-specifically reclassified below as no-local-backend quarantines. Any
-still-missing hidden helper exactness belongs under `Q13`, not under the old
-WCL adapter-stub bucket.
+`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and
+`setWCL_CONFIG_BG_PARAMS` are specifically reclassified below as
+no-local-backend quarantines. Any still-missing hidden helper exactness belongs
+under `Q13`, not under the old WCL adapter-stub bucket.
 
-## Q13 correction: BG motion-profile and BG network are BGScanAdapter-backed
+## Q13 correction: BG motion-profile, BG network, and BG params are BGScanAdapter-backed
 
 `setWCL_CONFIG_BG_MOTIONPROFILE(...)` is not a standalone 0x40-byte cache.
 Tahoe 25C56 Infra wrapper `0x10001921c` tail-jumps to Core `0x100142b46`.
@@ -1657,6 +1655,24 @@ mutations, but it keeps the live scan-result fields and their other owners.
 This makes no full carrier-layout, valid-input/error, PFN/IOVAR-payload, or
 completion parity claim. See
 `docs/reference/CR-479-bg-network-quarantine-20260713.md`.
+
+`setWCL_CONFIG_BG_PARAMS(...)` is also not a standalone 0x20-byte cache.
+Tahoe 25C56 Infra wrapper `0x1000192c4` tail-jumps to Core `0x100142bac`.
+Core returns `0xe00002bc` for null and otherwise selects the same
+BGScanAdapter at `+0x1578`, whose setter is `0x1000102a2`. When the first
+sub-command is enabled, that setter calls `configureDynamicScanFreq` at
+`0x1000103ec`; it constructs a 0x18-byte `pfn_override` request and submits
+it through Commander `sendIOVarSet` with an async completion callback. When
+the second sub-command is enabled, it calls `configureUnAssociatedScanTime` at
+`0x100010504`, which sends the four-byte `scan_unassoc_time` request through
+Commander `runIOVarSet` `0x10017b6e6` and retains the relevant status path.
+
+The port preserves the direct null guard and returns `kIOReturnUnsupported`
+for a non-null BG params request before reading its carrier. It removes the
+dead 0x20 pseudo-layout/cache/flag and their reset lines. This makes no full
+carrier-layout, sub-command validity, PFN/IOVAR-payload, async-completion, or
+return-status parity claim. See
+`docs/reference/CR-479-bg-params-quarantine-20260713.md`.
 
 ## Q13 Batch: sideband carriers continue to leave the unsupported/stub tail
 
