@@ -2553,7 +2553,6 @@ init()
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
     memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
-    memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
     memset(cachedMwsRfemConfig, 0, sizeof(cachedMwsRfemConfig));
     memset(cachedMwsAssocProtectionBitmap, 0, sizeof(cachedMwsAssocProtectionBitmap));
     memset(cachedMwsScanFreq, 0, sizeof(cachedMwsScanFreq));
@@ -3012,7 +3011,6 @@ init(IOService *provider)
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
     memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
-    memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
     memset(this->cachedMwsRfemConfig, 0, sizeof(this->cachedMwsRfemConfig));
     memset(this->cachedMwsAssocProtectionBitmap, 0, sizeof(this->cachedMwsAssocProtectionBitmap));
     memset(this->cachedMwsScanFreq, 0, sizeof(this->cachedMwsScanFreq));
@@ -6778,9 +6776,10 @@ setMWS_DISABLE_OCL_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedMwsDisableOclBitmap, reinterpret_cast<const uint32_t *>(data),
-           sizeof(cachedMwsDisableOclBitmap));
-    return kIOReturnSuccess;
+    // AppleBCMWLAN maps this opaque bitmap carrier to a firmware-specific
+    // coexistence command. Intel has no equivalent owner or transport, so do
+    // not acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -842,7 +842,6 @@ private:
     uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
     uint32_t cachedMwsCoexBitmap[9];
-    uint32_t cachedMwsDisableOclBitmap[9];
     uint32_t cachedMwsRfemConfig[10];
     uint32_t cachedMwsAssocProtectionBitmap[9];
     uint32_t cachedMwsScanFreq[10];

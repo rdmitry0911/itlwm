@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "no_local_mws_disable_ocl_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_disable_ocl_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x10014113c",
+    "core_vtable": "0x1003a10d8",
+    "firmware_iovar": "mws",
+    "firmware_subcommand": 3,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 651,
+    "infra_wrapper": "0x10001965c",
+    "terminal_owner": "0x1001222fa"
+  },
+  "schema": "itlwm-mws-disable-ocl-bitmap-quarantine-v1",
+  "source_base_revision": "22594a6b762c241229e9db95480f8a965efdf2ea"
+}
