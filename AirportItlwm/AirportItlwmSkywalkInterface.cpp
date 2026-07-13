@@ -2508,9 +2508,6 @@ init()
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
-    cachedUsbHostNotificationSeq = 0;
-    cachedUsbHostNotificationChange = 0;
-    cachedUsbHostNotificationPresent = 0;
     memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
     cachedAssocIeLen = 0;
     hasCachedAssocIe = false;
@@ -2950,9 +2947,6 @@ init(IOService *provider)
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
-    this->cachedUsbHostNotificationSeq = 0;
-    this->cachedUsbHostNotificationChange = 0;
-    this->cachedUsbHostNotificationPresent = 0;
     memset(this->cachedAssocIe, 0, sizeof(this->cachedAssocIe));
     this->cachedAssocIeLen = 0;
     this->hasCachedAssocIe = false;
@@ -4461,23 +4455,10 @@ setUSB_HOST_NOTIFICATION(apple80211_usb_host_notification_data *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetUSBHostNotification(data, &asyncContext)
-            : kIOReturnBadArgumentTahoe;
-    if (rc != kIOReturnSuccess)
-        return rc;
-
-    // The recovered Apple producer first routes through the hidden +0x1510
-    // owner and then programs commander IOVARs. That hidden type gate is still
-    // unrecovered here, so the new TahoeCommander layer mirrors the Apple-
-    // visible command split and preserves the two IOVAR payloads separately.
-    const auto &owner = instance->getTahoeOwnerRegistry().usbHostNotification;
-    cachedUsbHostNotificationSeq = owner.sequenceNumber;
-    cachedUsbHostNotificationChange = owner.change;
-    cachedUsbHostNotificationPresent = owner.present;
-    return rc;
+    // Apple performs a hidden-owner transition followed by real Broadcom
+    // commander IOVAR traffic. The Intel port has neither backend, so it must
+    // not acknowledge a carrier after only synthetic local bookkeeping.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

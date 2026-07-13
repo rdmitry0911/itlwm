@@ -1,0 +1,29 @@
+{
+  "checks": {
+    "no_local_usb_iovar_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_usb_host_notification_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "change_iovar": "asym_mit_ext_usb_chg",
+    "conditional_change_max": 1,
+    "conditional_change_offset": "0x08",
+    "core_setter": "0x100120ae0",
+    "hidden_owner_offset": "0x1510",
+    "hidden_owner_virtual_offset": "0x170",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_slot": "0x720",
+    "infra_wrapper": "0x100018890",
+    "iovar_payload_bytes": 4,
+    "present_iovar": "asym_mit_ext_usb",
+    "present_offset": "0x0c"
+  },
+  "schema": "itlwm-usb-host-notification-quarantine-v1",
+  "source_base_revision": "0282d06e58bf6001efee0deb6a0b8e9564b0995d"
+}

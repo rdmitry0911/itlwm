@@ -1187,3 +1187,66 @@ are the connection evidence. Radio OFF/ON remains excluded because the
 restored bit-identical A2DF baseline reproduces the same separate WCL lifecycle
 panic. Full immutable runtime evidence is under
 /home/dima/Projects/aiam/runtime-captures/itlwm-ibss-mode-quarantine-20260713/.
+
+## FIX_CANDIDATE — USB host notification false-success quarantine
+
+- anomaly ID: public `USB_HOST_NOTIFICATION` accepted a non-null carrier,
+  updated local owner/cache state, and reported success through a synthetic
+  commander despite no Intel USB/coexistence hardware backend.
+- expected reference path: Tahoe 25C56 Infra wrapper `0x100018890` dispatches
+  virtual slot `+0x720` to Core `0x100120ae0`. The Core invokes hidden owner
+  `+0x1510`/virtual `+0x170`, sends carrier `+0x0c` as the four-byte
+  `asym_mit_ext_usb` IOVAR, conditionally sends carrier `+0x08` when it is at
+  most one as `asym_mit_ext_usb_chg`, and preserves commander status.
+- actual local behavior: `runSetUSBHostNotification` only updates a local
+  registry and calls `dispatchTransport`, which immediately completes status
+  zero. The public setter then mirrors three values into dead Skywalk cache;
+  no local `asym_mit_ext_usb`, `runIOVarSet`, or Intel-equivalent owner exists.
+- proposed correction: preserve the existing local null rejection, reject each
+  non-null carrier with `kIOReturnUnsupported` before the synthetic path, and
+  remove only the three dead Skywalk cache members and their two reset sites.
+- scope boundary: no generic commander mutation, no guessed carrier or private
+  setter invocation, no Apple null/valid-input return parity claim, and no
+  MWS, BTCOEX, WCL, radio, power, or association change.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON remains
+  excluded because the restored bit-identical A2DF baseline reproduces the
+  separate WCL lifecycle panic.
+
+## VERIFIED RESULT — USB host notification false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`e0bf5fc4c69d0e6166e17758e78af86b51bfbc4c4e43e669503b240ac092fc09`.
+The USB host-notification report, retained affected quarantine reports, Tahoe
+payload-builder suite (31 contracts), payload parity, and staged whitespace
+check passed. A clean Tahoe build resolved all 959 undefined symbols against
+BootKC.
+
+The installed candidate loaded as UUID
+`E65EA5A4-7787-3BD9-B86E-7A153B329F8B` with executable SHA-256
+`e3c8c3e69ef2f5f2adf96aa5667bf1f3cdae61e25f319c809e96aa9efb14162a` and
+AuxKC SHA-256
+`48e0bb48ddf7b084fe2163640cbb0c69fedbf28e95c69c5e27c4aef6de206985`.
+The deployment's informational codesign check reported an unsigned code
+object; the loaded identity is established by kmutil, UUID, and executable
+hash, not a signing claim. After an explicit normal credentialed rejoin,
+capped uplink and reverse 240-second gates each transferred 572 MiB at
+20.0 Mbit/s with 240/240 concurrent ping replies and 0.0% loss (mean RTT
+5.378 ms and 6.158 ms; reverse sender had zero retransmits). Hostapd retained
+an authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the bounded guest fault filter had no matching
+panic/WCL/AirportItlwm marker, and the bounded host filter had no fatal
+VFIO/IOMMU/AER match.
+
+The recovered reference proves hidden-owner and real commander work but does
+not establish a complete public-carrier allocation or Apple null/valid-input
+return-code parity. No guessed carrier or private setter ioctl was issued, so
+this is explicitly not a claim of direct setter runtime invocation. The known
+networksetup association string remains a false negative; AP station state,
+IPv4/gateway route, ping, and traffic gates are the connection evidence.
+Radio OFF/ON remains excluded because the restored bit-identical A2DF baseline
+reproduces the same separate WCL lifecycle panic. Full immutable runtime
+evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-usb-host-notification-quarantine-20260713/`.

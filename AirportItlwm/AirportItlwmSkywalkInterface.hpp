@@ -797,9 +797,6 @@ private:
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;
-    uint32_t cachedUsbHostNotificationSeq;
-    uint32_t cachedUsbHostNotificationChange;
-    uint32_t cachedUsbHostNotificationPresent;
     uint8_t cachedAssocIe[2048];
     uint32_t cachedAssocIeLen;
     bool hasCachedAssocIe;
