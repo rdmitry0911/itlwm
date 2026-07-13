@@ -1047,9 +1047,9 @@ notifier graph:
 - `setNDD_REQ(...)` now exposes the recovered Tahoe fail path rather than a
   generic placeholder
 
-## Q13 Minimal Setter-Contract Zone: mixed opaque carriers and fixed fail shapes
+## Q13 Minimal Setter-Contract Zone: remaining opaque carriers and fixed fail shapes
 
-The next `Q13` zone closes fifteen setter slots that all share the same
+The remaining `Q13` zone closes the following setter slots, which share the
 pragmatic boundary: Tahoe already exposes a stable public contract for them,
 but the hidden owner choreography is either feature-gated or still private.
 
@@ -1067,7 +1067,6 @@ Closed in this zone:
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
 - `setEAP_FILTER_CONFIG(...)`
-- `setWCL_ASSOCIATED_SLEEP(...)`
 - `setWCL_SOI_CONFIG(...)`
 - `setOS_ELIGIBILITY(...)`
 
@@ -1079,8 +1078,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   field split:
   `setDBG_GUARD_TIME_PARAMS`, `setDYNAMIC_RSSI_WINDOW_CONFIG`,
   `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setEAP_FILTER_CONFIG`,
-  `setWCL_ASSOCIATED_SLEEP`, `setWCL_SOI_CONFIG`, `setRSN_XE`,
-  `setOS_ELIGIBILITY`
+  `setWCL_SOI_CONFIG`, `setRSN_XE`, `setOS_ELIGIBILITY`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1089,10 +1087,26 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
 
 That closes the zone at the public Apple80211 surface:
 
-- generic unsupported is removed from these fifteen setters
-- caller-visible carriers are preserved locally where Apple preserves them in
-  core state
+- generic unsupported is removed from these remaining setters
+- caller-visible carriers are preserved locally only for the remaining
+  cache-only contracts in this zone
 - fixed Tahoe fail codes are now explicit where Apple exposes them
+
+## Q13 correction: `setWCL_ASSOCIATED_SLEEP` is PowerStateAdapter-backed
+
+`setWCL_ASSOCIATED_SLEEP(...)` is not an opaque cache carrier.  In Tahoe
+25C56, Infra forwards virtual slot `+0x778` to Core, whose terminal setter
+updates power-management state and calls the `PowerStateAdapter` at Core
+`+0x8c88` to configure beacon SOI, data SOI, excess-PM alert, and
+associated-sleep roam scanning.  A local byte copy cannot supply those
+effects.
+
+The port keeps its local null guard but returns `kIOReturnUnsupported` for a
+non-null request before any pseudo-state mutation, and removes the dead
+associated-sleep cache.  This is a no-local-backend quarantine: it does not
+claim Apple null handling, complete carrier allocation, or valid-input return
+code parity.  See
+`docs/reference/CR-479-wcl-associated-sleep-quarantine-20260713.md`.
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 

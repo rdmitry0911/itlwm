@@ -1214,6 +1214,70 @@ panic. Full immutable runtime evidence is under
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
 
+## FIX_CANDIDATE — WCL associated-sleep false-success quarantine
+
+- anomaly ID: public `setWCL_ASSOCIATED_SLEEP` accepted a non-null opaque
+  carrier, copied a local `0x58`-byte cache, and returned success although no
+  Intel power-management backend consumes that state.
+- expected reference path: Tahoe 25C56 image SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`
+  dispatches Infra wrapper `0x100019498` through virtual `+0x778` to Core
+  `0x100142fce`.  The Core updates power-management state, reads the carrier
+  byte at `+0x36`, and calls four `PowerStateAdapter` configurators through
+  Core `+0x8c88`: beacon SOI, data SOI, excess-PM alert, and associated-sleep
+  roam scanning.
+- actual local behavior: the setter only copied the cache and set a flag; no
+  local `PowerStateAdapter` or recovered configurator exists, and no consumer
+  observed that pseudo-state.
+- proposed correction: preserve the existing local null safety guard; return
+  `kIOReturnUnsupported` for a non-null carrier before mutation; remove only
+  the two dead cache members and their two reset groups.
+- scope boundary: no Core power-management lift, no inferred complete carrier
+  allocation, no guessed carrier or private setter invocation, and no Apple
+  null or valid-input return-code parity claim.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and focused bounded guest/host fault filters. Radio OFF/ON
+  remains excluded because the restored bit-identical A2DF baseline reproduces
+  the separate WCL lifecycle panic.
+
+## VERIFIED RESULT — WCL associated-sleep false-success quarantine
+
+The declared verification plan completed.  The compiled source-code delta
+(`AirportItlwm/` and `include/` build inputs) has SHA-256
+`3d6aaf0d98324506e79ffa5d1925b720e0dbaa9e7256281dc3100a5cf5ccfd37`.
+The associated-sleep quarantine report, retained BCN-mute/IE/USB/BTCOEX
+reports, payload parity, 31 payload-builder contracts, Python syntax check,
+and staged whitespace check passed.  A clean Tahoe build resolved all
+959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`F854B410-0B11-3AA8-9E64-F61C22A75762` with executable SHA-256
+`09c6b7f2bd5c479d0782d0a88167a2c397d7aff784e59b5e77858653513c5174` and
+AuxKC SHA-256
+`880d80783d609636ea522bfef3c8b7c7612747592205db5d0bf1c9e580139809`.
+The informational codesign check reported an unsigned code object; loaded
+identity is established by kmutil, UUID, and executable hash, not a signing
+claim.  After an explicit normal credentialed rejoin, capped uplink and
+reverse 240-second gates each transferred 572 MiB at 20.0 Mbit/s with
+240/240 concurrent ping replies and 0.0% loss (mean RTT 3.323 ms and
+5.815 ms; reverse sender had one retransmit).  Hostapd kept an
+authorized/authenticated/associated station with zero TX failures and QEMU
+remained running.  The focused bounded guest failure filter produced
+`no_matching_guest_panic_wcl_airportitlwm_marker`; the bounded host filter
+produced `no_recent_fatal_vfio_iommu_aer_match`.
+
+The recovered reference proves PowerStateAdapter backend work, but does not
+establish a complete public carrier allocation or Apple null/valid-input
+return-code parity.  No guessed carrier or private setter ioctl was issued,
+so this is explicitly not a claim of direct setter runtime invocation.  The
+known networksetup association string remains a false negative; AP station
+state, IPv4/gateway route, ping, and traffic gates are the connection
+evidence.  Radio OFF/ON remains excluded because the restored bit-identical
+A2DF baseline reproduces the separate WCL lifecycle panic.  Full immutable
+runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-associated-sleep-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

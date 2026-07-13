@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "intel_source_has_no_power_state_adapter_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true,
+    "stale_cache_claim_corrected": true
+  },
+  "local": {
+    "backend_power_state_adapter": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "beacon_soi": "0x100041352",
+    "core_setter": "0x100142fce",
+    "data_soi": "0x100041a0c",
+    "excess_pm_alert": "0x100041ce6",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x778",
+    "infra_wrapper": "0x100019498",
+    "power_state_adapter_offset": "0x8c88",
+    "roam_scan_associated_sleep": "0x100041eb6"
+  },
+  "schema": "itlwm-wcl-associated-sleep-quarantine-v1",
+  "source_base_revision": "32a5572d1ab0d2f1c71ca34569d84beadbbc8df6"
+}

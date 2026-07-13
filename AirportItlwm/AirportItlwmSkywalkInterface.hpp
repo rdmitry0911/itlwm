@@ -810,8 +810,6 @@ private:
     uint32_t cachedRealTimeQosMscs;
     uint32_t cachedEapFilterConfig;
     bool cachedWowEnabled;
-    uint8_t cachedAssociatedSleepConfig[0x58];
-    bool hasCachedAssociatedSleepConfig;
     uint8_t cachedSoiConfig[0x40];
     bool hasCachedSoiConfig;
     uint32_t cachedOsEligibility;

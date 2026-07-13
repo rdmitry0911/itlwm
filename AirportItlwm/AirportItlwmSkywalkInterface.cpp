@@ -2521,8 +2521,6 @@ init()
     cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
-    memset(cachedAssociatedSleepConfig, 0, sizeof(cachedAssociatedSleepConfig));
-    hasCachedAssociatedSleepConfig = false;
     memset(cachedSoiConfig, 0, sizeof(cachedSoiConfig));
     hasCachedSoiConfig = false;
     cachedOsEligibility = 0;
@@ -2951,8 +2949,6 @@ init(IOService *provider)
     this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
-    memset(this->cachedAssociatedSleepConfig, 0, sizeof(this->cachedAssociatedSleepConfig));
-    this->hasCachedAssociatedSleepConfig = false;
     memset(this->cachedSoiConfig, 0, sizeof(this->cachedSoiConfig));
     this->hasCachedSoiConfig = false;
     this->cachedOsEligibility = 0;
@@ -6596,9 +6592,9 @@ setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedAssociatedSleepConfig, data, sizeof(cachedAssociatedSleepConfig));
-    hasCachedAssociatedSleepConfig = true;
-    return kIOReturnSuccess;
+    // Tahoe configures an external sleep backend for this carrier.  Intel has
+    // no equivalent backend, so do not acknowledge an unconsumed request.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
