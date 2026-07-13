@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "no_local_mws_coex_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_coex_bitmap_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100140f5a",
+    "core_vtable": "0x1003a10d8",
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_payload_bytes": 36,
+    "firmware_subcommand": 2,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 650,
+    "infra_wrapper": "0x100019624",
+    "terminal_owner": "0x100122074"
+  },
+  "schema": "itlwm-mws-coex-bitmap-quarantine-v1",
+  "source_base_revision": "dbb657170839995acc20c5a0674ac2dc6f5849af"
+}

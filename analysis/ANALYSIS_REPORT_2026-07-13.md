@@ -459,6 +459,40 @@ separate WCL lifecycle panic. Full immutable runtime evidence is under
   fault filters. The runtime report will distinguish regression coverage from
   direct private-setter execution.
 
+## VERIFIED RESULT — MWS COEX bitmap false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`dab239a2fb5648b8dc62195ea019cd56f550e32637d7b0dcda21a93517c7222`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test, the
+four-invariant MWS COEX quarantine report, retained RFEM/disable-OCL/Type-7/
+battery/LMTPC/TX-power-cap reports, and the payload-parity report all passed.
+A clean Tahoe build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`4B935CB8-7C94-387E-9BFD-A8C1BDA75654` with signed executable SHA-256
+`46b5bfd06d2560bdc514751afdc676c3fba40bb5d3e8bde3146ce47198a645c6`
+and AuxKC SHA-256
+`619cbc9b4d9453dc754f2f70752add1736a77f826661e4b5bdc45e2c80c30568`.
+After explicit saved-profile rejoin, capped uplink and reverse 240-second
+gates each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping
+replies and 0.0% loss (mean RTT 4.344 ms and 6.591 ms respectively; reverse
+sender had two retransmits). Hostapd retained an authorized, authenticated,
+associated station with zero TX failures, QEMU remained running, the bounded
+guest fault filter had no matching panic/WCL/AirportItlwm marker, and the
+bounded host filter had no fatal VFIO/IOMMU/AER match.
+
+The recovered reference consumes nine effective dwords, but does not prove the
+complete public-carrier allocation size. No guessed opaque carrier or private
+setter ioctl was issued, so this is explicitly not a claim of direct setter
+runtime invocation or Apple valid-input return-code parity. The known
+`networksetup` association string remains a false negative here; the actual AP
+station state, IPv4 address, route, ping, and traffic gates are the connection
+evidence. Radio OFF/ON remains excluded because the restored bit-identical
+A2DF baseline reproduces the same separate WCL lifecycle panic. Full immutable
+runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-mws-coex-bitmap-quarantine-20260713/`.
+
 ## VERIFIED RESULT — MWS RFEM configuration false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
@@ -492,6 +526,59 @@ evidence. Radio OFF/ON remains excluded because the restored bit-identical
 A2DF baseline reproduces the same separate WCL lifecycle panic. Full immutable
 runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-mws-rfem-config-quarantine-20260713/`.
+
+## FIX_CANDIDATE — MWS COEX bitmap false-success quarantine
+
+- anomaly_id: `CR-479-MWS-COEX-BITMAP-FALSE-SUCCESS-P0`
+- status: `FIX_CANDIDATE`
+- symptom: a non-null `MWS_COEX_BITMAP_WIFI_ENH` request reports success
+  although the Intel port has no corresponding MWS firmware-policy owner or
+  transport.
+- expected system behavior: recovered 25C56 Infra slot-[650] at
+  `0x100019624` calls Core `0x100140f5a`; the Core setter consumes nine
+  dwords at `+0..+0x20`, stores them at `+0x292c..+0x294c`, and dispatches
+  `+0x610`. Its proven vtable target `0x100122074` creates the 36-byte MWS
+  command-2 bitmap payload and returns real Commander IOVAR status.
+- actual behavior: local
+  `AirportItlwmSkywalkInterface::setMWS_COEX_BITMAP_WIFI_ENH` preserves the
+  null guard, then writes only `cachedMwsCoexBitmap` and returns success. The
+  cache has no consumer; scoped local inventory finds no MWS iovar, COEX bitmap
+  owner, callback, or equivalent Commander transport.
+- exact divergence point: local cache-only setter versus the recovered
+  wrapper/Core/vtable/terminal chain recorded in
+  `docs/reference/CR-479-mws-coex-bitmap-quarantine-20260713.md`.
+- evidence from static recovery: the exact reference image has SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`;
+  raw recovery establishes the null/effective-nine-dword/vtable/firmware
+  behavior. Scoped local inspection proves the cache-only success path and
+  backend absence.
+- confirmed deviation: callers are told a COEX bitmap policy was accepted
+  while the local port cannot reproduce the corresponding firmware work.
+- fix justification path: `REFERENCE_ALIGNMENT_SAFETY_QUARANTINE`.
+- why this is root cause and not just correlation: this does not explain the
+  independent WCL lifecycle panic. It is a direct false-capability boundary:
+  local success follows a dead cache write while the reference sends real MWS
+  IOVAR policy work.
+- proposed fix: retain the recovered null error, reject all non-null requests
+  with `kIOReturnUnsupported` before mutation, and remove only the dead cache
+  plus its two initializers.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp` and `.hpp`;
+  - dedicated COEX bitmap quarantine report, reference note, and this analysis
+    record.
+- forbidden alternative fixes considered and rejected:
+  - fabricating the opaque MWS command-2 payload or issuing a guessed IOVAR;
+  - treating generic Intel coexistence code as Apple's MWS implementation;
+  - changing PM, radio state, `0x37`, WCL, association, or generic commander
+    semantics;
+  - claiming `kIOReturnUnsupported` is Apple's valid-input result;
+  - changing adjacent MWS selectors without their own terminal trace;
+  - using the baseline-shared radio OFF/ON fault as a candidate gate.
+- verification plan: deterministic source guard plus existing payload checks,
+  clean Tahoe build and symbol resolution, AuxKC install/load identity,
+  saved-profile rejoin, bounded bidirectional traffic/ping, and guest/host
+  fault filters. The runtime report will distinguish regression coverage from
+  direct private-setter execution.
 
 ## VERIFIED RESULT — MWS disable-OCL bitmap false-success quarantine
 
