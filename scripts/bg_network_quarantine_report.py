@@ -53,9 +53,7 @@ def report():
         "### 3. Former WCL adapter-plane stub cluster is closed as a queue",
         "### 4.",
     )
-    correction_heading = (
-        "## Q13 correction: BG motion-profile, BG network, and BG params are BGScanAdapter-backed"
-    )
+    correction_heading = "## Q13 correction: BGScanAdapter-backed producer quarantines"
     return {
         "schema": "itlwm-bg-network-quarantine-v1",
         "source_base_revision": "894af7ec9c1894954a6a5c2ade3de7216180be94",
@@ -137,7 +135,7 @@ def report():
                 )
             ),
             "stale_q7_claim_corrected": correction_heading in signal_audit
-            and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and\n`setWCL_CONFIG_BG_PARAMS` are excluded from that functional closure"
+            and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,\n`setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are excluded from that\nfunctional closure"
             in inventory_q7
             and "- `setWCL_CONFIG_BG_NETWORK`" not in inventory_q7,
         },

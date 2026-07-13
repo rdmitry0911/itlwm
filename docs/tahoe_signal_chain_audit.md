@@ -1592,14 +1592,12 @@ The remaining `Q7` gap was the roam/bgscan half of the WCL plane:
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_ARP_MODE`
-- `setWCL_CONFIG_BGSCAN`
 
 Recovered Apple paths show these are not disposable validate-and-ack slots.
 They either:
 
 - persist exact carrier/config payloads (`0x9c`, `0x60`, `0x23c`, `0x14`), or
-- delegate into local-owner-equivalent actions we already have
-  (`REASSOC_REQ`, bgscan start/stop)
+- delegate into a local-owner-equivalent action we already have (`REASSOC_REQ`)
 
 The port still lacks Apple's hidden roam/bgscan/keepalive helper objects, so
 full helper choreography remains part of the broader hidden-owner surface. The
@@ -1613,12 +1611,12 @@ make every copied carrier a complete owner implementation:
 - adapter-owned requests without that owner are reclassified rather than
   acknowledged by a partial local cache
 
-`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`, and
-`setWCL_CONFIG_BG_PARAMS` are specifically reclassified below as
-no-local-backend quarantines. Any still-missing hidden helper exactness belongs
-under `Q13`, not under the old WCL adapter-stub bucket.
+`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,
+`setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are specifically
+reclassified below as no-local-backend quarantines. Any still-missing hidden
+helper exactness belongs under `Q13`, not under the old WCL adapter-stub bucket.
 
-## Q13 correction: BG motion-profile, BG network, and BG params are BGScanAdapter-backed
+## Q13 correction: BGScanAdapter-backed producer quarantines
 
 `setWCL_CONFIG_BG_MOTIONPROFILE(...)` is not a standalone 0x40-byte cache.
 Tahoe 25C56 Infra wrapper `0x10001921c` tail-jumps to Core `0x100142b46`.
@@ -1673,6 +1671,25 @@ dead 0x20 pseudo-layout/cache/flag and their reset lines. This makes no full
 carrier-layout, sub-command validity, PFN/IOVAR-payload, async-completion, or
 return-status parity claim. See
 `docs/reference/CR-479-bg-params-quarantine-20260713.md`.
+
+`setWCL_CONFIG_BGSCAN(...)` is not a generic net80211 start/stop control. Tahoe
+25C56 Infra wrapper `0x10001928c` tail-jumps to Core `0x100142b8a`. Core
+returns `0xe00002bc` for null and otherwise selects the same BGScanAdapter at
+`+0x1578`, whose setter is `0x10000f852`. A nonzero byte 0 invokes
+`configurePFN(0)` at `0x10000f516`; a nonzero byte 1 invokes `configPNO` at
+`0x10000fa18` with byte 2, which issues the four-byte `scan_nprobes` Commander
+request through `runIOVarSet` `0x10017b6e6`; and a nonzero byte 3 invokes
+`configEPNO` at `0x10000fc20` with byte 4. Those branches retain adapter-owned
+PFN/PNO/EPNO status and lifecycle handling rather than controlling the port's
+generic scan flags.
+
+The port preserves the direct null guard and returns `kIOReturnUnsupported`
+for a non-null BGSCAN request before reading the carrier. It removes the dead
+eight-byte pseudo-layout/cache/flag/reset lines and only the setter-local
+generic bgscan mutations. It keeps generic net80211 scan fields and their
+separate owners. This makes no full carrier-layout, branch-validity,
+PFN/PNO/EPNO IOVAR-payload, completion, or return-status parity claim. See
+`docs/reference/CR-479-bgscan-quarantine-20260713.md`.
 
 ## Q13 Batch: sideband carriers continue to leave the unsupported/stub tail
 

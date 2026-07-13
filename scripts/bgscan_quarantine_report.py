@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify BG motion-profile false-success quarantine evidence."""
+"""Generate and verify BGSCAN false-success quarantine evidence."""
 
 import argparse
 import json
@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "evidence/state/bg_motion_profile_quarantine_report.json"
-NOTE = ROOT / "docs/reference/CR-479-bg-motion-profile-quarantine-20260713.md"
+OUTPUT = ROOT / "evidence/state/bgscan_quarantine_report.json"
+NOTE = ROOT / "docs/reference/CR-479-bgscan-quarantine-20260713.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
@@ -45,8 +45,8 @@ def report():
     inventory = INVENTORY.read_text(encoding="utf-8")
     setter = section(
         cpp,
-        "setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)",
-        "setWCL_CONFIG_BG_NETWORK",
+        "setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)",
+        "setWCL_CONFIG_BG_PARAMS",
     )
     inventory_q7 = section(
         inventory,
@@ -55,25 +55,25 @@ def report():
     )
     correction_heading = "## Q13 correction: BGScanAdapter-backed producer quarantines"
     return {
-        "schema": "itlwm-bg-motion-profile-quarantine-v1",
-        "source_base_revision": "d4085ec9753b2ce7a30a470252418fa10bb89a33",
+        "schema": "itlwm-bgscan-quarantine-v1",
+        "source_base_revision": "a02e2a5ac95c42c5fe979339fbe448db6a5807e0",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-            "infra_wrapper": "0x10001921c",
-            "core_setter": "0x100142b46",
+            "infra_wrapper": "0x10001928c",
+            "core_setter": "0x100142b8a",
             "null_status": "0xe00002bc",
             "bgscan_adapter_offset": "0x1578",
-            "adapter_setter": "0x10000e856",
-            "mapping": "0x10000e96e",
-            "mapping_iovar": "mpf_map",
-            "pno": "0x10000eb3a",
-            "epno": "0x10000ec9a",
-            "pno_epno_iovar": "pfn_mpfset",
+            "adapter_setter": "0x10000f852",
+            "configure_pfn": "0x10000f516",
+            "config_pno": "0x10000fa18",
+            "config_epno": "0x10000fc20",
+            "pno_iovar": "scan_nprobes",
+            "pno_payload_bytes": 4,
             "commander_run_iovar_set": "0x10017b6e6",
-            "partial_pno_gate": "data+0x1",
+            "control_bytes": [0, 1, 2, 3, 4],
         },
         "local": {
-            "matching_bgscan_backend_implemented": False,
+            "matching_bgscan_pfn_pno_epno_backend_implemented": False,
             "request_false_success": False,
             "full_carrier_layout_proven": False,
             "valid_input_or_error_is_apple_parity": False,
@@ -83,18 +83,16 @@ def report():
                 token in note
                 for token in (
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "0x10001921c",
-                    "0x100142b46",
+                    "0x10001928c",
+                    "0x100142b8a",
                     "`0xe00002bc`",
                     "`+0x1578`",
-                    "0x10000e856",
-                    "0x10000e96e",
-                    "`mpf_map`",
+                    "0x10000f852",
+                    "0x10000f516",
+                    "0x10000fa18",
+                    "0x10000fc20",
+                    "`scan_nprobes`",
                     "0x10017b6e6",
-                    "0x10000eb3a",
-                    "0x10000ec9a",
-                    "`pfn_mpfset`",
-                    "`data + 1`",
                     "complete public carrier layout",
                 )
             ),
@@ -109,35 +107,37 @@ def report():
             and all(
                 token not in setter
                 for token in (
+                    "cachedBgScanConfig",
+                    "hasCachedBgScanConfig",
                     "data->raw",
-                    "cachedBgMotionProfile",
-                    "hasCachedBgMotionProfile",
+                    "ic_bgscan_start",
+                    "IEEE80211_F_BGSCAN",
                     "return kIOReturnSuccess;",
                 )
             ),
             "pseudo_state_and_layout_removed": all(
                 token not in cpp and token not in hpp
                 for token in (
-                    "cachedBgMotionProfile",
-                    "hasCachedBgMotionProfile",
-                    "struct apple80211_bg_motion_profile",
+                    "cachedBgScanConfig",
+                    "hasCachedBgScanConfig",
+                    "struct apple80211_bg_scan",
                 )
             ),
             "scoped_bgscan_backend_absent": all(
                 not source_contains(token)
                 for token in (
-                    "configureMotionProfileMapping(",
-                    "configureMotionProfilePNO(",
-                    "configureMotionProfileEPNO(",
-                    "mpf_map",
-                    "pfn_mpfset",
+                    "AppleBCMWLANBGScanAdapter",
+                    "configurePFN(",
+                    "configPNO(",
+                    "configEPNO(",
+                    "scan_nprobes",
                     "runIOVarSet(",
                 )
             ),
             "stale_q7_claim_corrected": correction_heading in signal_audit
             and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,\n`setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are excluded from that\nfunctional closure"
             in inventory_q7
-            and "- `setWCL_CONFIG_BG_MOTIONPROFILE`" not in inventory_q7,
+            and "- `setWCL_CONFIG_BGSCAN`" not in inventory_q7,
         },
     }
 
@@ -152,7 +152,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("BG motion-profile quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("BGSCAN quarantine checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -166,5 +166,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"BG motion-profile quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"BGSCAN quarantine validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_bgscan_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q7_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_bgscan_pfn_pno_epno_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_setter": "0x10000f852",
+    "bgscan_adapter_offset": "0x1578",
+    "commander_run_iovar_set": "0x10017b6e6",
+    "config_epno": "0x10000fc20",
+    "config_pno": "0x10000fa18",
+    "configure_pfn": "0x10000f516",
+    "control_bytes": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "core_setter": "0x100142b8a",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x10001928c",
+    "null_status": "0xe00002bc",
+    "pno_iovar": "scan_nprobes",
+    "pno_payload_bytes": 4
+  },
+  "schema": "itlwm-bgscan-quarantine-v1",
+  "source_base_revision": "a02e2a5ac95c42c5fe979339fbe448db6a5807e0"
+}

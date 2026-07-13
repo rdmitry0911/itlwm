@@ -942,11 +942,6 @@ static_assert(offsetof(apple80211_wcl_arp_mode, enabled) == 0x10,
 static_assert(sizeof(apple80211_wcl_arp_mode) == 0x14,
               "apple80211_wcl_arp_mode must preserve the recovered Tahoe offsets");
 
-struct apple80211_bg_scan
-{
-    uint8_t raw[8];
-} __attribute__((packed));
-
 struct apple80211_pm_mode
 {
     uint32_t version;
@@ -2474,8 +2469,6 @@ init()
     hasCachedRoamProfileConfig = false;
     memset(cachedWclArpMode, 0, sizeof(cachedWclArpMode));
     hasCachedWclArpMode = false;
-    memset(cachedBgScanConfig, 0, sizeof(cachedBgScanConfig));
-    hasCachedBgScanConfig = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -2886,8 +2879,6 @@ init(IOService *provider)
     this->hasCachedRoamProfileConfig = false;
     memset(this->cachedWclArpMode, 0, sizeof(this->cachedWclArpMode));
     this->hasCachedWclArpMode = false;
-    memset(this->cachedBgScanConfig, 0, sizeof(this->cachedBgScanConfig));
-    this->hasCachedBgScanConfig = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -6086,40 +6077,12 @@ setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BGSCAN(apple80211_bg_scan *data)
 {
-    struct ieee80211com *ic = fHalService->get80211Controller();
-
-    // AppleBCMWLANCore::setWCL_CONFIG_BGSCAN is a tiny command multiplexer:
-    // byte 0 resets PFN mode, byte 1 rewrites scan_nprobes using byte 2, and
-    // byte 3 toggles suspend/resume using byte 4. Mirror that split locally so
-    // the request is preserved and the available bgscan owner is exercised.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedBgScanConfig, data, sizeof(*data));
-    hasCachedBgScanConfig = true;
-
-    if (data->raw[0] != 0) {
-        if (ic->ic_flags & IEEE80211_F_BGSCAN)
-            ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-        if (ic->ic_flags & IEEE80211_F_ASCAN)
-            ic->ic_flags &= ~IEEE80211_F_ASCAN;
-    }
-
-    IOReturn rc = kIOReturnSuccess;
-    if (data->raw[3] != 0) {
-        if (data->raw[4] != 0) {
-            if (ic->ic_bgscan_start != nullptr && ic->ic_state == IEEE80211_S_RUN) {
-                const int bgscanRc = ic->ic_bgscan_start(ic);
-                if (bgscanRc != 0)
-                    rc = static_cast<IOReturn>(bgscanRc);
-            }
-        } else {
-            if (ic->ic_flags & IEEE80211_F_BGSCAN)
-                ic->ic_flags &= ~IEEE80211_F_BGSCAN;
-        }
-    }
-
-    return rc;
+    // Tahoe delegates PFN/PNO/EPNO lifecycle and Commander IOVAR work to
+    // BGScanAdapter. Intel has no matching background-scan owner or transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -1214,6 +1214,57 @@ panic. Full immutable runtime evidence is under
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
 
+## VERIFIED RESULT — WCL_CONFIG_BGSCAN false-success quarantine
+
+- status: `VERIFIED`
+- public surface: `setWCL_CONFIG_BGSCAN(apple80211_bg_scan *)`
+- local defect: the former local eight-byte pseudo-carrier cache treated Tahoe
+  PFN/PNO/EPNO controls as generic net80211 background-scan flags. It could
+  clear generic scan flags, call the generic bgscan-start callback, and return
+  local success without the recovered adapter owner, Commander transport, or
+  reference status propagation.
+- correction: preserve `NULL -> kIOReturnBadArgumentTahoe`; for every non-null
+  request return `kIOReturnUnsupported` before reading the opaque carrier; and
+  remove only the dead pseudo-layout/cache/flag/reset lines and setter-local
+  generic scan mutations. Generic net80211 scan fields retain their separate
+  live owners.
+- reference: Tahoe 25C56 DEXT SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`
+  dispatches wrapper `0x10001928c` -> Core `0x100142b8a` -> BGScanAdapter
+  `0x10000f852` at Core `+0x1578`; null returns `0xe00002bc`. The adapter
+  calls `configurePFN(0)` `0x10000f516`, conditionally calls
+  `configPNO` `0x10000fa18` / four-byte `scan_nprobes` Commander request, and
+  conditionally calls `configEPNO` `0x10000fc20`. That is a PFN/PNO/EPNO
+  lifecycle, not a generic bgscan start/stop contract.
+- non-claims: no complete public carrier layout, branch-validity, IOVAR
+  payload, async/completion, or valid-input return-status parity; no direct
+  setter invocation, private IOCTL, guessed carrier/IOVAR, radio OFF/ON, or
+  generic net80211 scan rewrite.
+
+The deterministic BGSCAN report, retained BG reports, payload parity, 31
+payload-builder contracts, `py_compile`, shell syntax, and staged whitespace
+check passed. The exact compiled source-code delta has SHA-256
+`469bf930ba7bb14345ead8bed3825f4fab3daf0aa68d3cc158998fe7f02d7a28`.
+A clean Tahoe build resolved all 959 symbols and produced UUID
+`EC5C3605-601B-3EB0-9FE1-61CD384F3815` with executable SHA-256
+`c421698fa1c0b5a407b1b967efa0f56b818614a32cc6b4a6794ebd20aa8703c0`.
+The guest-only AuxKC rebuild changed SHA-256 from
+`34cabb2abe2b2224565f84af723206f9809f0c43636441352d0169418e98bf95`
+to `916ab70b6719c61521e42dec1becb582d35dfdd1e62dc675638ec78be8b53dc3`;
+the loaded identity matched the candidate after reboot.
+
+An ordinary secret-hidden credentialed rejoin restored `en1` `10.77.0.47`
+and the route to `10.77.0.1` through `en1`. Both 240-second directions
+transferred 572 MiB at 20.0 Mbit/s. Concurrent uplink ping was 240/240 with
+0.0% loss and 3.346 ms mean RTT; reverse ping was 240/240 with 0.0% loss and
+6.958 ms mean RTT. Reverse iperf reported two sender retransmits, recorded as
+such. Hostapd retained authenticated/associated/authorized state with zero TX
+failures; QEMU remained running; focused bounded guest and host filters found
+no matching WCL/AirportItlwm panic or fatal VFIO/IOMMU/DMAR/AER marker. The
+guest rebooted only to load the AuxKC; the host was not rebooted. Full
+immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-bgscan-quarantine-20260713/`.
+
 ## FIX_CANDIDATE — WCL associated-sleep false-success quarantine
 
 - anomaly ID: public `setWCL_ASSOCIATED_SLEEP` accepted a non-null opaque
