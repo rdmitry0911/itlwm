@@ -393,8 +393,10 @@ This inventory is intentionally split into:
   `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`, and
   `getWCL_EXTENDED_BSS_INFO` are now reflected directly in the port, while
   `getAWDL_PEER_TRAFFIC_STATS` is classified out as an Apple internal stub and
-  `setBSS_BLACKLIST` / `setREALTIME_QOS_MSCS` are finally removed from the open
-  queue because their setter bodies were already lifted. The same batch also
+  `setBSS_BLACKLIST` was removed from the open queue because its setter body was
+  lifted; `setREALTIME_QOS_MSCS` was initially classified that way, but current
+  25C56 QoS/MSCS recovery supersedes it with a no-local-backend quarantine. The
+  same batch also
   moves `setVIRTUAL_IF_CREATE` off generic unsupported onto its recovered Tahoe
   public fail contract.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).

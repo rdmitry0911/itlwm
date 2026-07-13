@@ -1561,6 +1561,45 @@ host was not rebooted. No direct setter, private IOCTL, guessed carrier, or
 radio OFF/ON cycle was used. Full immutable evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-wcl-wnm-ops-quarantine-20260713/`.
 
+## VERIFIED RESULT — REALTIME_QOS_MSCS false-success quarantine
+
+The public `setREALTIME_QOS_MSCS` had accepted a non-null
+`apple80211_state_data`, copied its `+0x4` state dword into a local cache, and
+returned success although that cache had no consumer or QoS/MSCS firmware and
+completion path.  The correction preserves the existing defensive local null
+guard, returns `kIOReturnUnsupported` for every non-null request before
+mutation, and removes only `cachedRealTimeQosMscs` plus its two initialization
+resets.  Scoped source confirms no matching local QoS/MSCS sender, terminal,
+or event handler.
+
+Tahoe 25C56 DEXT SHA-256
+`4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab` dispatches
+from Infra wrapper `0x1000189ac` through Core virtual `+0x7b0` to
+`0x1001e81a4`.  Core gates feature bit `0x5f`, config `+0x7579`, and the
+current-BSS QoS/MSCS virtual `+0x290`; only then it inspects `data + 4`, updates
+`+0x757b`, and calls `sendQoSMgmtMSCSReq` `0x10013d028`.  Its sender reaches
+`confiQoSMgmtMSCS` `0x10013cda6`, the `WL_QOS_CMD_RAV_MSCS`/`qosSetIOVar`
+terminal, and the reference has `handleMSCSEvent` `0x1001de8dc`.  The reference
+raw `0x16` null branch is after those QoS/BSS gates; this remains neither an
+Apple null-input nor valid-input return-code, full-carrier-layout, or firmware
+completion parity claim.
+
+The deterministic report, retained contracts, payload parity, 31 payload
+builder contracts, `py_compile`, prebuild audit, and staged whitespace check
+passed.  A clean Tahoe build resolved all 959 symbols and produced UUID
+`91F1DF9E-04F2-38FB-8834-627B03916E56` with executable SHA-256
+`eed60a9acc5cc9dfc89ff98cd399d2490728d30cf8e522b20ee36a86fa7a61e8`.
+After explicit guest-only AuxKC rebuild and a normal secret-hidden credentialed
+rejoin, both 240-second traffic directions transferred 572 MiB at 20.0 Mbit/s;
+their concurrent pings were 240/240 with 0.0% loss (mean 3.562 ms uplink,
+5.985 ms reverse), and reverse iperf had zero sender retransmits.  AP evidence
+remained authenticated/associated/authorized with zero TX failures, QEMU was
+running, and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal vfio/IOMMU/DMAR/AER marker.  The guest rebooted only
+to load the AuxKC; the host was not rebooted.  No direct setter, private IOCTL,
+guessed carrier, or radio OFF/ON was used.  Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-realtime-qos-mscs-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

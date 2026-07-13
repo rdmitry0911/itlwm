@@ -504,8 +504,8 @@ public:
     // [585] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *) override;
-    // [586] — AppleBCMWLANCore consumes the first dword as an enable/disable
-    // state carrier before QoS-owner gating.
+    // [586] — AppleBCMWLANCore is QoS/MSCS firmware-backed; locally
+    // quarantined until a matching QoS owner and event path exist.
     virtual IOReturn setREALTIME_QOS_MSCS(apple80211_state_data *) override;
     // [587] — AppleBCMWLANSensingAdapter routes this selector into an internal
     // trap-only control path.
@@ -804,7 +804,6 @@ private:
     bool hasCachedLastActionFrame;
     uint8_t cachedDbgGuardTimeParams[8];
     bool hasCachedDbgGuardTimeParams;
-    uint32_t cachedRealTimeQosMscs;
     uint32_t cachedEapFilterConfig;
     bool cachedWowEnabled;
     uint8_t cachedBssBlacklist[0x2b];

@@ -1190,6 +1190,27 @@ complete carrier allocation or Apple null, valid-input, feature-gate, or
 transport-status parity. See
 `docs/reference/CR-479-wcl-wnm-ops-quarantine-20260713.md`.
 
+## Q13 correction: `setREALTIME_QOS_MSCS` is QoS/MSCS-backed
+
+`setREALTIME_QOS_MSCS(...)` is not a standalone state cache. Tahoe 25C56
+Infra wrapper `0x1000189ac` dispatches through Core virtual `+0x7b0` to
+`AppleBCMWLANCore::setREALTIME_QOS_MSCS` `0x1001e81a4`. Core obtains the
+current BSS, checks feature bit `0x5f`, configuration byte `+0x7579`, and the
+current-BSS QoS/MSCS capability virtual at `+0x290`. Only after those gates
+does it read the state dword, set `+0x757b`, and call
+`sendQoSMgmtMSCSReq` `0x10013d028`.
+
+The sender reaches `confiQoSMgmtMSCS` `0x10013cda6`, whose recovered terminal
+builds `WL_QOS_CMD_RAV_MSCS` and submits it through `qosSetIOVar`; the matching
+firmware response is handled by `handleMSCSEvent` `0x1001de8dc`. A local dword
+copy has none of that owner, firmware, or completion behavior.
+
+The port preserves its local null guard but returns `kIOReturnUnsupported` for
+a non-null request before pseudo-state mutation, and removes the dead cache.
+This does not claim universal Apple null-input or valid-input return parity:
+the reference checks its gates before the null branch. See
+`docs/reference/CR-479-realtime-qos-mscs-quarantine-20260713.md`.
+
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 
 The next `Q13` zone closes fifteen getter slots that already expose a stable
@@ -1978,9 +1999,9 @@ Public Apple-side facts used for this zone:
   targets as an interim no-owner shape; role 7 itself is now tracked as a
   required `IO80211SapProtocol` / APSTA owner reconstruction item rather than a
   permanent no-APSTA policy
-- `AppleBCMWLANCore::setBSS_BLACKLIST(...)` and
-  `setREALTIME_QOS_MSCS(...)` were already lifted in code, so keeping them in
-  the open unsupported queue was just stale documentation debt
+- `AppleBCMWLANCore::setBSS_BLACKLIST(...)` was lifted in code;
+  `setREALTIME_QOS_MSCS(...)` was initially classified from a cache stub, but
+  the current QoS/MSCS correction above supersedes that classification
 
 This zone closes on the system-facing boundary:
 
@@ -1988,8 +2009,9 @@ This zone closes on the system-facing boundary:
   Apple already exposes a fixed public carrier or trap contract
 - the restored `getCOUNTRY_CHANNELS_INFO` / `getHW_SUPPORTED_CHANNELS` routes
   keep Tahoe aligned with the same bridge-restoration principle used earlier
-- `setBSS_BLACKLIST` and `setREALTIME_QOS_MSCS` are now counted correctly as
-  closed because their public setter contracts had already been lifted
+- `setBSS_BLACKLIST` remains part of that historic close-out; the
+  `setREALTIME_QOS_MSCS` classification is superseded by the current
+  QoS/MSCS no-local-backend quarantine above
 
 Final `Q13` close-out:
 

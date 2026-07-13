@@ -2513,7 +2513,6 @@ init()
     hasCachedLastActionFrame = false;
     memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
     hasCachedDbgGuardTimeParams = false;
-    cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
@@ -2933,7 +2932,6 @@ init(IOService *provider)
     this->hasCachedLastActionFrame = false;
     memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
     this->hasCachedDbgGuardTimeParams = false;
-    this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
@@ -6517,8 +6515,9 @@ setREALTIME_QOS_MSCS(apple80211_state_data *data)
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    cachedRealTimeQosMscs = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
-    return kIOReturnSuccess;
+    // Tahoe gates and drives a QoS/MSCS firmware path. No matching local QoS
+    // owner, event handler, or firmware request path is implemented.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "opaque_cache_classification_removed": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_qos_mscs_anchor_literals_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "matching_qos_mscs_backend_implemented": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "bss_mscs_capability_virtual": "0x290",
+    "configurator": "0x10013cda6",
+    "core_setter": "0x1001e81a4",
+    "core_virtual_offset": "0x7b0",
+    "event_handler": "0x1001de8dc",
+    "feature_bit": "0x5f",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x1000189ac",
+    "mscs_enabled_offset": "0x757b",
+    "null_status_after_gates": "0x16",
+    "qos_enabled_offset": "0x7579",
+    "qos_iovar": "WL_QOS_CMD_RAV_MSCS",
+    "qos_request_bytes": 16,
+    "sender": "0x10013d028",
+    "state_offset": "0x4"
+  },
+  "schema": "itlwm-realtime-qos-mscs-quarantine-v1",
+  "source_base_revision": "70512f429121d631dac5a92f8b50ef6abc31d01f"
+}
