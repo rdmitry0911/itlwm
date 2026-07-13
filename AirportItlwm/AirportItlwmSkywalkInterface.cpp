@@ -2552,7 +2552,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    memset(cachedMwsAntennaSelection, 0, sizeof(cachedMwsAntennaSelection));
     memset(fLastPublishedBssid, 0, sizeof(fLastPublishedBssid));
     fLastPublishedBssidValid = false;
     RT3_SET(12); // SkywalkInterface::init OK
@@ -3002,7 +3001,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    memset(this->cachedMwsAntennaSelection, 0, sizeof(this->cachedMwsAntennaSelection));
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
 #endif
@@ -6837,10 +6835,10 @@ setMWS_ANTENNA_SELECTION_WIFI_ENH(apple80211_mws_antenna_selection *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    memcpy(cachedMwsAntennaSelection, raw, 8 * sizeof(uint16_t));
-    cachedMwsAntennaSelection[8] = *reinterpret_cast<const uint16_t *>(raw + 0x10);
-    return kIOReturnSuccess;
+    // AppleBCMWLAN maps this opaque carrier to a firmware-specific
+    // coexistence command. Intel has no equivalent owner or transport, so do
+    // not acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

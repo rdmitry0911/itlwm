@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "no_local_mws_antenna_selection_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_antenna_selection_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "command_tx_payload_bytes": 116,
+    "core_setter": "0x100141cbc",
+    "core_vtable": "0x1003a10d8",
+    "embedded_body_bytes": 108,
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_subcommand": 4,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 657,
+    "infra_wrapper": "0x1000197ac",
+    "selector_count": 8,
+    "terminal_owner": "0x10012351c",
+    "vtable_entry": "0x1003a1670"
+  },
+  "schema": "itlwm-mws-antenna-selection-quarantine-v1",
+  "source_base_revision": "fa71cc1b4e6a57512b7cf1755d956208977e9eec"
+}
