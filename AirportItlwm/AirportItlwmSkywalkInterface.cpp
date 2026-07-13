@@ -942,11 +942,6 @@ static_assert(offsetof(apple80211_wcl_arp_mode, enabled) == 0x10,
 static_assert(sizeof(apple80211_wcl_arp_mode) == 0x14,
               "apple80211_wcl_arp_mode must preserve the recovered Tahoe offsets");
 
-struct apple80211_bg_motion_profile
-{
-    uint8_t raw[0x40];
-} __attribute__((packed));
-
 struct apple80211_bg_network
 {
     uint8_t raw[0x12c0];
@@ -2493,8 +2488,6 @@ init()
     hasCachedRoamProfileConfig = false;
     memset(cachedWclArpMode, 0, sizeof(cachedWclArpMode));
     hasCachedWclArpMode = false;
-    memset(cachedBgMotionProfile, 0, sizeof(cachedBgMotionProfile));
-    hasCachedBgMotionProfile = false;
     memset(cachedBgNetwork, 0, sizeof(cachedBgNetwork));
     hasCachedBgNetwork = false;
     memset(cachedBgScanConfig, 0, sizeof(cachedBgScanConfig));
@@ -2911,8 +2904,6 @@ init(IOService *provider)
     this->hasCachedRoamProfileConfig = false;
     memset(this->cachedWclArpMode, 0, sizeof(this->cachedWclArpMode));
     this->hasCachedWclArpMode = false;
-    memset(this->cachedBgMotionProfile, 0, sizeof(this->cachedBgMotionProfile));
-    this->hasCachedBgMotionProfile = false;
     memset(this->cachedBgNetwork, 0, sizeof(this->cachedBgNetwork));
     this->hasCachedBgNetwork = false;
     memset(this->cachedBgScanConfig, 0, sizeof(this->cachedBgScanConfig));
@@ -6095,18 +6086,12 @@ setWCL_ARP_MODE(apple80211_wcl_arp_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data)
 {
-    // AppleBGScanAdapter first validates its internal motion-profile mapping,
-    // then programs PNO/EPNO from the incoming blob. The recovered helper
-    // rejects a zero PNO-count byte with a generic error, so keep that gate
-    // instead of advertising unconditional success.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
-    if (data->raw[1] == 0)
-        return kIOReturnError;
 
-    memcpy(cachedBgMotionProfile, data, sizeof(cachedBgMotionProfile));
-    hasCachedBgMotionProfile = true;
-    return kIOReturnSuccess;
+    // Tahoe delegates mapping and PNO/EPNO firmware work to BGScanAdapter.
+    // Intel has no matching background-scan owner or Commander path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

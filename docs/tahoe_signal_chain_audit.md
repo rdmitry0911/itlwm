@@ -488,7 +488,8 @@ For the methods above, strict parity means:
 - remove inline ack-only stubs from the Tahoe vtable
 - move them into explicit out-of-line implementations
 - return Apple `0xe00002bc` for null requests
-- persist the incoming state in driver-owned cached fields
+- persist incoming state in driver-owned cached fields only when recovery
+  proves that no deferred owner is required
 - leave comments tying each field back to the recovered Apple contract
 
 This is not the full end state for every plane, but it removes a concrete class
@@ -1591,7 +1592,6 @@ The remaining `Q7` gap was the roam/bgscan half of the WCL plane:
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_ARP_MODE`
-- `setWCL_CONFIG_BG_MOTIONPROFILE`
 - `setWCL_CONFIG_BG_NETWORK`
 - `setWCL_CONFIG_BGSCAN`
 - `setWCL_CONFIG_BG_PARAMS`
@@ -1605,17 +1605,41 @@ They either:
   (`REASSOC_REQ`, cache-bgscan preparation, bgscan start/stop)
 
 The port still lacks Apple's hidden roam/bgscan/keepalive helper objects, so
-full helper choreography remains part of the broader hidden-owner surface. But
-the concrete architectural mismatch that defined `Q7` is now removed:
+full helper choreography remains part of the broader hidden-owner surface. The
+historical `Q7` closure remains valid for its out-of-line form, but it does not
+make every copied carrier a complete owner implementation:
 
 - the remaining WCL adapter methods are out-of-line implementations, not inline
   success stubs
 - null requests return Apple `0xe00002bc`
-- recovered payloads are persisted in driver-owned state
-- available local owner actions are exercised instead of being skipped
+- payload persistence is retained only where a matching local owner exists
+- adapter-owned requests without that owner are reclassified rather than
+  acknowledged by a partial local cache
 
-That closes `Q7` as a standalone queue. Any still-missing hidden helper
-exactness now belongs under `Q13`, not under the old WCL adapter-stub bucket.
+`setWCL_CONFIG_BG_MOTIONPROFILE` is specifically reclassified below as a
+no-local-backend quarantine. Any still-missing hidden helper exactness belongs
+under `Q13`, not under the old WCL adapter-stub bucket.
+
+## Q13 correction: `setWCL_CONFIG_BG_MOTIONPROFILE` is BGScanAdapter-backed
+
+`setWCL_CONFIG_BG_MOTIONPROFILE(...)` is not a standalone 0x40-byte cache.
+Tahoe 25C56 Infra wrapper `0x10001921c` tail-jumps to Core `0x100142b46`.
+Core returns `0xe00002bc` for null and otherwise selects its BGScanAdapter at
+Core `+0x1578`, whose setter is `0x10000e856`. The adapter first calls
+`configureMotionProfileMapping` `0x10000e96e`, which builds the `mpf_map`
+Commander IOVAR through `runIOVarSet` `0x10017b6e6`; it then calls
+`configureMotionProfilePNO` `0x10000eb3a` and
+`configureMotionProfileEPNO` `0x10000ec9a`, whose recovered terminals submit
+`pfn_mpfset` requests.
+
+The PNO helper's `data + 1` condition is only one subpath among mapping, PNO,
+EPNO, capability, and transport handling. It cannot justify a local byte gate
+or cache-and-success substitute. The port preserves the direct null guard and
+returns `kIOReturnUnsupported` for a non-null request before reading the
+carrier; it removes the dead cache, flag, and local pseudo-layout. This makes
+no full carrier-layout, valid-input/error, IOVAR-payload, or completion parity
+claim. See
+`docs/reference/CR-479-bg-motion-profile-quarantine-20260713.md`.
 
 ## Q13 Batch: sideband carriers continue to leave the unsupported/stub tail
 

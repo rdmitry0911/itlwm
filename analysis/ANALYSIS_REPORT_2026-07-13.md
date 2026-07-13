@@ -1640,6 +1640,45 @@ guessed carrier, `pkt_filter_*` IOVAR, generic EAPOL data-path rewrite, or
 radio OFF/ON was used. Full immutable evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-eap-filter-config-quarantine-20260713/`.
 
+## VERIFIED RESULT — WCL_CONFIG_BG_MOTIONPROFILE false-success quarantine
+
+The public `setWCL_CONFIG_BG_MOTIONPROFILE` had read one local byte, copied an
+inferred 0x40-byte blob to a dead cache, and returned success without a
+background-scan owner, mapping, PNO/EPNO work, or firmware status propagation.
+The correction preserves `NULL -> kIOReturnBadArgumentTahoe`, returns
+`kIOReturnUnsupported` for every non-null request before reading the carrier,
+and removes only the cache, flag, four reset lines, and unused pseudo-layout.
+Scoped source confirms no BGScanAdapter, mapping, PNO/EPNO, `mpf_map`,
+`pfn_mpfset`, or Commander backend.
+
+Tahoe 25C56 DEXT SHA-256
+`4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab` dispatches
+from Infra wrapper `0x10001921c` to Core `0x100142b46`, which returns
+`0xe00002bc` for null and otherwise selects BGScanAdapter at `+0x1578`.
+Adapter setter `0x10000e856` calls mapping `0x10000e96e` and its `mpf_map`
+Commander request, then PNO `0x10000eb3a` and EPNO `0x10000ec9a` paths whose
+terminals send `pfn_mpfset`. The PNO `data + 1` branch is only subordinate to
+that larger lifecycle; this recovery does not claim full carrier layout,
+valid-input/error, IOVAR-payload, or completion parity.
+
+The deterministic report, retained contracts, payload parity, 31 payload
+builder contracts, `py_compile`, shell syntax, and staged whitespace check
+passed. A clean Tahoe build resolved all 959 symbols and produced UUID
+`5D616B96-56E6-3B9B-9D3E-36E38D2CA1F8` with executable SHA-256
+`50273815892fc0e2b584b5dd86707e029c95b9bc326a4574d252280901da7177`.
+After explicit guest-only AuxKC rebuild and a normal secret-hidden credentialed
+rejoin, both 240-second traffic directions transferred 572 MiB at 20.0 Mbit/s;
+their concurrent pings were 240/240 with 0.0% loss (mean 4.498 ms uplink,
+6.366 ms reverse). Reverse iperf reported two sender retransmits, recorded as
+such; it otherwise completed at zero loss and zero exit status. AP evidence
+remained authenticated/associated/authorized with zero TX failures, QEMU was
+running, and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal vfio/IOMMU/DMAR/AER marker. The guest rebooted only
+to load the AuxKC; the host was not rebooted. No direct setter, private IOCTL,
+guessed PNO/EPNO carrier or IOVAR, background-scan rewrite, or radio OFF/ON
+was used. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-bg-motion-profile-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

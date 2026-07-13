@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_bgscan_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q7_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_bgscan_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_setter": "0x10000e856",
+    "bgscan_adapter_offset": "0x1578",
+    "commander_run_iovar_set": "0x10017b6e6",
+    "core_setter": "0x100142b46",
+    "epno": "0x10000ec9a",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x10001921c",
+    "mapping": "0x10000e96e",
+    "mapping_iovar": "mpf_map",
+    "null_status": "0xe00002bc",
+    "partial_pno_gate": "data+0x1",
+    "pno": "0x10000eb3a",
+    "pno_epno_iovar": "pfn_mpfset"
+  },
+  "schema": "itlwm-bg-motion-profile-quarantine-v1",
+  "source_base_revision": "d4085ec9753b2ce7a30a470252418fa10bb89a33"
+}

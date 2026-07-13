@@ -49,10 +49,11 @@ This inventory is intentionally split into:
   remaining carrier-like slots are now part of the `Q13` unsupported census
 
 - `Q7 WCL Adapter Plane`:
-  closed
-  the former ack-only roam/bgscan/ARP producer cluster now preserves recovered
-  payloads and drives the available local owners; remaining hidden helper
-  exactness moved under `Q13`
+  partially closed
+  the former ack-only roam/bgscan/ARP producer cluster is out-of-line, but
+  `WCL_CONFIG_BG_MOTIONPROFILE` is reclassified as an adapter-backed
+  no-local-backend quarantine; remaining hidden helper exactness stays under
+  `Q13`
 
 - `Q8 Scan Plane`:
   the currently confirmed scan-abort / completion bulletin issues are closed
@@ -772,13 +773,16 @@ Closed in the latest batch:
 - `setWCL_LEGACY_ROAM_PROFILE_CONFIG`
 - `setWCL_ROAM_PROFILE_CONFIG`
 - `setWCL_ARP_MODE`
-- `setWCL_CONFIG_BG_MOTIONPROFILE`
 - `setWCL_CONFIG_BG_NETWORK`
 - `setWCL_CONFIG_BGSCAN`
 - `setWCL_CONFIG_BG_PARAMS`
 
 The exact hidden helper choreography behind roam/bgscan/keepalive owners still
-belongs to `Q13`, but these slots no longer remain as inline success stubs.
+belongs to `Q13`, but the listed slots no longer remain as inline success
+stubs. `setWCL_CONFIG_BG_MOTIONPROFILE` is excluded from that functional
+closure: Tahoe routes it through BGScanAdapter mapping plus PNO/EPNO Commander
+work, so the local cache-only implementation is now a dedicated no-backend
+quarantine.
 
 ### 4. Hidden `+0x1510` object method surface is still only partially lifted
 

@@ -576,7 +576,8 @@ public:
     virtual IOReturn setBATTERY_POWERSAVE_CONFIG(apple80211_battery_ps_config *data) override;
     // [614]
     virtual IOReturn setMIMO_CONFIG(apple80211_mimo_config *) override;
-    // [615] — AppleBCMWLAN: delegates to BGScanAdapter.
+    // [615] — Tahoe BGScanAdapter owns mapping plus PNO/EPNO firmware work;
+    // locally quarantined until a matching background-scan owner exists.
     virtual IOReturn setWCL_CONFIG_BG_MOTIONPROFILE(apple80211_bg_motion_profile *data) override;
     // [616] — AppleBCMWLAN: delegates to BGScanAdapter.
     virtual IOReturn setWCL_CONFIG_BG_NETWORK(apple80211_bg_network *data) override;
@@ -784,8 +785,6 @@ private:
     bool hasCachedRoamProfileConfig;
     uint8_t cachedWclArpMode[0x14];
     bool hasCachedWclArpMode;
-    uint8_t cachedBgMotionProfile[0x40];
-    bool hasCachedBgMotionProfile;
     uint8_t cachedBgNetwork[0x12c0];
     bool hasCachedBgNetwork;
     uint8_t cachedBgScanConfig[8];
