@@ -1,0 +1,100 @@
+{
+  "artifacts": {
+    "aiam_bss_blacklist_core_helper_raw_exact_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "d1eaf424a708d745413823807c3b142802d18837900ecebe098f8c1638b02138",
+      "expected_sha256": "d1eaf424a708d745413823807c3b142802d18837900ecebe098f8c1638b02138",
+      "matches": true
+    },
+    "aiam_bss_blacklist_disasm_25C56_20260712.txt.gz": {
+      "actual_sha256": "45352774702a1af33e6fe451b845a3d55c164ba420deadcc0368405d7ca09d6e",
+      "expected_sha256": "45352774702a1af33e6fe451b845a3d55c164ba420deadcc0368405d7ca09d6e",
+      "matches": true
+    },
+    "aiam_bss_blacklist_get_route_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "29a71bb786a0492e3c17ec5b88deec04971c5400fa55166a10224d3ce91fae1b",
+      "expected_sha256": "29a71bb786a0492e3c17ec5b88deec04971c5400fa55166a10224d3ce91fae1b",
+      "matches": true
+    },
+    "aiam_bss_blacklist_get_wrapper_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "68fb2bc8be6e45dd1f6ad389cefa3bb8af6b1b6109d2f1c8a032ae3f8b3b1a39",
+      "expected_sha256": "68fb2bc8be6e45dd1f6ad389cefa3bb8af6b1b6109d2f1c8a032ae3f8b3b1a39",
+      "matches": true
+    },
+    "aiam_bss_blacklist_helper_listing_25C56_20260712.txt.gz": {
+      "actual_sha256": "70d11c13d9ed71e33fb8d94d0bddd771c179b6940cf8ee173a655949486f0c6c",
+      "expected_sha256": "70d11c13d9ed71e33fb8d94d0bddd771c179b6940cf8ee173a655949486f0c6c",
+      "matches": true
+    },
+    "aiam_bss_blacklist_isbssid_decoded_pointer_scan_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "17e1fcf4eb056b886202d5f74d5be7963eb837447eae4913ddb6f33c5b64618a",
+      "expected_sha256": "17e1fcf4eb056b886202d5f74d5be7963eb837447eae4913ddb6f33c5b64618a",
+      "matches": true
+    },
+    "aiam_bss_blacklist_set_route_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "bd4fa4027266c18a1c369f005ba2f0d7a3787122a5e98b3c2f1faaa7adbb0ff5",
+      "expected_sha256": "bd4fa4027266c18a1c369f005ba2f0d7a3787122a5e98b3c2f1faaa7adbb0ff5",
+      "matches": true
+    },
+    "aiam_bss_blacklist_set_wrapper_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "568400b60ce76e0d4097727bdcb5ccf02f3d522da01cc9c4df65d969f44f9adc",
+      "expected_sha256": "568400b60ce76e0d4097727bdcb5ccf02f3d522da01cc9c4df65d969f44f9adc",
+      "matches": true
+    },
+    "aiam_bss_blacklist_wcl_fill_block_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "5e4ba345adb42aa2eee667703b9fdff18648ebdb42bc8c10dc0fc72b7beb8c0b",
+      "expected_sha256": "5e4ba345adb42aa2eee667703b9fdff18648ebdb42bc8c10dc0fc72b7beb8c0b",
+      "matches": true
+    },
+    "aiam_bss_blacklist_wcl_joinrequest_flag_strings_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "ce7b0202d69092240d7c3d3a04b278897e612c44912a74d039a19b993f629fe7",
+      "expected_sha256": "ce7b0202d69092240d7c3d3a04b278897e612c44912a74d039a19b993f629fe7",
+      "matches": true
+    },
+    "aiam_bss_blacklist_wcl_sort_block_raw_current_25C56_20260713.txt.gz": {
+      "actual_sha256": "3488b73622842ee78feeb7cd5569d6a0a9658434ce39c954e4882b785dd9cff0",
+      "expected_sha256": "3488b73622842ee78feeb7cd5569d6a0a9658434ce39c954e4882b785dd9cff0",
+      "matches": true
+    }
+  },
+  "checks": {
+    "artifact_hashes": true,
+    "contract": true,
+    "controller": true,
+    "interface": true,
+    "net80211": true,
+    "note": true,
+    "test": true
+  },
+  "local": {
+    "async_event_owner": true,
+    "command_gated": true,
+    "controller_owned_applied_state": true,
+    "controller_owned_requested_state": true,
+    "hard_exclusion_claimed": false,
+    "public_route_p0": true,
+    "scan_results_hidden": false
+  },
+  "missing_tokens": {
+    "contract": [],
+    "controller": [],
+    "interface": [],
+    "net80211": [],
+    "note": [],
+    "test": []
+  },
+  "reference": {
+    "admission_before_owner_cast": true,
+    "build": "macOS 26.2 (25C56)",
+    "class_owner_absent_status": "0xe082280e",
+    "event": "0xa3",
+    "event_length": "6 * count + 6",
+    "get_writes_sync_buffer": false,
+    "invalid_carrier_status": "0x16",
+    "invalid_count_preserves_applied": true,
+    "no_interface_status": "0x66",
+    "request_length": 43,
+    "selector": "0x174"
+  },
+  "schema": "itlwm-bss-blacklist-async-owner-v2",
+  "source_base_revision": "4b2cea995201492fde5a23554d6cd3ca34ff0583"
+}

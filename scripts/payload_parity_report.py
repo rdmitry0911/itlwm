@@ -30,7 +30,7 @@ DETERMINISTIC_TESTS = [
             "testTahoeDriverAvailabilityContracts",
             "frameLen > 0x707",
             "rejects zero PMK length",
-            "30 contracts",
+            "31 contracts",
         ],
         "runner_tokens": [
             "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
@@ -84,6 +84,17 @@ REFERENCE_CASES = [
         "id": "apple-wcl-auth-assoc-complete",
         "path": "docs/reference/CR-479-wcl-auth-assoc-complete-publication-20260710.md",
         "tokens": ["handleAssocEvent", "0x4e", "length `0x08`", "associationStatusHandler"],
+    },
+    {
+        "id": "apple-bss-blacklist-async-owner",
+        "path": "docs/reference/CR-479-bss-blacklist-async-owner-20260713.md",
+        "tokens": [
+            "selector `0x174`",
+            "exactly `0x2b`",
+            "message `0xa3`",
+            "`6 * count + 6`",
+            "count is at least `8`",
+        ],
     },
     {
         "id": "apple-io80211-selector-surface",
@@ -322,6 +333,47 @@ PAYLOAD_TYPES = [
             },
         ],
         "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2",
+    },
+    {
+        "name": "bss-blacklist-async-owner",
+        "shape": "43-byte request; variable async u32 count + 6-byte BSSIDs + 2-byte tail",
+        "producer": "AirportItlwm::setBssBlacklistOwner/queryBssBlacklistOwner",
+        "consumer": "IO80211Controller::postMessage 0xa3",
+        "reference_ids": ["apple-bss-blacklist-async-owner"],
+        "implementation_checks": [
+            {
+                "path": "AirportItlwm/TahoeBssBlacklistContracts.hpp",
+                "tokens": [
+                    "kRequestLength",
+                    "kEventMessage = 0xa3",
+                    "decodeAppliedState",
+                    "eventTrailingOffset",
+                    "buildEventCarrier",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmV2.cpp",
+                "tokens": [
+                    "setBssBlacklistOwner",
+                    "queryBssBlacklistOwner",
+                    "ic_bss_blacklist_requested",
+                    "airportItlwmPublishBssBlacklist",
+                    "self->postMessage",
+                ],
+            },
+            {
+                "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+                "tokens": [
+                    "case APPLE80211_IOC_BSS_BLACKLIST",
+                    "routePreflightStatus",
+                    "isCommandProhibited(",
+                    "wrapperStatus",
+                    "getBSS_BLACKLIST",
+                    "setBSS_BLACKLIST",
+                ],
+            },
+        ],
+        "invalid_semantics": "no interface returns 0x66 before malformed carrier 0x16; admission precedes owner cast; SET null returns 0xe00002bc; count >= 8 preserves applied state; GET never writes its caller buffer; empty applied list emits no event",
     },
     {
         "name": "txrx-chain-info",

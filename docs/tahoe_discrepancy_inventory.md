@@ -7770,3 +7770,31 @@ Non-claim:
   `not associated` result, so item 220 remains open;
 - this does not change public CoreWLAN, Dynamic Store, AP/GO, or add a
   fallback gate.
+
+## 2026-07-13 correction: BSS blacklist is asynchronous owner state
+
+The earlier Q13 classification closed `514 getBSS_BLACKLIST` and
+`581 setBSS_BLACKLIST` as a synchronous raw-cache pair. Exact current 25C56
+evidence supersedes that interpretation. SET copies a 43-byte requested
+carrier, programs a distinct lower applied list, and launches an async list
+query. GET does not write its caller buffer; it launches the same query. A
+successful non-empty callback posts variable message `0xa3` with length
+`6 * count + 6`.
+
+The local Tahoe path now has controller-owned requested/applied state,
+command-gated SET/GET, exact invalid-count preservation, and the local async
+event model. Its selector-bearing BSD route now returns raw `0x66` for an
+absent interface before the exact `0x2b` carrier gate (`0x16`), invokes the
+existing `0x174` admission slot before owner dispatch, and maps the proven
+absent owner to `0xe082280e`. This closes the recovered owner/ABI/public-route
+portion of items 514/581 and removes the false synchronous cache behavior.
+
+The local publication is intentionally not called lower callback parity: it
+does not yet have a firmware MACLIST query, callback status, or null-payload
+branch. Those open states are not hidden by a synthetic retry or event.
+
+Lower selection policy remains separately scoped. WCL evidence proves
+deprioritization with fallback rather than scan hiding, but firmware MACMODE 3
+semantics are still unlabeled. This batch therefore makes no hard-exclusion,
+lower-callback, or complete firmware-blacklist parity claim. See
+`docs/reference/CR-479-bss-blacklist-async-owner-20260713.md`.

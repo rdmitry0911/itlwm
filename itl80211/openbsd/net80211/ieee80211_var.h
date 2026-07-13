@@ -473,6 +473,16 @@ struct ieee80211com {
     u_int32_t       ic_wcl_reassoc_owner_active;
     u_int32_t       ic_wcl_reassoc_owner_last_leaf;
     /*
+     * Controller-owned BSS blacklist state. The public request is the exact
+     * 43-byte Core carrier. The applied list changes only for valid counts;
+     * the event storage is persistent across the async postMessage call.
+     */
+    u_int8_t        ic_bss_blacklist_requested[43];
+    u_int8_t        ic_bss_blacklist_count;
+    u_int8_t        ic_bss_blacklist_bssid[7][IEEE80211_ADDR_LEN];
+    u_int32_t       ic_bss_blacklist_event_count;
+    u_int8_t        ic_bss_blacklist_event_body[7 * IEEE80211_ADDR_LEN + 2];
+    /*
      * Single-consumer net80211 AP station-event bridge state.
      *
      * ic_apsta_event_cb is a non-retaining callback that the

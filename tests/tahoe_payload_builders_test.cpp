@@ -11,6 +11,7 @@
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
 #include "AirportItlwm/TahoeBeaconIeBuilder.hpp"
+#include "AirportItlwm/TahoeBssBlacklistContracts.hpp"
 #include "AirportItlwm/TahoeBssManagerContracts.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
@@ -583,6 +584,7 @@ void testPayloadContractInventory()
         "action-frame-progress",
         "ranging-authenticate",
         "association-candidates-hidden",
+        "bss-blacklist-async-owner",
         "txrx-chain-info",
         "link-changed-32",
         "bssid-changed-24",
@@ -1028,6 +1030,94 @@ void testTahoeLeScanContracts()
             "LE-scan owner-state helper rejects null carrier");
     require(!copyOwnerStateFromCarrier(&carrier, nullptr),
             "LE-scan owner-state helper rejects null owner state");
+}
+
+void testTahoeBssBlacklistContracts()
+{
+    using namespace TahoeBssBlacklistContracts;
+
+    require(APPLE80211_IOC_BSS_BLACKLIST == 0x174,
+            "BSS blacklist BSD route uses selector 0x174");
+    require(kSelector == APPLE80211_IOC_BSS_BLACKLIST,
+            "BSS blacklist contract selector matches the BSD route");
+    require(kRequestLength == 0x2b && sizeof(AppliedState) == 0x2b,
+            "BSS blacklist request is count plus seven six-byte BSSIDs");
+    require(kEventMessage == 0xa3 && sizeof(EventCarrier) == 0x30,
+            "BSS blacklist async result uses message 0xa3 and 48-byte capacity");
+    require(offsetof(EventCarrier, body) == 0x04,
+            "BSS blacklist event variable body begins after its count");
+
+    uint8_t request[kRequestLength] = {};
+    request[0] = 1;
+    const uint8_t bssid[kBssidLength] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    std::memcpy(request + 1, bssid, sizeof(bssid));
+
+    require(routePreflightStatus(false, 0, nullptr) == kNoInterfaceStatus,
+            "BSS route returns 0x66 before malformed carrier validation");
+    require(routePreflightStatus(false, kRequestLength, request) ==
+                kNoInterfaceStatus,
+            "BSS route returns 0x66 for an absent interface with valid carrier");
+    require(routePreflightStatus(true, kRequestLength, nullptr) ==
+                kInvalidArgumentStatus,
+            "BSS route returns 0x16 for a null carrier after interface admission");
+    require(routePreflightStatus(true, kRequestLength - 1, request) ==
+                kInvalidArgumentStatus &&
+                routePreflightStatus(true, kRequestLength + 1, request) ==
+                    kInvalidArgumentStatus,
+            "BSS route returns 0x16 for either wrong carrier length");
+    require(routePreflightStatus(true, kRequestLength, request) ==
+                kSuccessStatus,
+            "BSS route accepts an interface-backed exact carrier");
+    require(localAdmissionStatus(false) == kSuccessStatus &&
+                localAdmissionStatus(true) == 1,
+            "BSS local bool admission preserves raw 0 and 1 statuses");
+    require(wrapperStatus(0x12345678, false) == 0x12345678 &&
+                wrapperStatus(1, false) == 1,
+            "BSS wrapper returns nonzero admission before owner cast");
+    require(wrapperStatus(kSuccessStatus, false) == kClassOwnerAbsentStatus,
+            "BSS wrapper maps failed owner cast to 0xe082280e");
+    require(wrapperStatus(kSuccessStatus, true) == kSuccessStatus,
+            "BSS wrapper dispatches only after admission and owner cast");
+
+    AppliedState applied{};
+    require(decodeAppliedState(request, &applied),
+            "BSS blacklist owner accepts one-entry request");
+    require(applied.count == 1 &&
+                std::memcmp(applied.bssids[0], bssid, sizeof(bssid)) == 0,
+            "BSS blacklist owner preserves the applied BSSID");
+
+    EventCarrier event{};
+    require(buildEventCarrier(applied.count, &applied.bssids[0][0], &event) == 12,
+            "one-entry BSS blacklist result publishes 12 bytes");
+    const uint8_t *eventRaw = reinterpret_cast<const uint8_t *>(&event);
+    require(event.count == 1 &&
+                std::memcmp(event.body, bssid, sizeof(bssid)) == 0 &&
+                eventRaw[eventTrailingOffset(1)] == 0 &&
+                eventRaw[eventTrailingOffset(1) + 1] == 0,
+            "BSS blacklist result preserves BSSID and zeros its dynamic tail");
+
+    request[0] = 8;
+    AppliedState unchanged;
+    std::memset(&unchanged, 0x5a, sizeof(unchanged));
+    AppliedState before = unchanged;
+    require(!decodeAppliedState(request, &unchanged),
+            "BSS blacklist lower owner rejects count eight");
+    require(std::memcmp(&unchanged, &before, sizeof(unchanged)) == 0,
+            "invalid BSS blacklist request leaves applied state unchanged");
+
+    std::memset(&applied, 0, sizeof(applied));
+    applied.count = kMaxEntries;
+    for (size_t i = 0; i < sizeof(applied.bssids); i++)
+        reinterpret_cast<uint8_t *>(applied.bssids)[i] = static_cast<uint8_t>(i);
+    require(buildEventCarrier(applied.count, &applied.bssids[0][0], &event) ==
+                kEventCapacity,
+            "seven-entry BSS blacklist result publishes full 48-byte carrier");
+    eventRaw = reinterpret_cast<const uint8_t *>(&event);
+    require(eventRaw[eventTrailingOffset(kMaxEntries)] == 0 &&
+                eventRaw[eventTrailingOffset(kMaxEntries) + 1] == 0,
+            "full BSS blacklist result keeps its tail at bytes 46 and 47");
+    require(buildEventCarrier(0, nullptr, &event) == 0 && event.count == 0,
+            "empty BSS blacklist query succeeds without an event");
 }
 
 void testTahoeMimoContracts()
@@ -1622,6 +1712,7 @@ int main()
     testTahoePhyModeContracts();
     testTahoeNrateContracts();
     testTahoeLeScanContracts();
+    testTahoeBssBlacklistContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
     testTahoeTxRxChainContracts();
@@ -1636,6 +1727,6 @@ int main()
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 30 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 31 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

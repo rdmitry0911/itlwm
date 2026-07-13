@@ -286,8 +286,8 @@ public:
     // owner path. The former Q11-C umbrella queue is closed; this slot now
     // lives in the narrower Q11-C1 HP2P/DynSAR helper subqueue.
     virtual IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl *) override;
-    // [514] — AppleBCMWLANCore delegates to an async blacklist getter rather
-    // than a direct unsupported stub. Preserve the caller-visible raw blob.
+    // [514] — AppleBCMWLANCore ignores the synchronous output and launches an
+    // async lower-owner query whose non-empty result is message 0xa3.
     virtual IOReturn getBSS_BLACKLIST(bss_blacklist *) override;
     // [515] — Tahoe public contract is `NULL -> 0xe00002c2`, else four one-byte
     // chain masks.
@@ -488,9 +488,8 @@ public:
     // public producer.
     virtual IOReturn setHP2P_CTRL(apple80211_hp2p_ctrl *) override;
     // [581]
-    // Tahoe AppleBCMWLANCore::setBSS_BLACKLIST consumes an opaque public blob and
-    // preserves it in core state before dispatching helper work; it is not a
-    // direct unsupported slot.
+    // Tahoe AppleBCMWLANCore::setBSS_BLACKLIST preserves the exact 43-byte
+    // request, programs lower state, then launches the same async query as GET.
     virtual IOReturn setBSS_BLACKLIST(bss_blacklist *) override;
     // [582] — AppleBCMWLANCore dispatches this selector through a gated
     // setPropertyIoctl callback path.

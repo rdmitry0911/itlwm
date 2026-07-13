@@ -5279,3 +5279,39 @@ private-WCL bulletin shortcut. Final UUID
 `WCLNetManager::handleLqmUpdate` calls over 250 seconds while 240-second ping
 plus iperf3 completed with zero loss and no driver/host fault. See
 `docs/reference/CR-479-driver-owned-lqm-statistics-producer-20260711.md`.
+
+## 2026-07-13 correction: BSS blacklist async signal chain
+
+The previous `setBSS_BLACKLIST`/`getBSS_BLACKLIST` lift preserved the 43-byte
+blob synchronously. That shape was not the Apple signal chain. Current 25C56
+shows:
+
+```text
+BSD selector 0x174 (exact length 0x2b)
+  -> public Infra wrapper
+  -> AppleBCMWLANCore requested state
+  -> lower MACMODE/MACLIST programming
+  -> async GET_MACLIST
+  -> successful non-empty callback may publish message 0xa3
+     (u32 count + 6*n BSSID + 2 bytes)
+```
+
+SET returns success after non-null input even when the lower list rejects a
+count of eight or more; requested state changes while applied state remains
+the prior valid list. GET never writes the synchronous carrier. Both SET and
+GET launch the async query. Publication remains conditional on callback status,
+payload, and non-zero callback count; count zero suppresses publication only
+when such a callback is actually invoked.
+
+AirportItlwm now routes selector-bearing `0x174` with reference P0 error
+precedence (`0x66` before `0x16`), admission before the owner cast, and raw
+`0xe082280e` for the proven absent-owner branch. It owns requested/applied
+state in the controller lifetime domain, serializes it on the command gate,
+and publishes the variable controller-level event. This is not described as a
+firmware query callback: lower status/null-payload branches remain open. It
+deliberately does not filter scan output or mark a node with an
+association-failure bit. WCL candidate code marks and reorders deny-listed
+candidates after non-denied candidates, retaining fallback; the separate
+lower-selection mapping remains open until its own runtime gate.
+
+See `docs/reference/CR-479-bss-blacklist-async-owner-20260713.md`.

@@ -9,6 +9,7 @@
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeBeaconIeBuilder.hpp"
+#include "TahoeBssBlacklistContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeDriverAvailabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
@@ -2656,6 +2657,127 @@ void AirportItlwm::releaseAll()
         _fWorkloop = NULL;
     }
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+static_assert(IEEE80211_ADDR_LEN == TahoeBssBlacklistContracts::kBssidLength,
+              "BSS blacklist contract requires six-byte addresses");
+static_assert(
+    sizeof(((struct ieee80211com *)0)->ic_bss_blacklist_requested) ==
+        TahoeBssBlacklistContracts::kRequestLength,
+    "BSS blacklist requested owner must preserve all 43 input bytes");
+static_assert(
+    sizeof(((struct ieee80211com *)0)->ic_bss_blacklist_bssid) ==
+        TahoeBssBlacklistContracts::kMaxEntries * IEEE80211_ADDR_LEN,
+    "BSS blacklist applied owner must preserve seven addresses");
+static_assert(
+    sizeof(((struct ieee80211com *)0)->ic_bss_blacklist_event_count) +
+            sizeof(((struct ieee80211com *)0)->ic_bss_blacklist_event_body) ==
+        TahoeBssBlacklistContracts::kEventCapacity,
+    "BSS blacklist persistent event owner must preserve 48 bytes");
+static_assert(
+    offsetof(struct ieee80211com, ic_bss_blacklist_event_body) ==
+        offsetof(struct ieee80211com, ic_bss_blacklist_event_count) +
+            sizeof(uint32_t),
+    "BSS blacklist event variable body must immediately follow the count");
+
+static IOReturn
+airportItlwmPublishBssBlacklist(AirportItlwm *self, struct ieee80211com *ic)
+{
+    using namespace TahoeBssBlacklistContracts;
+
+    EventCarrier event;
+    memset(&event, 0, sizeof(event));
+    const size_t eventLength = buildEventCarrier(
+        ic->ic_bss_blacklist_count,
+        &ic->ic_bss_blacklist_bssid[0][0], &event);
+
+    ic->ic_bss_blacklist_event_count = event.count;
+    memcpy(ic->ic_bss_blacklist_event_body, event.body,
+           sizeof(ic->ic_bss_blacklist_event_body));
+
+    if (eventLength != 0 && self->fNetIf != nullptr) {
+        self->postMessage(
+            self->fNetIf, kEventMessage,
+            &ic->ic_bss_blacklist_event_count,
+            static_cast<unsigned int>(eventLength), true);
+    }
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSetBssBlacklistAction(OSObject *target, void *arg0,
+                                  void *, void *, void *)
+{
+    using namespace TahoeBssBlacklistContracts;
+
+    AirportItlwm *self = OSDynamicCast(AirportItlwm, target);
+    const uint8_t *request = static_cast<const uint8_t *>(arg0);
+    if (self == nullptr || request == nullptr)
+        return static_cast<IOReturn>(kBadArgumentStatus);
+    if (self->fHalService == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = self->fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+
+    memcpy(ic->ic_bss_blacklist_requested, request, kRequestLength);
+
+    AppliedState applied;
+    if (decodeAppliedState(request, &applied)) {
+        ic->ic_bss_blacklist_count = 0;
+        memset(ic->ic_bss_blacklist_bssid, 0,
+               sizeof(ic->ic_bss_blacklist_bssid));
+        memcpy(ic->ic_bss_blacklist_bssid, applied.bssids,
+               sizeof(ic->ic_bss_blacklist_bssid));
+        ic->ic_bss_blacklist_count = applied.count;
+    }
+
+    // The reference setter ignores lower programming status, then launches
+    // the same async query used by GET. Publish the current applied list even
+    // when an invalid requested count left that list unchanged.
+    return airportItlwmPublishBssBlacklist(self, ic);
+}
+
+static IOReturn
+airportItlwmQueryBssBlacklistAction(OSObject *target, void *,
+                                    void *, void *, void *)
+{
+    AirportItlwm *self = OSDynamicCast(AirportItlwm, target);
+    if (self == nullptr)
+        return kIOReturnBadArgument;
+    if (self->fHalService == nullptr)
+        return kIOReturnNotReady;
+
+    struct ieee80211com *ic = self->fHalService->get80211Controller();
+    if (ic == nullptr)
+        return kIOReturnNotReady;
+    return airportItlwmPublishBssBlacklist(self, ic);
+}
+
+IOReturn AirportItlwm::setBssBlacklistOwner(const uint8_t *request)
+{
+    if (request == nullptr) {
+        return static_cast<IOReturn>(
+            TahoeBssBlacklistContracts::kBadArgumentStatus);
+    }
+
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    return gate->runAction(
+        airportItlwmSetBssBlacklistAction,
+        const_cast<uint8_t *>(request));
+}
+
+IOReturn AirportItlwm::queryBssBlacklistOwner()
+{
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    return gate->runAction(airportItlwmQueryBssBlacklistAction);
+}
+#endif
 
 IOReturn AirportItlwm::
 postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3)

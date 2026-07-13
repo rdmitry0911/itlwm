@@ -12,6 +12,7 @@
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeBeaconIeBuilder.hpp"
+#include "TahoeBssBlacklistContracts.hpp"
 #include "TahoeBssManagerContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeLeScanContracts.hpp"
@@ -1616,6 +1617,13 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
         data != NULL) {
         apple80211req *req = static_cast<apple80211req *>(data);
+        if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
+            const uint32_t routeStatus =
+                TahoeBssBlacklistContracts::routePreflightStatus(
+                    interface != NULL, req->req_len, req->req_data);
+            if (routeStatus != TahoeBssBlacklistContracts::kSuccessStatus)
+                return static_cast<IOReturn>(routeStatus);
+        }
         UInt normalizedCmd =
             isApple80211GetIoctl(cmd) ? SIOCGA80211 : SIOCSA80211;
         IOReturn ret = processApple80211Ioctl(normalizedCmd, req);
@@ -2261,6 +2269,30 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_NSS:
             return (cmd == SIOCGA80211) ? getNSS((apple80211_nss_data *)req->req_data)
                                         : kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_BSS_BLACKLIST: {
+            const uint32_t routeStatus =
+                TahoeBssBlacklistContracts::routePreflightStatus(
+                    true, req->req_len, req->req_data);
+            if (routeStatus != TahoeBssBlacklistContracts::kSuccessStatus)
+                return static_cast<IOReturn>(routeStatus);
+
+            const uint32_t wrapperStatus =
+                TahoeBssBlacklistContracts::wrapperStatus(
+                    TahoeBssBlacklistContracts::localAdmissionStatus(
+                        isCommandProhibited(
+                            TahoeBssBlacklistContracts::kSelector)),
+                    instance != nullptr);
+            if (wrapperStatus != TahoeBssBlacklistContracts::kSuccessStatus)
+                return static_cast<IOReturn>(wrapperStatus);
+
+            if (cmd == SIOCGA80211)
+                return getBSS_BLACKLIST((bss_blacklist *)req->req_data);
+            if (cmd == SIOCSA80211)
+                return setBSS_BLACKLIST((bss_blacklist *)req->req_data);
+            return kIOReturnUnsupported;
+        }
+#endif
         case APPLE80211_IOC_CURRENT_NETWORK:
             return (cmd == SIOCGA80211) ? getCURRENT_NETWORK((apple80211_scan_result *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -4195,16 +4227,24 @@ getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
 IOReturn AirportItlwmSkywalkInterface::
 getBSS_BLACKLIST(bss_blacklist *data)
 {
+#if __IO80211_TARGET >= __MAC_26_0
+    (void)data;
+    if (instance == nullptr)
+        return static_cast<IOReturn>(
+            TahoeBssBlacklistContracts::kClassOwnerAbsentStatus);
+
+    // AppleBCMWLANCore ignores the synchronous caller buffer and launches an
+    // async lower-owner query. Its callback publishes message 0xa3 only when
+    // the applied list is non-empty.
+    return instance->queryBssBlacklistOwner();
+#else
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
-
-    // Apple routes this through an async blacklist owner, but the caller-visible
-    // surface is still the same opaque public blob. Preserve the raw blob from
-    // cached setter-side state instead of leaving slot [514] unsupported.
     memset(data, 0, sizeof(cachedBssBlacklist));
     if (hasCachedBssBlacklist)
         memcpy(data, cachedBssBlacklist, sizeof(cachedBssBlacklist));
     return kIOReturnSuccess;
+#endif
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6735,11 +6775,19 @@ setBSS_BLACKLIST(bss_blacklist *data)
 {
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
+#if __IO80211_TARGET >= __MAC_26_0
+    if (instance == nullptr)
+        return static_cast<IOReturn>(
+            TahoeBssBlacklistContracts::kClassOwnerAbsentStatus);
 
+    return instance->setBssBlacklistOwner(
+        reinterpret_cast<const uint8_t *>(data));
+#else
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     memcpy(cachedBssBlacklist, data, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = true;
     return kIOReturnSuccess;
+#endif
 }
 
 IOReturn AirportItlwmSkywalkInterface::

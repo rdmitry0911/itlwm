@@ -114,6 +114,14 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
             "hidden carrier is accepted only at length 0x3ad8; null direct WCL associate returns 0xe00002c2"
         },
         {
+            "bss-blacklist-async-owner",
+            "AirportItlwm::setBssBlacklistOwner/queryBssBlacklistOwner",
+            "IO80211Controller::postMessage 0xa3",
+            "apple-bss-blacklist-async-owner",
+            kVariablePayloadLength,
+            "SET null returns 0xe00002bc; count >= 8 preserves applied state; GET never writes its caller buffer; empty applied list emits no event"
+        },
+        {
             "txrx-chain-info",
             "ItlDriverInfo::getTxChainMask/getRxChainMask",
             "AirportItlwmSkywalkInterface::getTXRX_CHAIN_INFO",

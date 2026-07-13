@@ -582,6 +582,11 @@ public:
         AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *data);
     bool isHostApRunning() const;
 
+#if __IO80211_TARGET >= __MAC_26_0
+    IOReturn setBssBlacklistOwner(const uint8_t *request);
+    IOReturn queryBssBlacklistOwner();
+#endif
+
     /*
      * Host APSTA owner accessors. Role-7 (APPLE80211_VIF_SOFT_AP)
      * acquisition allocates the owner through ensureAPSTAOwner();

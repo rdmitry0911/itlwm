@@ -213,6 +213,14 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
+    memset(ic->ic_bss_blacklist_requested, 0,
+           sizeof(ic->ic_bss_blacklist_requested));
+    ic->ic_bss_blacklist_count = 0;
+    memset(ic->ic_bss_blacklist_bssid, 0,
+           sizeof(ic->ic_bss_blacklist_bssid));
+    ic->ic_bss_blacklist_event_count = 0;
+    memset(ic->ic_bss_blacklist_event_body, 0,
+           sizeof(ic->ic_bss_blacklist_event_body));
     ifp->if_skywalk_rx = NULL;
     ifq_init(&ifp->if_snd, ifp, 2048);
     memcpy(((struct arpcom *)ifp)->ac_enaddr, ic->ic_myaddr,
