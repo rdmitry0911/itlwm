@@ -1406,6 +1406,78 @@ reproduces the separate WCL lifecycle panic. Full immutable runtime evidence
 is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-os-eligibility-quarantine-20260713/`.
 
+## FIX_CANDIDATE — Dynamic RSSI Window false-success quarantine
+
+- anomaly ID: public `setDYNAMIC_RSSI_WINDOW_CONFIG` accepted a non-null
+  carrier, copied its dword into a local cache, and returned success although
+  no Intel dynamic-RSSI configuration backend consumes that state.
+- recovered reference components: Tahoe 25C56 image SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`
+  identifies the Infra wrapper symbol at `0x100019530` and, separately, Core
+  implementation `0x10014365e`. Core passes the carrier to `0x100140672`,
+  which validates the reference range then selects ConfigManager `+0x1558` /
+  `0x10008c6a6`; its recovered path sends four-byte `rssi_win` and `snr_win`
+  commander IOVARs.
+- actual local behavior: the setter only copied a dword cache; scoped local
+  source contains no matching Dynamic-RSSI configurator or `rssi_win`/
+  `snr_win` path, and no consumer observed that pseudo-state.
+- proposed correction: preserve the existing local null safety guard; return
+  `kIOReturnUnsupported` for every non-null carrier before mutation; remove
+  only the dead cache member and its two reset sites.
+- scope boundary: no ConfigManager/commander lift, no inferred complete carrier
+  allocation, no emulated reference 2..16 range or status path, no guessed
+  carrier or private setter invocation, and no Apple null or valid-input
+  return-code parity claim.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and focused bounded guest/host fault filters. Radio OFF/ON
+  remains excluded because the restored bit-identical A2DF baseline reproduces
+  the separate WCL lifecycle panic.
+
+## VERIFIED RESULT — Dynamic RSSI Window false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build-input `AirportItlwm/` and `include/` files) has SHA-256
+`8042f72fce8467eeaca669819ee061be636bdcd73c7878d78143262425a3d9cc`.
+The Dynamic-RSSI report, retained OS-eligibility, SOI, associated-sleep,
+BCN-mute, IE, USB, and BTCOEX reports, Tahoe payload parity, 31
+payload-builder contracts, `py_compile`, and staged whitespace check passed.
+A clean Tahoe build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`79A76107-B7AE-3070-ACAC-51F05B8C3039` with executable SHA-256
+`1e8f690c8e81e65c7ba86affb5e8d92c1728524ab108e722e86a59aa9ac367c5` and
+AuxKC SHA-256
+`e4cb1c0c8e2b0acc6340efb314cedeab14739c8022fa4d084f0e6396c3bb339e`.
+An initial AuxKC invocation without a base collection failed before an AuxKC
+move or reboot; the recorded retry used explicit BootKC/SystemKC/bundle paths
+and produced the identity above. The deployment's informational codesign check
+reported an unsigned code object; loaded identity is established by kmutil,
+UUID, and executable hash, not a signing claim. The saved-profile join attempt
+returned `-3900`; a normal explicit credentialed rejoin then succeeded.
+Capped uplink and reverse 240-second gates each transferred 572 MiB at
+20.0 Mbit/s with 240/240 concurrent ping replies and 0.0% loss (mean RTT
+4.309 ms and 6.141 ms; reverse sender had two retransmits). Hostapd retained
+an authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the focused bounded guest failure filter produced
+`no_matching_guest_panic_wcl_airportitlwm_marker`, and the bounded host filter
+produced `no_recent_fatal_vfio_iommu_aer_match`.
+
+The capture independently identifies the Dynamic-RSSI Infra wrapper symbol
+and Core implementation, but does not record a wrapper-to-Core edge. The Core
+recovery proves ConfigManager/commander work, while the scoped local source
+absence check is limited to the matching Dynamic-RSSI configurator and
+`rssi_win`/`snr_win` anchors; it is not a claim that generic local IOVAR
+transport is absent. No complete carrier allocation or Apple null/range/error,
+feature-gate, or transport-status parity is claimed. No guessed carrier or
+private setter ioctl was issued, so this is explicitly not a claim of direct
+setter runtime invocation. The known networksetup association string remains a
+false negative; AP station state, IPv4/gateway route, ping, and traffic gates
+are the connection evidence. Radio OFF/ON remains excluded because the
+restored bit-identical A2DF baseline reproduces the separate WCL lifecycle
+panic. Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-dynamic-rssi-window-quarantine-20260713/`.
+
 ## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta

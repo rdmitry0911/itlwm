@@ -2517,7 +2517,6 @@ init()
     hasCachedLastActionFrame = false;
     memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
     hasCachedDbgGuardTimeParams = false;
-    cachedDynamicRssiWindowConfig = 0;
     cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
@@ -2942,7 +2941,6 @@ init(IOService *provider)
     this->hasCachedLastActionFrame = false;
     memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
     this->hasCachedDbgGuardTimeParams = false;
-    this->cachedDynamicRssiWindowConfig = 0;
     this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
@@ -6516,8 +6514,9 @@ setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedDynamicRssiWindowConfig = *reinterpret_cast<const uint32_t *>(data);
-    return kIOReturnSuccess;
+    // Tahoe applies this through ConfigManager commander IOVARs.  No matching
+    // local Dynamic-RSSI configurator is implemented, so do not acknowledge it.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

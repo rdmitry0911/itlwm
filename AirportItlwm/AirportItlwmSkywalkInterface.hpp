@@ -806,7 +806,6 @@ private:
     bool hasCachedLastActionFrame;
     uint8_t cachedDbgGuardTimeParams[8];
     bool hasCachedDbgGuardTimeParams;
-    uint32_t cachedDynamicRssiWindowConfig;
     uint32_t cachedRealTimeQosMscs;
     uint32_t cachedEapFilterConfig;
     bool cachedWowEnabled;

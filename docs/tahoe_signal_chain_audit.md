@@ -1059,7 +1059,6 @@ Closed in this zone:
 - `setDBG_GUARD_TIME_PARAMS(...)`
 - `setPRIVATE_MAC(...)`
 - `setTHERMAL_INDEX(...)`
-- `setDYNAMIC_RSSI_WINDOW_CONFIG(...)`
 - `setBSS_BLACKLIST(...)`
 - `setREALTIME_QOS_MSCS(...)`
 - `setRSN_XE(...)`
@@ -1074,9 +1073,8 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   `setGAS_ABORT`, `setWCL_LIMITED_AGGREGATION`
 - several are opaque state carriers with only a null gate or a small public
   field split:
-  `setDBG_GUARD_TIME_PARAMS`, `setDYNAMIC_RSSI_WINDOW_CONFIG`,
-  `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setEAP_FILTER_CONFIG`,
-  `setRSN_XE`
+  `setDBG_GUARD_TIME_PARAMS`, `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`,
+  `setEAP_FILTER_CONFIG`, `setRSN_XE`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1137,6 +1135,24 @@ eligibility cache.  This is a no-local-backend quarantine: it does not claim
 Apple null handling, complete carrier allocation, or valid-input return-code
 parity.  See
 `docs/reference/CR-479-os-eligibility-quarantine-20260713.md`.
+
+## Q13 correction: `setDYNAMIC_RSSI_WINDOW_CONFIG` is ConfigManager-backed
+
+`setDYNAMIC_RSSI_WINDOW_CONFIG(...)` is not an opaque cache carrier.  Tahoe
+25C56 identifies its Infra wrapper symbol at `0x100019530` and, separately,
+the Core implementation `setDYNAMIC_RSSI_WINDOW_CONFIG` at `0x10014365e`.
+The latter passes the carrier dword to `configureDynamicRssiWindow` at
+`0x100140672`.  Core selects its
+ConfigManager through `+0x1558`; the recovered manager at `0x10008c6a6`
+gates the feature and sends the `rssi_win` and `snr_win` commander IOVARs.  A
+local dword copy cannot reproduce those effects.
+
+The port keeps its local null guard but returns `kIOReturnUnsupported` for a
+non-null request before pseudo-state mutation, and removes the dead dynamic
+RSSI cache.  This is a no-local-backend quarantine: it does not claim Apple
+null handling, complete carrier allocation, range/error, feature-gate, or
+transport-status parity.  See
+`docs/reference/CR-479-dynamic-rssi-window-quarantine-20260713.md`.
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 

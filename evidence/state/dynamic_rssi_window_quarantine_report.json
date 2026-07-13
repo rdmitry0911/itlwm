@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "opaque_cache_classification_removed": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_dynamic_rssi_anchor_literals_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "matching_dynamic_rssi_configurator_implemented": false,
+    "null_status_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "config_manager_offset": "0x1558",
+    "config_manager_setter": "0x10008c6a6",
+    "core_configure": "0x100140672",
+    "core_setter": "0x10014365e",
+    "feature_unavailable_status": "0xe00002c7",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019530",
+    "invalid_status": "0xe00002c2",
+    "null_status": "0xe00002bc",
+    "rssi_iovar": "rssi_win",
+    "rssi_payload_bytes": 4,
+    "rssi_payload_or": "0x200",
+    "snr_iovar": "snr_win",
+    "snr_payload_bytes": 4,
+    "valid_range": "2..16"
+  },
+  "schema": "itlwm-dynamic-rssi-window-quarantine-v1",
+  "source_base_revision": "780f5f576c6c41ce604f3af233995b55a6b38b32"
+}
