@@ -747,13 +747,6 @@ private:
     uint32_t cachedPowerProfile;
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;
-    uint16_t cachedIbssMode;
-    uint16_t cachedIbssAuthLower;
-    uint16_t cachedIbssAuthUpper;
-    apple80211_channel cachedIbssChannel;
-    uint32_t cachedIbssSsidLen;
-    uint8_t cachedIbssSsid[APPLE80211_MAX_SSID_LEN];
-    bool hasCachedIbssNetwork;
     uint32_t cachedFaceTimeWiFiCallingStatus;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;

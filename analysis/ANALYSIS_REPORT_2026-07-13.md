@@ -1127,3 +1127,63 @@ WCL lifecycle panic. Full immutable runtime evidence is under
   Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
   traffic/ping, and bounded guest/host fault filters. Radio OFF/ON stays
   excluded due to the independently reproduced baseline WCL lifecycle panic.
+
+## FIX_CANDIDATE — IBSS mode false-success quarantine
+
+- anomaly ID: public APPLE80211_IOC_IBSS_MODE selector 24 accepted a non-null
+  network carrier after copying it only to dead local pseudo-state; the local
+  STA-only port did not create the requested IBSS/ad-hoc network.
+- expected reference path: on Tahoe 25C56, Infra wrapper 0x10001814c dispatches
+  to AppleBCMWLANCore::setIBSS_MODE at 0x10011c94c. Its non-null path
+  coordinates Proximity/NAN/NAN-data links and calls
+  AppleBCMWLANJoinAdapter::createAdhocNetwork at 0x10003d7ea, preserving
+  lifecycle status. The recovered BssManager lifecycle ties positive
+  ad-hoc-created state to actual successful creator work.
+- actual local behavior: copies mode, auth bounds, channel and SSID into seven
+  cachedIbss fields, returns success, and has no consumer, creator, transport,
+  IBSS net80211 mode, or Intel HAL backend.
+- proposed correction: leave the existing local null rejection untouched,
+  reject every non-null carrier with kIOReturnUnsupported before mutation, and
+  delete only the seven dead cache members plus their two reset sites.
+- scope boundary: no claim of Apple null-input or valid-input return-code
+  parity, no full carrier-size inference, no direct carrier invocation, and no
+  mutation of BssManager teardown, getOP_MODE, STA_ONLY/HAL, WCL, radio, PM,
+  association, or generic command behavior.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON remains
+  excluded due to the independently reproduced baseline WCL lifecycle panic.
+
+## VERIFIED RESULT — IBSS mode false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+f232dae4299d01ef298795e4d4b34a97a9311f8ccd3cee7259ebdc5f450515d3.
+The IBSS-mode report, retained quarantine reports, Tahoe payload-builder suite
+(31 contracts), payload parity, and staged whitespace check passed. A clean
+Tahoe build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+9625D5EB-24E1-3C4F-BB34-8848100A0667 with executable SHA-256
+528606c2f3862250a0d3448672d283740ed0bd6a7f43c778a61f1f4a4e6286f4 and
+AuxKC SHA-256
+a1171f3d24912a5b170f15cf1438a39712ca322857fd0ff6e29501a955386712.
+After an explicit normal credentialed rejoin, capped uplink and reverse
+240-second gates each transferred 572 MiB at 20.0 Mbit/s with 240/240
+concurrent ping replies and 0.0% loss (mean RTT 5.036 ms and 5.939 ms
+respectively; reverse sender had one retransmit). Hostapd retained an
+authorized, authenticated, associated station with zero TX failures, QEMU
+remained running, the bounded guest fault filter had no matching
+panic/WCL/AirportItlwm marker, and the bounded host filter had no fatal
+VFIO/IOMMU/AER match.
+
+The recovered reference proves real ad-hoc/proximity/NAN lifecycle work and
+createAdhocNetwork ownership, but does not establish a complete public-carrier
+allocation or Apple valid-input return-code parity. No guessed carrier or
+private setter ioctl was issued, so this is explicitly not a claim of direct
+setter runtime invocation. The known networksetup association string remains a
+false negative; AP station state, IPv4, gateway route, ping, and traffic gates
+are the connection evidence. Radio OFF/ON remains excluded because the
+restored bit-identical A2DF baseline reproduces the same separate WCL lifecycle
+panic. Full immutable runtime evidence is under
+/home/dima/Projects/aiam/runtime-captures/itlwm-ibss-mode-quarantine-20260713/.

@@ -2458,13 +2458,6 @@ init()
     cachedPowerProfile = 0;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
-    cachedIbssMode = 0;
-    cachedIbssAuthLower = 0;
-    cachedIbssAuthUpper = 0;
-    memset(&cachedIbssChannel, 0, sizeof(cachedIbssChannel));
-    cachedIbssSsidLen = 0;
-    memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
-    hasCachedIbssNetwork = false;
     cachedFaceTimeWiFiCallingStatus = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
@@ -2907,13 +2900,6 @@ init(IOService *provider)
     this->cachedPowerProfile = 0;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
-    this->cachedIbssMode = 0;
-    this->cachedIbssAuthLower = 0;
-    this->cachedIbssAuthUpper = 0;
-    memset(&this->cachedIbssChannel, 0, sizeof(this->cachedIbssChannel));
-    this->cachedIbssSsidLen = 0;
-    memset(this->cachedIbssSsid, 0, sizeof(this->cachedIbssSsid));
-    this->hasCachedIbssNetwork = false;
     this->cachedFaceTimeWiFiCallingStatus = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
@@ -5656,23 +5642,13 @@ setRATE(apple80211_rate_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIBSS_MODE(apple80211_network_data *data)
 {
-    // AppleBCMWLANCore::setIBSS_MODE has a visible success contract even
-    // though the real owner path toggles hidden proximity/NAN interfaces. Keep
-    // the same public carrier coverage instead of leaving Tahoe on generic
-    // unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedIbssMode = data->nd_mode;
-    cachedIbssAuthLower = data->nd_auth_lower;
-    cachedIbssAuthUpper = data->nd_auth_upper;
-    cachedIbssChannel = data->nd_channel;
-    cachedIbssSsidLen = MIN(data->nd_ssid_len, static_cast<uint32_t>(sizeof(cachedIbssSsid)));
-    memset(cachedIbssSsid, 0, sizeof(cachedIbssSsid));
-    if (cachedIbssSsidLen != 0)
-        memcpy(cachedIbssSsid, data->nd_ssid, cachedIbssSsidLen);
-    hasCachedIbssNetwork = true;
-    return kIOReturnSuccess;
+    // Apple carries this request through real ad-hoc/proximity/NAN lifecycle
+    // owners. The local HAL is STA-only and has no equivalent IBSS creator, so
+    // do not acknowledge a network mode that was not created.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

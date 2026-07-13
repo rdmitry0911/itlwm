@@ -1,0 +1,24 @@
+{
+  "checks": {
+    "ioctl_route_present": true,
+    "no_local_ibss_creator": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_ibss_creator": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "adhoc_creator": "0x10003d7ea",
+    "apple80211_ioc": 24,
+    "core_setter": "0x10011c94c",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x10001814c",
+    "positive_bssmanager_edge_requires_creator": true
+  },
+  "schema": "itlwm-ibss-mode-quarantine-v1",
+  "source_base_revision": "b7196beac22e540694abb1c0d402e2759a07e34d"
+}
