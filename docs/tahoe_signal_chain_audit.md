@@ -1067,7 +1067,6 @@ Closed in this zone:
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
 - `setEAP_FILTER_CONFIG(...)`
-- `setWCL_SOI_CONFIG(...)`
 - `setOS_ELIGIBILITY(...)`
 
 Recovered Apple behavior is consistent enough to lift this as one zone:
@@ -1078,7 +1077,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   field split:
   `setDBG_GUARD_TIME_PARAMS`, `setDYNAMIC_RSSI_WINDOW_CONFIG`,
   `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setEAP_FILTER_CONFIG`,
-  `setWCL_SOI_CONFIG`, `setRSN_XE`, `setOS_ELIGIBILITY`
+  `setRSN_XE`, `setOS_ELIGIBILITY`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1087,10 +1086,11 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
 
 That closes the zone at the public Apple80211 surface:
 
-- generic unsupported is removed from these remaining setters
-- caller-visible carriers are preserved locally only for the remaining
-  cache-only contracts in this zone
-- fixed Tahoe fail codes are now explicit where Apple exposes them
+- each remaining setter follows its recovered public boundary rather than an
+  unqualified cache-only rule
+- caller-visible carriers are preserved locally only where the remaining
+  contract is genuinely cache-only
+- fixed Tahoe fail codes remain explicit where Apple exposes them
 
 ## Q13 correction: `setWCL_ASSOCIATED_SLEEP` is PowerStateAdapter-backed
 
@@ -1107,6 +1107,21 @@ associated-sleep cache.  This is a no-local-backend quarantine: it does not
 claim Apple null handling, complete carrier allocation, or valid-input return
 code parity.  See
 `docs/reference/CR-479-wcl-associated-sleep-quarantine-20260713.md`.
+
+## Q13 correction: `setWCL_SOI_CONFIG` is PowerStateAdapter-backed
+
+`setWCL_SOI_CONFIG(...)` is likewise not an opaque cache carrier.  Tahoe
+25C56 forwards virtual slot `+0x780` to Core, which passes the base carrier
+and its `+0x1c` portion through Core `+0x8c88` to the beacon-SOI and
+data-SOI `PowerStateAdapter` configurators.  The recovered downstream paths
+reach real commander IOVAR operations, including `bcn_li_bcn` and
+`pm2_sleep_ret`; a local byte copy cannot reproduce those effects.
+
+The port keeps its local null guard but returns `kIOReturnUnsupported` for a
+non-null request before pseudo-state mutation, and removes the dead SOI
+cache.  This is a no-local-backend quarantine: it does not claim Apple null
+handling, complete carrier allocation, or valid-input return-code parity.
+See `docs/reference/CR-479-wcl-soi-quarantine-20260713.md`.
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 

@@ -2521,8 +2521,6 @@ init()
     cachedRealTimeQosMscs = 0;
     cachedEapFilterConfig = 0;
     cachedWowEnabled = false;
-    memset(cachedSoiConfig, 0, sizeof(cachedSoiConfig));
-    hasCachedSoiConfig = false;
     cachedOsEligibility = 0;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
@@ -2949,8 +2947,6 @@ init(IOService *provider)
     this->cachedRealTimeQosMscs = 0;
     this->cachedEapFilterConfig = 0;
     this->cachedWowEnabled = false;
-    memset(this->cachedSoiConfig, 0, sizeof(this->cachedSoiConfig));
-    this->hasCachedSoiConfig = false;
     this->cachedOsEligibility = 0;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
@@ -6603,10 +6599,9 @@ setWCL_SOI_CONFIG(appl80211_sleep_on_inactivity_config *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    memcpy(cachedSoiConfig, raw, sizeof(cachedSoiConfig));
-    hasCachedSoiConfig = true;
-    return kIOReturnSuccess;
+    // Tahoe routes this carrier to a sleep configuration backend.  Intel has
+    // no equivalent backend, so do not acknowledge an unconsumed request.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
