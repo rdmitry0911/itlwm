@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "no_local_mws_assoc_protection_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_assoc_protection_bitmap_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100141526",
+    "core_vtable": "0x1003a10d8",
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_payload_bytes": 36,
+    "firmware_subcommand": 13,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 653,
+    "infra_wrapper": "0x1000196cc",
+    "terminal_owner": "0x100122fa6",
+    "vtable_entry": "0x1003a1730"
+  },
+  "schema": "itlwm-mws-assoc-protection-bitmap-quarantine-v1",
+  "source_base_revision": "0ee55bf26c71da21bf2469c6163206c4ee856af7"
+}
