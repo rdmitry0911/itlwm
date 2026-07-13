@@ -1,0 +1,25 @@
+{
+  "checks": {
+    "no_local_mws_wifi_type7_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_wifi_type7_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100140e68",
+    "core_vtable": "0x1003a10d8",
+    "firmware_iovar": "mws",
+    "firmware_payload_bytes": 36,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 649,
+    "infra_wrapper": "0x1000195ec",
+    "terminal_owner": "0x100122580"
+  },
+  "schema": "itlwm-mws-wifi-type7-bitmap-quarantine-v1",
+  "source_base_revision": "5ce9d4231f928a22399f48727f8174de1ea3e434"
+}

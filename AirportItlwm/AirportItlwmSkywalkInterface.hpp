@@ -841,7 +841,6 @@ private:
     bool hasCachedRsnXe;
     uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
-    uint32_t cachedMwsWifiType7Bitmap[9];
     uint32_t cachedMwsCoexBitmap[9];
     uint32_t cachedMwsDisableOclBitmap[9];
     uint32_t cachedMwsRfemConfig[10];

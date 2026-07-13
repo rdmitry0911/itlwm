@@ -2552,7 +2552,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    memset(cachedMwsWifiType7Bitmap, 0, sizeof(cachedMwsWifiType7Bitmap));
     memset(cachedMwsCoexBitmap, 0, sizeof(cachedMwsCoexBitmap));
     memset(cachedMwsDisableOclBitmap, 0, sizeof(cachedMwsDisableOclBitmap));
     memset(cachedMwsRfemConfig, 0, sizeof(cachedMwsRfemConfig));
@@ -3012,7 +3011,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    memset(this->cachedMwsWifiType7Bitmap, 0, sizeof(this->cachedMwsWifiType7Bitmap));
     memset(this->cachedMwsCoexBitmap, 0, sizeof(this->cachedMwsCoexBitmap));
     memset(this->cachedMwsDisableOclBitmap, 0, sizeof(this->cachedMwsDisableOclBitmap));
     memset(this->cachedMwsRfemConfig, 0, sizeof(this->cachedMwsRfemConfig));
@@ -6757,9 +6755,10 @@ setMWS_WIFI_TYPE_7_BITMAP_WIFI_ENH(apple80211_mws_wifi_channel_bitmap *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedMwsWifiType7Bitmap, reinterpret_cast<const uint32_t *>(data),
-           sizeof(cachedMwsWifiType7Bitmap));
-    return kIOReturnSuccess;
+    // AppleBCMWLAN turns this opaque nine-dword carrier into a
+    // firmware-specific coexistence IOVAR. Intel has no equivalent owner or
+    // transport, so do not acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
