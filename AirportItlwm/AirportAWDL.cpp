@@ -24,7 +24,13 @@ getIE(OSObject *object, struct apple80211_ie_data *data)
 IOReturn AirportItlwm::
 setIE(OSObject *object, struct apple80211_ie_data *data)
 {
-    return kIOReturnSuccess;
+    if (data == nullptr || data->ie_len == 0 || data->ie_len > sizeof(data->ie))
+        return static_cast<IOReturn>(0x16);
+
+    // The legacy controller entry has no Intel implementation of the Apple
+    // WAPI or vndr_ie paths. Keep the same visible invalid range, but do not
+    // acknowledge non-null IE data after local bookkeeping alone.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

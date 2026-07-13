@@ -28,10 +28,10 @@ inline const PayloadContract *payloadContracts(uint32_t *count)
         {
             "ie-assoc-vendor",
             "TahoePayloadBuilders::buildIE",
-            "TahoeCommanderV2::runSetIE",
-            "apple-ie-custom-assoc",
+            "AirportItlwmSkywalkInterface::setIE",
+            "apple-ie-public-quarantine",
             kVariablePayloadLength,
-            "null-or-overlength returns raw 0x16; custom assoc is gated by ie[0] == 0x44"
+            "null, zero, or overlength returns raw 0x16; valid carrier returns unsupported without synthetic IE state"
         },
         {
             "offload-ndp-ipv6",

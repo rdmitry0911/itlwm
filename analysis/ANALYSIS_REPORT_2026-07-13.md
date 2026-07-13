@@ -1214,6 +1214,42 @@ panic. Full immutable runtime evidence is under
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
 
+## VERIFIED RESULT — IE public setter and carrier-ABI false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build-input `AirportItlwm/` and `include/` files) has SHA-256
+`96aed4fc7e37dbb270832eb6fd53ef9d32cbae304c2a47cf45ca3bf30d1903a8`.
+The IE public-quarantine report, retained USB/BTCOEX reports, Tahoe payload
+parity, 31 payload-builder contracts, and staged whitespace check passed. A
+clean Tahoe build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`7E962C85-D85B-33C7-B66C-CB3AC8F052A3` with executable SHA-256
+`e721c7e74edc9a5fdba76d80fe62455312dce02a4cea1014370e742cd24ef99c` and
+AuxKC SHA-256
+`c4c6333f1ac612e85e89a052bb7ecbaafff588be1895f06dc8cb1d0efcc7c338`.
+The deployment's informational codesign check reported an unsigned code
+object; loaded identity is established by kmutil, UUID, and executable hash,
+not a signing claim. After an explicit normal credentialed rejoin, capped
+uplink and reverse 240-second gates each transferred 572 MiB at 20.0 Mbit/s
+with 240/240 concurrent ping replies and 0.0% loss (mean RTT 3.521 ms and
+6.695 ms; reverse sender had one retransmit). Hostapd retained an authorized,
+authenticated, associated station with zero TX failures, QEMU remained
+running, the focused bounded guest failure filter had no matching
+panic/WCL/AirportItlwm marker, and the bounded host filter had no fatal
+VFIO/IOMMU/AER match.
+
+The recovered reference proves real WAPI and `vndr_ie` backend work and exact
+carrier/range semantics, but does not establish Apple valid-input return-code
+parity outside the backend result. No guessed IE carrier or private setter
+ioctl was issued, so this is explicitly not a claim of direct setter runtime
+invocation. The known networksetup association string remains a false
+negative; AP station state, IPv4/gateway route, ping, and traffic gates are
+the connection evidence. Radio OFF/ON remains excluded because the restored
+bit-identical A2DF baseline reproduces the separate WCL lifecycle panic. Full
+immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-ie-public-quarantine-20260713/`.
+
 ## VERIFIED RESULT — USB host notification false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
@@ -1315,3 +1351,34 @@ the connection evidence. Radio OFF/ON remains excluded because the restored
 bit-identical A2DF baseline reproduces the same separate WCL lifecycle panic.
 Full immutable runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-btcoex-public-quarantine-20260713/`.
+
+## FIX_CANDIDATE — IE public setter and carrier-ABI false-success quarantine
+
+- anomaly ID: public `APPLE80211_IOC_IE` / selector `552` accepted a
+  zero-length or valid carrier, passed it into synthetic local owner/commander
+  bookkeeping, copied it into dead Skywalk caches, and reported success. The
+  legacy controller `setIE` entry also returned success unconditionally. The
+  shared local carrier declaration additionally inserted an extra dword that
+  moved IE bytes from the recovered `+0x14` to `+0x18`.
+- expected reference path: Tahoe 25C56 Infra wrapper `0x100018230` dispatches
+  virtual `+0x528` to Core `0x100121826`. It returns raw `0x16` for null,
+  zero, and `>0x800` lengths; it accepts only `1..0x800` in a `0x814` carrier
+  with bytes at `+0x14`, then calls either JoinAdapter `0x10003eeac` / `wapiie`
+  or Core `0x10012109c` / `vndr_ie` commander work.
+- actual local behavior: no Intel `wapiie` or `vndr_ie` backend exists. The
+  local generic commander only updated registry/cache state and completed
+  status zero; the ABI declaration contradicted the existing `0x814` APSTA
+  layout witness.
+- proposed correction: restore the `0x814` / `+0x14` declaration and validate
+  only `1..0x800`; preserve raw invalid status in both public entry points;
+  return `kIOReturnUnsupported` for a valid carrier before owner, async,
+  cache, or transport mutation; delete only seven dead Skywalk IE cache fields
+  and their two reset sites.
+- scope boundary: no generic commander/owner, association, WCL, radio, MWS,
+  power, or Intel firmware change; no guessed carrier or private setter
+  invocation, and no Apple valid-input return-code parity claim.
+- verification plan: deterministic source report, retained payload contracts,
+  clean Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON remains
+  excluded because the restored bit-identical A2DF baseline reproduces the
+  separate WCL lifecycle panic.

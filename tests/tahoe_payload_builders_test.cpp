@@ -60,6 +60,11 @@ void testIEBuilder()
     apple80211_ie_data ie{};
     TahoePayloadBuilders::IEPayloads payload{};
 
+    require(sizeof(apple80211_ie_data) == 0x814,
+            "IE carrier uses the recovered 0x814-byte ABI");
+    require(offsetof(apple80211_ie_data, ie) == 0x14,
+            "IE bytes begin at the recovered +0x14 ABI offset");
+
     ie.frame_type_flags = 4;
     ie.add = 1;
     ie.ie_len = 3;
@@ -71,6 +76,9 @@ void testIEBuilder()
     require(payload.customAssoc, "IE builder marks 0x44 frame-type 4 add=1 as custom assoc");
     require(payload.ieLen == 3, "IE builder preserves IE length");
     require(payload.ie[1] == 0xaa && payload.ie[2] == 0xbb, "IE builder copies IE bytes");
+
+    ie.ie_len = 0;
+    require(!TahoePayloadBuilders::buildIE(&ie, &payload), "IE builder rejects zero-length IE");
 
     ie.ie_len = sizeof(ie.ie) + 1;
     require(!TahoePayloadBuilders::buildIE(&ie, &payload), "IE builder rejects overlength IE");

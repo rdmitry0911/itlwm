@@ -797,13 +797,6 @@ private:
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;
-    uint8_t cachedAssocIe[2048];
-    uint32_t cachedAssocIeLen;
-    bool hasCachedAssocIe;
-    uint8_t cachedVendorIe[2048];
-    uint32_t cachedVendorIeLen;
-    uint32_t cachedVendorIeFlags;
-    bool hasCachedVendorIe;
     uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];

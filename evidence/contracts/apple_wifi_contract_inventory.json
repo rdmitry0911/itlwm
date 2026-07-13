@@ -1487,10 +1487,13 @@
         "join owner vs commander owner routing"
       ],
       "source_paths": [
+        "AirportItlwm/AirportAWDL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
         "AirportItlwm/TahoePayloadBuilders.hpp",
         "AirportItlwm/TahoeOwners.hpp",
         "AirportItlwm/TahoeCommanderV2.hpp",
-        "AirportItlwm/TahoeCommandRouter.hpp"
+        "AirportItlwm/TahoeCommandRouter.hpp",
+        "include/Airport/apple80211_ioctl.h"
       ],
       "payload_shape": {
         "required_fields": [
@@ -1500,20 +1503,18 @@
           "IE byte array",
           "custom-assoc condition frame_type_flags==4 add!=0 ie[0]==0x44"
         ],
-        "invalid_payload_behavior": "Reject data->ie_len beyond carrier capacity with raw Apple invalid-argument status."
+        "invalid_payload_behavior": "Reject null, zero-length, and over-capacity data with raw Apple invalid-argument status; the recovered carrier is 0x814 bytes and IE bytes begin at +0x14."
       },
       "state_machine": {
         "states": [
           "ie-empty",
-          "vendor-ie-cached",
-          "assoc-ie-cached",
-          "commander-route-sent",
-          "join-route-sent"
+          "ie-invalid-rejected",
+          "ie-valid-quarantined"
         ],
         "transitions": [
-          "custom association IE routes to join owner",
-          "generic vendor IE routes to commander owner",
-          "cache update precedes transport dispatch"
+          "Apple routes custom association IE to the join owner and generic vendor IE to its commander",
+          "the local public boundary returns unsupported for a valid carrier until an equivalent backend exists",
+          "no local IE cache or synthetic transport reports success"
         ]
       },
       "current_gap_ids": [
@@ -1525,7 +1526,7 @@
         {
           "gap_id": "gap-payload-parity",
           "roadmap_item_id": "itlwm-rm-03",
-          "closure_requirement": "Verify IE routing, carrier bounds, and cache-before-dispatch semantics."
+          "closure_requirement": "Verify exact IE ABI/range and retain the explicit fail-closed public boundary until an equivalent backend exists."
         }
       ],
       "payload_state_acceptance_criteria_ids": [
@@ -2256,12 +2257,12 @@
         "itlwm-rm-05"
       ],
       "payload_acceptance": [
-        "IE length is bounded by the apple80211_ie_data carrier capacity.",
-        "Custom association IE condition routes selector 552 to the join owner; generic vendor IE routes to commander owner."
+        "The IE carrier is 0x814 bytes, IE bytes begin at +0x14, and only lengths 1..0x800 are valid.",
+        "The local public boundary does not synthesize the Apple custom-association or vendor-IE owner result."
       ],
       "state_machine_acceptance": [
-        "IE cache update precedes transport dispatch.",
-        "Association IE and vendor IE caches remain distinct."
+        "Invalid IE carriers retain the raw Apple invalid-argument fail shape.",
+        "Valid IE carriers fail closed without a synthetic cache or transport success."
       ]
     },
     {

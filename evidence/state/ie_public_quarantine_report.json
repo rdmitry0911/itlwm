@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "builder_preserves_exact_invalid_range": true,
+    "carrier_abi_matches_reference": true,
+    "dead_skywalk_pseudo_state_removed": true,
+    "legacy_setter_quarantines_valid": true,
+    "no_local_ie_backend_execution": true,
+    "reference_note": true,
+    "skywalk_setter_quarantines_valid": true,
+    "stale_ie_claims_corrected": true,
+    "vndr_ie_scaffold_is_not_a_backend": true
+  },
+  "local": {
+    "backend_ie_commander": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "accepted_ie_length": "1..0x800",
+    "carrier_bytes": 2068,
+    "core_setter": "0x100121826",
+    "custom_assoc_setter": "0x10003eeac",
+    "custom_iovar": "wapiie",
+    "ie_offset": "0x14",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x528",
+    "infra_wrapper": "0x100018230",
+    "invalid_status": "0x16",
+    "vendor_iovar": "vndr_ie",
+    "vendor_setter": "0x10012109c"
+  },
+  "schema": "itlwm-ie-public-quarantine-v1",
+  "source_base_revision": "e55bcd64321591754ea3faca9d09e0b7faa83740"
+}

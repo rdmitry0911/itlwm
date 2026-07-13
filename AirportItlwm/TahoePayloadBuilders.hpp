@@ -17,8 +17,10 @@
 #define APPLE80211_MAX_CC_LEN 3
 
 struct apple80211_ie_data {
+    uint32_t version;
     uint32_t frame_type_flags;
     uint32_t add;
+    uint32_t signature_len;
     uint32_t ie_len;
     uint8_t ie[2048];
 };
@@ -173,7 +175,8 @@ struct RangingAuthenticatePayload {
 
 inline bool buildIE(const apple80211_ie_data *data, IEPayloads *payload)
 {
-    if (data == nullptr || payload == nullptr || data->ie_len > sizeof(data->ie))
+    if (data == nullptr || payload == nullptr || data->ie_len == 0 ||
+        data->ie_len > sizeof(data->ie))
         return false;
     payload->frameTypeFlags = data->frame_type_flags;
     payload->add = data->add;

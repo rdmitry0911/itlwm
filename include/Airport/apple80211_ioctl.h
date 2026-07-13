@@ -1650,9 +1650,13 @@ struct apple80211_ie_data {
     uint32_t    add;                // 8
     uint32_t    signature_len;      // 12
     uint32_t    ie_len;             // 16
-    uint32_t    pad1;               // 20
     uint8_t     ie[2048];
 } __attribute__((packed));
+
+static_assert(sizeof(struct apple80211_ie_data) == 0x814,
+              "apple80211 IE carrier size error");
+static_assert(__offsetof(struct apple80211_ie_data, ie) == 0x14,
+              "apple80211 IE byte offset error");
 
 struct apple80211_p2p_listen_data {
     uint32_t    version;

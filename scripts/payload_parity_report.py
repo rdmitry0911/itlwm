@@ -140,30 +140,38 @@ REFERENCE_CASES = [
     },
 
     {
-        "id": "apple-ie-custom-assoc",
-        "path": "docs/tahoe_signal_chain_audit.md",
-        "tokens": ["ie_len != 0", "ie[0] == 0x44"],
+        "id": "apple-ie-public-quarantine",
+        "path": "docs/reference/CR-479-ie-public-quarantine-20260713.md",
+        "tokens": ["0x100121826", "`1..0x800`", "`+0x14`", "`wapiie`", "`vndr_ie`"],
     },
 ]
 
 PAYLOAD_TYPES = [
     {
         "name": "ie-assoc-vendor",
-        "shape": "variable IE bytes, max 2048",
+        "shape": "0x814-byte carrier with IE bytes at +0x14 and length 1..0x800",
         "producer": "TahoePayloadBuilders::buildIE",
-        "consumer": "TahoeCommanderV2::runSetIE",
-        "reference_ids": ["apple-ie-custom-assoc", "apple-io80211-selector-surface"],
+        "consumer": "AirportItlwmSkywalkInterface::setIE",
+        "reference_ids": ["apple-ie-public-quarantine", "apple-io80211-selector-surface"],
         "implementation_checks": [
             {
                 "path": "AirportItlwm/TahoePayloadBuilders.hpp",
-                "tokens": ["struct IEPayloads", "buildIE", "data->ie_len > sizeof(data->ie)", "data->ie[0] == 0x44"],
+                "tokens": ["struct IEPayloads", "buildIE", "data->ie_len == 0", "data->ie_len > sizeof(data->ie)", "data->ie[0] == 0x44"],
             },
             {
-                "path": "AirportItlwm/TahoeCommanderV2.hpp",
-                "tokens": ["runSetIE", "dispatchIOVarSet(552", "dispatchVirtualIOVarSet(552"],
+                "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+                "tokens": ["setIE(apple80211_ie_data *data)", "return kApple80211ErrInvalidArgumentRaw;", "return kIOReturnUnsupported;"],
+            },
+            {
+                "path": "include/Airport/apple80211_ioctl.h",
+                "tokens": ["sizeof(struct apple80211_ie_data) == 0x814", "__offsetof(struct apple80211_ie_data, ie) == 0x14"],
+            },
+            {
+                "path": "AirportItlwm/AirportAWDL.cpp",
+                "tokens": ["data == nullptr || data->ie_len == 0", "return static_cast<IOReturn>(0x16);", "return kIOReturnUnsupported;"],
             },
         ],
-        "invalid_semantics": "null or overlength carrier returns raw 0x16",
+        "invalid_semantics": "null, zero, or overlength carrier returns raw 0x16; valid carrier is fail-closed without an IE backend",
     },
     {
         "name": "offload-ndp-ipv6",

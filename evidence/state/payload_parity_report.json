@@ -19,18 +19,20 @@
   "covered_payload_types": [
     {
       "name": "ie-assoc-vendor",
-      "shape": "variable IE bytes, max 2048",
+      "shape": "0x814-byte carrier with IE bytes at +0x14 and length 1..0x800",
       "producer": "TahoePayloadBuilders::buildIE",
-      "consumer": "TahoeCommanderV2::runSetIE",
+      "consumer": "AirportItlwmSkywalkInterface::setIE",
       "implementation_paths": [
-        "AirportItlwm/TahoeCommanderV2.hpp",
-        "AirportItlwm/TahoePayloadBuilders.hpp"
+        "AirportItlwm/AirportAWDL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "include/Airport/apple80211_ioctl.h"
       ],
       "apple_reference_case_ids": [
-        "apple-ie-custom-assoc",
+        "apple-ie-public-quarantine",
         "apple-io80211-selector-surface"
       ],
-      "invalid_semantics": "null or overlength carrier returns raw 0x16"
+      "invalid_semantics": "null, zero, or overlength carrier returns raw 0x16; valid carrier is fail-closed without an IE backend"
     },
     {
       "name": "offload-ndp-ipv6",
@@ -380,9 +382,9 @@
       "assertions_checked": 5
     },
     {
-      "id": "apple-ie-custom-assoc",
-      "path": "docs/tahoe_signal_chain_audit.md",
-      "assertions_checked": 2
+      "id": "apple-ie-public-quarantine",
+      "path": "docs/reference/CR-479-ie-public-quarantine-20260713.md",
+      "assertions_checked": 5
     }
   ],
   "error_semantics_cases": 6,

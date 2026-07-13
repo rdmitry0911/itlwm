@@ -2508,13 +2508,6 @@ init()
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
-    memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
-    cachedAssocIeLen = 0;
-    hasCachedAssocIe = false;
-    memset(cachedVendorIe, 0, sizeof(cachedVendorIe));
-    cachedVendorIeLen = 0;
-    cachedVendorIeFlags = 0;
-    hasCachedVendorIe = false;
     cachedBtcoexProfileActive = 0;
     cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
@@ -2945,13 +2938,6 @@ init(IOService *provider)
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
-    memset(this->cachedAssocIe, 0, sizeof(this->cachedAssocIe));
-    this->cachedAssocIeLen = 0;
-    this->hasCachedAssocIe = false;
-    memset(this->cachedVendorIe, 0, sizeof(this->cachedVendorIe));
-    this->cachedVendorIeLen = 0;
-    this->cachedVendorIeFlags = 0;
-    this->hasCachedVendorIe = false;
     this->cachedBtcoexProfileActive = 0;
     this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
@@ -5631,28 +5617,17 @@ setIBSS_MODE(apple80211_network_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIE(apple80211_ie_data *data)
 {
-    TahoeAsyncCommandContext asyncContext{};
-    const IOReturn rc =
-        (instance != nullptr)
-            ? instance->getTahoeCommander().runSetIE(data, &asyncContext)
-            : kApple80211ErrInvalidArgumentRaw;
-    if (rc != kIOReturnSuccess)
-        return rc;
+    if (data == nullptr || instance == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
 
-    const auto &owner = instance->getTahoeOwnerRegistry().ie;
-    cachedAssocIeLen = owner.assocIeLen;
-    memset(cachedAssocIe, 0, sizeof(cachedAssocIe));
-    if (cachedAssocIeLen != 0)
-        memcpy(cachedAssocIe, owner.assocIe, cachedAssocIeLen);
-    hasCachedAssocIe = owner.hasAssocIe;
+    TahoePayloadBuilders::IEPayloads payload;
+    if (!TahoePayloadBuilders::buildIE(data, &payload))
+        return kApple80211ErrInvalidArgumentRaw;
 
-    cachedVendorIeLen = owner.vendorIeLen;
-    cachedVendorIeFlags = owner.vendorIeFlags;
-    memset(cachedVendorIe, 0, sizeof(cachedVendorIe));
-    if (cachedVendorIeLen != 0)
-        memcpy(cachedVendorIe, owner.vendorIe, cachedVendorIeLen);
-    hasCachedVendorIe = owner.hasVendorIe;
-    return rc;
+    // Apple validates a 1..0x800-byte IE, then routes it either to WAPI
+    // association work or to the vndr_ie commander path. Intel has neither
+    // backend, so do not turn a validated public carrier into local success.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

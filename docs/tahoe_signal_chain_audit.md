@@ -2113,9 +2113,10 @@ closed:
 
 One more owner-family public-path mismatch is now closed:
 
-- `setIE(...)` must not reject `ie_len == 0`; the recovered Apple producer only
-  rejects `NULL` and `ie_len > 0x800`, and the assoc-request/WAPI branch is
-  taken only when `ie_len != 0` and `ie[0] == 0x44`
+- `setIE(...)` must reject `ie_len == 0` with raw `0x16`: the recovered Apple
+  producer accepts only `1..0x800` bytes and places `ie[0]` at carrier `+0x14`;
+  the WAPI branch additionally requires frame type `4`, nonzero `add`, and
+  first byte `0x44`
 
 ## Tahoe Commander Engineering Batch
 
