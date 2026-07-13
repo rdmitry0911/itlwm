@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "no_local_mws_rfem_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_rfem_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x10014131e",
+    "core_vtable": "0x1003a10d8",
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_payload_bytes": 36,
+    "firmware_subcommand": 8,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 652,
+    "infra_wrapper": "0x100019694",
+    "terminal_owner": "0x100122ce6"
+  },
+  "schema": "itlwm-mws-rfem-config-quarantine-v1",
+  "source_base_revision": "278a2d586b2c6a98476fb7343c9ffcd42d67edf7"
+}
