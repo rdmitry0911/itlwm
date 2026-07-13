@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "no_local_mws_scan_freq_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_mws_scan_freq_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100141708",
+    "core_vtable": "0x1003a10d8",
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_payload_bytes": 40,
+    "firmware_subcommand": 7,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 654,
+    "infra_wrapper": "0x100019704",
+    "terminal_owner": "0x100122806",
+    "vtable_entry": "0x1003a1710"
+  },
+  "schema": "itlwm-mws-scan-freq-quarantine-v1",
+  "source_base_revision": "2a42fcab60b129cc1c645283c34f07d034bae9d3"
+}

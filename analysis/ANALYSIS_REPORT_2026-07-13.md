@@ -849,3 +849,94 @@ evidence. Radio OFF/ON remains excluded because the restored bit-identical
 A2DF baseline reproduces the same separate WCL lifecycle panic. Full immutable
 runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-mws-assoc-protection-bitmap-quarantine-20260713/`.
+
+## FIX_CANDIDATE — MWS scan-frequency false-success quarantine
+
+- anomaly_id: `CR-479-MWS-SCAN-FREQ-FALSE-SUCCESS-P0`
+- status: `FIX_CANDIDATE`
+- symptom: a non-null `MWS_SCAN_FREQ_WIFI_ENH` request reports success although
+  the Intel port has no corresponding MWS firmware-policy owner or transport.
+- expected system behavior: recovered 25C56 Infra slot-[654] at
+  `0x100019704` calls Core `0x100141708`; the Core setter reads ten dwords in
+  reference order (`+0x24`, then `+0..+0x20`), stores them at
+  `+0x299c..+0x29c0`, and dispatches `+0x628`. With the Core vptr address
+  point, raw entry `0x1003a1710` selects image-local `0x100122806`,
+  `setWiFiType4BlankingBitmapsWiFiEnh`, which creates a 40-byte MWS
+  command-7 payload with ten low-16-bit fields, sends it through Commander
+  IOVAR work, and preserves status.
+- actual behavior: local
+  `AirportItlwmSkywalkInterface::setMWS_SCAN_FREQ_WIFI_ENH` preserves the null
+  guard, then writes only `cachedMwsScanFreq` and returns success. The cache
+  has no consumer; scoped local inventory finds no MWS iovar, Type-4 blanking
+  terminal owner, callback, or equivalent Commander transport.
+- exact divergence point: local cache-only setter versus the recovered
+  wrapper/Core/vtable/terminal chain recorded in
+  `docs/reference/CR-479-mws-scan-freq-quarantine-20260713.md`.
+- evidence from static recovery: the exact reference image has SHA-256
+  `4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab`;
+  raw recovery establishes the current null/reordered-ten-dword/vtable/
+  firmware behavior. Scoped local inspection proves the cache-only success
+  path and backend absence.
+- confirmed deviation: callers are told a scan-frequency coexistence policy
+  was accepted while the local port cannot reproduce the corresponding
+  firmware work.
+- fix justification path: `REFERENCE_ALIGNMENT_SAFETY_QUARANTINE`.
+- why this is root cause and not just correlation: this does not explain the
+  independent WCL lifecycle panic. It is a direct false-capability boundary:
+  local success follows a dead cache write while the reference sends real MWS
+  IOVAR policy work.
+- proposed fix: retain the recovered null error, reject all non-null requests
+  with `kIOReturnUnsupported` before mutation, and remove only the dead cache
+  plus its two initializers.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmSkywalkInterface.cpp` and `.hpp`;
+  - dedicated scan-frequency quarantine report, reference note, and this
+    analysis record.
+- forbidden alternative fixes considered and rejected:
+  - fabricating the opaque MWS command-7 payload or issuing a guessed IOVAR;
+  - treating generic Intel coexistence code as Apple's MWS implementation;
+  - changing scan mode, Condition-ID, antenna, PM, radio state, `0x37`, WCL,
+    association, or generic commander semantics;
+  - claiming `kIOReturnUnsupported` is Apple's valid-input result;
+  - changing adjacent MWS selectors without their own terminal trace;
+  - using the baseline-shared radio OFF/ON fault as a candidate gate.
+- verification plan: deterministic source guard plus existing payload checks,
+  clean Tahoe build and symbol resolution, AuxKC install/load identity,
+  saved-profile rejoin, bounded bidirectional traffic/ping, and guest/host
+  fault filters. The runtime report will distinguish regression coverage from
+  direct private-setter execution.
+
+## VERIFIED RESULT — MWS scan-frequency false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`cd537e7c0a7cea426be010a503ed27b5ba8de0e29b845d8f37690134c4785cf1`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test, the
+four-invariant MWS scan-frequency quarantine report, retained association-
+protection/COEX/RFEM/disable-OCL/Type-7/battery/LMTPC/TX-power-cap reports,
+and the payload-parity report all passed. A clean Tahoe build resolved all 959
+undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`A953ED22-9781-3096-8C81-BA8B9EEBB915` with signed executable SHA-256
+`8294ef32f8381a388c12d3b6176b66a10040d4a0c8d29e9b5309426869f795c1`
+and AuxKC SHA-256
+`4b582fc12c3096f9b9a4ff6f4dbf3bf5e50d7dec412e238f3fa871fb21e5756a`.
+After explicit saved-profile rejoin, capped uplink and reverse 240-second
+gates each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping
+replies and 0.0% loss (mean RTT 4.229 ms and 6.150 ms respectively; reverse
+sender had one retransmit). Hostapd retained an authorized, authenticated,
+associated station with zero TX failures, QEMU remained running, the bounded
+guest fault filter had no matching panic/WCL/AirportItlwm marker, and the
+bounded host filter had no fatal VFIO/IOMMU/AER match.
+
+The recovered reference consumes ten effective dwords in a specific reorder,
+but does not prove the complete public-carrier allocation size. No guessed
+opaque carrier or private setter ioctl was issued, so this is explicitly not a
+claim of direct setter runtime invocation or Apple valid-input return-code
+parity. The known `networksetup` association string remains a false negative
+here; the actual AP station state, IPv4 address, route, ping, and traffic gates
+are the connection evidence. Radio OFF/ON remains excluded because the
+restored bit-identical A2DF baseline reproduces the same separate WCL lifecycle
+panic. Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-mws-scan-freq-quarantine-20260713/`.

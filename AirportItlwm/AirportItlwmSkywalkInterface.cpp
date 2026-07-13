@@ -2552,7 +2552,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    memset(cachedMwsScanFreq, 0, sizeof(cachedMwsScanFreq));
     memset(cachedMwsScanFreqMode, 0, sizeof(cachedMwsScanFreqMode));
     memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
     cachedMwsConditionIdCount = 0;
@@ -3007,7 +3006,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    memset(this->cachedMwsScanFreq, 0, sizeof(this->cachedMwsScanFreq));
     memset(this->cachedMwsScanFreqMode, 0, sizeof(this->cachedMwsScanFreqMode));
     memset(this->cachedMwsConditionIdConfig, 0, sizeof(this->cachedMwsConditionIdConfig));
     this->cachedMwsConditionIdCount = 0;
@@ -6807,9 +6805,10 @@ setMWS_SCAN_FREQ_WIFI_ENH(apple80211_mws_scan_freq *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedMwsScanFreq, reinterpret_cast<const uint32_t *>(data),
-           sizeof(cachedMwsScanFreq));
-    return kIOReturnSuccess;
+    // AppleBCMWLAN maps this opaque carrier to a firmware-specific
+    // coexistence command. Intel has no equivalent owner or transport, so do
+    // not acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
