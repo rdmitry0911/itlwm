@@ -841,9 +841,6 @@ private:
     bool hasCachedRsnXe;
     uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
-    uint8_t cachedMwsConditionIdConfig[0x168];
-    uint8_t cachedMwsConditionIdCount;
-    bool hasCachedMwsConditionIdConfig;
     uint16_t cachedMwsAntennaSelection[9];
 
     u_int32_t current_authtype_lower;

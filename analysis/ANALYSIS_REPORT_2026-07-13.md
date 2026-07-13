@@ -967,6 +967,41 @@ panic. Full immutable runtime evidence is under
   traffic/ping, and bounded guest/host fault filters. Radio OFF/ON stays
   excluded due to the independently reproduced baseline WCL lifecycle panic.
 
+## VERIFIED RESULT — MWS Condition-ID bitmap false-success quarantine
+
+The declared verification plan completed. The compiled source-code delta
+(build inputs only) has SHA-256
+`78165d97457c2c653446141f2b8a5bcda30934a574a8a8bbe8937d0f0f3e959d`.
+`git diff --cached --check`, the 31-contract Tahoe payload-builder test, the
+four-invariant MWS Condition-ID bitmap quarantine report, retained
+scan-frequency-mode/scan-frequency/association-protection/COEX/RFEM/
+disable-OCL/Type-7/battery/LMTPC/TX-power-cap reports, and payload parity all
+passed. A clean Tahoe build resolved all 959 undefined symbols against BootKC.
+
+The installed candidate loaded as UUID
+`F0DACC1F-0F16-3345-B609-D538C26D5F51` with signed executable SHA-256
+`4483f2d87f8e951e31780cc908061553ddc7c3e6b84a49b2ea0a57f7f4f0a2aa`
+and AuxKC SHA-256
+`160083977c31f2334c8a6eb1aa7a1464aca58e303bfd2462f75666d07da9a2a3`.
+After explicit saved-profile rejoin, capped uplink and reverse 240-second
+gates each transferred 572 MiB at 20.0 Mbit/s with 240/240 concurrent ping
+replies and 0.0% loss (mean RTT 3.447 ms and 7.389 ms respectively; reverse
+sender had four retransmits). Hostapd retained an authorized, authenticated,
+associated station with zero TX failures, QEMU remained running, the bounded
+guest fault filter had no matching panic/WCL/AirportItlwm marker, and the
+bounded host filter had no fatal VFIO/IOMMU/AER match.
+
+The recovered reference establishes its count loop, record geometry, and
+terminal transport, but does not prove the complete public-carrier allocation
+size. No guessed opaque carrier or private setter ioctl was issued, so this is
+explicitly not a claim of direct setter runtime invocation or Apple valid-input
+return-code parity. The known `networksetup` association string remains a
+false negative here; the actual AP station state, IPv4 address, route, ping,
+and traffic gates are the connection evidence. Radio OFF/ON remains excluded
+because the restored bit-identical A2DF baseline reproduces the same separate
+WCL lifecycle panic. Full immutable runtime evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-mws-condition-id-bitmap-quarantine-20260713/`.
+
 ## VERIFIED RESULT — MWS scan-frequency-mode false-success quarantine
 
 The declared verification plan completed. The compiled source-code delta
@@ -1001,3 +1036,33 @@ and traffic gates are the connection evidence. Radio OFF/ON remains excluded
 because the restored bit-identical A2DF baseline reproduces the same separate
 WCL lifecycle panic. Full immutable runtime evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-mws-scan-freq-mode-quarantine-20260713/`.
+
+## FIX_CANDIDATE — MWS Condition-ID bitmap false-success quarantine
+
+- anomaly ID: public `MWS_CONDITION_ID_BITMAP_WIFI_ENH` retained only a
+  clamped local cache and reported success despite no Intel-side MWS owner or
+  transport.
+- expected reference path: slot-[656] wrapper `0x100019774` dispatches to
+  Core `0x100141a2e`, preserving null/count-zero rejection and looping each
+  `0x28` condition record. It stages the condition ID and nine bitmap words,
+  invokes vtable offset `+0x638`, and returns immediately on terminal error.
+  Accounting for the Itanium vptr address point, raw entry `0x1003a1720`
+  resolves to terminal `0x100123df8`, which constructs the `mws`
+  command-`0x1018000`, subcommand-10 policy and preserves enqueue or
+  synchronous transport status.
+- actual local behavior: retain only
+  `cachedMwsConditionIdConfig/cachedMwsConditionIdCount`, report success,
+  and provide neither the MWS iovar nor an equivalent owner, callback, or
+  transport.
+- proposed correction: retain both
+  `kIOReturnBadArgumentTahoe` guards, reject count-nonzero input with
+  `kIOReturnUnsupported` before mutation, and remove only the three dead
+  cache members plus their two reset sites.
+- scope boundary: no inferred full opaque-carrier size, no direct setter
+  invocation, no Apple valid-input return-code parity claim, and no mutation
+  of antenna, scan frequency/mode, PM, radio/WCL, association, or generic
+  command semantics.
+- verification plan: source report plus retained payload contracts, clean
+  Tahoe build/load identity, saved-profile rejoin, bounded bidirectional
+  traffic/ping, and bounded guest/host fault filters. Radio OFF/ON stays
+  excluded due to the independently reproduced baseline WCL lifecycle panic.

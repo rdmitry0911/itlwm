@@ -2552,9 +2552,6 @@ init()
     hasCachedRsnXe = false;
     cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
-    memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
-    cachedMwsConditionIdCount = 0;
-    hasCachedMwsConditionIdConfig = false;
     memset(cachedMwsAntennaSelection, 0, sizeof(cachedMwsAntennaSelection));
     memset(fLastPublishedBssid, 0, sizeof(fLastPublishedBssid));
     fLastPublishedBssidValid = false;
@@ -3005,9 +3002,6 @@ init(IOService *provider)
     this->hasCachedRsnXe = false;
     this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
-    memset(this->cachedMwsConditionIdConfig, 0, sizeof(this->cachedMwsConditionIdConfig));
-    this->cachedMwsConditionIdCount = 0;
-    this->hasCachedMwsConditionIdConfig = false;
     memset(this->cachedMwsAntennaSelection, 0, sizeof(this->cachedMwsAntennaSelection));
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
@@ -6831,15 +6825,10 @@ setMWS_CONDITION_ID_BITMAP_WIFI_ENH(apple80211_mws_condition_id_config *data)
     if (raw[2] == 0)
         return kIOReturnBadArgumentTahoe;
 
-    cachedMwsConditionIdCount = raw[2];
-    size_t bytesToCopy = static_cast<size_t>(cachedMwsConditionIdCount) * 0x28;
-    if (bytesToCopy > sizeof(cachedMwsConditionIdConfig))
-        bytesToCopy = sizeof(cachedMwsConditionIdConfig);
-
-    memset(cachedMwsConditionIdConfig, 0, sizeof(cachedMwsConditionIdConfig));
-    memcpy(cachedMwsConditionIdConfig, raw + 0x28, bytesToCopy);
-    hasCachedMwsConditionIdConfig = true;
-    return kIOReturnSuccess;
+    // AppleBCMWLAN submits each condition record through its MWS firmware
+    // transport. Intel has no equivalent owner or transport, so do not
+    // acknowledge a policy that was not applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

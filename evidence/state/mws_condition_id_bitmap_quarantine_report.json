@@ -1,0 +1,31 @@
+{
+  "checks": {
+    "no_local_mws_condition_id_backend": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "setter_preserves_rejections_and_quarantines_valid": true
+  },
+  "local": {
+    "backend_mws_condition_id_owner": false,
+    "false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "bitmaps_per_record": 9,
+    "command_tx_payload_bytes": 36,
+    "core_setter": "0x100141a2e",
+    "core_vtable": "0x1003a10d8",
+    "embedded_body_bytes": 28,
+    "firmware_command": "0x1018000",
+    "firmware_iovar": "mws",
+    "firmware_subcommand": 10,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 656,
+    "infra_wrapper": "0x100019774",
+    "record_stride_bytes": 40,
+    "terminal_owner": "0x100123df8",
+    "vtable_entry": "0x1003a1720"
+  },
+  "schema": "itlwm-mws-condition-id-bitmap-quarantine-v1",
+  "source_base_revision": "2fdfe22c80bf0a3bdf7b439719f72e4cdcac3dd3"
+}
