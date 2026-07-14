@@ -27,9 +27,10 @@ firmware transport, or optional owner update. Its direct
 copied fields into Skywalk caches, and returned success. `fNetIf` is not the
 Apple Core `+0x2c20` owner and no firmware operation followed that success.
 
-`setIPV4_PARAMS(...)` is a separate public selector and remains the local IPv4
-cache producer. `setWCL_ARP_MODE(...)` has an independently recovered contract
-and is outside this direct-offload correction.
+`setIPV4_PARAMS(...)` is a separate public selector and is now independently
+quarantined with IPV6_PARAMS: its old local cache did not implement the Infra,
+notification, Proximity, or keepalive lifecycle. `setWCL_ARP_MODE(...)` has an
+independently recovered contract and is outside this direct-offload correction.
 
 ## Local correction
 
@@ -42,5 +43,5 @@ claim that Apple rejects a valid carrier on hardware which constructs the owner.
 
 `scripts/arp_offload_quarantine_report.py --check` requires current 25C56
 anchors in this note, the local raw result before direct ARP cache mutation,
-the retained independent `setIPV4_PARAMS(...)` cache producer, and absence of
-the private IPv4 notification/keepalive backend in the Intel source tree.
+the separate paired IP-parameter quarantine, and absence of the private IPv4
+notification/keepalive backend in the Intel source tree.

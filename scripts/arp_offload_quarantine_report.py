@@ -82,12 +82,20 @@ def build_report():
                 and "cachedIPv4Address" not in setter
                 and "cachedIPv4Gateway" not in setter
             ),
-            "ipv4_params_remains_independent_producer": all(
+            "ipv4_params_is_separate_quarantine": all(
                 token in ipv4_params
                 for token in (
-                    "cachedIPv4Address = ipv4->address;",
-                    "cachedIPv4Netmask = ipv4->netmask;",
-                    "cachedIPv4Gateway = ipv4->gateway;",
+                    "if (data == nullptr)",
+                    "return kIOReturnBadArgumentTahoe;",
+                    "return kIOReturnUnsupported;",
+                )
+            ) and all(
+                token not in ipv4_params
+                for token in (
+                    "cachedIPv4Address",
+                    "cachedIPv4Netmask",
+                    "cachedIPv4Gateway",
+                    "return kIOReturnSuccess;",
                 )
             ),
             "intel_source_has_no_private_arp_backend": not any(

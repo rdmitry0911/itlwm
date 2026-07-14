@@ -735,24 +735,6 @@ struct triggerCCSnapshot
 static_assert(sizeof(triggerCCSnapshot) == 0x20,
               "triggerCCSnapshot must match the first four qwords cached by Apple");
 
-struct tahoeIPv4ParamsContract
-{
-    uint32_t address;
-    uint32_t netmask;
-    uint32_t gateway;
-    uint16_t gatewayTail;
-} __attribute__((packed));
-static_assert(sizeof(tahoeIPv4ParamsContract) == 0x0E,
-              "tahoeIPv4ParamsContract must match recovered Apple field coverage");
-
-struct tahoeIPv6ParamsHeader
-{
-    uint32_t count;
-    uint8_t addresses[10][16];
-} __attribute__((packed));
-static_assert(sizeof(tahoeIPv6ParamsHeader) == 0xA4,
-              "tahoeIPv6ParamsHeader must match recovered Apple count+address coverage");
-
 struct apple80211_offload_arp_data
 {
     uint32_t version;
@@ -2340,14 +2322,6 @@ init()
     leScanPeakSum = 0;
     leScanTotalSum = 0;
     memset(leScanDutyCount, 0, sizeof(leScanDutyCount));
-    cachedIPv4Address = 0;
-    cachedIPv4Netmask = 0;
-    cachedIPv4Reserved = 0;
-    cachedIPv4Gateway = 0;
-    cachedIPv4GatewayTail = 0;
-    cachedIPv6Count = 0;
-    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
-    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
@@ -2729,14 +2703,6 @@ init(IOService *provider)
     this->leScanPeakSum = 0;
     this->leScanTotalSum = 0;
     memset(this->leScanDutyCount, 0, sizeof(this->leScanDutyCount));
-    this->cachedIPv4Address = 0;
-    this->cachedIPv4Netmask = 0;
-    this->cachedIPv4Reserved = 0;
-    this->cachedIPv4Gateway = 0;
-    this->cachedIPv4GatewayTail = 0;
-    this->cachedIPv6Count = 0;
-    memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
-    memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
@@ -4784,47 +4750,26 @@ setPOWER_PROFILE(apple80211_power_profile *data)
 IOReturn AirportItlwmSkywalkInterface::
 setIPV4_PARAMS(apple80211_ipv4_params *data)
 {
-    if (!data)
+    // Apple optionally calls the Infra IPv4 owner, persists state, and drives
+    // IPv4 / keepalive notifications. AirportItlwm has none of that lifecycle
+    // ownership, so a dead local cache must not acknowledge the request.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const auto *ipv4 = reinterpret_cast<const tahoeIPv4ParamsContract *>(data);
-
-    // The Apple producer persists IPv4/mask/router fields in core state,
-    // triggers IPv4 notifications, and only then decides whether keepalive data
-    // needs refreshing. Returning success without carrying the values breaks the
-    // producer/consumer contract even if user-visible network behavior has not
-    // reached that path yet.
-    cachedIPv4Address = ipv4->address;
-    cachedIPv4Netmask = ipv4->netmask;
-    cachedIPv4Reserved = 0;
-    cachedIPv4Gateway = ipv4->gateway;
-    cachedIPv4GatewayTail = ipv4->gatewayTail;
-
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setIPV6_PARAMS(apple80211_ipv6_params *data)
 {
-    if (!data)
+    // Apple optionally calls the Infra IPv6 owner and schedules its
+    // notification path. Its raw Core body does not establish a safe NULL
+    // return; preserve the local NULL guard, then fail closed because no
+    // matching owner exists.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const auto *ipv6 = reinterpret_cast<const tahoeIPv6ParamsHeader *>(data);
-    cachedIPv6Count = MIN(ipv6->count, static_cast<uint32_t>(10));
-    memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
-    memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
-    if (cachedIPv6Count != 0)
-        memcpy(cachedIPv6Addresses, ipv6->addresses, cachedIPv6Count * sizeof(cachedIPv6Addresses[0]));
-
-    // Apple seeds a dedicated link-local fe80:: prefix after refreshing the
-    // cached IPv6 table. Keep that exact state edge so later consumers do not
-    // observe "success" with no link-local cache behind it.
-    cachedIPv6LinkLocalAddress[0] = 0xfe;
-    cachedIPv6LinkLocalAddress[1] = 0x80;
-    if (cachedIPv6Count != 0)
-        memcpy(&cachedIPv6LinkLocalAddress[8], &cachedIPv6Addresses[0][8], 8);
-
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

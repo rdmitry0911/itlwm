@@ -259,6 +259,13 @@ than accepting the inverted invalid range and caching a false success.
   no-local-backend quarantine with the direct null error retained.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+  IPV4_PARAMS/IPV6_PARAMS correction: the old local cache-only success did not
+  perform the recovered Infra, notification, Proximity, or keepalive lifecycle
+  work. Those dead caches and reset paths are removed; both selectors retain
+  the local NULL safety boundary and reject non-null input until a matching
+  owner exists. IPv6 NULL handling is deliberately not presented as Apple
+  parity because the raw reference body dereferences that path.
+
 - `Q5 getter subset: RATE / RATE_SET / RSSI`:
   raw POSIX `6` removed from the getter subset whose Apple helper contracts
   were recovered strongly enough to implement 1:1.

@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "interface_slots_retained": true,
+    "ipv4_setter_preserves_null_and_quarantines_nonnull": true,
+    "ipv6_setter_preserves_local_safety_and_quarantines_nonnull": true,
+    "reference_note": true,
+    "scoped_lifecycle_backend_absent": true,
+    "synthetic_ip_state_removed": true
+  },
+  "local": {
+    "ip_lifecycle_backend": false,
+    "ipv4_null_return_is_apple_parity": true,
+    "ipv6_null_return_is_apple_parity": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "ipv4_core_setter": "0x100142776",
+    "ipv4_infra_wrapper": "0x1000190cc",
+    "ipv4_null_return": "0xe00002bc",
+    "ipv4_owner_offset": "+0x2c18",
+    "ipv4_state_offsets": [
+      "+0x250c",
+      "+0x2514",
+      "+0x2518",
+      "+0x251c"
+    ],
+    "ipv6_core_setter": "0x100142a50",
+    "ipv6_count_offset": "+0x0",
+    "ipv6_entry_stride": "+0x10",
+    "ipv6_infra_wrapper": "0x100019334",
+    "ipv6_max_entries": 10
+  },
+  "schema": "itlwm-ip-params-quarantine-v1",
+  "source_base_revision": "782c5a6d078a1f48bab06fcfa9778d82f47b89bd"
+}

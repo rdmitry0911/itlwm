@@ -1,7 +1,7 @@
 {
   "checks": {
     "intel_source_has_no_private_arp_backend": true,
-    "ipv4_params_remains_independent_producer": true,
+    "ipv4_params_is_separate_quarantine": true,
     "reference_note": true,
     "setter_fails_without_cache_mutation": true
   },

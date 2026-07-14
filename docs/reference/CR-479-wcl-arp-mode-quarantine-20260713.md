@@ -17,8 +17,8 @@ The direct local null guard remains `kIOReturnBadArgumentTahoe`
 (`0xe00002bc`). A non-null request now returns `kIOReturnUnsupported` before
 reading the carrier. The dead pseudo-layout, cache, flag, reset lines, and
 synthetic direct-OFFLOAD_ARP bridge are removed. The separate direct
-`setOFFLOAD_ARP` no-owner quarantine and independent `setIPV4_PARAMS` producer
-remain unchanged.
+`setOFFLOAD_ARP` no-owner quarantine and paired IP-parameter quarantine remain
+unchanged.
 
 ## Tahoe 25C56 reference recovery
 

@@ -460,26 +460,46 @@ ConfigManager, power-profile, or valid-input return-status parity.
 Apple path:
 
 - null returns `0xe00002bc`
-- optionally forwards to the infra-interface side
-- stores IPv4/mask/router/tail fields in persistent core state
-- triggers IPv4 notification handling
-- triggers keepalive notification if both address and mask are non-zero
+- optionally forwards to the infra-interface side, without propagating that
+  call's status
+- stores raw IPv4/mask/router/tail fields in persistent core state
+- triggers IPv4 notification handling, optional Proximity update, and
+  keepalive notification if both address and mask are non-zero
 
-The important architectural point is that Tahoe expects this IOC to update
-driver-owned IPv4 state, not merely acknowledge the request.
+The former local cache-only success was therefore false: its five IPv4 fields
+had no reader outside initialization and this setter, while the port has no
+Infra IPv4 owner, notification, Proximity, or keepalive lifecycle. The local
+`NULL -> kIOReturnBadArgumentTahoe` boundary matches Apple; a non-null request
+now returns unsupported before carrier access or mutation. This does not claim
+Apple valid-input return-code parity.
 
 ### `setIPV6_PARAMS`
 
 Apple path:
 
-- forwards to infra-interface if present
-- stores up to 10 IPv6 entries
-- clears the companion cached area
-- stores count
-- seeds a link-local `fe80::` address prefix in dedicated core state
-- schedules IPv6 notification handling
+- optionally forwards to infra-interface if present, without propagating that
+  call's status
+- clamps the raw count to 10, reads the first dword of each `+4 + 0x10*i`
+  entry, clears its companion state area, records count, seeds link-local
+  `fe80` state, and schedules IPv6 notification handling
 
-Again, this is a state-carrier IOC, not an ack-only slot.
+Again, this is lifecycle work rather than an ack-only slot. The former local
+IPv6 table/link-local cache had no reader outside initialization and this
+setter, and the port has no matching Infra or notification owner. The raw
+25C56 Core body does not establish a safe Apple NULL return: its NULL branch
+reaches an immediate carrier dereference. The retained local NULL rejection is
+therefore a safety boundary, not null-return parity; non-null input returns
+unsupported before access or mutation.
+
+### `IPV4_PARAMS` / `IPV6_PARAMS` correction
+
+The earlier state-carrier lift conflated Apple state persistence with a valid
+local cache-only implementation. Tahoe 25C56 does perform those state writes,
+but it also drives Infra / notification / keepalive lifecycle operations absent
+from AirportItlwm. Both dead local cache layouts and their reset paths are
+removed; neither public setter now reports success for an unapplied request.
+This correction does not synthesize IP configuration, direct firmware work,
+private IOCTLs, notifications, or valid-input Apple status parity.
 
 ### `setINFRA_ENUMERATED`
 
@@ -585,7 +605,8 @@ successes:
 - powersave re-entry through the lifted Tahoe `setPOWERSAVE(...)` path
 - RTS threshold through `ieee80211com::ic_rtsthreshold`
 - post-link MAC-context refresh through `ic_updateedca`
-- independent IPv4 state through the separate `setIPV4_PARAMS(...)` producer
+- the separate paired IP-parameter no-backend quarantine, which does not
+  fabricate IPv4/IPv6 notification or keepalive completion
 
 ### Q10 correction: WCL QoS has a selective owner boundary
 

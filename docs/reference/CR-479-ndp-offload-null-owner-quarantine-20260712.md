@@ -28,8 +28,9 @@ Its generic and V2 Tahoe commanders nevertheless copied the carrier into
 Skywalk setter then copied that fabricated state into its IPv6 cache. None of
 those operations submitted NDP offload work to Intel firmware.
 
-`setIPV6_PARAMS(...)` remains an independent local cache producer. It does not
-make `setOFFLOAD_NDP(...)` a valid firmware-offload operation.
+`setIPV6_PARAMS(...)` is now independently quarantined with IPV4_PARAMS: its
+old local cache did not implement the Infra or notification lifecycle. It does
+not make `setOFFLOAD_NDP(...)` a valid firmware-offload operation.
 
 ## Local correction
 

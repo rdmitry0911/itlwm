@@ -609,7 +609,8 @@ public:
     // feature-gated PowerManager path; non-null requests stay quarantined
     // until the port has that owner.
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
-    // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
+    // [624] — Apple drives an Infra IPv4 / keepalive lifecycle; non-null
+    // requests remain quarantined until the port owns that notification path.
     virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
     // [625] — AppleBCMWLAN is WnmAdapter-backed; locally quarantined until a
     // matching WNM configuration backend exists.
@@ -643,7 +644,8 @@ public:
     // [635] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state *) override;
-    // [636] — AppleBCMWLAN: stores up to 10 IPv6 addresses, notifies InfraInterface
+    // [636] — Apple drives an Infra IPv6 notification lifecycle; non-null
+    // requests remain quarantined until the port owns that notification path.
     virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *data) override;
     // [637] — AppleBCMWLAN: validates param, returns success (minimal stub)
     virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override;
@@ -766,14 +768,6 @@ private:
     uint32_t leScanPeakSum;
     uint32_t leScanTotalSum;
     uint32_t leScanDutyCount[7];
-    uint32_t cachedIPv4Address;
-    uint32_t cachedIPv4Netmask;
-    uint32_t cachedIPv4Reserved;
-    uint32_t cachedIPv4Gateway;
-    uint16_t cachedIPv4GatewayTail;
-    uint32_t cachedIPv6Count;
-    uint8_t cachedIPv6Addresses[10][16];
-    uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
     apple80211_lqm_config_t cachedLqmConfig;
     bool hasCachedLqmConfig;
