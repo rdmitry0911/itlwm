@@ -395,12 +395,12 @@ behavior:
 2. inline `if (!data) return error; return success;` stubs where Apple carries
    state, calls an adapter, or both.
 
-The first batch recovered well enough to implement directly from decompile is:
+The first batch identified from decompile was:
 
 - `setOS_FEATURE_FLAGS`
 - `setDHCP_RENEWAL_DATA`
 - `setBATTERY_POWERSAVE_CONFIG`
-- `setPOWER_PROFILE`
+- `setPOWER_PROFILE` (reclassified below as a no-local-backend quarantine)
 - `setIPV4_PARAMS`
 - `setIPV6_PARAMS`
 - `setINFRA_ENUMERATED`
@@ -437,13 +437,23 @@ Apple path:
 - stores the first 32-bit mode
 - passes it into the battery save configuration path
 
-### `setPOWER_PROFILE`
+### `setPOWER_PROFILE`: ConfigManager-backed quarantine
 
 Apple path:
 
 - null returns `0xe00002bc`
-- stores the first 32-bit profile in core state at `+0x29f0`
-- then dispatches through the power-policy vtable
+- stores the first 32-bit profile in core state at `+0x29e8`
+- dispatches through Core virtual `+0x560`; the `AppleBCMWLANCore` vtable
+  entry at `0x1003a1648` resolves to `setPowerProfile` at `0x100124398`
+- `setPowerProfile` selects ConfigManager at Core `+0x1558` and calls its
+  `setPowerProfile` owner at `0x10008b53e`
+
+The local port had only an unread `cachedPowerProfile` dword and returned
+success. That cache does not implement the ConfigManager/power-profile owner or
+its downstream status. The port now preserves the null error and returns
+`kIOReturnUnsupported` for non-null input before reading it, removing the
+pseudo-state and both reset sites. This does not claim complete carrier ABI,
+ConfigManager, power-profile, or valid-input return-status parity.
 
 ### `setIPV4_PARAMS`
 

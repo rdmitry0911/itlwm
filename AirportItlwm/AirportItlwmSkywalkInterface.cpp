@@ -2382,7 +2382,6 @@ init()
     cachedWowTestMode = 0;
     cachedOSFeatureFlags = 0;
     cachedDhcpRenewalData = false;
-    cachedPowerProfile = 0;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
     cachedFaceTimeWiFiCallingStatus = 0;
@@ -2782,7 +2781,6 @@ init(IOService *provider)
     this->cachedWowTestMode = 0;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
-    this->cachedPowerProfile = 0;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
     this->cachedFaceTimeWiFiCallingStatus = 0;
@@ -4857,11 +4855,10 @@ setPOWER_PROFILE(apple80211_power_profile *data)
     if (!data)
         return kIOReturnBadArgumentTahoe;
 
-    // AppleBCMWLANCore caches the first power-profile dword at +0x29f0 before
-    // dispatching into its power-policy vtable. Preserve the same cached owner
-    // state here instead of dropping the profile on the floor.
-    cachedPowerProfile = *reinterpret_cast<const uint32_t *>(data);
-    return kIOReturnSuccess;
+    // Tahoe stores the profile in Core and then routes it through a
+    // ConfigManager/power-profile owner. Intel has no matching owner, so reject
+    // before reading the carrier instead of acknowledging an unread cache.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

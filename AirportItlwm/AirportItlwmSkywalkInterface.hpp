@@ -592,7 +592,8 @@ public:
     // [618] — Tahoe BGScanAdapter owns dynamic PFN override and unassociated
     // scan-time configuration; locally quarantined until a matching owner exists.
     virtual IOReturn setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data) override;
-    // [619] — AppleBCMWLAN: stores profile at offset, calls power config vtable
+    // [619] — Tahoe Core stores the profile and invokes ConfigManager through
+    // its power-profile vtable; locally quarantined until that owner exists.
     virtual IOReturn setPOWER_PROFILE(apple80211_power_profile *data) override;
     // [620] — No Apple producer was recovered for this selector on Tahoe.
     virtual IOReturn setHEARTBEAT(void *) override;
@@ -754,7 +755,6 @@ private:
     uint32_t cachedWowTestMode;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
-    uint32_t cachedPowerProfile;
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;
     uint32_t cachedFaceTimeWiFiCallingStatus;

@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "pseudo_state_removed": true,
+    "reference_note": true,
+    "scoped_config_manager_backend_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "complete_public_carrier_layout_proven": false,
+    "matching_config_manager_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "config_manager_setter": "0x10008b53e",
+    "core_config_manager_offset": "0x1558",
+    "core_power_profile": "0x100124398",
+    "core_setter": "0x100142686",
+    "core_state_offset": "0x29e8",
+    "core_virtual_offset": "0x560",
+    "core_vtable": "0x1003a10d8",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018fb4",
+    "null_status": "0xe00002bc",
+    "vtable_entry": "0x1003a1648"
+  },
+  "schema": "itlwm-power-profile-quarantine-v1",
+  "source_base_revision": "4f07316dd4d3ff709992dc8ecf4cadf1d0bec66d"
+}

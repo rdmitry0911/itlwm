@@ -243,7 +243,11 @@ This inventory is intentionally split into:
 
 - `state-carrier IOC batch`:
   `OS_FEATURE_FLAGS`, `DHCP_RENEWAL_DATA`, `BATTERY_POWERSAVE_CONFIG`,
-  `POWER_PROFILE`, `IPV4_PARAMS`, `IPV6_PARAMS`, `INFRA_ENUMERATED`.
+  `IPV4_PARAMS`, `IPV6_PARAMS`, `INFRA_ENUMERATED`. `POWER_PROFILE` is
+  intentionally excluded: Tahoe sends its dword through a separate
+  ConfigManager/power-profile owner, while the port had only an unread cache;
+  valid non-null input is now an explicit `kIOReturnUnsupported`
+  no-local-backend quarantine with the direct null error retained.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q5 getter subset: RATE / RATE_SET / RSSI`:
