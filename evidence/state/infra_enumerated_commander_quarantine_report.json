@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "opaque_abi_remains_forward_only": true,
+    "reference_note": true,
+    "scoped_commander_backend_absent": true,
+    "setter_retains_null_and_quarantines_without_reading": true,
+    "synthetic_state_removed": true,
+    "virtual_slot_retained": true
+  },
+  "local": {
+    "bsd_ioc_route": false,
+    "commander_backend": false,
+    "opaque_carrier_abi_defined": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "command_timeout": "0x61a8",
+    "command_timeout_state_offset": "+0x10c",
+    "commander_offset": "+0x1520",
+    "commander_state_offset": "+0x40",
+    "commander_terminal": "0x100181e04",
+    "core_owner_offset": "+0x48",
+    "core_setter": "0x100142bf0",
+    "effective_carrier_offset": "+0x0",
+    "factory_boot_arg": "wlan.factory",
+    "factory_state_offset": "+0xa8",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x10001936c",
+    "null_return": "0xe00002bc"
+  },
+  "schema": "itlwm-infra-enumerated-commander-quarantine-v1",
+  "source_base_revision": "cf1fc1a8181db9ee9bcf7c77d2ca61f2d3657694"
+}

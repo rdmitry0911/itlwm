@@ -266,6 +266,14 @@ than accepting the inverted invalid range and caching a false success.
   owner exists. IPv6 NULL handling is deliberately not presented as Apple
   parity because the raw reference body dereferences that path.
 
+  INFRA_ENUMERATED correction: the old cached-success model was not a minimal
+  Tahoe producer. Canonical recovery shows a byte-0 gate into Commander
+  stationary-boot timeout handling. The carrier is only forward-declared
+  locally with no IOC route or length validation, and the port has no Commander
+  owner. It now retains the local NULL error and rejects non-null input before
+  carrier access or cache mutation rather than adding an unchecked byte read.
+  See [CR-479-infra-enumerated-commander-quarantine-20260714.md](reference/CR-479-infra-enumerated-commander-quarantine-20260714.md).
+
 - `Q5 getter subset: RATE / RATE_SET / RSSI`:
   raw POSIX `6` removed from the getter subset whose Apple helper contracts
   were recovered strongly enough to implement 1:1.

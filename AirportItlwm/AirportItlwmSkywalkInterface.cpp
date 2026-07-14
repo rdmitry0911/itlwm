@@ -2305,7 +2305,6 @@ init()
     leScanPeakSum = 0;
     leScanTotalSum = 0;
     memset(leScanDutyCount, 0, sizeof(leScanDutyCount));
-    cachedInfraEnumerated = false;
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
     cachedSetPropertyIoctlSeen = false;
@@ -2679,7 +2678,6 @@ init(IOService *provider)
     this->leScanPeakSum = 0;
     this->leScanTotalSum = 0;
     memset(this->leScanDutyCount, 0, sizeof(this->leScanDutyCount));
-    this->cachedInfraEnumerated = false;
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
     this->cachedSetPropertyIoctlSeen = false;
@@ -4739,10 +4737,12 @@ setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
     if (!data)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple's contract here really is minimal: validate non-null and succeed.
-    // Our old kIOReturnError path still diverged from that producer shape.
-    cachedInfraEnumerated = true;
-    return kIOReturnSuccess;
+    // Tahoe reads byte +0 and, when set, drives Commander command-timeout
+    // state through a stationary-boot notification. This port has neither
+    // that owner nor a concrete local ABI for the opaque forward declaration,
+    // so do not dereference or acknowledge a non-null carrier.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

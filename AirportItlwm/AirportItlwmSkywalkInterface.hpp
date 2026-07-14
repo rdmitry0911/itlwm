@@ -650,7 +650,8 @@ public:
     // [636] — Apple drives an Infra IPv6 notification lifecycle; non-null
     // requests remain quarantined until the port owns that notification path.
     virtual IOReturn setIPV6_PARAMS(apple80211_ipv6_params *data) override;
-    // [637] — AppleBCMWLAN: validates param, returns success (minimal stub)
+    // [637] — Tahoe conditionally calls the Commander stationary-boot owner;
+    // ownerless opaque carriers are quarantined after the local NULL gate.
     virtual IOReturn setINFRA_ENUMERATED(apple80211_infra_enumerated *data) override;
     // [638]
     virtual IOReturn setLMTPC_CONFIG(apple80211_lmtpc_config *) override;
@@ -766,7 +767,6 @@ private:
     uint32_t leScanPeakSum;
     uint32_t leScanTotalSum;
     uint32_t leScanDutyCount[7];
-    bool cachedInfraEnumerated;
     apple80211_vht_capability cachedVhtCapability;
     bool hasCachedVhtCapability;
     bool cachedSetPropertyIoctlSeen;

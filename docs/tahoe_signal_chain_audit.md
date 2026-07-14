@@ -506,10 +506,35 @@ private IOCTLs, notifications, or valid-input Apple status parity.
 Apple path:
 
 - null returns `0xe00002bc`
-- non-null returns success
+- a non-null carrier is read at byte `+0`; zero returns success without the
+  owner action, while nonzero reaches
+  `AppleBCMWLANCommander::deviceBootStationaryNotification()`
+- that Commander terminal updates its command-timeout state and still returns
+  success to Core
 
-This one is a true minimal producer contract; our previous generic
-`kIOReturnError` null handling was still wrong.
+This is therefore not a cache-only minimal producer contract. The canonical
+25C56 recovery is corrected below: AirportItlwm has neither the Commander
+owner nor a defined local ABI for the opaque forward-declared carrier.
+
+### 2026-07-14 correction: `INFRA_ENUMERATED` is Commander-backed
+
+The canonical DEXT routes
+`AppleBCMWLANInfraProtocol::setINFRA_ENUMERATED` at `0x10001936c` directly to
+Core `0x100142bf0`. `NULL` returns `0xe00002bc`; Core reads exactly byte `+0`.
+Only a nonzero byte follows `(Core + 0x48) + 0x1520` to
+`AppleBCMWLANCommander::deviceBootStationaryNotification()` at `0x100181e04`.
+That void terminal first follows Commander `+0x40` to its internal state, then
+writes timeout `0x61a8` at state `+0x10c`, with a `wlan.factory` adjustment
+using state `+0xa8`.
+
+The local carrier remains only a forward declaration, without an IOC route or
+length validation, so reproducing Apple’s byte-zero branch would add an
+unchecked opaque-carrier read. The local boundary keeps its safe NULL error,
+rejects every non-null carrier with `kIOReturnUnsupported` before access, and
+removes the dead cache. It does not claim valid-input return-code parity or
+Commander timeout behavior.
+
+See [CR-479-infra-enumerated-commander-quarantine-20260714.md](reference/CR-479-infra-enumerated-commander-quarantine-20260714.md).
 
 ## Batch 1 Fix Direction
 
