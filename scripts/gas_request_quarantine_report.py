@@ -39,12 +39,6 @@ def build_report():
         "setGAS_REQ(apple80211_gas_query_t *data)",
         "setBTCOEX_PROFILE",
     )
-    gas_abort = section(
-        skywalk,
-        "setGAS_ABORT(void *)",
-        "setWCL_LIMITED_AGGREGATION",
-    )
-
     return {
         "schema": "itlwm-gas-request-quarantine-v1",
         "source_base_revision": "f11cf7f",
@@ -89,7 +83,6 @@ def build_report():
             and "cachedGasQueryIssued" not in skywalk_hpp,
             "abort_remains_separate": (
                 "setGAS_ABORT" not in gas_request
-                and "return kIOReturnSuccess;" in gas_abort
             ),
             "intel_source_has_no_gas_backend": not any(
                 source_contains(token)

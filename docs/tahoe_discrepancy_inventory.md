@@ -308,6 +308,16 @@ This inventory is intentionally split into:
   instead of leaving the zone on generic unsupported.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 correction: GAS abort is not a successful no-op`:
+  `setGAS_ABORT(...)` reaches a GASAdapter rather than a pure minimal
+  contract. Its feature-enabled path sends the private `anqpo_stop_query`
+  IOVAR and publishes GAS completion; its feature-disabled path still clears
+  adapter state through the completion flow. With no local GAS/ANQP owner,
+  transport, or completion publisher, AirportItlwm now returns the explicit
+  no-local-backend `kIOReturnUnsupported` without inventing pointer validation
+  or a synthetic event. See
+  [CR-479-gas-abort-quarantine-20260714.md](/Users/bob/Projects/itlwm/docs/reference/CR-479-gas-abort-quarantine-20260714.md).
+
 - `Q13 mini-batch: telemetry/cache getter zone`:
   fifteen remaining getters were reduced to their Tahoe public contracts.
   Fixed-fail selectors now expose exact Apple error shapes (`BTCOEX_PROFILE`,

@@ -571,7 +571,8 @@ public:
     // injection ownership after closing the broader Q11-A umbrella queue.
     virtual IOReturn setWCL_ACTION_FRAME(apple80211_wcl_action_frame *) override;
     // [610]
-    // [610] — AppleBCMWLANCore delegates to GASAdapter with no payload.
+    // [610] — Tahoe delegates to GASAdapter; without its abort transport and
+    // completion owner, the public no-payload selector quarantines.
     virtual IOReturn setGAS_ABORT(void *) override;
     // [611] — AppleBCMWLAN: stores flags, applies DynSAR/KVR/6G feature configuration
     virtual IOReturn setOS_FEATURE_FLAGS(apple80211_feature_flags *data) override;

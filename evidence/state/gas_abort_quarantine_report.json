@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "legacy_request_report_decoupled": true,
+    "local_gas_backend_absent": true,
+    "reference_note": true,
+    "setter_quarantines_unconditionally": true
+  },
+  "local": {
+    "backend_gas_adapter": false,
+    "false_success": false,
+    "input_pointer_is_not_interpreted": true,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "abort_iovar": "anqpo_stop_query",
+    "adapter_setter": "0x1001a171a",
+    "complete_event": "0xdc",
+    "core_setter": "0x100137992",
+    "core_virtual_offset": "0x540",
+    "feature_bit": "0x11",
+    "gas_adapter_offset": "0x1560",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_core_offset": "0x88",
+    "infra_wrapper": "0x100019b52",
+    "issue_abort": "0x1000205e8"
+  },
+  "schema": "itlwm-gas-abort-quarantine-v1",
+  "source_base_revision": "19cf0e670937cfd209a3d904f3048fea0bfc7177"
+}

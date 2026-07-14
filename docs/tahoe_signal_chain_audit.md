@@ -1087,14 +1087,13 @@ Closed in this zone:
 - `setBSS_BLACKLIST(...)`
 - `setREALTIME_QOS_MSCS(...)`
 - `setRSN_XE(...)`
-- `setGAS_ABORT(...)`
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
 
 Recovered Apple behavior is consistent enough to lift this as one zone:
 
 - several selectors are pure minimal contracts:
-  `setGAS_ABORT`, `setWCL_LIMITED_AGGREGATION`
+  `setWCL_LIMITED_AGGREGATION`
 - several are opaque state carriers with only a null gate or a small public
   field split:
   `setDBG_GUARD_TIME_PARAMS`, `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`,
@@ -1112,6 +1111,25 @@ That closes the zone at the public Apple80211 surface:
 - caller-visible carriers are preserved locally only where the remaining
   contract is genuinely cache-only
 - fixed Tahoe fail codes remain explicit where Apple exposes them
+
+## Q13 correction: `setGAS_ABORT` is GASAdapter-backed
+
+`setGAS_ABORT(...)` is not a local successful no-op. Tahoe 25C56 Infra
+`0x100019b52` dispatches through Core virtual `+0x540` to
+`AppleBCMWLANCore::setGAS_ABORT` `0x100137992`, which selects the GASAdapter
+at Core `+0x1560`. Its terminal `0x1001a171a` conditionally calls
+`issueGASAbort` `0x1000205e8` under feature bit `0x11`; that path sends the
+private `anqpo_stop_query` IOVAR, emits GAS completion, and clears adapter
+state. Even with the feature absent, Tahoe emits a completion status and clears
+that state. The input pointer is neither read nor tested; its return is the
+event-admission result, not a fixed successful no-op.
+
+AirportItlwm has no GAS/ANQP adapter, abort IOVAR, fragment/completion event
+path, or adapter state to clear. It therefore returns
+`kIOReturnUnsupported` unconditionally, without adding a null gate or
+synthetic completion. This is a no-local-backend quarantine, not Apple
+return-code parity; see
+`docs/reference/CR-479-gas-abort-quarantine-20260714.md`.
 
 ## Q13 correction: `setWCL_ASSOCIATED_SLEEP` is PowerStateAdapter-backed
 

@@ -6311,10 +6311,12 @@ setRSN_XE(apple80211_rsn_xe_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setGAS_ABORT(void *)
 {
-    // AppleBCMWLANCore forwards this selector to the GAS adapter and exposes no
-    // public payload. Match the visible success contract instead of generic
-    // unsupported.
-    return kIOReturnSuccess;
+    // Tahoe reaches an Apple GAS owner, performs its private abort transport,
+    // emits completion, and clears adapter state. Intel has no GAS/ANQP owner
+    // or completion path, so do not acknowledge an abort operation that was
+    // not performed. The reference ignores this selector's pointer, therefore
+    // no local null distinction is invented.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
