@@ -280,14 +280,17 @@ This inventory is intentionally split into:
   discrepancy queue without inventing new producer paths.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
-- `Q13 mini-batch: MWS/NDD setter carrier zone`:
+- `Q13 mini-batch: MWS/NDD setter-contract zone`:
   the next Tahoe setter zone closes ten sideband selectors together. The nine
   `MWS_*_WIFI_ENH` slots are public carriers in Apple rather than generic
   unsupported stubs: Tahoe copies raw caller payloads into cached core state
-  before dispatching into Broadcom-private notifiers. `setNDD_REQ(...)` is
-  feature-gated and falls back to `0xe00002c7` when no nearby-discovery owner
-  exists. The port now mirrors that public surface instead of leaving the
-  whole zone on generic unsupported.
+  before dispatching into Broadcom-private notifiers. That private owner graph
+  is why a cache-only Intel acknowledgement would be false success. With no
+  matching local MWS owner, transport, or callback chain, valid non-null MWS
+  requests are explicit `kIOReturnUnsupported` no-local-backend quarantines;
+  their existing null/validation errors remain intact. `setNDD_REQ(...)`
+  separately retains its feature-gated `0xe00002c7` path when no
+  nearby-discovery owner exists.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: minimal setter-contract zone`:

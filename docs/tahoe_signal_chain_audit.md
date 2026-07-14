@@ -1017,7 +1017,7 @@ That closes this zone as follows:
 - `getCHIP_COUNTER_STATS(...)` leaves the open queue because the port now
   returns the same fixed Tahoe fail code that the reference driver exposes
 
-## Q13 Setter Carrier Zone: `MWS_*_WIFI_ENH` plus `NDD_REQ`
+## Q13 Setter Contract Zone: `MWS_*_WIFI_ENH` quarantines plus `NDD_REQ`
 
 The next `Q13` zone closes ten Tahoe sideband setters at once:
 
@@ -1039,13 +1039,14 @@ Recovered Apple behavior is split but still clean at the public contract layer:
 - `setNDD_REQ(...)` is feature-gated and returns `0xe00002c7` whenever the
   `NearbyDeviceDiscoveryAdapter` owner is absent
 
-That is enough to close the system-facing zone without guessing the private
-notifier graph:
-
-- the port now preserves the full caller-visible `MWS_*` carriers instead of
-  dropping the selectors on generic unsupported
-- `setNDD_REQ(...)` now exposes the recovered Tahoe fail path rather than a
-  generic placeholder
+That recovered private-notifier graph establishes that a cache-only local
+acknowledgement would be false success. The port has no corresponding MWS
+owner, IOVAR transport, or callback chain, so every valid non-null
+`MWS_*_WIFI_ENH` request is an explicit `kIOReturnUnsupported` no-local-backend
+quarantine after its existing null/validation guard. This is not Apple
+valid-input return-code parity and does not claim to mirror the carrier cache.
+`setNDD_REQ(...)` remains the separately recovered feature-gated
+`0xe00002c7` path.
 
 ## Q13 Minimal Setter-Contract Zone: remaining opaque carriers and fixed fail shapes
 
