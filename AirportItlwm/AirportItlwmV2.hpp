@@ -684,10 +684,6 @@ public:
     uint16_t awdlMasterChannel;
     uint16_t awdlSecondaryMasterChannel;
     uint8_t *roamProfile;
-    struct apple80211_btc_profiles_data *btcProfile;
-    struct apple80211_btc_config_data btcConfig;
-    uint32_t btcMode;
-    uint32_t btcOptions;
     bool awdlSyncEnable;
 
     CCPipe *driverLogPipe;

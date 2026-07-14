@@ -1,0 +1,49 @@
+77fad8c22845b5ba2c5d808134f0dccd2cc5d42f006410aa89f7448360b72672  /home/dima/Projects/aiam/workpacks/itlwm-offline-20260509/staging_decomp_gap_closure_20260509/common/reference/base/macos_binaries/ghidra_output/kdk_26.3/kdk_final/System/Library/Extensions/IO80211Family.kext/Contents/MacOS/IO80211Family
+            ;-- apple80211getBTCOEX_MODE(IO80211SkywalkInterface*, void*):
+            0x000dc5e6      55             push rbp                    ; apple80211getBTCOEX_MODE(IO80211SkywalkInterface*, void*)
+            0x000dc5e7      4889e5         mov rbp, rsp
+            0x000dc5ea      b80e2882e0     mov eax, 0xe082280e
+            0x000dc5ef      5d             pop rbp
+            0x000dc5f0      c3             ret
+            ;-- apple80211getBTCOEX_PROFILES(IO80211SkywalkInterface*, void*):
+            0x000dd502      55             push rbp                    ; apple80211getBTCOEX_PROFILES(IO80211SkywalkInterface*, void*)
+            0x000dd503      4889e5         mov rbp, rsp
+            0x000dd506      b80e2882e0     mov eax, 0xe082280e
+            0x000dd50b      5d             pop rbp
+            0x000dd50c      c3             ret
+            ;-- apple80211getBTCOEX_CONFIG(IO80211SkywalkInterface*, void*):
+            0x000dd50d      55             push rbp                    ; apple80211getBTCOEX_CONFIG(IO80211SkywalkInterface*, void*)
+            0x000dd50e      4889e5         mov rbp, rsp
+            0x000dd511      b80e2882e0     mov eax, 0xe082280e
+            0x000dd516      5d             pop rbp
+            0x000dd517      c3             ret
+            ;-- apple80211getBTCOEX_OPTIONS(IO80211SkywalkInterface*, void*):
+            0x000dd6c4      55             push rbp                    ; apple80211getBTCOEX_OPTIONS(IO80211SkywalkInterface*, void*)
+            0x000dd6c5      4889e5         mov rbp, rsp
+            0x000dd6c8      b80e2882e0     mov eax, 0xe082280e
+            0x000dd6cd      5d             pop rbp
+            0x000dd6ce      c3             ret
+            ;-- apple80211setBTCOEX_MODE(IO80211SkywalkInterface*, void*):
+            0x000e1388      55             push rbp                    ; apple80211setBTCOEX_MODE(IO80211SkywalkInterface*, void*)
+            0x000e1389      4889e5         mov rbp, rsp
+            0x000e138c      b80e2882e0     mov eax, 0xe082280e
+            0x000e1391      5d             pop rbp
+            0x000e1392      c3             ret
+            ;-- apple80211setBTCOEX_PROFILES(IO80211SkywalkInterface*, void*):
+            0x000e23dc      55             push rbp                    ; apple80211setBTCOEX_PROFILES(IO80211SkywalkInterface*, void*)
+            0x000e23dd      4889e5         mov rbp, rsp
+            0x000e23e0      b80e2882e0     mov eax, 0xe082280e
+            0x000e23e5      5d             pop rbp
+            0x000e23e6      c3             ret
+            ;-- apple80211setBTCOEX_CONFIG(IO80211SkywalkInterface*, void*):
+            0x000e23e7      55             push rbp                    ; apple80211setBTCOEX_CONFIG(IO80211SkywalkInterface*, void*)
+            0x000e23e8      4889e5         mov rbp, rsp
+            0x000e23eb      b80e2882e0     mov eax, 0xe082280e
+            0x000e23f0      5d             pop rbp
+            0x000e23f1      c3             ret
+            ;-- apple80211setBTCOEX_OPTIONS(IO80211SkywalkInterface*, void*):
+            0x000e2632      55             push rbp                    ; apple80211setBTCOEX_OPTIONS(IO80211SkywalkInterface*, void*)
+            0x000e2633      4889e5         mov rbp, rsp
+            0x000e2636      b80e2882e0     mov eax, 0xe082280e
+            0x000e263b      5d             pop rbp
+            0x000e263c      c3             ret

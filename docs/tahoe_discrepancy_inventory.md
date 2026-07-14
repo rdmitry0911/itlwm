@@ -7944,3 +7944,18 @@ deprioritization with fallback rather than scan hiding, but firmware MACMODE 3
 semantics are still unlabeled. This batch therefore makes no hard-exclusion,
 lower-callback, or complete firmware-blacklist parity claim. See
 `docs/reference/CR-479-bss-blacklist-async-owner-20260713.md`.
+
+## 2026-07-14 correction: legacy BTCOEX selectors are direct Tahoe gates
+
+The Tahoe V2 bridge previously accepted legacy `BTCOEX_MODE`,
+`BTCOEX_PROFILES`, `BTCOEX_CONFIG`, and `BTCOEX_OPTIONS` requests, cached their
+carriers locally, and replayed that cache through getters. The 26.3
+IO80211Family wrappers for both directions are instead direct
+`0xe082280e` leaves with no carrier read, owner dispatch, or transport.
+
+The active Tahoe bridge now returns that exact status before accessing a local
+instance or carrier. The V2-only cache fields and their teardown are removed,
+while the card-specific routes remain explicit so valid selectors reach the
+right gate. This is an exact Tahoe return-shape correction, not a coexistence
+backend implementation and not a claim about the separate V1 target. See
+`docs/reference/CR-479-legacy-btcoex-direct-gate-alignment-20260714.md`.

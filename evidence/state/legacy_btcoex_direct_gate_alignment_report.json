@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "reference_note_has_identity_and_offsets": true,
+    "reference_raw_has_all_direct_leaves": true,
+    "reference_raw_manifest_is_portable": true,
+    "skywalk_combines_all_four_selector_cases": true,
+    "skywalk_returns_exact_direct_gate": true,
+    "tahoe_card_specific_route_is_retained": true,
+    "v1_scope_is_not_changed": true,
+    "v2_synthetic_cache_fields_removed": true
+  },
+  "reference": {
+    "bundle": "com.apple.iokit.IO80211Family",
+    "bundle_version": "1200.13.1",
+    "direct_status": "0xe082280e",
+    "get_offsets": {
+      "config": "0xdd50d",
+      "mode": "0xdc5e6",
+      "options": "0xdd6c4",
+      "profiles": "0xdd502"
+    },
+    "image_sha256": "77fad8c22845b5ba2c5d808134f0dccd2cc5d42f006410aa89f7448360b72672",
+    "platform": "26.3",
+    "set_offsets": {
+      "config": "0xe23e7",
+      "mode": "0xe1388",
+      "options": "0xe2632",
+      "profiles": "0xe23dc"
+    }
+  },
+  "schema": "itlwm-legacy-btcoex-direct-gate-alignment-v1",
+  "scope": {
+    "active_target": "Tahoe V2/Skywalk only",
+    "runtime_selector_invocation": false,
+    "v1_legacy_target_modified": false
+  },
+  "source_base_revision": "c427073dacfe842e45a958026599a9a137806a86"
+}

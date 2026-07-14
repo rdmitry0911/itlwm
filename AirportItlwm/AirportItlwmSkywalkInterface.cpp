@@ -1838,83 +1838,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
              */
             return (cmd == SIOCSA80211) ? kApple80211ClassOwnerAbsent
                                         : kIOReturnUnsupported;
-        case APPLE80211_IOC_BTCOEX_PROFILES: {
-            if (instance == NULL)
-                return kIOReturnNotReady;
-            auto *data = (apple80211_btc_profiles_data *)req->req_data;
-            if (data == NULL)
-                return kIOReturnError;
-            if (cmd == SIOCGA80211) {
-                if (instance->btcProfile == NULL)
-                    return kIOReturnError;
-                memcpy(data, instance->btcProfile, sizeof(*data));
-                return kIOReturnSuccess;
-            }
-            if (cmd == SIOCSA80211) {
-                if (instance->btcProfile != NULL) {
-                    IOFree(instance->btcProfile,
-                           sizeof(struct apple80211_btc_profiles_data));
-                    instance->btcProfile = NULL;
-                }
-                instance->btcProfile =
-                    (struct apple80211_btc_profiles_data *)IOMalloc(sizeof(*data));
-                if (instance->btcProfile == NULL)
-                    return kIOReturnNoMemory;
-                memcpy(instance->btcProfile, data, sizeof(*data));
-                return kIOReturnSuccess;
-            }
-            return kIOReturnUnsupported;
-        }
-        case APPLE80211_IOC_BTCOEX_CONFIG: {
-            if (instance == NULL)
-                return kIOReturnNotReady;
-            auto *data = (apple80211_btc_config_data *)req->req_data;
-            if (data == NULL)
-                return kIOReturnError;
-            if (cmd == SIOCGA80211) {
-                memcpy(data, &instance->btcConfig, sizeof(*data));
-                return kIOReturnSuccess;
-            }
-            if (cmd == SIOCSA80211) {
-                memcpy(&instance->btcConfig, data, sizeof(*data));
-                return kIOReturnSuccess;
-            }
-            return kIOReturnUnsupported;
-        }
-        case APPLE80211_IOC_BTCOEX_OPTIONS: {
-            if (instance == NULL)
-                return kIOReturnNotReady;
-            auto *data = (apple80211_btc_options_data *)req->req_data;
-            if (data == NULL)
-                return kIOReturnError;
-            if (cmd == SIOCGA80211) {
-                data->version = APPLE80211_VERSION;
-                data->btc_options = instance->btcOptions;
-                return kIOReturnSuccess;
-            }
-            if (cmd == SIOCSA80211) {
-                instance->btcOptions = data->btc_options;
-                return kIOReturnSuccess;
-            }
-            return kIOReturnUnsupported;
-        }
-        case APPLE80211_IOC_BTCOEX_MODE: {
-            if (instance == NULL)
-                return kIOReturnNotReady;
-            auto *data = (apple80211_btc_mode_data *)req->req_data;
-            if (data == NULL)
-                return kIOReturnError;
-            if (cmd == SIOCGA80211) {
-                data->version = APPLE80211_VERSION;
-                data->btc_mode = instance->btcMode;
-                return kIOReturnSuccess;
-            }
-            if (cmd == SIOCSA80211) {
-                instance->btcMode = data->btc_mode;
-                return kIOReturnSuccess;
-            }
-            return kIOReturnUnsupported;
-        }
+        case APPLE80211_IOC_BTCOEX_PROFILES:
+        case APPLE80211_IOC_BTCOEX_CONFIG:
+        case APPLE80211_IOC_BTCOEX_OPTIONS:
+        case APPLE80211_IOC_BTCOEX_MODE:
+            // IO80211Family 26.3 implements both directions as a direct
+            // class-owner-absent leaf.  These legacy selectors must not
+            // acknowledge or retain a synthetic BT coexistence state.
+            return kApple80211ClassOwnerAbsent;
         case APPLE80211_IOC_BGSCAN_CACHE_RESULTS:
             return (cmd == SIOCGA80211) ? getWCL_BGSCAN_CACHE_RESULT((apple80211_bgscan_cached_network_data_list *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -3823,7 +3754,7 @@ getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
     uint8_t *raw = reinterpret_cast<uint8_t *>(data);
     memset(raw, 0, 8);
     // Apple reads the dedicated "btc_profile_active" property here. Using the
-    // coarse controller-wide btcMode conflates two different selectors and
+    // coarse legacy BTCOEX_MODE cache would conflate two different selectors and
     // loses the exact value that setBTCOEX_PROFILE_ACTIVE previously accepted.
     *reinterpret_cast<uint32_t *>(raw + 4) = cachedBtcoexProfileActive;
     return kIOReturnSuccess;
