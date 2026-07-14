@@ -41,6 +41,7 @@ def report():
     hpp = HPP.read_text(encoding="utf-8")
     note = NOTE.read_text(encoding="utf-8")
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
+    normalized_signal_audit = " ".join(signal_audit.split())
     setter = section(
         cpp,
         "setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)",
@@ -131,7 +132,7 @@ def report():
             ),
             "stale_q13_claim_corrected": correction_heading in signal_audit
             and "user-cache recovery demonstrates a RoamAdapter lifecycle and is reclassified"
-            in signal_audit
+            in normalized_signal_audit
             and "preserve the recovered caller-visible carrier state locally" not in signal_audit,
         },
     }

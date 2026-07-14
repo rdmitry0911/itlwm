@@ -2355,7 +2355,6 @@ init()
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
-    cachedPmMode = 0;
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
@@ -2743,7 +2742,6 @@ init(IOService *provider)
     memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
     memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
-    this->cachedPmMode = 0;
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
@@ -5609,21 +5607,14 @@ setRANGING_AUTHENTICATE(apple80211_ranging_authenticate_request_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 setPM_MODE(apple80211_pm_mode *data)
 {
-    // AppleBCMWLANCore::setPM_MODE is a thin producer: it forwards the dword at
-    // caller +0x4 into NetAdapter::configurePM(...). The recovered helper maps
-    // any non-zero mode onto the same PM request bit family-side consumers use
-    // when they later query powersave state. Re-enter the lifted POWERSAVE path
-    // instead of leaving slot [584] unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedPmMode = data->mode;
-
-    apple80211_powersave_data pd{};
-    pd.version = APPLE80211_VERSION;
-    pd.powersave_level = data->mode;
-    const IOReturn rc = setPOWERSAVE(&pd);
-    return rc;
+    // AppleBCMWLANCore forwards this carrier to NetAdapter::configurePM,
+    // which sends IOC 0x56 and retains asynchronous transport status. The
+    // Intel port has no matching owner, callback, or command path, so do not
+    // substitute a cache-only POWERSAVE transition for that operation.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

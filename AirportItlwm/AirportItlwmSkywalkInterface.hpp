@@ -499,7 +499,8 @@ public:
     // [583] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn setROAM_CACHE_UPDATE(apple80211_roam_cache_data *) override;
-    // [584]
+    // [584] — AppleBCMWLANCore delegates PM mode to a real NetAdapter IOC;
+    // the port quarantines non-null input until that owner exists.
     virtual IOReturn setPM_MODE(apple80211_pm_mode *) override;
     // [585]
     // [585] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -769,7 +770,6 @@ private:
     uint8_t cachedIPv6Addresses[10][16];
     uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
-    uint32_t cachedPmMode;
     apple80211_lqm_config_t cachedLqmConfig;
     bool hasCachedLqmConfig;
     apple80211_vht_capability cachedVhtCapability;

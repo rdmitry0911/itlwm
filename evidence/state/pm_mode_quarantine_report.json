@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "interface_slot_retained": true,
+    "reference_note": true,
+    "scoped_backend_absent": true,
+    "setter_preserves_null_and_quarantines_nonnull": true,
+    "synthetic_cache_removed": true
+  },
+  "local": {
+    "backend_pm_owner": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "async_callback": "0x100015fd0",
+    "carrier_mode_offset": "+0x4",
+    "commander_send": "0x10017b80c",
+    "core_setter": "0x100119c4a",
+    "core_vptr_address_point": "0x1003a10e8",
+    "core_vtable_cell": "0x1003a17e8",
+    "core_vtable_offset": "0x700",
+    "core_vtable_symbol": "0x1003a10d8",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018960",
+    "ioc": "0x56",
+    "mapped_nonzero_request": 2,
+    "net_adapter_configure": "0x100015e02",
+    "payload_bytes": 4
+  },
+  "schema": "itlwm-pm-mode-quarantine-v1",
+  "source_base_revision": "d2438159215a61989cffcef2e4f16d4d7a08b921"
+}

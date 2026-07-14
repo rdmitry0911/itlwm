@@ -1826,7 +1826,8 @@ Recovered Apple evidence:
 
 - `AppleBCMWLANCore::setPM_MODE(apple80211_pm_mode*)`
   forwards the dword at caller `+0x4` into
-  `AppleBCMWLANNetAdapter::configurePM(...)`
+  `AppleBCMWLANNetAdapter::configurePM(...)`, which issues its own
+  asynchronous PM IOC rather than a generic powersave cache update
 - `AppleBCMWLANCore::setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache*)`
   delegates into the roam adapter `cmdROAM_USER_CACHE(...)`; helper xrefs prove
   the caller-visible cache carries channel entries from `+0x0`, count at
@@ -1834,13 +1835,20 @@ Recovered Apple evidence:
 - `AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime*)`
   consumes a single dword and forwards it to the scan adapter owner
 
-`PM_MODE` and scan-home-away retain their separately scoped behavior. The
-user-cache recovery demonstrates a RoamAdapter lifecycle and is reclassified
-below rather than preserved as a cache-and-success substitute.
+Scan-home-away retains its separately scoped behavior. The user-cache recovery
+demonstrates a RoamAdapter lifecycle and is reclassified below rather than
+preserved as a cache-and-success substitute.
 
 - reject `NULL` with Apple `0xe00002bc`
-- reuse already-lifted local owners where available (`setPOWERSAVE(...)` for
-  `PM_MODE`)
+- do not substitute a nearby local owner for an Apple-owned asynchronous
+  transport path
+
+PM_MODE correction: `configurePM(...)` maps a nonzero public mode to request
+value `2`, sends four bytes through Commander IOC `0x56`, installs an async
+completion callback, and returns its enqueue/transport status. The local
+`setPOWERSAVE(...)` call was not that operation. With no equivalent Intel
+owner, callback, or IOC transport, non-null PM_MODE requests now return
+unsupported before a synthetic cache or powersave transition.
 
 This does not close `Q13`, but it removes another class of simple
 state-carrier mismatches from its tail.

@@ -1141,6 +1141,12 @@ port has neither transaction path. Both non-null setters therefore return
 unsupported before mutating getter state or a dead rate cache. The real
 BA-notification producers behind the `getTXPOWER` cache remain intact.
 
+PM_MODE correction: Apple delegates the mode carrier to a NetAdapter that
+sends asynchronous IOC `0x56` and returns the enqueue/transport result. The
+port has no matching owner or callback, so PM_MODE now retains its local null
+safety gate and returns unsupported for non-null input instead of invoking
+cache-only `setPOWERSAVE(...)`.
+
 ### 12. Additional post-batch public-path corrections
 
 - `setOFFLOAD_NDP` no longer invents a dependency on local `fNetIf`
