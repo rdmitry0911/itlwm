@@ -308,18 +308,6 @@ tahoeSeedBssManagerAssociatedAuthType(
         kAppleBssManagerAssociatedAuthTypeLen);
 }
 
-static void initializeTahoeLqmConfig(apple80211_lqm_config_t *config)
-{
-    memset(config, 0, sizeof(*config));
-    config->version = APPLE80211_VERSION;
-    // AppleBCMWLANLQM::withDriver initializes its dedicated statistics timer
-    // to 0x1388 ms. Mirror that owner default across the public interval fields
-    // which setLQM_CONFIG later forwards to the same timer owner.
-    config->sample_period_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
-    config->tx_per_interval_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
-    config->rx_loss_interval_ms = TahoeLqmContracts::kDefaultStatsIntervalMs;
-}
-
 namespace {
 
 static_assert(TahoeBssManagerContracts::kBeaconMetaDataSize ==
@@ -2322,8 +2310,6 @@ init()
     leScanTotalSum = 0;
     memset(leScanDutyCount, 0, sizeof(leScanDutyCount));
     cachedInfraEnumerated = false;
-    initializeTahoeLqmConfig(&cachedLqmConfig);
-    hasCachedLqmConfig = false;
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
     cachedSetPropertyIoctlSeen = false;
@@ -2702,8 +2688,6 @@ init(IOService *provider)
     this->leScanTotalSum = 0;
     memset(this->leScanDutyCount, 0, sizeof(this->leScanDutyCount));
     this->cachedInfraEnumerated = false;
-    initializeTahoeLqmConfig(&this->cachedLqmConfig);
-    this->hasCachedLqmConfig = false;
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
     this->cachedSetPropertyIoctlSeen = false;
@@ -3769,20 +3753,12 @@ getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 getLQM_CONFIG(apple80211_lqm_config_t *data)
 {
-    // The Tahoe LQM getter is a real producer, not an unsupported slot.
-    // IO80211LQMData exposes a stable 0x24-byte carrier and AppleBCMWLANCore
-    // forwards the same public ABI from its own owner state. The local port
-    // does not have the hidden Broadcom LQM owner, but it can still preserve
-    // the exact caller-visible carrier and validation contract.
-    if (data == nullptr)
-        return kIOReturnBadArgument;
-
-    if (!hasCachedLqmConfig)
-        initializeTahoeLqmConfig(&cachedLqmConfig);
-
-    memcpy(data, &cachedLqmConfig, sizeof(*data));
-    data->version = APPLE80211_VERSION;
-    return kIOReturnSuccess;
+    // Tahoe checks for its AppleBCMWLANLQM owner before touching the caller
+    // output and returns 0xe00002bc when that owner is absent. The Intel
+    // telemetry timer is not that public configuration owner, so do not
+    // synthesize a config carrier from a local default.
+    (void)data;
+    return kIOReturnError;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5560,30 +5536,16 @@ setPM_MODE(apple80211_pm_mode *data)
 IOReturn AirportItlwmSkywalkInterface::
 setLQM_CONFIG(apple80211_lqm_config_t *data)
 {
-    // AppleBCMWLANCore::setLQM_CONFIG is not a blind setter. Tahoe validates
-    // the public 0x24-byte carrier before forwarding it into the LQM owner.
-    // Reproduce those exact caller-visible checks so the port no longer
-    // advertises slot [577] as unsupported.
+    // Tahoe rejects NULL with raw 0x16 before its owner/feature gates. For an
+    // enabled, validated non-null carrier, it synchronizes eCounters and
+    // configures its LQM, RSSI, and channel-quality owners. The local
+    // statistics timer is an independent telemetry producer, not a substitute
+    // public config owner.
     if (data == nullptr)
         return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
-    if (TahoeLqmContracts::hasInvalidInterval(
-            data->sample_period_ms, data->tx_per_interval_ms,
-            data->rx_loss_interval_ms))
-        return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
 
-    const uint8_t *carrier = reinterpret_cast<const uint8_t *>(data);
-    if (TahoeLqmContracts::hasInvalidThresholdBytes(carrier) ||
-        TahoeLqmContracts::hasInvalidTailBytes(carrier))
-        return static_cast<IOReturn>(TahoeLqmContracts::kInvalidArgumentRaw);
-
-    memcpy(&cachedLqmConfig, data, sizeof(cachedLqmConfig));
-    cachedLqmConfig.version = APPLE80211_VERSION;
-    hasCachedLqmConfig = true;
-#if __IO80211_TARGET >= __MAC_26_0
-    if (instance != nullptr)
-        instance->setTahoeLqmStatsInterval(data->sample_period_ms);
-#endif
-    return kIOReturnSuccess;
+    (void)data;
+    return kIOReturnError;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

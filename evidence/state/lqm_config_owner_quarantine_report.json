@@ -1,0 +1,40 @@
+{
+  "checks": {
+    "driver_owned_timer_lifecycle_preserved": true,
+    "getter_uses_no_owner_boundary": true,
+    "historical_claims_corrected": true,
+    "interface_slots_and_dispatch_retained": true,
+    "public_setter_does_not_retune_timer": true,
+    "reference_note": true,
+    "scoped_configuration_backends_absent": true,
+    "setter_preserves_null_and_quarantines_nonnull": true,
+    "synthetic_public_config_state_removed": true
+  },
+  "local": {
+    "driver_owned_statistics_timer_preserved": true,
+    "public_config_cache": false,
+    "public_lqm_configuration_owner": false,
+    "public_timer_retune": false,
+    "setter_nonnull_is_feature_off_equivalent": true,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "channel_quality_configure": "0x10011a308",
+    "core_getter": "0x100119800",
+    "core_set_vtable_offset": "+0x710",
+    "core_setter": "0x100119d98",
+    "ecounters_sync": "0x1001de336",
+    "feature_bit": "0x27",
+    "feature_off_return": "0xe00002bc",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_set_wrapper": "0x100018844",
+    "lqm_timer_setter": "0x10000be36",
+    "null_return": "0x16",
+    "opaque_state_gate_offset": "+0x43f",
+    "opaque_state_gate_return": "0x2d",
+    "owner_offset": "0x48+0x15e8",
+    "rssi_configure": "0x10011a0ea"
+  },
+  "schema": "itlwm-lqm-config-owner-quarantine-v1",
+  "source_base_revision": "a9cdc6520ef658fb2b422e8691a5a3fd35836157"
+}

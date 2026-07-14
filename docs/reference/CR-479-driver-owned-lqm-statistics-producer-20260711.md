@@ -93,8 +93,9 @@ workloop. It is distinct from the one-second net80211 watchdog timer.
 
 - `setWCL_LINK_STATE_UPDATE` starts or stops it on the same association edges
   that update the driver-owned BssManager;
-- `setLQM_CONFIG` updates and rearms the owner interval after the recovered
-  carrier validation;
+- the independent local timer keeps its own default interval and lifecycle;
+  the public LQM configuration API is corrected separately below rather than
+  serving as a substitute owner control path;
 - the timer callback enters the controller command gate before reading
   net80211/backend state;
 - event `0x27` is posted through `fNetIf`, the real Infra protocol endpoint;
@@ -105,6 +106,24 @@ workloop. It is distinct from the one-second net80211 watchdog timer.
 There is no direct WCL manager call, private object-layout traversal,
 ungated callback fallback, synthetic timestamp write, or direct framework
 sink call.
+
+## 2026-07-14 correction: public `LQM_CONFIG` is not this timer's owner API
+
+The local timer described here remains a valid driver-owned telemetry producer:
+it defaults to 5000 ms, starts and stops on association lifecycle edges, and
+posts real `0x27` statistics events. It is nevertheless not the
+AppleBCMWLANCore configuration graph used by public `getLQM_CONFIG` and
+`setLQM_CONFIG`.
+
+Current 25C56 Core recovery shows that the public setter first requires the
+eCounters/LQM/RSSI/channel-quality owner path and that the getter returns
+`0xe00002bc` when the Core LQM owner is absent. The Intel port has no matching
+public owner. Its configuration slots are therefore fail-closed (`NULL` setter
+retains raw `0x16`, otherwise a local no-backend `0xe00002bc` quarantine) and
+no longer retune this timer. The latter mirrors only Tahoe's feature-off
+disposition, not a missing-owner setter return. This deliberately preserves
+the autonomous default telemetry lifecycle without claiming
+configuration-owner parity.
 
 ## Validation
 

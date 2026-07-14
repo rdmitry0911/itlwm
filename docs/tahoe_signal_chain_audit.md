@@ -2127,17 +2127,18 @@ So the hidden `+0x1510` object is now closed as a queue:
 - the remaining named xrefs are explicitly classified as Broadcom-private
   internal surface and no longer kept as unresolved system-contract debt
 
-## Q13 Batch: LQM carrier zone leaves the unsupported tail
+## Historical Q13 LQM carrier lift (superseded by owner-boundary correction)
 
-The next clean `Q13` zone was the LQM carrier surface:
+The earlier `Q13` lift treated the LQM carrier surface as a self-contained
+public ABI:
 
 - `getLQM_CONFIG`
 - `setLQM_CONFIG`
 - `getLQM_SUMMARY`
 - `getLQM_STATISTICS`
 
-This zone no longer depended on the hidden Broadcom producer transport. The
-recovered Apple evidence was already strong enough at the family/core boundary:
+That lift did not yet distinguish the carrier layout from the Core-owned LQM
+configuration graph:
 
 - `IO80211LQMData::getLQM_CONFIG(...)` exposes a fixed `0x24` carrier and
   mirrors one interval value into the first three dwords
@@ -2152,23 +2153,53 @@ recovered Apple evidence was already strong enough at the family/core boundary:
 - `AppleBCMWLANInfraProtocol::getLQM_STATISTICS(...)` is a direct
   `return 0xe00002c7;` stub on Tahoe
 
-That is enough to make a narrow lift without guessing:
+The following historical conclusion has been superseded by the current 25C56
+owner-boundary recovery:
 
-- `getLQM_CONFIG` now exposes the recovered `0x24` carrier instead of generic
-  unsupported
-- `setLQM_CONFIG` now follows the recovered Tahoe validation ranges and raw
-  `0x16` invalid-carrier returns before caching the public blob
+- `getLQM_CONFIG` previously exposed a local default carrier
+- `setLQM_CONFIG` previously validated and cached a public blob
 - `getLQM_SUMMARY` now returns the fixed zeroed summary payload rather than an
   unsupported error
 - `getLQM_STATISTICS` is no longer treated as an "unknown missing producer":
   it is explicitly classified as Apple-unsupported on Tahoe
 
-This does not claim that the full hidden Broadcom LQM owner is lifted. The
-architectural correction is narrower and system-facing:
+This historical lift did not claim that the full hidden Broadcom LQM owner was
+lifted. Its final disposition is replaced by the correction below.
 
-- the public Apple80211 ABI for the LQM config/summary selectors now matches
-  the recovered family/core contract, and the known BSD IOC reachability is
-  restored for `LQM_CONFIG`
+### 2026-07-14 correction: `LQM_CONFIG` is an owner-backed control surface
+
+Current Tahoe 25C56 recovery shows that the Core endpoint cannot be lifted
+from the carrier shape alone:
+
+- Infra `setLQM_CONFIG` at `0x100018844` dispatches through Core virtual
+  `+0x710` to `AppleBCMWLANCore::setLQM_CONFIG` at `0x100119d98`.
+- `NULL` returns raw `0x16`; a non-null request can first take an opaque Core
+  `+0x43f` `0x2d` gate. When feature bit `0x27` is absent, Core returns
+  `0xe00002bc` before consuming the carrier.
+- Only the enabled path validates all three interval fields, synchronizes
+  eCounters, calls the LQM owner timer, and configures `rssi_event` and
+  `chq_event` state/firmware paths. The latter configuration effects are real
+  even where their helper status is not propagated to the public return.
+- Core `getLQM_CONFIG` at `0x100119800` checks its LQM owner at
+  `(Core + 0x48) + 0x15e8` before dereferencing output, and returns
+  `0xe00002bc` if no owner exists.
+
+The Intel port owns a separate LQM statistics timer and real `0x27` telemetry
+producer, but not the eCounters/LQM/RSSI/channel-quality configuration graph.
+`getLQM_CONFIG` therefore takes the recovered no-owner error boundary; the
+setter preserves raw `0x16` for `NULL` and otherwise returns the local
+no-backend error without reading, caching, or retuning from a public carrier.
+That setter disposition is a feature-off-equivalent local quarantine, not a
+claim that a missing Apple LQM owner would return the same status. This
+intentionally removes dynamic public interval tuning. The internal 5000 ms
+default timer, association lifecycle, and telemetry producer remain intact.
+
+No Apple enabled-path success, opaque `+0x43f` gate, valid-input return-code,
+or public config-to-telemetry mapping parity is claimed.
+
+The non-config LQM results remain unchanged:
+
+- `getLQM_SUMMARY` retains its fixed zeroed public producer
 - the one selector that Apple does not implement (`getLQM_STATISTICS`) stays
   explicitly unsupported instead of being kept in the generic open bucket
 

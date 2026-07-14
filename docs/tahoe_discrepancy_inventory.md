@@ -911,22 +911,26 @@ Status:
 
 - closed
 
-### 5a. LQM config / summary public ABI is no longer part of the open tail
+### 5a. LQM config is owner-quarantined; summary/telemetry remain separate
 
-Recovered Apple evidence was strong enough to remove the public LQM carrier
-surface from the generic unsupported bucket:
+The LQM public configuration carrier is not equivalent to the driver-owned
+statistics producer. Tahoe Core gates `getLQM_CONFIG` on its LQM owner and
+returns `0xe00002bc` before output when no owner exists. A non-null setter
+requires eCounters plus LQM/RSSI/channel-quality configuration; its local
+absence must not be replaced by a cached config or telemetry timer retune.
 
-- `IO80211LQMData::getLQM_CONFIG(...)` uses a fixed `0x24` carrier
-- `IO80211LQMData::setLQM_CONFIG(...)` validates the public carrier before
-  updating internal state
-- `IO80211LQMData::getLQM_SUMMARY(...)` zeroes a fixed `0x15a0` summary blob
-- `AppleBCMWLANInfraProtocol::getLQM_STATISTICS(...)` is a direct
-  `0xe00002c7` stub on Tahoe
+The Intel port therefore preserves `setLQM_CONFIG(NULL) -> 0x16` and uses a
+local no-backend `0xe00002bc` quarantine for non-null configuration. That
+matches the recovered feature-off branch, but does not claim Apple owner-null
+or valid-input setter return-code parity. Its independent 5000 ms telemetry
+timer and real `0x27` producer remain implemented, but are not advertised as
+an Apple configuration owner.
 
 Status:
 
-- `getLQM_CONFIG`: closed
-- `setLQM_CONFIG`: closed
+- `getLQM_CONFIG`: closed as no-owner `0xe00002bc`
+- `setLQM_CONFIG`: closed as `NULL -> 0x16`, otherwise local no-backend
+  `0xe00002bc` quarantine
 - `getLQM_SUMMARY`: closed
 - `getLQM_STATISTICS`: closed as `Apple also unsupported`
 
@@ -7824,7 +7828,9 @@ Local closure:
 
 - added a dedicated LQM timer distinct from the net80211 watchdog and tied its
   start/stop edges to the recovered WCL link-state/BssManager lifecycle;
-- `setLQM_CONFIG` rearms the same owner after exact carrier validation;
+- public `setLQM_CONFIG` no longer retunes the timer: it is quarantined at the
+  local no-backend, feature-off-equivalent boundary while the driver-owned
+  timer retains its 5000 ms default;
 - the callback enters the controller command gate, reads live
   `IONetworkStats` plus backend firmware beacon statistics, and posts
   `0x27/0x1dc` through the real `fNetIf` Infra endpoint;

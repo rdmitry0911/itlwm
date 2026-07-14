@@ -261,7 +261,8 @@ public:
     // [505] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t *) override;
-    // [506]
+    // [506] — Core checks its AppleBCMWLANLQM owner before touching output;
+    // this port has no equivalent public configuration owner.
     virtual IOReturn getLQM_CONFIG(apple80211_lqm_config_t *) override;
     // [507] — AppleBCMWLANCore zero-fills the mini-dump body from +0x4 rather
     // than using a generic unsupported stub, so this remains open producer
@@ -477,7 +478,9 @@ public:
     virtual IOReturn setPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [576]
     virtual IOReturn setOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
-    // [577]
+    // [577] — NULL has Tahoe's raw 0x16 boundary. Non-null configuration
+    // requires eCounters/LQM/RSSI/channel-quality owners not present locally;
+    // do not retune the independent statistics producer through this API.
     virtual IOReturn setLQM_CONFIG(apple80211_lqm_config_t *) override;
     // [578] — AppleBCMWLANCore consumes the first dword as the public carrier.
     virtual IOReturn setDYNAMIC_RSSI_WINDOW_CONFIG(apple80211_dynamic_rssi_window_config *) override;
@@ -768,8 +771,6 @@ private:
     uint32_t leScanTotalSum;
     uint32_t leScanDutyCount[7];
     bool cachedInfraEnumerated;
-    apple80211_lqm_config_t cachedLqmConfig;
-    bool hasCachedLqmConfig;
     apple80211_vht_capability cachedVhtCapability;
     bool hasCachedVhtCapability;
     bool cachedSetPropertyIoctlSeen;
