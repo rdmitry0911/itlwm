@@ -900,13 +900,6 @@ struct apple80211_reassoc
 static_assert(sizeof(apple80211_reassoc) == 0x9c,
               "apple80211_reassoc must cover the Apple offsets used by sendReassocCommand");
 
-struct apple80211_legacy_roam_profile_config
-{
-    uint8_t raw[0x60];
-} __attribute__((packed));
-static_assert(sizeof(apple80211_legacy_roam_profile_config) == 0x60,
-              "legacy roam profile config must match WCLRoamProfile payload size");
-
 struct apple80211_pm_mode
 {
     uint32_t version;
@@ -2417,8 +2410,6 @@ init()
     cachedSetPropertyIoctlSeen = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
-    memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
-    hasCachedLegacyRoamProfileConfig = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -2819,8 +2810,6 @@ init(IOService *provider)
     this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
-    memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
-    this->hasCachedLegacyRoamProfileConfig = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -5920,18 +5909,12 @@ setWCL_REASSOC(apple80211_reassoc *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 {
-    // WCLRoamProfile::setRoamingProfile(legacy) consumes exactly 0x60 bytes,
-    // and AppleBCMWLANRoamAdapter stores that profile before it reconfigures
-    // join preferences / Multi-AP state. The local port does not have the
-    // hidden roam owner object yet, but dropping the payload on the floor was
-    // still an architectural mismatch because later roam decisions had no
-    // stable source of truth at all.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedLegacyRoamProfileConfig, data, sizeof(*data));
-    hasCachedLegacyRoamProfileConfig = true;
-    return kIOReturnSuccess;
+    // Tahoe hands legacy profile policy and transport to RoamAdapter. Intel
+    // has no matching owner or Commander path, so reject before carrier read.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

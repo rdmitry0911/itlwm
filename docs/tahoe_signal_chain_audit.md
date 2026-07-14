@@ -1615,11 +1615,11 @@ make every copied carrier a complete owner implementation:
 backend quarantines. Any still-missing hidden helper exactness belongs under
 `Q13`, not under the old WCL adapter-stub bucket.
 
-The historical list also included modern `setWCL_ROAM_PROFILE_CONFIG` because
-it had moved out of an inline stub. Its later recovery establishes a multi-owner
-RoamAdapter policy/transport lifecycle, not a reusable opaque cache; it is
-therefore reclassified below as a no-local-backend quarantine. This correction
-does not change the separate legacy roam-profile or reassociation scopes.
+The historical list also included both profile variants because they had moved
+out of inline stubs. Their later recoveries establish distinct RoamAdapter
+policy/transport lifecycles, not reusable opaque caches; each is therefore
+reclassified below as a no-local-backend quarantine. Reassociation remains a
+separate scope.
 
 ## Q13 correction: WCL Roam Profile Config is RoamAdapter-backed
 
@@ -1636,11 +1636,31 @@ The modern-profile recovery demonstrates a RoamAdapter policy and transport
 lifecycle and is reclassified. The port preserves the direct null error and
 returns `kIOReturnUnsupported` for non-null input before reading the opaque
 carrier, removing its dead 0x23c pseudo-layout/cache/flag/reset lines. No
-legacy profile, generic STA `ROAM_PROFILE`, reassociation, scan, key, link,
-WCL event, or generic adaptive-roaming property path changes. This makes no
-complete carrier-layout, policy, Commander transport, completion, or valid-
-input return-status parity claim. See
+generic STA `ROAM_PROFILE`, reassociation, scan, key, link, WCL event, or
+generic adaptive-roaming property path changes. This makes no complete
+carrier-layout, policy, Commander transport, completion, or valid-input
+return-status parity claim. See
 `docs/reference/CR-479-wcl-roam-profile-quarantine-20260714.md`.
+
+## Q13 correction: WCL Legacy Roam Profile Config is RoamAdapter-backed
+
+Tahoe 25C56 Infra wrapper `0x100018b28` dispatches virtual `+0x6d0` to Core
+`0x100141de4`. Core selects RoamAdapter at `+0x15c0` and tail-jumps to
+`setLEGACY_ROAM_PROFILE_CONFIG` `0x10001c272`. Null reaches `0x10019ffce`
+and stores `0xe00002bc`; a non-null request calls `setRoamingProfile`
+`0x10001a17e`, which selects V4 `0x10001a782` or V2 `0x10001b3c4` policy.
+That lifecycle builds `roam_prof` Commander work through `sendIOVarSet`
+`0x10017b900` with `handleRoamProfileAsyncCallBack` `0x10001bd9a`, then
+configures Multi-AP state through `configureMultiAPBit` `0x10001c322` and
+the `roam_multi_ap_env` callback `0x10001e809`.
+
+The port preserves the direct null error and returns `kIOReturnUnsupported`
+for non-null input before reading the former 0x60 pseudo-carrier. It removes
+the unread cache/flag/reset lines and makes no complete carrier-layout,
+policy, Commander transport, completion, or valid-input return-status parity
+claim. No modern profile, generic STA `ROAM_PROFILE`, reassociation, scan,
+key, link, WCL event, or generic adaptive-roaming property path changes. See
+`docs/reference/CR-479-wcl-legacy-roam-profile-quarantine-20260714.md`.
 
 ## Q13 correction: WCL ARP mode is KeepAlive/WnmAdapter-backed
 

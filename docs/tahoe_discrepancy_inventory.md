@@ -778,8 +778,12 @@ owner. Modern `setWCL_ROAM_PROFILE_CONFIG` is now explicitly a no-local-backend
 quarantine: Tahoe fans its carrier into RoamAdapter per-band policy, `join_pref`,
 `roam_prof`, multi-AP, callback, and transport-status lifecycles, while the
 local port had only an unread 0x23c cache. The direct null error remains and a
-non-null modern profile now returns unsupported before carrier access. The
-legacy profile and reassociation entries remain separate scopes.
+non-null modern profile now returns unsupported before carrier access. Legacy
+`setWCL_LEGACY_ROAM_PROFILE_CONFIG` is now explicitly a no-local-backend
+quarantine as well: its distinct RoamAdapter path selects legacy V4/V2 policy,
+`roam_prof`, and multi-AP work while the local port had only an unread 0x60
+cache. Its direct null error remains and non-null legacy input now returns
+unsupported before carrier access. Reassociation remains a separate scope.
 
 The exact hidden helper choreography behind roam/bgscan/keepalive owners still
 belongs to `Q13`, but the listed slots no longer remain as inline success

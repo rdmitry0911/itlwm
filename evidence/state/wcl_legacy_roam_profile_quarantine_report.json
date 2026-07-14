@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_roam_adapter_backend_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "complete_public_carrier_layout_proven": false,
+    "matching_roam_adapter_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_null_cold_path": "0x10019ffce",
+    "adapter_setter": "0x10001c272",
+    "commander_send_iovar_set": "0x10017b900",
+    "core_setter": "0x100141de4",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x6d0",
+    "infra_wrapper": "0x100018b28",
+    "multi_ap": "0x10001c322",
+    "multi_ap_callback": "0x10001e809",
+    "null_status": "0xe00002bc",
+    "profile_callback": "0x10001bd9a",
+    "profile_setter": "0x10001a17e",
+    "profile_v2": "0x10001b3c4",
+    "profile_v4": "0x10001a782",
+    "pseudo_layout_bytes": "0x60",
+    "roam_adapter_offset": "0x15c0"
+  },
+  "schema": "itlwm-wcl-legacy-roam-profile-quarantine-v1",
+  "source_base_revision": "0ea727804317adb3c830e1730ac19cb31ce30b39"
+}
