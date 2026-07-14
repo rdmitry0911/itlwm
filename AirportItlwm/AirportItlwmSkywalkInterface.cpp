@@ -15,7 +15,6 @@
 #include "TahoeBssBlacklistContracts.hpp"
 #include "TahoeBssManagerContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
-#include "TahoeLeScanContracts.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
@@ -2344,8 +2343,11 @@ init()
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
     cachedFaceTimeWiFiCallingStatus = 0;
-    memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
-    hasCachedLeScanParams = false;
+    leScanEnabledCount = 0;
+    leScanDisabledCount = 0;
+    leScanPeakSum = 0;
+    leScanTotalSum = 0;
+    memset(leScanDutyCount, 0, sizeof(leScanDutyCount));
     cachedIPv4Address = 0;
     cachedIPv4Netmask = 0;
     cachedIPv4Reserved = 0;
@@ -2731,8 +2733,11 @@ init(IOService *provider)
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
     this->cachedFaceTimeWiFiCallingStatus = 0;
-    memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
-    this->hasCachedLeScanParams = false;
+    this->leScanEnabledCount = 0;
+    this->leScanDisabledCount = 0;
+    this->leScanPeakSum = 0;
+    this->leScanTotalSum = 0;
+    memset(this->leScanDutyCount, 0, sizeof(this->leScanDutyCount));
     this->cachedIPv4Address = 0;
     this->cachedIPv4Netmask = 0;
     this->cachedIPv4Reserved = 0;
@@ -6088,20 +6093,34 @@ setLMTPC_CONFIG(apple80211_lmtpc_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setLE_SCAN_PARAM(apple80211_le_scan_params *data)
 {
-    const auto *params =
-        reinterpret_cast<const TahoeLeScanContracts::Carrier *>(data);
+    // AppleBCMWLANCore updates BTLE connection statistics directly: byte +0
+    // selects the enabled or disabled counter, +4/+8 are accumulated only on
+    // the enabled path, and dword +0xc selects a duty bucket 0..6. Its
+    // optional IOReporting owner is a reporter, not the owner of this state.
+    // Keep the port's NULL rejection as a local safety boundary; Apple reads
+    // the carrier directly and has no corresponding NULL return path.
+    if (data == nullptr)
+        return kIOReturnBadArgumentTahoe;
 
-    // AppleBCMWLANCore::setLE_SCAN_PARAM first requires the BTLE reporting
-    // owner at core +0x15a8; once present, NULL is a successful no-op and the
-    // request copies only six dwords from +0x4..+0x18 into owner +0x24..+0x38.
-    // Model the owner-present state locally instead of preserving the ignored
-    // caller dword at +0x0.
-    if (params == nullptr)
-        return kIOReturnSuccess;
+    const auto *raw = reinterpret_cast<const uint8_t *>(data);
+    uint32_t peak = 0;
+    uint32_t total = 0;
+    uint32_t duty = 0;
+    memcpy(&peak, raw + 4, sizeof(peak));
+    memcpy(&total, raw + 8, sizeof(total));
+    memcpy(&duty, raw + 12, sizeof(duty));
 
-    if (TahoeLeScanContracts::copyOwnerStateFromCarrier(params,
-            &cachedLeScanOwnerState))
-        hasCachedLeScanParams = true;
+    if (raw[0] != 0) {
+        ++leScanEnabledCount;
+        leScanPeakSum += peak;
+        leScanTotalSum += total;
+    } else {
+        ++leScanDisabledCount;
+    }
+
+    if (duty <= 6)
+        ++leScanDutyCount[duty];
+
     return kIOReturnSuccess;
 }
 

@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "direct_state_declared": true,
+    "historical_claims_corrected": true,
+    "optional_reporter_absent": true,
+    "reference_note": true,
+    "setter_preserves_safety_and_direct_state": true,
+    "synthetic_contract_test_removed": true,
+    "synthetic_owner_cache_removed": true
+  },
+  "local": {
+    "btle_owner_implemented": false,
+    "nonnull_direct_state_transition": true,
+    "null_return_is_apple_parity": false,
+    "optional_reporter_implemented": false
+  },
+  "reference": {
+    "core_setter": "0x100140d6c",
+    "disabled_count_offset": "+0x78c8",
+    "duty_bucket_max": 6,
+    "duty_bucket_offset": "+0x78d4",
+    "duty_offset": "+0xc",
+    "enable_offset": "+0x0",
+    "enabled_count_offset": "+0x78c4",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019414",
+    "optional_reporter_offset": "+0x1588",
+    "peak_offset": "+0x4",
+    "peak_sum_offset": "+0x78cc",
+    "reporter": "0x10002e00c",
+    "total_offset": "+0x8",
+    "total_sum_offset": "+0x78d0"
+  },
+  "schema": "itlwm-le-scan-param-direct-state-v1",
+  "source_base_revision": "6e5d2ad8aec905a06831d1fc3f5cd0097159ff7a"
+}

@@ -1951,10 +1951,13 @@ Recovered Apple producer contracts:
   rejects `NULL`, stores a single byte at core `+0x4594`, and then re-enters
   the LMTPC owner
 - `AppleBCMWLANCore::setLE_SCAN_PARAM(...)`
-  requires the BTLE reporting owner at core `+0x15a8` and, when that owner is
-  present, treats `NULL` as a successful no-op while copying six dwords from
-  caller offsets `+0x4/+0x8/+0xc/+0x10/+0x14/+0x18` into owner offsets
-  `+0x24..+0x38`; caller dword `+0x0` is ignored
+  is a direct Core statistics update: it reads enable byte `+0`, peak dword
+  `+0x4`, total dword `+0x8`, and duty dword `+0xc`; enabled calls increment
+  enabled/peak/total statistics, disabled calls increment only the disabled
+  count, and duty values `0..6` increment their matching bucket. The optional
+  object at Core's `+0x48` state block offset `+0x1588` only reports the
+  completed statistics; it does not own the operation. Core directly
+  dereferences the carrier and has no NULL return path.
 
 That is strong enough to move these slots out of the generic
 `kIOReturnUnsupported` bucket:
@@ -1972,9 +1975,19 @@ WiFi-calling policy, tx-power-cap recalculation, or BTLE reporting. What
 changes here is the architectural surface:
 
 - these selectors are no longer dead unsupported slots
-- Tahoe now preserves the same caller-visible carriers Apple exposes
+- Tahoe now preserves the same caller-visible direct state where the recovered
+  body proves it, including LE_SCAN_PARAM's narrow cumulative statistics
 - the remaining hidden-owner exactness stays open under the residual `Q13`
   hidden-helper zone instead of being conflated with missing selector bodies
+
+LE_SCAN_PARAM correction: the former six-dword hidden-owner cache was not an
+Apple behavior. Tahoe 25C56 Infra wrapper `0x100019414` jumps directly to
+Core `0x100140d6c`, which updates counters in its `+0x48` state block and then
+invokes `reportBTLECnxStats(...)` only when the optional reporter exists at
+state offset `+0x1588`.
+The port now mirrors the direct counter/bucket semantics without inventing a
+reporter or owner. Its `NULL -> kIOReturnBadArgumentTahoe` guard is retained
+only as a local safety divergence, not as Apple return-code parity.
 
 ## Q13 Batch: simple getter carriers continue to leave the unsupported tail
 

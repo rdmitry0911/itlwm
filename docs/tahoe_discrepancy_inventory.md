@@ -395,8 +395,10 @@ than accepting the inverted invalid range and caching a false success.
   generic unsupported tail. `setWCL_ULOFDMA_STATE`, `setMIMO_CONFIG`,
   `setFACETIME_WIFICALLING_PARAMS`, `setDUAL_POWER_MODE`,
   `setCONGESTION_CTRL_IND`, `setLMTPC_CONFIG`, and `setLE_SCAN_PARAM` now
-  preserve the recovered caller-visible carriers and Apple null gates instead
-  of returning `kIOReturnUnsupported`.
+  follow their recovered caller-visible boundaries instead of returning
+  `kIOReturnUnsupported`. LE_SCAN_PARAM is a direct BTLE statistics update,
+  not the previously modeled hidden-owner cache; its retained local NULL
+  rejection is an explicit safety divergence rather than Apple NULL parity.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: HE capability / P2P device capability getter lift`:

@@ -11,7 +11,6 @@
 
 #include <Airport/Apple80211.h>
 #include "AirportItlwmAPSTAInterface.hpp"
-#include "TahoeLeScanContracts.hpp"
 #include "TahoeMimoContracts.hpp"
 #include "TahoePayloadBuilders.hpp"
 
@@ -651,7 +650,9 @@ public:
     // [639] — traffic-engine parameters now sit in Q11-C3 traffic-policy
     // ownership after closing the broader Q11-C umbrella queue.
     virtual IOReturn setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *) override;
-    // [640]
+    // [640] — AppleBCMWLANCore directly updates BTLE connection statistics;
+    // local state mirrors that narrow counter surface without fabricating its
+    // optional IOReporting owner.
     virtual IOReturn setLE_SCAN_PARAM(apple80211_le_scan_params *) override;
     // [641]
     // [641] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -759,8 +760,11 @@ private:
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;
     uint32_t cachedFaceTimeWiFiCallingStatus;
-    TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
-    bool hasCachedLeScanParams;
+    uint32_t leScanEnabledCount;
+    uint32_t leScanDisabledCount;
+    uint32_t leScanPeakSum;
+    uint32_t leScanTotalSum;
+    uint32_t leScanDutyCount[7];
     uint32_t cachedIPv4Address;
     uint32_t cachedIPv4Netmask;
     uint32_t cachedIPv4Reserved;

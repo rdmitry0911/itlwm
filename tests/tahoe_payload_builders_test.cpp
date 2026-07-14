@@ -15,7 +15,6 @@
 #include "AirportItlwm/TahoeBssManagerContracts.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
-#include "AirportItlwm/TahoeLeScanContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeMimoContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
@@ -999,47 +998,6 @@ void testTahoeNrateContracts()
             "guard interval decoder rejects null output");
 }
 
-void testTahoeLeScanContracts()
-{
-    using namespace TahoeLeScanContracts;
-
-    require(kBadArgumentStatus == 0xe00002bc,
-            "LE-scan absent-owner status is Apple bad-argument 0xe00002bc");
-    require(sizeof(Carrier) == kCarrierSize && kCarrierSize == 0x1c,
-            "LE-scan carrier spans input offsets +0x0..+0x18");
-    require(offsetof(Carrier, value04) == 0x04,
-            "LE-scan first copied dword is at input +0x04");
-    require(offsetof(Carrier, value18) == 0x18,
-            "LE-scan last copied dword is at input +0x18");
-    require(sizeof(OwnerState) == kOwnerStateSize && kOwnerStateSize == 0x18,
-            "LE-scan owner state is six copied dwords");
-    require(kCopiedDwordCount == 6,
-            "LE-scan copies exactly six dwords into owner state");
-
-    Carrier carrier{};
-    OwnerState state{};
-    carrier.ignored00 = 0xaaaaaaaa;
-    carrier.value04 = 0x11111111;
-    carrier.value08 = 0x22222222;
-    carrier.value0c = 0x33333333;
-    carrier.value10 = 0x44444444;
-    carrier.value14 = 0x55555555;
-    carrier.value18 = 0x66666666;
-
-    require(copyOwnerStateFromCarrier(&carrier, &state),
-            "LE-scan owner-state helper accepts a complete carrier");
-    require(state.value04 == carrier.value04 && state.value08 == carrier.value08 &&
-                state.value0c == carrier.value0c && state.value10 == carrier.value10 &&
-                state.value14 == carrier.value14 && state.value18 == carrier.value18,
-            "LE-scan owner-state helper copies +0x04..+0x18 dwords");
-    require(state.value04 != carrier.ignored00,
-            "LE-scan owner-state helper ignores caller dword +0x00");
-    require(!copyOwnerStateFromCarrier(nullptr, &state),
-            "LE-scan owner-state helper rejects null carrier");
-    require(!copyOwnerStateFromCarrier(&carrier, nullptr),
-            "LE-scan owner-state helper rejects null owner state");
-}
-
 void testTahoeBssBlacklistContracts()
 {
     using namespace TahoeBssBlacklistContracts;
@@ -1719,7 +1677,6 @@ int main()
     testTahoeOpModeContracts();
     testTahoePhyModeContracts();
     testTahoeNrateContracts();
-    testTahoeLeScanContracts();
     testTahoeBssBlacklistContracts();
     testTahoeMimoContracts();
     testTahoeLqmContracts();
@@ -1735,6 +1692,6 @@ int main()
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 31 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, LE-scan, MIMO, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 30 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, MIMO, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
     return 0;
 }

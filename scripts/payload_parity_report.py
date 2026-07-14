@@ -30,7 +30,7 @@ DETERMINISTIC_TESTS = [
             "testTahoeDriverAvailabilityContracts",
             "frameLen > 0x707",
             "rejects zero PMK length",
-            "31 contracts",
+            "30 contracts",
         ],
         "runner_tokens": [
             "TAHOE_PAYLOAD_BUILDERS_STANDALONE_TEST",
