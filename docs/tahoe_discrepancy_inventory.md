@@ -300,7 +300,7 @@ This inventory is intentionally split into:
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: minimal setter-contract zone`:
-  fifteen remaining setters were narrowed to the public contract they actually
+  fourteen remaining setters were narrowed to the public contract they actually
   expose on Tahoe. Some are fixed-fail selectors (`AP_MODE`, `PRIVATE_MAC`,
   `THERMAL_INDEX`), some are feature-gated (`OFFLOAD_TCPKA_ENABLE`), and the
   rest are opaque or narrow carriers whose caller-visible state Apple stores
@@ -318,8 +318,20 @@ This inventory is intentionally split into:
   or a synthetic event. See
   [CR-479-gas-abort-quarantine-20260714.md](/Users/bob/Projects/itlwm/docs/reference/CR-479-gas-abort-quarantine-20260714.md).
 
+- `Q13 correction: DBG guard time is not cache-backed`:
+  the paired `getDBG_GUARD_TIME_PARAMS(...)` and
+  `setDBG_GUARD_TIME_PARAMS(...)` selectors use Tahoe's private `forced_pm`
+  commander transport. The getter preserves raw transport status and only
+  receives an eight-byte reply and copies selected bytes on its two observed
+  copy-status paths; the setter packs selected public bytes with fixed padding
+  and returns transport status.
+  AirportItlwm has neither transport nor owner, so both selectors retain their
+  local null safety gates and reject non-null input with
+  `kIOReturnUnsupported` instead of writing/readbacking pseudo-state. See
+  [CR-479-dbg-guard-time-quarantine-20260714.md](/Users/bob/Projects/itlwm/docs/reference/CR-479-dbg-guard-time-quarantine-20260714.md).
+
 - `Q13 mini-batch: telemetry/cache getter zone`:
-  fifteen remaining getters were reduced to their Tahoe public contracts.
+  fourteen remaining getters were reduced to their Tahoe public contracts.
   Fixed-fail selectors now expose exact Apple error shapes (`BTCOEX_PROFILE`,
   `TKO_*` with no keepalive owner), while cache/state-backed selectors now
   preserve the caller-visible carrier instead of returning generic unsupported.

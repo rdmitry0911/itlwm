@@ -206,8 +206,8 @@ public:
     // contract returns the fixed Apple failure 0xe00002e6 rather than generic
     // unsupported. Keep the slot explicit so the mismatch does not regress.
     virtual IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats *) override;
-    // [487] — AppleBCMWLANCore exposes a compact 8-byte public carrier for the
-    // forced_pm/guard-time path instead of leaving the selector unsupported.
+    // [487] — Tahoe reads the guard-time reply through a private command owner;
+    // without that owner, this selector quarantines after its local null guard.
     virtual IOReturn getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *) override;
     // [488] — Broadcom-private leaky-AP diagnostics surface. This is no
     // longer carried as Q13 system-contract debt; it stays on the internal
@@ -434,8 +434,8 @@ public:
     // queue in the audit; keep the header on the same explicit unsupported
     // contract instead of treating it like a missing producer.
     virtual IOReturn setROAM_PROFILE(apple80211_roam_profile_all_bands *) override;
-    // [562] — AppleBCMWLANCore consumes a compact 8-byte carrier and writes it
-    // through the "forced_pm" property path.
+    // [562] — Tahoe writes selected guard-time bytes through a private command
+    // owner; without that owner, this selector quarantines after its null gate.
     virtual IOReturn setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *) override;
     // [563] — Broadcom-private leaky-AP diagnostics setter. Reclassified to
     // internal diagnostics coverage rather than Q13.
@@ -789,8 +789,6 @@ private:
     uint32_t cachedLastActionFrameChannel;
     uint8_t cachedLastActionFrameCategory;
     bool hasCachedLastActionFrame;
-    uint8_t cachedDbgGuardTimeParams[8];
-    bool hasCachedDbgGuardTimeParams;
     bool cachedWowEnabled;
     uint8_t cachedBssBlacklist[0x2b];
     bool hasCachedBssBlacklist;

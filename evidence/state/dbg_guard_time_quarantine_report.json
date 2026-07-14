@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "getter_preserves_local_null_guard_and_quarantines_nonnull": true,
+    "historical_claims_corrected": true,
+    "local_transport_absent": true,
+    "pseudo_cache_removed": true,
+    "reference_note": true,
+    "setter_preserves_local_null_guard_and_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_forced_pm_owner": false,
+    "getter_false_success": false,
+    "setter_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_vtable": "0x1003a10d8",
+    "getter_copy_status": "0xe00002e3",
+    "getter_core_handler": "0x100106ce8",
+    "getter_core_virtual_offset": "0x2d0",
+    "getter_infra_wrapper": "0x100017210",
+    "getter_transport": "0x10017b780",
+    "getter_vtable_entry": "0x1003a13b8",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "iovar": "forced_pm",
+    "setter_core_setter": "0x1001203d4",
+    "setter_core_virtual_offset": "0x4d8",
+    "setter_infra_wrapper": "0x100018490",
+    "setter_transport": "0x10017b6e6",
+    "setter_vtable_entry": "0x1003a15c0"
+  },
+  "schema": "itlwm-dbg-guard-time-quarantine-v1",
+  "source_base_revision": "f3bcc3a0a8c5ef32c0e808e01de608b9600dea59"
+}

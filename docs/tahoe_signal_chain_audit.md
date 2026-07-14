@@ -1081,7 +1081,6 @@ but the hidden owner choreography is either feature-gated or still private.
 Closed in this zone:
 
 - `setAP_MODE(...)`
-- `setDBG_GUARD_TIME_PARAMS(...)`
 - `setPRIVATE_MAC(...)`
 - `setTHERMAL_INDEX(...)`
 - `setBSS_BLACKLIST(...)`
@@ -1096,8 +1095,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   `setWCL_LIMITED_AGGREGATION`
 - several are opaque state carriers with only a null gate or a small public
   field split:
-  `setDBG_GUARD_TIME_PARAMS`, `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`,
-  `setRSN_XE`
+  `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setRSN_XE`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
   `setTHERMAL_INDEX -> 0xe00002bc`
@@ -1130,6 +1128,27 @@ path, or adapter state to clear. It therefore returns
 synthetic completion. This is a no-local-backend quarantine, not Apple
 return-code parity; see
 `docs/reference/CR-479-gas-abort-quarantine-20260714.md`.
+
+## Q13 correction: DBG guard time is commander-backed
+
+`getDBG_GUARD_TIME_PARAMS(...)` and `setDBG_GUARD_TIME_PARAMS(...)` are not
+paired local cache carriers. Tahoe 25C56 Infra getter `0x100017210` dispatches
+through virtual `+0x2d0` to Core `0x100106ce8`, which calls Commander
+`runIOVarGet("forced_pm", ...)` `0x10017b780` for an eight-byte reply. It
+copies reply bytes into caller offsets `+0x4/+0x8/+0xa/+0xb` only for status
+zero or `0xe00002e3`, while returning the raw transport status. Infra setter
+`0x100018490` dispatches virtual `+0x4d8` (vtable entry `0x1003a15c0`) to Core
+`0x1001203d4`; it packs selected caller bytes with fixed `0xaa` padding and
+calls `runIOVarSet("forced_pm", ...)` `0x10017b6e6`, returning raw transport
+status.
+
+AirportItlwm has no matching command owner or transport. A local write-only
+cache could neither apply the setting nor observe changes in the reference
+owner, and a synthesized getter reply falsely claimed success. Both selectors
+retain their existing local null guards as safety boundaries and return
+`kIOReturnUnsupported` for non-null input. This does not claim Tahoe null,
+carrier-allocation, transport-status, or direct-runtime parity; see
+`docs/reference/CR-479-dbg-guard-time-quarantine-20260714.md`.
 
 ## Q13 correction: `setWCL_ASSOCIATED_SLEEP` is PowerStateAdapter-backed
 
@@ -1275,12 +1294,11 @@ EAPOL RX/TX data paths are not this firmware filter backend.  See
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 
-The next `Q13` zone closes fifteen getter slots that already expose a stable
+The next `Q13` zone closes fourteen getter slots that already expose a stable
 Tahoe public contract even when the deeper Broadcom owner is still hidden.
 
 Closed in this zone:
 
-- `getDBG_GUARD_TIME_PARAMS(...)`
 - `getAWDL_RSDB_CAPS(...)`
 - `getTKO_PARAMS(...)`
 - `getTKO_DUMP(...)`
@@ -1306,7 +1324,7 @@ Recovered Apple behavior splits into three public buckets:
   `getBTCOEX_PROFILE -> 0xe00002c2`,
   `getTKO_PARAMS/getTKO_DUMP -> 0xe00002bc` when the keepalive owner is absent
 - compact cache-backed carriers:
-  `getDBG_GUARD_TIME_PARAMS`, `getRSN_XE`, `getBSS_BLACKLIST`
+  `getRSN_XE`, `getBSS_BLACKLIST`
 - state-backed telemetry carriers:
   `getAWDL_RSDB_CAPS`, `getBTCOEX_PROFILE_ACTIVE`,
   `getMAX_NSS_FOR_AP`, `getBTCOEX_2G_CHAIN_DISABLE`,

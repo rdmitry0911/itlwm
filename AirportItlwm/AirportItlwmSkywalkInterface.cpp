@@ -2414,8 +2414,6 @@ init()
     cachedLastActionFrameChannel = 0;
     cachedLastActionFrameCategory = 0;
     hasCachedLastActionFrame = false;
-    memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
-    hasCachedDbgGuardTimeParams = false;
     cachedWowEnabled = false;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
@@ -2808,8 +2806,6 @@ init(IOService *provider)
     this->cachedLastActionFrameChannel = 0;
     this->cachedLastActionFrameCategory = 0;
     this->hasCachedLastActionFrame = false;
-    memset(this->cachedDbgGuardTimeParams, 0, sizeof(this->cachedDbgGuardTimeParams));
-    this->hasCachedDbgGuardTimeParams = false;
     this->cachedWowEnabled = false;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
@@ -3895,16 +3891,10 @@ getDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // AppleBCMWLANCore consumes and re-exposes a compact 8-byte public carrier:
-    // u16 @ +0x4, u16 @ +0x8, u8 @ +0xa, u8 @ +0xb. Preserve that caller-visible
-    // Tahoe ABI directly from the cached setter-side state.
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 0x0c);
-    memcpy(raw + 4, cachedDbgGuardTimeParams + 0, 2);
-    memcpy(raw + 8, cachedDbgGuardTimeParams + 4, 2);
-    raw[10] = cachedDbgGuardTimeParams[6];
-    raw[11] = cachedDbgGuardTimeParams[7];
-    return kIOReturnSuccess;
+    // Tahoe reads this reply through a private command transport. Intel has no
+    // corresponding owner or transport, so do not synthesize output from a
+    // setter-side cache. The local null guard is retained as a safety boundary.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -6208,14 +6198,10 @@ setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    memset(cachedDbgGuardTimeParams, 0, sizeof(cachedDbgGuardTimeParams));
-    memcpy(cachedDbgGuardTimeParams + 0, raw + 4, 2);
-    memcpy(cachedDbgGuardTimeParams + 4, raw + 8, 2);
-    cachedDbgGuardTimeParams[6] = raw[10];
-    cachedDbgGuardTimeParams[7] = raw[11];
-    hasCachedDbgGuardTimeParams = true;
-    return kIOReturnSuccess;
+    // Tahoe sends a private command after packing selected carrier bytes. Intel
+    // has no matching owner or transport, so do not acknowledge an unapplied
+    // configuration. The local null guard remains a safety boundary.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
