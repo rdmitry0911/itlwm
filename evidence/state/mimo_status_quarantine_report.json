@@ -1,0 +1,31 @@
+{
+  "checks": {
+    "active_v2_slot_remains": true,
+    "local_null_guard_is_retained": true,
+    "no_local_mimo_transport_in_getter": true,
+    "nonnull_path_fails_closed_without_carrier": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_feature_and_iovar_contract": true,
+    "reference_raw_manifest_matches": true,
+    "synthetic_helper_and_test_removed": true
+  },
+  "local": {
+    "false_success": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_getter": "0x10011989c",
+    "feature_bit": "0x2c",
+    "feature_disabled_status": "0xe00002c7",
+    "firmware_iovar": "mimo_ps_status",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 516,
+    "infra_wrapper": "0x100017870",
+    "response_bytes": 10
+  },
+  "schema": "itlwm-mimo-status-quarantine-v1",
+  "source_base_revision": "6ea70cc4dab9ad32bfd29aa4ec4ed44b3c17a122"
+}

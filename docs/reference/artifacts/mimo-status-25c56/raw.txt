@@ -1,0 +1,42 @@
+Reference capture: 25C56 x86_64 AppleBCMWLAN DEXT
+
+$ shasum -a 256 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+$ dwarfdump --uuid /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getMIMO_STATUS
+Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100017870]
+Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getMIMO_STATUS(apple80211_mimo_status*)
+(lldb) image lookup -n AppleBCMWLANCore::getMIMO_STATUS
+Address: com.apple.DriverKit-AppleBCMWLAN[0x000000010011989c]
+Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getMIMO_STATUS(apple80211_mimo_status*)
+
+(lldb) disassemble -s 0x100017870 -c 52
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getMIMO_STATUS:
+com.apple.DriverKit-AppleBCMWLAN[0x100017870] <+0>:  pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017874] <+4>:  movq   0x88(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x10001787e] <+14>: popq   %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x10001787f] <+15>: jmp    0x10011989c               ; AppleBCMWLANCore::getMIMO_STATUS(apple80211_mimo_status*)
+
+(lldb) disassemble -s 0x10011989c -e 0x100119a1f
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getMIMO_STATUS:
+com.apple.DriverKit-AppleBCMWLAN[0x1001198bf] <+35>:  movl   $0x2c, %esi
+com.apple.DriverKit-AppleBCMWLAN[0x1001198c4] <+40>:  callq  0x1000c846e               ; AppleBCMWLANCore::featureFlagIsBitSet(int) const
+com.apple.DriverKit-AppleBCMWLAN[0x1001198c9] <+45>:  movl   $0xe00002c7, %ebx         ; imm = 0xE00002C7
+com.apple.DriverKit-AppleBCMWLAN[0x1001198d0] <+52>:  je     0x100119a00               ; <+356>
+com.apple.DriverKit-AppleBCMWLAN[0x100119910] <+116>: leaq   0x16cbe3(%rip), %rsi      ; "mimo_ps_status"
+com.apple.DriverKit-AppleBCMWLAN[0x10011991d] <+129>: callq  0x10017b780               ; AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+com.apple.DriverKit-AppleBCMWLAN[0x100119922] <+134>: movl   %eax, %ebx
+com.apple.DriverKit-AppleBCMWLAN[0x100119926] <+138>: je     0x10011996b               ; <+207>
+com.apple.DriverKit-AppleBCMWLAN[0x10011996b] <+207>: movb   $0x1, (%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x10011997d] <+225>: movb   %al, 0x1(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x10011998b] <+239>: movb   %al, 0x6(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199ba] <+286>: movb   %dl, 0x4(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199c1] <+293>: movb   %al, 0x7(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199c8] <+300>: movb   %al, 0x8(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199e6] <+330>: movb   $0x50, 0x9(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199ed] <+337>: movb   $0x14, 0x9(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199f4] <+344>: movb   $0x28, 0x9(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x1001199fb] <+351>: movb   $0x0, 0x9(%r14)
+com.apple.DriverKit-AppleBCMWLAN[0x100119a10] <+372>: movl   %ebx, %eax

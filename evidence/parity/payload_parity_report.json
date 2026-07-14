@@ -19,18 +19,20 @@
   "covered_payload_types": [
     {
       "name": "ie-assoc-vendor",
-      "shape": "variable IE bytes, max 2048",
+      "shape": "0x814-byte carrier with IE bytes at +0x14 and length 1..0x800",
       "producer": "TahoePayloadBuilders::buildIE",
-      "consumer": "TahoeCommanderV2::runSetIE",
+      "consumer": "AirportItlwmSkywalkInterface::setIE",
       "implementation_paths": [
-        "AirportItlwm/TahoeCommanderV2.hpp",
-        "AirportItlwm/TahoePayloadBuilders.hpp"
+        "AirportItlwm/AirportAWDL.cpp",
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/TahoePayloadBuilders.hpp",
+        "include/Airport/apple80211_ioctl.h"
       ],
       "apple_reference_case_ids": [
-        "apple-ie-custom-assoc",
+        "apple-ie-public-quarantine",
         "apple-io80211-selector-surface"
       ],
-      "invalid_semantics": "null or overlength carrier returns raw 0x16"
+      "invalid_semantics": "null, zero, or overlength carrier returns raw 0x16; valid carrier is fail-closed without an IE backend"
     },
     {
       "name": "offload-ndp-ipv6",
@@ -104,18 +106,18 @@
       "invalid_semantics": "null returns 0xe00002c2"
     },
     {
-      "name": "tx-power-cap-bypass",
-      "shape": "4-byte policy payload, low bit is enabled",
-      "producer": "TahoePayloadBuilders::buildTxPowerCapBypass",
-      "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP",
+      "name": "tx-power-cap-quarantine",
+      "shape": "bypass and dual-power carriers are rejected before local pseudo-state",
+      "producer": "no Intel TX-power-cap firmware backend",
+      "consumer": "AirportItlwmSkywalkInterface::setBYPASS_TX_POWER_CAP / setDUAL_POWER_MODE",
       "implementation_paths": [
-        "AirportItlwm/TahoeOwnerRegistry.hpp",
-        "AirportItlwm/TahoePayloadBuilders.hpp"
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
       ],
       "apple_reference_case_ids": [
-        "apple-io80211-selector-surface"
+        "apple-io80211-selector-surface",
+        "apple-tx-power-cap-firmware-owner"
       ],
-      "invalid_semantics": "null returns 0xe00002bc; send is gated until dual-power values exist"
+      "invalid_semantics": "null returns 0xe00002bc; non-null input fails closed before synthetic completion"
     },
     {
       "name": "wcl-action-frame-v1-v2",
@@ -174,6 +176,21 @@
         "apple-hidden-association-rsn"
       ],
       "invalid_semantics": "hidden fallback routes only exact 0x3ad8 carrier; direct null WCL associate returns 0xe00002c2"
+    },
+    {
+      "name": "bss-blacklist-async-owner",
+      "shape": "43-byte request; variable async u32 count + 6-byte BSSIDs + 2-byte tail",
+      "producer": "AirportItlwm::setBssBlacklistOwner/queryBssBlacklistOwner",
+      "consumer": "IO80211Controller::postMessage 0xa3",
+      "implementation_paths": [
+        "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
+        "AirportItlwm/AirportItlwmV2.cpp",
+        "AirportItlwm/TahoeBssBlacklistContracts.hpp"
+      ],
+      "apple_reference_case_ids": [
+        "apple-bss-blacklist-async-owner"
+      ],
+      "invalid_semantics": "no interface returns 0x66 before malformed carrier 0x16; admission precedes owner cast; SET null returns 0xe00002bc; count >= 8 preserves applied state; GET never writes its caller buffer; empty applied list emits no event"
     },
     {
       "name": "txrx-chain-info",
@@ -335,6 +352,16 @@
       "assertions_checked": 4
     },
     {
+      "id": "apple-bss-blacklist-async-owner",
+      "path": "docs/reference/CR-479-bss-blacklist-async-owner-20260713.md",
+      "assertions_checked": 5
+    },
+    {
+      "id": "apple-tx-power-cap-firmware-owner",
+      "path": "docs/reference/CR-479-tx-power-cap-quarantine-20260713.md",
+      "assertions_checked": 5
+    },
+    {
       "id": "apple-io80211-selector-surface",
       "path": "include/Airport/IO80211InfraProtocol.h",
       "assertions_checked": 4
@@ -355,9 +382,9 @@
       "assertions_checked": 5
     },
     {
-      "id": "apple-ie-custom-assoc",
-      "path": "docs/tahoe_signal_chain_audit.md",
-      "assertions_checked": 2
+      "id": "apple-ie-public-quarantine",
+      "path": "docs/reference/CR-479-ie-public-quarantine-20260713.md",
+      "assertions_checked": 5
     }
   ],
   "error_semantics_cases": 6,
@@ -423,8 +450,8 @@
   "mismatch_count": 0,
   "mismatches": [],
   "metrics": {
-    "covered_payload_type_count": 19,
-    "apple_reference_case_count": 14,
+    "covered_payload_type_count": 20,
+    "apple_reference_case_count": 16,
     "error_semantics_case_count": 6,
     "deterministic_test_count": 1
   }

@@ -7991,3 +7991,17 @@ with `kIOReturnUnsupported`. The dead cache is removed. The separate
 `fAPSTAOwner->setChannel(in)` branch is deliberately unchanged. This is a
 no-backend quarantine, not Apple valid-input status parity. See
 `docs/reference/CR-479-channel-fallback-quarantine-20260714.md`.
+
+## 2026-07-14 correction: MIMO status is feature/IOVAR-backed, not zero telemetry
+
+The old Q13 classification described `getMIMO_STATUS` as a stable 0x21-byte
+carrier with version `1` and zeroed hidden fields. Exact 25C56 DEXT code
+instead checks Core feature `0x2c`, returns `0xe00002c7` when disabled, and
+when enabled calls `runIOVarGet("mimo_ps_status")` before writing only its
+real response fields. It does not establish the old fixed zero carrier.
+
+The local synthetic helper, carrier test, and success return are removed. The
+local null guard is retained, while every non-null request now fails closed
+with `kIOReturnUnsupported`. This does not claim Apple null or feature-enabled
+valid-input parity and does not modify the separate `setMIMO_CONFIG` surface.
+See `docs/reference/CR-479-mimo-status-quarantine-20260714.md`.

@@ -16,7 +16,6 @@
 #include "TahoeBssManagerContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeLqmContracts.hpp"
-#include "TahoeMimoContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
 #include "TahoePhyModeContracts.hpp"
@@ -3827,14 +3826,11 @@ getMIMO_STATUS(apple80211_mimo_status *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // AppleBCMWLANCore::getMIMO_STATUS writes a 0x21-byte carrier: version
-    // dword +0, an owner dword +4, core dwords +8/+c/+11, word +15, bytes
-    // +17/+18, and qword +19. The Broadcom MIMO owner/core counters are not
-    // available locally, so expose the exact public shape with version 1 and
-    // zeroed hidden-owner fields instead of the previous 10-byte guessed view.
-    TahoeMimoContracts::initializeStatusCarrier(
-        reinterpret_cast<TahoeMimoContracts::StatusCarrier *>(data));
-    return kIOReturnSuccess;
+    // Tahoe Core gates this selector on feature 0x2c and, when enabled, reads
+    // `mimo_ps_status` through its Commander. The Intel port has no matching
+    // MIMO owner or IOVAR backend, so do not fabricate a zeroed status view.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

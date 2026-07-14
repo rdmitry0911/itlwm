@@ -11,7 +11,6 @@
 
 #include <Airport/Apple80211.h>
 #include "AirportItlwmAPSTAInterface.hpp"
-#include "TahoeMimoContracts.hpp"
 #include "TahoePayloadBuilders.hpp"
 
 struct if_link_status;
@@ -292,8 +291,8 @@ public:
     // [515] — Tahoe public contract is `NULL -> 0xe00002c2`, else four one-byte
     // chain masks.
     virtual IOReturn getTXRX_CHAIN_INFO(apple80211_txrx_chain_info *) override;
-    // [516] — Tahoe public contract is a 0x21-byte MIMO status carrier gated
-    // by the hidden MIMO owner.
+    // [516] — Tahoe Core feature-gates MIMO status then reads
+    // `mimo_ps_status`; the local no-owner port fails closed for non-null.
     virtual IOReturn getMIMO_STATUS(apple80211_mimo_status *) override;
     // [517]
     virtual IOReturn getCUR_PMK(apple80211_pmk *) override;

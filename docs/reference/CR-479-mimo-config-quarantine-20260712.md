@@ -17,7 +17,9 @@ unconsumed request that merely reports success.
 
 AirportItlwm has no MIMO power owner, feature-gated owner path, or matching
 configuration transport. Its setMIMO_CONFIG only checked NULL and returned
-success. getMIMO_STATUS is a separate output contract and is unchanged here.
+success. `getMIMO_STATUS` is a separate output contract; its former synthetic
+zero-success carrier is corrected independently by
+`CR-479-mimo-status-quarantine-20260714.md`.
 
 ## Local correction
 

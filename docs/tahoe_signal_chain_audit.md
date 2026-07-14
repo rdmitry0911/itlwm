@@ -1366,9 +1366,10 @@ EAPOL RX/TX data paths are not this firmware filter backend.  See
 
 The original `Q13` zone classified fourteen getter slots as exposing a stable
 Tahoe public contract even when the deeper Broadcom owner was still hidden.
-That classification is superseded for `getWCL_LOW_LATENCY_INFO_STATS(...)` by
-the 2026-07-14 correction below: its reference body reads real owner/core
-state, so the local all-zero success carrier was not a stable contract.
+That classification is superseded for `getMIMO_STATUS(...)` and
+`getWCL_LOW_LATENCY_INFO_STATS(...)` by the 2026-07-14 corrections below:
+their reference bodies require real feature/owner/core work, so the local
+all-zero success carriers were not stable contracts.
 
 Closed in this zone:
 
@@ -1381,11 +1382,6 @@ Closed in this zone:
 - `getBTCOEX_2G_CHAIN_DISABLE(...)`
 - `getBSS_BLACKLIST(...)`
 - `getTXRX_CHAIN_INFO(...)`
-- `getMIMO_STATUS(...)`
-  writes a `0x21`-byte carrier: version dword `+0x00`, hidden MIMO owner
-  dword `+0x04`, core dwords `+0x08/+0x0c/+0x11`, word `+0x15`, bytes
-  `+0x17/+0x18`, and qword `+0x19`; the local port publishes version `1`
-  and zeroes unavailable hidden-owner fields
 - `getWCL_FW_HOT_CHANNELS(...)`
 - `getWCL_TRAFFIC_COUNTERS(...)`
 - `getRSN_XE(...)`
@@ -1400,7 +1396,7 @@ Recovered Apple behavior splits into three public buckets:
 - state-backed telemetry carriers:
   `getAWDL_RSDB_CAPS`, `getBTCOEX_PROFILE_ACTIVE`,
   `getMAX_NSS_FOR_AP`, `getBTCOEX_2G_CHAIN_DISABLE`,
-  `getTXRX_CHAIN_INFO`, `getMIMO_STATUS`, `getWCL_FW_HOT_CHANNELS`,
+  `getTXRX_CHAIN_INFO`, `getWCL_FW_HOT_CHANNELS`,
   `getWCL_TRAFFIC_COUNTERS`
 
 This batch intentionally stops at the public Apple80211 boundary:
