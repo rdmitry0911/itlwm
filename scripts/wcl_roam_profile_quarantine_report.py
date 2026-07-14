@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify BG params false-success quarantine evidence."""
+"""Generate and verify WCL modern Roam Profile false-success evidence."""
 
 import argparse
 import json
@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "evidence/state/bg_params_quarantine_report.json"
-NOTE = ROOT / "docs/reference/CR-479-bg-params-quarantine-20260713.md"
+OUTPUT = ROOT / "evidence/state/wcl_roam_profile_quarantine_report.json"
+NOTE = ROOT / "docs/reference/CR-479-wcl-roam-profile-quarantine-20260714.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
@@ -43,40 +43,40 @@ def report():
     note = NOTE.read_text(encoding="utf-8")
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
     inventory = INVENTORY.read_text(encoding="utf-8")
+    normalized_signal_audit = " ".join(signal_audit.split())
+    normalized_inventory = " ".join(inventory.split())
     setter = section(
         cpp,
-        "setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)",
-        "setWCL_JOIN_ABORT",
+        "setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)",
+        "setWCL_ARP_MODE",
     )
-    inventory_q7 = section(
-        inventory,
-        "### 3. Former WCL adapter-plane stub cluster: historical lift versus owner parity",
-        "### 4.",
-    )
-    correction_heading = "## Q13 correction: BGScanAdapter-backed producer quarantines"
+    correction_heading = "## Q13 correction: WCL Roam Profile Config is RoamAdapter-backed"
     return {
-        "schema": "itlwm-bg-params-quarantine-v1",
-        "source_base_revision": "92ff9ea66cf025b671b4ecacddc23b2de3eb5ab1",
+        "schema": "itlwm-wcl-roam-profile-quarantine-v1",
+        "source_base_revision": "4be063c7e51e75bc23f73345fa9bb095053a2861",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-            "infra_wrapper": "0x1000192c4",
-            "core_setter": "0x100142bac",
-            "null_status": "0xe00002bc",
-            "bgscan_adapter_offset": "0x1578",
-            "adapter_setter": "0x1000102a2",
-            "configure_dynamic_scan_freq": "0x1000103ec",
-            "dynamic_iovar": "pfn_override",
-            "dynamic_payload_bytes": "0x18",
-            "dynamic_async_transport": "sendIOVarSet",
-            "configure_unassociated_scan_time": "0x100010504",
-            "unassociated_iovar": "scan_unassoc_time",
-            "unassociated_payload_bytes": 4,
+            "infra_wrapper": "0x100018b74",
+            "infra_virtual_offset": "0x6d8",
+            "core_setter": "0x100141e10",
+            "adapter_null_cold_path": "0x1001a01a0",
+            "roam_adapter_offset": "0x15c0",
+            "adapter_setter": "0x10001c3f8",
+            "per_band_setter": "0x10001bfca",
+            "profile_callback": "0x10001bd9a",
+            "disable_6g": "0x10001c5b0",
+            "disable_6g_callback": "0x10001de02",
+            "candidate_boost": "0x10001c6ba",
+            "multi_ap": "0x10001c322",
+            "commander_send_iovar_set": "0x10017b900",
             "commander_run_iovar_set": "0x10017b6e6",
+            "null_status": "0xe00002bc",
+            "pseudo_layout_bytes": "0x23c",
         },
         "local": {
-            "matching_bgscan_params_backend_implemented": False,
+            "matching_roam_adapter_backend_implemented": False,
             "request_false_success": False,
-            "full_carrier_layout_proven": False,
+            "complete_public_carrier_layout_proven": False,
             "valid_input_or_error_is_apple_parity": False,
         },
         "checks": {
@@ -84,16 +84,24 @@ def report():
                 token in note
                 for token in (
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "0x1000192c4",
-                    "0x100142bac",
+                    "0x100018b74",
+                    "`+0x6d8`",
+                    "0x100141e10",
+                    "0x1001a01a0",
                     "`0xe00002bc`",
-                    "`+0x1578`",
-                    "0x1000102a2",
-                    "0x1000103ec",
-                    "0x18-byte `pfn_override`",
-                    "`sendIOVarSet`",
-                    "0x100010504",
-                    "`scan_unassoc_time`",
+                    "`+0x15c0`",
+                    "0x10001c3f8",
+                    "`+0x0`",
+                    "`+0xb8`",
+                    "`+0x170`",
+                    "0x10001bfca",
+                    "0x10001bd9a",
+                    "0x10001c5b0",
+                    "`+0x238`",
+                    "0x10001de02",
+                    "0x10001c6ba",
+                    "0x10001c322",
+                    "0x10017b900",
                     "0x10017b6e6",
                     "complete public carrier layout",
                 )
@@ -109,35 +117,41 @@ def report():
             and all(
                 token not in setter
                 for token in (
-                    "cachedBgParams",
-                    "hasCachedBgParams",
-                    "data->raw",
+                    "cachedRoamProfileConfig",
+                    "hasCachedRoamProfileConfig",
+                    "data->",
                     "return kIOReturnSuccess;",
                 )
             ),
             "pseudo_state_and_layout_removed": all(
                 token not in cpp and token not in hpp
                 for token in (
-                    "cachedBgParams",
-                    "hasCachedBgParams",
-                    "struct apple80211_bg_params",
+                    "cachedRoamProfileConfig",
+                    "hasCachedRoamProfileConfig",
+                    "struct apple80211_roam_profile_config",
                 )
             ),
-            "scoped_bgscan_params_backend_absent": all(
+            "scoped_roam_adapter_backend_absent": all(
                 not source_contains(token)
                 for token in (
-                    "configureDynamicScanFreq(",
-                    "configureUnAssociatedScanTime(",
-                    "pfn_override",
-                    "scan_unassoc_time",
+                    "setRoamingProfileV6(",
+                    "handleRoamProfileAsyncCallBack(",
+                    "disable6GForRoamScans(",
+                    "disable6GForRoamScansCallback(",
+                    "applyRoamingCandidateBoost(",
+                    "configureMultiAPBit(",
                     "sendIOVarSet(",
                     "runIOVarSet(",
+                    "\"roam_prof\"",
+                    "\"join_pref\"",
+                    "\"roam_multi_ap_env\"",
                 )
             ),
-            "stale_q7_claim_corrected": correction_heading in signal_audit
-            and "`setWCL_CONFIG_BG_MOTIONPROFILE`, `setWCL_CONFIG_BG_NETWORK`,\n`setWCL_CONFIG_BGSCAN`, and `setWCL_CONFIG_BG_PARAMS` are excluded from that\nfunctional closure"
-            in inventory_q7
-            and "- `setWCL_CONFIG_BG_PARAMS`" not in inventory_q7,
+            "historical_claims_corrected": correction_heading in signal_audit
+            and "modern-profile recovery demonstrates a RoamAdapter policy and transport lifecycle and is reclassified"
+            in normalized_signal_audit
+            and "Modern `setWCL_ROAM_PROFILE_CONFIG` is now explicitly a no-local-backend quarantine"
+            in normalized_inventory,
         },
     }
 
@@ -152,7 +166,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("BG params quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("WCL Roam Profile quarantine checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -166,5 +180,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"BG params quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"WCL Roam Profile quarantine validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

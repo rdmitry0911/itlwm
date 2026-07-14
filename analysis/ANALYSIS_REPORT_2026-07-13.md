@@ -2108,3 +2108,48 @@ running and focused bounded guest/host filters found no matching WCL/
 AirportItlwm panic or fatal VFIO/IOMMU/DMAR/AER marker. The guest rebooted only
 to load the AuxKC; the host was not rebooted. Full immutable evidence is under
 `/home/dima/Projects/aiam/runtime-captures/itlwm-roam-lock-quarantine-20260714/`.
+
+## VERIFIED RESULT — WCL_ROAM_PROFILE_CONFIG false-success quarantine
+
+`setWCL_ROAM_PROFILE_CONFIG` previously accepted every non-null opaque
+carrier, copied an inferred 0x23c-byte blob into unread local state, and
+returned success. Tahoe 25C56 routes Infra wrapper `0x100018b74` through
+virtual `+0x6d8` to Core `0x100141e10`, which selects RoamAdapter at `+0x15c0`
+and tail-jumps to `setROAM_PROFILE_CONFIG` `0x10001c3f8`. Its null path returns
+`0xe00002bc`; non-null processing fans through per-band profile work,
+`join_pref`, `roam_prof`, candidate boost, multi-AP state, callbacks, and
+Commander transport statuses. The local port has no matching owner or backend.
+
+This batch preserves `NULL -> kIOReturnBadArgumentTahoe` and returns
+`kIOReturnUnsupported` for every non-null request before reading the carrier.
+It deletes only the modern pseudo-layout/cache/flag/reset lines. It does not
+change the separate legacy WCL profile, generic STA `ROAM_PROFILE`, roam lock,
+user cache, reassociation, scan, key, link, WCL event, or generic
+adaptive-roaming property paths. No complete carrier layout, policy, Commander
+transport, completion, or Apple valid-input return-status parity is claimed.
+No direct setter invocation, private IOCTL, guessed profile/IOVAR, or radio
+OFF/ON was used.
+
+The new deterministic report, compatibility anchors for retained ARP/BG
+reports, all retained quarantine reports, payload parity, payload-builder
+contracts, Python compilation, shell syntax, and staged whitespace checks
+passed. The staged source-code delta SHA-256 is
+`7d48f207a7b92f63606a6d6775287cd0e4fa4972a6f75e38f3bdc4ccfccbfe70`.
+A clean Tahoe build resolved all 959 undefined symbols against BootKC. The
+installed candidate loaded as UUID `89A954D4-6DDA-308F-980F-B7F2A5682ACC`
+with executable SHA-256
+`b72c61adc1a15d735eef48fe243da6c8c7ea7f1b51eed391118d048f75d9e335`.
+AuxKC SHA-256 changed from
+`d7cb9924c8748246c0c49bb51b0aaf411b16991b326234f601602402c61184ec` to
+`f1852f9dd1f0a5086b0e21498d4cd4dc47ed28dcf5d68cd31331f703f79f947d`.
+
+After an explicit normal secret-hidden rejoin (`networksetup_rc=0`), `en1`
+received `10.77.0.47` and routed `10.77.0.1` through `en1`. Both capped
+240-second directions transferred 572 MiB at 20.0 Mbit/s; concurrent pings
+were 240/240 with 0.0% loss (mean 3.328 ms uplink and 6.523 ms reverse).
+Reverse iperf reported zero sender retransmits. Hostapd remained
+authenticated/associated/authorized with zero TX failures, QEMU was running,
+and focused bounded guest/host filters found no matching WCL/AirportItlwm panic
+or fatal VFIO/IOMMU/DMAR/AER marker. The guest rebooted only to load the AuxKC;
+the host was not rebooted. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-roam-profile-quarantine-20260714/`.

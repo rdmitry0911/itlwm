@@ -1615,6 +1615,33 @@ make every copied carrier a complete owner implementation:
 backend quarantines. Any still-missing hidden helper exactness belongs under
 `Q13`, not under the old WCL adapter-stub bucket.
 
+The historical list also included modern `setWCL_ROAM_PROFILE_CONFIG` because
+it had moved out of an inline stub. Its later recovery establishes a multi-owner
+RoamAdapter policy/transport lifecycle, not a reusable opaque cache; it is
+therefore reclassified below as a no-local-backend quarantine. This correction
+does not change the separate legacy roam-profile or reassociation scopes.
+
+## Q13 correction: WCL Roam Profile Config is RoamAdapter-backed
+
+Tahoe 25C56 Infra wrapper `0x100018b74` dispatches virtual `+0x6d8` to Core
+`0x100141e10`. Null reaches `0x1001a01a0` and returns `0xe00002bc`; non-null
+selects RoamAdapter at `+0x15c0` and tail-jumps to
+`setROAM_PROFILE_CONFIG` `0x10001c3f8`. That owner conditionally dispatches
+three per-band records to `setRoamingProfileV6` `0x10001bfca`, drives
+`join_pref` through `disable6GForRoamScans` `0x10001c5b0`, applies candidate
+boost, configures multi-AP state, and uses Commander `roam_prof` requests with
+async callbacks/status paths.
+
+The modern-profile recovery demonstrates a RoamAdapter policy and transport
+lifecycle and is reclassified. The port preserves the direct null error and
+returns `kIOReturnUnsupported` for non-null input before reading the opaque
+carrier, removing its dead 0x23c pseudo-layout/cache/flag/reset lines. No
+legacy profile, generic STA `ROAM_PROFILE`, reassociation, scan, key, link,
+WCL event, or generic adaptive-roaming property path changes. This makes no
+complete carrier-layout, policy, Commander transport, completion, or valid-
+input return-status parity claim. See
+`docs/reference/CR-479-wcl-roam-profile-quarantine-20260714.md`.
+
 ## Q13 correction: WCL ARP mode is KeepAlive/WnmAdapter-backed
 
 `setWCL_ARP_MODE(...)` is not a reusable direct OFFLOAD_ARP carrier. Tahoe

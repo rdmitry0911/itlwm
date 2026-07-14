@@ -55,7 +55,7 @@ def report():
     )
     inventory_q7 = section(
         inventory,
-        "### 3. Former WCL adapter-plane stub cluster is closed as a queue",
+        "### 3. Former WCL adapter-plane stub cluster: historical lift versus owner parity",
         "### 4.",
     )
     correction_heading = "## Q13 correction: WCL ARP mode is KeepAlive/WnmAdapter-backed"

@@ -907,13 +907,6 @@ struct apple80211_legacy_roam_profile_config
 static_assert(sizeof(apple80211_legacy_roam_profile_config) == 0x60,
               "legacy roam profile config must match WCLRoamProfile payload size");
 
-struct apple80211_roam_profile_config
-{
-    uint8_t raw[0x23c];
-} __attribute__((packed));
-static_assert(sizeof(apple80211_roam_profile_config) == 0x23c,
-              "roam profile config must match WCLRoamProfile payload size");
-
 struct apple80211_pm_mode
 {
     uint32_t version;
@@ -2426,8 +2419,6 @@ init()
     hasCachedReassocRequest = false;
     memset(cachedLegacyRoamProfileConfig, 0, sizeof(cachedLegacyRoamProfileConfig));
     hasCachedLegacyRoamProfileConfig = false;
-    memset(cachedRoamProfileConfig, 0, sizeof(cachedRoamProfileConfig));
-    hasCachedRoamProfileConfig = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
     cachedTriggerCCMode = 0;
     hasCachedTriggerCC = false;
@@ -2830,8 +2821,6 @@ init(IOService *provider)
     this->hasCachedReassocRequest = false;
     memset(this->cachedLegacyRoamProfileConfig, 0, sizeof(this->cachedLegacyRoamProfileConfig));
     this->hasCachedLegacyRoamProfileConfig = false;
-    memset(this->cachedRoamProfileConfig, 0, sizeof(this->cachedRoamProfileConfig));
-    this->hasCachedRoamProfileConfig = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
     this->cachedTriggerCCMode = 0;
     this->hasCachedTriggerCC = false;
@@ -5948,17 +5937,12 @@ setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data)
 {
-    // WCLRoamProfile::setRoamingProfile(modern) ships a 0x23c payload into the
-    // roam adapter. Apple's downstream helper fans this out into join
-    // preference and per-band policy programming. Persist the exact carrier so
-    // the local port no longer acknowledges this producer and immediately loses
-    // the only recovered roam configuration state.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedRoamProfileConfig, data, sizeof(*data));
-    hasCachedRoamProfileConfig = true;
-    return kIOReturnSuccess;
+    // Tahoe fans this request into RoamAdapter policy and transport lifecycles.
+    // Intel has no matching modern profile owner or Commander backend.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -523,7 +523,8 @@ public:
     virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override;
     // [592] — AppleBCMWLAN: delegates to RoamAdapter legacy profile path.
     virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
-    // [593] — AppleBCMWLAN: delegates to RoamAdapter modern profile path.
+    // [593] — Tahoe RoamAdapter owns modern profile policy and transport;
+    // locally quarantined until a matching adaptive-roam owner exists.
     virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override;
     // [594] — Tahoe RoamAdapter owns user-cache channel mutation and override
     // state; locally quarantined until a matching adaptive-roam owner exists.
@@ -782,8 +783,6 @@ private:
     bool hasCachedReassocRequest;
     uint8_t cachedLegacyRoamProfileConfig[0x60];
     bool hasCachedLegacyRoamProfileConfig;
-    uint8_t cachedRoamProfileConfig[0x23c];
-    bool hasCachedRoamProfileConfig;
     uint8_t cachedTriggerCC[0x20];
     uint32_t cachedTriggerCCMode;
     bool hasCachedTriggerCC;

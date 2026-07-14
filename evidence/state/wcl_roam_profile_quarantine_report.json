@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_roam_adapter_backend_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "complete_public_carrier_layout_proven": false,
+    "matching_roam_adapter_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_null_cold_path": "0x1001a01a0",
+    "adapter_setter": "0x10001c3f8",
+    "candidate_boost": "0x10001c6ba",
+    "commander_run_iovar_set": "0x10017b6e6",
+    "commander_send_iovar_set": "0x10017b900",
+    "core_setter": "0x100141e10",
+    "disable_6g": "0x10001c5b0",
+    "disable_6g_callback": "0x10001de02",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x6d8",
+    "infra_wrapper": "0x100018b74",
+    "multi_ap": "0x10001c322",
+    "null_status": "0xe00002bc",
+    "per_band_setter": "0x10001bfca",
+    "profile_callback": "0x10001bd9a",
+    "pseudo_layout_bytes": "0x23c",
+    "roam_adapter_offset": "0x15c0"
+  },
+  "schema": "itlwm-wcl-roam-profile-quarantine-v1",
+  "source_base_revision": "4be063c7e51e75bc23f73345fa9bb095053a2861"
+}
