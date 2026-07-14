@@ -518,8 +518,8 @@ public:
     // [590] — AppleBCMWLAN: validates param, snapshots reassoc parameters,
     // and delegates into NetAdapter reassoc send path.
     virtual IOReturn setWCL_REASSOC(apple80211_reassoc *data) override;
-    // [591] — WCLRoamManager sends selector 0x1ac with a one-byte roam-off
-    // payload; AppleBCMWLANCore forwards data[0] to RoamAdapter::setRoamLock.
+    // [591] — Tahoe RoamAdapter owns byte-0 validation and roam_off transport;
+    // locally quarantined until a matching adaptive-roam owner exists.
     virtual IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data) override;
     // [592] — AppleBCMWLAN: delegates to RoamAdapter legacy profile path.
     virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
@@ -772,8 +772,6 @@ private:
     uint8_t cachedIPv6Addresses[10][16];
     uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
-    bool cachedWclRoamLocked;
-    bool hasCachedWclRoamLock;
     uint32_t cachedPmMode;
     apple80211_lqm_config_t cachedLqmConfig;
     bool hasCachedLqmConfig;

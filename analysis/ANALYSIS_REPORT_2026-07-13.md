@@ -2061,3 +2061,50 @@ Full immutable runtime evidence is under
   traffic/ping, and bounded guest/host fault filters. Radio OFF/ON remains
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
+
+## VERIFIED RESULT — WCL_SET_ROAM_LOCK false-success quarantine
+
+`setWCL_SET_ROAM_LOCK` previously accepted every non-null carrier, read byte 0
+into unread local cache flags, and returned success. Tahoe 25C56 routes Infra
+wrapper `0x100018adc` through virtual `+0x4b0` to Core `0x10011ed1e`. Null
+takes cold path `0x1002082a6` and returns raw `0x16`; a non-null path selects
+RoamAdapter at `+0x15c0`, reads byte 0, and tail-jumps to `setRoamLock`
+`0x10001e4e0`. That adapter serializes a four-byte `roam_off` request, sends
+it through Commander `sendIOVarSet`, installs
+`handleRoamOffAsyncCallBack` `0x10001e59e`, and returns the transport result.
+The local port has no matching RoamAdapter owner or transport lifecycle.
+
+This batch preserves `NULL -> kApple80211ErrInvalidArgumentRaw` and returns
+`kIOReturnUnsupported` for every non-null request before reading its carrier.
+It deletes only the pseudo one-byte type/cache/flag/reset lines. It does not
+alter reassociation, scan, key, link, WCL event, profile, user-cache, or generic
+adaptive-roaming property paths. No complete carrier allocation, transport,
+completion, or Apple valid-input return-status parity is claimed. No direct
+setter invocation, private IOCTL, guessed carrier/IOVAR, or radio OFF/ON was
+used.
+
+The new deterministic report plus all retained quarantine reports, payload
+parity, payload-builder contracts, Python compilation, shell syntax, and
+staged whitespace checks passed. The staged source-code delta SHA-256 is
+`17ed8c7b2adf3431e558ac29233bdaf0020c20e810bd69e385dc688b25496031`.
+A clean Tahoe build resolved all 959 undefined symbols against BootKC. The
+installed candidate loaded as UUID `2DBA362F-FCEF-3DAD-BA3A-EB34379CBA8D`
+with executable SHA-256
+`331fcf305c9a177079abc75f8945637dcceb74969fd4a4d20cc4b1570f5c38bf`.
+AuxKC SHA-256 changed from
+`e66061c6fd96fe098175797819ecd3172a08da14e8b27e3943fd916010e7c051` to
+`d7cb9924c8748246c0c49bb51b0aaf411b16991b326234f601602402c61184ec`.
+
+After an explicit normal secret-hidden rejoin (`networksetup_rc=0`), `en1`
+received `10.77.0.47` and routed `10.77.0.1` through `en1`. Uplink transferred
+572 MiB at 20.0 Mbit/s with concurrent ping 240/240, 0.0% loss, and 3.500 ms
+mean RTT. The first reverse pass also had 240/240 ping replies and 572 MiB at
+20.0 Mbit/s, but recorded 47 sender retransmits and 47 AP TX failures despite
+no loss or focused fault marker. That observation is retained in evidence. A
+fresh ordinary credentialed rejoin created a new AP session; its confirmatory
+reverse pass had 240/240 replies, 0.0% loss, 5.959 ms mean RTT, 572 MiB at
+20.0 Mbit/s, zero sender retransmits, and zero AP TX failures. QEMU remained
+running and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal VFIO/IOMMU/DMAR/AER marker. The guest rebooted only
+to load the AuxKC; the host was not rebooted. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-roam-lock-quarantine-20260714/`.

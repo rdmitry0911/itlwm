@@ -900,13 +900,6 @@ struct apple80211_reassoc
 static_assert(sizeof(apple80211_reassoc) == 0x9c,
               "apple80211_reassoc must cover the Apple offsets used by sendReassocCommand");
 
-struct apple80211_set_roam_lock
-{
-    uint8_t roam_off;
-} __attribute__((packed));
-static_assert(sizeof(apple80211_set_roam_lock) == 0x1,
-              "apple80211_set_roam_lock must match the one-byte WCL IOUC payload");
-
 struct apple80211_legacy_roam_profile_config
 {
     uint8_t raw[0x60];
@@ -2423,8 +2416,6 @@ init()
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
-    cachedWclRoamLocked = false;
-    hasCachedWclRoamLock = false;
     cachedPmMode = 0;
     initializeTahoeLqmConfig(&cachedLqmConfig);
     hasCachedLqmConfig = false;
@@ -2829,8 +2820,6 @@ init(IOService *provider)
     memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
     memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
-    this->cachedWclRoamLocked = false;
-    this->hasCachedWclRoamLock = false;
     this->cachedPmMode = 0;
     initializeTahoeLqmConfig(&this->cachedLqmConfig);
     this->hasCachedLqmConfig = false;
@@ -5317,15 +5306,12 @@ setSET_WIFI_ASSERTION_STATE(apple80211_wifi_assertion_data *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock *data)
 {
-    // WCLRoamManager sends selector 0x1ac with exactly one payload byte.
-    // AppleBCMWLANCore rejects NULL with raw 0x16, then forwards data[0] as
-    // the `roam_off` bool to AppleBCMWLANRoamAdapter::setRoamLock(bool).
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    cachedWclRoamLocked = data->roam_off != 0;
-    hasCachedWclRoamLock = true;
-    return kIOReturnSuccess;
+    // Tahoe delegates byte-0 validation and the roam_off transport lifecycle
+    // to RoamAdapter. Intel has no matching adaptive-roam owner or transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

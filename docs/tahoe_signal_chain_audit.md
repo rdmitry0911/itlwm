@@ -1757,20 +1757,32 @@ makes no full carrier-layout, channel validation, backend-state, transport,
 completion, or return-status parity claim. See
 `docs/reference/CR-479-wcl-roam-user-cache-quarantine-20260713.md`.
 
-## Q13 Classification: non-Apple sideband selectors must not advertise success
+## Q13 Classification: sideband selectors must not advertise success
 
-The remaining inline-success tail was checked against both the local Tahoe
-decompile corpus and the remote Ghidra output. No producer symbols were found
-for:
+The remaining sideband tail was checked against the local Tahoe decompile
+corpus and the remote Ghidra output. No producer symbols were found for
+`setHEARTBEAT` or `setINTERFACE_SETTING`, so those selectors remain explicit
+unsupported rather than advertising an ack-only success path.
 
-- `setWCL_SET_ROAM_LOCK`
-- `setHEARTBEAT`
-- `setINTERFACE_SETTING`
+## Q13 correction: WCL Roam Lock is RoamAdapter-backed
 
-That matters because `success` on those slots was strictly worse than explicit
-unsupported: it advertised producer paths that the recovered Apple stack does
-not expose. Those selectors are now classified out of the ack-only bucket and
-return `kIOReturnUnsupported` until real Apple implementations are recovered.
+The roam-lock recovery demonstrates a RoamAdapter transport lifecycle and is
+reclassified. Tahoe 25C56 Infra wrapper `0x100018adc` dispatches virtual
+`+0x4b0` to Core `0x10011ed1e`. Null reaches cold path `0x1002082a6` and
+returns raw `0x16`; non-null selects RoamAdapter at `+0x15c0`, reads byte 0 as
+the boolean input, and tail-jumps to `setRoamLock` `0x10001e4e0`. The adapter
+serializes a four-byte boolean `roam_off` request, sends it asynchronously via
+Commander, and returns its enqueue/transport status through callback
+`handleRoamOffAsyncCallBack` `0x10001e59e`.
+
+The previous local byte-cache-and-success substitute is removed. The port
+preserves the raw null error and returns `kIOReturnUnsupported` for non-null
+input before reading it, because no local RoamAdapter owner, `roam_off`
+transport, callback, or status lifecycle exists. No reassociation, scan,
+key, link, WCL event, or generic adaptive-roaming property path changes. This
+makes no full carrier-allocation, completion, transport, or valid-input
+return-status parity claim. See
+`docs/reference/CR-479-wcl-roam-lock-quarantine-20260714.md`.
 
 ## Q13 Batch: TIMESYNC and WNM no longer sit in the raw unsupported surface
 
