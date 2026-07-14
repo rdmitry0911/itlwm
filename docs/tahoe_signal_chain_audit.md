@@ -1712,7 +1712,7 @@ PFN/PNO/EPNO IOVAR-payload, completion, or return-status parity claim. See
 ## Q13 Batch: sideband carriers continue to leave the unsupported/stub tail
 
 The next `Q13` reduction pass was intentionally narrow: only recovered producer
-paths with simple caller-visible carriers were lifted.
+paths with simple caller-visible carriers were classified.
 
 Recovered Apple evidence:
 
@@ -1726,15 +1726,36 @@ Recovered Apple evidence:
 - `AppleBCMWLANCore::setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime*)`
   consumes a single dword and forwards it to the scan adapter owner
 
-Those slots were previously either unsupported or inline success. They now:
+`PM_MODE` and scan-home-away retain their separately scoped behavior. The
+user-cache recovery demonstrates a RoamAdapter lifecycle and is reclassified
+below rather than preserved as a cache-and-success substitute.
 
 - reject `NULL` with Apple `0xe00002bc`
-- preserve the recovered caller-visible carrier state locally
 - reuse already-lifted local owners where available (`setPOWERSAVE(...)` for
   `PM_MODE`)
 
 This does not close `Q13`, but it removes another class of simple
 state-carrier mismatches from its tail.
+
+## Q13 correction: WCL Roam User Cache is RoamAdapter-backed
+
+`setWCL_ROAM_USER_CACHE(...)` is not a standalone 0x7c-byte cache. Tahoe
+25C56 Infra wrapper `0x100018ca0` dispatches virtual `+0x6e0` to Core
+`0x100141e52`, which selects RoamAdapter at `+0x15c0` and tail-jumps to
+`cmdROAM_USER_CACHE` `0x10001c916`. The helper allocates 0x78 bytes of backend
+state, validates the request, clears channel state at `0x10001cb3a`, adds
+channels at `0x10001cc16`, conditionally changes override state at
+`0x10001cd78`, and retains each status path. Its recovered carrier handling
+uses channel entries from `+0x0` in 0x0c strides, channel count at `+0x78`,
+and override-related bytes including `+0x7a`.
+
+The port preserves the direct null guard and returns `kIOReturnUnsupported`
+for a non-null user-cache request before reading the carrier. It removes the
+dead pseudo-layout/cache/flag/reset lines and does not change reassoc, roam
+lock, roam-profile, or generic adaptive-roaming platform-property paths. This
+makes no full carrier-layout, channel validation, backend-state, transport,
+completion, or return-status parity claim. See
+`docs/reference/CR-479-wcl-roam-user-cache-quarantine-20260713.md`.
 
 ## Q13 Classification: non-Apple sideband selectors must not advertise success
 

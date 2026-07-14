@@ -525,7 +525,8 @@ public:
     virtual IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config *data) override;
     // [593] — AppleBCMWLAN: delegates to RoamAdapter modern profile path.
     virtual IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config *data) override;
-    // [594]
+    // [594] — Tahoe RoamAdapter owns user-cache channel mutation and override
+    // state; locally quarantined until a matching adaptive-roam owner exists.
     virtual IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data) override;
     // [595] — AppleBCMWLAN: aborts ongoing scan
     virtual IOReturn setWCL_SCAN_ABORT(void *) override;
@@ -771,8 +772,6 @@ private:
     uint8_t cachedIPv6Addresses[10][16];
     uint8_t cachedIPv6LinkLocalAddress[16];
     bool cachedInfraEnumerated;
-    uint8_t cachedUserRoamCache[0x7c];
-    bool hasCachedUserRoamCache;
     bool cachedWclRoamLocked;
     bool hasCachedWclRoamLock;
     uint32_t cachedPmMode;

@@ -1214,6 +1214,49 @@ panic. Full immutable runtime evidence is under
   excluded because the restored bit-identical A2DF baseline reproduces the
   separate WCL lifecycle panic.
 
+## VERIFIED RESULT — WCL_ROAM_USER_CACHE false-success quarantine
+
+`setWCL_ROAM_USER_CACHE` previously accepted every non-null opaque carrier,
+copied an inferred 0x7c-byte blob into unread local cache state, and returned
+success. Tahoe 25C56 routes the Infra wrapper `0x100018ca0` through virtual
+`+0x6e0` to Core `0x100141e52`, which selects RoamAdapter at `+0x15c0` and
+calls `cmdROAM_USER_CACHE` `0x10001c916`. That owner allocates backend state,
+validates the request, clears/adds channel state, and changes override state
+while retaining its real statuses. The local port has no matching
+adaptive-roam owner or transport.
+
+This batch preserves `NULL -> kIOReturnBadArgumentTahoe` and returns
+`kIOReturnUnsupported` for every non-null request before reading its carrier.
+It deletes only the dead pseudo-layout/cache/flag/reset lines. It does not
+alter roam lock, roam profile, reassociation, or the separate generic
+adaptive-roaming platform-property path. No full public-carrier ABI, channel
+validation, backend mutation, transport, completion, or Apple valid-input
+return-status parity is claimed. No direct setter invocation, private IOCTL,
+guessed carrier/IOVAR, or radio OFF/ON was used.
+
+The new deterministic report plus all retained quarantine reports, payload
+parity, payload-builder contracts, Python compilation, shell syntax, and
+staged whitespace checks passed. The staged source-code delta SHA-256 is
+`9189d7d33232dadee3b7a5baa4db0b4c23fbb0344d316a3ee0603f6e1eeebc62`.
+A clean Tahoe build resolved all 959 undefined symbols against BootKC. The
+installed candidate loaded as UUID `EAF35109-93DB-35E1-AFDA-4C59A01134D8`
+with executable SHA-256
+`79e1e482052beab226a07d516460805eac88dde3f78165bfb2ea9feb51417d9a`.
+AuxKC SHA-256 changed from
+`78aef65051d480fbc6d038e3dc6f7d4848b94634a0dee50bd0cffe09ecc82ccf` to
+`e66061c6fd96fe098175797819ecd3172a08da14e8b27e3943fd916010e7c051`.
+
+After an explicit normal secret-hidden rejoin (`networksetup_rc=0`), `en1`
+received `10.77.0.47` and routed `10.77.0.1` through `en1`. Each capped
+240-second direction transferred 572 MiB at 20.0 Mbit/s; concurrent pings
+were 240/240 with 0.0% loss (mean 3.928 ms uplink and 6.332 ms reverse).
+Reverse iperf reported one sender retransmit, recorded as such. Hostapd
+remained authenticated/associated/authorized with zero TX failures, QEMU was
+running, and focused bounded guest/host filters found no matching WCL/
+AirportItlwm panic or fatal VFIO/IOMMU/DMAR/AER marker. The guest rebooted only
+to load the AuxKC; the host was not rebooted. Full immutable evidence is under
+`/home/dima/Projects/aiam/runtime-captures/itlwm-roam-user-cache-quarantine-20260713/`.
+
 ## VERIFIED RESULT — WCL_ARP_MODE false-success quarantine
 
 - status: `VERIFIED`

@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "pseudo_state_and_layout_removed": true,
+    "reference_note": true,
+    "scoped_roam_adapter_backend_absent": true,
+    "setter_quarantines_nonnull": true,
+    "stale_q13_claim_corrected": true
+  },
+  "local": {
+    "full_carrier_layout_proven": false,
+    "matching_roam_adapter_backend_implemented": false,
+    "request_false_success": false,
+    "valid_input_or_error_is_apple_parity": false
+  },
+  "reference": {
+    "adapter_command": "0x10001c916",
+    "adapter_state_bytes": "0x78",
+    "add_channels": "0x10001cc16",
+    "channel_count_offset": "0x78",
+    "channel_entry_stride": "0x0c",
+    "clear_channels": "0x10001cb3a",
+    "core_setter": "0x100141e52",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_virtual_offset": "0x6e0",
+    "infra_wrapper": "0x100018ca0",
+    "override_offset": "0x7a",
+    "request_validator": "0x10001ca9a",
+    "roam_adapter_offset": "0x15c0",
+    "set_override": "0x10001cd78"
+  },
+  "schema": "itlwm-wcl-roam-user-cache-quarantine-v1",
+  "source_base_revision": "a9d72a587c93d7976ddd0ca0d6ca0fd89da6a9cb"
+}

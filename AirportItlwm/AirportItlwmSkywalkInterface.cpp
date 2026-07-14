@@ -929,13 +929,6 @@ struct apple80211_pm_mode
 static_assert(sizeof(apple80211_pm_mode) == 0x8,
               "apple80211_pm_mode must preserve the recovered version+mode layout");
 
-struct apple80211_user_roam_cache
-{
-    uint8_t raw[0x7c];
-} __attribute__((packed));
-static_assert(sizeof(apple80211_user_roam_cache) == 0x7c,
-              "apple80211_user_roam_cache must cover the recovered count/override tail");
-
 struct scanHomeAndAwayTime
 {
     uint32_t milliseconds;
@@ -2430,8 +2423,6 @@ init()
     memset(cachedIPv6Addresses, 0, sizeof(cachedIPv6Addresses));
     memset(cachedIPv6LinkLocalAddress, 0, sizeof(cachedIPv6LinkLocalAddress));
     cachedInfraEnumerated = false;
-    memset(cachedUserRoamCache, 0, sizeof(cachedUserRoamCache));
-    hasCachedUserRoamCache = false;
     cachedWclRoamLocked = false;
     hasCachedWclRoamLock = false;
     cachedPmMode = 0;
@@ -2838,8 +2829,6 @@ init(IOService *provider)
     memset(this->cachedIPv6Addresses, 0, sizeof(this->cachedIPv6Addresses));
     memset(this->cachedIPv6LinkLocalAddress, 0, sizeof(this->cachedIPv6LinkLocalAddress));
     this->cachedInfraEnumerated = false;
-    memset(this->cachedUserRoamCache, 0, sizeof(this->cachedUserRoamCache));
-    this->hasCachedUserRoamCache = false;
     this->cachedWclRoamLocked = false;
     this->hasCachedWclRoamLock = false;
     this->cachedPmMode = 0;
@@ -5836,18 +5825,12 @@ setWCL_ACTION_FRAME(apple80211_wcl_action_frame *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 {
-    // AppleBCMWLANCore::setWCL_ROAM_USER_CACHE delegates into the roam adapter
-    // `cmdROAM_USER_CACHE(...)`. The recovered helper family shows that the
-    // caller-visible payload carries channel entries from offset 0x0 in 0x0c
-    // strides, a channel count at +0x78, and an override byte at +0x7a.
-    // Persist that exact 0x7c blob so later roam-owner lifts retain the same
-    // request state instead of losing it behind an inline success stub.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    memcpy(cachedUserRoamCache, data, sizeof(*data));
-    hasCachedUserRoamCache = true;
-    return kIOReturnSuccess;
+    // Tahoe delegates channel-cache validation, mutation, and override state
+    // to RoamAdapter. Intel has no matching adaptive-roam owner or transport.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
