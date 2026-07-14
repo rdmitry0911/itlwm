@@ -467,8 +467,8 @@ public:
     // [572] — RF coexistence programming now sits in Q11-B2 coexistence owner
     // work after closing the broader Q11-B umbrella queue.
     virtual IOReturn setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override;
-    // [573] — Tahoe validates the public carrier and returns the fixed fail
-    // `0xe00002bc` from the visible path rather than generic unsupported.
+    // [573] — Tahoe feature-gates a `tvpm` owner transaction. This port has no
+    // such owner; rejected carriers must not update getter-visible state.
     virtual IOReturn setTHERMAL_INDEX(apple80211_thermal_index_t *) override;
     // [574] — RF coexistence/radio programming now sits in Q11-B2 after
     // closing the broader Q11-B umbrella queue.
@@ -748,7 +748,6 @@ private:
     uint32_t cachedPowersaveLevel;
     apple80211_channel_data cachedRequestedChannel;
     bool hasCachedRequestedChannel;
-    uint32_t cachedThermalIndex;
     uint32_t cachedPowerBudget;
     uint32_t cachedDynsarHeader0[4];
     uint32_t cachedDynsarHeader1[4];

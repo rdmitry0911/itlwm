@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "getter_is_default_only": true,
+    "historical_claims_corrected": true,
+    "interface_slots_retained": true,
+    "normal_bsd_setter_is_not_exposed": true,
+    "reference_note": true,
+    "scoped_owner_absent": true,
+    "setter_rejects_without_consuming_carrier": true,
+    "synthetic_rejected_state_removed": true
+  },
+  "local": {
+    "getter_is_baseline_only": true,
+    "request_false_state": false,
+    "thermal_owner_backend": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "allocation_failure": "0x0c",
+    "core_getter": "0x100106eda",
+    "core_setter": "0x100120586",
+    "core_vtable_offset": "+0x4f0",
+    "feature_bit": "0x3b",
+    "feature_helper": "0x1000c846e",
+    "firmware_iovar": "tvpm",
+    "firmware_set": "0x10017b6e6",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018760",
+    "payload_bytes": 12,
+    "special_commit_status": "0xe3ff8117",
+    "state_offset": "0x48+0x0",
+    "valid_range": "1..100"
+  },
+  "schema": "itlwm-thermal-index-rejected-state-v1",
+  "source_base_revision": "e47979db54a949d262f4bc82c83a8cbde77c1002"
+}

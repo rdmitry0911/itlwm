@@ -2302,7 +2302,6 @@ init()
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     memset(&cachedRequestedChannel, 0, sizeof(cachedRequestedChannel));
     hasCachedRequestedChannel = false;
-    cachedThermalIndex = 0;
     cachedPowerBudget = 0;
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
     memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
@@ -2683,7 +2682,6 @@ init(IOService *provider)
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     memset(&this->cachedRequestedChannel, 0, sizeof(this->cachedRequestedChannel));
     this->hasCachedRequestedChannel = false;
-    this->cachedThermalIndex = 0;
     this->cachedPowerBudget = 0;
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
     memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
@@ -3715,14 +3713,15 @@ getTHERMAL_INDEX(apple80211_thermal_index_t *data)
 {
     // AppleBCMWLANCore::getTHERMAL_INDEX is a plain core-state carrier getter:
     // it writes a 32-bit scalar at caller offset +4 from core-state base +0x0.
-    // Tahoe should therefore expose a real `version + u32` payload here rather
-    // than leaving slot [500] on kIOReturnUnsupported.
+    // This port has no thermal owner that can accept a setter request, so retain
+    // the established zero-initialized public carrier without retaining a value
+    // from a request that was rejected locally.
     if (data == nullptr)
         return kIOReturnBadArgument;
 
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
-    data->thermal_index = cachedThermalIndex;
+    data->thermal_index = 0;
     return kIOReturnSuccess;
 }
 
@@ -6128,9 +6127,10 @@ setSET_MAC_ADDRESS(apple80211_set_mac_address_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setTHERMAL_INDEX(apple80211_thermal_index_t *data)
 {
-    if (data != nullptr)
-        cachedThermalIndex = *reinterpret_cast<const uint32_t *>(reinterpret_cast<const uint8_t *>(data) + 4);
-
+    // Tahoe feature-gates a `tvpm` firmware transaction before it can update
+    // core state. The Intel port has neither that owner nor its transport, so
+    // reject without consuming the carrier or manufacturing getter state.
+    (void)data;
     return kIOReturnBadArgumentTahoe;
 }
 

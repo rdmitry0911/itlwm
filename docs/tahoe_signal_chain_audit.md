@@ -1461,11 +1461,11 @@ object path.
 Recovered Apple producer contract:
 
 - `AppleBCMWLANCore::getTHERMAL_INDEX(apple80211_thermal_index_t*)`
-  writes a 32-bit scalar at caller offset `+4` from core-state base
-  `*(param_1 + 0x128) + 0x0`
+  writes a 32-bit scalar at caller offset `+4` from core state
+  `(Core + 0x48) + 0x0`
 - `AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)`
-  writes a 32-bit scalar at caller offset `+4` from core-state base
-  `*(param_1 + 0x128) + 0x4`
+  writes a 32-bit scalar at caller offset `+4` from core state
+  `(Core + 0x48) + 0x4`
 - both producers return success directly; there is no hidden helper, WCL
   bulletin, or additional transport layer in between
 
@@ -1477,10 +1477,33 @@ That gives a sufficiently strong ABI recovery for the getter side:
 
 This batch still does **not** justify lifting the setter side:
 
-- `setTHERMAL_INDEX(...)` exists, but the recovered body is validation-heavy
-  and ends on the Apple bad-argument path rather than a simple carrier write
+- `setTHERMAL_INDEX(...)` is not a cache-only carrier: it feature-gates a
+  `tvpm` firmware transaction, validates the requested index, and updates
+  core state only after its transport result permits that commit
 - `getOFFLOAD_TCPKA_ENABLE(...)` remains unresolved because only the setter
   body is currently present in the vendor decompile
+
+### `THERMAL_INDEX` correction: rejected setters must not manufacture getter state
+
+The earlier minimal fixed-fail lift for `setTHERMAL_INDEX` retained a local
+`cachedThermalIndex` write before returning `0xe00002bc`. That made a rejected
+direct vtable request visible through the otherwise direct scalar getter.
+
+The recovered Tahoe 25C56 setter is instead a feature-gated firmware path:
+
+- Infra `0x100018760` dispatches through Core virtual `+0x4f0` to
+  `AppleBCMWLANCore::setTHERMAL_INDEX` at `0x100120586`.
+- When `featureFlagIsBitSet(0x3b)` is false, Core returns `0xe00002bc`.
+  Enabled Core accepts exactly `1..100`, builds a 12-byte `tvpm` payload, and
+  calls `runIOVarSet("tvpm")`.
+- Core writes state `(Core + 0x48) + 0x0` only when the transport result is
+  zero or special status `0xe3ff8117`, then returns that raw transport status.
+
+The Intel port has no `tvpm` owner or matching transport. It now preserves the
+local fixed-fail safety boundary without reading the rejected carrier and
+removes the rejected-request cache. `getTHERMAL_INDEX` continues to provide
+its established zero-initialized ABI carrier, but that zero is only the local
+baseline; it is not a claim of dynamic Tahoe thermal-state parity.
 
 ## Q13 Confirmed Producer Mini-Batch: `getGUARD_INTERVAL`
 

@@ -382,6 +382,15 @@ than accepting the inverted invalid range and caching a false success.
   offsets `+0x0` and `+0x4` inside the core-state block.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
+- `Q13 correction: THERMAL_INDEX rejected-setter state`:
+  `setTHERMAL_INDEX` is a feature-gated `tvpm` transport operation, not a
+  cache-only setter. Tahoe commits its core scalar only after the transport
+  result permits it. The Intel port has no matching owner, so its fixed-fail
+  boundary no longer consumes a rejected carrier or makes it visible through
+  `getTHERMAL_INDEX`; the getter's zero is a local baseline, not a claim of
+  dynamic Tahoe thermal-state parity.
+  See [CR-479-thermal-index-rejected-state-20260714.md](reference/CR-479-thermal-index-rejected-state-20260714.md).
+
 - `Q13 mini-batch: guard-interval producer path`:
   `getGUARD_INTERVAL` no longer belongs in the generic unsupported bucket.
   `AppleBCMWLANCore::getGUARD_INTERVAL(...)` is a real producer: it rejects
