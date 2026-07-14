@@ -44,7 +44,7 @@ SOURCE_TOKENS = {
     "tests": [
         "slow-wifi enabled carrier is core-private +0x7569",
         "QoS/DynSAR owner starts with slow-wifi disabled",
-        "QoS/DynSAR owner reset restores Apple default zero carriers",
+        "QoS/DynSAR owner reset restores retained local zero carriers",
     ],
 }
 FORBIDDEN_LOCAL_TOKENS = [
