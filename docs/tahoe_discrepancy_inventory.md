@@ -1944,18 +1944,25 @@ reference producer.
   - batch 3, internal-only / no-producer-recovered explicit-unsupported
     selectors:
     `[488, 499, 563, 591, 620, 621]`
-  - batch 4, the one remaining non-stub visible contract:
+  - batch 4, the one remaining visible Fast Lane policy selector:
     `[632] setWCL_UPDATE_FAST_LANE`
 - final state:
   - `AirportItlwmSkywalkInterface.hpp` now has
     `inline_unsupported = 0`
   - all former inline bodies are now explicit `.cpp` methods
-  - `[632]` now follows the recovered visible contract
-    `NULL -> 0xe00002bc`, else success
+  - `[632]` now preserves its recovered null gate
+    `NULL -> 0xe00002bc`; its non-null Fast Lane owner path is quarantined
+    because the port has no WME/ACM owner or firmware transport
 - why this is closed:
   the mismatch was no longer "missing producers everywhere"; it was that the
   remaining slot policy still lived in anonymous header stubs. That surface is
   now explicit and reference-classed per slot.
+
+Fast Lane correction: the wrapper's normal return does not make a copied
+carrier a complete implementation. Its non-null path first updates Fast Lane
+capability and, when both observed control bytes are set, invokes the NetAdapter
+WME/ACM override path. The port deliberately reports unsupported for that
+unimplemented non-null work rather than falsely acknowledging it.
 
 ### 27. Bootstrap current-AP seed theory was rejected and removed from the live diff
 

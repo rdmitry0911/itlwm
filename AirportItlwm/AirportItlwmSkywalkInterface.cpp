@@ -5304,12 +5304,11 @@ setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
 {
-    // The recovered Tahoe visible contract is minimal: Apple rejects NULL with
-    // 0xe00002bc and otherwise reports success from the public setter surface
-    // before the deeper traffic-policy owner work.
+    // Tahoe's non-null path drives Fast Lane capability and WME/ACM owner work.
+    // The port has neither owner nor transport, so it must not acknowledge it.
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002bc);
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

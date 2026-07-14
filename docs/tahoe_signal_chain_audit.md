@@ -3138,7 +3138,7 @@ everything":
 3. internal-only / no-producer-recovered selectors that must stay explicit
    unsupported:
    `[488, 499, 563, 591, 620, 621]`
-4. the one remaining non-stub visible contract in that tail:
+4. the one remaining visible Fast Lane policy selector in that tail:
    `[632] setWCL_UPDATE_FAST_LANE`
 
 The important correction is not that all `34` selectors suddenly became public
@@ -3148,13 +3148,19 @@ producers. They did not. The correction is narrower:
   `AirportItlwmSkywalkInterface.hpp`
 - each former inline body now lives in `.cpp` with its reference class made
   explicit
-- `[632] setWCL_UPDATE_FAST_LANE(...)` no longer hides behind generic
-  unsupported; it now follows the recovered public Apple contract
-  `NULL -> 0xe00002bc`, else success
+- `[632] setWCL_UPDATE_FAST_LANE(...)` no longer hides behind a generic
+  inline stub; it preserves the recovered null gate `NULL -> 0xe00002bc` and
+  quarantines its missing non-null WME/ACM owner work
 
 That leaves the Tahoe slot surface easier to audit: direct Apple stubs,
 internal-only selectors, and real public producers are no longer conflated in
 anonymous header placeholders.
+
+Fast Lane correction: the normal wrapper return is reached only after Fast Lane
+capability dispatch and, for the observed enabled pair, the NetAdapter WME/ACM
+override submission. Since the port has no corresponding owner or firmware
+transport, the explicit local body returns unsupported for non-null carriers
+instead of reporting a false successful policy application.
 
 After rebooting into `CR-044`, the next active blocker is no longer scan
 visibility or slot `[509]`. The runtime now shows:

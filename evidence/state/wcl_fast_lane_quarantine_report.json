@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "historical_contract_corrected": true,
+    "interface_slot_retained": true,
+    "reference_note": true,
+    "scoped_missing_owner_absent": true,
+    "setter_quarantines_nonnull": true
+  },
+  "local": {
+    "backend_fast_lane_owner": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "acm_override": "0x10019e2c6",
+    "capability_bind": "0x1003964b0",
+    "capability_vtable_offset": "0x1a8",
+    "fast_lane_callback": "0x1000168c4",
+    "firmware_iovar": "wme_ac_sta",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_slot": 632,
+    "infra_wrapper": "0x100019916",
+    "net_adapter_getter": "0x1000c7dd6",
+    "net_adapter_state_offset": "0x15e0",
+    "null_status": "0xe00002bc",
+    "wme_async": "0x100013664"
+  },
+  "schema": "itlwm-wcl-fast-lane-quarantine-v1",
+  "source_base_revision": "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1"
+}
