@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "getter_is_zero_baseline_only": true,
+    "historical_claims_corrected": true,
+    "interface_slots_and_dispatch_retained": true,
+    "reference_note": true,
+    "scoped_owner_backend_absent": true,
+    "setter_preserves_null_and_quarantines_without_consuming": true,
+    "synthetic_private_mac_state_removed": true
+  },
+  "local": {
+    "getter_is_baseline_only": true,
+    "private_mac_owner_backend": false,
+    "rejected_request_false_state": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_get_vtable_offset": "+0x6e8",
+    "core_getter": "0x100119538",
+    "core_set_vtable_offset": "+0x6f0",
+    "core_setter": "0x10011ee12",
+    "enabled_offset": "+0x4",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_get_wrapper": "0x1000172f4",
+    "infra_set_wrapper": "0x100018528",
+    "mac_offset": "+0x10",
+    "null_return": "0x16",
+    "scanmac_iovar": "scanmac",
+    "timeout_offset": "+0xc"
+  },
+  "schema": "itlwm-private-mac-rejected-state-v1",
+  "source_base_revision": "483ca3d30b448d608c477d99d1fa7252e0c66a84"
+}

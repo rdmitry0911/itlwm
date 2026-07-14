@@ -441,8 +441,8 @@ public:
     // [563] — Broadcom-private leaky-AP diagnostics setter. Reclassified to
     // internal diagnostics coverage rather than Q13.
     virtual IOReturn setLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override;
-    // [564] — AppleBCMWLANCore preserves timeout/MAC state and returns the
-    // raw Tahoe code `0x16`, not generic unsupported.
+    // [564] — Tahoe configures a BGScanAdapter-backed private-MAC owner;
+    // local ownerless carriers are quarantined after the raw NULL gate.
     virtual IOReturn setPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [565] — Apple routes this selector into a trap/debug path and the only
     // caller-visible non-trap contract is the raw Tahoe fail 0x16.
@@ -755,10 +755,6 @@ private:
     uint32_t cachedDynsarHeader0[4];
     uint32_t cachedDynsarHeader1[4];
     uint8_t cachedDynsarPayload[4][0x2d00];
-    uint32_t cachedPrivateMacState;
-    uint32_t cachedPrivateMacTimeoutSeconds;
-    uint8_t cachedPrivateMacPrimary[6];
-    uint8_t cachedPrivateMacSecondary[6];
     bool cachedTcpkaOffloadSupported;
     bool cachedTcpkaOffloadEnabled;
     uint64_t cachedOSFeatureFlags;

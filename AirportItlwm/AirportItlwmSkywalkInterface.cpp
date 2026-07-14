@@ -2294,10 +2294,6 @@ init()
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
     memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
     memset(cachedDynsarPayload, 0, sizeof(cachedDynsarPayload));
-    cachedPrivateMacState = 0;
-    cachedPrivateMacTimeoutSeconds = 0;
-    memset(cachedPrivateMacPrimary, 0, sizeof(cachedPrivateMacPrimary));
-    memset(cachedPrivateMacSecondary, 0, sizeof(cachedPrivateMacSecondary));
     cachedTcpkaOffloadSupported = false;
     cachedTcpkaOffloadEnabled = false;
     cachedOSFeatureFlags = 0;
@@ -2672,10 +2668,6 @@ init(IOService *provider)
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
     memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
     memset(this->cachedDynsarPayload, 0, sizeof(this->cachedDynsarPayload));
-    this->cachedPrivateMacState = 0;
-    this->cachedPrivateMacTimeoutSeconds = 0;
-    memset(this->cachedPrivateMacPrimary, 0, sizeof(this->cachedPrivateMacPrimary));
-    memset(this->cachedPrivateMacSecondary, 0, sizeof(this->cachedPrivateMacSecondary));
     this->cachedTcpkaOffloadSupported = false;
     this->cachedTcpkaOffloadEnabled = false;
     this->cachedOSFeatureFlags = 0;
@@ -3673,22 +3665,16 @@ getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getPRIVATE_MAC(apple80211_private_mac_data *data)
 {
-    // AppleBCMWLANCore::getPRIVATE_MAC does not use kIOReturnUnsupported. It
-    // rejects NULL with raw 0x16 and otherwise writes a packed 0x1c carrier
-    // covering offsets +0x4..+0x1b. The exact semantic names of the trailing
-    // "scanmac" fields are still only partially recovered, so keep the ABI
-    // offset-accurate and state-backed instead of inventing names or collapsing
-    // the slot into a generic unsupported path.
+    // Tahoe queries BGScanAdapter and the private "scanmac" IOVAR here. This
+    // port has neither owner nor backend, so retain the packed carrier ABI
+    // with its zero no-owner baseline rather than exposing state from a
+    // rejected direct setter request.
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->enabled = 0;
-    data->scanmac_state = cachedPrivateMacState;
-    data->timeout_seconds = cachedPrivateMacTimeoutSeconds;
-    memcpy(data->primary_mac, cachedPrivateMacPrimary, sizeof(data->primary_mac));
-    memcpy(data->secondary_mac, cachedPrivateMacSecondary, sizeof(data->secondary_mac));
     return kIOReturnSuccess;
 }
 
@@ -6045,16 +6031,15 @@ setDBG_GUARD_TIME_PARAMS(apple80211_dbg_guard_time_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setPRIVATE_MAC(apple80211_private_mac_data *data)
 {
-    if (data != nullptr) {
-        const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-        cachedPrivateMacTimeoutSeconds = *reinterpret_cast<const uint32_t *>(raw + 0x0c);
-        memcpy(cachedPrivateMacPrimary, raw + 0x10, sizeof(cachedPrivateMacPrimary));
-    }
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
 
-    // AppleBCMWLANCore::setPRIVATE_MAC returns the raw Tahoe code 0x16 even on
-    // the visible success-looking path, so match that public contract instead
-    // of generic unsupported.
-    return static_cast<IOReturn>(0x16);
+    // Tahoe applies this carrier through BGScanAdapter and returns success only
+    // after configuring private scan MAC state. There is no matching Intel
+    // owner or "scanmac" backend, so reject valid local carriers before
+    // reading them instead of manufacturing state visible through the getter.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

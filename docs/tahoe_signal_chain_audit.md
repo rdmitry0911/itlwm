@@ -1102,7 +1102,6 @@ but the hidden owner choreography is either feature-gated or still private.
 Closed in this zone:
 
 - `setAP_MODE(...)`
-- `setPRIVATE_MAC(...)`
 - `setTHERMAL_INDEX(...)`
 - `setBSS_BLACKLIST(...)`
 - `setREALTIME_QOS_MSCS(...)`
@@ -1118,10 +1117,14 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   field split:
   `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setRSN_XE`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
-  `setAP_MODE -> 0xe00002c7`, `setPRIVATE_MAC -> 0x16`,
-  `setTHERMAL_INDEX -> 0xe00002bc`
+  `setAP_MODE -> 0xe00002c7`, `setTHERMAL_INDEX -> 0xe00002bc`
 - `setOFFLOAD_TCPKA_ENABLE(...)` remains feature-gated and uses the same
   visible fail/success split as the getter-side path
+
+`setPRIVATE_MAC(...)` was initially grouped here as a raw-`0x16` fixed-fail
+shape. That classification was corrected on 2026-07-14 after the canonical
+25C56 DEXT recovery showed a BGScanAdapter-backed valid-input path; it is now
+handled by the separate owner/state quarantine below.
 
 That closes the zone at the public Apple80211 surface:
 
@@ -1130,6 +1133,27 @@ That closes the zone at the public Apple80211 surface:
 - caller-visible carriers are preserved locally only where the remaining
   contract is genuinely cache-only
 - fixed Tahoe fail codes remain explicit where Apple exposes them
+
+## 2026-07-14 correction: `PRIVATE_MAC` is BGScanAdapter-backed
+
+The canonical 25C56 DEXT shows `AppleBCMWLANInfraProtocol::setPRIVATE_MAC`
+at `0x100018528` dispatching through Core virtual `+0x6f0` to
+`AppleBCMWLANCore::setPRIVATE_MAC` at `0x10011ee12`. `NULL` returns raw
+`0x16`, but a valid carrier configures BGScan private-MAC timeout/MAC state,
+enables or disables private scan MAC according to carrier `+0x4`, and returns
+success. This is not a fixed-fail selector.
+
+`getPRIVATE_MAC` likewise reads BGScan adapter state and the private
+`"scanmac"` IOVAR. AirportItlwm has no corresponding BGScan owner or backend.
+Its prior local setter nevertheless copied timeout/MAC bytes before returning
+raw `0x16`, which made a failed direct request observably alter the getter.
+The local boundary now keeps raw `0x16` for `NULL`, rejects valid ownerless
+carriers with `kIOReturnUnsupported` before reading them, removes the synthetic
+cache, and returns only the existing zero packed-carrier baseline from the
+getter. This does not claim Tahoe dynamic getter state or valid-input
+return-code parity.
+
+See [CR-479-private-mac-rejected-state-20260714.md](reference/CR-479-private-mac-rejected-state-20260714.md).
 
 ## Q13 correction: `setGAS_ABORT` is GASAdapter-backed
 

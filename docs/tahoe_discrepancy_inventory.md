@@ -315,11 +315,13 @@ than accepting the inverted invalid range and caching a false success.
 
 - `Q13 mini-batch: minimal setter-contract zone`:
   fourteen remaining setters were narrowed to the public contract they actually
-  expose on Tahoe. Some are fixed-fail selectors (`AP_MODE`, `PRIVATE_MAC`,
+  expose on Tahoe. Some are fixed-fail selectors (`AP_MODE`,
   `THERMAL_INDEX`), some are feature-gated (`OFFLOAD_TCPKA_ENABLE`), and the
   rest are opaque or narrow carriers whose caller-visible state Apple stores
-  before delegating to private owners. The port now mirrors that public layer
-  instead of leaving the zone on generic unsupported.
+  before delegating to private owners. `PRIVATE_MAC` was later removed from
+  this fixed-fail classification after canonical recovery found its BGScan
+  owner path. The port now mirrors the recovered public boundary instead of
+  leaving the zone on generic unsupported.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 correction: GAS abort is not a successful no-op`:
@@ -390,6 +392,16 @@ than accepting the inverted invalid range and caching a false success.
   `getTHERMAL_INDEX`; the getter's zero is a local baseline, not a claim of
   dynamic Tahoe thermal-state parity.
   See [CR-479-thermal-index-rejected-state-20260714.md](reference/CR-479-thermal-index-rejected-state-20260714.md).
+
+- `Q13 correction: PRIVATE_MAC ownerless rejected state`:
+  `setPRIVATE_MAC` is a BGScanAdapter-backed control surface, not the old
+  raw-`0x16` fixed-fail classification. Tahoe returns raw `0x16` only for
+  `NULL`; a valid carrier configures private scan-MAC state and succeeds. The
+  Intel port has no matching owner, so valid local requests are now rejected
+  before carrier access and cannot leak timeout/MAC bytes into a later
+  `getPRIVATE_MAC` baseline. The getter retains its packed zero ABI carrier;
+  it does not claim dynamic Tahoe state or valid-input return-code parity.
+  See [CR-479-private-mac-rejected-state-20260714.md](reference/CR-479-private-mac-rejected-state-20260714.md).
 
 - `Q13 mini-batch: guard-interval producer path`:
   `getGUARD_INTERVAL` no longer belongs in the generic unsupported bucket.
