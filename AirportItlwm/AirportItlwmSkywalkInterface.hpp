@@ -641,7 +641,8 @@ public:
     // [633] — AppleBCMWLANCore consumes a larger opaque sleep-management blob
     // and feeds it into the power-state adapter.
     virtual IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config *) override;
-    // [634]
+    // [634] — Tahoe feeds traffic-monitor state; ownerless non-null carriers
+    // are quarantined after the local NULL safety gate.
     virtual IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *) override;
     // [635]
     // [635] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`

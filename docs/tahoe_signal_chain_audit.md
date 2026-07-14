@@ -2042,7 +2042,8 @@ Recovered Apple producer contracts:
   rejects `NULL`, persists two signed dwords at core `+0x4d3c/+0x4d40`, and
   then re-enters tx-power-cap state handling
 - `AppleBCMWLANCore::setCONGESTION_CTRL_IND(...)`
-  is a pure bool carrier into core `+0x79d2`
+  has no NULL return contract, reads effective byte `+0`, and writes it into
+  traffic-monitor state `(Core + 0x48) + 0x89d2`
 - `AppleBCMWLANCore::setLMTPC_CONFIG(...)`
   rejects `NULL`, stores a single byte at core `+0x4594`, and then re-enters
   the LMTPC owner
@@ -2061,7 +2062,6 @@ That is strong enough to move these slots out of the generic
 - `setWCL_ULOFDMA_STATE`
 - `setMIMO_CONFIG`
 - `setDUAL_POWER_MODE`
-- `setCONGESTION_CTRL_IND`
 - `setLMTPC_CONFIG`
 - `setLE_SCAN_PARAM`
 
@@ -2074,6 +2074,22 @@ changes here is the architectural surface:
   body proves it, including LE_SCAN_PARAM's narrow cumulative statistics
 - the remaining hidden-owner exactness stays open under the residual `Q13`
   hidden-helper zone instead of being conflated with missing selector bodies
+
+## 2026-07-14 correction: `CONGESTION_CTRL_IND` is traffic-monitor state
+
+The initial direct-carrier classification did not recover the consumer of
+`setCONGESTION_CTRL_IND`. In the 25C56 DEXT, Infra wrapper `0x1000192fc`
+reaches Core `0x1001429f4`, which reads only carrier byte `+0` and writes it
+to `(Core + 0x48) + 0x89d2`. `collectRealTimeAppCongestionState()` at
+`0x10013d482` returns that state at `0x10013d5a9`, and
+`trafficMonitorCallback()` consumes the collector. This is not a standalone
+QoS/DynSAR cache surface.
+
+The local carrier, registry field, and sync helper had no local consumer or
+traffic-monitor/WMM backend. The slot now retains its local NULL safety guard
+and rejects every non-null carrier before reading it. This no-owner quarantine
+does not claim Apple NULL or valid-input status parity; it removes only the
+previous false local success/state assertion.
 
 FACETIME_WIFICALLING_PARAMS correction: the former local status cache did not
 perform Apple's WiFi-call policy/PowerManager action. Tahoe 25C56 Infra wrapper
@@ -4847,7 +4863,7 @@ Recovered contracts:
 - TX address resolution counters live at `+0x2aa4` and `+0x2aa8`.
 - The neighboring public status carriers use the same core/private owner
   family: slow-wifi enabled at `+0x7569`, low-latency owner state at `+0x2c28`,
-  tx-blanking bit at `+0x4ce8`, and congestion indication bool at `+0x79d2`.
+  and tx-blanking bit at `+0x4ce8`.
 
 Local corrections in this batch:
 
@@ -4856,8 +4872,8 @@ Local corrections in this batch:
 - Added pure helper semantics for DynSAR fail-safe window and congestion
   feature gate.
 - Routed `getSLOW_WIFI_FEATURE_ENABLED`, `getWCL_LOW_LATENCY_INFO`,
-  `getWCL_GET_TX_BLANKING_STATUS`, and `setCONGESTION_CTRL_IND` through the
-  QosDynsar owner state instead of separate interface-local caches.
+  and `getWCL_GET_TX_BLANKING_STATUS` through the QosDynsar owner state instead
+  of separate interface-local caches.
 
 This batch does not execute QoS IOVARs, does not enable DynSAR policy, and does
 not force congestion/AMPDU/split-TX/address-resolution state.

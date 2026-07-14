@@ -110,7 +110,6 @@ struct TahoeOwnerRegistry {
     struct QosDynsarOwner {
         uint64_t dynSarFailSafeStartTicks = 0;
         uint8_t congestionControlFeature = 0;
-        uint8_t congestionControlIndication = 0;
         uint32_t forceAwdlAmpdu = 0;
         uint32_t forceDisableAwdlAmpdu = 0;
         uint32_t hwFeatureFlags = 0;
@@ -166,12 +165,6 @@ struct TahoeOwnerRegistry {
     {
         return TahoeQosDynsarContracts::txBlankingStatusEnabled(
             qosDynsar.txBlankingStatus);
-    }
-
-    void syncCongestionControlIndication(bool enabled)
-    {
-        qosDynsar.congestionControlIndication =
-            TahoeQosDynsarContracts::boolCarrier(enabled);
     }
 
     void reset()

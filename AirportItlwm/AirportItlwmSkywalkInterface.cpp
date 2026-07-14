@@ -764,13 +764,6 @@ struct tahoeDualPowerModeParams
 static_assert(sizeof(tahoeDualPowerModeParams) == 0x8,
               "tahoeDualPowerModeParams must match two Apple mode dwords");
 
-struct tahoeCongestionControlIndication
-{
-    uint8_t enabled;
-} __attribute__((packed));
-static_assert(sizeof(tahoeCongestionControlIndication) == 0x1,
-              "tahoeCongestionControlIndication must match Apple bool carrier");
-
 struct tahoeDynsarDetailRequest
 {
     uint32_t version;
@@ -5944,18 +5937,13 @@ setDUAL_POWER_MODE(apple80211_dual_power_mode_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setCONGESTION_CTRL_IND(apple80211_congestion_control_indication *data)
 {
-    const auto *ind = reinterpret_cast<const tahoeCongestionControlIndication *>(data);
-
-    // AppleBCMWLANCore::setCONGESTION_CTRL_IND is a tiny core-state write:
-    // log gate, then a bool at core +0x79d2. There is no extra hidden helper
-    // to wait for, so slot [634] should behave as a real bool carrier here.
-    if (ind == nullptr)
+    // Tahoe feeds a traffic-monitor state path. The Intel port has no matching
+    // monitor or WMM owner, so it must not acknowledge an unread carrier.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    if (instance != nullptr)
-        instance->getTahoeOwnerRegistry().syncCongestionControlIndication(
-            ind->enabled != 0);
-    return kIOReturnSuccess;
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

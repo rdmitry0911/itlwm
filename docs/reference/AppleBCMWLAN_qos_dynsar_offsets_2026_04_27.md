@@ -35,8 +35,16 @@ Observed behavior:
 - Both functions test core-private byte `+0x7584` bit `0`.
 - If the bit is set, return `0`.
 - If the bit is clear, return `0xe00002c7`.
-- `AppleBCMWLANCore::setCONGESTION_CTRL_IND(...)` stores the caller bool at
-  core-private `+0x79d2`.
+
+## 2026-07-14 Tahoe 25C56 correction: congestion indication
+
+The current DEXT recovery supersedes the original snapshot's setter mapping.
+`AppleBCMWLANCore::setCONGESTION_CTRL_IND(...)` at `0x1001429f4`, reached from
+Infra wrapper `0x1000192fc`, reads effective carrier byte `+0` and writes it
+to traffic-monitor state `(Core + 0x48) + 0x89d2`. The state is consumed by
+`collectRealTimeAppCongestionState()` at `0x10013d482` and
+`trafficMonitorCallback()`, so it must not be represented as an ownerless
+local QoS cache.
 
 ## AWDL AMPDU and feature flag accessors
 

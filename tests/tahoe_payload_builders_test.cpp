@@ -726,8 +726,6 @@ void testTahoeQosDynsarContracts()
             "QoS/DynSAR congestion feature uses bit 0");
     require(kUnsupportedStatus == 0xe00002c7,
             "QoS/DynSAR unsupported gate returns Apple status 0xe00002c7");
-    require(kCongestionControlIndicationOffset == 0x79d2,
-            "QoS/DynSAR congestion indication bool is core-private +0x79d2");
     require(!congestionControlSupported(0),
             "QoS/DynSAR congestion gate rejects a clear feature byte");
     require(congestionControlSupported(kCongestionControlFeatureBit),
@@ -757,18 +755,14 @@ void testTahoeQosDynsarContracts()
     registry.qosDynsar.lowLatencyPowerSave = 2;
     registry.qosDynsar.lowLatencyWindow = 0x1234;
     registry.qosDynsar.txBlankingStatus = kTxBlankingStatusBit;
-    registry.syncCongestionControlIndication(true);
     require(registry.isSlowWifiFeatureEnabled(),
             "QoS/DynSAR owner exposes slow-wifi enabled state");
     require(registry.isTxBlankingStatusEnabled(),
             "QoS/DynSAR owner exposes tx-blanking bit 0");
-    require(registry.qosDynsar.congestionControlIndication == 1,
-            "QoS/DynSAR owner stores congestion indication as a bool carrier");
     registry.reset();
     require(!registry.isSlowWifiFeatureEnabled() &&
-                !registry.isTxBlankingStatusEnabled() &&
-                registry.qosDynsar.congestionControlIndication == 0,
-            "QoS/DynSAR owner reset restores Apple default zero carriers");
+                !registry.isTxBlankingStatusEnabled(),
+            "QoS/DynSAR owner reset restores retained local zero carriers");
 }
 
 void testTahoeOpModeContracts()

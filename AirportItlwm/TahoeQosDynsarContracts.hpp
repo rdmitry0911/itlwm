@@ -18,7 +18,6 @@ static constexpr uint32_t kDynSarFailSafeLogLine = 0xdea9;
 static constexpr uint32_t kCongestionControlFeatureOffset = 0x7584;
 static constexpr uint8_t kCongestionControlFeatureBit = 0x01;
 static constexpr uint32_t kUnsupportedStatus = 0xe00002c7;
-static constexpr uint32_t kCongestionControlIndicationOffset = 0x79d2;
 
 static constexpr uint32_t kForceDisableAwdlAmpduOffset = 0x3764;
 static constexpr uint32_t kForceAwdlAmpduOffset = 0x3768;
@@ -46,11 +45,6 @@ inline bool congestionControlSupported(uint8_t featureByte)
 inline bool txBlankingStatusEnabled(uint8_t statusByte)
 {
     return (statusByte & kTxBlankingStatusBit) != 0;
-}
-
-inline uint8_t boolCarrier(bool enabled)
-{
-    return enabled ? 1U : 0U;
 }
 
 } // namespace TahoeQosDynsarContracts

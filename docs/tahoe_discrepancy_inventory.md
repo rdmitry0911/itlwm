@@ -429,8 +429,8 @@ than accepting the inverted invalid range and caching a false success.
 - `Q13 mini-batch: simple core-owned setter carriers`:
   the next setter zone proved to be concrete Apple producer surface, not
   generic unsupported tail. `setWCL_ULOFDMA_STATE`, `setMIMO_CONFIG`,
-  `setFACETIME_WIFICALLING_PARAMS`, `setDUAL_POWER_MODE`,
-  `setCONGESTION_CTRL_IND`, `setLMTPC_CONFIG`, and `setLE_SCAN_PARAM` now
+  `setFACETIME_WIFICALLING_PARAMS`, `setDUAL_POWER_MODE`, `setLMTPC_CONFIG`,
+  and `setLE_SCAN_PARAM` now
   follow their recovered caller-visible boundaries instead of returning
   `kIOReturnUnsupported`. LE_SCAN_PARAM is a direct BTLE statistics update,
   not the previously modeled hidden-owner cache; its retained local NULL
@@ -439,6 +439,15 @@ than accepting the inverted invalid range and caching a false success.
   Apple invokes a WiFi-call policy/PowerManager operation which the port does
   not own, so the prior status-cache success was removed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 correction: CONGESTION_CTRL_IND traffic-monitor quarantine`:
+  `setCONGESTION_CTRL_IND` is no longer classified as a local direct-state
+  carrier. The 25C56 Core byte feeds a traffic-monitor/WMM consumer that the
+  port does not own; its former local registry write had no reader. The slot
+  retains its local NULL safety guard and rejects non-null carriers before
+  reading them, removing false success and synthetic state without claiming
+  Apple NULL or valid-input status parity. See
+  [CR-479-congestion-ctrl-ind-traffic-monitor-quarantine-20260714.md](reference/CR-479-congestion-ctrl-ind-traffic-monitor-quarantine-20260714.md).
 
 - `Q13 mini-batch: HE capability / P2P device capability getter lift`:
   `getHE_CAPABILITY` and `getP2P_DEVICE_CAPABILITY` no longer belong in the
@@ -3549,7 +3558,7 @@ unimplemented non-null work rather than falsely acknowledging it.
   - TX address resolution counters live at `+0x2aa4/+0x2aa8`
   - adjacent public carriers read slow-wifi enabled at `+0x7569`,
     low-latency owner state at `+0x2c28`, tx-blanking bit at `+0x4ce8`,
-    and congestion indication bool at `+0x79d2`
+    while `setCONGESTION_CTRL_IND` is a separate traffic-monitor setter
 - local mismatch before CR-159:
   - these helper offsets and return/status contracts were not compiled local
     witnesses
@@ -3559,9 +3568,8 @@ unimplemented non-null work rather than falsely acknowledging it.
   - add `TahoeOwnerRegistry::QosDynsarOwner`
   - add pure helper semantics for DynSAR fail-safe window and congestion
     feature gate
-  - route slow-wifi, low-latency, tx-blanking, and congestion-indication
-    public carriers through the QosDynsar owner instead of interface-local
-    cache fields
+  - route slow-wifi, low-latency, and tx-blanking public carriers through the
+    QosDynsar owner instead of interface-local cache fields
 - non-claims:
   - this does not call QoS IOVARs
   - this does not enable DynSAR policy

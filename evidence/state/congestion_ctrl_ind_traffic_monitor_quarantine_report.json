@@ -1,0 +1,37 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "no_bsd_ioc_or_scoped_traffic_backend": true,
+    "reference_note": true,
+    "setter_retains_local_null_safety_and_quarantines_without_reading": true,
+    "synthetic_state_removed": true,
+    "virtual_slot_and_forward_only_abi_retained": true
+  },
+  "local": {
+    "bsd_ioc_route": false,
+    "null_return_is_apple_parity": false,
+    "opaque_carrier_abi_defined": false,
+    "request_false_success": false,
+    "synthetic_registry_state": false,
+    "traffic_monitor_backend": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "collector": "0x10013d482",
+    "collector_return": "0x10013d5a9",
+    "core_log_vtable_offset": "+0x7a0",
+    "core_setter": "0x1001429f4",
+    "core_state_root_offset": "+0x48",
+    "effective_carrier_byte_offset": "+0x0",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x1000192fc",
+    "traffic_monitor_callback": "0x10013d5d6",
+    "traffic_monitor_collect_calls": [
+      "0x10013d747",
+      "0x10013d85b"
+    ],
+    "traffic_monitor_state_offset": "+0x89d2"
+  },
+  "schema": "itlwm-congestion-ctrl-ind-traffic-monitor-quarantine-v1",
+  "source_base_revision": "89e3eed712add8cee44f825811751149caff5e92"
+}
