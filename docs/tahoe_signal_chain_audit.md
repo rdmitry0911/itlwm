@@ -1940,8 +1940,11 @@ Recovered Apple producer contracts:
   public `getMIMO_STATUS` carrier; the neighboring core `+0x29f0` field belongs
   to `setPOWER_PROFILE`, not MIMO config
 - `AppleBCMWLANCore::setFACETIME_WIFICALLING_PARAMS(...)`
-  rejects `NULL`, reads a single status dword, and forwards it into the
-  WiFi-call policy owner
+  rejects `NULL`, reads a single status dword, invokes
+  `setWiFiCallPolicies(...)`, and then returns success. The helper only enters
+  `AppleBCMWLANPowerManager::setWiFiCallPowerPolicy(...)` when feature flag
+  `0x2c` is enabled, using the PowerManager in Core's `+0x48` state block at
+  `+0x1590`; its side effects are the operation rather than a Core cache write
 - `AppleBCMWLANCore::setDUAL_POWER_MODE(...)`
   rejects `NULL`, persists two signed dwords at core `+0x4d3c/+0x4d40`, and
   then re-enters tx-power-cap state handling
@@ -1964,7 +1967,6 @@ That is strong enough to move these slots out of the generic
 
 - `setWCL_ULOFDMA_STATE`
 - `setMIMO_CONFIG`
-- `setFACETIME_WIFICALLING_PARAMS`
 - `setDUAL_POWER_MODE`
 - `setCONGESTION_CTRL_IND`
 - `setLMTPC_CONFIG`
@@ -1979,6 +1981,15 @@ changes here is the architectural surface:
   body proves it, including LE_SCAN_PARAM's narrow cumulative statistics
 - the remaining hidden-owner exactness stays open under the residual `Q13`
   hidden-helper zone instead of being conflated with missing selector bodies
+
+FACETIME_WIFICALLING_PARAMS correction: the former local status cache did not
+perform Apple's WiFi-call policy/PowerManager action. Tahoe 25C56 Infra wrapper
+`0x100019094` jumps directly to Core `0x100142714`, which calls
+`setWiFiCallPolicies(...)` at `0x100139fbc` after the `NULL -> 0xe00002bc`
+gate. The local port has no policy or PowerManager owner, so it preserves the
+matching null rejection and returns unsupported for non-null input before any
+synthetic cache mutation. This makes no Apple valid-input return-code or
+feature-state parity claim.
 
 LE_SCAN_PARAM correction: the former six-dword hidden-owner cache was not an
 Apple behavior. Tahoe 25C56 Infra wrapper `0x100019414` jumps directly to

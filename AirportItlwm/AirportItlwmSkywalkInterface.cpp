@@ -786,13 +786,6 @@ struct tahoeWclQosParams
 static_assert(sizeof(tahoeWclQosParams) == 0x18,
               "tahoeWclQosParams must match Apple dword fields + tail bytes");
 
-struct tahoeFaceTimeWiFiCallingParams
-{
-    uint32_t status;
-} __attribute__((packed));
-static_assert(sizeof(tahoeFaceTimeWiFiCallingParams) == 0x4,
-              "tahoeFaceTimeWiFiCallingParams must match Apple status dword");
-
 struct tahoeDualPowerModeParams
 {
     int32_t primary;
@@ -2342,7 +2335,6 @@ init()
     cachedDhcpRenewalData = false;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
     hasCachedHtCapability = false;
-    cachedFaceTimeWiFiCallingStatus = 0;
     leScanEnabledCount = 0;
     leScanDisabledCount = 0;
     leScanPeakSum = 0;
@@ -2732,7 +2724,6 @@ init(IOService *provider)
     this->cachedDhcpRenewalData = false;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
     this->hasCachedHtCapability = false;
-    this->cachedFaceTimeWiFiCallingStatus = 0;
     this->leScanEnabledCount = 0;
     this->leScanDisabledCount = 0;
     this->leScanPeakSum = 0;
@@ -6036,16 +6027,14 @@ setMIMO_CONFIG(apple80211_mimo_config *data)
 IOReturn AirportItlwmSkywalkInterface::
 setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *data)
 {
-    const auto *params = reinterpret_cast<const tahoeFaceTimeWiFiCallingParams *>(data);
-
-    // Apple stores a single FaceTime/WiFi-calling status dword and hands it to
-    // setWiFiCallPolicies(...). Preserve that status verbatim so slot [623] no
-    // longer drops an Apple-owned carrier behind kIOReturnUnsupported.
-    if (params == nullptr)
+    // Apple reads the status dword and invokes its WiFi-call policy helper;
+    // feature-gated PowerManager work is the actual operation. AirportItlwm
+    // has no matching policy owner, so a cache-only status write must not
+    // acknowledge that request.
+    if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedFaceTimeWiFiCallingStatus = params->status;
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

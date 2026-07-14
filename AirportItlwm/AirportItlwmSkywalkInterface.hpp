@@ -605,7 +605,9 @@ public:
     // [622] — tx-power-cap bypass now sits in Q11-B3 tx-power policy
     // ownership after closing the broader Q11-B umbrella queue.
     virtual IOReturn setBYPASS_TX_POWER_CAP(apple80211_bypass_tx_power_cap *) override;
-    // [623]
+    // [623] — Apple routes the status carrier into WiFi-call policy and a
+    // feature-gated PowerManager path; non-null requests stay quarantined
+    // until the port has that owner.
     virtual IOReturn setFACETIME_WIFICALLING_PARAMS(apple80211_facetime_wificalling_params *) override;
     // [624] — AppleBCMWLAN: stores IPv4 addr/mask/gw, notifies InfraInterface
     virtual IOReturn setIPV4_PARAMS(apple80211_ipv4_params *data) override;
@@ -759,7 +761,6 @@ private:
     bool cachedDhcpRenewalData;
     apple80211_ht_capability cachedHtCapability;
     bool hasCachedHtCapability;
-    uint32_t cachedFaceTimeWiFiCallingStatus;
     uint32_t leScanEnabledCount;
     uint32_t leScanDisabledCount;
     uint32_t leScanPeakSum;

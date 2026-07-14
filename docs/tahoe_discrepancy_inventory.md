@@ -399,6 +399,9 @@ than accepting the inverted invalid range and caching a false success.
   `kIOReturnUnsupported`. LE_SCAN_PARAM is a direct BTLE statistics update,
   not the previously modeled hidden-owner cache; its retained local NULL
   rejection is an explicit safety divergence rather than Apple NULL parity.
+  FACETIME_WIFICALLING_PARAMS instead remains fail-closed for non-null input:
+  Apple invokes a WiFi-call policy/PowerManager operation which the port does
+  not own, so the prior status-cache success was removed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: HE capability / P2P device capability getter lift`:

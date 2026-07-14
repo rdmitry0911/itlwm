@@ -1,0 +1,29 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "interface_slot_retained": true,
+    "reference_note": true,
+    "scoped_policy_backend_absent": true,
+    "setter_preserves_null_and_quarantines_nonnull": true,
+    "synthetic_status_state_removed": true
+  },
+  "local": {
+    "null_return_is_apple_parity": true,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false,
+    "wifi_call_policy_backend": false
+  },
+  "reference": {
+    "core_setter": "0x100142714",
+    "feature_flag": "0x2c",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100019094",
+    "null_return": "0xe00002bc",
+    "policy_helper": "0x100139fbc",
+    "power_manager_offset": "+0x1590",
+    "power_policy": "0x100174780",
+    "status_offset": "+0x0"
+  },
+  "schema": "itlwm-facetime-wificalling-quarantine-v1",
+  "source_base_revision": "cc8e28f5a2c463a000d4175bdd866fc47cebdf37"
+}
