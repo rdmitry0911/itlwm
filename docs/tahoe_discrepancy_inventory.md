@@ -65,8 +65,10 @@ This inventory is intentionally split into:
   remaining reassoc/roam-driven hidden-owner exactness lives under `Q13`
 
 - `Q10 Net-Link / IP Plane`:
-  closed
-  net-link adjunct producers now follow recovered owner-backed carrier paths;
+  closed as a selector queue
+  QoS is explicitly selective: retry/lifetime, real-time-policy, and MLO bits
+  without a local owner return `kIOReturnUnsupported`, while local RTS and
+  powersave bits remain active and unknown bit `0x80` remains a no-op;
   remaining adapter-owner exactness is tracked under `Q13`
 
 - `Q11 Skywalk Datapath / Queue Surface`:

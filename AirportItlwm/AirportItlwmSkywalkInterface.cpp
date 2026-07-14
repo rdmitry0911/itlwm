@@ -2387,11 +2387,6 @@ init()
     cachedFaceTimeWiFiCallingStatus = 0;
     memset(&cachedLeScanOwnerState, 0, sizeof(cachedLeScanOwnerState));
     hasCachedLeScanParams = false;
-    cachedQosLongRetryLimit = 0;
-    cachedQosRtsThreshold = 0;
-    cachedQosLifetimeAc3 = 0;
-    cachedQosLifetimeAc2 = 0;
-    cachedQosFlags = 0;
     cachedIPv4Address = 0;
     cachedIPv4Netmask = 0;
     cachedIPv4Reserved = 0;
@@ -2786,11 +2781,6 @@ init(IOService *provider)
     this->cachedFaceTimeWiFiCallingStatus = 0;
     memset(&this->cachedLeScanOwnerState, 0, sizeof(this->cachedLeScanOwnerState));
     this->hasCachedLeScanParams = false;
-    this->cachedQosLongRetryLimit = 0;
-    this->cachedQosRtsThreshold = 0;
-    this->cachedQosLifetimeAc3 = 0;
-    this->cachedQosLifetimeAc2 = 0;
-    this->cachedQosFlags = 0;
     this->cachedIPv4Address = 0;
     this->cachedIPv4Netmask = 0;
     this->cachedIPv4Reserved = 0;
@@ -6037,33 +6027,25 @@ setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     const auto *qos = reinterpret_cast<const tahoeWclQosParams *>(data);
+    constexpr uint8_t kMissingQosOwnerFlags = 0x6d;
 
-    // AppleBCMWLANCore::setWCL_QOS_PARAMS is not one monolithic blob. The
-    // recovered NetAdapter helper applies independent knobs under a flag byte:
-    // long retry limit, RTS threshold, powersave mode, and two "lifetime"
-    // buckets. We only claim parity where the local port has a real owner:
-    // RTS threshold lives in `ieee80211com`, powersave already has a lifted
-    // Tahoe IOC path, and the remaining Apple-configured words are preserved
-    // as driver-owned state instead of being acknowledged and discarded.
     if (qos == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedQosFlags = qos->flags;
-    if ((qos->flags & 0x01) != 0)
-        cachedQosLongRetryLimit = qos->long_retry_limit;
-    if ((qos->flags & 0x02) != 0)
-        cachedQosRtsThreshold = qos->rts_threshold;
-    if ((qos->flags & 0x04) != 0)
-        cachedQosLifetimeAc3 = qos->lifetime_ac3;
-    if ((qos->flags & 0x08) != 0)
-        cachedQosLifetimeAc2 = qos->lifetime_ac2;
+    const uint8_t flags = qos->flags;
+    // Tahoe routes retry/lifetime, real-time-policy, and MLO bits through
+    // NetAdapter/Core owners absent from Intel. Reject the complete request
+    // before local mutation whenever one of those bits is present. Bit 0x80
+    // stays an Apple no-op; the local RTS and PM actions remain below.
+    if ((flags & kMissingQosOwnerFlags) != 0)
+        return kIOReturnUnsupported;
 
-    if ((qos->flags & 0x02) != 0) {
+    if ((flags & 0x02) != 0) {
         ic->ic_rtsthreshold = MIN(static_cast<uint32_t>(IEEE80211_RTS_MAX),
-                                  cachedQosRtsThreshold);
+                                  qos->rts_threshold);
     }
 
-    if ((qos->flags & 0x10) != 0) {
+    if ((flags & 0x10) != 0) {
         apple80211_powersave_data pd{};
         pd.version = APPLE80211_VERSION;
         pd.powersave_level = qos->powersave_mode;

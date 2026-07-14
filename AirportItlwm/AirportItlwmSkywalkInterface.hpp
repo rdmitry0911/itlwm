@@ -545,7 +545,8 @@ public:
     virtual IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *) override;
     // [601]
     virtual IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates *) override;
-    // [602] — AppleBCMWLAN: delegates to NetAdapter::setQosParams
+    // [602] — Tahoe dispatches retry/lifetime, policy, and MLO flags through
+    // absent owners; only local RTS/PM bits remain active, others quarantine.
     virtual IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data) override;
     // [603] — AppleBCMWLAN: calls PowerManager::handleLinkUpConfiguration
     virtual IOReturn setWCL_LINK_UP_DONE(void *) override;
@@ -760,11 +761,6 @@ private:
     uint32_t cachedFaceTimeWiFiCallingStatus;
     TahoeLeScanContracts::OwnerState cachedLeScanOwnerState;
     bool hasCachedLeScanParams;
-    uint32_t cachedQosLongRetryLimit;
-    uint32_t cachedQosRtsThreshold;
-    uint32_t cachedQosLifetimeAc3;
-    uint32_t cachedQosLifetimeAc2;
-    uint8_t cachedQosFlags;
     uint32_t cachedIPv4Address;
     uint32_t cachedIPv4Netmask;
     uint32_t cachedIPv4Reserved;

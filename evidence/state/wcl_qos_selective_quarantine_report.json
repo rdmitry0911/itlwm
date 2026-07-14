@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "local_rts_and_pm_paths_preserved": true,
+    "missing_owner_mask_quarantined_before_mutation": true,
+    "pseudo_cache_removed": true,
+    "reference_note": true,
+    "scoped_missing_backends_absent": true,
+    "unknown_noop_mask_preserved": true
+  },
+  "local": {
+    "local_owner_flag_mask": "0x12",
+    "missing_owner_flag_mask": "0x6d",
+    "request_false_success": false,
+    "unknown_noop_flag": "0x80",
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x1001e867a",
+    "flag_offset": "0x17",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x100018dbc",
+    "lifetime": "0x100015f06",
+    "long_retry": "0x100012bb6",
+    "long_retry_ioctl": "0x22",
+    "mlo": "0x10004394a",
+    "net_adapter_offset": "0x15e0",
+    "net_adapter_setter": "0x10019df72",
+    "null_status": "0xe00002bc",
+    "realtime_policy": "0x10013a06a",
+    "realtime_state_offset": "0x78f4"
+  },
+  "schema": "itlwm-wcl-qos-selective-quarantine-v1",
+  "source_base_revision": "90574110c0f5ab7fdf05fae28e3647a48034ffac"
+}

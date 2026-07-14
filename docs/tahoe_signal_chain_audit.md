@@ -566,8 +566,11 @@ Recovered Apple contracts show these are not generic unsupported slots:
 
 - `setWCL_REAL_TIME_MODE`: NULL -> `0xe00002bc`, otherwise select real-time vs
   default mode from the first byte
-- `setWCL_QOS_PARAMS`: decode a flagged carrier covering long retry limit, RTS
-  threshold, two lifetime buckets, and powersave mode
+- `setWCL_QOS_PARAMS`: decode a flagged carrier. Bits `0x01`, `0x04`, and
+  `0x08` enter NetAdapter retry/lifetime transports; `0x20` enters Core
+  real-time-app policy; `0x40` conditionally enters the 11be MLO owner. Only
+  `0x02` (RTS) and `0x10` (powersave) are independently meaningful local
+  actions; unknown `0x80` is an Apple no-op
 - `setWCL_LINK_UP_DONE`: call `PowerManager::handleLinkUpConfiguration()`
 - `setOFFLOAD_TCPKA_ENABLE`: default `0xe00002c7`, flip the keepalive enable
   byte only when the feature gate and owner object exist
@@ -584,9 +587,20 @@ successes:
 - post-link MAC-context refresh through `ic_updateedca`
 - independent IPv4 state through the separate `setIPV4_PARAMS(...)` producer
 
-That closes `Q10` as a standalone queue: the net-link plane no longer has
-blind adjunct stubs of its own. The remaining exact helper choreography for
-those adapter-owned producers now stays under `Q13`.
+### Q10 correction: WCL QoS has a selective owner boundary
+
+The QoS carrier cannot be acknowledged as a cache-only whole. Tahoe routes
+flags `0x01|0x04|0x08|0x20|0x40` through owners and transports absent from the
+Intel port: retry limit via Commander IOCTL `0x22`, lifetimes via the
+`lifetime` IOVAR, Core real-time-app policy, and feature-gated MLO
+configuration. The port therefore returns `kIOReturnUnsupported` for any
+non-null carrier containing the aggregate missing-owner mask `0x6d`, before
+RTS/powersave mutation. It retains local RTS (`0x02`) and powersave (`0x10`)
+actions, and preserves the reference no-op for unknown bit `0x80`.
+
+This closes `Q10` as a selector queue without claiming full QoS carrier or
+valid-input return-status parity. See
+`docs/reference/CR-479-wcl-qos-selective-quarantine-20260714.md`.
 
 ## Root Cause After Live `4973c4d`
 
