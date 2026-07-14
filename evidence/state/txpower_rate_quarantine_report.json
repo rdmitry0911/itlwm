@@ -1,0 +1,48 @@
+{
+  "checks": {
+    "ba_qtxpower_producers_retained": true,
+    "historical_claims_corrected": true,
+    "interface_slots_retained": true,
+    "rate_null_safety_and_quarantine": true,
+    "reference_note": true,
+    "scoped_backend_absent": true,
+    "synthetic_mutations_removed": true,
+    "txpower_null_safety_and_quarantine": true
+  },
+  "local": {
+    "backend_bg_rate_owner": false,
+    "backend_qtxpower_owner": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_vptr_address_point": "0x1003a10e8",
+    "core_vtable_symbol": "0x1003a10d8",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "rate": {
+      "core_setter": "0x100120cba",
+      "core_vtable_cell": "0x1003a15e8",
+      "core_vtable_offset": "0x500",
+      "final_status": "raw final bg_rate GET status",
+      "firmware_get": "0x10017b780",
+      "firmware_iovar": "bg_rate",
+      "firmware_set": "0x10017b6e6",
+      "infra_wrapper": "0x100018100",
+      "request_rate_offset": "+0x8",
+      "sequence": "GET/SET/GET"
+    },
+    "txpower": {
+      "core_setter": "0x10012099c",
+      "core_vtable_cell": "0x1003a15d0",
+      "core_vtable_offset": "0x4e8",
+      "firmware_iovar": "qtxpower",
+      "firmware_set": "0x10017b6e6",
+      "infra_wrapper": "0x1000180b4",
+      "payload_bytes": 4,
+      "txpower_offset": "+0x8",
+      "unit_offset": "+0x4"
+    }
+  },
+  "schema": "itlwm-txpower-rate-quarantine-v1",
+  "source_base_revision": "89e97549082163207cf32f3148e85784bda9fe7f"
+}

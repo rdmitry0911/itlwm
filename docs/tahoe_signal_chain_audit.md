@@ -2138,9 +2138,11 @@ surface without inventing private Broadcom semantics:
   rejects channel ids `>= 0x100` with raw `0x16`, and otherwise preserves the
   caller-visible request before resolving the hidden chanspec path
 - `AppleBCMWLANCore::setTXPOWER(...)` is a real producer that writes the
-  public `qtxpower` carrier, not a direct unsupported selector
-- `AppleBCMWLANCore::setRATE(...)` is a real producer that updates the cached
-  `bg_rate` property instead of failing generically
+  public `qtxpower` carrier through firmware, so a port without that owner
+  must not acknowledge the operation by changing a getter cache
+- `AppleBCMWLANCore::setRATE(...)` is a real `bg_rate` GET/SET/GET firmware
+  producer, so a port without that owner must not acknowledge it through a
+  local cache
 - `AppleBCMWLANCore::setIBSS_MODE(...)` is a real producer with a visible
   success contract, even though the private proximity/NAN owner path is still
   Apple-private
@@ -2171,8 +2173,9 @@ The trap/debug half of the zone also has recoverable public meaning:
 
 This zone therefore closes on the public Apple boundary:
 
-- the real public producer/carrier selectors now expose their recovered caller-
-  visible gates instead of `kIOReturnUnsupported`
+- real public producer/carrier selectors expose recovered caller-visible gates
+  only when their local owner exists; `TXPOWER` and `RATE` now fail closed
+  rather than fabricating their missing firmware transitions
 - the trap/debug selectors are classified out of the open discrepancy queue as
   internal-only Apple control paths rather than missing normal producer work
 - the BSD IOCTL bridge now reaches the real setter bodies for the standard IOC
@@ -2484,6 +2487,12 @@ WoW Test correction: valid mode requests use a retrying firmware owner in the
 reference and only its successful completion enables WoW state. The port has
 no equivalent owner or transport, so it returns unsupported for valid non-null
 requests without a synthetic cache or `setWoWEnabled(true)` side effect.
+
+TXPOWER/RATE correction: the qtxpower getter's BA-notification cache is an
+observation path, not a substitute for the separate Apple setter transactions.
+Apple uses `qtxpower` SET and `bg_rate` GET/SET/GET firmware operations; the
+port has neither owner. Both non-null setters now return unsupported before
+altering the BA-backed getter cache or a dead local rate cache.
 
 Two more public-path mismatches also fell out of the batch bodies and are now
 closed:

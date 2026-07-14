@@ -450,25 +450,6 @@ static uint8_t encodeAppleTahoeQTxpowerBootstrap(uint8_t maxHalfDbm)
     return static_cast<uint8_t>(static_cast<int8_t>(raw));
 }
 
-static uint8_t encodeAppleTahoeQTxpowerFromMw(uint32_t mw)
-{
-    // AppleBCMWLANCore::setTXPOWER(version==1) converts the public mW carrier
-    // back into the one-byte qtxpower transport. Preserve that public encoding
-    // with the same table Apple uses on the getter side instead of falling back
-    // to `ic_txpower`.
-    uint32_t bestIndex = 0;
-    uint32_t bestDelta = UINT32_MAX;
-    for (uint32_t i = 0; i < sizeof(kAppleTahoeQTxpowerTable) / sizeof(kAppleTahoeQTxpowerTable[0]); i++) {
-        uint32_t tableValue = kAppleTahoeQTxpowerTable[i];
-        uint32_t delta = (tableValue > mw) ? (tableValue - mw) : (mw - tableValue);
-        if (delta < bestDelta) {
-            bestDelta = delta;
-            bestIndex = i;
-        }
-    }
-    return static_cast<uint8_t>(0x99U + bestIndex);
-}
-
 static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
 {
     if (hal == nullptr || raw == nullptr)
@@ -499,25 +480,6 @@ static bool getTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t *raw)
     }
 
     return false;
-}
-
-static void setTahoeCachedQTxpowerRaw(ItlHalService *hal, uint8_t raw)
-{
-    if (hal == nullptr)
-        return;
-
-    if (auto *iwm = OSDynamicCast(ItlIwm, hal)) {
-        struct iwm_softc *sc = &iwm->com;
-        sc->sc_last_qtxpower_raw = raw;
-        sc->sc_has_last_qtxpower_raw = true;
-        return;
-    }
-
-    if (auto *iwx = OSDynamicCast(ItlIwx, hal)) {
-        struct iwx_softc *sc = &iwx->com;
-        sc->sc_last_qtxpower_raw = raw;
-        sc->sc_has_last_qtxpower_raw = true;
-    }
 }
 
 static IOReturn getTahoeCachedNrate(ItlHalService *hal, uint32_t *rate)
@@ -2366,8 +2328,6 @@ init()
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     memset(&cachedRequestedChannel, 0, sizeof(cachedRequestedChannel));
     hasCachedRequestedChannel = false;
-    cachedBgRate = 0;
-    hasCachedBgRate = false;
     cachedThermalIndex = 0;
     cachedPowerBudget = 0;
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
@@ -2756,8 +2716,6 @@ init(IOService *provider)
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     memset(&this->cachedRequestedChannel, 0, sizeof(this->cachedRequestedChannel));
     this->hasCachedRequestedChannel = false;
-    this->cachedBgRate = 0;
-    this->hasCachedBgRate = false;
     this->cachedThermalIndex = 0;
     this->cachedPowerBudget = 0;
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
@@ -5396,38 +5354,26 @@ setCHANNEL(apple80211_channel_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setTXPOWER(apple80211_txpower_data *data)
 {
-    // AppleBCMWLANCore::setTXPOWER re-encodes the caller-visible unit/value
-    // pair back into the one-byte qtxpower transport. Preserve that transport
-    // instead of falling back to `ic_txpower`.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    uint8_t raw;
-    if (data->version == APPLE80211_VERSION &&
-        data->txpower_unit == APPLE80211_UNIT_MW) {
-        raw = encodeAppleTahoeQTxpowerFromMw(static_cast<uint32_t>(MAX(0, data->txpower)));
-    } else {
-        int scaled = data->txpower << 2;
-        scaled = MAX(-128, MIN(127, scaled));
-        raw = static_cast<uint8_t>(static_cast<int8_t>(scaled));
-    }
-
-    setTahoeCachedQTxpowerRaw(fHalService, raw);
-    return kIOReturnSuccess;
+    // AppleBCMWLANCore serializes the caller carrier into a four-byte
+    // qtxpower firmware IOVAR and returns the raw transport status. The Intel
+    // port has no matching command owner, so do not fabricate that transition
+    // by mutating the getter's BA-notification cache.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setRATE(apple80211_rate_data *data)
 {
-    // AppleBCMWLANCore::setRATE updates the public bg_rate property path. We
-    // do not carry Apple's property manager, but preserving the public dword
-    // avoids advertising the selector as unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedBgRate = data->rate[0];
-    hasCachedBgRate = true;
-    return kIOReturnSuccess;
+    // AppleBCMWLANCore performs bg_rate GET/SET/GET firmware transactions and
+    // returns their transport result. There is no equivalent Intel owner, so
+    // fail closed before observing or caching the caller carrier.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

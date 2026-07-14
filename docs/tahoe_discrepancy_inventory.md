@@ -458,7 +458,7 @@ than accepting the inverted invalid range and caching a false success.
 
 ## Open Confirmed
 
-### 1. `qtxpower` / `nrate` source lift is closed
+### 1. Getter `qtxpower` / `nrate` source lift is closed
 
 Files:
 
@@ -1133,6 +1133,13 @@ WoW Test correction: Apple only marks the owner WoW-enabled after a successful
 firmware wake-test operation. The port has no matching event-bit or transport
 owner, so valid non-null test requests return unsupported without synthetic
 cache or interface-state mutation.
+
+TXPOWER/RATE correction: the closed getter source lift does not supply either
+setter's separate firmware owner. Apple serializes `setTXPOWER` into a
+four-byte `qtxpower` IOVAR and runs `setRATE` as `bg_rate` GET/SET/GET; the
+port has neither transaction path. Both non-null setters therefore return
+unsupported before mutating getter state or a dead rate cache. The real
+BA-notification producers behind the `getTXPOWER` cache remain intact.
 
 ### 12. Additional post-batch public-path corrections
 

@@ -389,10 +389,11 @@ public:
     virtual IOReturn setCHANNEL(apple80211_channel_data *) override;
     // [547]
     virtual IOReturn setPOWERSAVE(apple80211_powersave_data *) override;
-    // [548] — AppleBCMWLANCore writes the public one-byte qtxpower transport;
-    // Tahoe does not treat this as a generic unsupported setter.
+    // [548] — AppleBCMWLANCore writes qtxpower through a real firmware owner;
+    // the port deliberately quarantines valid input until that owner exists.
     virtual IOReturn setTXPOWER(apple80211_txpower_data *) override;
-    // [549] — AppleBCMWLANCore updates the public bg_rate property path.
+    // [549] — AppleBCMWLANCore performs real bg_rate GET/SET/GET transactions;
+    // the port deliberately quarantines valid input until that owner exists.
     virtual IOReturn setRATE(apple80211_rate_data *) override;
     // [550] — AppleBCMWLANCore exposes a visible success contract here before
     // delegating into private proximity/NAN owner work.
@@ -741,8 +742,6 @@ private:
     uint32_t cachedPowersaveLevel;
     apple80211_channel_data cachedRequestedChannel;
     bool hasCachedRequestedChannel;
-    uint32_t cachedBgRate;
-    bool hasCachedBgRate;
     uint32_t cachedThermalIndex;
     uint32_t cachedPowerBudget;
     uint32_t cachedDynsarHeader0[4];
