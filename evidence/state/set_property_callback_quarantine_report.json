@@ -1,0 +1,39 @@
+{
+  "checks": {
+    "historical_claims_corrected": true,
+    "opaque_abi_remains_forward_only": true,
+    "reference_note": true,
+    "scoped_callback_backend_absent": true,
+    "setter_retains_local_null_safety_and_quarantines_without_reading": true,
+    "synthetic_state_removed": true,
+    "virtual_slot_retained": true
+  },
+  "local": {
+    "bsd_ioc_route": false,
+    "null_return_is_apple_parity": false,
+    "opaque_carrier_abi_defined": false,
+    "property_callback_backend": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "command_gate_execute_vtable_offset": "+0x38",
+    "core_callback_target": "0x1000da982",
+    "core_callback_vtable_entry": "0x1003a1878",
+    "core_callback_vtable_offset": "+0x790",
+    "core_gate_vtable_offset": "+0x68",
+    "core_set_vtable_entry": "0x1003a1810",
+    "core_set_vtable_offset": "+0x728",
+    "core_setter": "0x1000da8de",
+    "core_state_root_offset": "+0x48",
+    "effective_carrier_pointer_offset": "+0x8",
+    "gate_predicate_state_offset": "+0x7950",
+    "gate_predicate_vtable_offset": "+0x90",
+    "gated_helper": "0x1000da8aa",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "inflight_state_offset": "+0x794b",
+    "infra_wrapper": "0x100018914"
+  },
+  "schema": "itlwm-set-property-callback-quarantine-v1",
+  "source_base_revision": "84828a3810ca1e785c6882d2f4c0b99e59f2df02"
+}

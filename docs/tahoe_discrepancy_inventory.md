@@ -451,18 +451,28 @@ than accepting the inverted invalid range and caching a false success.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: mixed setter control/programming zone`:
-  a 17-slot setter zone no longer belongs in the generic unsupported bucket.
+  a 16-slot setter zone no longer belongs in the generic unsupported bucket.
   The zone splits into real public producers/carriers
   (`setCHANNEL`, `setTXPOWER`, `setRATE`, `setIBSS_MODE`, `setOFFLOAD_ARP`,
   `setGAS_REQ`, `setTKO_PARAMS`, `setOFFLOAD_TCPKA_ENABLE`,
-  `setSET_PROPERTY`, `setSENSING_DISABLE`) and internal-only Apple control
+  `setSENSING_DISABLE`) and internal-only Apple control
   selectors (`setRESET_CHIP`, `setCRASH`, `setRANGING_ENABLE`,
   `setRANGING_START`, `setHP2P_CTRL`, `setSENSING_ENABLE`,
   `setDBRG_ENTROPY`). The first group now exposes recovered public gates
   instead of generic unsupported; the second group is classified out of the
   open discrepancy queue because the decompile proves they are trap/debug/hidden
-  owner selectors rather than missing normal producers.
+  owner selectors rather than missing normal producers. `setSET_PROPERTY` is
+  excluded by the standalone callback quarantine below.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
+
+- `Q13 correction: SET_PROPERTY callback quarantine`:
+  `setSET_PROPERTY` is a gated Core callback control plane, not a local
+  delegated-success contract. Its opaque carrier and callback backend are not
+  defined in the Intel port, and the former success path wrote only an unread
+  flag. The local NULL safety guard remains; non-null input now fails before
+  carrier access or cache mutation. This is not claimed as Apple NULL,
+  callback, or valid-input return-code parity.
+  See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-property-callback-quarantine-20260714.md).
 
 - `Q13 mini-batch: diagnostic / roam getter zone`:
   a 15-slot mixed diagnostic/country/roam zone no longer belongs in the
@@ -797,7 +807,6 @@ part of the open setter list above:
 - `570 setTKO_PARAMS`
 - `576 setOFFLOAD_TCPKA_ENABLE`
 - `580 setHP2P_CTRL`
-- `582 setSET_PROPERTY`
 - `587 setSENSING_ENABLE`
 - `588 setSENSING_DISABLE`
 - `659 setDBRG_ENTROPY`

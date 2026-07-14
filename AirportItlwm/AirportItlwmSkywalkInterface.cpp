@@ -2307,7 +2307,6 @@ init()
     memset(leScanDutyCount, 0, sizeof(leScanDutyCount));
     memset(&cachedVhtCapability, 0, sizeof(cachedVhtCapability));
     hasCachedVhtCapability = false;
-    cachedSetPropertyIoctlSeen = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
     memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
@@ -2680,7 +2679,6 @@ init(IOService *provider)
     memset(this->leScanDutyCount, 0, sizeof(this->leScanDutyCount));
     memset(&this->cachedVhtCapability, 0, sizeof(this->cachedVhtCapability));
     this->hasCachedVhtCapability = false;
-    this->cachedSetPropertyIoctlSeen = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
     memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
@@ -5466,14 +5464,15 @@ setHP2P_CTRL(apple80211_hp2p_ctrl *)
 IOReturn AirportItlwmSkywalkInterface::
 setSET_PROPERTY(apple80211_set_property_unserialized_data *data)
 {
-    // AppleBCMWLANCore::setSET_PROPERTY runs through a gated property callback
-    // path. Preserve the caller-visible "delegated setter" contract instead of
-    // reporting generic unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    cachedSetPropertyIoctlSeen = true;
-    return kIOReturnSuccess;
+    // Tahoe routes this opaque carrier through a gated Core callback and reads
+    // carrier +0x8 only in that owner path. The port has neither callback nor
+    // carrier ABI, so reject before access rather than recording a successful
+    // property operation that was never applied.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

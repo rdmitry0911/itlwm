@@ -2271,7 +2271,6 @@ lifted. This zone closes the following selectors together:
 - `setTKO_PARAMS`
 - `setOFFLOAD_TCPKA_ENABLE`
 - `setHP2P_CTRL`
-- `setSET_PROPERTY`
 - `setSENSING_ENABLE`
 - `setSENSING_DISABLE`
 - `setDBRG_ENTROPY`
@@ -2281,7 +2280,7 @@ Recovered Apple evidence splits this zone into two families:
 - real public producers plus one recovered public fail-contract:
   `setCHANNEL`, `setTXPOWER`, `setRATE`, `setIBSS_MODE`, `setOFFLOAD_ARP`,
   `setGAS_REQ`, `setTKO_PARAMS`, `setOFFLOAD_TCPKA_ENABLE`,
-  `setSET_PROPERTY`, `setSENSING_DISABLE`
+  `setSENSING_DISABLE`
 - internal-only trap / debug / hidden-owner selectors that must no longer be
   treated as "missing normal producers":
   `setRESET_CHIP`, `setCRASH`, `setRANGING_ENABLE`, `setRANGING_START`,
@@ -2309,7 +2308,8 @@ surface without inventing private Broadcom semantics:
 - `AppleBCMWLANCore::setTKO_PARAMS(...)` is a keepalive-owner carrier setter:
   missing owner -> `0xe00002bc`, otherwise the six public dwords are copied
 - `AppleBCMWLANCore::setSET_PROPERTY(...)` is a real delegated producer that
-  runs through a gated property callback path, not a direct unsupported slot
+  runs through a gated property callback path, not a direct unsupported slot;
+  the later local callback quarantine below does not claim to lift that owner
 - `AppleBCMWLANSensingAdapter::setSENSING_DISABLE(...)` is feature-gated and
   does not expose a generic unsupported contract
 
@@ -2338,6 +2338,33 @@ This zone therefore closes on the public Apple boundary:
   subset (`CHANNEL`, `TXPOWER`, `RATE`, `IBSS_MODE`, `OFFLOAD_ARP`,
   `GAS_REQ`, `RESET_CHIP`, `CRASH`, `RANGING_*`, `TKO_PARAMS`,
   `OFFLOAD_TCPKA_ENABLE`)
+
+`SET_PROPERTY` is excluded from this historical closure: its separate
+correction below removes the local delegated-success claim because the required
+callback control plane is absent.
+
+## 2026-07-14 correction: `SET_PROPERTY` is a gated callback control plane
+
+The canonical 25C56 DEXT dispatches
+`AppleBCMWLANInfraProtocol::setSET_PROPERTY` at `0x100018914` through Core
+virtual `+0x728` to `AppleBCMWLANCore::setSET_PROPERTY` at `0x1000da8de`.
+There is no recovered NULL guard. The Core path uses the opaque carrier pointer
+at `+0x8`, first checks `(Core + 0x48) + 0x7950` through virtual `+0x90`,
+marks in-flight state at `(Core + 0x48) + 0x794b`, and returns the result of
+Core virtual `+0x790`. Vtable entry `0x1003a1878` resolves that callback to
+`AppleBCMWLANCore::setProperties(OSObject*)` at `0x1000da982`. When the direct
+gate is unavailable, Core schedules the same work through virtual `+0x68`,
+then command-gate virtual `+0x38` invokes `setPropertyIoctlGated` at
+`0x1000da8aa`.
+
+This is broad generic property control, not a narrow cache-only carrier. The
+local type is only forward-declared and has no BSD IOC route or callback
+backend; its old code only set an unread flag and returned success. The local
+boundary now keeps its existing NULL safety error and rejects every non-null
+carrier before access. It deliberately does not claim Apple NULL, callback, or
+valid-input return-code parity.
+
+See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-property-callback-quarantine-20260714.md).
 
 ## Q13 Batch: diagnostic/roam getter zone leaves the unsupported tail
 

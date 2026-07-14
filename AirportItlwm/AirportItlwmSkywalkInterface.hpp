@@ -494,8 +494,8 @@ public:
     // Tahoe AppleBCMWLANCore::setBSS_BLACKLIST preserves the exact 43-byte
     // request, programs lower state, then launches the same async query as GET.
     virtual IOReturn setBSS_BLACKLIST(bss_blacklist *) override;
-    // [582] — AppleBCMWLANCore dispatches this selector through a gated
-    // setPropertyIoctl callback path.
+    // [582] — Tahoe dispatches this opaque carrier through a gated Core
+    // property callback; ownerless requests quarantine after the NULL gate.
     virtual IOReturn setSET_PROPERTY(apple80211_set_property_unserialized_data *) override;
     // [583]
     // [583] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -769,7 +769,6 @@ private:
     uint32_t leScanDutyCount[7];
     apple80211_vht_capability cachedVhtCapability;
     bool hasCachedVhtCapability;
-    bool cachedSetPropertyIoctlSeen;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
     uint8_t cachedTriggerCC[0x20];
