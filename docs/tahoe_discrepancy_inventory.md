@@ -484,13 +484,13 @@ than accepting the inverted invalid range and caching a false success.
   See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-property-callback-quarantine-20260714.md).
 
 - `Q13 mini-batch: diagnostic / roam getter zone`:
-  a 15-slot mixed diagnostic/country/roam zone no longer belongs in the
+  a mixed diagnostic/country/roam zone no longer belongs in the
   generic unsupported bucket. The public Apple contracts for
   `getPOWER_DEBUG_INFO`, `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`,
   `getHW_SUPPORTED_CHANNELS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
   `getBEACON_INFO`, `getCHIP_DIAGS`, `getCUR_PMK`,
-  `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`, and
-  `getWCL_EXTENDED_BSS_INFO` are now reflected directly in the port, while
+  `getCOUNTRY_CHANNELS_INFO`, and `getSENSING_DATA` are now reflected directly
+  in the port, while
   `getAWDL_PEER_TRAFFIC_STATS` is classified out as an Apple internal stub and
   `setBSS_BLACKLIST` was removed from the open queue because its setter body was
   lifted; `setREALTIME_QOS_MSCS` was initially classified that way, but current
@@ -834,7 +834,6 @@ the open queues above:
 - `517 getCUR_PMK`
 - `519 getCOUNTRY_CHANNELS_INFO`
 - `523 getSENSING_DATA`
-- `533 getWCL_EXTENDED_BSS_INFO`
 - `555 setVIRTUAL_IF_CREATE`
 - `581 setBSS_BLACKLIST`
 - `586 setREALTIME_QOS_MSCS`
@@ -8020,3 +8019,18 @@ The local Tahoe method retains its existing null guard but now returns
 removes a false telemetry success; it does not implement the absent owners or
 claim Apple valid-input return/value parity. See
 `docs/reference/CR-479-wcl-traffic-counters-quarantine-20260714.md`.
+
+## 2026-07-14 correction: extended BSS info requires the NetAdapter pipeline
+
+The earlier Q13 classification treated `getWCL_EXTENDED_BSS_INFO` as a
+non-error owner-delegation boundary even though the local path had no owner
+and did not write its caller carrier. Exact 25C56 DEXT recovery shows active
+Infra slot `[533]` dispatching through Core to NetAdapter, where rate/MCS and
+associated RSN data are synchronized and their failures can propagate; an
+11be feature branch can additionally populate MLO context.
+
+The local Tahoe getter retains its existing null guard but returns
+`kIOReturnUnsupported` for every non-null request before output mutation.
+This removes a false success, not a claim of Apple valid-input status or
+output-layout parity. See
+`docs/reference/CR-479-wcl-extended-bss-info-quarantine-20260714.md`.

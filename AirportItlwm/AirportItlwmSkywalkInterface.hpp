@@ -340,7 +340,9 @@ public:
     // [532] — Tahoe public contract is raw `NULL -> 0x16`, else version=1 at
     // +0; the hidden SIB owner may fill dwords at +4/+8 when present.
     virtual IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status *) override;
-    // [533]
+    // [533] — Tahoe Core delegates valid callers to a NetAdapter producer;
+    // the local V2/Skywalk path retains its null guard and otherwise fails
+    // closed until that output pipeline exists.
     virtual IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *) override;
     // [534] — Tahoe Core fills a 0x7c-byte low-latency stats carrier from
     // hidden owner state. The local no-owner port fails closed for non-null.

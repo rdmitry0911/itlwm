@@ -2383,7 +2383,9 @@ See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-p
 
 The next `Q13` zone is the diagnostics / roaming / country-information cluster
 that still sat on generic unsupported even though Tahoe already exposes a
-recoverable public contract for it. This zone closes the following 15 slots:
+recoverable public contract for it. This zone closed the following slots;
+the former `getWCL_EXTENDED_BSS_INFO` classification is superseded by the
+2026-07-14 no-backend correction below:
 
 - `getAWDL_PEER_TRAFFIC_STATS`
 - `getPOWER_DEBUG_INFO`
@@ -2396,7 +2398,6 @@ recoverable public contract for it. This zone closes the following 15 slots:
 - `getCUR_PMK`
 - `getCOUNTRY_CHANNELS_INFO`
 - `getSENSING_DATA`
-- `getWCL_EXTENDED_BSS_INFO`
 - `setVIRTUAL_IF_CREATE`
 - `setBSS_BLACKLIST`
 - `setREALTIME_QOS_MSCS`
@@ -2413,8 +2414,7 @@ Recovered Apple evidence splits this zone into three public classes:
   `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`
 - delegated owner-backed selectors whose public null/fail contract is still
   recoverable even when the private owner stays unlifted:
-  `getWCL_EXTENDED_BSS_INFO`, `setVIRTUAL_IF_CREATE`,
-  `setBSS_BLACKLIST`, `setREALTIME_QOS_MSCS`
+  `setVIRTUAL_IF_CREATE`, `setBSS_BLACKLIST`, `setREALTIME_QOS_MSCS`
 
 Public Apple-side facts used for this zone:
 
@@ -2441,8 +2441,6 @@ Public Apple-side facts used for this zone:
   deeper debug/association subpaths under Apple-only gates
 - `AppleBCMWLANCore::getSENSING_DATA(...)` writes `version=1` and exposes the
   public fail split `0xe0822801` / `0xe00002c7`
-- `AppleBCMWLANCore::getWCL_EXTENDED_BSS_INFO(...)` exposes `NULL -> 0xe00002bc`
-  before delegating to the net adapter owner
 - `AppleBCMWLANCore::setVIRTUAL_IF_CREATE(...)` is not a generic unsupported
   setter: Tahoe exposes role-dependent public failures before the hidden
   proximity/AWDL/NAN/APSTA owners take over

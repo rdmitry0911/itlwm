@@ -3249,13 +3249,14 @@ getSENSING_DATA(apple80211_sensing_data_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
 {
-    // AppleBCMWLANCore::getWCL_EXTENDED_BSS_INFO exposes only one public gate:
-    // NULL -> 0xe00002bc, non-NULL -> delegate to the NetAdapter owner. The
-    // hidden owner is still absent locally, so preserve the same null gate and
-    // the non-error outer contract instead of generic unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
-    return kIOReturnSuccess;
+
+    // Tahoe Core delegates a valid carrier to NetAdapter, which synchronizes
+    // rate/MCS/RSN and optional MLO data. The Intel port has no equivalent
+    // producer, so do not acknowledge an output it did not construct.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
