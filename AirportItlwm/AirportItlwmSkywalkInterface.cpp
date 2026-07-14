@@ -4264,16 +4264,17 @@ setPOWER_BUDGET(apple80211_power_budget_t *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple gates TVPM by feature bit 0x3b before validating the caller's PPM
-    // index. The visible range check is intentionally non-intuitive: values
-    // 1..100 reject with 0xe00002bc, while 0 and >=101 are accepted.
+    // The reference gates its firmware power-budget owner by feature bit 0x3b
+    // and accepts only the inclusive public range 1..100.
     if (((cachedOSFeatureFlags >> 0x3b) & 1ULL) == 0)
         return kIOReturnBadArgumentTahoe;
-    if (data->power_budget >= 1 && data->power_budget <= 100)
+    if (data->power_budget == 0 || data->power_budget >= 101)
         return kIOReturnBadArgumentTahoe;
 
-    cachedPowerBudget = data->power_budget;
-    return kIOReturnSuccess;
+    // A valid request reaches a firmware-backed owner in Tahoe. The port has
+    // no equivalent owner or transport, so do not acknowledge a cache-only
+    // policy update.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

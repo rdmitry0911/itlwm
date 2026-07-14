@@ -2431,13 +2431,20 @@ contract level:
 - `getSYSTEM_SLEEP_CONFIG` already matched the recovered owner-missing fail
   shape `0xe00002bc`
 - `setWOW_TEST` already matched the recovered public 1..600 gate
-- `setPOWER_BUDGET` already matched the recovered feature/range gate
+- `setPOWER_BUDGET` preserves its local null/feature gates, recognizes the
+  recovered 1..100 range, then quarantines the missing firmware-owner request
 - `setUSB_HOST_NOTIFICATION` already preserved the public dword carrier
 - `setHOST_CLOCK_INFO` is confirmed by decompile as a direct
   `AppleBCMWLANInfraProtocol::setHOST_CLOCK_INFO -> 0xe00002c7` stub
 
 That leaves no remaining top-level queue debt after `Q12`; only runtime
 verification remains.
+
+Power Budget correction: the recovered valid range is 1..100, not its
+complement. Tahoe then sends a 12-byte request through its `tvpm` firmware
+owner and returns the transport status. The port has no equivalent owner, so
+the valid local path returns unsupported without updating the cache; this is a
+quarantine boundary, not Apple valid-input return-code parity.
 
 ## Owner-Family Batch Tooling And Post-Q12 Tightening
 

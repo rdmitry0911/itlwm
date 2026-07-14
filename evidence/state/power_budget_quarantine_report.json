@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "exact_local_range": true,
+    "historical_claims_corrected": true,
+    "interface_slot_retained": true,
+    "reference_note": true,
+    "scoped_backend_absent": true,
+    "setter_cache_write_removed": true,
+    "setter_preserves_gates_and_quarantines_valid": true
+  },
+  "local": {
+    "backend_power_budget_owner": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x100120790",
+    "core_vptr_address_point": "0x1003a10e8",
+    "core_vtable_cell": "0x1003a15e0",
+    "core_vtable_offset": "0x4f8",
+    "core_vtable_symbol": "0x1003a10d8",
+    "feature_bit": "0x3b",
+    "feature_helper": "0x1000c846e",
+    "firmware_iovar": "tvpm",
+    "firmware_set": "0x10017b6e6",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x1000187f8",
+    "payload_bytes": 12,
+    "special_commit_status": "0xe3ff8117",
+    "state_offset": "0x48+0x4",
+    "valid_range": "1..100"
+  },
+  "schema": "itlwm-power-budget-quarantine-v1",
+  "source_base_revision": "3a8a5a32c243bdab9591e8a7357894f9b61790e3"
+}

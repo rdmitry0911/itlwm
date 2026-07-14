@@ -81,7 +81,8 @@ This inventory is intentionally split into:
   the Apple-visible sleep/power/timing contract is now exhausted:
   `getSYSTEM_SLEEP_CONFIG` mirrors the owner-missing `0xe00002bc` fail shape,
   `setWOW_TEST` matches the recovered 1..600 gate,
-  `setPOWER_BUDGET` mirrors the feature/range gate,
+  `setPOWER_BUDGET` preserves its local null/feature gates, recognizes the
+  recovered 1..100 range, and quarantines the missing firmware-owner request,
   `setUSB_HOST_NOTIFICATION` preserves the public carrier,
   `setHOST_CLOCK_INFO` is fixed to Apple's direct `0xe00002c7`
 
@@ -89,6 +90,11 @@ This inventory is intentionally split into:
   closed
   remaining pre-`Q12` owner-family selectors now enter a centralized
   owner-targeted commander layer rather than per-selector ad hoc shims
+
+Power Budget correction: a valid budget is not an acknowledgement-only
+carrier. Tahoe sends it to a firmware owner after the feature and 1..100
+validation. The port now rejects that valid, unimplemented owner path rather
+than accepting the inverted invalid range and caching a false success.
 
 ## Closed
 
