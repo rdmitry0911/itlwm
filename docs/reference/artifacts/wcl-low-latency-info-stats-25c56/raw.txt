@@ -1,0 +1,51 @@
+Reference capture: 25C56 x86_64 AppleBCMWLAN DEXT
+
+$ shasum -a 256 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+$ dwarfdump --uuid /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getWCL_LOW_LATENCY_INFO_STATS
+Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100017d60]
+Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats*)
+(lldb) image lookup -n AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO_STATS
+Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100141f06]
+Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats*)
+
+(lldb) disassemble -s 0x100017d60 -c 52
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getWCL_LOW_LATENCY_INFO_STATS:
+com.apple.DriverKit-AppleBCMWLAN[0x100017d60] <+0>:  pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017d61] <+1>:  movq   %rsp, %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017d64] <+4>:  movq   0x88(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017d6b] <+11>: movq   (%rax), %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100017d6e] <+14>: popq   %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017d6f] <+15>: jmp    0x100141f06               ; AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats*)
+
+(lldb) disassemble -s 0x100141f06 -e 0x10014203d
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO_STATS:
+com.apple.DriverKit-AppleBCMWLAN[0x100141f06] <+0>:   testq  %rsi, %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x100141f09] <+3>:   je     0x100142037               ; <+305>
+com.apple.DriverKit-AppleBCMWLAN[0x100141f33] <+45>:  movq   0x2c18(%rax), %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100141f41] <+59>:  callq  *0x288(%rax)
+com.apple.DriverKit-AppleBCMWLAN[0x100141f47] <+65>:  movl   %eax, 0x10(%rbx,%r12,4)
+com.apple.DriverKit-AppleBCMWLAN[0x100141f50] <+74>:  movl   0x4798(%rax,%r12,8), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141f58] <+82>:  movl   %eax, (%rbx,%r12,4)
+com.apple.DriverKit-AppleBCMWLAN[0x100141f76] <+112>: addq   $0x76c4, %rax             ; imm = 0x76C4
+com.apple.DriverKit-AppleBCMWLAN[0x100141f95] <+143>: movl   %ecx, 0x34(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100141fa5] <+159>: movl   0x7500(%rax,%r15), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fad] <+167>: movl   %eax, 0x20(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100141fb4] <+174>: movl   0x7504(%rax,%r15), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fbc] <+182>: movl   %eax, 0x24(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100141fc3] <+189>: movl   0x77b8(%rax), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fcc] <+198>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fd0] <+202>: movl   0x77bc(%rax), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fd9] <+211>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100141fdd] <+215>: movl   0x78c0(%rax), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100141ffe] <+248>: movq   0x48(%r14), %rcx
+com.apple.DriverKit-AppleBCMWLAN[0x100142002] <+252>: movups 0x78fc(%rcx), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100142010] <+266>: movups 0x791c(%rcx), %xmm2
+com.apple.DriverKit-AppleBCMWLAN[0x10014201e] <+280>: movups %xmm3, 0x6c(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x10014202a] <+292>: movups %xmm0, 0x3c(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100142036] <+304>: retq
+com.apple.DriverKit-AppleBCMWLAN[0x100142037] <+305>: movl   $0xe00002bc, %eax         ; imm = 0xE00002BC
+com.apple.DriverKit-AppleBCMWLAN[0x10014203c] <+310>: retq

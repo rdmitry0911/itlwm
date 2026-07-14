@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "active_slot_declarations_remain": true,
+    "distinct_configuration_carrier_is_preserved": true,
+    "local_null_guard_is_retained": true,
+    "nonnull_path_fails_closed_without_zero_fill": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_real_snapshot_anchors": true,
+    "reference_raw_manifest_matches": true,
+    "stats_owner_is_not_invented": true
+  },
+  "local": {
+    "false_success": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "carrier_bytes": 124,
+    "core_getter": "0x100141f06",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 534,
+    "infra_wrapper": "0x100017d60",
+    "null_status": "0xe00002bc"
+  },
+  "schema": "itlwm-wcl-low-latency-info-stats-quarantine-v1",
+  "source_base_revision": "bb76264e271dd36e8d85344534b8aab1b169ff99"
+}

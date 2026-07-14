@@ -1364,8 +1364,11 @@ EAPOL RX/TX data paths are not this firmware filter backend.  See
 
 ## Q13 Telemetry/Cache Getter Zone: public carriers without hidden owner lift
 
-The next `Q13` zone closes fourteen getter slots that already expose a stable
-Tahoe public contract even when the deeper Broadcom owner is still hidden.
+The original `Q13` zone classified fourteen getter slots as exposing a stable
+Tahoe public contract even when the deeper Broadcom owner was still hidden.
+That classification is superseded for `getWCL_LOW_LATENCY_INFO_STATS(...)` by
+the 2026-07-14 correction below: its reference body reads real owner/core
+state, so the local all-zero success carrier was not a stable contract.
 
 Closed in this zone:
 
@@ -1386,7 +1389,6 @@ Closed in this zone:
 - `getWCL_FW_HOT_CHANNELS(...)`
 - `getWCL_TRAFFIC_COUNTERS(...)`
 - `getRSN_XE(...)`
-- `getWCL_LOW_LATENCY_INFO_STATS(...)`
 
 Recovered Apple behavior splits into three public buckets:
 
@@ -1399,11 +1401,11 @@ Recovered Apple behavior splits into three public buckets:
   `getAWDL_RSDB_CAPS`, `getBTCOEX_PROFILE_ACTIVE`,
   `getMAX_NSS_FOR_AP`, `getBTCOEX_2G_CHAIN_DISABLE`,
   `getTXRX_CHAIN_INFO`, `getMIMO_STATUS`, `getWCL_FW_HOT_CHANNELS`,
-  `getWCL_TRAFFIC_COUNTERS`, `getWCL_LOW_LATENCY_INFO_STATS`
+  `getWCL_TRAFFIC_COUNTERS`
 
 This batch intentionally stops at the public Apple80211 boundary:
 
-- unsupported headers are removed for these fifteen selectors
+- unsupported headers are removed for the remaining Q13 selectors
 - exact Tahoe fail codes are preserved where Apple exposes failure directly
 - caller-visible carriers are preserved from local cache/runtime state where
   Apple reads them from hidden owners or core-state fields

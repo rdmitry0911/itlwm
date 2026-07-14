@@ -3905,11 +3905,11 @@ getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple exposes a fixed 0x7c-byte carrier here. The hidden low-latency
-    // owner is still absent, so keep the caller-visible ABI as a zeroed
-    // snapshot rather than leaving slot [534] unsupported.
-    memset(data, 0, 0x7c);
-    return kIOReturnSuccess;
+    // The 25C56 Core getter fills all 0x7c bytes from its low-latency and
+    // traffic-monitor owners. This port has no equivalent producer, so do not
+    // acknowledge a synthetic all-zero snapshot.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -7959,3 +7959,20 @@ while the card-specific routes remain explicit so valid selectors reach the
 right gate. This is an exact Tahoe return-shape correction, not a coexistence
 backend implementation and not a claim about the separate V1 target. See
 `docs/reference/CR-479-legacy-btcoex-direct-gate-alignment-20260714.md`.
+
+## 2026-07-14 correction: low-latency stats require a real owner snapshot
+
+The earlier Q13 telemetry classification treated
+`getWCL_LOW_LATENCY_INFO_STATS` as a fixed `0x7c`-byte zero carrier when its
+hidden low-latency owner was unavailable. Exact 25C56 DEXT disassembly
+supersedes that conclusion: the active Infra slot `[534]` tail-dispatches to
+Core, which rejects null with `0xe00002bc` and otherwise reads its traffic
+owner/core counters before filling the caller's snapshot.
+
+The local Tahoe method retains its null guard but now returns
+`kIOReturnUnsupported` for a non-null carrier before zeroing or reading it.
+This removes a false success rather than claiming Apple valid-input return
+parity or implementing the absent traffic-monitor owner. The separate
+`getWCL_LOW_LATENCY_INFO` configuration carrier and its three registry scalars
+are deliberately unchanged. See
+`docs/reference/CR-479-wcl-low-latency-info-stats-quarantine-20260714.md`.

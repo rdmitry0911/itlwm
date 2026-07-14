@@ -342,8 +342,8 @@ public:
     virtual IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status *) override;
     // [533]
     virtual IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *) override;
-    // [534] — Tahoe public contract is `NULL -> 0xe00002bc`, else a fixed
-    // low-latency stats carrier.
+    // [534] — Tahoe Core fills a 0x7c-byte low-latency stats carrier from
+    // hidden owner state. The local no-owner port fails closed for non-null.
     virtual IOReturn getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats *) override;
     // [535]
     virtual IOReturn getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *) override;
