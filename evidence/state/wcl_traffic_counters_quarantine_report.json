@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "active_v2_slot_remains": true,
+    "local_null_guard_is_retained": true,
+    "no_local_counter_source_is_introduced": true,
+    "nonnull_path_fails_closed_without_zero_fill": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_real_counter_anchors": true,
+    "reference_raw_manifest_matches": true
+  },
+  "local": {
+    "false_success": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_getter": "0x100132b8c",
+    "counter_qwords": 7,
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 527,
+    "infra_wrapper": "0x100017ca4",
+    "null_status": "0xe00002bc"
+  },
+  "schema": "itlwm-wcl-traffic-counters-quarantine-v1",
+  "source_base_revision": "8b271f7070db4a803dd6e83ddad31f563d33a5e0"
+}

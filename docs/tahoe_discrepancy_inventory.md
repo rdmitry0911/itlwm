@@ -8005,3 +8005,18 @@ local null guard is retained, while every non-null request now fails closed
 with `kIOReturnUnsupported`. This does not claim Apple null or feature-enabled
 valid-input parity and does not modify the separate `setMIMO_CONFIG` surface.
 See `docs/reference/CR-479-mimo-status-quarantine-20260714.md`.
+
+## 2026-07-14 correction: WCL traffic counters require real counter sources
+
+The earlier Q13 telemetry classification treated `getWCL_TRAFFIC_COUNTERS` as
+a safe seven-qword all-zero carrier when its Broadcom traffic owners were not
+lifted. Exact 25C56 DEXT disassembly supersedes that assumption: active Infra
+slot `[527]` dispatches through Core, which returns `0xe00002bc` for null and
+otherwise composes all seven fields from owner callbacks, Core counters, the
+real-time NAN TX reader, and continuous time.
+
+The local Tahoe method retains its existing null guard but now returns
+`kIOReturnUnsupported` for any non-null carrier before zeroing it. This
+removes a false telemetry success; it does not implement the absent owners or
+claim Apple valid-input return/value parity. See
+`docs/reference/CR-479-wcl-traffic-counters-quarantine-20260714.md`.

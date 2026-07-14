@@ -3852,11 +3852,12 @@ getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple exposes seven u64 counters here. The local port does not yet lift
-    // the hidden WCL traffic owner, so preserve the same carrier shape with a
-    // zeroed snapshot rather than returning unsupported.
-    memset(data, 0, sizeof(uint64_t) * 7);
-    return kIOReturnSuccess;
+    // Tahoe Core derives these seven counters from traffic owners, Core
+    // counters, the real-time NAN TX reader, and continuous time. The Intel
+    // port has none of those WCL sources behind this getter, so a zeroed
+    // snapshot would acknowledge telemetry that was never collected.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
