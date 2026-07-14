@@ -2957,22 +2957,15 @@ getPOWER_DEBUG_INFO(apple80211_power_debug_info *data)
 IOReturn AirportItlwmSkywalkInterface::
 getROAM_PROFILE(apple80211_roam_profile_all_bands *data)
 {
-    // AppleBCMWLANCore::getROAM_PROFILE writes the three per-band metadata
-    // words at +0x4/+0x84/+0x104 and marks each successful band payload at
-    // +0xc + band*0x80. Preserve that public multi-band carrier instead of
-    // returning generic unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 0x180);
-    *reinterpret_cast<uint32_t *>(raw + 0x04) = 4;
-    *reinterpret_cast<uint32_t *>(raw + 0x84) = 2;
-    *reinterpret_cast<uint32_t *>(raw + 0x104) = 0x400;
-    raw[0x0c] = 1;
-    raw[0x8c] = 1;
-    raw[0x10c] = 1;
-    return kIOReturnSuccess;
+    // Tahoe obtains each band from the RoamAdapter after primary-interface,
+    // association, and firmware-I/O checks. A blank carrier with every band
+    // marked successful did none of that work, so fail closed until a real
+    // owner exists.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

@@ -487,10 +487,12 @@ than accepting the inverted invalid range and caching a false success.
 - `Q13 mini-batch: diagnostic / roam getter zone`:
   a mixed diagnostic/country/roam zone no longer belongs in the
   generic unsupported bucket. The public Apple contracts for
-  `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`, `getHW_SUPPORTED_CHANNELS`,
+  `getCOUNTRY_CHANNELS`, `getHW_SUPPORTED_CHANNELS`,
   `getTRAP_CRASHTRACER_MINI_DUMP`, `getBEACON_INFO`, `getCHIP_DIAGS`, `getCUR_PMK`,
   `getCOUNTRY_CHANNELS_INFO`, and `getSENSING_DATA` are now reflected directly
-  in the port, while
+  in the port. `getROAM_PROFILE` was later shown to require a primary-interface,
+  association, and firmware backend, so its former synthetic carrier is
+  superseded by the no-backend quarantine. Meanwhile,
   `getAWDL_PEER_TRAFFIC_STATS` is classified out as an Apple internal stub and
   `setBSS_BLACKLIST` was removed from the open queue because its setter body was
   lifted; `setREALTIME_QOS_MSCS` was initially classified that way, but current
@@ -820,11 +822,11 @@ part of the open setter list above:
 - `588 setSENSING_DISABLE`
 - `659 setDBRG_ENTROPY`
 
-Closed as the diagnostic / roam getter zone and therefore no longer part of
-the open queues above:
+Initially classified as closed in the diagnostic / roam getter zone (the
+`getROAM_PROFILE` entry is superseded by the 2026-07-15 quarantine below):
 
 - `470 getAWDL_PEER_TRAFFIC_STATS`
-- `485 getROAM_PROFILE`
+- `485 getROAM_PROFILE` (historical classification; superseded)
 - `489 getCOUNTRY_CHANNELS`
 - `496 getHW_SUPPORTED_CHANNELS`
 - `507 getTRAP_CRASHTRACER_MINI_DUMP`
@@ -8061,3 +8063,18 @@ returns `kIOReturnUnsupported` for valid modes before state mutation. This is
 a no-backend quarantine, not Apple null, valid-mode status, input-shape, or
 adapter-side parity. See
 `docs/reference/CR-479-wcl-trigger-cc-quarantine-20260714.md`.
+
+## 2026-07-15 correction: ROAM_PROFILE is association and firmware backed
+
+The prior V2/Skywalk getter zeroed the complete `0x180` public carrier, wrote
+its three metadata values, marked every band successful, and returned success.
+Fresh 25C56 DEXT recovery instead dispatches slot `[485]` into RoamAdapter.
+It needs a primary interface, checks association for each `0x80`-byte band,
+and gets `roam_prof` through the firmware commander; only a per-band result of
+zero sets that band success flag.
+
+The local getter retains its safety null boundary but returns
+`kIOReturnUnsupported` for every non-null request before output mutation. This
+is a no-backend quarantine, not Apple null, valid-input error-code,
+output-layout, association, firmware, or runtime-selector parity. See
+`docs/reference/CR-479-roam-profile-quarantine-20260715.md`.

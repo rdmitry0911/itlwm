@@ -2382,13 +2382,12 @@ valid-input return-code parity.
 
 See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-property-callback-quarantine-20260714.md).
 
-## Q13 Batch: diagnostic/roam getter zone leaves the unsupported tail
+## Q13 batch record: diagnostic/roam getter zone (partially superseded)
 
-The next `Q13` zone is the diagnostics / roaming / country-information cluster
-that still sat on generic unsupported even though Tahoe already exposes a
-recoverable public contract for it. This zone closed the following slots;
-the former `getPOWER_DEBUG_INFO` and `getWCL_EXTENDED_BSS_INFO`
-classifications are superseded by the 2026-07-14 no-backend corrections below:
+The `Q13` diagnostics / roaming / country-information batch was originally
+recorded as moving this cluster off generic unsupported. Its classifications
+for `getPOWER_DEBUG_INFO`, `getWCL_EXTENDED_BSS_INFO`, and `getROAM_PROFILE`
+are superseded by later no-backend corrections below:
 
 - `getAWDL_PEER_TRAFFIC_STATS`
 - `getROAM_PROFILE`
@@ -2410,10 +2409,11 @@ Recovered Apple evidence splits this zone into three public classes:
   "missing producer" bucket:
   `getAWDL_PEER_TRAFFIC_STATS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
   `getBEACON_INFO`
-- concrete caller-visible carriers:
-  `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`, `getHW_SUPPORTED_CHANNELS`,
-  `getCHIP_DIAGS`, `getCUR_PMK`, `getCOUNTRY_CHANNELS_INFO`,
-  `getSENSING_DATA`
+- association/firmware-backed carrier that must not be synthesized from a
+  static local buffer: `getROAM_PROFILE`
+- other concrete caller-visible carriers: `getCOUNTRY_CHANNELS`,
+  `getHW_SUPPORTED_CHANNELS`, `getCHIP_DIAGS`, `getCUR_PMK`,
+  `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`
 - delegated owner-backed selectors whose public null/fail contract is still
   recoverable even when the private owner stays unlifted:
   `setVIRTUAL_IF_CREATE`, `setBSS_BLACKLIST`, `setREALTIME_QOS_MSCS`
@@ -2423,9 +2423,9 @@ Public Apple-side facts used for this zone:
 - `IO80211InfraProtocol_vtable_25D125.txt` marks slot `[470]` as an
   `AWDL internal stub`, which is enough to classify it out of the open
   public-system discrepancy queue
-- `AppleBCMWLANCore::getROAM_PROFILE(...)` writes the three per-band metadata
-  words at offsets `+0x4/+0x84/+0x104` and marks successful band payloads at
-  `+0xc + band*0x80`
+- `AppleBCMWLANCore::getROAM_PROFILE(...)` delegates to RoamAdapter; that
+  path requires a primary interface, checks association for every band, and
+  uses the firmware `roam_prof` IOVAR before it marks a band successful
 - `AppleBCMWLANCore::getCOUNTRY_CHANNELS(...)` is a fixed zero-fill trap path
   over a `0x12d8` public carrier
 - `APPLE80211_IOC_HW_SUPPORTED_CHANNELS` belongs to the same Skywalk BSD bridge
