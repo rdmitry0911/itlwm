@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "active_channel_slot_and_route_remain": true,
+    "apsta_owner_path_is_retained": true,
+    "dead_cache_removed": true,
+    "internal_input_gates_are_retained": true,
+    "known_channel_fails_closed": true,
+    "reference_note_has_core_and_nonclaim": true
+  },
+  "local": {
+    "apsta_owner_branch_modified": false,
+    "false_success": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "chanspec_helper": "0xffffff8001602f74",
+    "core_setter": "0xffffff8001602b3e",
+    "invalid_status": "0x16",
+    "kdk_sha256": "db163f75110e7e79aafa580396285275df1a7a0105da82cf1a05912a5e24c401",
+    "kernel_collections_sha256": "aaf052e7fcb4ee9c9a1e1d76a57e85966a853ea19cf9dc76183959ea416ca5a8",
+    "null_status": "0xe00002bc",
+    "symbol_map_sha256": "1ee52696618d1ed8d14272c077121dccd1fb90c6f6ced6bc737abd2bf099b748",
+    "zero_chanspec_status": "0xe00002c2"
+  },
+  "schema": "itlwm-channel-fallback-quarantine-v1",
+  "source_base_revision": "d6fb256eb1d42e03958c9388a08f2ce3c1a4069a"
+}

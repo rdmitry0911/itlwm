@@ -751,8 +751,6 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
-    apple80211_channel_data cachedRequestedChannel;
-    bool hasCachedRequestedChannel;
     uint32_t cachedPowerBudget;
     uint32_t cachedDynsarHeader0[4];
     uint32_t cachedDynsarHeader1[4];

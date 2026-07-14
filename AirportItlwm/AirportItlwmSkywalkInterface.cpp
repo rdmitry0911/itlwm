@@ -2212,8 +2212,6 @@ init()
     fHalService = NULL;
     scanSource = NULL;
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    memset(&cachedRequestedChannel, 0, sizeof(cachedRequestedChannel));
-    hasCachedRequestedChannel = false;
     cachedPowerBudget = 0;
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
     memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
@@ -2584,8 +2582,6 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    memset(&this->cachedRequestedChannel, 0, sizeof(this->cachedRequestedChannel));
-    this->hasCachedRequestedChannel = false;
     this->cachedPowerBudget = 0;
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
     memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
@@ -5148,17 +5144,14 @@ setTX_MODE_CONFIG(apple80211_tx_mode_config *)
 IOReturn AirportItlwmSkywalkInterface::
 setCHANNEL(apple80211_channel_data *data)
 {
-    // AppleBCMWLANCore::setCHANNEL preserves the public request carrier, gates
-    // channel ids >= 0x100 with raw 0x16, then only later resolves the hidden
-    // chanspec/property owner. Keep the same caller-visible split here instead
-    // of dropping the selector on the floor as generic unsupported.
+    // AppleBCMWLANCore::setCHANNEL gates malformed channels, resolves a
+    // chanspec, then programs it through a hidden owner. The no-APSTA local
+    // fallback has no such owner, so retain the malformed/unknown split but do
+    // not acknowledge an otherwise-known channel from an unread cache.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
     if (data->channel.channel >= 0x100)
         return kApple80211ErrInvalidArgumentRaw;
-
-    cachedRequestedChannel = *data;
-    hasCachedRequestedChannel = true;
 
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr || data->channel.channel == 0)
@@ -5168,7 +5161,7 @@ setCHANNEL(apple80211_channel_data *data)
         if (ic->ic_channels[i].ic_freq == 0)
             continue;
         if (ieee80211_chan2ieee(ic, &ic->ic_channels[i]) == data->channel.channel)
-            return kIOReturnSuccess;
+            return kIOReturnUnsupported;
     }
     return static_cast<IOReturn>(0xe00002c2);
 }

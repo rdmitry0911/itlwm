@@ -7976,3 +7976,18 @@ parity or implementing the absent traffic-monitor owner. The separate
 `getWCL_LOW_LATENCY_INFO` configuration carrier and its three registry scalars
 are deliberately unchanged. See
 `docs/reference/CR-479-wcl-low-latency-info-stats-quarantine-20260714.md`.
+
+## 2026-07-14 correction: no-APSTA channel fallback cannot acknowledge tune
+
+The earlier generic `setCHANNEL` classification identified the real Apple
+Core chanspec producer but did not distinguish the local no-APSTA fallback.
+That active Tahoe fallback only copied a request into an unread cache, checked
+the local channel table, and returned success for a known channel; it did not
+resolve chanspec or issue the required firmware IOVAR.
+
+The fallback now preserves its existing internal null/range,
+zero/absent-controller, and unknown-channel gates but rejects a known channel
+with `kIOReturnUnsupported`. The dead cache is removed. The separate
+`fAPSTAOwner->setChannel(in)` branch is deliberately unchanged. This is a
+no-backend quarantine, not Apple valid-input status parity. See
+`docs/reference/CR-479-channel-fallback-quarantine-20260714.md`.
