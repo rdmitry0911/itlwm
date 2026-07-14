@@ -1,0 +1,147 @@
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: A97E73DB-90B4-3827-B166-4AECB9972AD5 (arm64e) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) target create /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+Current executable set to '/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN' (x86_64).
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getPOWER_DEBUG_INFO
+1 match found in /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN:
+        Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100016ffc] (com.apple.DriverKit-AppleBCMWLAN.__TEXT.__text + 77820)
+        Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getPOWER_DEBUG_INFO(apple80211_power_debug_info*)
+(lldb) image lookup -n AppleBCMWLANCore::getPOWER_DEBUG_INFO
+1 match found in /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN:
+        Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100133876] (com.apple.DriverKit-AppleBCMWLAN.__TEXT.__text + 1243254)
+        Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getPOWER_DEBUG_INFO(apple80211_power_debug_info*)
+(lldb) disassemble -s 0x100016ffc -c 48
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getPOWER_DEBUG_INFO:
+com.apple.DriverKit-AppleBCMWLAN[0x100016ffc] <+0>:  pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100016ffd] <+1>:  movq   %rsp, %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017000] <+4>:  movq   0x88(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017007] <+11>: movq   (%rax), %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x10001700a] <+14>: movq   (%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x10001700d] <+17>: movq   0x358(%rax), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017014] <+24>: popq   %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017015] <+25>: jmpq   *%rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017017] <+27>: nop
+(lldb) disassemble -s 0x100133876 -c 200
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getPOWER_DEBUG_INFO:
+com.apple.DriverKit-AppleBCMWLAN[0x100133876] <+0>:   pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100133877] <+1>:   movq   %rsp, %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x10013387a] <+4>:   pushq  %r15
+com.apple.DriverKit-AppleBCMWLAN[0x10013387c] <+6>:   pushq  %r14
+com.apple.DriverKit-AppleBCMWLAN[0x10013387e] <+8>:   pushq  %rbx
+com.apple.DriverKit-AppleBCMWLAN[0x10013387f] <+9>:   subq   $0x2f8, %rsp              ; imm = 0x2F8
+com.apple.DriverKit-AppleBCMWLAN[0x100133886] <+16>:  movq   %rsi, %rbx
+com.apple.DriverKit-AppleBCMWLAN[0x100133889] <+19>:  movq   %rdi, %r14
+com.apple.DriverKit-AppleBCMWLAN[0x10013388c] <+22>:  movq   0x250e35(%rip), %rax      ; (void *)0x80100000000000d9
+com.apple.DriverKit-AppleBCMWLAN[0x100133893] <+29>:  movq   (%rax), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133896] <+32>:  movq   %rax, -0x20(%rbp)
+com.apple.DriverKit-AppleBCMWLAN[0x10013389a] <+36>:  movq   $0x0, 0x4(%rsi)
+com.apple.DriverKit-AppleBCMWLAN[0x1001338a2] <+44>:  movabsq $-0x5555555555555556, %rax ; imm = 0xAAAAAAAAAAAAAAAA
+com.apple.DriverKit-AppleBCMWLAN[0x1001338ac] <+54>:  movq   %rax, -0x30(%rbp)
+com.apple.DriverKit-AppleBCMWLAN[0x1001338b0] <+58>:  movaps 0xf4329(%rip), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x1001338b7] <+65>:  movaps %xmm0, -0x40(%rbp)
+com.apple.DriverKit-AppleBCMWLAN[0x1001338bb] <+69>:  movaps %xmm0, -0x50(%rbp)
+com.apple.DriverKit-AppleBCMWLAN[0x1001338bf] <+73>:  callq  0x1000ddb7c               ; AppleBCMWLANCore::isRejectingCommands()
+com.apple.DriverKit-AppleBCMWLAN[0x1001338c4] <+78>:  testl  %eax, %eax
+com.apple.DriverKit-AppleBCMWLAN[0x1001338c6] <+80>:  je     0x100133ae2               ; <+620>
+com.apple.DriverKit-AppleBCMWLAN[0x1001338cc] <+86>:  movl   $0x2c50, %esi             ; imm = 0x2C50
+com.apple.DriverKit-AppleBCMWLAN[0x1001338d1] <+91>:  addq   0x48(%r14), %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x1001338d5] <+95>:  leaq   0x2c0(%rbx), %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x1001338dc] <+102>: movl   $0x2c0, %edx              ; imm = 0x2C0
+com.apple.DriverKit-AppleBCMWLAN[0x1001338e1] <+107>: callq  0x10022798a               ; symbol stub for: memcpy
+com.apple.DriverKit-AppleBCMWLAN[0x1001338e6] <+112>: movq   %r14, %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x1001338e9] <+115>: movl   $0x4c, %esi
+com.apple.DriverKit-AppleBCMWLAN[0x1001338ee] <+120>: callq  0x1000c846e               ; AppleBCMWLANCore::featureFlagIsBitSet(int) const
+com.apple.DriverKit-AppleBCMWLAN[0x1001338f3] <+125>: testb  %al, %al
+com.apple.DriverKit-AppleBCMWLAN[0x1001338f5] <+127>: je     0x100133a0d               ; <+407>
+com.apple.DriverKit-AppleBCMWLAN[0x1001338fb] <+133>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x1001338ff] <+137>: cmpb   $0x0, 0x4834(%rax)
+com.apple.DriverKit-AppleBCMWLAN[0x100133906] <+144>: jne    0x100133a0d               ; <+407>
+com.apple.DriverKit-AppleBCMWLAN[0x10013390c] <+150>: leaq   -0x310(%rbp), %r15
+com.apple.DriverKit-AppleBCMWLAN[0x100133913] <+157>: movl   $0x2c0, %edx              ; imm = 0x2C0
+com.apple.DriverKit-AppleBCMWLAN[0x100133918] <+162>: movq   %r15, %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x10013391b] <+165>: movl   $0xaa, %esi
+com.apple.DriverKit-AppleBCMWLAN[0x100133920] <+170>: callq  0x100227996               ; symbol stub for: memset
+com.apple.DriverKit-AppleBCMWLAN[0x100133925] <+175>: leaq   -0x50(%rbp), %rdx
+com.apple.DriverKit-AppleBCMWLAN[0x100133929] <+179>: movl   $0x20, (%rdx)
+com.apple.DriverKit-AppleBCMWLAN[0x10013392f] <+185>: movq   %r14, %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100133932] <+188>: movq   %r15, %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x100133935] <+191>: callq  0x100104610               ; AppleBCMWLANCore::getPowerStats(apple80211_power_debug_sub_info*, apple80211_stat_report*)
+com.apple.DriverKit-AppleBCMWLAN[0x10013393a] <+196>: movl   (%r15), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x10013393d] <+199>: movl   0x38(%r15), %ecx
+com.apple.DriverKit-AppleBCMWLAN[0x100133941] <+203>: movl   0x1e0(%r15), %edx
+com.apple.DriverKit-AppleBCMWLAN[0x100133948] <+210>: movl   %eax, 0x580(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x10013394e] <+216>: movl   %ecx, 0x584(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133954] <+222>: movups 0x4c(%r15), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133959] <+227>: movups %xmm0, 0x588(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133960] <+234>: movups 0x5c(%r15), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133965] <+239>: movups %xmm0, 0x598(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x10013396c] <+246>: movups 0x6c(%r15), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133971] <+251>: movups %xmm0, 0x5a8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133978] <+258>: movq   0x150(%r15), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x10013397f] <+265>: movq   %rax, 0x5b8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133986] <+272>: movq   0x1d8(%r15), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x10013398d] <+279>: movq   %rax, 0x5c4(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133994] <+286>: movl   %edx, 0x5cc(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x10013399a] <+292>: movl   0x194(%r15), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x1001339a1] <+299>: movl   %eax, 0x5c0(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339a7] <+305>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x1001339ab] <+309>: movups 0x2f10(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x1001339b2] <+316>: movups 0x2f20(%rax), %xmm1
+com.apple.DriverKit-AppleBCMWLAN[0x1001339b9] <+323>: movups 0x2f30(%rax), %xmm2
+com.apple.DriverKit-AppleBCMWLAN[0x1001339c0] <+330>: movups 0x2f40(%rax), %xmm3
+com.apple.DriverKit-AppleBCMWLAN[0x1001339c7] <+337>: movups %xmm0, 0x5e8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339ce] <+344>: movups %xmm1, 0x5f8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339d5] <+351>: movups %xmm2, 0x608(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339dc] <+358>: movups %xmm3, 0x618(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339e3] <+365>: movups 0x2f50(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x1001339ea] <+372>: movups %xmm0, 0x628(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339f1] <+379>: movups 0x2f60(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x1001339f8] <+386>: movups %xmm0, 0x638(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x1001339ff] <+393>: movq   0x2f70(%rax), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133a06] <+400>: movq   %rax, 0x648(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a0d] <+407>: leaq   0x650(%rbx), %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x100133a14] <+414>: movq   %r14, %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100133a17] <+417>: callq  0x100133b4c               ; AppleBCMWLANCore::getInactivityPowerStats(apple80211_inactivity_power_debug_sub_info*)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a1c] <+422>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133a20] <+426>: movups 0x8bc8(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133a27] <+433>: movups 0x8bd8(%rax), %xmm1
+com.apple.DriverKit-AppleBCMWLAN[0x100133a2e] <+440>: movups 0x8be4(%rax), %xmm2
+com.apple.DriverKit-AppleBCMWLAN[0x100133a35] <+447>: movups %xmm2, 0x698(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a3c] <+454>: movups %xmm1, 0x68c(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a43] <+461>: movups %xmm0, 0x67c(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a4a] <+468>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133a4e] <+472>: movups 0x8bf4(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133a55] <+479>: movups 0x8c04(%rax), %xmm1
+com.apple.DriverKit-AppleBCMWLAN[0x100133a5c] <+486>: movups 0x8c14(%rax), %xmm2
+com.apple.DriverKit-AppleBCMWLAN[0x100133a63] <+493>: movups 0x8c20(%rax), %xmm3
+com.apple.DriverKit-AppleBCMWLAN[0x100133a6a] <+500>: movups %xmm1, 0x6b8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a71] <+507>: movups %xmm2, 0x6c8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a78] <+514>: movups %xmm3, 0x6d4(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a7f] <+521>: movups %xmm0, 0x6a8(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133a86] <+528>: movq   0x48(%r14), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133a8a] <+532>: movups 0x8c98(%rax), %xmm0
+com.apple.DriverKit-AppleBCMWLAN[0x100133a91] <+539>: movups 0x8ca8(%rax), %xmm1
+com.apple.DriverKit-AppleBCMWLAN[0x100133a98] <+546>: movups 0x8cb8(%rax), %xmm2
+com.apple.DriverKit-AppleBCMWLAN[0x100133a9f] <+553>: movups 0x8cc8(%rax), %xmm3
+com.apple.DriverKit-AppleBCMWLAN[0x100133aa6] <+560>: movups %xmm1, 0x6f4(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133aad] <+567>: movups %xmm2, 0x704(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133ab4] <+574>: movups %xmm3, 0x714(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133abb] <+581>: movups %xmm0, 0x6e4(%rbx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133ac2] <+588>: movq   0x250bff(%rip), %rax      ; (void *)0x80100000000000d9
+com.apple.DriverKit-AppleBCMWLAN[0x100133ac9] <+595>: movq   (%rax), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133acc] <+598>: cmpq   -0x20(%rbp), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100133ad0] <+602>: jne    0x100133b46               ; <+720>
+com.apple.DriverKit-AppleBCMWLAN[0x100133ad2] <+604>: xorl   %eax, %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100133ad4] <+606>: addq   $0x2f8, %rsp              ; imm = 0x2F8
+com.apple.DriverKit-AppleBCMWLAN[0x100133adb] <+613>: popq   %rbx
+com.apple.DriverKit-AppleBCMWLAN[0x100133adc] <+614>: popq   %r14
+com.apple.DriverKit-AppleBCMWLAN[0x100133ade] <+616>: popq   %r15
+com.apple.DriverKit-AppleBCMWLAN[0x100133ae0] <+618>: popq   %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100133ae1] <+619>: retq
+com.apple.DriverKit-AppleBCMWLAN[0x100133ae2] <+620>: leaq   -0x50(%rbp), %rdx
+com.apple.DriverKit-AppleBCMWLAN[0x100133aea] <+628>: movl   $0xd, (%rdx)
+com.apple.DriverKit-AppleBCMWLAN[0x100133af0] <+634>: movq   %r14, %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100133af3] <+637>: movq   %rbx, %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x100133af6] <+640>: callq  0x100104610               ; AppleBCMWLANCore::getPowerStats(apple80211_power_debug_sub_info*, apple80211_stat_report*)

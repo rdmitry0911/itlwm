@@ -183,7 +183,9 @@ public:
     virtual IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data *) override;
     // [479]
     virtual IOReturn getMCS(apple80211_mcs_data *) override;
-    // [480]
+    // [480] — Tahoe composes this diagnostic carrier from live power/Core
+    // telemetry; the local V2/Skywalk path retains its safety null guard and
+    // otherwise fails closed until a real producer exists.
     virtual IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info *) override;
     // [481]
     virtual IOReturn getHT_CAPABILITY(apple80211_ht_capability *) override;

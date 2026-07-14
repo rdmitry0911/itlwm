@@ -2960,17 +2960,14 @@ getOP_MODE(struct apple80211_opmode_data *od)
 IOReturn AirportItlwmSkywalkInterface::
 getPOWER_DEBUG_INFO(apple80211_power_debug_info *data)
 {
-    // AppleBCMWLANCore::getPOWER_DEBUG_INFO zeroes the leading public qword
-    // and then copies a fixed 0x2c0 telemetry snapshot from core state. The
-    // local port does not lift the hidden power-debug owner yet, but it can
-    // still preserve the caller-visible fixed carrier shape instead of generic
-    // unsupported.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 0x580);
-    return kIOReturnSuccess;
+    // Tahoe builds this diagnostic reply from live power statistics, Core
+    // snapshot fields, feature gates, and inactivity state. The Intel port
+    // has no equivalent telemetry producer, so do not fabricate a blank one.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

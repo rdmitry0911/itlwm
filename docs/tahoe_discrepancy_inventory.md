@@ -486,9 +486,8 @@ than accepting the inverted invalid range and caching a false success.
 - `Q13 mini-batch: diagnostic / roam getter zone`:
   a mixed diagnostic/country/roam zone no longer belongs in the
   generic unsupported bucket. The public Apple contracts for
-  `getPOWER_DEBUG_INFO`, `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`,
-  `getHW_SUPPORTED_CHANNELS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
-  `getBEACON_INFO`, `getCHIP_DIAGS`, `getCUR_PMK`,
+  `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`, `getHW_SUPPORTED_CHANNELS`,
+  `getTRAP_CRASHTRACER_MINI_DUMP`, `getBEACON_INFO`, `getCHIP_DIAGS`, `getCUR_PMK`,
   `getCOUNTRY_CHANNELS_INFO`, and `getSENSING_DATA` are now reflected directly
   in the port, while
   `getAWDL_PEER_TRAFFIC_STATS` is classified out as an Apple internal stub and
@@ -824,7 +823,6 @@ Closed as the diagnostic / roam getter zone and therefore no longer part of
 the open queues above:
 
 - `470 getAWDL_PEER_TRAFFIC_STATS`
-- `480 getPOWER_DEBUG_INFO`
 - `485 getROAM_PROFILE`
 - `489 getCOUNTRY_CHANNELS`
 - `496 getHW_SUPPORTED_CHANNELS`
@@ -8034,3 +8032,17 @@ The local Tahoe getter retains its existing null guard but returns
 This removes a false success, not a claim of Apple valid-input status or
 output-layout parity. See
 `docs/reference/CR-479-wcl-extended-bss-info-quarantine-20260714.md`.
+
+## 2026-07-14 correction: power debug info requires a live telemetry producer
+
+The earlier Q13 classification treated `getPOWER_DEBUG_INFO` as a stable blank
+diagnostic carrier despite the absent power telemetry owner. Exact 25C56 DEXT
+disassembly shows active Infra slot `[480]` dispatching to Core, which writes
+from live power statistics, copies a Core snapshot, follows feature gates, and
+adds inactivity/Core fields beyond the former local zero-fill region.
+
+The local Tahoe getter retains its safety null guard but returns
+`kIOReturnUnsupported` for every non-null request before output mutation. This
+removes a fabricated diagnostic success; it does not claim Apple null,
+valid-input status, output-layout, or feature-branch parity. See
+`docs/reference/CR-479-power-debug-info-quarantine-20260714.md`.

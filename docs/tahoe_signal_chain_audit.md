@@ -2384,11 +2384,10 @@ See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-p
 The next `Q13` zone is the diagnostics / roaming / country-information cluster
 that still sat on generic unsupported even though Tahoe already exposes a
 recoverable public contract for it. This zone closed the following slots;
-the former `getWCL_EXTENDED_BSS_INFO` classification is superseded by the
-2026-07-14 no-backend correction below:
+the former `getPOWER_DEBUG_INFO` and `getWCL_EXTENDED_BSS_INFO`
+classifications are superseded by the 2026-07-14 no-backend corrections below:
 
 - `getAWDL_PEER_TRAFFIC_STATS`
-- `getPOWER_DEBUG_INFO`
 - `getROAM_PROFILE`
 - `getCOUNTRY_CHANNELS`
 - `getHW_SUPPORTED_CHANNELS`
@@ -2409,9 +2408,9 @@ Recovered Apple evidence splits this zone into three public classes:
   `getAWDL_PEER_TRAFFIC_STATS`, `getTRAP_CRASHTRACER_MINI_DUMP`,
   `getBEACON_INFO`
 - concrete caller-visible carriers:
-  `getPOWER_DEBUG_INFO`, `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`,
-  `getHW_SUPPORTED_CHANNELS`, `getCHIP_DIAGS`, `getCUR_PMK`,
-  `getCOUNTRY_CHANNELS_INFO`, `getSENSING_DATA`
+  `getROAM_PROFILE`, `getCOUNTRY_CHANNELS`, `getHW_SUPPORTED_CHANNELS`,
+  `getCHIP_DIAGS`, `getCUR_PMK`, `getCOUNTRY_CHANNELS_INFO`,
+  `getSENSING_DATA`
 - delegated owner-backed selectors whose public null/fail contract is still
   recoverable even when the private owner stays unlifted:
   `setVIRTUAL_IF_CREATE`, `setBSS_BLACKLIST`, `setREALTIME_QOS_MSCS`
@@ -2421,8 +2420,6 @@ Public Apple-side facts used for this zone:
 - `IO80211InfraProtocol_vtable_25D125.txt` marks slot `[470]` as an
   `AWDL internal stub`, which is enough to classify it out of the open
   public-system discrepancy queue
-- `AppleBCMWLANCore::getPOWER_DEBUG_INFO(...)` zeroes the public leading qword
-  and copies a fixed `0x2c0` telemetry snapshot from core state
 - `AppleBCMWLANCore::getROAM_PROFILE(...)` writes the three per-band metadata
   words at offsets `+0x4/+0x84/+0x104` and marks successful band payloads at
   `+0xc + band*0x80`
