@@ -80,7 +80,8 @@ This inventory is intentionally split into:
   closed
   the Apple-visible sleep/power/timing contract is now exhausted:
   `getSYSTEM_SLEEP_CONFIG` mirrors the owner-missing `0xe00002bc` fail shape,
-  `setWOW_TEST` matches the recovered 1..600 gate,
+  `setWOW_TEST` preserves the recovered local 1..600 gate and quarantines its
+  missing firmware wake-test owner,
   `setPOWER_BUDGET` preserves its local null/feature gates, recognizes the
   recovered 1..100 range, and quarantines the missing firmware-owner request,
   `setUSB_HOST_NOTIFICATION` preserves the public carrier,
@@ -1122,12 +1123,16 @@ ad hoc shell history.
 - `BTCOEX_PROFILE` no longer keeps only one blob; it preserves the ten-entry
   per-profile table indexed by `profileIndex`, matching the recovered Apple
   core-state layout
-- `WOW_TEST` no longer behaves as a scalar-only cache write; it now mirrors the
-  visible success side effect of entering WoW-enabled state after accepted test
-  setup
+- `WOW_TEST` now preserves its public range rejection while quarantining the
+  missing valid wake-test backend instead of manufacturing a WoW-enabled state
 
 These are no longer counted as drift between local public behavior and the
 reference owner-family decompile.
+
+WoW Test correction: Apple only marks the owner WoW-enabled after a successful
+firmware wake-test operation. The port has no matching event-bit or transport
+owner, so valid non-null test requests return unsupported without synthetic
+cache or interface-state mutation.
 
 ### 12. Additional post-batch public-path corrections
 

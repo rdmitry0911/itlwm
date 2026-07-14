@@ -754,7 +754,6 @@ private:
     uint8_t cachedPrivateMacSecondary[6];
     bool cachedTcpkaOffloadSupported;
     bool cachedTcpkaOffloadEnabled;
-    uint32_t cachedWowTestMode;
     uint64_t cachedOSFeatureFlags;
     bool cachedDhcpRenewalData;
     apple80211_ht_capability cachedHtCapability;
@@ -789,7 +788,6 @@ private:
     uint32_t cachedLastActionFrameChannel;
     uint8_t cachedLastActionFrameCategory;
     bool hasCachedLastActionFrame;
-    bool cachedWowEnabled;
     uint8_t cachedBssBlacklist[0x2b];
     bool hasCachedBssBlacklist;
     uint16_t cachedRsnXeLength;

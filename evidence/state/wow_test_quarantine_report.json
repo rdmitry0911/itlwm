@@ -1,0 +1,37 @@
+{
+  "checks": {
+    "exact_local_range": true,
+    "fake_state_removed": true,
+    "historical_claims_corrected": true,
+    "interface_slot_retained": true,
+    "reference_note": true,
+    "scoped_backend_absent": true,
+    "setter_preserves_range_and_quarantines_valid": true
+  },
+  "local": {
+    "backend_wow_test_owner": false,
+    "request_false_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "add_event_bit": "0x1001e25ae",
+    "config_entry": "0x100120f20",
+    "core_setter": "0x100120ed2",
+    "core_vptr_address_point": "0x1003a10e8",
+    "core_vtable_cell": "0x1003a1600",
+    "core_vtable_offset": "0x518",
+    "core_vtable_symbol": "0x1003a10d8",
+    "event_bit": "0x4c",
+    "firmware_iovar": "wake_event",
+    "firmware_set": "0x10017b6e6",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "infra_wrapper": "0x10001827c",
+    "invalid_status": "0xe00002c2",
+    "retries": 5,
+    "success_state_offset": "0x2508",
+    "valid_range": "1..600",
+    "write_event_bit_field": "0x10011ef7e"
+  },
+  "schema": "itlwm-wow-test-quarantine-v1",
+  "source_base_revision": "0e3fea413894832461e3f6225818b4cd2ed643c5"
+}

@@ -2430,7 +2430,8 @@ contract level:
 
 - `getSYSTEM_SLEEP_CONFIG` already matched the recovered owner-missing fail
   shape `0xe00002bc`
-- `setWOW_TEST` already matched the recovered public 1..600 gate
+- `setWOW_TEST` preserves the recovered local 1..600 rejection and quarantines
+  the missing valid wake-test backend
 - `setPOWER_BUDGET` preserves its local null/feature gates, recognizes the
   recovered 1..100 range, then quarantines the missing firmware-owner request
 - `setUSB_HOST_NOTIFICATION` already preserved the public dword carrier
@@ -2471,13 +2472,18 @@ still-visible state drifts without inventing hidden commander behavior:
 - `setBTCOEX_PROFILE(...)` now stores the full Apple-shaped per-profile table
   entry by `profileIndex` instead of collapsing everything into one last-seen
   blob
-- `setWOW_TEST(...)` now mirrors Apple's externally visible retry/enable
-  semantics more closely by treating success as a WoW-enabled state transition,
-  not just a scalar cache write
+- `setWOW_TEST(...)` preserves the visible range rejection but quarantines the
+  missing retry/event-bit/firmware wake-test owner rather than treating success
+  as a locally manufactured WoW-enabled state transition
 
 The deeper hidden owner bodies behind `USB_HOST_NOTIFICATION`, `OFFLOAD_NDP`,
 `BTCOEX_*` commander traffic, ranging auth, and tx-power-cap bypass still
 remain backend-parity work, not queue debt.
+
+WoW Test correction: valid mode requests use a retrying firmware owner in the
+reference and only its successful completion enables WoW state. The port has
+no equivalent owner or transport, so it returns unsupported for valid non-null
+requests without a synthetic cache or `setWoWEnabled(true)` side effect.
 
 Two more public-path mismatches also fell out of the batch bodies and are now
 closed:

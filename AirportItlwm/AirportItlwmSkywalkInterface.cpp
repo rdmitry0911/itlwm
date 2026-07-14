@@ -2379,7 +2379,6 @@ init()
     memset(cachedPrivateMacSecondary, 0, sizeof(cachedPrivateMacSecondary));
     cachedTcpkaOffloadSupported = false;
     cachedTcpkaOffloadEnabled = false;
-    cachedWowTestMode = 0;
     cachedOSFeatureFlags = 0;
     cachedDhcpRenewalData = false;
     memset(&cachedHtCapability, 0, sizeof(cachedHtCapability));
@@ -2414,7 +2413,6 @@ init()
     cachedLastActionFrameChannel = 0;
     cachedLastActionFrameCategory = 0;
     hasCachedLastActionFrame = false;
-    cachedWowEnabled = false;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
     cachedRsnXeLength = 0;
@@ -2771,7 +2769,6 @@ init(IOService *provider)
     memset(this->cachedPrivateMacSecondary, 0, sizeof(this->cachedPrivateMacSecondary));
     this->cachedTcpkaOffloadSupported = false;
     this->cachedTcpkaOffloadEnabled = false;
-    this->cachedWowTestMode = 0;
     this->cachedOSFeatureFlags = 0;
     this->cachedDhcpRenewalData = false;
     memset(&this->cachedHtCapability, 0, sizeof(this->cachedHtCapability));
@@ -2806,7 +2803,6 @@ init(IOService *provider)
     this->cachedLastActionFrameChannel = 0;
     this->cachedLastActionFrameCategory = 0;
     this->hasCachedLastActionFrame = false;
-    this->cachedWowEnabled = false;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
     this->cachedRsnXeLength = 0;
@@ -4211,22 +4207,13 @@ setWOW_TEST(apple80211_wow_test_data *data)
         return static_cast<IOReturn>(0xe00002c2);
 
     uint32_t mode = *reinterpret_cast<uint32_t *>(raw + 4);
-    // The recovered Apple path retries configureWoWTestModeEntry() up to five
-    // times around the `wake_event` IOVAR and leaves WoW enabled after a
-    // successful setup. The local Tahoe port still lacks Apple's commander
-    // backend, but it can still mirror those externally visible side effects
-    // instead of behaving like a one-shot scalar cache.
     if (mode < 1 || mode > 600)
         return static_cast<IOReturn>(0xe00002c2);
 
-    for (int retries = 0; retries < 5; retries++) {
-        cachedWowTestMode = mode;
-        cachedWowEnabled = true;
-        if (instance && instance->fNetIf != nullptr)
-            instance->fNetIf->setWoWEnabled(true);
-        return kIOReturnSuccess;
-    }
-    return static_cast<IOReturn>(0xe00002c2);
+    // A valid request reaches a retrying firmware wake-test owner in Tahoe.
+    // The port has no equivalent owner or transport, so it must not enable WoW
+    // or report a successful test setup.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
