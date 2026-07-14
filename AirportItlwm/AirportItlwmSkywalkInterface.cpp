@@ -712,16 +712,6 @@ publishTahoeBssidChangedFromCurrentBss(const char *source)
 }
 #endif
 
-struct triggerCCSnapshot
-{
-    uint64_t qword0;
-    uint64_t qword1;
-    uint64_t qword2;
-    uint64_t qword3;
-} __attribute__((packed));
-static_assert(sizeof(triggerCCSnapshot) == 0x20,
-              "triggerCCSnapshot must match the first four qwords cached by Apple");
-
 struct apple80211_offload_arp_data
 {
     uint32_t version;
@@ -2230,9 +2220,6 @@ init()
     hasCachedVhtCapability = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
-    memset(cachedTriggerCC, 0, sizeof(cachedTriggerCC));
-    cachedTriggerCCMode = 0;
-    hasCachedTriggerCC = false;
     cachedBtcoexProfileActive = 0;
     cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
@@ -2600,9 +2587,6 @@ init(IOService *provider)
     this->hasCachedVhtCapability = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
-    memset(this->cachedTriggerCC, 0, sizeof(this->cachedTriggerCC));
-    this->cachedTriggerCCMode = 0;
-    this->hasCachedTriggerCC = false;
     this->cachedBtcoexProfileActive = 0;
     this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
@@ -4545,23 +4529,16 @@ setWCL_TRIGGER_CC(triggerCC *data)
     if (!data)
         return kIOReturnBadArgument;
 
-    const auto *snapshot = reinterpret_cast<const triggerCCSnapshot *>(data);
     const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
     const uint32_t mode = *reinterpret_cast<const uint32_t *>(raw + 0x8);
 
-    // Tahoe 26.x calls APPLE80211_IOC_WCL_TRIGGER_CC during the scan manager
-    // bring-up path.  The Apple producer does not treat it as optional:
-    // AppleBCMWLANCore::setWCL_TRIGGER_CC first copies the first four qwords of
-    // the request into adapter-owned state, then accepts mode 0/1 and returns
-    // 0xe00002bc only for any other mode.  Returning unsupported here is what
-    // produced the live INTERNAL WCL_TRIGGER_CC -> 0xe00002c7 failure.
-    memcpy(cachedTriggerCC, snapshot, sizeof(*snapshot));
-    cachedTriggerCCMode = mode;
-    hasCachedTriggerCC = true;
+    if (mode != 0 && mode != 1)
+        return kIOReturnBadArgumentTahoe;
 
-    if (mode == 0 || mode == 1)
-        return kIOReturnSuccess;
-    return kIOReturnBadArgumentTahoe;
+    // Tahoe routes the valid modes into distinct Scan/Join adapter pipelines.
+    // The Intel cache formerly written here had no consumer and did not run
+    // either pipeline, so it must not acknowledge the request as applied.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

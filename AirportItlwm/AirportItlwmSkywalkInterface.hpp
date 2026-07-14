@@ -547,7 +547,9 @@ public:
     virtual IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode *data) override;
     // [598]
     virtual IOReturn setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data) override;
-    // [599]
+    // [599] — Tahoe routes valid modes into Scan/Join adapter work; the local
+    // V2/Skywalk path preserves its null/invalid-mode boundaries but fails
+    // closed rather than acknowledging an unread cache.
     virtual IOReturn setWCL_TRIGGER_CC(triggerCC *) override;
     // [600]
     virtual IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *) override;
@@ -774,9 +776,6 @@ private:
     bool hasCachedVhtCapability;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
-    uint8_t cachedTriggerCC[0x20];
-    uint32_t cachedTriggerCCMode;
-    bool hasCachedTriggerCC;
     uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];

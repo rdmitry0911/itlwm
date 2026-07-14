@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "active_v2_slot_remains": true,
+    "dead_cache_and_adapter_work_are_absent": true,
+    "local_null_and_invalid_boundaries_remain": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_adapter_pipeline": true,
+    "reference_raw_manifest_matches": true,
+    "valid_modes_fail_closed_without_cache": true
+  },
+  "local": {
+    "false_success": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "valid_mode_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_setter": "0x10013a800",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 599,
+    "infra_wrapper": "0x100018c30",
+    "invalid_mode_status": "0xe00002bc",
+    "join_adapter": "0x100040e28",
+    "mode_offset": 8,
+    "scan_adapter": "0x10018fda2"
+  },
+  "schema": "itlwm-wcl-trigger-cc-quarantine-v1",
+  "source_base_revision": "e45bb13bba708d0714ebf12bbd25e764eda0bcf0"
+}

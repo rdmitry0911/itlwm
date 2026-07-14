@@ -549,14 +549,15 @@ The recovered Apple behavior is:
   path
 - only any other mode returns `0xe00002bc`
 
-Important shape detail:
+Important historical limitation:
 
-- both Apple branches cache the same first four qwords before doing any
+- both Apple branches copy the same first four qwords before doing
   adapter-specific work
-- this IOC is therefore not optional on Tahoe and must not return
-  `kIOReturnUnsupported`
+- that initial copy alone does not establish the Scan/Join producer work, so
+  this older recovery must not be read as evidence that a cache-only local
+  implementation may acknowledge the IOC instead of failing closed
 
-## `WCL_TRIGGER_CC` Root Cause
+## Historical `WCL_TRIGGER_CC` diagnosis (superseded)
 
 Our Tahoe skywalk vtable still implemented slot `[599]` as:
 
@@ -566,34 +567,47 @@ That maps exactly to the live failure:
 
 - `APPLE80211_IOC_WCL_TRIGGER_CC -> 0xe00002c7`
 
-So the current root cause is a direct producer-side contract violation: the
-driver rejects a mandatory internal WCL IOC that the Apple reference accepts
-for the valid mode values used during Tahoe bring-up.
+The original diagnosis treated that result as a direct producer-side contract
+violation. Fresh 25C56 recovery later showed the local success replacement was
+only an unread cache, not either required adapter pipeline; it must not be
+counted as a completed producer operation.
 
-## `WCL_TRIGGER_CC` Fix Direction
+## Historical cache-only experiment (superseded)
 
-The minimal compatible behavior is:
+The earlier experiment did the following:
 
 - accept a non-null `triggerCC` request
-- cache the first `0x20` bytes of the request, matching the first Apple action
+- cache the first `0x20` bytes of the request
 - return success for mode `0` and mode `1`
 - return `0xe00002bc` for any other mode
 
-This reproduces the reference request-shape contract closely enough to remove
-the current `unsupported` failure without inventing a fabricated Tahoe-only
-policy.
+It was not a compatible implementation: the cache had no reader and did not
+run either Apple adapter. The current policy is the quarantine below, not this
+historical experiment.
 
-## Runtime Status After `5097f30`
+### 2026-07-14 correction: cache-only acknowledgement is not the producer
 
-Live logs on `AirportItlwm build=5097f30` close the previous `WCL_TRIGGER_CC`
-issue:
+The preceding direction and the resulting `0x0` trace are historical gate
+observations, not proof of Scan/Join adapter equivalence. Fresh 25C56 DEXT
+recovery shows that mode 0 and mode 1 each enter a distinct adapter pipeline
+after the request copy; the local cache had no reader or corresponding work.
+The current port therefore retains only its local null/invalid-mode boundaries
+and fails closed for valid modes until a real adapter backend exists. This does
+not claim Apple null, valid-mode return-code, input-shape, or adapter-side
+parity; see `docs/reference/CR-479-wcl-trigger-cc-quarantine-20260714.md`.
+
+## Historical runtime trace after `5097f30`
+
+Live logs on `AirportItlwm build=5097f30` recorded a cache-only
+`WCL_TRIGGER_CC` acknowledgement:
 
 - internal `APPLE80211_IOC_WCL_TRIGGER_CC -> 0x0`
 - our own driver log confirms `setWCL_TRIGGER_CC mode=0 ...`
 
-So `WCL_TRIGGER_CC` is no longer the open blocker.
+This historical trace shows only that the local cache returned success; it does
+not establish that `WCL_TRIGGER_CC` had completed the Apple Scan/Join work.
 
-The next root cause appears immediately after that fix:
+The same trace later showed:
 
 - `WCLScanManager` enters `SCAN_MANAGER_STATE_IN_PROGRESS`
 - internal `APPLE80211_IOC_WCL_SCAN_ABORT -> 0x0`

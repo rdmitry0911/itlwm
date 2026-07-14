@@ -363,9 +363,11 @@ So a Tahoe port must first satisfy producer contracts that feed:
 
 before later UI/user-visible scan behavior can be trusted.
 
-## Already Confirmed Earlier Root Causes
+## Earlier root-cause record
 
-The following mismatches were already confirmed and fixed in earlier commits:
+The following mismatches were identified in earlier commits. Their current
+status must be read per entry: later reference recovery can supersede an older
+local acknowledgement, as it did for `WCL_TRIGGER_CC`.
 
 - `APPLE80211_IOC_PLATFORM_CONFIG` was left unsupported / zero-stubbed instead
   of following the Apple 7-byte packed producer contract.
@@ -377,8 +379,9 @@ The following mismatches were already confirmed and fixed in earlier commits:
   controller-side `AirportItlwm::apple80211Request(...)` dispatcher still
   lacking explicit cases for request numbers `96/97`, not from the Tahoe
   interface-side BSD bridge anymore.
-- `APPLE80211_IOC_WCL_TRIGGER_CC` returned unsupported instead of accepting the
-  Apple mode contract and caching the first `0x20` bytes.
+- `APPLE80211_IOC_WCL_TRIGGER_CC` was historically advanced past an unsupported
+  gate by caching the first `0x20` bytes, but that cache-only acknowledgement
+  is superseded by the 2026-07-14 no-Scan/Join-backend quarantine.
 - `SCAN_ABORT` and scan-complete delivery diverged from the Tahoe WCL path.
 - `DRIVER_AVAILABLE` routing/timing diverged from the controller/PostOffice
   path and from the real BSD attach ordering.

@@ -232,7 +232,8 @@ than accepting the inverted invalid range and caching a false success.
   See [tahoe_platform_config_root_cause.md](/Users/bob/Projects/itlwm/docs/tahoe_platform_config_root_cause.md).
 
 - `WCL_TRIGGER_CC`:
-  recovered request-shape contract implemented.
+  the former cache-only request-shape acknowledgement is superseded by the
+  no-Scan/Join-backend quarantine.
   See [tahoe_platform_config_root_cause.md](/Users/bob/Projects/itlwm/docs/tahoe_platform_config_root_cause.md).
 
 - `scan abort / WCL scan complete bulletin`:
@@ -8046,3 +8047,17 @@ The local Tahoe getter retains its safety null guard but returns
 removes a fabricated diagnostic success; it does not claim Apple null,
 valid-input status, output-layout, or feature-branch parity. See
 `docs/reference/CR-479-power-debug-info-quarantine-20260714.md`.
+
+## 2026-07-14 correction: WCL trigger CC requires Scan/Join adapter work
+
+The earlier local `setWCL_TRIGGER_CC` recovery copied the first 0x20 bytes
+into an unread cache and returned success for modes 0/1. Exact 25C56 DEXT code
+instead dispatches mode 0 to ScanAdapter and mode 1 to JoinAdapter. Those
+adapters store adapter-owned state and perform scan/join-side reporting,
+metrics, and state work that the local cache did not provide.
+
+The local Tahoe setter retains its local null and invalid-mode boundaries but
+returns `kIOReturnUnsupported` for valid modes before state mutation. This is
+a no-backend quarantine, not Apple null, valid-mode status, input-shape, or
+adapter-side parity. See
+`docs/reference/CR-479-wcl-trigger-cc-quarantine-20260714.md`.
