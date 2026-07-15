@@ -342,8 +342,9 @@ public:
     // [531] — AppleBCMWLANCore copies an opaque XE blob with length at +0x4 and
     // payload at +0x6.
     virtual IOReturn getRSN_XE(apple80211_rsn_xe_data *) override;
-    // [532] — Tahoe public contract is raw `NULL -> 0x16`, else version=1 at
-    // +0; the hidden SIB owner may fill dwords at +4/+8 when present.
+    // [532] — Tahoe copies two live Core-state dwords into the caller. The
+    // local V2/Skywalk path retains its raw local null boundary and otherwise
+    // fails closed rather than synthesizing version/zero state.
     virtual IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status *) override;
     // [533] — Tahoe Core delegates valid callers to a NetAdapter producer;
     // the local V2/Skywalk path retains its null guard and otherwise fails

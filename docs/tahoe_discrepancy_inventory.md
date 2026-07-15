@@ -8078,3 +8078,17 @@ The local getter retains its safety null boundary but returns
 is a no-backend quarantine, not Apple null, valid-input error-code,
 output-layout, association, firmware, or runtime-selector parity. See
 `docs/reference/CR-479-roam-profile-quarantine-20260715.md`.
+
+## 2026-07-15 correction: SIB coex status requires live Core state
+
+The prior V2/Skywalk getter zeroed 12 bytes, wrote a local version value, and
+returned success. Fresh 25C56 DEXT code instead dispatches slot `[532]` to
+Core, which copies its live `sib coex mode` and `timeToTST` dwords into caller
+offsets `+0` and `+4` before returning success. It does not establish that the
+legacy local BTCOEX fields represent either value.
+
+The local getter deliberately retains its existing raw null boundary and
+returns `kIOReturnUnsupported` for every non-null request before output
+mutation. This is a no-producer quarantine, not Apple null, valid-input
+return-code, struct-layout, Core-state, BTCOEX-equivalence, or runtime-selector
+parity. See `docs/reference/CR-479-sib-coex-status-quarantine-20260715.md`.

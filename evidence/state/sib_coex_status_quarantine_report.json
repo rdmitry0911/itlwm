@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "active_v2_slot_remains": true,
+    "local_null_guard_is_retained": true,
+    "no_local_core_or_btcoex_substitution_is_introduced": true,
+    "nonnull_path_fails_closed_without_synthetic_snapshot": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_live_core_snapshot": true,
+    "reference_raw_manifest_matches": true
+  },
+  "local": {
+    "false_success": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_getter": "0x100119a7a",
+    "core_state_dword_0": "0x8b10",
+    "core_state_dword_1": "0x8b14",
+    "core_vtable_offset": "0x458",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 532,
+    "infra_wrapper": "0x100017b28",
+    "null_status": "0xe00002c2"
+  },
+  "schema": "itlwm-sib-coex-status-quarantine-v1",
+  "source_base_revision": "66c5e46757f8d0e7c4e49cbbd5079e8878ed2779"
+}

@@ -3857,14 +3857,11 @@ getSIB_COEX_STATUS(apple80211_sib_coex_status *data)
     if (data == nullptr)
         return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 12);
-    // AppleBCMWLANCore writes version=1, then only asks the hidden SIB owner to
-    // fill +0x4/+0x8 when that owner exists. The local port has no SIB owner, so
-    // preserve the visible owner-missing success carrier instead of conflating
-    // this selector with the legacy BTCOEX_MODE/OPTIONS state.
-    *reinterpret_cast<uint32_t *>(raw + 0) = APPLE80211_VERSION;
-    return kIOReturnSuccess;
+    // Tahoe reads two live Core-state dwords; the local version/zero carrier
+    // had no matching producer. Do not confuse legacy BTCOEX state with those
+    // fields or acknowledge a snapshot that was never read.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

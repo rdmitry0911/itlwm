@@ -1,0 +1,55 @@
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: A97E73DB-90B4-3827-B166-4AECB9972AD5 (arm64e) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) target create /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+Current executable set to '/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN' (x86_64).
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getSIB_COEX_STATUS
+1 match found in /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN:
+        Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100017b28] (com.apple.DriverKit-AppleBCMWLAN.__TEXT.__text + 80680)
+        Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getSIB_COEX_STATUS(apple80211_sib_coex_status*)
+(lldb) image lookup -n AppleBCMWLANCore::getSIB_COEX_STATUS
+1 match found in /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN:
+        Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100119a7a] (com.apple.DriverKit-AppleBCMWLAN.__TEXT.__text + 1137274)
+        Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getSIB_COEX_STATUS(apple80211_sib_coex_status*)
+(lldb) image lookup -a 0x100205dbf
+      Address: com.apple.DriverKit-AppleBCMWLAN[0x0000000100205dbf] (com.apple.DriverKit-AppleBCMWLAN.__TEXT.__text + 2104767)
+      Summary: com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getSIB_COEX_STATUS(apple80211_sib_coex_status*) (.cold.1)
+(lldb) disassemble -s 0x100017b28 -e 0x100017b74
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANInfraProtocol::getSIB_COEX_STATUS:
+com.apple.DriverKit-AppleBCMWLAN[0x100017b28] <+0>:  pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017b29] <+1>:  movq   %rsp, %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017b2c] <+4>:  movq   0x88(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017b33] <+11>: movq   (%rax), %rdi
+com.apple.DriverKit-AppleBCMWLAN[0x100017b36] <+14>: movq   (%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017b39] <+17>: movq   0x458(%rax), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100017b40] <+24>: popq   %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100017b41] <+25>: jmpq   *%rax
+(lldb) disassemble -s 0x100119a7a -e 0x100119bf8
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getSIB_COEX_STATUS:
+com.apple.DriverKit-AppleBCMWLAN[0x100119a7a] <+0>:   pushq  %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100119a7b] <+1>:   movq   %rsp, %rbp
+com.apple.DriverKit-AppleBCMWLAN[0x100119a95] <+27>:  testq  %rsi, %rsi
+com.apple.DriverKit-AppleBCMWLAN[0x100119a98] <+30>:  je     0x100119bce               ; <+340>
+com.apple.DriverKit-AppleBCMWLAN[0x100119a9e] <+36>:  movq   %rsi, %rbx
+com.apple.DriverKit-AppleBCMWLAN[0x100119aa1] <+39>:  movq   %rdi, %r14
+com.apple.DriverKit-AppleBCMWLAN[0x100119aa4] <+42>:  movq   0x48(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100119aa8] <+46>:  movl   0x8b10(%rax), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100119aae] <+52>:  movl   %eax, (%rsi)
+com.apple.DriverKit-AppleBCMWLAN[0x100119ab0] <+54>:  movq   0x48(%rdi), %rax
+com.apple.DriverKit-AppleBCMWLAN[0x100119ab4] <+58>:  movl   0x8b14(%rax), %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100119aba] <+64>:  movl   %eax, 0x4(%rsi)
+com.apple.DriverKit-AppleBCMWLAN[0x100119b29] <+175>: leaq   0x19ecdf(%rip), %rdi      ; "getSIB_COEX_STATUS"
+com.apple.DriverKit-AppleBCMWLAN[0x100119b78] <+254>: leaq   0x267f81(%rip), %rcx      ; "%c [dk] %s@%d: %s::%s getting sib coex mode %d , timeToTST %d\n"
+com.apple.DriverKit-AppleBCMWLAN[0x100119b98] <+286>: xorl   %r15d, %r15d
+com.apple.DriverKit-AppleBCMWLAN[0x100119bce] <+340>: movl   $0xe00002c2, %r15d        ; imm = 0xE00002C2
+com.apple.DriverKit-AppleBCMWLAN[0x100119be4] <+362>: movl   %r15d, %eax
+com.apple.DriverKit-AppleBCMWLAN[0x100119bf1] <+375>: retq
+(lldb) disassemble -s 0x100205dbf -e 0x100205e1f
+com.apple.DriverKit-AppleBCMWLAN`AppleBCMWLANCore::getSIB_COEX_STATUS(apple80211_sib_coex_status*) (.cold.1):
+com.apple.DriverKit-AppleBCMWLAN[0x100205de7] <+40>: movl   (%r14), %r10d
+com.apple.DriverKit-AppleBCMWLAN[0x100205dea] <+43>: movl   (%rbx), %r11d
+com.apple.DriverKit-AppleBCMWLAN[0x100205ded] <+46>: leaq   0xb2a2e(%rip), %rsi       ; "[dk] %s@%d:%s::%s getting sib coex mode %d , timeToTST %d\n"
+com.apple.DriverKit-AppleBCMWLAN[0x100205df4] <+53>: leaq   0xb2a14(%rip), %rdx       ; "getSIB_COEX_STATUS"
+com.apple.DriverKit-AppleBCMWLAN[0x100205e0f] <+80>: callq  0x100226e32               ; symbol stub for: CCLogStream::logInfo(char const*, ...)
+com.apple.DriverKit-AppleBCMWLAN[0x100205e1e] <+95>: retq
