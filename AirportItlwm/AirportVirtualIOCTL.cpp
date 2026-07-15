@@ -422,7 +422,12 @@ setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(OSObject *object, struct apple80211_awd
 #if 0
     dumpAWDLChannelSeqs(data);
 #endif
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. This active
+    // legacy shim has no implementation of that conditional path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

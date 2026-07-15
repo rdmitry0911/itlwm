@@ -6190,3 +6190,22 @@ This is a historical source-surface fail-closed boundary, not a Tahoe runtime,
 Apple terminal-status, carrier-layout, AWDL policy, firmware, event, or
 traffic parity claim. See
 docs/reference/CR-505-legacy-awdl-election-rssi-thresholds-no-owner-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL synchronization-channel-sequence blind-success shim
+
+The historical virtual-interface IOC 129 SET shim previously returned success
+while ignoring its typed synchronization-channel-sequence carrier. Direct
+current 25C56 nested-KEXT recovery shows a selector gate, nonzero-status
+propagation, AWDL-protocol owner test, and only then a tail dispatch; a failed
+owner test returns raw `0xe082280e`. A separate internal admission path checks
+the request's `0x190` carrier length and non-null carrier, so the public
+wrapper's lack of a dereference is not a global no-validation claim.
+
+The active legacy shim now returns `kIOReturnUnsupported` without reading
+either argument. Its paired GET version result, typed route, imported
+channel-sequence/CCA ABI declarations, and Tahoe's absence of IOC 129 remain
+intact. Tahoe does not compile `AirportVirtualIOCTL.cpp`. This is a historical
+source-surface fail-closed boundary, not a Tahoe runtime, Apple
+terminal-status, carrier-layout, channel policy, firmware, CCA, event, or
+traffic parity claim. See
+docs/reference/CR-506-legacy-awdl-sync-channel-sequence-blind-success-quarantine-20260715.md.
