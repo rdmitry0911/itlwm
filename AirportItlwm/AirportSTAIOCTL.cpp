@@ -883,8 +883,11 @@ setBTCOEX_MODE(OSObject *object, struct apple80211_btc_mode_data *data)
 {
     if (!data)
         return kIOReturnError;
-    btcMode = data->btc_mode;
-    return kIOReturnSuccess;
+
+    (void)object;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::
