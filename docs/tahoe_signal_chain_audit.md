@@ -6486,3 +6486,25 @@ rather than AirportSTAIOCTL.cpp. This is non-null V1 false-success removal
 with direct public status alignment only; it does not claim null, Tahoe, GET,
 carrier/ABI, BTCOEX policy, firmware, event, traffic, or runtime parity. See
 docs/reference/CR-520-legacy-btcoex-options-non-null-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: legacy V1 BTCOEX_PROFILES non-null fixed-stub alignment
+
+The historical V1 IOC 221 SET half in AirportSTAIOCTL.cpp previously freed,
+allocated, and copied a non-null profiles carrier into a local BTCOEX
+readback pointer before returning success. Direct current 25C56
+nested-KEXT recovery identifies the public apple80211setBTCOEX_PROFILES body
+as an exact 11-byte fixed stub returning raw 0xe082280e. The public body is
+unread and contains no selector load, gate, owner lookup, call, state,
+transport, event, or dispatch to a static handler or terminal.
+
+The active legacy V1 setter now preserves its existing null guard and, only
+for non-null input, leaves the carrier unread and returns that exact recovered
+numeric status. The typed bidirectional V1 route, separate V1 GET replay, and
+existing pointer teardown remain unchanged. Tahoe is already separate and
+untouched: its Skywalk BTCOEX group returns its existing
+kApple80211ClassOwnerAbsent status through the CR-479 direct-gate boundary,
+and the Tahoe source phase compiles Skywalk rather than AirportSTAIOCTL.cpp.
+This is non-null V1 false-success removal with direct public status alignment
+only; it does not claim null, Tahoe, GET, carrier/ABI, BTCOEX policy,
+firmware, event, traffic, or runtime parity. See
+docs/reference/CR-521-legacy-btcoex-profiles-non-null-fixed-stub-alignment-20260715.md.

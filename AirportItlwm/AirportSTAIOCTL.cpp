@@ -929,11 +929,11 @@ setBTCOEX_PROFILES(OSObject *object, struct apple80211_btc_profiles_data *data)
 {
     if (!data)
         return kIOReturnError;
-    if (btcProfile)
-        IOFree(btcProfile, sizeof(struct apple80211_btc_profiles_data));
-    btcProfile = (struct apple80211_btc_profiles_data *)IOMalloc(sizeof(struct apple80211_btc_profiles_data));
-    memcpy(btcProfile, data, sizeof(struct apple80211_btc_profiles_data));
-    return kIOReturnSuccess;
+
+    (void)object;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::
