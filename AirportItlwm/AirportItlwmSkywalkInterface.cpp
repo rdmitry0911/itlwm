@@ -1603,6 +1603,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                        ? instance->setAPSTA_SSID(this, (apple80211_ssid_data *)req->req_data)
                        : kIOReturnNotReady;
         case APPLE80211_IOC_BSSID:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public SET wrapper is an unread fixed 0xe082280e
+             * leaf. Preserve the bootstrap-oriented GET producer below.
+             */
+            if (cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             // Same bootstrap contract as SSID: airportd queries BSSID during
             // _initInterface and expects success with an all-zero BSSID before
             // association. Letting the active WCL path leak 0xe0822403 keeps
