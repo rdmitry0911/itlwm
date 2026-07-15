@@ -2031,6 +2031,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_REQ:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Keep the separate dynamic SET scan producer intact.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_IBSS_MODE:
