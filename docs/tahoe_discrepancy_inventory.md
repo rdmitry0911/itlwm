@@ -1120,7 +1120,7 @@ Owner-specific debt was narrowed to exact implementation classes and has now
 been exhausted at the Apple-visible contract layer:
 
 - direct core-state carriers and small producer bodies:
-  `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+  `getSLOW_WIFI_FEATURE_ENABLED`,
   `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
   `getSYSTEM_SLEEP_CONFIG`, `setWOW_TEST`, `setHT_CAPABILITY`,
   `setVHT_CAPABILITY`, `setPOWER_BUDGET`, `setUSB_HOST_NOTIFICATION`,
@@ -1138,8 +1138,8 @@ been exhausted at the Apple-visible contract layer:
 Concrete Apple contracts recovered in this batch:
 
 - `getDYNSAR_DETAIL`:
-  versioned public carrier, `NULL/out-of-range -> 0x16`, `version=1`,
-  fixed `0x2d00` copy per bank
+  reference Core is TxPowerManager-backed and copies a `0x2d00` report; the
+  former local cache-success classification is superseded by CR-494
 - `getSLOW_WIFI_FEATURE_ENABLED`:
   `NULL -> 0xe00002c2`, success writes one enabled bit from core `+0x7569`
 - `getWCL_LOW_LATENCY_INFO`:
@@ -1172,7 +1172,7 @@ behavior.
 ## Next Execution Order
 
 1. Lifted the direct core-state owner batch from the targeted decompile:
-   `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
+   `getSLOW_WIFI_FEATURE_ENABLED`,
    `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
    `getSYSTEM_SLEEP_CONFIG` fail-contract, `setWOW_TEST`,
    `setHT_CAPABILITY`, `setVHT_CAPABILITY`, `setPOWER_BUDGET`,
@@ -8121,3 +8121,19 @@ returns `kIOReturnUnsupported` for every non-null request before output
 mutation. This is a no-producer quarantine, not Apple null, valid-input
 return-code, struct-layout, Core-state, BTCOEX-equivalence, or runtime-selector
 parity. See `docs/reference/CR-479-sib-coex-status-quarantine-20260715.md`.
+
+## 2026-07-15 correction: DYNSAR_DETAIL no-producer quarantine
+
+The earlier owner-level inventory placed `getDYNSAR_DETAIL` among lifted
+direct Core-state carriers and described the local reset cache as a public
+carrier mirror. That previous local cache-success classification is
+superseded. Selected 25C56 slot `[518]` disassembly shows Core reads through
+`AppleBCMWLANTxPowerManager` and copies a manager-produced `0x2d00` report;
+the local arrays had no writer.
+
+The local method retains its raw null/out-of-range boundary and fails closed
+for a non-null in-range request before output mutation. The independent
+slow-wifi, low-latency, and tx-blanking owner surfaces remain present. This is
+not Apple null-input, valid-input return-code, full carrier-layout, version,
+TxPowerManager/Core-state, firmware, or runtime-selector parity. See
+`docs/reference/CR-494-dynsar-detail-no-producer-quarantine-20260715.md`.

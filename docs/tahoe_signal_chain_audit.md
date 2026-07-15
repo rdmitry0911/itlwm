@@ -2614,7 +2614,6 @@ Targeted owner-family decompile findings (2026-04-13):
 Recovered producer split for the remaining owner-specific families:
 
 - direct public carriers already recoverable without hidden owners:
-  `AppleBCMWLANCore::getDYNSAR_DETAIL`,
   `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED`,
   `AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO`,
   `AppleBCMWLANCore::getWCL_GET_TX_BLANKING_STATUS`,
@@ -2643,10 +2642,11 @@ Recovered producer split for the remaining owner-specific families:
 
 Specific recovered Apple contracts that materially narrow the remaining work:
 
-- `AppleBCMWLANCore::getDYNSAR_DETAIL(...)` is not a generic hidden getter:
-  it is a caller-visible versioned carrier with
-  `NULL/out-of-range -> 0x16`, `version=1`, bank selection by `param_1[4]`,
-  and a fixed `0x2d00` copy per bank
+- `AppleBCMWLANCore::getDYNSAR_DETAIL(...)` is a caller-visible,
+  TxPowerManager-backed carrier: selected code checks null/caller `+0x08`,
+  writes `1` at `+0x00`, reads manager-derived values, and copies `0x2d00`
+  bytes at caller `+0x18`. The former local cache-success conclusion is
+  superseded by CR-494.
 - `AppleBCMWLANCore::getSLOW_WIFI_FEATURE_ENABLED(...)` is a trivial
   `NULL -> 0xe00002c2`, success writes `enabled` from core `+0x7569`
 - `AppleBCMWLANCore::getWCL_LOW_LATENCY_INFO(...)` is a trivial
@@ -5975,3 +5975,21 @@ candidates after non-denied candidates, retaining fallback; the separate
 lower-selection mapping remains open until its own runtime gate.
 
 See `docs/reference/CR-479-bss-blacklist-async-owner-20260713.md`.
+
+## 2026-07-15 correction: DYNSAR_DETAIL no-producer quarantine
+
+Earlier Q11/Q13 material described the local `getDYNSAR_DETAIL` cache carrier
+as a way to mirror the public Core shape. That previous local cache-success
+classification is superseded. Fresh 25C56 DEXT disassembly shows slot `[518]`
+dispatching to Core, which reaches `AppleBCMWLANTxPowerManager` for two detail
+values and a `0x2d00` report copy; the local three arrays were only reset and
+never received equivalent detail state.
+
+The active local slot keeps its raw input boundary but returns
+`kIOReturnUnsupported` for a non-null in-range request before output mutation.
+This removes a false success without changing the separate
+`TahoeQosDynsarContracts`/owner-registry surfaces used by slow-wifi,
+low-latency, and tx-blanking getters. It is not Apple null-input, valid-input
+return-code, full carrier-layout, version, TxPowerManager/Core-state, firmware,
+or runtime-selector parity. See
+`docs/reference/CR-494-dynsar-detail-no-producer-quarantine-20260715.md`.

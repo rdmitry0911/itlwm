@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "active_slot_and_opaque_abi_remain": true,
+    "dead_dynsar_cache_is_removed": true,
+    "historical_cache_classification_is_superseded": true,
+    "local_raw_safety_boundary_is_retained": true,
+    "no_matching_local_detail_producer": true,
+    "nonnull_getter_fails_closed_without_output": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_manager_backed_detail_anchors": true,
+    "reference_raw_manifest_matches": true,
+    "separate_qos_dynsar_surfaces_are_preserved": true
+  },
+  "local": {
+    "detail_producer": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "synthetic_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_get_vtable_offset": "0x338",
+    "core_getter": "0x1001e11e4",
+    "detail_circled": "0x1000b43b2",
+    "detail_cur_id": "0x1000b439a",
+    "detail_report": "0x1000b43ca",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_get_wrapper": "0x1000178e0",
+    "infra_slot": 518,
+    "report_copy_bytes": 11520,
+    "tx_power_manager_from_core": "0x48+0x1598"
+  },
+  "schema": "itlwm-dynsar-detail-no-producer-quarantine-v1",
+  "source_base_revision": "fe31c2e85c5278335ee7c676ce17516062bf2f48"
+}

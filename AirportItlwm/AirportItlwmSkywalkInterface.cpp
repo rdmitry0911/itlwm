@@ -764,7 +764,7 @@ struct tahoeDynsarDetailRequest
     uint8_t payload[0x2d00];
 } __attribute__((packed));
 static_assert(sizeof(tahoeDynsarDetailRequest) == 0x2d18,
-              "tahoeDynsarDetailRequest must match the recovered Apple offsets");
+              "tahoeDynsarDetailRequest must retain the observed caller offsets");
 
 struct tahoeSlowWifiFeatureEnabled
 {
@@ -2201,9 +2201,6 @@ init()
     fHalService = NULL;
     scanSource = NULL;
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
-    memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
-    memset(cachedDynsarPayload, 0, sizeof(cachedDynsarPayload));
     cachedTcpkaOffloadSupported = false;
     cachedTcpkaOffloadEnabled = false;
     cachedOSFeatureFlags = 0;
@@ -2566,9 +2563,6 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
-    memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
-    memset(this->cachedDynsarPayload, 0, sizeof(this->cachedDynsarPayload));
     this->cachedTcpkaOffloadSupported = false;
     this->cachedTcpkaOffloadEnabled = false;
     this->cachedOSFeatureFlags = 0;
@@ -3866,17 +3860,11 @@ getDYNSAR_DETAIL(apple80211_dynsar_detail *data)
     if (raw == nullptr || raw->entry_index >= 4)
         return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
 
-    // AppleBCMWLANCore::getDYNSAR_DETAIL is a strict versioned carrier: NULL or
-    // entry_index>=4 returns raw 0x16, otherwise version=1 plus two bank-local
-    // headers and a fixed 0x2d00 payload copy. Preserve that visible contract
-    // from local cache instead of turning the slot into a generic unsupported
-    // or inventing semantic field names that are still unrecovered.
-    raw->version = APPLE80211_VERSION;
-    const uint32_t bank = raw->bank_selector != 0 ? 1U : 0U;
-    raw->header0 = cachedDynsarHeader0[bank];
-    raw->header1 = cachedDynsarHeader1[bank];
-    memcpy(raw->payload, cachedDynsarPayload[raw->entry_index], sizeof(raw->payload));
-    return kIOReturnSuccess;
+    // The reference getter reads TxPowerManager-owned detail state and copies
+    // a real 0x2d00-byte report. There is no matching local producer, so do
+    // not acknowledge the former reset-only cache as a DynSAR snapshot.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

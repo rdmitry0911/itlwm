@@ -1,0 +1,58 @@
+capture_scope: selected static 25C56 x86_64 disassembly lines for DYNSAR_DETAIL and its direct TxPowerManager reads
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getDYNSAR_DETAIL
+Address: 0x00000001000178e0
+Summary: AppleBCMWLANInfraProtocol::getDYNSAR_DETAIL(apple80211_dynsar_detail*)
+(lldb) image lookup -n AppleBCMWLANCore::getDYNSAR_DETAIL
+Address: 0x00000001001e11e4
+Summary: AppleBCMWLANCore::getDYNSAR_DETAIL(apple80211_dynsar_detail*)
+(lldb) image lookup -n AppleBCMWLANTxPowerManager::getDynSARDetailCurId
+Address: 0x00000001000b439a
+Summary: AppleBCMWLANTxPowerManager::getDynSARDetailCurId(unsigned char) const
+(lldb) image lookup -n AppleBCMWLANTxPowerManager::getDynSARDetailCircled
+Address: 0x00000001000b43b2
+Summary: AppleBCMWLANTxPowerManager::getDynSARDetailCircled(unsigned char) const
+(lldb) image lookup -n AppleBCMWLANTxPowerManager::getDynSARDetailReportPerSlicePerAnt
+Address: 0x00000001000b43ca
+Summary: AppleBCMWLANTxPowerManager::getDynSARDetailReportPerSlicePerAnt(unsigned char, unsigned char)
+(lldb) disassemble -b -s 0x1000178e0 -e 0x1000178fc
+0x1000178e0: pushq  %rbp
+0x1000178e1: movq   %rsp, %rbp
+0x1000178e4: movq   0x88(%rdi), %rax
+0x1000178eb: movq   (%rax), %rdi
+0x1000178ee: movq   (%rdi), %rax
+0x1000178f1: movq   0x338(%rax), %rax
+0x1000178f8: popq   %rbp
+0x1000178f9: jmpq   *%rax
+(lldb) disassemble -b -s 0x1001e11e4 -e 0x1001e1277
+0x1001e11e4: pushq  $0x16
+0x1001e11e6: popq   %rax
+0x1001e11e7: testq  %rsi, %rsi
+0x1001e11ea: je     0x1001e1272
+0x1001e11fd: cmpl   $0x3, 0x8(%rsi)
+0x1001e1201: ja     0x1001e1268
+0x1001e1206: movl   $0x1, (%rbx)
+0x1001e120c: movq   0x48(%rdi), %rax
+0x1001e1210: movq   0x1598(%rax), %rdi
+0x1001e1217: movzbl 0x4(%rbx), %esi
+0x1001e121b: callq  0x1000b439a ; AppleBCMWLANTxPowerManager::getDynSARDetailCurId(unsigned char) const
+0x1001e1220: movl   %eax, 0xc(%rbx)
+0x1001e1223: movq   0x48(%r14), %rax
+0x1001e1227: movq   0x1598(%rax), %rdi
+0x1001e122e: movzbl 0x4(%rbx), %esi
+0x1001e1232: callq  0x1000b43b2 ; AppleBCMWLANTxPowerManager::getDynSARDetailCircled(unsigned char) const
+0x1001e1237: movl   %eax, 0x10(%rbx)
+0x1001e123a: leaq   0x18(%rbx), %r15
+0x1001e123e: movq   0x48(%r14), %rax
+0x1001e1242: movq   0x1598(%rax), %rdi
+0x1001e1249: movzbl 0x4(%rbx), %esi
+0x1001e124d: movzbl 0x8(%rbx), %edx
+0x1001e1251: callq  0x1000b43ca ; AppleBCMWLANTxPowerManager::getDynSARDetailReportPerSlicePerAnt(unsigned char, unsigned char)
+0x1001e1256: movl   $0x2d00, %edx
+0x1001e125b: movq   %r15, %rdi
+0x1001e125e: movq   %rax, %rsi
+0x1001e1261: callq  0x10022798a ; symbol stub for: memcpy
+0x1001e1266: xorl   %eax, %eax
+0x1001e1272: retq

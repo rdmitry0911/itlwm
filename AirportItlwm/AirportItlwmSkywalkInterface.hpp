@@ -305,9 +305,9 @@ public:
     virtual IOReturn getMIMO_STATUS(apple80211_mimo_status *) override;
     // [517]
     virtual IOReturn getCUR_PMK(apple80211_pmk *) override;
-    // [518] — DynSAR detail is a hidden RF/policy owner surface. The former
-    // Q11-C umbrella queue is closed; this slot now lives in Q11-C1 with
-    // HP2P helper ownership.
+    // [518] — Reference Core reads TxPowerManager DynSAR detail state. This
+    // port has no equivalent detail producer, so retain the virtual ABI but
+    // keep non-null requests fail-closed.
     virtual IOReturn getDYNSAR_DETAIL(apple80211_dynsar_detail *) override;
     // [519]
     // [519] — AppleBCMWLANInfraProtocol returns `0xe00002c7` directly for this
@@ -765,9 +765,6 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
-    uint32_t cachedDynsarHeader0[4];
-    uint32_t cachedDynsarHeader1[4];
-    uint8_t cachedDynsarPayload[4][0x2d00];
     bool cachedTcpkaOffloadSupported;
     bool cachedTcpkaOffloadEnabled;
     uint64_t cachedOSFeatureFlags;
