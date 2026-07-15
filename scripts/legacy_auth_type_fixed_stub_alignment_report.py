@@ -64,6 +64,16 @@ def report():
         "case APPLE80211_IOC_AUTH_TYPE:",
         "case APPLE80211_IOC_HOST_AP_MODE:",
     )
+    tahoe_set_branch = section(
+        tahoe_route,
+        "#if __IO80211_TARGET >= __MAC_26_0",
+        "#else",
+    )
+    pre26_set_branch = section(
+        tahoe_route,
+        "#else",
+        "#endif // __IO80211_TARGET >= __MAC_26_0",
+    )
     tahoe_setter = section(
         skywalk,
         "setAUTH_TYPE(struct apple80211_authtype_data *ad)",
@@ -165,14 +175,17 @@ def report():
                 and "u_int32_t current_authtype_lower;" in hpp
                 and "u_int32_t current_authtype_upper;" in hpp
             ),
-            "tahoe_auth_route_state_and_owner_context_remain_separate": (
+            "tahoe_auth_get_and_internal_owner_context_remain_separate": (
                 "if (cmd == SIOCGA80211)" in tahoe_route
                 and "return getAUTH_TYPE((apple80211_authtype_data *)req->req_data);" in tahoe_route
                 and "if (cmd == SIOCSA80211)" in tahoe_route
-                and "return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);" in tahoe_route
+                and "return static_cast<IOReturn>(0xe082280e);" in tahoe_set_branch
+                and "setAUTH_TYPE" not in tahoe_set_branch
+                and "return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);" in pre26_set_branch
                 and "return kIOReturnUnsupported;" in tahoe_route
                 and "current_authtype_lower = ad->authtype_lower;" in tahoe_setter
                 and "current_authtype_upper = ad->authtype_upper;" in tahoe_setter
+                and skywalk.count("setAUTH_TYPE(&auth_type_data);") == 2
                 and "u_int32_t current_authtype_lower;" in skywalk_hpp
                 and "u_int32_t current_authtype_upper;" in skywalk_hpp
                 and "tahoeSeedBssManagerAssociatedAuthType(" in skywalk

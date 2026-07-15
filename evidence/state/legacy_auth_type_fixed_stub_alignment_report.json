@@ -7,7 +7,7 @@
     "note_records_scope_and_nonclaims": true,
     "reference_raw_has_exact_unread_fixed_stub": true,
     "reference_raw_manifest_matches": true,
-    "tahoe_auth_route_state_and_owner_context_remain_separate": true
+    "tahoe_auth_get_and_internal_owner_context_remain_separate": true
   },
   "reference": {
     "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",

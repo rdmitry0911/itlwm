@@ -1623,8 +1623,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_AUTH_TYPE:
             if (cmd == SIOCGA80211)
                 return getAUTH_TYPE((apple80211_authtype_data *)req->req_data);
-            if (cmd == SIOCSA80211)
+            if (cmd == SIOCSA80211) {
+#if __IO80211_TARGET >= __MAC_26_0
+                // Current 25C56 public SET wrapper is an unread fixed nonzero
+                // stub. Keep the local helper below for association-internal
+                // auth-context seeding; this public non-null carrier must not
+                // acknowledge a state update the reference wrapper never makes.
+                return static_cast<IOReturn>(0xe082280e);
+#else
                 return setAUTH_TYPE((apple80211_authtype_data *)req->req_data);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            }
             return kIOReturnUnsupported;
         case APPLE80211_IOC_HOST_AP_MODE:
             if (instance == NULL)

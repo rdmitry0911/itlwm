@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "both_public_tahoe_ingress_paths_terminalize_nonunsupported": true,
+    "internal_auth_context_helper_and_association_calls_remain": true,
+    "normal_nonnull_public_route_returns_exact_fixed_status_unread": true,
+    "note_records_scope_and_nonclaims": true,
+    "null_fallback_remains_outside_this_layer": true,
+    "pre26_public_route_remains_existing_auth_context_helper": true,
+    "reference_raw_has_exact_unread_public_fixed_stub": true,
+    "reference_raw_manifest_matches": true,
+    "tahoe_source_phase_and_v1_boundary_remain_explicit": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021c352b",
+    "nlist_index": 7204,
+    "public_wrapper": "0xffffff80021c3520"
+  },
+  "schema": "itlwm-skywalk-public-auth-type-fixed-stub-alignment-v1",
+  "scope": {
+    "deployment": false,
+    "internal_association_helper_modified": false,
+    "normal_nonnull_public_set_only": true,
+    "outer_or_inner_null_fallback_modified": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "traffic": false
+  },
+  "source_base_revision": "5d76d0f504941c990e28905dde45a084ae79e472"
+}

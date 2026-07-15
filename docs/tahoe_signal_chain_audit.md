@@ -6530,3 +6530,20 @@ unchanged. This is a V1 no-backend false-success removal only; it does not
 claim GET, carrier/ABI, roaming policy, Tahoe, firmware, event, traffic, or
 runtime parity. See
 docs/reference/CR-522-legacy-roam-profile-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: Skywalk public AUTH_TYPE fixed-stub alignment
+
+The current 25C56 public `apple80211setAUTH_TYPE` wrapper is an exact
+11-byte unread stub that returns raw `0xe082280e`. The Tahoe Skywalk BSD and
+card-specific bridges formerly accepted a normal non-null IOC 2 SET, called
+the local auth-context helper, and returned success instead.
+
+The public non-null SET branch now returns that exact numeric status without
+reading the carrier or mutating state, under a compile-time Tahoe-only guard;
+the pre-26/Sonoma branch retains its existing helper call. Its existing GET
+route, null fallback, and the helper's two direct internal association callers
+remain unchanged: the helper continues to seed association/BSS-manager context
+outside the public dispatcher. This removes a direct public false-success
+claim only; it does not claim null, GET, association, carrier/ABI, firmware,
+traffic, or runtime parity. See
+docs/reference/CR-523-skywalk-public-auth-type-fixed-stub-alignment-20260715.md.

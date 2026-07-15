@@ -58,12 +58,17 @@ public V1 SET body and status, reducing its blind-success capability claim.
 It does not claim Apple historical behavior, caller population, runtime
 reachability, a SET chain, or broader authentication semantics are identical.
 
-Tahoe remains distinct and untouched. Its Skywalk route retains AUTH_TYPE GET
-and SET, has separate Skywalk current_authtype fields, and uses those fields
+Tahoe remains distinct and untouched by this V1 layer. Its Skywalk route has
+separate AUTH_TYPE GET and auth-context helper state, and uses those fields
 when seeding BssManager auth context. Tahoe's source phase includes
 AirportItlwmV2.cpp and AirportItlwmSkywalkInterface.cpp, not
 AirportSTAIOCTL.cpp. This V1-only correction therefore makes no Tahoe runtime
 claim.
+
+Subsequent CR-523 aligns the normal non-null public Tahoe SET route itself to
+the same fixed current status while retaining the Skywalk helper and its
+direct association callers for local auth-context seeding. That later
+Skywalk-only correction does not alter this CR-517 V1 scope.
 
 ## Verification boundary
 
