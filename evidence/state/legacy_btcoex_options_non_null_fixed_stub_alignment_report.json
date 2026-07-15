@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "legacy_getter_and_remaining_readback_field_are_separate": true,
+    "legacy_selector_carrier_route_and_null_guard_remain": true,
+    "legacy_source_is_absent_from_tahoe_phase": true,
+    "non_null_setter_matches_fixed_status_without_carrier_read_or_cache_write": true,
+    "note_records_non_null_scope_and_nonclaims": true,
+    "reference_raw_has_exact_unread_fixed_stub_and_null_boundary": true,
+    "reference_raw_manifest_matches": true,
+    "tahoe_direct_gate_remains_separate": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021c528f",
+    "public_wrapper": "0xffffff80021c5284"
+  },
+  "schema": "itlwm-legacy-btcoex-options-non-null-fixed-stub-alignment-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "d5b3ca7b70b147ccdf5c5df6740c955d7dda3da9"
+}

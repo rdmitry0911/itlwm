@@ -908,8 +908,11 @@ setBTCOEX_OPTIONS(OSObject *object, struct apple80211_btc_options_data *data)
 {
     if (!data)
         return kIOReturnError;
-    btcOptions = data->btc_options;
-    return kIOReturnSuccess;
+
+    (void)object;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::
