@@ -6122,3 +6122,21 @@ The fixed status has no public local symbolic name and is intentionally not
 relabeled `kIOReturnUnsupported`.  It is not P2P runtime, client-invocation,
 firmware, event, or broader legacy semantic parity.  See
 docs/reference/CR-501-legacy-p2p-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL election-metric no-owner quarantine
+
+The historical virtual-interface IOC 126 SET handler previously returned
+success while ignoring its typed election-metric carrier. Direct current
+25C56 nested-KEXT recovery shows that the public wrapper is not a fixed stub:
+it forwards selector 126 through an initial gate, propagates nonzero gate
+status, performs an AWDL-protocol owner test, and only then tail-dispatches
+the original carrier. A failed owner test returns raw `0xe082280e`.
+
+The legacy Intel handler has no corresponding AWDL owner, metric state, or
+backend, and now returns `kIOReturnUnsupported` without reading either
+argument. The IOC route, carrier, paired GET error, and nearby AWDL state
+surfaces remain intact. Tahoe does not compile `AirportVirtualIOCTL.cpp`;
+this is a historical source-surface fail-closed boundary, not a Tahoe
+runtime, Apple terminal-status, carrier-layout, AWDL, firmware, event, or
+traffic parity claim. See
+docs/reference/CR-502-legacy-awdl-election-metric-no-owner-quarantine-20260715.md.

@@ -174,7 +174,13 @@ getAWDL_PEER_TRAFFIC_REGISTRATION(OSObject *object, struct apple80211_awdl_peer_
 IOReturn AirportItlwm::
 setAWDL_ELECTION_METRIC(OSObject *object, struct apple80211_awdl_election_metric *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates this public selector and tail-dispatches it to an
+    // AWDL-capable owner.  The legacy Intel surface has no corresponding
+    // owner, state, or backend, so do not acknowledge an unapplied metric.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::
