@@ -1,0 +1,85 @@
+# 25C56 current legacy V1 ROAM_PROFILE public-dispatch recovery
+#
+# Source (read-only): 10.7.6.112:~/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery method: parse the outer 64-bit Mach-O LC_UUID, then the embedded
+# Wi-Fi MH_KEXT LC_SYMTAB directly and read the exact external symbol body.
+#
+# Container identity
+outer_file_bytes=66437120
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+outer_lc_uuid=F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5
+#
+# Embedded Wi-Fi MH_KEXT identity and validated file mapping
+mh_kext_fileoff=0x1fe3000
+mh_kext_filetype=11
+mh_kext_lc_uuid=8FB4B7F0-D656-3539-B8D6-C1327A50377C
+mh_kext_text_vmaddr=0xffffff80020e3000
+mh_kext_text_fileoff=0x1fe3000
+lc_symtab_absolute_symoff=0x3498030
+lc_symtab_nsyms=19760
+lc_symtab_absolute_stroff=0x367e130
+lc_symtab_strsize=0x847d88
+#
+# Exact N_SECT|N_EXT (n_type=0x0f), section 1 public wrapper. The next sorted
+# external section symbol begins at 0xffffff80021c4f6e, so this body is
+# exactly 0x55 bytes.
+nlist_index=7410
+n_type=0x0f
+n_sect=1
+n_desc=0x0000
+symbol=__Z25apple80211setROAM_PROFILEP23IO80211SkywalkInterfaceP33apple80211_roam_profile_all_bands
+symbol_vmaddr=0xffffff80021c4f19
+symbol_vmaddr_end=0xffffff80021c4f6e
+symbol_fileoff=0x20c4f19
+symbol_fileoff_end=0x20c4f6e
+symbol_bytes=0x55
+next_nlist_index=7530
+next_symbol=__Z27apple80211setAWDL_OPER_MODEP23IO80211SkywalkInterfacePv
+next_symbol_vmaddr=0xffffff80021c4f6e
+raw=55 48 89 e5 41 56 53 48 89 f3 49 89 fe 48 8b 07 be d8 00 00 00 ff 90 c8 0c 00 00 85 c0 74 05 5b 41 5e 5d c3 48 8d 35 e4 cd 21 00 4c 89 f7 e8 b4 a2 83 fe 48 85 c0 74 16 49 8b 06 48 8b 80 78 11 00 00 4c 89 f7 48 89 de 5b 41 5e 5d ff e0 b8 0e 28 82 e0 eb ca
+body_sha256=17b3fd4216f0fd8371173ee1e29a4b66fade12d030c406229b0eaadd5739d0bc
+#
+# Decode:
+#   virtual +0xcc8 with selector 0xd8; nonzero result returns unchanged
+#   OSMetaClassBase::safeMetaCast; failed cast returns 0xe082280e
+#   successful cast loads virtual +0x1178 and tail-dispatches the carrier
+# This is an unread public gate/metacast/dynamic-terminal topology.
+# It does not establish a null-input contract, terminal identity, carrier
+# layout, or a successful-terminal status.
+#
+# x86_64 decode of the exact body:
+# 0xffffff80021c4f19  pushq  %rbp
+# 0xffffff80021c4f1a  movq   %rsp,%rbp
+# 0xffffff80021c4f1d  pushq  %r14
+# 0xffffff80021c4f1f  pushq  %rbx
+# 0xffffff80021c4f20  movq   %rsi,%rbx
+# 0xffffff80021c4f23  movq   %rdi,%r14
+# 0xffffff80021c4f26  movq   (%rdi),%rax
+# 0xffffff80021c4f29  movl   $0xd8,%esi
+# 0xffffff80021c4f2e  callq  *0xcc8(%rax)
+# 0xffffff80021c4f34  testl  %eax,%eax
+# 0xffffff80021c4f36  je     0xffffff80021c4f3d
+# 0xffffff80021c4f38  popq   %rbx
+# 0xffffff80021c4f39  popq   %r14
+# 0xffffff80021c4f3b  popq   %rbp
+# 0xffffff80021c4f3c  retq
+# 0xffffff80021c4f3d  leaq   0x21cde4(%rip),%rsi
+# 0xffffff80021c4f44  movq   %r14,%rdi
+# 0xffffff80021c4f47  callq  OSMetaClassBase::safeMetaCast
+# 0xffffff80021c4f4c  testq  %rax,%rax
+# 0xffffff80021c4f4f  je     0xffffff80021c4f67
+# 0xffffff80021c4f51  movq   (%r14),%rax
+# 0xffffff80021c4f54  movq   0x1178(%rax),%rax
+# 0xffffff80021c4f5b  movq   %r14,%rdi
+# 0xffffff80021c4f5e  movq   %rbx,%rsi
+# 0xffffff80021c4f61  popq   %rbx
+# 0xffffff80021c4f62  popq   %r14
+# 0xffffff80021c4f64  popq   %rbp
+# 0xffffff80021c4f65  jmpq   *%rax
+# 0xffffff80021c4f67  movl   $0xe082280e,%eax
+# 0xffffff80021c4f6c  jmp    0xffffff80021c4f38
+#
+# Reproducible raw disassembly window:
+# objdump -D -b binary -mi386:x86-64 --adjust-vma=0xffffff8000100000 \
+#   --start-address=0xffffff80021c4f19 --stop-address=0xffffff80021c4f6e \
+#   "$K"

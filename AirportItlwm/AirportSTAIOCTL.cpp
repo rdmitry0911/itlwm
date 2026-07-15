@@ -837,17 +837,11 @@ getROAM_PROFILE(OSObject *object, struct apple80211_roam_profile_band_data *data
 IOReturn AirportItlwm::
 setROAM_PROFILE(OSObject *object, struct apple80211_roam_profile_band_data *data)
 {
-#if 0
-    for (int i = 0; i < data->profile_cnt; i++) {
-        struct apple80211_roam_profile *bd = &data->profiles[i];
-        XYLog("%s %d ROAM_PROF_BACKOFF_MULTIPLIER: %d, ROAM_PROF_FULLSCAN_PERIOD: %d, ROAM_PROF_INIT_SCAN_PERIOD: %d, ROAM_PROF_MAX_SCAN_PERIOD: %d, ROAM_PROF_NFSCAN: %d, ROAM_PROF_ROAM_DELTA: %d, ROAM_PROF_ROAM_FLAGS:%d, ROAM_PROF_ROAM_TRIGGER: %d, ROAM_PROF_RSSI_BOOST_DELTA: %d, ROAM_PROF_RSSI_BOOST_THRESH: %d, ROAM_PROF_RSSI_LOWER: %d\n", __FUNCTION__, i, bd->backoff_multiplier, bd->full_scan_period, bd->init_scan_period, bd->max_scan_period, bd->nfscan, bd->delta, bd->flags, bd->trigger, bd->rssi_boost_delta, bd->rssi_boost_thresh, bd->rssi_lower);
-    }
-#endif
-    if (roamProfile != NULL)
-        IOFree(roamProfile, sizeof(struct apple80211_roam_profile_band_data));
-    roamProfile = (uint8_t *)IOMalloc(sizeof(struct apple80211_roam_profile_band_data));
-    memcpy(roamProfile, data, sizeof(struct apple80211_roam_profile_band_data));
-    return kIOReturnSuccess;
+    // Current 25C56 gates IOC 216 and dispatches it to a dynamic Roam owner.
+    // This legacy band-only carrier has no matching local owner or transport.
+    (void)object;
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

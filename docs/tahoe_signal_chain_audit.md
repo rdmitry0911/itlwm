@@ -6508,3 +6508,25 @@ This is non-null V1 false-success removal with direct public status alignment
 only; it does not claim null, Tahoe, GET, carrier/ABI, BTCOEX policy,
 firmware, event, traffic, or runtime parity. See
 docs/reference/CR-521-legacy-btcoex-profiles-non-null-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: legacy V1 ROAM_PROFILE blind-success quarantine
+
+The historical V1 IOC 216 SET half in AirportSTAIOCTL.cpp previously freed,
+allocated, and copied a 76-byte band-only profile carrier into local readback
+state before returning success. Direct current 25C56 nested-KEXT recovery
+shows the public apple80211setROAM_PROFILE wrapper gates selector 0xd8,
+performs a safe metacast, and dynamically tails to a Roam-owner slot at
++0x1178. A failed gate propagates its raw status and a failed cast returns raw
+0xe082280e. This is active dispatch topology, not a fixed success or fixed
+unsupported body.
+
+The active legacy V1 setter now leaves both arguments unread and returns
+kIOReturnUnsupported because this port has no matching Roam owner or
+transport. The local 76-byte band-only carrier is not substituted for the
+reference all-bands carrier, and the correction makes no null-input or
+valid-input status-parity claim. The typed bidirectional V1 route, separate
+V1 GET self-echo, pointer declaration/teardown, and Tahoe source remain
+unchanged. This is a V1 no-backend false-success removal only; it does not
+claim GET, carrier/ABI, roaming policy, Tahoe, firmware, event, traffic, or
+runtime parity. See
+docs/reference/CR-522-legacy-roam-profile-blind-success-quarantine-20260715.md.
