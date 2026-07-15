@@ -359,7 +359,12 @@ setAWDL_SECONDARY_MASTER_CHANNEL(OSObject *object, struct apple80211_awdl_second
 IOReturn AirportItlwm::
 setAWDL_MIN_RATE(OSObject *object, struct apple80211_awdl_min_rate *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. The legacy
+    // Intel path has no corresponding AWDL min-rate owner or backend.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

@@ -6156,3 +6156,20 @@ GET-only/SET-rejection route remain unchanged. Tahoe does not compile
 `kIOReturnUnsupported`. This is not peer-cache runtime, APSTA, AWDL,
 firmware, event, traffic, or broader historical semantic parity. See
 docs/reference/CR-503-legacy-peer-cache-maximum-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL min-rate no-owner quarantine
+
+The historical virtual-interface IOC 213 SET handler previously returned
+success while ignoring its typed AWDL min-rate carrier. Direct current 25C56
+nested-KEXT recovery shows a selector gate, nonzero-status propagation,
+AWDL-protocol owner test, and only then a tail dispatch; a failed owner test
+returns raw `0xe082280e`.
+
+The legacy Intel handler has no corresponding min-rate owner, state, or
+backend, and now returns `kIOReturnUnsupported` without reading either
+argument. Its legacy GET, typed route, and Tahoe's absence of a min-rate
+surface remain intact. Tahoe does not compile `AirportVirtualIOCTL.cpp`. This
+is a historical source-surface fail-closed boundary, not a Tahoe runtime,
+Apple terminal-status, carrier-layout, AWDL policy, firmware, event, or
+traffic parity claim. See
+docs/reference/CR-504-legacy-awdl-min-rate-no-owner-quarantine-20260715.md.
