@@ -457,10 +457,10 @@ static_assert(sizeof(struct apple80211_p2p_device_capability) == 0x1,
 struct apple80211_private_mac_data {
     uint32_t    version;
     uint32_t    enabled;
-    // AppleBCMWLANCore::getPRIVATE_MAC(...) writes the next 24 bytes as an
-    // opaque packed carrier returned from the "scanmac" command path. The
-    // exact semantic names of these fields are not fully recovered yet, so keep
-    // the ABI offset-accurate instead of inventing labels Apple never used.
+    // Tahoe obtains +0x4 and +0xc from BGScanAdapter, then fills the opaque
+    // reply fields from "scanmac" only after that command succeeds. It does
+    // not write version; the exact field names remain unrecovered, so preserve
+    // the offsets without inventing semantics.
     uint32_t    scanmac_state;
     uint32_t    timeout_seconds;
     uint8_t     primary_mac[6];

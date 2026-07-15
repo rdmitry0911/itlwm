@@ -1,0 +1,53 @@
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: A97E73DB-90B4-3827-B166-4AECB9972AD5 (arm64e) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getPRIVATE_MAC
+1 match found:
+Address: 0x00000001000172f4
+Summary: AppleBCMWLANInfraProtocol::getPRIVATE_MAC(apple80211_private_mac_data*)
+(lldb) image lookup -n AppleBCMWLANCore::getPRIVATE_MAC
+1 match found:
+Address: 0x0000000100119538
+Summary: AppleBCMWLANCore::getPRIVATE_MAC(apple80211_private_mac_data*)
+(lldb) image lookup -n AppleBCMWLANBGScanAdapter::isPrivateMacEnabled
+1 match found:
+Address: 0x00000001000124e2
+Summary: AppleBCMWLANBGScanAdapter::isPrivateMacEnabled()
+(lldb) image lookup -n AppleBCMWLANBGScanAdapter::getPrivateMacTimeout
+1 match found:
+Address: 0x000000010001263a
+Summary: AppleBCMWLANBGScanAdapter::getPrivateMacTimeout()
+(lldb) disassemble -s 0x1000172f4 -e 0x100017340
+0x1000172f4: pushq  %rbp
+0x1000172f8: movq   0x88(%rdi), %rax
+0x1000172ff: movq   (%rax), %rdi
+0x100017302: movq   (%rdi), %rax
+0x100017305: movq   0x6e8(%rax), %rax
+0x10001730d: jmpq   *%rax
+(lldb) disassemble -s 0x100119538 -e 0x100119630
+0x100119538: pushq  %rbp
+0x100119563: testq  %rsi, %rsi
+0x100119566: je     0x10011960d
+0x100119572: movq   0x48(%rdi), %rax
+0x100119576: movq   0x1578(%rax), %rdi
+0x10011957d: callq  0x1000124e2 ; AppleBCMWLANBGScanAdapter::isPrivateMacEnabled()
+0x100119582: movzbl %al, %eax
+0x100119585: movl   %eax, 0x4(%rbx)
+0x100119588: movq   0x48(%r14), %rax
+0x10011958c: movq   0x1578(%rax), %rdi
+0x100119593: callq  0x10001263a ; AppleBCMWLANBGScanAdapter::getPrivateMacTimeout()
+0x100119598: movl   %eax, 0xc(%rbx)
+0x1001195d2: leaq   0x14f1e9(%rip), %rsi ; "scanmac"
+0x1001195dc: callq  0x10017b780 ; AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+0x1001195e1: testl  %eax, %eax
+0x1001195e3: jne    0x100119612
+0x1001195e9: movzwl 0x4(%rcx), %edx
+0x1001195ed: movw   %dx, 0x14(%rbx)
+0x1001195f3: movl   %edx, 0x10(%rbx)
+0x1001195f9: movl   %edx, 0x16(%rbx)
+0x100119600: movw   %dx, 0x1a(%rbx)
+0x100119608: movl   %ecx, 0x8(%rbx)
+0x10011960d: movl   $0x16, %eax
+0x100119612: movq   0x26b0af(%rip), %rcx
+0x10011962a: retq

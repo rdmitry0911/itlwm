@@ -1,33 +1,36 @@
 {
   "checks": {
-    "getter_is_zero_baseline_only": true,
-    "historical_claims_corrected": true,
-    "interface_slots_and_dispatch_retained": true,
-    "reference_note": true,
-    "scoped_owner_backend_absent": true,
-    "setter_preserves_null_and_quarantines_without_consuming": true,
-    "synthetic_private_mac_state_removed": true
+    "abi_comment_keeps_only_observed_producer_split": true,
+    "active_v2_slot_and_dispatch_remain": true,
+    "getter_preserves_null_and_fails_closed_without_output": true,
+    "historical_zero_baseline_claim_is_superseded": true,
+    "no_matching_local_private_mac_producer": true,
+    "no_synthetic_private_mac_state_remains": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_bgscan_transport_producer": true,
+    "reference_raw_manifest_matches": true,
+    "setter_remains_quarantined_without_consuming": true
   },
   "local": {
-    "getter_is_baseline_only": true,
+    "null_return_is_apple_parity": true,
     "private_mac_owner_backend": false,
-    "rejected_request_false_state": false,
+    "runtime_selector_invocation": false,
+    "synthetic_success": false,
     "valid_input_return_is_apple_parity": false
   },
   "reference": {
-    "core_get_vtable_offset": "+0x6e8",
+    "bgscan_adapter_from_core": "0x48+0x1578",
+    "core_get_vtable_offset": "0x6e8",
     "core_getter": "0x100119538",
-    "core_set_vtable_offset": "+0x6f0",
-    "core_setter": "0x10011ee12",
-    "enabled_offset": "+0x4",
+    "enabled_offset": "0x4",
     "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
     "infra_get_wrapper": "0x1000172f4",
-    "infra_set_wrapper": "0x100018528",
-    "mac_offset": "+0x10",
+    "infra_slot": 490,
     "null_return": "0x16",
     "scanmac_iovar": "scanmac",
-    "timeout_offset": "+0xc"
+    "timeout_offset": "0xc"
   },
-  "schema": "itlwm-private-mac-rejected-state-v1",
-  "source_base_revision": "483ca3d30b448d608c477d99d1fa7252e0c66a84"
+  "schema": "itlwm-private-mac-no-producer-quarantine-v2",
+  "source_base_revision": "20a8de84e3c2055a8ddbb1c10c76dfe4a97d6656"
 }

@@ -219,7 +219,8 @@ public:
     virtual IOReturn getLEAKY_AP_STATS_MODE(apple80211_leaky_ap_setting *) override;
     // [489]
     virtual IOReturn getCOUNTRY_CHANNELS(apple80211_country_channel_data *) override;
-    // [490]
+    // [490] — Tahoe requires a BGScanAdapter/"scanmac" producer here. Keep
+    // this slot fail-closed until that owner and transport exist locally.
     virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;
     // [491]
     // [491] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`

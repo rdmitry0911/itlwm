@@ -329,8 +329,9 @@ than accepting the inverted invalid range and caching a false success.
   rest are opaque or narrow carriers whose caller-visible state Apple stores
   before delegating to private owners. `PRIVATE_MAC` was later removed from
   this fixed-fail classification after canonical recovery found its BGScan
-  owner path. The port now mirrors the recovered public boundary instead of
-  leaving the zone on generic unsupported.
+  owner path. Its ownerless local setter and getter are now both explicit
+  no-producer quarantines; the port does not represent the successful Apple
+  owner chain without its BGScan and command transport.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 correction: GAS abort is not a successful no-op`:
@@ -402,15 +403,15 @@ than accepting the inverted invalid range and caching a false success.
   dynamic Tahoe thermal-state parity.
   See [CR-479-thermal-index-rejected-state-20260714.md](reference/CR-479-thermal-index-rejected-state-20260714.md).
 
-- `Q13 correction: PRIVATE_MAC ownerless rejected state`:
-  `setPRIVATE_MAC` is a BGScanAdapter-backed control surface, not the old
-  raw-`0x16` fixed-fail classification. Tahoe returns raw `0x16` only for
-  `NULL`; a valid carrier configures private scan-MAC state and succeeds. The
-  Intel port has no matching owner, so valid local requests are now rejected
-  before carrier access and cannot leak timeout/MAC bytes into a later
-  `getPRIVATE_MAC` baseline. The getter retains its packed zero ABI carrier;
-  it does not claim dynamic Tahoe state or valid-input return-code parity.
-  See [CR-479-private-mac-rejected-state-20260714.md](reference/CR-479-private-mac-rejected-state-20260714.md).
+- `Q13 correction: PRIVATE_MAC getter no-producer quarantine`:
+  `setPRIVATE_MAC` and `getPRIVATE_MAC` are BGScanAdapter-backed control and
+  producer paths, not ownerless fixed-fail/zero-baseline contracts. Tahoe
+  returns raw `0x16` for `NULL`; its valid getter reads BGScan state and
+  `runIOVarGet("scanmac")`, propagating command failure before it can fill the
+  opaque reply. The Intel port has no matching owner or transport, so both
+  local non-null paths reject before carrier access or output mutation.
+  This is not dynamic Tahoe state or valid-input return-code parity.
+  See [CR-490-private-mac-no-producer-quarantine-20260715.md](reference/CR-490-private-mac-no-producer-quarantine-20260715.md).
 
 - `Q13 mini-batch: guard-interval producer path`:
   `getGUARD_INTERVAL` no longer belongs in the generic unsupported bucket.
@@ -420,11 +421,11 @@ than accepting the inverted invalid range and caching a false success.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: HT capability / private-mac / TCPKA getter-side ABI lift`:
-  `getHT_CAPABILITY`, `getPRIVATE_MAC`, and `getOFFLOAD_TCPKA_ENABLE` no longer
-  belong in the generic unsupported bucket. The remote AppleBCMWLANCoreMach-O
-  recovered a real `getHT_CAPABILITY(...)` producer body, while
-  `getPRIVATE_MAC(...)` and `getOFFLOAD_TCPKA_ENABLE(...)` proved that the
-  local Tahoe headers were still missing their packed carrier ABIs.
+  the remote AppleBCMWLANCoreMach-O recovered a real `getHT_CAPABILITY(...)`
+  producer body and packed carrier layouts for `getPRIVATE_MAC(...)` and
+  `getOFFLOAD_TCPKA_ENABLE(...)`. That historical ABI recovery does not make
+  `getPRIVATE_MAC` a local producer: with no BGScan/`scanmac` backend it is now
+  explicitly fail-closed by the no-producer quarantine.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: simple core-owned setter carriers`:

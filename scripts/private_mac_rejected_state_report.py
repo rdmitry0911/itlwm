@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Generate and verify PRIVATE_MAC rejected-state quarantine evidence."""
+"""Generate and verify PRIVATE_MAC no-producer quarantine evidence."""
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -9,11 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "evidence/state/private_mac_rejected_state_report.json"
-NOTE = ROOT / "docs/reference/CR-479-private-mac-rejected-state-20260714.md"
+NOTE = ROOT / "docs/reference/CR-490-private-mac-no-producer-quarantine-20260715.md"
+LEGACY_NOTE = ROOT / "docs/reference/CR-479-private-mac-rejected-state-20260714.md"
+RAW = ROOT / "docs/reference/artifacts/private-mac-25c56/raw.txt"
+RAW_MANIFEST = RAW.with_name("SHA256SUMS.txt")
 INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 HPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
+V2 = ROOT / "AirportItlwm/AirportItlwmV2.cpp"
+INFRA = ROOT / "include/Airport/IO80211InfraProtocol.h"
+ABI = ROOT / "include/Airport/apple80211_ioctl.h"
 SOURCE_ROOTS = (
     ROOT / "AirportItlwm",
     ROOT / "include",
@@ -40,7 +47,13 @@ def source_contains(token):
 def report():
     cpp = CPP.read_text(encoding="utf-8")
     hpp = HPP.read_text(encoding="utf-8")
+    v2 = V2.read_text(encoding="utf-8")
+    infra = INFRA.read_text(encoding="utf-8")
+    abi = ABI.read_text(encoding="utf-8")
     note = " ".join(NOTE.read_text(encoding="utf-8").split())
+    legacy_note = LEGACY_NOTE.read_text(encoding="utf-8")
+    raw = RAW.read_text(encoding="utf-8")
+    manifest = RAW_MANIFEST.read_text(encoding="utf-8")
     inventory = INVENTORY.read_text(encoding="utf-8")
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
     getter = section(
@@ -58,127 +71,152 @@ def report():
         "case APPLE80211_IOC_PRIVATE_MAC:",
         "case APPLE80211_IOC_SET_MAC_ADDRESS:",
     )
+    raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-private-mac-rejected-state-v1",
-        "source_base_revision": "483ca3d30b448d608c477d99d1fa7252e0c66a84",
+        "schema": "itlwm-private-mac-no-producer-quarantine-v2",
+        "source_base_revision": "20a8de84e3c2055a8ddbb1c10c76dfe4a97d6656",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-            "infra_set_wrapper": "0x100018528",
-            "core_set_vtable_offset": "+0x6f0",
-            "core_setter": "0x10011ee12",
+            "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+            "infra_slot": 490,
             "infra_get_wrapper": "0x1000172f4",
-            "core_get_vtable_offset": "+0x6e8",
+            "core_get_vtable_offset": "0x6e8",
             "core_getter": "0x100119538",
+            "bgscan_adapter_from_core": "0x48+0x1578",
             "null_return": "0x16",
-            "timeout_offset": "+0xc",
-            "mac_offset": "+0x10",
-            "enabled_offset": "+0x4",
+            "enabled_offset": "0x4",
+            "timeout_offset": "0xc",
             "scanmac_iovar": "scanmac",
         },
         "local": {
             "private_mac_owner_backend": False,
-            "rejected_request_false_state": False,
-            "getter_is_baseline_only": True,
+            "synthetic_success": False,
+            "null_return_is_apple_parity": True,
             "valid_input_return_is_apple_parity": False,
+            "runtime_selector_invocation": False,
         },
         "checks": {
-            "reference_note": all(
-                token in note
+            "reference_raw_manifest_matches": manifest == f"{raw_digest}  raw.txt\n",
+            "reference_raw_has_bgscan_transport_producer": all(
+                token in raw
                 for token in (
                     "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
-                    "`0x100018528`",
-                    "`+0x6f0`",
-                    "`0x10011ee12`",
-                    "`0x1000172f4`",
-                    "`+0x6e8`",
-                    "`0x100119538`",
-                    "`0x16`",
-                    "`+0xc`",
-                    "`+0x10`",
-                    "`+0x4`",
-                    "configureBGScanPrivateMacTimeout",
-                    "configureBGScanPrivateMac",
-                    "enablePrivateMACForScans",
-                    "disablePrivateMACForScans",
-                    "runIOVarGet(\"scanmac\")",
-                    "does not claim live Tahoe",
-                    "valid-input return-code parity",
+                    "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+                    "0x1000172f4",
+                    "0x6e8(%rax)",
+                    "0x100119538",
+                    "0x48(%rdi)",
+                    "0x1578(%rax)",
+                    "isPrivateMacEnabled",
+                    "0x4(%rbx)",
+                    "getPrivateMacTimeout",
+                    "0xc(%rbx)",
+                    "\"scanmac\"",
+                    "runIOVarGet",
+                    "testl  %eax, %eax",
+                    "$0x16",
                 )
             ),
-            "setter_preserves_null_and_quarantines_without_consuming": all(
+            "reference_note_has_scope_and_nonclaim": all(
+                token in note
+                for token in (
+                    "slot `[490]`",
+                    "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+                    "`0x1000172f4`",
+                    "`0x6e8`",
+                    "`0x100119538`",
+                    "0x48",
+                    "(Core + 0x48) + 0x1578",
+                    "`0x16`",
+                    "runIOVarGet(\"scanmac\")",
+                    "not Apple valid-input return-code, full carrier-layout, BGScan-owner, IOVAR-result, or runtime-selector parity",
+                )
+            ),
+            "active_v2_slot_and_dispatch_remain": (
+                "// [490]" in hpp
+                and "getPRIVATE_MAC" in hpp
+                and "// [490]" in infra
+                and "getPRIVATE_MAC" in infra
+                and "fNetIf = new AirportItlwmSkywalkInterface;" in v2
+                and all(
+                    token in dispatch
+                    for token in (
+                        "cmd == SIOCGA80211",
+                        "getPRIVATE_MAC",
+                        "kIOReturnUnsupported",
+                    )
+                )
+            ),
+            "getter_preserves_null_and_fails_closed_without_output": all(
+                token in getter
+                for token in (
+                    "if (data == nullptr)",
+                    "return kApple80211ErrInvalidArgumentRaw;",
+                    "(void)data;",
+                    "return kIOReturnUnsupported;",
+                )
+            )
+            and all(
+                token not in getter
+                for token in (
+                    "data->",
+                    "cachedPrivateMac",
+                    "return kIOReturnSuccess;",
+                    "memset",
+                    "APPLE80211_VERSION",
+                )
+            ),
+            "setter_remains_quarantined_without_consuming": all(
                 token in setter
                 for token in (
                     "if (data == nullptr)",
                     "return kApple80211ErrInvalidArgumentRaw;",
                     "(void)data;",
                     "return kIOReturnUnsupported;",
-                    "before\n    // reading them",
                 )
             )
             and all(
                 token not in setter
                 for token in (
+                    "cachedPrivateMac",
                     "data->",
-                    "reinterpret_cast",
-                    "cachedPrivateMac",
                     "return kIOReturnSuccess;",
                 )
             ),
-            "getter_is_zero_baseline_only": all(
-                token in getter
-                for token in (
-                    "memset(data, 0, sizeof(*data));",
-                    "data->version = APPLE80211_VERSION;",
-                    "data->enabled = 0;",
-                    "return kIOReturnSuccess;",
-                )
-            )
-            and all(
-                token not in getter
-                for token in (
-                    "cachedPrivateMac",
-                    "data->scanmac_state =",
-                    "data->timeout_seconds =",
-                    "memcpy(data->primary_mac",
-                    "memcpy(data->secondary_mac",
-                )
-            ),
-            "synthetic_private_mac_state_removed": "cachedPrivateMac" not in cpp + hpp,
-            "interface_slots_and_dispatch_retained": all(
-                token in hpp
-                for token in (
-                    "virtual IOReturn getPRIVATE_MAC(apple80211_private_mac_data *) override;",
-                    "virtual IOReturn setPRIVATE_MAC(apple80211_private_mac_data *) override;",
-                )
-            )
-            and all(
-                token in dispatch
-                for token in (
-                    "cmd == SIOCGA80211",
-                    "getPRIVATE_MAC",
-                    "kIOReturnUnsupported",
-                )
-            )
-            and "setPRIVATE_MAC" not in dispatch,
-            "scoped_owner_backend_absent": all(
+            "no_matching_local_private_mac_producer": all(
                 not source_contains(token)
                 for token in (
-                    "AppleBCMWLANBGScanAdapter",
-                    "configureBGScanPrivateMacTimeout",
+                    "AppleBCMWLANBGScanAdapter::isPrivateMacEnabled",
+                    "AppleBCMWLANBGScanAdapter::getPrivateMacTimeout",
                     "configureBGScanPrivateMac",
                     "enablePrivateMACForScans",
                     "disablePrivateMACForScans",
-                    "isPrivateMacEnabled",
-                    "getPrivateMacTimeout",
+                    "cachedPrivateMac",
                 )
             ),
-            "historical_claims_corrected": (
-                "## 2026-07-14 correction: `PRIVATE_MAC` is BGScanAdapter-backed"
+            "abi_comment_keeps_only_observed_producer_split": all(
+                token in abi
+                for token in (
+                    "obtains +0x4 and +0xc from BGScanAdapter",
+                    "reply fields from \"scanmac\" only after that command succeeds",
+                    "not write version; the exact field names remain unrecovered",
+                )
+            ),
+            "historical_zero_baseline_claim_is_superseded": (
+                "## 2026-07-15 correction: `PRIVATE_MAC` getter is a no-producer quarantine"
                 in signal_audit
-                and "Q13 correction: PRIVATE_MAC ownerless rejected state" in inventory
-                and "`setPRIVATE_MAC -> 0x16`" not in signal_audit
-                and "fixed-fail selectors (`AP_MODE`, `PRIVATE_MAC`," not in inventory
+                and "`Q13 correction: PRIVATE_MAC getter no-producer quarantine`"
+                in inventory
+                and "Superseded on 2026-07-15" in legacy_note
+                and "returns only the existing zero packed-carrier baseline" not in signal_audit
+                and "getter retains its packed zero ABI carrier" not in inventory
+            ),
+            "no_synthetic_private_mac_state_remains": all(
+                token not in cpp + hpp
+                for token in (
+                    "cachedPrivateMac",
+                )
             ),
         },
     }

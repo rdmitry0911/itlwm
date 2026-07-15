@@ -1175,13 +1175,30 @@ success. This is not a fixed-fail selector.
 `"scanmac"` IOVAR. AirportItlwm has no corresponding BGScan owner or backend.
 Its prior local setter nevertheless copied timeout/MAC bytes before returning
 raw `0x16`, which made a failed direct request observably alter the getter.
-The local boundary now keeps raw `0x16` for `NULL`, rejects valid ownerless
-carriers with `kIOReturnUnsupported` before reading them, removes the synthetic
-cache, and returns only the existing zero packed-carrier baseline from the
-getter. This does not claim Tahoe dynamic getter state or valid-input
-return-code parity.
+The setter boundary keeps raw `0x16` for `NULL` and rejects valid ownerless
+carriers with `kIOReturnUnsupported` before reading them, removing that
+synthetic cache.
 
-See [CR-479-private-mac-rejected-state-20260714.md](reference/CR-479-private-mac-rejected-state-20260714.md).
+A later getter-specific correction also removes the inherited zero baseline:
+the reference non-null getter needs BGScan state and command transport, so an
+absent local owner cannot justify a zero success carrier.
+
+See [CR-490-private-mac-no-producer-quarantine-20260715.md](reference/CR-490-private-mac-no-producer-quarantine-20260715.md).
+
+## 2026-07-15 correction: `PRIVATE_MAC` getter is a no-producer quarantine
+
+The canonical 25C56 getter is an active producer chain, not an ownerless
+packed-zero contract: Infra `0x1000172f4` dispatches through `+0x6e8` to Core
+`0x100119538`, which obtains BGScanAdapter through `(Core + 0x48) + 0x1578`, writes caller
+`+0x4`/`+0xc`, and calls `runIOVarGet("scanmac")`. Its command error is
+propagated; opaque reply bytes are written only on success, and `version` is
+not initialized by this body.
+
+AirportItlwm has no matching producer. Slot `[490]` therefore retains only the
+raw `0x16` null boundary and returns `kIOReturnUnsupported` for every non-null
+carrier before output mutation. This is a no-producer quarantine, not
+valid-input return-code, full carrier-layout, BGScan-owner, IOVAR-result, or
+runtime-selector parity.
 
 ## Q13 correction: `setGAS_ABORT` is GASAdapter-backed
 
@@ -1581,10 +1598,11 @@ This still does **not** justify lifting `HT_CAPABILITY`: `getGUARD_INTERVAL`
 only proves the current-rate-to-interval policy, not the full HT capability IE
 producer path.
 
-## Q13 Confirmed Producer Mini-Batch: `getHT_CAPABILITY` / `getPRIVATE_MAC` / `getOFFLOAD_TCPKA_ENABLE`
+## Q13 Historical ABI Recovery: `getHT_CAPABILITY` / `getPRIVATE_MAC` / `getOFFLOAD_TCPKA_ENABLE`
 
-The next three Tahoe getters now have enough recovered producer-side evidence
-to stop treating them as a generic unsupported bucket.
+This section preserves reference-side ABI recovery. It is not a current local
+producer claim for `PRIVATE_MAC`: its local disposition is superseded by the
+2026-07-15 no-producer quarantine above.
 
 Recovered Apple producer contract for `getHT_CAPABILITY`:
 
@@ -1624,8 +1642,8 @@ The important Tahoe consequences are:
 
 - `HT_CAPABILITY` can now be lifted as a real producer using the same local HT
   capability state that already feeds our 802.11 HT IE generator
-- `PRIVATE_MAC` must stop being an opaque forward declaration and become a
-  packed `0x1c` ABI carrier
+- `PRIVATE_MAC` has a recovered packed `0x1c` ABI layout, but without a local
+  producer it remains fail-closed rather than becoming a successful carrier
 - `OFFLOAD_TCPKA_ENABLE` cannot remain `typedef UInt`; the recovered getter and
   setter both prove it is a packed `version + u32 enabled` carrier
 

@@ -3555,17 +3555,14 @@ getP2P_DEVICE_CAPABILITY(apple80211_p2p_device_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getPRIVATE_MAC(apple80211_private_mac_data *data)
 {
-    // Tahoe queries BGScanAdapter and the private "scanmac" IOVAR here. This
-    // port has neither owner nor backend, so retain the packed carrier ABI
-    // with its zero no-owner baseline rather than exposing state from a
-    // rejected direct setter request.
+    // Tahoe reads this carrier through BGScanAdapter and the private
+    // "scanmac" IOVAR. This port has neither producer, so do not manufacture
+    // a zero success result for a valid request.
     if (data == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
-    memset(data, 0, sizeof(*data));
-    data->version = APPLE80211_VERSION;
-    data->enabled = 0;
-    return kIOReturnSuccess;
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
