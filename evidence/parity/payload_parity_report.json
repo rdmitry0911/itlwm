@@ -93,9 +93,9 @@
     },
     {
       "name": "btcoex-2g-chain-disable",
-      "shape": "6-byte chain-disable payload with fixed 0x00060001 header",
-      "producer": "TahoePayloadBuilders::buildBtcoex2GChainDisable",
-      "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_2G_CHAIN_DISABLE",
+      "shape": "opaque public carrier; reference SET uses a 6-byte 0x00060001-headed payload",
+      "producer": "TahoePayloadBuilders::buildBtcoex2GChainDisable (ABI builder only)",
+      "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_2G_CHAIN_DISABLE fail-closed boundary",
       "implementation_paths": [
         "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
         "AirportItlwm/TahoePayloadBuilders.hpp"

@@ -48,9 +48,9 @@ request now returns `kIOReturnUnsupported` before caller mutation.
 
 The existing `TahoeOwnerRegistry::btcoex.activeProfile`,
 `TahoePayloadBuilders::buildBtcoexProfileActive`, commander/owner declarations,
-IOC route, setter, and distinct `cachedBtcoex2GChainDisable` getter are
-deliberately unchanged. They are not evidence of a current local GET result
-producer.
+IOC route, and setter are deliberately unchanged. The then-distinct
+chain-disable getter is corrected separately by CR-496. None of these are
+evidence of a current local active-profile GET result producer.
 
 This is a no-producer quarantine, **not Apple null-input, valid-input
 return-code, value, carrier-layout, special-`0xe00002e3`, firmware, or

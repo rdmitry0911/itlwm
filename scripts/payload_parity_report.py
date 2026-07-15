@@ -247,9 +247,9 @@ PAYLOAD_TYPES = [
     },
     {
         "name": "btcoex-2g-chain-disable",
-        "shape": "6-byte chain-disable payload with fixed 0x00060001 header",
-        "producer": "TahoePayloadBuilders::buildBtcoex2GChainDisable",
-        "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_2G_CHAIN_DISABLE",
+        "shape": "opaque public carrier; reference SET uses a 6-byte 0x00060001-headed payload",
+        "producer": "TahoePayloadBuilders::buildBtcoex2GChainDisable (ABI builder only)",
+        "consumer": "AirportItlwmSkywalkInterface::setBTCOEX_2G_CHAIN_DISABLE fail-closed boundary",
         "reference_ids": ["apple-io80211-selector-surface"],
         "implementation_checks": [
             {
@@ -258,7 +258,7 @@ PAYLOAD_TYPES = [
             },
             {
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["setBTCOEX_2G_CHAIN_DISABLE", "cachedBtcoex2GChainDisable"],
+                "tokens": ["setBTCOEX_2G_CHAIN_DISABLE", "return kIOReturnUnsupported;"],
             },
         ],
         "invalid_semantics": "null returns 0xe00002c2",

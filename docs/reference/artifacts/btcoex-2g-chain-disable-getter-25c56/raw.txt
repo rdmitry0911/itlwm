@@ -1,0 +1,73 @@
+# Selected read-only static reference excerpts: BTCOEX_2G_CHAIN_DISABLE GET
+# x86_64 slice of com.apple.DriverKit-AppleBCMWLAN, macOS 25C56.
+
+(shasum -a 256)
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(dwarfdump --uuid)
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+
+(nm -arch x86_64 -nm)
+0x10001758c (__TEXT,__text) __ZN25AppleBCMWLANInfraProtocol26getBTCOEX_2G_CHAIN_DISABLEEP34apple80211_btcoex_2g_chain_disable
+0x1001e57fc (__TEXT,__text) __ZN16AppleBCMWLANCore26getBTCOEX_2G_CHAIN_DISABLEEP34apple80211_btcoex_2g_chain_disable
+0x1000187ac (__TEXT,__text) __ZN25AppleBCMWLANInfraProtocol26setBTCOEX_2G_CHAIN_DISABLEEP34apple80211_btcoex_2g_chain_disable
+0x1001e3a3e (__TEXT,__text) __ZN16AppleBCMWLANCore26setBTCOEX_2G_CHAIN_DISABLEEP34apple80211_btcoex_2g_chain_disable
+
+(otool -arch x86_64 -tvV; Infra GET wrapper)
+0x10001758c  pushq  %rbp
+0x100017590  movq   0x88(%rdi), %rax
+0x100017597  movq   (%rax), %rdi
+0x10001759a  movq   (%rdi), %rax
+0x10001759d  movq   0x3e8(%rax), %rax
+0x1000175a5  jmpq   *%rax
+
+(nm -arch x86_64 -nm) __ZTV16AppleBCMWLANCore
+0x1003A10D8 (__DATA_CONST,__const) __ZTV16AppleBCMWLANCore
+(dyld_info -arch x86_64 -fixups)
+__DATA_CONST    __const          0x1003A14D0         rebase  0x1001E57FC
+__DATA_CONST    __const          0x1003A1778         rebase  0x1001E3A3E
+
+(otool -arch x86_64 -tvV; Core GET selected body)
+0x1001e581b  testq  %rsi, %rsi
+0x1001e581e  je     0x1001e593a
+0x1001e582a  movq   0x48(%rdi), %rax
+0x1001e582e  movq   0x1520(%rax), %rdi
+0x1001e5835  callq  AppleBCMWLANCommander::getMaxCmdRxPayload
+0x1001e5840  callq  _IOMallocZeroData
+0x1001e5848  movq   0x48(%r15), %rax
+0x1001e584c  movq   0x1520(%rax), %rdi
+0x1001e58a5  leaq   "btc_2g_shchain_disable", %rsi
+0x1001e58b6  callq  AppleBCMWLANCommander::runIOVarGet
+0x1001e58bb  movl   %eax, %r12d
+0x1001e58be  cmpl   $0xe00002e3, %eax
+0x1001e58c3  je     0x1001e58ca
+0x1001e58c5  testl  %r12d, %r12d
+0x1001e58c8  jne    0x1001e58dc
+0x1001e58ca  movb   0x4(%r14), %al
+0x1001e58ce  movb   %al, 0x4(%r13)
+0x1001e58d2  movb   0x5(%r14), %al
+0x1001e58d6  movb   %al, 0x5(%r13)
+0x1001e5928  movl   %r12d, %eax
+0x1001e593a  movl   $0xe00002c2, %r12d
+
+(otool -arch x86_64 -tvV; Infra SET wrapper)
+0x1000187ac  pushq  %rbp
+0x1000187b0  movq   0x88(%rdi), %rax
+0x1000187b7  movq   (%rax), %rdi
+0x1000187ba  movq   (%rdi), %rax
+0x1000187bd  movq   0x690(%rax), %rax
+0x1000187c5  jmpq   *%rax
+
+(otool -arch x86_64 -tvV; Core SET selected body)
+0x1001e3a5d  testq  %rsi, %rsi
+0x1001e3a60  je     0x1001e3bb1
+0x1001e3a69  movzwl 0x4(%rsi), %r15d
+0x1001e3a6e  pushq  $0x6
+0x1001e3a71  callq  _IOMallocZeroData
+0x1001e3a79  movl   $0x60001, (%rax)
+0x1001e3a7f  movw   %r15w, 0x4(%rax)
+0x1001e3a9c  movq   0x48(%rbx), %rax
+0x1001e3aa0  movq   0x1520(%rax), %rdi
+0x1001e3b19  leaq   "btc_2g_shchain_disable", %rsi
+0x1001e3b2a  callq  AppleBCMWLANCommander::runIOVarSet
+0x1001e3b89  movl   $0xe00002bd, %r15d
+0x1001e3bb1  movl   $0xe00002c2, %r15d

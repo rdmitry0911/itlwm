@@ -258,8 +258,9 @@ public:
     // [501] — Tahoe public contract is `NULL -> 0xe00002c2`, else one dword
     // carrier at +0x4.
     virtual IOReturn getMAX_NSS_FOR_AP(apple80211_btcoex_max_nss_for_ap_data *) override;
-    // [502] — Tahoe public contract is `NULL -> 0xe00002c2`, else writes
-    // version=1 at +0x4.
+    // [502] — Reference Core obtains the two-byte result through the
+    // `btc_2g_shchain_disable` commander IOVAR. This port has no GET
+    // producer, so retain the virtual ABI but fail closed for non-null input.
     virtual IOReturn getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override;
     // [503] — Tahoe reads Core power-budget state populated through a `tvpm`
     // lifecycle. Keep this slot fail-closed until that producer exists here.
@@ -781,7 +782,6 @@ private:
     bool hasCachedVhtCapability;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
-    uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];
     uint16_t cachedLastActionFrameLen;
     uint32_t cachedLastActionFrameChannel;

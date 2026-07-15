@@ -8152,7 +8152,26 @@ only status zero or the observed `0xe00002e3` case copies one dword to caller
 The local cache had no writer, including from the already fail-closed setter.
 The getter now preserves its raw null boundary and fails closed for non-null
 input before output mutation. The separate IOC route, opaque ABI/builders,
-owner/commander declarations, setter, and chain-disable cache remain
-unchanged. This is not Apple null-input, valid-input return-code, value,
+owner/commander declarations and setter remain unchanged; CR-496 separately
+supersedes the former chain-disable cache scope. This is not Apple null-input,
+valid-input return-code, value,
 carrier-layout, special-status, firmware, or runtime-selector parity. See
 `docs/reference/CR-495-btcoex-profile-active-getter-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: BTCOEX_2G_CHAIN_DISABLE getter no-producer quarantine
+
+The earlier Q13 material classified `getBTCOEX_2G_CHAIN_DISABLE` as a
+state-backed cache carrier and treated the paired setter cache as a plausible
+source. That cache-success classification is superseded. Selected 25C56 slot
+`[502]` dispatches to Core, which obtains `btc_2g_shchain_disable` through its
+commander; only status zero or the observed `0xe00002e3` case copies two bytes
+to caller `+0x04/+0x05`, while the original transport status is returned.
+
+The local chain-disable field was reset-only and was never written by its
+already fail-closed paired setter. The getter now preserves its raw null
+boundary and fails closed for non-null input before output mutation. The
+separate IOC route, opaque ABI/builders, profile/active getter corrections,
+and setter remain unchanged. This is not Apple null-input, valid-input
+return-code, value, carrier-layout, special-status, firmware, or
+runtime-selector parity. See
+`docs/reference/CR-496-btcoex-2g-chain-disable-getter-no-producer-quarantine-20260715.md`.

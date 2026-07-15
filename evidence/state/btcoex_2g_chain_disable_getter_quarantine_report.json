@@ -1,7 +1,7 @@
 {
   "checks": {
-    "active_v2_slot_abi_and_ioc_route_remain": true,
-    "dead_active_getter_cache_is_removed": true,
+    "chain_v2_slot_abi_and_ioc_route_remain": true,
+    "dead_chain_disable_getter_cache_is_removed": true,
     "historical_cache_classification_is_superseded": true,
     "legacy_and_payload_guards_are_narrowed": true,
     "local_null_guard_is_retained_as_safety_boundary": true,
@@ -13,7 +13,7 @@
     "separate_btcoex_surfaces_are_preserved": true
   },
   "local": {
-    "active_get_producer": false,
+    "chain_disable_get_producer": false,
     "null_return_is_apple_parity": false,
     "runtime_selector_invocation": false,
     "synthetic_success": false,
@@ -21,18 +21,18 @@
   },
   "reference": {
     "commander_from_core": "0x48+0x1520",
-    "core_get_vtable_offset": "0x3b0",
-    "core_getter": "0x1001e509a",
-    "core_set_vtable_offset": "0x698",
-    "core_setter": "0x1001e393a",
-    "get_iovar": "btc_profile_active",
+    "core_get_vtable_offset": "0x3e8",
+    "core_getter": "0x1001e57fc",
+    "core_set_vtable_offset": "0x690",
+    "core_setter": "0x1001e3a3e",
+    "get_iovar": "btc_2g_shchain_disable",
     "get_special_status": "0xe00002e3",
     "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
     "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
-    "infra_get_slot": 498,
-    "infra_get_wrapper": "0x100017470",
-    "infra_set_wrapper": "0x100018714"
+    "infra_get_slot": 502,
+    "infra_get_wrapper": "0x10001758c",
+    "infra_set_wrapper": "0x1000187ac"
   },
-  "schema": "itlwm-btcoex-profile-active-getter-no-producer-quarantine-v1",
+  "schema": "itlwm-btcoex-2g-chain-disable-getter-no-producer-quarantine-v1",
   "source_base_revision": "e04c5dc33ee6bdaa7ba5b2fee7d417927d9f1669"
 }

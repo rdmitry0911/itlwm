@@ -2216,7 +2216,6 @@ init()
     hasCachedVhtCapability = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
-    cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
     cachedLastActionFrameLen = 0;
     cachedLastActionFrameChannel = 0;
@@ -2577,7 +2576,6 @@ init(IOService *provider)
     this->hasCachedVhtCapability = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
-    this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
     this->cachedLastActionFrameLen = 0;
     this->cachedLastActionFrameChannel = 0;
@@ -3720,13 +3718,11 @@ getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 8);
-    // Apple writes the two-byte 2G chain-disable carrier at caller +0x4/+0x5.
-    // Preserve the value accepted by the paired setter instead of returning a
-    // fixed version-like marker.
-    *reinterpret_cast<uint16_t *>(raw + 4) = cachedBtcoex2GChainDisable;
-    return kIOReturnSuccess;
+    // Reference Core obtains this two-byte result through its commander and
+    // propagates the transport status. There is no matching local GET
+    // producer, so do not expose the reset-only cache as coexistence state.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5229,7 +5225,7 @@ setBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
         return static_cast<IOReturn>(0xe00002c2);
 
     // Apple emits the fixed six-byte chain-disable IOVAR. The Intel port has
-    // no equivalent backend, so leave the paired getter cache untouched.
+    // no equivalent backend or local SET-to-GET producer.
     return kIOReturnUnsupported;
 }
 

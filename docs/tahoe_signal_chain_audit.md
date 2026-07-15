@@ -6006,8 +6006,27 @@ fail-closed paired setter.
 
 The local getter retains its `0xe00002c2` null safety boundary and returns
 `kIOReturnUnsupported` for every non-null request before output mutation.
-This does not alter the IOC route, opaque carrier/builders, paired setter,
-BTCOEX owner/commander declarations, or chain-disable getter. It is not Apple
-null-input, valid-input return-code, value, carrier-layout, special-status,
-firmware, or runtime-selector parity. See
+This does not alter the IOC route, opaque carrier/builders, paired setter, or
+BTCOEX owner/commander declarations; CR-496 separately supersedes the former
+chain-disable getter scope. It is not Apple null-input, valid-input
+return-code, value, carrier-layout, special-status, firmware, or
+runtime-selector parity. See
 `docs/reference/CR-495-btcoex-profile-active-getter-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: BTCOEX_2G_CHAIN_DISABLE getter no-producer quarantine
+
+Earlier Q13 material classified `getBTCOEX_2G_CHAIN_DISABLE` as a local
+state-backed cache carrier. That cache-success classification is superseded.
+Fresh 25C56 slot `[502]` recovery dispatches to Core, which obtains
+`btc_2g_shchain_disable` through its commander; it writes caller `+0x04` and
+`+0x05` only under observed transport-status conditions and returns the
+original status. The local chain-disable field was reset-only and its paired
+setter already fails closed.
+
+The local getter retains its `0xe00002c2` null safety boundary and returns
+`kIOReturnUnsupported` for every non-null request before output mutation. This
+does not alter the IOC route, opaque carrier/builders, paired setter, or the
+separate active/profile getter surfaces. It is not Apple null-input,
+valid-input return-code, value, carrier-layout, special-status, firmware, or
+runtime-selector parity. See
+`docs/reference/CR-496-btcoex-2g-chain-disable-getter-no-producer-quarantine-20260715.md`.

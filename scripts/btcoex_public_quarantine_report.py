@@ -61,8 +61,8 @@ def report():
     )
 
     return {
-        "schema": "itlwm-btcoex-public-quarantine-v2",
-        "source_base_revision": "a1e4df046d38f4bc95deca7a2b41ea0a71533934",
+        "schema": "itlwm-btcoex-public-quarantine-v3",
+        "source_base_revision": "e04c5dc33ee6bdaa7ba5b2fee7d417927d9f1669",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "profile": {
@@ -93,6 +93,7 @@ def report():
             "backend_btcoex_commander": False,
             "false_success": False,
             "active_getter_false_success": False,
+            "chain_disable_getter_false_success": False,
             "valid_input_return_is_apple_parity": False,
         },
         "checks": {
@@ -148,28 +149,38 @@ def report():
                 token not in cpp and token not in hpp
                 for token in ("cachedBtcoexProfiles", "cachedBtcoexProfileValidMask")
             ),
-            "active_getter_fails_closed_and_chain_scope_preserved": (
+            "active_and_chain_getters_fail_closed": (
                 all(
-                    token in active_getter
-                    for token in (
-                        "if (data == nullptr)",
-                        "return static_cast<IOReturn>(0xe00002c2);",
-                        "(void)data;",
-                        "return kIOReturnUnsupported;",
+                    all(
+                        token in getter
+                        for token in (
+                            "if (data == nullptr)",
+                            "return static_cast<IOReturn>(0xe00002c2);",
+                            "(void)data;",
+                            "return kIOReturnUnsupported;",
+                        )
+                    )
+                    and all(
+                        token not in getter
+                        for token in (
+                            "memset",
+                            "reinterpret_cast",
+                            cache,
+                            "kIOReturnSuccess",
+                        )
+                    )
+                    for getter, cache in (
+                        (active_getter, "cachedBtcoexProfileActive"),
+                        (chain_getter, "cachedBtcoex2GChainDisable"),
                     )
                 )
                 and all(
-                    token not in active_getter
-                    for token in (
-                        "memset",
-                        "reinterpret_cast",
+                    cache not in cpp + hpp
+                    for cache in (
                         "cachedBtcoexProfileActive",
-                        "kIOReturnSuccess",
+                        "cachedBtcoex2GChainDisable",
                     )
                 )
-                and "cachedBtcoexProfileActive" not in cpp + hpp
-                and "cachedBtcoex2GChainDisable" in chain_getter
-                and "cachedBtcoex2GChainDisable" in hpp
             ),
             "no_local_btcoex_commander_transport": all(
                 not source_contains(token)
