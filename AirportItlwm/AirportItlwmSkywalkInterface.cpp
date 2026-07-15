@@ -1728,6 +1728,16 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_NOISE:
             return (cmd == SIOCGA80211) ? getNOISE((apple80211_noise_data *)req->req_data)
                                         : kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_INT_MIT:
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Keep the legacy helper outside this Tahoe public path.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_RSSI:
             return (cmd == SIOCGA80211) ? getRSSI((apple80211_rssi_data *)req->req_data)
                                         : kIOReturnUnsupported;
