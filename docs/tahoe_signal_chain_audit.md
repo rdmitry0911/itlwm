@@ -6307,3 +6307,22 @@ and Tahoe's absence of IOC 164 remain intact. Tahoe does not compile
 boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
 peer-registration policy, firmware, CCA, event, or traffic parity claim. See
 docs/reference/CR-511-legacy-awdl-peer-traffic-registration-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL sync-enabled blind-success cache
+
+The historical virtual-interface IOC 117 SET half previously copied an
+unvalidated carrier bit into a local readback cache and returned success.
+Direct current 25C56 nested-KEXT recovery shows a selector gate,
+nonzero-status propagation, AWDL-protocol owner test, and dynamic tail
+dispatch; a failed owner test returns raw `0xe082280e`. A separate internal
+handler requires a non-null `0x0c` request carrier and directly reaches an
+active AWDL-peer-manager terminal. The local packed carrier also occupies
+`0x0c` bytes, but byte-count equality is not ABI or layout parity.
+
+The active legacy SET half now returns `kIOReturnUnsupported` without reading
+either argument. Its bidirectional route, cached legacy GET behavior, and
+Tahoe's absence of IOC 117 remain intact. Tahoe does not compile
+`AirportVirtualIOCTL.cpp`. This is a historical source-surface fail-closed
+boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
+sync-policy, firmware, CCA, event, or traffic parity claim. See
+docs/reference/CR-512-legacy-awdl-sync-enabled-blind-success-quarantine-20260715.md.

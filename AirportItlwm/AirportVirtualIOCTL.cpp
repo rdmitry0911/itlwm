@@ -197,8 +197,12 @@ getSYNC_ENABLED(OSObject *object, struct apple80211_awdl_sync_enabled *data)
 IOReturn AirportItlwm::
 setSYNC_ENABLED(OSObject *object, struct apple80211_awdl_sync_enabled *data)
 {
-    this->awdlSyncEnable = data->enabled;
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector; the legacy
+    // write only changed a local readback cache without an AWDL sink.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

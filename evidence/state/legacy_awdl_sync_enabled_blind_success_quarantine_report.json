@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "equal_byte_count_does_not_become_layout_parity": true,
+    "note_records_scope_reference_and_equal_size_boundary": true,
+    "paired_getter_and_tahoe_absence_remain": true,
+    "reference_raw_manifest_matches": true,
+    "reference_raw_records_public_internal_terminal_and_equal_size_caveat": true,
+    "selector_carrier_header_route_getter_and_cache_boundary_remain": true,
+    "setter_is_unread_and_fails_closed": true
+  },
+  "local": {
+    "byte_count_matches_reference_admission": true,
+    "carrier_layout_is_reference_parity": false,
+    "packed_carrier_bytes": 12
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "internal_carrier_bytes": 12,
+    "internal_selector": "0xffffff80021e439e",
+    "public_wrapper": "0xffffff80021c432a",
+    "selector": 117,
+    "terminal": "0xffffff8002178cac"
+  },
+  "schema": "itlwm-legacy-awdl-sync-enabled-blind-success-quarantine-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "f2c6e4abd3ebb94711b34c2cf355ab980252b721"
+}
