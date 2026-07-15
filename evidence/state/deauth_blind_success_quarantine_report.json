@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "blind_success_classification_is_recorded": true,
+    "distinct_disassociate_is_not_substituted": true,
+    "local_setter_fails_closed_without_reading_or_effect": true,
+    "paired_get_legacy_and_apsta_surfaces_remain_out_of_scope": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_current_gate_and_terminal_topology": true,
+    "reference_raw_manifest_matches": true,
+    "typed_ioc29_route_and_abi_remain": true
+  },
+  "local": {
+    "blind_success": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "terminal_owner": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid_x86_64": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "cast_failure_status": "0xe082280e",
+    "selector": 29,
+    "selector_gate_vtable_offset": "0xcc8",
+    "selector_wrapper": "0xffffff80021c3a1f",
+    "terminal_vtable_offset": "0x2e0"
+  },
+  "schema": "itlwm-deauth-blind-success-quarantine-v1",
+  "source_base_revision": "40d5660130c60fe63a5017981d08228c43c2979d"
+}

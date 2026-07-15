@@ -130,6 +130,10 @@ public:
     IOReturn getLINK_CHANGED_EVENT_DATA(apple80211_link_changed_event_data *);
     IOReturn setASSOCIATE(apple80211_assoc_data *);
     IOReturn setDISASSOCIATE(void *);
+    // Public IOC 29 is distinct from the void DISASSOCIATE carrier. This port
+    // has no recovered DEAUTH owner, so the local former blind-success stub
+    // fails closed rather than acknowledging an unapplied deauthentication.
+    IOReturn setDEAUTH(apple80211_deauth_data *);
     // Tahoe Skywalk current-PMK setter routed through the
     // alternate apple80211setCUR_PMK selector at Tahoe absolute
     // vtable slot [750] of __ZTV23IO80211SkywalkInterface (offset
@@ -150,7 +154,6 @@ public:
     // local PMK store, drops the PSK policy flag, and emits a
     // non-secret marker that names the reset reason.
     void clearExternalPmkEligibilityLocked(const char *reason_tag);
-    IOReturn setDEAUTH(apple80211_deauth_data *);
     IOReturn setSCAN_REQ(apple80211_scan_data *);
     IOReturn setSET_MAC_ADDRESS(apple80211_set_mac_address_data *);
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);

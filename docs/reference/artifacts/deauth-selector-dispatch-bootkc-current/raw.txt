@@ -1,0 +1,61 @@
+# Selected read-only static reference excerpts: public IOC 29 DEAUTH selector dispatch.
+#
+# This is a current guest BootKernelExtensions.kc capture, not the separate
+# canonical 25C56 AppleBCMWLAN DEXT. It establishes only selector gate/type/
+# terminal-vtable topology; it does not establish terminal owner, firmware,
+# state, management-frame, null-input, or valid-input return behavior.
+
+(shasum -a 256)
+eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d  /System/Library/KernelCollections/BootKernelExtensions.kc
+(dwarfdump --uuid)
+UUID: F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5 (x86_64) /System/Library/KernelCollections/BootKernelExtensions.kc
+
+(nm -arch x86_64 -nm)
+0xffffff80021c3a1f (__TEXT,__text) apple80211setDEAUTH(IO80211SkywalkInterface*, apple80211_deauth_data*)
+0xffffff80021e365c (__TEXT,__text) private setDEAUTH(IO80211Controller*, IO80211SkywalkInterface*, IO80211APIUserClient*, apple80211req*)
+0xffffff80022b0467 (__TEXT,__text) private setDeauth(IO80211Controller*, IO80211SkywalkInterface*, apple80211req*, bool)
+
+(fileset mapping + bounded byte extraction)
+__REGION349 vmaddr=0xffffff80020e3000 fileoff=33435648
+wrapper_vmaddr=0xffffff80021c3a1f
+wrapper_delta=0xe0a1f
+wrapper_fileoff=34355743
+command: dd if=BootKernelExtensions.kc bs=1 skip=34355743 count=85 | xxd -g 1
+00000000: 55 48 89 e5 41 56 53 48 89 f3 49 89 fe 48 8b 07
+00000010: be 1d 00 00 00 ff 90 c8 0c 00 00 85 c0 74 05 5b
+00000020: 41 5e 5d c3 48 8d 35 66 d2 21 00 4c 89 f7 e8 ae
+00000030: b7 83 fe 48 85 c0 74 16 49 8b 06 48 8b 80 e0 02
+00000040: 00 00 4c 89 f7 48 89 de 5b 41 5e 5d ff e0 b8 0e
+00000050: 28 82 e0 eb ca
+
+(x86_64 decode of the captured 0x55-byte wrapper)
+0xffffff80021c3a1f  pushq  %rbp
+0xffffff80021c3a20  movq   %rsp, %rbp
+0xffffff80021c3a23  pushq  %r14
+0xffffff80021c3a25  pushq  %rbx
+0xffffff80021c3a26  movq   %rsi, %rbx
+0xffffff80021c3a29  movq   %rdi, %r14
+0xffffff80021c3a2c  movq   (%rdi), %rax
+0xffffff80021c3a2f  movl   $0x1d, %esi
+0xffffff80021c3a34  callq  *0xcc8(%rax)
+0xffffff80021c3a3a  testl  %eax, %eax
+0xffffff80021c3a3c  je     0xffffff80021c3a43
+0xffffff80021c3a3e  popq   %rbx
+0xffffff80021c3a3f  popq   %r14
+0xffffff80021c3a41  popq   %rbp
+0xffffff80021c3a42  retq
+0xffffff80021c3a43  leaq   0x21d266(%rip), %rsi
+0xffffff80021c3a4a  movq   %r14, %rdi
+0xffffff80021c3a4d  callq  OSMetaClassBase::safeMetaCast
+0xffffff80021c3a52  testq  %rax, %rax
+0xffffff80021c3a55  je     0xffffff80021c3a6d
+0xffffff80021c3a57  movq   (%r14), %rax
+0xffffff80021c3a5a  movq   0x2e0(%rax), %rax
+0xffffff80021c3a61  movq   %r14, %rdi
+0xffffff80021c3a64  movq   %rbx, %rsi
+0xffffff80021c3a67  popq   %rbx
+0xffffff80021c3a68  popq   %r14
+0xffffff80021c3a6a  popq   %rbp
+0xffffff80021c3a6b  jmpq   *%rax
+0xffffff80021c3a6d  movl   $0xe082280e, %eax
+0xffffff80021c3a72  jmp    0xffffff80021c3a3e

@@ -4354,7 +4354,11 @@ setCLEAR_PMKSA_CACHE(void *req)
 IOReturn AirportItlwmSkywalkInterface::
 setDEAUTH(struct apple80211_deauth_data *da)
 {
-    return kIOReturnSuccess;
+    // This public carrier is not the void DISASSOCIATE lifecycle. Without a
+    // DEAUTH owner, do not acknowledge a reason/BSSID request that was not
+    // applied to state or management transport.
+    (void)da;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

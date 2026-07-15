@@ -6062,3 +6062,27 @@ RSNXE parser, RSN_IE, or RSN_CONF surfaces. It is not Apple null-input,
 valid-input return-code, carrier-layout, capability-gate, JoinAdapter-state,
 firmware, or runtime-selector parity. See
 `docs/reference/CR-497-rsn-xe-join-adapter-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: public IOC 29 `setDEAUTH` blind-success quarantine
+
+The Tahoe Skywalk BSD bridge routes `SIOCSA80211` IOC 29 directly to the
+typed `setDEAUTH(apple80211_deauth_data *)` handler. The local handler had
+returned success without reading version, reason, or BSSID, changing
+deauthentication state, sending management transport, or publishing an event.
+That is a false acknowledgement, not a recovered deauthentication lifecycle.
+
+The current BootKC selector capture shows `apple80211setDEAUTH` selecting
+class-specific work with selector `0x1d` through virtual `+0xcc8`; a nonzero
+first-handler status returns immediately, while zero performs a type check and
+tail-dispatches virtual `+0x2e0` with the original carrier. It establishes
+that the selector is not a generic fixed-success no-op, but does not establish
+the terminal handler, null-input behavior, carrier layout, valid-input return
+code, or firmware/state path.
+
+AirportItlwm therefore retains IOC 29 routing and the typed public carrier but
+returns `kIOReturnUnsupported` without reading it. This does not call or alter
+the distinct void IOC 22 `setDISASSOCIATE` lifecycle, the paired GET DEAUTH
+reader, APSTA DEAUTH, or the older STA dispatcher. It is a no-owner safety
+boundary, not Apple null-input, valid-input return-code, terminal-handler,
+carrier-layout, management-frame, state, firmware, or runtime-selector parity.
+See `docs/reference/CR-499-deauth-blind-success-quarantine-20260715.md`.
