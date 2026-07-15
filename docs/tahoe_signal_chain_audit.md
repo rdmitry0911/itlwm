@@ -6086,3 +6086,21 @@ reader, APSTA DEAUTH, or the older STA dispatcher. It is a no-owner safety
 boundary, not Apple null-input, valid-input return-code, terminal-handler,
 carrier-layout, management-frame, state, firmware, or runtime-selector parity.
 See `docs/reference/CR-499-deauth-blind-success-quarantine-20260715.md`.
+
+## 2026-07-15 correction: legacy IOC 29 DEAUTH blind-success quarantine
+
+The old AirportItlwm controller dispatcher remains a distinct source surface
+for historical targets. Its IOC 29 case routes both request halves through
+the typed DEAUTH macro. The legacy SET handler previously returned success
+without reading the reason/BSSID carrier, changing deauthentication state,
+sending management transport, or publishing an event.
+
+The handler now returns kIOReturnUnsupported without reading either argument.
+This does not reuse or alter the effectful IOC 22 DISASSOCIATE lifecycle, the
+paired legacy GET DEAUTH reader, APSTA DEAUTH, or the already separate Tahoe
+Skywalk handler. Tahoe does not compile AirportSTAIOCTL.cpp in its current
+source phase, so this is a legacy source-surface correction, not a Tahoe
+runtime claim. The current BootKC DEAUTH capture establishes only modern
+public gate/type/terminal topology; it is not claimed as a recovered legacy
+terminal. See
+docs/reference/CR-500-legacy-deauth-blind-success-quarantine-20260715.md.

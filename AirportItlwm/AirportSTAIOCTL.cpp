@@ -1399,7 +1399,13 @@ IOReturn AirportItlwm::
 setDEAUTH(OSObject *object,
                           struct apple80211_deauth_data *da)
 {
-    return kIOReturnSuccess;
+    // IOC 29 carries a reason and BSSID. This legacy path has no local
+    // deauthentication owner, state transition, management transport, or
+    // event publication, so it must not acknowledge an unapplied request.
+    // It is deliberately not substituted with the distinct IOC 22 lifecycle.
+    (void)object;
+    (void)da;
+    return kIOReturnUnsupported;
 }
 
 void AirportItlwm::

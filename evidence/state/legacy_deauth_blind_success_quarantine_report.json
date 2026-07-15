@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "correction_records_scope_and_nonclaims": true,
+    "legacy_disassociate_not_substituted": true,
+    "legacy_header_retains_typed_bidirectional_deauth": true,
+    "legacy_ioc29_routes_through_typed_macro": true,
+    "legacy_ioctl_macro_still_selects_set_half": true,
+    "legacy_setter_is_unread_fail_closed": true,
+    "legacy_source_remains_historical_and_absent_from_tahoe_phase": true,
+    "paired_legacy_getter_is_preserved": true,
+    "reference_raw_identity_and_topology_present": true,
+    "reference_raw_manifest_matches": true,
+    "separate_tahoe_skywalk_quarantine_retained": true
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "kind": "current BootKC public selector topology only",
+    "selector": "0x1d",
+    "terminal_vtable_offset": "0x2e0",
+    "wrapper": "apple80211setDEAUTH"
+  },
+  "schema": "itlwm-legacy-deauth-blind-success-quarantine-v1",
+  "scope": {
+    "deployment": false,
+    "legacy_controller_setter_only": true,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_skywalk_setter_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "51e9f90c4486918b7c97678c3dda007b123fcd92"
+}
