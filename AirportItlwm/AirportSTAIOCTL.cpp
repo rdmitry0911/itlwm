@@ -608,9 +608,11 @@ getAUTH_TYPE(OSObject *object, struct apple80211_authtype_data *ad)
 IOReturn AirportItlwm::
 setAUTH_TYPE(OSObject *object, struct apple80211_authtype_data *ad)
 {
-    current_authtype_lower = ad->authtype_lower;
-    current_authtype_upper = ad->authtype_upper;
-    return kIOReturnSuccess;
+    (void)object;
+    (void)ad;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::

@@ -6404,3 +6404,22 @@ This is only direct public V1 SET-body/status alignment, not a Tahoe, GET,
 carrier/null/ABI, association, scan, firmware, event, traffic, or runtime
 parity claim. See
 docs/reference/CR-516-legacy-bssid-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: legacy V1 AUTH_TYPE fixed-stub alignment
+
+The historical V1 IOC 2 SET half in AirportSTAIOCTL.cpp previously copied two
+auth-type words into V1 readback fields and returned success. Direct current
+25C56 nested-KEXT recovery identifies the public apple80211setAUTH_TYPE body
+as an exact 11-byte fixed stub returning raw 0xe082280e. It reads neither
+public argument and has no selector load, gate, owner lookup, call, state,
+transport, or event operation.
+
+The active legacy V1 setter now leaves both arguments unread and returns that
+exact recovered numeric status. The typed bidirectional V1 route and separate
+V1 GET cache readback remain unchanged. Tahoe is separate and untouched: its
+Skywalk route still implements AUTH_TYPE GET and SET, maintains distinct
+Skywalk fields, and seeds BssManager auth context; the Tahoe source phase
+includes V2/Skywalk rather than AirportSTAIOCTL.cpp. This is only direct
+public V1 SET-body/status alignment, not a Tahoe, GET, carrier/null/ABI,
+association, firmware, event, traffic, or runtime parity claim. See
+docs/reference/CR-517-legacy-auth-type-fixed-stub-alignment-20260715.md.
