@@ -6526,10 +6526,11 @@ AirportItlwm::ensureAPSTAOwner(const struct apple80211_virt_if_create_data *crea
  * fHalService and clearing the station table before the owner
  * memory is reclaimed. The Tahoe Skywalk dispatch surface does
  * not expose a per-role-7 delete entry point, so this function is
- * reached through AirportItlwm::releaseAll during driver release
- * and through the switch-only Tahoe VIRTUAL_IF_DELETE carrier
- * after that dispatch is migrated to the host owner in this
- * follow-up layer.
+ * reached through AirportItlwm::releaseAll during driver release and through
+ * the legacy controller VIRTUAL_IF_DELETE path. Current 25C56 Tahoe public
+ * VIRTUAL_IF_DELETE SET is an unread fixed nonzero wrapper, so the Skywalk
+ * public dispatcher must not treat it as an APSTA owner-teardown entry point.
+ * This does not remove cleanup from release or failed-create paths.
  */
 void AirportItlwm::deleteAPSTAOwner()
 {

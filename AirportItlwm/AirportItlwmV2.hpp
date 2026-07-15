@@ -591,7 +591,8 @@ public:
      * Host APSTA owner accessors. Role-7 (APPLE80211_VIF_SOFT_AP)
      * acquisition allocates the owner through ensureAPSTAOwner();
      * driver release tears it down through deleteAPSTAOwner().
-     * VIRTUAL_IF_DELETE tears down only a matching role-7 owner.
+     * The legacy VIRTUAL_IF_DELETE path tears down only a matching role-7
+     * owner. Current Tahoe public VIRTUAL_IF_DELETE SET remains separate.
      * The owner reports AP-up status through isHostApRunning().
      */
     AirportItlwmAPSTAOwner *ensureAPSTAOwner(

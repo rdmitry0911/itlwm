@@ -6547,3 +6547,20 @@ outside the public dispatcher. This removes a direct public false-success
 claim only; it does not claim null, GET, association, carrier/ABI, firmware,
 traffic, or runtime parity. See
 docs/reference/CR-523-skywalk-public-auth-type-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: Skywalk public VIRTUAL_IF_DELETE fixed-stub alignment
+
+The current 25C56 public `apple80211setVIRTUAL_IF_DELETE` wrapper is an exact
+11-byte unread stub returning raw `0xe082280e`. The local Skywalk BSD path had
+instead called a controller-owned APSTA owner-delete helper, which could
+release a matching role-7 owner and report success.
+
+Only the normal non-null Tahoe SET arm now returns that exact numeric status,
+under a compile-time Tahoe-only guard. The pre-26 branch retains its existing
+helper call. The outer/null fallback, GET fallback, legacy V1/controller
+route, and controller cleanup used by release and failed-create paths remain
+separate. IOC 95 is not admitted by the Tahoe card-specific route, so this is
+a BSD-dispatch boundary only. This removes a direct Tahoe public false-success
+claim only; it does not claim APSTA, owner-lifetime, carrier/ABI, firmware,
+traffic, or runtime parity. See
+docs/reference/CR-524-skywalk-public-virtual-if-delete-fixed-stub-alignment-20260715.md.

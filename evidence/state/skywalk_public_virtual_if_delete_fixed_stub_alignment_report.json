@@ -1,0 +1,37 @@
+{
+  "checks": {
+    "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "bsd_ingress_terminalizes_nonunsupported": true,
+    "card_specific_tahoe_route_excludes_ioc95": true,
+    "helper_controller_and_v1_cleanup_topology_remain": true,
+    "normal_nonnull_tahoe_public_route_returns_exact_fixed_status_unread": true,
+    "note_records_scope_and_nonclaims": true,
+    "null_and_get_fallbacks_remain_outside_this_layer": true,
+    "pre26_public_route_retains_existing_helper": true,
+    "reference_raw_has_exact_unread_public_fixed_stub": true,
+    "reference_raw_manifest_matches": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021c4165",
+    "nlist_index": 7756,
+    "public_wrapper": "0xffffff80021c415a"
+  },
+  "schema": "itlwm-skywalk-public-virtual-if-delete-fixed-stub-alignment-v1",
+  "scope": {
+    "apsta_owner_cleanup_modified": false,
+    "card_specific_route_modified": false,
+    "deployment": false,
+    "normal_nonnull_public_set_only": true,
+    "outer_or_inner_null_fallback_modified": false,
+    "pre26_helper_route_modified": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "traffic": false
+  },
+  "source_base_revision": "d874de83b7db330289a89c9a360577e48b1cb5e4"
+}

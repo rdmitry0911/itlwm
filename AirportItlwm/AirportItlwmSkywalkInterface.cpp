@@ -1972,8 +1972,19 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCSA80211) ? setVIRTUAL_IF_CREATE((apple80211_virt_if_create_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_VIRTUAL_IF_DELETE:
-            return (cmd == SIOCSA80211) ? setVIRTUAL_IF_DELETE((apple80211_virt_if_delete_data *)req->req_data)
-                                        : kIOReturnUnsupported;
+            if (cmd == SIOCSA80211) {
+#if __IO80211_TARGET >= __MAC_26_0
+                // Current 25C56 public SET wrapper is an unread fixed nonzero
+                // stub. The controller-owned APSTA cleanup below remains for
+                // release/failure and pre-26 paths, but this public Tahoe
+                // carrier must not report a state transition Apple does not make.
+                return static_cast<IOReturn>(0xe082280e);
+#else
+                return setVIRTUAL_IF_DELETE(
+                    (apple80211_virt_if_delete_data *)req->req_data);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            }
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_REQ:
             return (cmd == SIOCSA80211) ? setSCAN_REQ((apple80211_scan_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -4909,12 +4920,13 @@ IOReturn AirportItlwmSkywalkInterface::
 setVIRTUAL_IF_DELETE(apple80211_virt_if_delete_data *data)
 {
     /*
-     * Tahoe APSTA lifetime symmetry: VIRTUAL_IF_DELETE is not a
-     * protocol vtable slot here, so route the IOCTL switch directly
-     * to the controller-owned APSTA delete path. The delete carrier
-     * contains only the BSD name; the controller matches that name
-     * against the existing role-7 APSTA owner and otherwise fails
-     * closed without creating AP state or reporting AP/GO support.
+     * Pre-26 APSTA lifetime symmetry: VIRTUAL_IF_DELETE is not a protocol
+     * vtable slot here, so the legacy branch routes the IOCTL switch directly
+     * to the controller-owned APSTA delete path. Current 25C56 Tahoe public
+     * SET is instead an unread fixed nonzero wrapper and bypasses this helper.
+     * The controller cleanup remains separately owned by legacy, release, and
+     * failed-create paths; it is not removed or reinterpreted by that public
+     * Tahoe wrapper boundary.
      */
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
