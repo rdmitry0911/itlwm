@@ -1893,6 +1893,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getTKO_DUMP((apple80211_tko_dump *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_CIPHER_KEY:
+            /*
+             * The current 25C56 public GET wrapper is an unread fixed
+             * 0xe082280e leaf. Keep the SET path below intact: it owns the
+             * separate local key and PMK carrier handling.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCSA80211)
                 return kIOReturnUnsupported;
             if (instance != NULL && instance->fAPSTAOwner != NULL)
