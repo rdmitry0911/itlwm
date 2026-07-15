@@ -1,0 +1,29 @@
+{
+  "checks": {
+    "legacy_getter_is_preserved_separately": true,
+    "legacy_selector_carrier_and_route_remain": true,
+    "legacy_setter_matches_exact_fixed_status_without_reads": true,
+    "legacy_source_is_absent_from_tahoe_phase": true,
+    "note_records_scope_and_nonclaims": true,
+    "reference_raw_has_exact_unread_fixed_stub": true,
+    "reference_raw_manifest_matches": true,
+    "tahoe_get_and_set_rejection_remain_separate": true
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021c4580",
+    "public_wrapper": "0xffffff80021c4575"
+  },
+  "schema": "itlwm-legacy-peer-cache-maximum-fixed-stub-alignment-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "5c7c3bb448b120ec7ab0a65575e9059a7d09f447"
+}

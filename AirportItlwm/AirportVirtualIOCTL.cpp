@@ -317,7 +317,13 @@ getPEER_CACHE_MAXIMUM_SIZE(OSObject *object, struct apple80211_peer_cache_maximu
 IOReturn AirportItlwm::
 setPEER_CACHE_MAXIMUM_SIZE(OSObject *object, struct apple80211_peer_cache_maximum_size *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // The current 25C56 public wrapper is an exact unread fixed stub. Keep
+    // the recovered private WLAN-family value numeric: it is not
+    // kIOReturnUnsupported and has no public local symbolic name.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::

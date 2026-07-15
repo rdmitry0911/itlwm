@@ -6140,3 +6140,19 @@ this is a historical source-surface fail-closed boundary, not a Tahoe
 runtime, Apple terminal-status, carrier-layout, AWDL, firmware, event, or
 traffic parity claim. See
 docs/reference/CR-502-legacy-awdl-election-metric-no-owner-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy peer-cache maximum fixed-stub alignment
+
+The historical virtual-interface IOC 130 SET handler previously returned
+success without reading its typed peer-cache carrier. Direct current 25C56
+nested-KEXT symbol recovery shows the public setter is an exact 11-byte fixed
+stub returning raw `0xe082280e`, with no argument read, gate, owner lookup,
+call, state, transport, or event work.
+
+The legacy handler now returns the same numeric fixed status without reading
+either argument. The paired legacy GET behavior and Tahoe's separate
+GET-only/SET-rejection route remain unchanged. Tahoe does not compile
+`AirportVirtualIOCTL.cpp`, and `0xe082280e` is intentionally not relabelled
+`kIOReturnUnsupported`. This is not peer-cache runtime, APSTA, AWDL,
+firmware, event, traffic, or broader historical semantic parity. See
+docs/reference/CR-503-legacy-peer-cache-maximum-fixed-stub-alignment-20260715.md.
