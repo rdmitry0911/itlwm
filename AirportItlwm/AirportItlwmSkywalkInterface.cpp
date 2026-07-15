@@ -1475,6 +1475,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 
     switch (req->req_type) {
         case APPLE80211_IOC_VIRTUAL_IF_ROLE:
+            /*
+             * Current 25C56 public GET and SET ROLE/PARENT wrappers are
+             * unread fixed 0xe082280e leaves. Keep the null and unknown
+             * command fallbacks below, but do not synthesize a normal Tahoe
+             * carrier result for a non-null public request.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (req->req_data != NULL &&
+                (cmd == SIOCGA80211 || cmd == SIOCSA80211))
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCGA80211)
                 return kIOReturnUnsupported;
             if (req->req_data == NULL)
@@ -1485,6 +1496,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 static_cast<uint32_t>(getInterfaceRole());
             return kIOReturnSuccess;
         case APPLE80211_IOC_VIRTUAL_IF_PARENT: {
+#if __IO80211_TARGET >= __MAC_26_0
+            if (req->req_data != NULL &&
+                (cmd == SIOCGA80211 || cmd == SIOCSA80211))
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCGA80211)
                 return kIOReturnUnsupported;
             if (req->req_data == NULL)
