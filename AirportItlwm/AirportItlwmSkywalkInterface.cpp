@@ -1670,6 +1670,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return kIOReturnUnsupported;
         case APPLE80211_IOC_HOST_AP_MODE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Keep the APSTA instance guard and SET producer below
+             * for their separate directions and pre-26 behavior.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
             return (cmd == SIOCSA80211)
