@@ -1,13 +1,14 @@
 {
   "checks": {
     "active_and_chain_quarantine_valid": true,
+    "active_getter_fails_closed_and_chain_scope_preserved": true,
     "dead_profile_pseudo_state_removed": true,
-    "getter_scope_preserved": true,
     "no_local_btcoex_commander_transport": true,
     "profile_preserves_invalid_gates_and_quarantines_valid": true,
     "reference_note": true
   },
   "local": {
+    "active_getter_false_success": false,
     "backend_btcoex_commander": false,
     "false_success": false,
     "valid_input_return_is_apple_parity": false
@@ -38,6 +39,6 @@
       "record_bytes": 56
     }
   },
-  "schema": "itlwm-btcoex-public-quarantine-v1",
-  "source_base_revision": "74fe3ed49eb97759a152fe44c5350ff7a5ce8b57"
+  "schema": "itlwm-btcoex-public-quarantine-v2",
+  "source_base_revision": "a1e4df046d38f4bc95deca7a2b41ea0a71533934"
 }

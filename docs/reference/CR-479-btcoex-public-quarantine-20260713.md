@@ -7,8 +7,9 @@ Date: 2026-07-13
 This closure covers only the Tahoe public `BTCOEX_PROFILE`,
 `BTCOEX_PROFILE_ACTIVE`, and `BTCOEX_2G_CHAIN_DISABLE` setter boundaries. It
 does not emulate Apple's Broadcom coexistence firmware, change the generic
-Tahoe commander or owner registry, alter the paired getters, or change MWS,
-WCL, radio, power, association, or Intel boot-time coexistence configuration.
+Tahoe commander or owner registry, alter the chain-disable paired getter, or
+change MWS, WCL, radio, power, association, or Intel boot-time coexistence
+configuration. The active getter's later no-producer correction is CR-495.
 
 ## Recovered reference contract
 
@@ -52,9 +53,10 @@ consumer of these Tahoe caller carriers.
 
 `cachedBtcoexProfiles` and `cachedBtcoexProfileValidMask` were dead and occur
 only in their declarations, two initialization/reset blocks, and the profile
-setter. The active and chain-disable cache fields are deliberately retained:
-the paired public getters read them and this batch does not alter getter
-semantics.
+setter. At this setter-only stage the active and chain-disable getter caches
+were left outside scope. CR-495 later supersedes the active-cache portion:
+that field had no writer and is removed. The chain-disable cache remains
+separate and is retained.
 
 ## Local correction
 
@@ -63,7 +65,8 @@ The three setters retain their local null/absent-instance raw
 band/mode/index invalid errors. A valid non-null carrier now returns
 `kIOReturnUnsupported` before commander, owner, async-completion, or cache
 mutation. The two dead profile cache fields and their initialization/reset
-sites are removed; paired getter caches remain untouched.
+sites are removed. The chain-disable getter cache remains untouched; CR-495
+separately removes the active getter's reset-only cache.
 
 This is a no-backend quarantine, not Apple valid-input return-code parity: the
 reference accepts valid carriers only while applying actual coexistence
@@ -72,10 +75,22 @@ firmware work.
 ## Verification boundary
 
 The deterministic report requires all three wrapper/Core/IOVAR anchors,
-profile invalid gates, retained active/chain getter-cache scope, fail-closed
-valid paths, and removal of only dead profile pseudo-state. Build/load and
+profile invalid gates, retained chain getter-cache scope, fail-closed valid
+paths, and removal of only dead profile pseudo-state. The active getter is
+checked separately by CR-495. Build/load and
 normal association/traffic gates establish regression safety. No BTCOEX
 carrier, private setter ioctl, or guessed opaque transport is issued, so
 runtime results must not be presented as direct setter execution. Radio
 OFF/ON remains excluded because the A2DF baseline independently reproduces
 its WCL lifecycle panic.
+
+## 2026-07-15 correction: active getter scope narrowed
+
+CR-495 supersedes only this record's former active-getter cache scope. Fresh
+25C56 getter recovery shows `getBTCOEX_PROFILE_ACTIVE` performs
+`runIOVarGet("btc_profile_active")` and copies a result only under its observed
+transport-status condition; the local active cache had no writer. The active
+getter therefore now fails closed for non-null input and its reset-only cache
+is removed. This does not alter the three setter quarantines, the IOC route,
+the active setter's existing fail-closed behavior, or the separately retained
+chain-disable getter cache.

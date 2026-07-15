@@ -240,7 +240,7 @@ PAYLOAD_TYPES = [
             },
             {
                 "path": "AirportItlwm/AirportItlwmSkywalkInterface.cpp",
-                "tokens": ["setBTCOEX_PROFILE_ACTIVE", "cachedBtcoexProfileActive"],
+                "tokens": ["setBTCOEX_PROFILE_ACTIVE", "return kIOReturnUnsupported;"],
             },
         ],
         "invalid_semantics": "null returns 0xe00002c2",

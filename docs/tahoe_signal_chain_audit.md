@@ -1398,7 +1398,6 @@ Closed in this zone:
 - `getTKO_PARAMS(...)`
 - `getTKO_DUMP(...)`
 - `getBTCOEX_PROFILE(...)`
-- `getBTCOEX_PROFILE_ACTIVE(...)`
 - `getMAX_NSS_FOR_AP(...)`
 - `getBTCOEX_2G_CHAIN_DISABLE(...)`
 - `getBSS_BLACKLIST(...)`
@@ -1414,7 +1413,7 @@ Recovered Apple behavior splits into three public buckets:
 - compact cache-backed carriers:
   `getRSN_XE`, `getBSS_BLACKLIST`
 - state-backed telemetry carriers:
-  `getBTCOEX_PROFILE_ACTIVE`, `getMAX_NSS_FOR_AP`,
+  `getMAX_NSS_FOR_AP`,
   `getBTCOEX_2G_CHAIN_DISABLE`,
   `getTXRX_CHAIN_INFO`, `getWCL_FW_HOT_CHANNELS`
 
@@ -2729,8 +2728,9 @@ manual/repetition excuse for the remaining owner-side work.
 The first immediate tightening pass after adding that tooling closed a few
 still-visible state drifts without inventing hidden commander behavior:
 
-- `getBTCOEX_PROFILE_ACTIVE(...)` now returns the dedicated
-  `btc_profile_active` cache instead of reusing coarse `btcMode`
+- the former `getBTCOEX_PROFILE_ACTIVE(...)` cache split is superseded:
+  current reference GET uses `btc_profile_active` commander work, while the
+  reset-only local getter cache is quarantined by CR-495
 - `setBTCOEX_PROFILE(...)` now stores the full Apple-shaped per-profile table
   entry by `profileIndex` instead of collapsing everything into one last-seen
   blob
@@ -5993,3 +5993,21 @@ low-latency, and tx-blanking getters. It is not Apple null-input, valid-input
 return-code, full carrier-layout, version, TxPowerManager/Core-state, firmware,
 or runtime-selector parity. See
 `docs/reference/CR-494-dynsar-detail-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: BTCOEX_PROFILE_ACTIVE getter no-producer quarantine
+
+Earlier Q13 material classified `getBTCOEX_PROFILE_ACTIVE` as a state-backed
+cache carrier. That cache-success classification is superseded. Fresh 25C56
+slot `[498]` recovery dispatches to Core, which obtains
+`btc_profile_active` through its commander; it writes caller `+0x04` only
+under observed transport-status conditions and returns the original status.
+The local active field was reset-only and was never written by its already
+fail-closed paired setter.
+
+The local getter retains its `0xe00002c2` null safety boundary and returns
+`kIOReturnUnsupported` for every non-null request before output mutation.
+This does not alter the IOC route, opaque carrier/builders, paired setter,
+BTCOEX owner/commander declarations, or chain-disable getter. It is not Apple
+null-input, valid-input return-code, value, carrier-layout, special-status,
+firmware, or runtime-selector parity. See
+`docs/reference/CR-495-btcoex-profile-active-getter-no-producer-quarantine-20260715.md`.

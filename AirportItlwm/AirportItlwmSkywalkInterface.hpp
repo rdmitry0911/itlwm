@@ -244,8 +244,9 @@ public:
     // [497] — AppleBCMWLANCore exposes the fixed Tahoe fail 0xe00002c2 here,
     // not generic unsupported.
     virtual IOReturn getBTCOEX_PROFILE(apple80211_btcoex_profile *) override;
-    // [498] — Tahoe public contract is `NULL -> 0xe00002c2`, else a single
-    // dword activity carrier at +0x4.
+    // [498] — Reference Core obtains the activity dword through the
+    // `btc_profile_active` commander IOVAR. This port has no GET producer, so
+    // retain the virtual ABI but fail closed for non-null input.
     virtual IOReturn getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *) override;
     // [499] — trap/debug diagnostics surface, not a shared Apple80211 runtime
     // producer contract. Keep it classified as internal-only instead of open
@@ -780,7 +781,6 @@ private:
     bool hasCachedVhtCapability;
     uint8_t cachedReassocRequest[0x9c];
     bool hasCachedReassocRequest;
-    uint32_t cachedBtcoexProfileActive;
     uint16_t cachedBtcoex2GChainDisable;
     uint8_t cachedLastActionFrame[TahoePayloadBuilders::kActionFramePayloadCapacity];
     uint16_t cachedLastActionFrameLen;

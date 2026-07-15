@@ -2216,7 +2216,6 @@ init()
     hasCachedVhtCapability = false;
     memset(cachedReassocRequest, 0, sizeof(cachedReassocRequest));
     hasCachedReassocRequest = false;
-    cachedBtcoexProfileActive = 0;
     cachedBtcoex2GChainDisable = 0;
     memset(cachedLastActionFrame, 0, sizeof(cachedLastActionFrame));
     cachedLastActionFrameLen = 0;
@@ -2578,7 +2577,6 @@ init(IOService *provider)
     this->hasCachedVhtCapability = false;
     memset(this->cachedReassocRequest, 0, sizeof(this->cachedReassocRequest));
     this->hasCachedReassocRequest = false;
-    this->cachedBtcoexProfileActive = 0;
     this->cachedBtcoex2GChainDisable = 0;
     memset(this->cachedLastActionFrame, 0, sizeof(this->cachedLastActionFrame));
     this->cachedLastActionFrameLen = 0;
@@ -3697,13 +3695,11 @@ getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 8);
-    // Apple reads the dedicated "btc_profile_active" property here. Using the
-    // coarse legacy BTCOEX_MODE cache would conflate two different selectors and
-    // loses the exact value that setBTCOEX_PROFILE_ACTIVE previously accepted.
-    *reinterpret_cast<uint32_t *>(raw + 4) = cachedBtcoexProfileActive;
-    return kIOReturnSuccess;
+    // Reference Core fetches this dword through its commander and propagates
+    // the transport result. There is no matching local GET producer, so do not
+    // report the reset-only cache as live coexistence state.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5222,7 +5218,7 @@ setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
         return static_cast<IOReturn>(0xe00002c2);
 
     // Apple programs btc_profile_active through its commander. There is no
-    // Intel-equivalent transport, so leave the paired getter cache untouched.
+    // Intel-equivalent transport or local SET-to-GET producer.
     return kIOReturnUnsupported;
 }
 

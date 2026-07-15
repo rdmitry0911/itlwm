@@ -1210,16 +1210,18 @@ ad hoc shell history.
 
 ### 11. Immediate post-batch tightening that is now closed
 
-- `BTCOEX_PROFILE_ACTIVE` no longer aliases `btcMode`; it uses its own cached
-  active-profile state, matching the Apple-visible property split
+- the former `BTCOEX_PROFILE_ACTIVE` dedicated-cache claim is superseded:
+  CR-495 records the manager-backed reference GET and the local no-producer
+  getter quarantine
 - `BTCOEX_PROFILE` no longer keeps only one blob; it preserves the ten-entry
   per-profile table indexed by `profileIndex`, matching the recovered Apple
   core-state layout
 - `WOW_TEST` now preserves its public range rejection while quarantining the
   missing valid wake-test backend instead of manufacturing a WoW-enabled state
 
-These are no longer counted as drift between local public behavior and the
-reference owner-family decompile.
+The remaining setter/WoW items in this historical tightening list are no
+longer counted as drift between local public behavior and the reference
+owner-family decompile; the active getter is separately corrected by CR-495.
 
 WoW Test correction: Apple only marks the owner WoW-enabled after a successful
 firmware wake-test operation. The port has no matching event-bit or transport
@@ -8137,3 +8139,20 @@ slow-wifi, low-latency, and tx-blanking owner surfaces remain present. This is
 not Apple null-input, valid-input return-code, full carrier-layout, version,
 TxPowerManager/Core-state, firmware, or runtime-selector parity. See
 `docs/reference/CR-494-dynsar-detail-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: BTCOEX_PROFILE_ACTIVE getter no-producer quarantine
+
+The earlier inventory called `getBTCOEX_PROFILE_ACTIVE` a lifted state-backed
+carrier and described a dedicated local cache as matching its property split.
+That cache-success classification is superseded. Selected 25C56 slot `[498]`
+code reaches the Core commander and calls `runIOVarGet("btc_profile_active")`;
+only status zero or the observed `0xe00002e3` case copies one dword to caller
+`+0x04`, while the original status is returned.
+
+The local cache had no writer, including from the already fail-closed setter.
+The getter now preserves its raw null boundary and fails closed for non-null
+input before output mutation. The separate IOC route, opaque ABI/builders,
+owner/commander declarations, setter, and chain-disable cache remain
+unchanged. This is not Apple null-input, valid-input return-code, value,
+carrier-layout, special-status, firmware, or runtime-selector parity. See
+`docs/reference/CR-495-btcoex-profile-active-getter-no-producer-quarantine-20260715.md`.

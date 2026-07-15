@@ -1,0 +1,60 @@
+capture_scope: selected static 25C56 x86_64 disassembly lines for BTCOEX_PROFILE_ACTIVE GET and paired SET transport context
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getBTCOEX_PROFILE_ACTIVE
+Address: 0x0000000100017470
+Summary: AppleBCMWLANInfraProtocol::getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data*)
+(lldb) image lookup -n AppleBCMWLANCore::getBTCOEX_PROFILE_ACTIVE
+Address: 0x00000001001e509a
+Summary: AppleBCMWLANCore::getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data*)
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::setBTCOEX_PROFILE_ACTIVE
+Address: 0x0000000100018714
+Summary: AppleBCMWLANInfraProtocol::setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data*)
+(lldb) image lookup -n AppleBCMWLANCore::setBTCOEX_PROFILE_ACTIVE
+Address: 0x00000001001e393a
+Summary: AppleBCMWLANCore::setBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data*)
+(lldb) disassemble -b -s 0x100017470 -e 0x100017490
+0x100017470: movq   0x88(%rdi), %rax
+0x10001747b: movq   (%rax), %rdi
+0x10001747e: movq   (%rdi), %rax
+0x100017481: movq   0x3b0(%rax), %rax
+0x100017489: jmpq   *%rax
+(nm -arch x86_64 -nm) __ZTV16AppleBCMWLANCore
+0x1003A10D8 (__DATA_CONST,__const) __ZTV16AppleBCMWLANCore
+(dyld_info -arch x86_64 -fixups)
+__DATA_CONST    __const          0x1003A1498         rebase  0x1001E509A
+__DATA_CONST    __const          0x1003A1780         rebase  0x1001E393A
+(lldb) disassemble -b -s 0x1001e509a -e 0x1001e51a5
+0x1001e50ba: testq  %rsi, %rsi
+0x1001e50bd: je     0x1001e5162
+0x1001e50e2: movq   0x48(%rdi), %rax
+0x1001e50e6: movq   0x1520(%rax), %rdi
+0x1001e50ed: leaq   0xd7357(%rip), %rsi ; "btc_profile_active"
+0x1001e50f4: leaq   0x764dd(%rip), %rdx ; kNoTxPayload
+0x1001e50fe: callq  0x10017b780 ; AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+0x1001e5103: movl   %eax, %ebx
+0x1001e5105: cmpl   $0xe00002e3, %eax
+0x1001e510a: je     0x1001e5110
+0x1001e510c: testl  %ebx, %ebx
+0x1001e510e: jne    0x1001e5119
+0x1001e5110: movl   -0x24(%rbp), %eax
+0x1001e5113: movl   %eax, 0x4(%r15)
+0x1001e5155: movl   %ebx, %eax
+0x1001e5162: movl   $0xe00002c2, %ebx
+0x1001e5167: jmp    0x1001e5145
+(lldb) disassemble -b -s 0x100018714 -e 0x100018730
+0x100018714: movq   0x88(%rdi), %rax
+0x10001871f: movq   (%rax), %rdi
+0x100018722: movq   (%rdi), %rax
+0x100018725: movq   0x698(%rax), %rax
+0x10001872d: jmpq   *%rax
+(lldb) disassemble -b -s 0x1001e393a -e 0x1001e3991
+0x1001e3955: testq  %rsi, %rsi
+0x1001e3958: je     0x1001e39e5
+0x1001e3961: movq   0x48(%rdi), %rax
+0x1001e3965: movq   0x1520(%rax), %rdi
+0x1001e396c: addq   $0x4, %rsi
+0x1001e3977: movw   $0x4, 0x8(%rdx)
+0x1001e397d: leaq   0xd8ac7(%rip), %rsi ; "btc_profile_active"
+0x1001e398c: callq  0x10017b6e6 ; AppleBCMWLANCommander::runIOVarSet(char const*, CommandTxPayload const&, CommandRxPayload*, CommandBusPreference)

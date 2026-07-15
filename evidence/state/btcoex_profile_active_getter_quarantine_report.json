@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "active_v2_slot_abi_and_ioc_route_remain": true,
+    "dead_active_getter_cache_is_removed": true,
+    "historical_cache_classification_is_superseded": true,
+    "legacy_and_payload_guards_are_narrowed": true,
+    "local_null_guard_is_retained_as_safety_boundary": true,
+    "nonnull_getter_fails_closed_without_output": true,
+    "paired_setter_remains_fail_closed_without_getter_cache": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_get_and_set_transport_anchors": true,
+    "reference_raw_manifest_matches": true,
+    "separate_btcoex_and_chain_surfaces_are_preserved": true
+  },
+  "local": {
+    "active_get_producer": false,
+    "null_return_is_apple_parity": false,
+    "runtime_selector_invocation": false,
+    "synthetic_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "commander_from_core": "0x48+0x1520",
+    "core_get_vtable_offset": "0x3b0",
+    "core_getter": "0x1001e509a",
+    "core_set_vtable_offset": "0x698",
+    "core_setter": "0x1001e393a",
+    "get_iovar": "btc_profile_active",
+    "get_special_status": "0xe00002e3",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_get_slot": 498,
+    "infra_get_wrapper": "0x100017470",
+    "infra_set_wrapper": "0x100018714"
+  },
+  "schema": "itlwm-btcoex-profile-active-getter-no-producer-quarantine-v1",
+  "source_base_revision": "a1e4df046d38f4bc95deca7a2b41ea0a71533934"
+}

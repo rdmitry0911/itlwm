@@ -61,8 +61,8 @@ def report():
     )
 
     return {
-        "schema": "itlwm-btcoex-public-quarantine-v1",
-        "source_base_revision": "74fe3ed49eb97759a152fe44c5350ff7a5ce8b57",
+        "schema": "itlwm-btcoex-public-quarantine-v2",
+        "source_base_revision": "a1e4df046d38f4bc95deca7a2b41ea0a71533934",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "profile": {
@@ -92,6 +92,7 @@ def report():
         "local": {
             "backend_btcoex_commander": False,
             "false_success": False,
+            "active_getter_false_success": False,
             "valid_input_return_is_apple_parity": False,
         },
         "checks": {
@@ -147,10 +148,27 @@ def report():
                 token not in cpp and token not in hpp
                 for token in ("cachedBtcoexProfiles", "cachedBtcoexProfileValidMask")
             ),
-            "getter_scope_preserved": (
-                "cachedBtcoexProfileActive" in active_getter
+            "active_getter_fails_closed_and_chain_scope_preserved": (
+                all(
+                    token in active_getter
+                    for token in (
+                        "if (data == nullptr)",
+                        "return static_cast<IOReturn>(0xe00002c2);",
+                        "(void)data;",
+                        "return kIOReturnUnsupported;",
+                    )
+                )
+                and all(
+                    token not in active_getter
+                    for token in (
+                        "memset",
+                        "reinterpret_cast",
+                        "cachedBtcoexProfileActive",
+                        "kIOReturnSuccess",
+                    )
+                )
+                and "cachedBtcoexProfileActive" not in cpp + hpp
                 and "cachedBtcoex2GChainDisable" in chain_getter
-                and "cachedBtcoexProfileActive" in hpp
                 and "cachedBtcoex2GChainDisable" in hpp
             ),
             "no_local_btcoex_commander_transport": all(
