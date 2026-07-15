@@ -6173,3 +6173,20 @@ is a historical source-surface fail-closed boundary, not a Tahoe runtime,
 Apple terminal-status, carrier-layout, AWDL policy, firmware, event, or
 traffic parity claim. See
 docs/reference/CR-504-legacy-awdl-min-rate-no-owner-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL election-RSSI-thresholds no-owner quarantine
+
+The historical virtual-interface IOC 135 SET handler previously returned
+success while ignoring its typed AWDL election-RSSI-thresholds carrier. Direct
+current 25C56 nested-KEXT recovery shows a selector gate, nonzero-status
+propagation, AWDL-protocol owner test, and only then a tail dispatch; a failed
+owner test returns raw `0xe082280e`.
+
+The legacy Intel handler has no corresponding election-RSSI-threshold owner,
+state, or backend, and now returns `kIOReturnUnsupported` without reading
+either argument. Its paired GET error, typed route, and Tahoe's absence of an
+IOC 135 route remain intact. Tahoe does not compile `AirportVirtualIOCTL.cpp`.
+This is a historical source-surface fail-closed boundary, not a Tahoe runtime,
+Apple terminal-status, carrier-layout, AWDL policy, firmware, event, or
+traffic parity claim. See
+docs/reference/CR-505-legacy-awdl-election-rssi-thresholds-no-owner-quarantine-20260715.md.

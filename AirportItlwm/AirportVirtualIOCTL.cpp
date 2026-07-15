@@ -384,7 +384,12 @@ getAWDL_ELECTION_RSSI_THRESHOLDS(OSObject *object, struct apple80211_awdl_electi
 IOReturn AirportItlwm::
 setAWDL_ELECTION_RSSI_THRESHOLDS(OSObject *object, struct apple80211_awdl_election_rssi_thresholds *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. The legacy
+    // Intel path has no corresponding AWDL election-RSSI owner or backend.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::
