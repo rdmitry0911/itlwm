@@ -1829,6 +1829,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return setDEAUTH((apple80211_deauth_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_RATE_SET:
+            /*
+             * The current 25C56 public SET wrapper is an unread fixed
+             * 0xe082280e leaf. Preserve the separate dynamic GET producer.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCGA80211) ? getRATE_SET((apple80211_rate_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_ROAM_PROFILE:

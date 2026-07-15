@@ -1,0 +1,59 @@
+# 25C56 current Skywalk RATE_SET SET public fixed-stub recovery
+#
+# Source (read-only): 10.7.6.112:~/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery method: parse the outer 64-bit Mach-O LC_UUID, then the embedded
+# Wi-Fi MH_KEXT LC_SYMTAB directly and read the exact external symbol body.
+#
+# Container identity
+outer_file_bytes=66437120
+outer_mh_magic=0xfeedfacf
+outer_mh_filetype=12
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+outer_lc_uuid=F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5
+#
+# Embedded Wi-Fi MH_KEXT identity and validated file mapping
+mh_kext_fileoff=0x1fe3000
+mh_kext_magic=0xfeedfacf
+mh_kext_filetype=11
+mh_kext_lc_uuid=8FB4B7F0-D656-3539-B8D6-C1327A50377C
+mh_kext_text_vmaddr=0xffffff80020e3000
+mh_kext_text_fileoff=0x1fe3000
+lc_symtab_absolute_symoff=0x3498030
+lc_symtab_nsyms=19760
+lc_symtab_absolute_stroff=0x367e130
+lc_symtab_strsize=0x847d88
+#
+# Exact N_SECT|N_EXT (n_type=0x0f), section 1 symbol. The next symbol begins
+# at the recorded end, so the recovered body is exactly 11 bytes.
+symbol=__Z21apple80211setRATE_SETP23IO80211SkywalkInterfaceP24apple80211_rate_set_data
+nlist_index=7165
+n_strx=0x33627
+n_type=0x0f
+n_sect=1
+n_desc=0x0000
+symbol_vmaddr=0xffffff80021c3a8a
+symbol_vmaddr_end=0xffffff80021c3a95
+symbol_fileoff=0x20c3a8a
+symbol_fileoff_end=0x20c3a95
+symbol_bytes=0x0b
+next_nlist_index=7276
+next_symbol=__Z23apple80211setSHORT_SLOTP23IO80211SkywalkInterfacePv
+next_n_type=0x0f
+next_n_sect=1
+next_n_desc=0x0000
+next_symbol_vmaddr=0xffffff80021c3a95
+next_symbol_fileoff=0x20c3a95
+raw=55 48 89 e5 b8 0e 28 82 e0 5d c3
+body_sha256=9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576
+#
+# Decode:
+#   push rbp; mov rbp,rsp; mov eax,0xe082280e; pop rbp; ret
+# It reads neither public argument and performs no gate, owner lookup, call,
+# state, transport, or event operation before the fixed nonzero return.
+#
+# Reproducible raw disassembly window:
+# objdump -D -b binary -mi386:x86-64 --adjust-vma=0xffffff8000100000 \
+#   --start-address=0xffffff80021c3a60 --stop-address=0xffffff80021c3ac0 "$K"
+#
+# The public SDK does not provide a canonical name for 0xe082280e. It is kept
+# numeric and must not be relabelled as kIOReturnUnsupported (0xe00002c7).
