@@ -1731,9 +1731,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_INT_MIT:
             /*
-             * The current public GET wrapper is an unread fixed 0xe082280e
-             * leaf. Keep the legacy helper outside this Tahoe public path.
+             * The current public SET wrapper is an unread fixed 0xe082280e
+             * leaf. Keep the already aligned GET leaf and the legacy helper
+             * outside this Tahoe public carrier path.
              */
+            if (cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
             if (cmd == SIOCGA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
