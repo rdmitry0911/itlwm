@@ -6104,3 +6104,21 @@ runtime claim. The current BootKC DEAUTH capture establishes only modern
 public gate/type/terminal topology; it is not claimed as a recovered legacy
 terminal. See
 docs/reference/CR-500-legacy-deauth-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy P2P fixed-stub alignment
+
+The historical P2P LISTEN, SCAN, and GO_CONF setters previously returned
+success without reading their typed carriers or producing P2P state, transport,
+or events.  Direct 25C56 nested-KEXT symbol-table recovery shows the current
+public P2P stubs returning the same fixed nonzero raw WLAN-family status
+`0xe082280e` without reading either argument or calling an owner.  The three
+historical handlers now return that recovered fixed status too.
+
+This retains both historical SET-only IOC routes and typed carrier ABI, but
+does not implement P2P, add GET routes, alter selectors 91 or 99–101, replace
+the effectful normal scan path, alter VIF create/delete, or touch Tahoe
+Skywalk/V2/HP2P code.  Tahoe excludes `AirportAWDL.cpp` from its source phase.
+The fixed status has no public local symbolic name and is intentionally not
+relabeled `kIOReturnUnsupported`.  It is not P2P runtime, client-invocation,
+firmware, event, or broader legacy semantic parity.  See
+docs/reference/CR-501-legacy-p2p-fixed-stub-alignment-20260715.md.

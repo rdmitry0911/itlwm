@@ -1,0 +1,42 @@
+{
+  "checks": {
+    "awdl_remains_historical_and_absent_from_tahoe_phase": true,
+    "both_historical_dispatchers_retain_set_only_routes": true,
+    "correction_records_scope_and_nonclaims": true,
+    "local_header_keeps_only_the_three_typed_setters": true,
+    "normal_scan_and_virtual_interface_lifecycles_preserved": true,
+    "reference_raw_identity_and_symbol_records_present": true,
+    "reference_raw_manifest_matches": true,
+    "separate_tahoe_p2p_hp2p_surfaces_preserved": true,
+    "three_setters_are_unread_exact_fixed_stubs": true,
+    "unimplemented_sibling_selectors_remain_unrouted": true
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "kind": "current 25C56 BootKC embedded Wi-Fi KEXT exact fixed stubs",
+    "symbols": {
+      "P2P_ENABLE": "0xffffff80021c40e4",
+      "P2P_GO_CONF": "0xffffff80021c417b",
+      "P2P_LISTEN": "0xffffff80021c40ef",
+      "P2P_SCAN": "0xffffff80021c40fa"
+    }
+  },
+  "schema": "itlwm-legacy-p2p-fixed-stub-alignment-v1",
+  "scope": {
+    "deployment": false,
+    "local_historical_setters": [
+      "P2P_LISTEN",
+      "P2P_SCAN",
+      "P2P_GO_CONF"
+    ],
+    "p2p_enable_local_implementation": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "c091ce97e72da5f6f7e18bdf8547f4213dee8a7b"
+}
