@@ -1697,6 +1697,16 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setAP_MODE((apple80211_apmode_data *)req->req_data)
                                         : kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_COUNTERMEASURES:
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. No local COUNTERMEASURES carrier contract is inferred.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
                 return kIOReturnNotReady;
