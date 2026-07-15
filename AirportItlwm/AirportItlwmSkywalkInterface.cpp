@@ -3776,11 +3776,11 @@ getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Apple delegates this selector into the net adapter. Until that hidden
-    // owner is lifted, preserve the visible Tahoe ABI as a zeroed carrier
-    // instead of a generic unsupported return.
-    memset(data, 0, sizeof(uint32_t));
-    return kIOReturnSuccess;
+    // Reference Core delegates this carrier to NetAdapter hot-channel state
+    // and firmware transport. There is no matching local owner, so do not
+    // fabricate a four-byte successful telemetry result.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

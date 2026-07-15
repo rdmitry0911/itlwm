@@ -325,8 +325,9 @@ public:
     virtual IOReturn getTIMESYNC_INFO(apple80211_timesync_info *) override;
     // [523]
     virtual IOReturn getSENSING_DATA(apple80211_sensing_data_t *) override;
-    // [524] — AppleBCMWLANCore delegates to the net adapter instead of leaving
-    // the slot unsupported.
+    // [524] — Reference Core delegates to NetAdapter hot-channel state and
+    // firmware transport. This port has no matching owner, so retain the
+    // virtual ABI but fail closed for non-null input.
     virtual IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels *) override;
     // [525] — low-latency runtime state belongs to the dedicated Q11-C2
     // low-latency / slow-wifi owner path, not the former umbrella queue.

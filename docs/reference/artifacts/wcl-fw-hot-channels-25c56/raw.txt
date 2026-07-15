@@ -1,0 +1,89 @@
+# Selected read-only static reference excerpts: WCL_FW_HOT_CHANNELS NetAdapter ownership
+# x86_64 slice of com.apple.DriverKit-AppleBCMWLAN, macOS 25C56.
+
+(shasum -a 256)
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(dwarfdump --uuid)
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+
+(nm -arch x86_64 -nm)
+0x100012db0 (__TEXT,__text) AppleBCMWLANNetAdapter::getFWHotChannels(apple80211_fw_hot_channels*)
+0x100017b74 (__TEXT,__text) AppleBCMWLANInfraProtocol::getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels*)
+0x100140c84 (__TEXT,__text) AppleBCMWLANCore::getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels*)
+
+(nm -arch x86_64 -nm) __ZTV16AppleBCMWLANCore
+0x1003A10D8 (__DATA_CONST,__const) __ZTV16AppleBCMWLANCore
+(dyld_info -arch x86_64 -fixups)
+__DATA_CONST    __const          0x1003A1858         rebase  0x100140C84
+
+(otool -arch x86_64 -tvV; Infra GET wrapper)
+0x100017b74  pushq  %rbp
+0x100017b75  movq   %rsp, %rbp
+0x100017b78  movq   0x88(%rdi), %rax
+0x100017b7f  movq   (%rax), %rdi
+0x100017b82  movq   (%rdi), %rax
+0x100017b85  movq   0x770(%rax), %rax
+0x100017b8c  popq   %rbp
+0x100017b8d  jmpq   *%rax
+
+(otool -arch x86_64 -tvV; Core GET selected body)
+0x100140c84  pushq  %rbp
+0x100140c85  movq   %rsp, %rbp
+0x100140c88  movq   0x48(%rdi), %rax
+0x100140c8c  movq   0x15e0(%rax), %rdi
+0x100140c93  popq   %rbp
+0x100140c94  jmp    AppleBCMWLANNetAdapter::getFWHotChannels(apple80211_fw_hot_channels*)
+
+(otool -arch x86_64 -tvV; NetAdapter selected body)
+0x100012db0  pushq  %rbp
+0x100012db1  movq   %rsp, %rbp
+0x100012db4  pushq  %r15
+0x100012db6  pushq  %r14
+0x100012db8  pushq  %r12
+0x100012dba  pushq  %rbx
+0x100012dbb  subq   $0x620, %rsp
+0x100012dc2  movq   %rsi, %r14
+0x100012dc5  movq   %rdi, %rbx
+0x100012dd6  leaq   -0x624(%rbp), %r15
+0x100012ddd  movl   $0x5fa, %edx
+0x100012de7  callq  _memset
+0x100012dec  movl   $0x17c, 0x6(%r15)
+0x100012e0c  movq   0x28(%rbx), %rax
+0x100012e14  movq   0x8(%rax), %rdi
+0x100012e18  leaq   "roam_channels_in_hotlist", %rsi
+0x100012e1f  leaq   _kNoTxPayload(%rip), %rdx
+0x100012e29  callq  AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+0x100012e2e  movl   %eax, %r15d
+0x100012e31  testl  %eax, %eax
+0x100012e33  je     0x100012e60
+0x100012e35  movq   (%rbx), %rax
+0x100012e38  movq   0x20(%rax), %rdi
+0x100012e3c  testq  %rdi, %rdi
+0x100012e3f  je     0x100012eca
+0x100012e45  movl   $0x1, %esi
+0x100012e4a  callq  CCLogStream::shouldLog
+0x100012e4f  testb  %al, %al
+0x100012e51  je     0x100012eca
+0x100012e53  movq   %rbx, %rdi
+0x100012e56  movl   %r15d, %esi
+0x100012e59  callq  AppleBCMWLANNetAdapter::getFWHotChannels.cold.1
+0x100012e5e  jmp    0x100012eca
+0x100012e60  movl   -0x624(%rbp), %eax
+0x100012e66  cmpl   $0x7, %eax
+0x100012e69  movl   $0x7, %r8d
+0x100012e6f  cmovbl %eax, %r8d
+0x100012e73  movl   %r8d, 0x10(%r14)
+0x100012e95  testl  %r8d, %r8d
+0x100012e98  je     0x100012eca
+0x100012e9a  xorl   %r12d, %r12d
+0x100012ea3  callq  AppleBCMWLANCore::getChanSpecHandler()
+0x100012ea8  movzwl -0x620(%rbp,%r12,4), %esi
+0x100012eb4  callq  AppleBCMWLANChanSpec::getAppleChannelSpec(unsigned short)
+0x100012eb9  movw   %ax, (%r14,%r12,2)
+0x100012ebe  incq   %r12
+0x100012ec1  movl   0x10(%r14), %eax
+0x100012ec5  cmpq   %rax, %r12
+0x100012ec8  jb     0x100012e9d
+0x100012eca  movq   ___stack_chk_guard(%rip), %rax
+0x100012eda  movl   %r15d, %eax
+0x100012eec  retq

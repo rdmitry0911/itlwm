@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "historical_state_backed_classification_is_superseded": true,
+    "local_null_guard_is_retained_as_safety_boundary": true,
+    "mimo_section_delimiter_is_preserved": true,
+    "no_local_net_adapter_hot_channel_backend_is_introduced": true,
+    "nonnull_getter_fails_closed_without_output": true,
+    "protocol_slot_remains_without_invented_numeric_ioc": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_routing_transport_and_bounded_output": true,
+    "reference_raw_manifest_matches": true
+  },
+  "local": {
+    "net_adapter_backend": false,
+    "null_return_is_apple_parity": false,
+    "numeric_ioc_route": false,
+    "runtime_selector_invocation": false,
+    "synthetic_zero_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "core_getter": "0x100140c84",
+    "core_vtable_cell": "0x1003A1858",
+    "core_vtable_offset": "0x770",
+    "firmware_iovar": "roam_channels_in_hotlist",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_slot": 524,
+    "infra_wrapper": "0x100017b74",
+    "maximum_channels": 7,
+    "net_adapter_getter": "0x100012db0",
+    "net_adapter_offset": "0x48+0x15e0"
+  },
+  "schema": "itlwm-wcl-fw-hot-channels-no-producer-quarantine-v1",
+  "source_base_revision": "3089859c57c8fb116aa3b8539ade2027bfa474ab"
+}

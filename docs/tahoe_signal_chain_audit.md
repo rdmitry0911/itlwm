@@ -1401,7 +1401,6 @@ Closed in this zone:
 - `getBTCOEX_2G_CHAIN_DISABLE(...)`
 - `getBSS_BLACKLIST(...)`
 - `getTXRX_CHAIN_INFO(...)`
-- `getWCL_FW_HOT_CHANNELS(...)`
 
 Recovered Apple behavior splits into three public buckets:
 
@@ -1412,8 +1411,7 @@ Recovered Apple behavior splits into three public buckets:
   `getBSS_BLACKLIST`
 - state-backed telemetry carriers:
   `getMAX_NSS_FOR_AP`,
-  `getBTCOEX_2G_CHAIN_DISABLE`,
-  `getTXRX_CHAIN_INFO`, `getWCL_FW_HOT_CHANNELS`
+  `getBTCOEX_2G_CHAIN_DISABLE`, `getTXRX_CHAIN_INFO`
 
 This batch intentionally stops at the public Apple80211 boundary:
 
@@ -1441,6 +1439,24 @@ update lifecycle. Slot `[493]` therefore preserves its existing local raw
 non-null request before output mutation. Its reset-only cache is removed. This
 is a no-producer quarantine, not Apple null-input, valid-input,
 full-carrier, version, Core-state, AWDL-feature, or runtime-selector parity.
+
+### 2026-07-15 correction: `WCL_FW_HOT_CHANNELS` is a NetAdapter no-producer quarantine
+
+Fresh 25C56 recovery shows this is not a stable zero telemetry carrier: Infra
+`0x100017b74` dispatches through `+0x770` to Core `0x100140c84`, which reaches
+NetAdapter at `(Core + 0x48) + 0x15e0`. NetAdapter issues
+`runIOVarGet("roam_channels_in_hotlist")` and returns its transport status.
+On the observed zero-status branch it clamps the reply count to seven, writes
+that count at caller `+0x10`, and converts that many reply channel specs into
+caller words beginning at `+0x0`.
+
+AirportItlwm has no matching NetAdapter owner, hot-channel query, transport,
+reply validation, or channel-spec conversion lifecycle. The former
+state-backed telemetry classification for `getWCL_FW_HOT_CHANNELS` is
+superseded: slot `[524]` retains its local null-safety guard and returns
+`kIOReturnUnsupported` for every non-null carrier before output mutation. This
+is a no-producer quarantine, not Apple null-input, valid-input return-code,
+full-carrier, channel-value, owner, firmware, or runtime-selector parity.
 
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 
