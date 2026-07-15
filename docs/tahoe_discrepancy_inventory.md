@@ -660,7 +660,7 @@ Current examples:
 - GET side:
   `getGUARD_INTERVAL`, `getHT_CAPABILITY`, `getVHT_CAPABILITY`,
   `getROAM_PROFILE`, `getHW_SUPPORTED_CHANNELS`, `getLQM_SUMMARY`,
-  `getWCL_LOW_LATENCY_INFO`, `getRSN_XE`, `getHE_CAPABILITY`
+  `getWCL_LOW_LATENCY_INFO`, `getHE_CAPABILITY`
 - SET side:
   `setCHANNEL`, `setTXPOWER`, `setRATE`, `setROAM_PROFILE`,
   `setPRIVATE_MAC`, `setRESET_CHIP`, `setRANGING_*`, `setBTCOEX_*`,
@@ -681,7 +681,7 @@ Initial classification buckets for the next pass:
   `kIOReturnUnsupported`
   examples to classify first:
   `getGUARD_INTERVAL`, `getHT_CAPABILITY`, `getVHT_CAPABILITY`,
-  `getROAM_PROFILE`, `getPRIVATE_MAC`, `getRSN_XE`
+  `getROAM_PROFILE`, `getPRIVATE_MAC`
 
 - `Q13-B likely real producer/state carrier`
   rationale: names imply runtime state/config ownership rather than optional
@@ -8175,3 +8175,22 @@ and setter remain unchanged. This is not Apple null-input, valid-input
 return-code, value, carrier-layout, special-status, firmware, or
 runtime-selector parity. See
 `docs/reference/CR-496-btcoex-2g-chain-disable-getter-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: RSN_XE JoinAdapter no-producer quarantine
+
+Earlier Q13 material treated `getRSN_XE` as a compact cache-backed carrier and
+`setRSN_XE` as an opaque cache-carrier boundary. That cache-success
+classification is superseded. Selected 25C56 slots `[531]` and `[606]` both
+dispatch through Core to JoinAdapter association state: GET passes caller
+`+0x06` with capacity `0x101` and receives a low-16-bit length at `+0x04`,
+while SET passes the caller `+0x04` length and `+0x06` bytes to the owner.
+
+The local length, bytes, and validity fields only formed a GET/SET echo and
+had no matching JoinAdapter owner. Both methods preserve their local null
+boundaries and fail closed for non-null input before mutation; the three fields
+and their reset blocks are removed. No numeric `APPLE80211_IOC_RSN_XE` exists
+or is added. The independent APSTA RSNXE parser and RSN_IE/RSN_CONF surfaces
+remain unchanged. This is not Apple null-input, valid-input return-code,
+carrier-layout, capability-gate, JoinAdapter-state, firmware, or
+runtime-selector parity. See
+`docs/reference/CR-497-rsn-xe-join-adapter-no-producer-quarantine-20260715.md`.

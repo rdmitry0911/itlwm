@@ -345,8 +345,9 @@ public:
     virtual IOReturn getHE_COUNTERS(apple80211_he_counters_ctl *) override;
     // [530]
     virtual IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo *) override;
-    // [531] — AppleBCMWLANCore copies an opaque XE blob with length at +0x4 and
-    // payload at +0x6.
+    // [531] — Reference Core delegates the XE result to JoinAdapter
+    // association state. This port has no matching owner, so retain the
+    // virtual ABI but fail closed for non-null input.
     virtual IOReturn getRSN_XE(apple80211_rsn_xe_data *) override;
     // [532] — Tahoe copies two live Core-state dwords into the caller. The
     // local V2/Skywalk path retains its raw local null boundary and otherwise
@@ -578,8 +579,9 @@ public:
     // expose on Tahoe.
     virtual IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state *data) override;
     // [606]
-    // [606] — AppleBCMWLANCore forwards the opaque XE blob starting at +0x6
-    // with the public length at +0x4.
+    // [606] — Reference Core delegates XE mutation to JoinAdapter association
+    // state. This port has no matching owner, so retain the virtual ABI but
+    // fail closed for non-null input.
     virtual IOReturn setRSN_XE(apple80211_rsn_xe_data *) override;
     // [607]
     // [607] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
@@ -789,9 +791,6 @@ private:
     bool hasCachedLastActionFrame;
     uint8_t cachedBssBlacklist[0x2b];
     bool hasCachedBssBlacklist;
-    uint16_t cachedRsnXeLength;
-    uint8_t cachedRsnXe[APPLE80211_MAX_RSN_IE_LEN];
-    bool hasCachedRsnXe;
     uint32_t cachedTkoParams[6];
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;

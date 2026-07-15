@@ -1134,7 +1134,6 @@ Closed in this zone:
 - `setTHERMAL_INDEX(...)`
 - `setBSS_BLACKLIST(...)`
 - `setREALTIME_QOS_MSCS(...)`
-- `setRSN_XE(...)`
 - `setWCL_LIMITED_AGGREGATION(...)`
 - `setWCL_BCN_MUTE_CONFIG(...)`
 
@@ -1144,7 +1143,7 @@ Recovered Apple behavior is consistent enough to lift this as one zone:
   `setWCL_LIMITED_AGGREGATION`
 - several are opaque state carriers with only a null gate or a small public
   field split:
-  `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`, `setRSN_XE`
+  `setBSS_BLACKLIST`, `setWCL_BCN_MUTE_CONFIG`
 - several expose fixed Tahoe fail shapes rather than generic unsupported:
   `setAP_MODE -> 0xe00002c7`, `setTHERMAL_INDEX -> 0xe00002bc`
 - `setOFFLOAD_TCPKA_ENABLE(...)` remains feature-gated and uses the same
@@ -1403,7 +1402,6 @@ Closed in this zone:
 - `getBSS_BLACKLIST(...)`
 - `getTXRX_CHAIN_INFO(...)`
 - `getWCL_FW_HOT_CHANNELS(...)`
-- `getRSN_XE(...)`
 
 Recovered Apple behavior splits into three public buckets:
 
@@ -1411,7 +1409,7 @@ Recovered Apple behavior splits into three public buckets:
   `getBTCOEX_PROFILE -> 0xe00002c2`,
   `getTKO_PARAMS/getTKO_DUMP -> 0xe00002bc` when the keepalive owner is absent
 - compact cache-backed carriers:
-  `getRSN_XE`, `getBSS_BLACKLIST`
+  `getBSS_BLACKLIST`
 - state-backed telemetry carriers:
   `getMAX_NSS_FOR_AP`,
   `getBTCOEX_2G_CHAIN_DISABLE`,
@@ -6030,3 +6028,21 @@ separate active/profile getter surfaces. It is not Apple null-input,
 valid-input return-code, value, carrier-layout, special-status, firmware, or
 runtime-selector parity. See
 `docs/reference/CR-496-btcoex-2g-chain-disable-getter-no-producer-quarantine-20260715.md`.
+
+## 2026-07-15 correction: RSN_XE JoinAdapter no-producer quarantine
+
+The earlier Q13 cache-carrier classification for `getRSN_XE` and `setRSN_XE`
+is superseded. Fresh 25C56 recovery shows Infra slots `[531]` and `[606]`
+dispatch to Core, then to the JoinAdapter at `(Core + 0x48) + 0x1528`. GET
+passes caller `+0x06` and capacity `0x101` to `getAssocRSNXE` before writing a
+length at `+0x04`; SET passes its length/bytes to `setAssocRSNXE`. Capability
+and length gates belong to that owner, not to a local cache echo.
+
+The local pair retains its null safety guards and returns
+`kIOReturnUnsupported` for every non-null request before output or cache
+mutation. The reset-only length/bytes/validity fields are removed. This does
+not add a numeric IOC, alter protocol slots, or replace the separate APSTA
+RSNXE parser, RSN_IE, or RSN_CONF surfaces. It is not Apple null-input,
+valid-input return-code, carrier-layout, capability-gate, JoinAdapter-state,
+firmware, or runtime-selector parity. See
+`docs/reference/CR-497-rsn-xe-join-adapter-no-producer-quarantine-20260715.md`.

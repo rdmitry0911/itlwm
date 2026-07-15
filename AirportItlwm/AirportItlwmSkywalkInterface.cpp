@@ -2223,9 +2223,6 @@ init()
     hasCachedLastActionFrame = false;
     memset(cachedBssBlacklist, 0, sizeof(cachedBssBlacklist));
     hasCachedBssBlacklist = false;
-    cachedRsnXeLength = 0;
-    memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
-    hasCachedRsnXe = false;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
     memset(fLastPublishedBssid, 0, sizeof(fLastPublishedBssid));
     fLastPublishedBssidValid = false;
@@ -2583,9 +2580,6 @@ init(IOService *provider)
     this->hasCachedLastActionFrame = false;
     memset(this->cachedBssBlacklist, 0, sizeof(this->cachedBssBlacklist));
     this->hasCachedBssBlacklist = false;
-    this->cachedRsnXeLength = 0;
-    memset(this->cachedRsnXe, 0, sizeof(this->cachedRsnXe));
-    this->hasCachedRsnXe = false;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
@@ -3809,14 +3803,11 @@ getRSN_XE(apple80211_rsn_xe_data *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 6 + sizeof(cachedRsnXe));
-    *reinterpret_cast<uint16_t *>(raw + 4) = cachedRsnXeLength;
-    size_t copyLen = static_cast<size_t>(cachedRsnXeLength);
-    if (copyLen > sizeof(cachedRsnXe))
-        copyLen = sizeof(cachedRsnXe);
-    memcpy(raw + 6, cachedRsnXe, copyLen);
-    return kIOReturnSuccess;
+    // Reference Core delegates this carrier to JoinAdapter association state.
+    // There is no matching local owner, so do not expose a reset-only cache as
+    // an applied RSNXE association result.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5944,13 +5935,11 @@ setRSN_XE(apple80211_rsn_xe_data *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    const uint8_t *raw = reinterpret_cast<const uint8_t *>(data);
-    cachedRsnXeLength = *reinterpret_cast<const uint16_t *>(raw + 4);
-    size_t copyLen = MIN(static_cast<size_t>(cachedRsnXeLength), sizeof(cachedRsnXe));
-    memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
-    memcpy(cachedRsnXe, raw + 6, copyLen);
-    hasCachedRsnXe = true;
-    return kIOReturnSuccess;
+    // Reference Core delegates validation and mutation to JoinAdapter. The
+    // local port has no equivalent association owner, so do not acknowledge a
+    // carrier that was not applied.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

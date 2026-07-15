@@ -1,0 +1,40 @@
+{
+  "checks": {
+    "apsta_rsnxe_parser_and_distinct_rsn_surfaces_remain": true,
+    "dead_rsnxe_cache_is_removed": true,
+    "historical_cache_classification_is_superseded": true,
+    "local_null_guards_are_retained_as_safety_boundaries": true,
+    "no_local_join_adapter_backend_is_introduced": true,
+    "nonnull_get_and_set_fail_closed_without_cache_or_output": true,
+    "protocol_slots_remain_without_invented_numeric_ioc": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_owner_routing_and_gates": true,
+    "reference_raw_manifest_matches": true
+  },
+  "local": {
+    "cache_echo": false,
+    "join_adapter_backend": false,
+    "null_return_is_apple_parity": false,
+    "numeric_ioc_route": false,
+    "runtime_selector_invocation": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "carrier_capacity": "0x101",
+    "core_get_vtable_offset": "0x348",
+    "core_getter": "0x100107da0",
+    "core_set_vtable_offset": "0x510",
+    "core_setter": "0x100120e96",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_get_slot": 531,
+    "infra_get_wrapper": "0x100016f18",
+    "infra_set_slot": 606,
+    "infra_set_wrapper": "0x1000181e4",
+    "join_adapter_from_core": "0x48+0x1528",
+    "join_getter": "0x10003f0be",
+    "join_setter": "0x10003f2c2"
+  },
+  "schema": "itlwm-rsn-xe-join-adapter-no-producer-quarantine-v1",
+  "source_base_revision": "121891b21657d2905f3f67057232e25e13de9bab"
+}

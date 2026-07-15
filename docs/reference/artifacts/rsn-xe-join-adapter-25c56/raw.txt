@@ -1,0 +1,119 @@
+# Selected read-only static reference excerpts: RSN_XE JoinAdapter ownership
+# x86_64 slice of com.apple.DriverKit-AppleBCMWLAN, macOS 25C56.
+
+(shasum -a 256)
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(dwarfdump --uuid)
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+
+(nm -arch x86_64 -nm)
+0x100016f18 (__TEXT,__text) __ZN25AppleBCMWLANInfraProtocol9getRSN_XEEP22apple80211_rsn_xe_data
+0x1000181e4 (__TEXT,__text) __ZN25AppleBCMWLANInfraProtocol9setRSN_XEEP22apple80211_rsn_xe_data
+0x100107da0 (__TEXT,__text) __ZN16AppleBCMWLANCore9getRSN_XEEP22apple80211_rsn_xe_data
+0x100120e96 (__TEXT,__text) __ZN16AppleBCMWLANCore9setRSN_XEEP22apple80211_rsn_xe_data
+0x10003f0be (__TEXT,__text) __ZNK23AppleBCMWLANJoinAdapter13getAssocRSNXEEPhRy
+0x10003f2c2 (__TEXT,__text) __ZN23AppleBCMWLANJoinAdapter13setAssocRSNXEEPKhy
+
+(otool -arch x86_64 -tvV; Infra GET wrapper)
+0x100016f18  pushq  %rbp
+0x100016f1c  movq   0x88(%rdi), %rax
+0x100016f23  movq   (%rax), %rdi
+0x100016f26  movq   (%rdi), %rax
+0x100016f29  movq   0x348(%rax), %rax
+0x100016f31  jmpq   *%rax
+
+(otool -arch x86_64 -tvV; Infra SET wrapper)
+0x1000181e4  pushq  %rbp
+0x1000181e8  movq   0x88(%rdi), %rax
+0x1000181ef  movq   (%rax), %rdi
+0x1000181f2  movq   (%rdi), %rax
+0x1000181f5  movq   0x510(%rax), %rax
+0x1000181fd  jmpq   *%rax
+
+(nm -arch x86_64 -nm) __ZTV16AppleBCMWLANCore
+0x1003A10D8 (__DATA_CONST,__const) __ZTV16AppleBCMWLANCore
+(dyld_info -arch x86_64 -fixups)
+__DATA_CONST    __const          0x1003A1430         rebase  0x100107DA0
+__DATA_CONST    __const          0x1003A15F8         rebase  0x100120E96
+
+(otool -arch x86_64 -tvV; Core GET selected body)
+0x100107da0  pushq  %rbp
+0x100107da1  movq   %rsp, %rbp
+0x100107da4  pushq  %r14
+0x100107da6  pushq  %rbx
+0x100107da7  subq   $0x10, %rsp
+0x100107dab  movq   %rsi, %rbx
+0x100107dbc  leaq   -0x20(%rbp), %r14
+0x100107dc0  movq   $0x101, (%r14)
+0x100107dc7  movq   0x48(%rdi), %rax
+0x100107dcb  movq   0x1528(%rax), %rdi
+0x100107dd2  addq   $0x6, %rsi
+0x100107dd9  callq  AppleBCMWLANJoinAdapter::getAssocRSNXE
+0x100107dde  movzwl (%r14), %ecx
+0x100107de2  movw   %cx, 0x4(%rbx)
+
+(otool -arch x86_64 -tvV; Core SET selected body)
+0x100120e96  pushq  %rbp
+0x100120e97  movq   %rsp, %rbp
+0x100120e9a  movq   0x48(%rdi), %rax
+0x100120e9e  movq   0x1528(%rax), %rdi
+0x100120ea5  movzwl 0x4(%rsi), %edx
+0x100120ea9  addq   $0x6, %rsi
+0x100120eae  jmp    AppleBCMWLANJoinAdapter::setAssocRSNXE
+
+(otool -arch x86_64 -tvV; JoinAdapter GET selected body)
+0x10003f0d2  movq   0x30(%rdi), %rax
+0x10003f0d6  movq   0x38(%rax), %rdi
+0x10003f0da  callq  AppleBCMWLANCore::checkForSaePKSupport
+0x10003f0df  movl   $0xe00002c2, %r12d
+0x10003f0e5  testb  %al, %al
+0x10003f0e7  je     0x10003f127
+0x10003f0e9  movq   0x30(%r14), %rax
+0x10003f0ed  movq   0x38(%rax), %rdi
+0x10003f0f1  callq  AppleBCMWLANCore::checkForWPA3SAESupport
+0x10003f0f6  testb  %al, %al
+0x10003f0f8  je     0x10003f127
+0x10003f0fa  movq   0x30(%r14), %rsi
+0x10003f0fe  movq   0x68(%rsi), %rdx
+0x10003f102  movl   $0xe00002db, %r12d
+0x10003f108  cmpq   %rdx, (%rbx)
+0x10003f10b  jb     0x10003f127
+0x10003f10d  addq   $0x70, %rsi
+0x10003f111  movq   %r15, %rdi
+0x10003f114  callq  _memcpy
+0x10003f11d  movq   0x68(%rax), %rax
+0x10003f121  movq   %rax, (%rbx)
+0x10003f124  xorl   %r12d, %r12d
+
+(otool -arch x86_64 -tvV; JoinAdapter SET selected body)
+0x10003f2d6  movq   0x30(%rdi), %rax
+0x10003f2da  movq   0x38(%rax), %rdi
+0x10003f2de  callq  AppleBCMWLANCore::checkForSaePKSupport
+0x10003f2e3  movl   $0xe00002c2, %r12d
+0x10003f2e9  testb  %al, %al
+0x10003f2eb  je     0x10003f340
+0x10003f2ed  movq   0x30(%r14), %rax
+0x10003f2f1  movq   0x38(%rax), %rdi
+0x10003f2f5  callq  AppleBCMWLANCore::checkForWPA3SAESupport
+0x10003f2fa  testb  %al, %al
+0x10003f2fc  je     0x10003f340
+0x10003f2fe  movl   $0xe00002db, %r12d
+0x10003f304  cmpq   $0x101, %rbx
+0x10003f30b  ja     0x10003f340
+0x10003f30d  movq   0x30(%r14), %rdi
+0x10003f311  addq   $0x70, %rdi
+0x10003f315  testq  %rbx, %rbx
+0x10003f318  je     0x10003f327
+0x10003f31a  movq   %r15, %rsi
+0x10003f31d  movq   %rbx, %rdx
+0x10003f320  callq  _memcpy
+0x10003f325  jmp    0x10003f335
+0x10003f327  xorl   %ebx, %ebx
+0x10003f329  movl   $0x101, %edx
+0x10003f32e  xorl   %esi, %esi
+0x10003f330  callq  _memset
+0x10003f339  movq   %rbx, 0x68(%rax)
+0x10003f33d  xorl   %r12d, %r12d
+
+# Separate JoinAdapter::getAssociatedRSNXE has rsnxe IOVAR work; Core GET above
+# directly invokes getAssocRSNXE instead.
