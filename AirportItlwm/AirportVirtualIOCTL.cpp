@@ -528,5 +528,10 @@ setAWDL_AF_TX_MODE(OSObject *object, struct apple80211_awdl_af_tx_mode *data)
 IOReturn AirportItlwm::
 setAWDL_OOB_AUTO_REQUEST(OSObject *object, struct apple80211_awdl_oob_request *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 has a conditional selector gate and owner dispatch.
+    // This active legacy SET-only shim has no implementation of that path.
+    return kIOReturnUnsupported;
 }

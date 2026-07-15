@@ -6268,3 +6268,22 @@ absence of IOC 208 remain intact. Tahoe does not compile
 boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
 AF-TX-policy, firmware, CCA, event, or traffic parity claim. See
 docs/reference/CR-509-legacy-awdl-af-tx-mode-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL OOB-auto-request blind-success shim
+
+The historical virtual-interface IOC 225 SET-only shim previously returned
+success while ignoring its typed OOB-request carrier. Direct current 25C56
+nested-KEXT recovery shows a selector gate, nonzero-status propagation,
+AWDL-protocol owner test, and only then a dynamic tail dispatch; a failed
+owner test returns raw `0xe082280e`. The public wrapper does not dereference
+the carrier, and the terminal target of its dynamic `+0x1148` slot is
+intentionally unresolved: a separately named peer-manager success stub is
+not treated as that target.
+
+The active legacy SET-only shim now returns `kIOReturnUnsupported` without
+reading either argument. Its packed carrier, SET-only route, and existing GET
+error remain intact. Tahoe does not compile `AirportVirtualIOCTL.cpp`. This
+is a historical source-surface fail-closed boundary, not a Tahoe runtime,
+Apple terminal-status, carrier-layout, carrier-validation, OOB-policy,
+firmware, CCA, event, or traffic parity claim. See
+docs/reference/CR-510-legacy-awdl-oob-auto-request-blind-success-quarantine-20260715.md.
