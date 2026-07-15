@@ -1811,6 +1811,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return setOFFLOAD_TCPKA_ENABLE((apple80211_offload_tcpka_enable_t *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_OP_MODE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public SET wrapper is an unread fixed 0xe082280e
+             * leaf. Preserve the separate dynamic GET producer below.
+             */
+            if (cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd == SIOCGA80211) {
                 if (instance != NULL && instance->fAPSTAOwner != NULL) {
                     return instance->getAPSTA_OP_MODE(
