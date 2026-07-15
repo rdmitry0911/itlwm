@@ -6385,3 +6385,22 @@ Tahoe's absence of IOC 136 remain intact. Tahoe does not compile
 boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
 presence-policy, firmware, CCA, event, or traffic parity claim. See
 docs/reference/CR-515-legacy-awdl-presence-mode-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy V1 BSSID fixed-stub alignment
+
+The historical V1 IOC 9 SET half in `AirportSTAIOCTL.cpp` previously returned
+success while ignoring its BSSID carrier. Direct current 25C56 nested-KEXT
+recovery identifies the public `apple80211setBSSID` body as an exact
+11-byte fixed stub returning raw `0xe082280e`. It reads neither public
+argument and has no selector load, gate, owner lookup, call, state, transport,
+or event operation.
+
+The active legacy V1 setter now leaves both arguments unread and returns that
+exact recovered numeric status. The typed bidirectional V1 route and separate
+live-state V1 GET remain unchanged. Tahoe is distinct: its Skywalk bridge
+retains BSSID GET behavior and rejects SET with `kIOReturnUnsupported`, while
+the Tahoe source phase includes V2/Skywalk rather than `AirportSTAIOCTL.cpp`.
+This is only direct public V1 SET-body/status alignment, not a Tahoe, GET,
+carrier/null/ABI, association, scan, firmware, event, traffic, or runtime
+parity claim. See
+docs/reference/CR-516-legacy-bssid-fixed-stub-alignment-20260715.md.

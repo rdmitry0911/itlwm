@@ -955,7 +955,11 @@ getBSSID(OSObject *object,
 IOReturn AirportItlwm::
 setBSSID(OSObject *object, struct apple80211_bssid_data *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::

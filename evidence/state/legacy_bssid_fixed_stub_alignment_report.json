@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "legacy_getter_is_preserved_separately": true,
+    "legacy_selector_carrier_and_route_remain": true,
+    "legacy_setter_matches_exact_fixed_status_without_reads": true,
+    "legacy_source_is_absent_from_tahoe_phase": true,
+    "note_records_scope_and_nonclaims": true,
+    "reference_raw_has_exact_unread_fixed_stub": true,
+    "reference_raw_manifest_matches": true,
+    "tahoe_get_and_set_rejection_remain_separate": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021c3739",
+    "public_wrapper": "0xffffff80021c372e"
+  },
+  "schema": "itlwm-legacy-bssid-fixed-stub-alignment-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "bf52fec42157c1a04ac1eb4ec3a0de511d16bb96"
+}
