@@ -1,0 +1,35 @@
+{
+  "checks": {
+    "equal_byte_count_does_not_become_layout_parity": true,
+    "note_records_scope_reference_and_two_region_boundary": true,
+    "paired_getter_and_tahoe_absence_remain": true,
+    "reference_raw_manifest_matches": true,
+    "reference_raw_records_public_internal_terminal_and_two_region_caveat": true,
+    "selector_carrier_header_route_and_getter_remain": true,
+    "setter_is_unread_and_fails_closed": true
+  },
+  "local": {
+    "byte_count_matches_reference_admission": true,
+    "carrier_layout_is_reference_parity": false,
+    "packed_carrier_bytes": 16
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "internal_carrier_bytes": 16,
+    "internal_selector": "0xffffff80021e4637",
+    "public_wrapper": "0xffffff80021c4460",
+    "selector": 125,
+    "terminal": "0xffffff8002179d78"
+  },
+  "schema": "itlwm-legacy-awdl-bssid-blind-success-quarantine-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "9978058f5d131d7e36dee475a22f68a4bdd21b1e"
+}

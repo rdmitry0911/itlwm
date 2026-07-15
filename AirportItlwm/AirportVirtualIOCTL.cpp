@@ -266,8 +266,12 @@ getAWDL_BSSID(OSObject *object, struct apple80211_awdl_bssid *data)
 IOReturn AirportItlwm::
 setAWDL_BSSID(OSObject *object, struct apple80211_awdl_bssid *data)
 {
-    memcpy(awdlBSSID, data->bssid, 6);
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector; the legacy
+    // write cached only one of the two carrier MAC regions.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::
