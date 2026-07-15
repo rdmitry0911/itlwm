@@ -1650,6 +1650,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             }
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_PROTMODE:
+            /*
+             * The current 25C56 public GET and SET wrappers are unread
+             * fixed 0xe082280e leaves. Do not expose the historical
+             * carrier helper on the normal Tahoe public BSD route.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_HOST_AP_MODE:
             if (instance == NULL)
                 return kIOReturnNotReady;
