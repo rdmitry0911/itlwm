@@ -1829,10 +1829,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_BT_POWER:
             /*
-             * Recovered setBT_POWER target lands in the adjacent fixed
-             * 0xe082280e wrapper stub. Do not manufacture a BT power state
-             * carrier on this path.
+             * The current 25C56 public GET wrapper is an unread fixed
+             * 0xe082280e leaf. Do not manufacture or inspect a BT-power
+             * carrier on that Tahoe public route. The existing SET and
+             * pre-26 paths remain their own contracts.
              */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? kApple80211ClassOwnerAbsent
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILES:
