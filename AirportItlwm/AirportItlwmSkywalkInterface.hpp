@@ -134,16 +134,15 @@ public:
     // has no recovered DEAUTH owner, so the local former blind-success stub
     // fails closed rather than acknowledging an unapplied deauthentication.
     IOReturn setDEAUTH(apple80211_deauth_data *);
-    // Tahoe Skywalk current-PMK setter routed through the
-    // alternate apple80211setCUR_PMK selector at Tahoe absolute
-    // vtable slot [750] of __ZTV23IO80211SkywalkInterface (offset
-    // +0x1770). Apple delivers the externally sourced PSK PMK on
-    // PSK association edges via either CIPHER_KEY(PMK) or this
-    // CUR_PMK carrier; both must populate the same local host-
-    // supplicant PMK store before the first 4-way M1.
+    // Retained Tahoe Skywalk ABI/private current-PMK helper at the
+    // alternate vtable slot [750] of __ZTV23IO80211SkywalkInterface
+    // (offset +0x1770). Current 25C56 public CUR_PMK SET is an unread
+    // fixed nonzero wrapper and does not prove a public call to this helper.
+    // CIPHER_KEY and PLTI DeliverPMK remain separate local PMK paths.
     virtual IOReturn setCUR_PMK(apple80211_pmk *) override;
-    // Credential-safe shared external PMK ingestion helper used by
-    // both setCIPHER_KEY(APPLE80211_CIPHER_PMK) and setCUR_PMK.
+    // Credential-safe shared PMK ingestion helper used by
+    // setCIPHER_KEY(APPLE80211_CIPHER_PMK) and retained private/ABI
+    // setCUR_PMK callers.
     // Validates a 32-byte PMK, copies it into ic_psk, sets PSK
     // policy flags, and emits only non-secret structural markers.
     IOReturn installExternalPmkLocked(const uint8_t *pmk_bytes,

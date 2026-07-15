@@ -578,13 +578,11 @@ public:
     // in the comment but the local declaration name keeps the _TahoeSlotNNN
     // prefix so it does not collide with parent-class virtuals at other local
     // slot positions.
-    // Slot [750] is the SET-side Skywalk virtual receiver for the
-    // apple80211setCUR_PMK trampoline at 0xffffff80021eb3b9; base function is
-    // the forwarding thunk at 0xffffff8002277d2e and the AppleBCMWLAN production
-    // override target is 0xffffff8000b72960. Apple delivers the externally
-    // sourced PSK PMK through this slot, so the matching local override in
-    // AirportItlwmSkywalkInterface routes the apple80211_pmk * payload through
-    // installExternalPmkLocked into ic_psk before the host net80211 4-way M1.
+    // Slot [750] remains a reconstructed Skywalk virtual ABI slot. Current
+    // direct 25C56 public apple80211setCUR_PMK is instead the fixed wrapper
+    // at 0xffffff80021c700b and does not invoke this virtual receiver. Earlier
+    // slot/override recovery is retained for ABI/private-route context only;
+    // it cannot establish current public PMK-install behavior.
     //
 
     // [664]
@@ -945,13 +943,10 @@ public:
     virtual void _TahoeSlot749_ffffff80022b26c8() {}
     // [750]
     // Tahoe abs slot 750 at __ZTV23IO80211SkywalkInterface+0x1770.
-    // Base function pointer 0xffffff8002277d2e is the
-    // _RESERVED_IO80211SkywalkInterface_11 forwarding thunk; the live
-    // setCUR_PMK body 0xffffff8000b72960 is reached only through the
-    // AppleBCMWLANIO80211APSTAInterface subclass override. The pure-virtual
-    // declaration here forces every concrete IO80211InfraProtocol subclass
-    // to provide a credential-safe local setCUR_PMK implementation that
-    // matches Apple's observable contract.
+    // The pure-virtual declaration preserves the reconstructed ABI. The
+    // current 25C56 public fixed wrapper does not establish that a public
+    // carrier reaches this implementation; retained private/ABI users remain
+    // outside this public-wrapper correction.
     virtual IOReturn setCUR_PMK(apple80211_pmk *) = 0;
 
 public:

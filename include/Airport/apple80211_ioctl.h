@@ -68,11 +68,10 @@ struct apple80211req
 #define     APPLE80211_CIPHER_KEY_UNICAST        1   // req_val
 #define     APPLE80211_CIPHER_KEY_MULICAST       2   // req_val
 
-// Tahoe Skywalk current-PMK setter delivered through the alternate
-// apple80211setCUR_PMK selector. Carries struct apple80211_pmk; the
-// key bytes live at struct offset 0x10, and the validated key length
-// at offset 0x04. Used by Apple userspace to publish or refresh the
-// active host-supplicant PMK on a PSK association edge.
+// Tahoe Skywalk current-PMK carrier declaration. The carrier retains its
+// 0x5c-byte ABI (key bytes +0x10, declared length +0x04), but current 25C56
+// public apple80211setCUR_PMK returns a fixed nonzero status without consuming
+// it. This declaration does not assert a public PMK-install behavior.
 #define APPLE80211_IOC_CUR_PMK                 360   // req_type
 
 #define APPLE80211_IOC_CHANNEL                   4   // req_type

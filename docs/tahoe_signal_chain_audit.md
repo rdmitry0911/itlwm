@@ -6564,3 +6564,19 @@ a BSD-dispatch boundary only. This removes a direct Tahoe public false-success
 claim only; it does not claim APSTA, owner-lifetime, carrier/ABI, firmware,
 traffic, or runtime parity. See
 docs/reference/CR-524-skywalk-public-virtual-if-delete-fixed-stub-alignment-20260715.md.
+
+## 2026-07-15 correction: Skywalk public CUR_PMK fixed-stub alignment
+
+The current 25C56 public `apple80211setCUR_PMK` wrapper is an exact 11-byte
+unread stub returning raw `0xe082280e`. The local Tahoe BSD and card-specific
+bridges formerly admitted a normal non-null IOC 360 SET and passed its PMK
+carrier into a local ingestion helper.
+
+Only the normal non-null Tahoe SET arm now returns that exact numeric status,
+under a compile-time Tahoe-only guard; the pre-26 branch preserves the
+existing helper call and the GET route remains separate. The virtual helper,
+`CIPHER_KEY` PMK path, and PLTI `DeliverPMK` user-client path are retained
+without redirection. This is direct current public-wrapper alignment only; it
+does not claim private virtual-route, PMK-owner, association, carrier/ABI,
+firmware, traffic, or runtime parity. See
+docs/reference/CR-525-skywalk-public-cur-pmk-fixed-stub-alignment-20260715.md.

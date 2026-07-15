@@ -351,16 +351,12 @@ struct apple80211_key
     u_int8_t            wowl_kek_key[24];
 };
 
-// Field-level layout of the Tahoe apple80211_pmk carrier used by
-// apple80211setCUR_PMK (selector 0x168 / IOC 360) and the matching
-// apple80211getCUR_PMK getter (selector 0x16a). The Apple PMK owner
-// helper accepts a key length strictly less than 0x41 at offset
-// +0x04 and copies the source key material from carrier offset +0x10
-// into the PMK store. The getter writes the owner snapshot starting
-// at carrier offset +0x08 and stamps the version/metadata at +0x48,
-// +0x4c, and +0x54. Field names match the recovered Apple semantics
-// and do not log raw key material; the byte buffers carry credential
-// material and must only be reported through credential-safe markers.
+// Field-level layout of the Tahoe apple80211_pmk carrier for IOC 360 and the
+// matching getter carrier. It remains ABI data for retained private/virtual
+// paths, but direct current-25C56 public SET returns before reading it. Do not
+// infer current public PMK-owner mutation from these field names or offsets.
+// The buffers carry credential material and must only be reported through
+// credential-safe markers.
 #define APPLE80211_PMK_BUFF_LEN              64
 // Recovered Apple Tahoe carrier layout: status at +0x48 is immediately
 // followed by two 8-byte metadata cookies at +0x4c and +0x54 with no

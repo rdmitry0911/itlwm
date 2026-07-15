@@ -225,10 +225,9 @@ static_assert(__offsetof(apple80211_authtype_data, version) ==
 // setCIPHER_KEY into ieee80211com::ic_psk. Atomic-relaxed so
 // concurrent IOCTL paths do not lose increments.
 extern "C" volatile uint64_t setCipherKey_pmk_install_count = 0;
-// Counter of successful apple80211setCUR_PMK installs through the
-// alternate selector into ieee80211com::ic_psk. Same atomic-relaxed
-// contract as the CIPHER_KEY counter so an observer can attribute
-// each PMK install to the carrier that delivered it.
+// Counter of successful calls through the retained local setCUR_PMK helper.
+// Current 25C56 public CUR_PMK SET returns before this helper, so this is not
+// a public-current-wrapper counter; it remains for ABI/private callers.
 extern "C" volatile uint64_t setCUR_PMK_pmk_install_count = 0;
 // Counter of credential-safe external-PMK eligibility clears
 // performed on reset/leave/disassoc/PMKSA-clear edges. Each clear
@@ -1903,21 +1902,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return kIOReturnUnsupported;
         case APPLE80211_IOC_CUR_PMK:
-            // Tahoe Skywalk current-PMK carrier. The active local
-            // ingress for selector 0x168 / IOC 360 is the
-            // card-specific bridge: IO80211Family routes the IOCTL
-            // into handleCardSpecific(...) on the V2 controller,
-            // routeTahoeSkywalkIoctl(...) gates it through
-            // shouldRouteTahoeSkywalkIoctlReq(...) (which lists
-            // APPLE80211_IOC_CUR_PMK explicitly), and the request
-            // lands here. The set-side path enters the shared
-            // external-PMK ingestion helper through setCUR_PMK; the
-            // get-side path remains credential-safe and returns the
-            // documented Apple failure 0xe00002c7 from getCUR_PMK
-            // without snapshotting PMK material into the caller
-            // buffer.
-            return (cmd == SIOCSA80211) ? setCUR_PMK((struct apple80211_pmk *)req->req_data)
-                                        : getCUR_PMK((struct apple80211_pmk *)req->req_data);
+            // Current 25C56 public SET wrapper is an unread fixed nonzero
+            // stub. Both public Tahoe ingress paths reach this dispatcher,
+            // but the retained helper below is only for ABI/private contexts;
+            // CIPHER_KEY and PLTI DeliverPMK stay separate PMK paths.
+            if (cmd == SIOCSA80211) {
+#if __IO80211_TARGET >= __MAC_26_0
+                return static_cast<IOReturn>(0xe082280e);
+#else
+                return setCUR_PMK((struct apple80211_pmk *)req->req_data);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            }
+            return getCUR_PMK((struct apple80211_pmk *)req->req_data);
         case APPLE80211_IOC_ASSOCIATION_STATUS:
             return (cmd == SIOCGA80211) ? getASSOCIATION_STATUS((apple80211_assoc_status_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -2738,16 +2734,13 @@ setCIPHER_KEY(struct apple80211_key *key)
             break;
         case APPLE80211_CIPHER_PMK: {
             // APPLE80211_IOC_CIPHER_KEY (=3) with key_cipher_type =
-            // APPLE80211_CIPHER_PMK (=6) is one of the two host-side
-            // PSK PMK delivery carriers on Tahoe Skywalk: the other is
-            // apple80211setCUR_PMK below. Both carriers must converge on
-            // the same local PMK sink (ieee80211com::ic_psk) so the
-            // OpenBSD-derived PAE supplicant reads a consistent PMK in
-            // ieee80211_recv_4way_msg1 regardless of which carrier
-            // delivered it. installExternalPmkLocked centralises the
-            // 32-byte validation, ic_psk copy, IEEE80211_F_PSK flag,
-            // and WPA/RSN PSK auth-state refresh, and emits only
-            // non-secret structural markers.
+            // APPLE80211_CIPHER_PMK (=6) remains an independent local PMK
+            // ingestion path. The retained setCUR_PMK helper can share this
+            // sink only in a distinct ABI/private context: current 25C56
+            // public CUR_PMK SET does not reach it. installExternalPmkLocked
+            // centralises the 32-byte validation, ic_psk copy,
+            // IEEE80211_F_PSK flag, and WPA/RSN PSK auth-state refresh, and
+            // emits only non-secret structural markers.
             return installExternalPmkLocked(key->key,
                                             key->key_len,
                                             "CIPHER_KEY");
@@ -3040,21 +3033,11 @@ getCUR_PMK(apple80211_pmk *)
 IOReturn AirportItlwmSkywalkInterface::
 setCUR_PMK(struct apple80211_pmk *pmk)
 {
-    // Tahoe apple80211setCUR_PMK is the alternate PSK PMK delivery
-    // selector (0x168 / IOC 360). The Apple carrier struct
-    // apple80211_pmk holds the validated key length at offset 0x04
-    // and the source key bytes at offset 0x10. The accepted Apple
-    // semantics are that CUR_PMK and CIPHER_KEY case 6/9 both
-    // converge on the same host-side PMK owner, so the local
-    // implementation funnels both into the shared external-PMK
-    // helper. The active local ingress is the V2 controller
-    // card-specific bridge: IO80211Family delivers SIOCSA80211 and
-    // SIOCGA80211 ioctls into handleCardSpecific(...), which
-    // routeTahoeSkywalkIoctl(...) forwards to processApple80211Ioctl
-    // when shouldRouteTahoeSkywalkIoctlReq(...) accepts the selector
-    // (APPLE80211_IOC_CUR_PMK is explicitly listed in that allow
-    // list), and processApple80211Ioctl dispatches the SIOCSA80211
-    // direction here.
+    // Retained local ABI/private helper. Direct current 25C56 public
+    // apple80211setCUR_PMK returns a fixed nonzero status before reading the
+    // carrier, so processApple80211Ioctl no longer enters here for normal
+    // Tahoe public SET. CIPHER_KEY and the PLTI DeliverPMK user-client path
+    // remain separate PMK-ingestion paths and neither is redirected here.
     if (pmk == nullptr) {
         XYLog("setCUR_PMK NOT_READY pmk=NULL\n");
         return kIOReturnBadArgument;
@@ -3069,19 +3052,12 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
                          uint32_t key_len,
                          const char *source_tag)
 {
-    // Shared external-PMK ingestion. The contract is the same for the
-    // CIPHER_KEY(PMK) and CUR_PMK carriers: validate IEEE80211_PMK_LEN,
-    // copy the 32-byte PMK into ic->ic_psk, set IEEE80211_F_PSK, refresh
-    // WPA/RSN PSK auth state through ieee80211_ioctl_setwpaparms so the
-    // OpenBSD-derived 4-way supplicant has consistent state at the
-    // first M1, and emit only non-secret structural markers (length,
-    // nonzero-byte count, policy flags, source tag). A malformed
-    // delivery returns an explicit IOReturn error so a future change to
-    // the carrier caller cannot silently turn a rejected PMK into
-    // kIOReturnSuccess. Per the Apple reference contract the PMK byte
-    // store must be present in ic_psk before the first 4-way M1 is
-    // consumed, regardless of whether the install arrived before or
-    // after setWCL_ASSOCIATE.
+    // Shared local PMK ingestion for CIPHER_KEY and any retained private/ABI
+    // setCUR_PMK caller: validate IEEE80211_PMK_LEN, copy the 32-byte PMK
+    // into ic->ic_psk, set IEEE80211_F_PSK, refresh WPA/RSN PSK auth state
+    // through ieee80211_ioctl_setwpaparms, and emit only non-secret
+    // structural markers. This helper is not evidence that the current 25C56
+    // public CUR_PMK wrapper performs a PMK install.
     struct ieee80211com *ic = fHalService
         ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
@@ -5447,10 +5423,11 @@ setWCL_REASSOC(apple80211_reassoc *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
 
-    // A reassociation start invalidates an EXTERNALLY delivered PMK:
+    // A reassociation start invalidates an externally delivered PMK:
     // the host supplicant must re-install a fresh PMK through
-    // CIPHER_KEY(PMK), CIPHER_KEY(MSK), or CUR_PMK on the
-    // reassociated network. A locally owned PSK PMK, however, must
+    // CIPHER_KEY(PMK), CIPHER_KEY(MSK), PLTI DeliverPMK, or a retained
+    // private/ABI CUR_PMK path on the reassociated network. A locally owned
+    // PSK PMK, however, must
     // SURVIVE this edge: this producer always reassociates to the
     // CURRENT BSS (ieee80211_send_mgmt(ic->ic_bss, REASSOC_REQ)
     // below), a PSK PMK is a pure function of passphrase+SSID and
