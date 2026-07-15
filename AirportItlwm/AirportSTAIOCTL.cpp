@@ -864,8 +864,11 @@ setBTCOEX_CONFIG(OSObject *object, struct apple80211_btc_config_data *data)
 {
     if (!data)
         return kIOReturnError;
-    memcpy(&btcConfig, data, sizeof(struct apple80211_btc_config_data));
-    return kIOReturnSuccess;
+
+    (void)object;
+
+    // Current 25C56 public wrapper is an unread fixed nonzero status stub.
+    return static_cast<IOReturn>(0xe082280e);
 }
 
 IOReturn AirportItlwm::
