@@ -1776,6 +1776,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_STATUS_DEV_NAME:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Match it before the generic carrier-null fallback;
+             * no STATUS_DEV_NAME carrier access is needed for that leaf.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_RATE:
             if (cmd == SIOCGA80211)
                 return getRATE((apple80211_rate_data *)req->req_data);
