@@ -1748,6 +1748,15 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCGA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_TX_ANTENNA:
+            /*
+             * The current Skywalk public GET wrapper is an unread fixed
+             * 0xe082280e leaf. Keep the separate legacy V1 antenna route
+             * outside this Tahoe-only public dispatch boundary.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
 #endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
