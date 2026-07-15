@@ -490,7 +490,12 @@ getAWDL_SYNC_PARAMS(OSObject *object, struct apple80211_awdl_sync_params *data)
 IOReturn AirportItlwm::
 setAWDL_SYNC_PARAMS(OSObject *object, struct apple80211_awdl_sync_params *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. This active
+    // legacy shim has no implementation of that conditional path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::
