@@ -3568,18 +3568,14 @@ getPRIVATE_MAC(apple80211_private_mac_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getTHERMAL_INDEX(apple80211_thermal_index_t *data)
 {
-    // AppleBCMWLANCore::getTHERMAL_INDEX is a plain core-state carrier getter:
-    // it writes a 32-bit scalar at caller offset +4 from core-state base +0x0.
-    // This port has no thermal owner that can accept a setter request, so retain
-    // the established zero-initialized public carrier without retaining a value
-    // from a request that was rejected locally.
+    // Tahoe writes caller +4 from its thermal Core state. This port has neither
+    // that state lifecycle nor the `tvpm` producer path, so do not report a
+    // zero success carrier for a valid request.
     if (data == nullptr)
         return kIOReturnBadArgument;
 
-    memset(data, 0, sizeof(*data));
-    data->version = APPLE80211_VERSION;
-    data->thermal_index = 0;
-    return kIOReturnSuccess;
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

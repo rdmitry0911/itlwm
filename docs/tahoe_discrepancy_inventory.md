@@ -388,20 +388,21 @@ than accepting the inverted invalid range and caching a false success.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: thermal / power-budget carrier getters`:
-  `getTHERMAL_INDEX` and `getPOWER_BUDGET` no longer belong in the generic
-  unsupported bucket. The Apple vendor producers are direct core-state scalar
-  carriers that write a 32-bit value at caller offset `+4`, sourced from
-  offsets `+0x0` and `+0x4` inside the core-state block.
+  the Apple vendor getters are direct Core-state scalar reads to caller `+4`,
+  sourced from `+0x0` and `+0x4` inside the state block. That reference ABI
+  recovery does not make `getTHERMAL_INDEX` a local producer: without the
+  matching `tvpm` lifecycle it is now explicitly fail-closed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
-- `Q13 correction: THERMAL_INDEX rejected-setter state`:
+- `Q13 correction: THERMAL_INDEX getter no-producer quarantine`:
   `setTHERMAL_INDEX` is a feature-gated `tvpm` transport operation, not a
-  cache-only setter. Tahoe commits its core scalar only after the transport
-  result permits it. The Intel port has no matching owner, so its fixed-fail
-  boundary no longer consumes a rejected carrier or makes it visible through
-  `getTHERMAL_INDEX`; the getter's zero is a local baseline, not a claim of
-  dynamic Tahoe thermal-state parity.
-  See [CR-479-thermal-index-rejected-state-20260714.md](reference/CR-479-thermal-index-rejected-state-20260714.md).
+  cache-only setter, and the recovered getter reads the resulting Core scalar
+  at caller `+4` without initializing `version`. The Intel port has no
+  matching owner, transport, or Core-state lifecycle, so its local null guard
+  remains only a safety boundary and every non-null `getTHERMAL_INDEX` request
+  now fails closed without output mutation. This is not Apple null-input,
+  valid-input, full-carrier, version, or Core-state parity.
+  See [CR-491-thermal-index-no-producer-quarantine-20260715.md](reference/CR-491-thermal-index-no-producer-quarantine-20260715.md).
 
 - `Q13 correction: PRIVATE_MAC getter no-producer quarantine`:
   `setPRIVATE_MAC` and `getPRIVATE_MAC` are BGScanAdapter-backed control and

@@ -250,7 +250,8 @@ public:
     // producer contract. Keep it classified as internal-only instead of open
     // Q13 debt.
     virtual IOReturn getTRAP_INFO(apple80211_trap_info_data *) override;
-    // [500]
+    // [500] — Tahoe reads Core thermal state populated through a `tvpm`
+    // lifecycle. Keep this slot fail-closed until that producer exists here.
     virtual IOReturn getTHERMAL_INDEX(apple80211_thermal_index_t *) override;
     // [501] — Tahoe public contract is `NULL -> 0xe00002c2`, else one dword
     // carrier at +0x4.

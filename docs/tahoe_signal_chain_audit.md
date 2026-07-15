@@ -1015,10 +1015,11 @@ That is enough to make one narrow Q13 correction without guessing:
 - implement `getHW_ADDR` as `version=1` plus the controller hardware address
 - remove generic `kIOReturnUnsupported` from slot `[511]`
 
-This batch does **not** generalize to nearby slots like
-`getTHERMAL_INDEX`, `getPOWER_BUDGET`, or `getOFFLOAD_TCPKA_ENABLE`.
-Those still depend on unrecovered core-state/config-manager carriers and remain
-open in the discrepancy inventory.
+At the time of this historical batch, nearby slots such as
+`getTHERMAL_INDEX`, `getPOWER_BUDGET`, and `getOFFLOAD_TCPKA_ENABLE` remained
+open. Subsequent reference recovery found the THERMAL_INDEX Core read, but its
+absence of a local state lifecycle now requires the separate no-producer
+quarantine recorded below.
 
 ## Q13 First Confirmed Apple-Unsupported Getter Batch
 
@@ -1518,30 +1519,26 @@ For HT, the currently recovered evidence is still only on the family-side
 `IO80211PeerManager::getHtCapabilityIE(...)` consumer/helper path, not a clean
 Apple vendor-side producer body.
 
-## Q13 Confirmed Producer Mini-Batch: `getTHERMAL_INDEX` / `getPOWER_BUDGET`
+## Q13 Reference ABI Recovery: `getTHERMAL_INDEX` / `getPOWER_BUDGET`
 
-`getTHERMAL_INDEX` and `getPOWER_BUDGET` are the next Tahoe getters with
-recoverable Apple producer bodies that do not depend on the unresolved hidden
-object path.
+This section preserves reference-side getter observations; it does not by
+itself establish a locally owned producer. In particular, the current local
+THERMAL_INDEX disposition is superseded by the no-producer quarantine below.
 
-Recovered Apple producer contract:
+Recovered Apple getter observations:
 
-- `AppleBCMWLANCore::getTHERMAL_INDEX(apple80211_thermal_index_t*)`
-  writes a 32-bit scalar at caller offset `+4` from core state
-  `(Core + 0x48) + 0x0`
-- `AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)`
-  writes a 32-bit scalar at caller offset `+4` from core state
-  `(Core + 0x48) + 0x4`
-- both producers return success directly; there is no hidden helper, WCL
-  bulletin, or additional transport layer in between
+- `AppleBCMWLANCore::getTHERMAL_INDEX(apple80211_thermal_index_t*)` reads a
+  32-bit scalar from `(Core + 0x48) + 0x0`, writes caller `+4`, and returns
+  zero. The observed body does not initialize `version` or test the carrier
+  pointer.
+- `AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)` reads a
+  32-bit scalar from `(Core + 0x48) + 0x4` into caller `+4`.
 
-That gives a sufficiently strong ABI recovery for the getter side:
+The recovered THERMAL_INDEX body establishes only the observed Core-to-caller
+scalar transfer, not complete carrier initialization, null behavior, or a
+local lifecycle.
 
-- both payloads are 8-byte carriers
-- offset `+0` is the standard `version`
-- offset `+4` is the 32-bit payload value
-
-This batch still does **not** justify lifting the setter side:
+The setter-side evidence remains relevant context:
 
 - `setTHERMAL_INDEX(...)` is not a cache-only carrier: it feature-gates a
   `tvpm` firmware transaction, validates the requested index, and updates
@@ -1565,11 +1562,22 @@ The recovered Tahoe 25C56 setter is instead a feature-gated firmware path:
 - Core writes state `(Core + 0x48) + 0x0` only when the transport result is
   zero or special status `0xe3ff8117`, then returns that raw transport status.
 
-The Intel port has no `tvpm` owner or matching transport. It now preserves the
-local fixed-fail safety boundary without reading the rejected carrier and
-removes the rejected-request cache. `getTHERMAL_INDEX` continues to provide
-its established zero-initialized ABI carrier, but that zero is only the local
-baseline; it is not a claim of dynamic Tahoe thermal-state parity.
+The Intel port has no `tvpm` owner or matching transport. It preserves the
+local fixed-fail setter safety boundary without reading the rejected carrier
+and removes the rejected-request cache.
+
+### 2026-07-15 correction: `THERMAL_INDEX` getter is a no-producer quarantine
+
+The fresh 25C56 getter is a live Core-state read, not an ownerless zero
+contract: Infra `0x1000174f4` dispatches through `+0x2e8` to Core
+`0x100106eda`, which reads `(Core + 0x48) + 0x0` and writes only caller `+0x4`.
+It does not initialize `version` or check the caller pointer.
+
+AirportItlwm has no corresponding state lifecycle or `tvpm` writer. Slot
+`[500]` therefore retains its local `kIOReturnBadArgument` null-safety guard
+and returns `kIOReturnUnsupported` for every non-null carrier before output
+mutation. This is a no-producer quarantine, not Apple null-input,
+valid-input, full-carrier, version, Core-state, or runtime-selector parity.
 
 ## Q13 Confirmed Producer Mini-Batch: `getGUARD_INTERVAL`
 
