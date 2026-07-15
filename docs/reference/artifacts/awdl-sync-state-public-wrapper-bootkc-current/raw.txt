@@ -1,0 +1,91 @@
+# 25C56 current BootKC AWDL sync-state recovery
+#
+# Source (read-only): /home/dima/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery method: parse the outer 64-bit Mach-O LC_UUID, then the embedded
+# Wi-Fi MH_KEXT LC_SYMTAB directly and disassemble exact bounded windows.
+#
+# Container identity
+outer_file_bytes=66437120
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+outer_lc_uuid=F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5
+#
+# Embedded Wi-Fi MH_KEXT identity and validated file mapping
+mh_kext_fileoff=0x1fe3000
+mh_kext_filetype=11
+mh_kext_lc_uuid=8FB4B7F0-D656-3539-B8D6-C1327A50377C
+mh_kext_text_vmaddr=0xffffff80020e3000
+mh_kext_text_fileoff=0x1fe3000
+lc_symtab_absolute_symoff=0x3498030
+lc_symtab_nsyms=19760
+lc_symtab_absolute_stroff=0x367e130
+lc_symtab_strsize=0x847d88
+#
+# Exact N_SECT|N_EXT (n_type=0x0f), section 1 public wrapper. nlist 7607
+# begins at 0xffffff80021c45eb; next text symbol nlist 8192 begins at
+# 0xffffff80021c4640, so this selected body is 0x55 bytes.
+symbol=__Z28apple80211setAWDL_SYNC_STATEP23IO80211SkywalkInterfaceP26apple80211_awdl_sync_state
+symbol_nlist=7607
+symbol_n_type=0x0f
+symbol_section=1
+symbol_vmaddr=0xffffff80021c45eb
+next_symbol_nlist=8192
+next_symbol=__Z42apple80211setAWDL_ELECTION_RSSI_THRESHOLDSP23IO80211SkywalkInterfaceP40apple80211_awdl_election_rssi_thresholds
+next_symbol_vmaddr=0xffffff80021c4640
+symbol_fileoff=0x20c45eb
+validated_mapping=0x1fe3000+(0xffffff80021c45eb-0xffffff80020e3000)=0x20c45eb
+selector=134
+raw=55 48 89 e5 41 56 53 48 89 f3 49 89 fe 48 8b 07 be 86 00 00 00 ff 90 c8 0c 00 00 85 c0 74 05 5b 41 5e 5d c3 48 8d 35 52 c9 21 00 4c 89 f7 e8 e2 ab 83 fe 48 85 c0 74 16 49 8b 06 48 8b 80 e0 10 00 00 4c 89 f7 48 89 de 5b 41 5e 5d ff e0 b8 0e 28 82 e0 eb ca
+#
+# Exact decoded public-wrapper control shape:
+#   - preserves the public carrier in rsi;
+#   - calls the first owner vtable gate at +0xcc8 with rsi=0x86 (selector 134);
+#   - returns that gate's nonzero status unchanged;
+#   - uses the recovered IO80211AWDLProtocol metaclass reference at
+#     0xffffff80023e0f68 for a safe-meta-cast-style owner test;
+#   - tail-dispatches the original (owner, carrier) through dynamic vtable
+#     +0x10e0 only after that test succeeds; and
+#   - returns 0xe082280e if that owner test fails.
+#
+# The public wrapper itself does not dereference the carrier. A separate static
+# selector-named handler has a distinct internal admission and direct terminal:
+internal_selector=__ZL18setAWDL_SYNC_STATEP17IO80211ControllerP23IO80211SkywalkInterfaceP20IO80211APIUserClientP13apple80211req
+internal_selector_nlist=629
+internal_selector_n_type=0x1e
+internal_selector_section=1
+internal_selector_vmaddr=0xffffff80021e4922
+internal_selector_next_vmaddr=0xffffff80021e4984
+internal_selector_fileoff=0x20e4922
+internal_selector_raw=554889e55350b81600000083791818754a488b59204885db7441b82d0000004885f67437488b8e20010000488b79284885ff7427488d3503cb1f00e89ea881fe4885c074114889c74889de4883c4085b5de9066bf9ffb8130000004883c4085b5dc3
+internal_selector_admission=req+0x18 must equal 0x18; req+0x20 must be non-null before AWDLPeerManager safe-meta-cast-style cast
+internal_selector_metaclass=0xffffff80023e1460=IO80211AWDLPeerManager::gMetaClass
+internal_selector_direct_terminal=__ZN22IO80211AWDLPeerManager16setAwdlSyncStateEP26apple80211_awdl_sync_state
+#
+# The directly reached named terminal is bounded by its next external text
+# symbol. Its entry has a non-null guard, writes carrier first dword=1, reads
+# carrier+0x4, branches on manager flags and state, calls owner operations,
+# and updates manager state. The bounded observations do not establish full
+# terminal policy, ABI, return status, or carrier semantics.
+terminal_symbol=__ZN22IO80211AWDLPeerManager16setAwdlSyncStateEP26apple80211_awdl_sync_state
+terminal_nlist=13788
+terminal_n_type=0x0f
+terminal_section=1
+terminal_vmaddr=0xffffff800217b47e
+terminal_fileoff=0x207b47e
+terminal_next_nlist=13933
+terminal_next_symbol=__ZN22IO80211AWDLPeerManager19setAwdlPresenceModeEP29apple80211_awdl_presence_mode
+terminal_next_vmaddr=0xffffff800217b84c
+terminal_next_fileoff=0x207b84c
+terminal_bounded_range=0x3ce
+#
+# The checked-in local packed carrier has 0x08 bytes: uint32_t version at
+# +0x0 and uint32_t state at +0x4. The internal reference admission requires 0x18. That is a recorded size divergence, not a basis for changing the
+# local carrier or claiming layout/validation parity. The local fail-close
+# boundary deliberately does not read or forward it.
+#
+# Thus this capture proves public selector gating, a distinct internal admission, and a bounded active terminal entry; it does not prove that the public dynamic +0x10e0 tail resolves to that terminal.
+# It must not be generalized into a claim that the reference selector never validates the carrier. 0xe082280e is a private WLAN-family status and must not be relabelled kIOReturnUnsupported.
+#
+# Reproducible public-wrapper disassembly window:
+# objdump -D -b binary -mi386:x86-64 --adjust-vma=0xffffff8000100000 \
+#   --start-address=0xffffff80021c45eb --stop-address=0xffffff80021c4640 \
+#   "$K"
