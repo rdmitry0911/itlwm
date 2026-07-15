@@ -1766,6 +1766,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnUnsupported;
 #endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_DISASSOCIATE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Preserve the separate disassociation SET producer below.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_RATE:
