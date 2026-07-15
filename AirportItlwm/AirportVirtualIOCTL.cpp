@@ -517,7 +517,12 @@ getAWDL_AF_TX_MODE(OSObject *object, struct apple80211_awdl_af_tx_mode *data)
 IOReturn AirportItlwm::
 setAWDL_AF_TX_MODE(OSObject *object, struct apple80211_awdl_af_tx_mode *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. This active
+    // legacy shim has no implementation of that conditional path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

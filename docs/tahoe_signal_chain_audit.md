@@ -6249,3 +6249,22 @@ absence of IOC 116 remain intact. Tahoe does not compile
 boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
 sync-policy, firmware, CCA, event, or traffic parity claim. See
 docs/reference/CR-508-legacy-awdl-sync-params-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL AF-TX-mode blind-success shim
+
+The historical virtual-interface IOC 208 SET shim previously returned success
+while ignoring its typed AF-TX-mode carrier. Direct current 25C56 nested-KEXT
+recovery shows a selector gate, nonzero-status propagation, AWDL-protocol
+owner test, and only then a tail dispatch; a failed owner test returns raw
+`0xe082280e`. A separate internal handler validates the `0x08` and non-null
+request carrier, then performs an AWDLPeerManager metaclass cast/call, while
+the local packed carrier remains `0x0c`. That is a recorded size divergence,
+not a basis for a guessed header change or carrier-layout claim.
+
+The active legacy shim now returns `kIOReturnUnsupported` without reading
+either argument. Its paired GET version result, typed route, and Tahoe's
+absence of IOC 208 remain intact. Tahoe does not compile
+`AirportVirtualIOCTL.cpp`. This is a historical source-surface fail-closed
+boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
+AF-TX-policy, firmware, CCA, event, or traffic parity claim. See
+docs/reference/CR-509-legacy-awdl-af-tx-mode-blind-success-quarantine-20260715.md.
