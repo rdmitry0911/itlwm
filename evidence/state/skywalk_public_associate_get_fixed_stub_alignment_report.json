@@ -1,0 +1,41 @@
+{
+  "checks": {
+    "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "bsd_ingress_terminalizes_exact_nonunsupported_status": true,
+    "hidden_association_carrier_path_remains_outside_this_layer": true,
+    "legacy_virtual_and_card_boundaries_remain_separate": true,
+    "normal_nonnull_tahoe_public_get_returns_exact_unread_status": true,
+    "note_records_scope_and_nonclaims": true,
+    "null_fallback_remains_outside_this_layer": true,
+    "reference_raw_has_exact_unread_public_get_fixed_stub": true,
+    "reference_raw_manifest_matches": true,
+    "selector_and_carrier_abi_remain_explicit": true,
+    "set_and_pre26_routes_remain_separate": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "next_symbol": "0xffffff80021be916",
+    "nlist_index": 7182,
+    "public_wrapper": "0xffffff80021be90b"
+  },
+  "schema": "itlwm-skywalk-public-associate-get-fixed-stub-alignment-v1",
+  "scope": {
+    "association_set_or_hidden_path_modified": false,
+    "card_specific_route_modified": false,
+    "carrier_access": false,
+    "deployment": false,
+    "legacy_v1_modified": false,
+    "normal_nonnull_public_bsd_get_only": true,
+    "outer_or_inner_null_fallback_modified": false,
+    "pre26_route_modified": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "traffic": false,
+    "virtual_ioctl_modified": false
+  },
+  "source_base_revision": "406b4f03d8a91e36d892af66d017635aa5f558cc"
+}
