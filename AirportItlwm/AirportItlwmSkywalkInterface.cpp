@@ -1687,6 +1687,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     (AirportItlwmAPSTAHostApModeNetworkDataLayout *)req->req_data)
                 : kIOReturnUnsupported;
         case APPLE80211_IOC_AP_MODE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Preserve the separate AP-mode SET failure producer.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setAP_MODE((apple80211_apmode_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_POWER:
