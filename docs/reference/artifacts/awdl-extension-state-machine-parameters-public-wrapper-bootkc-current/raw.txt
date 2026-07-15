@@ -1,0 +1,68 @@
+# 25C56 current BootKC AWDL extension-state-machine-parameters public-wrapper recovery
+#
+# Source (read-only): /home/dima/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery method: parse the outer 64-bit Mach-O LC_UUID, then the embedded
+# Wi-Fi MH_KEXT LC_SYMTAB directly and disassemble the exact symbol window.
+#
+# Container identity
+outer_file_bytes=66437120
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+outer_lc_uuid=F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5
+#
+# Embedded Wi-Fi MH_KEXT identity and validated file mapping
+mh_kext_fileoff=0x1fe3000
+mh_kext_filetype=11
+mh_kext_lc_uuid=8FB4B7F0-D656-3539-B8D6-C1327A50377C
+mh_kext_text_vmaddr=0xffffff80020e3000
+mh_kext_text_fileoff=0x1fe3000
+lc_symtab_absolute_symoff=0x3498030
+lc_symtab_nsyms=19760
+lc_symtab_absolute_stroff=0x367e130
+lc_symtab_strsize=0x847d88
+#
+# Exact N_SECT|N_EXT (n_type=0x0f), section 1 public wrapper. nlist 8248
+# begins at 0xffffff80021c437f; next text symbol nlist 7871 begins at
+# 0xffffff80021c43d4, so this selected body is 0x55 bytes.
+symbol=__Z52apple80211setAWDL_EXTENSION_STATE_MACHINE_PARAMETERSP23IO80211SkywalkInterfaceP49apple80211_awdl_extension_state_machine_parameter
+symbol_nlist=8248
+symbol_n_type=0x0f
+symbol_section=1
+symbol_vmaddr=0xffffff80021c437f
+next_symbol_nlist=7871
+next_symbol=__Z32apple80211setAWDL_SERVICE_PARAMSP23IO80211SkywalkInterfacePv
+next_symbol_vmaddr=0xffffff80021c43d4
+symbol_fileoff=0x20c437f
+validated_mapping=0x1fe3000+(0xffffff80021c437f-0xffffff80020e3000)=0x20c437f
+selector=118
+raw=55 48 89 e5 41 56 53 48 89 f3 49 89 fe 48 8b 07 be 76 00 00 00 ff 90 c8 0c 00 00 85 c0 74 05 5b 41 5e 5d c3 48 8d 35 be cb 21 00 4c 89 f7 e8 4e ae 83 fe 48 85 c0 74 16 49 8b 06 48 8b 80 b0 10 00 00 4c 89 f7 48 89 de 5b 41 5e 5d ff e0 b8 0e 28 82 e0 eb ca
+#
+# Exact decoded public-wrapper control shape:
+#   - preserves the public carrier in rsi;
+#   - calls the first owner vtable gate at +0xcc8 with rsi=0x76 (selector 118);
+#   - returns that gate's nonzero status unchanged;
+#   - uses the recovered IO80211AWDLProtocol metaclass reference at
+#     0xffffff80023e0f68 for a safe-meta-cast-style owner test;
+#   - tail-dispatches the original (owner, carrier) through vtable +0x10b0
+#     only after that test succeeds; and
+#   - returns 0xe082280e if that owner test fails.
+#
+# The public wrapper itself does not dereference or validate the carrier.
+# That fact is deliberately limited to this wrapper. A separate selector-named
+# internal handler has this admission shape:
+internal_selector_symbol=__ZL52setAWDL_EXTENSION_STATE_MACHINE_PARAMETERSP17IO80211ControllerP23IO80211SkywalkInterfaceP20IO80211APIUserClientP13apple80211req
+internal_selector_vmaddr=0xffffff80021e4400
+internal_selector_next_vmaddr=0xffffff80021e4462
+internal_selector_metaclass=0xffffff80023e1460=IO80211AWDLPeerManager::gMetaClass
+internal_selector_admission=req+0x18 must equal 0x14; req+0x20 must be non-null before AWDLPeerManager safe-meta-cast-style cast/call
+#
+# Thus this capture proves public selector gating and conditional dispatch,
+# not the terminal method, carrier layout, null-input behavior, valid-input
+# return status, extension-state-machine policy, state transition, event, or
+# firmware semantics. It also must not be generalized into a claim that the
+# reference selector never validates the carrier. 0xe082280e is a private
+# WLAN-family status and must not be relabelled kIOReturnUnsupported.
+#
+# Reproducible public-wrapper disassembly window:
+# objdump -D -b binary -mi386:x86-64 --adjust-vma=0xffffff8000100000 \
+#   --start-address=0xffffff80021c437f --stop-address=0xffffff80021c43d4 \
+#   "$K"

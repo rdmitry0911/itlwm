@@ -6209,3 +6209,23 @@ source-surface fail-closed boundary, not a Tahoe runtime, Apple
 terminal-status, carrier-layout, channel policy, firmware, CCA, event, or
 traffic parity claim. See
 docs/reference/CR-506-legacy-awdl-sync-channel-sequence-blind-success-quarantine-20260715.md.
+
+## 2026-07-15 correction: legacy AWDL extension-state-machine blind-success shim
+
+The historical virtual-interface IOC 118 SET shim previously returned success
+while ignoring its typed extension-state-machine carrier. Direct current 25C56
+nested-KEXT recovery shows a selector gate, nonzero-status propagation,
+AWDL-protocol owner test, and only then a tail dispatch; a failed owner test
+returns raw `0xe082280e`. A separate internal handler checks the request's
+`0x14` carrier length and non-null carrier through an AWDLPeerManager
+metaclass, so the public wrapper's lack of a dereference is not a global
+no-validation claim.
+
+The active legacy shim now returns `kIOReturnUnsupported` without reading
+either argument. Its paired GET version result, typed route, and Tahoe's
+absence of IOC 118 remain intact. Tahoe does not compile
+`AirportVirtualIOCTL.cpp`. This is a historical source-surface fail-closed
+boundary, not a Tahoe runtime, Apple terminal-status, carrier-layout,
+extension-state-machine policy, firmware, CCA, event, or traffic parity
+claim. See
+docs/reference/CR-507-legacy-awdl-extension-state-machine-blind-success-quarantine-20260715.md.

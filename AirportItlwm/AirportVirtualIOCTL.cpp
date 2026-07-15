@@ -456,7 +456,12 @@ getAWDL_EXTENSION_STATE_MACHINE_PARAMETERS(OSObject *object, struct apple80211_a
 IOReturn AirportItlwm::
 setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS(OSObject *object, struct apple80211_awdl_extension_state_machine_parameter *data)
 {
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector. This active
+    // legacy shim has no implementation of that conditional path.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

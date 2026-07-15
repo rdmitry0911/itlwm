@@ -1,0 +1,31 @@
+{
+  "checks": {
+    "note_records_scope_reference_and_caveat": true,
+    "paired_getter_and_tahoe_absence_remain": true,
+    "reference_raw_manifest_matches": true,
+    "reference_raw_records_conditional_wrapper_and_admission_caveat": true,
+    "selector_carrier_header_and_legacy_route_remain": true,
+    "setter_is_unread_and_fails_closed": true
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "gate_vtable_offset": "0xcc8",
+    "internal_admission": "0xffffff80021e4400:IO80211AWDLPeerManager::gMetaClass=0xffffff80023e1460:req+0x18=0x14:req+0x20_nonnull",
+    "next_symbol": "0xffffff80021c43d4",
+    "owner_mismatch_status": "0xe082280e",
+    "public_wrapper": "0xffffff80021c437f",
+    "selector": 118,
+    "tail_vtable_offset": "0x10b0"
+  },
+  "schema": "itlwm-legacy-awdl-extension-state-machine-blind-success-quarantine-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "83eac167d45bf9ae95747967eeb9196af9646ee7"
+}
