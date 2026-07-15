@@ -151,16 +151,12 @@ apple80211VirtualRequest(UInt request_type, int request_number, IO80211VirtualIn
 IOReturn AirportItlwm::
 setAWDL_PEER_TRAFFIC_REGISTRATION(OSObject *object, struct apple80211_awdl_peer_traffic_registration *data)
 {
-    if (!strncmp(data->name, "wifid-assisted-discovery", data->name_len)) {
-        if (data->active) {
-            
-        } else {
-            
-        }
-    } else if (!strncmp(data->name, "sidecar", data->name_len)) {
-        
-    }
-    return kIOReturnSuccess;
+    (void)object;
+    (void)data;
+
+    // Current 25C56 gates and owner-dispatches this selector; its separate
+    // internal path also admits a differently sized carrier.
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwm::

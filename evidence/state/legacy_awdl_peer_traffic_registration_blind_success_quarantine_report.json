@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "local_carrier_size_divergence_is_preserved": true,
+    "note_records_scope_reference_and_size_divergence": true,
+    "paired_getter_and_tahoe_absence_remain": true,
+    "reference_raw_manifest_matches": true,
+    "reference_raw_records_public_internal_terminal_and_size_caveat": true,
+    "selector_carrier_header_legacy_route_and_getter_remain": true,
+    "setter_is_unread_and_fails_closed": true
+  },
+  "local": {
+    "carrier_size_is_reference_parity": false,
+    "packed_x86_64_carrier_bytes": 172
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "internal_carrier_bytes": 184,
+    "internal_selector": "0xffffff80021e4f66",
+    "public_wrapper": "0xffffff80021c49f9",
+    "selector": 164,
+    "terminal": "0xffffff8002166c34"
+  },
+  "schema": "itlwm-legacy-awdl-peer-traffic-registration-blind-success-quarantine-v1",
+  "scope": {
+    "deployment": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "tahoe_source_modified_by_this_layer": false,
+    "traffic": false
+  },
+  "source_base_revision": "0ccc03c874dcbc4712e120ed9d47c9ad68f99b54"
+}
