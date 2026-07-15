@@ -1755,6 +1755,16 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setASSOCIATE((apple80211_assoc_data *)req->req_data)
                                         : kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_ASSOCIATE_RESULT:
+            /*
+             * The current public GET wrapper is an unread fixed 0xe082280e
+             * leaf. Keep the legacy association-result producer separate.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_DISASSOCIATE:
             return (cmd == SIOCSA80211) ? setDISASSOCIATE(req->req_data)
                                         : kIOReturnUnsupported;
