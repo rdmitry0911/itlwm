@@ -1017,9 +1017,9 @@ That is enough to make one narrow Q13 correction without guessing:
 
 At the time of this historical batch, nearby slots such as
 `getTHERMAL_INDEX`, `getPOWER_BUDGET`, and `getOFFLOAD_TCPKA_ENABLE` remained
-open. Subsequent reference recovery found the THERMAL_INDEX Core read, but its
-absence of a local state lifecycle now requires the separate no-producer
-quarantine recorded below.
+open. Subsequent reference recovery found live Core reads for both thermal and
+power budget; without their corresponding local `tvpm` state lifecycles,
+those getters now have separate no-producer quarantines recorded below.
 
 ## Q13 First Confirmed Apple-Unsupported Getter Batch
 
@@ -1522,8 +1522,9 @@ Apple vendor-side producer body.
 ## Q13 Reference ABI Recovery: `getTHERMAL_INDEX` / `getPOWER_BUDGET`
 
 This section preserves reference-side getter observations; it does not by
-itself establish a locally owned producer. In particular, the current local
-THERMAL_INDEX disposition is superseded by the no-producer quarantine below.
+itself establish a locally owned producer. The current local THERMAL_INDEX and
+POWER_BUDGET dispositions are separately superseded by the no-producer
+quarantines below.
 
 Recovered Apple getter observations:
 
@@ -1534,15 +1535,20 @@ Recovered Apple getter observations:
 - `AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)` reads a
   32-bit scalar from `(Core + 0x48) + 0x4` into caller `+4`.
 
-The recovered THERMAL_INDEX body establishes only the observed Core-to-caller
-scalar transfer, not complete carrier initialization, null behavior, or a
-local lifecycle.
+The recovered getter bodies establish only observed Core-to-caller scalar
+transfers, not complete carrier initialization, null behavior, or a local
+lifecycle. For POWER_BUDGET specifically, the observed Core body returns
+zero but does not initialize version or test the carrier pointer.
 
 The setter-side evidence remains relevant context:
 
 - `setTHERMAL_INDEX(...)` is not a cache-only carrier: it feature-gates a
   `tvpm` firmware transaction, validates the requested index, and updates
   core state only after its transport result permits that commit
+- `setPOWER_BUDGET(...)` is likewise a feature-gated `tvpm` firmware
+  transaction that can commit the power scalar only after its transport result
+  permits that commit; this observed path is not a claim that every Apple
+  writer has been recovered
 - `getOFFLOAD_TCPKA_ENABLE(...)` remains unresolved because only the setter
   body is currently present in the vendor decompile
 
@@ -1578,6 +1584,20 @@ AirportItlwm has no corresponding state lifecycle or `tvpm` writer. Slot
 and returns `kIOReturnUnsupported` for every non-null carrier before output
 mutation. This is a no-producer quarantine, not Apple null-input,
 valid-input, full-carrier, version, Core-state, or runtime-selector parity.
+
+### 2026-07-15 correction: POWER_BUDGET getter is a no-producer quarantine
+
+The fresh 25C56 getter is a live Core-state read, not a default-only carrier:
+Infra 0x1000175d8 dispatches through +0x2f8 to Core 0x10010712c, which reads
+(Core + 0x48) + 0x4 and writes only caller +0x4. It does not initialize
+version or check the caller pointer.
+
+AirportItlwm has no matching state lifecycle or tvpm writer. Slot [503]
+therefore retains its local kIOReturnBadArgument null-safety guard and returns
+kIOReturnUnsupported for every non-null carrier before output mutation. Its
+default-only cachedPowerBudget state is removed. This is a no-producer
+quarantine, not Apple null-input, valid-input, full-carrier, version,
+Core-state, setter, or runtime-selector parity.
 
 ## Q13 Confirmed Producer Mini-Batch: `getGUARD_INTERVAL`
 

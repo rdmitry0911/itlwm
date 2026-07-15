@@ -1,0 +1,56 @@
+capture_scope: selected static 25C56 x86_64 disassembly lines for POWER_BUDGET getter and recovered setter context
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: A97E73DB-90B4-3827-B166-4AECB9972AD5 (arm64e) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getPOWER_BUDGET
+Address: 0x00000001000175d8
+Summary: AppleBCMWLANInfraProtocol::getPOWER_BUDGET(apple80211_power_budget_t*)
+(lldb) image lookup -n AppleBCMWLANCore::getPOWER_BUDGET
+Address: 0x000000010010712c
+Summary: AppleBCMWLANCore::getPOWER_BUDGET(apple80211_power_budget_t*)
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::setPOWER_BUDGET
+Address: 0x00000001000187f8
+Summary: AppleBCMWLANInfraProtocol::setPOWER_BUDGET(apple80211_power_budget_t*)
+(lldb) image lookup -n AppleBCMWLANCore::setPOWER_BUDGET
+Address: 0x0000000100120790
+Summary: AppleBCMWLANCore::setPOWER_BUDGET(apple80211_power_budget_t*)
+(lldb) disassemble -b -s 0x1000175d8 -e 0x1000175f4
+0x1000175d8: movq   0x88(%rdi), %rax
+0x1000175e3: movq   (%rax), %rdi
+0x1000175e6: movq   (%rdi), %rax
+0x1000175e9: movq   0x2f8(%rax), %rax
+0x1000175f1: jmpq   *%rax
+(lldb) disassemble -b -s 0x10010712c -e 0x100107140
+0x10010712c: pushq  %rbp
+0x100107130: movq   0x48(%rdi), %rax
+0x100107134: movl   0x4(%rax), %eax
+0x100107137: movl   %eax, 0x4(%rsi)
+0x10010713a: xorl   %eax, %eax
+0x10010713d: retq
+(lldb) disassemble -b -s 0x1000187f8 -e 0x100018814
+0x1000187f8: movq   0x88(%rdi), %rax
+0x100018803: movq   (%rax), %rdi
+0x100018806: movq   (%rdi), %rax
+0x100018809: movq   0x4f8(%rax), %rax
+0x100018811: jmpq   *%rax
+(lldb) disassemble -b -s 0x100120790 -e 0x10012096b
+0x1001207e5: movl   $0x3b, %esi
+0x1001207ea: callq  0x1000c846e ; AppleBCMWLANCore::featureFlagIsBitSet(int) const
+0x1001207f3: movl   0x4(%r15), %eax
+0x1001207fb: addl   $-0x65, %eax
+0x1001207fe: cmpl   $-0x65, %eax
+0x100120813: movl   $0xe00002bc, %r14d
+0x10012089c: movl   $0xc, %edi
+0x1001208a1: callq  0x100226c46 ; symbol stub for: IOMallocZeroData
+0x1001208bc: movl   (%r15), %eax
+0x1001208bf: movl   %eax, 0x8(%r12)
+0x1001208dc: leaq   0x166b28(%rip), %rsi ; "tvpm"
+0x1001208e8: callq  0x10017b6e6 ; AppleBCMWLANCommander::runIOVarSet(char const*, CommandTxPayload const&, CommandRxPayload*, CommandBusPreference)
+0x1001208f0: cmpl   $0xe3ff8117, %eax
+0x1001208f7: testl  %r14d, %r14d
+0x1001208fc: movl   (%r15), %eax
+0x1001208ff: movq   0x48(%rbx), %rcx
+0x100120903: movl   %eax, 0x4(%rcx)
+0x10012095b: movl   %r14d, %eax
+0x10012096a: retq

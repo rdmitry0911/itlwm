@@ -259,7 +259,8 @@ public:
     // [502] — Tahoe public contract is `NULL -> 0xe00002c2`, else writes
     // version=1 at +0x4.
     virtual IOReturn getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *) override;
-    // [503]
+    // [503] — Tahoe reads Core power-budget state populated through a `tvpm`
+    // lifecycle. Keep this slot fail-closed until that producer exists here.
     virtual IOReturn getPOWER_BUDGET(apple80211_power_budget_t *) override;
     // [504]
     virtual IOReturn getOFFLOAD_TCPKA_ENABLE(apple80211_offload_tcpka_enable_t *) override;
@@ -763,7 +764,6 @@ private:
     IOTimerEventSource *scanSource;
     bool fScanResultWrapping;
     uint32_t cachedPowersaveLevel;
-    uint32_t cachedPowerBudget;
     uint32_t cachedDynsarHeader0[4];
     uint32_t cachedDynsarHeader1[4];
     uint8_t cachedDynsarPayload[4][0x2d00];

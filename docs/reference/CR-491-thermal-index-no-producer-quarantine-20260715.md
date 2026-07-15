@@ -7,8 +7,10 @@ Date: 2026-07-15
 This correction covers only Tahoe V2/Skywalk slot `[500]`,
 `getTHERMAL_INDEX`. It removes a local zero/version success carrier that had
 no matching state lifecycle or writer. It does not alter the carrier layout,
-the virtual setter, POWER_BUDGET, the ordinary GET dispatcher route, firmware
-commands, scan/radio state, association, or traffic.
+the virtual setter, the ordinary GET dispatcher route, firmware commands,
+scan/radio state, association, or traffic. At this record's creation it did
+not alter POWER_BUDGET; that separate getter is now covered by
+[CR-492-power-budget-no-producer-quarantine-20260715.md](CR-492-power-budget-no-producer-quarantine-20260715.md).
 
 ## Recovered 25C56 reference
 

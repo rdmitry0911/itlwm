@@ -1071,7 +1071,7 @@ struct apple80211_power_budget_t
     u_int32_t    power_budget;
 };
 static_assert(sizeof(apple80211_power_budget_t) == 0x08,
-              "apple80211_power_budget_t must match Apple version + u32 carrier ABI");
+              "apple80211_power_budget_t must preserve the declared local 8-byte carrier layout");
 
 struct apple80211_mcs_data
 {

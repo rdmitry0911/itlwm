@@ -390,8 +390,9 @@ than accepting the inverted invalid range and caching a false success.
 - `Q13 mini-batch: thermal / power-budget carrier getters`:
   the Apple vendor getters are direct Core-state scalar reads to caller `+4`,
   sourced from `+0x0` and `+0x4` inside the state block. That reference ABI
-  recovery does not make `getTHERMAL_INDEX` a local producer: without the
-  matching `tvpm` lifecycle it is now explicitly fail-closed.
+  recovery does not make either `getTHERMAL_INDEX` or `getPOWER_BUDGET` a
+  local producer: without their matching `tvpm` lifecycles both are now
+  explicitly fail-closed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 correction: THERMAL_INDEX getter no-producer quarantine`:
@@ -403,6 +404,17 @@ than accepting the inverted invalid range and caching a false success.
   now fails closed without output mutation. This is not Apple null-input,
   valid-input, full-carrier, version, or Core-state parity.
   See [CR-491-thermal-index-no-producer-quarantine-20260715.md](reference/CR-491-thermal-index-no-producer-quarantine-20260715.md).
+
+- `Q13 correction: POWER_BUDGET getter no-producer quarantine`:
+  Tahoe reads its budget scalar from Core state at caller `+4`; the observed
+  getter neither checks the carrier nor initializes `version`. Its setter
+  context is a feature-gated `tvpm` transaction, while AirportItlwm has no
+  matching state lifecycle, transport, or writer. The local null guard remains
+  only a safety boundary and each non-null getter request now fails closed
+  without output mutation or a default-only cache. This is not Apple
+  null-input, valid-input, full-carrier, version, Core-state, setter, or
+  runtime-selector parity.
+  See [CR-492-power-budget-no-producer-quarantine-20260715.md](reference/CR-492-power-budget-no-producer-quarantine-20260715.md).
 
 - `Q13 correction: PRIVATE_MAC getter no-producer quarantine`:
   `setPRIVATE_MAC` and `getPRIVATE_MAC` are BGScanAdapter-backed control and

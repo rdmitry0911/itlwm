@@ -2201,7 +2201,6 @@ init()
     fHalService = NULL;
     scanSource = NULL;
     cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    cachedPowerBudget = 0;
     memset(cachedDynsarHeader0, 0, sizeof(cachedDynsarHeader0));
     memset(cachedDynsarHeader1, 0, sizeof(cachedDynsarHeader1));
     memset(cachedDynsarPayload, 0, sizeof(cachedDynsarPayload));
@@ -2568,7 +2567,6 @@ init(IOService *provider)
     this->fHalService = instance->fHalService;
     this->scanSource = instance->scanSource;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
-    this->cachedPowerBudget = 0;
     memset(this->cachedDynsarHeader0, 0, sizeof(this->cachedDynsarHeader0));
     memset(this->cachedDynsarHeader1, 0, sizeof(this->cachedDynsarHeader1));
     memset(this->cachedDynsarPayload, 0, sizeof(this->cachedDynsarPayload));
@@ -3581,18 +3579,14 @@ getTHERMAL_INDEX(apple80211_thermal_index_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 getPOWER_BUDGET(apple80211_power_budget_t *data)
 {
-    // AppleBCMWLANCore::getPOWER_BUDGET is the neighboring scalar carrier:
-    // it writes a 32-bit value at caller offset +4 from core-state base +0x4.
-    // The important Tahoe mismatch was architectural reachability/ABI, not a
-    // complex helper path, so slot [503] must return the same 8-byte carrier
-    // shape instead of generic unsupported.
+    // Tahoe reads caller +4 from Core state populated through a `tvpm`
+    // lifecycle. This port has neither that state lifecycle nor a producer,
+    // so do not publish a default-only cache as a successful carrier.
     if (data == nullptr)
         return kIOReturnBadArgument;
 
-    memset(data, 0, sizeof(*data));
-    data->version = APPLE80211_VERSION;
-    data->power_budget = cachedPowerBudget;
-    return kIOReturnSuccess;
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
