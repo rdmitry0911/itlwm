@@ -1,0 +1,48 @@
+capture_scope: selected static 25C56 x86_64 disassembly lines for AWDL_RSDB_CAPS getter and observed RSDB producer context
+reference_dext: /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab  /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+UUID: 149C0AD1-A92F-35BC-AA69-5C8815C5421E (x86_64) /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+(lldb) image lookup -n AppleBCMWLANInfraProtocol::getAWDL_RSDB_CAPS
+Address: 0x0000000100017a20
+Summary: AppleBCMWLANInfraProtocol::getAWDL_RSDB_CAPS(apple80211_rsdb_capability*)
+(lldb) image lookup -n AppleBCMWLANCore::getAWDL_RSDB_CAPS
+Address: 0x00000001001328fa
+Summary: AppleBCMWLANCore::getAWDL_RSDB_CAPS(apple80211_rsdb_capability*)
+(lldb) image lookup -n AppleBCMWLANConfigManager::querySDBPolicies
+Address: 0x000000010008b716
+Summary: AppleBCMWLANConfigManager::querySDBPolicies()
+(lldb) image lookup -n AppleBCMWLANCore::updateRSDBCaps
+Address: 0x00000001000d9a70
+Summary: AppleBCMWLANCore::updateRSDBCaps(rsdb_caps_response_v1*)
+(lldb) disassemble -b -s 0x100017a20 -e 0x100017a3c
+0x100017a20: movq   0x88(%rdi), %rax
+0x100017a2b: movq   (%rax), %rdi
+0x100017a2e: movq   (%rdi), %rax
+0x100017a31: movq   0x388(%rax), %rax
+0x100017a39: jmpq   *%rax
+(lldb) disassemble -b -s 0x1001328fa -e 0x100132911
+0x1001328fa: pushq  %rbp
+0x1001328fe: movq   0x48(%rdi), %rax
+0x100132902: movq   0x436(%rax), %rax
+0x100132909: movq   %rax, 0x4(%rsi)
+0x10013290d: xorl   %eax, %eax
+0x100132910: retq
+(lldb) disassemble -b -s 0x10008b716 -e 0x10008ba10
+0x10008b73f: callq  0x1000fa974 ; AppleBCMWLANCore::checkForSDBSupport()
+0x10008b7c9: leaq   0x2020fe(%rip), %rsi ; "rsdb"
+0x10008b7d7: callq  0x10017b780 ; AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+0x10008b7dc: testl  %eax, %eax
+0x10008b877: cmpw   $0x0, 0x4(%rbx)
+0x10008b884: cmpw   $0x6, 0x6(%rbx)
+0x10008b990: callq  0x1000d9a70 ; AppleBCMWLANCore::updateRSDBCaps(rsdb_caps_response_v1*)
+0x10008b9a3: leaq   0x201f24(%rip), %rsi ; "rsdb"
+0x10008b9b5: callq  0x10017b780 ; AppleBCMWLANCommander::runIOVarGet(char const*, CommandTxPayload const&, CommandRxPayload&, CommandBusPreference)
+0x10008b9ba: testl  %eax, %eax
+(lldb) disassemble -b -s 0x1000d9a70 -e 0x1000d9b20
+0x1000d9a7d: movq   0x48(%rdi), %rcx
+0x1000d9a81: movb   %al, 0x438(%rcx)
+0x1000d9a8a: movq   0x48(%rdi), %rcx
+0x1000d9a8e: movb   %al, 0x439(%rcx)
+0x1000d9a98: movq   0x48(%rdi), %rcx
+0x1000d9a9c: movw   %ax, 0x43a(%rcx)
+0x1000d9ac2: movb   %cl, 0x43c(%rax,%r12)

@@ -357,10 +357,14 @@ than accepting the inverted invalid range and caching a false success.
   [CR-479-dbg-guard-time-quarantine-20260714.md](/Users/bob/Projects/itlwm/docs/reference/CR-479-dbg-guard-time-quarantine-20260714.md).
 
 - `Q13 mini-batch: telemetry/cache getter zone`:
-  fourteen remaining getters were reduced to their Tahoe public contracts.
+  the historical fourteen-getter batch reduced candidates to their Tahoe public
+  contracts.
   Fixed-fail selectors now expose exact Apple error shapes (`BTCOEX_PROFILE`,
   `TKO_*` with no keepalive owner), while cache/state-backed selectors now
   preserve the caller-visible carrier instead of returning generic unsupported.
+  `getAWDL_RSDB_CAPS` is no longer included in that closed cache/state group:
+  its real ConfigManager/`rsdb` producer lifecycle is now separately
+  fail-closed.
   See [tahoe_signal_chain_audit.md](/Users/bob/Projects/itlwm/docs/tahoe_signal_chain_audit.md).
 
 - `Q13 mini-batch: explicit Apple-unsupported setter classification`:
@@ -415,6 +419,17 @@ than accepting the inverted invalid range and caching a false success.
   null-input, valid-input, full-carrier, version, Core-state, setter, or
   runtime-selector parity.
   See [CR-492-power-budget-no-producer-quarantine-20260715.md](reference/CR-492-power-budget-no-producer-quarantine-20260715.md).
+
+- `Q13 correction: AWDL_RSDB_CAPS getter no-producer quarantine`:
+  Tahoe reads an opaque eight-byte Core-state window at caller `+4`, without an
+  observed null check or `version` initialization. Its ConfigManager performs
+  an `rsdb` IOVAR query, reply validation, and overlapping Core-state update
+  context. AirportItlwm has no matching lifecycle, so the existing
+  raw `0xe00002c2` null guard remains only a safety boundary and every
+  non-null getter request now fails closed without output mutation or a
+  reset-only cache. This is not Apple null-input, valid-input, full-carrier,
+  version, Core-state, AWDL-feature, or runtime-selector parity.
+  See [CR-493-awdl-rsdb-caps-no-producer-quarantine-20260715.md](reference/CR-493-awdl-rsdb-caps-no-producer-quarantine-20260715.md).
 
 - `Q13 correction: PRIVATE_MAC getter no-producer quarantine`:
   `setPRIVATE_MAC` and `getPRIVATE_MAC` are BGScanAdapter-backed control and

@@ -1,0 +1,37 @@
+{
+  "checks": {
+    "active_v2_slot_selector_and_get_route_remain": true,
+    "dead_rsdb_cache_is_removed": true,
+    "historical_cache_classification_is_superseded": true,
+    "local_null_guard_is_retained_as_safety_boundary": true,
+    "no_matching_local_operational_rsdb_producer": true,
+    "nonnull_getter_fails_closed_without_output": true,
+    "opaque_carrier_and_separate_rsdb_surfaces_are_preserved": true,
+    "reference_getter_has_no_observed_null_guard": true,
+    "reference_note_has_scope_and_nonclaim": true,
+    "reference_raw_has_getter_and_observed_producer_context": true,
+    "reference_raw_manifest_matches": true
+  },
+  "local": {
+    "null_return_is_apple_parity": false,
+    "rsdb_query_owner_backend": false,
+    "runtime_selector_invocation": false,
+    "synthetic_success": false,
+    "valid_input_return_is_apple_parity": false
+  },
+  "reference": {
+    "commander_rsdb_get": "0x10017b780",
+    "config_query": "0x10008b716",
+    "core_get_vtable_offset": "0x388",
+    "core_getter": "0x1001328fa",
+    "core_state_window_from_core": "0x48+0x436",
+    "core_update": "0x1000d9a70",
+    "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
+    "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
+    "infra_get_wrapper": "0x100017a20",
+    "infra_slot": 493,
+    "observed_update_start": "0x438"
+  },
+  "schema": "itlwm-awdl-rsdb-caps-no-producer-quarantine-v1",
+  "source_base_revision": "d374793f7938b1a1ea184edf95341f0e0a3e5019"
+}

@@ -1388,14 +1388,13 @@ EAPOL RX/TX data paths are not this firmware filter backend.  See
 The original `Q13` zone classified fourteen getter slots as exposing a stable
 Tahoe public contract even when the deeper Broadcom owner was still hidden.
 That classification is superseded for `getMIMO_STATUS(...)`,
-`getWCL_LOW_LATENCY_INFO_STATS(...)`, and `getWCL_TRAFFIC_COUNTERS(...)` by
-the 2026-07-14 corrections below: their reference bodies require real
-feature/owner/core work, so the local all-zero success carriers were not
-stable contracts.
+`getWCL_LOW_LATENCY_INFO_STATS(...)`, `getWCL_TRAFFIC_COUNTERS(...)`, and
+`getAWDL_RSDB_CAPS(...)` by the corrections below: their reference bodies
+require real feature/owner/core work, so the local all-zero success carriers
+were not stable contracts.
 
 Closed in this zone:
 
-- `getAWDL_RSDB_CAPS(...)`
 - `getTKO_PARAMS(...)`
 - `getTKO_DUMP(...)`
 - `getBTCOEX_PROFILE(...)`
@@ -1415,8 +1414,8 @@ Recovered Apple behavior splits into three public buckets:
 - compact cache-backed carriers:
   `getRSN_XE`, `getBSS_BLACKLIST`
 - state-backed telemetry carriers:
-  `getAWDL_RSDB_CAPS`, `getBTCOEX_PROFILE_ACTIVE`,
-  `getMAX_NSS_FOR_AP`, `getBTCOEX_2G_CHAIN_DISABLE`,
+  `getBTCOEX_PROFILE_ACTIVE`, `getMAX_NSS_FOR_AP`,
+  `getBTCOEX_2G_CHAIN_DISABLE`,
   `getTXRX_CHAIN_INFO`, `getWCL_FW_HOT_CHANNELS`
 
 This batch intentionally stops at the public Apple80211 boundary:
@@ -1425,6 +1424,26 @@ This batch intentionally stops at the public Apple80211 boundary:
 - exact Tahoe fail codes are preserved where Apple exposes failure directly
 - caller-visible carriers are preserved from local cache/runtime state where
   Apple reads them from hidden owners or core-state fields
+
+### 2026-07-15 correction: `AWDL_RSDB_CAPS` getter is a no-producer quarantine
+
+Fresh 25C56 recovery shows this is not a stable zero carrier: Infra
+`0x100017a20` dispatches through `+0x388` to Core `0x1001328fa`, which reads
+eight bytes from `(Core + 0x48) + 0x436` and writes caller `+0x4`. It does
+not initialize `version` or check the caller pointer.
+
+The capture has observed ConfigManager producer context: `querySDBPolicies`
+invokes `runIOVarGet("rsdb")`, validates its reply, and calls `updateRSDBCaps`, whose
+observed writes begin at Core `+0x438`. That is producer context, not a claim
+to recover every writer, response field, opaque carrier byte, or AWDL feature
+state.
+
+AirportItlwm has no matching query, transport, reply validation, or state
+update lifecycle. Slot `[493]` therefore preserves its existing local raw
+`0xe00002c2` null-safety guard and returns `kIOReturnUnsupported` for every
+non-null request before output mutation. Its reset-only cache is removed. This
+is a no-producer quarantine, not Apple null-input, valid-input,
+full-carrier, version, Core-state, AWDL-feature, or runtime-selector parity.
 
 ## Q13 First Confirmed Apple-Unsupported Setter Batch
 

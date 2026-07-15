@@ -2231,7 +2231,6 @@ init()
     cachedRsnXeLength = 0;
     memset(cachedRsnXe, 0, sizeof(cachedRsnXe));
     hasCachedRsnXe = false;
-    cachedAwdlRsdbCaps = 0;
     memset(cachedTkoParams, 0, sizeof(cachedTkoParams));
     memset(fLastPublishedBssid, 0, sizeof(fLastPublishedBssid));
     fLastPublishedBssidValid = false;
@@ -2597,7 +2596,6 @@ init(IOService *provider)
     this->cachedRsnXeLength = 0;
     memset(this->cachedRsnXe, 0, sizeof(this->cachedRsnXe));
     this->hasCachedRsnXe = false;
-    this->cachedAwdlRsdbCaps = 0;
     memset(this->cachedTkoParams, 0, sizeof(this->cachedTkoParams));
     RT3_SET(12); // SkywalkInterface::init OK
     return true;
@@ -3655,14 +3653,11 @@ getAWDL_RSDB_CAPS(apple80211_rsdb_capability *data)
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
-    // AppleBCMWLANCore copies an 8-byte capability carrier from core state at
-    // caller +0x4. This port has no separate AWDL/RSDB owner, so preserve the
-    // same visible ABI with the locally cached carrier instead of generic
-    // unsupported.
-    uint8_t *raw = reinterpret_cast<uint8_t *>(data);
-    memset(raw, 0, 0x0c);
-    *reinterpret_cast<uint64_t *>(raw + 4) = cachedAwdlRsdbCaps;
-    return kIOReturnSuccess;
+    // Tahoe reads an opaque capability window from RSDB Core state with
+    // observed ConfigManager/`rsdb` producer context. This port has no
+    // matching lifecycle, so do not publish a default-only cache as success.
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

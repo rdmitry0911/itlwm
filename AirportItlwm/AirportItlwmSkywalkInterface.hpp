@@ -230,8 +230,9 @@ public:
     // [492] — AppleBCMWLANInfraProtocol is a direct `return 0xe00002c7;`
     // stub on Tahoe.
     virtual IOReturn getRANGING_START(apple80211_ranging_start_request_t *) override;
-    // [493] — AppleBCMWLANCore copies an 8-byte RSDB capability carrier from
-    // core state at +0x436.
+    // [493] — Tahoe reads an opaque RSDB capability window from Core state
+    // with observed ConfigManager/`rsdb` producer context. Keep this slot
+    // fail-closed until that producer exists here.
     virtual IOReturn getAWDL_RSDB_CAPS(apple80211_rsdb_capability *) override;
     // [494] — Tahoe public contract is owner-backed: missing keepalive owner ->
     // 0xe00002bc, otherwise six u32 fields at +0x4..+0x18.
@@ -794,7 +795,6 @@ private:
     uint16_t cachedRsnXeLength;
     uint8_t cachedRsnXe[APPLE80211_MAX_RSN_IE_LEN];
     bool hasCachedRsnXe;
-    uint64_t cachedAwdlRsdbCaps;
     uint32_t cachedTkoParams[6];
     u_int32_t current_authtype_lower;
     u_int32_t current_authtype_upper;
