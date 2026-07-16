@@ -2293,6 +2293,20 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 ? instance->getAPSTA_STATION_LIST(
                     this, (apple80211_sta_data *)req->req_data)
                 : kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_BT_COEX_AW_PROTECTED_PERIOD_LENGTH:
+        case APPLE80211_IOC_AWDL_BT_COEX_AGREEMENT:
+        case APPLE80211_IOC_AWDL_BT_COEX_AGREEMENT_ENABLED:
+            /*
+             * Both current 25C56 public directions for these AWDL Bluetooth
+             * coexistence selectors are unread fixed 0xe082280e leaves.  Do
+             * not manufacture coex agreement, enablement, or protected-period
+             * state on this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_PEER_CACHE_MAXIMUM_SIZE:
             if (instance == NULL)
                 return kIOReturnNotReady;
