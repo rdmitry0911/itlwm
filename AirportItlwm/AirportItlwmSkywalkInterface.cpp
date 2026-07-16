@@ -2772,6 +2772,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return instance->setMIS_MAX_STA(this,
                     (apple80211_mis_max_sta *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_QUIET:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not manufacture AWDL quiet state on
+             * this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         default:
             return kIOReturnUnsupported;
     }
