@@ -1,0 +1,77 @@
+{
+  "checks": {
+    "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "bsd_ingress_terminalizes_exact_nonunsupported_status": true,
+    "no_card_specific_awdl_rssi_aes_timing_or_control_route_is_introduced": true,
+    "normal_nonnull_tahoe_public_get_and_set_return_exact_fixed_status_unread": true,
+    "note_records_scope_and_nonclaims": true,
+    "null_fallback_remains_outside_this_layer": true,
+    "only_one_public_dispatch_case_per_awdl_selector": true,
+    "pre26_and_unknown_command_fallback_remain_unsupported": true,
+    "reference_raw_manifest_matches": true,
+    "reference_raw_records_all_ten_exact_fixed_leaves": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "surfaces": [
+      {
+        "get_nlist_index": 8188,
+        "get_public_wrapper": "0xffffff80021bfae8",
+        "name": "AWDL_RSSI_MEASUREMENT_REQUEST",
+        "selector": 159,
+        "set_nlist_index": 8194,
+        "set_public_wrapper": "0xffffff80021c49c2"
+      },
+      {
+        "get_nlist_index": 7367,
+        "get_public_wrapper": "0xffffff80021bfaf3",
+        "name": "AWDL_AES_KEY",
+        "selector": 160,
+        "set_nlist_index": 7394,
+        "set_public_wrapper": "0xffffff80021c49cd"
+      },
+      {
+        "get_nlist_index": 8039,
+        "get_public_wrapper": "0xffffff80021bfafe",
+        "name": "AWDL_SCAN_RESERVED_TIME",
+        "selector": 161,
+        "set_nlist_index": 8059,
+        "set_public_wrapper": "0xffffff80021c49d8"
+      },
+      {
+        "get_nlist_index": 7136,
+        "get_public_wrapper": "0xffffff80021bfb09",
+        "name": "AWDL_CTL",
+        "selector": 162,
+        "set_nlist_index": 7154,
+        "set_public_wrapper": "0xffffff80021c49e3"
+      },
+      {
+        "get_nlist_index": 8010,
+        "get_public_wrapper": "0xffffff80021bfb14",
+        "name": "AWDL_SOCIAL_TIME_SLOTS",
+        "selector": 163,
+        "set_nlist_index": 8021,
+        "set_public_wrapper": "0xffffff80021c49ee"
+      }
+    ]
+  },
+  "schema": "itlwm-skywalk-public-awdl-rssi-aes-timing-control-fixed-stubs-alignment-v1",
+  "scope": {
+    "card_specific_route_modified": false,
+    "deployment": false,
+    "legacy_v1_modified": false,
+    "normal_nonnull_public_bsd_get_set_only": true,
+    "outer_or_inner_null_fallback_modified": false,
+    "pre26_route_modified": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "traffic": false,
+    "virtual_interface_modified": false
+  },
+  "source_base_revision": "e0d9c1339105bedffee99e54779ee4022ebe67fc"
+}

@@ -2414,6 +2414,23 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_TRAP_CRASHTRACER_MINI_DUMP:
             return (cmd == SIOCGA80211) ? getTRAP_CRASHTRACER_MINI_DUMP((apple80211_trap_mini_dump_data *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_RSSI_MEASUREMENT_REQUEST:
+        case APPLE80211_IOC_AWDL_AES_KEY:
+        case APPLE80211_IOC_AWDL_SCAN_RESERVED_TIME:
+        case APPLE80211_IOC_AWDL_CTL:
+        case APPLE80211_IOC_AWDL_SOCIAL_TIME_SLOTS:
+            /*
+             * Both current 25C56 public directions for these AWDL request,
+             * key, timing, control, and social-slot selectors are unread
+             * fixed 0xe082280e leaves.  Do not manufacture AWDL RSSI,
+             * AES-key, scan-reservation, control, or social-slot state on
+             * this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_VIRTUAL_IF_CREATE:
 #if __IO80211_TARGET >= __MAC_26_0
             /*
