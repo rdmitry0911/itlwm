@@ -35,6 +35,7 @@
  */
 
 #include "ItlIwn.hpp"
+#include "IwnHt40Contracts.hpp"
 #include "../../AirportItlwm/TahoeNrateContracts.hpp"
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
@@ -1778,6 +1779,7 @@ iwn_read_eeprom_channels(struct iwn_softc *sc, int n, uint32_t addr)
     const struct iwn_chan_band *band = &iwn_bands[n];
     struct iwn_eeprom_chan channels[IWN_MAX_CHAN_PER_BAND];
     uint8_t chan;
+    unsigned int upper;
     int i;
 
     iwn_read_prom_data(sc, addr, channels,
@@ -1812,8 +1814,19 @@ iwn_read_eeprom_channels(struct iwn_softc *sc, int n, uint32_t addr)
             /* We have at least one valid 5GHz channel. */
             sc->sc_flags |= IWN_FLAG_HAS_5GHZ;
         } else  { /* 40 MHz */
+            upper = (unsigned int)chan +
+                IwnHt40Contracts::kPrimarySecondaryChannelDelta;
+            if (!(sc->sc_flags & IWN_FLAG_HAS_11N) ||
+                !IwnHt40Contracts::isPrimaryWithSecondaryAbove(chan, upper) ||
+                chan >= nitems(sc->maxpwr40) ||
+                upper >= nitems(ic->ic_channels) ||
+                upper >= nitems(sc->maxpwr40) ||
+                ic->ic_channels[chan].ic_freq == 0 ||
+                ic->ic_channels[upper].ic_freq == 0)
+                continue;
             sc->maxpwr40[chan] = channels[i].maxpwr;
-            ic->ic_channels[chan].ic_flags |= IEEE80211_CHAN_HT40;
+            ic->ic_channels[chan].ic_flags |= IEEE80211_CHAN_HT40U;
+            ic->ic_channels[upper].ic_flags |= IEEE80211_CHAN_HT40D;
         }
 
         /* Is active scan allowed on this channel? */
@@ -1829,7 +1842,7 @@ iwn_read_eeprom_channels(struct iwn_softc *sc, int n, uint32_t addr)
 
             if (sc->sc_flags & IWN_FLAG_HAS_11N)
                 ic->ic_channels[chan].ic_flags |=
-                IEEE80211_CHAN_HT;
+                IEEE80211_CHAN_HT20;
         }
 
     }
@@ -4898,6 +4911,7 @@ iwn4965_set_txpower(struct iwn_softc *sc, int async)
     int32_t vdiff, tdiff;
     int i, c, grp, maxpwr, is_ht40 = 0;
     uint8_t chan, ext_chan;
+    unsigned int ht40chan;
 
     /* Retrieve current channel from last RXON. */
     chan = sc->rxon.chan;
@@ -4943,14 +4957,22 @@ iwn4965_set_txpower(struct iwn_softc *sc, int async)
         return EINVAL;
     chans = sc->bands[i].chans;
 
+    ht40chan = chan;
+    ext_chan = chan;
     if (that->iwn_rxon_ht40_enabled(sc)) {
-        is_ht40 = 1;
-        if (le32toh(sc->rxon.flags) & IWN_RXON_HT_HT40MINUS)
-            ext_chan = chan - 2;
-        else
-            ext_chan = chan + 2;
-    } else
-        ext_chan = chan;
+        bool secondaryBelow =
+            (le32toh(sc->rxon.flags) & IWN_RXON_HT_HT40MINUS) != 0;
+
+        if (IwnHt40Contracts::nvmPowerChannel(
+                chan, secondaryBelow, &ht40chan) &&
+            ht40chan < nitems(sc->maxpwr40)) {
+            is_ht40 = 1;
+            if (secondaryBelow)
+                ext_chan = chan - 2;
+            else
+                ext_chan = chan + 2;
+        }
+    }
 
     for (c = 0; c < 2; c++) {
         uint8_t power, gain, temp;
@@ -4971,7 +4993,7 @@ iwn4965_set_txpower(struct iwn_softc *sc, int async)
         for (ridx = 0; ridx <= IWN_RIDX_MAX; ridx++) {
             /* Convert dBm to half-dBm. */
             if (is_ht40)
-                maxchpwr = sc->maxpwr40[chan] * 2;
+                maxchpwr = sc->maxpwr40[ht40chan] * 2;
             else
                 maxchpwr = sc->maxpwr[chan] * 2;
 #ifdef notyet
@@ -6128,20 +6150,34 @@ iwn_bgscan(struct ieee80211com *ic)
     return error;
 }
 
+static bool
+iwn_ht40_pair_permitted(struct ieee80211_node *ni, uint8_t sco)
+{
+    if (ni == NULL || ni->ni_chan == NULL)
+        return false;
+
+    return IwnHt40Contracts::allowsLocalDirection(
+        ieee80211_node_supports_ht_chan40(ni), sco,
+        IEEE80211_IS_CHAN_HT40U(ni->ni_chan),
+        IEEE80211_IS_CHAN_HT40D(ni->ni_chan));
+}
+
 void ItlIwn::
 iwn_rxon_configure_ht40(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     struct iwn_softc *sc = (struct iwn_softc *)ic->ic_softc;
+
+    sc->rxon.flags &= ~htole32(IWN_RXON_HT_CHANMODE_MIXED2040 |
+                               IWN_RXON_HT_CHANMODE_PURE40 | IWN_RXON_HT_HT40MINUS);
+
+    if (ni == NULL)
+        return;
+
     uint8_t sco = (ni->ni_htop0 & IEEE80211_HTOP0_SCO_MASK);
     int htprot = (ni->ni_htop1 &
                   IEEE80211_HTOP1_PROT_MASK);
-    
-    sc->rxon.flags &= ~htole32(IWN_RXON_HT_CHANMODE_MIXED2040 |
-                               IWN_RXON_HT_CHANMODE_PURE40 | IWN_RXON_HT_HT40MINUS);
-    
-    if (ieee80211_node_supports_ht_chan40(ni) &&
-        (sco == IEEE80211_HTOP0_SCO_SCA ||
-         sco == IEEE80211_HTOP0_SCO_SCB)) {
+
+    if (iwn_ht40_pair_permitted(ni, sco)) {
         if (sco == IEEE80211_HTOP0_SCO_SCB)
             sc->rxon.flags |= htole32(IWN_RXON_HT_HT40MINUS);
         if (htprot == IEEE80211_HTPROT_20MHZ)
