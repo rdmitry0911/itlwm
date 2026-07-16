@@ -25,7 +25,7 @@
     "set_nlist_index": 7393,
     "set_public_wrapper": "0xffffff80021c421d"
   },
-  "schema": "itlwm-skywalk-public-availability-fixed-stubs-alignment-v1",
+  "schema": "itlwm-skywalk-public-availability-fixed-stubs-alignment-v2",
   "scope": {
     "card_specific_route_modified": false,
     "deployment": false,

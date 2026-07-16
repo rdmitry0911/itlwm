@@ -2140,6 +2140,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return static_cast<IOReturn>(0xe082280e);
 #endif // __IO80211_TARGET >= __MAC_26_0
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_CDD_MODE:
+        case APPLE80211_IOC_LAST_BCAST_SCAN_TIME:
+        case APPLE80211_IOC_THERMAL_THROTTLING:
+        case APPLE80211_IOC_FACTORY_MODE:
+        case APPLE80211_IOC_REASSOCIATE:
+            /*
+             * Both current 25C56 public directions for these control
+             * selectors are unread fixed 0xe082280e leaves.  Do not invent
+             * a radio, thermal, factory, scan-time, or reassociation carrier
+             * on this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILES:
         case APPLE80211_IOC_BTCOEX_CONFIG:
         case APPLE80211_IOC_BTCOEX_OPTIONS:
