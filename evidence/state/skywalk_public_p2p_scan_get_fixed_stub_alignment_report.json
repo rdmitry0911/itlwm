@@ -1,0 +1,45 @@
+{
+  "checks": {
+    "legacy_virtual_and_card_set_boundaries_remain_explicit": true,
+    "note_records_scope_and_nonclaims": true,
+    "outer_null_and_bsd_boundaries_remain_explicit": true,
+    "public_tahoe_get_returns_exact_unread_status": true,
+    "reference_raw_has_exact_unread_public_get_fixed_stub": true,
+    "reference_raw_manifest_matches": true,
+    "selector_and_active_source_phases_are_explicit": true,
+    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true
+  },
+  "reference": {
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "selector": {
+      "fileoff": "0x20bf27a",
+      "ioc": 93,
+      "name": "P2P_SCAN",
+      "next_nlist_index": 7724,
+      "next_symbol": "__Z30apple80211getVIRTUAL_IF_CREATEP23IO80211SkywalkInterfaceP30apple80211_virt_if_create_data",
+      "nlist_index": 7143,
+      "public_wrapper": "0xffffff80021bf27a",
+      "symbol": "__Z21apple80211getP2P_SCANP23IO80211SkywalkInterfacePv"
+    }
+  },
+  "schema": "itlwm-skywalk-public-p2p-scan-get-fixed-stub-alignment-v1",
+  "scope": {
+    "card_specific_route_modified": false,
+    "carrier_is_not_observed_for_get": true,
+    "deployment": false,
+    "legacy_v1_set_modified": false,
+    "outer_null_dispatch_modified": false,
+    "pre26_skywalk_route_modified": false,
+    "public_nonnull_request_object_tahoe_bsd_get_only": true,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "set_behavior_changed": false,
+    "traffic": false,
+    "virtual_set_modified": false
+  },
+  "source_base_revision": "02636ae32f8d42992ed60baec7c81e2e0632ec43"
+}
