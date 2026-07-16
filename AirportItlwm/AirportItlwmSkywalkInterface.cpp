@@ -2218,6 +2218,19 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_CHIP_COUNTER_STATS:
             return (cmd == SIOCGA80211) ? getCHIP_COUNTER_STATS((apple80211_chip_stats *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_AVAILABILITY_WINDOW_AP_ALIGNMENT:
+        case APPLE80211_IOC_AWDL_SYNC_FRAME_AP_BEACON_ALIGNMENT:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not synthesize AWDL availability-window
+             * or sync-frame AP alignment state on this normal non-null Tahoe
+             * BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_DBG_GUARD_TIME_PARAMS:
             if (cmd == SIOCGA80211)
                 return getDBG_GUARD_TIME_PARAMS((apple80211_dbg_guard_time_params *)req->req_data);
