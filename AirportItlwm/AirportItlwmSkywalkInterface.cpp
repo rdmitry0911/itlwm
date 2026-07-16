@@ -2129,6 +2129,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? kApple80211ClassOwnerAbsent
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_AVAILABILITY:
+            /*
+             * Both current 25C56 public wrappers are unread fixed
+             * 0xe082280e leaves.  Keep this normal non-null Tahoe BSD
+             * surface separate from the outer null and card-specific paths.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_BTCOEX_PROFILES:
         case APPLE80211_IOC_BTCOEX_CONFIG:
         case APPLE80211_IOC_BTCOEX_OPTIONS:
