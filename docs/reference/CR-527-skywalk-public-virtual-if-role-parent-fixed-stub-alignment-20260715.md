@@ -4,7 +4,7 @@ Date: 2026-07-15
 
 ## Scope
 
-This correction covers only normal non-null public Tahoe GET/SET routes for
+This correction covers only outer-request public Tahoe GET/SET routes for
 `APPLE80211_IOC_VIRTUAL_IF_ROLE` (IOC 96) and
 `APPLE80211_IOC_VIRTUAL_IF_PARENT` (IOC 97) in
 `AirportItlwmSkywalkInterface::processApple80211Ioctl`. It retains all
@@ -61,12 +61,22 @@ returned success. The SET directions returned generic unsupported before those
 paths. All four current reference public wrappers instead read neither
 argument and return `0xe082280e`.
 
-The two normal non-null Tahoe switch branches now return that exact numeric
-status for public GET or SET before any role, parent, name, length, or carrier
-operation. Their existing null and unknown-command fallbacks remain after the
-guard, as does all pre-26 code. `processBSDCommand` treats a result other than
-`kIOReturnUnsupported` as terminal, so normal BSD requests receive the raw
-status.
+The two outer-request Tahoe switch branches return that exact numeric status
+for public GET or SET before any role, parent, name, length, or inner
+`req_data` operation. Their existing null and unknown-command fallbacks remain
+after the guard, as does all pre-26 code. `processBSDCommand` treats a result
+other than `kIOReturnUnsupported` as terminal, so normal BSD requests receive
+the raw status.
+
+## CR-569 inner-carrier correction
+
+The initial guarded source had additionally required `req->req_data != NULL`
+before returning the fixed Tahoe status. That condition itself reads the inner
+public carrier member, which the four direct reference leaves do not read.
+CR-569 removes that unsupported predicate: after the existing outer
+`req == NULL` return, Tahoe public GET/SET returns the recovered raw status
+without inspecting `req_data`. This does not extend the claim to outer-null
+dispatch, a carrier ABI, pre-26 behavior, V1, or card-specific behavior.
 
 `TahoeSkywalkIoctlRoutes` is unchanged: it still admits IOC 96/97 only when
 `!isSet`, so card-specific SET remains excluded before the shared dispatcher.
@@ -78,9 +88,9 @@ contract claim.
 
 `scripts/skywalk_public_virtual_if_role_parent_fixed_stub_alignment_report.py
 --check` verifies the four raw wrapper identities and manifest, guarded Tahoe
-GET/SET branches, retained null/unknown/pre-26 behavior, BSD terminal edge,
-unchanged card-specific policy and canonical GET lengths, and all active
-Skywalk source phases.
+GET/SET branches without an inner-carrier read, retained null/unknown/pre-26
+behavior, BSD terminal edge, unchanged card-specific policy and canonical GET
+lengths, and all active Skywalk source phases.
 
 No private carrier or selector is constructed or invoked. This layer makes no
 deployment, radio, association, APSTA, parent-topology, AWDL, P2P, scan,

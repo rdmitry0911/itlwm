@@ -3,9 +3,9 @@
     "all_active_skywalk_source_phases_and_target_guards_are_explicit": true,
     "bsd_ingress_terminalizes_nonunsupported_status": true,
     "card_specific_get_shares_dispatch_but_set_stays_excluded": true,
-    "normal_nonnull_tahoe_role_and_parent_get_set_return_exact_unread_status": true,
     "note_records_scope_and_nonclaims": true,
     "null_unknown_and_pre26_role_parent_logic_remain_after_guard": true,
+    "outer_request_tahoe_role_and_parent_get_set_return_exact_unread_status_without_inner_carrier_read": true,
     "reference_raw_has_all_four_exact_unread_public_fixed_stubs": true,
     "reference_raw_manifest_matches": true,
     "selector_numbers_and_carrier_abi_remain_declared": true
@@ -39,19 +39,19 @@
       }
     }
   },
-  "schema": "itlwm-skywalk-public-virtual-if-role-parent-fixed-stub-alignment-v1",
+  "schema": "itlwm-skywalk-public-virtual-if-role-parent-fixed-stub-alignment-v2",
   "scope": {
     "card_specific_route_modified": false,
     "carrier_or_abi_modified": false,
     "deployment": false,
     "legacy_v1_modified": false,
-    "normal_nonnull_public_tahoe_get_set_only": true,
     "null_fallback_modified": false,
+    "outer_request_public_tahoe_get_set_only": true,
     "pre26_route_modified": false,
     "radio_or_association": false,
     "runtime_selector_invocation": false,
     "traffic": false,
     "unknown_command_fallback_modified": false
   },
-  "source_base_revision": "eebabbba80dfcd326e0a3a5499df8409d943cf41"
+  "source_base_revision": "3cfa60e95871e9771a6f7fc89ed04c5a14ebb3b3"
 }

@@ -95,8 +95,8 @@ def report():
     )
 
     return {
-        "schema": "itlwm-skywalk-public-virtual-if-role-parent-fixed-stub-alignment-v1",
-        "source_base_revision": "eebabbba80dfcd326e0a3a5499df8409d943cf41",
+        "schema": "itlwm-skywalk-public-virtual-if-role-parent-fixed-stub-alignment-v2",
+        "source_base_revision": "3cfa60e95871e9771a6f7fc89ed04c5a14ebb3b3",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
             "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
@@ -111,7 +111,7 @@ def report():
             },
         },
         "scope": {
-            "normal_nonnull_public_tahoe_get_set_only": True,
+            "outer_request_public_tahoe_get_set_only": True,
             "null_fallback_modified": False,
             "unknown_command_fallback_modified": False,
             "pre26_route_modified": False,
@@ -188,21 +188,22 @@ def report():
                     "0xffffff80021c417b",
                     "0xe082280e",
                     "compile-time Tahoe-only guard",
-                    "normal non-null public Tahoe GET/SET",
+                    "outer-request public Tahoe GET/SET",
+                    "without inspecting `req_data`",
                     "card-specific SET remains excluded",
                     "no independent card-specific contract claim",
                     "does not claim null, carrier/ABI, private virtual-route, card-specific contract, V1, pre-26, association, firmware, runtime-execution, or broader Tahoe behavior parity",
                     "No private carrier or selector is constructed or invoked",
                 )
             ),
-            "normal_nonnull_tahoe_role_and_parent_get_set_return_exact_unread_status": (
-                "req->req_data != NULL" in role_tahoe
+            "outer_request_tahoe_role_and_parent_get_set_return_exact_unread_status_without_inner_carrier_read": (
+                "req->req_data" not in role_tahoe
                 and "cmd == SIOCGA80211 || cmd == SIOCSA80211" in role_tahoe
                 and "return static_cast<IOReturn>(0xe082280e);" in role_tahoe
                 and "getInterfaceRole" not in role_tahoe
                 and "req->req_len" not in role_tahoe
                 and "return kIOReturnSuccess;" not in role_tahoe
-                and "req->req_data != NULL" in parent_tahoe
+                and "req->req_data" not in parent_tahoe
                 and "cmd == SIOCGA80211 || cmd == SIOCSA80211" in parent_tahoe
                 and "return static_cast<IOReturn>(0xe082280e);" in parent_tahoe
                 and "getPrimarySkywalkInterface" not in parent_tahoe

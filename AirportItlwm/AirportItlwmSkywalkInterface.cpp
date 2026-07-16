@@ -1482,8 +1482,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
              * carrier result for a non-null public request.
              */
 #if __IO80211_TARGET >= __MAC_26_0
-            if (req->req_data != NULL &&
-                (cmd == SIOCGA80211 || cmd == SIOCSA80211))
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
                 return static_cast<IOReturn>(0xe082280e);
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCGA80211)
@@ -1497,8 +1496,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnSuccess;
         case APPLE80211_IOC_VIRTUAL_IF_PARENT: {
 #if __IO80211_TARGET >= __MAC_26_0
-            if (req->req_data != NULL &&
-                (cmd == SIOCGA80211 || cmd == SIOCSA80211))
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
                 return static_cast<IOReturn>(0xe082280e);
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCGA80211)
