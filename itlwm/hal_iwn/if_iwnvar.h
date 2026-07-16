@@ -259,6 +259,7 @@ struct iwn_softc {
 #define IWN_FLAG_CALIB_DONE    (1 << 2)
 #define IWN_FLAG_USE_ICT    (1 << 3)
 #define IWN_FLAG_INTERNAL_PA    (1 << 4)
+#define IWN_FLAG_FATAL_RECOVERY    (1 << 5)
 #define IWN_FLAG_HAS_11N    (1 << 6)
 #define IWN_FLAG_ENH_SENS    (1 << 7)
 #define IWN_FLAG_ADV_BT_COEX    (1 << 8)

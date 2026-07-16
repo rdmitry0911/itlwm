@@ -962,6 +962,15 @@ iwn_init_task(void *arg1)
 //    rw_enter_write(&sc->sc_rwlock);
     s = splnet();
 
+    /* The interrupt action leaves a fatal firmware fault with device IRQs
+     * masked.  timeout/state/hardware teardown crosses macOS work-loop
+     * boundaries, so it must run here rather than in that interrupt action. */
+    if (sc->sc_flags & IWN_FLAG_FATAL_RECOVERY) {
+        sc->sc_flags &= ~IWN_FLAG_FATAL_RECOVERY;
+        if (ifp->if_flags & IFF_RUNNING)
+            that->iwn_stop(ifp);
+    }
+
     if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
         that->iwn_init(ifp);
 
@@ -3565,11 +3574,12 @@ iwn_intr(OSObject *object, IOInterruptEventSource* sender, int count)
         /* Force a complete recalibration on next init. */
         sc->sc_flags &= ~IWN_FLAG_CALIB_DONE;
 
-        /* Dump firmware error log and stop. */
+        /* Dump firmware error log.  State/hardware teardown is deferred to
+         * init_task so the interrupt action never crosses work-loop state. */
 #ifdef IWN_DEBUG
         that->iwn_fatal_intr(sc);
 #endif
-        that->iwn_stop(ifp);
+        sc->sc_flags |= IWN_FLAG_FATAL_RECOVERY;
         task_add(systq, &sc->init_task);
         return 1;
     }

@@ -499,6 +499,61 @@ ieee80211_sa_query_request(struct ieee80211com *ic, struct ieee80211_node *ni)
 }
 #endif	/* IEEE80211_STA_ONLY */
 
+/*
+ * Negotiated channel width comes from the peer's HT/VHT/HE operation
+ * information.  It still has to be representable by the local channel map:
+ * the map carries the firmware/NVM regulatory limits for each primary
+ * channel.  Do this validation before a HAL turns ni_chw into a PHY or TLC
+ * firmware command.
+ */
+static void
+ieee80211_sanitize_negotiated_chw(struct ieee80211_node *ni)
+{
+    struct ieee80211_channel *chan = ni->ni_chan;
+    int offset;
+    int valid = 0;
+
+    if (chan == NULL)
+        return;
+
+    offset = chan->ic_freq - chan->ic_center_freq1;
+    switch (ni->ni_chw) {
+    case IEEE80211_CHAN_WIDTH_20_NOHT:
+    case IEEE80211_CHAN_WIDTH_20:
+        valid = 1;
+        break;
+    case IEEE80211_CHAN_WIDTH_40:
+        if (offset == -10)
+            valid = IEEE80211_IS_CHAN_HT40U(chan);
+        else if (offset == 10)
+            valid = IEEE80211_IS_CHAN_HT40D(chan);
+        break;
+    case IEEE80211_CHAN_WIDTH_80:
+        valid = IEEE80211_IS_CHAN_VHT80(chan) &&
+            (offset == -30 || offset == -10 ||
+             offset == 10 || offset == 30);
+        break;
+    case IEEE80211_CHAN_WIDTH_160:
+        valid = IEEE80211_IS_CHAN_VHT160(chan) &&
+            (offset == -70 || offset == -50 || offset == -30 ||
+             offset == -10 || offset == 10 || offset == 30 ||
+             offset == 50 || offset == 70);
+        break;
+    default:
+        break;
+    }
+
+    if (valid)
+        return;
+
+    /* 80+80 and malformed or NVM-disallowed wide channels are not safe
+     * firmware inputs.  Preserve the association at its common 20 MHz
+     * width instead of advertising a PHY geometry we cannot program. */
+    ni->ni_chw = IEEE80211_CHAN_WIDTH_20;
+    chan->ic_center_freq1 = chan->ic_freq;
+    chan->ic_center_freq2 = 0;
+}
+
 void
 ieee80211_ht_negotiate_chw(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
@@ -526,6 +581,8 @@ ieee80211_ht_negotiate_chw(struct ieee80211com *ic, struct ieee80211_node *ni)
         else
             ni->ni_chan->ic_center_freq1 = ni->ni_chan->ic_freq - 10;
     }
+
+    ieee80211_sanitize_negotiated_chw(ni);
 }
 
 void
@@ -734,6 +791,7 @@ ieee80211_vht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
             break;
             
         default:
+            ieee80211_sanitize_negotiated_chw(ni);
             return;
     }
     
@@ -743,7 +801,8 @@ ieee80211_vht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
         ni->ni_flags |= IEEE80211_NODE_VHT_SGI80;
     if (ieee80211_node_supports_vht_sgi160(ni))
         ni->ni_flags |= IEEE80211_NODE_VHT_SGI160;
-    
+
+    ieee80211_sanitize_negotiated_chw(ni);
 }
 
 void
@@ -866,9 +925,11 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
             break;
             
         default:
+            ieee80211_sanitize_negotiated_chw(ni);
             return;
     }
-    
+
+    ieee80211_sanitize_negotiated_chw(ni);
 }
 
 void
