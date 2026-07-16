@@ -2466,6 +2466,21 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_ROAM_THRESH:
+        case APPLE80211_IOC_VENDOR_DBG_FLAGS:
+        case APPLE80211_IOC_CACHE_AGE_THRESH:
+        case APPLE80211_IOC_PMK_CACHE:
+        case APPLE80211_IOC_LINK_QUAL_EVENT_PARAMS:
+            /*
+             * The current public ROAM/CACHE GET wrappers are unread fixed
+             * 0xe082280e leaves. No local carrier contract is inferred for
+             * any member of this Tahoe-only batch.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_HOST_AP_MODE_HIDDEN:
             if (instance == NULL)
                 return kIOReturnNotReady;
