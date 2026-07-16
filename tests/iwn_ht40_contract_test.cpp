@@ -66,6 +66,24 @@ void testDirectionalAdmission()
             "no secondary offset is rejected");
 }
 
+void testSgiAdmissionByEffectiveWidth()
+{
+    using namespace IwnHt40Contracts;
+
+    require(allowsSgiForEffectiveHtWidth(false, true, false),
+            "HT20 admits only peer SGI20");
+    require(!allowsSgiForEffectiveHtWidth(false, false, true),
+            "HT20 rejects peer SGI40-only");
+    require(allowsSgiForEffectiveHtWidth(true, false, true),
+            "HT40 admits only peer SGI40");
+    require(!allowsSgiForEffectiveHtWidth(true, true, false),
+            "HT40 rejects peer SGI20-only");
+    require(allowsSgiForEffectiveHtWidth(false, true, true),
+            "HT20 keeps SGI when the peer supports both widths");
+    require(allowsSgiForEffectiveHtWidth(true, true, true),
+            "HT40 keeps SGI when the peer supports both widths");
+}
+
 } // namespace
 
 int main()
@@ -73,5 +91,6 @@ int main()
     testNvmPairGeometry();
     testPowerRecordSelection();
     testDirectionalAdmission();
+    testSgiAdmissionByEffectiveWidth();
     return 0;
 }

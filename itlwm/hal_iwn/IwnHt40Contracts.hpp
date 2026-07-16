@@ -56,6 +56,13 @@ inline bool allowsLocalDirection(bool peerSupportsHt40,
     return false;
 }
 
+inline bool allowsSgiForEffectiveHtWidth(bool effectiveHt40,
+                                         bool peerSupportsSgi20,
+                                         bool peerSupportsSgi40)
+{
+    return effectiveHt40 ? peerSupportsSgi40 : peerSupportsSgi20;
+}
+
 } // namespace IwnHt40Contracts
 
 #endif

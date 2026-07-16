@@ -4025,16 +4025,17 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     if ((ni->ni_flags & IEEE80211_NODE_HT) &&
         tx->id != sc->broadcast_id &&
         rinfo->ht_plcp != IWN_RATE_HT_SISO_MCS_INV_PLCP) {
+        bool ht40Enabled = iwn_rxon_ht40_enabled(sc);
+
         tx->plcp = rinfo->ht_plcp;
         tx->rflags = IWN_RFLAG_MCS;
-        if (ieee80211_node_supports_ht_sgi20(ni))
-            tx->rflags |= IWN_RFLAG_SGI;
-        if (iwn_rxon_ht40_enabled(sc)) {
+        if (ht40Enabled)
             tx->rflags |= IWN_RFLAG_HT40;
-            if (ieee80211_node_supports_ht_sgi40(ni)) {
-                tx->rflags |= IWN_RFLAG_SGI;
-            }
-        }
+        if (IwnHt40Contracts::allowsSgiForEffectiveHtWidth(
+                ht40Enabled,
+                ieee80211_node_supports_ht_sgi20(ni),
+                ieee80211_node_supports_ht_sgi40(ni)))
+            tx->rflags |= IWN_RFLAG_SGI;
         if (iwn_is_mimo_ht_plcp(rinfo->ht_plcp))
             tx->rflags |= IWN_RFLAG_ANT(sc->txchainmask);
         else
@@ -4631,6 +4632,8 @@ iwn_set_link_quality(struct iwn_softc *sc, struct ieee80211_node *ni)
     struct iwn_cmd_link_quality linkq;
     struct ieee80211_rateset *rs = &ni->ni_rates;
     uint8_t txant;
+    bool ht40Enabled;
+    bool sgiEnabled;
     int i, ridx, ridx_min, ridx_max, j, mimo, tab = 0, rflags = 0;
 
     /* Use the first valid TX antenna. */
@@ -4643,6 +4646,11 @@ iwn_set_link_quality(struct iwn_softc *sc, struct ieee80211_node *ni)
     linkq.ampdu_max = IWN_AMPDU_MAX;
     linkq.ampdu_threshold = 3;
     linkq.ampdu_limit = htole16(4000);    /* 4ms */
+    ht40Enabled = iwn_rxon_ht40_enabled(sc);
+    sgiEnabled = IwnHt40Contracts::allowsSgiForEffectiveHtWidth(
+        ht40Enabled,
+        ieee80211_node_supports_ht_sgi20(ni),
+        ieee80211_node_supports_ht_sgi40(ni));
 
 #if 0 // RTS/CTS protection not yet tested
     if (ni->ni_flags & IEEE80211_NODE_HT &&
@@ -4695,9 +4703,9 @@ iwn_set_link_quality(struct iwn_softc *sc, struct ieee80211_node *ni)
                 /* First two Tx attempts may use 40MHz/SGI. */
                 if (j > 1)
                     break;
-                if (iwn_rxon_ht40_enabled(sc))
+                if (ht40Enabled)
                     rflags |= IWN_RFLAG_HT40;
-                if (ieee80211_ra_use_ht_sgi(ni))
+                if (sgiEnabled)
                     rflags |= IWN_RFLAG_SGI;
             }
         } else if (plcp != IWN_RATE_INVM_PLCP) {

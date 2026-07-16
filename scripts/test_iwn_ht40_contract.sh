@@ -33,6 +33,18 @@ require_source 'IEEE80211_CHAN_HT20;'
 require_source 'IwnHt40Contracts::nvmPowerChannel('
 require_source 'maxchpwr = sc->maxpwr40[ht40chan] * 2;'
 
+sgi_uses=$(grep -F -c \
+  'IwnHt40Contracts::allowsSgiForEffectiveHtWidth(' "$source")
+if [ "$sgi_uses" -ne 2 ]; then
+  echo "expected direct TX and link-quality SGI guards, got $sgi_uses" >&2
+  exit 1
+fi
+
+if grep -F -q 'ieee80211_ra_use_ht_sgi(ni)' "$source"; then
+  echo 'link quality still derives SGI from negotiated rather than RXON width' >&2
+  exit 1
+fi
+
 if sed -n '/^iwn_read_eeprom_channels/,/^}$/p' "$source" | \
   grep -F -q 'IEEE80211_CHAN_HT;'; then
   echo 'generic HT40 capability leaked into EEPROM channel materialization' >&2
