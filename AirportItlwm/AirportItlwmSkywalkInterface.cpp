@@ -2067,8 +2067,10 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return kIOReturnUnsupported;
         case APPLE80211_IOC_SUPPORTED_CHANNELS:
-        case APPLE80211_IOC_HW_SUPPORTED_CHANNELS:
             return (cmd == SIOCGA80211) ? getSUPPORTED_CHANNELS((apple80211_sup_channel_data *)req->req_data)
+                                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_HW_SUPPORTED_CHANNELS:
+            return (cmd == SIOCGA80211) ? getHW_SUPPORTED_CHANNELS((apple80211_sup_channel_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_COUNTRY_CHANNELS:
             return (cmd == SIOCGA80211) ? getCOUNTRY_CHANNELS((apple80211_country_channel_data *)req->req_data)
@@ -3581,10 +3583,14 @@ getCOUNTRY_CHANNELS(apple80211_country_channel_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data *data)
 {
-    // Tahoe carries APPLE80211_IOC_HW_SUPPORTED_CHANNELS through the same BSD
-    // bridge family as SUPPORTED_CHANNELS. The public carrier is identical on
-    // the family side, so route both selectors to the same lifted producer.
-    return getSUPPORTED_CHANNELS(data);
+    // Apple uses a dedicated matching/regulatory query mode for the hardware
+    // view. Intel has no equivalent owner, so do not pretend that the raw
+    // net80211 channel table is that filtered result.
+    if (data == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    (void)data;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4914,19 +4920,14 @@ setDISASSOCIATE(void *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
 {
-    if (!ad)
-        return kIOReturnError;
-    ad->version = APPLE80211_VERSION;
-    ad->num_channels = 0;
-    struct ieee80211com *ic = fHalService->get80211Controller();
-    for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
-        if (ic->ic_channels[i].ic_freq != 0) {
-            ad->supported_channels[ad->num_channels].channel = ieee80211_chan2ieee(ic, &ic->ic_channels[i]);
-            ad->supported_channels[ad->num_channels].flags = ieeeChanFlag2appleScanFlagVentura(ic->ic_channels[i].ic_flags);
-            ad->num_channels++;
-        }
-    }
-    return kIOReturnSuccess;
+    // Apple obtains this carrier from its matching/regulatory owner. Its raw
+    // net80211 channel-table walk is neither the same policy nor bounded by
+    // the public 128-entry ABI, so fail closed until that owner exists.
+    if (ad == nullptr)
+        return kApple80211ErrInvalidArgumentRaw;
+
+    (void)ad;
+    return kIOReturnUnsupported;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
