@@ -2380,6 +2380,19 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setVHT_CAPABILITY((apple80211_vht_capability *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_STRATEGY:
+        case APPLE80211_IOC_AWDL_MAX_NO_MASTER_PERIODS:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not synthesize AWDL strategy or
+             * max-no-master-period state on this normal non-null Tahoe BSD
+             * surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_WOW_TEST:
             return (cmd == SIOCSA80211) ? setWOW_TEST((apple80211_wow_test_data *)req->req_data)
                                         : kIOReturnUnsupported;
