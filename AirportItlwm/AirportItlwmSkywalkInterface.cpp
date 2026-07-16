@@ -2203,6 +2203,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211)
                        ? getWCL_BSS_INFO((apple80211_beacon_msg *)req->req_data)
                        : kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_MAX_TREE_DEPTH:
+        case APPLE80211_IOC_AWDL_GUARD_TIME:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not manufacture AWDL tree topology
+             * or guard-time state on this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_CHIP_COUNTER_STATS:
             return (cmd == SIOCGA80211) ? getCHIP_COUNTER_STATS((apple80211_chip_stats *)req->req_data)
                                         : kIOReturnUnsupported;
