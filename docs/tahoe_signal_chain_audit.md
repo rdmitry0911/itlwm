@@ -3451,11 +3451,12 @@ That leaves the Tahoe slot surface easier to audit: direct Apple stubs,
 internal-only selectors, and real public producers are no longer conflated in
 anonymous header placeholders.
 
-Fast Lane correction: the normal wrapper return is reached only after Fast Lane
-capability dispatch and, for the observed enabled pair, the NetAdapter WME/ACM
-override submission. Since the port has no corresponding owner or firmware
-transport, the explicit local body returns unsupported for non-null carriers
-instead of reporting a false successful policy application.
+Fast Lane recovery: an exact runtime bisect later established that the
+non-null setter is on the local post-association path. The local body preserves
+the null gate, maps the recovered enabled pair to the native VO ACM override,
+and triggers the existing EDCA refresh route. It does not claim Apple
+`wme_ac_sta` IOVAR or async-callback parity, but no longer returns a false
+failure for a policy that has a real local counterpart.
 
 After rebooting into `CR-044`, the next active blocker is no longer scan
 visibility or slot `[509]`. The runtime now shows:

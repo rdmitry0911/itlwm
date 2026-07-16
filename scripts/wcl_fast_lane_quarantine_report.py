@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify WCL Fast Lane false-success quarantine evidence."""
+"""Generate and verify WCL Fast Lane native-EDCA recovery evidence."""
 
 import argparse
 import json
@@ -14,27 +14,9 @@ INVENTORY = ROOT / "docs/tahoe_discrepancy_inventory.md"
 SIGNAL_AUDIT = ROOT / "docs/tahoe_signal_chain_audit.md"
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 HPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.hpp"
-SOURCE_ROOTS = (
-    ROOT / "AirportItlwm",
-    ROOT / "include",
-    ROOT / "itl80211",
-    ROOT / "itlwm",
-)
-
-
 def section(source, begin, end):
     start = source.index(begin)
     return source[start:source.index(end, start)]
-
-
-def source_contains(token):
-    for root in SOURCE_ROOTS:
-        for path in root.rglob("*"):
-            if path.suffix not in {".c", ".cc", ".cpp", ".h", ".hpp"}:
-                continue
-            if token in path.read_text(encoding="utf-8", errors="ignore"):
-                return True
-    return False
 
 
 def report():
@@ -44,6 +26,9 @@ def report():
     normalized_note = " ".join(note.split())
     inventory = INVENTORY.read_text(encoding="utf-8")
     signal_audit = SIGNAL_AUDIT.read_text(encoding="utf-8")
+    iwn = (ROOT / "itlwm/hal_iwn/ItlIwn.cpp").read_text(encoding="utf-8")
+    iwm = (ROOT / "itlwm/hal_iwm/mac80211.cpp").read_text(encoding="utf-8")
+    iwx = (ROOT / "itlwm/hal_iwx/ItlIwx.cpp").read_text(encoding="utf-8")
     setter = section(
         cpp,
         "setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)",
@@ -51,8 +36,11 @@ def report():
     )
 
     return {
-        "schema": "itlwm-wcl-fast-lane-quarantine-v1",
-        "source_base_revision": "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1",
+        "schema": "itlwm-wcl-fast-lane-native-edca-bridge-v1",
+        "runtime_boundary": {
+            "good_parent": "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1",
+            "bad_quarantine": "3a8a5a32c243bdab9591e8a7357894f9b61790e3",
+        },
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "infra_slot": 632,
@@ -68,8 +56,9 @@ def report():
             "null_status": "0xe00002bc",
         },
         "local": {
-            "backend_fast_lane_owner": False,
-            "request_false_success": False,
+            "native_vo_acm_override": True,
+            "native_edca_refresh": True,
+            "apple_wme_iovar_transport": False,
             "valid_input_return_is_apple_parity": False,
         },
         "checks": {
@@ -90,35 +79,32 @@ def report():
                     "`0x100013664`",
                     "`wme_ac_sta`",
                     "sendIOVarSet",
-                    "does not claim Apple valid-input return-code parity",
+                    "Runtime recovery",
+                    "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1",
+                    "3a8a5a32c243bdab9591e8a7357894f9b61790e3",
+                    "does not claim full Apple valid-input return-code",
                 )
             ),
-            "setter_quarantines_nonnull": (
+            "setter_applies_native_bridge": (
                 "if (data == nullptr)" in setter
                 and "return static_cast<IOReturn>(0xe00002bc);" in setter
-                and "return kIOReturnUnsupported;" in setter
-                and "return kIOReturnSuccess;" not in setter
-                and setter.index("return kIOReturnUnsupported;")
-                > setter.index("return static_cast<IOReturn>(0xe00002bc);")
+                and "raw[0] == 0 || raw[1] == 0" in setter
+                and "ic->ic_edca_ac[EDCA_AC_VO].ac_acm = 0;" in setter
+                and "ic->ic_updateedca(ic);" in setter
+                and "return kIOReturnSuccess;" in setter
             ),
             "interface_slot_retained": "virtual IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *) override;"
             in hpp,
-            "scoped_missing_owner_absent": all(
-                not source_contains(token)
-                for token in (
-                    "setFastlaneCapable",
-                    "overrideACMConfiguration",
-                    "configureWmeParamsAsync",
-                    "configureACMOverrideForFastLaneAsyncCallback",
-                )
+            "native_backend_routes": (
+                "IWN_CMD_EDCA_PARAMS" in iwn
+                and "iwm_updateedca" in iwm
+                and "iwx_updateedca" in iwx
             ),
-            "historical_contract_corrected": (
-                "Fast Lane correction:" in inventory
-                and "WME/ACM" in inventory
-                and "falsely acknowledging" in inventory
-                and "Fast Lane correction:" in signal_audit
-                and "WME/ACM" in signal_audit
-                and "false successful policy application" in signal_audit
+            "runtime_contract_recorded": (
+                "Fast Lane recovery:" in inventory
+                and "native host-side" in inventory
+                and "Fast Lane recovery:" in signal_audit
+                and "native VO ACM override" in signal_audit
             ),
         },
     }

@@ -5589,11 +5589,34 @@ setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
 {
-    // Tahoe's non-null path drives Fast Lane capability and WME/ACM owner work.
-    // The port has neither owner nor transport, so it must not acknowledge it.
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002bc);
-    return kIOReturnUnsupported;
+
+    // Tahoe consumes byte 0 as the Fast Lane capability. If that capability
+    // and byte 1 are both enabled, it clears WME AC3's ACM bit and submits WME
+    // parameters. The Intel counterpart is the native host-side admission
+    // control table plus its existing EDCA refresh path.
+    const auto *raw = reinterpret_cast<const uint8_t *>(data);
+    if (raw[0] == 0 || raw[1] == 0)
+        return kIOReturnSuccess;
+
+    struct ieee80211com *ic =
+        fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || ic->ic_bss == nullptr)
+        return kIOReturnNotReady;
+    if (ic->ic_updateedca == nullptr)
+        return kIOReturnUnsupported;
+
+    ic->ic_edca_ac[EDCA_AC_VO].ac_acm = 0;
+
+    // Clearing ACM stops the native VO-to-VI admission-control downgrade.
+    // IWN sends the EDCA table directly while IWM/IWX enqueue a MAC-context
+    // refresh. Before RUN the modified table is retained; the existing
+    // WCL_LINK_UP_DONE refresh applies it after association.
+    if (ic->ic_state == IEEE80211_S_RUN)
+        ic->ic_updateedca(ic);
+
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

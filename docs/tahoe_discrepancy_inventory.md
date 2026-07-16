@@ -738,7 +738,6 @@ Raw unsupported setters still present in the header, but no longer carried as
 - `579 setUSB_HOST_NOTIFICATION`
 - `609 setWCL_ACTION_FRAME`
 - `622 setBYPASS_TX_POWER_CAP`
-- `632 setWCL_UPDATE_FAST_LANE`
 - `639 setTRAFFIC_ENG_PARAMS`
 - `642 setHOST_CLOCK_INFO`
 
@@ -751,8 +750,7 @@ generic unsupported-surface queue:
   `setHT_CAPABILITY`, `setOFFLOAD_NDP`, `setVHT_CAPABILITY`,
   `setRANGING_AUTHENTICATE`, `setBTCOEX_PROFILE`,
   `setBTCOEX_PROFILE_ACTIVE`, `setBTCOEX_2G_CHAIN_DISABLE`,
-  `setWCL_ACTION_FRAME`, `setBYPASS_TX_POWER_CAP`,
-  `setWCL_UPDATE_FAST_LANE`, `setTRAFFIC_ENG_PARAMS`
+  `setWCL_ACTION_FRAME`, `setBYPASS_TX_POWER_CAP`, `setTRAFFIC_ENG_PARAMS`
 - `Broadcom-private diagnostics / test surface`
   `getLEAKY_AP_STATS_MODE`, `getTRAP_INFO`, `setLEAKY_AP_STATS_MODE`
 
@@ -772,8 +770,7 @@ split into owner-based subqueues:
 - `Q11-C nearby / low-latency / traffic policy`
   `getHP2P_CTRL`, `getDYNSAR_DETAIL`, `getSLOW_WIFI_FEATURE_ENABLED`,
   `getWCL_LOW_LATENCY_INFO`, `getWCL_GET_TX_BLANKING_STATUS`,
-  `setOFFLOAD_NDP`, `setRANGING_AUTHENTICATE`, `setWCL_UPDATE_FAST_LANE`,
-  `setTRAFFIC_ENG_PARAMS`
+  `setOFFLOAD_NDP`, `setRANGING_AUTHENTICATE`, `setTRAFFIC_ENG_PARAMS`
 
 This decomposition is intentionally documentation-first: it closes the broad
 `Q11` umbrella queue by replacing it with owner-based subqueues, but it does
@@ -2068,19 +2065,19 @@ reference producer.
   - `AirportItlwmSkywalkInterface.hpp` now has
     `inline_unsupported = 0`
   - all former inline bodies are now explicit `.cpp` methods
-  - `[632]` now preserves its recovered null gate
-    `NULL -> 0xe00002bc`; its non-null Fast Lane owner path is quarantined
-    because the port has no WME/ACM owner or firmware transport
+  - `[632]` preserves its recovered null gate `NULL -> 0xe00002bc`; a later
+    runtime bisect recovered its native EDCA/ACM counterpart and removed it
+    from the remaining unsupported policy surface
 - why this is closed:
   the mismatch was no longer "missing producers everywhere"; it was that the
   remaining slot policy still lived in anonymous header stubs. That surface is
   now explicit and reference-classed per slot.
 
-Fast Lane correction: the wrapper's normal return does not make a copied
-carrier a complete implementation. Its non-null path first updates Fast Lane
-capability and, when both observed control bytes are set, invokes the NetAdapter
-WME/ACM override path. The port deliberately reports unsupported for that
-unimplemented non-null work rather than falsely acknowledging it.
+Fast Lane recovery: the wrapper's non-null call is part of the live join path.
+For the observed two-byte branch, the port now applies the native host-side
+VO ACM override and triggers its established EDCA refresh path. This is not a
+claim of Apple IOVAR/callback parity; it removes the verified false failure
+without synthesizing a Broadcom `wme_ac_sta` request.
 
 ### 27. Bootstrap current-AP seed theory was rejected and removed from the live diff
 

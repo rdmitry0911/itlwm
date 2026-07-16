@@ -1,14 +1,15 @@
 {
   "checks": {
-    "historical_contract_corrected": true,
     "interface_slot_retained": true,
+    "native_backend_routes": true,
     "reference_note": true,
-    "scoped_missing_owner_absent": true,
-    "setter_quarantines_nonnull": true
+    "runtime_contract_recorded": true,
+    "setter_applies_native_bridge": true
   },
   "local": {
-    "backend_fast_lane_owner": false,
-    "request_false_success": false,
+    "apple_wme_iovar_transport": false,
+    "native_edca_refresh": true,
+    "native_vo_acm_override": true,
     "valid_input_return_is_apple_parity": false
   },
   "reference": {
@@ -25,6 +26,9 @@
     "null_status": "0xe00002bc",
     "wme_async": "0x100013664"
   },
-  "schema": "itlwm-wcl-fast-lane-quarantine-v1",
-  "source_base_revision": "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1"
+  "runtime_boundary": {
+    "bad_quarantine": "3a8a5a32c243bdab9591e8a7357894f9b61790e3",
+    "good_parent": "1044083fc36b4ab4cb2f4c7a401fe150ac88d2b1"
+  },
+  "schema": "itlwm-wcl-fast-lane-native-edca-bridge-v1"
 }
