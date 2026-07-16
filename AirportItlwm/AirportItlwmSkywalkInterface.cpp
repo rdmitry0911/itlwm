@@ -2255,6 +2255,21 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_TKO_DUMP:
             return (cmd == SIOCGA80211) ? getTKO_DUMP((apple80211_tko_dump *)req->req_data)
                                         : kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_PERIODIC_SYNC_FRAME_PACKET_LIFETIME:
+        case APPLE80211_IOC_AWDL_MASTER_MODE_SYNC_FRAME_PERIOD:
+        case APPLE80211_IOC_AWDL_NON_ELECTION_MASTER_MODE_SYNC_FRAME_PERIOD:
+        case APPLE80211_IOC_AWDL_EXPLICIT_AVAILABILITY_WINDOW_EXTENSION_OPT_OUT:
+            /*
+             * Both current 25C56 public directions for these timing and
+             * opt-out selectors are unread fixed 0xe082280e leaves.  Do not
+             * synthesize AWDL frame-period, lifetime, or opt-out state on
+             * this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_CIPHER_KEY:
             /*
              * The current 25C56 public GET wrapper is an unread fixed
