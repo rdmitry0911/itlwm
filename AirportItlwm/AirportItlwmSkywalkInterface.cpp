@@ -2765,6 +2765,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this,
                     (apple80211_softap_extended_capabilities_info *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_BTLE_PEER_INDICATION:
+        case APPLE80211_IOC_AWDL_BTLE_STATE_PARAMS:
+        case APPLE80211_IOC_AWDL_PEER_DATABASE:
+        case APPLE80211_IOC_AWDL_BTLE_ENABLE_SYNC_WITH_PARAMS:
+            /*
+             * Both current 25C56 public directions for these AWDL BTLE and
+             * peer-database selectors are unread fixed 0xe082280e leaves.
+             * Do not manufacture BTLE indication, state, peer-database, or
+             * sync-with-parameters state on this normal non-null Tahoe BSD
+             * surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_MIS_MAX_STA:
             if (instance == NULL)
                 return kIOReturnNotReady;
