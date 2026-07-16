@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify Skywalk public MCS-adjacent GET fixed-stub evidence."""
+"""Generate and verify Skywalk public cache-threshold GET fixed-stub evidence."""
 
 import argparse
 import hashlib
@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "evidence/state/skywalk_public_mcs_adjacent_get_fixed_stubs_alignment_report.json"
-NOTE = ROOT / "docs/reference/CR-559-skywalk-public-mcs-adjacent-get-fixed-stubs-alignment-20260716.md"
-RAW = ROOT / "docs/reference/artifacts/skywalk-mcs-adjacent-get-public-fixed-stubs-bootkc-current/raw.txt"
+OUTPUT = ROOT / "evidence/state/skywalk_public_cache_threshold_get_fixed_stubs_alignment_report.json"
+NOTE = ROOT / "docs/reference/CR-560-skywalk-public-cache-threshold-get-fixed-stubs-alignment-20260716.md"
+RAW = ROOT / "docs/reference/artifacts/skywalk-cache-threshold-get-public-fixed-stubs-bootkc-current/raw.txt"
 RAW_MANIFEST = RAW.with_name("SHA256SUMS.txt")
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
 V2 = ROOT / "AirportItlwm/AirportItlwmV2.cpp"
@@ -22,14 +22,14 @@ IOCTL = ROOT / "include/Airport/apple80211_ioctl.h"
 PROJECT = ROOT / "itlwm.xcodeproj/project.pbxproj"
 
 SELECTORS = (
-    ("RIFS", "APPLE80211_IOC_RIFS", 58, 7019, "0xffffff80021bef22", "0x20bef22", "__Z17apple80211getRIFSP23IO80211SkywalkInterfacePv", 7013, "__Z17apple80211getLDPCP23IO80211SkywalkInterfacePv"),
-    ("LDPC", "APPLE80211_IOC_LDPC", 59, 7013, "0xffffff80021bef2d", "0x20bef2d", "__Z17apple80211getLDPCP23IO80211SkywalkInterfacePv", 7015, "__Z17apple80211getMSDUP23IO80211SkywalkInterfacePv"),
-    ("MSDU", "APPLE80211_IOC_MSDU", 60, 7015, "0xffffff80021bef38", "0x20bef38", "__Z17apple80211getMSDUP23IO80211SkywalkInterfacePv", 7014, "__Z17apple80211getMPDUP23IO80211SkywalkInterfacePv"),
-    ("MPDU", "APPLE80211_IOC_MPDU", 61, 7014, "0xffffff80021bef43", "0x20bef43", "__Z17apple80211getMPDUP23IO80211SkywalkInterfacePv", 7184, "__Z22apple80211getBLOCK_ACKP23IO80211SkywalkInterfacePv"),
-    ("BLOCK_ACK", "APPLE80211_IOC_BLOCK_ACK", 62, 7184, "0xffffff80021bef4e", "0x20bef4e", "__Z22apple80211getBLOCK_ACKP23IO80211SkywalkInterfacePv", 7001, "__Z16apple80211getPLSP23IO80211SkywalkInterfacePv"),
-    ("PLS", "APPLE80211_IOC_PLS", 63, 7001, "0xffffff80021bef59", "0x20bef59", "__Z16apple80211getPLSP23IO80211SkywalkInterfacePv", 7016, "__Z17apple80211getPSMPP23IO80211SkywalkInterfacePv"),
-    ("PSMP", "APPLE80211_IOC_PSMP", 64, 7016, "0xffffff80021bef64", "0x20bef64", "__Z17apple80211getPSMPP23IO80211SkywalkInterfacePv", 7379, "__Z25apple80211getPHY_SUB_MODEP23IO80211SkywalkInterfacePv"),
-    ("PHY_SUB_MODE", "APPLE80211_IOC_PHY_SUB_MODE", 65, 7379, "0xffffff80021bef6f", "0x20bef6f", "__Z25apple80211getPHY_SUB_MODEP23IO80211SkywalkInterfacePv", 7441, "__Z26apple80211getMCS_INDEX_SETP23IO80211SkywalkInterfaceP29apple80211_mcs_index_set_data"),
+    ("CACHE_THRESH_BCAST", "APPLE80211_IOC_CACHE_THRESH_BCAST", 67, 7771,
+     "0xffffff80021befcf", "0x20befcf",
+     "__Z31apple80211getCACHE_THRESH_BCASTP23IO80211SkywalkInterfacePv", 7846,
+     "__Z32apple80211getCACHE_THRESH_DIRECTP23IO80211SkywalkInterfacePv"),
+    ("CACHE_THRESH_DIRECT", "APPLE80211_IOC_CACHE_THRESH_DIRECT", 68, 7846,
+     "0xffffff80021befda", "0x20befda",
+     "__Z32apple80211getCACHE_THRESH_DIRECTP23IO80211SkywalkInterfacePv", 7526,
+     "__Z27apple80211getWOW_PARAMETERSP23IO80211SkywalkInterfaceP29apple80211_wow_parameter_data"),
 )
 
 
@@ -50,7 +50,7 @@ def report():
     bsd = section(cpp, "processBSDCommand(ifnet_t interface, UInt cmd, void *data)", "processApple80211Ioctl(UInt cmd, apple80211req *req)")
     dispatcher = section(cpp, "processApple80211Ioctl(UInt cmd, apple80211req *req)", "IOReturn AirportItlwmSkywalkInterface::\ngetAUTH_TYPE")
     tahoe_block = section(dispatcher, "#if __IO80211_TARGET >= __MAC_26_0\n        case APPLE80211_IOC_COUNTERMEASURES:", "        case APPLE80211_IOC_POWER:")
-    group = section(dispatcher, "case APPLE80211_IOC_RIFS:", "        case APPLE80211_IOC_CACHE_THRESH_BCAST:")
+    group = section(dispatcher, "case APPLE80211_IOC_CACHE_THRESH_BCAST:", "        case APPLE80211_IOC_POWER:")
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
     macros = tuple(item[1] for item in SELECTORS)
@@ -63,12 +63,12 @@ def report():
         "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
         "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
         "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
-        "batch_symbol_vmaddr_start=0xffffff80021bef22",
-        "batch_symbol_vmaddr_end=0xffffff80021bef7a",
-        "batch_symbol_fileoff_start=0x20bef22",
-        "batch_symbol_fileoff_end=0x20bef7a",
-        "batch_symbol_bytes=0x58",
-        "batch_body_sha256=1afbf00a256e9fc3e3da1eea2961531a0c91a973acfef76a1305bde7a92fdd22",
+        "batch_symbol_vmaddr_start=0xffffff80021befcf",
+        "batch_symbol_vmaddr_end=0xffffff80021befe5",
+        "batch_symbol_fileoff_start=0x20befcf",
+        "batch_symbol_fileoff_end=0x20befe5",
+        "batch_symbol_bytes=0x16",
+        "batch_body_sha256=d10aa56f7dc33c2d99918578125f1c133d33dc0eaf3ecbd23caa44b6790369ef",
         "raw=55 48 89 e5 b8 0e 28 82 e0 5d c3",
         "body_sha256=9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
         "reads neither public argument",
@@ -80,15 +80,15 @@ def report():
             "symbol_bytes=0x0b", f"next_nlist_index={next_nlist}", f"next_symbol={next_symbol}",
         )
     return {
-        "schema": "itlwm-skywalk-public-mcs-adjacent-get-fixed-stubs-alignment-v1",
-        "source_base_revision": "78a31bb16e1508616019517cb5499aef6e9aa7cd",
+        "schema": "itlwm-skywalk-public-cache-threshold-get-fixed-stubs-alignment-v1",
+        "source_base_revision": "aca9f2e6505a93bc94e0573e3b5bc25c0588ba94",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
             "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
             "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
             "fixed_status": "0xe082280e",
             "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
-            "batch_body_sha256": "1afbf00a256e9fc3e3da1eea2961531a0c91a973acfef76a1305bde7a92fdd22",
+            "batch_body_sha256": "d10aa56f7dc33c2d99918578125f1c133d33dc0eaf3ecbd23caa44b6790369ef",
             "selectors": [
                 {"name": name, "ioc": value, "nlist_index": nlist, "public_wrapper": vmaddr, "fileoff": fileoff, "symbol": symbol, "next_nlist_index": next_nlist, "next_symbol": next_symbol}
                 for name, macro, value, nlist, vmaddr, fileoff, symbol, next_nlist, next_symbol in SELECTORS
@@ -113,11 +113,10 @@ def report():
             "reference_raw_manifest_matches": manifest == f"{raw_digest}  raw.txt\n",
             "reference_raw_has_all_exact_unread_public_get_fixed_stubs": all(token in raw for token in raw_tokens),
             "note_records_scope_and_nonclaims": all(token in note for token in (
-                "IOC 58", "IOC 59", "IOC 60", "IOC 61", "IOC 62", "IOC 63", "IOC 64", "IOC 65",
-                "0xffffff80021bef22..0xffffff80021bef7a", "0xe082280e", "compile-time Tahoe-only case",
-                "selectors remain absent from the pre-26 switch", "No local carrier contract is inferred for any member",
-                "card-specific route has no MCS-adjacent group entry",
-                "does not claim outer-null dispatch behavior, a carrier contract, SET behavior, RIFS behavior, LDPC behavior, MSDU behavior, MPDU behavior, block-ack behavior, PLS behavior, PSMP behavior, PHY-sub-mode behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "IOC 67", "IOC 68", "0xffffff80021befcf..0xffffff80021befe5", "0xe082280e", "compile-time Tahoe-only case",
+                "selectors remain absent from the pre-26 switch", "No local carrier contract is inferred for either member",
+                "card-specific route has no cache-threshold entry",
+                "does not claim outer-null dispatch behavior, a carrier contract, SET behavior, cache-threshold broadcast behavior, cache-threshold direct behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status_for_every_selector": (
@@ -130,13 +129,12 @@ def report():
             "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in group
                 and "SIOCSA80211" not in group
-                and "case APPLE80211_IOC_CACHE_THRESH_BCAST:" not in group
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in group
                 and all(f"case {macro}:" not in pre26_dispatcher for macro in macros)
             ),
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher
-                and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_RIFS:")
+                and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_CACHE_THRESH_BCAST:")
                 and "data != NULL" in bsd
                 and "IOReturn ret = processApple80211Ioctl(normalizedCmd, req);" in bsd
                 and "if (ret != kIOReturnUnsupported)\n            return ret;" in bsd
@@ -169,7 +167,7 @@ def main():
     value = report()
     failed = [name for name, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("Skywalk public MCS-adjacent GET alignment validation failed: " + ", ".join(failed))
+        raise ValueError("Skywalk public cache-threshold GET alignment validation failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -183,5 +181,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"Skywalk public MCS-adjacent GET alignment validation failed: {exc}", file=sys.stderr)
+        print(f"Skywalk public cache-threshold GET alignment validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

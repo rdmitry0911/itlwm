@@ -1847,6 +1847,16 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCGA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_CACHE_THRESH_BCAST:
+        case APPLE80211_IOC_CACHE_THRESH_DIRECT:
+            /*
+             * The current public cache-threshold GET wrappers are unread
+             * fixed 0xe082280e leaves. No local carrier contract is inferred
+             * for either member of this Tahoe-only batch.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
 #endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
