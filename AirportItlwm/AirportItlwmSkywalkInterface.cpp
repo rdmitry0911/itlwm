@@ -2164,6 +2164,20 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             // class-owner-absent leaf.  These legacy selectors must not
             // acknowledge or retain a synthetic BT coexistence state.
             return kApple80211ClassOwnerAbsent;
+        case APPLE80211_IOC_AWDL_SERVICE_PARAMS:
+        case APPLE80211_IOC_AWDL_PEER_SERVICE_REQUEST:
+        case APPLE80211_IOC_AWDL_ELECTION_ALGORITHM_ENABLED:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not manufacture an AWDL service,
+             * peer-request, or election-algorithm carrier on this normal
+             * non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_BGSCAN_CACHE_RESULTS:
             return (cmd == SIOCGA80211) ? getWCL_BGSCAN_CACHE_RESULT((apple80211_bgscan_cached_network_data_list *)req->req_data)
                                         : kIOReturnUnsupported;
