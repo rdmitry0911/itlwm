@@ -1808,6 +1808,26 @@ void AirportItlwm::performTahoeBootChipImage()
     power_state = kWiFiPowerOn;
     const IOReturn enableResult = enableAdapter(NULL);
     if (enableResult == kIOReturnSuccess) {
+        // setupDriver() in the reference consumes its bootstrap POWER cache
+        // exactly once after adapter setup and before bootChipImage's normal
+        // terminal tail.  Clear the local cache before replaying it: a
+        // re-entrant request must take the ordinary POWER path, rather than
+        // being folded into this completed bootstrap transaction.
+        const bool replayBootstrapPower = tahoeBootstrapPowerPending;
+        const uint8_t cachedPowerState = tahoeRequestedPowerState;
+        tahoeBootstrapPowerPending = false;
+        tahoeBootstrapPowerWindowOpen = false;
+        if (replayBootstrapPower) {
+#if __IO80211_TARGET >= __MAC_26_0
+            handlePowerStateChange(cachedPowerState, NULL);
+#else
+            handlePowerStateChange(cachedPowerState, bsdInterface);
+#endif
+        }
+
+        // The normal boot tail remains unconditional, including after a
+        // cached OFF.  In the reference this publishes BootReady (0x37) after
+        // the POWER transition; it is not a normal radio-on notification.
         OSBitAndAtomic(~static_cast<UInt32>(kAirportItlwmPmBootInProgressBit),
                        &pmPowerStateFlags);
         publishTahoeBootReadyState(this);
@@ -5249,10 +5269,6 @@ setPOWER(OSObject *object,
         tahoeRequestedPowerState = (uint8_t)requestedState;
         if (tahoeBootstrapPowerWindowOpen) {
             tahoeBootstrapPowerPending = true;
-            if (requestedState == power_state) {
-                tahoeBootstrapPowerPending = false;
-                tahoeBootstrapPowerWindowOpen = false;
-            }
             return kIOReturnSuccess;
         }
 #if __IO80211_TARGET >= __MAC_26_0
@@ -5663,13 +5679,12 @@ IOReturn AirportItlwm::registerWithPolicyMaker(IOService *policyMaker)
     ret = policyMaker->registerPowerDriver(this,
                                            powerStateArray,
                                            kPowerStateCount);
-    if (ret == kIOReturnSuccess) {
-        // Match Apple's pattern: assert device desires ON, external starts at OFF.
-        // Without this, PM framework may call setPowerState(0) after registration,
-        // disabling the adapter that start() just enabled.
-        changePowerStateToPriv(kPowerStateOn);
-        changePowerStateTo(kPowerStateOff);
-    }
+    // Apple only performs the changePowerStateToPriv(ON) / external-OFF pair
+    // when its separate core-private +0x2a00 owner has bit 0 set.  The Intel
+    // port has no corresponding owner, initializer, or lifecycle, so the
+    // applicable reference branch is the false branch.  Unconditionally
+    // forcing the pair locally manufactures a startup IOPM resume and its
+    // POWER_CHANGED bulletin before the radio lifecycle is established.
     return ret;
 }
 
