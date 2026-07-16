@@ -2493,6 +2493,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this,
                     (AirportItlwmAPSTAHostApModeHiddenLayout *)req->req_data);
             return kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_P2P_ENABLE:
+            /* Current public Tahoe GET is an unread fixed 0xe082280e leaf. */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_SOFTAP_PARAMS:
             if (instance == NULL)
                 return kIOReturnNotReady;
