@@ -1831,6 +1831,22 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCGA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_RIFS:
+        case APPLE80211_IOC_LDPC:
+        case APPLE80211_IOC_MSDU:
+        case APPLE80211_IOC_MPDU:
+        case APPLE80211_IOC_BLOCK_ACK:
+        case APPLE80211_IOC_PLS:
+        case APPLE80211_IOC_PSMP:
+        case APPLE80211_IOC_PHY_SUB_MODE:
+            /*
+             * The current public GET wrappers for this MCS-adjacent group
+             * are unread fixed 0xe082280e leaves. No local carrier contract
+             * is inferred for any member of this Tahoe-only batch.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
 #endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_POWER:
             if (instance == NULL)
