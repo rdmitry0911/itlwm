@@ -2179,8 +2179,20 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return kIOReturnUnsupported;
         case APPLE80211_IOC_BGSCAN_CACHE_RESULTS:
-            return (cmd == SIOCGA80211) ? getWCL_BGSCAN_CACHE_RESULT((apple80211_bgscan_cached_network_data_list *)req->req_data)
-                                        : kIOReturnUnsupported;
+            /*
+             * 25C56 keeps the GET-side background-scan cache carrier
+             * dynamic, but its public SET wrapper is an unread fixed
+             * 0xe082280e leaf.  Do not reinterpret SET as a cache update
+             * or otherwise manufacture a writable cache-result carrier.
+             */
+            if (cmd == SIOCGA80211)
+                return getWCL_BGSCAN_CACHE_RESULT(
+                    (apple80211_bgscan_cached_network_data_list *)req->req_data);
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case TahoeSkywalkIoctlRoutes::kIocWclBssInfo:
             /*
              * WCLNetManager::updateBss() requests selector 0x1b1 into a

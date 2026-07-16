@@ -1,0 +1,50 @@
+{
+  "checks": {
+    "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "bsd_ingress_terminalizes_exact_nonunsupported_status": true,
+    "get_remains_the_existing_dynamic_carrier_route": true,
+    "no_card_specific_bgscan_cache_route_is_introduced": true,
+    "normal_nonnull_tahoe_public_set_returns_exact_fixed_status_unread": true,
+    "note_records_asymmetric_scope_and_nonclaims": true,
+    "null_fallback_remains_outside_this_layer": true,
+    "only_one_public_dispatch_case_for_bgscan_cache_results": true,
+    "pre26_and_unknown_command_fallback_remain_unsupported": true,
+    "reference_raw_distinguishes_dynamic_get_from_fixed_set": true,
+    "reference_raw_manifest_matches": true
+  },
+  "reference": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "get": {
+      "classification": "dynamic_wrapper_not_fixed_stub",
+      "nlist_index": 7900,
+      "public_wrapper": "0xffffff80021c0034",
+      "span_bytes": 85
+    },
+    "selector": 215,
+    "set": {
+      "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+      "fixed_status": "0xe082280e",
+      "nlist_index": 7929,
+      "public_wrapper": "0xffffff80021c4f0e",
+      "span_bytes": 11
+    }
+  },
+  "schema": "itlwm-skywalk-public-bgscan-cache-set-fixed-stub-alignment-v1",
+  "scope": {
+    "cache_update_modified": false,
+    "card_specific_route_modified": false,
+    "deployment": false,
+    "existing_get_carrier_preserved": true,
+    "legacy_v1_modified": false,
+    "normal_nonnull_public_bsd_set_only": true,
+    "outer_or_inner_null_fallback_modified": false,
+    "pre26_route_modified": false,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "traffic": false,
+    "virtual_interface_modified": false
+  },
+  "source_base_revision": "d8b7ee8f83c6c2399f9f6439d2549827db5b080d"
+}
