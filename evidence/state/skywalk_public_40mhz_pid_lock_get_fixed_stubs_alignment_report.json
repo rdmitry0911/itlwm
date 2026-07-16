@@ -1,0 +1,60 @@
+{
+  "checks": {
+    "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "legacy_v1_virtual_and_card_boundaries_remain_explicit": true,
+    "note_records_scope_and_nonclaims": true,
+    "outer_null_and_bsd_boundaries_remain_explicit": true,
+    "public_tahoe_get_returns_exact_unread_status_for_every_selector": true,
+    "reference_raw_has_all_exact_unread_public_get_fixed_stubs": true,
+    "reference_raw_manifest_matches": true,
+    "selector_and_carrier_boundaries_are_explicit": true,
+    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true
+  },
+  "reference": {
+    "batch_body_sha256": "d10aa56f7dc33c2d99918578125f1c133d33dc0eaf3ecbd23caa44b6790369ef",
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "selectors": [
+      {
+        "fileoff": "0x20bf08f",
+        "ioc": 71,
+        "name": "40MHZ_INTOLERANT",
+        "next_nlist_index": 7145,
+        "next_symbol": "__Z21apple80211getPID_LOCKP23IO80211SkywalkInterfaceP21apple80211_state_data",
+        "nlist_index": 7642,
+        "public_wrapper": "0xffffff80021bf08f",
+        "symbol": "__Z29apple80211get40MHZ_INTOLERANTP23IO80211SkywalkInterfacePv"
+      },
+      {
+        "fileoff": "0x20bf09a",
+        "ioc": 72,
+        "name": "PID_LOCK",
+        "next_nlist_index": 7316,
+        "next_symbol": "__Z24apple80211getSTA_IE_LISTP23IO80211SkywalkInterfaceP22apple80211_sta_ie_data",
+        "nlist_index": 7145,
+        "public_wrapper": "0xffffff80021bf09a",
+        "symbol": "__Z21apple80211getPID_LOCKP23IO80211SkywalkInterfaceP21apple80211_state_data"
+      }
+    ]
+  },
+  "schema": "itlwm-skywalk-public-40mhz-pid-lock-get-fixed-stubs-alignment-v1",
+  "scope": {
+    "card_specific_route_modified": false,
+    "carrier_abi_added": false,
+    "carrier_is_not_observed": true,
+    "deployment": false,
+    "legacy_v1_modified": false,
+    "outer_null_dispatch_modified": false,
+    "pre26_route_modified": false,
+    "public_nonnull_request_object_tahoe_bsd_get_only": true,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "set_modified": false,
+    "traffic": false,
+    "virtual_ioctl_modified": false
+  },
+  "source_base_revision": "9caad3685ca0f8580270ed4efc601028b73a98b4"
+}

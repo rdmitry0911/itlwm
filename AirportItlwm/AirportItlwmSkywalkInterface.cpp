@@ -1866,6 +1866,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return instance->setPOWER(this, (apple80211_power_data *)req->req_data);
             return kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_40MHZ_INTOLERANT:
+        case APPLE80211_IOC_PID_LOCK:
+            /*
+             * The current public 40MHz/PID-lock GET wrappers are unread
+             * fixed 0xe082280e leaves. No local carrier contract is inferred
+             * for either member of this Tahoe-only batch.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_POWERSAVE:
             if (cmd == SIOCGA80211)
                 return getPOWERSAVE((apple80211_powersave_data *)req->req_data);
