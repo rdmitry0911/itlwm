@@ -2270,6 +2270,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getTRAP_CRASHTRACER_MINI_DUMP((apple80211_trap_mini_dump_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_VIRTUAL_IF_CREATE:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * Current public Tahoe GET is an unread fixed 0xe082280e leaf.
+             * Keep the established SET route below separate and intact.
+             */
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             return (cmd == SIOCSA80211) ? setVIRTUAL_IF_CREATE((apple80211_virt_if_create_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_VIRTUAL_IF_DELETE:
