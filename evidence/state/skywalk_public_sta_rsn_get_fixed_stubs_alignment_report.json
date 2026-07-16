@@ -1,0 +1,80 @@
+{
+  "checks": {
+    "existing_set_producers_and_null_order_remain_explicit": true,
+    "legacy_virtual_card_and_set_helper_boundaries_remain_explicit": true,
+    "note_records_scope_and_nonclaims": true,
+    "outer_null_and_bsd_boundaries_remain_explicit": true,
+    "public_tahoe_get_prefixes_return_exact_unread_status": true,
+    "reference_raw_has_all_exact_unread_public_get_fixed_stubs": true,
+    "reference_raw_manifest_matches": true,
+    "selector_definitions_and_active_source_phases_are_explicit": true,
+    "tahoe_and_pre26_boundaries_remain_explicit": true
+  },
+  "reference": {
+    "batch_body_sha256": "7cafec9b3e93326f5496eb094c961c255f27309b88a01744fb7a5aaccead46b2",
+    "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
+    "embedded_kext_uuid": "8FB4B7F0-D656-3539-B8D6-C1327A50377C",
+    "fixed_status": "0xe082280e",
+    "selectors": [
+      {
+        "fileoff": "0x20bf0fa",
+        "ioc": 74,
+        "name": "STA_AUTHORIZE",
+        "next_nlist_index": 7665,
+        "next_symbol": "__Z29apple80211getSTA_DISASSOCIATEP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data",
+        "nlist_index": 7450,
+        "public_wrapper": "0xffffff80021bf0fa",
+        "symbol": "__Z26apple80211getSTA_AUTHORIZEP23IO80211SkywalkInterfaceP29apple80211_sta_authorize_data"
+      },
+      {
+        "fileoff": "0x20bf105",
+        "ioc": 75,
+        "name": "STA_DISASSOCIATE",
+        "next_nlist_index": 7250,
+        "next_symbol": "__Z23apple80211getSTA_DEAUTHP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data",
+        "nlist_index": 7665,
+        "public_wrapper": "0xffffff80021bf105",
+        "symbol": "__Z29apple80211getSTA_DISASSOCIATEP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data"
+      },
+      {
+        "fileoff": "0x20bf110",
+        "ioc": 76,
+        "name": "STA_DEAUTH",
+        "next_nlist_index": 7148,
+        "next_symbol": "__Z21apple80211getRSN_CONFP23IO80211SkywalkInterfaceP24apple80211_rsn_conf_data",
+        "nlist_index": 7250,
+        "public_wrapper": "0xffffff80021bf110",
+        "symbol": "__Z23apple80211getSTA_DEAUTHP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data"
+      },
+      {
+        "fileoff": "0x20bf11b",
+        "ioc": 77,
+        "name": "RSN_CONF",
+        "next_nlist_index": 7096,
+        "next_symbol": "__Z20apple80211getKEY_RSCP23IO80211SkywalkInterfaceP14apple80211_key",
+        "nlist_index": 7148,
+        "public_wrapper": "0xffffff80021bf11b",
+        "symbol": "__Z21apple80211getRSN_CONFP23IO80211SkywalkInterfaceP24apple80211_rsn_conf_data"
+      }
+    ]
+  },
+  "schema": "itlwm-skywalk-public-sta-rsn-get-fixed-stubs-alignment-v1",
+  "scope": {
+    "card_specific_route_modified": false,
+    "carrier_abi_added": false,
+    "carrier_is_not_observed_for_get": true,
+    "deployment": false,
+    "legacy_v1_get_modified": false,
+    "outer_null_dispatch_modified": false,
+    "pre26_route_modified": false,
+    "public_nonnull_request_object_tahoe_bsd_get_only": true,
+    "radio_or_association": false,
+    "runtime_selector_invocation": false,
+    "set_behavior_changed": false,
+    "traffic": false,
+    "virtual_ioctl_modified": false
+  },
+  "source_base_revision": "f9e56dd1904d8e1e8b2230e422486e24d91cce08"
+}

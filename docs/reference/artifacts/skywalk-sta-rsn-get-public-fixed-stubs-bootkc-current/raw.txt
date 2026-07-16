@@ -1,0 +1,80 @@
+# 25C56 current Skywalk STA/RSN public GET fixed-stub recovery
+#
+# Source (read-only): 10.7.6.112:~/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery method: parse the outer 64-bit Mach-O LC_UUID, then the embedded
+# Wi-Fi MH_KEXT LC_SYMTAB directly and read the exact external symbol bodies.
+#
+# Container identity
+outer_file_bytes=66437120
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+outer_lc_uuid=F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5
+mh_kext_fileoff=0x1fe3000
+mh_kext_filetype=11
+mh_kext_lc_uuid=8FB4B7F0-D656-3539-B8D6-C1327A50377C
+mh_kext_text_vmaddr=0xffffff80020e3000
+mh_kext_text_fileoff=0x1fe3000
+lc_symtab_absolute_symoff=0x3498030
+lc_symtab_nsyms=19760
+lc_symtab_absolute_stroff=0x367e130
+lc_symtab_strsize=0x847d88
+#
+# Four exact adjacent N_SECT|N_EXT (n_type=0x0f), section 1 symbols.
+batch_symbol_vmaddr_start=0xffffff80021bf0fa
+batch_symbol_vmaddr_end=0xffffff80021bf126
+batch_symbol_fileoff_start=0x20bf0fa
+batch_symbol_fileoff_end=0x20bf126
+batch_symbol_bytes=0x2c
+batch_body_sha256=7cafec9b3e93326f5496eb094c961c255f27309b88a01744fb7a5aaccead46b2
+raw=55 48 89 e5 b8 0e 28 82 e0 5d c3
+body_sha256=9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576
+#
+selector=STA_AUTHORIZE
+symbol=__Z26apple80211getSTA_AUTHORIZEP23IO80211SkywalkInterfaceP29apple80211_sta_authorize_data
+nlist_index=7450
+symbol_vmaddr=0xffffff80021bf0fa
+symbol_vmaddr_end=0xffffff80021bf105
+symbol_fileoff=0x20bf0fa
+symbol_fileoff_end=0x20bf105
+symbol_bytes=0x0b
+next_nlist_index=7665
+next_symbol=__Z29apple80211getSTA_DISASSOCIATEP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data
+#
+selector=STA_DISASSOCIATE
+symbol=__Z29apple80211getSTA_DISASSOCIATEP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data
+nlist_index=7665
+symbol_vmaddr=0xffffff80021bf105
+symbol_vmaddr_end=0xffffff80021bf110
+symbol_fileoff=0x20bf105
+symbol_fileoff_end=0x20bf110
+symbol_bytes=0x0b
+next_nlist_index=7250
+next_symbol=__Z23apple80211getSTA_DEAUTHP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data
+#
+selector=STA_DEAUTH
+symbol=__Z23apple80211getSTA_DEAUTHP23IO80211SkywalkInterfaceP28apple80211_sta_disassoc_data
+nlist_index=7250
+symbol_vmaddr=0xffffff80021bf110
+symbol_vmaddr_end=0xffffff80021bf11b
+symbol_fileoff=0x20bf110
+symbol_fileoff_end=0x20bf11b
+symbol_bytes=0x0b
+next_nlist_index=7148
+next_symbol=__Z21apple80211getRSN_CONFP23IO80211SkywalkInterfaceP24apple80211_rsn_conf_data
+#
+selector=RSN_CONF
+symbol=__Z21apple80211getRSN_CONFP23IO80211SkywalkInterfaceP24apple80211_rsn_conf_data
+nlist_index=7148
+symbol_vmaddr=0xffffff80021bf11b
+symbol_vmaddr_end=0xffffff80021bf126
+symbol_fileoff=0x20bf11b
+symbol_fileoff_end=0x20bf126
+symbol_bytes=0x0b
+next_nlist_index=7096
+next_symbol=__Z20apple80211getKEY_RSCP23IO80211SkywalkInterfaceP14apple80211_key
+#
+# Decode of every body:
+#   push rbp; mov rbp,rsp; mov eax,0xe082280e; pop rbp; ret
+# Every direct leaf reads neither public argument and performs no gate, owner
+# lookup, call, state, transport, or event operation before the fixed return.
+# The public SDK does not provide a canonical name for 0xe082280e. It is kept
+# numeric and must not be relabelled as kIOReturnUnsupported (0xe00002c7).

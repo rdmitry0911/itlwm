@@ -2416,6 +2416,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this, (AirportItlwmAPSTAStaStatsDataLayout *)req->req_data)
                 : kIOReturnUnsupported;
         case APPLE80211_IOC_STA_AUTHORIZE:
+#if __IO80211_TARGET >= __MAC_26_0
+            // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
             return (cmd == SIOCSA80211)
@@ -2423,6 +2428,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this, (AirportItlwmAPSTAStaAuthorizeInputLayout *)req->req_data)
                 : kIOReturnUnsupported;
         case APPLE80211_IOC_STA_DISASSOCIATE:
+#if __IO80211_TARGET >= __MAC_26_0
+            // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
             return (cmd == SIOCSA80211)
@@ -2430,6 +2440,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, false)
                 : kIOReturnUnsupported;
         case APPLE80211_IOC_STA_DEAUTH:
+#if __IO80211_TARGET >= __MAC_26_0
+            // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
             return (cmd == SIOCSA80211)
@@ -2437,6 +2452,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, true)
                 : kIOReturnUnsupported;
         case APPLE80211_IOC_RSN_CONF:
+#if __IO80211_TARGET >= __MAC_26_0
+            // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
+            if (cmd == SIOCGA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
             return (cmd == SIOCSA80211)
