@@ -2237,6 +2237,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (cmd == SIOCSA80211)
                 return setDBG_GUARD_TIME_PARAMS((apple80211_dbg_guard_time_params *)req->req_data);
             return kIOReturnUnsupported;
+        case APPLE80211_IOC_AWDL_OUI:
+        case APPLE80211_IOC_AWDL_TOP_MASTER:
+            /*
+             * Both current 25C56 public directions are unread fixed
+             * 0xe082280e leaves.  Do not manufacture AWDL OUI identity or
+             * top-master state on this normal non-null Tahoe BSD surface.
+             */
+#if __IO80211_TARGET >= __MAC_26_0
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+#endif // __IO80211_TARGET >= __MAC_26_0
+            return kIOReturnUnsupported;
         case APPLE80211_IOC_AWDL_RSDB_CAPS:
             return (cmd == SIOCGA80211) ? getAWDL_RSDB_CAPS((apple80211_rsdb_capability *)req->req_data)
                                         : kIOReturnUnsupported;
