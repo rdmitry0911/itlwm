@@ -2573,6 +2573,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                     this,
                     (AirportItlwmAPSTACsaInputLayout *)req->req_data);
             return kIOReturnUnsupported;
+#if __IO80211_TARGET >= __MAC_26_0
+        case APPLE80211_IOC_P2P_NOA_LIST:
+        case APPLE80211_IOC_P2P_OPP_PS:
+        case APPLE80211_IOC_P2P_CT_WINDOW:
+            /*
+             * Current public Tahoe GET and SET leaves are unread fixed
+             * 0xe082280e stubs. No legacy carrier route is introduced here.
+             */
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
+                return static_cast<IOReturn>(0xe082280e);
+            return kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_SOFTAP_WIFI_NETWORK_INFO_IE:
             if (instance == NULL)
                 return kIOReturnNotReady;
