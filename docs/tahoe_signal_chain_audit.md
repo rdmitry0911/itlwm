@@ -2464,8 +2464,9 @@ See [CR-479-set-property-callback-quarantine-20260714.md](reference/CR-479-set-p
 
 The `Q13` diagnostics / roaming / country-information batch was originally
 recorded as moving this cluster off generic unsupported. Its classifications
-for `getPOWER_DEBUG_INFO`, `getWCL_EXTENDED_BSS_INFO`, and `getROAM_PROFILE`
-are superseded by later no-backend corrections below:
+for `getPOWER_DEBUG_INFO` and `getROAM_PROFILE` are superseded by later
+no-backend corrections below. `getWCL_EXTENDED_BSS_INFO` is separately
+superseded by the active-WCL partial-producer recovery in CR-479.
 
 - `getAWDL_PEER_TRAFFIC_STATS`
 - `getROAM_PROFILE`

@@ -8049,19 +8049,22 @@ removes a false telemetry success; it does not implement the absent owners or
 claim Apple valid-input return/value parity. See
 `docs/reference/CR-479-wcl-traffic-counters-quarantine-20260714.md`.
 
-## 2026-07-14 correction: extended BSS info requires the NetAdapter pipeline
+## 2026-07-16 correction: extended BSS info is an active WCL current-BSS producer
 
-The earlier Q13 classification treated `getWCL_EXTENDED_BSS_INFO` as a
-non-error owner-delegation boundary even though the local path had no owner
-and did not write its caller carrier. Exact 25C56 DEXT recovery shows active
-Infra slot `[533]` dispatching through Core to NetAdapter, where rate/MCS and
-associated RSN data are synchronized and their failures can propagate; an
-11be feature branch can additionally populate MLO context.
+Exact 25C56 DEXT recovery shows active Infra slot `[533]` dispatching through
+Core to NetAdapter, where rate/MCS and associated RSN data are synchronized,
+their failures can propagate, and an 11be feature branch can additionally
+populate MLO context. Local runtime tracing further proves that WCL
+`setCurrentBSS` calls this slot as selector `0x1cc` with a `0x214` output
+carrier; treating every non-null request as unsupported makes WCL leave the
+network.
 
-The local Tahoe getter retains its existing null guard but returns
-`kIOReturnUnsupported` for every non-null request before output mutation.
-This removes a false success, not a claim of Apple valid-input status or
-output-layout parity. See
+The local Tahoe getter now declares and fills the recovered carrier boundaries
+from its actual current-BSS rate/MCS producers, VHT default-or-producer path,
+HE default-or-HEON+11AX path, and bounded canonical raw RSN TLV. Rate/MCS
+failures propagate. The MLO range remains zero because no local 11be owner has
+been recovered. This is a partial local producer, not byte-identical Apple
+valid-input or private-NetAdapter parity. See
 `docs/reference/CR-479-wcl-extended-bss-info-quarantine-20260714.md`.
 
 ## 2026-07-14 correction: power debug info requires a live telemetry producer

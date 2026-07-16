@@ -3807,11 +3807,54 @@ getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
-    // Tahoe Core delegates a valid carrier to NetAdapter, which synchronizes
-    // rate/MCS/RSN and optional MLO data. The Intel port has no equivalent
-    // producer, so do not acknowledge an output it did not construct.
-    (void)data;
-    return kIOReturnUnsupported;
+    auto *carrier = data;
+    memset(carrier, 0, sizeof(*carrier));
+
+    struct ieee80211com *ic =
+        fHalService ? fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_RUN ||
+        ic->ic_bss == nullptr)
+        return kApple80211ErrDriverNotAvailable;
+
+    // These two reference NetAdapter synchronizers propagate their status.
+    // Reuse the corresponding current-BSS producers rather than rejecting a
+    // valid 0x214-byte WCL output carrier with generic Unsupported.
+    IOReturn ret = getRATE_SET(&carrier->rate_set);
+    if (ret != kIOReturnSuccess)
+        return ret;
+    ret = getMCS_INDEX_SET(&carrier->mcs_set);
+    if (ret != kIOReturnSuccess)
+        return ret;
+
+    // The local link-state path uses the same normalized defaults when VHT or
+    // HE is not negotiated.  There is no local 11be owner, so the optional
+    // MLO range remains deterministically empty.
+    carrier->vht_mcs_set.version = APPLE80211_VERSION;
+    carrier->vht_mcs_set.mcs_map = 0xffff;
+    if (getVHT_MCS_INDEX_SET(&carrier->vht_mcs_set) != kIOReturnSuccess) {
+        carrier->vht_mcs_set.version = APPLE80211_VERSION;
+        carrier->vht_mcs_set.mcs_map = 0xffff;
+    }
+
+    carrier->he_mcs_set.version = APPLE80211_VERSION;
+    carrier->he_mcs_set.mcs_map = 0xffff;
+    if ((ic->ic_flags & IEEE80211_F_HEON) != 0 &&
+        ic->ic_curmode >= IEEE80211_MODE_11AX) {
+        carrier->he_mcs_set.mcs_map =
+            ic->ic_bss->ni_he_mcs_nss_supp.tx_mcs_80;
+    }
+
+    // getAssociatedWPARSNIESync writes a raw 0x101-byte IE range and does not
+    // contribute a status.  Preserve that shape from the associated raw TLV;
+    // a missing or malformed length remains the deterministic all-zero range.
+    if (ic->ic_bss->ni_rsnie_tlv != nullptr &&
+        ic->ic_bss->ni_rsnie_tlv_len != 0 &&
+        ic->ic_bss->ni_rsnie_tlv_len <= sizeof(carrier->associated_rsn_ie)) {
+        memcpy(carrier->associated_rsn_ie, ic->ic_bss->ni_rsnie_tlv,
+               ic->ic_bss->ni_rsnie_tlv_len);
+    }
+
+    return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

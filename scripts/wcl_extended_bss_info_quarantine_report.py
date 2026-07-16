@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify WCL extended BSS info quarantine evidence."""
+"""Generate and verify WCL extended-BSS producer evidence."""
 
 import argparse
 import hashlib
@@ -24,6 +24,18 @@ def section(source, begin, end):
     return source[start:source.index(end, start)]
 
 
+def ordered(source, tokens):
+    positions = []
+    cursor = 0
+    for token in tokens:
+        position = source.find(token, cursor)
+        if position < 0:
+            return False
+        positions.append(position)
+        cursor = position + len(token)
+    return positions == sorted(positions)
+
+
 def report():
     cpp = CPP.read_text(encoding="utf-8")
     hpp = HPP.read_text(encoding="utf-8")
@@ -36,8 +48,8 @@ def report():
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
 
     return {
-        "schema": "itlwm-wcl-extended-bss-info-quarantine-v1",
-        "source_base_revision": "ea0a9e655fabf32729cc6e5de71a528d777d6f8b",
+        "schema": "itlwm-wcl-extended-bss-info-producer-v2",
+        "source_parent_revision": "c12a66a1e618e7d37bd2d6771ec25b4c4204f5f1",
         "reference": {
             "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
             "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
@@ -46,11 +58,36 @@ def report():
             "core_getter": "0x100132df6",
             "net_adapter_getter": "0x10019de64",
             "null_status": "0xe00002bc",
+            "carrier_size": "0x214",
         },
         "local": {
             "false_success": False,
-            "valid_input_return_is_apple_parity": False,
-            "runtime_selector_invocation": False,
+            "partial_local_producer": True,
+            "full_apple_valid_input_parity": False,
+            "mlo_context_is_zero_without_owner": True,
+        },
+        "external_runtime_evidence": {
+            "verified_by_this_source_check": False,
+            "selector_0x1cc_full_producer_trace": {
+                "workspace_relative_path": (
+                    "runtime-captures/"
+                    "itlwm-wcl-extended-bss-info-regression-20260716/"
+                    "main-full-producer-20260716T1838Z-linkstate.dtrace.log"
+                ),
+                "sha256": (
+                    "5555ade49a794456069867bea2906ff758a5c643fae3f0b0d101fa9a28b8863b"
+                ),
+            },
+            "four_radio_cycles": {
+                "workspace_relative_path": (
+                    "runtime-captures/"
+                    "itlwm-wcl-extended-bss-info-regression-20260716/"
+                    "full-producer-radio-cycles.log"
+                ),
+                "sha256": (
+                    "371e57bb9d3af57b372564fb987f4a2686919b91bfb0658ca4eafd31b5680d8f"
+                ),
+            },
         },
         "checks": {
             "reference_raw_manifest_matches": manifest == f"{raw_digest}  raw.txt\n",
@@ -85,7 +122,8 @@ def report():
                     "0x100017c58",
                     "0x100132df6",
                     "0x10019de64",
-                    "not Apple valid-input return-code or\noutput-layout parity",
+                    "partial local producer",
+                    "not byte-identical",
                 )
             ),
             "active_v2_slot_remains": (
@@ -95,24 +133,72 @@ def report():
                 and "getWCL_EXTENDED_BSS_INFO" in infra
                 and "fNetIf = new AirportItlwmSkywalkInterface;" in v2
             ),
+            "exact_0214_carrier_layout": all(
+                token in infra
+                for token in (
+                    "struct apple80211_extended_bss_info",
+                    "rate_set",
+                    "mcs_set",
+                    "vht_mcs_set",
+                    "he_mcs_set",
+                    "mlo_context[0x37]",
+                    "associated_rsn_ie[APPLE80211_MAX_RSN_IE_LEN]",
+                    "sizeof(apple80211_extended_bss_info) == 0x214",
+                    "offsetof(apple80211_extended_bss_info, rate_set) == 0x000",
+                    "offsetof(apple80211_extended_bss_info, mcs_set) == 0x0bc",
+                    "offsetof(apple80211_extended_bss_info, vht_mcs_set) == 0x0cc",
+                    "offsetof(apple80211_extended_bss_info, he_mcs_set) == 0x0d4",
+                    "offsetof(apple80211_extended_bss_info, mlo_context) == 0x0dc",
+                    "offsetof(apple80211_extended_bss_info, associated_rsn_ie) ==",
+                )
+            ),
             "local_null_guard_is_retained": (
                 "if (data == nullptr)" in getter
                 and "return kIOReturnBadArgumentTahoe;" in getter
             ),
-            "nonnull_path_fails_closed_without_output": (
-                "(void)data;" in getter
-                and "return kIOReturnUnsupported;" in getter
-                and "kIOReturnSuccess" not in getter
-                and "memset" not in getter
-                and "memcpy" not in getter
+            "producer_order_is_explicit": ordered(
+                getter,
+                (
+                    "memset(carrier, 0, sizeof(*carrier));",
+                    "ic == nullptr",
+                    "getRATE_SET(&carrier->rate_set)",
+                    "getMCS_INDEX_SET(&carrier->mcs_set)",
+                    "memcpy(carrier->associated_rsn_ie",
+                    "return kIOReturnSuccess;",
+                ),
             ),
-            "no_local_net_adapter_pipeline_is_introduced": all(
-                token not in getter
+            "rate_and_mcs_failures_propagate": all(
+                token in getter
                 for token in (
-                    "updateRateSetSync",
-                    "updateMCSSetSyc",
-                    "getAssociatedWPARSNIESync",
-                    "getMloContext",
+                    "IOReturn ret = getRATE_SET(&carrier->rate_set);",
+                    "ret = getMCS_INDEX_SET(&carrier->mcs_set);",
+                    "if (ret != kIOReturnSuccess)\n        return ret;",
+                )
+            ),
+            "vht_he_have_explicit_defaults_and_producers": (
+                "getVHT_MCS_INDEX_SET(&carrier->vht_mcs_set)" in getter
+                and getter.count("mcs_map = 0xffff;") >= 2
+                and "IEEE80211_F_HEON" in getter
+                and "ni_he_mcs_nss_supp.tx_mcs_80" in getter
+            ),
+            "rsn_is_bounded_associated_raw_tlv": all(
+                token in getter
+                for token in (
+                    "ni_rsnie_tlv != nullptr",
+                    "ni_rsnie_tlv_len != 0",
+                    "ni_rsnie_tlv_len <= sizeof(carrier->associated_rsn_ie)",
+                    "memcpy(carrier->associated_rsn_ie, ic->ic_bss->ni_rsnie_tlv",
+                )
+            ),
+            "mlo_is_not_fabricated": "mlo_context" not in getter,
+            "external_runtime_evidence_is_documented": all(
+                token in note
+                for token in (
+                    "not verified by this source-only script",
+                    "main-full-producer-20260716T1838Z-linkstate.dtrace.log",
+                    "5555ade49a794456069867bea2906ff758a5c643fae3f0b0d101fa9a28b8863b",
+                    "full-producer-radio-cycles.log",
+                    "371e57bb9d3af57b372564fb987f4a2686919b91bfb0658ca4eafd31b5680d8f",
                 )
             ),
         },
@@ -130,7 +216,7 @@ def main():
     value = report()
     failed = [key for key, passed in value["checks"].items() if not passed]
     if failed:
-        raise ValueError("WCL extended BSS info quarantine checks failed: " + ", ".join(failed))
+        raise ValueError("WCL extended-BSS producer checks failed: " + ", ".join(failed))
     rendered = json.dumps(value, indent=2, sort_keys=True) + "\n"
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -144,5 +230,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"WCL extended BSS info quarantine validation failed: {exc}", file=sys.stderr)
+        print(f"WCL extended-BSS producer validation failed: {exc}", file=sys.stderr)
         sys.exit(1)

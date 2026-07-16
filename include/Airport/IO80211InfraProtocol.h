@@ -20,6 +20,7 @@
 #define IO80211InfraProtocol_h
 
 #include <IOKit/IOService.h>
+#include <stddef.h>
 #include <Airport/apple80211_var.h>
 #include <Airport/apple80211_ioctl.h>
 
@@ -66,7 +67,41 @@ struct apple80211_he_counters_ctl;
 struct apple80211ChannelInfo;
 struct apple80211_rsn_xe_data;
 struct apple80211_sib_coex_status;
-struct apple80211_extended_bss_info;
+// WCLNetManager::setCurrentBSS() requests this selector-0x1cc carrier as a
+// 0x214-byte GET.  The field boundaries are recovered from the Tahoe 25C56
+// NetAdapter producer; natural alignment is part of that ABI.
+struct apple80211_extended_bss_info {
+    apple80211_rate_set_data rate_set;                  // +0x000, 0x0bc
+    apple80211_mcs_index_set_data mcs_set;              // +0x0bc, 0x010
+    apple80211_vht_mcs_index_set_data vht_mcs_set;      // +0x0cc, 0x008
+    apple80211_he_mcs_index_set_data he_mcs_set;        // +0x0d4, 0x008
+    uint8_t mlo_context[0x37];                          // +0x0dc, opaque
+    uint8_t associated_rsn_ie[APPLE80211_MAX_RSN_IE_LEN]; // +0x113, raw
+};
+
+static_assert(sizeof(apple80211_rate_set_data) == 0x0bc,
+              "WCL extended-BSS rate-set ABI mismatch");
+static_assert(sizeof(apple80211_mcs_index_set_data) == 0x010,
+              "WCL extended-BSS MCS ABI mismatch");
+static_assert(sizeof(apple80211_vht_mcs_index_set_data) == 0x008,
+              "WCL extended-BSS VHT ABI mismatch");
+static_assert(sizeof(apple80211_he_mcs_index_set_data) == 0x008,
+              "WCL extended-BSS HE ABI mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, rate_set) == 0x000,
+              "WCL extended-BSS rate offset mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, mcs_set) == 0x0bc,
+              "WCL extended-BSS MCS offset mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, vht_mcs_set) == 0x0cc,
+              "WCL extended-BSS VHT offset mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, he_mcs_set) == 0x0d4,
+              "WCL extended-BSS HE offset mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, mlo_context) == 0x0dc,
+              "WCL extended-BSS MLO offset mismatch");
+static_assert(offsetof(apple80211_extended_bss_info, associated_rsn_ie) ==
+                  0x113,
+              "WCL extended-BSS RSN offset mismatch");
+static_assert(sizeof(apple80211_extended_bss_info) == 0x214,
+              "WCL extended-BSS carrier ABI mismatch");
 struct apple80211_wcl_low_latency_stats;
 struct apple80211_bgscan_cached_network_data_list;
 struct apple80211_wcl_wnm_offload_t;

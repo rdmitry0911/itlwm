@@ -1,19 +1,37 @@
 {
   "checks": {
     "active_v2_slot_remains": true,
+    "exact_0214_carrier_layout": true,
+    "external_runtime_evidence_is_documented": true,
     "local_null_guard_is_retained": true,
-    "no_local_net_adapter_pipeline_is_introduced": true,
-    "nonnull_path_fails_closed_without_output": true,
+    "mlo_is_not_fabricated": true,
+    "producer_order_is_explicit": true,
+    "rate_and_mcs_failures_propagate": true,
     "reference_note_has_scope_and_nonclaim": true,
     "reference_raw_has_net_adapter_pipeline": true,
-    "reference_raw_manifest_matches": true
+    "reference_raw_manifest_matches": true,
+    "rsn_is_bounded_associated_raw_tlv": true,
+    "vht_he_have_explicit_defaults_and_producers": true
+  },
+  "external_runtime_evidence": {
+    "four_radio_cycles": {
+      "sha256": "371e57bb9d3af57b372564fb987f4a2686919b91bfb0658ca4eafd31b5680d8f",
+      "workspace_relative_path": "runtime-captures/itlwm-wcl-extended-bss-info-regression-20260716/full-producer-radio-cycles.log"
+    },
+    "selector_0x1cc_full_producer_trace": {
+      "sha256": "5555ade49a794456069867bea2906ff758a5c643fae3f0b0d101fa9a28b8863b",
+      "workspace_relative_path": "runtime-captures/itlwm-wcl-extended-bss-info-regression-20260716/main-full-producer-20260716T1838Z-linkstate.dtrace.log"
+    },
+    "verified_by_this_source_check": false
   },
   "local": {
     "false_success": false,
-    "runtime_selector_invocation": false,
-    "valid_input_return_is_apple_parity": false
+    "full_apple_valid_input_parity": false,
+    "mlo_context_is_zero_without_owner": true,
+    "partial_local_producer": true
   },
   "reference": {
+    "carrier_size": "0x214",
     "core_getter": "0x100132df6",
     "image_sha256": "4696795caefe738e849e5a4bb12077b7a3c2e68e9bb44fc99e8c91ef5f6463ab",
     "image_uuid_x86_64": "149C0AD1-A92F-35BC-AA69-5C8815C5421E",
@@ -22,6 +40,6 @@
     "net_adapter_getter": "0x10019de64",
     "null_status": "0xe00002bc"
   },
-  "schema": "itlwm-wcl-extended-bss-info-quarantine-v1",
-  "source_base_revision": "ea0a9e655fabf32729cc6e5de71a528d777d6f8b"
+  "schema": "itlwm-wcl-extended-bss-info-producer-v2",
+  "source_parent_revision": "c12a66a1e618e7d37bd2d6771ec25b4c4204f5f1"
 }
