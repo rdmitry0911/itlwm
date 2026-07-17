@@ -37,6 +37,9 @@ SOURCE_TOKENS = {
     ],
     "skywalk": [
         "setOS_FEATURE_FLAGS(apple80211_feature_flags *data)",
+        "constexpr uint64_t kSlowWifiFeatureFlag = 1ULL << 2",
+        "if ((flags & kSlowWifiFeatureFlag) != 0)",
+        "return kIOReturnUnsupported;",
         "cachedOSFeatureFlags = flags",
         "getSLOW_WIFI_FEATURE_ENABLED(apple80211_slow_wifi_feature_enabled *data)",
         "isSlowWifiFeatureEnabled()",
@@ -79,7 +82,7 @@ def build_report():
     forbidden = present_tokens([CONTRACTS, REGISTRY, SKYWALK], FORBIDDEN_LOCAL_TOKENS)
     return {
         "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v2",
-        "source_base_revision": "beb4a475a253c44d5a84282c4ad808854c840d83",
+        "source_base_revision": "b27f276eb98be416dfd5b445a785d9d2fc98ff4f",
         "reference": {
             "build": "macOS 26.2 (25C56)",
             "initial_store": {
@@ -107,10 +110,11 @@ def build_report():
             },
         },
         "local": {
-            "raw_feature_word_cached": True,
+            "raw_feature_word_cached_when_slow_wifi_bit_clear": True,
+            "slow_wifi_bit2_quarantined_before_cache": True,
             "slow_wifi_null_owner_initial_enabled": 0,
             "producer_to_getter_mapping_implemented": False,
-            "reason": "dependent LQM capability and PeerMonitor owners are unrecovered",
+            "reason": "dependent LQM capability and PeerMonitor owners are unrecovered; bit 2 is rejected before cache",
         },
         "checks": {
             **{key: not value for key, value in missing.items()},

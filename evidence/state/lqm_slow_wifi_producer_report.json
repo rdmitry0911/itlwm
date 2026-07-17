@@ -10,8 +10,9 @@
   "forbidden_local_tokens": [],
   "local": {
     "producer_to_getter_mapping_implemented": false,
-    "raw_feature_word_cached": true,
-    "reason": "dependent LQM capability and PeerMonitor owners are unrecovered",
+    "raw_feature_word_cached_when_slow_wifi_bit_clear": true,
+    "reason": "dependent LQM capability and PeerMonitor owners are unrecovered; bit 2 is rejected before cache",
+    "slow_wifi_bit2_quarantined_before_cache": true,
     "slow_wifi_null_owner_initial_enabled": 0
   },
   "missing_tokens": {
@@ -48,5 +49,5 @@
     "startup_copy_uuid": "EACC3D4B-4773-30D1-83FF-CB21BE2A7DF8"
   },
   "schema": "itlwm-lqm-slow-wifi-producer-quarantine-v2",
-  "source_base_revision": "beb4a475a253c44d5a84282c4ad808854c840d83"
+  "source_base_revision": "b27f276eb98be416dfd5b445a785d9d2fc98ff4f"
 }

@@ -5140,6 +5140,17 @@ setOS_FEATURE_FLAGS(apple80211_feature_flags *data)
 
     const uint64_t flags = *reinterpret_cast<const uint64_t *>(data);
 
+    constexpr uint64_t kSlowWifiFeatureFlag = 1ULL << 2;
+    if ((flags & kSlowWifiFeatureFlag) != 0) {
+        // Apple fans this bit into Core +0x7569. The matching Intel LQM owner
+        // and capability are intentionally absent, so acknowledging the word
+        // would claim a feature transition this driver does not implement
+        // while the later getter remains false. QueueCall activity observed
+        // during the same radio lifecycle is tracked independently; do not
+        // infer a causal link from this guard. Reject before caching it.
+        return kIOReturnUnsupported;
+    }
+
     // AppleBCMWLANCore::setOS_FEATURE_FLAGS is not an ack-only slot. It first
     // persists the incoming 64-bit word, then derives multiple cached booleans
     // and fans out follow-up configuration (DynSAR, 6G, KVR, AOP scan-forward,

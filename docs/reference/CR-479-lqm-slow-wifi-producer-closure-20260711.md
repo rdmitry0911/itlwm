@@ -8,9 +8,10 @@ Date: 2026-07-11
 (`SLOW_WIFI_FEATURE_ENABLED`) and uses carrier dword `+0x04` as options bit
 zero. This note closes the investigation of the missing local producer edge:
 the reference update source is recovered exactly, but reproducing it exposes
-the already-known incomplete local LQM consumer. The local driver must retain
-the raw feature word without routing this bit into the public getter until that
-consumer is recovered.
+the already-known incomplete local LQM consumer. The local driver must not
+acknowledge or cache a bit-2-bearing raw feature word, nor route bit 2 into the
+public getter, until that consumer is recovered. It retains the raw carrier
+only for requests whose bit 2 is clear.
 
 ## Reference evidence
 
@@ -47,11 +48,12 @@ The direct producer-to-getter implementation was built and tested twice on
 the 25C56 guest. It is rejected, not committed:
 
 - Candidate `EACC3D4B-4773-30D1-83FF-CB21BE2A7DF8` copied the Apple startup
-  low byte. It reached `IO80211QueueCall::handleEntry` type 3 with
-  `0xe00002c7` and concurrent 240-second ping/iperf produced `239/240` ping.
+  low byte. Its runtime capture contains `IO80211QueueCall::handleEntry` type
+  3 with `0xe00002c7`; concurrent 240-second ping/iperf produced `239/240`
+  ping.
 - Candidate `17DA2F0A-6A4D-33C6-BAD4-3E368575F3C8` left startup at zero but
-  mapped OS feature word bit 2 exactly. A real userspace feature update again
-  reached the same type-3 `0xe00002c7` path and produced `239/240` ping.
+  mapped OS feature word bit 2 exactly. Its runtime capture again contains the
+  type-3 `0xe00002c7` path and produced `239/240` ping.
 
 Both candidates completed iperf3, but neither outcome passes the required
 zero-loss runtime gate. The raw artifacts are retained outside the source
@@ -75,22 +77,50 @@ capability is correctly owned. The FBT artifact is retained at
 
 ## Local disposition
 
-`setOS_FEATURE_FLAGS` continues to retain the native 64-bit word in
-`cachedOSFeatureFlags`. `TahoeOwnerRegistry` remains the actual local
-null-owner for the slow-WiFi getter, initialized to `0`. There is deliberately
-no local `OS_FEATURE_FLAGS bit 2 -> SLOW_WIFI_FEATURE_ENABLED` transition and
-no startup copy of the private Apple core byte.
+`setOS_FEATURE_FLAGS` retains the native 64-bit word in
+`cachedOSFeatureFlags` only when slow-WiFi bit 2 is clear. If bit 2 is set,
+it returns `kIOReturnUnsupported` before the cache write. `TahoeOwnerRegistry`
+remains the actual local null-owner for the slow-WiFi getter, initialized to
+`0`; there is deliberately no local
+`OS_FEATURE_FLAGS bit 2 -> SLOW_WIFI_FEATURE_ENABLED` transition and no
+startup copy of the private Apple core byte.
 
-This is not a substitute value or a compatibility gate: it is the reference
-null-owner branch for a driver that does not yet own the dependent LQM
-capability and PeerMonitor state. Adding the recovered producer before
-recovering those owners would turn a known queue failure into an externally
-visible regression.
+The bit-2 rejection is a quarantine, not a substitute value or compatibility
+gate. Apple accepts the word only because it owns the dependent LQM capability
+and PeerMonitor state. This driver does not, so cache-only success would make
+a false externally visible claim. The quarantine does not claim to suppress
+other LQM or QueueCall work in the radio lifecycle.
 
 `scripts/lqm_slow_wifi_producer_report.py` checks the reference anchors,
-the retained raw feature-word carrier, and the absence of the unsafe local
-mapping deterministically. Its checked-in output is
+the retained raw feature-word carrier for bit-2-clear requests, the bit-2
+quarantine, and the absence of the unsafe local mapping deterministically. Its
+checked-in output is
 `evidence/state/lqm_slow_wifi_producer_report.json`.
+
+## Current candidate runtime validation
+
+Candidate `18696FED-D0E0-3E57-BAC7-B09E499527B1` was loaded after the host
+reboot; the active bundle and AuxiliaryKC inspection both matched that UUID.
+During a normal radio OFF/ON lifecycle, a passive FBT probe recorded the
+system-managed `setOS_FEATURE_FLAGS` producer passing `0x408967c` twice. Bit
+2 is set in that word, and both local returns were `0xe00002c7`
+(`kIOReturnUnsupported`). The probe is retained at
+`/Users/devops/runtime/slowwifi-bit2-system-producer-20260717T165823Z/fbt.log`;
+the matching external IOC results are in
+`/home/dima/Projects/itlwm/vm-boot/20260717T164704Z-5g153-vht80-slowwifi-resume/serial.log`.
+This proves the narrow behavior of the candidate: it truthfully rejects a
+real bit-2 carrier before `cachedOSFeatureFlags` is written.
+
+That same timestamp-less FBT capture contains `IO80211QueueCall` and
+`IO80211InfraInterface::createLinkQualityMonitor` entries, including one
+QueueCall before the first captured OS-feature entry. It therefore neither
+establishes a causal ordering between OS feature flags and QueueCall nor
+proves that this quarantine suppresses LQM work. Those LQM paths remain an
+open surface. Separately, the post-reboot candidate passed a clean 240-second
+traffic gate; its artifacts are
+`/Users/devops/runtime/slowwifi-18696-post-host-reboot-20260717T164918Z/ping-240.log`
+and `iperf3-240.json` in the same directory. It also passed four strict radio
+OFF/ON cycles on the 5 GHz channel-153, VHT80 lab AP; the four-cycle log is
 
 ## Non-claims
 
@@ -98,3 +128,5 @@ mapping deterministically. Its checked-in output is
 - This does not implement the other Apple `setOS_FEATURE_FLAGS` fan-out
   branches (DynSAR, 6G, KVR, and link-loss configuration).
 - This does not change the `CHIP_DIAGS` no-write unsupported behavior.
+- This does not claim that OS feature flags cause, or that this guard suppresses,
+  any observed `IO80211QueueCall` work.
