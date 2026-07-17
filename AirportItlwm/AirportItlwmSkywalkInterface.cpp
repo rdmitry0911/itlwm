@@ -1543,6 +1543,18 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     if (req->req_data == NULL)
         return kIOReturnUnsupported;
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * The current public SET wrapper is an unread fixed 0xe082280e
+     * leaf.  It does not inspect the normal non-null carrier, so do not
+     * acknowledge an inventory update that the Tahoe reference never makes.
+     * GET remains on the dynamic virtual producer below.
+     */
+    if (cmd == SIOCSA80211 &&
+        req->req_type == APPLE80211_IOC_CHANNELS_INFO)
+        return kApple80211NotVirtualInterface;
+#endif // __IO80211_TARGET >= __MAC_26_0
+
     // Tahoe architectural gap fixed here:
     // the Skywalk-only BSD bridge originally forwarded just a small hand-picked
     // subset of Apple80211 IOCTLs.  That diverged from the legacy STA IOCTL
