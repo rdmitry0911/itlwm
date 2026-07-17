@@ -59,15 +59,20 @@ wakeupOn(void *ident)
 }
 
 int ItlHalService::
-tsleep_nsec(void *ident, int priority, const char *wmesg, int timo)
+tsleep_nsec(void *ident, int priority, const char *wmesg, uint64_t timo)
 {
 //    XYLog("%s %s\n", __FUNCTION__, wmesg);
     struct timespec ts;
+    struct timespec *timeout = nullptr;
     int err;
-    memset(&ts, 0, sizeof(struct timespec));
-    ts.tv_nsec = timo;
+    if (timo != UINT64_MAX) {
+        memset(&ts, 0, sizeof(struct timespec));
+        ts.tv_sec = timo / 1000000000ULL;
+        ts.tv_nsec = timo % 1000000000ULL;
+        timeout = &ts;
+    }
     lck_mtx_lock(this->inner_lock);
-    err = msleep(ident, this->inner_lock, priority, wmesg, &ts);
+    err = msleep(ident, this->inner_lock, priority, wmesg, timeout);
     lck_mtx_unlock(this->inner_lock);
     return err;
 }

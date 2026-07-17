@@ -239,7 +239,7 @@ public:
     
 protected:
     
-    int tsleep_nsec(void *ident, int priority, const char *wmesg, int timo);
+    int tsleep_nsec(void *ident, int priority, const char *wmesg, uint64_t timo);
     
     void wakeupOn(void* ident);
     
