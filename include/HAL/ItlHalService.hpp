@@ -239,6 +239,11 @@ public:
     
 protected:
     
+    /* Completion paths may test their predicate before sleeping under this mutex. */
+    void lockTsleep();
+    void unlockTsleep();
+    int tsleep_nsec_locked(void *ident, int priority, const char *wmesg,
+                           uint64_t timo);
     int tsleep_nsec(void *ident, int priority, const char *wmesg, uint64_t timo);
     
     void wakeupOn(void* ident);

@@ -49,6 +49,7 @@
 #include <net/ethernet.h>
 
 #include <sys/_task.h>
+#include <kern/clock.h>
 #include <sys/pcireg.h>
 
 #define super ItlHalService
@@ -3435,8 +3436,10 @@ iwn_notif_intr(struct iwn_softc *sc)
             break;
 
         case IWN5000_CALIBRATION_DONE:
+            lockTsleep();
             sc->sc_flags |= IWN_FLAG_CALIB_DONE;
             wakeupOn(sc);
+            unlockTsleep();
             break;
         }
 
@@ -6917,9 +6920,29 @@ iwn5000_query_calibration(struct iwn_softc *sc)
     if (error != 0)
         return error;
 
-    /* Wait at most two seconds for calibration to complete. */
-    if (!(sc->sc_flags & IWN_FLAG_CALIB_DONE))
-        error = that->tsleep_nsec(sc, PCATCH, "iwncal", SEC_TO_NSEC(2));
+    uint64_t deadline;
+    clock_interval_to_deadline(2, kSecondScale, &deadline);
+    that->lockTsleep();
+    while (!(sc->sc_flags & IWN_FLAG_CALIB_DONE)) {
+        uint64_t now;
+        uint64_t remaining_nsec;
+        clock_get_uptime(&now);
+        if (now >= deadline) {
+            error = EWOULDBLOCK;
+            break;
+        }
+        absolutetime_to_nanoseconds(deadline - now, &remaining_nsec);
+        if (remaining_nsec == 0) {
+            error = EWOULDBLOCK;
+            break;
+        }
+        error = that->tsleep_nsec_locked(sc, PCATCH, "iwncal", remaining_nsec);
+        if (error != 0 && !(sc->sc_flags & IWN_FLAG_CALIB_DONE))
+            break;
+    }
+    if (sc->sc_flags & IWN_FLAG_CALIB_DONE)
+        error = 0;
+    that->unlockTsleep();
     return error;
 }
 
