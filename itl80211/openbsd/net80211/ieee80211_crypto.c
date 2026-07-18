@@ -408,6 +408,9 @@ ieee80211_derive_ptk(enum ieee80211_akm akm, const u_int8_t *pmk,
 	void (*kdf)(const u_int8_t *, size_t, const u_int8_t *, size_t,
         const u_int8_t *, size_t, u_int8_t *, size_t);
     u_int8_t buf[2 * IEEE80211_ADDR_LEN + 2 * EAPOL_KEY_NONCE_LEN];
+    static const u_int8_t ptk_label[] = "Pairwise key expansion";
+    size_t ptk_label_len;
+    size_t ptk_len;
     int ret;
 
     /* Min(AA,SPA) || Max(AA,SPA) */
@@ -421,8 +424,21 @@ ieee80211_derive_ptk(enum ieee80211_akm akm, const u_int8_t *pmk,
     memcpy(&buf[44], ret ? snonce : anonce, EAPOL_KEY_NONCE_LEN);
 
     kdf = ieee80211_is_sha256_akm(akm) ? ieee80211_kdf : ieee80211_prf;
-    (*kdf)(pmk, IEEE80211_PMK_LEN, (const u_int8_t *)"Pairwise key expansion", 23,
-        buf, sizeof buf, (u_int8_t *)ptk, sizeof(*ptk));
+    /*
+     * The SHA256 KDF consumes the label bytes without the NUL terminator,
+     * while the legacy SHA1 PRF needs the NUL separator before Context.
+     */
+    ptk_label_len = ieee80211_is_sha256_akm(akm)
+        ? sizeof(ptk_label) - 1 : sizeof(ptk_label);
+    /*
+     * SHA256 KDF includes L in its HMAC input.  CCMP's PTK is 48 bytes
+     * (KCK16 + KEK16 + TK16), while the legacy SHA1 PRF must retain the
+     * full local carrier length because it has no L field.
+     */
+    ptk_len = ieee80211_is_sha256_akm(akm)
+        ? MIN(48, sizeof(*ptk)) : sizeof(*ptk);
+    (*kdf)(pmk, IEEE80211_PMK_LEN, ptk_label, ptk_label_len,
+        buf, sizeof buf, (u_int8_t *)ptk, ptk_len);
 }
 
 static void
