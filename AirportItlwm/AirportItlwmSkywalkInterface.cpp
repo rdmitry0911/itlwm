@@ -1793,11 +1793,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnUnsupported;
         case APPLE80211_IOC_ANTENNA_DIVERSITY:
             /*
-             * The current Skywalk public GET wrapper is an unread fixed
-             * 0xe082280e leaf. Keep the separate legacy V1 antenna route
-             * outside this Tahoe-only public dispatch boundary.
+             * The current Skywalk public GET and SET wrappers are unread
+             * fixed 0xe082280e leaves. Keep the separate legacy V1 GET-only
+             * antenna route outside this Tahoe-only public dispatch boundary.
              */
-            if (cmd == SIOCGA80211)
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_ROM:
