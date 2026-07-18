@@ -1469,6 +1469,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            (req->req_type == APPLE80211_IOC_COUNTRY_CHANNELS ||
+             req->req_type == APPLE80211_IOC_TRAP_CRASHTRACER_MINI_DUMP)) {
+            /*
+             * The local GET helpers clear respectively 0x12d8 and 0x19000
+             * bytes.  That is valid only for a kernel-owned carrier; the BSD
+             * callback has not marshalled its nested req_data address.  Leave
+             * raw BSD transport to the family rather than writing either
+             * large caller-owned result from this driver.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
