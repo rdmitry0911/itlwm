@@ -12,7 +12,8 @@ The compile-time Tahoe-only case returns the direct public-wrapper raw status
 0xe082280e before observing the carrier. The direct leaf reads neither public
 argument, so the branch applies to a non-null request object without claiming
 outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+switch. The separately evidenced Tahoe SET direction is confined to CR-595;
+this GET record does not independently establish SET behavior.
 
 Legacy V1 has a separate TX_ANTENNA route using an existing
 apple80211_antenna_data carrier. It is deliberately preserved and this layer
@@ -54,6 +55,9 @@ behavior, antenna behavior, legacy V1 behavior, Virtual IOCTL, card-specific
 behavior, firmware, runtime-execution, radio, association, traffic, or broader
 Tahoe behavior parity.
 
+SET behavior is separately aligned and documented by CR-595; this GET evidence
+does not independently prove SET behavior.
+
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
 this layer.
@@ -63,4 +67,5 @@ this layer.
 scripts/skywalk_public_tx_antenna_get_fixed_stub_alignment_report.py --check
 checks the direct raw record and manifest, exact Tahoe-only GET case, absent
 pre-26 source case, preserved separate legacy V1 route, separated Virtual/card
-seams, and active Tahoe source-phase markers.
+seams, the TX-case boundary before RX_ANTENNA, and active Tahoe source-phase
+markers.

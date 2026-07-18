@@ -52,7 +52,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v2",
+        "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v3",
         "source_base_revision": "407536ed0244f3d4003e4fa6e5bd46850db823d0",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -68,7 +68,7 @@ def report():
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
             "adjacent_rx_antenna_set_outside_tx_get_evidence": True,
-            "tx_antenna_set_modified": False,
+            "tx_antenna_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -99,25 +99,22 @@ def report():
                 "selector remains absent from the pre-26 switch", "Legacy V1 has a separate TX_ANTENNA route",
                 "card-specific route has no TX_ANTENNA entry",
                 "does not claim outer-null dispatch behavior, a TX_ANTENNA Skywalk carrier contract, SET behavior, antenna behavior, legacy V1 behavior, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-595; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_TX_ANTENNA:") == 1
-                and "if (cmd == SIOCGA80211)" in tx
+                and "SIOCGA80211" in tx
                 and "return static_cast<IOReturn>(0xe082280e);" in tx
                 and "req->req_data" not in tx
                 and "return kIOReturnSuccess;" not in tx
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_case_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in tx
-                and "SIOCSA80211" not in tx
                 and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_TX_ANTENNA:" not in pre26_dispatcher
             ),
-            "tx_case_boundary_excludes_adjacent_rx_set": (
-                "case APPLE80211_IOC_RX_ANTENNA:" not in tx
-                and "SIOCSA80211" not in tx
-            ),
+            "tx_case_boundary_excludes_adjacent_rx_case": "case APPLE80211_IOC_RX_ANTENNA:" not in tx,
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher
                 and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_TX_ANTENNA:")
