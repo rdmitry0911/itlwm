@@ -54,7 +54,7 @@ def report():
     rom = section(
         dispatcher,
         "case APPLE80211_IOC_ROM:",
-        "        case APPLE80211_IOC_POWER:",
+        "        case APPLE80211_IOC_RAND:",
     )
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
@@ -64,7 +64,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-rom-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-rom-get-fixed-stub-alignment-v2",
         "source_base_revision": "42d06e1b07ee56cb0c002f27088006fd1485923b",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -79,7 +79,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
-            "rom_set_modified": False,
+            "rom_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -111,21 +111,22 @@ def report():
                 "selector remains absent from the pre-26 switch", "No local ROM carrier contract is inferred",
                 "card-specific route has no ROM entry",
                 "does not claim outer-null dispatch behavior, a ROM carrier contract, SET behavior, ROM behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-598; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_ROM:") == 1
-                and "if (cmd == SIOCGA80211)" in rom
+                and "SIOCGA80211" in rom
                 and "return static_cast<IOReturn>(0xe082280e);" in rom
                 and "req->req_data" not in rom
                 and "return kIOReturnSuccess;" not in rom
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_case_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in rom
-                and "SIOCSA80211" not in rom
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in rom
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_ROM:" not in pre26_dispatcher
             ),
+            "rom_case_boundary_excludes_rand_case": "case APPLE80211_IOC_RAND:" not in rom,
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher
                 and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_ROM:")

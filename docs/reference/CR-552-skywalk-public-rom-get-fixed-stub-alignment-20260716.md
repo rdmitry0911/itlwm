@@ -11,7 +11,8 @@ The compile-time Tahoe-only case returns the direct public-wrapper raw status
 0xe082280e before observing the carrier. The direct leaf reads neither public
 argument, so the branch applies to a non-null request object without claiming
 outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+switch. The separately evidenced Tahoe SET direction is confined to CR-598;
+this GET record does not independently establish SET behavior.
 
 No local ROM carrier contract is inferred from the direct current public getter.
 This layer neither constructs nor consumes a carrier. Historical V1 and Virtual
@@ -49,6 +50,9 @@ behavior, V1, Virtual IOCTL, card-specific behavior, firmware,
 runtime-execution, radio, association, traffic, or broader Tahoe behavior
 parity.
 
+SET behavior is separately aligned and documented by CR-598; this GET evidence
+does not independently prove SET behavior.
+
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
 this layer.
@@ -58,4 +62,5 @@ this layer.
 scripts/skywalk_public_rom_get_fixed_stub_alignment_report.py --check checks
 the direct raw record and manifest, exact Tahoe-only GET case, absent pre-26
 source case, separated V1/Virtual/card seams, selector declaration without
-local carrier access, and active Tahoe source-phase markers.
+local carrier access, the ROM-case boundary before RAND, and active Tahoe
+source-phase markers.
