@@ -1455,6 +1455,20 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            (req->req_type == APPLE80211_IOC_BGSCAN_CACHE_RESULTS ||
+             req->req_type == TahoeSkywalkIoctlRoutes::kIocWclBssInfo)) {
+            /*
+             * These dynamic WCL result carriers are respectively 0xb00 and
+             * 0x844 bytes.  Their local producers intentionally write the
+             * complete payload and remain valid for the card-specific route,
+             * whose request carrier is kernel-owned.  A BSD callback owns
+             * only the outer request, however, so its nested req_data address
+             * must stay with the family transport rather than reaching those
+             * producers directly.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
