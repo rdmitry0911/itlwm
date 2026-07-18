@@ -8,7 +8,7 @@
     "reference_raw_has_exact_unread_public_get_fixed_stub": true,
     "reference_raw_manifest_matches": true,
     "selector_is_declared_without_local_carrier_access": true,
-    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true
+    "tahoe_target_guard_and_pre26_boundary_remain_explicit": true
   },
   "reference": {
     "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
@@ -20,7 +20,7 @@
     "nlist_index": 7247,
     "public_wrapper": "0xffffff80021beaf2"
   },
-  "schema": "itlwm-skywalk-public-rx-antenna-get-fixed-stub-alignment-v1",
+  "schema": "itlwm-skywalk-public-rx-antenna-get-fixed-stub-alignment-v2",
   "scope": {
     "card_specific_route_modified": false,
     "carrier_abi_added": false,
@@ -32,7 +32,7 @@
     "public_nonnull_request_object_tahoe_bsd_get_only": true,
     "radio_or_association": false,
     "runtime_selector_invocation": false,
-    "rx_antenna_set_modified": false,
+    "rx_antenna_set_behavior_is_outside_this_get_evidence": true,
     "traffic": false,
     "virtual_ioctl_modified": false
   },

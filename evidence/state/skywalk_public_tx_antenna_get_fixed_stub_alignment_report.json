@@ -8,7 +8,8 @@
     "reference_raw_has_exact_unread_public_get_fixed_stub": true,
     "reference_raw_manifest_matches": true,
     "selector_and_carrier_boundaries_are_explicit": true,
-    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true
+    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true,
+    "tx_case_boundary_excludes_adjacent_rx_set": true
   },
   "reference": {
     "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
@@ -20,8 +21,9 @@
     "nlist_index": 7252,
     "public_wrapper": "0xffffff80021beae7"
   },
-  "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v1",
+  "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v2",
   "scope": {
+    "adjacent_rx_antenna_set_outside_tx_get_evidence": true,
     "card_specific_route_modified": false,
     "carrier_abi_added": false,
     "carrier_is_not_observed": true,

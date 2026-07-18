@@ -42,7 +42,7 @@ def report():
     bsd = section(cpp, "processBSDCommand(ifnet_t interface, UInt cmd, void *data)", "processApple80211Ioctl(UInt cmd, apple80211req *req)")
     dispatcher = section(cpp, "processApple80211Ioctl(UInt cmd, apple80211req *req)", "IOReturn AirportItlwmSkywalkInterface::\ngetAUTH_TYPE")
     tahoe_block = section(dispatcher, "#if __IO80211_TARGET >= __MAC_26_0\n        case APPLE80211_IOC_COUNTERMEASURES:", "        case APPLE80211_IOC_POWER:")
-    tx = section(dispatcher, "case APPLE80211_IOC_TX_ANTENNA:", "        case APPLE80211_IOC_POWER:")
+    tx = section(dispatcher, "case APPLE80211_IOC_TX_ANTENNA:", "        case APPLE80211_IOC_RX_ANTENNA:")
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
     legacy = section(v1, "case APPLE80211_IOC_TX_ANTENNA:", "case APPLE80211_IOC_ANTENNA_DIVERSITY:")
@@ -52,7 +52,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-tx-antenna-get-fixed-stub-alignment-v2",
         "source_base_revision": "407536ed0244f3d4003e4fa6e5bd46850db823d0",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -67,6 +67,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
+            "adjacent_rx_antenna_set_outside_tx_get_evidence": True,
             "tx_antenna_set_modified": False,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
@@ -110,8 +111,12 @@ def report():
             "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in tx
                 and "SIOCSA80211" not in tx
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tx
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_TX_ANTENNA:" not in pre26_dispatcher
+            ),
+            "tx_case_boundary_excludes_adjacent_rx_set": (
+                "case APPLE80211_IOC_RX_ANTENNA:" not in tx
+                and "SIOCSA80211" not in tx
             ),
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher

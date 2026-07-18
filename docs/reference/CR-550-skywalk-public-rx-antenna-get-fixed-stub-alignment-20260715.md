@@ -12,7 +12,8 @@ The compile-time Tahoe-only case returns the direct public-wrapper raw status
 0xe082280e before observing the carrier. The direct leaf reads neither public
 argument, so the branch applies to a non-null request object without claiming
 outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+switch. SET behavior is separately aligned and documented by CR-594; this GET
+evidence does not independently prove SET behavior.
 
 No local RX_ANTENNA carrier contract is inferred from the direct current
 public getter. This layer neither constructs nor consumes a carrier.
@@ -47,10 +48,11 @@ docs/reference/artifacts/skywalk-rx-antenna-get-public-fixed-stub-bootkc-current
 ## Boundary and non-claims
 
 This is an exact, narrow public GET status alignment. It does not claim
-outer-null dispatch behavior, a RX_ANTENNA carrier contract, SET behavior,
-antenna behavior, V1, Virtual IOCTL, card-specific behavior, firmware,
+outer-null dispatch behavior, a RX_ANTENNA carrier contract, antenna
+behavior, V1, Virtual IOCTL, card-specific behavior, firmware,
 runtime-execution, radio, association, traffic, or broader Tahoe behavior
-parity.
+parity. SET behavior is separately aligned and documented by CR-594; this GET
+evidence does not independently prove SET behavior.
 
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
@@ -61,4 +63,5 @@ this layer.
 scripts/skywalk_public_rx_antenna_get_fixed_stub_alignment_report.py --check
 checks the direct raw record and manifest, exact Tahoe-only GET case, absent
 pre-26 source case, separated V1/Virtual/card seams, selector declaration
-without local carrier access, and active Tahoe source-phase markers.
+without local carrier access, and active Tahoe source-phase markers. CR-594
+separately retains the independent SET raw record and SET alignment contract.
