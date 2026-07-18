@@ -1647,9 +1647,29 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             }
             return kIOReturnUnsupported;
         case APPLE80211_IOC_SCAN_RESULT:
+#if __IO80211_TARGET >= __MAC_26_0
+            /*
+             * Do not consume the external BSD SCAN_RESULT carrier here.
+             *
+             * The BSD ioctl layer owns only the outer apple80211req copy;
+             * its nested payload address can still be a user virtual address.
+             * This local producer writes a complete 0x8d8 scan-result
+             * structure, so
+             * dereferencing that nested address in kernel context is both
+             * unsafe and contrary to Tahoe's IOUC/WCL-first scan path.
+             * Returning unsupported deliberately falls through from
+             * processBSDCommand() to IO80211InfraProtocol, which owns the
+             * family transport and its BSSID/cache validation.
+             *
+             * The local scan iterator remains available to its explicit
+             * private callers; this BSD bridge must never reach it.
+             */
+            return kIOReturnUnsupported;
+#else
             return (cmd == SIOCGA80211)
                        ? getSCAN_RESULT((struct apple80211_scan_result *)req->req_data)
                        : kIOReturnUnsupported;
+#endif // __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_CHANNEL:
             if (cmd == SIOCGA80211) {
                 // Same pre-association cache contract as SSID/BSSID. Reverse
