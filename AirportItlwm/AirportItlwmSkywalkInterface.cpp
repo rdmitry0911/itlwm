@@ -1479,6 +1479,8 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         static_cast<IOReturn>(0xe082280e);
     static const IOReturn kApple80211ClassOwnerAbsent =
         static_cast<IOReturn>(0xe082280e);
+    static const IOReturn kApple80211PublicFixedStubStatus =
+        static_cast<IOReturn>(0xe082280e);
     static const IOReturn kApple80211RawEnxio =
         static_cast<IOReturn>(6);
     static const IOReturn kApple80211RawInvalidArgument =
@@ -1578,6 +1580,28 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
     if (cmd == SIOCSA80211 &&
         req->req_type == APPLE80211_IOC_COUNTRY_CHANNELS)
         return kApple80211NotVirtualInterface;
+#endif // __IO80211_TARGET >= __MAC_26_0
+
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Lab-only candidate: all recovered public SET wrappers except LDPC.
+     * LDPC is separately quarantined after an association regression.
+     */
+    if (cmd == SIOCSA80211 &&
+        (req->req_type == APPLE80211_IOC_RADIO_INFO ||
+         req->req_type == APPLE80211_IOC_MIMO_POWERSAVE ||
+         req->req_type == APPLE80211_IOC_RIFS ||
+         req->req_type == APPLE80211_IOC_MSDU ||
+         req->req_type == APPLE80211_IOC_MPDU ||
+         req->req_type == APPLE80211_IOC_BLOCK_ACK ||
+         req->req_type == APPLE80211_IOC_PLS ||
+         req->req_type == APPLE80211_IOC_PSMP ||
+         req->req_type == APPLE80211_IOC_PHY_SUB_MODE ||
+         req->req_type == APPLE80211_IOC_CACHE_THRESH_BCAST ||
+         req->req_type == APPLE80211_IOC_CACHE_THRESH_DIRECT ||
+         req->req_type == APPLE80211_IOC_40MHZ_INTOLERANT ||
+         req->req_type == APPLE80211_IOC_PID_LOCK))
+        return kApple80211PublicFixedStubStatus;
 #endif // __IO80211_TARGET >= __MAC_26_0
 
     // Tahoe architectural gap fixed here:
