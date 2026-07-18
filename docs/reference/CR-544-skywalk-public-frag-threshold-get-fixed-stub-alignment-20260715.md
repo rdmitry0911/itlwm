@@ -12,7 +12,8 @@ The compile-time Tahoe-only case returns the direct public-wrapper raw status
 0xe082280e before observing the carrier. The direct leaf reads neither public
 argument, so the branch applies to a non-null request object without claiming
 outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+switch. SET behavior is separately aligned and documented by CR-589; this
+GET evidence does not independently prove SET behavior.
 
 The public header retains a historical apple80211_frag_threshold_data
 declaration. This layer neither constructs nor consumes that carrier: the
@@ -49,10 +50,11 @@ docs/reference/artifacts/skywalk-frag-threshold-get-public-fixed-stub-bootkc-cur
 ## Boundary and non-claims
 
 This is an exact, narrow public GET status alignment. It does not claim
-outer-null dispatch behavior, a FRAG_THRESHOLD public carrier contract, SET
-behavior, fragmentation-threshold behavior, V1, Virtual IOCTL, card-specific
-behavior, firmware, runtime-execution, radio, association, traffic, or broader
-Tahoe behavior parity.
+outer-null dispatch behavior, a FRAG_THRESHOLD public carrier contract,
+fragmentation-threshold behavior, V1, Virtual IOCTL, card-specific behavior,
+firmware, runtime-execution, radio, association, traffic, or broader Tahoe
+behavior parity. SET behavior is separately aligned and documented by CR-589;
+this GET evidence does not independently prove SET behavior.
 
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of

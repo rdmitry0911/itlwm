@@ -59,7 +59,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-frag-threshold-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-frag-threshold-get-fixed-stub-alignment-v2",
         "source_base_revision": "4a63dfea4075048c99cbbc02be67fd2532e54ec9",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -75,7 +75,7 @@ def report():
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
             "historical_header_carrier_activated": False,
-            "frag_threshold_set_modified": False,
+            "frag_threshold_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -105,19 +105,20 @@ def report():
                 "IOC 31", "0xffffff80021bea5b", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "historical apple80211_frag_threshold_data",
                 "card-specific route has no FRAG_THRESHOLD entry",
-                "does not claim outer-null dispatch behavior, a FRAG_THRESHOLD public carrier contract, SET behavior, fragmentation-threshold behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-589",
+                "does not independently prove SET behavior",
+                "does not claim outer-null dispatch behavior, a FRAG_THRESHOLD public carrier contract, fragmentation-threshold behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_FRAG_THRESHOLD:") == 1
-                and "if (cmd == SIOCGA80211)" in frag
+                and "SIOCGA80211" in frag
                 and "return static_cast<IOReturn>(0xe082280e);" in frag
                 and "req->req_data" not in frag
                 and "return kIOReturnSuccess;" not in frag
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_target_guard_and_pre26_boundary_remain_explicit": (
                 "return kIOReturnUnsupported;" in frag
-                and "SIOCSA80211" not in frag
                 and "#endif // __IO80211_TARGET >= __MAC_26_0" in frag
                 and "case APPLE80211_IOC_FRAG_THRESHOLD:" not in pre26_dispatcher
             ),
