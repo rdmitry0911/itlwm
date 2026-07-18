@@ -59,7 +59,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-short-slot-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-short-slot-get-fixed-stub-alignment-v2",
         "source_base_revision": "21b7b227d796cf2947c6ac1b4c307ee620aefe70",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -75,7 +75,7 @@ def report():
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
             "historical_header_carrier_activated": False,
-            "short_slot_set_modified": False,
+            "short_slot_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -105,19 +105,19 @@ def report():
                 "IOC 33", "0xffffff80021beabb", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "historical apple80211_short_slot_data",
                 "card-specific route has no SHORT_SLOT entry",
-                "does not claim outer-null dispatch behavior, a SHORT_SLOT public carrier contract, SET behavior, short-slot timing behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "does not claim outer-null dispatch behavior, a SHORT_SLOT public carrier contract, short-slot timing behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-590; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_SHORT_SLOT:") == 1
-                and "if (cmd == SIOCGA80211)" in short_slot
+                and "SIOCGA80211" in short_slot
                 and "return static_cast<IOReturn>(0xe082280e);" in short_slot
                 and "req->req_data" not in short_slot
                 and "return kIOReturnSuccess;" not in short_slot
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_target_guard_and_pre26_boundary_remain_explicit": (
                 "return kIOReturnUnsupported;" in short_slot
-                and "SIOCSA80211" not in short_slot
                 and "#endif // __IO80211_TARGET >= __MAC_26_0" in short_slot
                 and "case APPLE80211_IOC_SHORT_SLOT:" not in pre26_dispatcher
             ),

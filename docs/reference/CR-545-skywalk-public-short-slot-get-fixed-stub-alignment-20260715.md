@@ -12,7 +12,8 @@ The compile-time Tahoe-only case returns the direct public-wrapper raw status
 0xe082280e before observing the carrier. The direct leaf reads neither public
 argument, so the branch applies to a non-null request object without claiming
 outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+switch. SET behavior is separately aligned and documented by CR-590; this
+GET evidence does not independently prove SET behavior.
 
 The public header retains a historical apple80211_short_slot_data declaration.
 This layer neither constructs nor consumes that carrier: the direct current
@@ -49,10 +50,11 @@ docs/reference/artifacts/skywalk-short-slot-get-public-fixed-stub-bootkc-current
 ## Boundary and non-claims
 
 This is an exact, narrow public GET status alignment. It does not claim
-outer-null dispatch behavior, a SHORT_SLOT public carrier contract, SET
-behavior, short-slot timing behavior, V1, Virtual IOCTL, card-specific
-behavior, firmware, runtime-execution, radio, association, traffic, or broader
-Tahoe behavior parity.
+outer-null dispatch behavior, a SHORT_SLOT public carrier contract,
+short-slot timing behavior, V1, Virtual IOCTL, card-specific behavior,
+firmware, runtime-execution, radio, association, traffic, or broader Tahoe
+behavior parity. SET behavior is separately aligned and documented by CR-590;
+this GET evidence does not independently prove SET behavior.
 
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
@@ -63,4 +65,5 @@ this layer.
 scripts/skywalk_public_short_slot_get_fixed_stub_alignment_report.py
 --check checks the direct raw record and manifest, the exact Tahoe-only GET
 case, absent pre-26 source case, separated V1/Virtual/card seams, the declared
-but unconsumed historical carrier, and active Tahoe source-phase markers.
+but unconsumed historical carrier, and active Tahoe source-phase markers. SET
+has separate raw evidence and contract coverage in CR-590.
