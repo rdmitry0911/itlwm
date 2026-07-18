@@ -51,7 +51,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-short-retry-limit-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-short-retry-limit-get-fixed-stub-alignment-v2",
         "source_base_revision": "6e595f8f7772e3cd255ae546b7165ed72808a335",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -66,7 +66,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
-            "short_retry_limit_set_modified": False,
+            "short_retry_limit_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -95,11 +95,12 @@ def report():
                 "IOC 35", "0xffffff80021bead1", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "No local SHORT_RETRY_LIMIT carrier contract is inferred",
                 "card-specific route has no SHORT_RETRY_LIMIT entry",
-                "does not claim outer-null dispatch behavior, a SHORT_RETRY_LIMIT carrier contract, SET behavior, retry-limit behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "does not claim outer-null dispatch behavior, a SHORT_RETRY_LIMIT carrier contract, retry-limit behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-592; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
-            "public_tahoe_get_returns_exact_unread_status": dispatcher.count("case APPLE80211_IOC_SHORT_RETRY_LIMIT:") == 1 and "if (cmd == SIOCGA80211)" in retry and "return static_cast<IOReturn>(0xe082280e);" in retry and "req->req_data" not in retry and "return kIOReturnSuccess;" not in retry,
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": "return kIOReturnUnsupported;" in retry and "SIOCSA80211" not in retry and "#endif // __IO80211_TARGET >= __MAC_26_0" in retry and "case APPLE80211_IOC_SHORT_RETRY_LIMIT:" not in pre26_dispatcher,
+            "public_tahoe_get_returns_exact_unread_status": dispatcher.count("case APPLE80211_IOC_SHORT_RETRY_LIMIT:") == 1 and "SIOCGA80211" in retry and "return static_cast<IOReturn>(0xe082280e);" in retry and "req->req_data" not in retry and "return kIOReturnSuccess;" not in retry,
+            "tahoe_target_guard_and_pre26_boundary_remain_explicit": "return kIOReturnUnsupported;" in retry and "#endif // __IO80211_TARGET >= __MAC_26_0" in retry and "case APPLE80211_IOC_SHORT_RETRY_LIMIT:" not in pre26_dispatcher,
             "outer_null_and_bsd_boundaries_remain_explicit": "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_SHORT_RETRY_LIMIT:") and "data != NULL" in bsd and "IOReturn ret = processApple80211Ioctl(normalizedCmd, req);" in bsd and "if (ret != kIOReturnUnsupported)\n            return ret;" in bsd,
             "legacy_virtual_and_card_boundaries_remain_separate": "APPLE80211_IOC_SHORT_RETRY_LIMIT" not in v1 and "APPLE80211_IOC_SHORT_RETRY_LIMIT" not in virtual and "kIocShortRetryLimit" not in routes and "APPLE80211_IOC_SHORT_RETRY_LIMIT" not in routes and "default:\n            return false;" in routes and "routeTahoeSkywalkIoctl(interface, &req," in card,
             "selector_is_declared_without_local_carrier_access": "#define APPLE80211_IOC_SHORT_RETRY_LIMIT         35" in ioctl and "req->req_data" not in retry,
