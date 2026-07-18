@@ -780,6 +780,9 @@ public:
 private:
     TahoeOwnerRegistry tahoeOwnerRegistry;
     TahoeCommanderV2 tahoeCommander{&tahoeOwnerRegistry};
+    // Keep the CoreCapture lifecycle state at the class tail so existing
+    // controller member offsets remain unchanged.
+    bool driverSnapshotsPipeStarted;
 };
 
 // Boot nub — replicates Apple's AppleBCMWLANUserClient IOKit matching pattern.

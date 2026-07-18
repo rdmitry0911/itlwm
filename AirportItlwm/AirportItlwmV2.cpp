@@ -2626,6 +2626,10 @@ void AirportItlwm::releaseAll()
         fBssManager = nullptr;
     }
 #endif
+    if (driverSnapshotsPipe != nullptr && driverSnapshotsPipeStarted) {
+        driverSnapshotsPipe->stopPipe();
+        driverSnapshotsPipeStarted = false;
+    }
     OSSafeReleaseNULL(driverLogStream);
     OSSafeReleaseNULL(driverLogPipe);
     OSSafeReleaseNULL(driverDataPathPipe);
@@ -3193,6 +3197,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     tahoeBootstrapPowerWindowOpen = true;
     driverLogStream = nullptr;
     fBssManager = nullptr;
+    driverSnapshotsPipeStarted = false;
 #if __IO80211_TARGET >= __MAC_26_0
     fTahoeLqmStatsTimer = nullptr;
     fTahoeLqmStatsIntervalMs =
@@ -3306,6 +3311,7 @@ initCCLogs()
     //  8   0x100  IO80211FaultReporter::allocWithParams OK
     //  9   0x200  driverLogStream (CCLogStream) created
     // 10   0x400  initCCLogs returning true
+    // 11   0x800  driverSnapshotsPipe started
     // ---------------------------------------------------------------
     struct CCDiag {
         volatile uint32_t mask;
@@ -3313,6 +3319,7 @@ initCCLogs()
         void *logPipe;
         void *dataPathPipe;
         void *snapshotsPipe;
+        bool snapshotsPipeStarted;
         void *faultStream;     // CCStream* from withPipeAndName
         void *dataStream;      // CCDataStream* after OSDynamicCast
         void *frWorkloop;
@@ -3372,7 +3379,15 @@ initCCLogs()
     driverLogOptions.pipe_size = 128;
     driverSnapshotsPipe = CCPipe::withOwnerNameCapacity(pciNub, "com.zxystd.AirportItlwm", "StateSnapshots", &driverLogOptions);
     sCCDiag.snapshotsPipe = driverSnapshotsPipe;
-    if (driverSnapshotsPipe) CC_SET(3);
+    driverSnapshotsPipeStarted = false;
+    if (driverSnapshotsPipe) {
+        CC_SET(3);
+        // CCDataPipe::start initializes the queue used by deferred fault
+        // reports. Create the stream only after its public lifecycle starts.
+        driverSnapshotsPipeStarted = driverSnapshotsPipe->startPipe();
+        sCCDiag.snapshotsPipeStarted = driverSnapshotsPipeStarted;
+        if (driverSnapshotsPipeStarted) CC_SET(11);
+    }
 
     CCStreamOptions faultReportOptions = { 0 };
     faultReportOptions.stream_type = 1;
@@ -3424,16 +3439,18 @@ initCCLogs()
     }
 
     bool ok = driverLogPipe && driverDataPathPipe && driverSnapshotsPipe
-        && driverFaultReporter && io80211FaultReporter;
+        && driverSnapshotsPipeStarted && driverFaultReporter
+        && io80211FaultReporter;
     if (ok) CC_SET(10);
 
     if (!ok) {
         panic("AirportItlwm::initCCLogs FAILED  ccMask=0x%03x rtMask=0x%07x rt2=0x%04x | "
-              "pci=%p logPipe=%p dataPath=%p snap=%p "
+              "pci=%p logPipe=%p dataPath=%p snap=%p snapStarted=%u "
               "faultStream=%p dataStream=%p wl=%p ccfr=%p io80211fr=%p logStream=%p | "
               "ic=%d fl=0x%x pwr=%u evt=%u pm=%u",
               sCCDiag.mask, sRT.rtMask, sRT.rtMask2, sCCDiag.pciNub,
               sCCDiag.logPipe, sCCDiag.dataPathPipe, sCCDiag.snapshotsPipe,
+              sCCDiag.snapshotsPipeStarted,
               sCCDiag.faultStream, sCCDiag.dataStream, sCCDiag.frWorkloop,
               sCCDiag.ccFaultReporter, sCCDiag.io80211FR, sCCDiag.logStream,
               sRT.ic_state, sRT.if_flags, sRT.power_state,
