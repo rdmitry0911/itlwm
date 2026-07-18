@@ -1442,6 +1442,20 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
     if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
         data != NULL) {
         apple80211req *req = static_cast<apple80211req *>(data);
+#if __IO80211_TARGET >= __MAC_26_0
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_CURRENT_NETWORK) {
+            /*
+             * CURRENT_NETWORK uses the same 0x8d8 result shape as
+             * SCAN_RESULT.  The Tahoe controller card-specific route owns
+             * its kernel carrier, but this BSD callback has only the outer
+             * apple80211req marshalled by ioctl.  Do not let an external
+             * nested pointer reach the local serializer; delegate the BSD
+             * request to the family transport instead.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+#endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
                 TahoeBssBlacklistContracts::routePreflightStatus(

@@ -3,8 +3,9 @@
 ## Scope
 
 This change restores the Tahoe IOUC/WCL-first ownership boundary for external
-`APPLE80211_IOC_SCAN_RESULT` requests.  It does not change the local scan
-iterator or fabricate a new result format.
+`APPLE80211_IOC_SCAN_RESULT` requests and prevents the same nested-carrier
+hazard on BSD `APPLE80211_IOC_CURRENT_NETWORK`.  It does not change the local
+scan iterator or fabricate a new result format.
 
 ## Evidence
 
@@ -15,6 +16,11 @@ iterator or fabricate a new result format.
   `getSCAN_RESULT`, whose serializer begins by zeroing the full carrier.
   A direct BSD request can therefore fault under SMAP before any Wi-Fi state
   is consumed.
+- `CURRENT_NETWORK` uses the same carrier and serializer.  Its Tahoe
+  controller card-specific route remains kernel-owned; the BSD callback is
+  quarantined to the family transport rather than passing a nested caller
+  address into that helper.  This is a safety boundary, not a claim that the
+  family route has the same producer contract.
 - The historical Tahoe IOUC-first route deliberately returned unsupported for
   this selector so `IO80211InfraProtocol::processBSDCommand()` could own the
   WCL scan transport.  The controller-side Tahoe route table does not own
@@ -26,7 +32,9 @@ For Tahoe, `processApple80211Ioctl()` returns `kIOReturnUnsupported` for
 selector 11 without inspecting `req_data`.  `processBSDCommand()` then
 delegates to its superclass.  The local iterator helper remains present for
 explicit private uses, but the Tahoe external BSD bridge cannot reach it or
-dereference a nested caller pointer.  Pre-Tahoe behavior is unchanged.
+dereference a nested caller pointer.  Tahoe BSD `CURRENT_NETWORK` likewise
+delegates before the local dispatcher, while its controller card-specific
+route remains intact.  Pre-Tahoe behavior is unchanged.
 
 ## Regression coverage
 

@@ -52,6 +52,18 @@ printf '%s\n' "$scan_case" | grep -Fq '#else' ||
     fail 'pre-Tahoe SCAN_RESULT path was unexpectedly removed'
 
 bsd_bridge=$(sed -n '/processBSDCommand(ifnet_t interface, UInt cmd, void \*data)/,/processApple80211Ioctl(UInt cmd, apple80211req \*req)/p' "$source")
+current_network_gate_line=$(printf '%s\n' "$bsd_bridge" |
+    grep -Fnm1 'req->req_type == APPLE80211_IOC_CURRENT_NETWORK' | cut -d: -f1)
+bridge_dispatch_line=$(printf '%s\n' "$bsd_bridge" |
+    grep -Fnm1 'processApple80211Ioctl(normalizedCmd, req)' | cut -d: -f1)
+[ -n "$current_network_gate_line" ] && [ -n "$bridge_dispatch_line" ] ||
+    fail 'CURRENT_NETWORK BSD gate is missing'
+[ "$current_network_gate_line" -lt "$bridge_dispatch_line" ] ||
+    fail 'CURRENT_NETWORK gate runs after the local dispatcher'
+printf '%s\n' "$bsd_bridge" | grep -Fq '#if __IO80211_TARGET >= __MAC_26_0' ||
+    fail 'CURRENT_NETWORK Tahoe guard is missing'
+printf '%s\n' "$bsd_bridge" | grep -Fq 'return super::processBSDCommand(interface, cmd, data);' ||
+    fail 'CURRENT_NETWORK BSD gate no longer delegates to IO80211Family'
 printf '%s\n' "$bsd_bridge" | grep -Fq 'if (ret != kIOReturnUnsupported)' ||
     fail 'BSD bridge no longer recognizes local fallthrough'
 printf '%s\n' "$bsd_bridge" | grep -Fq 'return super::processBSDCommand(interface, cmd, data);' ||
@@ -60,6 +72,10 @@ printf '%s\n' "$bsd_bridge" | grep -Fq 'return super::processBSDCommand(interfac
 if grep -Fq 'APPLE80211_IOC_SCAN_RESULT' "$routes"; then
     fail 'controller-side Tahoe route unexpectedly owns SCAN_RESULT'
 fi
+grep -Fq 'kIocCurrentNetwork = 103' "$routes" ||
+    fail 'controller current-network route disappeared'
+grep -Fq 'case kIocCurrentNetwork:' "$routes" ||
+    fail 'controller current-network route lost its GET admission'
 
 grep -Fq 'APPLE80211_M_WCL_SCAN_RESULT' "$v2" ||
     fail 'WCL scan-result publication path disappeared'
