@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "evidence/state/skywalk_public_debug_flags_get_fixed_stub_alignment_report.json"
 NOTE = ROOT / "docs/reference/CR-555-skywalk-public-debug-flags-get-fixed-stub-alignment-20260716.md"
+SET_NOTE = ROOT / "docs/reference/CR-600-skywalk-public-debug-flags-set-fixed-stub-alignment-20260718.md"
 RAW = ROOT / "docs/reference/artifacts/skywalk-debug-flags-get-public-fixed-stub-bootkc-current/raw.txt"
 RAW_MANIFEST = RAW.with_name("SHA256SUMS.txt")
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
@@ -33,6 +34,7 @@ def report():
         for path in (CPP, V2, V1, VIRTUAL, ROUTES, IOCTL, PROJECT)
     )
     note = " ".join(NOTE.read_text(encoding="utf-8").split())
+    set_note = " ".join(SET_NOTE.read_text(encoding="utf-8").split())
     raw = RAW.read_text(encoding="utf-8")
     manifest = RAW_MANIFEST.read_text(encoding="utf-8")
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
@@ -54,7 +56,7 @@ def report():
     debug_flags = section(
         dispatcher,
         "case APPLE80211_IOC_DEBUG_FLAGS:",
-        "        case APPLE80211_IOC_POWER:",
+        "        case APPLE80211_IOC_LAST_RX_PKT_DATA:",
     )
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
@@ -64,8 +66,8 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-debug-flags-get-fixed-stub-alignment-v1",
-        "source_base_revision": "4ccf6725c650e8606ce84c99abbdab07e390d193",
+        "schema": "itlwm-skywalk-public-debug-flags-get-fixed-stub-alignment-v2",
+        "source_base_revision": "22437f05487695bff47c13a807f2bbf4542eab8a",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
             "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
@@ -77,9 +79,9 @@ def report():
             "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
         },
         "scope": {
-            "public_nonnull_request_object_tahoe_bsd_get_only": True,
+            "public_nonnull_request_object_tahoe_bsd_get_evidence_only": True,
             "carrier_is_not_observed": True,
-            "debug_flags_set_modified": False,
+            "debug_flags_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -110,22 +112,28 @@ def report():
                 "IOC 52", "0xffffff80021bee4c", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "No local DEBUG_FLAGS carrier contract is inferred",
                 "card-specific route has no DEBUG_FLAGS entry",
-                "does not claim outer-null dispatch behavior, a DEBUG_FLAGS carrier contract, SET behavior, debug-flags behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "does not independently claim outer-null dispatch behavior, a DEBUG_FLAGS carrier contract, SET behavior, debug-flags behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-600; this GET record does not infer it",
                 "No private carrier or selector is constructed or invoked",
+            )),
+            "separate_set_record_is_present": all(token in set_note for token in (
+                "IOC 52", "0xffffff80021c3c53", "0xe082280e",
+                "does not construct, read, or activate a local DEBUG_FLAGS carrier contract",
+                "No V1, Virtual, or card-specific DEBUG_FLAGS route is introduced",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_DEBUG_FLAGS:") == 1
-                and "if (cmd == SIOCGA80211)" in debug_flags
+                and "SIOCGA80211" in debug_flags
                 and "return static_cast<IOReturn>(0xe082280e);" in debug_flags
                 and "req->req_data" not in debug_flags
                 and "return kIOReturnSuccess;" not in debug_flags
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_case_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in debug_flags
-                and "SIOCSA80211" not in debug_flags
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in debug_flags
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_DEBUG_FLAGS:" not in pre26_dispatcher
             ),
+            "debug_flags_case_boundary_excludes_last_rx_pkt_data": "case APPLE80211_IOC_LAST_RX_PKT_DATA:" not in debug_flags,
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher
                 and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_DEBUG_FLAGS:")

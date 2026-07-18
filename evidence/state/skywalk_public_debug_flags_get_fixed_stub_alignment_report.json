@@ -1,6 +1,7 @@
 {
   "checks": {
     "all_active_skywalk_source_phases_and_target_guard_are_explicit": true,
+    "debug_flags_case_boundary_excludes_last_rx_pkt_data": true,
     "legacy_v1_virtual_and_card_boundaries_remain_explicit": true,
     "note_records_scope_and_nonclaims": true,
     "outer_null_and_bsd_boundaries_remain_explicit": true,
@@ -8,7 +9,8 @@
     "reference_raw_has_exact_unread_public_get_fixed_stub": true,
     "reference_raw_manifest_matches": true,
     "selector_and_carrier_boundaries_are_explicit": true,
-    "tahoe_nonget_and_pre26_boundaries_remain_explicit": true
+    "separate_set_record_is_present": true,
+    "tahoe_case_and_pre26_boundaries_remain_explicit": true
   },
   "reference": {
     "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
@@ -20,21 +22,21 @@
     "nlist_index": 7290,
     "public_wrapper": "0xffffff80021bee4c"
   },
-  "schema": "itlwm-skywalk-public-debug-flags-get-fixed-stub-alignment-v1",
+  "schema": "itlwm-skywalk-public-debug-flags-get-fixed-stub-alignment-v2",
   "scope": {
     "card_specific_route_modified": false,
     "carrier_abi_added": false,
     "carrier_is_not_observed": true,
-    "debug_flags_set_modified": false,
+    "debug_flags_set_behavior_is_outside_this_get_evidence": true,
     "deployment": false,
     "legacy_v1_modified": false,
     "outer_null_dispatch_modified": false,
     "pre26_route_modified": false,
-    "public_nonnull_request_object_tahoe_bsd_get_only": true,
+    "public_nonnull_request_object_tahoe_bsd_get_evidence_only": true,
     "radio_or_association": false,
     "runtime_selector_invocation": false,
     "traffic": false,
     "virtual_ioctl_modified": false
   },
-  "source_base_revision": "4ccf6725c650e8606ce84c99abbdab07e390d193"
+  "source_base_revision": "22437f05487695bff47c13a807f2bbf4542eab8a"
 }

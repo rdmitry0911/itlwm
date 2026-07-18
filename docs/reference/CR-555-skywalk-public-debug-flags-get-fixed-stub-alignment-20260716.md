@@ -4,15 +4,17 @@ Date: 2026-07-16
 
 ## Scope
 
-This layer aligns only the current 25C56 public APPLE80211_IOC_DEBUG_FLAGS
-(IOC 52) Tahoe BSD GET direction in
+This record preserves direct current 25C56 public APPLE80211_IOC_DEBUG_FLAGS
+(IOC 52) Tahoe BSD GET evidence in
 AirportItlwmSkywalkInterface::processApple80211Ioctl.
 
 The compile-time Tahoe-only case returns the direct public-wrapper raw status
-0xe082280e before observing the carrier. The direct leaf reads neither public
-argument, so the branch applies to a non-null request object without claiming
-outer-null dispatch behavior. The selector remains absent from the pre-26
-switch; Tahoe non-GET remains unsupported.
+0xe082280e before observing the carrier for GET. The direct leaf reads neither
+public argument, so the branch applies to a non-null request object without
+claiming outer-null dispatch behavior. The independently recovered BSD SET
+fixed status is separately aligned and documented by CR-600; this GET evidence
+does not independently prove SET behavior. The selector remains absent from
+the pre-26 switch.
 
 No local DEBUG_FLAGS carrier contract is inferred from the direct current
 public getter. This layer neither constructs nor consumes a carrier. Historical
@@ -45,11 +47,12 @@ docs/reference/artifacts/skywalk-debug-flags-get-public-fixed-stub-bootkc-curren
 
 ## Boundary and non-claims
 
-This is an exact, narrow public GET status alignment. It does not claim
+This is exact, narrow public GET evidence. It does not independently claim
 outer-null dispatch behavior, a DEBUG_FLAGS carrier contract, SET behavior,
 debug-flags behavior, V1, Virtual IOCTL, card-specific behavior, firmware,
 runtime-execution, radio, association, traffic, or broader Tahoe behavior
-parity.
+parity. SET behavior is separately aligned and documented by CR-600; this GET
+record does not infer it.
 
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
@@ -60,4 +63,5 @@ this layer.
 scripts/skywalk_public_debug_flags_get_fixed_stub_alignment_report.py --check
 checks the direct raw record and manifest, exact Tahoe-only GET case, absent
 pre-26 source case, separated V1/Virtual/card seams, selector declaration
-without local carrier access, and active Tahoe source-phase markers.
+without local carrier access, active Tahoe source-phase markers, and the
+separate SET record boundary.
