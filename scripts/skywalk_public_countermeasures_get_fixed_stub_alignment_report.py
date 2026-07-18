@@ -51,7 +51,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-countermeasures-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-countermeasures-get-fixed-stub-alignment-v2",
         "source_base_revision": "d195a271ea325f91a71d69193a6a9fd10d8c3ecc",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -66,7 +66,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
-            "countermeasures_set_modified": False,
+            "countermeasures_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -95,20 +95,21 @@ def report():
             "note_records_scope_and_nonclaims": all(token in note for token in (
                 "IOC 30", "0xffffff80021bea50", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "card-specific route has no COUNTERMEASURES entry",
-                "does not claim outer-null dispatch behavior, a COUNTERMEASURES carrier ABI, SET behavior, security-countermeasure behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-588",
+                "does not independently prove SET behavior",
+                "does not claim outer-null dispatch behavior, a COUNTERMEASURES carrier ABI, security-countermeasure behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_COUNTERMEASURES:") == 1
                 and counter.startswith(macro_case)
-                and "if (cmd == SIOCGA80211)" in counter
+                and "SIOCGA80211" in counter
                 and "return static_cast<IOReturn>(0xe082280e);" in counter
                 and "req->req_data" not in counter
                 and "return kIOReturnSuccess;" not in counter
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_target_guard_and_pre26_boundary_remain_explicit": (
                 "return kIOReturnUnsupported;" in counter
-                and "SIOCSA80211" not in counter
                 and "#endif // __IO80211_TARGET >= __MAC_26_0" in counter
                 and "case APPLE80211_IOC_COUNTERMEASURES:" not in pre26_dispatcher
             ),
