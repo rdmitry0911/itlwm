@@ -59,7 +59,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-multicast-rate-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-multicast-rate-get-fixed-stub-alignment-v2",
         "source_base_revision": "4e52a29af337376d60a847f89060a11af278ff3a",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -74,7 +74,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
-            "multicast_rate_set_modified": False,
+            "multicast_rate_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -104,19 +104,19 @@ def report():
                 "IOC 34", "0xffffff80021beac6", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "No local MULTICAST_RATE carrier contract is inferred",
                 "card-specific route has no MULTICAST_RATE entry",
-                "does not claim outer-null dispatch behavior, a MULTICAST_RATE carrier contract, SET behavior, multicast-rate behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "does not claim outer-null dispatch behavior, a MULTICAST_RATE carrier contract, multicast-rate behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-591; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_MULTICAST_RATE:") == 1
-                and "if (cmd == SIOCGA80211)" in multicast
+                and "SIOCGA80211" in multicast
                 and "return static_cast<IOReturn>(0xe082280e);" in multicast
                 and "req->req_data" not in multicast
                 and "return kIOReturnSuccess;" not in multicast
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_target_guard_and_pre26_boundary_remain_explicit": (
                 "return kIOReturnUnsupported;" in multicast
-                and "SIOCSA80211" not in multicast
                 and "#endif // __IO80211_TARGET >= __MAC_26_0" in multicast
                 and "case APPLE80211_IOC_MULTICAST_RATE:" not in pre26_dispatcher
             ),
