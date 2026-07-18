@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify Skywalk public LAST_RX_PKT_DATA GET fixed-stub evidence."""
+"""Verify public LAST_RX_PKT_DATA GET evidence and its SET companion boundary."""
 
 import argparse
 import hashlib
@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "evidence/state/skywalk_public_last_rx_pkt_data_get_fixed_stub_alignment_report.json"
 NOTE = ROOT / "docs/reference/CR-556-skywalk-public-last-rx-pkt-data-get-fixed-stub-alignment-20260716.md"
+SET_NOTE = ROOT / "docs/reference/CR-601-skywalk-public-last-rx-pkt-data-set-fixed-stub-alignment-20260718.md"
 RAW = ROOT / "docs/reference/artifacts/skywalk-last-rx-pkt-data-get-public-fixed-stub-bootkc-current/raw.txt"
 RAW_MANIFEST = RAW.with_name("SHA256SUMS.txt")
 CPP = ROOT / "AirportItlwm/AirportItlwmSkywalkInterface.cpp"
@@ -33,6 +34,7 @@ def report():
         for path in (CPP, V2, V1, VIRTUAL, ROUTES, IOCTL, PROJECT)
     )
     note = " ".join(NOTE.read_text(encoding="utf-8").split())
+    set_note = " ".join(SET_NOTE.read_text(encoding="utf-8").split())
     raw = RAW.read_text(encoding="utf-8")
     manifest = RAW_MANIFEST.read_text(encoding="utf-8")
     raw_digest = hashlib.sha256(RAW.read_bytes()).hexdigest()
@@ -54,7 +56,7 @@ def report():
     last_rx_pkt_data = section(
         dispatcher,
         "case APPLE80211_IOC_LAST_RX_PKT_DATA:",
-        "        case APPLE80211_IOC_POWER:",
+        "        case APPLE80211_IOC_RADIO_INFO:",
     )
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
@@ -64,8 +66,8 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-last-rx-pkt-data-get-fixed-stub-alignment-v1",
-        "source_base_revision": "9760b0e28701f16c87b44519e6b8f4ae020c8a11",
+        "schema": "itlwm-skywalk-public-last-rx-pkt-data-get-fixed-stub-alignment-v2",
+        "source_base_revision": "72457aa",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
             "bootkc_uuid": "F0ACEF59-61D0-DEDC-C1D2-BECE30DD94E5",
@@ -77,9 +79,9 @@ def report():
             "body_sha256": "9e4580f0175946d7624b2451e6ffda84a93e91e3e2d852d7a2c7998ee2d78576",
         },
         "scope": {
-            "public_nonnull_request_object_tahoe_bsd_get_only": True,
+            "public_nonnull_request_object_tahoe_bsd_get_and_set_only": True,
             "carrier_is_not_observed": True,
-            "last_rx_pkt_data_set_modified": False,
+            "last_rx_pkt_data_set_behavior_is_separately_evidenced": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -110,20 +112,26 @@ def report():
                 "IOC 53", "0xffffff80021bee57", "0xe082280e", "compile-time Tahoe-only case",
                 "selector remains absent from the pre-26 switch", "No local LAST_RX_PKT_DATA carrier contract is inferred",
                 "card-specific route has no LAST_RX_PKT_DATA entry",
-                "does not claim outer-null dispatch behavior, a LAST_RX_PKT_DATA carrier contract, SET behavior, last-received-packet behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "does not independently claim outer-null dispatch behavior, a LAST_RX_PKT_DATA carrier contract, SET behavior, last-received-packet behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-601; this GET record does not infer it",
                 "No private carrier or selector is constructed or invoked",
             )),
-            "public_tahoe_get_returns_exact_unread_status": (
+            "separate_set_record_is_present": all(token in set_note for token in (
+                "IOC 53", "0xffffff80021c3c5e", "0xe082280e",
+                "does not construct, read, or activate a local LAST_RX_PKT_DATA carrier contract",
+                "No V1, Virtual, or card-specific LAST_RX_PKT_DATA route is introduced",
+            )),
+            "public_tahoe_get_and_set_return_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_LAST_RX_PKT_DATA:") == 1
-                and "if (cmd == SIOCGA80211)" in last_rx_pkt_data
+                and "if (cmd == SIOCGA80211 || cmd == SIOCSA80211)" in last_rx_pkt_data
                 and "return static_cast<IOReturn>(0xe082280e);" in last_rx_pkt_data
                 and "req->req_data" not in last_rx_pkt_data
                 and "return kIOReturnSuccess;" not in last_rx_pkt_data
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_case_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in last_rx_pkt_data
-                and "SIOCSA80211" not in last_rx_pkt_data
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in last_rx_pkt_data
+                and "if (cmd == SIOCGA80211 || cmd == SIOCSA80211)" in last_rx_pkt_data
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_LAST_RX_PKT_DATA:" not in pre26_dispatcher
             ),
             "outer_null_and_bsd_boundaries_remain_explicit": (

@@ -45,11 +45,12 @@ docs/reference/artifacts/skywalk-last-rx-pkt-data-get-public-fixed-stub-bootkc-c
 
 ## Boundary and non-claims
 
-This is an exact, narrow public GET status alignment. It does not claim
-outer-null dispatch behavior, a LAST_RX_PKT_DATA carrier contract, SET behavior,
-last-received-packet behavior, V1, Virtual IOCTL, card-specific behavior,
-firmware, runtime-execution, radio, association, traffic, or broader Tahoe
-behavior parity.
+This is an exact, narrow public GET status alignment. It does not independently
+claim outer-null dispatch behavior, a LAST_RX_PKT_DATA carrier contract, SET
+behavior, last-received-packet behavior, V1, Virtual IOCTL, card-specific
+behavior, firmware, runtime-execution, radio, association, traffic, or broader
+Tahoe behavior parity. SET behavior is separately aligned and documented by
+CR-601; this GET record does not infer it.
 
 No private carrier or selector is constructed or invoked. No deployment,
 radio change, association, traffic, or runtime selector execution is part of
