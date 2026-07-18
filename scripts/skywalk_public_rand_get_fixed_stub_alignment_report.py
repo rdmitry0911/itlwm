@@ -54,7 +54,7 @@ def report():
     rand = section(
         dispatcher,
         "case APPLE80211_IOC_RAND:",
-        "        case APPLE80211_IOC_POWER:",
+        "        case APPLE80211_IOC_BACKGROUND_SCAN:",
     )
     pre26_dispatcher = dispatcher.replace(tahoe_block, "")
     card = section(v2, "SInt32 AirportItlwm::handleCardSpecific(", "IOReturn AirportItlwm::enableAdapter")
@@ -64,7 +64,7 @@ def report():
         "F8E94CD22B9ABFE20081A3C4 /* AirportItlwmSkywalkInterface.cpp in Sources */",
     )
     return {
-        "schema": "itlwm-skywalk-public-rand-get-fixed-stub-alignment-v1",
+        "schema": "itlwm-skywalk-public-rand-get-fixed-stub-alignment-v2",
         "source_base_revision": "c10e4eabf5769711dd121b91916ca8575dede234",
         "reference": {
             "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
@@ -79,7 +79,7 @@ def report():
         "scope": {
             "public_nonnull_request_object_tahoe_bsd_get_only": True,
             "carrier_is_not_observed": True,
-            "rand_set_modified": False,
+            "rand_set_behavior_is_outside_this_get_evidence": True,
             "outer_null_dispatch_modified": False,
             "pre26_route_modified": False,
             "card_specific_route_modified": False,
@@ -111,21 +111,22 @@ def report():
                 "selector remains absent from the pre-26 switch", "No local RAND carrier contract is inferred",
                 "card-specific route has no RAND entry",
                 "does not claim outer-null dispatch behavior, a RAND carrier contract, SET behavior, RAND behavior, V1, Virtual IOCTL, card-specific behavior, firmware, runtime-execution, radio, association, traffic, or broader Tahoe behavior parity",
+                "SET behavior is separately aligned and documented by CR-599; this GET evidence does not independently prove SET behavior",
                 "No private carrier or selector is constructed or invoked",
             )),
             "public_tahoe_get_returns_exact_unread_status": (
                 dispatcher.count("case APPLE80211_IOC_RAND:") == 1
-                and "if (cmd == SIOCGA80211)" in rand
+                and "SIOCGA80211" in rand
                 and "return static_cast<IOReturn>(0xe082280e);" in rand
                 and "req->req_data" not in rand
                 and "return kIOReturnSuccess;" not in rand
             ),
-            "tahoe_nonget_and_pre26_boundaries_remain_explicit": (
+            "tahoe_case_and_pre26_boundaries_remain_explicit": (
                 "return kIOReturnUnsupported;" in rand
-                and "SIOCSA80211" not in rand
-                and "#endif // __IO80211_TARGET >= __MAC_26_0" in rand
+                and "#endif // __IO80211_TARGET >= __MAC_26_0" in tahoe_block
                 and "case APPLE80211_IOC_RAND:" not in pre26_dispatcher
             ),
+            "rand_case_boundary_excludes_background_scan_case": "case APPLE80211_IOC_BACKGROUND_SCAN:" not in rand,
             "outer_null_and_bsd_boundaries_remain_explicit": (
                 "if (req == NULL)\n        return kIOReturnUnsupported;" in dispatcher
                 and dispatcher.index("if (req == NULL)\n        return kIOReturnUnsupported;") < dispatcher.index("case APPLE80211_IOC_RAND:")

@@ -1810,10 +1810,10 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return kIOReturnUnsupported;
         case APPLE80211_IOC_RAND:
             /*
-             * The current public GET wrapper is an unread fixed 0xe082280e
-             * leaf. No local RAND carrier contract is inferred.
+             * The current public GET and SET wrappers are unread fixed
+             * 0xe082280e leaves. No local RAND carrier contract is inferred.
              */
-            if (cmd == SIOCGA80211)
+            if (cmd == SIOCGA80211 || cmd == SIOCSA80211)
                 return static_cast<IOReturn>(0xe082280e);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_BACKGROUND_SCAN:
