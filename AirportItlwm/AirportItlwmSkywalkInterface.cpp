@@ -215,6 +215,8 @@ static_assert(sizeof(apple80211_authtype_data) ==
               "associated auth type carrier length must match Apple ABI");
 static_assert(sizeof(apple80211_rate_set_data) == 0xbc,
               "RATE_SET carrier length must match Tahoe BSD ABI");
+static_assert(sizeof(apple80211_mcs_data) == 0x08,
+              "MCS internal carrier must remain eight bytes");
 static_assert(sizeof(apple80211_mcs_index_set_data) == 0x10,
               "MCS_INDEX_SET carrier length must match Tahoe BSD ABI");
 static_assert(__offsetof(apple80211_authtype_data, version) ==
@@ -1569,6 +1571,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              * carrier directly, but this BSD callback has marshalled only the
              * outer request. Leave carrier admission and WCL ownership with
              * IO80211Family; the internal rate producer remains unchanged.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_MCS) {
+            /*
+             * Tahoe accepts a four-byte public MCS result, then owns an
+             * internal eight-byte legacy carrier for WCL and copies back
+             * only its index dword. The local helper initializes the whole
+             * versioned carrier, while this BSD callback has marshalled only
+             * the outer request. Leave carrier admission and WCL ownership
+             * with IO80211Family; the internal MCS producer remains intact.
              */
             return super::processBSDCommand(interface, cmd, data);
         }
