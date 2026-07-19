@@ -219,6 +219,8 @@ static_assert(sizeof(apple80211_mcs_data) == 0x08,
               "MCS internal carrier must remain eight bytes");
 static_assert(sizeof(apple80211_mcs_index_set_data) == 0x10,
               "MCS_INDEX_SET carrier length must match Tahoe BSD ABI");
+static_assert(sizeof(apple80211_vht_capability) == 0x12,
+              "VHT capability internal IE carrier must remain compact");
 static_assert(__offsetof(apple80211_authtype_data, version) ==
                   TahoeAssociationContracts::kAssociatedAuthTypeVersionOffset &&
                   __offsetof(apple80211_authtype_data, authtype_lower) ==
@@ -1595,6 +1597,21 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              * carrier directly, but this BSD callback has marshalled only the
              * outer request. Leave carrier admission and WCL ownership with
              * IO80211Family; the internal MCS producer remains unchanged.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
+            req->req_type == APPLE80211_IOC_VHT_CAPABILITY) {
+            /*
+             * Tahoe's canonical raw VHT GET and SET paths admit a 0x14-byte
+             * public carrier and are peer-manager owned. GET reads the
+             * family cache; SET enters the peer-manager route before its
+             * public InfraProtocol setter. The local helpers use only the
+             * compact 0x12-byte VHT-IE prefix, so this BSD
+             * callback must not dereference an externally marshalled nested
+             * carrier. Keep both directions with IO80211Family. The standard
+             * c030 aliases are delegated for the same safety boundary; their
+             * exact private-table identity is intentionally not inferred.
              */
             return super::processBSDCommand(interface, cmd, data);
         }
@@ -4357,10 +4374,11 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
     struct ieee80211com *ic = fHalService->get80211Controller();
     // AppleBCMWLANCore::getVHT_CAPABILITY does not use a generic unsupported
     // path. It returns 0x2d when the PHY gate rejects VHT, and otherwise
-    // copies a 14-byte VHT capability IE body into the packed
-    // apple80211_vht_capability payload after `version`. Our local ABI now
-    // mirrors that recovered contract, so Tahoe should expose the same IE
-    // shape instead of leaving slot [484] on kIOReturnUnsupported.
+    // copies a 14-byte VHT capability IE body into the compact local
+    // apple80211_vht_capability prefix after `version`. Raw BSD carrier
+    // admission is family-owned and separately fenced above; this helper
+    // remains the internal virtual producer instead of leaving slot [484] on
+    // kIOReturnUnsupported.
     if (data == nullptr)
         return kIOReturnBadArgument;
     if (hasCachedVhtCapability) {
