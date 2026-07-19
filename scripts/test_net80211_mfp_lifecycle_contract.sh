@@ -112,9 +112,11 @@ for anchor in (
     assert anchor in iwx_source, anchor
 assert "le16toh(desc->status)" not in iwx_source, "RX status must remain __le32"
 
-# MFP is enabled only through the deferred PAE worker.  The generic key
-# callback remains asynchronous because it is callable from raw RX/timer
-# paths whose q0 completion producer is the same IOKit action.
+# The recovered AX211/API-68 firmware key carriers are retained, but MFP must
+# remain fail-closed until Msg3 becomes an async, generation-checked
+# continuation on the RX workloop. The old deferred PAE worker is a separate
+# kernel thread while splnet() is a no-op, so enabling it would race deauth,
+# roam, and EAPOL timers.
 setkey = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key(")
 setkey_wait = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key_wait(")
 setkey_impl = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key_impl(")
@@ -127,10 +129,10 @@ security_enqueue = cpp_method_body(
     iwx_source, "bool ItlIwx::\niwx_security_rx_enqueue("
 )
 assert "return that->iwx_set_key_impl(ic, ni, k, false);" in setkey
-assert "if (!that->iwx_security_rx_wait_context(sc))" in setkey_wait
-assert "return EWOULDBLOCK;" in setkey_wait
-assert "return that->iwx_set_key_impl(ic, ni, k, true);" in setkey_wait
+assert "return EOPNOTSUPP;" in setkey_wait
+assert "iwx_set_key_impl" not in setkey_wait
 assert "const bool mfp" in setkey_impl
+assert "if (mfp && !iwx_mfp_runtime_enabled(sc))" in setkey_impl
 assert "IWX_STA_KEY_MFP" in setkey_impl
 assert "iwx_send_cmd_pdu_status(sc, IWX_ADD_STA_KEY" in setkey_impl
 assert "(status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS" in setkey_impl
@@ -152,8 +154,10 @@ assert "sc->sc_security_rx_worker == current_thread()" in iwx_source
 assert "IWX_SECURITY_RXQ_LEN" in iwx_source
 assert "iwx_add_task(sc, sc->sc_nswq, &sc->security_rx_task);" in iwx_source
 assert "iwx_security_rx_purge(sc);" in iwx_source
-assert "ic->ic_eapol_key_input = iwx_security_rx_eapol_input;" in iwx_source
-assert "ic->ic_set_key_wait = iwx_set_key_wait;" in iwx_source
+assert "ic->ic_eapol_key_input = NULL;" in iwx_source
+assert "ic->ic_set_key_wait = NULL;" in iwx_source
+assert "ic->ic_eapol_key_input = iwx_security_rx_eapol_input;" not in iwx_source
+assert "ic->ic_set_key_wait = iwx_set_key_wait;" not in iwx_source
 assert security_enqueue.index("held_ni = ieee80211_ref_node(ni);") < \
     security_enqueue.index("IOLockLock(sc->sc_task_gate_lock);"), (
         "node reference must not take splnet under the lifecycle gate"
@@ -168,15 +172,20 @@ assert "IWX_MGMT_MCAST_KEY:" in iwx_source, (
 )
 assert "iwx_ax211_api68_igtk_v2_ok" in iwx_source
 assert "IwxMfpIgtkContracts::hasExactAbiPrerequisites" in iwx_source
+assert "static bool\niwx_mfp_runtime_enabled" in iwx_source
+runtime_gate = cpp_method_body(iwx_source, "static bool\niwx_mfp_runtime_enabled(")
+assert "return false;" in runtime_gate
 assert "iwx_publish_mfp_capability(sc);" in iwx_source
-assert "ic->ic_caps |= IEEE80211_C_MFP;" in iwx_source
+publish = cpp_method_body(iwx_source, "static void\niwx_publish_mfp_capability(")
+assert "ic->ic_caps &= ~IEEE80211_C_MFP;" in publish
+assert "IEEE80211_C_MFP" not in publish.replace("ic->ic_caps &= ~IEEE80211_C_MFP;", "")
 
 mfp_clear = "ic->ic_caps &= ~IEEE80211_C_MFP;"
 last_normal_cap = "ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;"
-assert iwx_source.count(mfp_clear) == 2, "initial and exact-gated MFP clear"
+assert iwx_source.count(mfp_clear) == 2, "initial and runtime-quarantined MFP clear"
 assert iwx_source.index(last_normal_cap) < iwx_source.rindex(mfp_clear), (
-    "MFP starts clear before init ucode validates the exact ABI"
+    "MFP starts clear before the runtime gate is refreshed after init ucode"
 )
 
-print("PASS: net80211 MFP deferred-PAE, IGTK lifecycle, and RX-route contract")
+print("PASS: net80211 MFP lifecycle contracts and runtime quarantine")
 PY

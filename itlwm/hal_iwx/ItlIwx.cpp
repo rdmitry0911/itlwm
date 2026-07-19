@@ -701,6 +701,7 @@ void    iwx_radiotap_attach(struct iwx_softc *);
 #endif
 
 static bool iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *);
+static bool iwx_mfp_runtime_enabled(const struct iwx_softc *);
 static void iwx_publish_mfp_capability(struct iwx_softc *);
 static int iwx_set_sta_igtk_v2(struct iwx_softc *,
                                 struct ieee80211_node *,
@@ -9733,7 +9734,8 @@ iwx_security_rx_eapol_input(struct ieee80211com *ic, mbuf_t m,
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
-    if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0) {
+    if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        iwx_mfp_runtime_enabled(sc)) {
         if (that->iwx_security_rx_enqueue(sc, m, ni))
             return;
 
@@ -10721,18 +10723,21 @@ int ItlIwx::
 iwx_set_key_wait(struct ieee80211com *ic, struct ieee80211_node *ni,
                  struct ieee80211_key *k)
 {
-    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
-    ItlIwx *that = container_of(sc, ItlIwx, com);
-
     /*
-     * q0 completion runs on the IOKit RX action. Waiting is valid only on
-     * our deferred security worker, never on the raw input action or a
-     * generic timer/key lifecycle call.
+     * Do not make a sleeping key command visible through this optional hook
+     * until it is an asynchronous continuation.  q0 ACKs arrive on the
+     * IOKit RX action while the old deferred PAE worker is a separate kernel
+     * thread; splnet() is a no-op in this port, so that worker can otherwise
+     * commit a stale Msg3 after deauth, roam, or an EAPOL timeout.
+     *
+     * The future implementation must submit asynchronously, retain a node
+     * reference plus association generation, and resume the PAE commit on
+     * the serial RX workloop only after revalidating that generation.
      */
-    if (!that->iwx_security_rx_wait_context(sc))
-        return EWOULDBLOCK;
-
-    return that->iwx_set_key_impl(ic, ni, k, true);
+    (void)ic;
+    (void)ni;
+    (void)k;
+    return EOPNOTSUPP;
 }
 
 int ItlIwx::
@@ -10748,6 +10753,10 @@ iwx_set_key_impl(struct ieee80211com *ic, struct ieee80211_node *ni,
 
     if (k == NULL)
         return EINVAL;
+
+    /* Firmware ABI support alone is not a safe PAE serialization contract. */
+    if (mfp && !iwx_mfp_runtime_enabled(sc))
+        return EOPNOTSUPP;
 
     if (k->k_cipher == IEEE80211_CIPHER_BIP) {
         if (!mfp || (k->k_flags & IEEE80211_KEY_IGTK) == 0)
@@ -10824,6 +10833,7 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 
     if (k->k_cipher == IEEE80211_CIPHER_BIP) {
         if ((k->k_flags & IEEE80211_KEY_IGTK) != 0 &&
+            iwx_mfp_runtime_enabled(sc) &&
             iwx_ax211_api68_igtk_v2_ok(sc) &&
             IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
             (void)iwx_set_sta_igtk_v2(sc, ni, k, true, false);
@@ -13009,15 +13019,27 @@ iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
               IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT));
 }
 
-/* Firmware flags become authoritative only after init ucode succeeds. */
+/*
+ * An exact AX211/API-68 firmware match is necessary, but not sufficient for
+ * MFP. The PAE Msg3 key transaction must be an asynchronous, generation-
+ * checked continuation back on the RX workloop. Until that state machine
+ * exists, fail closed rather than expose a key lifecycle that can race a
+ * deauth/roam callback on the same notification batch.
+ */
+static bool
+iwx_mfp_runtime_enabled(const struct iwx_softc *sc)
+{
+    (void)sc;
+    return false;
+}
+
+/* Firmware flags are not advertised until the full PAE continuation exists. */
 static void
 iwx_publish_mfp_capability(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
 
     ic->ic_caps &= ~IEEE80211_C_MFP;
-    if (iwx_ax211_api68_igtk_v2_ok(sc))
-        ic->ic_caps |= IEEE80211_C_MFP;
 }
 
 static int
@@ -13030,7 +13052,8 @@ iwx_set_sta_igtk_v2(struct iwx_softc *sc, struct ieee80211_node *ni,
 
     if (sc == NULL || k == NULL)
         return EINVAL;
-    if (!iwx_ax211_api68_igtk_v2_ok(sc))
+    if (!iwx_mfp_runtime_enabled(sc) ||
+        !iwx_ax211_api68_igtk_v2_ok(sc))
         return EOPNOTSUPP;
     if ((k->k_flags & IEEE80211_KEY_IGTK) == 0 ||
         k->k_cipher != IEEE80211_CIPHER_BIP ||
@@ -14560,7 +14583,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU_SETUP_IN_HW | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
     ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;
-    /* Init ucode later publishes MFP only for exact AX211/API-68 firmware. */
+    /* MFP remains quarantined pending an async PAE continuation. */
     ic->ic_caps &= ~IEEE80211_C_MFP;
     
     ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
@@ -14618,9 +14641,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_node_alloc = iwx_node_alloc;
     ic->ic_bgscan_start = iwx_bgscan;
     ic->ic_set_key = iwx_set_key;
-    ic->ic_set_key_wait = iwx_set_key_wait;
+    ic->ic_set_key_wait = NULL;
     ic->ic_delete_key = iwx_delete_key;
-    ic->ic_eapol_key_input = iwx_security_rx_eapol_input;
+    ic->ic_eapol_key_input = NULL;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;
