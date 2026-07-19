@@ -1,9 +1,10 @@
 #ifndef AirportItlwmRegDiag_h
 #define AirportItlwmRegDiag_h
 
+#include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_REGDIAG_ABI_VERSION 1U
+#define AIRPORT_ITLWM_REGDIAG_ABI_VERSION 2U
 #define AIRPORT_ITLWM_REGDIAG_MAX_TRACE_ENTRIES 128U
 #define AIRPORT_ITLWM_REGDIAG_MAX_SSID_LEN 32U
 #define AIRPORT_ITLWM_REGDIAG_MAX_NAME_LEN 32U
@@ -19,6 +20,8 @@ enum AirportItlwmRegDiagModeFlag {
     kAirportItlwmRegDiagModeAssoc = 0x00000004U,
     kAirportItlwmRegDiagModeData = 0x00000008U,
     kAirportItlwmRegDiagModeControl = 0x00000010U,
+    /* Opt-in association/PMK timeline; carries no key bytes. */
+    kAirportItlwmRegDiagModePmk = 0x00000020U,
     kAirportItlwmRegDiagModeIntervention = 0x80000000U
 };
 
@@ -39,7 +42,12 @@ enum AirportItlwmRegDiagTraceKind {
     kAirportItlwmRegDiagTraceTx = 4,
     kAirportItlwmRegDiagTraceRx = 5,
     kAirportItlwmRegDiagTraceBlock = 6,
-    kAirportItlwmRegDiagTraceControl = 7
+    kAirportItlwmRegDiagTraceControl = 7,
+    kAirportItlwmRegDiagTraceAuthPolicy = 8,
+    kAirportItlwmRegDiagTracePmkIngress = 9,
+    kAirportItlwmRegDiagTracePmkClear = 10,
+    kAirportItlwmRegDiagTracePltiPublish = 11,
+    kAirportItlwmRegDiagTracePltiDeliver = 12
 };
 
 enum AirportItlwmRegDiagPath {
@@ -48,7 +56,49 @@ enum AirportItlwmRegDiagPath {
     kAirportItlwmRegDiagPathHiddenAssoc = 2,
     kAirportItlwmRegDiagPathTx = 3,
     kAirportItlwmRegDiagPathRx = 4,
-    kAirportItlwmRegDiagPathLink = 5
+    kAirportItlwmRegDiagPathLink = 5,
+    kAirportItlwmRegDiagPathPmk = 6,
+    kAirportItlwmRegDiagPathPlti = 7,
+    kAirportItlwmRegDiagPathLifecycle = 8
+};
+
+/* Non-secret source/decision IDs carried by the PMK timeline. */
+enum AirportItlwmRegDiagPmkSource {
+    kAirportItlwmRegDiagPmkSourceUnknown = 0,
+    kAirportItlwmRegDiagPmkSourceCipherKey = 1,
+    kAirportItlwmRegDiagPmkSourceCipherKeyMsk = 2,
+    kAirportItlwmRegDiagPmkSourceCurPmk = 3,
+    kAirportItlwmRegDiagPmkSourcePlti = 4
+};
+
+enum AirportItlwmRegDiagPmkDecision {
+    kAirportItlwmRegDiagPmkDecisionAccepted = 0,
+    kAirportItlwmRegDiagPmkDecisionRejectInput = 1,
+    kAirportItlwmRegDiagPmkDecisionRejectNull = 2,
+    kAirportItlwmRegDiagPmkDecisionRejectLength = 3,
+    kAirportItlwmRegDiagPmkDecisionRejectWpa3 = 4,
+    kAirportItlwmRegDiagPmkDecisionRejectPolicy = 5,
+    kAirportItlwmRegDiagPmkDecisionRejectGeneration = 6,
+    kAirportItlwmRegDiagPmkDecisionRejectTerminating = 7,
+    kAirportItlwmRegDiagPmkDecisionNotReady = 8
+};
+
+enum AirportItlwmRegDiagPmkClearReason {
+    kAirportItlwmRegDiagPmkClearUnknown = 0,
+    kAirportItlwmRegDiagPmkClearAssocDisableRsn = 1,
+    kAirportItlwmRegDiagPmkClearDisassociate = 2,
+    kAirportItlwmRegDiagPmkClearPmksa = 3,
+    kAirportItlwmRegDiagPmkClearLeave = 4,
+    kAirportItlwmRegDiagPmkClearReassoc = 5,
+    kAirportItlwmRegDiagPmkClearJoinAbort = 6,
+    kAirportItlwmRegDiagPmkClearTerminate = 7
+};
+
+enum AirportItlwmRegDiagAssocPolicyFlag {
+    kAirportItlwmRegDiagAssocPolicyRejectWpa3 = 0x00000001U,
+    kAirportItlwmRegDiagAssocPolicyPskPmkEligible = 0x00000002U,
+    kAirportItlwmRegDiagAssocPolicyLocalPsk = 0x00000004U,
+    kAirportItlwmRegDiagAssocPolicyAuditedWpa3Transition = 0x00000008U
 };
 
 typedef struct AirportItlwmRegDiagTraceEntry {
@@ -133,6 +183,29 @@ typedef struct AirportItlwmRegDiagSnapshot {
     uint64_t bsdIfPtr;
     uint64_t fTxQueuePtr;
     uint64_t fRxQueuePtr;
+
+    /* ABI v2: opt-in SAE/PMK diagnosis, never key material. */
+    uint32_t lastAssocAuthFlags;
+    uint32_t lastAssocCandidateCount;
+    uint32_t lastAssocPmfCapability;
+    uint32_t lastAssocPolicyFlags;
+    uint32_t pmkIngressCount;
+    uint32_t pmkIngressRejectCount;
+    uint32_t pmkClearCount;
+    uint32_t pltiPublishCount;
+    uint32_t pltiPublishRejectCount;
+    uint32_t pltiDeliverCount;
+    uint32_t pltiDeliverRejectCount;
+    uint32_t lastPmkSource;
+    uint32_t lastPmkDecision;
+    uint32_t lastPmkKeyLen;
+    uint32_t lastPmkAuthUpper;
+    uint64_t lastPmkGeneration;
+    uint32_t lastPmkClearReason;
+    uint32_t reservedV2;
 } AirportItlwmRegDiagSnapshot;
+
+#define AIRPORT_ITLWM_REGDIAG_SNAPSHOT_V1_SIZE \
+    offsetof(AirportItlwmRegDiagSnapshot, lastAssocAuthFlags)
 
 #endif /* AirportItlwmRegDiag_h */

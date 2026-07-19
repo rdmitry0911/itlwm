@@ -81,11 +81,7 @@ agent_target_uses_psk_pmk(const struct AirportItlwmAssociationTarget *tgt)
 {
     if (tgt == NULL)
         return false;
-    if ((tgt->authtype_upper & kAirportItlwmAuthWpa3Mask) != 0) {
-        return tgt->authtype_upper ==
-               kAirportItlwmAuthAuditedWpa3PskTransition;
-    }
-    return (tgt->authtype_upper & kAirportItlwmAuthPskPmkMask) != 0;
+    return AirportItlwmAgentTargetUsesPskPmk(tgt->authtype_upper);
 }
 
 static void

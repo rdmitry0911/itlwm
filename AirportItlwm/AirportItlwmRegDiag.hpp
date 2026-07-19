@@ -13,6 +13,24 @@ void airportItlwmRegDiagRecordAssoc(uint32_t path, const uint8_t *ssid,
                                     uint32_t ssidLen, const uint8_t *bssid,
                                     uint32_t authLower, uint32_t authUpper,
                                     uint32_t rsnIeLen, IOReturn result);
+void airportItlwmRegDiagRecordAssocPolicy(uint32_t path,
+                                          uint32_t authLower,
+                                          uint32_t authUpper,
+                                          uint32_t rsnIeLen,
+                                          uint32_t pmfCapability,
+                                          uint32_t authFlags,
+                                          uint32_t candidateCount,
+                                          uint32_t policyFlags);
+void airportItlwmRegDiagRecordPmkIngress(const char *sourceTag,
+                                         uint32_t decision,
+                                         IOReturn result,
+                                         uint32_t authUpper,
+                                         uint32_t keyLen);
+void airportItlwmRegDiagRecordPmkClear(const char *reasonTag);
+void airportItlwmRegDiagRecordPlti(uint32_t traceKind, uint32_t decision,
+                                   IOReturn result, uint32_t authUpper,
+                                   uint64_t generation);
+bool airportItlwmRegDiagShouldTracePacket(bool eapol);
 void airportItlwmRegDiagRecordData(uint32_t path, uint32_t length, bool eapol,
                                    IOReturn result);
 bool airportItlwmRegDiagShouldBlock(uint32_t blockMask);

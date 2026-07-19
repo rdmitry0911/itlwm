@@ -1130,6 +1130,7 @@ airportItlwmRegDiagPacketProbeEnabled()
 {
     return (sRegDiag.modeFlags & kAirportItlwmRegDiagModeEnabled) != 0 &&
            ((sRegDiag.modeFlags & kAirportItlwmRegDiagModeData) != 0 ||
+            (sRegDiag.modeFlags & kAirportItlwmRegDiagModePmk) != 0 ||
             (sRegDiag.modeFlags & kAirportItlwmRegDiagModeIntervention) != 0);
 }
 
@@ -1343,6 +1344,9 @@ airportItlwmRegDiagApplyControl(AirportItlwm *driver, const char *command)
     airportItlwmRegDiagSetFlagFromControl(command, "control",
                                           kAirportItlwmRegDiagModeControl,
                                           &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "pmk",
+                                          kAirportItlwmRegDiagModePmk,
+                                          &modeFlags);
     airportItlwmRegDiagSetFlagFromControl(command, "intervention",
                                           kAirportItlwmRegDiagModeIntervention,
                                           &modeFlags);
@@ -1470,6 +1474,23 @@ airportItlwmRegDiagFillSnapshot(AirportItlwm *driver)
                                  sizeof(snap.lastAssocBssid),
                                  sRegDiag.snapshot.lastAssocBssid,
                                  sizeof(snap.lastAssocBssid));
+    snap.lastAssocAuthFlags = sRegDiag.snapshot.lastAssocAuthFlags;
+    snap.lastAssocCandidateCount = sRegDiag.snapshot.lastAssocCandidateCount;
+    snap.lastAssocPmfCapability = sRegDiag.snapshot.lastAssocPmfCapability;
+    snap.lastAssocPolicyFlags = sRegDiag.snapshot.lastAssocPolicyFlags;
+    snap.pmkIngressCount = sRegDiag.snapshot.pmkIngressCount;
+    snap.pmkIngressRejectCount = sRegDiag.snapshot.pmkIngressRejectCount;
+    snap.pmkClearCount = sRegDiag.snapshot.pmkClearCount;
+    snap.pltiPublishCount = sRegDiag.snapshot.pltiPublishCount;
+    snap.pltiPublishRejectCount = sRegDiag.snapshot.pltiPublishRejectCount;
+    snap.pltiDeliverCount = sRegDiag.snapshot.pltiDeliverCount;
+    snap.pltiDeliverRejectCount = sRegDiag.snapshot.pltiDeliverRejectCount;
+    snap.lastPmkSource = sRegDiag.snapshot.lastPmkSource;
+    snap.lastPmkDecision = sRegDiag.snapshot.lastPmkDecision;
+    snap.lastPmkKeyLen = sRegDiag.snapshot.lastPmkKeyLen;
+    snap.lastPmkAuthUpper = sRegDiag.snapshot.lastPmkAuthUpper;
+    snap.lastPmkGeneration = sRegDiag.snapshot.lastPmkGeneration;
+    snap.lastPmkClearReason = sRegDiag.snapshot.lastPmkClearReason;
 
     sRegDiag.snapshot = snap;
 }
@@ -1559,10 +1580,152 @@ airportItlwmRegDiagRecordAssoc(uint32_t path, const uint8_t *ssid,
 }
 
 void
+airportItlwmRegDiagRecordAssocPolicy(uint32_t path, uint32_t authLower,
+                                     uint32_t authUpper, uint32_t rsnIeLen,
+                                     uint32_t pmfCapability,
+                                     uint32_t authFlags,
+                                     uint32_t candidateCount,
+                                     uint32_t policyFlags)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeAssoc))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    snap->lastAssocAuthFlags = authFlags;
+    snap->lastAssocCandidateCount = candidateCount;
+    snap->lastAssocPmfCapability = pmfCapability;
+    snap->lastAssocPolicyFlags = policyFlags;
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceAuthPolicy, path,
+                             (policyFlags &
+                              kAirportItlwmRegDiagAssocPolicyRejectWpa3) != 0 ?
+                                 kIOReturnUnsupported : kIOReturnSuccess,
+                             static_cast<int32_t>(pmfCapability),
+                             (static_cast<uint64_t>(authUpper) << 32) |
+                                 authLower,
+                             (static_cast<uint64_t>(rsnIeLen) << 32) |
+                                 policyFlags);
+}
+
+static uint32_t
+airportItlwmRegDiagPmkSourceForTag(const char *sourceTag)
+{
+    if (sourceTag == nullptr)
+        return kAirportItlwmRegDiagPmkSourceUnknown;
+    if (strcmp(sourceTag, "CIPHER_KEY") == 0)
+        return kAirportItlwmRegDiagPmkSourceCipherKey;
+    if (strcmp(sourceTag, "CIPHER_KEY_MSK") == 0)
+        return kAirportItlwmRegDiagPmkSourceCipherKeyMsk;
+    if (strcmp(sourceTag, "CUR_PMK") == 0)
+        return kAirportItlwmRegDiagPmkSourceCurPmk;
+    return kAirportItlwmRegDiagPmkSourceUnknown;
+}
+
+static uint32_t
+airportItlwmRegDiagPmkClearReasonForTag(const char *reasonTag)
+{
+    if (reasonTag == nullptr)
+        return kAirportItlwmRegDiagPmkClearUnknown;
+    if (strcmp(reasonTag, "associateSSID_disable_rsn") == 0)
+        return kAirportItlwmRegDiagPmkClearAssocDisableRsn;
+    if (strcmp(reasonTag, "setDISASSOCIATE") == 0)
+        return kAirportItlwmRegDiagPmkClearDisassociate;
+    if (strcmp(reasonTag, "setCLEAR_PMKSA_CACHE") == 0)
+        return kAirportItlwmRegDiagPmkClearPmksa;
+    if (strcmp(reasonTag, "setWCL_LEAVE_NETWORK") == 0)
+        return kAirportItlwmRegDiagPmkClearLeave;
+    if (strcmp(reasonTag, "setWCL_REASSOC") == 0)
+        return kAirportItlwmRegDiagPmkClearReassoc;
+    if (strcmp(reasonTag, "setWCL_JOIN_ABORT") == 0)
+        return kAirportItlwmRegDiagPmkClearJoinAbort;
+    if (strcmp(reasonTag, "releaseAll") == 0)
+        return kAirportItlwmRegDiagPmkClearTerminate;
+    return kAirportItlwmRegDiagPmkClearUnknown;
+}
+
+void
+airportItlwmRegDiagRecordPmkIngress(const char *sourceTag, uint32_t decision,
+                                    IOReturn result, uint32_t authUpper,
+                                    uint32_t keyLen)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModePmk))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    snap->pmkIngressCount++;
+    if (decision != kAirportItlwmRegDiagPmkDecisionAccepted)
+        snap->pmkIngressRejectCount++;
+    snap->lastPmkSource = airportItlwmRegDiagPmkSourceForTag(sourceTag);
+    snap->lastPmkDecision = decision;
+    snap->lastPmkKeyLen = keyLen;
+    snap->lastPmkAuthUpper = authUpper;
+    snap->lastPmkGeneration = 0;
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTracePmkIngress,
+                             kAirportItlwmRegDiagPathPmk, result,
+                             static_cast<int32_t>(snap->lastPmkSource),
+                             (static_cast<uint64_t>(authUpper) << 32) |
+                                 keyLen,
+                             decision);
+}
+
+void
+airportItlwmRegDiagRecordPmkClear(const char *reasonTag)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModePmk))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    snap->pmkClearCount++;
+    snap->lastPmkClearReason =
+        airportItlwmRegDiagPmkClearReasonForTag(reasonTag);
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTracePmkClear,
+                             kAirportItlwmRegDiagPathLifecycle,
+                             kIOReturnSuccess,
+                             static_cast<int32_t>(snap->lastPmkClearReason),
+                             0, 0);
+}
+
+void
+airportItlwmRegDiagRecordPlti(uint32_t traceKind, uint32_t decision,
+                              IOReturn result, uint32_t authUpper,
+                              uint64_t generation)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModePmk))
+        return;
+
+    AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
+    if (traceKind == kAirportItlwmRegDiagTracePltiPublish) {
+        snap->pltiPublishCount++;
+        if (decision != kAirportItlwmRegDiagPmkDecisionAccepted)
+            snap->pltiPublishRejectCount++;
+    } else if (traceKind == kAirportItlwmRegDiagTracePltiDeliver) {
+        snap->pltiDeliverCount++;
+        if (decision != kAirportItlwmRegDiagPmkDecisionAccepted)
+            snap->pltiDeliverRejectCount++;
+    } else {
+        return;
+    }
+    snap->lastPmkSource = kAirportItlwmRegDiagPmkSourcePlti;
+    snap->lastPmkDecision = decision;
+    snap->lastPmkAuthUpper = authUpper;
+    snap->lastPmkGeneration = generation;
+    airportItlwmRegDiagTrace(traceKind, kAirportItlwmRegDiagPathPlti, result,
+                             static_cast<int32_t>(decision), generation,
+                             authUpper);
+}
+
+bool
+airportItlwmRegDiagShouldTracePacket(bool eapol)
+{
+    return airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeData) ||
+           (eapol &&
+            airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModePmk));
+}
+
+void
 airportItlwmRegDiagRecordData(uint32_t path, uint32_t length, bool eapol,
                               IOReturn result)
 {
-    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeData))
+    if (!airportItlwmRegDiagShouldTracePacket(eapol))
         return;
 
     AirportItlwmRegDiagSnapshot *snap = &sRegDiag.snapshot;
@@ -7240,6 +7403,10 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
     if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(
             a->authtype_upper)) {
         a->out_generation = 0;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiPublish,
+            kAirportItlwmRegDiagPmkDecisionRejectPolicy,
+            kIOReturnNotPermitted, a->authtype_upper, 0);
         return kIOReturnSuccess;
     }
     // Teardown's terminal cancel is sticky for this controller lifetime.
@@ -7247,6 +7414,10 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
     // serialized behind the cancel and before HAL detach.
     if (s->fAssocTargetTerminating) {
         a->out_generation = 0;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiPublish,
+            kAirportItlwmRegDiagPmkDecisionRejectTerminating,
+            kIOReturnNotPermitted, a->authtype_upper, 0);
         return kIOReturnSuccess;
     }
     s->fAssocGenCounter += 1;
@@ -7268,6 +7439,10 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
     a->out_generation = s->fAssocGenCounter;
     s->getCommandGate()->commandWakeup(&s->fAssocTarget,
                                        /*oneThread=*/false);
+    airportItlwmRegDiagRecordPlti(
+        kAirportItlwmRegDiagTracePltiPublish,
+        kAirportItlwmRegDiagPmkDecisionAccepted, kIOReturnSuccess,
+        a->authtype_upper, a->out_generation);
     return kIOReturnSuccess;
 }
 
@@ -7380,6 +7555,12 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
         s->fAssocTarget.generation == 0 ||
         a->generation_echo != s->fAssocTarget.generation) {
         a->rc = kIOReturnNotPermitted;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            s->fAssocTargetTerminating ?
+                kAirportItlwmRegDiagPmkDecisionRejectTerminating :
+                kAirportItlwmRegDiagPmkDecisionRejectGeneration,
+            a->rc, s->fAssocTarget.authtype_upper, a->generation_echo);
         return kIOReturnSuccess;
     }
 
@@ -7387,6 +7568,10 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(
             s->fAssocTarget.authtype_upper)) {
         a->rc = kIOReturnNotPermitted;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionRejectPolicy, a->rc,
+            s->fAssocTarget.authtype_upper, a->generation_echo);
         return kIOReturnSuccess;
     }
     const uint32_t localAuthUpper =
@@ -7394,6 +7579,10 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
             s->fAssocTarget.authtype_upper);
     if (!TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
         a->rc = kIOReturnNotPermitted;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionRejectPolicy, a->rc,
+            s->fAssocTarget.authtype_upper, a->generation_echo);
         return kIOReturnSuccess;
     }
 
@@ -7401,6 +7590,10 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
         ? s->fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
         a->rc = kIOReturnNotReady;
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionNotReady, a->rc,
+            s->fAssocTarget.authtype_upper, a->generation_echo);
         return kIOReturnSuccess;
     }
 
@@ -7423,6 +7616,10 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     ieee80211_ioctl_setwpaparms(ic, &wpa);
 
     a->rc = kIOReturnSuccess;
+    airportItlwmRegDiagRecordPlti(
+        kAirportItlwmRegDiagTracePltiDeliver,
+        kAirportItlwmRegDiagPmkDecisionAccepted, a->rc,
+        s->fAssocTarget.authtype_upper, a->generation_echo);
     return kIOReturnSuccess;
 }
 
@@ -7442,16 +7639,28 @@ publishPendingAssocTarget(const uint8_t *ssid,
               ssid_len,
               ssid != nullptr ? 1 : 0,
               bssid != nullptr ? 1 : 0);
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiPublish,
+            kAirportItlwmRegDiagPmkDecisionRejectInput,
+            kIOReturnBadArgument, authtype_upper, 0);
         return 0;
     }
     if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(authtype_upper)) {
         XYLog("plti_publish_assoc_target REJECT_NON_PSK auth_upper=0x%x\n",
               authtype_upper);
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiPublish,
+            kAirportItlwmRegDiagPmkDecisionRejectPolicy,
+            kIOReturnNotPermitted, authtype_upper, 0);
         return 0;
     }
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr) {
         XYLog("plti_publish_assoc_target NOT_READY gate=NULL\n");
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiPublish,
+            kAirportItlwmRegDiagPmkDecisionNotReady,
+            kIOReturnNotReady, authtype_upper, 0);
         return 0;
     }
     AirportItlwmPublishAssocArgs a;
@@ -7623,21 +7832,37 @@ deliverExternalPMK(const struct apple80211_key *key,
     //                                      kIOReturnSuccess.
     if (key == nullptr) {
         XYLog("deliverExternalPMK REJECT key=NULL\n");
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionRejectNull,
+            kIOReturnBadArgument, 0, generation_echo);
         return kIOReturnBadArgument;
     }
     if (key->key_cipher_type != APPLE80211_CIPHER_PMK) {
         XYLog("deliverExternalPMK REJECT_CIPHER cipher=%u expected=%u\n",
               key->key_cipher_type, (unsigned)APPLE80211_CIPHER_PMK);
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionRejectInput,
+            kIOReturnBadArgument, 0, generation_echo);
         return kIOReturnBadArgument;
     }
     if (key->key_len != IEEE80211_PMK_LEN) {
         XYLog("deliverExternalPMK REJECT_LEN key_len=%u expected=%u\n",
               key->key_len, (unsigned)IEEE80211_PMK_LEN);
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionRejectLength,
+            kIOReturnBadArgument, 0, generation_echo);
         return kIOReturnBadArgument;
     }
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr) {
         XYLog("deliverExternalPMK NOT_READY gate=NULL\n");
+        airportItlwmRegDiagRecordPlti(
+            kAirportItlwmRegDiagTracePltiDeliver,
+            kAirportItlwmRegDiagPmkDecisionNotReady,
+            kIOReturnNotReady, 0, generation_echo);
         return kIOReturnNotReady;
     }
     AirportItlwmDeliverPmkArgs a;

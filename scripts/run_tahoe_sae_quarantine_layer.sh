@@ -28,18 +28,32 @@ PORT="${TAHOE_SAE_GATE_PORT:-3322}"
 REMOTE_SDK="${TAHOE_SAE_GATE_SDK:-/Users/devops/Projects/itlwm/MacKernelSDK}"
 BOOTKC="${TAHOE_SAE_GATE_BOOTKC:-/System/Library/KernelCollections/BootKernelExtensions.kc}"
 SSH=(ssh -o BatchMode=yes -p "$PORT" "$REMOTE")
+UNTRACKED_FILES="$(git -C "$ROOT" ls-files --others --exclude-standard)"
+if [ -n "$UNTRACKED_FILES" ]; then
+    echo "ERROR: Tahoe SAE layer gate refuses untracked source files; stage or ignore them first" >&2
+    printf '%s\n' "$UNTRACKED_FILES" >&2
+    exit 1
+fi
 SOURCE_ID="$(git -C "$ROOT" rev-parse --short HEAD)"
+SOURCE_DIRTY=0
 if ! git -C "$ROOT" diff --quiet; then
+    SOURCE_DIRTY=1
+fi
+if ! git -C "$ROOT" diff --cached --quiet; then
+    SOURCE_DIRTY=1
+fi
+if [ "$SOURCE_DIRTY" -ne 0 ]; then
     if command -v sha256sum >/dev/null 2>&1; then
-        SOURCE_ID="dirty$(git -C "$ROOT" diff --binary | sha256sum | awk '{print substr($1, 1, 12)}')"
+        SOURCE_ID="dirty$({ git -C "$ROOT" diff --binary; git -C "$ROOT" diff --cached --binary; } | sha256sum | awk '{print substr($1, 1, 12)}')"
     else
-        SOURCE_ID="dirty$(git -C "$ROOT" diff --binary | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
+        SOURCE_ID="dirty$({ git -C "$ROOT" diff --binary; git -C "$ROOT" diff --cached --binary; } | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
     fi
 fi
 
 echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
 bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
 bash -n "$ROOT/scripts/build_tahoe.sh"
+bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
 git -C "$ROOT" diff --check
 
 if [ "$STATIC_ONLY" -eq 1 ]; then
@@ -65,9 +79,10 @@ rsync -a -e "ssh -o BatchMode=yes -p $PORT" \
 "${SSH[@]}" "test -f '$REMOTE_SDK/Headers/IOKit/network/IONetworkController.h'"
 "${SSH[@]}" "cp -R '$REMOTE_SDK' '$REMOTE_DIR/MacKernelSDK'"
 
-echo "[4/4] Tahoe kext BootKC gate and Agent clean build"
+echo "[4/4] Tahoe kext BootKC gate, Agent clean build, and RegDiag client"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'"
 "${SSH[@]}" "cd '$REMOTE_DIR/AirportItlwmAgent' && make clean && make"
+"${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_regdiag.sh"
 
 echo "PASS: Tahoe SAE/PMF layer gate"
 echo "  source identity: $SOURCE_ID"

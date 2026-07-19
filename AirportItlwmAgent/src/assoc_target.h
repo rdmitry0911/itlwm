@@ -50,6 +50,20 @@
 #define kAirportItlwmAuthAuditedWpa3PskTransition \
     (kAirportItlwmAuthWpa3Sae | kAirportItlwmAuthWpa2Psk)
 
+/*
+ * Version-1 PLTI may derive a PBKDF2 PMK only for an exact nonempty subset
+ * of the three legacy PSK AKM bits, or for the one audited SAE transition
+ * carrier.  A merely co-present PSK bit must not authorize FT/WPS/enterprise
+ * or an unknown companion to consume the legacy PMK path.
+ */
+static inline int
+AirportItlwmAgentTargetUsesPskPmk(uint32_t authtype_upper)
+{
+    return authtype_upper == kAirportItlwmAuthAuditedWpa3PskTransition ||
+           (authtype_upper != 0 &&
+            (authtype_upper & ~kAirportItlwmAuthPskPmkMask) == 0);
+}
+
 #define kAirportItlwmUserClientType                        ('PLTI')
 
 enum {
@@ -70,8 +84,14 @@ struct AirportItlwmAssociationTarget {
     uint8_t  pad1[2];
 } __attribute__((packed));
 
+#if defined(__cplusplus)
+static_assert(sizeof(struct AirportItlwmAssociationTarget) == 72,
+              "AirportItlwmAssociationTarget ABI layout must match "
+              "AirportItlwm/AirportItlwmV2.hpp");
+#else
 _Static_assert(sizeof(struct AirportItlwmAssociationTarget) == 72,
                "AirportItlwmAssociationTarget ABI layout must match "
                "AirportItlwm/AirportItlwmV2.hpp");
+#endif
 
 #endif /* AIRPORTITLWMAGENT_ASSOC_TARGET_H */

@@ -95,6 +95,20 @@ inline bool isAuditedWpa3PskTransition(uint32_t authtypeUpper)
     return authtypeUpper == kAuditedWpa3PskTransitionAuth;
 }
 
+inline bool isAuditedPskPmkAuth(uint32_t authtypeUpper)
+{
+    /*
+     * PLTI version 1 carries only a WPA/WPA2 PSK-derived PBKDF2 PMK.  Its
+     * authorization carrier is therefore an exact nonempty subset of the
+     * three PSK AKM bits, not merely a vector which happens to contain one
+     * PSK bit.  In particular, WPA/WPA2 protocol bits select the local
+     * 802.1X branch, while FT/WPS/enterprise/unknown companions need a
+     * distinct credential protocol and must not inherit a PSK PMK.
+     */
+    return authtypeUpper != 0 &&
+           (authtypeUpper & ~kPskAuthMask) == 0;
+}
+
 inline bool requiresUnsupportedWpa3Auth(uint32_t authtypeUpper)
 {
     /*
@@ -116,9 +130,8 @@ inline bool mayUseLocalPskPmk(uint32_t authtypeUpper)
      * WPA3-containing vector rather than silently treating one PSK bit as an
      * authorization to derive a WPA2 PMK.
      */
-    if ((authtypeUpper & kWpa3OnlyAuthMask) != 0)
-        return isAuditedWpa3PskTransition(authtypeUpper);
-    return usesLocalPskAkm(authtypeUpper);
+    return isAuditedWpa3PskTransition(authtypeUpper) ||
+           isAuditedPskPmkAuth(authtypeUpper);
 }
 
 inline uint32_t localAuthMaskWithoutFallbackRewrite(uint32_t authtypeUpper)

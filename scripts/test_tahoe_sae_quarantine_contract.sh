@@ -29,6 +29,10 @@ output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 crypto = (root / "itl80211/openbsd/net80211/ieee80211_crypto.h").read_text()
 raw_ioctl = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.c").read_text()
+regdiag_header = (root / "include/ClientKit/AirportItlwmRegDiag.h").read_text()
+regdiag_client = (root / "AirportItlwmRegDiag/airport_itlwm_regdiag.c").read_text()
+capture_script = (root / "scripts/capture_tahoe_sae_layer.sh").read_text()
+layer_runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
 
 
 def fail(message):
@@ -81,6 +85,7 @@ for needle in (
     "kAuditedWpa3PskTransitionAuth =",
     "kAuthWpa3Sae | kAuthWpa2Psk",
     "inline bool requiresUnsupportedWpa3Auth",
+    "inline bool isAuditedPskPmkAuth",
     "inline bool mayUseLocalPskPmk",
     "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 ):
@@ -93,9 +98,14 @@ ordered(unsupported, "unsupported WPA3 predicate",
 pmk_policy = body(auth, "inline bool mayUseLocalPskPmk",
                   "mayUseLocalPskPmk")
 ordered(pmk_policy, "PLTI PMK policy",
-        "authtypeUpper & kWpa3OnlyAuthMask",
         "return isAuditedWpa3PskTransition(authtypeUpper)",
-        "return usesLocalPskAkm(authtypeUpper)")
+        "isAuditedPskPmkAuth(authtypeUpper)")
+audited_psk = body(auth, "inline bool isAuditedPskPmkAuth",
+                   "exact PLTI PSK allow-list")
+ordered(audited_psk, "exact PLTI PSK allow-list",
+        "authtypeUpper != 0", "~kPskAuthMask")
+forbid(audited_psk, "usesLocalPskAkm(",
+       "broad PSK authorization in exact PLTI allow-list")
 
 # Both Tahoe ingress routes must reject before any association state or RSN
 # mutation. The legacy route is kept in the same gate so a future target
@@ -240,18 +250,80 @@ for needle in (
     "kAirportItlwmAuthWpa3Mask",
     "kAirportItlwmAuthAuditedWpa3PskTransition",
     "kAirportItlwmAuthWpa3Sae | kAirportItlwmAuthWpa2Psk",
+    "AirportItlwmAgentTargetUsesPskPmk",
+    "~kAirportItlwmAuthPskPmkMask",
 ):
     require(agent_header, needle, "Agent mirrored auth policy")
 agent_policy = body(agent, "agent_target_uses_psk_pmk",
                     "Agent target policy")
 ordered(agent_policy, "Agent target policy",
-        "kAirportItlwmAuthWpa3Mask",
-        "kAirportItlwmAuthAuditedWpa3PskTransition",
-        "kAirportItlwmAuthPskPmkMask")
+        "return AirportItlwmAgentTargetUsesPskPmk(tgt->authtype_upper)")
 agent_handler = body(agent, "agent_handle_target", "Agent target handler")
 ordered(agent_handler, "Agent credential boundary",
         "!agent_target_uses_psk_pmk(tgt)", "return -1;",
         "AgentLookupProjectPSK", "AgentDerivePMK_PBKDF2")
+
+# A single runtime association capture must expose the input auth/PMF carrier,
+# direct PMK order, PLTI generation handoff, lifecycle clears, and EAPOL-only
+# traffic without recording key material or requiring route changes.
+for needle in (
+    "AIRPORT_ITLWM_REGDIAG_ABI_VERSION 2U",
+    "kAirportItlwmRegDiagModePmk",
+    "kAirportItlwmRegDiagTraceAuthPolicy",
+    "kAirportItlwmRegDiagTracePmkIngress",
+    "kAirportItlwmRegDiagTracePmkClear",
+    "kAirportItlwmRegDiagTracePltiPublish",
+    "kAirportItlwmRegDiagTracePltiDeliver",
+    "kAirportItlwmRegDiagPathPmk",
+    "kAirportItlwmRegDiagPathPlti",
+    "kAirportItlwmRegDiagPathLifecycle",
+    "lastAssocPmfCapability",
+    "lastPmkGeneration",
+):
+    require(regdiag_header, needle, "SAE/PMK RegDiag ABI")
+for needle in (
+    "airportItlwmRegDiagRecordAssocPolicy",
+    "airportItlwmRegDiagRecordPmkIngress",
+    "airportItlwmRegDiagRecordPmkClear",
+):
+    require(sky, needle, "Skywalk SAE/PMK timeline hook")
+for needle in (
+    "airportItlwmRegDiagRecordPlti",
+    "kAirportItlwmRegDiagTracePltiPublish",
+    "kAirportItlwmRegDiagTracePltiDeliver",
+):
+    require(v2, needle, "PLTI SAE/PMK timeline hook")
+packet_trace_policy = body(v2, "airportItlwmRegDiagShouldTracePacket",
+                           "PMK diagnostic packet trace policy")
+ordered(packet_trace_policy, "PMK diagnostic EAPOL-only data filter",
+        "kAirportItlwmRegDiagModeData", "eapol",
+        "kAirportItlwmRegDiagModePmk")
+require(sky, "airportItlwmRegDiagShouldTracePacket(isEapol)",
+        "Skywalk packet trace obeys PMK EAPOL-only filter")
+for needle in (
+    "sae-on",
+    "get snapshot|trace|control|report",
+    "pmk_source_name",
+    "pmk_decision_name",
+):
+    require(regdiag_client, needle, "RegDiag SAE/PMK report client")
+for needle in (
+    "routing_mutation=none",
+    "ip_address_mutation=none",
+    '"$@" >/dev/null 2>&1',
+    '"$TOOL" sae-on',
+    '"$TOOL" get report',
+):
+    require(capture_script, needle, "one-run SAE capture safety contract")
+forbid(capture_script, "networksetup", "hard-coded network mutation in capture")
+forbid(capture_script, "route ", "route mutation in capture")
+require(layer_runner, "./scripts/build_regdiag.sh",
+        "layer gate builds the matching RegDiag client")
+for needle in ("git -C \"$ROOT\" diff --cached --quiet",
+               "git -C \"$ROOT\" diff --cached --binary",
+               "git -C \"$ROOT\" ls-files --others --exclude-standard"):
+    require(layer_runner, needle,
+            "layer gate source identity includes staged changes")
 
 # SAE is intentionally absent below ingress. net80211 still emits and accepts
 # only Open-System authentication, so letting SAE cross the boundary would be

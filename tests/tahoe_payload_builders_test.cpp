@@ -7,6 +7,8 @@
 
 #include "AirportItlwm/AirportItlwmAPSTAInterface.hpp"
 #include "AirportItlwm/AirportItlwmAPSTAEventContracts.hpp"
+#include "AirportItlwmAgent/src/assoc_target.h"
+#include "include/ClientKit/AirportItlwmRegDiag.h"
 #include "include/Airport/apple80211_ioctl.h"
 #include "AirportItlwm/TahoeAssociationAuthContracts.hpp"
 #include "AirportItlwm/TahoeAssociationContracts.hpp"
@@ -1557,6 +1559,11 @@ void testTahoeAssociationAuthContracts()
 {
     using namespace TahoeAssociationAuthContracts;
 
+    require(AIRPORT_ITLWM_REGDIAG_ABI_VERSION == 2U &&
+                AIRPORT_ITLWM_REGDIAG_SNAPSHOT_V1_SIZE <
+                    sizeof(AirportItlwmRegDiagSnapshot),
+            "SAE/PMK RegDiag ABI extends the v1 snapshot without moving it");
+
     const uint32_t mixedTransition = kAuthWpa2Psk | kAuthWpa3Sae;
     uint32_t local = localAuthMaskWithoutFallbackRewrite(mixedTransition);
     require(local == kAuthWpa2Psk,
@@ -1605,6 +1612,47 @@ void testTahoeAssociationAuthContracts()
             "PLTI permits only the audited WPA3 PSK transition carrier");
     require(!mayUseLocalPskPmk(mixedTransition | (1U << 31)),
             "PLTI rejects an unobserved WPA3 plus PSK carrier");
+
+    /*
+     * Exercise the entire Apple-defined upper-auth bitfield once, rather
+     * than relying on one-off examples.  This keeps the kext-side PLTI gate
+     * and its independently compiled Agent mirror in lockstep for every
+     * combination of legacy, WPA3, FT/WPS/enterprise and mixed selector
+     * bits.  A separate high unknown bit covers carrier extension drift.
+     */
+    constexpr uint32_t kAppleDefinedAuthBits = (1U << 16) - 1U;
+    for (uint32_t selector = 0; selector <= kAppleDefinedAuthBits;
+         ++selector) {
+        const bool expectedPskPmk =
+            selector == kAuditedWpa3PskTransitionAuth ||
+            (selector != 0 && (selector & ~kPskAuthMask) == 0);
+        const bool expectedUnsupportedWpa3 =
+            (selector & kWpa3OnlyAuthMask) != 0 &&
+            selector != kAuditedWpa3PskTransitionAuth;
+        require(mayUseLocalPskPmk(selector) == expectedPskPmk,
+                "PLTI exact PSK matrix matches its audited allow-list");
+        require(AirportItlwmAgentTargetUsesPskPmk(selector) ==
+                    expectedPskPmk,
+                "Agent exact PSK matrix mirrors the kext allow-list");
+        require(requiresUnsupportedWpa3Auth(selector) ==
+                    expectedUnsupportedWpa3,
+                "WPA3 ingress matrix rejects every non-audited carrier");
+    }
+
+    for (uint32_t selector : {
+             kAuthWpa2Psk | (1U << 31),
+             kAuditedWpa3PskTransitionAuth | (1U << 31),
+             kAuthWpa2Psk | kAuthWpa2,
+             kAuthWpa2Psk | kAuthWpa,
+             kAuthWpa2Psk | (1U << 4),
+             kAuthWpa2Psk | (1U << 8),
+             kAuthWpa2Psk | kAuthSha2568021x,
+         }) {
+        require(!mayUseLocalPskPmk(selector),
+                "PLTI rejects an extra companion on a PSK selector");
+        require(!AirportItlwmAgentTargetUsesPskPmk(selector),
+                "Agent rejects an extra companion on a PSK selector");
+    }
 }
 
 void testTahoeCountryCodeCarrierContracts()

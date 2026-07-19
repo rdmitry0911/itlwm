@@ -42,6 +42,27 @@ static_assert(TahoeAssociationAuthContracts::kAuthWpa3Sae ==
                   APPLE80211_AUTHTYPE_WPA3_SAE,
               "association auth contract must match Apple80211 WPA3 SAE bit");
 
+static uint32_t tahoeAssociationRegDiagPolicyFlags(uint32_t authtypeUpper)
+{
+    uint32_t flags = 0;
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            authtypeUpper)) {
+        flags |= kAirportItlwmRegDiagAssocPolicyRejectWpa3;
+    }
+    if (TahoeAssociationAuthContracts::mayUseLocalPskPmk(authtypeUpper))
+        flags |= kAirportItlwmRegDiagAssocPolicyPskPmkEligible;
+    if (TahoeAssociationAuthContracts::usesLocalPskAkm(
+            TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
+                authtypeUpper))) {
+        flags |= kAirportItlwmRegDiagAssocPolicyLocalPsk;
+    }
+    if (TahoeAssociationAuthContracts::isAuditedWpa3PskTransition(
+            authtypeUpper)) {
+        flags |= kAirportItlwmRegDiagAssocPolicyAuditedWpa3Transition;
+    }
+    return flags;
+}
+
 static constexpr UInt kApple80211LegacyGetIoctl = 3223873993U; // 0xc02869c9
 static constexpr UInt kApple80211LegacySetIoctl = 2150132168U; // 0x802869c8
 
@@ -1324,7 +1345,8 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
     const uint32_t count = ++sIo80211InputProbeCount;
     const uint16_t etherType = airportItlwmHostEtherType(eh);
     const bool isEapol = etherType == ETHERTYPE_PAE;
-    const bool shouldTrace = count <= kIo80211InputProbeLimit || isEapol;
+    const bool shouldTrace = airportItlwmRegDiagShouldTracePacket(isEapol) &&
+        (count <= kIo80211InputProbeLimit || isEapol);
     const uint64_t traceArg =
         (static_cast<uint64_t>(etherType) << 32) | static_cast<uint64_t>(count);
 
@@ -4309,6 +4331,9 @@ setCUR_PMK(struct apple80211_pmk *pmk)
     // remain separate PMK-ingestion paths and neither is redirected here.
     if (pmk == nullptr) {
         XYLog("setCUR_PMK NOT_READY pmk=NULL\n");
+        airportItlwmRegDiagRecordPmkIngress(
+            "CUR_PMK", kAirportItlwmRegDiagPmkDecisionRejectNull,
+            kIOReturnBadArgument, current_authtype_upper, 0);
         return kIOReturnBadArgument;
     }
     return installExternalPmkLocked(pmk->apple_pmk_setter_source,
@@ -4335,23 +4360,35 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
     if (ic == nullptr) {
         XYLog("install_external_pmk NOT_READY source=%s ic=NULL\n",
               source_tag != nullptr ? source_tag : "?");
+        airportItlwmRegDiagRecordPmkIngress(
+            source_tag, kAirportItlwmRegDiagPmkDecisionNotReady,
+            kIOReturnNotReady, authtype_upper, key_len);
         return kIOReturnNotReady;
     }
     if (pmk_bytes == nullptr) {
         XYLog("install_external_pmk REJECT_NULL source=%s\n",
               source_tag != nullptr ? source_tag : "?");
+        airportItlwmRegDiagRecordPmkIngress(
+            source_tag, kAirportItlwmRegDiagPmkDecisionRejectNull,
+            kIOReturnBadArgument, authtype_upper, key_len);
         return kIOReturnBadArgument;
     }
     if (key_len != IEEE80211_PMK_LEN) {
         XYLog("install_external_pmk REJECT_LEN source=%s key_len=%u expected=%u\n",
               source_tag != nullptr ? source_tag : "?",
               key_len, (unsigned)IEEE80211_PMK_LEN);
+        airportItlwmRegDiagRecordPmkIngress(
+            source_tag, kAirportItlwmRegDiagPmkDecisionRejectLength,
+            kIOReturnBadArgument, authtype_upper, key_len);
         return kIOReturnBadArgument;
     }
     if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
             authtype_upper)) {
         XYLog("install_external_pmk REJECT_WPA3_NO_FALLBACK source=%s auth_upper=0x%x\n",
               source_tag != nullptr ? source_tag : "?", authtype_upper);
+        airportItlwmRegDiagRecordPmkIngress(
+            source_tag, kAirportItlwmRegDiagPmkDecisionRejectWpa3,
+            kIOReturnUnsupported, authtype_upper, key_len);
         return kIOReturnUnsupported;
     }
     memcpy(ic->ic_psk, pmk_bytes, sizeof(ic->ic_psk));
@@ -4389,6 +4426,9 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
         __atomic_add_fetch(&setCUR_PMK_pmk_install_count, 1,
                            __ATOMIC_RELAXED);
     }
+    airportItlwmRegDiagRecordPmkIngress(
+        source_tag, kAirportItlwmRegDiagPmkDecisionAccepted,
+        kIOReturnSuccess, authtype_upper, key_len);
     return kIOReturnSuccess;
 }
 
@@ -4454,6 +4494,7 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     }
     __atomic_add_fetch(&external_pmk_eligibility_clear_count, 1,
                        __ATOMIC_RELAXED);
+    airportItlwmRegDiagRecordPmkClear(reason_tag);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5540,6 +5581,11 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnError;
     }
 
+    airportItlwmRegDiagRecordAssocPolicy(
+        kAirportItlwmRegDiagPathPublicAssoc, ad->ad_auth_lower,
+        ad->ad_auth_upper, ad->ad_rsn_ie_len, 0, 0, 0,
+        tahoeAssociationRegDiagPolicyFlags(ad->ad_auth_upper));
+
     if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
             ad->ad_auth_upper)) {
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
@@ -6058,6 +6104,11 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
+
+    airportItlwmRegDiagRecordAssocPolicy(
+        kAirportItlwmRegDiagPathHiddenAssoc, auth_lower, auth_upper,
+        rsn_ie_len, pmf_capability, auth_flags, candidate_count,
+        tahoeAssociationRegDiagPolicyFlags(auth_upper));
 
     if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
             auth_upper)) {

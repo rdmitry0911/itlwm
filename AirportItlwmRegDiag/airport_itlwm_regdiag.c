@@ -19,6 +19,11 @@ kind_name(uint32_t kind)
         case kAirportItlwmRegDiagTraceRx: return "rx";
         case kAirportItlwmRegDiagTraceBlock: return "block";
         case kAirportItlwmRegDiagTraceControl: return "control";
+        case kAirportItlwmRegDiagTraceAuthPolicy: return "auth-policy";
+        case kAirportItlwmRegDiagTracePmkIngress: return "pmk-ingress";
+        case kAirportItlwmRegDiagTracePmkClear: return "pmk-clear";
+        case kAirportItlwmRegDiagTracePltiPublish: return "plti-publish";
+        case kAirportItlwmRegDiagTracePltiDeliver: return "plti-deliver";
         default: return "unknown";
     }
 }
@@ -32,6 +37,53 @@ path_name(uint32_t path)
         case kAirportItlwmRegDiagPathTx: return "tx";
         case kAirportItlwmRegDiagPathRx: return "rx";
         case kAirportItlwmRegDiagPathLink: return "link";
+        case kAirportItlwmRegDiagPathPmk: return "pmk";
+        case kAirportItlwmRegDiagPathPlti: return "plti";
+        case kAirportItlwmRegDiagPathLifecycle: return "lifecycle";
+        default: return "unknown";
+    }
+}
+
+static const char *
+pmk_source_name(uint32_t source)
+{
+    switch (source) {
+        case kAirportItlwmRegDiagPmkSourceCipherKey: return "cipher-key";
+        case kAirportItlwmRegDiagPmkSourceCipherKeyMsk: return "cipher-key-msk";
+        case kAirportItlwmRegDiagPmkSourceCurPmk: return "cur-pmk";
+        case kAirportItlwmRegDiagPmkSourcePlti: return "plti";
+        default: return "unknown";
+    }
+}
+
+static const char *
+pmk_decision_name(uint32_t decision)
+{
+    switch (decision) {
+        case kAirportItlwmRegDiagPmkDecisionAccepted: return "accepted";
+        case kAirportItlwmRegDiagPmkDecisionRejectInput: return "reject-input";
+        case kAirportItlwmRegDiagPmkDecisionRejectNull: return "reject-null";
+        case kAirportItlwmRegDiagPmkDecisionRejectLength: return "reject-length";
+        case kAirportItlwmRegDiagPmkDecisionRejectWpa3: return "reject-wpa3";
+        case kAirportItlwmRegDiagPmkDecisionRejectPolicy: return "reject-policy";
+        case kAirportItlwmRegDiagPmkDecisionRejectGeneration: return "reject-generation";
+        case kAirportItlwmRegDiagPmkDecisionRejectTerminating: return "reject-terminating";
+        case kAirportItlwmRegDiagPmkDecisionNotReady: return "not-ready";
+        default: return "unknown";
+    }
+}
+
+static const char *
+pmk_clear_reason_name(uint32_t reason)
+{
+    switch (reason) {
+        case kAirportItlwmRegDiagPmkClearAssocDisableRsn: return "assoc-disable-rsn";
+        case kAirportItlwmRegDiagPmkClearDisassociate: return "disassociate";
+        case kAirportItlwmRegDiagPmkClearPmksa: return "pmksa";
+        case kAirportItlwmRegDiagPmkClearLeave: return "leave";
+        case kAirportItlwmRegDiagPmkClearReassoc: return "reassoc";
+        case kAirportItlwmRegDiagPmkClearJoinAbort: return "join-abort";
+        case kAirportItlwmRegDiagPmkClearTerminate: return "terminate";
         default: return "unknown";
     }
 }
@@ -167,7 +219,8 @@ get_snapshot(io_service_t service)
         return 1;
     }
     if (CFGetTypeID(value) != CFDataGetTypeID() ||
-        CFDataGetLength((CFDataRef)value) < (CFIndex)sizeof(AirportItlwmRegDiagSnapshot)) {
+        CFDataGetLength((CFDataRef)value) <
+            (CFIndex)AIRPORT_ITLWM_REGDIAG_SNAPSHOT_V1_SIZE) {
         fprintf(stderr, "snapshot has unexpected type or size\n");
         CFRelease(value);
         return 1;
@@ -210,6 +263,24 @@ get_snapshot(io_service_t service)
            s->lastLinkState, s->lastBlockMask, s->lastTxLength, s->lastRxLength);
     printf("ptrs fNetIf=0x%" PRIx64 " bsdIf=0x%" PRIx64 " txQ=0x%" PRIx64 " rxQ=0x%" PRIx64 "\n",
            s->fNetIfPtr, s->bsdIfPtr, s->fTxQueuePtr, s->fRxQueuePtr);
+    if (CFDataGetLength((CFDataRef)value) >=
+        (CFIndex)sizeof(AirportItlwmRegDiagSnapshot)) {
+        printf("assoc_policy auth_flags=0x%x candidates=%u pmf=%u flags=0x%x\n",
+               s->lastAssocAuthFlags, s->lastAssocCandidateCount,
+               s->lastAssocPmfCapability, s->lastAssocPolicyFlags);
+        printf("pmk counts ingress=%u reject=%u clear=%u plti_publish=%u/%u plti_deliver=%u/%u\n",
+               s->pmkIngressCount, s->pmkIngressRejectCount,
+               s->pmkClearCount, s->pltiPublishCount,
+               s->pltiPublishRejectCount, s->pltiDeliverCount,
+               s->pltiDeliverRejectCount);
+        printf("pmk last source=%s decision=%s key_len=%u auth=0x%x generation=%" PRIu64 " clear=%s\n",
+               pmk_source_name(s->lastPmkSource),
+               pmk_decision_name(s->lastPmkDecision), s->lastPmkKeyLen,
+               s->lastPmkAuthUpper, s->lastPmkGeneration,
+               pmk_clear_reason_name(s->lastPmkClearReason));
+    } else {
+        printf("pmk_timeline=unavailable (loaded kext exposes ABI v1 snapshot)\n");
+    }
 
     CFRelease(value);
     return 0;
@@ -242,9 +313,33 @@ get_trace(io_service_t service)
         uint32_t seq = start + i;
         const AirportItlwmRegDiagTraceEntry *e =
             &t->entries[seq % AIRPORT_ITLWM_REGDIAG_MAX_TRACE_ENTRIES];
-        printf("#%u kind=%s path=%s result=0x%x arg0=%d arg1=0x%" PRIx64 " arg2=0x%" PRIx64 "\n",
+        printf("#%u kind=%s path=%s result=0x%x",
                e->sequence, kind_name(e->kind), path_name(e->path),
-               (uint32_t)e->result, e->arg0, e->arg1, e->arg2);
+               (uint32_t)e->result);
+        if (e->kind == kAirportItlwmRegDiagTraceAuthPolicy) {
+            uint32_t auth_lower = (uint32_t)e->arg1;
+            uint32_t auth_upper = (uint32_t)(e->arg1 >> 32);
+            uint32_t rsn_len = (uint32_t)(e->arg2 >> 32);
+            uint32_t flags = (uint32_t)e->arg2;
+            printf(" pmf=%d auth=0x%x/0x%x rsn_len=%u policy=0x%x",
+                   e->arg0, auth_lower, auth_upper, rsn_len, flags);
+        } else if (e->kind == kAirportItlwmRegDiagTracePmkIngress) {
+            printf(" source=%s auth=0x%x key_len=%u decision=%s",
+                   pmk_source_name((uint32_t)e->arg0),
+                   (uint32_t)(e->arg1 >> 32), (uint32_t)e->arg1,
+                   pmk_decision_name((uint32_t)e->arg2));
+        } else if (e->kind == kAirportItlwmRegDiagTracePmkClear) {
+            printf(" reason=%s", pmk_clear_reason_name((uint32_t)e->arg0));
+        } else if (e->kind == kAirportItlwmRegDiagTracePltiPublish ||
+                   e->kind == kAirportItlwmRegDiagTracePltiDeliver) {
+            printf(" decision=%s generation=%" PRIu64 " auth=0x%x",
+                   pmk_decision_name((uint32_t)e->arg0), e->arg1,
+                   (uint32_t)e->arg2);
+        } else {
+            printf(" arg0=%d arg1=0x%" PRIx64 " arg2=0x%" PRIx64,
+                   e->arg0, e->arg1, e->arg2);
+        }
+        putchar('\n');
     }
 
     CFRelease(value);
@@ -258,8 +353,8 @@ usage(const char *prog)
             "usage:\n"
             "  %s set enable 1 assoc 1 control 1 data 1 log 0 clear 1\n"
             "  %s set block 0x0 intervention 0\n"
-            "  %s get snapshot|trace|control\n"
-            "  %s on|off\n",
+            "  %s get snapshot|trace|control|report\n"
+            "  %s on|sae-on|off\n",
             prog, prog, prog, prog);
 }
 
@@ -298,6 +393,19 @@ main(int argc, char **argv)
             (char *)"block", (char *)"0",
         };
         rc = set_control(service, 6, args);
+    } else if (strcmp(argv[1], "sae-on") == 0) {
+        char *args[] = {
+            (char *)"enable", (char *)"1",
+            (char *)"assoc", (char *)"1",
+            (char *)"control", (char *)"1",
+            (char *)"pmk", (char *)"1",
+            (char *)"data", (char *)"0",
+            (char *)"log", (char *)"0",
+            (char *)"intervention", (char *)"0",
+            (char *)"block", (char *)"0",
+            (char *)"clear", (char *)"1",
+        };
+        rc = set_control(service, 18, args);
     } else if (strcmp(argv[1], "get") == 0 && argc >= 3) {
         if (strcmp(argv[2], "snapshot") == 0)
             rc = get_snapshot(service);
@@ -305,6 +413,11 @@ main(int argc, char **argv)
             rc = get_trace(service);
         else if (strcmp(argv[2], "control") == 0)
             rc = get_control(service);
+        else if (strcmp(argv[2], "report") == 0) {
+            rc = get_snapshot(service);
+            if (rc == 0)
+                rc = get_trace(service);
+        }
         else
             usage(argv[0]);
     } else {
