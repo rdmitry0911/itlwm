@@ -335,6 +335,13 @@ get_trace(io_service_t service)
             printf(" decision=%s generation=%" PRIu64 " auth=0x%x",
                    pmk_decision_name((uint32_t)e->arg0), e->arg1,
                    (uint32_t)e->arg2);
+        } else if (e->kind == kAirportItlwmRegDiagTraceTx ||
+                   e->kind == kAirportItlwmRegDiagTraceRx) {
+            printf(" eapol=%d length=%" PRIu64,
+                   e->arg0 != 0 ? 1 : 0, e->arg1);
+        } else if (e->kind == kAirportItlwmRegDiagTraceLinkState) {
+            printf(" link_state=%d raw_code=%" PRIu64,
+                   e->arg0, e->arg1);
         } else {
             printf(" arg0=%d arg1=0x%" PRIx64 " arg2=0x%" PRIx64,
                    e->arg0, e->arg1, e->arg2);

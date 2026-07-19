@@ -32,6 +32,8 @@ raw_ioctl = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.c").read_text()
 regdiag_header = (root / "include/ClientKit/AirportItlwmRegDiag.h").read_text()
 regdiag_client = (root / "AirportItlwmRegDiag/airport_itlwm_regdiag.c").read_text()
 capture_script = (root / "scripts/capture_tahoe_sae_layer.sh").read_text()
+capture_evaluator = (root / "scripts/evaluate_tahoe_sae_capture.py").read_text()
+profile_runner = (root / "scripts/run_tahoe_sae_lab_profiles.sh").read_text()
 layer_runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
 
 
@@ -305,6 +307,8 @@ for needle in (
     "get snapshot|trace|control|report",
     "pmk_source_name",
     "pmk_decision_name",
+    " eapol=%d length=",
+    " link_state=%d raw_code=",
 ):
     require(regdiag_client, needle, "RegDiag SAE/PMK report client")
 for needle in (
@@ -313,10 +317,39 @@ for needle in (
     '"$@" >/dev/null 2>&1',
     '"$TOOL" sae-on',
     '"$TOOL" get report',
+    '"$EVALUATOR" --expect',
+    'netstat -rn -f inet',
+    'mktemp -d "$OUT_ROOT/sae-layer-$STAMP.XXXXXX"',
 ):
     require(capture_script, needle, "one-run SAE capture safety contract")
 forbid(capture_script, "networksetup", "hard-coded network mutation in capture")
 forbid(capture_script, "route ", "route mutation in capture")
+for needle in (
+    "MODE_SAE_PMK = 0x35",
+    "TRACE_CAPACITY = 128",
+    "post-snapshot.txt",
+    "trace header count does not match decoded records",
+    "trace sequence is not a contiguous, unique ring window",
+    "PMK-mode trace contains non-EAPOL",
+    "snapshot packet counters do not reconcile",
+    "event.auth_upper == PURE_SAE",
+    "event.generation in published",
+    "no successful link-up publication",
+):
+    require(capture_evaluator, needle, "strict SAE/PMK capture evaluator")
+forbid(capture_evaluator, 'read_optional(directory / "report.txt")',
+       "report.txt fallback in canonical evaluator")
+for needle in (
+    "password_carrier=keychain-only",
+    "epoch_isolation=sae-on-clear-per-attempt",
+    "run_epoch sae sae-reject",
+    "run_epoch psk wpa2-psk",
+    "--strict",
+    "/usr/sbin/networksetup -setairportnetwork",
+):
+    require(profile_runner, needle, "two-epoch SAE lab runner")
+forbid(profile_runner, "PASSWORD=", "password carrier in SAE lab runner")
+forbid(profile_runner, "--password", "password command line in SAE lab runner")
 require(layer_runner, "./scripts/build_regdiag.sh",
         "layer gate builds the matching RegDiag client")
 for needle in ("git -C \"$ROOT\" diff --cached --quiet",
@@ -339,3 +372,6 @@ require(auth_rx, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
 
 print("PASS: Tahoe SAE/PMF quarantine layer contracts")
 PY
+
+python3 "$root/scripts/evaluate_tahoe_sae_capture.py" --self-test
+bash -n "$root/scripts/run_tahoe_sae_lab_profiles.sh"
