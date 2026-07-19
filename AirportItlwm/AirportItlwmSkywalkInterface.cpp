@@ -1508,6 +1508,19 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
             return super::processBSDCommand(interface, cmd, data);
         }
         if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_AP_IE_LIST) {
+            /*
+             * Tahoe validates a 0x808 public AP-IE carrier in the family,
+             * then uses the selector-48 interface route.  The local helper
+             * instead has an embedded 1024-byte IE array and writes it
+             * directly through req_data, while this BSD callback has
+             * marshalled only the outer request.  Keep that nested caller
+             * address with IO80211Family; the local producer remains
+             * available to kernel-owned callers.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211GetIoctl(cmd) &&
             req->req_type == APPLE80211_IOC_LINK_CHANGED_EVENT_DATA) {
             /*
              * The local 32-byte link-event snapshot is an internal,

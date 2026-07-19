@@ -1,0 +1,50 @@
+# 25C56 Tahoe AP_IE_LIST BSD carrier recovery
+#
+# Source (read-only): dima@10.7.6.112:/home/dima/Projects/ghidra_input/BootKC_guest_25C56.kc
+# Recovery date: 2026-07-19
+# Method: direct x86_64 disassembly at the embedded Wi-Fi KEXT file offsets.
+# The MH_KEXT mapping is the same verified mapping recorded in
+# skywalk-background-scan-get-public-fixed-stub-bootkc-current/raw.txt:
+# fileoff 0x1fe3000 -> vmaddr 0xffffff80020e3000.
+
+outer_file_bytes=66437120
+outer_sha256=eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d
+
+# Private BSD/family wrapper: __ZL13getAP_IE_LIST(...)
+private_wrapper_vmaddr=0xffffff80021d691b
+private_wrapper_fileoff=0x20d691b
+public_req_len=0x808
+invalid_length_status=0x16
+legacy_get_ioctl=0xc02869c9
+selector=0x30
+legacy_carrier_length=0x808
+fallback_leaf_vmaddr=0xffffff80021becf0
+private_wrapper_raw=554889e541574156534883ec18488b0511e81c00488b00488945e04885f60f849d00000081791808080000b816000000754f4c8b71204d85f674464889f3488b8620010000488bb8d80000004885ff744b4c8d7ddf41c6070041b808080000bec96928c0ba300000004c89f14d89f9e8b5d5f1ff41f6070174223d0f2882e0741b488b0d9de71c00488b09483b4de075374883c4185b415e415f5dc3488b0582e71c00488b00483b45e0751c4889df4c89f64883c4185b415e415f5de91483feffb866000000ebb9e8580913fe
+private_wrapper_raw_sha256=7ee859b4cdf88b4d92128131da530fe93de3c7470e342c2685c27712e1fedfcc
+
+# Decoded decisive instructions:
+#   cmp dword ptr [rcx+0x18], 0x808
+#   mov eax, 0x16
+#   mov r8d, 0x808
+#   mov esi, 0xc02869c9
+#   mov edx, 0x30
+#   ... call family transport ...
+#   jmp 0xffffff80021becf0
+
+# Public leaf: __Z23apple80211getAP_IE_LIST(...)
+public_leaf_vmaddr=0xffffff80021becf0
+public_leaf_fileoff=0x20becf0
+selector_gate=0x30
+selector_gate_vtable_slot=0xcc8
+interface_vtable_tail_slot=0x408
+owner_absent_status=0xe082280e
+public_leaf_raw=554889e54156534889f34989fe488b07be30000000ff90c80c000085c074055b415e5dc3488d35951f22004c89f7e8dd0484fe4885c07416498b06488b80080400004c89f74889de5b415e5dffe0b80e2882e0ebca
+public_leaf_raw_sha256=f66632c2b64624af3c9131803f9fb63ff08da517661bef083657735e6c5b238a
+
+# Decoded decisive instructions:
+#   mov esi, 0x30
+#   call qword ptr [rax+0xcc8]
+#   ... metacast vendor interface ...
+#   mov rax, qword ptr [rax+0x408]
+#   jmp rax
+#   mov eax, 0xe082280e
