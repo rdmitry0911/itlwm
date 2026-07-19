@@ -1521,6 +1521,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
             return super::processBSDCommand(interface, cmd, data);
         }
         if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_MAX_NSS_FOR_AP) {
+            /*
+             * Tahoe accepts a four-byte public result, then owns an internal
+             * eight-byte legacy carrier and copies only its trailing dword.
+             * The local helper clears and fills all eight bytes, while this
+             * BSD callback has marshalled only the outer request. Leave the
+             * nested caller buffer with IO80211Family; the kernel-owned
+             * card-specific route keeps its local helper.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211GetIoctl(cmd) &&
             req->req_type == APPLE80211_IOC_LINK_CHANGED_EVENT_DATA) {
             /*
              * The local 32-byte link-event snapshot is an internal,
