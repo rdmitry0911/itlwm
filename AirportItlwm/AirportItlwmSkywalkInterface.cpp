@@ -1600,7 +1600,8 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
-        if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd)) &&
+        if ((cmd == kApple80211LegacyGetIoctl ||
+             cmd == kApple80211LegacySetIoctl) &&
             req->req_type == APPLE80211_IOC_VHT_CAPABILITY) {
             /*
              * Tahoe's canonical raw VHT GET and SET paths admit a 0x14-byte
@@ -1609,9 +1610,9 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              * public InfraProtocol setter. The local helpers use only the
              * compact 0x12-byte VHT-IE prefix, so this BSD
              * callback must not dereference an externally marshalled nested
-             * carrier. Keep both directions with IO80211Family. The standard
-             * c030 aliases are delegated for the same safety boundary; their
-             * exact private-table identity is intentionally not inferred.
+             * carrier. Keep the recovered canonical raw directions with
+             * IO80211Family. Standard c030 aliases have no recovered
+             * private-table identity and remain on their existing path.
              */
             return super::processBSDCommand(interface, cmd, data);
         }

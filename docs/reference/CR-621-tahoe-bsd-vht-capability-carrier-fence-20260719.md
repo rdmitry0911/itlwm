@@ -4,10 +4,10 @@ Date: 2026-07-19
 
 ## Scope
 
-This closure covers only raw BSD `GET` and `SET` ingress for
+This closure covers only the canonical raw BSD `GET` and `SET` commands for
 `APPLE80211_IOC_VHT_CAPABILITY` (selector 214) on Tahoe. It does not change the
-local VHT IE producer, VHT association fields, AWDL virtual ioctl, or any
-card-specific route.
+standard ioctl aliases, local VHT IE producer, VHT association fields, AWDL
+virtual ioctl, or any card-specific route.
 
 ## Fresh reference contract
 
@@ -48,21 +48,20 @@ IO80211Family.
 
 ## Correction
 
-On Tahoe only, both raw BSD directions for selector 214 delegate to
+On Tahoe only, both canonical raw BSD directions for selector 214 delegate to
 `IO80211InfraProtocol::processBSDCommand` before any local nested-carrier
 access. The fence reads only the outer selector and leaves all local virtual
 helpers available for the system SET route and kernel-owned callers.
 
-The source also recognizes standard `c030/8030` ioctl aliases. The fence sends
-those aliases to the family for the same nested-pointer safety boundary, but
-does not claim they select the same recovered private-table path as canonical
-`c028/8028` commands.
+The standard `c030/8030` ioctl aliases are not fenced. Their private-table
+identity is not recovered, so extending the canonical rule to them would be an
+unsupported inference and can perturb normal association control flow.
 
 ## Verification boundary
 
 `scripts/test_tahoe_vht_capability_bsd_carrier_fence.sh` pins the 25C56
 external table entries, ABI and owner gates, exact body/tail behavior, system
-super route, SET's retained local virtual route, GET/SET-only Tahoe delegation,
+super route, SET's retained local virtual route, canonical-only Tahoe delegation,
 and absence of a fabricated card route. Build/load and normal
 association/traffic gates establish regression safety. No raw BSD or raw
 Apple80211 selector is sent at runtime.

@@ -12,6 +12,7 @@ canonical_set_ioctl=0x802869c8
 standard_get_ioctl=0xc03069c9
 standard_set_ioctl=0x803069c8
 standard_alias_private_table_identity=not_proven
+standard_alias_fence_action=not_fenced
 get_handler_label=getGetHandler
 get_handler_vmaddr=0xffffff80021d53f6
 get_handler_fileoff=0x20d53f6
