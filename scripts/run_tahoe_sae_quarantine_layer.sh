@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# One invocation for the Tahoe SAE/PMF quarantine layer.
+#
+# It first runs every source contract in test_tahoe_sae_quarantine_contract.sh,
+# then (unless --static-only is selected) transfers the current tree to an
+# isolated Tahoe guest directory and builds both the kext and Agent there.
+# It never installs, loads, releases, or reboots anything.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+STATIC_ONLY=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --static-only)
+            STATIC_ONLY=1
+            ;;
+        *)
+            echo "usage: $0 [--static-only]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+REMOTE="${TAHOE_SAE_GATE_REMOTE:-devops@127.0.0.1}"
+PORT="${TAHOE_SAE_GATE_PORT:-3322}"
+REMOTE_SDK="${TAHOE_SAE_GATE_SDK:-/Users/devops/Projects/itlwm/MacKernelSDK}"
+BOOTKC="${TAHOE_SAE_GATE_BOOTKC:-/System/Library/KernelCollections/BootKernelExtensions.kc}"
+SSH=(ssh -o BatchMode=yes -p "$PORT" "$REMOTE")
+SOURCE_ID="$(git -C "$ROOT" rev-parse --short HEAD)"
+if ! git -C "$ROOT" diff --quiet; then
+    if command -v sha256sum >/dev/null 2>&1; then
+        SOURCE_ID="dirty$(git -C "$ROOT" diff --binary | sha256sum | awk '{print substr($1, 1, 12)}')"
+    else
+        SOURCE_ID="dirty$(git -C "$ROOT" diff --binary | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
+    fi
+fi
+
+echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
+bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
+bash -n "$ROOT/scripts/build_tahoe.sh"
+git -C "$ROOT" diff --check
+
+if [ "$STATIC_ONLY" -eq 1 ]; then
+    echo "PASS: static-only Tahoe SAE/PMF layer gate"
+    exit 0
+fi
+
+echo "[2/4] allocating isolated Tahoe build directory"
+REMOTE_DIR="$("${SSH[@]}" 'mktemp -d /tmp/aiam-tahoe-sae-layer-gate.XXXXXX')"
+if [ -z "$REMOTE_DIR" ]; then
+    echo "ERROR: Tahoe guest did not return an isolated build directory" >&2
+    exit 1
+fi
+
+echo "[3/4] staging source and project-local MacKernelSDK"
+rsync -a -e "ssh -o BatchMode=yes -p $PORT" \
+    --exclude='.git' \
+    --exclude='Build' \
+    --exclude='DerivedData' \
+    --exclude='DerivedData-optout' \
+    --exclude='MacKernelSDK' \
+    "$ROOT/" "$REMOTE:$REMOTE_DIR/"
+"${SSH[@]}" "test -f '$REMOTE_SDK/Headers/IOKit/network/IONetworkController.h'"
+"${SSH[@]}" "cp -R '$REMOTE_SDK' '$REMOTE_DIR/MacKernelSDK'"
+
+echo "[4/4] Tahoe kext BootKC gate and Agent clean build"
+"${SSH[@]}" "cd '$REMOTE_DIR' && ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'"
+"${SSH[@]}" "cd '$REMOTE_DIR/AirportItlwmAgent' && make clean && make"
+
+echo "PASS: Tahoe SAE/PMF layer gate"
+echo "  source identity: $SOURCE_ID"
+echo "  isolated guest build: $REMOTE:$REMOTE_DIR"
+echo "  no kext was installed, loaded, published, or released"

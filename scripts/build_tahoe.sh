@@ -88,8 +88,10 @@ patch_mackernelsdk() {
     local packet_header="$PROJECT_DIR/MacKernelSDK/Headers/IOKit/skywalk/IOSkywalkPacket.h"
 
     if [ ! -f "$header" ]; then
-        echo "WARNING: MacKernelSDK not found, skipping patch"
-        return
+        echo "ERROR: MacKernelSDK is missing at $PROJECT_DIR/MacKernelSDK"
+        echo "  Tahoe builds require its Headers and x86_64 libkmod archive."
+        echo "  Restore the project-local SDK before invoking xcodebuild."
+        exit 1
     fi
 
     # IONetworkController reserved slots 6/7: promoted to real methods
@@ -219,7 +221,7 @@ source_identity_hash() {
     printf '%s\n' "unknown"
 }
 
-GIT_HASH=$(source_identity_hash)
+GIT_HASH="${ITLWM_SOURCE_ID_OVERRIDE:-$(source_identity_hash)}"
 BUILD_SETTINGS=$(xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
@@ -232,12 +234,19 @@ fi
 
 echo ""
 echo "Building only AirportItlwm.kext via $TARGET ($CONFIGURATION/$VARIANT_LABEL) source-id=$GIT_HASH..."
-xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
+mkdir -p "$DERIVED_DATA"
+BUILD_LOG="$DERIVED_DATA/${TARGET}-${CONFIGURATION}.log"
+if ! xcodebuild -project "$PROJECT_DIR/itlwm.xcodeproj" \
     -scheme "$TARGET" \
     -configuration "$CONFIGURATION" \
     -derivedDataPath "$DERIVED_DATA" \
     GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ITLWM_COMMIT_HASH='"$GIT_HASH""$EXTRA_PP" \
-    2>&1 | tail -5
+    >"$BUILD_LOG" 2>&1; then
+    echo "ERROR: Tahoe build failed; last 100 lines follow ($BUILD_LOG)"
+    tail -100 "$BUILD_LOG"
+    exit 1
+fi
+tail -5 "$BUILD_LOG"
 
 if [ ! -f "$BUILD_BINARY" ]; then
     echo "ERROR: build output not found at $BUILD_BINARY"

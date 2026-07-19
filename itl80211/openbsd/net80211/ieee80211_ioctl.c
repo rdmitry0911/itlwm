@@ -469,6 +469,33 @@ ieee80211_ess_getwpaparms(struct ieee80211_ess *ess,
 		wpa->i_ciphers = IEEE80211_WPA_CIPHER_USEGROUP;
 }
 
+#if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
+/*
+ * Tahoe exposes its Wi-Fi control plane through the Skywalk Apple80211
+ * carrier, not these legacy OpenBSD _ifnet setters.  Fence all mutations
+ * that can select an ESS/BSSID/channel or inject key/AKM/PMK state so a
+ * direct backend caller cannot bypass the typed Tahoe association policy.
+ */
+static int
+ieee80211_tahoe_raw_assoc_mutation(u_long cmd)
+{
+	switch (cmd) {
+	case SIOCS80211NWID:
+	case SIOCS80211JOIN:
+	case SIOCS80211NWKEY:
+	case SIOCS80211WPAPARMS:
+	case SIOCS80211WPAPSK:
+	case SIOCS80211KEYAVAIL:
+	case SIOCS80211KEYRUN:
+	case SIOCS80211BSSID:
+	case SIOCS80211CHANNEL:
+		return 1;
+	default:
+		return 0;
+	}
+}
+#endif
+
 int
 ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
 {
@@ -495,6 +522,11 @@ ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
 	struct ieee80211_nodereq_all *na;
 	struct ieee80211_node *ni;
 	u_int32_t flags;
+
+#if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
+	if (ieee80211_tahoe_raw_assoc_mutation(cmd))
+		return EOPNOTSUPP;
+#endif
 
 	switch (cmd) {
 //	case SIOCSIFMEDIA:

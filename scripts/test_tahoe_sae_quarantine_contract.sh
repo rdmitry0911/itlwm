@@ -28,6 +28,7 @@ agent = (root / "AirportItlwmAgent/src/main.m").read_text()
 output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 crypto = (root / "itl80211/openbsd/net80211/ieee80211_crypto.h").read_text()
+raw_ioctl = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.c").read_text()
 
 
 def fail(message):
@@ -185,6 +186,8 @@ ordered(pmk_ingress, "direct PMK exact PSK AKM mapping",
         "IEEE80211_WPA_AKM_SHA256_PSK", "ieee80211_ioctl_setwpaparms")
 forbid(pmk_ingress, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
        "implicit SHA256-PSK in direct PMK ingress")
+require(pmk_ingress, "CIPHER_KEY/CUR_PMK may arrive before WCL_ASSOCIATE",
+        "PMK-before-WCL ordering boundary")
 cipher_key = body(sky, "setCIPHER_KEY(struct apple80211_key *key)",
                   "CIPHER_KEY PMK caller")
 require(cipher_key, "current_authtype_upper,\n                                            \"CIPHER_KEY\"",
@@ -195,6 +198,42 @@ cur_pmk = body(sky, "setCUR_PMK(struct apple80211_pmk *pmk)",
                "CUR_PMK caller")
 require(cur_pmk, "current_authtype_upper,\n                                    \"CUR_PMK\"",
         "CUR_PMK selector passed to PMK ingress")
+
+# The OpenBSD raw ioctl backend is compiled for the device, but Tahoe's
+# Skywalk BSD bridge must never leave an untyped mutable ESS/AKM/PMK carrier
+# to its opaque superclass fallback.  Explicitly reject the state
+# setters before the Apple80211 wrapper route is even considered.
+bsd_dispatch = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nprocessBSDCommand",
+                    "Skywalk BSD dispatcher")
+ordered(bsd_dispatch, "raw net80211 association quarantine",
+        "case SIOCS80211NWID:", "case SIOCS80211JOIN:",
+        "case SIOCS80211NWKEY:", "case SIOCS80211WPAPARMS:",
+        "case SIOCS80211WPAPSK:", "case SIOCS80211KEYAVAIL:",
+        "case SIOCS80211KEYRUN:", "case SIOCS80211BSSID:",
+        "case SIOCS80211CHANNEL:",
+        "REJECT_RAW_NET80211_ASSOC", "return kIOReturnUnsupported;",
+        "if ((isApple80211GetIoctl(cmd) || isApple80211SetIoctl(cmd))")
+for token in ("case SIOCS80211NWID:", "case SIOCS80211JOIN:",
+              "case SIOCS80211NWKEY:", "case SIOCS80211WPAPARMS:",
+              "case SIOCS80211WPAPSK:", "case SIOCS80211KEYAVAIL:",
+              "case SIOCS80211KEYRUN:", "case SIOCS80211BSSID:",
+              "case SIOCS80211CHANNEL:"):
+    require(raw_ioctl, token, "raw net80211 setter inventory")
+raw_backend_fence = body(raw_ioctl, "ieee80211_tahoe_raw_assoc_mutation",
+                         "Tahoe raw net80211 backend fence")
+for token in ("case SIOCS80211NWID:", "case SIOCS80211JOIN:",
+              "case SIOCS80211NWKEY:", "case SIOCS80211WPAPARMS:",
+              "case SIOCS80211WPAPSK:", "case SIOCS80211KEYAVAIL:",
+              "case SIOCS80211KEYRUN:", "case SIOCS80211BSSID:",
+              "case SIOCS80211CHANNEL:"):
+    require(raw_backend_fence, token, "Tahoe raw backend fence setter")
+require(raw_backend_fence, "return 1;", "Tahoe raw backend fence reject")
+raw_backend_dispatch = body(raw_ioctl,
+                            "ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)",
+                            "raw net80211 dispatcher")
+ordered(raw_backend_dispatch, "raw net80211 backend dispatch quarantine",
+        "ieee80211_tahoe_raw_assoc_mutation(cmd)", "return EOPNOTSUPP;",
+        "switch (cmd)")
 
 for needle in (
     "kAirportItlwmAuthSha256Psk",

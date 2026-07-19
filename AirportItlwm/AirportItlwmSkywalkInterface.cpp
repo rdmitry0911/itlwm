@@ -1568,6 +1568,31 @@ bool AirportItlwmSkywalkInterface::isCommandProhibited(int command)
 IOReturn AirportItlwmSkywalkInterface::
 processBSDCommand(ifnet_t interface, UInt cmd, void *data)
 {
+    switch (cmd) {
+        case SIOCS80211NWID:
+        case SIOCS80211JOIN:
+        case SIOCS80211NWKEY:
+        case SIOCS80211WPAPARMS:
+        case SIOCS80211WPAPSK:
+        case SIOCS80211KEYAVAIL:
+        case SIOCS80211KEYRUN:
+        case SIOCS80211BSSID:
+        case SIOCS80211CHANNEL:
+            /*
+             * These are the old OpenBSD net80211 configuration carriers.
+             * Each mutates ESS, key, AKM, PMK, BSSID, or channel state and
+             * would bypass the Tahoe association-selector / PLTI / Agent
+             * policy if it reached an inherited dispatcher.  The Tahoe
+             * Skywalk public interface has no recovered carrier for them, so
+             * do not delegate them through the opaque family fallback.
+             */
+            XYLog("processBSDCommand REJECT_RAW_NET80211_ASSOC cmd=0x%x\n",
+                  cmd);
+            return kIOReturnUnsupported;
+        default:
+            break;
+    }
+
     // Tahoe removed a large block of legacy Apple80211 GET/SET methods from the
     // IO80211InfraProtocol vtable. Our driver still implements those semantics
     // as helper methods below, but without an explicit BSD-command bridge they
@@ -4349,6 +4374,10 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
         // legacy ordinary-PSK default, but never infer SHA256-PSK.
         wpa.i_akms = IEEE80211_WPA_AKM_PSK;
     }
+    // CIPHER_KEY/CUR_PMK may arrive before WCL_ASSOCIATE supplies a trusted
+    // candidate selector. The later association ingress remains responsible
+    // for accepting or rejecting that candidate; do not turn this carrier's
+    // transient selector absence into a premature connection failure.
     ieee80211_ioctl_setwpaparms(ic, &wpa);
     // Mirror the CIPHER_KEY install counter for backward compatibility
     // and bump the matching source-specific counter so an observer can
