@@ -107,6 +107,7 @@
  */
 
 #include "ItlIwx.hpp"
+#include "IwxMfpIgtkContracts.hpp"
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -599,6 +600,45 @@ static int iwx_hwrate_to_plcp_idx(uint32_t rate_n_flags)
 #if NBPFILTER > 0
 void    iwx_radiotap_attach(struct iwx_softc *);
 #endif
+
+static bool iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *);
+static int iwx_set_sta_igtk_v2(struct iwx_softc *,
+                                struct ieee80211_node *,
+                                struct ieee80211_key *, int);
+
+static_assert(sizeof(struct iwx_mgmt_mcast_key_cmd_v2) ==
+                  sizeof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2),
+              "kernel IGTK v2 carrier must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, IGTK) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, igtk),
+              "kernel IGTK v2 key offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, key_id) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, key_id),
+              "kernel IGTK v2 key-id offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, sta_id) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, sta_id),
+              "kernel IGTK v2 station-id offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, receive_seq_cnt) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2,
+                           receive_seq_cnt),
+              "kernel IGTK v2 receive-sequence offset must match the recovered ABI layout");
+static_assert(IWX_UCODE_TLV_FLAGS_MFP ==
+                  IwxMfpIgtkContracts::kFirmwareMfpFlag,
+              "AX211 MFP flag must match the recovered firmware contract");
+static_assert(IWX_STA_KEY_FLG_CCM ==
+                  IwxMfpIgtkContracts::kIgtkInstallCipher,
+              "AX211 IGTK install cipher must match the recovered firmware contract");
+static_assert(IWX_STA_KEY_NOT_VALID ==
+                  IwxMfpIgtkContracts::kIgtkDeleteFlag,
+              "AX211 IGTK delete flag must match the recovered firmware contract");
+static_assert(IWX_MGMT_MCAST_KEY ==
+                  IwxMfpIgtkContracts::kMgmtMcastKeyCommand,
+              "AX211 IGTK command id must match the recovered firmware contract");
+static_assert(IWX_STATION_ID == IwxMfpIgtkContracts::kStationId,
+              "AX211 IGTK station id must match the recovered firmware contract");
+static_assert(IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT ==
+                  IwxMfpIgtkContracts::kMultiQueueRxCapability,
+              "AX211 IGTK capability bit must match the recovered firmware contract");
 
 uint8_t ItlIwx::
 iwx_lookup_cmd_ver(struct iwx_softc *sc, uint8_t grp, uint8_t cmd)
@@ -1341,6 +1381,7 @@ iwx_read_firmware(struct iwx_softc *sc)
     uncompressFirmware((u_char *)fw->fw_rawdata, (uint *)&fw->fw_rawsize, (u_char *)fwData->getBytesNoCopy(), fwData->getLength());
     
     sc->sc_capaflags = 0;
+    sc->sc_fw_api = 0;
     sc->sc_capa_n_scan_channels = IWX_DEFAULT_SCAN_CHANNELS;
     memset(sc->sc_enabled_capa, 0, sizeof(sc->sc_enabled_capa));
     memset(sc->sc_ucode_api, 0, sizeof(sc->sc_ucode_api));
@@ -1357,10 +1398,10 @@ iwx_read_firmware(struct iwx_softc *sc)
         goto out;
     }
     
+    sc->sc_fw_api = IWX_UCODE_API(le32toh(uhdr->ver));
     iwx_fw_version_str(sc->sc_fwver, sizeof(sc->sc_fwver),
              IWX_UCODE_MAJOR(le32toh(uhdr->ver)),
-             IWX_UCODE_MINOR(le32toh(uhdr->ver)),
-             IWX_UCODE_API(le32toh(uhdr->ver)));
+             IWX_UCODE_MINOR(le32toh(uhdr->ver)), sc->sc_fw_api);
     data = uhdr->data;
     len = fw->fw_rawsize - sizeof(*uhdr);
     
@@ -9556,6 +9597,40 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     struct iwx_add_sta_key_cmd cmd;
     ItlIwx *that = container_of(sc, ItlIwx, com);
+    int err;
+
+    /*
+     * BIP remains software-owned on this port until the protected-management
+     * RX route has one unambiguous HW/SW owner.  Keep that software context,
+     * but mirror its IGTK into firmware only for the one recovered AX211
+     * API-68 carrier.  MFP is deliberately still unadvertised, so this path
+     * is dormant unless a later, fully validated MFP layer negotiates it.
+     */
+    if (k->k_cipher == IEEE80211_CIPHER_BIP &&
+        (k->k_flags & IEEE80211_KEY_IGTK) != 0 && ni != NULL &&
+        (ni->ni_flags & IEEE80211_NODE_MFP) != 0) {
+        if (!iwx_ax211_api68_igtk_v2_ok(sc))
+            return EOPNOTSUPP;
+        if (!IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+            return EINVAL;
+
+        err = ieee80211_set_key(ic, ni, k);
+        if (err != 0)
+            return err;
+
+        err = iwx_set_sta_igtk_v2(sc, ni, k, 0);
+        if (err != 0) {
+            ieee80211_delete_key(ic, ni, k);
+            return err;
+        }
+        return 0;
+    }
+
+    if (k->k_cipher == IEEE80211_CIPHER_CCMP &&
+        (k->k_flags & IEEE80211_KEY_GROUP) == 0 && ni != NULL &&
+        (ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        !iwx_ax211_api68_igtk_v2_ok(sc))
+        return EOPNOTSUPP;
     
     if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
         /* Fallback to software crypto for other ciphers. */
@@ -9571,8 +9646,11 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (k->k_flags & IEEE80211_KEY_GROUP) {
         cmd.common.key_offset = 1;
         cmd.common.key_flags |= htole16(IWX_STA_KEY_MULTICAST);
-    } else
+    } else {
         cmd.common.key_offset = 0;
+        if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0)
+            cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
+    }
     
     memcpy(cmd.common.key, k->k_key, MIN(sizeof(cmd.common.key), k->k_len));
     cmd.common.sta_id = IWX_STATION_ID;
@@ -9590,6 +9668,18 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     struct iwx_add_sta_key_cmd cmd;
     ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (k->k_cipher == IEEE80211_CIPHER_BIP &&
+        (k->k_flags & IEEE80211_KEY_IGTK) != 0) {
+        if (iwx_ax211_api68_igtk_v2_ok(sc) &&
+            IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+            (void)iwx_set_sta_igtk_v2(sc, ni, k, 1);
+
+        /* Always retire the retained software BIP state, even if firmware
+         * has already reset or rejected the asynchronous invalidation. */
+        ieee80211_delete_key(ic, ni, k);
+        return;
+    }
     
     if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
         /* Fallback to software crypto for other ciphers. */
@@ -11642,6 +11732,69 @@ const struct iwl_cfg iwlax211_2ax_cfg_so_gf_a0_long = {
     .trans.low_latency_xtal = 1,
     .num_rbds = IWL_NUM_RBDS_AX210_HE,
 };
+
+/*
+ * This deliberately names both AX211 API-68 configuration objects instead
+ * of accepting the broader AX210 device family.  The payload below has no
+ * safe v1 fallback: changing the firmware family, API, MFP flag, or
+ * MULTI_QUEUE_RX_SUPPORT capability leaves the key in software only.
+ */
+static bool
+iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
+{
+    if (sc == NULL || sc->sc_cfg == NULL)
+        return false;
+    if (sc->sc_device_family != IWX_DEVICE_FAMILY_AX210 ||
+        sc->sc_cfg->device_family != IWX_DEVICE_FAMILY_AX210)
+        return false;
+    if (sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0 &&
+        sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0_long)
+        return false;
+
+    return IwxMfpIgtkContracts::hasExactAbiPrerequisites(
+        sc->sc_fw_api, (uint32_t)sc->sc_capaflags,
+        isset(sc->sc_enabled_capa,
+              IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT));
+}
+
+static int
+iwx_set_sta_igtk_v2(struct iwx_softc *sc, struct ieee80211_node *ni,
+                    struct ieee80211_key *k, int remove_key)
+{
+    struct iwx_mgmt_mcast_key_cmd_v2 cmd;
+    ItlIwx *that;
+
+    if (sc == NULL || k == NULL)
+        return EINVAL;
+    if (!iwx_ax211_api68_igtk_v2_ok(sc))
+        return EOPNOTSUPP;
+    if ((k->k_flags & IEEE80211_KEY_IGTK) == 0 ||
+        k->k_cipher != IEEE80211_CIPHER_BIP ||
+        !IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+        return EINVAL;
+    if (!remove_key &&
+        (ni == NULL || (ni->ni_flags & IEEE80211_NODE_MFP) == 0))
+        return EOPNOTSUPP;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.key_id = htole32(k->k_id);
+    cmd.sta_id = htole32(IWX_STATION_ID);
+    if (remove_key) {
+        /* Firmware expects only NOT_VALID for the special IGTK delete.
+         * No node is required here: RSN teardown may already have freed it. */
+        cmd.ctrl_flags = htole32(IWX_STA_KEY_NOT_VALID);
+    } else {
+        /* API-68 v2 uses CCM here; do not mix in generic ADD_STA flags. */
+        cmd.ctrl_flags = htole32(IWX_STA_KEY_FLG_CCM);
+        memcpy(cmd.IGTK, k->k_key, k->k_len);
+        cmd.receive_seq_cnt = htole64(k->k_mgmt_rsc);
+    }
+
+    that = container_of(sc, ItlIwx, com);
+    return that->iwx_send_cmd_pdu(sc, IWX_MGMT_MCAST_KEY,
+                                  remove_key ? IWX_CMD_ASYNC : 0,
+                                  sizeof(cmd), &cmd);
+}
 
 const struct iwl_cfg iwlax210_2ax_cfg_ty_gf_a0 = {
     .name = "Intel(R) Wi-Fi 6 AX210 160MHz",

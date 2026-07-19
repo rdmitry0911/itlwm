@@ -690,6 +690,10 @@ struct iwx_softc {
 
 	struct iwx_ucode_status sc_uc;
 	char sc_fwver[32];
+	/* Raw API field from the validated TLV ucode header.  Do not infer this
+	 * from sc_fwver: a later TLV_FW_VERSION may rewrite the printable string.
+	 */
+	uint8_t sc_fw_api;
 
 	int sc_capaflags;
 	int sc_capa_max_probe_len;

@@ -25,6 +25,7 @@
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
 #include "AirportItlwm/TahoeTxRxChainContracts.hpp"
+#include "itlwm/hal_iwx/IwxMfpIgtkContracts.hpp"
 #include "include/Airport/IO80211BssManager.h"
 
 namespace {
@@ -1335,6 +1336,43 @@ void testTahoeCapabilityContracts()
             "CARD_CAPABILITIES rejects old over-advertised cluster");
 }
 
+void testIwxMfpIgtkContracts()
+{
+    using namespace IwxMfpIgtkContracts;
+
+    require(kAx211FirmwareApi == 68,
+            "AX211 IGTK gate pins the recovered API-68 header value");
+    require(kFirmwareMfpFlag == 0x4,
+            "AX211 IGTK gate pins firmware MFP flag bit 2");
+    require(kMultiQueueRxCapability == 68,
+            "AX211 IGTK v2 gate pins MULTI_QUEUE_RX_SUPPORT capability 68");
+    require(kIgtkInstallCipher == 2 && kIgtkDeleteFlag == 0x800,
+            "AX211 IGTK command uses CCM install and NOT_VALID delete flags");
+    require(kMgmtMcastKeyCommand == 0x1f && kStationId == 0,
+            "AX211 IGTK command and station ids match the recovered ABI");
+    require(sizeof(MgmtMcastKeyCommandV2) == 0x34,
+            "AX211 IGTK v2 command has recovered 0x34-byte ABI");
+    require(offsetof(MgmtMcastKeyCommandV2, igtk) == 0x04 &&
+                offsetof(MgmtMcastKeyCommandV2, key_id) == 0x24 &&
+                offsetof(MgmtMcastKeyCommandV2, sta_id) == 0x28 &&
+                offsetof(MgmtMcastKeyCommandV2, receive_seq_cnt) == 0x2c,
+            "AX211 IGTK v2 member offsets match the firmware ABI");
+    require(hasValidIgtkShape(4, 16) && hasValidIgtkShape(5, 16),
+            "AX211 IGTK v2 accepts only standard 16-byte IGTK slots");
+    require(!hasValidIgtkShape(3, 16) && !hasValidIgtkShape(6, 16) &&
+                !hasValidIgtkShape(4, 32),
+            "AX211 IGTK v2 rejects unsupported key ids and lengths");
+    require(hasExactAbiPrerequisites(kAx211FirmwareApi, kFirmwareMfpFlag,
+                                     true),
+            "AX211 IGTK gate accepts the complete recovered ABI proof");
+    require(!hasExactAbiPrerequisites(kAx211FirmwareApi - 1,
+                                      kFirmwareMfpFlag, true) &&
+                !hasExactAbiPrerequisites(kAx211FirmwareApi, 0, true) &&
+                !hasExactAbiPrerequisites(kAx211FirmwareApi,
+                                          kFirmwareMfpFlag, false),
+            "AX211 IGTK gate rejects stale API, missing MFP, and missing MQ RX");
+}
+
 static constexpr size_t kTahoeScanResultMaxRates = 15;
 static constexpr size_t kTahoeScanResultMaxSsidLength = 32;
 static constexpr size_t kTahoeScanResultIeDataLength = 2116;
@@ -1631,6 +1669,7 @@ int main()
     testTahoeBssManagerWriterContracts();
     testTahoeBssidChangedCarrierLayout();
     testTahoeCapabilityContracts();
+    testIwxMfpIgtkContracts();
     testTahoeScanResultLayout();
     testTahoeCurrentNetworkCarrierContract();
     testTahoeBeaconIeBuilder();
@@ -1639,6 +1678,6 @@ int main()
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 29 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 30 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

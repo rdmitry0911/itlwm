@@ -7760,6 +7760,19 @@ struct iwx_mgmt_mcast_key_cmd {
     uint64_t receive_seq_cnt;
 } __packed; /* SEC_MGMT_MULTICAST_KEY_CMD_API_S_VER_1 */
 
+/*
+ * AX211 API-68 advertises MULTI_QUEUE_RX_SUPPORT and uses the v2 IGTK
+ * carrier.  The legacy v1 carrier above must not be substituted: its K1/K2
+ * slots change the payload size and are not part of the API-68 command.
+ */
+struct iwx_mgmt_mcast_key_cmd_v2 {
+    uint32_t ctrl_flags;
+    uint8_t IGTK[32];
+    uint32_t key_id;
+    uint32_t sta_id;
+    uint64_t receive_seq_cnt;
+} __packed; /* SEC_MGMT_MULTICAST_KEY_CMD_API_S_VER_2 */
+
 struct iwx_wep_key {
     uint8_t key_index;
     uint8_t key_offset;
