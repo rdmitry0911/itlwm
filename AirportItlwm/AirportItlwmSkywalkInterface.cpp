@@ -1519,6 +1519,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_ASSOCIATION_STATUS) {
+            /*
+             * Tahoe's public status request carries only its status dword;
+             * the family expands it into the versioned internal response and
+             * owns the final copy-out.  The local helper writes the complete
+             * eight-byte legacy carrier, while this BSD callback has only
+             * marshalled the outer request.  Retain the family conversion at
+             * this raw ingress rather than writing a nested public address.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =

@@ -584,6 +584,8 @@ struct apple80211_assoc_status_data
     u_int32_t    version;
     u_int32_t    status;
 };
+static_assert(sizeof(struct apple80211_assoc_status_data) == 8,
+              "apple80211_assoc_status_data must remain an 8-byte legacy carrier");
 
 struct apple80211_rate_data
 {
