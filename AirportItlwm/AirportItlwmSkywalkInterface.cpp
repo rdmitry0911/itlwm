@@ -213,6 +213,8 @@ static constexpr uint32_t kAppleBssManagerBandInfoBitmapTable[4] = {
 static_assert(sizeof(apple80211_authtype_data) ==
                   TahoeAssociationContracts::kAssociatedAuthTypePayloadLength,
               "associated auth type carrier length must match Apple ABI");
+static_assert(sizeof(apple80211_rate_set_data) == 0xbc,
+              "RATE_SET carrier length must match Tahoe BSD ABI");
 static_assert(__offsetof(apple80211_authtype_data, version) ==
                   TahoeAssociationContracts::kAssociatedAuthTypeVersionOffset &&
                   __offsetof(apple80211_authtype_data, authtype_lower) ==
@@ -1553,6 +1555,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              * versioned carrier, while this BSD callback has marshalled only
              * the outer request. Leave the nested caller buffer with
              * IO80211Family; SET and the local helper remain unchanged.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_RATE_SET) {
+            /*
+             * Tahoe validates the complete 0xbc public carrier, gives that
+             * exact caller buffer to WCL, then falls back through the public
+             * NoneProtocol owner. The local helper serializes the same full
+             * carrier directly, but this BSD callback has marshalled only the
+             * outer request. Leave carrier admission and WCL ownership with
+             * IO80211Family; the internal rate producer remains unchanged.
              */
             return super::processBSDCommand(interface, cmd, data);
         }
