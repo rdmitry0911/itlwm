@@ -1526,6 +1526,20 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
                     interface != NULL, req->req_len, req->req_data);
             if (routeStatus != TahoeBssBlacklistContracts::kSuccessStatus)
                 return static_cast<IOReturn>(routeStatus);
+#if __IO80211_TARGET >= __MAC_26_0
+            if (isApple80211SetIoctl(cmd)) {
+                /*
+                 * The Tahoe public SET wrapper has already established the
+                 * selector-bearing P0 contract above.  Its valid 43-byte
+                 * carrier remains owned by the family transport: this BSD
+                 * callback has only the outer request marshalled, while the
+                 * local command-gate owner would memcpy the nested pointer.
+                 * Preserve the recovered preflight results, then leave the
+                 * raw SET ingress with IO80211Family.
+                 */
+                return super::processBSDCommand(interface, cmd, data);
+            }
+#endif // __IO80211_TARGET >= __MAC_26_0
         }
         UInt normalizedCmd =
             isApple80211GetIoctl(cmd) ? SIOCGA80211 : SIOCSA80211;
