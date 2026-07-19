@@ -694,6 +694,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             /* install the IGTK */
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
+                    ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
+                    ic->ic_igtk_kid = kid;
                     break;
                 case EBUSY:
                     deferlink = 1;
@@ -702,6 +704,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                     reason = IEEE80211_REASON_AUTH_LEAVE;
                     goto deauth;
             }
+            ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
         }
     }
     if (info & EAPOL_KEY_INSTALL)
@@ -985,12 +988,16 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             /* install the IGTK */
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
+                    ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
+                    ic->ic_igtk_kid = kid;
+                    break;
                 case EBUSY:
                     break;
                 default:
                     reason = IEEE80211_REASON_AUTH_LEAVE;
                     goto deauth;
             }
+            ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
         }
     }
     if (info & EAPOL_KEY_SECURE) {
