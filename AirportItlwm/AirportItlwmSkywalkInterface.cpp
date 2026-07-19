@@ -1581,6 +1581,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
             return super::processBSDCommand(interface, cmd, data);
         }
         if (isApple80211SetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_RANGING_AUTHENTICATE) {
+            /*
+             * Tahoe's external BSD SET table has no selector-243 entry and
+             * rejects the request before it accesses req_data.  The local
+             * typed proximity helper remains available internally, but this
+             * callback has marshalled only the outer request. Keep the raw
+             * request with IO80211Family instead of dereferencing its nested
+             * caller carrier.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211SetIoctl(cmd) &&
             req->req_type == APPLE80211_IOC_BTCOEX_PROFILE) {
             /*
              * Tahoe's public coexistence wrapper validates its 0x38-byte
