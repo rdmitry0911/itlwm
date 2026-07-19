@@ -1507,6 +1507,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_LINK_CHANGED_EVENT_DATA) {
+            /*
+             * The local 32-byte link-event snapshot is an internal,
+             * kernel-owned producer.  This BSD callback has marshalled only
+             * the outer request, while getLINK_CHANGED_EVENT_DATA clears and
+             * fills the complete nested carrier without a req_len boundary.
+             * Tahoe's public WCL path owns and length-gates that response, so
+             * preserve the family transport at this raw ingress.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
