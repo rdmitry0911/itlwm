@@ -1544,6 +1544,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211SetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_BTCOEX_PROFILE) {
+            /*
+             * Tahoe's public coexistence wrapper validates its 0x38-byte
+             * carrier, then gates selector 255 to a protocol owner.  The
+             * local helper instead reads control fields and copies the whole
+             * carrier, while this BSD callback has marshalled only the outer
+             * request.  Leave the nested caller buffer with IO80211Family;
+             * the kernel-owned card-specific route keeps its local helper.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
