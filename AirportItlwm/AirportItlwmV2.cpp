@@ -7161,8 +7161,9 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
 //                      4-way M1 routes through the local PAE
 //                      (owner=local), matching the existing
 //                      installExternalPmkLocked sink semantic;
-//                      ieee80211_ioctl_setwpaparms with
-//                      protos=WPA1|WPA2 + akms=PSK|SHA256_PSK.
+//                      maps the generation-bound association selector to
+//                      its exact AKM; it must not broaden PSK into
+//                      SHA256-PSK.
 //
 // Lifecycle reset / replay invariant:
 //   cancelPendingAssocTarget runs under the SAME command gate as
@@ -7388,6 +7389,13 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
         a->rc = kIOReturnNotPermitted;
         return kIOReturnSuccess;
     }
+    const uint32_t localAuthUpper =
+        TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
+            s->fAssocTarget.authtype_upper);
+    if (!TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
 
     struct ieee80211com *ic = (s->fHalService != nullptr)
         ? s->fHalService->get80211Controller() : nullptr;
@@ -7405,8 +7413,13 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
     struct ieee80211_wpaparams wpa;
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
-    wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
-    wpa.i_akms    = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
+    wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
+    if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
+            localAuthUpper))
+        wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+    if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
+            localAuthUpper))
+        wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
     ieee80211_ioctl_setwpaparms(ic, &wpa);
 
     a->rc = kIOReturnSuccess;

@@ -1016,7 +1016,13 @@ IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssi
     }
     
     if (TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
-        wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
+        /* Do not advertise SHA256-PSK unless Apple selected that AKM. */
+        if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
+                localAuthUpper))
+            wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+        if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
+                localAuthUpper))
+            wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         // The Tahoe Skywalk WCL_ASSOCIATE / IOC_ASSOCIATE carrier
         // may legitimately arrive with key == nullptr or key_len
@@ -3951,6 +3957,7 @@ setCIPHER_KEY(struct apple80211_key *key)
             // emits only non-secret structural markers.
             return installExternalPmkLocked(key->key,
                                             key->key_len,
+                                            current_authtype_upper,
                                             "CIPHER_KEY");
         }
         case APPLE80211_CIPHER_MSK: {
@@ -3969,6 +3976,7 @@ setCIPHER_KEY(struct apple80211_key *key)
             if (key->key_len == IEEE80211_PMK_LEN) {
                 return installExternalPmkLocked(key->key,
                                                 key->key_len,
+                                                current_authtype_upper,
                                                 "CIPHER_KEY_MSK");
             }
             ieee80211_pmksa_add(fHalService->get80211Controller(),
@@ -4280,20 +4288,23 @@ setCUR_PMK(struct apple80211_pmk *pmk)
     }
     return installExternalPmkLocked(pmk->apple_pmk_setter_source,
                                     pmk->apple_pmk_key_len,
+                                    current_authtype_upper,
                                     "CUR_PMK");
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 installExternalPmkLocked(const uint8_t *pmk_bytes,
                          uint32_t key_len,
+                         uint32_t authtype_upper,
                          const char *source_tag)
 {
     // Shared local PMK ingestion for CIPHER_KEY and any retained private/ABI
     // setCUR_PMK caller: validate IEEE80211_PMK_LEN, copy the 32-byte PMK
-    // into ic->ic_psk, set IEEE80211_F_PSK, refresh WPA/RSN PSK auth state
-    // through ieee80211_ioctl_setwpaparms, and emit only non-secret
-    // structural markers. This helper is not evidence that the current 25C56
-    // public CUR_PMK wrapper performs a PMK install.
+    // into ic->ic_psk, set IEEE80211_F_PSK, and configure only the AKM the
+    // supplied association selector requested. A timing-independent PMK
+    // ingress must not broaden ordinary PSK into SHA256-PSK. This helper is
+    // not evidence that the current 25C56 public CUR_PMK wrapper performs a
+    // PMK install.
     struct ieee80211com *ic = fHalService
         ? fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
@@ -4312,15 +4323,32 @@ installExternalPmkLocked(const uint8_t *pmk_bytes,
               key_len, (unsigned)IEEE80211_PMK_LEN);
         return kIOReturnBadArgument;
     }
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            authtype_upper)) {
+        XYLog("install_external_pmk REJECT_WPA3_NO_FALLBACK source=%s auth_upper=0x%x\n",
+              source_tag != nullptr ? source_tag : "?", authtype_upper);
+        return kIOReturnUnsupported;
+    }
     memcpy(ic->ic_psk, pmk_bytes, sizeof(ic->ic_psk));
     ic->ic_flags |= IEEE80211_F_PSK;
     struct ieee80211_wpaparams wpa;
     memset(&wpa, 0, sizeof(wpa));
     wpa.i_enabled = 1;
-    wpa.i_protos  = IEEE80211_WPA_PROTO_WPA1 |
-                    IEEE80211_WPA_PROTO_WPA2;
-    wpa.i_akms    = IEEE80211_WPA_AKM_PSK |
-                    IEEE80211_WPA_AKM_SHA256_PSK;
+    wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
+    const uint32_t localAuthUpper =
+        TahoeAssociationAuthContracts::localAuthMaskWithoutFallbackRewrite(
+            authtype_upper);
+    if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
+            localAuthUpper))
+        wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+    if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
+            localAuthUpper))
+        wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
+    if (wpa.i_akms == 0) {
+        // No selector was available on this direct PMK carrier. Preserve the
+        // legacy ordinary-PSK default, but never infer SHA256-PSK.
+        wpa.i_akms = IEEE80211_WPA_AKM_PSK;
+    }
     ieee80211_ioctl_setwpaparms(ic, &wpa);
     // Mirror the CIPHER_KEY install counter for backward compatibility
     // and bump the matching source-specific counter so an observer can

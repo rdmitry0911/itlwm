@@ -1563,6 +1563,8 @@ void testTahoeAssociationAuthContracts()
             "association auth keeps explicit WPA2 PSK from mixed transition auth");
     require(usesLocalWpaProtocol(local) && usesLocalPskAkm(local),
             "association auth maps explicit WPA2 PSK to local RSN/PSK");
+    require(usesLocalLegacyPskAkm(local) && !usesLocalSha256PskAkm(local),
+            "ordinary WPA2 PSK does not implicitly select SHA256-PSK");
     require(!usesLocalEnterpriseAkm(local),
             "association auth does not add enterprise AKM to PSK auth");
 
@@ -1571,6 +1573,16 @@ void testTahoeAssociationAuthContracts()
             "association auth does not rewrite pure WPA3 SAE to WPA2 PSK");
     require(!usesLocalWpaProtocol(local) && !usesLocalPskAkm(local),
             "association auth leaves pure WPA3 SAE outside local WPA mapping");
+
+    local = localAuthMaskWithoutFallbackRewrite(kAuthSha256Psk);
+    require(!usesLocalLegacyPskAkm(local) && usesLocalSha256PskAkm(local),
+            "explicit SHA256 PSK remains distinguishable from ordinary PSK");
+    require(mayUseLocalPskPmk(kAuthSha256Psk),
+            "PLTI accepts an explicit SHA256 PSK selector");
+
+    local = localAuthMaskWithoutFallbackRewrite(kAuthWpa2Psk | kAuthSha256Psk);
+    require(usesLocalLegacyPskAkm(local) && usesLocalSha256PskAkm(local),
+            "an explicit dual-PSK selector preserves both advertised AKMs");
 
     local = localAuthMaskWithoutFallbackRewrite(kAuthWpa3Enterprise);
     require(local == 0,

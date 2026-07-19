@@ -34,6 +34,10 @@ static constexpr uint32_t kPskAuthMask =
     kAuthWpa2Psk |
     kAuthSha256Psk;
 
+static constexpr uint32_t kLegacyPskAuthMask =
+    kAuthWpaPsk |
+    kAuthWpa2Psk;
+
 static constexpr uint32_t kEnterpriseAuthMask =
     kAuthWpa |
     kAuthWpa2 |
@@ -57,6 +61,16 @@ inline bool usesLocalWpaProtocol(uint32_t authtypeUpper)
 inline bool usesLocalPskAkm(uint32_t authtypeUpper)
 {
     return (authtypeUpper & kPskAuthMask) != 0;
+}
+
+inline bool usesLocalLegacyPskAkm(uint32_t authtypeUpper)
+{
+    return (authtypeUpper & kLegacyPskAuthMask) != 0;
+}
+
+inline bool usesLocalSha256PskAkm(uint32_t authtypeUpper)
+{
+    return (authtypeUpper & kAuthSha256Psk) != 0;
 }
 
 inline bool usesLocalEnterpriseAkm(uint32_t authtypeUpper)

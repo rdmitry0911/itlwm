@@ -191,7 +191,12 @@ IOReturn AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const str
     }
     
     if (TahoeAssociationAuthContracts::usesLocalPskAkm(localAuthUpper)) {
-        wpa.i_akms |= IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK;
+        if (TahoeAssociationAuthContracts::usesLocalLegacyPskAkm(
+                localAuthUpper))
+            wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+        if (TahoeAssociationAuthContracts::usesLocalSha256PskAkm(
+                localAuthUpper))
+            wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
         wpa.i_enabled = 1;
         memcpy(ic->ic_psk, key, sizeof(ic->ic_psk));
         ic->ic_flags |= IEEE80211_F_PSK;

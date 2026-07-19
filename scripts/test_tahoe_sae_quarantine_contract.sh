@@ -105,6 +105,12 @@ ordered(sky_assoc, "Skywalk associate ingress",
         "requiresUnsupportedWpa3Auth", "return kIOReturnUnsupported;",
         "fHalService->get80211Controller()", "ieee80211_disable_rsn",
         "publishPendingAssocTarget")
+ordered(sky_assoc, "Skywalk exact PSK AKM mapping",
+        "usesLocalPskAkm", "usesLocalLegacyPskAkm",
+        "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
+        "IEEE80211_WPA_AKM_SHA256_PSK")
+forbid(sky_assoc, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
+       "implicit SHA256-PSK in Skywalk association")
 for token in ("IEEE80211_AUTH_ALG_OPEN",):
     if token in sky_assoc:
         fail(f"Skywalk association directly contains unsafe token {token}")
@@ -131,6 +137,12 @@ legacy_assoc = body(legacy, "IOReturn AirportItlwm::associateSSID",
 ordered(legacy_assoc, "legacy association ingress",
         "requiresUnsupportedWpa3Auth", "return kIOReturnUnsupported;",
         "fHalService->get80211Controller()", "ieee80211_disable_rsn")
+ordered(legacy_assoc, "legacy exact PSK AKM mapping",
+        "usesLocalPskAkm", "usesLocalLegacyPskAkm",
+        "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
+        "IEEE80211_WPA_AKM_SHA256_PSK")
+forbid(legacy_assoc, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
+       "implicit SHA256-PSK in legacy association")
 legacy_public = body(legacy_ioctl, "IOReturn AirportItlwm::\nsetASSOCIATE",
                      "legacy setASSOCIATE")
 ordered(legacy_public, "legacy public association ingress",
@@ -155,11 +167,37 @@ publish_api = body(v2, "uint64_t AirportItlwm::\npublishPendingAssocTarget",
 ordered(publish_api, "PLTI publish API",
         "mayUseLocalPskPmk", "return 0;", "IOCommandGate *gate")
 for segment, label in ((publish_action, "publish action"),
-                       (deliver_action, "deliver action"),
                        (publish_api, "publish API")):
     forbid(segment, "usesLocalPskAkm(", f"broad PSK bypass in {label}")
+ordered(deliver_action, "PLTI exact PSK AKM mapping",
+        "localAuthMaskWithoutFallbackRewrite", "usesLocalPskAkm",
+        "usesLocalLegacyPskAkm", "IEEE80211_WPA_AKM_PSK",
+        "usesLocalSha256PskAkm", "IEEE80211_WPA_AKM_SHA256_PSK",
+        "ieee80211_ioctl_setwpaparms")
+forbid(deliver_action, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
+       "implicit SHA256-PSK in PLTI delivery")
+pmk_ingress = body(sky, "IOReturn AirportItlwmSkywalkInterface::\ninstallExternalPmkLocked",
+                   "CIPHER_KEY/CUR_PMK ingress")
+ordered(pmk_ingress, "direct PMK exact PSK AKM mapping",
+        "requiresUnsupportedWpa3Auth", "memcpy(ic->ic_psk",
+        "localAuthMaskWithoutFallbackRewrite", "usesLocalLegacyPskAkm",
+        "IEEE80211_WPA_AKM_PSK", "usesLocalSha256PskAkm",
+        "IEEE80211_WPA_AKM_SHA256_PSK", "ieee80211_ioctl_setwpaparms")
+forbid(pmk_ingress, "IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_SHA256_PSK",
+       "implicit SHA256-PSK in direct PMK ingress")
+cipher_key = body(sky, "setCIPHER_KEY(struct apple80211_key *key)",
+                  "CIPHER_KEY PMK caller")
+require(cipher_key, "current_authtype_upper,\n                                            \"CIPHER_KEY\"",
+        "CIPHER_KEY selector passed to PMK ingress")
+require(cipher_key, "current_authtype_upper,\n                                                \"CIPHER_KEY_MSK\"",
+        "CIPHER_KEY MSK selector passed to PMK ingress")
+cur_pmk = body(sky, "setCUR_PMK(struct apple80211_pmk *pmk)",
+               "CUR_PMK caller")
+require(cur_pmk, "current_authtype_upper,\n                                    \"CUR_PMK\"",
+        "CUR_PMK selector passed to PMK ingress")
 
 for needle in (
+    "kAirportItlwmAuthSha256Psk",
     "kAirportItlwmAuthWpa3Mask",
     "kAirportItlwmAuthAuditedWpa3PskTransition",
     "kAirportItlwmAuthWpa3Sae | kAirportItlwmAuthWpa2Psk",

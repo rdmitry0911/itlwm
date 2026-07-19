@@ -146,10 +146,12 @@ public:
     // Credential-safe shared PMK ingestion helper used by
     // setCIPHER_KEY(APPLE80211_CIPHER_PMK) and retained private/ABI
     // setCUR_PMK callers.
-    // Validates a 32-byte PMK, copies it into ic_psk, sets PSK
-    // policy flags, and emits only non-secret structural markers.
+    // Validates a 32-byte PMK, copies it into ic_psk, sets the local PSK
+    // ownership flag, and maps the explicitly supplied association selector
+    // to an AKM without broadening ordinary PSK into SHA256-PSK.
     IOReturn installExternalPmkLocked(const uint8_t *pmk_bytes,
                                       uint32_t key_len,
+                                      uint32_t authtype_upper,
                                       const char *source_tag);
     // Clear external PMK/PSK eligibility at lifecycle reset edges
     // (disassociate, leave, PMKSA clear, RSN disable). Zeroes the
