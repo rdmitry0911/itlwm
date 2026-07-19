@@ -1495,6 +1495,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_RSN_IE) {
+            /*
+             * The public Tahoe GET is interface-gated and owner-backed.  The
+             * local helper remains useful to kernel-owned callers, but this
+             * BSD callback has marshalled only the outer request and the
+             * helper writes the complete RSN IE carrier through req_data
+             * without a req_len boundary.  Preserve the family transport at
+             * this raw ingress instead of bypassing that ownership boundary.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
