@@ -1481,6 +1481,20 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211GetIoctl(cmd) &&
+            (req->req_type == APPLE80211_IOC_SUPPORTED_CHANNELS ||
+             req->req_type == APPLE80211_IOC_HW_SUPPORTED_CHANNELS)) {
+            /*
+             * The public channel-list carrier has a fixed 128-entry array,
+             * while the legacy local producer walks all 255 net80211 channel
+             * slots without either a req_len or entry-count boundary.  That
+             * producer remains usable by kernel-owned callers, but this BSD
+             * callback marshals only the outer request.  Keep its raw nested
+             * address with IO80211Family rather than letting the local loop
+             * write a caller-owned carrier (or run past its fixed array).
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
