@@ -27,6 +27,29 @@
 
 #define kAirportItlwmAssocTargetVersion 1u
 
+/*
+ * The version-1 PLTI carrier transports a 32-byte PMK only for the existing
+ * WPA/WPA2 PSK path. These bit values mirror apple80211_authtype_upper;
+ * WPA3 bits exist only so the agent can reject unimplemented SAE/PMF paths,
+ * because a PBKDF2 PMK is not SAE credential material. Keep this local C
+ * header independent from the kext-only C++ Apple80211 headers.
+ */
+#define kAirportItlwmAuthWpaPsk       (1u << 1)
+#define kAirportItlwmAuthWpa2Psk      (1u << 3)
+#define kAirportItlwmAuthSha256Psk    (1u << 10)
+#define kAirportItlwmAuthPskPmkMask   \
+    (kAirportItlwmAuthWpaPsk | kAirportItlwmAuthWpa2Psk | \
+     kAirportItlwmAuthSha256Psk)
+#define kAirportItlwmAuthWpa3Sae      (1u << 12)
+#define kAirportItlwmAuthWpa3FtSae    (1u << 13)
+#define kAirportItlwmAuthWpa3Enterprise (1u << 14)
+#define kAirportItlwmAuthWpa3FtEnterprise (1u << 15)
+#define kAirportItlwmAuthWpa3Mask     \
+    (kAirportItlwmAuthWpa3Sae | kAirportItlwmAuthWpa3FtSae | \
+     kAirportItlwmAuthWpa3Enterprise | kAirportItlwmAuthWpa3FtEnterprise)
+#define kAirportItlwmAuthAuditedWpa3PskTransition \
+    (kAirportItlwmAuthWpa3Sae | kAirportItlwmAuthWpa2Psk)
+
 #define kAirportItlwmUserClientType                        ('PLTI')
 
 enum {

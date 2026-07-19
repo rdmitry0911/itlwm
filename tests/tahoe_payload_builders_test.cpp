@@ -1579,6 +1579,20 @@ void testTahoeAssociationAuthContracts()
             "association auth identifies WPA3-only carriers without mapping them");
     require(!isWpa3OnlyAuth(mixedTransition),
             "association auth does not classify mixed transition auth as WPA3-only");
+    require(requiresUnsupportedWpa3Auth(kAuthWpa3Sae),
+            "association auth rejects pure WPA3 SAE before legacy association");
+    require(requiresUnsupportedWpa3Auth(kAuthWpa3Sae | (1U << 31)),
+            "association auth rejects WPA3 SAE with unrelated bits and no fallback");
+    require(requiresUnsupportedWpa3Auth(mixedTransition | (1U << 31)),
+            "association auth rejects an unobserved WPA3 plus PSK carrier");
+    require(!requiresUnsupportedWpa3Auth(mixedTransition),
+            "association auth preserves explicit WPA2 PSK transition fallback");
+    require(requiresUnsupportedWpa3Auth(kAuthWpa3Enterprise | kAuthWpa2),
+            "association auth rejects unimplemented WPA3 enterprise transition");
+    require(mayUseLocalPskPmk(mixedTransition),
+            "PLTI permits only the audited WPA3 PSK transition carrier");
+    require(!mayUseLocalPskPmk(mixedTransition | (1U << 31)),
+            "PLTI rejects an unobserved WPA3 plus PSK carrier");
 }
 
 void testTahoeCountryCodeCarrierContracts()

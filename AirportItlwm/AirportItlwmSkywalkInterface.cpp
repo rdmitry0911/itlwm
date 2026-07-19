@@ -934,8 +934,21 @@ static_assert(sizeof(apple80211_wcl_wnm_offload_t) == 0x30,
 
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
-void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
+IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
 {
+    /*
+     * SAE is not an AKM alias for PSK: it needs an SAE password exchange and
+     * PMF/IGTK. Do not let an unsupported WPA3 request fall through to
+     * net80211's Open-System authentication builder, nor let the PMK path turn
+     * a passphrase into a WPA2 PBKDF2 PMK for it.
+     */
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            authtype_upper)) {
+        XYLog("associateSSID REJECT_WPA3_NO_FALLBACK auth_upper=0x%x\n",
+              authtype_upper);
+        return kIOReturnUnsupported;
+    }
+
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // ieee80211_disable_rsn() zeroes ic->ic_psk along with the
@@ -1131,7 +1144,7 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
     
     if (authtype_lower == APPLE80211_AUTHTYPE_SHARED) {
         XYLog("shared key authentication is not supported!\n");
-        return;
+        return kIOReturnUnsupported;
     }
     
     if (authtype_upper == APPLE80211_AUTHTYPE_NONE && authtype_lower == APPLE80211_AUTHTYPE_OPEN) { // Open or WEP Open System
@@ -1143,6 +1156,8 @@ void AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_le
             ieee80211_ioctl_setnwkeys(ic, &nwkey);
         }
     }
+
+    return kIOReturnSuccess;
 }
 
 void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
@@ -5468,6 +5483,17 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnError;
     }
 
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            ad->ad_auth_upper)) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
+                                       ad->ad_ssid, ad->ad_ssid_len,
+                                       reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
+                                       ad->ad_auth_lower, ad->ad_auth_upper,
+                                       ad->ad_rsn_ie_len,
+                                       kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
+
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
@@ -5488,6 +5514,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnSuccess;
     }
 
+    IOReturn assocResult = kIOReturnSuccess;
     if (ad->ad_mode != APPLE80211_AP_MODE_IBSS) {
         disassocIsVoluntary = false;
         auth_type_data.version = APPLE80211_VERSION;
@@ -5497,14 +5524,18 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         const uint16_t rsnIeLen = static_cast<uint16_t>(ad->ad_rsn_ie[1] + 2);
         storeAssocRsnIeOverride(ic, ad->ad_rsn_ie, rsnIeLen);
 
-        associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index, true, false);
+        assocResult = associateSSID(ad->ad_ssid, ad->ad_ssid_len,
+                                    ad->ad_bssid, ad->ad_auth_lower,
+                                    ad->ad_auth_upper, ad->ad_key.key,
+                                    ad->ad_key.key_len, ad->ad_key.key_index,
+                                    true, false);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
                                    ad->ad_ssid, ad->ad_ssid_len,
                                    reinterpret_cast<const uint8_t *>(&ad->ad_bssid),
                                    ad->ad_auth_lower, ad->ad_auth_upper,
-                                   ad->ad_rsn_ie_len, kIOReturnSuccess);
-    return kIOReturnSuccess;
+                                   ad->ad_rsn_ie_len, assocResult);
+    return assocResult;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -5971,6 +6002,16 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
     if (ssid_len > APPLE80211_MAX_SSID_LEN)
         ssid_len = APPLE80211_MAX_SSID_LEN;
 
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            auth_upper)) {
+        airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
+                                       ssid, ssid_len,
+                                       reinterpret_cast<const uint8_t *>(bssid),
+                                       auth_lower, auth_upper, rsn_ie_len,
+                                       kIOReturnUnsupported);
+        return kIOReturnUnsupported;
+    }
+
     auto &associationOwner = instance->getTahoeOwnerRegistry().association;
     associationOwner.hasCarrier = true;
     associationOwner.selectedFromCandidate = candidate_count > 0;
@@ -6037,6 +6078,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         return kIOReturnSuccess;
     }
 
+    IOReturn assocResult = kIOReturnSuccess;
     if (ap_mode != APPLE80211_AP_MODE_IBSS) {
         disassocIsVoluntary = false;
 
@@ -6051,15 +6093,16 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
                                     associationOwner.boundedRsnIeLength);
         }
 
-        associateSSID(const_cast<uint8_t *>(ssid), ssid_len, *bssid,
-                      auth_lower, auth_upper, NULL, 0, 0, false, true);
+        assocResult = associateSSID(const_cast<uint8_t *>(ssid), ssid_len,
+                                    *bssid, auth_lower, auth_upper, NULL, 0,
+                                    0, false, true);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                    ssid, ssid_len,
                                    reinterpret_cast<const uint8_t *>(bssid),
                                    auth_lower, auth_upper, rsn_ie_len,
-                                   kIOReturnSuccess);
-    return kIOReturnSuccess;
+                                   assocResult);
+    return assocResult;
 }
 
 IOReturn AirportItlwmSkywalkInterface::

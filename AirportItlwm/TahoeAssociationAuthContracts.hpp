@@ -45,6 +45,10 @@ static constexpr uint32_t kWpa3OnlyAuthMask =
     kAuthWpa3Enterprise |
     kAuthWpa3FtEnterprise;
 
+/* The sole explicitly permitted WPA3 transition representation for fallback. */
+static constexpr uint32_t kAuditedWpa3PskTransitionAuth =
+    kAuthWpa3Sae | kAuthWpa2Psk;
+
 inline bool usesLocalWpaProtocol(uint32_t authtypeUpper)
 {
     return (authtypeUpper & kWpaProtocolAuthMask) != 0;
@@ -62,9 +66,45 @@ inline bool usesLocalEnterpriseAkm(uint32_t authtypeUpper)
 
 inline bool isWpa3OnlyAuth(uint32_t authtypeUpper)
 {
+    /*
+     * Strict identity-only diagnostic predicate. Association ingress uses
+     * requiresUnsupportedWpa3Auth() below, which is deliberately stricter:
+     * it also rejects WPA3 vectors with extra unrecognised bits.
+     */
     return authtypeUpper != 0 &&
            (authtypeUpper & ~kWpa3OnlyAuthMask) == 0 &&
            (authtypeUpper & kWpa3OnlyAuthMask) != 0;
+}
+
+inline bool isAuditedWpa3PskTransition(uint32_t authtypeUpper)
+{
+    return authtypeUpper == kAuditedWpa3PskTransitionAuth;
+}
+
+inline bool requiresUnsupportedWpa3Auth(uint32_t authtypeUpper)
+{
+    /*
+     * Preserve only the explicitly permitted WPA3-SAE|WPA2-PSK transition
+     * carrier. Arbitrary additional bits would allow an unsupported
+     * SAE/FT/enterprise carrier to enter the legacy Open-System path or the
+     * WPA2 PMK helper. SAE and WPA3 enterprise both require
+     * capabilities this driver has quarantined (SAE and PMF/IGTK).
+     */
+    return (authtypeUpper & kWpa3OnlyAuthMask) != 0 &&
+           !isAuditedWpa3PskTransition(authtypeUpper);
+}
+
+inline bool mayUseLocalPskPmk(uint32_t authtypeUpper)
+{
+    /*
+     * Version-1 PLTI transports a WPA/WPA2 PBKDF2 PMK.  It may preserve the
+     * one explicitly permitted SAE transition carrier above, but must reject any other
+     * WPA3-containing vector rather than silently treating one PSK bit as an
+     * authorization to derive a WPA2 PMK.
+     */
+    if ((authtypeUpper & kWpa3OnlyAuthMask) != 0)
+        return isAuditedWpa3PskTransition(authtypeUpper);
+    return usesLocalPskAkm(authtypeUpper);
 }
 
 inline uint32_t localAuthMaskWithoutFallbackRewrite(uint32_t authtypeUpper)

@@ -76,6 +76,18 @@
 #define kAgentPLTIRetrySleepSeconds 1u
 #define kAgentPLTIRetryLogEvery 10u
 
+static bool
+agent_target_uses_psk_pmk(const struct AirportItlwmAssociationTarget *tgt)
+{
+    if (tgt == NULL)
+        return false;
+    if ((tgt->authtype_upper & kAirportItlwmAuthWpa3Mask) != 0) {
+        return tgt->authtype_upper ==
+               kAirportItlwmAuthAuditedWpa3PskTransition;
+    }
+    return (tgt->authtype_upper & kAirportItlwmAuthPskPmkMask) != 0;
+}
+
 static void
 agent_zero(void *p, size_t n)
 {
@@ -104,6 +116,19 @@ agent_handle_target(io_connect_t conn,
               "authtype_lower=0x%x authtype_upper=0x%x",
               (unsigned long long)tgt->generation, tgt->ssid_len,
               tgt->authtype_lower, tgt->authtype_upper);
+
+    /*
+     * Do not turn a WPA3-only password into a WPA2 PBKDF2 PMK.  A future SAE
+     * producer needs an explicitly versioned password ingress and its own
+     * authenticated exchange; version-1 PLTI must fail closed instead.
+     */
+    if (!agent_target_uses_psk_pmk(tgt)) {
+        AGENT_ERR("handle_target REJECT_NON_PSK generation=%llu "
+                  "authtype_upper=0x%x",
+                  (unsigned long long)tgt->generation,
+                  tgt->authtype_upper);
+        return -1;
+    }
 
     int kc = AgentLookupProjectPSK(tgt->ssid, tgt->ssid_len,
                                   passphrase, &passphrase_len);

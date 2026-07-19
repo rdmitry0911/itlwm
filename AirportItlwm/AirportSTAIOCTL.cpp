@@ -11,6 +11,7 @@
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeAssociationContracts.hpp"
+#include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeNrateContracts.hpp"
@@ -1268,6 +1269,10 @@ setASSOCIATE(OSObject *object,
 
     if (!ad)
         return kIOReturnError;
+
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            ad->ad_auth_upper))
+        return kIOReturnUnsupported;
     
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;
@@ -1284,7 +1289,10 @@ setASSOCIATE(OSObject *object,
         const uint16_t rsnIeLen = static_cast<uint16_t>(ad->ad_rsn_ie[1] + 2);
         storeAssocRsnIeOverride(ic, ad->ad_rsn_ie, rsnIeLen);
 
-        associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid, ad->ad_auth_lower, ad->ad_auth_upper, ad->ad_key.key, ad->ad_key.key_len, ad->ad_key.key_index);
+        return associateSSID(ad->ad_ssid, ad->ad_ssid_len, ad->ad_bssid,
+                             ad->ad_auth_lower, ad->ad_auth_upper,
+                             ad->ad_key.key, ad->ad_key.key_len,
+                             ad->ad_key.key_index);
     }
     return kIOReturnSuccess;
 }

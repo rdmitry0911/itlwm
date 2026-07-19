@@ -147,8 +147,15 @@ IONetworkInterface *AirportItlwm::createInterface()
     return netif;
 }
 
-void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index) 
+IOReturn AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index)
 {
+    if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
+            authtype_upper)) {
+        XYLog("associateSSID REJECT_WPA3_NO_FALLBACK auth_upper=0x%x\n",
+              authtype_upper);
+        return kIOReturnUnsupported;
+    }
+
     struct ieee80211com *ic = fHalService->get80211Controller();
     
     ieee80211_disable_rsn(ic);
@@ -198,7 +205,7 @@ void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct 
     
     if (authtype_lower == APPLE80211_AUTHTYPE_SHARED) {
         XYLog("shared key authentication is not supported!\n");
-        return;
+        return kIOReturnUnsupported;
     }
     
     if (authtype_upper == APPLE80211_AUTHTYPE_NONE && authtype_lower == APPLE80211_AUTHTYPE_OPEN) { // Open or WEP Open System
@@ -210,6 +217,8 @@ void AirportItlwm::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct 
             ieee80211_ioctl_setnwkeys(ic, &nwkey);
         }
     }
+
+    return kIOReturnSuccess;
 }
 
 void AirportItlwm::setPTK(const u_int8_t *key, size_t key_len) {

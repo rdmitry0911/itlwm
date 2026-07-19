@@ -9,6 +9,7 @@
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmCountryCode.hpp"
 #include "TahoeBeaconIeBuilder.hpp"
+#include "TahoeAssociationAuthContracts.hpp"
 #include "TahoeBssBlacklistContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
 #include "TahoeDriverAvailabilityContracts.hpp"
@@ -7234,6 +7235,12 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
 {
     AirportItlwmPublishAssocArgs *a = (AirportItlwmPublishAssocArgs *)arg0;
     AirportItlwm *s = a->self;
+    /* The PLTI carrier is deliberately a WPA/WPA2 PSK-PMK ingress only. */
+    if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(
+            a->authtype_upper)) {
+        a->out_generation = 0;
+        return kIOReturnSuccess;
+    }
     // Teardown's terminal cancel is sticky for this controller lifetime.
     // Never let a queued association producer reopen the target after it has
     // serialized behind the cancel and before HAL detach.
@@ -7375,6 +7382,13 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
         return kIOReturnSuccess;
     }
 
+    /* A malformed or stale non-PSK target must never consume a WPA2 PMK. */
+    if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(
+            s->fAssocTarget.authtype_upper)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+
     struct ieee80211com *ic = (s->fHalService != nullptr)
         ? s->fHalService->get80211Controller() : nullptr;
     if (ic == nullptr) {
@@ -7415,6 +7429,11 @@ publishPendingAssocTarget(const uint8_t *ssid,
               ssid_len,
               ssid != nullptr ? 1 : 0,
               bssid != nullptr ? 1 : 0);
+        return 0;
+    }
+    if (!TahoeAssociationAuthContracts::mayUseLocalPskPmk(authtype_upper)) {
+        XYLog("plti_publish_assoc_target REJECT_NON_PSK auth_upper=0x%x\n",
+              authtype_upper);
         return 0;
     }
     IOCommandGate *gate = getCommandGate();
