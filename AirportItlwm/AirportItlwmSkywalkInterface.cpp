@@ -1545,6 +1545,18 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
             return super::processBSDCommand(interface, cmd, data);
         }
         if (isApple80211GetIoctl(cmd) &&
+            req->req_type == APPLE80211_IOC_OFFLOAD_TCPKA_ENABLE) {
+            /*
+             * Tahoe accepts a four-byte public enable result, then owns an
+             * internal eight-byte legacy carrier and copies only its trailing
+             * dword.  The local helper clears and fills the complete
+             * versioned carrier, while this BSD callback has marshalled only
+             * the outer request. Leave the nested caller buffer with
+             * IO80211Family; SET and the local helper remain unchanged.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
+        if (isApple80211GetIoctl(cmd) &&
             req->req_type == APPLE80211_IOC_LINK_CHANGED_EVENT_DATA) {
             /*
              * The local 32-byte link-event snapshot is an internal,
