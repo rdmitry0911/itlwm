@@ -1173,7 +1173,10 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
                 ml_enqueue(ml, m);
             } else {
-                ieee80211_eapol_key_input(ic, m, ni);
+                if (ic->ic_eapol_key_input != NULL)
+                    (*ic->ic_eapol_key_input)(ic, m, ni);
+                else
+                    ieee80211_eapol_key_input(ic, m, ni);
             }
 #elif defined(USE_APPLE_SUPPLICANT)
             // Pre-Tahoe USE_APPLE_SUPPLICANT: unchanged legacy route.
@@ -1188,7 +1191,10 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
                     ifp->iface->inputPacket(m2, mbuf_len(m2));
             }
 #endif
-            ieee80211_eapol_key_input(ic, m, ni);
+            if (ic->ic_eapol_key_input != NULL)
+                (*ic->ic_eapol_key_input)(ic, m, ni);
+            else
+                ieee80211_eapol_key_input(ic, m, ni);
 #endif
         } else {
             ml_enqueue(ml, m);

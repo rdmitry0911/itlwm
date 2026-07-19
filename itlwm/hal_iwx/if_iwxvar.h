@@ -638,6 +638,21 @@ struct iwx_ba_task_data {
     uint32_t        stop_tidmask;
 };
 
+/*
+ * Security-sensitive RX frames which must leave the interrupt action before
+ * they can issue a wait-aware firmware command.  The queue is deliberately
+ * bounded and allocation-free on the RX side: an attacker cannot turn an
+ * EAPOL burst into unbounded kernel allocation, and a full queue drops
+ * the frame so the peer retransmits instead of falling back to an unsafe
+ * in-action key install.
+ */
+#define IWX_SECURITY_RXQ_LEN 16
+
+struct iwx_security_rx_entry {
+    mbuf_t m;
+    struct ieee80211_node *ni;
+};
+
 struct iwx_softc {
 	struct device sc_dev;
 	struct ieee80211com sc_ic;
@@ -648,6 +663,7 @@ struct iwx_softc {
 	struct task		init_task; /* NB: not reference-counted */
 //	struct refcnt		task_refs;
 	struct task newstate_task;
+	struct task security_rx_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 
@@ -690,6 +706,18 @@ struct iwx_softc {
     bool sc_task_gate_closed;
     bool sc_task_gate_bootstrap_init;
     bool sc_task_gate_detaching;
+
+    /*
+     * Deferred PAE ingress.  sc_security_rx_lock protects only the
+     * fixed FIFO and its active worker identity; it is never held across
+     * net80211, q0, allocation, or firmware submission.
+     */
+    IOSimpleLock *sc_security_rx_lock;
+    struct iwx_security_rx_entry sc_security_rxq[IWX_SECURITY_RXQ_LEN];
+    uint8_t sc_security_rx_head;
+    uint8_t sc_security_rx_tail;
+    uint8_t sc_security_rx_count;
+    thread_t sc_security_rx_worker;
 
 	/* TX/RX rings. */
 	struct iwx_tx_ring txq[IWX_MAX_TVQM_QUEUES];

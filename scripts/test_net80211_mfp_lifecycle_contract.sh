@@ -42,23 +42,34 @@ node = pathlib.Path(sys.argv[2]).read_text()
 input_source = pathlib.Path(sys.argv[3]).read_text()
 iwx_source = pathlib.Path(sys.argv[4]).read_text()
 
-igtk_install = re.compile(
-    r"/\* install the IGTK \*/\s*"
-    r"switch \(\(\*ic->ic_set_key\)\(ic, ni, k\)\) \{\s*"
-    r"case 0:\s*"
-    r"ni->ni_flags \|= IEEE80211_NODE_TXMGMTPROT;\s*"
-    r"ic->ic_igtk_kid = kid;\s*"
-    r"break;\s*"
-    r"case EBUSY:.*?"
-    r"default:\s*"
-    r"reason = IEEE80211_REASON_AUTH_LEAVE;\s*"
-    r"goto deauth;\s*"
-    r"\}\s*"
-    r"ni->ni_flags \|= IEEE80211_NODE_RXMGMTPROT;",
+pae_wait = re.search(
+    r"static int\n"
+    r"ieee80211_pae_set_key\(struct ieee80211com \*ic, "
+    r"struct ieee80211_node \*ni,\s*"
+    r"struct ieee80211_key \*k\)\n"
+    r"\{(?P<body>.*?)\n\}",
+    pae,
     re.DOTALL,
 )
+assert pae_wait, "MFP-aware PAE key helper"
+pae_wait_body = pae_wait.group("body")
+assert "IEEE80211_NODE_MFP" in pae_wait_body
+assert "ic->ic_set_key_wait != NULL" in pae_wait_body
+assert "(*ic->ic_set_key_wait)(ic, ni, k)" in pae_wait_body
+assert "return (*ic->ic_set_key)(ic, ni, k);" in pae_wait_body
+assert pae.count("switch (ieee80211_pae_set_key(ic, ni, k))") == 7, (
+    "every PAE key-install path uses the MFP-aware helper"
+)
+assert "(*ic->ic_set_key)(ic, ni, k)" not in pae[pae_wait.end():], (
+    "PAE does not bypass the wait-aware helper"
+)
 
-assert len(igtk_install.findall(pae)) == 2, "both IGTK install paths"
+msg3 = function_body(pae, "ieee80211_recv_4way_msg3")
+mfp_initial_igtk = msg3.index("IEEE80211_NODE_MFP | IEEE80211_NODE_RSN_NEW_PTK")
+assert "igtk == NULL" in msg3[mfp_initial_igtk:]
+assert mfp_initial_igtk < msg3.index("ieee80211_send_4way_msg4"), (
+    "initial MFP Msg3 without IGTK fails before completing the handshake"
+)
 
 for name in ("ieee80211_node_join_rsn", "ieee80211_node_leave_rsn"):
     body = function_body(node, name)
@@ -101,45 +112,71 @@ for anchor in (
     assert anchor in iwx_source, anchor
 assert "le16toh(desc->status)" not in iwx_source, "RX status must remain __le32"
 
-# AX211's API-68 payload is evidence, not an enabled Tahoe feature.  The
-# port's task and splnet compatibility layers cannot serialize the command
-# ring or pair firmware completion with the PAE Msg3 tail, so this driver
-# must not advertise MFP or submit its protected-management command.
+# MFP is enabled only through the deferred PAE worker.  The generic key
+# callback remains asynchronous because it is callable from raw RX/timer
+# paths whose q0 completion producer is the same IOKit action.
 setkey = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key(")
+setkey_wait = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key_wait(")
+setkey_impl = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key_impl(")
 deletekey = cpp_method_body(iwx_source, "void ItlIwx::\niwx_delete_key(")
-mfp_guard = (
-    "if (k->k_cipher == IEEE80211_CIPHER_BIP ||\n"
-    "        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0))\n"
-    "        return EOPNOTSUPP;"
+checked_cmd = cpp_method_body(
+    iwx_source, "int ItlIwx::\niwx_send_cmd_pdu_checked("
 )
-mfp_delete_guard = mfp_guard.replace("\n        return EOPNOTSUPP;", " {")
-assert mfp_guard in setkey, "forced MFP/BIP key install fails closed"
-assert mfp_delete_guard in deletekey, (
-    "forced MFP/BIP teardown is software-only"
+igtk_cmd = cpp_method_body(iwx_source, "static int\niwx_set_sta_igtk_v2(")
+security_enqueue = cpp_method_body(
+    iwx_source, "bool ItlIwx::\niwx_security_rx_enqueue("
 )
-assert setkey.index(mfp_guard) < setkey.index(
-    "if (k->k_cipher != IEEE80211_CIPHER_CCMP)"
-), "MFP rejection precedes every normal key submission"
-assert deletekey.index("ieee80211_delete_key(ic, ni, k);") < deletekey.index(
-    "if (k->k_cipher != IEEE80211_CIPHER_CCMP)"
-), "MFP teardown does not reach ADD_STA_KEY"
+assert "return that->iwx_set_key_impl(ic, ni, k, false);" in setkey
+assert "if (!that->iwx_security_rx_wait_context(sc))" in setkey_wait
+assert "return EWOULDBLOCK;" in setkey_wait
+assert "return that->iwx_set_key_impl(ic, ni, k, true);" in setkey_wait
+assert "const bool mfp" in setkey_impl
+assert "IWX_STA_KEY_MFP" in setkey_impl
+assert "iwx_send_cmd_pdu_status(sc, IWX_ADD_STA_KEY" in setkey_impl
+assert "(status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS" in setkey_impl
+assert "iwx_set_sta_igtk_v2(sc, ni, k, false, true)" in setkey_impl
+assert "iwx_set_sta_igtk_v2(sc, ni, k, true, false)" in deletekey
+assert "IWX_CMD_WANT_RESP" in checked_cmd
+assert "cmd.resp_pkt == NULL" in checked_cmd
+assert "iwx_rx_packet_len(cmd.resp_pkt) < sizeof(cmd.resp_pkt->hdr)" in checked_cmd
+assert "IWX_CMD_FAILED_MSK" in checked_cmd
+assert checked_cmd.count("iwx_free_resp(sc, &cmd);") == 3
+assert "iwx_send_cmd_pdu_checked(sc, IWX_MGMT_MCAST_KEY" in igtk_cmd
+assert "IWX_CMD_ASYNC" in igtk_cmd
 
-for forbidden in (
-    "IWX_MGMT_MCAST_KEY",
-    "IWX_STA_KEY_MFP",
-    "iwx_set_sta_igtk_v2",
-    "iwx_ax211_api68_igtk_v2_ok",
-    "IwxMfpIgtkContracts",
-    "ic->ic_caps |= IEEE80211_C_MFP;",
-):
-    assert forbidden not in iwx_source, forbidden
+assert "iwx_security_rx_eapol_input" in iwx_source
+assert "iwx_security_rx_recv_mgmt" not in iwx_source
+assert "iwx_security_rx_task_dispatch" in iwx_source
+assert "sc->sc_security_rx_worker = current_thread();" in iwx_source
+assert "sc->sc_security_rx_worker == current_thread()" in iwx_source
+assert "IWX_SECURITY_RXQ_LEN" in iwx_source
+assert "iwx_add_task(sc, sc->sc_nswq, &sc->security_rx_task);" in iwx_source
+assert "iwx_security_rx_purge(sc);" in iwx_source
+assert "ic->ic_eapol_key_input = iwx_security_rx_eapol_input;" in iwx_source
+assert "ic->ic_set_key_wait = iwx_set_key_wait;" in iwx_source
+assert security_enqueue.index("held_ni = ieee80211_ref_node(ni);") < \
+    security_enqueue.index("IOLockLock(sc->sc_task_gate_lock);"), (
+        "node reference must not take splnet under the lifecycle gate"
+    )
+assert security_enqueue.index("IOLockUnlock(sc->sc_task_gate_lock);") < \
+    security_enqueue.index("ieee80211_release_node(&sc->sc_ic, held_ni);"), (
+        "rejected deferred frame releases its node outside the lifecycle gate"
+    )
+
+assert "IWX_MGMT_MCAST_KEY:" in iwx_source, (
+    "firmware IGTK completion reaches the q0 completion path"
+)
+assert "iwx_ax211_api68_igtk_v2_ok" in iwx_source
+assert "IwxMfpIgtkContracts::hasExactAbiPrerequisites" in iwx_source
+assert "iwx_publish_mfp_capability(sc);" in iwx_source
+assert "ic->ic_caps |= IEEE80211_C_MFP;" in iwx_source
 
 mfp_clear = "ic->ic_caps &= ~IEEE80211_C_MFP;"
 last_normal_cap = "ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;"
-assert iwx_source.count(mfp_clear) == 1, "single explicit MFP quarantine"
-assert iwx_source.index(last_normal_cap) < iwx_source.index(mfp_clear), (
-    "MFP remains clear after the complete iwx capability set"
+assert iwx_source.count(mfp_clear) == 2, "initial and exact-gated MFP clear"
+assert iwx_source.index(last_normal_cap) < iwx_source.rindex(mfp_clear), (
+    "MFP starts clear before init ucode validates the exact ABI"
 )
 
-print("PASS: net80211 MFP RX-route and fail-closed quarantine contract")
+print("PASS: net80211 MFP deferred-PAE, IGTK lifecycle, and RX-route contract")
 PY

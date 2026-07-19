@@ -83,6 +83,24 @@ void	ieee80211_recv_eapol_key_req(struct ieee80211com *,
 #endif
 
 /*
+ * A protected-management 4-way exchange may need a firmware ACK before the
+ * port can be made valid. The ordinary ic_set_key contract remains async: it
+ * is also called from timer and RX-adjacent paths. A driver which has deferred
+ * this exact PAE ingress to a sleepable worker may opt into the separate
+ * waiter. Every other stack and every non-MFP exchange preserves the
+ * historical asynchronous path.
+ */
+static int
+ieee80211_pae_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
+                      struct ieee80211_key *k)
+{
+    if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        ic->ic_set_key_wait != NULL)
+        return (*ic->ic_set_key_wait)(ic, ni, k);
+    return (*ic->ic_set_key)(ic, ni, k);
+}
+
+/*
  * Process an incoming EAPOL frame.  Notice that we are only interested in
  * EAPOL-Key frames with an IEEE 802.11 or WPA descriptor type.
  */
@@ -538,6 +556,17 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         DPRINTF(("IGTK KDE found but GTK KDE missing\n"));
         return;
     }
+    /*
+     * An initial MFP 4-way exchange must establish an IGTK together with its
+     * new PTK.  Later Msg3 retransmits and group rekeys may legitimately omit
+     * it because the existing IGTK remains live; NODE_RSN_NEW_PTK separates
+     * those cases without weakening the initial protected-management setup.
+     */
+    if ((ni->ni_flags & (IEEE80211_NODE_MFP | IEEE80211_NODE_RSN_NEW_PTK)) ==
+        (IEEE80211_NODE_MFP | IEEE80211_NODE_RSN_NEW_PTK) && igtk == NULL) {
+        reason = IEEE80211_REASON_AUTH_LEAVE;
+        goto deauth;
+    }
     /* check that the Install bit is set if using pairwise keys */
     if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP &&
         !(info & EAPOL_KEY_INSTALL)) {
@@ -615,7 +644,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         k->k_len = keylen;
         memcpy(k->k_key, ni->ni_ptk.tk, k->k_len);
         /* install the PTK */
-        switch ((*ic->ic_set_key)(ic, ni, k)) {
+        switch (ieee80211_pae_set_key(ic, ni, k)) {
             case 0:
                 break;
             case EBUSY:
@@ -655,7 +684,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             k->k_len = keylen;
             memcpy(k->k_key, &gtk[8], k->k_len);
             /* install the GTK */
-            switch ((*ic->ic_set_key)(ic, ni, k)) {
+            switch (ieee80211_pae_set_key(ic, ni, k)) {
                 case 0:
                     break;
                 case EBUSY:
@@ -692,7 +721,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             k->k_len = 16;
             memcpy(k->k_key, &igtk[14], k->k_len);
             /* install the IGTK */
-            switch ((*ic->ic_set_key)(ic, ni, k)) {
+            switch (ieee80211_pae_set_key(ic, ni, k)) {
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
                     ic->ic_igtk_kid = kid;
@@ -787,7 +816,7 @@ ieee80211_recv_4way_msg4(struct ieee80211com *ic,
         k->k_len = ieee80211_cipher_keylen(k->k_cipher);
         memcpy(k->k_key, ni->ni_ptk.tk, k->k_len);
         /* install the PTK */
-        switch ((*ic->ic_set_key)(ic, ni, k)) {
+        switch (ieee80211_pae_set_key(ic, ni, k)) {
             case 0:
             case EBUSY:
                 break;
@@ -954,7 +983,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         k->k_len = keylen;
         memcpy(k->k_key, &gtk[8], k->k_len);
         /* install the GTK */
-        switch ((*ic->ic_set_key)(ic, ni, k)) {
+        switch (ieee80211_pae_set_key(ic, ni, k)) {
             case 0:
             case EBUSY:
                 break;
@@ -986,7 +1015,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             k->k_len = 16;
             memcpy(k->k_key, &igtk[14], k->k_len);
             /* install the IGTK */
-            switch ((*ic->ic_set_key)(ic, ni, k)) {
+            switch (ieee80211_pae_set_key(ic, ni, k)) {
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
                     ic->ic_igtk_kid = kid;
@@ -1091,7 +1120,7 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
         k->k_len = keylen;
         memcpy(k->k_key, gtk, k->k_len);
         /* install the GTK */
-        switch ((*ic->ic_set_key)(ic, ni, k)) {
+        switch (ieee80211_pae_set_key(ic, ni, k)) {
             case 0:
             case EBUSY:
                 break;

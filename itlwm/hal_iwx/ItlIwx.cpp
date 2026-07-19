@@ -107,6 +107,7 @@
  */
 
 #include "ItlIwx.hpp"
+#include "IwxMfpIgtkContracts.hpp"
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -201,6 +202,8 @@ detach(IOPCIDevice *device)
     if (sc->sc_taskq_initialized && sc->sc_task_callbacks_ready) {
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
         iwx_del_task(sc, systq, &sc->init_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
@@ -212,6 +215,7 @@ detach(IOPCIDevice *device)
         taskq_barrier(systq);
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
+    iwx_security_rx_purge(sc);
 
     /*
      * A successful iwx_start_hw() may have armed DMA.  Halt it while the
@@ -230,8 +234,10 @@ detach(IOPCIDevice *device)
      * Keep the closed gate and both queues alive through ifdetach(), so a
      * synchronous detach callback can safely reach iwx_add_task() and be
      * rejected rather than lock freed storage.
-     */
+    */
     if (sc->sc_if_attached) {
+        sc->sc_ic.ic_eapol_key_input = NULL;
+        sc->sc_ic.ic_set_key_wait = NULL;
         ieee80211_ifdetach(ifp);
         sc->sc_if_attached = false;
     }
@@ -246,6 +252,10 @@ detach(IOPCIDevice *device)
         sc->sc_taskq_initialized = false;
     }
     iwx_task_gate_destroy(sc);
+    if (sc->sc_security_rx_lock != NULL) {
+        IOSimpleLockFree(sc->sc_security_rx_lock);
+        sc->sc_security_rx_lock = NULL;
+    }
 
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwx_free_tx_ring(sc, &sc->txq[txq_i]);
@@ -689,6 +699,46 @@ static int iwx_hwrate_to_plcp_idx(uint32_t rate_n_flags)
 #if NBPFILTER > 0
 void    iwx_radiotap_attach(struct iwx_softc *);
 #endif
+
+static bool iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *);
+static void iwx_publish_mfp_capability(struct iwx_softc *);
+static int iwx_set_sta_igtk_v2(struct iwx_softc *,
+                                struct ieee80211_node *,
+                                struct ieee80211_key *, bool, bool);
+
+static_assert(sizeof(struct iwx_mgmt_mcast_key_cmd_v2) ==
+                  sizeof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2),
+              "kernel IGTK v2 carrier must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, IGTK) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, igtk),
+              "kernel IGTK v2 key offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, key_id) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, key_id),
+              "kernel IGTK v2 key-id offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, sta_id) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2, sta_id),
+              "kernel IGTK v2 station-id offset must match the recovered ABI layout");
+static_assert(offsetof(struct iwx_mgmt_mcast_key_cmd_v2, receive_seq_cnt) ==
+                  offsetof(IwxMfpIgtkContracts::MgmtMcastKeyCommandV2,
+                           receive_seq_cnt),
+              "kernel IGTK v2 receive sequence must match the recovered ABI layout");
+static_assert(IWX_UCODE_TLV_FLAGS_MFP ==
+                  IwxMfpIgtkContracts::kFirmwareMfpFlag,
+              "AX211 MFP flag must match the recovered firmware contract");
+static_assert(IWX_STA_KEY_FLG_CCM ==
+                  IwxMfpIgtkContracts::kIgtkInstallCipher,
+              "AX211 IGTK install cipher must match the recovered firmware contract");
+static_assert(IWX_STA_KEY_NOT_VALID ==
+                  IwxMfpIgtkContracts::kIgtkDeleteFlag,
+              "AX211 IGTK delete flag must match the recovered firmware contract");
+static_assert(IWX_MGMT_MCAST_KEY ==
+                  IwxMfpIgtkContracts::kMgmtMcastKeyCommand,
+              "AX211 IGTK command id must match the recovered firmware contract");
+static_assert(IWX_STATION_ID == IwxMfpIgtkContracts::kStationId,
+              "AX211 IGTK station id must match the recovered firmware contract");
+static_assert(IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT ==
+                  IwxMfpIgtkContracts::kMultiQueueRxCapability,
+              "AX211 IGTK capability bit must match the recovered firmware contract");
 
 uint8_t ItlIwx::
 iwx_lookup_cmd_ver(struct iwx_softc *sc, uint8_t grp, uint8_t cmd)
@@ -6858,6 +6908,44 @@ iwx_send_cmd_pdu(struct iwx_softc *sc, uint32_t id, uint32_t flags,
     return iwx_send_cmd(sc, &cmd);
 }
 
+/*
+ * A q0 completion alone only proves that firmware consumed the descriptor.
+ * The API-68 management-multicast key command has no status payload, so this
+ * path retains its response header: failed commands deliberately drop that
+ * response in iwx_cmdq_store_response(), making a missing or malformed
+ * packet authoritative failure rather than a successful ACK.
+ */
+int ItlIwx::
+iwx_send_cmd_pdu_checked(struct iwx_softc *sc, uint32_t id, uint16_t len,
+                         const void *data)
+{
+    struct iwx_host_cmd cmd = {
+        .id = id,
+        .len = { len, },
+        .data = { data, },
+        .flags = IWX_CMD_WANT_RESP,
+        .resp_pkt_len = IWX_CMD_RESP_MAX,
+    };
+    int err;
+
+    err = iwx_send_cmd(sc, &cmd);
+    if (err != 0)
+        return err;
+    if (cmd.resp_pkt == NULL)
+        return EIO;
+    if (iwx_rx_packet_len(cmd.resp_pkt) < sizeof(cmd.resp_pkt->hdr)) {
+        iwx_free_resp(sc, &cmd);
+        return EIO;
+    }
+    if (cmd.resp_pkt->hdr.group_id & IWX_CMD_FAILED_MSK) {
+        iwx_free_resp(sc, &cmd);
+        return EIO;
+    }
+
+    iwx_free_resp(sc, &cmd);
+    return 0;
+}
+
 int ItlIwx::
 iwx_send_cmd_status(struct iwx_softc *sc, struct iwx_host_cmd *cmd,
                     uint32_t *status)
@@ -9428,6 +9516,18 @@ iwx_newstate_task_dispatch(void *arg)
 }
 
 void ItlIwx::
+iwx_security_rx_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_security_rx_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
 iwx_init_task_dispatch(void *arg)
 {
     struct iwx_softc *sc = (struct iwx_softc *)arg;
@@ -9483,6 +9583,167 @@ iwx_del_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
     if (task_del(taskq, task)) {
         //        refcnt_rele(&sc->task_refs);
     }
+}
+
+bool ItlIwx::
+iwx_security_rx_enqueue(struct iwx_softc *sc, mbuf_t m,
+                        struct ieee80211_node *ni)
+{
+    struct iwx_security_rx_entry *entry;
+    struct ieee80211_node *held_ni;
+    bool queued = false;
+
+    if (sc == NULL || m == NULL || ni == NULL ||
+        sc->sc_security_rx_lock == NULL || sc->sc_task_gate_lock == NULL ||
+        sc->sc_nswq == NULL || !sc->sc_task_callbacks_ready)
+        return false;
+
+    /*
+     * Take the node reference before the lifecycle gate.  ieee80211_ref_node
+     * enters splnet(), while stop holds splnet() before closing this gate; the
+     * reverse order would create a stop-vs-RX ABBA deadlock.
+     */
+    held_ni = ieee80211_ref_node(ni);
+
+    /*
+     * Admission and task enqueue share the lifecycle gate. Stop closes it
+     * before draining this FIFO, so neither a stale frame nor a new RX action
+     * can reach a sleeping key command after shutdown begins.
+     */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
+        IOSimpleLockLock(sc->sc_security_rx_lock);
+        if (sc->sc_security_rx_count < IWX_SECURITY_RXQ_LEN) {
+            entry = &sc->sc_security_rxq[sc->sc_security_rx_tail];
+            entry->m = m;
+            entry->ni = held_ni;
+            held_ni = NULL;
+            sc->sc_security_rx_tail =
+                (sc->sc_security_rx_tail + 1) % IWX_SECURITY_RXQ_LEN;
+            sc->sc_security_rx_count++;
+            queued = true;
+        }
+        IOSimpleLockUnlock(sc->sc_security_rx_lock);
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+
+    if (held_ni != NULL)
+        ieee80211_release_node(&sc->sc_ic, held_ni);
+
+    /*
+     * Reuse the common admission helper after releasing the gate.  If stop
+     * closes it in this small interval, stop's post-barrier purge owns the
+     * queued frame; otherwise the helper schedules this serial worker.
+     */
+    if (queued)
+        iwx_add_task(sc, sc->sc_nswq, &sc->security_rx_task);
+
+    return queued;
+}
+
+bool ItlIwx::
+iwx_security_rx_wait_context(struct iwx_softc *sc)
+{
+    bool active = false;
+
+    if (sc == NULL || sc->sc_security_rx_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_security_rx_lock);
+    active = sc->sc_security_rx_worker == current_thread();
+    IOSimpleLockUnlock(sc->sc_security_rx_lock);
+    return active;
+}
+
+void ItlIwx::
+iwx_security_rx_task(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_security_rx_entry entry;
+
+    if (sc->sc_security_rx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_security_rx_lock);
+    sc->sc_security_rx_worker = current_thread();
+    IOSimpleLockUnlock(sc->sc_security_rx_lock);
+
+    for (;;) {
+        IOSimpleLockLock(sc->sc_security_rx_lock);
+        if (sc->sc_security_rx_count == 0) {
+            IOSimpleLockUnlock(sc->sc_security_rx_lock);
+            break;
+        }
+        entry = sc->sc_security_rxq[sc->sc_security_rx_head];
+        memset(&sc->sc_security_rxq[sc->sc_security_rx_head], 0,
+               sizeof(sc->sc_security_rxq[sc->sc_security_rx_head]));
+        sc->sc_security_rx_head =
+            (sc->sc_security_rx_head + 1) % IWX_SECURITY_RXQ_LEN;
+        sc->sc_security_rx_count--;
+        IOSimpleLockUnlock(sc->sc_security_rx_lock);
+
+        /* ieee80211_eapol_key_input consumes entry.m. */
+        ieee80211_eapol_key_input(ic, entry.m, entry.ni);
+        ieee80211_release_node(ic, entry.ni);
+    }
+
+    IOSimpleLockLock(sc->sc_security_rx_lock);
+    sc->sc_security_rx_worker = NULL;
+    IOSimpleLockUnlock(sc->sc_security_rx_lock);
+}
+
+void ItlIwx::
+iwx_security_rx_purge(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic;
+    struct iwx_security_rx_entry entry;
+
+    if (sc == NULL || sc->sc_security_rx_lock == NULL)
+        return;
+    ic = &sc->sc_ic;
+
+    for (;;) {
+        IOSimpleLockLock(sc->sc_security_rx_lock);
+        if (sc->sc_security_rx_count == 0) {
+            sc->sc_security_rx_worker = NULL;
+            IOSimpleLockUnlock(sc->sc_security_rx_lock);
+            break;
+        }
+        entry = sc->sc_security_rxq[sc->sc_security_rx_head];
+        memset(&sc->sc_security_rxq[sc->sc_security_rx_head], 0,
+               sizeof(sc->sc_security_rxq[sc->sc_security_rx_head]));
+        sc->sc_security_rx_head =
+            (sc->sc_security_rx_head + 1) % IWX_SECURITY_RXQ_LEN;
+        sc->sc_security_rx_count--;
+        IOSimpleLockUnlock(sc->sc_security_rx_lock);
+
+        if (entry.m != NULL)
+            mbuf_freem(entry.m);
+        if (entry.ni != NULL)
+            ieee80211_release_node(ic, entry.ni);
+    }
+}
+
+void ItlIwx::
+iwx_security_rx_eapol_input(struct ieee80211com *ic, mbuf_t m,
+                            struct ieee80211_node *ni)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0) {
+        if (that->iwx_security_rx_enqueue(sc, m, ni))
+            return;
+
+        /* Fail closed: the authenticator will retransmit the EAPOL key. */
+        ic->ic_stats.is_rx_nombuf++;
+        mbuf_freem(m);
+        return;
+    }
+
+    ieee80211_eapol_key_input(ic, m, ni);
 }
 
 int ItlIwx::
@@ -10451,27 +10712,77 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
             struct ieee80211_key *k)
 {
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
-    struct iwx_add_sta_key_cmd cmd;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    return that->iwx_set_key_impl(ic, ni, k, false);
+}
+
+int ItlIwx::
+iwx_set_key_wait(struct ieee80211com *ic, struct ieee80211_node *ni,
+                 struct ieee80211_key *k)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
     /*
-     * Protected management remains deliberately unavailable on this port.
-     * The AX211 API-68 payload alone is insufficient: the target task/RX
-     * compatibility layer has no command-ring serialization or paired PAE
-     * completion handoff.  Reject a forced MFP association before it can
-     * submit either an IGTK or MFP-marked CCMP command.
+     * q0 completion runs on the IOKit RX action. Waiting is valid only on
+     * our deferred security worker, never on the raw input action or a
+     * generic timer/key lifecycle call.
      */
-    if (k->k_cipher == IEEE80211_CIPHER_BIP ||
-        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0))
-        return EOPNOTSUPP;
-    
+    if (!that->iwx_security_rx_wait_context(sc))
+        return EWOULDBLOCK;
+
+    return that->iwx_set_key_impl(ic, ni, k, true);
+}
+
+int ItlIwx::
+iwx_set_key_impl(struct ieee80211com *ic, struct ieee80211_node *ni,
+                 struct ieee80211_key *k, bool wait_for_firmware)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    struct iwx_add_sta_key_cmd cmd;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    const bool mfp = ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0;
+    int err;
+    uint32_t status;
+
+    if (k == NULL)
+        return EINVAL;
+
+    if (k->k_cipher == IEEE80211_CIPHER_BIP) {
+        if (!mfp || (k->k_flags & IEEE80211_KEY_IGTK) == 0)
+            return EOPNOTSUPP;
+        if (!wait_for_firmware)
+            return EWOULDBLOCK;
+        if (!iwx_ax211_api68_igtk_v2_ok(sc))
+            return EOPNOTSUPP;
+        if (!IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+            return EINVAL;
+
+        /* RX BIP verification stays software-owned; firmware receives the
+         * matching API-68 IGTK carrier only after software state exists. */
+        err = ieee80211_set_key(ic, ni, k);
+        if (err != 0)
+            return err;
+        err = iwx_set_sta_igtk_v2(sc, ni, k, false, true);
+        if (err != 0)
+            ieee80211_delete_key(ic, ni, k);
+        return err;
+    }
+
     if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
         /* Fallback to software crypto for other ciphers. */
-        return (ieee80211_set_key(ic, ni, k));
+        return ieee80211_set_key(ic, ni, k);
     }
-    
+
+    if (mfp) {
+        if (!wait_for_firmware)
+            return EWOULDBLOCK;
+        if (!iwx_ax211_api68_igtk_v2_ok(sc))
+            return EOPNOTSUPP;
+    }
+
     memset(&cmd, 0, sizeof(cmd));
-    
     cmd.common.key_flags = htole16(IWX_STA_KEY_FLG_CCM |
                                    IWX_STA_KEY_FLG_WEP_KEY_MAP |
                                    ((k->k_id << IWX_STA_KEY_FLG_KEYID_POS) &
@@ -10481,15 +10792,26 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
         cmd.common.key_flags |= htole16(IWX_STA_KEY_MULTICAST);
     } else {
         cmd.common.key_offset = 0;
+        if (mfp)
+            cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
     }
-    
+
     memcpy(cmd.common.key, k->k_key, MIN(sizeof(cmd.common.key), k->k_len));
     cmd.common.sta_id = IWX_STATION_ID;
-    
     cmd.transmit_seq_cnt = htole64(k->k_tsc);
-    
+
+    if (mfp) {
+        status = IWX_ADD_STA_SUCCESS;
+        err = that->iwx_send_cmd_pdu_status(sc, IWX_ADD_STA_KEY,
+                                            sizeof(cmd), &cmd, &status);
+        if (err != 0)
+            return err;
+        if ((status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+            return EIO;
+        return 0;
+    }
     return that->iwx_send_cmd_pdu(sc, IWX_ADD_STA_KEY, IWX_CMD_ASYNC,
-                            sizeof(cmd), &cmd);
+                                  sizeof(cmd), &cmd);
 }
 
 void ItlIwx::
@@ -10500,9 +10822,13 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwx_add_sta_key_cmd cmd;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
-    if (k->k_cipher == IEEE80211_CIPHER_BIP ||
-        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0)) {
-        /* No protected-management key reaches the firmware command ring. */
+    if (k->k_cipher == IEEE80211_CIPHER_BIP) {
+        if ((k->k_flags & IEEE80211_KEY_IGTK) != 0 &&
+            iwx_ax211_api68_igtk_v2_ok(sc) &&
+            IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+            (void)iwx_set_sta_igtk_v2(sc, ni, k, true, false);
+
+        /* BIP verification is software-owned regardless of FW reset state. */
         ieee80211_delete_key(ic, ni, k);
         return;
     }
@@ -11374,6 +11700,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         task_del(systq, &sc->init_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         iwx_del_task(sc, systq, &sc->chan_ctxt_task);
@@ -11392,6 +11720,7 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     /* The barrier closes dequeue-to-prologue; this asserts body exit too. */
     that->iwx_task_gate_drain(sc, caller_is_init_task ? 1 : 0,
                               caller_is_init_epoch ? 1 : 0, 1);
+    that->iwx_security_rx_purge(sc);
 
     KASSERT(sc->task_refs.refs >= 1, "sc->task_refs.refs >= 1");
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
@@ -12027,6 +12356,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
             case IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP,
                 IWX_NVM_GET_INFO):
             case IWX_ADD_STA_KEY:
+            case IWX_MGMT_MCAST_KEY:
             case IWX_PHY_CONFIGURATION_CMD:
             case IWX_TX_ANT_CONFIGURATION_CMD:
             case IWX_ADD_STA:
@@ -12654,6 +12984,81 @@ const struct iwl_cfg iwlax211_2ax_cfg_so_gf_a0_long = {
     .trans.low_latency_xtal = 1,
     .num_rbds = IWL_NUM_RBDS_AX210_HE,
 };
+
+/*
+ * This deliberately names both AX211 API-68 configuration objects instead
+ * of accepting the broader AX210 family. The management-multicast key
+ * command has no safe v1 fallback: a different device, API, MFP bit, or RX
+ * capability leaves the feature disabled before association.
+ */
+static bool
+iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
+{
+    if (sc == NULL || sc->sc_cfg == NULL)
+        return false;
+    if (sc->sc_device_family != IWX_DEVICE_FAMILY_AX210 ||
+        sc->sc_cfg->device_family != IWX_DEVICE_FAMILY_AX210)
+        return false;
+    if (sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0 &&
+        sc->sc_cfg != &iwlax211_2ax_cfg_so_gf_a0_long)
+        return false;
+
+    return IwxMfpIgtkContracts::hasExactAbiPrerequisites(
+        sc->sc_fw_api, (uint32_t)sc->sc_capaflags,
+        isset(sc->sc_enabled_capa,
+              IWX_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT));
+}
+
+/* Firmware flags become authoritative only after init ucode succeeds. */
+static void
+iwx_publish_mfp_capability(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    ic->ic_caps &= ~IEEE80211_C_MFP;
+    if (iwx_ax211_api68_igtk_v2_ok(sc))
+        ic->ic_caps |= IEEE80211_C_MFP;
+}
+
+static int
+iwx_set_sta_igtk_v2(struct iwx_softc *sc, struct ieee80211_node *ni,
+                    struct ieee80211_key *k, bool remove_key,
+                    bool wait_for_firmware)
+{
+    struct iwx_mgmt_mcast_key_cmd_v2 cmd;
+    ItlIwx *that;
+
+    if (sc == NULL || k == NULL)
+        return EINVAL;
+    if (!iwx_ax211_api68_igtk_v2_ok(sc))
+        return EOPNOTSUPP;
+    if ((k->k_flags & IEEE80211_KEY_IGTK) == 0 ||
+        k->k_cipher != IEEE80211_CIPHER_BIP ||
+        !IwxMfpIgtkContracts::hasValidIgtkShape(k->k_id, k->k_len))
+        return EINVAL;
+    if (!remove_key &&
+        (ni == NULL || (ni->ni_flags & IEEE80211_NODE_MFP) == 0))
+        return EOPNOTSUPP;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.key_id = htole32(k->k_id);
+    cmd.sta_id = htole32(IWX_STATION_ID);
+    if (remove_key) {
+        /* Teardown can run after node loss; never wait from that path. */
+        cmd.ctrl_flags = htole32(IWX_STA_KEY_NOT_VALID);
+    } else {
+        cmd.ctrl_flags = htole32(IWX_STA_KEY_FLG_CCM);
+        memcpy(cmd.IGTK, k->k_key, k->k_len);
+        cmd.receive_seq_cnt = htole64(k->k_mgmt_rsc);
+    }
+
+    that = container_of(sc, ItlIwx, com);
+    if (wait_for_firmware)
+        return that->iwx_send_cmd_pdu_checked(sc, IWX_MGMT_MCAST_KEY,
+                                              sizeof(cmd), &cmd);
+    return that->iwx_send_cmd_pdu(sc, IWX_MGMT_MCAST_KEY, IWX_CMD_ASYNC,
+                                  sizeof(cmd), &cmd);
+}
 
 const struct iwl_cfg iwlax210_2ax_cfg_ty_gf_a0 = {
     .name = "Intel(R) Wi-Fi 6 AX210 160MHz",
@@ -13760,6 +14165,7 @@ iwx_preinit(struct iwx_softc *sc)
         /* Update MAC in case the upper layers changed it. */
         IEEE80211_ADDR_COPY(sc->sc_ic.ic_myaddr,
                             ((struct arpcom *)ifp)->ac_enaddr);
+        iwx_publish_mfp_capability(sc);
         return 0;
     }
 
@@ -13773,6 +14179,8 @@ iwx_preinit(struct iwx_softc *sc)
     iwx_stop_device(sc);
     if (err)
         return err;
+
+    iwx_publish_mfp_capability(sc);
     
     /* Mark first successful firmware load. */
     attached = 1;
@@ -13853,6 +14261,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memset(sc->sc_cmd_resp_len, 0, sizeof(sc->sc_cmd_resp_len));
     memset(&sc->init_task, 0, sizeof(sc->init_task));
     memset(&sc->newstate_task, 0, sizeof(sc->newstate_task));
+    memset(&sc->security_rx_task, 0, sizeof(sc->security_rx_task));
     memset(&sc->ba_task, 0, sizeof(sc->ba_task));
     memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
     memset(&sc->chan_ctxt_task, 0, sizeof(sc->chan_ctxt_task));
@@ -13874,6 +14283,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_task_gate_closed = true;
     sc->sc_task_gate_bootstrap_init = false;
     sc->sc_task_gate_detaching = false;
+    sc->sc_security_rx_lock = NULL;
+    memset(sc->sc_security_rxq, 0, sizeof(sc->sc_security_rxq));
+    sc->sc_security_rx_head = 0;
+    sc->sc_security_rx_tail = 0;
+    sc->sc_security_rx_count = 0;
+    sc->sc_security_rx_worker = NULL;
     
     //    rw_init(&sc->ioctl_rwl, "iwxioctl");
     
@@ -14107,6 +14522,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         XYLog("%s: could not allocate task admission gate\n", DEVNAME(sc));
         goto fail;
     }
+
+    sc->sc_security_rx_lock = IOSimpleLockAlloc();
+    if (sc->sc_security_rx_lock == NULL) {
+        XYLog("%s: could not allocate deferred security RX lock\n", DEVNAME(sc));
+        goto fail;
+    }
     
     taskq_init();
     sc->sc_taskq_initialized = true;
@@ -14139,8 +14560,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU_SETUP_IN_HW | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
     ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;
-    /* Do not advertise MFP until this port has a serialized command path
-     * and a complete IGTK/PAE completion lifecycle. */
+    /* Init ucode later publishes MFP only for exact AX211/API-68 firmware. */
     ic->ic_caps &= ~IEEE80211_C_MFP;
     
     ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
@@ -14186,6 +14606,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              "iwx_init_task");
     task_set(&sc->newstate_task, iwx_newstate_task_dispatch, sc,
              "iwx_newstate_task");
+    task_set(&sc->security_rx_task, iwx_security_rx_task_dispatch, sc,
+             "iwx_security_rx_task");
     task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");
     task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task_dispatch, sc,
              "iwx_mac_ctxt_task");
@@ -14196,7 +14618,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_node_alloc = iwx_node_alloc;
     ic->ic_bgscan_start = iwx_bgscan;
     ic->ic_set_key = iwx_set_key;
+    ic->ic_set_key_wait = iwx_set_key_wait;
     ic->ic_delete_key = iwx_delete_key;
+    ic->ic_eapol_key_input = iwx_security_rx_eapol_input;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;

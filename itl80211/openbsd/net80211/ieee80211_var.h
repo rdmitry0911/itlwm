@@ -446,9 +446,27 @@ struct ieee80211com {
 	int			(*ic_set_key)(struct ieee80211com *,
 				    struct ieee80211_node *,
 				    struct ieee80211_key *);
+	/*
+	 * Optional PAE-only key install path which may wait for a firmware
+	 * acknowledgement. It is selected only for negotiated MFP sessions.
+	 * Drivers must leave ic_set_key asynchronous for every other caller:
+	 * normal key lifecycle paths can run in an RX action, timer, or
+	 * interrupt-adjacent context where sleeping would deadlock completion.
+	 */
+	int			(*ic_set_key_wait)(struct ieee80211com *,
+				    struct ieee80211_node *,
+				    struct ieee80211_key *);
 	void			(*ic_delete_key)(struct ieee80211com *,
 				    struct ieee80211_node *,
 				    struct ieee80211_key *);
+	/*
+	 * Optional ownership-taking EAPOL-Key ingress hook. A non-NULL callback
+	 * consumes m on every return. It lets a driver defer a negotiated
+	 * protected-management handshake out of its RX action before issuing a
+	 * wait-aware key command; the default remains ieee80211_eapol_key_input.
+	 */
+	void			(*ic_eapol_key_input)(struct ieee80211com *, mbuf_t,
+				    struct ieee80211_node *);
 	int			(*ic_ampdu_tx_start)(struct ieee80211com *,
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_ampdu_tx_stop)(struct ieee80211com *,

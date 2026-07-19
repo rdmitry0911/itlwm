@@ -393,6 +393,8 @@ public:
     int    iwx_send_cmd(struct iwx_softc *, struct iwx_host_cmd *);
     int    iwx_send_cmd_pdu(struct iwx_softc *, uint32_t, uint32_t, uint16_t,
             const void *);
+    int    iwx_send_cmd_pdu_checked(struct iwx_softc *, uint32_t, uint16_t,
+            const void *);
     int    iwx_send_cmd_status(struct iwx_softc *, struct iwx_host_cmd *,
             uint32_t *);
     int    iwx_send_cmd_pdu_status(struct iwx_softc *, uint32_t, uint16_t,
@@ -494,8 +496,20 @@ public:
     static struct ieee80211_node *iwx_node_alloc(struct ieee80211com *);
     static int    iwx_set_key(struct ieee80211com *, struct ieee80211_node *,
            struct ieee80211_key *);
+    static int    iwx_set_key_wait(struct ieee80211com *,
+           struct ieee80211_node *, struct ieee80211_key *);
+    int    iwx_set_key_impl(struct ieee80211com *, struct ieee80211_node *,
+           struct ieee80211_key *, bool);
     static void    iwx_delete_key(struct ieee80211com *,
            struct ieee80211_node *, struct ieee80211_key *);
+    static void    iwx_security_rx_eapol_input(struct ieee80211com *, mbuf_t,
+           struct ieee80211_node *);
+    static void    iwx_security_rx_task(void *);
+    static void    iwx_security_rx_task_dispatch(void *);
+    bool    iwx_security_rx_enqueue(struct iwx_softc *, mbuf_t,
+           struct ieee80211_node *);
+    bool    iwx_security_rx_wait_context(struct iwx_softc *);
+    void    iwx_security_rx_purge(struct iwx_softc *);
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
     static void    iwx_newstate_task_dispatch(void *);

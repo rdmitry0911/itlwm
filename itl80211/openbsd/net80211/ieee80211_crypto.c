@@ -80,7 +80,9 @@ ieee80211_crypto_attach(struct _ifnet *ifp)
         ic->ic_rsngroupmgmtcipher = IEEE80211_CIPHER_BIP;
     }
     ic->ic_set_key = ieee80211_set_key;
+    ic->ic_set_key_wait = NULL;
     ic->ic_delete_key = ieee80211_delete_key;
+    ic->ic_eapol_key_input = NULL;
 #ifndef IEEE80211_STA_ONLY
     timeout_set(&ic->ic_tkip_micfail_timeout,
         ieee80211_michael_mic_failure_timeout, ic);
