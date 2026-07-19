@@ -5533,8 +5533,8 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
     else
         desc_size = IWX_RX_DESC_SIZE_V1;
     
-    if (!(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_CRC_OK)) ||
-        !(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_OVERRUN_OK))) {
+    if (!(desc->status & htole32(IWX_RX_MPDU_RES_STATUS_CRC_OK)) ||
+        !(desc->status & htole32(IWX_RX_MPDU_RES_STATUS_OVERRUN_OK))) {
         mbuf_freem(m);
         return; /* drop */
     }
@@ -5585,7 +5585,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
         } else
             hdrlen = ieee80211_get_hdrlen(wh);
         
-        if ((le16toh(desc->status) &
+        if ((le32toh(desc->status) &
              IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK) ==
             IWX_RX_MPDU_RES_STATUS_SEC_CCM_ENC) {
             /* Padding is inserted after the IV. */
@@ -5636,7 +5636,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
      * the TID supplied in QoS frame headers and this TID is implicitly
      * verified as part of the CCMP nonce.
      */
-    if (iwx_rx_hwdecrypt(sc, m, le16toh(desc->status), &rxi)) {
+    if (iwx_rx_hwdecrypt(sc, m, le32toh(desc->status), &rxi)) {
         mbuf_freem(m);
         return;
     }
@@ -5671,7 +5671,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
                        rate_n_flags, device_timestamp, &rxi, ml))
         return;
     
-    iwx_rx_frame(sc, m, chanidx, le16toh(desc->status),
+    iwx_rx_frame(sc, m, chanidx, le32toh(desc->status),
                  (phy_info & IWX_RX_MPDU_PHY_SHORT_PREAMBLE),
                  rate_n_flags, device_timestamp, &rxi, ml);
 }
