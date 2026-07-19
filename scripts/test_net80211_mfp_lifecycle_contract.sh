@@ -23,6 +23,20 @@ def function_body(text, name):
     return match.group("body")
 
 
+def cpp_method_body(text, marker):
+    start = text.index(marker)
+    opening = text.index("{", start)
+    depth = 0
+    for pos in range(opening, len(text)):
+        if text[pos] == "{":
+            depth += 1
+        elif text[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1:pos]
+    raise AssertionError(marker)
+
+
 pae = pathlib.Path(sys.argv[1]).read_text()
 node = pathlib.Path(sys.argv[2]).read_text()
 input_source = pathlib.Path(sys.argv[3]).read_text()
@@ -87,5 +101,45 @@ for anchor in (
     assert anchor in iwx_source, anchor
 assert "le16toh(desc->status)" not in iwx_source, "RX status must remain __le32"
 
-print("PASS: net80211 MFP IGTK lifecycle and RX-route contract")
+# AX211's API-68 payload is evidence, not an enabled Tahoe feature.  The
+# port's task and splnet compatibility layers cannot serialize the command
+# ring or pair firmware completion with the PAE Msg3 tail, so this driver
+# must not advertise MFP or submit its protected-management command.
+setkey = cpp_method_body(iwx_source, "int ItlIwx::\niwx_set_key(")
+deletekey = cpp_method_body(iwx_source, "void ItlIwx::\niwx_delete_key(")
+mfp_guard = (
+    "if (k->k_cipher == IEEE80211_CIPHER_BIP ||\n"
+    "        (ni != NULL && (ni->ni_flags & IEEE80211_NODE_MFP) != 0))\n"
+    "        return EOPNOTSUPP;"
+)
+mfp_delete_guard = mfp_guard.replace("\n        return EOPNOTSUPP;", " {")
+assert mfp_guard in setkey, "forced MFP/BIP key install fails closed"
+assert mfp_delete_guard in deletekey, (
+    "forced MFP/BIP teardown is software-only"
+)
+assert setkey.index(mfp_guard) < setkey.index(
+    "if (k->k_cipher != IEEE80211_CIPHER_CCMP)"
+), "MFP rejection precedes every normal key submission"
+assert deletekey.index("ieee80211_delete_key(ic, ni, k);") < deletekey.index(
+    "if (k->k_cipher != IEEE80211_CIPHER_CCMP)"
+), "MFP teardown does not reach ADD_STA_KEY"
+
+for forbidden in (
+    "IWX_MGMT_MCAST_KEY",
+    "IWX_STA_KEY_MFP",
+    "iwx_set_sta_igtk_v2",
+    "iwx_ax211_api68_igtk_v2_ok",
+    "IwxMfpIgtkContracts",
+    "ic->ic_caps |= IEEE80211_C_MFP;",
+):
+    assert forbidden not in iwx_source, forbidden
+
+mfp_clear = "ic->ic_caps &= ~IEEE80211_C_MFP;"
+last_normal_cap = "ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;"
+assert iwx_source.count(mfp_clear) == 1, "single explicit MFP quarantine"
+assert iwx_source.index(last_normal_cap) < iwx_source.index(mfp_clear), (
+    "MFP remains clear after the complete iwx capability set"
+)
+
+print("PASS: net80211 MFP RX-route and fail-closed quarantine contract")
 PY
