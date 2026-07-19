@@ -121,12 +121,15 @@ public:
     IOReturn getLOCALE(apple80211_locale_data *);
     IOReturn getDEAUTH(apple80211_deauth_data *);
     IOReturn getRATE_SET(apple80211_rate_set_data *);
+    IOReturn getRATE_SETImpl(apple80211_rate_set_data *);
     IOReturn getRSN_IE(apple80211_rsn_ie_data *);
     IOReturn setRSN_IE(apple80211_rsn_ie_data *);
     IOReturn getAP_IE_LIST(apple80211_ap_ie_data *);
     IOReturn getASSOCIATION_STATUS(apple80211_assoc_status_data *);
     IOReturn getMCS_INDEX_SET(apple80211_mcs_index_set_data *);
+    IOReturn getMCS_INDEX_SETImpl(apple80211_mcs_index_set_data *);
     IOReturn getVHT_MCS_INDEX_SET(apple80211_vht_mcs_index_set_data *);
+    IOReturn getVHT_MCS_INDEX_SETImpl(apple80211_vht_mcs_index_set_data *);
     IOReturn getLINK_CHANGED_EVENT_DATA(apple80211_link_changed_event_data *);
     IOReturn setASSOCIATE(apple80211_assoc_data *);
     IOReturn setDISASSOCIATE(void *);
@@ -155,10 +158,15 @@ public:
     void clearExternalPmkEligibilityLocked(const char *reason_tag);
     IOReturn setSCAN_REQ(apple80211_scan_data *);
     IOReturn setSET_MAC_ADDRESS(apple80211_set_mac_address_data *);
+    IOReturn setSET_MAC_ADDRESSImpl(apple80211_set_mac_address_data *);
     IOReturn getCURRENT_NETWORK(apple80211_scan_result *);
     IOReturn getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *);
     IOReturn processApple80211Ioctl(UInt, apple80211req *);
     void updateDriverBssManagerRateAndMcs();
+    IOReturn getCHANNELS_INFOImpl(apple80211_channels_info *);
+    IOReturn getSUPPORTED_CHANNELSImpl(apple80211_sup_channel_data *);
+    IOReturn setWCL_ASSOCIATEImpl(apple80211AssocCandidates *);
+    IOReturn setCHANNELImpl(apple80211_channel_data *);
 
 public:
     //

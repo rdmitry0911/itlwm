@@ -169,8 +169,8 @@ bool ItlIwx::attach(IOPCIDevice *device)
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
     if (!iwx_attach(&com, &pci)) {
+        /* detach() owns every unwind after iwx_attach() has exposed IRQs. */
         detach(device);
-        releaseAll();
         return false;
     }
 
@@ -182,16 +182,101 @@ detach(IOPCIDevice *device)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwx_softc *sc = &com;
-    
+
+    /*
+     * The order here is a lifetime fence, not just shutdown hygiene:
+     * close task admission and q0, drain already-dequeued callbacks,
+     * stop DMA, then remove the IRQ producer before descriptor/DMA
+     * storage and the q0 lock are released.
+     */
+    /* close() also publishes permanent SHUTDOWN under the admission lock. */
+    int detach_generation;
+    (void)iwx_task_gate_close(sc, true, &detach_generation);
+    iwx_cmdq_detach_begin(sc);
+
+    /* Mask new producers while barriers drain callbacks already dequeued. */
+    if (sc->sc_hw_active)
+        iwx_disable_interrupts(sc);
+
+    if (sc->sc_taskq_initialized && sc->sc_task_callbacks_ready) {
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+        iwx_del_task(sc, systq, &sc->init_task);
+        iwx_del_task(sc, systq, &sc->ba_task);
+        iwx_del_task(sc, systq, &sc->mac_ctxt_task);
+        iwx_del_task(sc, systq, &sc->chan_ctxt_task);
+
+        /* task_del() cannot see a callback copied by taskq_next_work(). */
+        if (sc->sc_nswq != NULL)
+            taskq_barrier(sc->sc_nswq);
+        taskq_barrier(systq);
+    }
+    iwx_task_gate_drain(sc, 0, 0, 0);
+
+    /*
+     * A successful iwx_start_hw() may have armed DMA.  Halt it while the
+     * event source is still installed, then mask the RF-kill interrupt
+     * which iwx_stop_device() normally re-enables for a non-detach stop.
+     * The active flag keeps early attach unwind completely MMIO-free.
+     */
+    if (sc->sc_hw_active) {
+        iwx_stop_device(sc);
+        iwx_disable_interrupts(sc);
+    }
+    iwx_interrupt_teardown(sc);
+
+    /*
+     * Net80211 owns the remaining producers of the driver task hooks.
+     * Keep the closed gate and both queues alive through ifdetach(), so a
+     * synchronous detach callback can safely reach iwx_add_task() and be
+     * rejected rather than lock freed storage.
+     */
+    if (sc->sc_if_attached) {
+        ieee80211_ifdetach(ifp);
+        sc->sc_if_attached = false;
+    }
+
+    if (sc->sc_taskq_initialized) {
+        sc->sc_task_callbacks_ready = false;
+        if (sc->sc_nswq != NULL) {
+            taskq_destroy(sc->sc_nswq);
+            sc->sc_nswq = NULL;
+        }
+        taskq_destroy(systq);
+        sc->sc_taskq_initialized = false;
+    }
+    iwx_task_gate_destroy(sc);
+
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
         iwx_free_tx_ring(sc, &sc->txq[txq_i]);
     iwx_free_rx_ring(sc, &sc->rxq);
     iwx_dma_contig_free(&sc->ict_dma);
     iwx_dma_contig_free(&com.ctxt_info_dma);
-    ieee80211_ifdetach(ifp);
-    taskq_destroy(systq);
-    taskq_destroy(com.sc_nswq);
+    /*
+     * Keep the stopped/detaching q0 lock alive through the detached HAL
+     * object's lifetime. A late controller call may still reach
+     * iwx_send_cmd() after the ring/DMA storage is gone; it must lock a
+     * valid q0 mutex, observe stopping, and return ENXIO rather than race
+     * the load-to-lock window against IOSimpleLockFree(). The final free()
+     * runs only after the controller's lifecycle fence and every producer
+     * source have released this HAL object.
+     */
     releaseAll();
+}
+
+void ItlIwx::
+iwx_interrupt_teardown(struct iwx_softc *sc)
+{
+    IOInterruptEventSource *ih = sc->sc_ih;
+
+    if (ih == NULL)
+        return;
+
+    ih->disable();
+    if (pci.workloop != NULL)
+        pci.workloop->removeEventSource(ih);
+    ih->release();
+    sc->sc_ih = NULL;
 }
 
 void ItlIwx::
@@ -219,6 +304,11 @@ releaseAll()
 
 void ItlIwx::free()
 {
+    // detach() leaves a stopped q0 lock deliberately reachable so a late
+    // external command sees ENXIO safely. By OSObject final release every
+    // controller/IRQ/task producer has been fenced; this is the sole point
+    // at which freeing that lock cannot race a pointer load in iwx_cmdq_enter.
+    iwx_cmdq_destroy(&com);
     super::free();
 }
 
@@ -2536,6 +2626,8 @@ void ItlIwx::
 iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
     int i;
+
+    /* q0 reaches reset only after iwx_cmdq_stop() drained all senders. */
     
     for (i = 0; i < ring->ring_count; i++) {
         struct iwx_tx_data *data = &ring->data[i];
@@ -2570,6 +2662,8 @@ void ItlIwx::
 iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 {
     int i;
+
+    /* Detach/failure unwind removes IRQs and drains tasks before q0 free. */
     
     iwx_dma_contig_free(&ring->desc_dma);
     iwx_dma_contig_free(&ring->cmd_dma);
@@ -3022,6 +3116,9 @@ iwx_start_hw(struct iwx_softc *sc)
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
 
+    /* From here firmware can be started and the DMA rings can be armed. */
+    sc->sc_hw_active = true;
+
     return 0;
 }
 
@@ -3030,7 +3127,9 @@ void ItlIwx::
 iwx_stop_device(struct iwx_softc *sc)
 {
     int qid;
-    
+
+    /* This must precede interrupt disable and q0 DMA/ring reset. */
+    iwx_cmdq_stop(sc);
     iwx_disable_interrupts(sc);
     sc->sc_flags &= ~IWX_FLAG_USE_ICT;
     
@@ -3081,6 +3180,7 @@ iwx_stop_device(struct iwx_softc *sc)
     iwx_dma_contig_free(&sc->prph_scratch_dma);
     iwx_dma_contig_free(&sc->iml_dma);
     iwx_dma_contig_free(&sc->pnvm_dram);
+    sc->sc_hw_active = false;
 }
 
 void ItlIwx::
@@ -3173,11 +3273,16 @@ iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
         .flags = IWX_CMD_WANT_RESP,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
-    struct iwx_tx_ring *ring = &sc->txq[qid];
+    struct iwx_tx_ring *ring;
     int err, fwqid;
     uint32_t wr_idx;
     size_t resp_len;
     
+    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
+        qid >= (int)nitems(sc->txq))
+        return EINVAL;
+    ring = &sc->txq[qid];
+
     iwx_reset_tx_ring(sc, ring);
     
     memset(&cmd, 0, sizeof(cmd));
@@ -3354,7 +3459,7 @@ iwx_tvqm_enable_txq(struct iwx_softc *sc, int tid, int ssn, uint32_t size)
     resp = (struct iwx_tx_queue_cfg_rsp *)pkt->data;
     fwqid = le16toh(resp->queue_number);
     wr_idx = le16toh(resp->write_pointer);
-    if (fwqid >= ARRAY_SIZE(sc->txq)) {
+    if (fwqid == IWX_DQA_CMD_QUEUE || fwqid >= ARRAY_SIZE(sc->txq)) {
         XYLog("queue index %d unsupported", fwqid);
         err = -EIO;
         goto fail;
@@ -5786,7 +5891,11 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
         tid = ba_tfd->tid;
 
         qid = le16toh(ba_tfd->q_num);
+        if (qid == IWX_DQA_CMD_QUEUE || qid >= nitems(sc->txq))
+            continue;
         ring = &sc->txq[qid];
+        if (ring->ring_count == 0)
+            continue;
 
         sc->sc_tx_timer = 0;
 
@@ -5842,13 +5951,20 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     int tid;
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
     int qid = tx_resp->tx_queue;
-    struct iwx_tx_ring *ring = &sc->txq[qid];
+    struct iwx_tx_ring *ring;
     struct iwx_tx_data *txd;
 
     bus_dmamap_sync(sc->sc_dmat, data->map, 0, IWX_RBUF_SIZE,
                     BUS_DMASYNC_POSTREAD);
     
     sc->sc_tx_timer = 0;
+
+    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
+        qid >= (int)nitems(sc->txq))
+        return;
+    ring = &sc->txq[qid];
+    if (ring->ring_count == 0)
+        return;
 
     if (tx_resp->frame_count <= 1) {
         tid = tx_resp->ra_tid & 0x0f;
@@ -5867,6 +5983,7 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
              struct iwx_rx_data *data)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     struct iwx_missed_beacons_notif *mbn = (struct iwx_missed_beacons_notif *)pkt->data;
     uint32_t missed;
     
@@ -5887,9 +6004,17 @@ iwx_rx_bmiss(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
             XYLog("%s driver queue status:\n", __FUNCTION__);
             for (int i = 0; i < IWX_MAX_QUEUES; i++) {
                 struct iwx_tx_ring *ring = &sc->txq[i];
+                int cur, queued;
+
+                if (i == IWX_DQA_CMD_QUEUE)
+                    that->iwx_cmdq_snapshot(sc, &cur, &queued);
+                else {
+                    cur = ring->cur;
+                    queued = ring->queued;
+                }
                 XYLog("  tx ring %2d: qid=%-2d cur=%-3d "
                       "queued=%-3d\n",
-                      i, ring->qid, ring->cur, ring->queued);
+                      i, ring->qid, cur, queued);
             }
             XYLog("  rx ring: cur=%d\n", sc->rxq.cur);
             XYLog("  802.11 state %s\n",
@@ -6138,27 +6263,349 @@ iwx_phy_ctxt_cmd(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     return iwx_send_cmd_pdu(sc, IWX_PHY_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
 }
 
+/* Caller holds sc_cmdq_lock while inspecting the mutable q0 ring. */
+static bool
+iwx_cmdq_ring_valid(const struct iwx_softc *sc,
+                    const struct iwx_tx_ring *ring)
+{
+    const unsigned int count = ring->ring_count;
+
+    return ring->desc != NULL && count != 0 &&
+        count <= nitems(sc->sc_cmdq_slots) &&
+        (count & (count - 1)) == 0;
+}
+
+int ItlIwx::
+iwx_cmdq_init(struct iwx_softc *sc)
+{
+    sc->sc_cmdq_lock = IOSimpleLockAlloc();
+    if (sc->sc_cmdq_lock == NULL)
+        return ENOMEM;
+
+    sc->sc_cmdq_next_serial = 0;
+    sc->sc_cmdq_epoch = 1;
+    sc->sc_cmdq_senders = 0;
+    sc->sc_cmdq_stopping = true;
+    sc->sc_cmdq_detaching = false;
+    memset(sc->sc_cmdq_slots, 0, sizeof(sc->sc_cmdq_slots));
+    return 0;
+}
+
+/* Caller holds sc_cmdq_lock. */
+static bool
+iwx_cmdq_start_locked(struct iwx_softc *sc)
+{
+    struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+
+    if (sc->sc_cmdq_detaching || !sc->sc_cmdq_stopping ||
+        sc->sc_cmdq_senders != 0 || !iwx_cmdq_ring_valid(sc, ring))
+        return false;
+
+    sc->sc_cmdq_epoch++;
+    if (sc->sc_cmdq_epoch == 0)
+        sc->sc_cmdq_epoch++;
+    memset(sc->sc_cmdq_slots, 0, sizeof(sc->sc_cmdq_slots));
+    sc->sc_cmdq_stopping = false;
+    return true;
+}
+
+bool ItlIwx::
+iwx_cmdq_start(struct iwx_softc *sc, int generation)
+{
+    bool started;
+
+    if (sc->sc_task_gate_lock == NULL || sc->sc_cmdq_lock == NULL)
+        return false;
+
+    /*
+     * The fixed order is task gate -> q0.  stop closes the task gate before
+     * q0, so this admission and the q0 transition are one race: either q0
+     * goes live before stop owns SHUTDOWN, or no init epoch can reopen it.
+     * No q0 path acquires the task-gate lock.
+     */
+    IOLockLock(sc->sc_task_gate_lock);
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        sc->sc_task_gate_detaching || !sc->sc_task_gate_closed ||
+        sc->sc_task_gate_init_refs != 1 ||
+        sc->sc_task_gate_stop_refs != 0 ||
+        sc->sc_generation != generation) {
+        IOLockUnlock(sc->sc_task_gate_lock);
+        return false;
+    }
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    started = iwx_cmdq_start_locked(sc);
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return started;
+}
+
+bool ItlIwx::
+iwx_cmdq_start_bootstrap(struct iwx_softc *sc)
+{
+    bool started;
+
+    if (sc->sc_cmdq_lock == NULL)
+        return false;
+
+    /* Attach/preinit has no active task-gate init epoch. */
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    started = iwx_cmdq_start_locked(sc);
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    return started;
+}
+
+bool ItlIwx::
+iwx_cmdq_enter(struct iwx_softc *sc)
+{
+    bool entered = false;
+
+    if (sc->sc_cmdq_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching) {
+        sc->sc_cmdq_senders++;
+        entered = true;
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    return entered;
+}
+
+void ItlIwx::
+iwx_cmdq_leave(struct iwx_softc *sc)
+{
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    KASSERT(sc->sc_cmdq_senders > 0, "sc->sc_cmdq_senders > 0");
+    sc->sc_cmdq_senders--;
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+}
+
+void ItlIwx::
+iwx_cmdq_detach_begin(struct iwx_softc *sc)
+{
+    if (sc->sc_cmdq_lock != NULL) {
+        IOSimpleLockLock(sc->sc_cmdq_lock);
+        sc->sc_cmdq_detaching = true;
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    }
+    iwx_cmdq_stop(sc);
+}
+
+void ItlIwx::
+iwx_cmdq_stop(struct iwx_softc *sc)
+{
+    struct iwx_tfh_tfd *wake_desc = NULL;
+    int wake_count = 0;
+    int i;
+
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+
+    /*
+     * The wait mutex precedes q0 everywhere.  A synchronous sender tests
+     * the slot under q0 while holding it, then enters msleep atomically;
+     * completion/stop hold it through the terminal-state transition and
+     * wakeup.  Never acquire this mutex while holding q0.
+     */
+    lockTsleep();
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    /*
+     * The stopped lock deliberately outlives rings/DMA until free(). A
+     * repeated stop after those resources are gone must not inspect ring
+     * fields or manufacture wake addresses from reclaimed storage; the first
+     * stopper already published terminal slot state and owns cleanup.
+     */
+    if (sc->sc_cmdq_stopping) {
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        unlockTsleep();
+        return;
+    }
+    {
+        struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+
+        if (iwx_cmdq_ring_valid(sc, ring)) {
+            wake_desc = ring->desc;
+            wake_count = (int)ring->ring_count;
+        }
+        sc->sc_cmdq_stopping = true;
+        sc->sc_cmdq_epoch++;
+        if (sc->sc_cmdq_epoch == 0)
+            sc->sc_cmdq_epoch++;
+        for (i = 0; i < (int)nitems(sc->sc_cmdq_slots); i++) {
+            if (sc->sc_cmdq_slots[i].state != IWX_CMD_SLOT_FREE) {
+                sc->sc_cmdq_slots[i].state = IWX_CMD_SLOT_ABORTED;
+            }
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    /* Waking an unused descriptor is harmless and keeps stop stack-small. */
+    for (i = 0; i < wake_count; i++)
+        wakeupOn(&wake_desc[i]);
+    unlockTsleep();
+
+    /*
+     * Stop is only called from detach, init/preinit, or task/process paths,
+     * never from the RX interrupt action.  It sleeps with no q0 or wait
+     * mutex held until every sender has dropped its descriptor lifetime ref.
+     */
+    for (;;) {
+        uint32_t senders;
+
+        IOSimpleLockLock(sc->sc_cmdq_lock);
+        senders = sc->sc_cmdq_senders;
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        if (senders == 0)
+            break;
+        IOSleep(1);
+    }
+
+    /* Detach each response under q0, then free it after leaving q0. */
+    for (i = 0; i < (int)nitems(sc->sc_cmdq_slots); i++) {
+        uint8_t *resp;
+
+        IOSimpleLockLock(sc->sc_cmdq_lock);
+        resp = sc->sc_cmd_resp_pkt[i];
+        sc->sc_cmd_resp_pkt[i] = NULL;
+        sc->sc_cmd_resp_len[i] = 0;
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        if (resp != NULL)
+            ::free(resp);
+    }
+}
+
+void ItlIwx::
+iwx_cmdq_destroy(struct iwx_softc *sc)
+{
+    if (sc->sc_cmdq_lock != NULL) {
+        IOSimpleLockLock(sc->sc_cmdq_lock);
+        KASSERT(sc->sc_cmdq_detaching, "sc->sc_cmdq_detaching");
+        KASSERT(sc->sc_cmdq_stopping, "sc->sc_cmdq_stopping");
+        KASSERT(sc->sc_cmdq_senders == 0, "sc->sc_cmdq_senders == 0");
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        IOSimpleLockFree(sc->sc_cmdq_lock);
+        sc->sc_cmdq_lock = NULL;
+    }
+}
+
+void ItlIwx::
+iwx_cmdq_snapshot(struct iwx_softc *sc, int *cur, int *queued)
+{
+    struct iwx_tx_ring *ring;
+
+    *cur = 0;
+    *queued = 0;
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwx_cmdq_ring_valid(sc, ring)) {
+        *cur = ring->cur;
+        *queued = ring->queued;
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+}
+
+bool ItlIwx::
+iwx_cmdq_is_narrow(struct iwx_softc *sc, int qid, int idx)
+{
+    struct iwx_tx_ring *ring;
+    bool narrow = false;
+
+    if (qid != IWX_DQA_CMD_QUEUE || sc->sc_cmdq_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwx_cmdq_ring_valid(sc, ring) &&
+        idx >= 0 && idx < (int)ring->ring_count &&
+        sc->sc_cmdq_slots[idx].state != IWX_CMD_SLOT_FREE &&
+        sc->sc_cmdq_slots[idx].state != IWX_CMD_SLOT_ABORTED) {
+        narrow = !!(ring->data[idx].flags & IWX_TXDATA_FLAG_CMD_IS_NARROW);
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    return narrow;
+}
+
+void ItlIwx::
+iwx_cmdq_store_response(struct iwx_softc *sc, int qid, int idx,
+                        struct iwx_rx_packet *pkt, size_t pkt_len,
+                        bool legacy_drop_response)
+{
+    struct iwx_tx_ring *ring;
+    uint8_t *resp_to_free = NULL;
+
+    if (qid != IWX_DQA_CMD_QUEUE || sc->sc_cmdq_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwx_cmdq_ring_valid(sc, ring) &&
+        idx >= 0 && idx < (int)ring->ring_count &&
+        (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_SUBMITTED ||
+         sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_TIMED_OUT) &&
+        sc->sc_cmd_resp_pkt[idx] != NULL) {
+        if (legacy_drop_response || pkt_len < sizeof(*pkt) ||
+            pkt_len > sc->sc_cmd_resp_len[idx] ||
+            sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_TIMED_OUT) {
+            resp_to_free = sc->sc_cmd_resp_pkt[idx];
+            sc->sc_cmd_resp_pkt[idx] = NULL;
+            sc->sc_cmd_resp_len[idx] = 0;
+        } else {
+            memcpy(sc->sc_cmd_resp_pkt[idx], pkt, pkt_len);
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+
+    if (resp_to_free != NULL)
+        ::free(resp_to_free);
+}
+
 int ItlIwx::
 iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
 {
-    struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
-    struct iwx_tfh_tfd *desc;
+    struct iwx_tx_ring *ring;
+    struct iwx_tfh_tfd *desc = NULL;
     struct iwx_tx_data *txdata;
-    struct iwx_device_cmd *cmd;
-    mbuf_t m;
+    struct iwx_device_cmd *cmd = NULL;
+    struct iwx_device_cmd *large_cmd = NULL;
+    mbuf_t m = NULL;
     bus_addr_t paddr;
     uint64_t addr;
-    int err = 0, i, paylen, off, s;
-    int idx, code, async, group_id;
+    int err = 0, i, paylen, off;
+    int idx = -1, async, group_id;
+    uint32_t code;
+    uint32_t slot_epoch = 0;
+    uint64_t slot_serial = 0;
+    uint8_t *resp_buf = NULL;
+    uint8_t *resp_to_free = NULL;
     size_t hdrlen, datasz;
     uint8_t *data;
-    int generation = sc->sc_generation;
+    int generation;
     unsigned int max_chunks = 1;
-    IOPhysicalSegment seg;
+    IOPhysicalSegment seg = {};
+    IOMbufNaturalMemoryCursor *cursor = NULL;
+    int txq_size;
+
+    /* The ref covers every later use of q0 storage, including tsleep(). */
+    if (!iwx_cmdq_enter(sc))
+        return ENXIO;
+
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    generation = sc->sc_generation;
+    txq_size = getTxQueueSize();
     
     code = hcmd->id;
     async = hcmd->flags & IWX_CMD_ASYNC;
-    idx = (ring->cur & (ring->ring_count - 1));
+    hdrlen = sizeof(((struct iwx_device_cmd *)0)->hdr_wide);
+    datasz = sizeof(((struct iwx_device_cmd *)0)->data_wide);
     
     for (i = 0, paylen = 0; i < nitems(hcmd->len); i++) {
         paylen += hcmd->len[i];
@@ -6167,47 +6614,20 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     /* If this command waits for a response, allocate response buffer. */
     hcmd->resp_pkt = NULL;
     if (hcmd->flags & IWX_CMD_WANT_RESP) {
-        uint8_t *resp_buf;
         //        KASSERT(!async);
         //        KASSERT(hcmd->resp_pkt_len >= sizeof(struct iwx_rx_packet));
         //        KASSERT(hcmd->resp_pkt_len <= IWX_CMD_RESP_MAX);
-        if (sc->sc_cmd_resp_pkt[idx] != NULL)
-            return ENOSPC;
         resp_buf = (uint8_t *)malloc(hcmd->resp_pkt_len, 0,
                                      M_NOWAIT | M_ZERO);
-        if (resp_buf == NULL)
-            return ENOMEM;
+        if (resp_buf == NULL) {
+            err = ENOMEM;
+            goto out;
+        }
         bzero(resp_buf, hcmd->resp_pkt_len);
-        sc->sc_cmd_resp_pkt[idx] = resp_buf;
-        sc->sc_cmd_resp_len[idx] = hcmd->resp_pkt_len;
-    } else {
-        sc->sc_cmd_resp_pkt[idx] = NULL;
     }
-    
-    s = splnet();
-    
-    desc = &ring->desc[idx];
-    txdata = &ring->data[idx];
-    
-    /*
-     * XXX Intel inside (tm)
-     * Firmware API versions >= 50 reject old-style commands in
-     * group 0 with a "BAD_COMMAND" firmware error. We must pretend
-     * that such commands were in the LONG_GROUP instead in order
-     * for firmware to accept them.
-     */
-    if (iwx_cmd_groupid(code) == 0) {
-        code = IWX_WIDE_ID(IWX_LONG_GROUP, code);
-        txdata->flags |= IWX_TXDATA_FLAG_CMD_IS_NARROW;
-    } else
-        txdata->flags &= ~IWX_TXDATA_FLAG_CMD_IS_NARROW;
-    
-    group_id = iwx_cmd_groupid(code);
-    hdrlen = sizeof(cmd->hdr_wide);
-    datasz = sizeof(cmd->data_wide);
-    
+
     if (paylen > datasz) {
-                /* Command is too large to fit in pre-allocated space. */
+        /* Command is too large to fit in pre-allocated space. */
         size_t totlen = hdrlen + paylen;
         if (paylen > IWX_MAX_CMD_PAYLOAD_SIZE) {
             XYLog("%s: firmware command too long (%zd bytes)\n",
@@ -6224,22 +6644,92 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
         }
         mbuf_setlen(m, totlen);
         mbuf_pkthdr_setlen(m, totlen);
-        cmd = mtod(m, struct iwx_device_cmd *);
-        txdata->map->dm_nsegs = txdata->map->cursor->getPhysicalSegmentsWithCoalesce(m, &seg, 1);
-        if (txdata->map->dm_nsegs == 0) {
-            XYLog("%s: could not load fw cmd mbuf (%zd bytes)\n",
-                  DEVNAME(sc), totlen);
-            mbuf_freem(m);
+        large_cmd = mtod(m, struct iwx_device_cmd *);
+        data = large_cmd->data_wide;
+        for (i = 0, off = 0; i < nitems(hcmd->data); i++) {
+            if (hcmd->len[i] == 0)
+                continue;
+            memcpy(data + off, hcmd->data[i], hcmd->len[i]);
+            off += hcmd->len[i];
+        }
+        KASSERT(off == paylen, "off == paylen");
+
+        /*
+         * A temporary cursor maps the retained mbuf before q0 ownership is
+         * taken.  The permanent per-slot map remains allocated unchanged;
+         * it is not needed to retain this single physical segment.
+         */
+        cursor = IOMbufNaturalMemoryCursor::withSpecification(
+            hdrlen + IWX_MAX_CMD_PAYLOAD_SIZE, IWX_TFH_NUM_TBS - 2);
+        if (cursor == NULL) {
+            err = ENOMEM;
             goto out;
         }
-//                XYLog("map fw cmd dm_nsegs=%d\n", txdata->map->dm_nsegs);
-        txdata->m = m; /* mbuf will be freed in iwm_cmd_done() */
+        if (cursor->getPhysicalSegmentsWithCoalesce(m, &seg, 1) == 0) {
+            XYLog("%s: could not load fw cmd mbuf (%zd bytes)\n",
+                  DEVNAME(sc), totlen);
+            err = ENOMEM;
+            goto out;
+        }
+        cursor->release();
+        cursor = NULL;
+    }
+
+    /*
+     * No allocation, mapping, sleep, wakeup, free, or net80211 callback is
+     * permitted while this lock is held.  Reservation and doorbell remain
+     * atomic so a later producer can never publish around this descriptor.
+     */
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+        !iwx_cmdq_ring_valid(sc, ring) || ring->cmd == NULL ||
+        ring->qid != IWX_DQA_CMD_QUEUE || txq_size == 0) {
+        err = ENXIO;
+        goto unlock;
+    }
+
+    /* AX210 uses a 16-bit hardware tail; descriptor slots are ring_count. */
+    idx = ring->cur & (ring->ring_count - 1);
+    if (ring->queued >= (int)ring->ring_count ||
+        sc->sc_cmdq_slots[idx].state != IWX_CMD_SLOT_FREE ||
+        sc->sc_cmd_resp_pkt[idx] != NULL || ring->data[idx].m != NULL) {
+        err = ENOSPC;
+        goto unlock;
+    }
+
+    desc = &ring->desc[idx];
+    txdata = &ring->data[idx];
+
+    /*
+     * XXX Intel inside (tm)
+     * Firmware API versions >= 50 reject old-style commands in group 0.
+     */
+    if (iwx_cmd_groupid(code) == 0) {
+        code = IWX_WIDE_ID(IWX_LONG_GROUP, code);
+        txdata->flags |= IWX_TXDATA_FLAG_CMD_IS_NARROW;
+    } else {
+        txdata->flags &= ~IWX_TXDATA_FLAG_CMD_IS_NARROW;
+    }
+
+    group_id = iwx_cmd_groupid(code);
+    if (large_cmd != NULL) {
+        cmd = large_cmd;
         paddr = seg.location;
+        txdata->m = m; /* mbuf is freed after completion or reset. */
+        m = NULL;
     } else {
         cmd = &ring->cmd[idx];
         paddr = txdata->cmd_paddr;
+        data = cmd->data_wide;
+        for (i = 0, off = 0; i < nitems(hcmd->data); i++) {
+            if (hcmd->len[i] == 0)
+                continue;
+            memcpy(data + off, hcmd->data[i], hcmd->len[i]);
+            off += hcmd->len[i];
+        }
+        KASSERT(off == paylen, "off == paylen");
     }
-    
+
     cmd->hdr_wide.cmd = iwx_cmd_opcode(code);
     cmd->hdr_wide.group_id = group_id;
     cmd->hdr_wide.qid = ring->qid;
@@ -6247,16 +6737,7 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     cmd->hdr_wide.length = htole16(paylen);
     cmd->hdr_wide.reserved = htole16(0);
     cmd->hdr_wide.version = iwx_cmd_version(code);
-    data = cmd->data_wide;
-    
-    for (i = 0, off = 0; i < nitems(hcmd->data); i++) {
-        if (hcmd->len[i] == 0)
-            continue;
-        memcpy(data + off, hcmd->data[i], hcmd->len[i]);
-        off += hcmd->len[i];
-    }
-    KASSERT(off == paylen, "off == paylen");
-    
+
     desc->tbs[0].tb_len = htole16(MIN(hdrlen + paylen, IWX_FIRST_TB_SIZE));
     addr = htole64(paddr);
     memcpy(&desc->tbs[0].addr, &addr, sizeof(addr));
@@ -6266,46 +6747,100 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
         addr = htole64(paddr + IWX_FIRST_TB_SIZE);
         memcpy(&desc->tbs[1].addr, &addr, sizeof(addr));
         desc->num_tbs = htole16(2);
-    } else
+    } else {
         desc->num_tbs = htole16(1);
-    
-    
-    //    if (paylen > datasz) {
-    //        bus_dmamap_sync(sc->sc_dmat, txdata->map, 0,
-    //            hdrlen + paylen, BUS_DMASYNC_PREWRITE);
-    //    } else {
-    //        bus_dmamap_sync(sc->sc_dmat, ring->cmd_dma.map,
-    //            (char *)(void *)cmd - (char *)(void *)ring->cmd_dma.vaddr,
-    //            hdrlen + paylen, BUS_DMASYNC_PREWRITE);
-    //    }
-    //    bus_dmamap_sync(sc->sc_dmat, ring->desc_dma.map,
-    //        (char *)(void *)desc - (char *)(void *)ring->desc_dma.vaddr,
-    //        sizeof (*desc), BUS_DMASYNC_PREWRITE);
-    /* Kick command ring. */
-    ring->queued++;
-    ring->cur = (ring->cur + 1) % getTxQueueSize();
-    IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
-    
-    if (!async) {
-        err = tsleep_nsec(desc, PCATCH, "iwxcmd", SEC_TO_NSEC(1));
-        if (err == 0) {
-            /* if hardware is no longer up, return error */
-            if (generation != sc->sc_generation) {
-                err = ENXIO;
-                goto out;
-            }
-            
-            /* Response buffer will be freed in iwx_free_resp(). */
-            hcmd->resp_pkt = (struct iwx_rx_packet *)sc->sc_cmd_resp_pkt[idx];
-            sc->sc_cmd_resp_pkt[idx] = NULL;
-        } else if (generation == sc->sc_generation) {
-            ::free(sc->sc_cmd_resp_pkt[idx]);
-            sc->sc_cmd_resp_pkt[idx] = NULL;
-        }
     }
+
+    sc->sc_cmdq_next_serial++;
+    if (sc->sc_cmdq_next_serial == 0)
+        sc->sc_cmdq_next_serial++;
+    slot_serial = sc->sc_cmdq_next_serial;
+    slot_epoch = sc->sc_cmdq_epoch;
+    sc->sc_cmdq_slots[idx].serial = slot_serial;
+    sc->sc_cmdq_slots[idx].epoch = slot_epoch;
+    sc->sc_cmdq_slots[idx].code = hcmd->id;
+    sc->sc_cmdq_slots[idx].async = !!async;
+    sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_SUBMITTED;
+    if (resp_buf != NULL) {
+        sc->sc_cmd_resp_pkt[idx] = resp_buf;
+        sc->sc_cmd_resp_len[idx] = hcmd->resp_pkt_len;
+        resp_buf = NULL;
+    } else {
+        sc->sc_cmd_resp_len[idx] = 0;
+    }
+
+    /* Publish only after the slot, command header, and descriptor are ready. */
+    ring->queued++;
+    ring->cur = (ring->cur + 1) % txq_size;
+    IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+
+unlock:
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    if (err)
+        goto out;
+
+    if (!async) {
+        /*
+         * Hold the sleep mutex before q0.  Completion/stop use the same
+         * order, so state testing and entering msleep cannot lose a wakeup.
+         */
+        lockTsleep();
+        IOSimpleLockLock(sc->sc_cmdq_lock);
+        if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+            generation == sc->sc_generation &&
+            iwx_cmdq_ring_valid(sc, ring) && idx >= 0 &&
+            idx < (int)ring->ring_count &&
+            sc->sc_cmdq_slots[idx].serial == slot_serial &&
+            sc->sc_cmdq_slots[idx].epoch == slot_epoch &&
+            sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_SUBMITTED) {
+            IOSimpleLockUnlock(sc->sc_cmdq_lock);
+            err = tsleep_nsec_locked(desc, PCATCH, "iwxcmd",
+                                     SEC_TO_NSEC(1));
+            IOSimpleLockLock(sc->sc_cmdq_lock);
+        }
+
+        if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+            generation != sc->sc_generation || !iwx_cmdq_ring_valid(sc, ring) ||
+            idx < 0 || idx >= (int)ring->ring_count ||
+            sc->sc_cmdq_slots[idx].serial != slot_serial ||
+            sc->sc_cmdq_slots[idx].epoch != slot_epoch) {
+            err = ENXIO;
+        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_COMPLETED) {
+            if (err == 0) {
+                hcmd->resp_pkt =
+                    (struct iwx_rx_packet *)sc->sc_cmd_resp_pkt[idx];
+                sc->sc_cmd_resp_pkt[idx] = NULL;
+                sc->sc_cmd_resp_len[idx] = 0;
+            } else {
+                resp_to_free = sc->sc_cmd_resp_pkt[idx];
+                sc->sc_cmd_resp_pkt[idx] = NULL;
+                sc->sc_cmd_resp_len[idx] = 0;
+            }
+            sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_FREE;
+        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_SUBMITTED) {
+            /* A timeout or spurious wake never permits immediate reuse. */
+            sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_TIMED_OUT;
+            if (err == 0)
+                err = EIO;
+        } else if (sc->sc_cmdq_slots[idx].state == IWX_CMD_SLOT_ABORTED) {
+            err = ENXIO;
+        } else {
+            err = EIO;
+        }
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        unlockTsleep();
+    }
+
 out:
-    splx(s);
-    
+    if (cursor != NULL)
+        cursor->release();
+    if (m != NULL)
+        mbuf_freem(m);
+    if (resp_buf != NULL)
+        ::free(resp_buf);
+    if (resp_to_free != NULL)
+        ::free(resp_to_free);
+    iwx_cmdq_leave(sc);
     return err;
 }
 
@@ -6379,29 +6914,89 @@ iwx_free_resp(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
 void ItlIwx::
 iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code)
 {
-    struct iwx_tx_ring *ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    struct iwx_tx_ring *ring;
     struct iwx_tx_data *data;
+    struct iwx_cmd_slot *slot;
+    mbuf_t m = NULL;
+    uint8_t *resp_to_free = NULL;
+    void *wchan = NULL;
+    bool unexpected = false;
+    bool code_mismatch = false;
+    uint32_t expected_code = 0;
     
     if (qid != IWX_DQA_CMD_QUEUE) {
         return;    /* Not a command ack. */
     }
-    
-    data = &ring->data[idx];
-    
-    if (data->m != NULL) {
-        //        bus_dmamap_sync(sc->sc_dmat, data->map, 0,
-        //            data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
-        //        bus_dmamap_unload(sc->sc_dmat, data->map);
-        mbuf_freem(data->m);
-        data->m = NULL;
+
+    if (sc->sc_cmdq_lock == NULL)
+        return;
+
+    /* Keep the same sleep-mutex -> q0 order as the synchronous sender. */
+    lockTsleep();
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    if (sc->sc_cmdq_stopping || sc->sc_cmdq_detaching ||
+        !iwx_cmdq_ring_valid(sc, ring) ||
+        idx < 0 || idx >= (int)ring->ring_count) {
+        IOSimpleLockUnlock(sc->sc_cmdq_lock);
+        unlockTsleep();
+        return;
     }
-    wakeupOn(&ring->desc[idx]);
-    
-    if (ring->queued == 0) {
+
+    data = &ring->data[idx];
+    slot = &sc->sc_cmdq_slots[idx];
+    if (slot->state != IWX_CMD_SLOT_SUBMITTED &&
+        slot->state != IWX_CMD_SLOT_TIMED_OUT) {
+        unexpected = true;
+    } else {
+        m = data->m;
+        data->m = NULL;
+        if (ring->queued == 0) {
+            unexpected = true;
+        } else {
+            ring->queued--;
+        }
+
+        /*
+         * qid/index is reset-fenced by cmdq_stop()+IRQ removal.  Check the
+         * visible opcode before releasing the slot so a firmware anomaly is
+         * diagnosable without inventing an unobservable host token.
+         */
+        expected_code = slot->code;
+        if (expected_code != (uint32_t)code)
+            code_mismatch = true;
+
+        if (slot->state == IWX_CMD_SLOT_TIMED_OUT || slot->async) {
+            /* Async WANT_RESP has no caller-visible completion API. */
+            resp_to_free = sc->sc_cmd_resp_pkt[idx];
+            sc->sc_cmd_resp_pkt[idx] = NULL;
+            sc->sc_cmd_resp_len[idx] = 0;
+            slot->state = IWX_CMD_SLOT_FREE;
+        } else {
+            slot->state = IWX_CMD_SLOT_COMPLETED;
+        }
+        wchan = &ring->desc[idx];
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+
+    /* The predicate changed while the sleep mutex was held; wake atomically. */
+    if (wchan != NULL)
+        wakeupOn(wchan);
+    unlockTsleep();
+
+    /* Free only after leaving both the raw-RX q0 and sleep mutexes. */
+    if (m != NULL)
+        mbuf_freem(m);
+    if (resp_to_free != NULL)
+        ::free(resp_to_free);
+    if (code_mismatch) {
+        DPRINTF(("%s: command completion code 0x%x mismatches slot 0x%x "
+                 "at q0[%d]\n", DEVNAME(sc), code, expected_code, idx));
+    }
+    if (unexpected) {
         DPRINTF(("%s: unexpected firmware response to command 0x%x\n",
                  DEVNAME(sc), code));
-    } else if (ring->queued > 0)
-        ring->queued--;
+    }
 }
 
 uint32_t ItlIwx::
@@ -6614,6 +7209,11 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
         }
     }
 
+    if (qid == IWX_DQA_CMD_QUEUE || qid < 0 ||
+        qid >= (int)nitems(sc->txq)) {
+        mbuf_freem(m);
+        return EINVAL;
+    }
     ring = &sc->txq[qid];
     if (ring->ring_count == 0) {
         mbuf_freem(m);
@@ -8564,21 +9164,317 @@ iwx_update_quotas(struct iwx_softc *sc, struct iwx_node *in, int running)
                             sizeof(cmd), &cmd);
 }
 
+bool ItlIwx::
+iwx_task_gate_close(struct iwx_softc *sc, bool detaching, int *generation)
+{
+    if (sc->sc_task_gate_lock == NULL) {
+        /* No task producer exists before the gate is initialized. */
+        if (detaching)
+            sc->sc_task_gate_detaching = true;
+        sc->sc_flags |= IWX_FLAG_SHUTDOWN;
+        *generation = ++sc->sc_generation;
+        return true;
+    }
+
+    IOLockLock(sc->sc_task_gate_lock);
+    /*
+     * This flag and the bootstrap token must transition under one lock.
+     * Otherwise DVACT_WAKEUP can enqueue init_task after close() has
+     * cleared the token but before its caller separately sets SHUTDOWN.
+     */
+    if (!detaching &&
+        (sc->sc_task_gate_detaching || sc->sc_task_gate_stop_refs != 0)) {
+        IOLockUnlock(sc->sc_task_gate_lock);
+        return false;
+    }
+    if (detaching)
+        sc->sc_task_gate_detaching = true;
+    else
+        sc->sc_task_gate_stop_refs++;
+    sc->sc_flags |= IWX_FLAG_SHUTDOWN;
+    *generation = ++sc->sc_generation;
+    sc->sc_task_gate_closed = true;
+    sc->sc_task_gate_bootstrap_init = false;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return true;
+}
+
+bool ItlIwx::
+iwx_task_gate_begin_epoch(struct iwx_softc *sc, int *generation)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return false;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    /* A new epoch only begins from a quiesced, closed admission gate. */
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        sc->sc_task_gate_detaching || !sc->sc_task_gate_closed ||
+        sc->sc_task_gate_init_refs != 0) {
+        IOLockUnlock(sc->sc_task_gate_lock);
+        return false;
+    }
+    *generation = ++sc->sc_generation;
+    sc->sc_task_gate_init_refs++;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return true;
+}
+
+bool ItlIwx::
+iwx_task_gate_epoch_live(struct iwx_softc *sc, int generation)
+{
+    bool live;
+
+    if (sc->sc_task_gate_lock == NULL)
+        return false;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    live = !(sc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+        !sc->sc_task_gate_detaching && sc->sc_task_gate_closed &&
+        sc->sc_task_gate_init_refs == 1 &&
+        sc->sc_task_gate_stop_refs == 0 &&
+        sc->sc_generation == generation;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return live;
+}
+
+bool ItlIwx::
+iwx_task_gate_open(struct iwx_softc *sc, int generation)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return false;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    /* A concurrent stop/detach or newer init epoch wins. */
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        sc->sc_task_gate_detaching || !sc->sc_task_gate_closed ||
+        sc->sc_task_gate_init_refs != 1 ||
+        sc->sc_generation != generation) {
+        IOLockUnlock(sc->sc_task_gate_lock);
+        return false;
+    }
+    sc->sc_task_gate_closed = false;
+    sc->sc_task_gate_bootstrap_init = false;
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return true;
+}
+
+void ItlIwx::
+iwx_task_gate_rearm(struct iwx_softc *sc, int generation)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    KASSERT(sc->sc_task_gate_closed, "sc->sc_task_gate_closed");
+    KASSERT(sc->sc_task_gate_stop_refs > 0,
+            "sc->sc_task_gate_stop_refs > 0");
+    sc->sc_task_gate_stop_refs--;
+    sc->sc_task_gate_bootstrap_init = false;
+    /* A newer stop or permanent detach owns SHUTDOWN from here on. */
+    if (!sc->sc_task_gate_detaching && sc->sc_generation == generation)
+        sc->sc_flags &= ~IWX_FLAG_SHUTDOWN;
+    IOLockWakeup(sc->sc_task_gate_lock, sc, false);
+    IOLockUnlock(sc->sc_task_gate_lock);
+}
+
+bool ItlIwx::
+iwx_task_gate_enter(struct iwx_softc *sc, bool bootstrap_init)
+{
+    bool entered = false;
+
+    if (sc->sc_task_gate_lock == NULL)
+        return false;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed ||
+        (bootstrap_init && sc->sc_task_gate_bootstrap_init)) {
+        if (bootstrap_init)
+            sc->sc_task_gate_bootstrap_init = false;
+        sc->sc_task_gate_active++;
+        entered = true;
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return entered;
+}
+
+void ItlIwx::
+iwx_task_gate_leave(struct iwx_softc *sc)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    KASSERT(sc->sc_task_gate_active > 0,
+            "sc->sc_task_gate_active > 0");
+    sc->sc_task_gate_active--;
+    IOLockWakeup(sc->sc_task_gate_lock, sc, false);
+    IOLockUnlock(sc->sc_task_gate_lock);
+}
+
+void ItlIwx::
+iwx_task_gate_end_epoch(struct iwx_softc *sc)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    KASSERT(sc->sc_task_gate_init_refs > 0,
+            "sc->sc_task_gate_init_refs > 0");
+    sc->sc_task_gate_init_refs--;
+    IOLockWakeup(sc->sc_task_gate_lock, sc, false);
+    IOLockUnlock(sc->sc_task_gate_lock);
+}
+
+void ItlIwx::
+iwx_task_gate_drain(struct iwx_softc *sc, uint32_t self_active,
+                    uint32_t self_init_refs, uint32_t self_stop_refs)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return;
+
+    /* No q0/device lock is held while waiting for lifecycle owners. */
+    IOLockLock(sc->sc_task_gate_lock);
+    while (sc->sc_task_gate_active > self_active ||
+           sc->sc_task_gate_init_refs > self_init_refs ||
+           sc->sc_task_gate_stop_refs > self_stop_refs)
+        IOLockSleep(sc->sc_task_gate_lock, sc, THREAD_INTERRUPTIBLE);
+    IOLockUnlock(sc->sc_task_gate_lock);
+}
+
+int ItlIwx::
+iwx_task_gate_init(struct iwx_softc *sc)
+{
+    sc->sc_task_gate_lock = IOLockAlloc();
+    if (sc->sc_task_gate_lock == NULL)
+        return ENOMEM;
+
+    sc->sc_task_gate_active = 0;
+    sc->sc_task_gate_init_refs = 0;
+    sc->sc_task_gate_stop_refs = 0;
+    /* Attach establishes no runnable firmware epoch; init opens it. */
+    sc->sc_task_gate_closed = true;
+    sc->sc_task_gate_bootstrap_init = false;
+    sc->sc_task_gate_detaching = false;
+    return 0;
+}
+
+void ItlIwx::
+iwx_task_gate_destroy(struct iwx_softc *sc)
+{
+    if (sc->sc_task_gate_lock == NULL)
+        return;
+
+    IOLockLock(sc->sc_task_gate_lock);
+    KASSERT(sc->sc_task_gate_closed, "sc->sc_task_gate_closed");
+    KASSERT(sc->sc_task_gate_active == 0,
+            "sc->sc_task_gate_active == 0");
+    KASSERT(sc->sc_task_gate_init_refs == 0,
+            "sc->sc_task_gate_init_refs == 0");
+    KASSERT(sc->sc_task_gate_stop_refs == 0,
+            "sc->sc_task_gate_stop_refs == 0");
+    KASSERT(!sc->sc_task_gate_bootstrap_init,
+            "!sc->sc_task_gate_bootstrap_init");
+    IOLockUnlock(sc->sc_task_gate_lock);
+    IOLockFree(sc->sc_task_gate_lock);
+    sc->sc_task_gate_lock = NULL;
+}
+
+void ItlIwx::
+iwx_mac_ctxt_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_mac_ctxt_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
+iwx_chan_ctxt_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_chan_ctxt_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
+iwx_ba_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_ba_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
+iwx_newstate_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_newstate_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
+iwx_init_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, true))
+        return;
+    iwx_init_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
 void ItlIwx::
 iwx_add_task(struct iwx_softc *sc, struct taskq *taskq, struct task *task)
 {
-    int s = splnet();
-    
-    if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
-        splx(s);
+    if (sc->sc_task_gate_lock == NULL || !sc->sc_task_callbacks_ready ||
+        taskq == NULL)
         return;
+
+    /* Gate-close and enqueue share this lock, so stop cannot miss work. */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
+        (void)task_add(taskq, task);
+    IOLockUnlock(sc->sc_task_gate_lock);
+}
+
+void ItlIwx::
+iwx_bootstrap_init_task(struct iwx_softc *sc)
+{
+    if (sc->sc_task_gate_lock == NULL || !sc->sc_task_callbacks_ready)
+        return;
+
+    /*
+     * Resume needs exactly one init callback while normal admission remains
+     * closed.  A token is armed only for the task we successfully enqueue;
+     * all ordinary callbacks remain rejected until init opens the epoch.
+     */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (sc->sc_task_gate_closed) {
+        if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+            !sc->sc_task_gate_bootstrap_init &&
+            task_add(systq, &sc->init_task))
+            sc->sc_task_gate_bootstrap_init = true;
+    } else if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
+        (void)task_add(systq, &sc->init_task);
     }
-    
-    //    refcnt_take(&sc->task_refs);
-    if (!task_add(taskq, task)) {
-        //        refcnt_rele_wake(&sc->task_refs);
-    }
-    splx(s);
+    IOLockUnlock(sc->sc_task_gate_lock);
 }
 
 void ItlIwx::
@@ -9757,7 +10653,7 @@ iwx_newstate_task(void *psc)
 out:
     if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
         if (err)
-            task_add(systq, &sc->init_task);
+            that->iwx_add_task(sc, systq, &sc->init_task);
         else
             sc->sc_newstate(ic, nstate, arg);
     }
@@ -10250,19 +11146,39 @@ iwx_allow_mcast(struct iwx_softc *sc)
 int ItlIwx::
 iwx_init(struct _ifnet *ifp)
 {
+    return iwx_init_internal(ifp, false);
+}
+
+int ItlIwx::
+iwx_init_internal(struct _ifnet *ifp, bool caller_is_init_task)
+{
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     int err, generation;
     int i;
+
+    //    rw_assert_wrlock(&sc->ioctl_rwl);
+
+    if (!that->iwx_task_gate_begin_epoch(sc, &generation))
+        return ENXIO;
 
     memset(sc->sc_tid_data, 0, sizeof(sc->sc_tid_data));
     for (i = 0; i < ARRAY_SIZE(sc->sc_tid_data); i++) {
         sc->sc_tid_data[i].qid = IWX_INVALID_QUEUE;
     }
 
-    //    rw_assert_wrlock(&sc->ioctl_rwl);
-
-    generation = ++sc->sc_generation;
+    /*
+     * q0 becomes live only if this exact init epoch still owns admission.
+     * The start transition holds task-gate -> q0, making it atomic against
+     * a concurrent stop close; a stale epoch never reopens q0 after stop.
+     */
+    if (!that->iwx_cmdq_start(sc, generation) ||
+        !that->iwx_task_gate_epoch_live(sc, generation)) {
+        that->iwx_cmdq_stop(sc);
+        err = ENXIO;
+        goto out;
+    }
 
     //    KASSERT(sc->task_refs.refs == 0);
     //    refcnt_init(&sc->task_refs);
@@ -10270,9 +11186,19 @@ iwx_init(struct _ifnet *ifp)
     err = iwx_init_hw(sc);
     if (err) {
         XYLog("DEBUG %s iwx_init_hw FAILED err=%d\n", __FUNCTION__, err);
-        if (generation == sc->sc_generation)
+        if (that->iwx_task_gate_epoch_live(sc, generation))
             iwx_stop_device(sc);
-        return err;
+        else
+            that->iwx_cmdq_stop(sc);
+        goto out;
+    }
+
+    /* q0 is live for this epoch; only now may task callbacks be admitted. */
+    if (!that->iwx_task_gate_open(sc, generation)) {
+        /* A stop won the epoch after init_hw; leave its q0 closed. */
+        that->iwx_cmdq_stop(sc);
+        err = ENXIO;
+        goto out;
     }
 
     if (sc->sc_nvm.sku_cap_11n_enable)
@@ -10291,7 +11217,8 @@ iwx_init(struct _ifnet *ifp)
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
-        return 0;
+        err = 0;
+        goto out;
     }
 
     ieee80211_begin_scan(ifp);
@@ -10303,18 +11230,23 @@ iwx_init(struct _ifnet *ifp)
     do {
         err = tsleep_nsec(&ic->ic_state, PCATCH, "iwxinit",
             SEC_TO_NSEC(1));
-        if (generation != sc->sc_generation) {
-            XYLog("DEBUG %s generation mismatch, returning ENXIO\n", __FUNCTION__);
-            return ENXIO;
+        if (!that->iwx_task_gate_epoch_live(sc, generation)) {
+            XYLog("DEBUG %s stale init epoch, returning ENXIO\n", __FUNCTION__);
+            that->iwx_cmdq_stop(sc);
+            err = ENXIO;
+            goto out;
         }
         if (err) {
             XYLog("DEBUG %s tsleep err=%d ic_state=%d, stopping\n", __FUNCTION__, err, ic->ic_state);
-            iwx_stop(ifp);
-            return err;
+            iwx_stop_internal(ifp, caller_is_init_task, true);
+            goto out;
         }
     } while (ic->ic_state != IEEE80211_S_SCAN);
 
-    return 0;
+    err = 0;
+out:
+    that->iwx_task_gate_end_epoch(sc);
+    return err;
 }
 
 IOReturn ItlIwx::
@@ -10408,21 +11340,59 @@ iwx_start(struct _ifnet *ifp)
 void ItlIwx::
 iwx_stop(struct _ifnet *ifp)
 {
+    iwx_stop_internal(ifp, false, false);
+}
+
+void ItlIwx::
+iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
+                  bool caller_is_init_epoch)
+{
     struct iwx_softc *sc = (struct iwx_softc *)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     int i, s = splnet();
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 
-    sc->sc_flags |= IWX_FLAG_SHUTDOWN; /* Disallow new tasks. */
+    /*
+     * Close admission before cancellation.  task_del() alone misses a
+     * callback already copied by taskq_next_work(), so barriers below run
+     * behind every pre-close entry.  The only self-origin is init_task on
+     * systq; it skips that queue's barrier and keeps one active ref while
+     * deliberately starting the replacement epoch after this stop.
+     */
+    /* close() atomically sets SHUTDOWN and becomes this stop's owner ref. */
+    int stop_generation;
+    if (!that->iwx_task_gate_close(sc, false, &stop_generation)) {
+        splx(s);
+        return;
+    }
     
-    /* Cancel scheduled tasks and let any stale tasks finish up. */
-    task_del(systq, &sc->init_task);
-    iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
-    iwx_del_task(sc, systq, &sc->ba_task);
-    iwx_del_task(sc, systq, &sc->mac_ctxt_task);
-    iwx_del_task(sc, systq, &sc->chan_ctxt_task);
+    /* Cancel queued task callbacks before fencing already-dequeued ones. */
+    if (sc->sc_taskq_initialized && sc->sc_task_callbacks_ready) {
+        task_del(systq, &sc->init_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+        iwx_del_task(sc, systq, &sc->ba_task);
+        iwx_del_task(sc, systq, &sc->mac_ctxt_task);
+        iwx_del_task(sc, systq, &sc->chan_ctxt_task);
+    }
+
+    /* Wake synchronous task senders before waiting for their callbacks. */
+    that->iwx_cmdq_stop(sc);
+
+    if (sc->sc_taskq_initialized && sc->sc_task_callbacks_ready) {
+        if (sc->sc_nswq != NULL)
+            taskq_barrier(sc->sc_nswq);
+        if (!caller_is_init_task)
+            taskq_barrier(systq);
+    }
+
+    /* The barrier closes dequeue-to-prologue; this asserts body exit too. */
+    that->iwx_task_gate_drain(sc, caller_is_init_task ? 1 : 0,
+                              caller_is_init_epoch ? 1 : 0, 1);
+
     KASSERT(sc->task_refs.refs >= 1, "sc->task_refs.refs >= 1");
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
     
@@ -10430,12 +11400,6 @@ iwx_stop(struct _ifnet *ifp)
     
     /* Reset soft state. */
     
-    sc->sc_generation++;
-    for (i = 0; i < nitems(sc->sc_cmd_resp_pkt); i++) {
-        ::free(sc->sc_cmd_resp_pkt[i]);
-        sc->sc_cmd_resp_pkt[i] = NULL;
-        sc->sc_cmd_resp_len[i] = 0;
-    }
     ifp->if_flags &= ~IFF_RUNNING;
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
@@ -10452,7 +11416,6 @@ iwx_stop(struct _ifnet *ifp)
     sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_TE_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_HW_ERR;
-    sc->sc_flags &= ~IWX_FLAG_SHUTDOWN;
     sc->sc_flags &= ~IWX_FLAG_TXFLUSH;
 
     sc->sc_rx_ba_sessions = 0;
@@ -10470,6 +11433,9 @@ iwx_stop(struct _ifnet *ifp)
     }
     
     ifp->if_timer = sc->sc_tx_timer = 0;
+
+    /* Stop is complete; permit exactly a subsequent, fresh init epoch. */
+    that->iwx_task_gate_rearm(sc, stop_generation);
     
     splx(s);
 }
@@ -10491,9 +11457,17 @@ iwx_watchdog(struct _ifnet *ifp)
             XYLog("driver status:\n");
             for (i = 0; i < IWX_MAX_QUEUES; i++) {
                 struct iwx_tx_ring *ring = &sc->txq[i];
+                int cur, queued;
+
+                if (i == IWX_DQA_CMD_QUEUE)
+                    that->iwx_cmdq_snapshot(sc, &cur, &queued);
+                else {
+                    cur = ring->cur;
+                    queued = ring->queued;
+                }
                 XYLog("  tx ring %2d: qid=%-2d cur=%-3d "
                       "queued=%-3d\n",
-                      i, ring->qid, ring->cur, ring->queued);
+                      i, ring->qid, cur, queued);
             }
             XYLog("  rx ring: cur=%d\n", sc->rxq.cur);
             XYLog("  802.11 state %s\n",
@@ -10502,7 +11476,7 @@ iwx_watchdog(struct _ifnet *ifp)
             that->iwx_nic_error(sc);
 #endif
             if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
-                task_add(systq, &sc->init_task);
+                that->iwx_add_task(sc, systq, &sc->init_task);
             ifp->netStat->outputErrors++;
             return;
         }
@@ -10864,11 +11838,12 @@ void ItlIwx::
 iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
 {
     struct _ifnet *ifp = IC2IFP(&sc->sc_ic);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     struct iwx_rx_packet *pkt, *nextpkt;
     uint32_t offset = 0, nextoff = 0, nmpdu = 0, len;
     mbuf_t m0, m;
     const size_t minsz = sizeof(pkt->len_n_flags) + sizeof(pkt->hdr);
-    int qid, idx, code, handled = 1;
+    int raw_qid, qid, idx, code, handled = 1;
     
     //    bus_dmamap_sync(sc->sc_dmat, data->map, 0, IWX_RBUF_SIZE,
     //        BUS_DMASYNC_POSTREAD);
@@ -10876,7 +11851,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
     m0 = data->m;
     while (m0 && offset + minsz < IWX_RBUF_SIZE) {
         pkt = (struct iwx_rx_packet *)((uint8_t*)mbuf_data(m0) + offset);
-        qid = pkt->hdr.qid;
+        raw_qid = pkt->hdr.qid;
+        qid = raw_qid & ~(1 << 7);
         idx = pkt->hdr.idx;
         
         code = IWX_WIDE_ID(pkt->hdr.group_id, pkt->hdr.cmd);
@@ -10891,10 +11867,18 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
          * in group 0, forcing us to use this hack.
          */
         if (iwx_cmd_groupid(code) == IWX_LONG_GROUP) {
-            struct iwx_tx_ring *ring = &sc->txq[qid];
-            struct iwx_tx_data *txdata = &ring->data[idx];
-            if (txdata->flags & IWX_TXDATA_FLAG_CMD_IS_NARROW)
+            if (!(raw_qid & (1 << 7)) &&
+                that->iwx_cmdq_is_narrow(sc, qid, idx)) {
                 code = iwx_cmd_opcode(code);
+            } else if (!(raw_qid & (1 << 7)) &&
+                       qid != IWX_DQA_CMD_QUEUE &&
+                       qid >= 0 && qid < (int)nitems(sc->txq) &&
+                       idx >= 0 && idx < (int)sc->txq[qid].ring_count) {
+                struct iwx_tx_ring *ring = &sc->txq[qid];
+                struct iwx_tx_data *txdata = &ring->data[idx];
+                if (txdata->flags & IWX_TXDATA_FLAG_CMD_IS_NARROW)
+                    code = iwx_cmd_opcode(code);
+            }
         }
         
         len = sizeof(pkt->len_n_flags) + iwx_rx_packet_len(pkt);
@@ -11036,7 +12020,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                        "stopping device\n",
                        DEVNAME(sc), le16toh(notif->temperature));
                 sc->sc_flags |= IWX_FLAG_HW_ERR;
-                task_add(systq, &sc->init_task);
+                that->iwx_add_task(sc, systq, &sc->init_task);
                 break;
             }
                 
@@ -11067,27 +12051,19 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
             case IWX_STATISTICS_CMD:
             case IWX_SCD_QUEUE_CFG: {
                 size_t pkt_len;
-                
-                if (sc->sc_cmd_resp_pkt[idx] == NULL)
-                    break;
-                
-                //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
-                //                sizeof(*pkt), BUS_DMASYNC_POSTREAD);
-                
+
                 pkt_len = sizeof(pkt->len_n_flags) +
                 iwx_rx_packet_len(pkt);
-                
-                if ((pkt->hdr.group_id & IWX_CMD_FAILED_MSK) ||
-                    pkt_len < sizeof(*pkt) ||
-                    pkt_len > sc->sc_cmd_resp_len[idx]) {
-                    ::free(sc->sc_cmd_resp_pkt[idx]);
-                    sc->sc_cmd_resp_pkt[idx] = NULL;
-                    break;
+
+                /*
+                 * Preserve the pre-existing response-buffer policy for this
+                 * bit.  It does not participate in q0 slot ownership or
+                 * completion validation in this serialization-only phase.
+                 */
+                if (!(raw_qid & (1 << 7))) {
+                    that->iwx_cmdq_store_response(sc, qid, idx, pkt, pkt_len,
+                        !!(pkt->hdr.group_id & IWX_CMD_FAILED_MSK));
                 }
-                
-                //            bus_dmamap_sync(sc->sc_dmat, data->map, sizeof(*pkt),
-                //                pkt_len - sizeof(*pkt), BUS_DMASYNC_POSTREAD);
-                memcpy(sc->sc_cmd_resp_pkt[idx], pkt, pkt_len);
                 break;
             }
                 
@@ -11265,7 +12241,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
          * For example, uCode issues IWX_REPLY_RX when it sends a
          * received frame to the driver.
          */
-        if (handled && !(qid & (1 << 7))) {
+        if (handled && !(raw_qid & (1 << 7))) {
             iwx_cmd_done(sc, qid, idx, code);
         }
         
@@ -11373,7 +12349,7 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
         handled |= IWX_CSR_INT_BIT_RF_KILL;
         XYLog("%s RF_KILL has been toggled\n", __FUNCTION__);
         that->iwx_check_rfkill(sc);
-        task_add(systq, &sc->init_task);
+        that->iwx_add_task(sc, systq, &sc->init_task);
         rv = 1;
         goto out_ena;
     }
@@ -11388,9 +12364,17 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
         XYLog("driver status:\n");
         for (i = 0; i < IWX_MAX_QUEUES; i++) {
             struct iwx_tx_ring *ring = &sc->txq[i];
+            int cur, queued;
+
+            if (i == IWX_DQA_CMD_QUEUE)
+                that->iwx_cmdq_snapshot(sc, &cur, &queued);
+            else {
+                cur = ring->cur;
+                queued = ring->queued;
+            }
             XYLog("  tx ring %2d: qid=%-2d cur=%-3d "
                   "queued=%-3d\n",
-                  i, ring->qid, ring->cur, ring->queued);
+                  i, ring->qid, cur, queued);
         }
         XYLog("  rx ring: cur=%d\n", sc->rxq.cur);
         XYLog("  802.11 state %s\n",
@@ -11399,7 +12383,7 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
         
         XYLog("%s: fatal firmware error\n", DEVNAME(sc));
         if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
-            task_add(systq, &sc->init_task);
+            that->iwx_add_task(sc, systq, &sc->init_task);
         rv = 1;
         goto out;
         
@@ -11410,7 +12394,7 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
         XYLog("%s: hardware error, stopping device \n", DEVNAME(sc));
         if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
             sc->sc_flags |= IWX_FLAG_HW_ERR;
-            task_add(systq, &sc->init_task);
+            that->iwx_add_task(sc, systq, &sc->init_task);
         }
         rv = 1;
         goto out;
@@ -11500,9 +12484,17 @@ iwx_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count)
         XYLog("driver status:\n");
         for (i = 0; i < IWX_MAX_QUEUES; i++) {
             struct iwx_tx_ring *ring = &sc->txq[i];
+            int cur, queued;
+
+            if (i == IWX_DQA_CMD_QUEUE)
+                that->iwx_cmdq_snapshot(sc, &cur, &queued);
+            else {
+                cur = ring->cur;
+                queued = ring->queued;
+            }
             XYLog("  tx ring %2d: qid=%-2d cur=%-3d "
                   "queued=%-3d\n",
-                  i, ring->qid, ring->cur, ring->queued);
+                  i, ring->qid, cur, queued);
         }
         XYLog("  rx ring: cur=%d\n", sc->rxq.cur);
         XYLog("  802.11 state %s\n",
@@ -11511,20 +12503,20 @@ iwx_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count)
         
         XYLog("%s: fatal firmware error\n", DEVNAME(sc));
         if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0)
-            task_add(systq, &sc->init_task);
+            that->iwx_add_task(sc, systq, &sc->init_task);
         return 1;
     }
     
     if (inta_hw & IWX_MSIX_HW_INT_CAUSES_REG_RF_KILL) {
         that->iwx_check_rfkill(sc);
-        task_add(systq, &sc->init_task);
+        that->iwx_add_task(sc, systq, &sc->init_task);
     }
     
     if (inta_hw & IWX_MSIX_HW_INT_CAUSES_REG_HW_ERR) {
         XYLog("%s: hardware error, stopping device \n", DEVNAME(sc));
         if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
             sc->sc_flags |= IWX_FLAG_HW_ERR;
-            task_add(systq, &sc->init_task);
+            that->iwx_add_task(sc, systq, &sc->init_task);
         }
         return 1;
     }
@@ -12841,6 +13833,47 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_pct = pa->pa_pc;
     sc->sc_pcitag = pa->pa_tag;
     sc->sc_dmat = pa->pa_dmat;
+    /* Establish safe values for every object the outer detach may inspect. */
+    sc->ih = NULL;
+    sc->sc_ih = NULL;
+    sc->sc_nswq = NULL;
+    sc->sc_msix = 0;
+    sc->sc_flags = 0;
+    sc->sc_cfg_params = NULL;
+    sc->sc_cfg = NULL;
+    memset(sc->txq, 0, sizeof(sc->txq));
+    memset(&sc->rxq, 0, sizeof(sc->rxq));
+    memset(&sc->ict_dma, 0, sizeof(sc->ict_dma));
+    memset(&sc->ctxt_info_dma, 0, sizeof(sc->ctxt_info_dma));
+    memset(&sc->prph_scratch_dma, 0, sizeof(sc->prph_scratch_dma));
+    memset(&sc->prph_info_dma, 0, sizeof(sc->prph_info_dma));
+    memset(&sc->iml_dma, 0, sizeof(sc->iml_dma));
+    memset(&sc->pnvm_dram, 0, sizeof(sc->pnvm_dram));
+    memset(sc->sc_cmd_resp_pkt, 0, sizeof(sc->sc_cmd_resp_pkt));
+    memset(sc->sc_cmd_resp_len, 0, sizeof(sc->sc_cmd_resp_len));
+    memset(&sc->init_task, 0, sizeof(sc->init_task));
+    memset(&sc->newstate_task, 0, sizeof(sc->newstate_task));
+    memset(&sc->ba_task, 0, sizeof(sc->ba_task));
+    memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
+    memset(&sc->chan_ctxt_task, 0, sizeof(sc->chan_ctxt_task));
+    sc->sc_taskq_initialized = false;
+    sc->sc_task_callbacks_ready = false;
+    sc->sc_if_attached = false;
+    sc->sc_hw_active = false;
+    sc->sc_generation = 0;
+    sc->sc_cmdq_lock = NULL;
+    sc->sc_cmdq_next_serial = 0;
+    sc->sc_cmdq_epoch = 0;
+    sc->sc_cmdq_senders = 0;
+    sc->sc_cmdq_stopping = true;
+    sc->sc_cmdq_detaching = false;
+    sc->sc_task_gate_lock = NULL;
+    sc->sc_task_gate_active = 0;
+    sc->sc_task_gate_init_refs = 0;
+    sc->sc_task_gate_stop_refs = 0;
+    sc->sc_task_gate_closed = true;
+    sc->sc_task_gate_bootstrap_init = false;
+    sc->sc_task_gate_detaching = false;
     
     //    rw_init(&sc->ioctl_rwl, "iwxioctl");
     
@@ -13045,7 +14078,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
                                IWX_ICT_SIZE, 1<<IWX_ICT_PADDR_SHIFT);
     if (err) {
         XYLog("%s: could not allocate ICT table\n", DEVNAME(sc));
-        goto fail0;
+        goto fail;
     }
     
     for (txq_i = 0; txq_i < nitems(sc->txq); txq_i++) {
@@ -13053,20 +14086,33 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         if (err) {
             XYLog("%s: could not allocate TX ring %d\n",
                   DEVNAME(sc), txq_i);
-            goto fail4;
+            goto fail;
         }
     }
     
     err = iwx_alloc_rx_ring(sc, &sc->rxq);
     if (err) {
         XYLog("%s: could not allocate RX ring\n", DEVNAME(sc));
-        goto fail4;
+        goto fail;
+    }
+
+    err = iwx_cmdq_init(sc);
+    if (err) {
+        XYLog("%s: could not allocate q0 serialization lock\n", DEVNAME(sc));
+        goto fail;
+    }
+
+    err = iwx_task_gate_init(sc);
+    if (err) {
+        XYLog("%s: could not allocate task admission gate\n", DEVNAME(sc));
+        goto fail;
     }
     
     taskq_init();
+    sc->sc_taskq_initialized = true;
     sc->sc_nswq = taskq_create("iwxns", 1, IPL_NET, 0);
     if (sc->sc_nswq == NULL)
-        goto fail4;
+        goto fail;
     
     ic->ic_phytype = IEEE80211_T_OFDM;    /* not only, but not used */
     ic->ic_opmode = IEEE80211_M_STA;    /* default to BSS mode */
@@ -13120,6 +14166,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     if_attach(ifp);
     ieee80211_ifattach(ifp, getController());
     ieee80211_media_init(ifp);
+    sc->sc_if_attached = true;
 
 #if NBPFILTER > 0
     iwx_radiotap_attach(sc);
@@ -13135,11 +14182,16 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         for (j = 0; j < nitems(rxba->entries); j++)
         ml_init(&rxba->entries[j].frames);
     }
-    task_set(&sc->init_task, iwx_init_task, sc, "iwx_init_task");
-    task_set(&sc->newstate_task, iwx_newstate_task, sc, "iwx_newstate_task");
-    task_set(&sc->ba_task, iwx_ba_task, sc, "iwx_ba_task");
-    task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task, sc, "iwx_mac_ctxt_task");
-    task_set(&sc->chan_ctxt_task, iwx_chan_ctxt_task, sc, "iwx_chan_ctxt_task");
+    task_set(&sc->init_task, iwx_init_task_dispatch, sc,
+             "iwx_init_task");
+    task_set(&sc->newstate_task, iwx_newstate_task_dispatch, sc,
+             "iwx_newstate_task");
+    task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");
+    task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task_dispatch, sc,
+             "iwx_mac_ctxt_task");
+    task_set(&sc->chan_ctxt_task, iwx_chan_ctxt_task_dispatch, sc,
+             "iwx_chan_ctxt_task");
+    sc->sc_task_callbacks_ready = true;
     
     ic->ic_node_alloc = iwx_node_alloc;
     ic->ic_bgscan_start = iwx_bgscan;
@@ -13163,25 +14215,17 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
+    if (!iwx_cmdq_start_bootstrap(sc))
+        goto fail;
     if (iwx_preinit(sc)) {
-        goto fail5;
+        goto fail;
     }
     iwx_auth_diag_init();
 
     return true;
     
-fail5:
-    for (i = 0; i < nitems(sc->sc_rxba_data); i++) {
-        struct iwx_rxba_data *rxba = &sc->sc_rxba_data[i];
-        iwx_clear_reorder_buffer(sc, rxba);
-    }
-fail4:    while (--txq_i >= 0)
-    iwx_free_tx_ring(sc, &sc->txq[txq_i]);
-    iwx_free_rx_ring(sc, &sc->rxq);
-fail3:    if (sc->ict_dma.vaddr != NULL)
-    iwx_dma_contig_free(&sc->ict_dma);
-
-fail0:    iwx_dma_contig_free(&sc->ctxt_info_dma);
+fail:
+    /* attach() immediately invokes the ordered detach() unwind. */
     return false;
 }
 
@@ -13212,6 +14256,11 @@ iwx_init_task(void *arg1)
     int generation = sc->sc_generation;
     int fatal = (sc->sc_flags & (IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL));
 
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
+        splx(s);
+        return;
+    }
+
     //    rw_enter_write(&sc->ioctl_rwl);
     if (generation != sc->sc_generation) {
         XYLog("DEBUG %s SKIP: generation mismatch %d != %d\n", __FUNCTION__, generation, sc->sc_generation);
@@ -13221,13 +14270,13 @@ iwx_init_task(void *arg1)
     }
 
     if (ifp->if_flags & IFF_RUNNING) {
-        that->iwx_stop(ifp);
+        that->iwx_stop_internal(ifp, true, false);
     } else {
         sc->sc_flags &= ~IWX_FLAG_HW_ERR;
     }
 
     if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
-        that->iwx_init(ifp);
+        that->iwx_init_internal(ifp, true);
     } else {
         XYLog("DEBUG %s SKIP iwx_init: fatal=%d IFF_UP=%d IFF_RUNNING=%d\n",
               __FUNCTION__, fatal, !!(ifp->if_flags & IFF_UP), !!(ifp->if_flags & IFF_RUNNING));
@@ -13272,6 +14321,7 @@ int ItlIwx::
 iwx_activate(struct iwx_softc *sc, int act)
 {
     struct _ifnet *ifp = &sc->sc_ic.ic_if;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     int err = 0;
     
     switch (act) {
@@ -13292,7 +14342,7 @@ iwx_activate(struct iwx_softc *sc, int act)
             /* Hardware should be up at this point. */
             err = iwx_prepare_card_hw(sc);
             if (err == 0) {
-                task_add(systq, &sc->init_task);
+                that->iwx_bootstrap_init_task(sc);
             } else {
                 XYLog("%s: DVACT_WAKEUP: iwx_prepare_card_hw failed err=%d, init_task NOT scheduled\n",
                       DEVNAME(sc), err);

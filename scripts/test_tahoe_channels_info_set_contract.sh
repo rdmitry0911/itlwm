@@ -84,7 +84,18 @@ for marker in 'isApple80211SetIoctl(cmd)' 'isApple80211GetIoctl(cmd) ? SIOCGA802
     }
 done
 
-get_section=$(sed -n '/getCHANNELS_INFO(apple80211_channels_info \*data)/,/^}/p' "$source")
+get_wrapper=$(sed -n '/getCHANNELS_INFO(apple80211_channels_info \*data)/,/^}/p' "$source")
+get_section=$(sed -n '/getCHANNELS_INFOImpl(apple80211_channels_info \*data)/,/^}/p' "$source")
+wrapper_live_count=$(printf '%s\n' "$get_wrapper" |
+    grep -Fc 'AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();' || true)
+[ "$wrapper_live_count" -eq 1 ] || {
+    echo 'CHANNELS_INFO public wrapper no longer has exactly one Live admission' >&2
+    exit 1
+}
+printf '%s\n' "$get_wrapper" | grep -Fq 'return getCHANNELS_INFOImpl(data);' || {
+    echo 'CHANNELS_INFO public wrapper no longer delegates to its unguarded implementation' >&2
+    exit 1
+}
 printf '%s\n' "$get_section" | grep -Fq 'return kIOReturnSuccess;' || {
     echo 'CHANNELS_INFO GET producer disappeared' >&2
     exit 1

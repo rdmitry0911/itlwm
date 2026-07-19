@@ -35,6 +35,7 @@ IOCommandGate *_fCommandGate;
 bool AirportItlwm::init(OSDictionary *properties)
 {
     bool ret = super::init(properties);
+    fWatchdogStopping = false;
     awdlSyncEnable = true;
     power_state = 0;
     memset(geo_location_cc, 0, sizeof(geo_location_cc));
@@ -392,6 +393,7 @@ bool AirportItlwm::start(IOService *provider)
     }
     if (!attachInterface((IONetworkInterface **)&fNetIf, true)) {
         XYLog("attach to interface fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -400,6 +402,7 @@ bool AirportItlwm::start(IOService *provider)
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
         XYLog("init watchdog workloop fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -408,12 +411,21 @@ bool AirportItlwm::start(IOService *provider)
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
     if (!watchdogTimer) {
         XYLog("init watchdog fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
         return false;
     }
-    fWatchdogWorkLoop->addEventSource(watchdogTimer);
+    fWatchdogStopping = false;
+    if (fWatchdogWorkLoop->addEventSource(watchdogTimer) != kIOReturnSuccess) {
+        XYLog("add watchdog event source fail\n");
+        stopWatchdogAndDrain();
+        fHalService->detach(pciNub);
+        super::stop(pciNub);
+        releaseAll();
+        return false;
+    }
     scanSource = IOTimerEventSource::timerEventSource(this, &fakeScanDone);
     _fWorkloop->addEventSource(scanSource);
     scanSource->enable();
@@ -432,13 +444,22 @@ bool AirportItlwm::start(IOService *provider)
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
-    // Guard: fHalService may be freed during releaseAll() on another
-    // thread while this fires on fWatchdogWorkLoop (see panic14 fix).
-    if (!fHalService)
+    // stopWatchdogAndDrain() marks permanent teardown before the source is
+    // synchronously removed from fWatchdogWorkLoop.  The flag prevents an
+    // in-flight action from touching HAL state or re-arming itself.
+    if (fWatchdogStopping || timer == NULL || timer != watchdogTimer)
         return;
-    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    (*ifp->if_watchdog)(ifp);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+
+    ItlHalService *hal = fHalService;
+    if (!hal)
+        return;
+
+    struct _ifnet *ifp = &hal->get80211Controller()->ic_ac.ac_if;
+    if (ifp->if_watchdog)
+        (*ifp->if_watchdog)(ifp);
+
+    if (!fWatchdogStopping && timer == watchdogTimer)
+        timer->setTimeoutMS(kWatchDogTimerPeriod);
 }
 
 void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
@@ -505,6 +526,7 @@ void AirportItlwm::stop(IOService *provider)
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     disableAdapter(fNetIf);
     setLinkStatus(kIONetworkLinkValid);
+    stopWatchdogAndDrain();
     fHalService->detach(pciNub);
     ether_ifdetach(ifp);
     detachInterface(fNetIf, true);
@@ -556,28 +578,49 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     return ret;
 }
 
+void AirportItlwm::stopWatchdogAndDrain()
+{
+    stopScanSourceAndDrain();
+
+    // IOWorkLoop::removeEventSource() waits until the workloop acknowledges
+    // removal.  After the stopping flag prevents re-arm, this is the lifetime
+    // fence required before fHalService is detached or released.
+    fWatchdogStopping = true;
+
+    IOTimerEventSource *timer = watchdogTimer;
+    if (!timer)
+        return;
+
+    timer->cancelTimeout();
+    timer->disable();
+    if (fWatchdogWorkLoop)
+        fWatchdogWorkLoop->removeEventSource(timer);
+    watchdogTimer = NULL;
+    timer->release();
+}
+
+void AirportItlwm::stopScanSourceAndDrain()
+{
+    IOTimerEventSource *source = scanSource;
+    if (!source)
+        return;
+
+    // fakeScanDone() posts through fNetIf, so its _fWorkloop source must be
+    // synchronously removed before the interface/HAL lifetime ends.
+    source->cancelTimeout();
+    source->disable();
+    if (_fWorkloop)
+        _fWorkloop->removeEventSource(source);
+    scanSource = NULL;
+    source->release();
+}
+
 void AirportItlwm::releaseAll()
 {
-    // CRITICAL: Stop all timers FIRST, before releasing fHalService.
-    // watchdogTimer runs on fWatchdogWorkLoop (a separate thread).
-    // If fHalService is freed while watchdogAction is in flight,
-    // the use-after-free chain fHalService→get80211Controller()→
-    // ic_ac.ac_if→if_watchdog dereferences freed memory (panic14).
-    if (fWatchdogWorkLoop && watchdogTimer) {
-        watchdogTimer->cancelTimeout();
-        watchdogTimer->disable();
-        fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-        watchdogTimer->release();
-        watchdogTimer = NULL;
+    stopWatchdogAndDrain();
+    if (fWatchdogWorkLoop) {
         fWatchdogWorkLoop->release();
         fWatchdogWorkLoop = NULL;
-    }
-    if (_fWorkloop && scanSource) {
-        scanSource->cancelTimeout();
-        scanSource->disable();
-        _fWorkloop->removeEventSource(scanSource);
-        scanSource->release();
-        scanSource = NULL;
     }
     if (fHalService) {
         fHalService->release();
@@ -599,6 +642,11 @@ void AirportItlwm::releaseAll()
 void AirportItlwm::free()
 {
     XYLog("%s\n", __FUNCTION__);
+    stopWatchdogAndDrain();
+    if (fWatchdogWorkLoop != NULL) {
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
     if (fHalService != NULL) {
         fHalService->release();
         fHalService = NULL;
@@ -647,7 +695,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
         return kIOReturnNotReady;
     }
     fHalService->enable(netif);
-    if (watchdogTimer) {
+    if (!fWatchdogStopping && watchdogTimer) {
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
     }

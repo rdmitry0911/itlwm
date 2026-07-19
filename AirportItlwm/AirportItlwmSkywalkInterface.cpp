@@ -45,6 +45,89 @@ static_assert(TahoeAssociationAuthContracts::kAuthWpa3Sae ==
 static constexpr UInt kApple80211LegacyGetIoctl = 3223873993U; // 0xc02869c9
 static constexpr UInt kApple80211LegacySetIoctl = 2150132168U; // 0x802869c8
 
+enum class AirportItlwmLifecycleAdmission {
+    LiveOnly,
+    StartingOrLive,
+};
+
+/*
+ * Skywalk has a large direct vtable surface in addition to the BSD ioctl
+ * route.  Snapshot the controller once and keep one lifecycle operation user
+ * across each outer callback, so controller stop first closes admission and
+ * then waits before it removes Skywalk queues or detaches the HAL.
+ */
+class AirportItlwmLifecycleOperationGuard {
+public:
+    AirportItlwmLifecycleOperationGuard(
+        AirportItlwm *controller,
+        AirportItlwmLifecycleAdmission admission)
+        : fController(controller)
+    {
+        if (fController == nullptr)
+            return;
+        const bool admitted = admission ==
+                AirportItlwmLifecycleAdmission::LiveOnly ?
+            fController->beginLifecycleOperation() :
+            fController->beginLifecycleInternalOperation();
+        if (!admitted)
+            fController = nullptr;
+    }
+
+    ~AirportItlwmLifecycleOperationGuard()
+    {
+        if (fController != nullptr)
+            fController->endLifecycleOperation();
+    }
+
+    bool admitted() const { return fController != nullptr; }
+
+private:
+    AirportItlwm *fController;
+};
+
+template <typename Action>
+static IOReturn airportItlwmRunDispatchLive(AirportItlwm *controller,
+                                             Action action)
+{
+    AirportItlwmLifecycleOperationGuard lifecycle(
+        controller, AirportItlwmLifecycleAdmission::LiveOnly);
+    if (!lifecycle.admitted())
+        return kIOReturnNotReady;
+    return action(controller);
+}
+
+#define AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION() \
+    AirportItlwm *const airportItlwmLifecycleController = instance; \
+    AirportItlwmLifecycleOperationGuard airportItlwmLifecycleGuard( \
+        airportItlwmLifecycleController, \
+        AirportItlwmLifecycleAdmission::LiveOnly); \
+    if (!airportItlwmLifecycleGuard.admitted()) \
+        return kIOReturnNotReady
+
+#define AIRPORT_ITLWM_REQUIRE_INTERNAL_OPERATION() \
+    AirportItlwm *const airportItlwmLifecycleController = instance; \
+    AirportItlwmLifecycleOperationGuard airportItlwmLifecycleGuard( \
+        airportItlwmLifecycleController, \
+        AirportItlwmLifecycleAdmission::StartingOrLive); \
+    if (!airportItlwmLifecycleGuard.admitted()) \
+        return kIOReturnNotReady
+
+#define AIRPORT_ITLWM_REQUIRE_INTERNAL_BOOL_OPERATION() \
+    AirportItlwm *const airportItlwmLifecycleController = instance; \
+    AirportItlwmLifecycleOperationGuard airportItlwmLifecycleGuard( \
+        airportItlwmLifecycleController, \
+        AirportItlwmLifecycleAdmission::StartingOrLive); \
+    if (!airportItlwmLifecycleGuard.admitted()) \
+        return false
+
+#define AIRPORT_ITLWM_REQUIRE_INTERNAL_SINT32_OPERATION() \
+    AirportItlwm *const airportItlwmLifecycleController = instance; \
+    AirportItlwmLifecycleOperationGuard airportItlwmLifecycleGuard( \
+        airportItlwmLifecycleController, \
+        AirportItlwmLifecycleAdmission::StartingOrLive); \
+    if (!airportItlwmLifecycleGuard.admitted()) \
+        return static_cast<SInt32>(kIOReturnNotReady)
+
 static bool isApple80211GetIoctl(UInt cmd)
 {
     return cmd == SIOCGA80211 || cmd == kApple80211LegacyGetIoctl;
@@ -1253,6 +1336,10 @@ inputPacket(IO80211NetworkPacket *packet, packet_info_tag *tag,
 static IOSkywalkTxSubmissionQueue *
 airportItlwmTxQueueForIndex(AirportItlwm *driver, unsigned char queueId)
 {
+    // Skywalk inventory accessors return framework-borrowed raw pointers.
+    // They deliberately remain callable through detachInterface(): that
+    // recursive framework fence completes before releaseAll() drops queues
+    // or pools, including on a partial start rollback.
     (void)queueId;
     if (driver == nullptr || driver->fTxQueue == nullptr)
         return nullptr;
@@ -1262,112 +1349,138 @@ airportItlwmTxQueueForIndex(AirportItlwm *driver, unsigned char queueId)
 SInt64 AirportItlwmSkywalkInterface::
 pendingPackets(unsigned char queueId)
 {
+    AirportItlwm *controller = instance;
     IOSkywalkTxSubmissionQueue *queue =
-        airportItlwmTxQueueForIndex(instance, queueId);
+        airportItlwmTxQueueForIndex(controller, queueId);
     return queue != nullptr ? queue->getPacketCount() : 0;
 }
 
 SInt64 AirportItlwmSkywalkInterface::
 packetSpace(unsigned char queueId)
 {
+    AirportItlwm *controller = instance;
     IOSkywalkTxSubmissionQueue *queue =
-        airportItlwmTxQueueForIndex(instance, queueId);
+        airportItlwmTxQueueForIndex(controller, queueId);
     return queue != nullptr ? queue->getFreeSpace() : 0;
 }
 
 UInt64 AirportItlwmSkywalkInterface::
 getTxQueueDepth(void)
 {
-    return instance != nullptr && instance->fTxQueue != nullptr
-        ? instance->fSkywalkTxQueueDepth
+    AirportItlwm *controller = instance;
+    return controller != nullptr && controller->fTxQueue != nullptr
+        ? controller->fSkywalkTxQueueDepth
         : 0;
 }
 
 UInt64 AirportItlwmSkywalkInterface::
 getRxQueueCapacity(void)
 {
-    return instance != nullptr && instance->fRxQueue != nullptr
-        ? instance->fSkywalkRxQueueCapacity
+    AirportItlwm *controller = instance;
+    return controller != nullptr && controller->fRxQueue != nullptr
+        ? controller->fSkywalkRxQueueCapacity
         : 0;
 }
 
 void *AirportItlwmSkywalkInterface::
 getMultiCastQueue(void)
 {
-    return instance != nullptr ? instance->fMultiCastQueue : nullptr;
+    AirportItlwm *controller = instance;
+    return controller != nullptr ? controller->fMultiCastQueue : nullptr;
 }
 
 void *AirportItlwmSkywalkInterface::
 getRxCompQueue(void)
 {
-    return instance != nullptr ? instance->fRxQueue : nullptr;
+    AirportItlwm *controller = instance;
+    return controller != nullptr ? controller->fRxQueue : nullptr;
 }
 
 void *AirportItlwmSkywalkInterface::
 getTxCompQueue(void)
 {
-    return instance != nullptr ? instance->fTxCompQueue : nullptr;
+    AirportItlwm *controller = instance;
+    return controller != nullptr ? controller->fTxCompQueue : nullptr;
 }
 
 void *AirportItlwmSkywalkInterface::
 getTxSubQueue(apple80211_wme_ac)
 {
-    return airportItlwmTxQueueForIndex(instance, 0);
+    AirportItlwm *controller = instance;
+    return airportItlwmTxQueueForIndex(controller, 0);
 }
 
 void *AirportItlwmSkywalkInterface::
 getTxPacketPool(void)
 {
-    return instance != nullptr ? instance->fTxPool : nullptr;
+    AirportItlwm *controller = instance;
+    return controller != nullptr ? controller->fTxPool : nullptr;
 }
 
 void *AirportItlwmSkywalkInterface::
 getRxPacketPool(void)
 {
-    return instance != nullptr ? instance->fRxPool : nullptr;
+    AirportItlwm *controller = instance;
+    return controller != nullptr ? controller->fRxPool : nullptr;
 }
 
 int AirportItlwmSkywalkInterface::
 getNumTxQueues(void)
 {
-    return instance != nullptr && instance->fTxQueue != nullptr ? 1 : 0;
+    AirportItlwm *controller = instance;
+    return controller != nullptr && controller->fTxQueue != nullptr ? 1 : 0;
 }
 
 void AirportItlwmSkywalkInterface::
 enableDatapath(void)
 {
-    if (instance == nullptr)
+    AirportItlwm *controller = instance;
+    AirportItlwmLifecycleOperationGuard lifecycle(
+        controller, AirportItlwmLifecycleAdmission::StartingOrLive);
+    if (!lifecycle.admitted())
         return;
 
-    if (instance->fTxCompQueue)
-        instance->fTxCompQueue->enable();
-    if (instance->fRxQueue) {
-        instance->fRxQueue->enable();
-        instance->fRxQueue->requestEnqueue(nullptr, 0);
+    if (controller->fTxCompQueue)
+        controller->fTxCompQueue->enable();
+    if (controller->fRxQueue) {
+        controller->fRxQueue->enable();
+        controller->fRxQueue->requestEnqueue(nullptr, 0);
     }
-    if (instance->fTxQueue)
-        instance->fTxQueue->enable();
+    if (controller->fTxQueue)
+        controller->fTxQueue->enable();
 }
 
 void AirportItlwmSkywalkInterface::
 disableDatapath(void)
 {
-    if (instance == nullptr)
+    AirportItlwm *controller = instance;
+    if (controller == nullptr)
         return;
 
-    if (instance->fTxQueue)
-        instance->fTxQueue->disable();
-    if (instance->fMultiCastQueue)
-        instance->fMultiCastQueue->disable();
-    if (instance->fRxQueue)
-        instance->fRxQueue->disable();
-    if (instance->fTxCompQueue)
-        instance->fTxCompQueue->disable();
+    // detachInterface() can synchronously request datapath shutdown after
+    // the controller has entered Draining. Queue lifetime is held through
+    // that framework fence, so this pure queue-disable callback stays
+    // callable; unlike enableDatapath it cannot reopen the data path.
+    if (controller->fTxQueue)
+        controller->fTxQueue->disable();
+    if (controller->fMultiCastQueue)
+        controller->fMultiCastQueue->disable();
+    if (controller->fRxQueue)
+        controller->fRxQueue->disable();
+    if (controller->fTxCompQueue)
+        controller->fTxCompQueue->disable();
 }
 #endif
 
 IOReturn AirportItlwmSkywalkInterface::
 getCHANNELS_INFO(apple80211_channels_info *data)
+{
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getCHANNELS_INFOImpl(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getCHANNELS_INFOImpl(apple80211_channels_info *data)
 {
     if (!data)
         return kIOReturnBadArgument;
@@ -1743,8 +1856,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (req->req_data == NULL)
                 return kApple80211NotVirtualInterface;
 
+            AirportItlwm *const controller = instance;
+            AirportItlwmLifecycleOperationGuard lifecycle(
+                controller, AirportItlwmLifecycleAdmission::LiveOnly);
+            if (!lifecycle.admitted())
+                return kIOReturnNotReady;
+
             IO80211SkywalkInterface *parent =
-                (instance != NULL) ? instance->getPrimarySkywalkInterface()
+                (controller != NULL) ? controller->getPrimarySkywalkInterface()
                                    : NULL;
             if (parent == NULL)
                 return kApple80211RawEnxio;
@@ -1760,8 +1879,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             memmove(req->req_data, bsdName, bsdNameLen);
             return kIOReturnSuccess;
         }
-        case APPLE80211_IOC_STATE:
+        case APPLE80211_IOC_STATE: {
             if (cmd == SIOCGA80211) {
+                AirportItlwm *const controller = instance;
+                AirportItlwmLifecycleOperationGuard lifecycle(
+                    controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                if (!lifecycle.admitted())
+                    return kIOReturnNotReady;
                 struct ieee80211com *ic =
                     fHalService ? fHalService->get80211Controller() : NULL;
                 uint32_t state =
@@ -1775,6 +1899,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 }
             }
             break;
+        }
         default:
             break;
     }
@@ -1874,16 +1999,25 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 if (req->req_len != 0 &&
                     req->req_len < sizeof(apple80211_ssid_data))
                     return kIOReturnBadArgument;
-                if (instance != NULL && instance->fAPSTAOwner != NULL) {
-                    return instance->getAPSTA_SSID(
-                        this,
-                        (AirportItlwmAPSTASsidDataLayout *)req->req_data);
+                AirportItlwm *const controller = instance;
+                if (controller != NULL) {
+                    AirportItlwmLifecycleOperationGuard lifecycle(
+                        controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                    if (!lifecycle.admitted())
+                        return kIOReturnNotReady;
+                    if (controller->fAPSTAOwner != NULL) {
+                        return controller->getAPSTA_SSID(
+                            this,
+                            (AirportItlwmAPSTASsidDataLayout *)req->req_data);
+                    }
                 }
                 return getSSID((apple80211_ssid_data *)req->req_data);
             }
-            return (instance != NULL)
-                       ? instance->setAPSTA_SSID(this, (apple80211_ssid_data *)req->req_data)
-                       : kIOReturnNotReady;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setAPSTA_SSID(
+                        this, (apple80211_ssid_data *)req->req_data);
+                });
         case APPLE80211_IOC_BSSID:
 #if __IO80211_TARGET >= __MAC_26_0
             /*
@@ -1941,9 +2075,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return getCHANNEL((apple80211_channel_data *)req->req_data);
             }
             if (cmd == SIOCSA80211)
-                return (instance != NULL)
-                    ? instance->setAPSTA_CHANNEL(this, (apple80211_channel_data *)req->req_data)
-                    : kIOReturnNotReady;
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setAPSTA_CHANNEL(
+                            this, (apple80211_channel_data *)req->req_data);
+                    });
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AUTH_TYPE:
             if (cmd == SIOCGA80211)
@@ -1983,11 +2119,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setHOST_AP_MODE(
-                    this,
-                    (AirportItlwmAPSTAHostApModeNetworkDataLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setHOST_AP_MODE(
+                        this,
+                        (AirportItlwmAPSTAHostApModeNetworkDataLayout *)req->req_data);
+                });
         case APPLE80211_IOC_AP_MODE:
 #if __IO80211_TARGET >= __MAC_26_0
             /*
@@ -2171,9 +2310,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCGA80211)
-                return instance->getPOWER(this, (apple80211_power_data *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->getPOWER(
+                            this, (apple80211_power_data *)req->req_data);
+                    });
             if (cmd == SIOCSA80211)
-                return instance->setPOWER(this, (apple80211_power_data *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setPOWER(
+                            this, (apple80211_power_data *)req->req_data);
+                    });
             return kIOReturnUnsupported;
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_40MHZ_INTOLERANT:
@@ -2194,29 +2341,45 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return setPOWERSAVE((apple80211_powersave_data *)req->req_data);
             return kIOReturnUnsupported;
         case APPLE80211_IOC_CARD_CAPABILITIES:
-            if (instance == NULL || cmd != SIOCGA80211)
-                return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
-            if (req->req_len != 0 &&
-                req->req_len < TahoeCapabilityContracts::kApple80211BindCardCapabilitiesLength)
-                return kIOReturnBadArgument;
-            if (req->req_len != 0 &&
-                req->req_len < sizeof(apple80211_capability_data)) {
-                apple80211_capability_data cd;
-                IOReturn ret = instance->getCARD_CAPABILITIES(this, &cd);
-                if (ret != kIOReturnSuccess)
-                    return ret;
-                memcpy(req->req_data, &cd, req->req_len);
-                return kIOReturnSuccess;
+        {
+            AirportItlwm *const controller = instance;
+            if (controller == NULL || cmd != SIOCGA80211)
+                return (controller == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
+            {
+                AirportItlwmLifecycleOperationGuard lifecycle(
+                    controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                if (!lifecycle.admitted())
+                    return kIOReturnNotReady;
+                if (req->req_len != 0 &&
+                    req->req_len < TahoeCapabilityContracts::kApple80211BindCardCapabilitiesLength)
+                    return kIOReturnBadArgument;
+                if (req->req_len != 0 &&
+                    req->req_len < sizeof(apple80211_capability_data)) {
+                    apple80211_capability_data cd;
+                    IOReturn ret = controller->getCARD_CAPABILITIES(this, &cd);
+                    if (ret != kIOReturnSuccess)
+                        return ret;
+                    memcpy(req->req_data, &cd, req->req_len);
+                    return kIOReturnSuccess;
+                }
+                return controller->getCARD_CAPABILITIES(
+                    this,
+                    (apple80211_capability_data *)req->req_data);
             }
-            return instance->getCARD_CAPABILITIES(
-                this,
-                (apple80211_capability_data *)req->req_data);
+        }
         case APPLE80211_IOC_STATE:
             if (cmd == SIOCGA80211) {
-                if (instance != NULL && instance->fAPSTAOwner != NULL) {
-                    return instance->getAPSTA_STATE(
-                        this,
-                        (AirportItlwmAPSTAStateDataLayout *)req->req_data);
+                AirportItlwm *const controller = instance;
+                if (controller != NULL) {
+                    AirportItlwmLifecycleOperationGuard lifecycle(
+                        controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                    if (!lifecycle.admitted())
+                        return kIOReturnNotReady;
+                    if (controller->fAPSTAOwner != NULL) {
+                        return controller->getAPSTA_STATE(
+                            this,
+                            (AirportItlwmAPSTAStateDataLayout *)req->req_data);
+                    }
                 }
                 return getSTATE((apple80211_state_data *)req->req_data);
             }
@@ -2369,10 +2532,17 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return static_cast<IOReturn>(0xe082280e);
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd == SIOCGA80211) {
-                if (instance != NULL && instance->fAPSTAOwner != NULL) {
-                    return instance->getAPSTA_OP_MODE(
-                        this,
-                        (AirportItlwmAPSTAOpModeDataLayout *)req->req_data);
+                AirportItlwm *const controller = instance;
+                if (controller != NULL) {
+                    AirportItlwmLifecycleOperationGuard lifecycle(
+                        controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                    if (!lifecycle.admitted())
+                        return kIOReturnNotReady;
+                    if (controller->fAPSTAOwner != NULL) {
+                        return controller->getAPSTA_OP_MODE(
+                            this,
+                            (AirportItlwmAPSTAOpModeDataLayout *)req->req_data);
+                    }
                 }
                 return getOP_MODE((apple80211_opmode_data *)req->req_data);
             }
@@ -2582,6 +2752,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return kIOReturnUnsupported;
         case APPLE80211_IOC_CIPHER_KEY:
+        {
             /*
              * The current 25C56 public GET wrapper is an unread fixed
              * 0xe082280e leaf. Keep the SET path below intact: it owns the
@@ -2593,17 +2764,29 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (cmd != SIOCSA80211)
                 return kIOReturnUnsupported;
-            if (instance != NULL && instance->fAPSTAOwner != NULL)
-                return instance->setAPSTA_CIPHER_KEY(
-                    this, (apple80211_key *)req->req_data);
+            AirportItlwm *const controller = instance;
+            if (controller != NULL) {
+                AirportItlwmLifecycleOperationGuard lifecycle(
+                    controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                if (!lifecycle.admitted())
+                    return kIOReturnNotReady;
+                if (controller->fAPSTAOwner != NULL) {
+                    return controller->setAPSTA_CIPHER_KEY(
+                        this, (apple80211_key *)req->req_data);
+                }
+            }
             return setCIPHER_KEY((apple80211_key *)req->req_data);
+        }
         case APPLE80211_IOC_STATION_LIST:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCGA80211)
-                ? instance->getAPSTA_STATION_LIST(
-                    this, (apple80211_sta_data *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getAPSTA_STATION_LIST(
+                        this, (apple80211_sta_data *)req->req_data);
+                });
         case APPLE80211_IOC_AWDL_ELECTION_MASTER_COUNTS:
         case APPLE80211_IOC_AWDL_GET_AWDL_MASTER_DATABASE:
         case APPLE80211_IOC_AWDL_BATTERY_LEVEL:
@@ -2634,13 +2817,21 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             return kIOReturnUnsupported;
         case APPLE80211_IOC_PEER_CACHE_MAXIMUM_SIZE:
-            if (instance == NULL)
+        {
+            AirportItlwm *const controller = instance;
+            if (controller == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCGA80211) {
-                if (instance->fAPSTAOwner != NULL) {
-                    return instance->getAPSTA_PEER_CACHE_MAXIMUM_SIZE(
-                        this,
-                        (AirportItlwmAPSTAPeerCacheMaximumSizeLayout *)req->req_data);
+                {
+                    AirportItlwmLifecycleOperationGuard lifecycle(
+                        controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                    if (!lifecycle.admitted())
+                        return kIOReturnNotReady;
+                    if (controller->fAPSTAOwner != NULL) {
+                        return controller->getAPSTA_PEER_CACHE_MAXIMUM_SIZE(
+                            this,
+                            (AirportItlwmAPSTAPeerCacheMaximumSizeLayout *)req->req_data);
+                    }
                 }
                 apple80211_peer_cache_maximum_size *data =
                     (apple80211_peer_cache_maximum_size *)req->req_data;
@@ -2649,6 +2840,7 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
                 return kIOReturnSuccess;
             }
             return kIOReturnUnsupported;
+        }
         case APPLE80211_IOC_CUR_PMK:
             // Current 25C56 public SET wrapper is an unread fixed nonzero
             // stub. Both public Tahoe ingress paths reach this dispatcher,
@@ -2666,30 +2858,49 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             return (cmd == SIOCGA80211) ? getASSOCIATION_STATUS((apple80211_assoc_status_data *)req->req_data)
                                         : kIOReturnUnsupported;
         case APPLE80211_IOC_COUNTRY_CODE:
-            if (instance == NULL)
+        {
+            AirportItlwm *const controller = instance;
+            if (controller == NULL)
                 return kIOReturnNotReady;
-            if (cmd == SIOCGA80211) {
-                if (req->req_len == APPLE80211_MAX_CC_LEN) {
-                    apple80211_country_code_data country{};
-                    IOReturn ret = instance->getCOUNTRY_CODE(this, &country);
-                    if (ret != kIOReturnSuccess)
-                        return ret;
-                    memcpy(req->req_data, country.cc, APPLE80211_MAX_CC_LEN);
-                    return kIOReturnSuccess;
+            {
+                AirportItlwmLifecycleOperationGuard lifecycle(
+                    controller, AirportItlwmLifecycleAdmission::LiveOnly);
+                if (!lifecycle.admitted())
+                    return kIOReturnNotReady;
+                if (cmd == SIOCGA80211) {
+                    if (req->req_len == APPLE80211_MAX_CC_LEN) {
+                        apple80211_country_code_data country{};
+                        IOReturn ret = controller->getCOUNTRY_CODE(this, &country);
+                        if (ret != kIOReturnSuccess)
+                            return ret;
+                        memcpy(req->req_data, country.cc, APPLE80211_MAX_CC_LEN);
+                        return kIOReturnSuccess;
+                    }
+                    return controller->getCOUNTRY_CODE(
+                        this, (apple80211_country_code_data *)req->req_data);
                 }
-                return instance->getCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
+                if (cmd == SIOCSA80211)
+                    return controller->setCOUNTRY_CODE(
+                        this, (apple80211_country_code_data *)req->req_data);
+                return kIOReturnUnsupported;
             }
-            if (cmd == SIOCSA80211)
-                return instance->setCOUNTRY_CODE(this, (apple80211_country_code_data *)req->req_data);
-            return kIOReturnUnsupported;
+        }
         case APPLE80211_IOC_DRIVER_VERSION:
             if (instance == NULL || cmd != SIOCGA80211)
                 return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
-            return instance->getDRIVER_VERSION(this, (apple80211_version_data *)req->req_data);
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getDRIVER_VERSION(
+                        this, (apple80211_version_data *)req->req_data);
+                });
         case APPLE80211_IOC_HARDWARE_VERSION:
             if (instance == NULL || cmd != SIOCGA80211)
                 return (instance == NULL) ? kIOReturnNotReady : kIOReturnUnsupported;
-            return instance->getHARDWARE_VERSION(this, (apple80211_version_data *)req->req_data);
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getHARDWARE_VERSION(
+                        this, (apple80211_version_data *)req->req_data);
+                });
         case APPLE80211_IOC_MCS:
             return (cmd == SIOCGA80211) ? getMCS((apple80211_mcs_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -2886,24 +3097,33 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_STA_IE_LIST:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCGA80211)
-                ? instance->getAPSTA_STA_IE_LIST(
-                    this, (AirportItlwmAPSTAStaIEDataLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getAPSTA_STA_IE_LIST(
+                        this, (AirportItlwmAPSTAStaIEDataLayout *)req->req_data);
+                });
         case APPLE80211_IOC_KEY_RSC:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCGA80211)
-                ? instance->getAPSTA_KEY_RSC(
-                    this, (AirportItlwmAPSTAKeyRscDataLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getAPSTA_KEY_RSC(
+                        this, (AirportItlwmAPSTAKeyRscDataLayout *)req->req_data);
+                });
         case APPLE80211_IOC_STA_STATS:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCGA80211)
-                ? instance->getAPSTA_STA_STATS(
-                    this, (AirportItlwmAPSTAStaStatsDataLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCGA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->getAPSTA_STA_STATS(
+                        this, (AirportItlwmAPSTAStaStatsDataLayout *)req->req_data);
+                });
         case APPLE80211_IOC_STA_AUTHORIZE:
 #if __IO80211_TARGET >= __MAC_26_0
             // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
@@ -2912,10 +3132,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setSTA_AUTHORIZE(
-                    this, (AirportItlwmAPSTAStaAuthorizeInputLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setSTA_AUTHORIZE(
+                        this, (AirportItlwmAPSTAStaAuthorizeInputLayout *)req->req_data);
+                });
         case APPLE80211_IOC_STA_DISASSOCIATE:
 #if __IO80211_TARGET >= __MAC_26_0
             // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
@@ -2924,10 +3147,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setSTA_DISASSOCIATE(
-                    this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, false)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setSTA_DISASSOCIATE(
+                        this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data,
+                        false);
+                });
         case APPLE80211_IOC_STA_DEAUTH:
 #if __IO80211_TARGET >= __MAC_26_0
             // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
@@ -2936,10 +3163,14 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setSTA_DISASSOCIATE(
-                    this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data, true)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setSTA_DISASSOCIATE(
+                        this, (AirportItlwmAPSTAStaDisassocInputLayout *)req->req_data,
+                        true);
+                });
         case APPLE80211_IOC_RSN_CONF:
 #if __IO80211_TARGET >= __MAC_26_0
             // Current public Tahoe GET is an unread fixed 0xe082280e leaf.
@@ -2948,10 +3179,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
 #endif // __IO80211_TARGET >= __MAC_26_0
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setRSN_CONF(
-                    this, (apple80211_rsn_conf_data *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setRSN_CONF(
+                        this, (apple80211_rsn_conf_data *)req->req_data);
+                });
         case APPLE80211_IOC_VHT_MCS_INDEX_SET:
             return (cmd == SIOCGA80211) ? getVHT_MCS_INDEX_SET((apple80211_vht_mcs_index_set_data *)req->req_data)
                                         : kIOReturnUnsupported;
@@ -2974,13 +3208,19 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCGA80211)
-                return instance->getHOST_AP_MODE_HIDDEN(
-                    this,
-                    (AirportItlwmAPSTAHostApModeHiddenOutputLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->getHOST_AP_MODE_HIDDEN(
+                            this,
+                            (AirportItlwmAPSTAHostApModeHiddenOutputLayout *)req->req_data);
+                    });
             if (cmd == SIOCSA80211)
-                return instance->setHOST_AP_MODE_HIDDEN(
-                    this,
-                    (AirportItlwmAPSTAHostApModeHiddenLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setHOST_AP_MODE_HIDDEN(
+                            this,
+                            (AirportItlwmAPSTAHostApModeHiddenLayout *)req->req_data);
+                    });
             return kIOReturnUnsupported;
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_P2P_ENABLE:
@@ -2993,13 +3233,19 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCGA80211)
-                return instance->getSOFTAP_PARAMS(
-                    this,
-                    (AirportItlwmAPSTASoftAPParamsOutputLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->getSOFTAP_PARAMS(
+                            this,
+                            (AirportItlwmAPSTASoftAPParamsOutputLayout *)req->req_data);
+                    });
             if (cmd == SIOCSA80211)
-                return instance->setSOFTAP_PARAMS(
-                    this,
-                    (AirportItlwmAPSTASoftAPParamsInputLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setSOFTAP_PARAMS(
+                            this,
+                            (AirportItlwmAPSTASoftAPParamsInputLayout *)req->req_data);
+                    });
             return kIOReturnUnsupported;
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_P2P_LISTEN:
@@ -3012,9 +3258,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCGA80211)
-                return instance->getSOFTAP_STATS(
-                    this,
-                    (AirportItlwmAPSTASoftAPStatsLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->getSOFTAP_STATS(
+                            this,
+                            (AirportItlwmAPSTASoftAPStatsLayout *)req->req_data);
+                    });
             return kIOReturnUnsupported;
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_P2P_SCAN:
@@ -3026,10 +3275,13 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
         case APPLE80211_IOC_PEER_CACHE_CONTROL:
             if (instance == NULL)
                 return kIOReturnNotReady;
-            return (cmd == SIOCSA80211)
-                ? instance->setPEER_CACHE_CONTROL(
-                    this, (AirportItlwmAPSTAPeerCacheControlLayout *)req->req_data)
-                : kIOReturnUnsupported;
+            if (cmd != SIOCSA80211)
+                return kIOReturnUnsupported;
+            return airportItlwmRunDispatchLive(
+                instance, [this, req](AirportItlwm *controller) {
+                    return controller->setPEER_CACHE_CONTROL(
+                        this, (AirportItlwmAPSTAPeerCacheControlLayout *)req->req_data);
+                });
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_P2P_GO_CONF:
             /*
@@ -3044,9 +3296,12 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCSA80211)
-                return instance->setSOFTAP_TRIGGER_CSA(
-                    this,
-                    (AirportItlwmAPSTACsaInputLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setSOFTAP_TRIGGER_CSA(
+                            this,
+                            (AirportItlwmAPSTACsaInputLayout *)req->req_data);
+                    });
             return kIOReturnUnsupported;
 #if __IO80211_TARGET >= __MAC_26_0
         case APPLE80211_IOC_P2P_NOA_LIST:
@@ -3064,17 +3319,23 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCSA80211)
-                return instance->setSOFTAP_WIFI_NETWORK_INFO_IE(
-                    this,
-                    (AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setSOFTAP_WIFI_NETWORK_INFO_IE(
+                            this,
+                            (AirportItlwmAPSTASoftAPWifiNetworkInfoCarrierLayout *)req->req_data);
+                    });
             return kIOReturnUnsupported;
         case APPLE80211_IOC_SOFTAP_EXTENDED_CAPABILITIES_IE:
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCSA80211)
-                return instance->setSOFTAP_EXTENDED_CAPABILITIES_IE(
-                    this,
-                    (apple80211_softap_extended_capabilities_info *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setSOFTAP_EXTENDED_CAPABILITIES_IE(
+                            this,
+                            (apple80211_softap_extended_capabilities_info *)req->req_data);
+                    });
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AWDL_BTLE_PEER_INDICATION:
         case APPLE80211_IOC_AWDL_BTLE_STATE_PARAMS:
@@ -3096,8 +3357,11 @@ processApple80211Ioctl(UInt cmd, apple80211req *req)
             if (instance == NULL)
                 return kIOReturnNotReady;
             if (cmd == SIOCSA80211)
-                return instance->setMIS_MAX_STA(this,
-                    (apple80211_mis_max_sta *)req->req_data);
+                return airportItlwmRunDispatchLive(
+                    instance, [this, req](AirportItlwm *controller) {
+                        return controller->setMIS_MAX_STA(
+                            this, (apple80211_mis_max_sta *)req->req_data);
+                    });
             return kIOReturnUnsupported;
         case APPLE80211_IOC_AWDL_QUIET:
             /*
@@ -3202,7 +3466,10 @@ bindController(AirportItlwm *provider)
         return false;
     }
     fHalService = instance->fHalService;
-    scanSource = instance->scanSource;
+    // Layout-preserving legacy slot only. The controller owns the timer and
+    // exposes admission-gated schedule/cancel methods, so this interface must
+    // never cache a raw pointer that can outlive controller teardown.
+    scanSource = NULL;
     setInterfaceRole(1);
     setInterfaceId(1);
     return true;
@@ -3284,18 +3551,18 @@ updateDriverBssManagerRateAndMcs()
     }
 
     apple80211_rate_set_data rates;
-    if (getRATE_SET(&rates) == kIOReturnSuccess)
+    if (getRATE_SETImpl(&rates) == kIOReturnSuccess)
         bssManager->setRateSet(rates);
 
     apple80211_mcs_index_set_data mcs;
-    if (getMCS_INDEX_SET(&mcs) == kIOReturnSuccess)
+    if (getMCS_INDEX_SETImpl(&mcs) == kIOReturnSuccess)
         bssManager->setMCSIndexSet(mcs);
 
     apple80211_vht_mcs_index_set_data vht;
     memset(&vht, 0, sizeof(vht));
     vht.version = APPLE80211_VERSION;
     vht.mcs_map = 0xffff;
-    if (getVHT_MCS_INDEX_SET(&vht) != kIOReturnSuccess) {
+    if (getVHT_MCS_INDEX_SETImpl(&vht) != kIOReturnSuccess) {
         vht.version = APPLE80211_VERSION;
         vht.mcs_map = 0xffff;
     }
@@ -3316,6 +3583,7 @@ bool AirportItlwmSkywalkInterface::
 setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce,
                      uint code, uint connectionId)
 {
+    AIRPORT_ITLWM_REQUIRE_INTERNAL_BOOL_OPERATION();
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     bool ret = IO80211InfraInterface::setLinkStateInternal(
         state, debounceTimeout, debounce, code, connectionId);
@@ -3420,6 +3688,7 @@ setCurrentApAddress(ether_addr *addr)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
+    AIRPORT_ITLWM_REQUIRE_INTERNAL_OPERATION();
     (void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
@@ -3455,6 +3724,7 @@ setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 SInt32 AirportItlwmSkywalkInterface::
 setInterfaceEnable(bool enable)
 {
+    AIRPORT_ITLWM_REQUIRE_INTERNAL_SINT32_OPERATION();
     /*
      * Recovered AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)
      * continues past the base enable: it publishes the Skywalk carrier and
@@ -3488,7 +3758,9 @@ init(IOService *provider)
         return false;
     }
     this->fHalService = instance->fHalService;
-    this->scanSource = instance->scanSource;
+    // See bindController(): keep the ABI slot inert rather than duplicating
+    // controller timer ownership into the interface.
+    this->scanSource = NULL;
     this->cachedPowersaveLevel = APPLE80211_POWERSAVE_MODE_DISABLED;
     this->cachedTcpkaOffloadSupported = false;
     this->cachedTcpkaOffloadEnabled = false;
@@ -3529,6 +3801,7 @@ init(IOService *provider)
 IOReturn AirportItlwmSkywalkInterface::
 getSSID(struct apple80211_ssid_data *sd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com * ic = fHalService->get80211Controller();
     // Apple's IO80211Controller::getSSIDData always pre-zeroes and returns success.
     // When not associated, the cached SSID data is zeroed (ssid_len=0).
@@ -3547,6 +3820,7 @@ getSSID(struct apple80211_ssid_data *sd)
 IOReturn AirportItlwmSkywalkInterface::
 getTahoeCompactSSID(void *data, uint32_t length, uint32_t *returnedLength)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr || length != APPLE80211_MAX_SSID_LEN)
         return kIOReturnBadArgument;
 
@@ -3569,6 +3843,7 @@ getTahoeCompactSSID(void *data, uint32_t length, uint32_t *returnedLength)
 IOReturn AirportItlwmSkywalkInterface::
 getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // Tahoe visible APPLE80211_IOC_ASSOCIATE does not fall into the public
     // `setASSOCIATE(...)` path. Family `getSetHandler(20)` first emits the
     // hidden carrier `0x45` with the full `0x3ad8` assoc-candidates blob and,
@@ -3590,11 +3865,12 @@ getAWDL_PEER_TRAFFIC_STATS(void *data, unsigned int length)
                                            kIOReturnUnsupported);
             return kIOReturnUnsupported;
         }
-        return setWCL_ASSOCIATE(reinterpret_cast<apple80211AssocCandidates *>(data));
+        return setWCL_ASSOCIATEImpl(
+            reinterpret_cast<apple80211AssocCandidates *>(data));
     }
 
     if (data != nullptr && length == sizeof(apple80211_set_mac_address_data)) {
-        return setSET_MAC_ADDRESS(
+        return setSET_MAC_ADDRESSImpl(
             reinterpret_cast<apple80211_set_mac_address_data *>(data));
     }
 
@@ -3621,6 +3897,7 @@ setAUTH_TYPE(struct apple80211_authtype_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setCIPHER_KEY(struct apple80211_key *key)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     static_assert(__offsetof(struct apple80211_key, key_ea) == 92, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, key_rsc_len) == 80, "struct corrupted");
     static_assert(__offsetof(struct apple80211_key, wowl_kck_len) == 100, "struct corrupted");
@@ -3705,6 +3982,7 @@ setCIPHER_KEY(struct apple80211_key *key)
 IOReturn AirportItlwmSkywalkInterface::
 getPHY_MODE(struct apple80211_phymode_data *pd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (pd == nullptr)
         return kApple80211ErrInvalidArgumentRaw;
 
@@ -3725,6 +4003,7 @@ getPHY_MODE(struct apple80211_phymode_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 getCHANNEL(struct apple80211_channel_data *cd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com * ic = fHalService->get80211Controller();
     // Apple's IO80211 framework pre-zeroes channel data and returns success.
     // When not associated, channel=0 / flags=0.
@@ -3742,6 +4021,7 @@ getCHANNEL(struct apple80211_channel_data *cd)
 IOReturn AirportItlwmSkywalkInterface::
 getSTATE(struct apple80211_state_data *sd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     memset(sd, 0, sizeof(*sd));
     sd->version = APPLE80211_VERSION;
     sd->state = fHalService->get80211Controller()->ic_state;
@@ -3750,6 +4030,13 @@ getSTATE(struct apple80211_state_data *sd)
 
 IOReturn AirportItlwmSkywalkInterface::
 getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
+{
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getMCS_INDEX_SETImpl(ad);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getMCS_INDEX_SETImpl(struct apple80211_mcs_index_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ad == NULL)
@@ -3781,6 +4068,13 @@ getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getVHT_MCS_INDEX_SET(struct apple80211_vht_mcs_index_set_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getVHT_MCS_INDEX_SETImpl(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getVHT_MCS_INDEX_SETImpl(struct apple80211_vht_mcs_index_set_data *data)
+{
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC)
         return kIOReturnError;
@@ -3793,6 +4087,7 @@ getVHT_MCS_INDEX_SET(struct apple80211_vht_mcs_index_set_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getMCS_VHT(struct apple80211_mcs_vht_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return kIOReturnBadArgument;
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
@@ -3807,6 +4102,13 @@ getMCS_VHT(struct apple80211_mcs_vht_data *data)
 
 IOReturn AirportItlwmSkywalkInterface::
 getRATE_SET(struct apple80211_rate_set_data *ad)
+{
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getRATE_SETImpl(ad);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getRATE_SETImpl(struct apple80211_rate_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL) {
@@ -3837,6 +4139,7 @@ getRATE_SET(struct apple80211_rate_set_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getOP_MODE(struct apple80211_opmode_data *od)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // AppleBCMWLANCore::getOP_MODE starts the public carrier as
     // `version=1, op_mode=0`. It then ORs in APSTA bits, current-BSS
     // STA/IBSS mode via IO80211BssManager when associated, and monitor bits
@@ -3892,10 +4195,11 @@ getCOUNTRY_CHANNELS(apple80211_country_channel_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // Tahoe carries APPLE80211_IOC_HW_SUPPORTED_CHANNELS through the same BSD
     // bridge family as SUPPORTED_CHANNELS. The public carrier is identical on
     // the family side, so route both selectors to the same lifted producer.
-    return getSUPPORTED_CHANNELS(data);
+    return getSUPPORTED_CHANNELSImpl(data);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -3949,6 +4253,7 @@ getCUR_PMK(apple80211_pmk *)
 IOReturn AirportItlwmSkywalkInterface::
 setCUR_PMK(struct apple80211_pmk *pmk)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // Retained local ABI/private helper. Direct current 25C56 public
     // apple80211setCUR_PMK returns a fixed nonzero status before reading the
     // carrier, so processApple80211Ioctl no longer enters here for normal
@@ -4082,7 +4387,8 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
 IOReturn AirportItlwmSkywalkInterface::
 getCOUNTRY_CHANNELS_INFO(apple80211_channels_info *data)
 {
-    return getCHANNELS_INFO(data);
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getCHANNELS_INFOImpl(data);
 }
 
 IOReturn AirportItlwmSkywalkInterface::
@@ -4115,6 +4421,7 @@ getSENSING_DATA(apple80211_sensing_data_t *data)
 IOReturn AirportItlwmSkywalkInterface::
 getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -4130,10 +4437,10 @@ getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
     // These two reference NetAdapter synchronizers propagate their status.
     // Reuse the corresponding current-BSS producers rather than rejecting a
     // valid 0x214-byte WCL output carrier with generic Unsupported.
-    IOReturn ret = getRATE_SET(&carrier->rate_set);
+    IOReturn ret = getRATE_SETImpl(&carrier->rate_set);
     if (ret != kIOReturnSuccess)
         return ret;
-    ret = getMCS_INDEX_SET(&carrier->mcs_set);
+    ret = getMCS_INDEX_SETImpl(&carrier->mcs_set);
     if (ret != kIOReturnSuccess)
         return ret;
 
@@ -4142,7 +4449,7 @@ getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
     // MLO range remains deterministically empty.
     carrier->vht_mcs_set.version = APPLE80211_VERSION;
     carrier->vht_mcs_set.mcs_map = 0xffff;
-    if (getVHT_MCS_INDEX_SET(&carrier->vht_mcs_set) != kIOReturnSuccess) {
+    if (getVHT_MCS_INDEX_SETImpl(&carrier->vht_mcs_set) != kIOReturnSuccess) {
         carrier->vht_mcs_set.version = APPLE80211_VERSION;
         carrier->vht_mcs_set.mcs_map = 0xffff;
     }
@@ -4171,6 +4478,7 @@ getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *data)
 IOReturn AirportItlwmSkywalkInterface::
 getTXPOWER(struct apple80211_txpower_data *txd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (txd == NULL)
         return kIOReturnBadArgument;
     memset(txd, 0, sizeof(*txd));
@@ -4189,6 +4497,7 @@ getTXPOWER(struct apple80211_txpower_data *txd)
 IOReturn AirportItlwmSkywalkInterface::
 getRATE(struct apple80211_rate_data *rd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (rd == nullptr)
         return kIOReturnBadArgument;
@@ -4210,6 +4519,7 @@ getRATE(struct apple80211_rate_data *rd)
 IOReturn AirportItlwmSkywalkInterface::
 getBSSID(struct apple80211_bssid_data *bd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     // Apple's IO80211 framework (FUN_ffffff8002215524) pre-zeroes BSSID and returns success.
     // When not associated, BSSID is all-zero.
@@ -4225,6 +4535,7 @@ getBSSID(struct apple80211_bssid_data *bd)
 IOReturn AirportItlwmSkywalkInterface::
 getTahoeCompactBSSID(void *data, uint32_t length)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr || length != APPLE80211_ADDR_LEN)
         return kIOReturnBadArgument;
 
@@ -4240,6 +4551,7 @@ getTahoeCompactBSSID(void *data, uint32_t length)
 IOReturn AirportItlwmSkywalkInterface::
 getHW_ADDR(struct apple80211_hw_mac_address *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     // AppleBCMWLANCore::getHW_ADDR writes version=1 followed by the six-byte
     // hardware address, and IO80211Family's
@@ -4372,6 +4684,7 @@ getCHIP_COUNTER_STATS(apple80211_chip_stats *)
 IOReturn AirportItlwmSkywalkInterface::
 getVHT_CAPABILITY(struct apple80211_vht_capability *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     // AppleBCMWLANCore::getVHT_CAPABILITY does not use a generic unsupported
     // path. It returns 0x2d when the PHY gate rejects VHT, and otherwise
@@ -4404,6 +4717,7 @@ getVHT_CAPABILITY(struct apple80211_vht_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getHT_CAPABILITY(struct apple80211_ht_capability *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // Remote otool on AppleBCMWLANCoreMac shows getHT_CAPABILITY is a real
@@ -4438,6 +4752,7 @@ getHT_CAPABILITY(struct apple80211_ht_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getHE_CAPABILITY(struct apple80211_he_capability *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBCMWLANCore::getHE_CAPABILITY is not an unsupported slot. It
@@ -4461,6 +4776,7 @@ getHE_CAPABILITY(struct apple80211_he_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 getGUARD_INTERVAL(apple80211_guard_interval_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
@@ -4653,6 +4969,7 @@ getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getMAX_NSS_FOR_AP(apple80211_btcoex_max_nss_for_ap_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
@@ -4678,6 +4995,10 @@ getBTCOEX_2G_CHAIN_DISABLE(apple80211_btcoex_2g_chain_disable *data)
 IOReturn AirportItlwmSkywalkInterface::
 getBSS_BLACKLIST(bss_blacklist *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    // The Tahoe query takes the controller command gate and reads the lower
+    // net80211 owner asynchronously; unlike ordinary raw getters it must
+    // explicitly retain lifecycle admission before it reaches that bridge.
 #if __IO80211_TARGET >= __MAC_26_0
     (void)data;
     if (instance == nullptr)
@@ -4701,6 +5022,7 @@ getBSS_BLACKLIST(bss_blacklist *data)
 IOReturn AirportItlwmSkywalkInterface::
 getTXRX_CHAIN_INFO(apple80211_txrx_chain_info *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002c2);
 
@@ -4906,6 +5228,7 @@ setHT_CAPABILITY(apple80211_ht_capability *data)
 IOReturn AirportItlwmSkywalkInterface::
 setVHT_CAPABILITY(apple80211_vht_capability *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return static_cast<IOReturn>(kApple80211ErrInvalidArgumentRaw);
 
@@ -4982,6 +5305,7 @@ setTRAFFIC_ENG_PARAMS(apple80211_traffic_eng_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 getRSSI(struct apple80211_rssi_data *rd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL) {
         // Apple delegates RSSI reads to IO80211BssManager::getCurrentRSSI(),
@@ -5003,6 +5327,7 @@ getRSSI(struct apple80211_rssi_data *rd)
 IOReturn AirportItlwmSkywalkInterface::
 getRSN_IE(struct apple80211_rsn_ie_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
 #ifdef USE_APPLE_SUPPLICANT
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_bss == NULL || ic->ic_bss->ni_rsnie == NULL) {
@@ -5034,6 +5359,7 @@ setRSN_IE(struct apple80211_rsn_ie_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getAP_IE_LIST(struct apple80211_ap_ie_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (!data)
         return kIOReturnError;
@@ -5054,6 +5380,7 @@ getAP_IE_LIST(struct apple80211_ap_ie_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 getNOISE(struct apple80211_noise_data *nd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (nd == NULL)
         return kIOReturnBadArgument;
@@ -5104,6 +5431,7 @@ setPOWERSAVE(struct apple80211_powersave_data *pd)
 IOReturn AirportItlwmSkywalkInterface::
 getNSS(struct apple80211_nss_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     memset(data, 0, sizeof(*data));
     data->version = APPLE80211_VERSION;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
@@ -5113,6 +5441,7 @@ getNSS(struct apple80211_nss_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setASSOCIATE(struct apple80211_assoc_data *ad)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(3); sRT.assocCount++;
     if (airportItlwmRegDiagShouldBlock(kAirportItlwmRegDiagBlockPublicAssoc)) {
         airportItlwmRegDiagRecordBlock(kAirportItlwmRegDiagBlockPublicAssoc,
@@ -5181,6 +5510,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
 IOReturn AirportItlwmSkywalkInterface::
 setDISASSOCIATE(void *ad)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(7);
     struct ieee80211com *ic = fHalService->get80211Controller();
 
@@ -5226,6 +5556,13 @@ setDISASSOCIATE(void *ad)
 IOReturn AirportItlwmSkywalkInterface::
 getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return getSUPPORTED_CHANNELSImpl(ad);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+getSUPPORTED_CHANNELSImpl(struct apple80211_sup_channel_data *ad)
+{
     if (!ad)
         return kIOReturnError;
     ad->version = APPLE80211_VERSION;
@@ -5255,6 +5592,7 @@ getLOCALE(struct apple80211_locale_data *ld)
 IOReturn AirportItlwmSkywalkInterface::
 getDEAUTH(struct apple80211_deauth_data *da)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (!da)
         return kIOReturnError;
     da->version = APPLE80211_VERSION;
@@ -5266,6 +5604,7 @@ getDEAUTH(struct apple80211_deauth_data *da)
 IOReturn AirportItlwmSkywalkInterface::
 getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     
     if (!hv)
@@ -5293,6 +5632,7 @@ getASSOCIATION_STATUS(struct apple80211_assoc_status_data *hv)
 IOReturn AirportItlwmSkywalkInterface::
 setCLEAR_PMKSA_CACHE(void *req)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     (void)req;
     struct ieee80211com *ic = fHalService->get80211Controller();
     // PMKSA-cache clear semantically invalidates any held host PMK,
@@ -5320,6 +5660,7 @@ setDEAUTH(struct apple80211_deauth_data *da)
 IOReturn AirportItlwmSkywalkInterface::
 getMCS(struct apple80211_mcs_data* md)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (md == NULL)
         return kIOReturnBadArgument;
 
@@ -5360,6 +5701,7 @@ getMCS(struct apple80211_mcs_data* md)
 IOReturn AirportItlwmSkywalkInterface::
 getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (ed == nullptr)
         return 16;
 
@@ -5393,6 +5735,7 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
 IOReturn AirportItlwmSkywalkInterface::
 setSCAN_REQ(struct apple80211_scan_data *sd)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (fScanResultWrapping)
@@ -5412,17 +5755,13 @@ setSCAN_REQ(struct apple80211_scan_data *sd)
     fScanResultWrapping = false;
 
     if (sd->scan_type == APPLE80211_SCAN_TYPE_FAST || sd->scan_type == APPLE80211_SCAN_TYPE_PASSIVE) {
-        if (scanSource) {
-            scanSource->setTimeoutMS(100);
-            scanSource->enable();
-        }
+        if (instance == nullptr || !instance->scheduleScanSource(100))
+            return kIOReturnAborted;
         return kIOReturnSuccess;
     }
+    if (instance == nullptr || !instance->scheduleScanSource(100))
+        return kIOReturnAborted;
     ieee80211_begin_cache_bgscan(&ic->ic_ac.ac_if);
-    if (scanSource) {
-        scanSource->setTimeoutMS(100);
-        scanSource->enable();
-    }
     return kIOReturnSuccess;
 }
 
@@ -5552,6 +5891,7 @@ setINFRA_ENUMERATED(apple80211_infra_enumerated *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_REQ(apple80211ScanRequest *req)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(2); sRT.scanReqCount++;
     struct ieee80211com *ic = fHalService->get80211Controller();
 
@@ -5568,18 +5908,23 @@ setWCL_SCAN_REQ(apple80211ScanRequest *req)
      * Starting an independent net80211 bgscan here leaves that scan without a
      * paired WCL completion owner and can move an associated interface out of
      * RUN after the WCL request has already completed.
-     */
+    */
     fNextNodeToSend = NULL;
     fScanResultWrapping = false;
-    if (scanSource) {
-        scanSource->setTimeoutMS(100);
-        scanSource->enable();
-    }
+    if (instance == nullptr || !instance->scheduleScanSource(100))
+        return kIOReturnAborted;
     return kIOReturnSuccess;
 }
 
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
+{
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return setWCL_ASSOCIATEImpl(candidates);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 {
     RT2_SET(3); sRT.assocCount++;
     if (!candidates) {
@@ -5720,6 +6065,7 @@ setWCL_ASSOCIATE(apple80211AssocCandidates *candidates)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (!data)
         return kIOReturnError;
 
@@ -5759,7 +6105,10 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_SCAN_ABORT(void *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     (void)data;
+    if (instance == nullptr || !instance->cancelScanSource())
+        return kIOReturnAborted;
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // AppleBCMWLANCore::setWCL_SCAN_ABORT is not a no-op: it dispatches into
@@ -5772,11 +6121,6 @@ setWCL_SCAN_ABORT(void *data)
     // later external SCAN_REQ hit the family ignore path (0xe00002bc / 16).
     // Cancel the local fake-scan timer and synthesize the single SCAN_DONE edge
     // that our backend otherwise never emits for abort completion.
-    if (scanSource) {
-        scanSource->cancelTimeout();
-        scanSource->disable();
-    }
-
     if (ic->ic_flags & IEEE80211_F_BGSCAN)
         ic->ic_flags &= ~IEEE80211_F_BGSCAN;
     if (ic->ic_flags & IEEE80211_F_ASCAN)
@@ -5797,6 +6141,7 @@ setWCL_SCAN_ABORT(void *data)
 IOReturn AirportItlwmSkywalkInterface::
 setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     // AppleBCMWLANCore::setVIRTUAL_IF_CREATE is not a generic unsupported
     // setter. Tahoe exposes role-dependent public failures before the private
     // proximity/AWDL/NAN owner path takes over:
@@ -5835,15 +6180,27 @@ setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *data)
              * report success until the lower HAL backend explicitly
              * advertises and starts AP/GO firmware mode.
              *
-             * While the lower backend is fail-closed, create builds
-             * and validates the owner shape, attempts the lower
-             * start gate, clears the station-event callback before
-             * releasing the owner, and returns the HAL failure. That
-             * keeps role-7 externally unsupported without leaving a
-             * registered owner behind from a failed create.
+             * Shipped iwx/iwm builds are STA-only: neither backend
+             * advertises AP mode.  Fail before creating the optional
+             * APSTA owner in that case.  This is deliberately a
+             * containment quarantine, not APSTA parity closure: an
+             * opt-in AP-capable backend must retain the owner path
+             * below and provide selector admission, producer-bridge
+             * draining, and a full concurrent lifetime proof.
+             *
+             * The precheck returns the same lower-gate result that
+             * startLowerIfReady() would return for the current HAL,
+             * while avoiding publication of an owner which can never
+             * start in this runtime.
              */
             if (instance == nullptr) {
                 return kIOReturnNotReady;
+            }
+            if (instance->fHalService == nullptr) {
+                return kIOReturnNotReady;
+            }
+            if (!instance->fHalService->supportsAPMode()) {
+                return kIOReturnUnsupported;
             }
             AirportItlwmAPSTAOwner *owner =
                 instance->ensureAPSTAOwner(data);
@@ -5955,6 +6312,7 @@ setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode *)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_UPDATE_FAST_LANE(apple80211_fastlane *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (data == nullptr)
         return static_cast<IOReturn>(0xe00002bc);
 
@@ -6053,6 +6411,13 @@ setTX_MODE_CONFIG(apple80211_tx_mode_config *)
 
 IOReturn AirportItlwmSkywalkInterface::
 setCHANNEL(apple80211_channel_data *data)
+{
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return setCHANNELImpl(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setCHANNELImpl(apple80211_channel_data *data)
 {
     // AppleBCMWLANCore::setCHANNEL gates malformed channels, resolves a
     // chanspec, then programs it through a hidden owner. The no-APSTA local
@@ -6415,6 +6780,7 @@ setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_REASSOC(apple80211_reassoc *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
 
     // A reassociation start invalidates an externally delivered PMK:
@@ -6602,6 +6968,7 @@ setWCL_CONFIG_BG_PARAMS(apple80211_bg_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
@@ -6654,6 +7021,7 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     const auto *qos = reinterpret_cast<const tahoeWclQosParams *>(data);
     constexpr uint8_t kMissingQosOwnerFlags = 0x6d;
@@ -6687,6 +7055,7 @@ setWCL_QOS_PARAMS(apple80211_wcl_qos_params *data)
 IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_UP_DONE(void *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     (void)data;
 
@@ -6867,6 +7236,13 @@ setPRIVATE_MAC(apple80211_private_mac_data *data)
 IOReturn AirportItlwmSkywalkInterface::
 setSET_MAC_ADDRESS(apple80211_set_mac_address_data *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    return setSET_MAC_ADDRESSImpl(data);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+setSET_MAC_ADDRESSImpl(apple80211_set_mac_address_data *data)
+{
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 
@@ -7020,6 +7396,9 @@ setDBRG_ENTROPY(apple80211_drbg_entropy *)
 IOReturn AirportItlwmSkywalkInterface::
 setBSS_BLACKLIST(bss_blacklist *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
+    // The setter bypasses processApple80211Ioctl's direct-controller wrapper
+    // and invokes the controller-side command-gate owner below.
     if (data == nullptr)
         return kIOReturnBadArgumentTahoe;
 #if __IO80211_TARGET >= __MAC_26_0
@@ -7310,6 +7689,7 @@ static int convertNodeToScanResult(ItlHalService *fHalService,
 IOReturn AirportItlwmSkywalkInterface::
 getCURRENT_NETWORK(apple80211_scan_result *sr)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     struct ieee80211com *ic = fHalService->get80211Controller();
     if (ic->ic_state != IEEE80211_S_RUN || ic->ic_bss == NULL) {
         // AppleBCMWLANCore::getCURRENT_NETWORK gates on
@@ -7367,6 +7747,7 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
 IOReturn AirportItlwmSkywalkInterface::
 getSCAN_RESULT(struct apple80211_scan_result *sr)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     RT2_SET(4); sRT.scanResCount++;
     if (fNextNodeToSend == NULL) {
         if (fScanResultWrapping) {
@@ -7397,6 +7778,7 @@ getSCAN_RESULT(struct apple80211_scan_result *sr)
 IOReturn AirportItlwmSkywalkInterface::
 getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (!data)
         return kIOReturnError;
 
@@ -7433,6 +7815,7 @@ getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list *data)
 IOReturn AirportItlwmSkywalkInterface::
 getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (!data)
         return kIOReturnError;
 
@@ -7475,6 +7858,7 @@ getWCL_CHANNELS_INFO(apple80211ChannelInfo *data)
 IOReturn AirportItlwmSkywalkInterface::
 getWCL_BSS_INFO(apple80211_beacon_msg *data)
 {
+    AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();
     if (!data)
         return kIOReturnError;
 
@@ -7489,3 +7873,8 @@ getWCL_BSS_INFO(apple80211_beacon_msg *data)
 
     return kIOReturnSuccess;
 }
+
+#undef AIRPORT_ITLWM_REQUIRE_INTERNAL_SINT32_OPERATION
+#undef AIRPORT_ITLWM_REQUIRE_INTERNAL_BOOL_OPERATION
+#undef AIRPORT_ITLWM_REQUIRE_INTERNAL_OPERATION
+#undef AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION

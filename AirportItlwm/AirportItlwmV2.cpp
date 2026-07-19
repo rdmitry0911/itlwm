@@ -107,6 +107,42 @@ AirportItlwm_IO80211BSSBeacon_setBeaconDataFromMsg(
 #include <IOKit/IOUserClient.h>
 #endif
 
+/*
+ * A controller operation fence for callbacks that are entered outside the
+ * command gate.  Stop first closes lifecycle admission and then waits for
+ * these users before it removes Skywalk queues or detaches the HAL.  The
+ * internal form is deliberately reserved for HAL/framework callbacks that
+ * may be emitted while start() is still publishing the interface.
+ */
+class AirportItlwmControllerLifecycleOperationGuard
+{
+public:
+    AirportItlwmControllerLifecycleOperationGuard(AirportItlwm *controller,
+                                                  bool allowStarting)
+        : fController(nullptr)
+    {
+        if (controller == nullptr)
+            return;
+
+        const bool admitted = allowStarting
+            ? controller->beginLifecycleInternalOperation()
+            : controller->beginLifecycleOperation();
+        if (admitted)
+            fController = controller;
+    }
+
+    ~AirportItlwmControllerLifecycleOperationGuard()
+    {
+        if (fController != nullptr)
+            fController->endLifecycleOperation();
+    }
+
+    bool admitted() const { return fController != nullptr; }
+
+private:
+    AirportItlwm *fController;
+};
+
 class AirportItlwmSkywalkMulticastQueue : public IOEventSource
 {
     OSDeclareDefaultStructors(AirportItlwmSkywalkMulticastQueue)
@@ -440,6 +476,7 @@ public:
                               OSDictionary *properties) APPLE_KEXT_OVERRIDE;
     virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     virtual void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
+    virtual void free(void) APPLE_KEXT_OVERRIDE;
     virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
     virtual IOReturn externalMethod(uint32_t selector,
                                     IOExternalMethodArguments *args,
@@ -457,8 +494,12 @@ public:
                                               void *reference,
                                               IOExternalMethodArguments *args);
 
+    AirportItlwm *retainProvider();
+
 private:
+    AirportItlwm *takeProvider();
     AirportItlwm *fProvider;
+    IOLock       *fProviderLock;
     task_t       fOwningTask;
 };
 
@@ -593,11 +634,12 @@ IOCommandGate *_fCommandGate;
 // serial owner) outside the command gate. The pending transition is a single
 // coalesced record: the latest accepted link state wins and the action
 // publishes exactly once per coalesced transition (no retry/replay).
-static IOInterruptEventSource *_fLinkStatePublishSource;
-static IOSimpleLock *_fLinkStatePublishLock;
-static bool _fLinkStatePublishPendingValid;
-static IO80211LinkState _fLinkStatePublishPendingState;
-static unsigned int _fLinkStatePublishPendingRawCode;
+//
+// The source state is per controller (fLinkStatePublishLifecycle), rather
+// than a process-global sidecar.  Setup claims admission before creating an
+// event source; teardown closes it and keeps tearingDown set through
+// removeEventSource().  That makes overlapping controller starts/stops and
+// simultaneous controllers independent.
 
 #if __IO80211_TARGET >= __MAC_26_0
 static bool
@@ -638,61 +680,416 @@ static void publishLinkStateInterruptAction(OSObject *owner,
                                             int count)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
-    if (that == NULL || _fLinkStatePublishLock == NULL)
+    if (that == NULL)
         return;
+
+    AirportItlwmLinkStatePublishLifecycle &state =
+        that->fLinkStatePublishLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (that == NULL || admissionLock == NULL)
+        return;
+
+    // removeEventSource() drains an already-running action, but it may begin
+    // while teardown closes admission. Hold admission while taking the
+    // payload snapshot so teardown cannot free the payload lock underneath
+    // this action.
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        sender != state.source || state.payloadLock == NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+
     IO80211LinkState linkState;
     unsigned int rawCode;
     bool valid;
-    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
-    valid = _fLinkStatePublishPendingValid;
-    linkState = _fLinkStatePublishPendingState;
-    rawCode = _fLinkStatePublishPendingRawCode;
-    _fLinkStatePublishPendingValid = false;
-    IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
+    IOSimpleLock *payloadLock = state.payloadLock;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(payloadLock);
+    valid = state.pendingValid;
+    linkState = state.pendingState;
+    rawCode = state.pendingRawCode;
+    state.pendingValid = false;
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
     if (!valid)
         return;
     AirportItlwm::setLinkStateGated(that, (void *)(uintptr_t)linkState,
                                     (void *)(uintptr_t)rawCode, NULL, NULL);
 }
 
+static bool setupLinkStatePublishSource(AirportItlwm *that,
+                                        IOWorkLoop *workloop)
+{
+    if (that == NULL || workloop == NULL)
+        return false;
+
+    AirportItlwmLinkStatePublishLifecycle &state =
+        that->fLinkStatePublishLifecycle;
+    IOSimpleLock *lifecycleLock = that->fLifecycleAdmissionLock;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (lifecycleLock == NULL || admissionLock == NULL)
+        return false;
+
+    /*
+     * Claim setup before allocation/addEventSource.  stop first changes the
+     * controller phase to Draining, then observes settingUp and waits; the
+     * retained workloop keeps this local setup/rollback path valid while it
+     * does so.  Lock order is lifecycle admission -> source admission only.
+     */
+    IOInterruptState lifecycleIrq =
+        IOSimpleLockLockDisableInterrupt(lifecycleLock);
+    if (that->fLifecyclePhase != kAirportItlwmLifecycleStarting &&
+        that->fLifecyclePhase != kAirportItlwmLifecycleLive) {
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source != NULL || state.payloadLock != NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    state.settingUp = true;
+    state.stopping = false;
+    state.tearingDown = false;
+    workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+
+    IOSimpleLock *payloadLock = IOSimpleLockAlloc();
+    IOInterruptEventSource *source =
+        IOInterruptEventSource::interruptEventSource(
+            that, (IOInterruptEventSource::Action)publishLinkStateInterruptAction);
+    bool sourceAdded = false;
+    bool installed = false;
+    if (payloadLock != NULL && source != NULL &&
+        workloop->addEventSource(source) == kIOReturnSuccess) {
+        sourceAdded = true;
+        source->enable();
+
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (!state.stopping && !state.tearingDown) {
+            state.source = source;
+            state.payloadLock = payloadLock;
+            state.users = 0;
+            state.pendingValid = false;
+            state.settingUp = false;
+            installed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    }
+
+    if (installed) {
+        workloop->release();
+        return true;
+    }
+
+    // Do not expose setup completion to a waiting stop until every local
+    // source/payload allocation has been removed and released.
+    if (source != NULL) {
+        source->disable();
+        if (sourceAdded)
+            workloop->removeEventSource(source);
+        source->release();
+    }
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.settingUp = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    workloop->release();
+    return false;
+}
+
 static void queueOffGateLinkStatePublish(AirportItlwm *that,
                                          IO80211LinkState linkState,
                                          unsigned int rawCode)
 {
-    if (_fLinkStatePublishSource == NULL || _fLinkStatePublishLock == NULL)
+    if (that == NULL)
         return;
-    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
-    _fLinkStatePublishPendingState = linkState;
-    _fLinkStatePublishPendingRawCode = rawCode;
-    _fLinkStatePublishPendingValid = true;
-    IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
-    _fLinkStatePublishSource->interruptOccurred(0, 0, 0);
+
+    AirportItlwmLinkStatePublishLifecycle &state =
+        that->fLinkStatePublishLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (that == NULL || admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == NULL || state.payloadLock == NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+    ++state.users;
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    source->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(payloadLock);
+    state.pendingState = linkState;
+    state.pendingRawCode = rawCode;
+    state.pendingValid = true;
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, irq);
+    source->interruptOccurred(0, 0, 0);
+    source->release();
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.users != 0)
+        --state.users;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 }
 
 // Drain and release the off-gate publication source. Idempotent. Must be called
 // before fNetIf is detached/released so a deferred action cannot reach the
 // publication worker after fNetIf's lifetime ends: removeEventSource drains the
 // in-flight action on the work-queue thread, and the pending record is cleared
-// so no further transition can be serviced.
-static void teardownLinkStatePublishSource(void)
+// so no further transition can be serviced.  Closing sidecar admission first
+// eliminates the producer check-then-free race with source/payload teardown.
+static void teardownLinkStatePublishSource(AirportItlwm *that,
+                                           IOWorkLoop *workloop)
 {
-    if (_fWorkloop && _fLinkStatePublishSource) {
-        _fLinkStatePublishSource->disable();
-        _fWorkloop->removeEventSource(_fLinkStatePublishSource);
+    if (that == NULL)
+        return;
+
+    AirportItlwmLinkStatePublishLifecycle &state =
+        that->fLinkStatePublishLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (that == NULL || admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.tearingDown) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        // A concurrent lifecycle convergence must not release the workloop
+        // while the first owner is inside removeEventSource().
+        for (;;) {
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            const bool complete = !state.tearingDown;
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (complete)
+                return;
+            IOSleep(1);
+        }
     }
-    if (_fLinkStatePublishLock) {
-        IOInterruptState irq = IOSimpleLockLockDisableInterrupt(_fLinkStatePublishLock);
-        _fLinkStatePublishPendingValid = false;
-        IOSimpleLockUnlockEnableInterrupt(_fLinkStatePublishLock, irq);
+    state.stopping = true;
+    state.tearingDown = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    // Close admission before waiting. A setup owner does not clear
+    // settingUp until it has removed every unpublished local object, and a
+    // producer keeps its retained source until it decrements users.
+    for (;;) {
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = !state.settingUp && state.users == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        if (drained)
+            break;
+        IOSleep(1);
     }
-    if (_fLinkStatePublishSource) {
-        _fLinkStatePublishSource->release();
-        _fLinkStatePublishSource = NULL;
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    if (source != NULL)
+        source->retain();
+    if (workloop != NULL)
+        workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    // Do not clear source/payload or tearingDown before the workloop has
+    // acknowledged the event source: an action already admitted above owns
+    // `that` until removeEventSource() returns.
+    if (source != NULL) {
+        source->disable();
+        if (workloop != NULL)
+            workloop->removeEventSource(source);
     }
-    if (_fLinkStatePublishLock) {
-        IOSimpleLockFree(_fLinkStatePublishLock);
-        _fLinkStatePublishLock = NULL;
+
+    // The workloop has acknowledged the action. Withdraw the published
+    // pointers while tearingDown remains true, before a reference drop can
+    // destroy either object. A second teardown continues to wait on the bit.
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.source = NULL;
+    state.payloadLock = NULL;
+    state.pendingValid = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    if (source != NULL) {
+        // Drop the state-owned reference followed by the local teardown
+        // retain. The latter protects the source through remove/clear.
+        source->release();
+        source->release();
     }
+    if (workloop != NULL)
+        workloop->release();
+
+    // Do not publish completion until every owned reference and payload
+    // allocation above is gone. A concurrent teardown waits on this bit.
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.tearingDown = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+
+// The Skywalk interface historically copied AirportItlwm::scanSource into a
+// second raw field. Keep that field layout-compatible, but the per-controller
+// fScanSourceLifecycle record is the only live owner/admission authority.
+
+static bool setupScanSource(AirportItlwm *that, IOWorkLoop *workloop)
+{
+    if (that == NULL || workloop == NULL)
+        return false;
+
+    AirportItlwmScanSourceLifecycle &state = that->fScanSourceLifecycle;
+    IOSimpleLock *lifecycleLock = that->fLifecycleAdmissionLock;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (lifecycleLock == NULL || admissionLock == NULL)
+        return false;
+
+    IOInterruptState lifecycleIrq =
+        IOSimpleLockLockDisableInterrupt(lifecycleLock);
+    if (that->fLifecyclePhase != kAirportItlwmLifecycleStarting &&
+        that->fLifecyclePhase != kAirportItlwmLifecycleLive) {
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source != NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    state.settingUp = true;
+    state.stopping = false;
+    state.tearingDown = false;
+    workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+
+    IOTimerEventSource *source =
+        IOTimerEventSource::timerEventSource(that, &AirportItlwm::fakeScanDone);
+    bool sourceAdded = false;
+    bool installed = false;
+    if (source != NULL && workloop->addEventSource(source) == kIOReturnSuccess) {
+        sourceAdded = true;
+        source->enable();
+
+        irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (!state.stopping && !state.tearingDown) {
+            state.source = source;
+            state.users = 0;
+            that->scanSource = source;
+            state.settingUp = false;
+            installed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    }
+
+    if (installed) {
+        workloop->release();
+        return true;
+    }
+
+    if (source != NULL) {
+        source->disable();
+        if (sourceAdded)
+            workloop->removeEventSource(source);
+        source->release();
+    }
+    irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.settingUp = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    workloop->release();
+    return false;
+}
+
+static bool acquireScanSource(AirportItlwm *that,
+                              IOTimerEventSource **out)
+{
+    if (out == NULL)
+        return false;
+    *out = NULL;
+    if (that == NULL)
+        return false;
+
+    AirportItlwmScanSourceLifecycle &state = that->fScanSourceLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (that == NULL || admissionLock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == NULL || that->scanSource != state.source) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        return false;
+    }
+    ++state.users;
+    *out = state.source;
+    (*out)->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return true;
+}
+
+static void releaseScanSource(AirportItlwm *that,
+                              IOTimerEventSource *source)
+{
+    if (source != NULL)
+        source->release();
+
+    if (that == NULL)
+        return;
+
+    AirportItlwmScanSourceLifecycle &state = that->fScanSourceLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (that == NULL || admissionLock == NULL)
+        return;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.users != 0)
+        --state.users;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+}
+
+bool AirportItlwm::scheduleScanSource(uint32_t timeoutMs)
+{
+    IOTimerEventSource *source = NULL;
+    if (!acquireScanSource(this, &source))
+        return false;
+    source->setTimeoutMS(timeoutMs);
+    source->enable();
+    releaseScanSource(this, source);
+    return true;
+}
+
+bool AirportItlwm::cancelScanSource()
+{
+    IOTimerEventSource *source = NULL;
+    if (!acquireScanSource(this, &source))
+        return false;
+    source->cancelTimeout();
+    source->disable();
+    releaseScanSource(this, source);
+    return true;
+}
+
+bool AirportItlwm::scanSourceCallbackLive(IOTimerEventSource *sender)
+{
+    AirportItlwmScanSourceLifecycle &state = fScanSourceLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (sender == NULL || admissionLock == NULL)
+        return false;
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    const bool live = !state.settingUp && !state.stopping &&
+        !state.tearingDown && state.source == sender && scanSource == sender;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    return live;
 }
 
 // RuntimeDiag struct defined in AirportItlwmV2.hpp
@@ -1785,7 +2182,13 @@ publishTahoeBootFailureState(AirportItlwm *controller)
 static IOReturn
 performTahoeBootChipImageGated(OSObject *owner, void *, void *, void *, void *)
 {
-    static_cast<AirportItlwm *>(owner)->performTahoeBootChipImage();
+    AirportItlwm *self = static_cast<AirportItlwm *>(owner);
+    // The thread-call handler can already be queued when stop begins.  Check
+    // again after entering the command gate so a stale invocation never
+    // reaches fHalService while cancel_wait() drains it.
+    if (self == nullptr || !self->tahoeBootThreadCallLive())
+        return kIOReturnAborted;
+    self->performTahoeBootChipImage();
     return kIOReturnSuccess;
 }
 
@@ -1793,8 +2196,10 @@ static void
 handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 {
     AirportItlwm *self = (AirportItlwm *)param0;
+    if (self == nullptr || !self->tahoeBootThreadCallLive())
+        return;
     IOCommandGate *gate = self->getCommandGate();
-    if (gate) {
+    if (gate && self->tahoeBootThreadCallLive()) {
         gate->runAction(performTahoeBootChipImageGated);
     }
 }
@@ -1850,8 +2255,7 @@ bool AirportItlwmBootNub::start(IOService *provider)
     // Apple's AppleBCMWLANUserClient triggers bootChipImage after IOKit
     // matches it against the controller.  This nub replicates that pattern:
     // IOKit matched us against AirportItlwm, now trigger the async boot.
-    if (controller->tahoeBootThreadCall)
-        thread_call_enter(controller->tahoeBootThreadCall);
+    controller->scheduleTahoeBootThreadCall();
     return true;
 }
 
@@ -2360,9 +2764,17 @@ skywalkRxReturnPreparedPacket(AirportItlwm *that, IOSkywalkPacket *rxPkt)
 static int
 skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 {
+    if (ifp == nullptr) {
+        if (m != nullptr)
+            mbuf_freem(m);
+        return ENXIO;
+    }
+
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ifp->controller);
-    if (!that || !that->fRxPool || !that->fRxQueue) {
-        mbuf_freem(m);
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(that, false);
+    if (!lifecycle.admitted() || !that->fRxPool || !that->fRxQueue) {
+        if (m != nullptr)
+            mbuf_freem(m);
         return ENXIO;
     }
 
@@ -2540,72 +2952,565 @@ skywalkRxInput(struct _ifnet *ifp, mbuf_t m)
 }
 #endif /* __IO80211_TARGET >= __MAC_26_0 */
 
-void AirportItlwm::releaseAll()
+void AirportItlwm::scheduleTahoeBootThreadCall()
+{
+    if (fTahoeBootCallLock == nullptr)
+        return;
+
+    IOLockLock(fTahoeBootCallLock);
+    if (!fTahoeBootStopping && !fTahoeBootScheduled &&
+        tahoeBootThreadCall != nullptr) {
+        // Submit exactly once. With no later re-entry, cancel_wait() either
+        // removes this sole pending call or waits for this sole running call.
+        fTahoeBootScheduled = true;
+        thread_call_enter(tahoeBootThreadCall);
+    }
+    IOLockUnlock(fTahoeBootCallLock);
+}
+
+bool AirportItlwm::tahoeBootThreadCallLive()
+{
+    bool live = false;
+
+    if (fTahoeBootCallLock == nullptr)
+        return false;
+
+    IOLockLock(fTahoeBootCallLock);
+    live = !fTahoeBootStopping && tahoeBootThreadCall != nullptr;
+    IOLockUnlock(fTahoeBootCallLock);
+    return live;
+}
+
+void AirportItlwm::stopTahoeBootThreadCallAndDrain()
+{
+    if (fTahoeBootCallLock == nullptr)
+        return;
+
+    IOLockLock(fTahoeBootCallLock);
+    fTahoeBootStopping = true;
+    thread_call_t call = tahoeBootThreadCall;
+    IOLockUnlock(fTahoeBootCallLock);
+    if (call == nullptr)
+        return;
+
+    // handleTahoeBootChipImage never invokes controller stop(), so this
+    // non-callback teardown path may synchronously wait for its runAction.
+    thread_call_cancel_wait(call);
+    if (!thread_call_free(call)) {
+        // A failed free leaves ownership of a call that can still reference
+        // this controller.  Continuing into controller destruction would turn
+        // that contract violation into a delayed use-after-free.
+        panic("%s: tahoe boot thread_call_free failed", __FUNCTION__);
+    }
+
+    IOLockLock(fTahoeBootCallLock);
+    if (tahoeBootThreadCall == call)
+        tahoeBootThreadCall = nullptr;
+    IOLockUnlock(fTahoeBootCallLock);
+}
+
+bool AirportItlwm::beginLifecycleOperation()
+{
+    IOSimpleLock *lock = fLifecycleAdmissionLock;
+    if (lock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    // External selector admission begins only after the controller has
+    // completed start(). Internal startup sources have their own setup fence.
+    const bool admitted = fLifecyclePhase == kAirportItlwmLifecycleLive;
+    if (admitted)
+        ++fLifecycleOperationUsers;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return admitted;
+}
+
+bool AirportItlwm::beginLifecycleInternalOperation()
+{
+    IOSimpleLock *lock = fLifecycleAdmissionLock;
+    if (lock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    // A small, explicitly-audited set of framework bootstrap callbacks can
+    // run during Starting. They share the same user count as externally
+    // visible work, so Draining waits both classes before HAL teardown.
+    const bool admitted = fLifecyclePhase == kAirportItlwmLifecycleStarting ||
+        fLifecyclePhase == kAirportItlwmLifecycleLive;
+    if (admitted)
+        ++fLifecycleOperationUsers;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return admitted;
+}
+
+void AirportItlwm::endLifecycleOperation()
+{
+    IOSimpleLock *lock = fLifecycleAdmissionLock;
+    if (lock == NULL)
+        return;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    if (fLifecycleOperationUsers != 0)
+        --fLifecycleOperationUsers;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+bool AirportItlwm::markLifecycleLive()
+{
+    IOSimpleLock *lock = fLifecycleAdmissionLock;
+    if (lock == NULL)
+        return false;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(lock);
+    const bool live = fLifecyclePhase == kAirportItlwmLifecycleStarting;
+    if (live)
+        fLifecyclePhase = kAirportItlwmLifecycleLive;
+    IOSimpleLockUnlockEnableInterrupt(lock, irq);
+    return live;
+}
+
+bool AirportItlwm::beginLifecycleDrain()
+{
+    IOLock *controlLock = fLifecycleLock;
+    IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
+    if (controlLock == NULL || admissionLock == NULL)
+        return false;
+
+    /*
+     * Serialize all stop/release/free convergence before any caller touches
+     * HAL state. The control lock is only an owner/wait lock; it is released
+     * before command-gate cancellation, thread-call waits, and every source
+     * removeEventSource() call below.
+     */
+    IOLockLock(controlLock);
+    if (fLifecycleFinalizing) {
+        IOLockUnlock(controlLock);
+        return false;
+    }
+    while (fLifecycleTeardownInFlight) {
+        if (fLifecycleDrainOwner == current_thread()) {
+            IOLockUnlock(controlLock);
+            return true;
+        }
+
+        // The final free path must not free controlLock while a follower is
+        // still inside IOLockSleep() and about to reacquire it.  Account for
+        // that precise window before sleeping, then retire the count only
+        // after the wake has reacquired controlLock.
+        ++fLifecycleDrainWaiters;
+        IOLockSleep(controlLock, this, THREAD_UNINT);
+        if (fLifecycleDrainWaiters != 0)
+            --fLifecycleDrainWaiters;
+        if (fLifecycleDrainWaiters == 0)
+            IOLockWakeup(controlLock, &fLifecycleDrainWaiters, false);
+
+        // free() sets this barrier before its final wake.  A follower must
+        // not become a second owner or release any shared object after that
+        // point; its caller treats false as a strict no-op.
+        if (fLifecycleFinalizing) {
+            IOLockUnlock(controlLock);
+            return false;
+        }
+    }
+
+    IOInterruptState irq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (fLifecyclePhase == kAirportItlwmLifecycleStopped) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        IOLockUnlock(controlLock);
+        return false;
+    }
+    fLifecyclePhase = kAirportItlwmLifecycleDraining;
+    fLifecycleTeardownInFlight = true;
+    fLifecycleDrainOwner = current_thread();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    IOLockUnlock(controlLock);
+    return true;
+}
+
+bool AirportItlwm::lifecycleFinalizing()
+{
+    IOLock *controlLock = fLifecycleLock;
+    if (controlLock == NULL)
+        return false;
+
+    IOLockLock(controlLock);
+    const bool finalizing = fLifecycleFinalizing;
+    IOLockUnlock(controlLock);
+    return finalizing;
+}
+
+void AirportItlwm::beginLifecycleFinalization()
+{
+    IOLock *controlLock = fLifecycleLock;
+    if (controlLock == NULL)
+        return;
+
+    IOLockLock(controlLock);
+    // This is intentionally set while the drain owner still holds its
+    // claim, before finishLifecycleDrain() wakes followers.  New callers
+    // then return without touching shared controller state.
+    fLifecycleFinalizing = true;
+    IOLockUnlock(controlLock);
+}
+
+void AirportItlwm::waitForLifecycleDrainWaiters()
+{
+    IOLock *controlLock = fLifecycleLock;
+    if (controlLock == NULL)
+        return;
+
+    IOLockLock(controlLock);
+    while (fLifecycleDrainWaiters != 0)
+        IOLockSleep(controlLock, &fLifecycleDrainWaiters, THREAD_UNINT);
+    IOLockUnlock(controlLock);
+}
+
+bool AirportItlwm::lifecycleDrainOwnedByCurrentThread()
+{
+    IOLock *controlLock = fLifecycleLock;
+    if (controlLock == NULL)
+        return false;
+    IOLockLock(controlLock);
+    const bool owned = fLifecycleTeardownInFlight &&
+        fLifecycleDrainOwner == current_thread();
+    IOLockUnlock(controlLock);
+    return owned;
+}
+
+void AirportItlwm::prepareLifecycleDrain()
 {
 #if __IO80211_TARGET >= __MAC_26_0
-    // Wake any helper currently blocked in waitAssocTarget so the
-    // user client thread can return kIOReturnAborted instead of
-    // dying with the command gate. Safe to call before _fCommandGate
-    // is released because cancelPendingAssocTarget is a no-op when
-    // getCommandGate() returns NULL. The gated cancel action also
-    // zeros ic_psk and drops IEEE80211_F_PSK / ic_external_pmk_owner
-    // so a PLTI DeliverPMK racing teardown cannot reinstall a stale
-    // PMK after the controller is on its way down.
-    cancelPendingAssocTarget("releaseAll", true);
+    /*
+     * WaitAssociationTarget may sleep under the command gate. Wake it before
+     * waiting lifecycle operation users, otherwise a user-client waiter can
+     * deadlock teardown while it waits for this cancellation edge. This call
+     * does not hold either lifecycle lock across runAction().
+     */
+    cancelPendingAssocTarget("prepareLifecycleDrain", true);
 #endif
 
-    // CRITICAL: Stop all timers FIRST, before releasing fHalService.
-    // watchdogTimer runs on fWatchdogWorkLoop (a separate thread).
-    // If fHalService is freed while watchdogAction is in flight,
-    // the use-after-free chain fHalService→get80211Controller()→
-    // ic_ac.ac_if→if_watchdog dereferences freed memory → panic14
-    // (RIP=0x0 via IOTimerEventSource::timeoutSignaled).
-#if __IO80211_TARGET >= __MAC_26_0
-    stopTahoeLqmStatsTimer();
-    if (fWatchdogWorkLoop && fTahoeLqmStatsTimer) {
-        fWatchdogWorkLoop->removeEventSource(fTahoeLqmStatsTimer);
-        fTahoeLqmStatsTimer->release();
-        fTahoeLqmStatsTimer = nullptr;
+    IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
+    if (admissionLock == NULL)
+        return;
+    for (;;) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = fLifecycleOperationUsers == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        if (drained)
+            return;
+        IOSleep(1);
+    }
+}
+
+void AirportItlwm::releaseAPSTAOwnerClaimed()
+{
+    /*
+     * Keep the APSTA owner release after the common producer fence but before
+     * fHalService is detached.  The shipped Tahoe/iwn surface is STA-only,
+     * so this is normally dormant; retaining the ordering nevertheless keeps
+     * a future explicitly-enabled APSTA backend from skipping stopAPMode()
+     * because its lower HAL was already gone.
+     */
+    if (fAPSTAOwner == NULL)
+        return;
+
+#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
+    if (fHalService != NULL) {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (ic != NULL)
+            ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
     }
 #endif
-    if (fWatchdogWorkLoop && watchdogTimer) {
-        watchdogTimer->cancelTimeout();
-        watchdogTimer->disable();
-        fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-        watchdogTimer->release();
-        watchdogTimer = NULL;
+    fAPSTAOwner->release();
+    fAPSTAOwner = NULL;
+}
+
+void AirportItlwm::stopHalAndDrainClaimed()
+{
+    // The caller owns the Draining transition. Keep every producer fence
+    // ahead of HAL detach and publish Stopped only after every source has
+    // removed/released its workloop registration.
+    prepareLifecycleDrain();
+    stopTahoeBootThreadCallAndDrain();
+    teardownLinkStatePublishSource(this, _fWorkloop);
+    stopWatchdogAndDrain();
+    releaseAPSTAOwnerClaimed();
+
+    // The direct Skywalk RX trampoline is published before registration and
+    // is independent of whether configureInterface() reached ether_ifattach.
+    // Clear it after the queue-source fence, but before detaching the HAL, on
+    // every teardown path.
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fHalService != nullptr) {
+        struct ieee80211com *ic = fHalService->get80211Controller();
+        if (ic != nullptr)
+            ic->ic_ac.ac_if.if_skywalk_rx = NULL;
     }
+#endif
+
+    if (fHalAttached) {
+        if (fHalService != nullptr)
+            fHalService->detach(pciNub);
+        fHalAttached = false;
+    }
+
+}
+
+void AirportItlwm::stopHalAndDrain()
+{
+    if (!beginLifecycleDrain())
+        return;
+    stopHalAndDrainClaimed();
+}
+
+void AirportItlwm::finishLifecycleDrain()
+{
+    // The drain owner reaches here only after all shared ifnet, Skywalk pool,
+    // workloop, and HAL references have been released. Do not wake a second
+    // stop merely because the HAL detach itself completed.
+    IOLock *controlLock = fLifecycleLock;
+    if (controlLock != NULL) {
+        IOLockLock(controlLock);
+        const bool owner = fLifecycleTeardownInFlight &&
+            fLifecycleDrainOwner == current_thread();
+        IOLockUnlock(controlLock);
+        if (!owner)
+            return;
+    }
+
+    IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
+    if (admissionLock != NULL) {
+        IOInterruptState irq =
+            IOSimpleLockLockDisableInterrupt(admissionLock);
+        fLifecyclePhase = kAirportItlwmLifecycleStopped;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+    }
+
+    if (controlLock != NULL) {
+        IOLockLock(controlLock);
+        fLifecycleDrainOwner = NULL;
+        fLifecycleTeardownInFlight = false;
+        IOLockWakeup(controlLock, this, false);
+        IOLockUnlock(controlLock);
+    }
+}
+
+void AirportItlwm::stopWatchdogAndDrain()
+{
+    stopScanSourceAndDrain();
+#if __IO80211_TARGET >= __MAC_26_0
+    stopSkywalkQueuesAndDrain();
+#endif
+
+    // Both timers execute on fWatchdogWorkLoop and can reach HAL state.
+    // IOWorkLoop::removeEventSource() waits for acknowledgement, so after
+    // this flag prevents re-arm it is the lifetime fence before HAL teardown.
+    fWatchdogStopping = true;
+    IOWorkLoop *workLoop = fWatchdogWorkLoop;
+
+#if __IO80211_TARGET >= __MAC_26_0
+    stopTahoeLqmStatsTimer();
+    IOTimerEventSource *lqmTimer = fTahoeLqmStatsTimer;
+    if (lqmTimer != nullptr) {
+        if (workLoop != nullptr)
+            workLoop->removeEventSource(lqmTimer);
+        fTahoeLqmStatsTimer = nullptr;
+        lqmTimer->release();
+    }
+#endif
+
+    IOTimerEventSource *timer = watchdogTimer;
+    if (timer != nullptr) {
+        timer->cancelTimeout();
+        timer->disable();
+        if (workLoop != nullptr)
+            workLoop->removeEventSource(timer);
+        watchdogTimer = NULL;
+        timer->release();
+    }
+}
+
+void AirportItlwm::stopScanSourceAndDrain()
+{
+    AirportItlwmScanSourceLifecycle &state = fScanSourceLifecycle;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.tearingDown) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        for (;;) {
+            irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            const bool complete = !state.tearingDown;
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+            if (complete)
+                return;
+            IOSleep(1);
+        }
+    }
+    state.stopping = true;
+    state.tearingDown = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+
+    // Close admission before waiting. schedule/cancel users hold only a
+    // retained timer while changing its timeout state; a setup owner holds
+    // settingUp until it has rolled an unpublished timer back.
+    for (;;) {
+        irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = !state.settingUp && state.users == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+        if (drained)
+            break;
+        IOSleep(1);
+    }
+
+    irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    IOTimerEventSource *source = state.source;
+    if (source != NULL)
+        source->retain();
+    IOWorkLoop *workloop = _fWorkloop;
+    if (workloop != NULL)
+        workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+
+    // fakeScanDone() posts WCL scan results through the controller.  The
+    // removeEventSource acknowledgement drains any callback that was already
+    // admitted before stopping became visible. Keep tearingDown true until
+    // the remove/release sequence has completed so a second stop cannot hand
+    // the workloop to releaseAll() in the middle of this fence.
+    if (source != NULL) {
+        source->cancelTimeout();
+        source->disable();
+        if (workloop != nullptr)
+            workloop->removeEventSource(source);
+    }
+
+    // removeEventSource() is now the callback fence. Clear the published
+    // pointers while tearingDown remains true, before either reference drop
+    // can destroy the timer.
+    irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.source = NULL;
+    scanSource = NULL;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+
+    if (source != NULL) {
+        source->release();
+        source->release();
+    }
+    if (workloop != NULL)
+        workloop->release();
+
+    irq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.tearingDown = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, irq);
+}
+
+#if __IO80211_TARGET >= __MAC_26_0
+void AirportItlwm::stopSkywalkQueuesAndDrain()
+{
+    // Queue callbacks run on _fWorkloop and may enter TX/RX paths that use
+    // fHalService.  disable() only prevents later scheduling; removing each
+    // source is the synchronous acknowledgement fence for an in-flight one.
+    if (_fWorkloop == nullptr)
+        return;
+
+    if (fMultiCastQueue != nullptr &&
+        fMultiCastQueue->getWorkLoop() == _fWorkloop) {
+        fMultiCastQueue->disable();
+        _fWorkloop->removeEventSource(fMultiCastQueue);
+    }
+    if (fTxCompQueue != nullptr &&
+        fTxCompQueue->getWorkLoop() == _fWorkloop) {
+        fTxCompQueue->disable();
+        _fWorkloop->removeEventSource(fTxCompQueue);
+    }
+    if (fTxQueue != nullptr && fTxQueue->getWorkLoop() == _fWorkloop) {
+        fTxQueue->disable();
+        _fWorkloop->removeEventSource(fTxQueue);
+    }
+    if (fRxQueue != nullptr && fRxQueue->getWorkLoop() == _fWorkloop) {
+        fRxQueue->disable();
+        _fWorkloop->removeEventSource(fRxQueue);
+    }
+}
+#endif
+
+void AirportItlwm::detachSkywalkInterfaceAndFenceBorrowers()
+{
+    /*
+     * Queue getters intentionally return borrowed Skywalk objects, matching
+     * the framework ABI. A framework consumer may still hold a borrowed
+     * result after that getter returns, including while this recursive detach
+     * asks the interface for its queue inventory. The required lifetime fence
+     * is therefore detachInterface(), not merely a null store or a scoped
+     * lifecycle user: STOPPED -> BSD detached -> logical link detached ->
+     * queue/pool released.
+     *
+     * Keep the two inverses independent.  A failed start can attach the
+     * controller interface before configureInterface() reaches
+     * ether_ifattach(), while a configured interface needs exactly one BSD
+     * detach before its framework detach.
+     */
+    if (fSkywalkEthernetAttached) {
+        if (fHalService != nullptr) {
+            struct ieee80211com *ic = fHalService->get80211Controller();
+            if (ic != nullptr) {
+                struct _ifnet *ifp = &ic->ic_ac.ac_if;
+                ether_ifdetach(ifp);
+            }
+        }
+        fSkywalkEthernetAttached = false;
+    }
+
+    const bool hadInterfaceAttachment = fSkywalkInterfaceAttached;
+    if (hadInterfaceAttachment && fNetIf != nullptr) {
+        RT3_SET(15); // IONetworkController::detachInterface entered
+        detachInterface(fNetIf, true);
+    }
+    fSkywalkInterfaceAttached = false;
+
+    // fNetIf->attach(this) can succeed even if attachInterface() immediately
+    // fails. Only that partial path needs an explicit provider inverse: a
+    // successful detachInterface() owns normal framework/IOService teardown,
+    // and a second fNetIf->detach(this) after it would be out of order.
+    if (!hadInterfaceAttachment && fSkywalkInterfaceProviderAttached &&
+        fNetIf != nullptr)
+        fNetIf->detach(this);
+    fSkywalkInterfaceProviderAttached = false;
+}
+
+void AirportItlwm::releaseAll(bool finishLifecycle)
+{
+    /*
+     * releaseAll() is reached from normal stop, start failures, and free.
+     * It either inherits the current drain claim or becomes the sole owner;
+     * a follower waits in beginLifecycleDrain() and then returns without
+     * releasing any shared object under the first owner.
+     */
+    if (!lifecycleDrainOwnedByCurrentThread() && !beginLifecycleDrain())
+        return;
+
+    // Stop/cleanup is idempotent but must be completed before either workloop
+    // is released. This path also performs cancellation before waiting any
+    // admitted PLTI/selector operation users.
+    stopHalAndDrainClaimed();
+
+    // stopHalAndDrainClaimed() disabled and synchronously removed all queue
+    // sources. Detach the BSD/framework borrowers while queues and pools are
+    // still owned; start failures after attachInterface() must take exactly
+    // the same fence as normal stop.
+    detachSkywalkInterfaceAndFenceBorrowers();
+
     if (fWatchdogWorkLoop) {
         fWatchdogWorkLoop->release();
         fWatchdogWorkLoop = NULL;
     }
-    if (_fWorkloop && scanSource) {
-        scanSource->cancelTimeout();
-        scanSource->disable();
-        _fWorkloop->removeEventSource(scanSource);
-        scanSource->release();
-        scanSource = NULL;
-    }
-    teardownLinkStatePublishSource();
 #if __IO80211_TARGET >= __MAC_26_0
     skywalkTxDrainCompletionPackets(this);
     skywalkRxDrainPendingPackets(this);
-    if (_fWorkloop && fMultiCastQueue && fMultiCastQueue->getWorkLoop() == _fWorkloop) {
-        fMultiCastQueue->disable();
-        _fWorkloop->removeEventSource(fMultiCastQueue);
-    }
-    if (_fWorkloop && fTxCompQueue && fTxCompQueue->getWorkLoop() == _fWorkloop) {
-        fTxCompQueue->disable();
-        _fWorkloop->removeEventSource(fTxCompQueue);
-    }
-    if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
-        fTxQueue->disable();
-        _fWorkloop->removeEventSource(fTxQueue);
-    }
-    if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
-        fRxQueue->disable();
-        _fWorkloop->removeEventSource(fRxQueue);
-    }
     OSSafeReleaseNULL(fMultiCastQueue);
     OSSafeReleaseNULL(fTxCompQueue);
     OSSafeReleaseNULL(fTxQueue);
@@ -2619,6 +3524,11 @@ void AirportItlwm::releaseAll()
     fSkywalkTxQueueDepth = 0;
     fSkywalkRxQueueCapacity = 0;
 #endif
+
+    // Queue/pool release is intentionally above this drop: Skywalk logical
+    // link teardown can still dereference the packet-pool inventory.
+    OSSafeReleaseNULL(fNetIf);
+    sRT.fNetIfPtr = 0;
 
 #if __IO80211_TARGET >= __MAC_26_0
     if (fBssManager != nullptr) {
@@ -2639,34 +3549,9 @@ void AirportItlwm::releaseAll()
         io80211FaultReporter->release();
         io80211FaultReporter = NULL;
     }
-    /*
-     * Tear down the host APSTA owner before fHalService.
-     * AirportItlwmAPSTAOwner::teardown stops the lower AP
-     * backend (if it was ever started) through fHalService and
-     * clears the station table; running teardown after fHalService
-     * has been released would leave the lower-stop call without a
-     * HAL service and skip the contractual stopAPMode invocation.
-     *
-     * Unbind the producer-bridge consumer before releasing the
-     * owner so the producer reads NULL cb/arg fields after the
-     * owner storage is reclaimed. The unregister API requires the
-     * cookie passed at register time and is a no-op when no
-     * consumer is currently bound, so calling it unconditionally
-     * is safe in APSTA station-event opt-out builds. Default Tahoe
-     * builds keep IEEE80211_STA_ONLY and do not bind this bridge.
-     */
-    if (fAPSTAOwner != NULL) {
-#ifdef IEEE80211_APSTA_STATION_EVENT_OPT_OUT
-        if (fHalService != NULL) {
-            struct ieee80211com *ic = fHalService->get80211Controller();
-            if (ic != NULL) {
-                ieee80211_apsta_event_unregister(ic, fAPSTAOwner);
-            }
-        }
-#endif
-        fAPSTAOwner->release();
-        fAPSTAOwner = NULL;
-    }
+    // stopHalAndDrainClaimed() fenced producers, released any dormant APSTA
+    // owner while the lower HAL was live, and returned HAL attach ownership
+    // while this drain owner remained active.
     if (fHalService) {
         fHalService->release();
         fHalService = NULL;
@@ -2680,6 +3565,8 @@ void AirportItlwm::releaseAll()
         _fWorkloop->release();
         _fWorkloop = NULL;
     }
+    if (finishLifecycle)
+        finishLifecycleDrain();
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -2897,16 +3784,27 @@ postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, vo
 void AirportItlwm::
 eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 {
+    if (ic == nullptr)
+        return;
+
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ic->ic_ac.ac_if.controller);
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(that, true);
+    if (!lifecycle.admitted() || !that->fNetIf) {
+        XYLog("DEBUG %s SKIP: interface=NULL or draining\n", __FUNCTION__);
+        return;
+    }
+
+    IOCommandGate *gate = that->getCommandGate();
+    if (gate == nullptr) {
+        XYLog("DEBUG %s SKIP: command gate unavailable\n", __FUNCTION__);
+        return;
+    }
+
     RT_SET(0);
     sRT.evtCount++;
     sRT.lastEvtCode = msgCode;
     sRT.ic_state = ic->ic_state;
     sRT.if_flags = ic->ic_ac.ac_if.if_flags;
-    if (!that || !that->fNetIf) {
-        XYLog("DEBUG %s SKIP: interface=NULL\n", __FUNCTION__);
-        return;
-    }
     UInt32 apple80211Msg;
     void *msgData = NULL;
     unsigned int msgDataLen = 0;
@@ -2942,8 +3840,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             // setWCL_JOIN_ABORT even though the handshake succeeded on air.
             // The RSN key-done path is command-gated, and the WCL routes below
             // use the gate-safe controller->postMessage (PostOffice) dispatch.
-            that->getCommandGate()->runAction(postRsnHandshakeDoneGated,
-                (void *)(uintptr_t)false, NULL, NULL);
+            gate->runAction(postRsnHandshakeDoneGated,
+                            (void *)(uintptr_t)false, NULL, NULL);
 #if __IO80211_TARGET >= __MAC_26_0
             postTahoeWclLinkUpInd(that, 0);
             postTahoeWclConnectCompleteEvent(that);
@@ -3002,21 +3900,25 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
             return;
     }
     // Defer postMessage to workloop context — cannot call from interrupt thread.
-    that->getCommandGate()->runAction(postMessageGated,
-        (void *)(uintptr_t)apple80211Msg, msgData, (void *)(uintptr_t)msgDataLen);
+    gate->runAction(postMessageGated,
+                    (void *)(uintptr_t)apple80211Msg, msgData,
+                    (void *)(uintptr_t)msgDataLen);
 }
 
 void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
 {
-    // Guard: watchdogAction runs on fWatchdogWorkLoop (separate thread).
-    // During releaseAll(), fHalService may be freed before the timer is
-    // fully cancelled.  Dereferencing freed fHalService causes a
-    // use-after-free chain that ends in calling a NULL if_watchdog
-    // function pointer (panic14: RIP=0x0, CR2=0x0).
-    if (!fHalService)
+    // stopWatchdogAndDrain() sets the permanent-stop flag before removing
+    // this source synchronously from fWatchdogWorkLoop.  Do not touch HAL
+    // state or re-arm the timer once teardown has begun.
+    if (fWatchdogStopping || timer == nullptr || timer != watchdogTimer)
         return;
-    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-    struct ieee80211com *ic = fHalService->get80211Controller();
+
+    ItlHalService *hal = fHalService;
+    if (hal == nullptr)
+        return;
+
+    struct _ifnet *ifp = &hal->get80211Controller()->ic_ac.ac_if;
+    struct ieee80211com *ic = hal->get80211Controller();
     RT_SET(8);
     sRT.wdCount++;
     sRT.ic_state = ic->ic_state;
@@ -3040,8 +3942,10 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     // Reading a single int is safe without locking.
     sRT.nodeCount = (uint32_t)ic->ic_nnodes;
     airportItlwmRegDiagPoll(this);
-    (*ifp->if_watchdog)(ifp);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+    if (ifp->if_watchdog)
+        (*ifp->if_watchdog)(ifp);
+    if (!fWatchdogStopping && timer == watchdogTimer)
+        timer->setTimeoutMS(kWatchDogTimerPeriod);
 }
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -3049,7 +3953,8 @@ IOReturn AirportItlwm::publishTahoeLqmStatsGated(
     OSObject *target, void *, void *, void *, void *)
 {
     AirportItlwm *that = OSDynamicCast(AirportItlwm, target);
-    if (that == nullptr || !that->fTahoeLqmAssociated ||
+    if (that == nullptr || that->fWatchdogStopping ||
+        !that->fTahoeLqmAssociated ||
         that->fHalService == nullptr || that->fNetIf == nullptr)
         return kIOReturnNotReady;
 
@@ -3089,7 +3994,8 @@ IOReturn AirportItlwm::publishTahoeLqmStatsGated(
 
 void AirportItlwm::tahoeLqmStatsAction(IOTimerEventSource *timer)
 {
-    if (timer == nullptr || timer != fTahoeLqmStatsTimer ||
+    if (fWatchdogStopping || timer == nullptr ||
+        timer != fTahoeLqmStatsTimer ||
         !fTahoeLqmAssociated || fHalService == nullptr)
         return;
 
@@ -3097,7 +4003,8 @@ void AirportItlwm::tahoeLqmStatsAction(IOTimerEventSource *timer)
     if (gate != nullptr)
         gate->runAction(publishTahoeLqmStatsGated);
 
-    if (fTahoeLqmAssociated && fBssManager != nullptr &&
+    if (!fWatchdogStopping && fTahoeLqmAssociated &&
+        fBssManager != nullptr &&
         fBssManager->isAssociated() && timer == fTahoeLqmStatsTimer) {
         timer->setTimeoutMS(fTahoeLqmStatsIntervalMs);
     }
@@ -3108,7 +4015,7 @@ void AirportItlwm::startTahoeLqmStatsTimer()
     fTahoeLqmAssociated = true;
     fTahoeLqmHasPreviousSnapshot = false;
     fTahoeLqmPreviousSnapshot = TahoeLqmContracts::CounterSnapshot{};
-    if (fTahoeLqmStatsTimer == nullptr)
+    if (fWatchdogStopping || fTahoeLqmStatsTimer == nullptr)
         return;
 
     fTahoeLqmStatsTimer->cancelTimeout();
@@ -3134,7 +4041,8 @@ void AirportItlwm::setTahoeLqmStatsInterval(uint32_t intervalMs)
         return;
 
     fTahoeLqmStatsIntervalMs = intervalMs;
-    if (fTahoeLqmAssociated && fTahoeLqmStatsTimer != nullptr) {
+    if (!fWatchdogStopping && fTahoeLqmAssociated &&
+        fTahoeLqmStatsTimer != nullptr) {
         fTahoeLqmStatsTimer->cancelTimeout();
         fTahoeLqmStatsTimer->enable();
         fTahoeLqmStatsTimer->setTimeoutMS(intervalMs);
@@ -3144,9 +4052,11 @@ void AirportItlwm::setTahoeLqmStatsInterval(uint32_t intervalMs)
 
 void AirportItlwm::fakeScanDone(OSObject *owner, IOTimerEventSource *sender)
 {
+    AirportItlwm *that = (AirportItlwm *)owner;
+    if (that == NULL || !that->scanSourceCallbackLive(sender))
+        return;
     RT_SET(13);
     sRT.scanCount++;
-    AirportItlwm *that = (AirportItlwm *)owner;
     /* Reset SCAN_RESULT iterator so airportd reads from the beginning */
     that->fNextNodeToSend = NULL;
     that->fScanResultWrapping = false;
@@ -3185,6 +4095,33 @@ bool AirportItlwm::isCommandProhibited(int command)
 bool AirportItlwm::init(OSDictionary *properties)
 {
     bool ret = super::init(properties);
+    fLifecycleLock = IOLockAlloc();
+    fLifecycleAdmissionLock = IOSimpleLockAlloc();
+    fLifecyclePhase = kAirportItlwmLifecycleStarting;
+    fLifecycleTeardownInFlight = false;
+    fLifecycleDrainWaiters = 0;
+    fLifecycleFinalizing = false;
+    fLifecycleDrainOwner = NULL;
+    fLifecycleOperationUsers = 0;
+    memset(&fLinkStatePublishLifecycle, 0,
+           sizeof(fLinkStatePublishLifecycle));
+    memset(&fScanSourceLifecycle, 0, sizeof(fScanSourceLifecycle));
+    fLinkStatePublishLifecycle.admissionLock = IOSimpleLockAlloc();
+    fScanSourceLifecycle.admissionLock = IOSimpleLockAlloc();
+    fWatchdogStopping = false;
+    tahoeBootThreadCall = nullptr;
+    fTahoeBootCallLock = IOLockAlloc();
+    fTahoeBootStopping = false;
+    fTahoeBootScheduled = false;
+    fHalAttached = false;
+    fSkywalkInterfaceProviderAttached = false;
+    fSkywalkInterfaceAttached = false;
+    fSkywalkEthernetAttached = false;
+    if (fTahoeBootCallLock == nullptr || fLifecycleLock == nullptr ||
+        fLifecycleAdmissionLock == nullptr ||
+        fLinkStatePublishLifecycle.admissionLock == nullptr ||
+        fScanSourceLifecycle.admissionLock == nullptr)
+        ret = false;
     awdlSyncEnable = true;
     power_state = 0;
     pmPowerStateFlags = 0;
@@ -3227,6 +4164,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTxCompletionPendingTail = 0;
     fTxCompletionPendingCount = 0;
     fAPSTAOwner = NULL;
+    scanSource = NULL;
     memset(fAPSTACoreFeatureFlags, 0, sizeof(fAPSTACoreFeatureFlags));
     fAPSTACorePrivateFeatureByte4d59 = 0;
     if (fRxPendingLock == NULL || fTxCompletionPendingLock == NULL)
@@ -3794,12 +4732,13 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
+    fHalAttached = true;
     SD_SET(9); // HAL attached
     sDiag.step = 6;
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog workloop\n", __FUNCTION__);
-        fHalService->detach(pciNub);
+        stopHalAndDrain();
         super::stop(pciNub);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3808,13 +4747,23 @@ bool AirportItlwm::start(IOService *provider)
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
     if (!watchdogTimer) {
         XYLog("DEBUG %s [STEP 6] FAIL: watchdog timer\n", __FUNCTION__);
-        fHalService->detach(pciNub);
+        stopHalAndDrain();
         super::stop(pciNub);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
-    fWatchdogWorkLoop->addEventSource(watchdogTimer);
+    fWatchdogStopping = false;
+    if (fWatchdogWorkLoop->addEventSource(watchdogTimer) !=
+        kIOReturnSuccess) {
+        XYLog("DEBUG %s [STEP 6] FAIL: watchdog event source\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
 #if __IO80211_TARGET >= __MAC_26_0
     fTahoeLqmStatsTimer = IOTimerEventSource::timerEventSource(
         this,
@@ -3825,7 +4774,7 @@ bool AirportItlwm::start(IOService *provider)
             kIOReturnSuccess) {
         XYLog("DEBUG %s [STEP 6] FAIL: Tahoe LQM stats timer\n",
               __FUNCTION__);
-        fHalService->detach(pciNub);
+        stopHalAndDrain();
         super::stop(pciNub);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3833,23 +4782,23 @@ bool AirportItlwm::start(IOService *provider)
     }
     fTahoeLqmStatsTimer->disable();
 #endif
-    scanSource = IOTimerEventSource::timerEventSource(this, &fakeScanDone);
-    _fWorkloop->addEventSource(scanSource);
-    scanSource->enable();
-
-    _fLinkStatePublishLock = IOSimpleLockAlloc();
-    _fLinkStatePublishPendingValid = false;
-    _fLinkStatePublishSource = IOInterruptEventSource::interruptEventSource(
-        this, (IOInterruptEventSource::Action)publishLinkStateInterruptAction);
-    if (_fLinkStatePublishLock == NULL || _fLinkStatePublishSource == NULL) {
-        XYLog("DEBUG %s [STEP 7] FAIL: link-state publish source alloc\n", __FUNCTION__);
+    if (!setupScanSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 6] FAIL: scan source\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(pciNub);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
-    _fWorkloop->addEventSource(_fLinkStatePublishSource);
-    _fLinkStatePublishSource->enable();
+
+    if (!setupLinkStatePublishSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 7] FAIL: link-state publish source alloc\n", __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
 
     SD_SET(10); // watchdog/scan timers OK
     sDiag.step = 7;
@@ -3857,6 +4806,7 @@ bool AirportItlwm::start(IOService *provider)
 #if __IO80211_TARGET >= __MAC_26_0
     if (!fNetIf->init()) {
         XYLog("DEBUG %s [STEP 7] FAIL: Skywalk interface no-arg init\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3870,6 +4820,7 @@ bool AirportItlwm::start(IOService *provider)
     if (!fNetIf->init(this)) {
 #endif
         XYLog("DEBUG %s [STEP 7] FAIL: Skywalk interface init\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3889,6 +4840,7 @@ bool AirportItlwm::start(IOService *provider)
 #if __IO80211_TARGET < __MAC_26_0
     if (!initCCLogs()) {
         XYLog("DEBUG %s [STEP 7] FAIL: CCLog init (pre-Tahoe)\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3897,20 +4849,30 @@ bool AirportItlwm::start(IOService *provider)
 #endif
     if (!fNetIf->attach(this)) {
         XYLog("DEBUG %s [STEP 7] FAIL: fNetIf attach\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
+    // This provider attachment is distinct from attachInterface(). If the
+    // latter fails, releaseAll() must still pair this successful edge before
+    // dropping fNetIf.
+    fSkywalkInterfaceProviderAttached = true;
     SD_SET(12); // fNetIf attach OK
     sDiag.step = 8;
     if (!attachInterface(fNetIf, this)) {
         XYLog("DEBUG %s [STEP 8] FAIL: attachInterface\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
         return false;
     }
+    // `attachInterface()` gives the framework a raw borrower path to the
+    // Skywalk queue/pool inventory.  Every later cleanup must run its paired
+    // detachInterface() fence before releasing that inventory.
+    fSkywalkInterfaceAttached = true;
     SD_SET(13); // attachInterface OK
 
     // --- Skywalk registration: proper Sequoia path ---
@@ -3929,6 +4891,7 @@ bool AirportItlwm::start(IOService *provider)
     memset(&registInfo, 0, sizeof(registInfo));
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("DEBUG %s [STEP 8] FAIL: initRegistrationInfo\n", __FUNCTION__);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -3989,6 +4952,7 @@ bool AirportItlwm::start(IOService *provider)
                   AirportItlwmIO80211PacketPool::ptrLo32(fRxPool));
             XYLog("DEBUG %s [STEP 8b] FAIL: pool creation (TX=%p RX=%p)\n",
                   __FUNCTION__, fTxPool, fRxPool);
+            stopHalAndDrain();
             super::stop(provider);
             releaseAll();
             DISARM_PANIC_TIMER();
@@ -4030,6 +4994,7 @@ bool AirportItlwm::start(IOService *provider)
               (unsigned long long)(uintptr_t)fMultiCastQueue);
         XYLog("DEBUG %s [STEP 8c] FAIL: queue creation (TX=%p TXC=%p RX=%p MC=%p)\n",
               __FUNCTION__, fTxQueue, fTxCompQueue, fRxQueue, fMultiCastQueue);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -4075,6 +5040,7 @@ bool AirportItlwm::start(IOService *provider)
             _fWorkloop->removeEventSource(fRxQueue);
         if (multicastQueueWorkloopRet == kIOReturnSuccess)
             _fWorkloop->removeEventSource(fMultiCastQueue);
+        stopHalAndDrain();
         super::stop(provider);
         releaseAll();
         DISARM_PANIC_TIMER();
@@ -4145,6 +5111,7 @@ bool AirportItlwm::start(IOService *provider)
 #endif
         if (regRet != kIOReturnSuccess) {
             XYLog("DEBUG %s [STEP 8d] FAIL: Skywalk registration ret=0x%x\n", __FUNCTION__, regRet);
+            stopHalAndDrain();
             super::stop(provider);
             releaseAll();
             DISARM_PANIC_TIMER();
@@ -4219,12 +5186,42 @@ bool AirportItlwm::start(IOService *provider)
     // setDataPathState fires.  The gate must be enabled before registerService()
     // so the boot nub's thread_call can route through it.
     _fCommandGate->enable();
-    tahoeBootThreadCall = thread_call_allocate(
+    thread_call_t bootCall = thread_call_allocate(
         (thread_call_func_t)handleTahoeBootChipImage,
         (thread_call_param_t)this);
+    if (fTahoeBootCallLock != nullptr) {
+        IOLockLock(fTahoeBootCallLock);
+        const bool discardBootCall = fTahoeBootStopping ||
+            tahoeBootThreadCall != nullptr;
+        if (!discardBootCall) {
+            tahoeBootThreadCall = bootCall;
+            // This is a newly allocated call on a freshly starting
+            // controller.  Once scheduleTahoeBootThreadCall() admits it,
+            // the bit intentionally remains set for this object's lifetime.
+            fTahoeBootScheduled = false;
+        }
+        IOLockUnlock(fTahoeBootCallLock);
+        if (discardBootCall && bootCall != nullptr)
+            (void)thread_call_free(bootCall);
+    } else if (bootCall != nullptr) {
+        (void)thread_call_free(bootCall);
+    }
     sDiag.step = 9;
     SD_SET(16);
     sDiag.step = 10;
+    // Do not admit an external selector until every source, workloop, and
+    // Skywalk object above is fully initialized. A concurrent controller
+    // stop changes the phase to Draining; in that case converge through the
+    // ordinary failure teardown instead of publishing a half-live service.
+    if (!markLifecycleLive()) {
+        XYLog("DEBUG %s [STEP 9] FAIL: lifecycle stopped during start\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(provider);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
     // registerService() makes the IO80211Controller visible to airportd and
     // triggers IOKit matching for AirportItlwmBootNub.  The BSD ifnet (en0)
     // is created asynchronously via the nexus callback chain triggered by
@@ -4306,67 +5303,42 @@ void AirportItlwm::stop(IOService *provider)
     clock_interval_to_deadline(60, kSecondScale, &stopDeadline);
     thread_call_enter_delayed(stopTimer, stopDeadline);
 
-    struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+    /*
+     * Claim Draining before disableAdapter().  External selectors acquire an
+     * operation user only while the phase is Live, so once this returns no
+     * new association/scan/key operation can begin.  Wake command-gate PMK
+     * waiters first, then wait already-admitted users before touching HAL.
+     */
+    if (!beginLifecycleDrain()) {
+        // Another lifecycle owner completes the whole shared-resource path.
+        // A follower must be a strict no-op after its wait: releaseAll() or
+        // super::stop() here could free objects still used by that owner.
+        thread_call_cancel(stopTimer);
+        thread_call_free(stopTimer);
+        return;
+    }
+    prepareLifecycleDrain();
+
     sRT.stopStep = 2;
-    if (tahoeBootThreadCall) {
-        thread_call_cancel(tahoeBootThreadCall);
-        thread_call_free(tahoeBootThreadCall);
-        tahoeBootThreadCall = NULL;
+    if (fHalService != nullptr) {
+        disableAdapter(NULL);
+        setLinkStatus(kIONetworkLinkValid);
     }
-    disableAdapter(NULL);
     sRT.stopStep = 3;
-    setLinkStatus(kIONetworkLinkValid);
-    // Drain the off-gate publication source before fNetIf is detached/released
-    // below, so the deferred action cannot dereference fNetIf after its lifetime
-    // ends. releaseAll() calls this again (idempotent).
-    teardownLinkStatePublishSource();
     sRT.stopStep = 4;
-    fHalService->detach(pciNub);
+    // The current caller owns the Draining transition, so retain that claim
+    // through producer removal and HAL detach rather than re-entering it.
+    stopHalAndDrainClaimed();
     sRT.stopStep = 5;
-#if __IO80211_TARGET >= __MAC_26_0
-    ifp->if_skywalk_rx = NULL;
-#endif
-    ether_ifdetach(ifp);
-    sRT.stopStep = 6;
-    // Release Skywalk queues and pools
-#if __IO80211_TARGET >= __MAC_26_0
-    skywalkTxDrainCompletionPackets(this);
-    skywalkRxDrainPendingPackets(this);
-#endif
-    if (_fWorkloop && fMultiCastQueue && fMultiCastQueue->getWorkLoop() == _fWorkloop) {
-        fMultiCastQueue->disable();
-        _fWorkloop->removeEventSource(fMultiCastQueue);
-    }
-    if (_fWorkloop && fTxCompQueue && fTxCompQueue->getWorkLoop() == _fWorkloop) {
-        fTxCompQueue->disable();
-        _fWorkloop->removeEventSource(fTxCompQueue);
-    }
-    if (_fWorkloop && fTxQueue && fTxQueue->getWorkLoop() == _fWorkloop) {
-        fTxQueue->disable();
-        _fWorkloop->removeEventSource(fTxQueue);
-    }
-    if (_fWorkloop && fRxQueue && fRxQueue->getWorkLoop() == _fWorkloop) {
-        fRxQueue->disable();
-        _fWorkloop->removeEventSource(fRxQueue);
-    }
-    OSSafeReleaseNULL(fMultiCastQueue);
-    OSSafeReleaseNULL(fTxCompQueue);
-    OSSafeReleaseNULL(fTxQueue);  sRT.fTxQueuePtr = 0;
-    OSSafeReleaseNULL(fRxQueue);  sRT.fRxQueuePtr = 0;
-    OSSafeReleaseNULL(fTxPool);   sRT.fTxPoolPtr = 0;
-    OSSafeReleaseNULL(fRxPool);   sRT.fRxPoolPtr = 0;
-    fSkywalkTxQueueDepth = 0;
-    fSkywalkRxQueueCapacity = 0;
-    sRT.stopStep = 61;
-    RT3_SET(15); // detachInterface entered
-    detachInterface(fNetIf, true);
-    sRT.stopStep = 7;
-    OSSafeReleaseNULL(fNetIf);    sRT.fNetIfPtr = 0;
-    sRT.stopStep = 8;
-    releaseAll();
+    // releaseAll() owns the common reverse order for full and partial starts:
+    // queue sources stopped -> optional ether_ifdetach -> detachInterface ->
+    // queue/pool release -> fNetIf release.  Keeping it in one owner avoids
+    // a duplicate BSD detach on the normal stop path.
+    releaseAll(false);
     sRT.stopStep = 9;
     super::stop(provider);
     sRT.stopStep = 10;
+    finishLifecycleDrain();
     thread_call_cancel(stopTimer);
     thread_call_free(stopTimer);
 }
@@ -4424,10 +5396,26 @@ void AirportItlwm::free()
     thread_call_enter_delayed(freeTimer, freeDeadline);
 
     sRT.freeStep = 2;
-    if (fHalService != NULL) {
-        fHalService->release();
-        fHalService = NULL;
+    // free() is a fallback lifecycle edge for partially started controllers.
+    // It must not release a HAL that still owns an attach or a callback.  A
+    // lifecycle follower is fail-closed: another free owner has set the final
+    // barrier, so this invocation must not touch shared state or call the
+    // superclass a second time.
+    bool lifecycleOwner = lifecycleDrainOwnedByCurrentThread();
+    if (!lifecycleOwner)
+        lifecycleOwner = beginLifecycleDrain();
+    if (!lifecycleOwner && lifecycleFinalizing()) {
+        thread_call_cancel(freeTimer);
+        thread_call_free(freeTimer);
+        return;
     }
+    if (lifecycleOwner)
+        releaseAll(false);
+
+    // In the owner case this is set before finishLifecycleDrain() wakes any
+    // beginLifecycleDrain() follower.  After a prior normal stop it closes
+    // the same ingress before free-only allocations are released.
+    beginLifecycleFinalization();
     sRT.freeStep = 3;
     if (syncFrameTemplate != NULL && syncFrameTemplateLength > 0) {
         IOFree(syncFrameTemplate, syncFrameTemplateLength);
@@ -4447,6 +5435,38 @@ void AirportItlwm::free()
     if (fRxPendingLock != NULL) {
         IOLockFree(fRxPendingLock);
         fRxPendingLock = NULL;
+    }
+    if (fTahoeBootCallLock != nullptr) {
+        IOLockLock(fTahoeBootCallLock);
+        const bool canFreeBootCallLock =
+            tahoeBootThreadCall == nullptr;
+        IOLockUnlock(fTahoeBootCallLock);
+        if (canFreeBootCallLock) {
+            IOLockFree(fTahoeBootCallLock);
+            fTahoeBootCallLock = nullptr;
+        }
+    }
+    if (lifecycleOwner)
+        finishLifecycleDrain();
+    // finishLifecycleDrain() may have woken followers out of
+    // IOLockSleep(fLifecycleLock). They decrement this count only after they
+    // have reacquired the control lock, so wait before freeing that lock.
+    waitForLifecycleDrainWaiters();
+    if (fLinkStatePublishLifecycle.admissionLock != NULL) {
+        IOSimpleLockFree(fLinkStatePublishLifecycle.admissionLock);
+        fLinkStatePublishLifecycle.admissionLock = NULL;
+    }
+    if (fScanSourceLifecycle.admissionLock != NULL) {
+        IOSimpleLockFree(fScanSourceLifecycle.admissionLock);
+        fScanSourceLifecycle.admissionLock = NULL;
+    }
+    if (fLifecycleAdmissionLock != NULL) {
+        IOSimpleLockFree(fLifecycleAdmissionLock);
+        fLifecycleAdmissionLock = NULL;
+    }
+    if (fLifecycleLock != NULL) {
+        IOLockFree(fLifecycleLock);
+        fLifecycleLock = NULL;
     }
     sRT.freeStep = 4;
     super::free();
@@ -4504,6 +5524,12 @@ IOReturn AirportItlwm::disable(IO80211SkywalkInterface *netif)
 
 bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 {
+    // configureInterface is a framework bootstrap callback and can precede
+    // markLifecycleLive(), but it must not race a failed-start/stop teardown.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, true);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return false;
+
     RT_SET(17);
     IONetworkData *nd;
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
@@ -4520,6 +5546,10 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
     }
     ifp->netStat = fpNetStats;
     ether_ifattach(ifp, OSDynamicCast(IOEthernetInterface, netif));
+    // attachInterface() can succeed before configureInterface() reaches this
+    // BSD edge. Track its inverse separately so a partial start neither skips
+    // a real ether_ifdetach() nor performs one before ether_ifattach().
+    fSkywalkEthernetAttached = true;
     RT_SET(26);
     fpNetStats->collisions = 0;
 
@@ -4591,12 +5621,29 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 {
     RT_SET(6);
     (void)speed;
-    struct _ifnet *ifq = &fHalService->get80211Controller()->ic_ac.ac_if;
     if (status == currentStatus) {
         return true;
     }
+
+    // Base status handling may itself consult the bound interface. Admit a
+    // normal Starting|Live callback before entering it. The one lifecycle
+    // drain owner is allowed to complete that base transition for stop(), but
+    // is kept out of every driver-local interface/HAL side effect below.
+    const bool drainOwner = lifecycleDrainOwnedByCurrentThread();
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, true);
+    if (!lifecycle.admitted() && !drainOwner)
+        return false;
+
     bool ret = super::setLinkStatus(status, activeMedium, speed, data);
     currentStatus = status;
+
+    // In the stop owner's Draining phase complete only the base transition.
+    // A late non-owner was rejected before super; neither path can touch
+    // fNetIf, the publish source, or lower queues after releaseAll retires
+    // those owners.
+    if (!lifecycle.admitted())
+        return ret;
+
     if (fNetIf) {
         if (status & kIONetworkLinkActive) {
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
@@ -4611,12 +5658,22 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
             bsdInterface->stopOutputThread();
             bsdInterface->flushOutputQueue();
 #endif
-            ifq_flush(&ifq->if_snd);
-            mq_purge(&fHalService->get80211Controller()->ic_mgtq);
+            // The enclosing Starting|Live admission keeps this lower queue
+            // flush/deauth snapshot from racing releaseAll().
+            uint16_t deauthReason = 0;
+            if (fHalService != nullptr) {
+                struct ieee80211com *ic = fHalService->get80211Controller();
+                if (ic != nullptr) {
+                    ifq_flush(&ic->ic_ac.ac_if.if_snd);
+                    mq_purge(&ic->ic_mgtq);
+                    deauthReason = ic->ic_deauth_reason;
+                }
+            }
 #if __IO80211_TARGET >= __MAC_26_0
             publishTahoeSkywalkLinkCarrier(fNetIf, false);
 #endif
-            queueOffGateLinkStatePublish(this, kIO80211NetworkLinkDown, fHalService->get80211Controller()->ic_deauth_reason);
+            queueOffGateLinkStatePublish(this, kIO80211NetworkLinkDown,
+                                         deauthReason);
         }
     }
     return ret;
@@ -4747,6 +5804,12 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
 #if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0
 IOReturn AirportItlwm::outputStart(IONetworkInterface *interface, IOOptionBits options)
 {
+    // Output callbacks are externally scheduled. Keep the controller/HAL
+    // alive through the queue probes as well as through outputPacket().
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return kIOReturnNoResources;
+
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     mbuf_t m = NULL;
     if (ifq_is_oactive(&ifp->if_snd))
@@ -4771,6 +5834,17 @@ IOReturn AirportItlwm::networkInterfaceNotification(
 
 UInt32 AirportItlwm::outputPacket(mbuf_t m, void *param)
 {
+    // The network stack may enter this virtual after stop has detached the
+    // HAL but before it has retired its output callback. Admission is held
+    // across every fHalService/ifnet use below, and rejected packets are
+    // consumed exactly as the existing power-off path consumes them.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+    if (!lifecycle.admitted() || fHalService == nullptr) {
+        if (m != nullptr && mbuf_type(m) != MBUF_TYPE_FREE)
+            freePacket(m);
+        return kIOReturnOutputDropped;
+    }
+
     IOReturn ret = kIOReturnOutputSuccess;
     uint32_t diagLength = 0;
     bool diagEapol = false;
@@ -4846,11 +5920,22 @@ const OSString * AirportItlwm::newVendorString() const
 
 const OSString * AirportItlwm::newModelString() const
 {
+    // IOEthernetController can ask for descriptive strings while the
+    // interface is being constructed. Starting is permitted, Draining is
+    // not; avoid dereferencing a released lower service on a late query.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(
+        const_cast<AirportItlwm *>(this), true);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return OSString::withCString("AirportItlwm");
     return OSString::withCString(fHalService->getDriverInfo()->getFirmwareName());
 }
 
 IOReturn AirportItlwm::getHardwareAddress(IOEthernetAddress *addrP)
 {
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, true);
+    if (!lifecycle.admitted() || fHalService == nullptr || addrP == nullptr)
+        return kIOReturnNotReady;
+
     if (IEEE80211_ADDR_EQ(etheranyaddr, fHalService->get80211Controller()->ic_myaddr))
         return kIOReturnError;
     else {
@@ -4861,6 +5946,11 @@ IOReturn AirportItlwm::getHardwareAddress(IOEthernetAddress *addrP)
 
 IOReturn AirportItlwm::setHardwareAddress(const void *addrP, UInt32 addrBytes)
 {
+    // MAC changes are post-Live external requests. Do not let one restart the
+    // HAL after stop has claimed Draining.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return kIOReturnNotReady;
     if (!fNetIf || !addrP)
         return kIOReturnError;
     if_setlladdr(&fHalService->get80211Controller()->ic_ac.ac_if, (const UInt8 *)addrP);
@@ -4878,6 +5968,10 @@ IOReturn AirportItlwm::setHardwareAddress(const void *addrP, UInt32 addrBytes)
 
 UInt32 AirportItlwm::getFeatures() const
 {
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(
+        const_cast<AirportItlwm *>(this), true);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return 0;
     return fHalService->getDriverInfo()->supportedFeatures();
 }
 
@@ -4895,6 +5989,13 @@ IOReturn AirportItlwm::setMulticastMode(IOEnetMulticastMode mode)
 
 IOReturn AirportItlwm::setMulticastList(IOEthernetAddress* addr, UInt32 len)
 {
+    // This IOEthernetController virtual bypasses the raw Skywalk selector
+    // dispatcher and reaches iwx_send_cmd_pdu directly. Hold a Live user
+    // before mutating the mirrored state or touching the lower controller.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return kIOReturnNotReady;
+
     if (len > TahoeControllerContracts::kMulticastMaxEntries)
         return static_cast<IOReturn>(TahoeControllerContracts::kErrorStatus);
 
@@ -5374,12 +6475,15 @@ SInt32 AirportItlwm::handleCardSpecific(IO80211SkywalkInterface *interface,unsig
 
 IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
 {
+    // Startup and power-management paths both converge here. They may run
+    // while Starting, but a stale power-on must not reopen or dereference the
+    // HAL after Draining has been claimed.
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(this, true);
+    if (!lifecycle.admitted() || fHalService == nullptr)
+        return kIOReturnNotReady;
+
     RT_SET(9);
     sRT.enableCnt++;
-    if (!fHalService) {
-        XYLog("DEBUG %s ABORT: fHalService is NULL\n", __FUNCTION__);
-        return kIOReturnNotReady;
-    }
 #if __IO80211_TARGET >= __MAC_26_0
     if (fTxCompQueue)
         fTxCompQueue->enable();
@@ -5389,7 +6493,7 @@ IOReturn AirportItlwm::enableAdapter(IONetworkInterface *netif)
         fTxQueue->enable();
 #endif
     fHalService->enable(netif);
-    if (watchdogTimer) {
+    if (!fWatchdogStopping && watchdogTimer) {
         watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
         watchdogTimer->enable();
     }
@@ -5582,11 +6686,22 @@ static IOPMPowerState powerStateArray[kPowerStateCount] =
 
 IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService *policyMaker)
 {
+    // IOPM can issue the initial policy OFF before start() has published
+    // Live, but must never race the Draining teardown with its command-gate
+    // enable/disable path.
+    if (!beginLifecycleInternalOperation())
+        return kIOReturnNotReady;
+
     RT_SET(12);
     sRT.pmCount++;
     sRT.lastPmReq = (uint32_t)powerStateOrdinal;
 
-    IOReturn result = getCommandGate()->runAction(
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr) {
+        endLifecycleOperation();
+        return kIOReturnNotReady;
+    }
+    IOReturn result = gate->runAction(
         setPowerStateGated,
         reinterpret_cast<void *>(powerStateOrdinal),
         policyMaker);
@@ -5598,6 +6713,7 @@ IOReturn AirportItlwm::setPowerState(unsigned long powerStateOrdinal, IOService 
     // explicit owner-null path, with no substitute publication.
     if (result != kIOReturnSuccess)
         sRT.pmGateErrorCnt++;
+    endLifecycleOperation();
     return result;
 }
 
@@ -5731,6 +6847,9 @@ initWithTask(task_t owningTask, void *securityID, UInt32 type,
     }
     fOwningTask = owningTask;
     fProvider = nullptr;
+    fProviderLock = IOLockAlloc();
+    if (fProviderLock == nullptr)
+        return false;
     return true;
 }
 
@@ -5739,19 +6858,78 @@ start(IOService *provider)
 {
     if (!IOUserClient::start(provider))
         return false;
-    fProvider = OSDynamicCast(AirportItlwm, provider);
-    if (fProvider == nullptr) {
+    AirportItlwm *controller = OSDynamicCast(AirportItlwm, provider);
+    if (controller == nullptr) {
         XYLog("CR239 AirportItlwmUserClient::start provider is not AirportItlwm\n");
         return false;
     }
+    IOLock *providerLock = fProviderLock;
+    if (providerLock == nullptr)
+        return false;
+
+    // UserClient::stop can null the provider concurrently with an external
+    // method. Hold a persistent retain while the client is attached, and let
+    // each method take a second retain under this lock before it calls the
+    // controller's lifecycle admission API.
+    controller->retain();
+    IOLockLock(providerLock);
+    if (fProvider != nullptr) {
+        IOLockUnlock(providerLock);
+        controller->release();
+        return false;
+    }
+    fProvider = controller;
+    IOLockUnlock(providerLock);
     return true;
+}
+
+AirportItlwm *AirportItlwmUserClient::retainProvider()
+{
+    IOLock *providerLock = fProviderLock;
+    if (providerLock == nullptr)
+        return nullptr;
+
+    IOLockLock(providerLock);
+    AirportItlwm *provider = fProvider;
+    if (provider != nullptr)
+        provider->retain();
+    IOLockUnlock(providerLock);
+    return provider;
+}
+
+AirportItlwm *AirportItlwmUserClient::takeProvider()
+{
+    IOLock *providerLock = fProviderLock;
+    if (providerLock == nullptr)
+        return nullptr;
+
+    IOLockLock(providerLock);
+    AirportItlwm *provider = fProvider;
+    fProvider = nullptr;
+    IOLockUnlock(providerLock);
+    return provider;
 }
 
 void AirportItlwmUserClient::
 stop(IOService *provider)
 {
-    fProvider = nullptr;
+    AirportItlwm *controller = takeProvider();
     IOUserClient::stop(provider);
+    if (controller != nullptr)
+        controller->release();
+}
+
+void AirportItlwmUserClient::
+free(void)
+{
+    AirportItlwm *controller = takeProvider();
+    if (controller != nullptr)
+        controller->release();
+    if (fProviderLock != nullptr) {
+        IOLockFree(fProviderLock);
+        fProviderLock = nullptr;
+    }
+    IOUserClient::free();
 }
 
 IOReturn AirportItlwmUserClient::
@@ -5806,14 +6984,30 @@ sExtDeliverPMK(AirportItlwmUserClient *target,
     // `checkScalarInputCount == 1` in `sAirportItlwmUserClientMethods[0]`
     // before this handler runs, so wrong-size calls return
     // `kIOReturnBadArgument` directly from the dispatch layer.
-    if (target == nullptr || target->fProvider == nullptr)
+    if (target == nullptr)
         return kIOReturnNotReady;
+    // retainProvider snapshots under the UserClient stop lock and retains the
+    // controller before stop() can clear/release its persistent reference.
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation())
+    {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
     if (args == nullptr || args->structureInput == nullptr)
+    {
+        provider->endLifecycleOperation();
+        provider->release();
         return kIOReturnBadArgument;
+    }
     const uint64_t generation_echo = (uint64_t)args->scalarInput[0];
-    return target->fProvider->deliverExternalPMK(
+    IOReturn rc = provider->deliverExternalPMK(
         (const struct apple80211_key *)args->structureInput,
         generation_echo);
+    provider->endLifecycleOperation();
+    provider->release();
+    return rc;
 }
 
 IOReturn AirportItlwmUserClient::
@@ -5829,17 +7023,33 @@ sExtWaitAssociationTarget(AirportItlwmUserClient *target,
     // AirportItlwmSkywalkInterface::associateSSID and then returns
     // the current AirportItlwmAssociationTarget snapshot so the
     // helper can locate the matching credential.
-    if (target == nullptr || target->fProvider == nullptr)
+    if (target == nullptr)
         return kIOReturnNotReady;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation())
+    {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
     if (args == nullptr || args->structureOutput == nullptr)
+    {
+        provider->endLifecycleOperation();
+        provider->release();
         return kIOReturnBadArgument;
+    }
     const uint64_t last_acked = (uint64_t)args->scalarInput[0];
     AirportItlwmAssociationTarget snap;
     memset(&snap, 0, sizeof(snap));
-    IOReturn rc = target->fProvider->waitAssocTarget(last_acked, &snap);
-    if (rc != kIOReturnSuccess)
+    IOReturn rc = provider->waitAssocTarget(last_acked, &snap);
+    if (rc != kIOReturnSuccess) {
+        provider->endLifecycleOperation();
+        provider->release();
         return rc;
+    }
     memcpy(args->structureOutput, &snap, sizeof(snap));
+    provider->endLifecycleOperation();
+    provider->release();
     return kIOReturnSuccess;
 }
 
@@ -5859,6 +7069,17 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
                                                 type, properties,
                                                 handler);
     }
+    // Do not open a fresh PLTI channel once controller teardown has claimed
+    // Draining. Keep this admission through authorization, allocation,
+    // attach/start, and handler publication: an atomic live check alone lets
+    // stop free the controller while IOServiceOpen is still wiring the new
+    // user-client to it.
+    if (!beginLifecycleOperation())
+        return kIOReturnNotReady;
+    if (handler == NULL) {
+        endLifecycleOperation();
+        return kIOReturnBadArgument;
+    }
     // CR-240 — Open-time authorization gate. The PLTI type magic is a
     // selector, NOT an access-control boundary (per CR-239 reviewer
     // note: "security-through-obscurity"). A custom user-client that
@@ -5875,26 +7096,32 @@ newUserClient(task_t owningTask, void *securityID, UInt32 type,
         XYLog("CR240 AirportItlwm::newUserClient(type=0x%x) DENIED -- "
               "clientHasPrivilege(kIOClientPrivilegeAdministrator)=0x%x\n",
               (unsigned)type, (unsigned)auth);
+        endLifecycleOperation();
         return kIOReturnNotPrivileged;
     }
     AirportItlwmUserClient *client = OSTypeAlloc(AirportItlwmUserClient);
     if (client == nullptr) {
+        endLifecycleOperation();
         return kIOReturnNoMemory;
     }
     if (!client->initWithTask(owningTask, securityID, type, properties)) {
         client->release();
+        endLifecycleOperation();
         return kIOReturnError;
     }
     if (!client->attach(this)) {
         client->release();
+        endLifecycleOperation();
         return kIOReturnError;
     }
     if (!client->start(this)) {
         client->detach(this);
         client->release();
+        endLifecycleOperation();
         return kIOReturnError;
     }
     *handler = client;
+    endLifecycleOperation();
     return kIOReturnSuccess;
 }
 
@@ -6007,6 +7234,13 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
 {
     AirportItlwmPublishAssocArgs *a = (AirportItlwmPublishAssocArgs *)arg0;
     AirportItlwm *s = a->self;
+    // Teardown's terminal cancel is sticky for this controller lifetime.
+    // Never let a queued association producer reopen the target after it has
+    // serialized behind the cancel and before HAL detach.
+    if (s->fAssocTargetTerminating) {
+        a->out_generation = 0;
+        return kIOReturnSuccess;
+    }
     s->fAssocGenCounter += 1;
     if (s->fAssocGenCounter == 0) {
         // Skip the reserved "no pending request" value on wraparound
@@ -6023,7 +7257,6 @@ airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
     s->fAssocTarget.authtype_lower = a->authtype_lower;
     s->fAssocTarget.authtype_upper = a->authtype_upper;
     s->fAssocTargetCanceled = false;
-    s->fAssocTargetTerminating = false;
     a->out_generation = s->fAssocGenCounter;
     s->getCommandGate()->commandWakeup(&s->fAssocTarget,
                                        /*oneThread=*/false);
@@ -6715,7 +7948,10 @@ IOReturn AirportItlwm::setAPSTA_CHANNEL(OSObject *object,
         AirportItlwmSkywalkInterface *interface =
             OSDynamicCast(AirportItlwmSkywalkInterface, object);
         if (interface != NULL) {
-            return interface->setCHANNEL(in);
+            // The dispatcher has already admitted the controller for this
+            // APSTA/no-owner fallback. Avoid re-entering the raw Skywalk
+            // wrapper solely to reach its local malformed-channel contract.
+            return interface->setCHANNELImpl(in);
         }
         return setCHANNEL(object, in);
     }

@@ -1738,13 +1738,18 @@ setVIRTUAL_IF_CREATE(OSObject *object, struct apple80211_virt_if_create_data* da
             return static_cast<IOReturn>(0xe00002bd);
         case APPLE80211_VIF_SOFT_AP: {
             /*
-             * V1 parity with the Tahoe Skywalk role-7 owner path:
-             * allocate/validate the controller-owned APSTA owner,
-             * attempt the lower AP/GO start gate, and tear the owner
-             * back down on any lower failure. Role-7 success remains
-             * impossible until a HAL backend advertises and starts
-             * AP/GO mode.
+             * The shipped iwx/iwm runtime is STA-only: neither HAL
+             * advertises AP mode.  Preserve the lower start-gate
+             * result, but fail before publishing an APSTA owner that
+             * cannot run.  This is a shipped-runtime containment
+             * quarantine, not APSTA parity closure; any AP-capable
+             * opt-in backend must retain the owner path and prove
+             * selector admission plus producer-bridge draining.
              */
+            if (fHalService == nullptr)
+                return kIOReturnNotReady;
+            if (!fHalService->supportsAPMode())
+                return kIOReturnUnsupported;
             AirportItlwmAPSTAOwner *owner = ensureAPSTAOwner(data);
             if (owner == nullptr) {
                 return static_cast<IOReturn>(

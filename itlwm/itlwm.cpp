@@ -32,7 +32,9 @@ IOCommandGate *_fCommandGate;
 
 bool itlwm::init(OSDictionary *properties)
 {
-    return super::init(properties);
+    bool ret = super::init(properties);
+    fWatchdogStopping = false;
+    return ret;
 }
 
 #define  PCI_MSI_FLAGS        2    /* Message Control */
@@ -347,6 +349,7 @@ bool itlwm::start(IOService *provider)
     }
     if (!attachInterface((IONetworkInterface **)&fNetIf, true)) {
         XYLog("attach to interface fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -355,6 +358,7 @@ bool itlwm::start(IOService *provider)
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
         XYLog("init watchdog workloop fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -363,12 +367,21 @@ bool itlwm::start(IOService *provider)
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &itlwm::watchdogAction));
     if (!watchdogTimer) {
         XYLog("init watchdog fail\n");
+        stopWatchdogAndDrain();
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
         return false;
     }
-    fWatchdogWorkLoop->addEventSource(watchdogTimer);
+    fWatchdogStopping = false;
+    if (fWatchdogWorkLoop->addEventSource(watchdogTimer) != kIOReturnSuccess) {
+        XYLog("add watchdog event source fail\n");
+        stopWatchdogAndDrain();
+        fHalService->detach(pciNub);
+        super::stop(pciNub);
+        releaseAll();
+        return false;
+    }
     setLinkStatus(kIONetworkLinkValid);
     OSObject *wifiEntryObject = NULL;
     OSDictionary *wifiEntry = NULL;
@@ -405,9 +418,22 @@ bool itlwm::start(IOService *provider)
 
 void itlwm::watchdogAction(IOTimerEventSource *timer)
 {
-    struct _ifnet *ifp = getIfp();
-    (*ifp->if_watchdog)(ifp);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+    // stopWatchdogAndDrain() sets the flag before it synchronously removes
+    // this source from fWatchdogWorkLoop.  Do not acquire HAL state or
+    // re-arm the timer once permanent teardown has started.
+    if (fWatchdogStopping || timer == NULL || timer != watchdogTimer)
+        return;
+
+    ItlHalService *hal = fHalService;
+    if (!hal)
+        return;
+
+    struct _ifnet *ifp = &hal->get80211Controller()->ic_ac.ac_if;
+    if (ifp->if_watchdog)
+        (*ifp->if_watchdog)(ifp);
+
+    if (!fWatchdogStopping && timer == watchdogTimer)
+        timer->setTimeoutMS(kWatchDogTimerPeriod);
 }
 
 const OSString * itlwm::newVendorString() const
@@ -467,6 +493,7 @@ void itlwm::stop(IOService *provider)
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
     super::stop(provider);
     setLinkStatus(kIONetworkLinkValid);
+    stopWatchdogAndDrain();
     fHalService->detach(pciNub);
     ether_ifdetach(ifp);
     detachInterface(fNetIf, true);
@@ -474,8 +501,32 @@ void itlwm::stop(IOService *provider)
     releaseAll();
 }
 
+void itlwm::stopWatchdogAndDrain()
+{
+    // IOWorkLoop::removeEventSource() does not return until the workloop has
+    // acknowledged the removal.  With the stopping flag preventing re-arm,
+    // this is the lifetime fence before HAL detach/release.
+    fWatchdogStopping = true;
+
+    IOTimerEventSource *timer = watchdogTimer;
+    if (!timer)
+        return;
+
+    timer->cancelTimeout();
+    timer->disable();
+    if (fWatchdogWorkLoop)
+        fWatchdogWorkLoop->removeEventSource(timer);
+    watchdogTimer = NULL;
+    timer->release();
+}
+
 void itlwm::releaseAll()
 {
+    stopWatchdogAndDrain();
+    if (fWatchdogWorkLoop) {
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
     if (fHalService) {
         fHalService->release();
         fHalService = NULL;
@@ -487,14 +538,6 @@ void itlwm::releaseAll()
             _fCommandGate->release();
             _fCommandGate = NULL;
         }
-        if (fWatchdogWorkLoop && watchdogTimer) {
-            watchdogTimer->cancelTimeout();
-            fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-            watchdogTimer->release();
-            watchdogTimer = NULL;
-            fWatchdogWorkLoop->release();
-            fWatchdogWorkLoop = NULL;
-        }
         _fWorkloop->release();
         _fWorkloop = NULL;
     }
@@ -503,6 +546,11 @@ void itlwm::releaseAll()
 
 void itlwm::free()
 {
+    stopWatchdogAndDrain();
+    if (fWatchdogWorkLoop != NULL) {
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
     if (fHalService != NULL) {
         fHalService->release();
         fHalService = NULL;
@@ -515,16 +563,20 @@ IOReturn itlwm::enable(IONetworkInterface *netif)
     super::enable(netif);
     _fCommandGate->enable();
     fHalService->enable(netif);
-    watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
-    watchdogTimer->enable();
+    if (!fWatchdogStopping && watchdogTimer) {
+        watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+        watchdogTimer->enable();
+    }
     return kIOReturnSuccess;
 }
 
 IOReturn itlwm::disable(IONetworkInterface *netif)
 {
     super::disable(netif);
-    watchdogTimer->cancelTimeout();
-    watchdogTimer->disable();
+    if (watchdogTimer) {
+        watchdogTimer->cancelTimeout();
+        watchdogTimer->disable();
+    }
     fHalService->disable(netif);
     setLinkStatus(kIONetworkLinkValid);
     return kIOReturnSuccess;

@@ -44,6 +44,29 @@ struct taskq {
     struct task_list     tq_worklist;
 };
 
+/*
+ * The task queues used by the wireless HALs are serial.  A caller outside
+ * that queue can put this marker behind all work already dequeued or queued
+ * and wait for it, which closes the dequeue-to-callback-prologue gap that
+ * task_del() alone cannot close.  The marker and completion live on the
+ * caller's stack until the callback signals it.
+ */
+struct taskq_barrier_wait {
+    IORecursiveLock *lock;
+    bool done;
+};
+
+static void
+taskq_barrier_task(void *arg)
+{
+    struct taskq_barrier_wait *wait = (struct taskq_barrier_wait *)arg;
+
+    IORecursiveLockLock(wait->lock);
+    wait->done = true;
+    IORecursiveLockWakeup(wait->lock, wait, false);
+    IORecursiveLockUnlock(wait->lock);
+}
+
 static const char taskq_sys_name[] = "systq";
 
 struct taskq taskq_sys = {
@@ -251,6 +274,30 @@ taskq_destroy(struct taskq *tq)
         IOFree(tq, sizeof(*tq));
     }
     
+}
+
+void
+taskq_barrier(struct taskq *tq)
+{
+    struct taskq_barrier_wait wait;
+    struct task barrier;
+
+    if (!tq || !tq->tq_mtx)
+        return;
+
+    wait.lock = IORecursiveLockAlloc();
+    if (wait.lock == NULL)
+        panic("taskq_barrier: completion lock allocation failed");
+    wait.done = false;
+    task_set(&barrier, taskq_barrier_task, &wait, "taskq_barrier");
+
+    IORecursiveLockLock(wait.lock);
+    if (task_add(tq, &barrier)) {
+        while (!wait.done)
+            IORecursiveLockSleep(wait.lock, &wait, THREAD_INTERRUPTIBLE);
+    }
+    IORecursiveLockUnlock(wait.lock);
+    IORecursiveLockFree(wait.lock);
 }
 
 void

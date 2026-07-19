@@ -235,6 +235,45 @@ const char *convertApple80211IOCTLToString(signed int cmd);
 class AirportItlwmAPSTAOwner;
 struct apple80211_virt_if_create_data;
 
+/*
+ * Tahoe callback-source lifecycle state.
+ *
+ * These records deliberately live per AirportItlwm instance rather than in a
+ * process-global sidecar: more than one controller may exist, and setup/stop
+ * can overlap on one controller.  The simple locks protect only short
+ * producer/setup admission sections.  Teardown never sleeps while holding
+ * either simple lock; it closes admission, waits outside the lock, then uses
+ * removeEventSource() as the callback fence.
+ */
+struct AirportItlwmLinkStatePublishLifecycle {
+    IOSimpleLock *admissionLock;
+    IOInterruptEventSource *source;
+    IOSimpleLock *payloadLock;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+    bool pendingValid;
+    IO80211LinkState pendingState;
+    unsigned int pendingRawCode;
+};
+
+struct AirportItlwmScanSourceLifecycle {
+    IOSimpleLock *admissionLock;
+    IOTimerEventSource *source;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+};
+
+enum AirportItlwmLifecyclePhase : uint32_t {
+    kAirportItlwmLifecycleStarting = 0,
+    kAirportItlwmLifecycleLive,
+    kAirportItlwmLifecycleDraining,
+    kAirportItlwmLifecycleStopped,
+};
+
 #if __IO80211_TARGET >= __MAC_26_0
 // Kext-side association-target request payload published by the PSK
 // association-start edge (AirportItlwmSkywalkInterface::associateSSID,
@@ -453,7 +492,37 @@ public:
 #endif
 
     bool createMediumTables(const IONetworkMedium **primary);
-    void releaseAll();
+    void releaseAll(bool finishLifecycle = true);
+    // `detachInterface()` is the framework fence for raw Skywalk queue/pool
+    // borrowers.  It must run after producer removal and BSD detach, but
+    // before those borrowed objects are released on every stop/failure path.
+    void detachSkywalkInterfaceAndFenceBorrowers();
+    void stopHalAndDrain();
+    // The normal stop path claims the lifecycle fence before disableAdapter()
+    // so no new external handler can enter while the HAL is still live.
+    bool beginLifecycleDrain();
+    void prepareLifecycleDrain();
+    void stopHalAndDrainClaimed();
+    void releaseAPSTAOwnerClaimed();
+    void finishLifecycleDrain();
+    void beginLifecycleFinalization();
+    void waitForLifecycleDrainWaiters();
+    bool lifecycleFinalizing();
+    bool lifecycleDrainOwnedByCurrentThread();
+    bool markLifecycleLive();
+    // Framework-internal bootstrap callbacks may arrive before start() has
+    // published Live; they may never enter once Draining has been claimed.
+    bool beginLifecycleInternalOperation();
+    bool beginLifecycleOperation();
+    void endLifecycleOperation();
+    void stopWatchdogAndDrain();
+    void stopScanSourceAndDrain();
+#if __IO80211_TARGET >= __MAC_26_0
+    void stopSkywalkQueuesAndDrain();
+#endif
+    void scheduleTahoeBootThreadCall();
+    bool tahoeBootThreadCallLive();
+    void stopTahoeBootThreadCallAndDrain();
     void watchdogAction(IOTimerEventSource *timer);
 #if __IO80211_TARGET >= __MAC_26_0
     void tahoeLqmStatsAction(IOTimerEventSource *timer);
@@ -504,6 +573,12 @@ public:
     
     //scan
     static void fakeScanDone(OSObject *owner, IOTimerEventSource *sender);
+    // The controller is the sole owner of the fake-scan timer.  Skywalk
+    // request/abort paths must use these admission-gated operations instead
+    // of retaining a raw timer pointer across controller teardown.
+    bool scheduleScanSource(uint32_t timeoutMs);
+    bool cancelScanSource();
+    bool scanSourceCallbackLive(IOTimerEventSource *sender);
     
     //-----------------------------------------------------------------------
     // Power management support.
@@ -605,6 +680,7 @@ public:
 public:
     IOInterruptEventSource* fInterrupt;
     IOTimerEventSource *watchdogTimer;
+    volatile bool fWatchdogStopping;
 #if __IO80211_TARGET >= __MAC_26_0
     IOTimerEventSource *fTahoeLqmStatsTimer;
     uint32_t fTahoeLqmStatsIntervalMs;
@@ -625,6 +701,7 @@ public:
     IO80211SkywalkInterface *fNetIf;
     IOWorkLoop *fWatchdogWorkLoop;
     ItlHalService *fHalService;
+    bool fHalAttached;
     AirportItlwmAPSTAOwner *fAPSTAOwner;
     uint8_t fAPSTACoreFeatureFlags[kAirportItlwmAPSTACoreFeatureFlagByteCount];
     // Mirrors Apple core-private +0x4d59; current Intel backends publish zero.
@@ -670,6 +747,9 @@ public:
     
     //pm
     thread_call_t tahoeBootThreadCall;
+    IOLock *fTahoeBootCallLock;
+    bool fTahoeBootStopping;
+    bool fTahoeBootScheduled;
     volatile UInt32 pmPowerStateFlags;
     UInt8 pmPCICapPtr;
     bool magicPacketEnabled;
@@ -783,6 +863,37 @@ private:
     // Keep the CoreCapture lifecycle state at the class tail so existing
     // controller member offsets remain unchanged.
     bool driverSnapshotsPipeStarted;
+
+public:
+    /*
+     * The outer lifecycle lock serializes all stopHalAndDrain() convergence
+     * paths through the final event-source removal, HAL detach, and workloop
+     * handoff.  It is never held across a command gate, thread-call drain, or
+     * removeEventSource().  Setup takes it before a source admission lock;
+     * no path takes those locks in the reverse order.
+     */
+    IOLock *fLifecycleLock;
+    IOSimpleLock *fLifecycleAdmissionLock;
+    AirportItlwmLifecyclePhase fLifecyclePhase;
+    bool fLifecycleTeardownInFlight;
+    // Count only threads asleep in beginLifecycleDrain().  free() sets the
+    // finalization barrier before the final wake and waits for this to reach
+    // zero before it releases the control lock itself.
+    uint32_t fLifecycleDrainWaiters;
+    bool fLifecycleFinalizing;
+    thread_t fLifecycleDrainOwner;
+    uint32_t fLifecycleOperationUsers;
+
+    AirportItlwmLinkStatePublishLifecycle fLinkStatePublishLifecycle;
+    AirportItlwmScanSourceLifecycle fScanSourceLifecycle;
+
+    // Keep teardown ownership at the class tail so existing controller member
+    // offsets stay stable. fNetIf->attach(), attachInterface(), and
+    // ether_ifattach() each have an independent inverse and may succeed on
+    // different start-failure paths.
+    bool fSkywalkInterfaceProviderAttached;
+    bool fSkywalkInterfaceAttached;
+    bool fSkywalkEthernetAttached;
 };
 
 // Boot nub — replicates Apple's AppleBCMWLANUserClient IOKit matching pattern.

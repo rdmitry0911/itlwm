@@ -41,7 +41,13 @@ printf '%s\n' "$fence" |
     grep -Fq 'return super::processBSDCommand(interface, cmd, data);' ||
     fail 'BSD channel-list fence does not delegate to IO80211Family'
 
-producer=$(sed -n '/getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data \*ad)/,/^}/p' "$source")
+wrapper=$(sed -n '/getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data \*ad)/,/^}/p' "$source")
+producer=$(sed -n '/getSUPPORTED_CHANNELSImpl(struct apple80211_sup_channel_data \*ad)/,/^}/p' "$source")
+wrapper_live_count=$(printf '%s\n' "$wrapper" |
+    grep -Fc 'AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();' || true)
+[ "$wrapper_live_count" -eq 1 ] || fail 'public channel-list wrapper no longer has exactly one Live admission'
+printf '%s\n' "$wrapper" | grep -Fq 'return getSUPPORTED_CHANNELSImpl(ad);' ||
+    fail 'public channel-list wrapper no longer delegates to its unguarded implementation'
 printf '%s\n' "$producer" |
     grep -Fq 'for (int i = 0; i < IEEE80211_CHAN_MAX; i++)' ||
     fail 'local channel-list producer no longer traverses net80211 slots'

@@ -45,7 +45,13 @@ if printf '%s\n' "$fence" | grep -Eq 'req->req_(data|len|val)'; then
     fail 'BSD RATE_SET fence inspects the nested carrier'
 fi
 
-producer=$(sed -n '/getRATE_SET(struct apple80211_rate_set_data \*ad)/,/^}/p' "$source")
+wrapper=$(sed -n '/getRATE_SET(struct apple80211_rate_set_data \*ad)/,/^}/p' "$source")
+producer=$(sed -n '/getRATE_SETImpl(struct apple80211_rate_set_data \*ad)/,/^}/p' "$source")
+wrapper_live_count=$(printf '%s\n' "$wrapper" |
+    grep -Fc 'AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();' || true)
+[ "$wrapper_live_count" -eq 1 ] || fail 'public GET wrapper no longer has exactly one Live admission'
+printf '%s\n' "$wrapper" | grep -Fq 'return getRATE_SETImpl(ad);' ||
+    fail 'public GET wrapper no longer delegates to its unguarded implementation'
 printf '%s\n' "$producer" | grep -Fq 'memset(ad, 0, sizeof(*ad));' || fail 'local producer no longer clears its complete carrier'
 printf '%s\n' "$producer" | grep -Fq 'ad->version = APPLE80211_VERSION;' || fail 'local producer no longer writes its version'
 printf '%s\n' "$producer" | grep -Fq 'ad->num_rates = ic->ic_bss->ni_rates.rs_nrates;' || fail 'local producer no longer writes its rate count'

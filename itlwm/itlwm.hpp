@@ -80,6 +80,7 @@ public:
     virtual IOReturn setWakeOnMagicPacket( bool active ) override;
     
     void releaseAll();
+    void stopWatchdogAndDrain();
     void joinSSID(const char *ssid, const char *pwd);
     void associateSSID(const char *ssid, const char *pwd);
     void watchdogAction(IOTimerEventSource *timer);
@@ -99,6 +100,7 @@ public:
 public:
     IOInterruptEventSource* fInterrupt;
     IOTimerEventSource *watchdogTimer;
+    volatile bool fWatchdogStopping;
     IOPCIDevice *pciNub;
     IONetworkStats *fpNetStats;
     IOEthernetInterface *fNetIf;

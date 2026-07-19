@@ -47,7 +47,13 @@ if printf '%s\n' "$fence" | grep -Eq 'req->req_(data|len|val)'; then
     fail 'BSD MCS fence inspects the nested carrier'
 fi
 
-producer=$(sed -n '/getMCS_INDEX_SET(struct apple80211_mcs_index_set_data \*ad)/,/^}/p' "$source")
+wrapper=$(sed -n '/getMCS_INDEX_SET(struct apple80211_mcs_index_set_data \*ad)/,/^}/p' "$source")
+producer=$(sed -n '/getMCS_INDEX_SETImpl(struct apple80211_mcs_index_set_data \*ad)/,/^}/p' "$source")
+wrapper_live_count=$(printf '%s\n' "$wrapper" |
+    grep -Fc 'AIRPORT_ITLWM_REQUIRE_LIVE_OPERATION();' || true)
+[ "$wrapper_live_count" -eq 1 ] || fail 'public GET wrapper no longer has exactly one Live admission'
+printf '%s\n' "$wrapper" | grep -Fq 'return getMCS_INDEX_SETImpl(ad);' ||
+    fail 'public GET wrapper no longer delegates to its unguarded implementation'
 printf '%s\n' "$producer" | grep -Fq 'memset(ad, 0, sizeof(*ad));' || fail 'local producer no longer clears its complete carrier'
 printf '%s\n' "$producer" | grep -Fq 'ad->version = APPLE80211_VERSION;' || fail 'local producer no longer writes its version'
 printf '%s\n' "$producer" | grep -Fq 'ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];' || fail 'local producer no longer writes its MCS map'

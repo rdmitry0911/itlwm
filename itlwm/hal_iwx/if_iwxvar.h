@@ -110,6 +110,7 @@
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
+#include <IOKit/IOLocks.h>
 
 #define IWL_CFG_ANY (~0)
 
@@ -364,6 +365,29 @@ struct iwx_tx_data {
     uint8_t  diag_subtype;
     uint16_t diag_auth_seq;
     uint8_t  diag_peer[6];
+};
+
+/*
+ * q0 is shared by the RX/PAE path, the two task queues, timers, and
+ * IOKit callbacks.  The hardware response supplies only qid/index, so an
+ * index must not be recycled until its previous command has reached a
+ * terminal state.  These records are deliberately q0-only; data queues
+ * retain their existing ownership rules.
+ */
+enum iwx_cmd_slot_state {
+    IWX_CMD_SLOT_FREE = 0,
+    IWX_CMD_SLOT_SUBMITTED,
+    IWX_CMD_SLOT_COMPLETED,
+    IWX_CMD_SLOT_TIMED_OUT,
+    IWX_CMD_SLOT_ABORTED,
+};
+
+struct iwx_cmd_slot {
+    uint64_t serial;
+    uint32_t epoch;
+    uint32_t code;
+    uint8_t state;
+    uint8_t async;
 };
 
 struct iwx_tx_ring {
@@ -647,6 +671,25 @@ struct iwx_softc {
 	pcitag_t sc_pcitag;
 	IOInterruptEventSource *sc_ih;
 	int sc_msix;
+	/* Attach/unwind state: detach owns the single ordered teardown. */
+	bool sc_taskq_initialized;
+	bool sc_task_callbacks_ready;
+	bool sc_if_attached;
+	/* Set only after iwx_start_hw() has completed its safe start point. */
+	bool sc_hw_active;
+	/*
+     * Admission fence for the five driver task callbacks and the one
+     * in-flight init epoch.  Stop closes this gate before closing q0 and
+     * waits for callback bodies and init ownership to leave before resetting
+     * hardware or releasing DMA storage.
+     */
+    IOLock *sc_task_gate_lock;
+    uint32_t sc_task_gate_active;
+    uint32_t sc_task_gate_init_refs;
+    uint32_t sc_task_gate_stop_refs;
+    bool sc_task_gate_closed;
+    bool sc_task_gate_bootstrap_init;
+    bool sc_task_gate_detaching;
 
 	/* TX/RX rings. */
 	struct iwx_tx_ring txq[IWX_MAX_TVQM_QUEUES];
@@ -747,6 +790,18 @@ struct iwx_softc {
 
 	uint8_t *sc_cmd_resp_pkt[IWX_TFD_QUEUE_SIZE_MAX_GEN3];	
 	size_t sc_cmd_resp_len[IWX_TFD_QUEUE_SIZE_MAX_GEN3];
+	/*
+	 * Fast q0 metadata lock.  It is usable from the raw RX/PAE producer and
+	 * the firmware-completion path.  Never allocate, DMA-map, sleep, wake, or
+	 * call into net80211 while holding it.
+	 */
+	IOSimpleLock *sc_cmdq_lock;
+	uint64_t sc_cmdq_next_serial;
+	uint32_t sc_cmdq_epoch;
+	uint32_t sc_cmdq_senders;
+	bool sc_cmdq_stopping;
+	bool sc_cmdq_detaching;
+	struct iwx_cmd_slot sc_cmdq_slots[IWX_MIN_256_BA_QUEUE_SIZE_GEN3];
 	int sc_nic_locks;
 
 	struct taskq *sc_nswq;

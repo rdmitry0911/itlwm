@@ -322,6 +322,8 @@ public:
     int    iwx_mimo_enabled(struct iwx_softc *);
     static void    iwx_mac_ctxt_task(void *);
     static void    iwx_chan_ctxt_task(void *);
+    static void    iwx_mac_ctxt_task_dispatch(void *);
+    static void    iwx_chan_ctxt_task_dispatch(void *);
     static void    iwx_updateprot(struct ieee80211com *);
     static void    iwx_updateslot(struct ieee80211com *);
     static void    iwx_updateedca(struct ieee80211com *);
@@ -343,6 +345,7 @@ public:
     static void    iwx_ampdu_tx_stop(struct ieee80211com *, struct ieee80211_node *,
             uint8_t);
     static void    iwx_ba_task(void *);
+    static void    iwx_ba_task_dispatch(void *);
 
     int    iwx_set_mac_addr_from_csr(struct iwx_softc *, struct iwx_nvm_data *);
     int    iwx_is_valid_mac_addr(const uint8_t *);
@@ -395,6 +398,19 @@ public:
     int    iwx_send_cmd_pdu_status(struct iwx_softc *, uint32_t, uint16_t,
             const void *, uint32_t *);
     void    iwx_free_resp(struct iwx_softc *, struct iwx_host_cmd *);
+    int     iwx_cmdq_init(struct iwx_softc *);
+    bool    iwx_cmdq_start(struct iwx_softc *, int);
+    bool    iwx_cmdq_start_bootstrap(struct iwx_softc *);
+    void    iwx_cmdq_stop(struct iwx_softc *);
+    void    iwx_cmdq_detach_begin(struct iwx_softc *);
+    void    iwx_cmdq_destroy(struct iwx_softc *);
+    bool    iwx_cmdq_enter(struct iwx_softc *);
+    void    iwx_cmdq_leave(struct iwx_softc *);
+    bool    iwx_cmdq_is_narrow(struct iwx_softc *, int, int);
+    void    iwx_cmdq_snapshot(struct iwx_softc *, int *, int *);
+    void    iwx_cmdq_store_response(struct iwx_softc *, int, int,
+            struct iwx_rx_packet *, size_t, bool legacy_drop_response);
+    void    iwx_interrupt_teardown(struct iwx_softc *);
     void    iwx_cmd_done(struct iwx_softc *, int, int, int);
     const struct iwx_rate *iwx_tx_fill_cmd(struct iwx_softc *, struct iwx_node *,
             struct ieee80211_frame *, uint32_t *, uint32_t *);
@@ -482,6 +498,7 @@ public:
            struct ieee80211_node *, struct ieee80211_key *);
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
+    static void    iwx_newstate_task_dispatch(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
     void    iwx_endscan(struct iwx_softc *);
     void    iwx_fill_sf_command(struct iwx_softc *, struct iwx_sf_cfg_cmd *,
@@ -493,8 +510,10 @@ public:
     int    iwx_send_temp_report_ths_cmd(struct iwx_softc *);
     int    iwx_init_hw(struct iwx_softc *);
     int    iwx_init(struct _ifnet *);
+    int    iwx_init_internal(struct _ifnet *, bool);
     static void    iwx_start(struct _ifnet *);
     void    iwx_stop(struct _ifnet *);
+    void    iwx_stop_internal(struct _ifnet *, bool, bool);
     static void    iwx_watchdog(struct _ifnet *);
     static int    iwx_ioctl(struct _ifnet *, u_long, caddr_t);
     const char *iwx_desc_lookup(uint32_t);
@@ -523,6 +542,20 @@ public:
     void    iwx_attach_hook(struct device *);
     bool    iwx_attach(struct iwx_softc *, struct pci_attach_args *);
     static void    iwx_init_task(void *);
+    static void    iwx_init_task_dispatch(void *);
+    int     iwx_task_gate_init(struct iwx_softc *);
+    bool    iwx_task_gate_close(struct iwx_softc *, bool, int *);
+    bool    iwx_task_gate_begin_epoch(struct iwx_softc *, int *);
+    bool    iwx_task_gate_epoch_live(struct iwx_softc *, int);
+    bool    iwx_task_gate_open(struct iwx_softc *, int);
+    void    iwx_task_gate_rearm(struct iwx_softc *, int);
+    void    iwx_task_gate_drain(struct iwx_softc *, uint32_t, uint32_t,
+                                uint32_t);
+    void    iwx_task_gate_destroy(struct iwx_softc *);
+    bool    iwx_task_gate_enter(struct iwx_softc *, bool);
+    void    iwx_task_gate_leave(struct iwx_softc *);
+    void    iwx_bootstrap_init_task(struct iwx_softc *);
+    void    iwx_task_gate_end_epoch(struct iwx_softc *);
     int    iwx_activate(struct iwx_softc *, int);
     int    iwx_resume(struct iwx_softc *);
     
