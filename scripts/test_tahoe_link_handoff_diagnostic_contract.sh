@@ -14,6 +14,7 @@ python3 "$EVALUATOR" --self-test
 python3 - "$ROOT" <<'PY'
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,10 @@ skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 client = (root / "AirportItlwmRegDiag/airport_itlwm_regdiag.c").read_text()
 evaluator = (root / "scripts/evaluate_tahoe_link_handoff.py").read_text()
 plan = (root / "analysis/TAHOE_LINK_HANDOFF_DIAGNOSTIC_PLAN_2026-07-20.md").read_text()
+parent_result_doc = (root / "analysis/"
+                     "TAHOE_LINK_STATE_PARENT_RESULT_NORMALIZATION_2026-07-20.md").read_text()
+release_582_doc = (root / "analysis/"
+                   "TAHOE_RELEASE_5827179_KEXT_VERIFICATION_2026-07-20.md").read_text()
 
 
 def fail(message: str) -> None:
@@ -141,6 +146,47 @@ for token in (
     "AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE",
 ):
     require(client, token, "RegDiag target-honest parent-bool rendering")
+parent_result_evidence = json.loads((root / "evidence/runtime/"
+                                    "tahoe_link_state_parent_result_eb5fdb5.json").read_text())
+if parent_result_evidence.get("schema_version") != "itlwm-tahoe-link-state-parent-result/v1":
+    fail("parent-result evidence schema mismatch")
+if parent_result_evidence.get("provenance") != {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "guest_os_build": "25C56",
+    "source_commit": "eb5fdb530ef6493ecb2e0fa35efd5f7d88ecbd96",
+}:
+    fail("parent-result evidence provenance mismatch")
+for key in (
+    "parent_true_maps_to_ioreturn_success",
+    "parent_false_maps_to_ioreturn_error",
+    "rt14_follows_raw_parent_bool",
+    "pre_tahoe_parent_accepted_is_na",
+):
+    if parent_result_evidence.get("static_semantics", {}).get(key) is not True:
+        fail(f"parent-result evidence missing static semantic: {key}")
+for key, value in parent_result_evidence.get("runtime_observation", {}).items():
+    if value is not False:
+        fail(f"parent-result evidence overclaims runtime observation: {key}")
+for key, value in parent_result_evidence.get("non_claims", {}).items():
+    if value is not False:
+        fail(f"parent-result evidence broadens execution scope: {key}")
+if parent_result_evidence.get("build_admission", {}).get("all_undefined_symbols_resolved") != 958:
+    fail("parent-result evidence unresolved-symbol count mismatch")
+for token in (
+    "Successful, bounded scenario",
+    "not a parent-false runtime observation",
+    "This record is not a Wi-Fi, SAE, PMF",
+    "credential-free record",
+):
+    require(parent_result_doc, token, "parent-result evidence document")
+for token in (
+    "v2.4.0-alpha-5827179",
+    "29786593288",
+    "AirportItlwm.kext/Contents/Info.plist",
+    "AirportItlwm.kext/Contents/MacOS/AirportItlwm",
+    "no functional Wi-Fi claim",
+):
+    require(release_582_doc, token, "release kext verification document")
 
 join_abort = body(skywalk, "setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)", "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_QOS_PARAMS")
 for token in (

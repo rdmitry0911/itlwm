@@ -1,0 +1,51 @@
+{
+  "build_admission": {
+    "agent_clean_build_passed": true,
+    "all_undefined_symbols_resolved": 958,
+    "kext_debug_build_passed": true,
+    "link_handoff_contract_passed": true,
+    "regdiag_build_passed": true,
+    "sae_quarantine_contract_passed": true
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "non_claims": {
+    "association_completed": false,
+    "candidate_installed": false,
+    "candidate_loaded": false,
+    "data_transfer_completed": false,
+    "dhcp_completed": false,
+    "direct_parent_linkstate_probe": false,
+    "network_association_attempted": false,
+    "physical_host_touched": false,
+    "radio_state_changed": false,
+    "remote_10_90_10_22_touched": false,
+    "routes_or_addresses_changed": false
+  },
+  "provenance": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "guest_os_build": "25C56",
+    "source_commit": "eb5fdb530ef6493ecb2e0fa35efd5f7d88ecbd96"
+  },
+  "run_utc": "2026-07-20T23:22:59Z",
+  "runtime_observation": {
+    "parent_false_observed": false,
+    "parent_true_observed": false,
+    "runtime_trace_collected": false
+  },
+  "schema_version": "itlwm-tahoe-link-state-parent-result/v1",
+  "static_semantics": {
+    "parent_false_maps_to_ioreturn_error": true,
+    "parent_true_maps_to_ioreturn_success": true,
+    "pre_tahoe_parent_accepted_is_na": true,
+    "rt14_follows_raw_parent_bool": true
+  },
+  "verdict": {
+    "abi_build_admission_passed": true,
+    "bool_ioreturn_normalization_verified_statically": true,
+    "runtime_parent_false_not_claimed": true
+  }
+}
