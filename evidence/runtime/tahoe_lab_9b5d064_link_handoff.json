@@ -1,0 +1,165 @@
+{
+  "activation": {
+    "full_auxkc": {
+      "atomic_swap": true,
+      "candidate_uuid_present": true,
+      "exact_member_count": 5,
+      "non_airport_members_unchanged": true,
+      "rebuild_passed": true,
+      "rollback_auxkc_present": true,
+      "rollback_bundle_present": true
+    },
+    "lab_guest_reboot_completed_before_identity_capture": true,
+    "private_auxkc_admission": {
+      "canonical_mutation": "none",
+      "canonical_postflight": "PASS",
+      "exact_member_count": 5,
+      "kmutil_create_exit": 0,
+      "private_admission_result": "PASS",
+      "private_auxkc_bootkc_inspect_exit": 0,
+      "private_auxkc_inspect_exit": 0
+    },
+    "scope": {
+      "lab_guest_only": true,
+      "physical_host_rebooted": false,
+      "remote_10_90_10_22_touched": false
+    }
+  },
+  "artifact_hashes": {
+    "link_handoff_verdict_sha256": "6d0a3260202c32a4c0f5e8b286c1c4b4eabbc31dbba3f74dbb26f99cf773c93a",
+    "manifest_sha256": "1622ace9e2ab6727c17d19f0fc4f7acb921a8cd8989f80e645e7ef28893f68dd",
+    "post_snapshot_sha256": "6e0e5a15c17f04050892d64985f7b2b65995c0646159d4af7159210155791201",
+    "pre_snapshot_sha256": "87c49e8e1f26bd3c5d59ae3977159583791bbba0fe8bb5eaf05b77a8cece3f58",
+    "regdiag_control_sha256": "1e7ae1701899194316a8eb835df2c66feb51dd5307d2e2404e38b21ee0a0a390",
+    "trace_sha256": "13d5a05d199662977d811f1aa4448a9d01bf97fc6cce23896cd0f1a835709e6c",
+    "verdict_sha256": "c8b2481dfbac27b226f0a8989407f873c7de3edf0364c6999efb34dd2ba63a7f"
+  },
+  "candidate": {
+    "archive_sha256": "654ab9c57d7546871c0c313ff7f09e77f4b1c59c49f468905e98a4f1fe602811",
+    "binary_sha256": "93d7f53dd54608ae76e5c99d8dd61de1437059280ab72ab53c3db42914f37317",
+    "identity_evidence_sha256": "dc529fcda6b534278e8e9b98986f8bada6b91d813df185a1c112b83ccb532c5e",
+    "macho_uuid": "ACCF10BE-552A-34D3-8908-7706514B2E3C",
+    "release_tag": "v2.4.0-alpha-9b5d064",
+    "source_commit": "9b5d064287541feadee23d5ee542fc423356660d"
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "controlled_epoch": {
+    "capture_utc": "20260720T221544Z",
+    "credential_handling": {
+      "passphrase_recorded": false,
+      "profile_selected_by_sha256": true,
+      "saved_profile_identifier_sha256": "552cb0ce6725ac3c13feef9e1c7947737b14201acd794cf5cd7c45808a8cac7d"
+    },
+    "environment": {
+      "default_route_observable": true,
+      "explicit_address_command": "none",
+      "explicit_dhcp_command": "none",
+      "explicit_route_command": "none",
+      "interface_changed": false,
+      "routes_after_sha256": "bed21c4c2eb7007d7a408f57d1a6b65fb9d8ade38cfe16bea356ea570410eed1",
+      "routes_before_sha256": "09be6c0b650be2e55eb884dc76ec6bdb0f5df92692c17167e1ca7bee0ab27b1f",
+      "routes_changed_observed": true
+    },
+    "handshake": {
+      "auth_policy_carrier": {
+        "auth_upper": "0x400",
+        "events": 1,
+        "pmf": 0,
+        "policy": "0x6",
+        "result": "0x0"
+      },
+      "eapol_rx": 0,
+      "eapol_tx": 0,
+      "link_up": 0,
+      "pmk_direct": 0,
+      "plti_deliver": 1,
+      "plti_publish": 1,
+      "strict_verdict": "INCONCLUSIVE_OR_FAIL",
+      "strict_verdict_reasons": [
+        "missing successful EAPOL TX/RX pair",
+        "no successful link-up publication"
+      ]
+    },
+    "link_handoff": {
+      "join_abort_events": 0,
+      "link_publish": {
+        "events": 4,
+        "off_gate_rejected": 2,
+        "published": 0,
+        "queued": 2,
+        "result_not_ready": 2,
+        "result_success": 2
+      },
+      "link_status": {
+        "applied": 2,
+        "events": 4,
+        "same": 2
+      },
+      "off_gate_predicate_at_rejection": {
+        "in_gate": true,
+        "on_thread": true,
+        "raw_code": 3
+      },
+      "post": {
+        "controller_status": "0x3",
+        "net80211_state": 4
+      },
+      "pre": {
+        "controller_status": "0x3",
+        "net80211_state": 4
+      },
+      "verdict": "LINK_PUBLICATION_INCOMPLETE",
+      "verdict_reasons": [
+        "pre-trigger controller status was already active",
+        "an active link request was short-circuited as unchanged",
+        "off-gate link publication was queued but not accepted"
+      ]
+    },
+    "post_epoch_pinned_guest_query_succeeded": true,
+    "regdiag": {
+      "abi": 2,
+      "control_block": "0x0",
+      "control_mode": "0x35",
+      "trace_count": 14,
+      "trace_dropped": 0,
+      "trace_next": 14
+    },
+    "scenario": {
+      "expect": "wpa2-sha256-psk",
+      "interface": "en1",
+      "join_invoked": true,
+      "settle_seconds": 15,
+      "trigger_exit": 0
+    }
+  },
+  "non_claims": {
+    "association_completed": false,
+    "authentication_completed": false,
+    "data_transfer_completed": false,
+    "dhcp_completed": false,
+    "eapol_exchange_completed": false,
+    "functional_wifi_connection_completed": false,
+    "link_up_completed": false,
+    "pure_sae_or_pmf_tested": false,
+    "route_preserved": false,
+    "wpa2_sha256_psk_baseline_pass": false
+  },
+  "schema_version": "itlwm-tahoe-link-handoff-runtime-record/v1",
+  "script_identity": {
+    "auxkc_preflight_sha256": "238794cf475a13bfeba0fcc8caf4af48581228086efd7d2ade798da4ca783520",
+    "capture_sha256": "f3e6676a34f8f2ced5146ab6c69940b31abe279a5ca1be59dce5079582313b22",
+    "link_handoff_evaluator_sha256": "69ff81c67f4a6a15bc18f36d514cd013315f949f0760026ef50b6d97e084a438",
+    "sae_capture_evaluator_sha256": "63cc6b68ab96e0cbf4f390d23c419b08a2888f7cf4c02d12c82c46e0a85067a8"
+  },
+  "verdict": {
+    "candidate_identity_bound": true,
+    "controlled_link_handoff_epoch_completed": true,
+    "functional_connection_claimed": false,
+    "next_safe_boundary": "reference-owned off-gate WCL publication",
+    "safety_guard_relaxed": false
+  }
+}
