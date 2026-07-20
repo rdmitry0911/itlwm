@@ -29,6 +29,8 @@ PINNED_GUEST="devops@127.0.0.1"
 PINNED_PORT=3322
 PINNED_REMOTE_SDK="/Users/devops/Projects/itlwm/MacKernelSDK"
 PINNED_BOOTKC="/System/Library/KernelCollections/BootKernelExtensions.kc"
+EXPECTED_GUEST_BUILD="25C56"
+EXPECTED_BOOTKC_SHA256="eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d"
 EXPECTED_GUEST_HOSTKEY_LINE="[127.0.0.1]:3322 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPrOLzo9N+8YgP4rFTWH4scBkBT8EYGNVy87QWgvdT2"
 EXPECTED_GUEST_HOSTKEY_SHA256="SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY"
 # Keep these two environment names as a fail-closed compatibility check for
@@ -72,7 +74,21 @@ prepare_guest_transport() {
     )
 }
 
-echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
+assert_pinned_guest_provenance() {
+    local observed_build observed_bootkc
+    observed_build="$("${SSH[@]}" 'sw_vers -buildVersion')"
+    observed_bootkc="$("${SSH[@]}" "shasum -a 256 '$BOOTKC' | awk '{ print \$1 }'")"
+    if [ "$observed_build" != "$EXPECTED_GUEST_BUILD" ]; then
+        echo "ERROR: pinned Tahoe guest build mismatch" >&2
+        exit 1
+    fi
+    if [ "$observed_bootkc" != "$EXPECTED_BOOTKC_SHA256" ]; then
+        echo "ERROR: pinned Tahoe guest BootKC digest mismatch" >&2
+        exit 1
+    fi
+}
+
+echo "[1/5] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
 bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
 bash "$ROOT/scripts/test_tahoe_link_handoff_diagnostic_contract.sh"
 bash "$ROOT/scripts/test_tahoe_link_handoff_lab_result_contract.sh"
@@ -91,6 +107,8 @@ fi
 
 trap cleanup_known_hosts EXIT
 prepare_guest_transport
+echo "[2/5] verifying pinned Tahoe guest provenance"
+assert_pinned_guest_provenance
 
 # Remote staging must remain an exact source tree. Static-only validation is
 # read-only and is intentionally usable while unrelated work is present.
@@ -116,14 +134,14 @@ if [ "$SOURCE_DIRTY" -ne 0 ]; then
     fi
 fi
 
-echo "[2/4] allocating isolated Tahoe build directory"
+echo "[3/5] allocating isolated Tahoe build directory"
 REMOTE_DIR="$("${SSH[@]}" 'mktemp -d /tmp/aiam-tahoe-sae-layer-gate.XXXXXX')"
 if [ -z "$REMOTE_DIR" ]; then
     echo "ERROR: Tahoe guest did not return an isolated build directory" >&2
     exit 1
 fi
 
-echo "[3/4] staging source and project-local MacKernelSDK"
+echo "[4/5] staging source and project-local MacKernelSDK"
 RSYNC_RSH="ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -p $PORT"
 rsync -a -e "$RSYNC_RSH" \
     --exclude='.git' \
@@ -135,7 +153,7 @@ rsync -a -e "$RSYNC_RSH" \
 "${SSH[@]}" "test -f '$REMOTE_SDK/Headers/IOKit/network/IONetworkController.h'"
 "${SSH[@]}" "cp -R '$REMOTE_SDK' '$REMOTE_DIR/MacKernelSDK'"
 
-echo "[4/4] Tahoe kext BootKC gate, Agent clean build, and RegDiag client"
+echo "[5/5] Tahoe kext BootKC gate, Agent clean build, and RegDiag client"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'"
 "${SSH[@]}" "cd '$REMOTE_DIR/AirportItlwmAgent' && make clean && make"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_regdiag.sh"

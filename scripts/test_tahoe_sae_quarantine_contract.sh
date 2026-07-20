@@ -375,6 +375,8 @@ for needle in (
     'PINNED_PORT=3322',
     'PINNED_REMOTE_SDK="/Users/devops/Projects/itlwm/MacKernelSDK"',
     'PINNED_BOOTKC="/System/Library/KernelCollections/BootKernelExtensions.kc"',
+    'EXPECTED_GUEST_BUILD="25C56"',
+    'EXPECTED_BOOTKC_SHA256="eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d"',
     'EXPECTED_GUEST_HOSTKEY_LINE=',
     'EXPECTED_GUEST_HOSTKEY_SHA256=',
     'KNOWN_HOSTS="$(mktemp /tmp/aiam-tahoe-sae-gate-known-hosts.XXXXXX)"',
@@ -385,16 +387,52 @@ for needle in (
     'RSYNC_RSH=',
 ):
     require(layer_runner, needle, "pinned layer-gate transport")
+transport_prepare_body = body(layer_runner, "prepare_guest_transport()",
+                              "pinned layer-gate transport preparation")
+ordered(transport_prepare_body, "pinned destination and path rejection",
+        '"$REMOTE" != "$PINNED_GUEST"',
+        '"$PORT" != "$PINNED_PORT"',
+        '"$REMOTE_SDK" != "$PINNED_REMOTE_SDK"',
+        '"$BOOTKC" != "$PINNED_BOOTKC"',
+        'ERROR: Tahoe SAE gate only accepts the pinned laboratory guest and paths',
+        'exit 2',
+        'KNOWN_HOSTS="$(mktemp /tmp/aiam-tahoe-sae-gate-known-hosts.XXXXXX)"',
+        'ssh-keygen -lf "$KNOWN_HOSTS" -E sha256',
+        'SSH=(')
 for needle in (
     'ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8',
     'StrictHostKeyChecking=yes',
-    'UserKnownHostsFile=',
+    'UserKnownHostsFile="$KNOWN_HOSTS"',
     'GlobalKnownHostsFile=/dev/null',
     'UpdateHostKeys=no',
     'LogLevel=ERROR',
 ):
-    if layer_runner.count(needle) < 2:
-        fail(f"pinned layer-gate transport must cover SSH and rsync: {needle}")
+    require(transport_prepare_body, needle, "strict SSH transport")
+provenance_body = body(layer_runner, "assert_pinned_guest_provenance()",
+                       "pinned Tahoe guest provenance")
+ordered(provenance_body, "pinned Tahoe guest provenance checks",
+        'sw_vers -buildVersion',
+        "shasum -a 256 '$BOOTKC'",
+        '"$observed_build" != "$EXPECTED_GUEST_BUILD"',
+        'ERROR: pinned Tahoe guest build mismatch',
+        '"$observed_bootkc" != "$EXPECTED_BOOTKC_SHA256"',
+        'ERROR: pinned Tahoe guest BootKC digest mismatch')
+rsync_rsh_line = next((line for line in layer_runner.splitlines()
+                       if line.startswith("RSYNC_RSH=")), "")
+if not rsync_rsh_line:
+    fail("missing strict rsync transport command")
+for needle in (
+    'ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8',
+    'StrictHostKeyChecking=yes',
+    'UserKnownHostsFile=$KNOWN_HOSTS',
+    'GlobalKnownHostsFile=/dev/null',
+    'UpdateHostKeys=no',
+    'LogLevel=ERROR',
+    '-p $PORT',
+):
+    require(rsync_rsh_line, needle, "strict rsync transport")
+require(layer_runner, 'rsync -a -e "$RSYNC_RSH"',
+        "rsync uses its strict transport command")
 for needle in (
     'StrictHostKeyChecking=no',
     'UserKnownHostsFile=/dev/null',
@@ -408,9 +446,11 @@ if static_exit < 0 or untracked_gate < 0 or static_exit > untracked_gate:
     fail("static-only layer gate must complete before the remote cleanliness gate")
 transport_cleanup = layer_runner.find('trap cleanup_known_hosts EXIT', static_exit)
 transport_prepare = layer_runner.find('\nprepare_guest_transport\n', static_exit)
-if (transport_cleanup < 0 or transport_prepare < 0 or
-        transport_cleanup > transport_prepare or transport_prepare > untracked_gate):
-    fail("layer gate must prepare cleanup and pinned transport before remote staging")
+provenance_check = layer_runner.find('\nassert_pinned_guest_provenance\n', static_exit)
+if (transport_cleanup < 0 or transport_prepare < 0 or provenance_check < 0 or
+        transport_cleanup > transport_prepare or transport_prepare > provenance_check or
+        provenance_check > untracked_gate):
+    fail("layer gate must verify pinned transport and Tahoe provenance before remote staging")
 
 # Passive BSS discovery recognizes the RSN SAE suite so a later state machine
 # can consume an exact selected-BSS snapshot. It remains strictly inactive:
