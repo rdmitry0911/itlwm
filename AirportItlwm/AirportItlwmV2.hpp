@@ -521,7 +521,10 @@ public:
     void stopSkywalkQueuesAndDrain();
 #endif
     void scheduleTahoeBootThreadCall();
+    bool beginTahoeBootThreadCall();
     bool tahoeBootThreadCallLive();
+    void completeTahoeBootThreadCall();
+    void releaseTahoeBootThreadCallRetain();
     void stopTahoeBootThreadCallAndDrain();
     void watchdogAction(IOTimerEventSource *timer);
 #if __IO80211_TARGET >= __MAC_26_0
@@ -750,6 +753,9 @@ public:
     IOLock *fTahoeBootCallLock;
     bool fTahoeBootStopping;
     bool fTahoeBootScheduled;
+    bool fTahoeBootCallActive;
+    bool fTahoeBootCallRetained;
+    thread_t fTahoeBootCallOwner;
     volatile UInt32 pmPowerStateFlags;
     UInt8 pmPCICapPtr;
     bool magicPacketEnabled;

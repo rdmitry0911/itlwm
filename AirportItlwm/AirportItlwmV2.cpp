@@ -2349,7 +2349,7 @@ performTahoeBootChipImageGated(OSObject *owner, void *, void *, void *, void *)
     AirportItlwm *self = static_cast<AirportItlwm *>(owner);
     // The thread-call handler can already be queued when stop begins.  Check
     // again after entering the command gate so a stale invocation never
-    // reaches fHalService while cancel_wait() drains it.
+    // reaches fHalService while the boot-callback drain owns it.
     if (self == nullptr || !self->tahoeBootThreadCallLive())
         return kIOReturnAborted;
     self->performTahoeBootChipImage();
@@ -2360,12 +2360,20 @@ static void
 handleTahoeBootChipImage(thread_call_param_t param0, thread_call_param_t)
 {
     AirportItlwm *self = (AirportItlwm *)param0;
-    if (self == nullptr || !self->tahoeBootThreadCallLive())
+    if (self == nullptr)
         return;
-    IOCommandGate *gate = self->getCommandGate();
-    if (gate && self->tahoeBootThreadCallLive()) {
-        gate->runAction(performTahoeBootChipImageGated);
+
+    // beginTahoeBootThreadCall() records this callback owner before its first
+    // liveness decision. The one schedule-owned retain remains held through
+    // the literal final release below, so no stop/free path can reclaim this
+    // raw thread-call param while the handler is still returning.
+    if (self->beginTahoeBootThreadCall()) {
+        IOCommandGate *gate = self->getCommandGate();
+        if (gate && self->tahoeBootThreadCallLive())
+            gate->runAction(performTahoeBootChipImageGated);
     }
+    self->completeTahoeBootThreadCall();
+    self->releaseTahoeBootThreadCallRetain();
 }
 
 void AirportItlwm::performTahoeBootChipImage()
@@ -3123,13 +3131,41 @@ void AirportItlwm::scheduleTahoeBootThreadCall()
 
     IOLockLock(fTahoeBootCallLock);
     if (!fTahoeBootStopping && !fTahoeBootScheduled &&
+        !fTahoeBootCallActive &&
         tahoeBootThreadCall != nullptr) {
-        // Submit exactly once. With no later re-entry, cancel_wait() either
-        // removes this sole pending call or waits for this sole running call.
+        // fTahoeBootScheduled is the lifetime one-shot latch.  The separate
+        // active latch covers exactly the submitted invocation, including the
+        // interval in which it has started but is blocked in runAction().
+        // That distinction lets the public cancel API safely replace the
+        // private/aux-kext-unavailable synchronous-cancel API during teardown.
         fTahoeBootScheduled = true;
+        fTahoeBootCallActive = true;
+        // The thread call stores only a raw `this` parameter. Retain before
+        // submit and release only at one of the two terminal edges: successful
+        // pending cancellation below, or the callback's literal last action.
+        fTahoeBootCallRetained = true;
+        retain();
         thread_call_enter(tahoeBootThreadCall);
     }
     IOLockUnlock(fTahoeBootCallLock);
+}
+
+bool AirportItlwm::beginTahoeBootThreadCall()
+{
+    IOLock *lock = fTahoeBootCallLock;
+    if (lock == nullptr)
+        return false;
+
+    IOLockLock(lock);
+    // Set this before checking Stopping: a callback which was dispatched just
+    // before teardown must never wait for itself if a framework callback
+    // reaches stopTahoeBootThreadCallAndDrain() re-entrantly.
+    if (fTahoeBootCallActive && tahoeBootThreadCall != nullptr)
+        fTahoeBootCallOwner = current_thread();
+    const bool live = !fTahoeBootStopping && fTahoeBootCallActive &&
+        tahoeBootThreadCall != nullptr;
+    IOLockUnlock(lock);
+    return live;
 }
 
 bool AirportItlwm::tahoeBootThreadCallLive()
@@ -3140,26 +3176,90 @@ bool AirportItlwm::tahoeBootThreadCallLive()
         return false;
 
     IOLockLock(fTahoeBootCallLock);
-    live = !fTahoeBootStopping && tahoeBootThreadCall != nullptr;
+    live = !fTahoeBootStopping && fTahoeBootCallActive &&
+        tahoeBootThreadCall != nullptr;
     IOLockUnlock(fTahoeBootCallLock);
     return live;
 }
 
-void AirportItlwm::stopTahoeBootThreadCallAndDrain()
+void AirportItlwm::completeTahoeBootThreadCall()
 {
-    if (fTahoeBootCallLock == nullptr)
+    IOLock *lock = fTahoeBootCallLock;
+    if (lock == nullptr)
         return;
 
-    IOLockLock(fTahoeBootCallLock);
+    IOLockLock(lock);
+    fTahoeBootCallOwner = nullptr;
+    fTahoeBootCallActive = false;
+    // stopTahoeBootThreadCallAndDrain() sleeps only after cancellation could
+    // not remove the invocation.  Wake it after every callback exit, whether
+    // the callback reached runAction() or observed fTahoeBootStopping first.
+    IOLockWakeup(lock, &fTahoeBootCallActive, false);
+    IOLockUnlock(lock);
+}
+
+void AirportItlwm::releaseTahoeBootThreadCallRetain()
+{
+    IOLock *lock = fTahoeBootCallLock;
+    bool dropRetain = false;
+    if (lock != nullptr) {
+        IOLockLock(lock);
+        if (fTahoeBootCallRetained) {
+            fTahoeBootCallRetained = false;
+            dropRetain = true;
+        }
+        IOLockUnlock(lock);
+    }
+
+    // This is intentionally the last use of `this` on the callback path.
+    // The matching schedule retain makes it safe even if teardown has already
+    // observed fTahoeBootCallActive=false and released the thread_call.
+    if (dropRetain)
+        release();
+}
+
+void AirportItlwm::stopTahoeBootThreadCallAndDrain()
+{
+    IOLock *lock = fTahoeBootCallLock;
+    if (lock == nullptr)
+        return;
+
+    IOLockLock(lock);
+    // beginLifecycleDrain()/stopHalAndDrainClaimed() supplies the normal sole
+    // owner. Keep this local claim too: a second caller must not snapshot and
+    // free the same thread_call after the first has begun draining it.
+    if (fTahoeBootStopping) {
+        IOLockUnlock(lock);
+        return;
+    }
+    if (fTahoeBootCallOwner == current_thread()) {
+        IOLockUnlock(lock);
+        panic("%s: Tahoe boot callback attempted self-drain", __FUNCTION__);
+    }
     fTahoeBootStopping = true;
     thread_call_t call = tahoeBootThreadCall;
-    IOLockUnlock(fTahoeBootCallLock);
+    IOLockUnlock(lock);
     if (call == nullptr)
         return;
 
-    // handleTahoeBootChipImage never invokes controller stop(), so this
-    // non-callback teardown path may synchronously wait for its runAction.
-    thread_call_cancel_wait(call);
+    // The private synchronous-cancel API is present in some kernel images but
+    // is not an auxiliary-kext-linkable contract on the 25C56 lab target. This
+    // call is
+    // submitted at most once and never re-entered.  Therefore a successful
+    // cancel proves that no callback can still hold `this`; otherwise the
+    // callback itself clears and wakes the active latch after its final gate
+    // check/runAction returns.  Do not replace this with cancel()+free(): a
+    // false cancellation result may mean the callback is already running.
+    const bool canceled = thread_call_cancel(call);
+    IOLockLock(lock);
+    if (canceled && tahoeBootThreadCall == call) {
+        fTahoeBootCallActive = false;
+        IOLockWakeup(lock, &fTahoeBootCallActive, false);
+    }
+    while (tahoeBootThreadCall == call && fTahoeBootCallActive)
+        IOLockSleep(lock, &fTahoeBootCallActive, THREAD_UNINT);
+    IOLockUnlock(lock);
+
     if (!thread_call_free(call)) {
         // A failed free leaves ownership of a call that can still reference
         // this controller.  Continuing into controller destruction would turn
@@ -3167,10 +3267,16 @@ void AirportItlwm::stopTahoeBootThreadCallAndDrain()
         panic("%s: tahoe boot thread_call_free failed", __FUNCTION__);
     }
 
-    IOLockLock(fTahoeBootCallLock);
+    IOLockLock(lock);
     if (tahoeBootThreadCall == call)
         tahoeBootThreadCall = nullptr;
-    IOLockUnlock(fTahoeBootCallLock);
+    IOLockUnlock(lock);
+
+    // A cancelled pending call never reaches the callback's final release.
+    // Drop exactly its matching schedule retain only after call ownership is
+    // unpublished; the callback owns the retain on every cancel-false path.
+    if (canceled)
+        releaseTahoeBootThreadCallRetain();
 }
 
 bool AirportItlwm::beginLifecycleOperation()
@@ -4277,6 +4383,9 @@ bool AirportItlwm::init(OSDictionary *properties)
     fTahoeBootCallLock = IOLockAlloc();
     fTahoeBootStopping = false;
     fTahoeBootScheduled = false;
+    fTahoeBootCallActive = false;
+    fTahoeBootCallRetained = false;
+    fTahoeBootCallOwner = nullptr;
     fHalAttached = false;
     fSkywalkInterfaceProviderAttached = false;
     fSkywalkInterfaceAttached = false;
@@ -5361,8 +5470,13 @@ bool AirportItlwm::start(IOService *provider)
             tahoeBootThreadCall = bootCall;
             // This is a newly allocated call on a freshly starting
             // controller.  Once scheduleTahoeBootThreadCall() admits it,
-            // the bit intentionally remains set for this object's lifetime.
+            // fTahoeBootScheduled intentionally remains set for this
+            // object's lifetime; fTahoeBootCallActive tracks only its one
+            // pending/running invocation for safe teardown draining.
             fTahoeBootScheduled = false;
+            fTahoeBootCallActive = false;
+            fTahoeBootCallRetained = false;
+            fTahoeBootCallOwner = nullptr;
         }
         IOLockUnlock(fTahoeBootCallLock);
         if (discardBootCall && bootCall != nullptr)
@@ -5603,7 +5717,8 @@ void AirportItlwm::free()
     if (fTahoeBootCallLock != nullptr) {
         IOLockLock(fTahoeBootCallLock);
         const bool canFreeBootCallLock =
-            tahoeBootThreadCall == nullptr;
+            tahoeBootThreadCall == nullptr && !fTahoeBootCallActive &&
+            !fTahoeBootCallRetained && fTahoeBootCallOwner == nullptr;
         IOLockUnlock(fTahoeBootCallLock);
         if (canFreeBootCallLock) {
             IOLockFree(fTahoeBootCallLock);

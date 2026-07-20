@@ -501,10 +501,32 @@ order(v2_init, "fLifecycleLock = IOLockAlloc();",
 order(v2_start, "if (!fHalService->attach(pciNub))", "fHalAttached = true;")
 order(v2_boot_schedule, "IOLockLock(fTahoeBootCallLock);",
       "!fTahoeBootStopping && !fTahoeBootScheduled",
-      "fTahoeBootScheduled = true;", "thread_call_enter(tahoeBootThreadCall);")
-order(v2_boot_drain, "fTahoeBootStopping = true;",
-      "thread_call_cancel_wait(call);", "thread_call_free(call)",
-      "tahoeBootThreadCall = nullptr;")
+      "!fTahoeBootCallActive", "fTahoeBootScheduled = true;",
+      "fTahoeBootCallActive = true;", "fTahoeBootCallRetained = true;",
+      "retain();", "thread_call_enter(tahoeBootThreadCall);")
+order(v2_boot_drain, "if (fTahoeBootStopping)",
+      "if (fTahoeBootCallOwner == current_thread())",
+      "fTahoeBootStopping = true;",
+      "const bool canceled = thread_call_cancel(call);", "if (canceled",
+      "fTahoeBootCallActive = false;", "while (tahoeBootThreadCall == call && fTahoeBootCallActive)",
+      "IOLockSleep(lock, &fTahoeBootCallActive, THREAD_UNINT);",
+      "thread_call_free(call)",
+      "tahoeBootThreadCall = nullptr;", "if (canceled)",
+      "releaseTahoeBootThreadCallRetain();")
+require(v2_hpp, "bool fTahoeBootCallActive;",
+        "Tahoe boot callback active-latch storage")
+require(v2_hpp, "bool fTahoeBootCallRetained;",
+        "Tahoe boot callback schedule-retain storage")
+require(v2_hpp, "thread_t fTahoeBootCallOwner;",
+        "Tahoe boot callback owner storage")
+require(v2_hpp, "bool beginTahoeBootThreadCall();",
+        "Tahoe boot callback owner admission declaration")
+require(v2_hpp, "void completeTahoeBootThreadCall();",
+        "Tahoe boot callback completion declaration")
+require(v2_hpp, "void releaseTahoeBootThreadCallRetain();",
+        "Tahoe boot callback retain release declaration")
+if "thread_call_cancel_wait" in v2_cpp:
+    fail("Tahoe boot callback still depends on aux-kext-unavailable cancel_wait")
 
 # External work is admitted only while Live.  Start-internal callbacks share
 # the same counter but may also enter during Starting; once Draining is

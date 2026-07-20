@@ -52,7 +52,10 @@ fi
 
 echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
 bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
+bash "$ROOT/scripts/test_tahoe_boot_thread_call_auxkc_contract.sh"
+bash "$ROOT/scripts/test_tahoe_auxkc_admission_preflight_contract.sh"
 bash -n "$ROOT/scripts/build_tahoe.sh"
+bash -n "$ROOT/scripts/tahoe_auxkc_admission_preflight.sh"
 bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
 git -C "$ROOT" diff --check
 

@@ -265,6 +265,17 @@ fi
 echo ""
 echo "Build succeeded: $OUTPUT_BINARY"
 
+# 25C56 rejects this private synchronous-drain symbol during AuxKC
+# materialization even when a raw BootKC symbol listing happens to contain an
+# internal implementation. Reject it before the broader nm comparison so a
+# build-only gate cannot mistake raw presence for external-kext admission.
+if nm -u "$OUTPUT_BINARY" | grep -qx '_thread_call_cancel_wait'; then
+    echo "FAIL: Tahoe AuxKC candidate depends on _thread_call_cancel_wait"
+    echo "  Use the explicit public cancel + owner/active drain contract instead."
+    exit 1
+fi
+echo "OK: Tahoe candidate has no _thread_call_cancel_wait dependency"
+
 # ── Step 3: Verify symbols ───────────────────────────────────────────
 echo ""
 echo "Verifying symbols..."
