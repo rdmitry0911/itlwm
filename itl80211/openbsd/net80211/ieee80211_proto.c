@@ -108,12 +108,7 @@ ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
 	return __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 }
 
-/*
- * The snapshot has no current cross-context reader.  Revoke only its atomic
- * epoch here: lifecycle edges can race, while the one post-copy producer owns
- * clearing and repopulating fixed bytes.  Epoch zero makes stale bytes
- * unusable to a future serialized reader.
- */
+/* All callers hold ic_pae_selected_bss_lock when it is available. */
 static void
 ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
 {
@@ -123,6 +118,19 @@ ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 }
 
+/* Advance a nonzero association epoch while its leaf writer lock is held. */
+static u_int64_t
+ieee80211_pae_assoc_epoch_advance_locked(struct ieee80211com *ic)
+{
+	u_int64_t epoch;
+
+	do {
+		epoch = __atomic_add_fetch(&ic->ic_pae_assoc_epoch, 1,
+		    __ATOMIC_ACQ_REL);
+	} while (epoch == 0);
+	return epoch;
+}
+
 /*
  * Capture only the BSS net80211 selected and copied into ic_bss.  The caller
  * reaches this after node replacement; request-side WCL/ASSOCIATE carriers,
@@ -130,23 +138,40 @@ ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
  */
 void
 ieee80211_pae_selected_bss_capture(struct ieee80211com *ic,
-    const struct ieee80211_node *ni)
+    const struct ieee80211_node *ni, int strict_pure_sae_profile,
+    u_int64_t expected_epoch)
 {
-	u_int64_t epoch;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
 
 	if (ic == NULL)
 		return;
-	ieee80211_pae_selected_bss_invalidate(ic);
+	lock = ic->ic_pae_selected_bss_lock;
+	/* Publication is optional until its leaf lock has been allocated. */
+	if (lock == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
 	if (ic->ic_opmode != IEEE80211_M_STA || ni == NULL ||
-	    ni != ic->ic_bss)
-		return;
-	epoch = ieee80211_pae_assoc_epoch_current(ic);
-	if (epoch == 0 || !ieee80211_pae_selected_bss_populate(
+	    ni != ic->ic_bss || expected_epoch == 0 ||
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) !=
+		expected_epoch ||
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		__ATOMIC_ACQUIRE) != expected_epoch)
+		goto out;
+	ieee80211_pae_selected_bss_invalidate(ic);
+	if (!ieee80211_pae_selected_bss_populate(
 	    &ic->ic_pae_selected_bss, ni->ni_bssid, ni->ni_essid,
-	    ni->ni_esslen, ni->ni_sae_scan_flags))
-		return;
-	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, epoch,
+	    ni->ni_esslen, ni->ni_sae_scan_flags, strict_pure_sae_profile))
+		goto out;
+	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, expected_epoch,
 	    __ATOMIC_RELEASE);
+out:
+	/* Only the replacement owner that installed this marker may clear it. */
+	if (__atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+	    __ATOMIC_ACQUIRE) == expected_epoch)
+		__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+		    __ATOMIC_RELEASE);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 }
 
 /*
@@ -159,15 +184,70 @@ u_int64_t
 ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 {
 	u_int64_t epoch;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
-	do {
-		epoch = __atomic_add_fetch(&ic->ic_pae_assoc_epoch, 1,
-		    __ATOMIC_ACQ_REL);
-	} while (epoch == 0);
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock != NULL)
+		irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
+	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
+	if (lock != NULL)
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	return epoch;
+}
+
+/* Begin the one controlled current-BSS replacement owner token. */
+u_int64_t
+ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
+{
+	u_int64_t epoch;
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL) {
+		(void)ieee80211_pae_assoc_epoch_begin(ic);
+		return 0;
+	}
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
+	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
+	    __ATOMIC_RELEASE);
+	ieee80211_pae_selected_bss_invalidate(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return epoch;
+}
+
+/*
+ * The final HAL owner calls this only after every controller, IRQ, and task
+ * producer has been drained.  ifdetach() intentionally does not free this
+ * lock because closed driver queues may still reject late cancellation work.
+ */
+void
+ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL)
+		return;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	ieee80211_pae_selected_bss_invalidate(ic);
+	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+	    __ATOMIC_RELEASE);
+	ic->ic_pae_selected_bss_lock = NULL;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	IOSimpleLockFree(lock);
 }
 
 /*

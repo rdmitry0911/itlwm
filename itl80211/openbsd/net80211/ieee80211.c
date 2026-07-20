@@ -213,7 +213,12 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
+    /* A missing leaf lock leaves the dormant snapshot unpublishable. */
+	if (ic->ic_pae_selected_bss_lock == NULL)
+		ic->ic_pae_selected_bss_lock = IOSimpleLockAlloc();
     __atomic_store_n(&ic->ic_pae_assoc_epoch, 0, __ATOMIC_RELAXED);
+	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+	    __ATOMIC_RELAXED);
     memset(&ic->ic_pae_selected_bss, 0, sizeof(ic->ic_pae_selected_bss));
     memset(ic->ic_bss_blacklist_requested, 0,
            sizeof(ic->ic_bss_blacklist_requested));
@@ -290,6 +295,7 @@ ieee80211_ifdetach(struct _ifnet *ifp)
     ifp->netStat = NULL;
     ifp->controller = NULL;
     ifp->iface = NULL;
+    /* HAL queues can still reject work after ifdetach; terminal owner frees it. */
 }
 
 /*

@@ -13,7 +13,9 @@ attempt and discard themselves if it has changed.
 ## Invalidation edges
 
 `ieee80211_pae_assoc_epoch_begin()` atomically advances a nonzero epoch for
-STA mode. Future asynchronous consumers must snapshot it with
+STA mode. `ieee80211_pae_assoc_epoch_begin_replacement()` does the same for
+the one controlled current-BSS replacement and returns a private owner token.
+Future asynchronous consumers must snapshot the epoch with
 `ieee80211_pae_assoc_epoch_current()` (an acquire load), never by reading the
 volatile field directly. The epoch advances before:
 
@@ -35,6 +37,24 @@ volatile field directly. The epoch advances before:
 - destructive external-PMK cancellation, including the no-controller and
   command-gate-unavailable fallback clear;
 - cleanup of the current STA BSS, but not cleanup of arbitrary cache nodes.
+
+## Controlled selected-BSS publication
+
+The selected-BSS snapshot is writer-only. A replacement begins under a small
+leaf lock, which advances the epoch, installs the matching owner token, and
+invalidates the record. The default node-copy uses its internal non-cancelling
+cleanup so it does not accidentally revoke the token it is meant to complete.
+After the copy, capture takes the same lock and publishes only if its expected
+epoch is still current and still owns the token. Every ordinary cancellation
+uses the same lock, advances the epoch, clears the token, and invalidates the
+record. Thus a cancellation that races post-copy capture wins fail-closed:
+the stale capture cannot republish its BSS under the new epoch.
+
+The leaf lock remains allocated through `ieee80211_ifdetach()` and is freed
+only by the terminal HAL `free()` after controller, interrupt, task, and
+higher lifecycle admission have been drained. It is deliberately not a
+cross-context reader protocol; a future reader must add its own serialized
+copy-out and re-check the epoch immediately before acting.
 
 The `ieee80211_new_state` wrapper also advances the epoch before the driver
 callback for every STA state request except one forward chain:
@@ -74,5 +94,5 @@ driver stop/detach/mode exit, deferred roam, WCL request/failure ordering,
 current-BSS-only cleanup, atomic zero-wrap behavior, and the unchanged MFP
 quarantine. The script is called by the aggregate SAE quarantine contract.
 
-No candidate kext was built, installed, loaded, rebooted, or exercised by this
-source-only proof.
+The isolated test gate may compile and link a candidate kext, but never
+installs, loads, reboots, or exercises it on a host.

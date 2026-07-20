@@ -26,6 +26,8 @@ crypto_c = (root / "itl80211/openbsd/net80211/ieee80211_crypto.c").read_text()
 core_c = (root / "itl80211/openbsd/net80211/ieee80211.c").read_text()
 iwx_cpp = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 iwm_cpp = (root / "itlwm/hal_iwm/mac80211.cpp").read_text()
+iwm_lifecycle_cpp = (root / "itlwm/hal_iwm/ItlIwm.cpp").read_text()
+iwn_lifecycle_cpp = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 v2_cpp = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 skywalk_cpp = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 
@@ -70,6 +72,10 @@ def body(text, marker, label):
 # lifetime for future q0/firmware-completion consumers.
 require(var_h, "volatile u_int64_t\tic_pae_assoc_epoch;",
         "association epoch field")
+require(var_h, "volatile u_int64_t\tic_pae_assoc_replace_epoch;",
+        "controlled replacement owner token")
+require(var_h, "IOSimpleLock\t\t*ic_pae_selected_bss_lock;",
+        "selected-BSS leaf writer lock")
 require(var_h, "struct ieee80211_pae_selected_bss ic_pae_selected_bss;",
         "writer-only selected BSS snapshot")
 for token in (
@@ -78,6 +84,7 @@ for token in (
     "uint8_t bssid[IEEE80211_PAE_SELECTED_BSS_BSSID_LEN];",
     "uint8_t ssid_len;",
     "uint8_t ssid[IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN];",
+    "uint8_t strict_pure_sae_profile;",
     "ieee80211_pae_selected_bss_populate",
     "ieee80211_pae_selected_bss_identity_matches",
 ):
@@ -86,6 +93,10 @@ require(proto_h, "u_int64_t ieee80211_pae_assoc_epoch_current",
         "epoch current declaration")
 require(proto_h, "u_int64_t ieee80211_pae_assoc_epoch_begin",
         "epoch begin declaration")
+require(proto_h, "u_int64_t ieee80211_pae_assoc_epoch_begin_replacement",
+        "controlled replacement declaration")
+require(proto_h, "void ieee80211_pae_selected_bss_lock_destroy",
+        "terminal selected-BSS lock destruction declaration")
 require(proto_h, "void ieee80211_pae_selected_bss_capture",
         "selected BSS capture declaration")
 require(proto_h, "void ieee80211_pae_assoc_epoch_note_newstate",
@@ -102,25 +113,70 @@ for token in ("ic->ic_opmode != IEEE80211_M_STA", "__atomic_load_n",
 
 begin = body(proto_c, "u_int64_t\nieee80211_pae_assoc_epoch_begin",
              "epoch begin")
-for token in ("ic->ic_opmode != IEEE80211_M_STA", "__atomic_add_fetch",
-              "__ATOMIC_ACQ_REL", "while (epoch == 0)",
-              "ieee80211_pae_selected_bss_invalidate(ic)"):
+advance = body(proto_c, "static u_int64_t\nieee80211_pae_assoc_epoch_advance_locked",
+               "locked epoch advance")
+for token in ("__atomic_add_fetch", "__ATOMIC_ACQ_REL", "while (epoch == 0)"):
+    require(advance, token, "locked epoch advance semantics")
+for token in ("ic->ic_opmode != IEEE80211_M_STA",
+              "IOSimpleLockLockDisableInterrupt",
+              "ieee80211_pae_assoc_epoch_advance_locked(ic)",
+              "ic->ic_pae_assoc_replace_epoch, 0",
+              "ieee80211_pae_selected_bss_invalidate(ic)",
+              "IOSimpleLockUnlockEnableInterrupt"):
     require(begin, token, "epoch begin semantics")
+
+replacement = body(proto_c,
+                   "u_int64_t\nieee80211_pae_assoc_epoch_begin_replacement",
+                   "controlled replacement")
+for token in ("ic->ic_pae_selected_bss_lock", "lock == NULL",
+              "ieee80211_pae_assoc_epoch_advance_locked(ic)",
+              "ic->ic_pae_assoc_replace_epoch, epoch",
+              "ieee80211_pae_selected_bss_invalidate(ic)",
+              "IOSimpleLockUnlockEnableInterrupt"):
+    require(replacement, token, "controlled replacement semantics")
+
+destroy = body(proto_c, "void\nieee80211_pae_selected_bss_lock_destroy",
+               "terminal selected-BSS lock destroy")
+for token in ("IOSimpleLockLockDisableInterrupt",
+              "ieee80211_pae_selected_bss_invalidate(ic)",
+              "ic->ic_pae_selected_bss_lock = NULL",
+              "IOSimpleLockUnlockEnableInterrupt", "IOSimpleLockFree(lock)"):
+    require(destroy, token, "terminal selected-BSS lock destruction")
 
 snapshot_capture = body(proto_c,
                         "void\nieee80211_pae_selected_bss_capture",
                         "selected BSS capture")
 for token in (
-    "ni != ic->ic_bss",
-    "ieee80211_pae_assoc_epoch_current(ic)",
+    "ni != ic->ic_bss", "expected_epoch",
+    "IOSimpleLockLockDisableInterrupt",
+    "ic->ic_pae_assoc_epoch", "ic->ic_pae_assoc_replace_epoch",
     "ni->ni_bssid", "ni->ni_essid", "ni->ni_esslen",
-    "ni->ni_sae_scan_flags", "__ATOMIC_RELEASE",
+    "ni->ni_sae_scan_flags", "strict_pure_sae_profile", "__ATOMIC_RELEASE",
+    "IOSimpleLockUnlockEnableInterrupt",
 ):
     require(snapshot_capture, token, "selected BSS capture semantics")
 for token in ("ieee80211_node_copy", "ieee80211_new_state",
               "IEEE80211_AKM_SAE", "IEEE80211_AUTH_ALG_SAE"):
     if token in snapshot_capture:
         fail(f"selected BSS capture must not activate association: {token}")
+
+require(var_h, "#include <IOKit/IOLocks.h>",
+        "selected-BSS spin-lock API")
+attach = body(core_c, "void\nieee80211_ifattach", "interface attach")
+require(attach, "IOSimpleLockAlloc()", "selected-BSS lock allocation")
+detach = body(core_c, "void\nieee80211_ifdetach", "interface detach")
+if "IOSimpleLockFree" in detach:
+    fail("ifdetach must retain the selected-BSS lock for late rejected work")
+for source, marker, label, order in (
+    (iwx_cpp, "void ItlIwx::free()", "IWX terminal free",
+     ("iwx_cmdq_destroy(&com)",
+      "ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic)", "super::free")),
+    (iwm_lifecycle_cpp, "void ItlIwm::\nfree()", "IWM terminal free",
+     ("ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic)", "super::free")),
+    (iwn_lifecycle_cpp, "void ItlIwn::free()", "IWN terminal free",
+     ("ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic)", "super::free")),
+):
+    ordered(body(source, marker, label), label, *order)
 
 note = body(proto_c, "void\nieee80211_pae_assoc_epoch_note_newstate",
             "epoch state-note")
@@ -154,20 +210,30 @@ ordered(wcl_failure, "WCL terminal failure fence before publication",
         "ic->ic_wcl_reassoc_owner_active = 0", "ic->ic_event_handler")
 
 join = body(node_c, "void\nieee80211_node_join_bss", "BSS selection")
-ordered(join, "BSS replacement fence", "ieee80211_pae_assoc_epoch_begin(ic)",
+ordered(join, "controlled BSS replacement fence",
+        "ieee80211_pae_assoc_epoch_begin_replacement(ic)",
         "(*ic->ic_node_copy)")
 ordered(join, "post-copy selected BSS snapshot",
         "(*ic->ic_node_copy)(ic, ic->ic_bss, selbs);", "ni = ic->ic_bss;",
-        "ieee80211_pae_selected_bss_capture(ic, ni);",
+        "strict_pure_sae_profile = ieee80211_sae_selected_bss_profile_is_strict(ni);",
+        "ieee80211_pae_selected_bss_capture(ic, ni, strict_pure_sae_profile,",
+        "replacement_epoch);",
         "ieee80211_fix_rate")
 for source, label in ((input_c, "scan parser"),
                       (skywalk_cpp, "Tahoe request ingress")):
     if "ieee80211_pae_selected_bss_capture" in source:
         fail(f"selected BSS snapshot must not be captured at {label}")
-cleanup = body(node_c, "void\nieee80211_node_cleanup", "node cleanup")
-ordered(cleanup, "current STA BSS cleanup fence",
+cleanup = body(node_c, "static void\nieee80211_node_cleanup_internal",
+               "node cleanup owner")
+ordered(cleanup, "ordinary current STA BSS cleanup fence",
+        "cancel_current_bss",
         "ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss",
         "ieee80211_pae_assoc_epoch_begin(ic)", "if (ni->ni_rsnie != NULL)")
+node_copy = body(node_c, "void\nieee80211_node_copy", "default node copy")
+require(node_copy, "ieee80211_node_cleanup_internal(ic, dst, 0);",
+        "controlled node-copy cleanup without a second epoch")
+if "ieee80211_pae_assoc_epoch_begin" in node_copy:
+    fail("default node copy must leave replacement-token ownership intact")
 disable_rsn = body(ioctl_c, "void\nieee80211_disable_rsn", "RSN disable")
 ordered(disable_rsn, "credential replacement fence",
         "ieee80211_pae_assoc_epoch_begin(ic)", "ic->ic_flags &=")
@@ -281,26 +347,50 @@ class EpochModel:
 
 class SnapshotModel:
     def __init__(self):
-        self.epoch = 0
+        self.association_epoch = 0
+        self.replacement_epoch = 0
+        self.snapshot_epoch = 0
         self.bssid = bytes(6)
         self.ssid = b""
 
     def invalidate(self):
-        self.epoch = 0
+        self.snapshot_epoch = 0
         self.bssid = bytes(6)
         self.ssid = b""
 
-    def capture(self, epoch, bssid, ssid):
+    def begin(self):
+        self.association_epoch = (self.association_epoch + 1) & ((1 << 64) - 1)
+        if self.association_epoch == 0:
+            self.association_epoch = 1
+        self.replacement_epoch = 0
         self.invalidate()
-        if epoch == 0 or len(bssid) != 6 or len(ssid) > 32:
+        return self.association_epoch
+
+    def begin_replacement(self):
+        token = self.begin()
+        self.replacement_epoch = token
+        return token
+
+    def nested_node_copy_cleanup(self):
+        # The default node copy owns no independent cancellation edge.
+        return self.association_epoch
+
+    def capture(self, expected_epoch, bssid, ssid):
+        if expected_epoch == 0 or expected_epoch != self.association_epoch or \
+                expected_epoch != self.replacement_epoch:
+            return False
+        self.invalidate()
+        if len(bssid) != 6 or len(ssid) > 32:
+            self.replacement_epoch = 0
             return False
         self.bssid = bssid
         self.ssid = ssid
-        self.epoch = epoch
+        self.snapshot_epoch = expected_epoch
+        self.replacement_epoch = 0
         return True
 
     def matches(self, epoch, bssid, ssid):
-        return epoch != 0 and self.epoch == epoch and \
+        return epoch != 0 and self.snapshot_epoch == epoch and \
             self.bssid == bssid and self.ssid == ssid
 
 
@@ -341,11 +431,30 @@ assert model.begin() == 1
 snapshot = SnapshotModel()
 bssid = bytes.fromhex("021122334455")
 ssid = b"s\x00ae"
-assert snapshot.capture(7, bssid, ssid)
-assert snapshot.matches(7, bssid, ssid)
-assert not snapshot.matches(8, bssid, ssid)
-snapshot.invalidate()
-assert not snapshot.matches(7, bssid, ssid)
+token = snapshot.begin_replacement()
+snapshot.nested_node_copy_cleanup()
+assert snapshot.capture(token, bssid, ssid)
+assert snapshot.matches(token, bssid, ssid)
+assert not snapshot.matches(token + 1, bssid, ssid)
+
+# A cancel after replacement admission but before its post-copy publication
+# clears the owner token. The stale producer cannot resurrect its BSS under
+# the newer epoch.
+stale_token = snapshot.begin_replacement()
+snapshot.nested_node_copy_cleanup()
+cancel_epoch = snapshot.begin()
+assert cancel_epoch != stale_token
+assert not snapshot.capture(stale_token, bssid, ssid)
+assert snapshot.snapshot_epoch == 0
+
+# Capture can publish only while it owns the token; a later cancellation
+# serializes after publication and revokes the record again.
+token = snapshot.begin_replacement()
+snapshot.nested_node_copy_cleanup()
+assert snapshot.capture(token, bssid, ssid)
+assert snapshot.matches(token, bssid, ssid)
+snapshot.begin()
+assert snapshot.snapshot_epoch == 0
 
 print("PASS: association epoch fences, selected-BSS identity, terminal RX, credential/reset, roam, and WCL reassociation")
 PY

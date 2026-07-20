@@ -1550,6 +1550,7 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     rsn->rsn_ciphers = IEEE80211_CIPHER_CCMP;
     /* if Group Management Cipher Suite missing, defaut to BIP */
     rsn->rsn_groupmgmtcipher = IEEE80211_CIPHER_BIP;
+    rsn->rsn_malformed_tail = 0;
     /* if AKM Suite missing, default to 802.1X */
     rsn->rsn_nakms = 1;
 	/* The implicit default is exactly one known 802.1X suite. */
@@ -1562,8 +1563,11 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     rsn->rsn_npmkids = 0;
     
     /* read Group Data Cipher Suite field */
-    if (frm + 4 > efrm)
+    if (frm + 4 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 4))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     rsn->rsn_groupcipher = ieee80211_parse_rsn_cipher(frm);
     if (rsn->rsn_groupcipher == IEEE80211_CIPHER_NONE ||
         rsn->rsn_groupcipher == IEEE80211_CIPHER_USEGROUP ||
@@ -1572,8 +1576,11 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     frm += 4;
     
     /* read Pairwise Cipher Suite Count field */
-    if (frm + 2 > efrm)
+    if (frm + 2 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 2))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     m = rsn->rsn_nciphers = LE_READ_2(frm);
     frm += 2;
     
@@ -1593,8 +1600,11 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     }
     
     /* read AKM Suite List Count field */
-    if (frm + 2 > efrm)
+    if (frm + 2 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 2))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     n = rsn->rsn_nakms = LE_READ_2(frm);
     frm += 2;
     
@@ -1621,14 +1631,20 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     }
     
     /* read RSN Capabilities field */
-    if (frm + 2 > efrm)
+    if (frm + 2 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 2))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     rsn->rsn_caps = LE_READ_2(frm);
     frm += 2;
     
     /* read PMKID Count field */
-    if (frm + 2 > efrm)
+    if (frm + 2 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 2))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     s = rsn->rsn_npmkids = LE_READ_2(frm);
     frm += 2;
     
@@ -1641,11 +1657,17 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     }
     
     /* read Group Management Cipher Suite field */
-    if (frm + 4 > efrm)
+    if (frm + 4 > efrm) {
+        if (ieee80211_sae_scan_rsn_tail_is_partial(frm, efrm, 4))
+            rsn->rsn_malformed_tail = 1;
         return 0;
+    }
     rsn->rsn_groupmgmtcipher = ieee80211_parse_rsn_cipher(frm);
     if (rsn->rsn_groupmgmtcipher != IEEE80211_CIPHER_BIP)
         return IEEE80211_STATUS_BAD_GROUP_CIPHER;
+    frm += 4;
+    if (frm != efrm)
+        rsn->rsn_malformed_tail = 1;
     
     return IEEE80211_STATUS_SUCCESS;
 }
@@ -1868,14 +1890,17 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 }
                 break;
             case IEEE80211_ELEMID_VENDOR:
-                if (frm[1] < 4) {
+                if (ieee80211_sae_scan_vendor_ie_is_truncated(frm[1])) {
                     ic->ic_stats.is_rx_elem_toosmall++;
+					sae_scan_malformed = 1;
                     break;
                 }
                 if (memcmp(frm + 2, MICROSOFT_OUI, 3) == 0) {
-                    if (frm[5] == 1)
+                    if (frm[5] == 1) {
+                        if (wpaie != NULL)
+                            sae_scan_malformed = 1;
                         wpaie = frm;
-                    else if (frm[1] >= 5 &&
+                    } else if (frm[1] >= 5 &&
                              frm[5] == 2 && frm[6] == 1)
                         wmmie = frm;
                 }
@@ -2117,6 +2142,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ni->ni_rsncaps = 0;
         ni->ni_sae_scan_flags = sae_scan_malformed
             ? IEEE80211_SAE_SCAN_MALFORMED : 0;
+		ni->ni_sae_scan_flags = ieee80211_sae_scan_note_legacy_wpa(
+		    ni->ni_sae_scan_flags, wpaie != NULL);
         if (rsnxe != NULL)
             ni->ni_sae_scan_flags |= ieee80211_sae_scan_rsnxe_flags(
                 rsnxe + 2, rsnxe[1]);
@@ -2139,6 +2166,14 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                     ni->ni_sae_scan_flags |=
                         IEEE80211_SAE_SCAN_AKM_AMBIGUOUS;
                 }
+                if (ieee80211_sae_scan_cipher_is_ambiguous(
+                    (rsn.rsn_akms & IEEE80211_AKM_SAE) != 0,
+                    rsn.rsn_nciphers))
+                    ni->ni_sae_scan_flags |=
+                        IEEE80211_SAE_SCAN_CIPHER_AMBIGUOUS;
+                if (rsn.rsn_malformed_tail != 0)
+                    ni->ni_sae_scan_flags |=
+                        IEEE80211_SAE_SCAN_RSN_TAIL_MALFORMED;
                 if (rsn.rsn_nsae_ext_key != 0)
                     ni->ni_sae_scan_flags |= IEEE80211_SAE_SCAN_SAE_EXT_KEY;
             } else {
@@ -2189,8 +2224,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 ni->ni_rsncaps = wpa.rsn_caps;
             }
         }
-        ni->ni_sae_scan_flags = ieee80211_sae_scan_finalize_flags(
-            ni->ni_sae_scan_flags);
+		ni->ni_sae_scan_flags = ieee80211_sae_scan_finalize_complete_flags(
+		    ni->ni_sae_scan_flags);
     }
     
     /*

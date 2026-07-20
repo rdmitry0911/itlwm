@@ -68,6 +68,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_sae_policy.h>
 
 struct ieee80211_node *ieee80211_node_alloc(struct ieee80211com *);
 void ieee80211_node_free(struct ieee80211com *, struct ieee80211_node *);
@@ -103,6 +104,34 @@ void ieee80211_inact_timeout(void *);
 void ieee80211_node_cache_timeout(void *);
 #endif
 void ieee80211_clean_inactive_nodes(struct ieee80211com *, int);
+
+/*
+ * Preserve an exact AP-profile fact before ieee80211_choose_rsnparams()
+ * intersects mutable node fields with local legacy configuration.  This is
+ * not an association decision; Tahoe still rejects pure WPA3 before any
+ * authentication or key path begins.
+ */
+static int
+ieee80211_sae_selected_bss_profile_is_strict(const struct ieee80211_node *ni)
+{
+    if (ni == NULL)
+        return 0;
+    return ieee80211_sae_scan_profile_is_strict(
+        ni->ni_supported_rsnprotos == IEEE80211_PROTO_RSN &&
+        ni->ni_rsnprotos == IEEE80211_PROTO_RSN,
+        ni->ni_supported_rsnakms == IEEE80211_AKM_SAE &&
+        ni->ni_rsnakms == IEEE80211_AKM_SAE,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_ESS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_IBSS) != 0,
+        (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_NOPAIRWISE) != 0,
+        ni->ni_rsnciphers == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP,
+        ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) != 0,
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR) != 0,
+        ni->ni_sae_scan_flags);
+}
 
 #ifndef IEEE80211_STA_ONLY
 void
@@ -1141,6 +1170,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     enum ieee80211_phymode mode;
     struct ieee80211_node *ni;
     uint32_t assoc_fail = 0;
+    u_int64_t replacement_epoch;
+    int strict_pure_sae_profile;
     
     /* Reinitialize media mode and channels if needed. */
     mode = ieee80211_chan2mode(ic, selbs->ni_chan);
@@ -1153,12 +1184,14 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
          memcmp(ic->ic_des_essid, selbs->ni_essid, selbs->ni_esslen) == 0))
         assoc_fail = ic->ic_bss->ni_assoc_fail;
     
-    /* Invalidate an old async association before ic_node_copy tears it down. */
-    (void)ieee80211_pae_assoc_epoch_begin(ic);
+    /* Own the cleanup nested in this exact controlled BSS replacement. */
+    replacement_epoch = ieee80211_pae_assoc_epoch_begin_replacement(ic);
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
     ni = ic->ic_bss;
-	/* Capture the actual post-copy BSS, never request-side candidate intent. */
-	ieee80211_pae_selected_bss_capture(ic, ni);
+    /* Capture the actual post-copy BSS, never request-side candidate intent. */
+    strict_pure_sae_profile = ieee80211_sae_selected_bss_profile_is_strict(ni);
+    ieee80211_pae_selected_bss_capture(ic, ni, strict_pure_sae_profile,
+        replacement_epoch);
     ni->ni_assoc_fail |= assoc_fail;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
@@ -1575,14 +1608,16 @@ ieee80211_node_alloc(struct ieee80211com *ic)
     return (struct ieee80211_node *)malloc(sizeof(struct ieee80211_node), 0, 0);
 }
 
-void
-ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
+static void
+ieee80211_node_cleanup_internal(struct ieee80211com *ic,
+    struct ieee80211_node *ni, int cancel_current_bss)
 {
     if (ni == NULL) {
         return;
     }
     /* Only destruction/replacement of the current STA BSS cancels its PAE. */
-    if (ic != NULL && ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+    if (cancel_current_bss && ic != NULL &&
+        ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
         (void)ieee80211_pae_assoc_epoch_begin(ic);
     if (ni->ni_rsnie != NULL) {
         free(ni->ni_rsnie);
@@ -1607,6 +1642,12 @@ ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
 }
 
 void
+ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
+{
+    ieee80211_node_cleanup_internal(ic, ni, 1);
+}
+
+void
 ieee80211_node_free(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     ieee80211_node_cleanup(ic, ni);
@@ -1617,7 +1658,8 @@ void
 ieee80211_node_copy(struct ieee80211com *ic,
                     struct ieee80211_node *dst, const struct ieee80211_node *src)
 {
-    ieee80211_node_cleanup(ic, dst);
+    /* ieee80211_node_join_bss() already owns this controlled replacement. */
+    ieee80211_node_cleanup_internal(ic, dst, 0);
     *dst = *src;
     dst->ni_rsnie = NULL;
     if (src->ni_rsnie != NULL)

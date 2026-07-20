@@ -27,6 +27,19 @@
 #define IEEE80211_SAE_SCAN_SAE_EXT_KEY		0x00000800u
 #define IEEE80211_SAE_SCAN_UNSUPPORTED		0x00001000u
 #define IEEE80211_SAE_SCAN_PROFILE_INCONSISTENT	0x00002000u
+#define IEEE80211_SAE_SCAN_CIPHER_AMBIGUOUS		0x00004000u
+#define IEEE80211_SAE_SCAN_LEGACY_WPA_PRESENT		0x00008000u
+#define IEEE80211_SAE_SCAN_RSN_TAIL_MALFORMED		0x00010000u
+#define IEEE80211_SAE_SCAN_CENSUS_COMPLETE		0x00020000u
+
+/*
+ * Strict normal-SAE accepts a completed census and only plain optional
+ * RSNXE/ExtCap markers.  Every other present or future fact fails closed.
+ */
+#define IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK \
+	(IEEE80211_SAE_SCAN_CENSUS_COMPLETE | \
+	 IEEE80211_SAE_SCAN_RSNXE_PRESENT | IEEE80211_SAE_SCAN_RSNXE_H2E | \
+	 IEEE80211_SAE_SCAN_EXTCAP_PRESENT)
 
 #define IEEE80211_SAE_RSNXE_FIELD_LEN_MASK	0x0fu
 #define IEEE80211_SAE_RSNXE_H2E		(1u << 5)
@@ -151,6 +164,39 @@ ieee80211_sae_scan_is_extended_key_akm(uint8_t suite_type)
 }
 
 /*
+ * An RSN body may omit a whole optional field, but a nonempty remainder
+ * shorter than that field is not an omitted field.  The parser's caller owns
+ * the same bounded IE buffer, so pointer subtraction is well-defined here.
+ */
+static inline int
+ieee80211_sae_scan_rsn_tail_is_partial(const uint8_t *frm,
+    const uint8_t *efrm, size_t field_len)
+{
+	return frm != efrm && (size_t)(efrm - frm) < field_len;
+}
+
+static inline int
+ieee80211_sae_scan_vendor_ie_is_truncated(size_t payload_len)
+{
+	return payload_len < 4;
+}
+
+static inline uint32_t
+ieee80211_sae_scan_note_legacy_wpa(uint32_t flags, int legacy_wpa_seen)
+{
+	if (legacy_wpa_seen)
+		flags |= IEEE80211_SAE_SCAN_LEGACY_WPA_PRESENT;
+	return flags;
+}
+
+static inline int
+ieee80211_sae_scan_cipher_is_ambiguous(int has_sae,
+    uint16_t advertised_count)
+{
+	return has_sae && advertised_count != 1;
+}
+
+/*
  * Resolve cross-IE claims only after RSNXE, ExtCap, and Rates/XRates have
  * been normalized.  These flags are evidence for a future owner; they never
  * select HnP/H2E, enable SAE-PK, or alter legacy association behavior.
@@ -172,6 +218,13 @@ ieee80211_sae_scan_finalize_flags(uint32_t flags)
 	return flags;
 }
 
+static inline uint32_t
+ieee80211_sae_scan_finalize_complete_flags(uint32_t flags)
+{
+	return ieee80211_sae_scan_finalize_flags(flags) |
+	    IEEE80211_SAE_SCAN_CENSUS_COMPLETE;
+}
+
 /*
  * The RSN parser deliberately exposes both the advertised suite count and
  * the count it could classify.  A later pure-SAE owner may admit only one
@@ -183,6 +236,24 @@ ieee80211_sae_scan_akm_is_ambiguous(uint16_t advertised_count,
     uint16_t known_count, uint16_t unknown_count)
 {
 	return advertised_count != 1 || known_count != 1 || unknown_count != 0;
+}
+
+/*
+ * Strict normal-SAE profile fact, not an association authorization.  Password
+ * Identifier, SAE-PK, H2E-only, malformed/unknown, duplicate-suite, and any
+ * later unmodeled scan fact all fail closed.  A plain RSNXE H2E bit remains
+ * observable but is not selected by this predicate.
+ */
+static inline int
+ieee80211_sae_scan_profile_is_strict(int rsn_only, int exact_sae,
+    int ess, int ibss, int privacy, int no_pairwise, int ccmp_pairwise,
+    int ccmp_group, int bip_group_mgmt, int mfpc, int mfpr,
+    uint32_t scan_flags)
+{
+	return rsn_only && exact_sae && ess && !ibss && privacy && !no_pairwise &&
+	    ccmp_pairwise && ccmp_group && bip_group_mgmt && mfpc && mfpr &&
+	    (scan_flags & IEEE80211_SAE_SCAN_CENSUS_COMPLETE) != 0 &&
+	    (scan_flags & ~IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK) == 0;
 }
 
 #endif /* _NET80211_IEEE80211_SAE_POLICY_H_ */

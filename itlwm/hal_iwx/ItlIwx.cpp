@@ -319,6 +319,8 @@ void ItlIwx::free()
     // controller/IRQ/task producer has been fenced; this is the sole point
     // at which freeing that lock cannot race a pointer load in iwx_cmdq_enter.
     iwx_cmdq_destroy(&com);
+	/* The same terminal lifetime fence now owns the PAE snapshot leaf lock. */
+	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }
 

@@ -145,6 +145,7 @@ releaseAll()
 
 void ItlIwn::free()
 {
+	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }
 

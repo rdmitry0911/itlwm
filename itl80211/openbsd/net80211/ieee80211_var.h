@@ -100,6 +100,7 @@
 #include <net80211/ieee80211_proto.h>
 
 #include <IOKit/IOLib.h>
+#include <IOKit/IOLocks.h>
 
 #define IEEE80211_DEBUG
 
@@ -550,6 +551,15 @@ struct ieee80211com {
 	 * key or callback path begins to depend on a partially wired transaction.
 	 */
 	volatile u_int64_t	ic_pae_assoc_epoch;
+	/* Private owner token for one controlled current-BSS replacement. */
+	volatile u_int64_t	ic_pae_assoc_replace_epoch;
+	/*
+	 * Serializes only epoch advancement and fixed selected-BSS publication.
+	 * It is a leaf spin lock because either writer can run in an
+	 * interrupt-adjacent driver task; no callback, allocation, or gate entry is
+	 * allowed while held.  A failed allocation keeps publication fail-closed.
+	 */
+	IOSimpleLock		*ic_pae_selected_bss_lock;
 	/*
 	 * Writer-only canonical identity of the BSS actually copied into ic_bss.
 	 * Its epoch is zeroed on every association fence and published only after

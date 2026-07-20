@@ -23,6 +23,8 @@ struct ieee80211_pae_selected_bss {
 	uint8_t bssid[IEEE80211_PAE_SELECTED_BSS_BSSID_LEN];
 	uint8_t ssid_len;
 	uint8_t ssid[IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN];
+	uint8_t strict_pure_sae_profile;
+	uint8_t reserved[3];
 };
 
 static inline void
@@ -41,13 +43,16 @@ ieee80211_pae_selected_bss_clear_payload(
 	for (index = 0; index < IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN;
 	    index++)
 		snapshot->ssid[index] = 0;
+	snapshot->strict_pure_sae_profile = 0;
+	for (index = 0; index < sizeof(snapshot->reserved); index++)
+		snapshot->reserved[index] = 0;
 }
 
 /* Populate fixed fields only; the net80211 owner publishes epoch separately. */
 static inline int
 ieee80211_pae_selected_bss_populate(struct ieee80211_pae_selected_bss *snapshot,
     const uint8_t *bssid, const uint8_t *ssid, size_t ssid_len,
-    uint32_t sae_scan_flags)
+    uint32_t sae_scan_flags, int strict_pure_sae_profile)
 {
 	size_t index;
 
@@ -64,6 +69,7 @@ ieee80211_pae_selected_bss_populate(struct ieee80211_pae_selected_bss *snapshot,
 		snapshot->ssid[index] = ssid[index];
 	snapshot->ssid_len = (uint8_t)ssid_len;
 	snapshot->sae_scan_flags = sae_scan_flags;
+	snapshot->strict_pure_sae_profile = strict_pure_sae_profile ? 1 : 0;
 	return 1;
 }
 

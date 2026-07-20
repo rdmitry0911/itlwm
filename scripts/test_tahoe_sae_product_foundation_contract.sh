@@ -45,6 +45,7 @@ crypto_c = (root / "itl80211/openbsd/net80211/ieee80211_crypto.c").read_text()
 input_c = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 output_c = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
+node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 priv_h = (root / "itl80211/openbsd/net80211/ieee80211_priv.h").read_text()
 ioctl_h = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
@@ -63,6 +64,14 @@ def require(text, needle, label):
 def forbid(text, needle, label):
     if needle in text:
         fail(f"unexpected {label}: {needle}")
+
+
+def ordered(text, label, *needles):
+    position = -1
+    for needle in needles:
+        position = text.find(needle, position + 1)
+        if position < 0:
+            fail(f"missing ordered {label}: {needle}")
 
 
 def struct_body(text, name):
@@ -165,13 +174,23 @@ for token in (
     "IEEE80211_SAE_SCAN_SAE_EXT_KEY",
     "IEEE80211_SAE_SCAN_UNSUPPORTED",
     "IEEE80211_SAE_SCAN_PROFILE_INCONSISTENT",
+    "IEEE80211_SAE_SCAN_LEGACY_WPA_PRESENT",
+    "IEEE80211_SAE_SCAN_RSN_TAIL_MALFORMED",
+    "IEEE80211_SAE_SCAN_CENSUS_COMPLETE",
     "field_len != payload_len",
     "payload_len > 16",
     "ieee80211_sae_scan_extcap_bit_is_set",
     "ieee80211_sae_scan_extcap_flags",
     "ieee80211_sae_scan_has_h2e_only_selector",
     "ieee80211_sae_scan_is_extended_key_akm",
+    "ieee80211_sae_scan_rsn_tail_is_partial",
+    "ieee80211_sae_scan_vendor_ie_is_truncated",
+    "ieee80211_sae_scan_note_legacy_wpa",
+    "ieee80211_sae_scan_cipher_is_ambiguous",
+    "IEEE80211_SAE_SCAN_STRICT_PROFILE_ALLOWED_MASK",
+    "ieee80211_sae_scan_profile_is_strict",
     "ieee80211_sae_scan_finalize_flags",
+    "ieee80211_sae_scan_finalize_complete_flags",
     "ieee80211_sae_scan_akm_is_ambiguous",
 ):
     require(policy, token, "strict RSNXE normalizer")
@@ -206,8 +225,51 @@ require(policy, "IEEE80211_SAE_AKM_FT_EXT_KEY\t\t25u",
         "FT-SAE-EXT-KEY type census")
 require(input_c, "IEEE80211_SAE_SCAN_SAE_EXT_KEY",
         "SAE_EXT_KEY passive scan fact")
-require(input_c, "ieee80211_sae_scan_finalize_flags(\n            ni->ni_sae_scan_flags)",
-        "cross-IE profile finalization")
+require(input_c, "IEEE80211_SAE_SCAN_CIPHER_AMBIGUOUS",
+        "pairwise cipher-count ambiguity fact")
+require(input_c, "ieee80211_sae_scan_cipher_is_ambiguous(",
+        "pairwise cipher-count ambiguity normalizer")
+require(policy, "IEEE80211_SAE_SCAN_LEGACY_WPA_PRESENT",
+        "raw legacy WPA presence fact")
+require(input_c, "ieee80211_sae_scan_note_legacy_wpa(",
+        "raw legacy WPA presence normalizer")
+require(input_c, "IEEE80211_SAE_SCAN_RSN_TAIL_MALFORMED",
+        "partial or trailing RSN-tail fact")
+require(policy, "IEEE80211_SAE_SCAN_CENSUS_COMPLETE",
+        "completed SAE census marker")
+require(priv_h, "rsn_malformed_tail;",
+        "partial or trailing RSN parser census")
+require(input_c, "rsn->rsn_malformed_tail = 1;",
+        "passive partial-RSN-tail marker")
+require(policy, "ieee80211_sae_scan_rsn_tail_is_partial",
+        "bounded partial RSN-tail normalizer")
+rsn_body_start = input_c.find("ieee80211_parse_rsn_body(")
+rsn_body_end = input_c.find("\nint\nieee80211_parse_rsn(", rsn_body_start)
+if rsn_body_start < 0 or rsn_body_end < 0:
+    fail("missing bounded RSN body parser")
+rsn_body = input_c[rsn_body_start:rsn_body_end]
+if rsn_body.count("ieee80211_sae_scan_rsn_tail_is_partial(") != 6:
+    fail("every optional RSN field must retain a bounded partial-tail fact")
+ordered(rsn_body, "final RSN tail handling", "frm += 4;",
+        "if (frm != efrm)", "rsn->rsn_malformed_tail = 1;")
+vendor_start = input_c.find("case IEEE80211_ELEMID_VENDOR:")
+vendor_end = input_c.find("case IEEE80211_ELEMID_EXTENSION:", vendor_start)
+if vendor_start < 0 or vendor_end < 0:
+    fail("missing bounded vendor IE parser")
+vendor = input_c[vendor_start:vendor_end]
+ordered(vendor, "truncated vendor census",
+        "ieee80211_sae_scan_vendor_ie_is_truncated(frm[1])",
+        "sae_scan_malformed = 1;")
+ordered(vendor, "duplicate WPA vendor census", "if (frm[5] == 1)",
+        "if (wpaie != NULL)", "sae_scan_malformed = 1;", "wpaie = frm;")
+require(input_c, "ieee80211_sae_scan_cipher_is_ambiguous(\n"
+        "                    (rsn.rsn_akms & IEEE80211_AKM_SAE) != 0,",
+        "SAE-only pairwise-count ambiguity guard")
+for token in ("IEEE80211_CAPINFO_ESS", "IEEE80211_CAPINFO_IBSS",
+              "IEEE80211_RSNCAP_NOPAIRWISE"):
+    require(node_c, token, "strict selected-BSS infrastructure predicate")
+require(input_c, "ieee80211_sae_scan_finalize_complete_flags(\n",
+        "cross-IE profile finalization and census publication")
 for duplicate in ("if (rates != NULL)", "if (xrates != NULL)",
                   "if (xcap != NULL)"):
     require(input_c, duplicate, "duplicate SAE scan-fact input fails closed")
