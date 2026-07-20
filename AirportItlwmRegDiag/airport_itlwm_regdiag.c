@@ -24,6 +24,9 @@ kind_name(uint32_t kind)
         case kAirportItlwmRegDiagTracePmkClear: return "pmk-clear";
         case kAirportItlwmRegDiagTracePltiPublish: return "plti-publish";
         case kAirportItlwmRegDiagTracePltiDeliver: return "plti-deliver";
+        case kAirportItlwmRegDiagTraceLinkStatus: return "link-status";
+        case kAirportItlwmRegDiagTraceLinkPublish: return "link-publish";
+        case kAirportItlwmRegDiagTraceWclJoinAbort: return "join-abort";
         default: return "unknown";
     }
 }
@@ -84,6 +87,40 @@ pmk_clear_reason_name(uint32_t reason)
         case kAirportItlwmRegDiagPmkClearReassoc: return "reassoc";
         case kAirportItlwmRegDiagPmkClearJoinAbort: return "join-abort";
         case kAirportItlwmRegDiagPmkClearTerminate: return "terminate";
+        default: return "unknown";
+    }
+}
+
+static const char *
+link_status_decision_name(uint32_t decision)
+{
+    switch (decision) {
+        case kAirportItlwmRegDiagLinkStatusSame: return "same";
+        case kAirportItlwmRegDiagLinkStatusApplied: return "applied";
+        case kAirportItlwmRegDiagLinkStatusLifecycleRejected: return "lifecycle-rejected";
+        default: return "unknown";
+    }
+}
+
+static const char *
+link_publish_decision_name(uint32_t decision)
+{
+    switch (decision) {
+        case kAirportItlwmRegDiagLinkPublishQueued: return "queued";
+        case kAirportItlwmRegDiagLinkPublishSourceUnavailable: return "source-unavailable";
+        case kAirportItlwmRegDiagLinkPublishOffGateRejected: return "off-gate-rejected";
+        case kAirportItlwmRegDiagLinkPublishPublished: return "published";
+        case kAirportItlwmRegDiagLinkPublishActionUnavailable: return "action-unavailable";
+        default: return "unknown";
+    }
+}
+
+static const char *
+join_abort_phase_name(uint32_t phase)
+{
+    switch (phase) {
+        case kAirportItlwmRegDiagJoinAbortEnter: return "enter";
+        case kAirportItlwmRegDiagJoinAbortExit: return "exit";
         default: return "unknown";
     }
 }
@@ -342,6 +379,18 @@ get_trace(io_service_t service)
         } else if (e->kind == kAirportItlwmRegDiagTraceLinkState) {
             printf(" link_state=%d raw_code=%" PRIu64,
                    e->arg0, e->arg1);
+        } else if (e->kind == kAirportItlwmRegDiagTraceLinkStatus) {
+            printf(" decision=%s previous=0x%x requested=0x%x",
+                   link_status_decision_name((uint32_t)e->arg0),
+                   (uint32_t)(e->arg1 >> 32), (uint32_t)e->arg1);
+        } else if (e->kind == kAirportItlwmRegDiagTraceLinkPublish) {
+            printf(" decision=%s link_state=%" PRIu64 " raw_code=%" PRIu64,
+                   link_publish_decision_name((uint32_t)e->arg0),
+                   e->arg1, e->arg2);
+        } else if (e->kind == kAirportItlwmRegDiagTraceWclJoinAbort) {
+            printf(" phase=%s ic_state=%" PRIu64 " request_completion=%" PRIu64,
+                   join_abort_phase_name((uint32_t)e->arg0), e->arg1,
+                   e->arg2);
         } else {
             printf(" arg0=%d arg1=0x%" PRIx64 " arg2=0x%" PRIx64,
                    e->arg0, e->arg1, e->arg2);

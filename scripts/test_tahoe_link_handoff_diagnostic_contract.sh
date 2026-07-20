@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Static contract for the Tahoe link-handoff diagnostic and premature-active fix.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+EVALUATOR="$ROOT/scripts/evaluate_tahoe_link_handoff.py"
+
+[ -f "$EVALUATOR" ] || {
+    echo "FAIL: missing Tahoe link-handoff evaluator" >&2
+    exit 1
+}
+python3 "$EVALUATOR" --self-test
+
+python3 - "$ROOT" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+root = Path(sys.argv[1])
+header = (root / "include/ClientKit/AirportItlwmRegDiag.h").read_text()
+diag_hpp = (root / "AirportItlwm/AirportItlwmRegDiag.hpp").read_text()
+v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
+skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
+client = (root / "AirportItlwmRegDiag/airport_itlwm_regdiag.c").read_text()
+evaluator = (root / "scripts/evaluate_tahoe_link_handoff.py").read_text()
+plan = (root / "analysis/TAHOE_LINK_HANDOFF_DIAGNOSTIC_PLAN_2026-07-20.md").read_text()
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"Tahoe link-handoff contract: {message}")
+
+
+def require(text: str, token: str, label: str) -> None:
+    if token not in text:
+        fail(f"missing {label}: {token}")
+
+
+def forbid(text: str, token: str, label: str) -> None:
+    if token in text:
+        fail(f"forbidden {label}: {token}")
+
+
+def body(text: str, marker: str, end: str) -> str:
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing method marker: {marker}")
+    finish = text.find(end, start + len(marker))
+    if finish < 0:
+        fail(f"missing method end marker: {end}")
+    return text[start:finish]
+
+
+for token in (
+    "kAirportItlwmRegDiagTraceLinkStatus",
+    "kAirportItlwmRegDiagTraceLinkPublish",
+    "kAirportItlwmRegDiagTraceWclJoinAbort",
+    "kAirportItlwmRegDiagLinkStatusSame",
+    "kAirportItlwmRegDiagLinkStatusApplied",
+    "kAirportItlwmRegDiagLinkPublishQueued",
+    "kAirportItlwmRegDiagLinkPublishOffGateRejected",
+    "kAirportItlwmRegDiagJoinAbortEnter",
+    "kAirportItlwmRegDiagJoinAbortExit",
+):
+    require(header, token, "redaction-safe link diagnostic ABI")
+for token in (
+    "airportItlwmRegDiagRecordLinkStatus",
+    "airportItlwmRegDiagRecordLinkPublish",
+    "airportItlwmRegDiagRecordJoinAbort",
+):
+    require(diag_hpp, token, "link diagnostic declaration")
+    require(v2, token, "link diagnostic implementation/callsite")
+
+link_status = body(v2, "bool AirportItlwm::\nsetLinkStatus", "IOReturn AirportItlwm::\nsetLinkStateGated")
+for token in (
+    "const UInt32 previousStatus = currentStatus",
+    "kAirportItlwmRegDiagLinkStatusSame",
+    "kAirportItlwmRegDiagLinkStatusLifecycleRejected",
+    "kAirportItlwmRegDiagLinkStatusApplied",
+    "queueOffGateLinkStatePublish(this, kIO80211NetworkLinkUp, 0)",
+):
+    require(link_status, token, "controller link-status branch coverage")
+
+queue = body(v2, "static void queueOffGateLinkStatePublish", "// Drain and release the off-gate")
+for token in (
+    "kAirportItlwmRegDiagLinkPublishSourceUnavailable",
+    "kAirportItlwmRegDiagLinkPublishQueued",
+    "source->interruptOccurred(0, 0, 0)",
+):
+    require(queue, token, "off-gate publication producer")
+gated = body(v2, "IOReturn AirportItlwm::\nsetLinkStateGated", "#if defined(__PRIVATE_SPI__) && __IO80211_TARGET < __MAC_26_0")
+for token in (
+    "kAirportItlwmRegDiagLinkPublishActionUnavailable",
+    "kAirportItlwmRegDiagLinkPublishOffGateRejected",
+    "kAirportItlwmRegDiagLinkPublishPublished",
+    "onThreadPred == 1 && inGatePred == 0",
+):
+    require(gated, token, "off-gate publication consumer")
+
+join_abort = body(skywalk, "setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)", "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_QOS_PARAMS")
+for token in (
+    "kAirportItlwmRegDiagJoinAbortEnter",
+    "kAirportItlwmRegDiagJoinAbortExit",
+    "ieee80211_new_state(ic, IEEE80211_S_SCAN, -1)",
+):
+    require(join_abort, token, "join-abort timeline")
+
+enable = body(skywalk, "setInterfaceEnable(bool enable)", "#else\nbool AirportItlwmSkywalkInterface::\ninit")
+require(enable, "IO80211InfraInterface::setInterfaceEnable(enable)", "base interface enable")
+require(enable, "reserve the visible link-up edge for", "aliased low-latency boundary")
+forbid(enable, "(void)reportLinkStatus(3", "premature active low-latency alias")
+forbid(enable, "(void)IO80211InfraInterface::setLinkState(", "premature infra link-up alias")
+
+for token in (
+    'return "PREMATURE_ACTIVE_SHORT_CIRCUIT"',
+    'return "LINK_PUBLICATION_PROGRESS"',
+    'return "LINK_PUBLICATION_INCOMPLETE"',
+    'return "DIAGNOSTIC_INCOMPLETE"',
+    "SSID", "BSSID", "pointer", "key data",
+):
+    require(evaluator, token, "structural link-handoff evaluator")
+for token in (
+    'return "link-status"', 'return "link-publish"', 'return "join-abort"',
+    "link_status_decision_name", "link_publish_decision_name",
+    "join_abort_phase_name",
+):
+    require(client, token, "RegDiag client rendering")
+for token in (
+    "PREMATURE_ACTIVE_SHORT_CIRCUIT",
+    "LINK_PUBLICATION_PROGRESS",
+    "None is an association, authentication, EAPOL, DHCP, ping, or traffic PASS",
+    "Only after that candidate is released",
+):
+    require(plan, token, "versioned link-handoff plan boundary")
+
+print("PASS: Tahoe link-handoff diagnostic source contract")
+PY

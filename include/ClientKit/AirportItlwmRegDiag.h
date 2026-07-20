@@ -47,7 +47,11 @@ enum AirportItlwmRegDiagTraceKind {
     kAirportItlwmRegDiagTracePmkIngress = 9,
     kAirportItlwmRegDiagTracePmkClear = 10,
     kAirportItlwmRegDiagTracePltiPublish = 11,
-    kAirportItlwmRegDiagTracePltiDeliver = 12
+    kAirportItlwmRegDiagTracePltiDeliver = 12,
+    /* Tahoe link-handoff timeline; no packet, identifier, or key material. */
+    kAirportItlwmRegDiagTraceLinkStatus = 13,
+    kAirportItlwmRegDiagTraceLinkPublish = 14,
+    kAirportItlwmRegDiagTraceWclJoinAbort = 15
 };
 
 enum AirportItlwmRegDiagPath {
@@ -99,6 +103,26 @@ enum AirportItlwmRegDiagAssocPolicyFlag {
     kAirportItlwmRegDiagAssocPolicyPskPmkEligible = 0x00000002U,
     kAirportItlwmRegDiagAssocPolicyLocalPsk = 0x00000004U,
     kAirportItlwmRegDiagAssocPolicyAuditedWpa3Transition = 0x00000008U
+};
+
+/* Non-secret branch IDs for the Tahoe link-handoff diagnostic timeline. */
+enum AirportItlwmRegDiagLinkStatusDecision {
+    kAirportItlwmRegDiagLinkStatusSame = 0,
+    kAirportItlwmRegDiagLinkStatusApplied = 1,
+    kAirportItlwmRegDiagLinkStatusLifecycleRejected = 2
+};
+
+enum AirportItlwmRegDiagLinkPublishDecision {
+    kAirportItlwmRegDiagLinkPublishQueued = 0,
+    kAirportItlwmRegDiagLinkPublishSourceUnavailable = 1,
+    kAirportItlwmRegDiagLinkPublishOffGateRejected = 2,
+    kAirportItlwmRegDiagLinkPublishPublished = 3,
+    kAirportItlwmRegDiagLinkPublishActionUnavailable = 4
+};
+
+enum AirportItlwmRegDiagJoinAbortPhase {
+    kAirportItlwmRegDiagJoinAbortEnter = 0,
+    kAirportItlwmRegDiagJoinAbortExit = 1
 };
 
 typedef struct AirportItlwmRegDiagTraceEntry {

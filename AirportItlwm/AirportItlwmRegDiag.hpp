@@ -30,6 +30,17 @@ void airportItlwmRegDiagRecordPmkClear(const char *reasonTag);
 void airportItlwmRegDiagRecordPlti(uint32_t traceKind, uint32_t decision,
                                    IOReturn result, uint32_t authUpper,
                                    uint64_t generation);
+void airportItlwmRegDiagRecordLinkStatus(uint32_t decision,
+                                         uint32_t previousStatus,
+                                         uint32_t requestedStatus,
+                                         IOReturn result);
+void airportItlwmRegDiagRecordLinkPublish(uint32_t decision,
+                                          uint32_t linkState,
+                                          uint32_t rawCode,
+                                          IOReturn result);
+void airportItlwmRegDiagRecordJoinAbort(uint32_t phase, int32_t icState,
+                                        uint32_t requestCompletion,
+                                        IOReturn result);
 bool airportItlwmRegDiagShouldTracePacket(bool eapol);
 void airportItlwmRegDiagRecordData(uint32_t path, uint32_t length, bool eapol,
                                    IOReturn result);

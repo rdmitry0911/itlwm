@@ -3794,19 +3794,16 @@ setInterfaceEnable(bool enable)
 {
     AIRPORT_ITLWM_REQUIRE_INTERNAL_SINT32_OPERATION();
     /*
-     * Recovered AppleBCMWLANLowLatencyInterface::setInterfaceEnable(true)
-     * continues past the base enable: it publishes the Skywalk carrier and
-     * then raises the infra link state.  IOSkywalkLegacyEthernet reads its
-     * visible IOLinkStatus from this provider context, so keep the lifted
-     * body on the modeled low-latency object instead of faking registry
-     * properties on the legacy child.
+     * Apple performs the recovered low-latency subclass tail on a distinct
+     * hidden object.  The local Tahoe port aliases that identity to fNetIf.
+     * Applying reportLinkStatus(3) and setLinkState(UP) to this main infra
+     * interface at driver-ready time therefore marks it active before any
+     * association. A later real net80211 LINK_STATE_UP then sees the same
+     * controller status and is short-circuited before its WCL publication.
+     * Keep the required base enable, but reserve the visible link-up edge for
+     * the real association-success path in AirportItlwm::setLinkStatus.
      */
     SInt32 ret = IO80211InfraInterface::setInterfaceEnable(enable);
-    if (enable && ret == kIOReturnSuccess) {
-        (void)reportLinkStatus(3, 0x80);
-        (void)IO80211InfraInterface::setLinkState(
-            kIO80211NetworkLinkUp, 1, false, 0, 0);
-    }
     if (ret != kIOReturnSuccess)
         XYLog("DEBUG %s FAIL: enable=%d ret=0x%x instance=%p\n",
               __FUNCTION__, enable ? 1 : 0, ret, instance);
@@ -7127,6 +7124,11 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
     const bool requestCompletion = data != nullptr &&
                                    *reinterpret_cast<const uint32_t *>(data) != 0;
 
+    airportItlwmRegDiagRecordJoinAbort(
+        kAirportItlwmRegDiagJoinAbortEnter,
+        ic != nullptr ? static_cast<int32_t>(ic->ic_state) : -1,
+        requestCompletion ? 1U : 0U, kIOReturnSuccess);
+
     // A join abort tears down the in-flight auth/assoc state and
     // returns the WCL join manager to IDLE. The recovered Apple
     // contract treats this as an association-reset edge for the PMK
@@ -7168,6 +7170,11 @@ setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)
         instance->postMessage(instance->fNetIf,
                               APPLE80211_M_WCL_JOIN_ABORT_COMPLETE,
                               nullptr, 0, true);
+
+    airportItlwmRegDiagRecordJoinAbort(
+        kAirportItlwmRegDiagJoinAbortExit,
+        ic != nullptr ? static_cast<int32_t>(ic->ic_state) : -1,
+        requestCompletion ? 1U : 0U, kIOReturnSuccess);
 
     return kIOReturnSuccess;
 }

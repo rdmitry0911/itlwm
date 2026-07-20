@@ -699,6 +699,9 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     if (state.settingUp || state.stopping || state.tearingDown ||
         sender != state.source || state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        airportItlwmRegDiagRecordLinkPublish(
+            kAirportItlwmRegDiagLinkPublishActionUnavailable, 0, 0,
+            kIOReturnNotReady);
         return;
     }
 
@@ -823,6 +826,9 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
     if (state.settingUp || state.stopping || state.tearingDown ||
         state.source == NULL || state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        airportItlwmRegDiagRecordLinkPublish(
+            kAirportItlwmRegDiagLinkPublishSourceUnavailable,
+            static_cast<uint32_t>(linkState), rawCode, kIOReturnNotReady);
         return;
     }
     ++state.users;
@@ -836,6 +842,9 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
     state.pendingRawCode = rawCode;
     state.pendingValid = true;
     IOSimpleLockUnlockEnableInterrupt(payloadLock, irq);
+    airportItlwmRegDiagRecordLinkPublish(
+        kAirportItlwmRegDiagLinkPublishQueued,
+        static_cast<uint32_t>(linkState), rawCode, kIOReturnSuccess);
     source->interruptOccurred(0, 0, 0);
     source->release();
 
@@ -1711,6 +1720,50 @@ airportItlwmRegDiagRecordPlti(uint32_t traceKind, uint32_t decision,
     airportItlwmRegDiagTrace(traceKind, kAirportItlwmRegDiagPathPlti, result,
                              static_cast<int32_t>(decision), generation,
                              authUpper);
+}
+
+void
+airportItlwmRegDiagRecordLinkStatus(uint32_t decision,
+                                    uint32_t previousStatus,
+                                    uint32_t requestedStatus,
+                                    IOReturn result)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl))
+        return;
+
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceLinkStatus,
+                             kAirportItlwmRegDiagPathLink, result,
+                             static_cast<int32_t>(decision),
+                             (static_cast<uint64_t>(previousStatus) << 32) |
+                                 requestedStatus,
+                             0);
+}
+
+void
+airportItlwmRegDiagRecordLinkPublish(uint32_t decision, uint32_t linkState,
+                                     uint32_t rawCode, IOReturn result)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl))
+        return;
+
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceLinkPublish,
+                             kAirportItlwmRegDiagPathLink, result,
+                             static_cast<int32_t>(decision), linkState,
+                             rawCode);
+}
+
+void
+airportItlwmRegDiagRecordJoinAbort(uint32_t phase, int32_t icState,
+                                   uint32_t requestCompletion, IOReturn result)
+{
+    if (!airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl))
+        return;
+
+    airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceWclJoinAbort,
+                             kAirportItlwmRegDiagPathLifecycle, result,
+                             static_cast<int32_t>(phase),
+                             static_cast<uint32_t>(icState),
+                             requestCompletion);
 }
 
 bool
@@ -5900,7 +5953,11 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
 {
     RT_SET(6);
     (void)speed;
-    if (status == currentStatus) {
+    const UInt32 previousStatus = currentStatus;
+    if (status == previousStatus) {
+        airportItlwmRegDiagRecordLinkStatus(
+            kAirportItlwmRegDiagLinkStatusSame, previousStatus, status,
+            kIOReturnSuccess);
         return true;
     }
 
@@ -5910,11 +5967,18 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
     // is kept out of every driver-local interface/HAL side effect below.
     const bool drainOwner = lifecycleDrainOwnedByCurrentThread();
     AirportItlwmControllerLifecycleOperationGuard lifecycle(this, true);
-    if (!lifecycle.admitted() && !drainOwner)
+    if (!lifecycle.admitted() && !drainOwner) {
+        airportItlwmRegDiagRecordLinkStatus(
+            kAirportItlwmRegDiagLinkStatusLifecycleRejected, previousStatus,
+            status, kIOReturnNotReady);
         return false;
+    }
 
     bool ret = super::setLinkStatus(status, activeMedium, speed, data);
     currentStatus = status;
+    airportItlwmRegDiagRecordLinkStatus(
+        kAirportItlwmRegDiagLinkStatusApplied, previousStatus, status,
+        ret ? kIOReturnSuccess : kIOReturnError);
 
     // In the stop owner's Draining phase complete only the base transition.
     // A late non-owner was rejected before super; neither path can touch
@@ -5988,6 +6052,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      */
     if (that->fNetIf == NULL) {
         XYLog("DEBUG %s skipped: null fNetIf\n", __FUNCTION__);
+        airportItlwmRegDiagRecordLinkPublish(
+            kAirportItlwmRegDiagLinkPublishActionUnavailable,
+            static_cast<uint32_t>(linkState), rawCode, kIOReturnNotReady);
         return kIOReturnNotReady;
     }
     {
@@ -5996,8 +6063,16 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
             publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
         const int inGatePred =
             publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        if (!(onThreadPred == 1 && inGatePred == 0))
+        if (!(onThreadPred == 1 && inGatePred == 0)) {
+            const uint32_t predicates =
+                (onThreadPred == 1 ? 0x1U : 0U) |
+                (inGatePred == 1 ? 0x2U : 0U);
+            airportItlwmRegDiagRecordLinkPublish(
+                kAirportItlwmRegDiagLinkPublishOffGateRejected,
+                static_cast<uint32_t>(linkState), predicates,
+                kIOReturnNotReady);
             return kIOReturnNotReady;
+        }
     }
     const unsigned int setLinkCode =
         (linkState == kIO80211NetworkLinkUp) ? 1U : rawCode;
@@ -6008,6 +6083,9 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     // of this publication path; reaching here means it holds, so the inherited
     // publication is safe to invoke.
     IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
+    airportItlwmRegDiagRecordLinkPublish(
+        kAirportItlwmRegDiagLinkPublishPublished,
+        static_cast<uint32_t>(linkState), setLinkCode, ret);
 #else
     IOReturn ret = that->fNetIf->setLinkState(linkState, rawCode);
 #endif
