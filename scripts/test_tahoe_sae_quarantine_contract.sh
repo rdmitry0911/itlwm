@@ -363,10 +363,54 @@ for needle in ("git -C \"$ROOT\" diff --cached --quiet",
                "git -C \"$ROOT\" ls-files --others --exclude-standard"):
     require(layer_runner, needle,
             "layer gate source identity includes staged changes")
+
+# The remote build runner is confined to the fixed QEMU laboratory guest.
+# It creates a private known_hosts file from a source-controlled literal pin;
+# neither the caller's SSH config nor mutable ambient known-host files can
+# redirect the session or silently accept a replacement key.  The same strict
+# transport settings must cover the separate rsync client as well as command
+# execution over SSH.
+for needle in (
+    'PINNED_GUEST="devops@127.0.0.1"',
+    'PINNED_PORT=3322',
+    'PINNED_REMOTE_SDK="/Users/devops/Projects/itlwm/MacKernelSDK"',
+    'PINNED_BOOTKC="/System/Library/KernelCollections/BootKernelExtensions.kc"',
+    'EXPECTED_GUEST_HOSTKEY_LINE=',
+    'EXPECTED_GUEST_HOSTKEY_SHA256=',
+    'KNOWN_HOSTS="$(mktemp /tmp/aiam-tahoe-sae-gate-known-hosts.XXXXXX)"',
+    'chmod 600 "$KNOWN_HOSTS"',
+    'ssh-keygen -lf "$KNOWN_HOSTS" -E sha256',
+    'ERROR: Tahoe SAE gate only accepts the pinned laboratory guest and paths',
+    'trap cleanup_known_hosts EXIT',
+    'RSYNC_RSH=',
+):
+    require(layer_runner, needle, "pinned layer-gate transport")
+for needle in (
+    'ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8',
+    'StrictHostKeyChecking=yes',
+    'UserKnownHostsFile=',
+    'GlobalKnownHostsFile=/dev/null',
+    'UpdateHostKeys=no',
+    'LogLevel=ERROR',
+):
+    if layer_runner.count(needle) < 2:
+        fail(f"pinned layer-gate transport must cover SSH and rsync: {needle}")
+for needle in (
+    'StrictHostKeyChecking=no',
+    'UserKnownHostsFile=/dev/null',
+    'ssh-keyscan',
+    'accept-new',
+):
+    forbid(layer_runner, needle, "weak layer-gate transport")
 static_exit = layer_runner.find('if [ "$STATIC_ONLY" -eq 1 ]; then')
 untracked_gate = layer_runner.find('UNTRACKED_FILES="$(git -C "$ROOT"')
 if static_exit < 0 or untracked_gate < 0 or static_exit > untracked_gate:
     fail("static-only layer gate must complete before the remote cleanliness gate")
+transport_cleanup = layer_runner.find('trap cleanup_known_hosts EXIT', static_exit)
+transport_prepare = layer_runner.find('\nprepare_guest_transport\n', static_exit)
+if (transport_cleanup < 0 or transport_prepare < 0 or
+        transport_cleanup > transport_prepare or transport_prepare > untracked_gate):
+    fail("layer gate must prepare cleanup and pinned transport before remote staging")
 
 # Passive BSS discovery recognizes the RSN SAE suite so a later state machine
 # can consume an exact selected-BSS snapshot. It remains strictly inactive:

@@ -25,11 +25,52 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-REMOTE="${TAHOE_SAE_GATE_REMOTE:-devops@127.0.0.1}"
-PORT="${TAHOE_SAE_GATE_PORT:-3322}"
-REMOTE_SDK="${TAHOE_SAE_GATE_SDK:-/Users/devops/Projects/itlwm/MacKernelSDK}"
-BOOTKC="${TAHOE_SAE_GATE_BOOTKC:-/System/Library/KernelCollections/BootKernelExtensions.kc}"
-SSH=(ssh -o BatchMode=yes -p "$PORT" "$REMOTE")
+PINNED_GUEST="devops@127.0.0.1"
+PINNED_PORT=3322
+PINNED_REMOTE_SDK="/Users/devops/Projects/itlwm/MacKernelSDK"
+PINNED_BOOTKC="/System/Library/KernelCollections/BootKernelExtensions.kc"
+EXPECTED_GUEST_HOSTKEY_LINE="[127.0.0.1]:3322 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPrOLzo9N+8YgP4rFTWH4scBkBT8EYGNVy87QWgvdT2"
+EXPECTED_GUEST_HOSTKEY_SHA256="SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY"
+# Keep these two environment names as a fail-closed compatibility check for
+# existing callers; any destination other than the pinned local QEMU guest is
+# rejected before a connection is attempted.
+REMOTE="${TAHOE_SAE_GATE_REMOTE:-$PINNED_GUEST}"
+PORT="${TAHOE_SAE_GATE_PORT:-$PINNED_PORT}"
+REMOTE_SDK="${TAHOE_SAE_GATE_SDK:-$PINNED_REMOTE_SDK}"
+BOOTKC="${TAHOE_SAE_GATE_BOOTKC:-$PINNED_BOOTKC}"
+KNOWN_HOSTS=""
+
+cleanup_known_hosts() {
+    if [ -n "$KNOWN_HOSTS" ]; then
+        rm -f "$KNOWN_HOSTS"
+    fi
+}
+
+prepare_guest_transport() {
+    if [ "$REMOTE" != "$PINNED_GUEST" ] || [ "$PORT" != "$PINNED_PORT" ] ||
+            [ "$REMOTE_SDK" != "$PINNED_REMOTE_SDK" ] || [ "$BOOTKC" != "$PINNED_BOOTKC" ]; then
+        echo "ERROR: Tahoe SAE gate only accepts the pinned laboratory guest and paths" >&2
+        exit 2
+    fi
+
+    KNOWN_HOSTS="$(mktemp /tmp/aiam-tahoe-sae-gate-known-hosts.XXXXXX)"
+    chmod 600 "$KNOWN_HOSTS"
+    printf '%s\n' "$EXPECTED_GUEST_HOSTKEY_LINE" > "$KNOWN_HOSTS"
+    local observed
+    observed="$(ssh-keygen -lf "$KNOWN_HOSTS" -E sha256 2>/dev/null |
+        awk 'NR == 1 { print $2; exit }')"
+    if [ "$observed" != "$EXPECTED_GUEST_HOSTKEY_SHA256" ]; then
+        echo "ERROR: pinned Tahoe guest host-key fingerprint mismatch" >&2
+        exit 1
+    fi
+
+    SSH=(
+        ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS"
+        -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR
+        -p "$PORT" "$REMOTE"
+    )
+}
 
 echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
 bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
@@ -47,6 +88,9 @@ if [ "$STATIC_ONLY" -eq 1 ]; then
     echo "PASS: static-only Tahoe SAE/PMF layer gate"
     exit 0
 fi
+
+trap cleanup_known_hosts EXIT
+prepare_guest_transport
 
 # Remote staging must remain an exact source tree. Static-only validation is
 # read-only and is intentionally usable while unrelated work is present.
@@ -80,7 +124,8 @@ if [ -z "$REMOTE_DIR" ]; then
 fi
 
 echo "[3/4] staging source and project-local MacKernelSDK"
-rsync -a -e "ssh -o BatchMode=yes -p $PORT" \
+RSYNC_RSH="ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -p $PORT"
+rsync -a -e "$RSYNC_RSH" \
     --exclude='.git' \
     --exclude='Build' \
     --exclude='DerivedData' \
