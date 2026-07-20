@@ -222,6 +222,8 @@ ieee80211_disable_wep(struct ieee80211com *ic)
 void
 ieee80211_disable_rsn(struct ieee80211com *ic)
 {
+	/* Credentials/configuration cease to belong to any pending attempt first. */
+	(void)ieee80211_pae_assoc_epoch_begin(ic);
 	ic->ic_flags &= ~(IEEE80211_F_PSK | IEEE80211_F_RSNON);
 	memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
 	ic->ic_rsnprotos = 0;
@@ -689,6 +691,8 @@ ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
 //		if ((error = suser(curproc)) != 0)
 //			break;
 		psk = (struct ieee80211_wpapsk *)data;
+		/* A PSK replacement or removal cannot share an old async attempt. */
+		(void)ieee80211_pae_assoc_epoch_begin(ic);
 		if (psk->i_enabled) {
 			ic->ic_flags |= IEEE80211_F_PSK;
 			memcpy(ic->ic_psk, psk->i_psk, sizeof(ic->ic_psk));

@@ -77,6 +77,14 @@ extern int ieee80211_debug;
 
 struct ieee80211_rsnparams {
 	u_int16_t		rsn_nakms;
+	/*
+	 * The bitset above is intentionally lossy.  Keep the suite-list census
+	 * alongside it so a future SAE admission owner can reject an AKM list
+	 * containing an unknown suite or duplicate instead of mistaking its
+	 * surviving SAE bit for an unambiguous pure-SAE profile.
+	 */
+	u_int16_t		rsn_nknownakms;
+	u_int16_t		rsn_nunknownakms;
 	u_int32_t		rsn_akms;
 	u_int16_t		rsn_nciphers;
 	u_int32_t		rsn_ciphers;

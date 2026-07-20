@@ -3592,7 +3592,11 @@ iwm_stop(struct _ifnet *ifp)
     struct iwm_softc *sc = (struct iwm_softc*)ifp->if_softc;
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwm_node *in = (struct iwm_node *)ic->ic_bss;
-    int i, s = splnet();
+    int i, s;
+
+    /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
+    s = splnet();
     
     //    rw_assert_wrlock(&sc->ioctl_rwl);
     

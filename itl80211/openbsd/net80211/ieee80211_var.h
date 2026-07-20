@@ -542,6 +542,13 @@ struct ieee80211com {
 	enum ieee80211_phytype	ic_phytype;	/* XXX wrong for multi-mode */
 	enum ieee80211_opmode	ic_opmode;	/* operation mode */
 	enum ieee80211_state	ic_state;	/* 802.11 state */
+	/*
+	 * Monotonic STA association-attempt fence.  Future asynchronous SAE/PAE
+	 * work carries this value and must abandon completion when it changes.
+	 * It is deliberately present while MFP remains quarantined so no current
+	 * key or callback path begins to depend on a partially wired transaction.
+	 */
+	volatile u_int64_t	ic_pae_assoc_epoch;
 	u_int32_t		*ic_aid_bitmap;
 	u_int16_t		ic_max_aid;
 	enum ieee80211_protmode	ic_protmode;	/* 802.11g/n protection mode */

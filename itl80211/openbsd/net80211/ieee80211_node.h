@@ -369,6 +369,8 @@ struct ieee80211_node {
 	enum ieee80211_cipher	ni_rsngroupcipher;
 	enum ieee80211_cipher	ni_rsngroupmgmtcipher;
 	u_int16_t		ni_rsncaps;
+	/* Strictly normalized scan facts; never a retained raw RSNXE IE. */
+	u_int8_t		ni_sae_scan_flags;
 	enum ieee80211_cipher	ni_rsncipher;
 	u_int8_t		ni_nonce[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ni_pmk[IEEE80211_PMK_LEN];

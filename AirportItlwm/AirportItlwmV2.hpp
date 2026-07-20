@@ -18,6 +18,7 @@
 #include "TahoeHiddenInterfaceContracts.hpp"
 #include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
+#include <ClientKit/AirportItlwmSaeRelayV1.h>
 
 #include "IOKit/network/IOGatedOutputQueue.h"
 #include <libkern/c++/OSNumber.h>
@@ -839,7 +840,7 @@ public:
                                        uint32_t authtype_upper);
     IOReturn waitAssocTarget(uint64_t last_acked,
                              AirportItlwmAssociationTarget *out);
-    void     cancelPendingAssocTarget(const char *reason,
+    bool     cancelPendingAssocTarget(const char *reason,
                                       bool terminating = false);
     void     invalidatePendingAssocTargetOnly(const char *reason);
 #endif // __IO80211_TARGET >= __MAC_26_0

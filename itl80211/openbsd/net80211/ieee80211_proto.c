@@ -95,6 +95,61 @@ const char * const ieee80211_phymode_name[] = {
 void ieee80211_set_beacon_miss_threshold(struct ieee80211com *);
 int ieee80211_newstate(struct ieee80211com *, enum ieee80211_state, int);
 
+/*
+ * Future asynchronous owners must snapshot through this acquire load rather
+ * than reading the volatile field directly.  The field is written from reset
+ * and driver-task contexts, so volatile alone is not a synchronization rule.
+ */
+u_int64_t
+ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
+{
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	return __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+}
+
+/*
+ * Advance a transaction fence before a new STA association owner replaces
+ * node/RSN state.  The future SAE relay and PAE continuation queues may read
+ * this from a different execution context, hence an atomic increment.  Zero
+ * is reserved as the uninitialized/no-attempt value and is skipped on wrap.
+ */
+u_int64_t
+ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
+{
+	u_int64_t epoch;
+
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	do {
+		epoch = __atomic_add_fetch(&ic->ic_pae_assoc_epoch, 1,
+		    __ATOMIC_ACQ_REL);
+	} while (epoch == 0);
+	return epoch;
+}
+
+/*
+ * Preserve only the forward SCAN -> AUTH -> ASSOC -> RUN chain as one
+ * attempt. Every other STA state request is a cancellation/retry boundary and
+ * must invalidate pending asynchronous work before the driver receives its
+ * potentially deferred newstate callback.
+ */
+void
+ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
+    enum ieee80211_state nstate)
+{
+	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+		return;
+	if ((ic->ic_state == IEEE80211_S_SCAN &&
+	     nstate == IEEE80211_S_AUTH) ||
+	    (ic->ic_state == IEEE80211_S_AUTH &&
+	     nstate == IEEE80211_S_ASSOC) ||
+	    (ic->ic_state == IEEE80211_S_ASSOC &&
+	     nstate == IEEE80211_S_RUN))
+		return;
+	(void)ieee80211_pae_assoc_epoch_begin(ic);
+}
+
 void
 ieee80211_proto_attach(struct _ifnet *ifp)
 {
@@ -1283,6 +1338,9 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 			    ic->ic_state, seq));
 			return;
 		}
+		/* A rejected current-BSS auth response ends the active attempt. */
+		if (status != 0 && ni == ic->ic_bss)
+			(void)ieee80211_pae_assoc_epoch_begin(ic);
 		if (ic->ic_flags & IEEE80211_F_RSNON) {
 			/* XXX not here! */
 			ic->ic_bss->ni_flags &= ~IEEE80211_NODE_TXRXPROT;

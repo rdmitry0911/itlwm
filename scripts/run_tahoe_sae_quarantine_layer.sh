@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # One invocation for the Tahoe SAE/PMF quarantine layer.
 #
-# It first runs every source contract in test_tahoe_sae_quarantine_contract.sh,
-# then (unless --static-only is selected) transfers the current tree to an
-# isolated Tahoe guest directory and builds both the kext and Agent there.
-# It never installs, loads, releases, or reboots anything.
+# It first runs the product SAE/PMF quarantine and Tahoe build-admission
+# contracts, then (unless --static-only is selected) transfers the current
+# tree to an isolated Tahoe guest directory and builds both the kext and
+# Agent there. The separate test-only SAE foundation aggregate is intentionally
+# local-only and is not part of this remote build gate. This runner never
+# installs, loads, releases, or reboots anything.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -28,6 +30,23 @@ PORT="${TAHOE_SAE_GATE_PORT:-3322}"
 REMOTE_SDK="${TAHOE_SAE_GATE_SDK:-/Users/devops/Projects/itlwm/MacKernelSDK}"
 BOOTKC="${TAHOE_SAE_GATE_BOOTKC:-/System/Library/KernelCollections/BootKernelExtensions.kc}"
 SSH=(ssh -o BatchMode=yes -p "$PORT" "$REMOTE")
+
+echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
+bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
+bash "$ROOT/scripts/test_tahoe_boot_thread_call_auxkc_contract.sh"
+bash "$ROOT/scripts/test_tahoe_auxkc_admission_preflight_contract.sh"
+bash -n "$ROOT/scripts/build_tahoe.sh"
+bash -n "$ROOT/scripts/tahoe_auxkc_admission_preflight.sh"
+bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
+git -C "$ROOT" diff --check
+
+if [ "$STATIC_ONLY" -eq 1 ]; then
+    echo "PASS: static-only Tahoe SAE/PMF layer gate"
+    exit 0
+fi
+
+# Remote staging must remain an exact source tree. Static-only validation is
+# read-only and is intentionally usable while unrelated work is present.
 UNTRACKED_FILES="$(git -C "$ROOT" ls-files --others --exclude-standard)"
 if [ -n "$UNTRACKED_FILES" ]; then
     echo "ERROR: Tahoe SAE layer gate refuses untracked source files; stage or ignore them first" >&2
@@ -48,20 +67,6 @@ if [ "$SOURCE_DIRTY" -ne 0 ]; then
     else
         SOURCE_ID="dirty$({ git -C "$ROOT" diff --binary; git -C "$ROOT" diff --cached --binary; } | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
     fi
-fi
-
-echo "[1/4] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
-bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
-bash "$ROOT/scripts/test_tahoe_boot_thread_call_auxkc_contract.sh"
-bash "$ROOT/scripts/test_tahoe_auxkc_admission_preflight_contract.sh"
-bash -n "$ROOT/scripts/build_tahoe.sh"
-bash -n "$ROOT/scripts/tahoe_auxkc_admission_preflight.sh"
-bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
-git -C "$ROOT" diff --check
-
-if [ "$STATIC_ONLY" -eq 1 ]; then
-    echo "PASS: static-only Tahoe SAE/PMF layer gate"
-    exit 0
 fi
 
 echo "[2/4] allocating isolated Tahoe build directory"

@@ -1153,6 +1153,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
          memcmp(ic->ic_des_essid, selbs->ni_essid, selbs->ni_esslen) == 0))
         assoc_fail = ic->ic_bss->ni_assoc_fail;
     
+    /* Invalidate an old async association before ic_node_copy tears it down. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
     ni = ic->ic_bss;
     ni->ni_assoc_fail |= assoc_fail;
@@ -1467,6 +1469,8 @@ ieee80211_end_scan(struct _ifnet *ifp)
             free(arg);
             return;
         }
+        /* The accepted roam has a deferred BSS-switch callback. */
+        (void)ieee80211_pae_assoc_epoch_begin(ic);
         
         /* Prevent dispatch of additional data frames to hardware. */
         ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
@@ -1575,6 +1579,9 @@ ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (ni == NULL) {
         return;
     }
+    /* Only destruction/replacement of the current STA BSS cancels its PAE. */
+    if (ic != NULL && ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+        (void)ieee80211_pae_assoc_epoch_begin(ic);
     if (ni->ni_rsnie != NULL) {
         free(ni->ni_rsnie);
         ni->ni_rsnie = NULL;

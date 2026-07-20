@@ -73,6 +73,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_sae_policy.h>
 
 mbuf_t ieee80211_input_hwdecrypt(struct ieee80211com *,
                                  struct ieee80211_node *, mbuf_t,
@@ -1517,6 +1518,8 @@ ieee80211_parse_rsn_akm(const u_int8_t selector[4])
                 return IEEE80211_AKM_SHA256_8021X;
             case 6:    /* PSK with SHA256 KDF */
                 return IEEE80211_AKM_SHA256_PSK;
+            case 8:    /* Simultaneous Authentication of Equals */
+                return IEEE80211_AKM_SAE;
         }
     }
     return IEEE80211_AKM_NONE;    /* ignore unknown AKMs */
@@ -1549,6 +1552,9 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     rsn->rsn_groupmgmtcipher = IEEE80211_CIPHER_BIP;
     /* if AKM Suite missing, default to 802.1X */
     rsn->rsn_nakms = 1;
+	/* The implicit default is exactly one known 802.1X suite. */
+	rsn->rsn_nknownakms = 1;
+	rsn->rsn_nunknownakms = 0;
     rsn->rsn_akms = IEEE80211_AKM_8021X;
     /* if RSN capabilities missing, default to 0 */
     rsn->rsn_caps = 0;
@@ -1595,8 +1601,16 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     if (frm + n * 4 > efrm)
         return IEEE80211_STATUS_IE_INVALID;
     rsn->rsn_akms = IEEE80211_AKM_NONE;
+	rsn->rsn_nknownakms = 0;
+	rsn->rsn_nunknownakms = 0;
     while (n-- > 0) {
-        rsn->rsn_akms |= ieee80211_parse_rsn_akm(frm);
+		enum ieee80211_akm akm = ieee80211_parse_rsn_akm(frm);
+
+		if (akm == IEEE80211_AKM_NONE)
+			rsn->rsn_nunknownakms++;
+		else
+			rsn->rsn_nknownakms++;
+		rsn->rsn_akms |= akm;
         frm += 4;
     }
     
@@ -1716,7 +1730,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
     const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie;
-    const u_int8_t *rsnie, *wpaie, *htcaps, *htop;
+    const u_int8_t *rsnie, *rsnxe, *wpaie, *htcaps, *htop;
     const uint8_t *csa;
     const uint8_t *vhtcap;
     const uint8_t *vhtopmode;
@@ -1724,7 +1738,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     const uint8_t *heopmode;
     u_int16_t capinfo, bintval;
     u_int8_t chan, bchan, erp, dtim_count, dtim_period;
-    int is_new;
+    int is_new, sae_scan_malformed;
     
     /*
      * We process beacon/probe response frames for:
@@ -1761,7 +1775,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     bintval = LE_READ_2(frm); frm += 2;
     capinfo = LE_READ_2(frm); frm += 2;
     
-    ssid = rates = xrates = edcaie = wmmie = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = NULL;
+    ssid = rates = xrates = edcaie = wmmie = rsnie = rsnxe = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = NULL;
     htcaps = htop = NULL;
     if (rxi->rxi_chan)
          bchan = rxi->rxi_chan;
@@ -1770,9 +1784,12 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     chan = bchan;
     erp = 0;
     dtim_count = dtim_period = 0;
+    /* A future SAE owner must reject an incomplete/ambiguous scan profile. */
+    sae_scan_malformed = 0;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm) {
             ic->ic_stats.is_rx_elem_toosmall++;
+            sae_scan_malformed = 1;
             break;
         }
         switch (frm[0]) {
@@ -1809,7 +1826,15 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 vhtopmode = frm;
                 break;
             case IEEE80211_ELEMID_RSN:
+                if (rsnie != NULL)
+                    sae_scan_malformed = 1;
                 rsnie = frm;
+                break;
+            case IEEE80211_ELEMID_RSNXE:
+                if (rsnxe != NULL)
+                    sae_scan_malformed = 1;
+                else
+                    rsnxe = frm;
                 break;
             case IEEE80211_ELEMID_EDCAPARMS:
                 edcaie = frm;
@@ -1840,6 +1865,12 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 }
                 break;
             case IEEE80211_ELEMID_EXTENSION:
+			/* Extension ID is the first payload octet, not optional. */
+			if (frm[1] < 1) {
+				ic->ic_stats.is_rx_elem_toosmall++;
+				sae_scan_malformed = 1;
+				break;
+			}
                 switch (frm[2]) {
                     case IEEE80211_ELEMID_EXT_HE_MU_EDCA:
                         break;
@@ -1864,6 +1895,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         }
         frm += 2 + frm[1];
     }
+	/* A dangling one-byte IE header has no length byte and must not vanish. */
+	if (frm != efrm)
+		sae_scan_malformed = 1;
     /* supported rates element is mandatory */
     if (rates == NULL || rates[1] > IEEE80211_RATE_MAXSIZE) {
         DPRINTF(("invalid supported rates element\n"));
@@ -2065,11 +2099,26 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ni->ni_rsngroupcipher = (enum ieee80211_cipher)0;
         ni->ni_rsngroupmgmtcipher = (enum ieee80211_cipher)0;
         ni->ni_rsncaps = 0;
+        ni->ni_sae_scan_flags = sae_scan_malformed
+            ? IEEE80211_SAE_SCAN_MALFORMED : 0;
+        if (rsnxe != NULL)
+            ni->ni_sae_scan_flags |= ieee80211_sae_scan_rsnxe_flags(
+                rsnxe + 2, rsnxe[1]);
         
-        if (rsnie != NULL &&
-            ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
-            ni->ni_supported_rsnprotos |= IEEE80211_PROTO_RSN;
-            ni->ni_supported_rsnakms |= rsn.rsn_akms;
+        if (rsnie != NULL) {
+            if (ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
+                ni->ni_supported_rsnprotos |= IEEE80211_PROTO_RSN;
+                ni->ni_supported_rsnakms |= rsn.rsn_akms;
+                if ((rsn.rsn_akms & IEEE80211_AKM_SAE) != 0 &&
+                    ieee80211_sae_scan_akm_is_ambiguous(rsn.rsn_nakms,
+                        rsn.rsn_nknownakms, rsn.rsn_nunknownakms)) {
+                    ni->ni_sae_scan_flags |=
+                        IEEE80211_SAE_SCAN_AKM_AMBIGUOUS;
+                }
+            } else {
+                /* A future SAE owner must not reinterpret a rejected RSN. */
+                ni->ni_sae_scan_flags |= IEEE80211_SAE_SCAN_MALFORMED;
+            }
         }
         if (wpaie != NULL &&
             ieee80211_parse_wpa(ic, wpaie, &wpa) == 0) {
@@ -2743,6 +2792,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     }
     
     if (status != IEEE80211_STATUS_SUCCESS) {
+        /* A rejected current-BSS response is terminal before callbacks. */
+        if (ni == ic->ic_bss)
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
         if (reassoc)
             ieee80211_wcl_reassoc_post_failure(ic, (u_int32_t)status);
         if (ifp->if_flags & IFF_DEBUG)
@@ -2769,6 +2821,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
          * key re-delivery from wifid. All other association state
          * (rates, HT/VHT caps, ERP) is unchanged — same AP — so skip
          * the re-setup and the RUN newstate transition entirely. */
+        /* The request boundary already fenced this accepted attempt. */
         ni->ni_associd = associd;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_port_valid = 0;
@@ -2817,6 +2870,11 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
                 }
                 break;
             case IEEE80211_ELEMID_EXTENSION:
+			/* Avoid reading an Extension ID beyond a zero-length IE. */
+			if (frm[1] < 1) {
+				ic->ic_stats.is_rx_elem_toosmall++;
+				break;
+			}
                 switch (frm[2]) {
                     case IEEE80211_ELEMID_EXT_HE_MU_EDCA:
                         break;
@@ -2965,6 +3023,9 @@ ieee80211_recv_deauth(struct ieee80211com *ic, mbuf_t m,
 
     XYLog("Deauth received, reason %d\n", reason);
     ic->ic_deauth_reason = reason;
+    /* Roamscan/stay-auth may return without newstate after this event. */
+    if (ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+        (void)ieee80211_pae_assoc_epoch_begin(ic);
     if (ic->ic_event_handler) {
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_DEAUTH, NULL);
     }
@@ -3029,6 +3090,9 @@ ieee80211_recv_disassoc(struct ieee80211com *ic, mbuf_t m,
     reason = LE_READ_2(frm);
     
     XYLog("Disassoc received, reason %d\n", reason);
+    /* Roamscan can ignore this frame without the usual state transition. */
+    if (ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss)
+        (void)ieee80211_pae_assoc_epoch_begin(ic);
     
     ic->ic_stats.is_rx_disassoc++;
     switch (ic->ic_opmode) {

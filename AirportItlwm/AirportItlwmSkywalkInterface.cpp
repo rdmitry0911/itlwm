@@ -4449,6 +4449,8 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
               reason_tag != nullptr ? reason_tag : "?");
         return;
     }
+    /* Every clear path, including early fallback, cancels a future owner. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
 #if __IO80211_TARGET >= __MAC_26_0
     // Route the ic_psk / IEEE80211_F_PSK / ic_external_pmk_owner
     // reset through the controller command gate so it is mutually
@@ -4466,10 +4468,8 @@ clearExternalPmkEligibilityLocked(const char *reason_tag)
     // edge before bindController completes) so the host-supplicant
     // reset still happens deterministically even when the PLTI
     // surface is not yet wired up.
-    if (instance != nullptr) {
-        instance->cancelPendingAssocTarget(
-            reason_tag != nullptr ? reason_tag : "clear_external_pmk");
-    } else {
+    if (instance == nullptr || !instance->cancelPendingAssocTarget(
+            reason_tag != nullptr ? reason_tag : "clear_external_pmk")) {
         memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
         ic->ic_flags &= ~IEEE80211_F_PSK;
         ic->ic_external_pmk_owner = 0;
@@ -6998,6 +6998,9 @@ setWCL_REASSOC(apple80211_reassoc *data)
         ieee80211_wcl_reassoc_post_success(ic);
         return kIOReturnSuccess;
     }
+
+    /* An OTA reassociation owns a new attempt before it can emit a response. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
 
     /*
      * Recovered host-owned WCL reassociation owner contract: open the

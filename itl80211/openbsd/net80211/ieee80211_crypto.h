@@ -59,7 +59,9 @@ enum ieee80211_akm {
 	IEEE80211_AKM_8021X		= 0x00000001,
 	IEEE80211_AKM_PSK		= 0x00000002,
 	IEEE80211_AKM_SHA256_8021X	= 0x00000004,	/* 11w */
-	IEEE80211_AKM_SHA256_PSK	= 0x00000008	/* 11w */
+	IEEE80211_AKM_SHA256_PSK	= 0x00000008,	/* 11w */
+	/* RSN suite type 8. Discovery only until SAE/PMF admission exists. */
+	IEEE80211_AKM_SAE		= 0x00000010
 };
 
 #define IEEE80211_TKIP_HDRLEN	8
@@ -95,7 +97,8 @@ static __inline int
 ieee80211_is_sha256_akm(enum ieee80211_akm akm)
 {
 	return akm == IEEE80211_AKM_SHA256_8021X ||
-	    akm == IEEE80211_AKM_SHA256_PSK;
+	    akm == IEEE80211_AKM_SHA256_PSK ||
+	    akm == IEEE80211_AKM_SAE;
 }
 
 struct ieee80211_key {

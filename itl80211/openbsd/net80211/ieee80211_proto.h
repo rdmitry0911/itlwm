@@ -124,8 +124,13 @@ extern	int ieee80211_send_eapol_key_req(struct ieee80211com *,
 		struct ieee80211_node *, u_int16_t, u_int64_t);
 extern	int ieee80211_pwrsave(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *);
+extern	u_int64_t ieee80211_pae_assoc_epoch_current(const struct ieee80211com *);
+extern	u_int64_t ieee80211_pae_assoc_epoch_begin(struct ieee80211com *);
+extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
+		enum ieee80211_state);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \
 do {    \
+ieee80211_pae_assoc_epoch_note_newstate((_ic), (_nstate)); \
 (((_ic)->ic_newstate)((_ic), (_nstate), (_arg)));   \
 } while (0)
 extern	enum ieee80211_edca_ac ieee80211_up_to_ac(struct ieee80211com *, int);

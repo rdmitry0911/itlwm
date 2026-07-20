@@ -618,6 +618,7 @@ enum {
     IEEE80211_ELEMID_FILS_INDICATION = 240,
     IEEE80211_ELEMID_DILS           = 241,
     IEEE80211_ELEMID_FRAGMENT       = 242,
+    IEEE80211_ELEMID_RSNXE          = 244,  /* RSN Extension */
     IEEE80211_ELEMID_EXTENSION      = 255,
 };
 
@@ -2189,5 +2190,3 @@ static inline uint64_t airport_up_time()
 #endif
 
 #endif /* _NET80211_IEEE80211_H_ */
-
-

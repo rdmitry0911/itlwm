@@ -11687,7 +11687,11 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    int i, s = splnet();
+    int i, s;
+
+    /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
+    s = splnet();
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 

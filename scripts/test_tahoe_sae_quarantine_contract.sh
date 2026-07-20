@@ -11,6 +11,8 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 bash "$root/scripts/test_payload_builders.sh"
 bash "$root/scripts/test_net80211_mfp_lifecycle_contract.sh"
+bash "$root/scripts/test_tahoe_sae_product_foundation_contract.sh"
+bash "$root/scripts/test_net80211_pae_epoch_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -28,6 +30,7 @@ agent = (root / "AirportItlwmAgent/src/main.m").read_text()
 output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 crypto = (root / "itl80211/openbsd/net80211/ieee80211_crypto.h").read_text()
+crypto_source = (root / "itl80211/openbsd/net80211/ieee80211_crypto.c").read_text()
 raw_ioctl = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.c").read_text()
 regdiag_header = (root / "include/ClientKit/AirportItlwmRegDiag.h").read_text()
 regdiag_client = (root / "AirportItlwmRegDiag/airport_itlwm_regdiag.c").read_text()
@@ -357,11 +360,21 @@ for needle in ("git -C \"$ROOT\" diff --cached --quiet",
                "git -C \"$ROOT\" ls-files --others --exclude-standard"):
     require(layer_runner, needle,
             "layer gate source identity includes staged changes")
+static_exit = layer_runner.find('if [ "$STATIC_ONLY" -eq 1 ]; then')
+untracked_gate = layer_runner.find('UNTRACKED_FILES="$(git -C "$ROOT"')
+if static_exit < 0 or untracked_gate < 0 or static_exit > untracked_gate:
+    fail("static-only layer gate must complete before the remote cleanliness gate")
 
-# SAE is intentionally absent below ingress. net80211 still emits and accepts
-# only Open-System authentication, so letting SAE cross the boundary would be
-# a false implementation claim rather than a working SAE exchange.
-forbid(crypto, "IEEE80211_AKM_SAE", "net80211 SAE AKM")
+# Passive BSS discovery recognizes the RSN SAE suite so a later state machine
+# can consume an exact selected-BSS snapshot. It remains strictly inactive:
+# active configuration stays PSK-only and net80211 still emits and accepts
+# only Open-System authentication. Letting Algorithm 3 cross this boundary
+# now would be a false implementation claim rather than a working exchange.
+require(crypto, "IEEE80211_AKM_SAE", "passive net80211 SAE AKM taxonomy")
+require(crypto_source, "ic->ic_rsnakms = IEEE80211_AKM_PSK;",
+        "PSK-only active net80211 configuration")
+forbid(crypto_source, "IEEE80211_AKM_SAE",
+       "active net80211 SAE configuration")
 forbid(input_source, "IEEE80211_AUTH_ALG_SAE", "net80211 SAE auth algorithm")
 auth_tx = body(output, "mbuf_t\nieee80211_get_auth", "net80211 auth TX")
 require(auth_tx, "LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN)",

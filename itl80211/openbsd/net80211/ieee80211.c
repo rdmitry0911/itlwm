@@ -213,6 +213,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     ifp->controller = controller;
+    __atomic_store_n(&ic->ic_pae_assoc_epoch, 0, __ATOMIC_RELAXED);
     memset(ic->ic_bss_blacklist_requested, 0,
            sizeof(ic->ic_bss_blacklist_requested));
     ic->ic_bss_blacklist_count = 0;
@@ -268,6 +269,8 @@ ieee80211_ifdetach(struct _ifnet *ifp)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
+    /* Close future async STA owners before queues, crypto, and nodes vanish. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
     timeout_del(&ic->ic_bgscan_timeout);
     timeout_free(&ic->ic_bgscan_timeout);
     ieee80211_proto_detach(ifp);
@@ -787,6 +790,10 @@ ieee80211_media_change(struct _ifnet *ifp)
      * Handle operating mode change.
      */
     if (ic->ic_opmode != newopmode) {
+        /* The STA guard must run while the old owner is still visible. */
+        if (ic->ic_opmode == IEEE80211_M_STA &&
+            newopmode != IEEE80211_M_STA)
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
         ic->ic_opmode = newopmode;
 #ifndef IEEE80211_STA_ONLY
         switch (newopmode) {
@@ -898,6 +905,14 @@ ieee80211_watchdog(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     
     if (ic->ic_mgt_timer && --ic->ic_mgt_timer == 0) {
+        /* The timeout callback publishes failure before its newstate call. */
+        if (ic->ic_opmode == IEEE80211_M_STA &&
+            (ic->ic_state == IEEE80211_S_AUTH ||
+             ic->ic_state == IEEE80211_S_ASSOC ||
+             (ic->ic_wcl_reassoc_owner_active &&
+              ieee80211_wcl_reassoc_leaf_is_post_send(
+                  ic->ic_wcl_reassoc_owner_last_leaf))))
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
         /*
          * Publish the WCL reassociation terminal failure selector
          * for a management-timer expiration that fires while a
@@ -1615,7 +1630,7 @@ ieee80211_plcp2rate(u_int8_t plcp, enum ieee80211_phymode mode)
 void
 ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
 {
-    if (ic == NULL || ic->ic_event_handler == NULL)
+    if (ic == NULL)
         return;
     if (!ic->ic_wcl_reassoc_owner_active)
         return;
@@ -1629,21 +1644,25 @@ ieee80211_wcl_reassoc_post_success(struct ieee80211com *ic)
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
-    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, NULL);
+    if (ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_DONE, NULL);
 }
 
 void
 ieee80211_wcl_reassoc_post_failure(struct ieee80211com *ic, u_int32_t result)
 {
-    if (ic == NULL || ic->ic_event_handler == NULL)
+    if (ic == NULL)
         return;
     if (!ic->ic_wcl_reassoc_owner_active)
         return;
     if (!ieee80211_wcl_reassoc_leaf_is_post_send(
             ic->ic_wcl_reassoc_owner_last_leaf))
         return;
+    /* Terminal failure invalidates the request epoch before publication. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
     ic->ic_wcl_reassoc_owner_active = 0;
     ic->ic_wcl_reassoc_owner_last_leaf =
         IEEE80211_WCL_REASSOC_OWNER_LEAF_IDLE;
-    (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &result);
+    if (ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_WCL_REASSOC_FAIL, &result);
 }

@@ -7614,6 +7614,8 @@ airportItlwmCancelAssocAction(OSObject * /*owner*/, void *arg0,
     if (s->fHalService != nullptr) {
         struct ieee80211com *ic = s->fHalService->get80211Controller();
         if (ic != nullptr) {
+            /* Destructive PLTI cancellation also invalidates a future SAE owner. */
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
             memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
             ic->ic_flags &= ~IEEE80211_F_PSK;
             ic->ic_external_pmk_owner = 0;
@@ -7887,17 +7889,18 @@ waitAssocTarget(uint64_t last_acked,
     return a.rc;
 }
 
-void AirportItlwm::
+bool AirportItlwm::
 cancelPendingAssocTarget(const char *reason, bool terminating)
 {
     (void)reason;
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr)
-        return;
+        return false;
     AirportItlwmCancelAssocArgs a;
     a.self = this;
     a.terminating = terminating;
-    gate->runAction(&airportItlwmCancelAssocAction, &a);
+    return gate->runAction(&airportItlwmCancelAssocAction, &a) ==
+        kIOReturnSuccess;
 }
 
 void AirportItlwm::
