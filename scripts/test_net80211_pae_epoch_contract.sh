@@ -266,6 +266,13 @@ ordered(auth_open, "authentication rejection fence",
         "if (status != 0 && ni == ic->ic_bss)",
         "ieee80211_pae_assoc_epoch_begin(ic)",
         "if (ic->ic_flags & IEEE80211_F_RSNON)")
+auth_rx = body(input_c, "void\nieee80211_recv_auth", "authentication input")
+ordered(auth_rx, "unsupported authentication rejection fence",
+        "if (algo != IEEE80211_AUTH_ALG_OPEN) {",
+        "if (ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq,",
+        "status))",
+        "ieee80211_pae_assoc_epoch_begin(ic)",
+        "ic->ic_stats.is_rx_auth_unsupported++")
 deauth = body(input_c, "void\nieee80211_recv_deauth", "deauthentication")
 ordered(deauth, "deauth fence before event callback",
         "ic->ic_deauth_reason = reason;", "ni == ic->ic_bss",

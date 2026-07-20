@@ -2378,6 +2378,39 @@ ieee80211_recv_probe_req(struct ieee80211com *ic, mbuf_t m,
  * [2] Authentication transaction sequence number
  * [2] Status code
  */
+/*
+ * Retain a real authentication rejection only for the selected STA BSS's
+ * expected response to an active Open-System attempt.  This is status-only:
+ * it neither adds an authentication algorithm nor advances the state machine.
+ * In particular, an SAE frame remains rejected by the Open-System-only
+ * dispatcher below; a zero-status SAE frame is made visible as the standard
+ * unsupported-algorithm result, never as success.  A nonzero return means a
+ * failure status was written, so the non-Open caller can revoke that selected
+ * attempt.
+ */
+static int
+ieee80211_record_sta_auth_failure(struct ieee80211com *ic,
+    const struct ieee80211_frame *wh, struct ieee80211_node *ni,
+    u_int16_t algo, u_int16_t seq, u_int16_t status)
+{
+    if (ic == NULL || wh == NULL || ni == NULL ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_AUTH || ni != ic->ic_bss ||
+        !IEEE80211_ADDR_EQ(wh->i_addr1, ic->ic_myaddr) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr2, ic->ic_bss->ni_bssid) ||
+        !IEEE80211_ADDR_EQ(wh->i_addr3, ic->ic_bss->ni_bssid) ||
+        seq != IEEE80211_AUTH_OPEN_RESPONSE)
+        return 0;
+
+    if (status != IEEE80211_STATUS_SUCCESS)
+        ic->ic_assoc_status = status;
+    else if (algo != IEEE80211_AUTH_ALG_OPEN)
+        ic->ic_assoc_status = IEEE80211_STATUS_ALG;
+    else
+        return 0;
+    return 1;
+}
+
 void
 ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
                     struct ieee80211_node *ni, struct ieee80211_rxinfo *rxi)
@@ -2431,6 +2464,9 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     
     /* only "open" auth mode is supported */
     if (algo != IEEE80211_AUTH_ALG_OPEN) {
+        if (ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq,
+            status))
+            (void)ieee80211_pae_assoc_epoch_begin(ic);
         DPRINTF(("unsupported auth algorithm %d from %s\n",
                  algo, ether_sprintf((u_int8_t *)wh->i_addr2)));
         ic->ic_stats.is_rx_auth_unsupported++;
@@ -2446,6 +2482,7 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     }
     ic->ic_deauth_reason = IEEE80211_REASON_UNSPECIFIED;
     ic->ic_assoc_status = 0xffff;
+    (void)ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq, status);
     ieee80211_auth_open(ic, wh, ni, rxi, seq, status);
 }
 
