@@ -382,4 +382,87 @@ forbid_literal 'routing_mutation=none' 'overbroad route-mutation claim'
 forbid_literal 'ip_address_mutation=none' 'overbroad address-mutation claim'
 forbid_literal '10.90.10.22' 'external validation host reference'
 
+python3 - "$ROOT" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+
+root = Path(sys.argv[1])
+evidence = json.loads((root / "evidence/runtime/"
+                       "tahoe_a2df_r5_70e0946_four_cycle.json").read_text())
+document = (root / "analysis/TAHOE_A2DF_R5_FOUR_CYCLE_2026-07-20.md").read_text()
+release_document = (root / "analysis/TAHOE_RELEASE_9286705_KEXT_VERIFICATION_2026-07-20.md").read_text()
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"A2DF result contract: {message}")
+
+
+if evidence.get("schema_version") != "itlwm-tahoe-a2df-radio-baseline/v1":
+    fail("unexpected schema")
+if evidence.get("runner") != {
+    "contract_sha256": "62dd85cd23b5f46aacfeda8204a7e08a32908d612d283ae1147a0191ef41dad5",
+    "source_commit": "70e09469152f065b8f4986077906fa6a8a25cc6d",
+    "script_sha256": "fb6dd9c91701796791846ded02233b87f6fea75c992902dce102d52d5f53a258",
+}:
+    fail("runner provenance mismatch")
+if evidence.get("results") != {
+    "completed_cycles": 4,
+    "fresh_association_epochs": 4,
+    "ping_packets_per_cycle": 5,
+    "ping_successful_cycles": 4,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "stable_ap_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20,
+}:
+    fail("four-cycle result mismatch")
+if evidence.get("verdict") != {
+    "dhcp_textual_observation_complete": True,
+    "four_cycle_result": "PASS",
+    "management_and_default_route_preserved": True,
+    "pinned_direct_wifi_route_preserved": True,
+}:
+    fail("aggregate verdict mismatch")
+for section in ("commit_safety", "non_claims"):
+    for key, value in evidence.get(section, {}).items():
+        if value is not False:
+            fail(f"{section} broadens scope: {key}")
+scope = evidence.get("scope", {})
+for key in ("explicit_address_command", "explicit_dhcp_state_mutating_command",
+            "explicit_route_command", "guest_rebooted", "physical_host_touched",
+            "remote_10_90_10_22_touched"):
+    if scope.get(key) is not False:
+        fail(f"scope unexpectedly permits: {key}")
+for key in ("radio_power_changed_on_pinned_guest", "saved_profile_autojoin_only"):
+    if scope.get(key) is not True:
+        fail(f"scope lacks expected bounded action: {key}")
+payload = json.dumps(evidence, sort_keys=True)
+for forbidden in ("10.77.", "10.90.10.22", "AIAMlab", "aa00bb"):
+    if forbidden in payload:
+        fail(f"evidence retains identifier or credential fragment: {forbidden}")
+for needle in (
+    "Successful, bounded scenario",
+    "All four public Wi-Fi OFF/ON cycles",
+    "all 20 transmitted packets were\nreceived",
+    "not a candidate-kext, SAE, PMF, general",
+    "Raw AP identity,",
+):
+    if needle not in document:
+        fail(f"missing bounded result document assertion: {needle}")
+for needle in (
+    "v2.4.0-alpha-9286705",
+    "29787110502",
+    "AirportItlwm.kext/Contents/Info.plist",
+    "AirportItlwm.kext/Contents/MacOS/AirportItlwm",
+    "no functional Wi-Fi claim",
+):
+    if needle not in release_document:
+        fail(f"missing release-kext verification assertion: {needle}")
+
+print("PASS: A2DF four-cycle result and release-kext evidence contract")
+PY
+
 printf 'PASS: pinned observed-invariants radio-gate static and DHCP-fixture contract\n'

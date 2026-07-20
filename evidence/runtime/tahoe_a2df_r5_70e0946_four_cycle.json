@@ -1,0 +1,56 @@
+{
+  "artifacts": {
+    "raw_artifacts_local_only": true,
+    "raw_summary_sha256": "bd91787579596501bc52732d18d4d28e2c5ee0c429b28852e38993dd0d9dc870"
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "dhcp_observation": {
+    "explicit_state_mutating_command": false,
+    "ipconfig_getpacket_stdout_observation": "COMPLETE"
+  },
+  "non_claims": {
+    "candidate_installed": false,
+    "candidate_loaded": false,
+    "general_internet_traffic_tested": false,
+    "sae_or_pmf_functionality_verified": false
+  },
+  "results": {
+    "completed_cycles": 4,
+    "fresh_association_epochs": 4,
+    "ping_packets_per_cycle": 5,
+    "ping_successful_cycles": 4,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "stable_ap_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "run_completed_utc": "2026-07-20T23:34:01Z",
+  "run_started_utc": "2026-07-20T23:28:00Z",
+  "runner": {
+    "contract_sha256": "62dd85cd23b5f46aacfeda8204a7e08a32908d612d283ae1147a0191ef41dad5",
+    "source_commit": "70e09469152f065b8f4986077906fa6a8a25cc6d",
+    "script_sha256": "fb6dd9c91701796791846ded02233b87f6fea75c992902dce102d52d5f53a258"
+  },
+  "schema_version": "itlwm-tahoe-a2df-radio-baseline/v1",
+  "scope": {
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_route_command": false,
+    "guest_rebooted": false,
+    "physical_host_touched": false,
+    "radio_power_changed_on_pinned_guest": true,
+    "remote_10_90_10_22_touched": false,
+    "saved_profile_autojoin_only": true
+  },
+  "verdict": {
+    "dhcp_textual_observation_complete": true,
+    "four_cycle_result": "PASS",
+    "management_and_default_route_preserved": true,
+    "pinned_direct_wifi_route_preserved": true
+  }
+}
