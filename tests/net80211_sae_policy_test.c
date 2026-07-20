@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 
+#include "ieee80211_pae_selected_bss.h"
 #include "ieee80211_sae_policy.h"
 
 int
@@ -20,6 +21,12 @@ main(void)
     const uint8_t rates_h2e_only[] = { 0xfb };
     const uint8_t rates_unflagged_h2e_only[] = { 0x7b };
     const uint8_t rates_other[] = { 0x82, 0x0c };
+    const uint8_t selected_bssid[] = { 0x02, 0x11, 0x22,
+        0x33, 0x44, 0x55 };
+    const uint8_t selected_ssid[] = { 's', 0, 'a', 'e' };
+    const uint8_t other_bssid[] = { 0x02, 0x11, 0x22,
+        0x33, 0x44, 0x56 };
+    struct ieee80211_pae_selected_bss selected = { 0 };
     uint8_t maximum_field[16] = { 0x0f };
 
     extcap_password_id[10] = 0x02;
@@ -77,6 +84,32 @@ main(void)
     assert(!ieee80211_sae_scan_has_h2e_only_selector(rates_other,
         sizeof(rates_other)));
     assert(!ieee80211_sae_scan_has_h2e_only_selector(NULL, 0));
+    assert(!ieee80211_pae_selected_bss_populate(NULL, selected_bssid,
+        selected_ssid, sizeof(selected_ssid), 0));
+    assert(!ieee80211_pae_selected_bss_populate(&selected, NULL,
+        selected_ssid, sizeof(selected_ssid), 0));
+    assert(!ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
+        NULL, 1, 0));
+    assert(!ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
+        selected_ssid, IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN + 1, 0));
+    assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
+        selected_ssid, sizeof(selected_ssid),
+        IEEE80211_SAE_SCAN_RSNXE_H2E));
+    assert(selected.ssid[1] == 0);
+    assert(selected.ssid[sizeof(selected_ssid)] == 0);
+    assert(selected.sae_scan_flags == IEEE80211_SAE_SCAN_RSNXE_H2E);
+    selected.epoch = 17;
+    assert(ieee80211_pae_selected_bss_identity_matches(&selected, 17,
+        selected_bssid, selected_ssid, sizeof(selected_ssid)));
+    assert(!ieee80211_pae_selected_bss_identity_matches(&selected, 16,
+        selected_bssid, selected_ssid, sizeof(selected_ssid)));
+    assert(!ieee80211_pae_selected_bss_identity_matches(&selected, 17,
+        other_bssid, selected_ssid, sizeof(selected_ssid)));
+    assert(!ieee80211_pae_selected_bss_identity_matches(&selected, 17,
+        selected_bssid, NULL, sizeof(selected_ssid)));
+    selected.epoch = 0;
+    assert(!ieee80211_pae_selected_bss_identity_matches(&selected, 0,
+        selected_bssid, selected_ssid, sizeof(selected_ssid)));
     assert(ieee80211_sae_scan_is_extended_key_akm(
         IEEE80211_SAE_AKM_EXT_KEY));
     assert(ieee80211_sae_scan_is_extended_key_akm(

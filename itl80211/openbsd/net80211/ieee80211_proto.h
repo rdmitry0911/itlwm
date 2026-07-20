@@ -126,6 +126,8 @@ extern	int ieee80211_pwrsave(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_current(const struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin(struct ieee80211com *);
+extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
+	    const struct ieee80211_node *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \

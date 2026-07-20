@@ -214,6 +214,7 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
     
     ifp->controller = controller;
     __atomic_store_n(&ic->ic_pae_assoc_epoch, 0, __ATOMIC_RELAXED);
+    memset(&ic->ic_pae_selected_bss, 0, sizeof(ic->ic_pae_selected_bss));
     memset(ic->ic_bss_blacklist_requested, 0,
            sizeof(ic->ic_bss_blacklist_requested));
     ic->ic_bss_blacklist_count = 0;

@@ -16,6 +16,7 @@ import sys
 
 root = Path(sys.argv[1])
 var_h = (root / "itl80211/openbsd/net80211/ieee80211_var.h").read_text()
+snapshot_h = (root / "itl80211/openbsd/net80211/ieee80211_pae_selected_bss.h").read_text()
 proto_h = (root / "itl80211/openbsd/net80211/ieee80211_proto.h").read_text()
 proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
 node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
@@ -69,10 +70,24 @@ def body(text, marker, label):
 # lifetime for future q0/firmware-completion consumers.
 require(var_h, "volatile u_int64_t\tic_pae_assoc_epoch;",
         "association epoch field")
+require(var_h, "struct ieee80211_pae_selected_bss ic_pae_selected_bss;",
+        "writer-only selected BSS snapshot")
+for token in (
+    "uint64_t epoch;",
+    "uint32_t sae_scan_flags;",
+    "uint8_t bssid[IEEE80211_PAE_SELECTED_BSS_BSSID_LEN];",
+    "uint8_t ssid_len;",
+    "uint8_t ssid[IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN];",
+    "ieee80211_pae_selected_bss_populate",
+    "ieee80211_pae_selected_bss_identity_matches",
+):
+    require(snapshot_h, token, "fixed-byte selected BSS identity")
 require(proto_h, "u_int64_t ieee80211_pae_assoc_epoch_current",
         "epoch current declaration")
 require(proto_h, "u_int64_t ieee80211_pae_assoc_epoch_begin",
         "epoch begin declaration")
+require(proto_h, "void ieee80211_pae_selected_bss_capture",
+        "selected BSS capture declaration")
 require(proto_h, "void ieee80211_pae_assoc_epoch_note_newstate",
         "epoch newstate declaration")
 ordered(proto_h, "newstate macro pre-driver fence",
@@ -88,8 +103,24 @@ for token in ("ic->ic_opmode != IEEE80211_M_STA", "__atomic_load_n",
 begin = body(proto_c, "u_int64_t\nieee80211_pae_assoc_epoch_begin",
              "epoch begin")
 for token in ("ic->ic_opmode != IEEE80211_M_STA", "__atomic_add_fetch",
-              "__ATOMIC_ACQ_REL", "while (epoch == 0)"):
+              "__ATOMIC_ACQ_REL", "while (epoch == 0)",
+              "ieee80211_pae_selected_bss_invalidate(ic)"):
     require(begin, token, "epoch begin semantics")
+
+snapshot_capture = body(proto_c,
+                        "void\nieee80211_pae_selected_bss_capture",
+                        "selected BSS capture")
+for token in (
+    "ni != ic->ic_bss",
+    "ieee80211_pae_assoc_epoch_current(ic)",
+    "ni->ni_bssid", "ni->ni_essid", "ni->ni_esslen",
+    "ni->ni_sae_scan_flags", "__ATOMIC_RELEASE",
+):
+    require(snapshot_capture, token, "selected BSS capture semantics")
+for token in ("ieee80211_node_copy", "ieee80211_new_state",
+              "IEEE80211_AKM_SAE", "IEEE80211_AUTH_ALG_SAE"):
+    if token in snapshot_capture:
+        fail(f"selected BSS capture must not activate association: {token}")
 
 note = body(proto_c, "void\nieee80211_pae_assoc_epoch_note_newstate",
             "epoch state-note")
@@ -125,6 +156,14 @@ ordered(wcl_failure, "WCL terminal failure fence before publication",
 join = body(node_c, "void\nieee80211_node_join_bss", "BSS selection")
 ordered(join, "BSS replacement fence", "ieee80211_pae_assoc_epoch_begin(ic)",
         "(*ic->ic_node_copy)")
+ordered(join, "post-copy selected BSS snapshot",
+        "(*ic->ic_node_copy)(ic, ic->ic_bss, selbs);", "ni = ic->ic_bss;",
+        "ieee80211_pae_selected_bss_capture(ic, ni);",
+        "ieee80211_fix_rate")
+for source, label in ((input_c, "scan parser"),
+                      (skywalk_cpp, "Tahoe request ingress")):
+    if "ieee80211_pae_selected_bss_capture" in source:
+        fail(f"selected BSS snapshot must not be captured at {label}")
 cleanup = body(node_c, "void\nieee80211_node_cleanup", "node cleanup")
 ordered(cleanup, "current STA BSS cleanup fence",
         "ic->ic_opmode == IEEE80211_M_STA && ni == ic->ic_bss",
@@ -240,6 +279,31 @@ class EpochModel:
         self.state = next_state
 
 
+class SnapshotModel:
+    def __init__(self):
+        self.epoch = 0
+        self.bssid = bytes(6)
+        self.ssid = b""
+
+    def invalidate(self):
+        self.epoch = 0
+        self.bssid = bytes(6)
+        self.ssid = b""
+
+    def capture(self, epoch, bssid, ssid):
+        self.invalidate()
+        if epoch == 0 or len(bssid) != 6 or len(ssid) > 32:
+            return False
+        self.bssid = bssid
+        self.ssid = ssid
+        self.epoch = epoch
+        return True
+
+    def matches(self, epoch, bssid, ssid):
+        return epoch != 0 and self.epoch == epoch and \
+            self.bssid == bssid and self.ssid == ssid
+
+
 # One deterministic matrix covers accepted forward phases, retries/teardown,
 # terminal RX, credentials, direct stop, deferred roam, request-boundary
 # reassociation, and 64-bit zero-wrap without a guest reboot.
@@ -273,5 +337,15 @@ assert model.epoch != request_epoch
 model.epoch = (1 << 64) - 1
 assert model.begin() == 1
 
-print("PASS: association epoch fences selection, terminal RX, credential/reset, roam, and WCL reassociation")
+# The snapshot is post-copy identity, not a raw scan node or request carrier.
+snapshot = SnapshotModel()
+bssid = bytes.fromhex("021122334455")
+ssid = b"s\x00ae"
+assert snapshot.capture(7, bssid, ssid)
+assert snapshot.matches(7, bssid, ssid)
+assert not snapshot.matches(8, bssid, ssid)
+snapshot.invalidate()
+assert not snapshot.matches(7, bssid, ssid)
+
+print("PASS: association epoch fences, selected-BSS identity, terminal RX, credential/reset, roam, and WCL reassociation")
 PY

@@ -96,6 +96,7 @@
 #include <net80211/ieee80211_crypto.h>
 #include <net80211/ieee80211_ioctl.h>		/* for ieee80211_stats */
 #include <net80211/ieee80211_node.h>
+#include <net80211/ieee80211_pae_selected_bss.h>
 #include <net80211/ieee80211_proto.h>
 
 #include <IOKit/IOLib.h>
@@ -549,6 +550,13 @@ struct ieee80211com {
 	 * key or callback path begins to depend on a partially wired transaction.
 	 */
 	volatile u_int64_t	ic_pae_assoc_epoch;
+	/*
+	 * Writer-only canonical identity of the BSS actually copied into ic_bss.
+	 * Its epoch is zeroed on every association fence and published only after
+	 * post-copy BSSID/SSID/scan facts are complete.  No current path consumes
+	 * it; a future cross-context owner needs an explicit serialized copy-out.
+	 */
+	struct ieee80211_pae_selected_bss ic_pae_selected_bss;
 	u_int32_t		*ic_aid_bitmap;
 	u_int16_t		ic_max_aid;
 	enum ieee80211_protmode	ic_protmode;	/* 802.11g/n protection mode */

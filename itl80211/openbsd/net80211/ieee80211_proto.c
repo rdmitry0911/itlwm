@@ -109,6 +109,47 @@ ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
 }
 
 /*
+ * The snapshot has no current cross-context reader.  Revoke only its atomic
+ * epoch here: lifecycle edges can race, while the one post-copy producer owns
+ * clearing and repopulating fixed bytes.  Epoch zero makes stale bytes
+ * unusable to a future serialized reader.
+ */
+static void
+ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, 0,
+	    __ATOMIC_RELEASE);
+}
+
+/*
+ * Capture only the BSS net80211 selected and copied into ic_bss.  The caller
+ * reaches this after node replacement; request-side WCL/ASSOCIATE carriers,
+ * scan candidates, raw IE pointers, and credentials remain out of scope.
+ */
+void
+ieee80211_pae_selected_bss_capture(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	u_int64_t epoch;
+
+	if (ic == NULL)
+		return;
+	ieee80211_pae_selected_bss_invalidate(ic);
+	if (ic->ic_opmode != IEEE80211_M_STA || ni == NULL ||
+	    ni != ic->ic_bss)
+		return;
+	epoch = ieee80211_pae_assoc_epoch_current(ic);
+	if (epoch == 0 || !ieee80211_pae_selected_bss_populate(
+	    &ic->ic_pae_selected_bss, ni->ni_bssid, ni->ni_essid,
+	    ni->ni_esslen, ni->ni_sae_scan_flags))
+		return;
+	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, epoch,
+	    __ATOMIC_RELEASE);
+}
+
+/*
  * Advance a transaction fence before a new STA association owner replaces
  * node/RSN state.  The future SAE relay and PAE continuation queues may read
  * this from a different execution context, hence an atomic increment.  Zero
@@ -125,6 +166,7 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 		epoch = __atomic_add_fetch(&ic->ic_pae_assoc_epoch, 1,
 		    __ATOMIC_ACQ_REL);
 	} while (epoch == 0);
+	ieee80211_pae_selected_bss_invalidate(ic);
 	return epoch;
 }
 

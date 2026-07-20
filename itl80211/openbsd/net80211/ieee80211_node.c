@@ -1157,6 +1157,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     (void)ieee80211_pae_assoc_epoch_begin(ic);
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
     ni = ic->ic_bss;
+	/* Capture the actual post-copy BSS, never request-side candidate intent. */
+	ieee80211_pae_selected_bss_capture(ic, ni);
     ni->ni_assoc_fail |= assoc_fail;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
