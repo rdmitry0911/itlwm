@@ -16,6 +16,7 @@ bash "$root/scripts/test_net80211_pae_epoch_contract.sh"
 bash "$root/scripts/test_net80211_auth_status_contract.sh"
 
 python3 - "$root" <<'PY'
+import json
 from pathlib import Path
 import sys
 
@@ -451,6 +452,48 @@ if (transport_cleanup < 0 or transport_prepare < 0 or provenance_check < 0 or
         transport_cleanup > transport_prepare or transport_prepare > provenance_check or
         provenance_check > untracked_gate):
     fail("layer gate must verify pinned transport and Tahoe provenance before remote staging")
+transport_evidence = json.loads((root / "evidence/runtime/"
+                                 "tahoe_sae_quarantine_transport_pin_4945db1.json").read_text())
+transport_doc = (root / "analysis/"
+                 "TAHOE_SAE_QUARANTINE_TRANSPORT_PIN_2026-07-20.md").read_text()
+if transport_evidence.get("schema_version") != "itlwm-tahoe-sae-quarantine-transport-pin/v1":
+    fail("transport evidence schema mismatch")
+provenance = transport_evidence.get("provenance", {})
+expected_provenance = {
+    "source_commit": "4945db13844b46da68769ef0ff66d272e5db79fa",
+    "guest_os_build": "25C56",
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "guest_ssh_hostkey_sha256": "SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY",
+}
+if provenance != expected_provenance:
+    fail("transport evidence provenance mismatch")
+for section, key in (
+    ("build_admission", "static_contracts_passed"),
+    ("build_admission", "kext_debug_build_passed"),
+    ("build_admission", "agent_clean_build_passed"),
+    ("build_admission", "regdiag_build_passed"),
+    ("transport", "ambient_ssh_config_ignored"),
+    ("transport", "ephemeral_private_known_hosts"),
+    ("transport", "ssh_strict_hostkey_check"),
+    ("transport", "rsync_strict_hostkey_check"),
+    ("verdict", "transport_pinned"),
+    ("verdict", "guest_provenance_pinned"),
+    ("verdict", "build_admission_passed"),
+):
+    if transport_evidence.get(section, {}).get(key) is not True:
+        fail(f"transport evidence missing success assertion: {section}.{key}")
+if transport_evidence.get("build_admission", {}).get("all_undefined_symbols_resolved") != 958:
+    fail("transport evidence unresolved-symbol count mismatch")
+for key, value in transport_evidence.get("non_claims", {}).items():
+    if value is not False:
+        fail(f"transport evidence broadens execution scope: {key}")
+for needle in (
+    "Successful, bounded scenario",
+    "all 958 undefined symbols",
+    "It is consequently not a\nfunctional Wi-Fi, SAE, PMF, association, or data-path pass claim",
+    "credential-free record",
+):
+    require(transport_doc, needle, "transport-pinned gate evidence document")
 
 # Passive BSS discovery recognizes the RSN SAE suite so a later state machine
 # can consume an exact selected-BSS snapshot. It remains strictly inactive:

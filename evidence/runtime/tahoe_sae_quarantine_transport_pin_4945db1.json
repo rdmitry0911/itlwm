@@ -1,0 +1,45 @@
+{
+  "build_admission": {
+    "agent_clean_build_passed": true,
+    "all_undefined_symbols_resolved": 958,
+    "kext_debug_build_passed": true,
+    "regdiag_build_passed": true,
+    "static_contracts_passed": true
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "non_claims": {
+    "association_completed": false,
+    "candidate_installed": false,
+    "candidate_loaded": false,
+    "data_transfer_completed": false,
+    "dhcp_completed": false,
+    "network_association_attempted": false,
+    "physical_host_touched": false,
+    "radio_state_changed": false,
+    "remote_10_90_10_22_touched": false,
+    "routes_or_addresses_changed": false
+  },
+  "provenance": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "guest_os_build": "25C56",
+    "guest_ssh_hostkey_sha256": "SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY",
+    "source_commit": "4945db13844b46da68769ef0ff66d272e5db79fa"
+  },
+  "run_utc": "2026-07-20T23:12:39Z",
+  "schema_version": "itlwm-tahoe-sae-quarantine-transport-pin/v1",
+  "transport": {
+    "ambient_ssh_config_ignored": true,
+    "ephemeral_private_known_hosts": true,
+    "rsync_strict_hostkey_check": true,
+    "ssh_strict_hostkey_check": true
+  },
+  "verdict": {
+    "build_admission_passed": true,
+    "guest_provenance_pinned": true,
+    "transport_pinned": true
+  }
+}
