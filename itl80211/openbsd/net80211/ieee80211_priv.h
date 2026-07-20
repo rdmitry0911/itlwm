@@ -85,6 +85,8 @@ struct ieee80211_rsnparams {
 	 */
 	u_int16_t		rsn_nknownakms;
 	u_int16_t		rsn_nunknownakms;
+	/* RSN suite types 24/25 (extended SAE), kept distinct from SAE-PK. */
+	u_int16_t		rsn_nsae_ext_key;
 	u_int32_t		rsn_akms;
 	u_int16_t		rsn_nciphers;
 	u_int32_t		rsn_ciphers;

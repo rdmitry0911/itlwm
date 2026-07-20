@@ -1555,6 +1555,7 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
 	/* The implicit default is exactly one known 802.1X suite. */
 	rsn->rsn_nknownakms = 1;
 	rsn->rsn_nunknownakms = 0;
+	rsn->rsn_nsae_ext_key = 0;
     rsn->rsn_akms = IEEE80211_AKM_8021X;
     /* if RSN capabilities missing, default to 0 */
     rsn->rsn_caps = 0;
@@ -1600,15 +1601,20 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     /* read AKM Suite List */
     if (frm + n * 4 > efrm)
         return IEEE80211_STATUS_IE_INVALID;
-    rsn->rsn_akms = IEEE80211_AKM_NONE;
+	rsn->rsn_akms = IEEE80211_AKM_NONE;
 	rsn->rsn_nknownakms = 0;
 	rsn->rsn_nunknownakms = 0;
+	rsn->rsn_nsae_ext_key = 0;
     while (n-- > 0) {
 		enum ieee80211_akm akm = ieee80211_parse_rsn_akm(frm);
 
-		if (akm == IEEE80211_AKM_NONE)
+		if (akm == IEEE80211_AKM_NONE) {
 			rsn->rsn_nunknownakms++;
-		else
+			/* 00:0f:ac:24/25 are extended SAE, not SAE-PK. */
+			if (memcmp(frm, IEEE80211_OUI, 3) == 0 &&
+			    ieee80211_sae_scan_is_extended_key_akm(frm[3]))
+				rsn->rsn_nsae_ext_key++;
+		} else
 			rsn->rsn_nknownakms++;
 		rsn->rsn_akms |= akm;
         frm += 4;
@@ -1730,7 +1736,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
     const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie;
-    const u_int8_t *rsnie, *rsnxe, *wpaie, *htcaps, *htop;
+    const u_int8_t *rsnie, *rsnxe, *xcap, *wpaie, *htcaps, *htop;
     const uint8_t *csa;
     const uint8_t *vhtcap;
     const uint8_t *vhtopmode;
@@ -1775,7 +1781,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     bintval = LE_READ_2(frm); frm += 2;
     capinfo = LE_READ_2(frm); frm += 2;
     
-    ssid = rates = xrates = edcaie = wmmie = rsnie = rsnxe = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = NULL;
+    ssid = rates = xrates = edcaie = wmmie = rsnie = rsnxe = xcap = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = NULL;
     htcaps = htop = NULL;
     if (rxi->rxi_chan)
          bchan = rxi->rxi_chan;
@@ -1800,6 +1806,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 csa = frm;
                 break;
             case IEEE80211_ELEMID_RATES:
+                if (rates != NULL)
+                    sae_scan_malformed = 1;
                 rates = frm;
                 break;
             case IEEE80211_ELEMID_DSPARMS:
@@ -1810,6 +1818,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 chan = frm[2];
                 break;
             case IEEE80211_ELEMID_XRATES:
+                if (xrates != NULL)
+                    sae_scan_malformed = 1;
                 xrates = frm;
                 break;
             case IEEE80211_ELEMID_ERP:
@@ -1835,6 +1845,12 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                     sae_scan_malformed = 1;
                 else
                     rsnxe = frm;
+                break;
+            case IEEE80211_ELEMID_XCAPS:
+                if (xcap != NULL)
+                    sae_scan_malformed = 1;
+                else
+                    xcap = frm;
                 break;
             case IEEE80211_ELEMID_EDCAPARMS:
                 edcaie = frm;
@@ -2104,6 +2120,14 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         if (rsnxe != NULL)
             ni->ni_sae_scan_flags |= ieee80211_sae_scan_rsnxe_flags(
                 rsnxe + 2, rsnxe[1]);
+        if (xcap != NULL)
+            ni->ni_sae_scan_flags |= ieee80211_sae_scan_extcap_flags(
+                xcap + 2, xcap[1]);
+        if (ieee80211_sae_scan_has_h2e_only_selector(rates + 2,
+            rates[1]) || (xrates != NULL &&
+            ieee80211_sae_scan_has_h2e_only_selector(xrates + 2,
+                xrates[1])))
+            ni->ni_sae_scan_flags |= IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR;
         
         if (rsnie != NULL) {
             if (ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
@@ -2115,6 +2139,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                     ni->ni_sae_scan_flags |=
                         IEEE80211_SAE_SCAN_AKM_AMBIGUOUS;
                 }
+                if (rsn.rsn_nsae_ext_key != 0)
+                    ni->ni_sae_scan_flags |= IEEE80211_SAE_SCAN_SAE_EXT_KEY;
             } else {
                 /* A future SAE owner must not reinterpret a rejected RSN. */
                 ni->ni_sae_scan_flags |= IEEE80211_SAE_SCAN_MALFORMED;
@@ -2163,6 +2189,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 ni->ni_rsncaps = wpa.rsn_caps;
             }
         }
+        ni->ni_sae_scan_flags = ieee80211_sae_scan_finalize_flags(
+            ni->ni_sae_scan_flags);
     }
     
     /*

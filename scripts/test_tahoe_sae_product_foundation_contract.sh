@@ -45,6 +45,7 @@ crypto_c = (root / "itl80211/openbsd/net80211/ieee80211_crypto.c").read_text()
 input_c = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 output_c = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
+priv_h = (root / "itl80211/openbsd/net80211/ieee80211_priv.h").read_text()
 ioctl_h = (root / "itl80211/openbsd/net80211/ieee80211_ioctl.h").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 v2_hpp = (root / "AirportItlwm/AirportItlwmV2.hpp").read_text()
@@ -146,32 +147,70 @@ forbid(crypto_c, "IEEE80211_AKM_SAE", "active SAE AKM configuration")
 forbid(ioctl_h, "IEEE80211_WPA_AKM_SAE", "raw ioctl SAE enable")
 forbid(output_c, "IEEE80211_AKM_SAE", "premature RSN SAE output")
 
-# RSNXE is parsed only from scan input and stored as fixed facts. Malformed,
-# duplicate, and unmodeled forms survive only as fail-closed flags; the raw IE
-# table is not an authority for a future Agent relay.
+# RSNXE, ExtCap, raw rate membership selectors, and SAE_EXT_KEY are parsed
+# only from scan input and stored as fixed facts. Malformed, duplicate,
+# unmodeled, unsupported, and inconsistent forms survive only as fail-closed
+# flags; the raw IE table is not an authority for a future Agent relay.
 for token in (
     "IEEE80211_SAE_SCAN_RSNXE_PRESENT",
     "IEEE80211_SAE_SCAN_RSNXE_H2E",
     "IEEE80211_SAE_SCAN_UNMODELED",
     "IEEE80211_SAE_SCAN_MALFORMED",
     "IEEE80211_SAE_SCAN_AKM_AMBIGUOUS",
+    "IEEE80211_SAE_SCAN_EXTCAP_PASSWORD_ID",
+    "IEEE80211_SAE_SCAN_EXTCAP_PASSWORD_ID_EXCLUSIVE",
+    "IEEE80211_SAE_SCAN_EXTCAP_SAE_PK_EXCLUSIVE",
+    "IEEE80211_SAE_SCAN_RSNXE_SAE_PK",
+    "IEEE80211_SAE_SCAN_H2E_ONLY_SELECTOR",
+    "IEEE80211_SAE_SCAN_SAE_EXT_KEY",
+    "IEEE80211_SAE_SCAN_UNSUPPORTED",
+    "IEEE80211_SAE_SCAN_PROFILE_INCONSISTENT",
     "field_len != payload_len",
     "payload_len > 16",
+    "ieee80211_sae_scan_extcap_bit_is_set",
+    "ieee80211_sae_scan_extcap_flags",
+    "ieee80211_sae_scan_has_h2e_only_selector",
+    "ieee80211_sae_scan_is_extended_key_akm",
+    "ieee80211_sae_scan_finalize_flags",
     "ieee80211_sae_scan_akm_is_ambiguous",
 ):
     require(policy, token, "strict RSNXE normalizer")
 require(ieee80211_h, "IEEE80211_ELEMID_RSNXE          = 244",
         "RSNXE element identity")
-require(node_h, "u_int8_t\t\tni_sae_scan_flags;",
+require(node_h, "u_int32_t\t\tni_sae_scan_flags;",
         "normalized node scan facts")
+require(priv_h, "rsn_nsae_ext_key;",
+        "SAE_EXT_KEY census without an SAE-PK alias")
 require(input_c, "#include <net80211/ieee80211_sae_policy.h>",
         "scan policy include")
 require(input_c, "case IEEE80211_ELEMID_RSNXE:", "RSNXE scan switch")
+require(input_c, "case IEEE80211_ELEMID_XCAPS:", "ExtCap scan switch")
 require(input_c, "sae_scan_malformed = 1;", "malformed scan marker")
 require(input_c, "ni->ni_sae_scan_flags = sae_scan_malformed",
         "scan fact reset")
 require(input_c, "ieee80211_sae_scan_rsnxe_flags(\n                rsnxe + 2, rsnxe[1])",
         "RSNXE normalized at scan boundary")
+require(input_c, "ieee80211_sae_scan_extcap_flags(\n                xcap + 2, xcap[1])",
+        "ExtCap normalized at scan boundary")
+require(input_c, "ieee80211_sae_scan_has_h2e_only_selector(rates + 2,",
+        "H2E-only Rates selector normalized before rate setup")
+require(input_c, "ieee80211_sae_scan_has_h2e_only_selector(xrates + 2,",
+        "H2E-only XRates selector normalized before rate setup")
+require(input_c, "rsn->rsn_nsae_ext_key++",
+        "SAE_EXT_KEY census parser")
+require(input_c, "memcmp(frm, IEEE80211_OUI, 3) == 0 &&\n\t\t\t    ieee80211_sae_scan_is_extended_key_akm(frm[3])",
+        "RSN-only extended-SAE census")
+require(policy, "IEEE80211_SAE_AKM_EXT_KEY\t\t24u",
+        "SAE_EXT_KEY type census")
+require(policy, "IEEE80211_SAE_AKM_FT_EXT_KEY\t\t25u",
+        "FT-SAE-EXT-KEY type census")
+require(input_c, "IEEE80211_SAE_SCAN_SAE_EXT_KEY",
+        "SAE_EXT_KEY passive scan fact")
+require(input_c, "ieee80211_sae_scan_finalize_flags(\n            ni->ni_sae_scan_flags)",
+        "cross-IE profile finalization")
+for duplicate in ("if (rates != NULL)", "if (xrates != NULL)",
+                  "if (xcap != NULL)"):
+    require(input_c, duplicate, "duplicate SAE scan-fact input fails closed")
 require(input_c, "rsn->rsn_nknownakms = 0;",
         "recognized AKM census reset")
 require(input_c, "rsn->rsn_nunknownakms++;",
