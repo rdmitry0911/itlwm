@@ -10,9 +10,13 @@ for path in \
     "$ROOT/scripts/capture_tahoe_sae_layer.sh" \
     "$ROOT/scripts/evaluate_tahoe_sae_capture.py" \
     "$ROOT/scripts/capture_tahoe_lab_ap_visibility.py" \
+    "$ROOT/scripts/capture_tahoe_lab_kext_identity.py" \
+    "$ROOT/scripts/test_tahoe_lab_kext_identity_contract.sh" \
     "$ROOT/analysis/TAHOE_SAE_PMF_LAB_SCENARIO_MATRIX_2026-07-20.md" \
     "$ROOT/analysis/TAHOE_LAB_AP_READINESS_2026-07-20.md" \
-    "$ROOT/evidence/runtime/tahoe_lab_ap_visibility_readiness.json"; do
+    "$ROOT/analysis/TAHOE_LAB_CANDIDATE_IDENTITY_BINDING_2026-07-20.md" \
+    "$ROOT/evidence/runtime/tahoe_lab_ap_visibility_readiness.json" \
+    "$ROOT/evidence/runtime/tahoe_lab_kext_identity_a4d803c.json"; do
     [ -f "$path" ] || {
         echo "FAIL: missing lab-scenario contract input: $path" >&2
         exit 1
@@ -23,6 +27,7 @@ bash -n "$ROOT/scripts/run_tahoe_sae_lab_profiles.sh"
 bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
 python3 "$ROOT/scripts/evaluate_tahoe_sae_capture.py" --self-test
 bash "$ROOT/scripts/test_tahoe_sae_lab_profiles_runner_fixture.sh"
+bash "$ROOT/scripts/test_tahoe_lab_kext_identity_contract.sh"
 
 python3 - "$ROOT" <<'PY'
 from __future__ import annotations
@@ -38,11 +43,15 @@ runner = (root / "scripts/run_tahoe_sae_lab_profiles.sh").read_text()
 capture = (root / "scripts/capture_tahoe_sae_layer.sh").read_text()
 evaluator = (root / "scripts/evaluate_tahoe_sae_capture.py").read_text()
 visibility = (root / "scripts/capture_tahoe_lab_ap_visibility.py").read_text()
+identity = (root / "scripts/capture_tahoe_lab_kext_identity.py").read_text()
 matrix = (root / "analysis/TAHOE_SAE_PMF_LAB_SCENARIO_MATRIX_2026-07-20.md").read_text()
 readiness = (root / "analysis/TAHOE_LAB_AP_READINESS_2026-07-20.md").read_text()
+binding_doc = (root / "analysis/TAHOE_LAB_CANDIDATE_IDENTITY_BINDING_2026-07-20.md").read_text()
 gitignore = (root / ".gitignore").read_text()
 evidence_path = root / "evidence/runtime/tahoe_lab_ap_visibility_readiness.json"
 evidence = json.loads(evidence_path.read_text())
+identity_evidence_path = root / "evidence/runtime/tahoe_lab_kext_identity_a4d803c.json"
+identity_evidence = json.loads(identity_evidence_path.read_text())
 
 
 def fail(message: str) -> None:
@@ -176,6 +185,44 @@ for needle in (
 forbid(visibility, "candidate_fix", "obsolete unbound candidate claim")
 require(gitignore, "runtime-captures/", "raw capture ignore rule")
 
+# An exact candidate runtime result is only meaningful after the released
+# archive, installed bundle, and already loaded bundle are proven identical.
+# This gate must itself remain strictly read-only and host-key pinned.
+for needle in (
+    "itlwm-tahoe-lab-kext-identity-binding/v1",
+    "StrictHostKeyChecking=yes",
+    "PINNED_HOST_KEY_SHA256",
+    "installed_binary_sha256_matches_release",
+    "installed_macho_uuid_matches_release",
+    "loaded_uuid_matches_release",
+    "candidate_kext_bound",
+    "candidate_kext_loaded_by_capture\": False",
+    "association_tested\": False",
+):
+    require(identity, needle, "exact candidate identity gate")
+for needle in (
+    "StrictHostKeyChecking=no",
+    "kmutil load",
+    "kextload",
+    "kextutil",
+    "sudo ",
+    "networksetup -set",
+    "route add",
+    "route delete",
+    "route change",
+    "ipconfig ",
+    "ifconfig ",
+):
+    forbid(identity, needle, "identity-gate mutation or weak host-key capability")
+for needle in (
+    "candidate_kext_bound=true",
+    "read-only",
+    "not an association or traffic PASS",
+    "identity precondition",
+    "successful identity-quarantine",
+):
+    require(binding_doc, needle, "versioned identity-gate evidence document")
+
 for needle in (
     "`wpa2-psk-baseline`",
     "`pure-sae-required-pmf-reject`",
@@ -227,6 +274,39 @@ for observation in evidence.get("scan", {}).get("allowed_ap_observations", []):
 evidence_hash = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
 if evidence_hash not in readiness:
     fail("readiness document does not bind the committed evidence hash")
+
+if identity_evidence.get("schema_version") != "itlwm-tahoe-lab-kext-identity-binding/v1":
+    fail("identity evidence schema is not v1")
+binding = identity_evidence.get("candidate_binding", {})
+if binding.get("candidate_kext_bound") is not False:
+    fail("identity evidence incorrectly claims a bound release kext")
+checks = binding.get("checks", {})
+for check in (
+    "pinned_guest_query_succeeded",
+    "wifi_interface_present",
+    "installed_bundle_present",
+    "installed_bundle_id_matches_release",
+    "kext_reported_loaded",
+    "loaded_uuid_matches_installed",
+):
+    if checks.get(check) is not True:
+        fail(f"identity evidence lacks successful quarantine precondition: {check}")
+for check in (
+    "installed_binary_sha256_matches_release",
+    "installed_macho_uuid_matches_release",
+    "loaded_uuid_matches_release",
+):
+    if checks.get(check) is not False:
+        fail(f"identity evidence lacks the expected stale-kext mismatch: {check}")
+if identity_evidence.get("verdict", {}).get("candidate_runtime_test_performed") is not False:
+    fail("identity evidence claims a candidate runtime test")
+if any(value is not False for value in identity_evidence.get("non_claims", {}).values()):
+    fail("identity evidence contains an unbounded functional claim")
+if identity_evidence.get("command_result", {}).get("raw_guest_stdout_retained") is not False:
+    fail("identity evidence retained raw guest stdout")
+identity_evidence_hash = hashlib.sha256(identity_evidence_path.read_bytes()).hexdigest()
+if identity_evidence_hash not in binding_doc:
+    fail("identity document does not bind the committed identity evidence hash")
 
 print("PASS: Tahoe SAE/PMF lab scenario contract")
 PY
