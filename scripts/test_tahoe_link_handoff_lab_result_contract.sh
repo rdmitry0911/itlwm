@@ -117,6 +117,10 @@ if {key: handshake.get(key) for key in ("pmk_direct", "plti_publish", "plti_deli
 handoff = epoch.get("link_handoff", {})
 if handoff.get("verdict") != "LINK_PUBLICATION_INCOMPLETE":
     fail("link-handoff diagnosis is not incomplete")
+if handoff.get("verdict_reasons") != [
+        "pre-trigger controller status was active, but a later active transition was applied",
+        "off-gate link publication was queued but not accepted"]:
+    fail("link-handoff diagnosis does not preserve the resolved-controller boundary")
 if handoff.get("pre") != {"controller_status": "0x3", "net80211_state": 4} or handoff.get("post") != {"controller_status": "0x3", "net80211_state": 4}:
     fail("redacted state snapshots changed")
 if handoff.get("link_status") != {"applied": 2, "events": 4, "same": 2}:
@@ -125,6 +129,10 @@ if handoff.get("link_publish") != {
         "events": 4, "off_gate_rejected": 2, "published": 0, "queued": 2,
         "result_not_ready": 2, "result_success": 2}:
     fail("link-publication timeline changed")
+if handoff.get("real_active_transition") != {
+        "applied": True, "previous_status": "0x1", "requested_status": "0x3",
+        "sequence": 10}:
+    fail("the real active controller transition was not preserved")
 if handoff.get("off_gate_predicate_at_rejection") != {"in_gate": True, "on_thread": True, "raw_code": 3}:
     fail("off-gate predicate finding changed")
 if handoff.get("join_abort_events") != 0:

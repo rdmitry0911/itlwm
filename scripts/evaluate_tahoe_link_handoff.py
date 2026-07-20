@@ -28,6 +28,7 @@ class Snapshot:
 
 @dataclass(frozen=True)
 class LinkStatusEvent:
+    sequence: int
     decision: str
     previous: int
     requested: int
@@ -83,15 +84,17 @@ def parse_trace(text: str) -> tuple[list[LinkStatusEvent],
     aborts: list[JoinAbortEvent] = []
     for line in text.splitlines():
         if "kind=link-status" in line:
+            sequence = re.match(r"^#(\d+)\b", line)
             match = re.search(
                 r"\bdecision=([a-z-]+)\s+previous=0x([0-9a-fA-F]+)\s+"
                 r"requested=0x([0-9a-fA-F]+)",
                 line,
             )
-            if match:
+            if sequence and match:
                 decision, previous, requested = match.groups()
                 statuses.append(LinkStatusEvent(
-                    decision, int(previous, 16), int(requested, 16),
+                    int(sequence.group(1)), decision, int(previous, 16),
+                    int(requested, 16),
                     parse_result(line)))
         elif "kind=link-publish" in line:
             match = re.search(
@@ -131,24 +134,29 @@ def classify(pre: Snapshot, post: Snapshot,
             "candidate did not emit link-status timeline records"
         ]
 
-    active_same = any(
+    active_applied_events = [
+        event for event in statuses
+        if event.decision == "applied" and
+        (event.requested & LINK_ACTIVE) != 0 and event.result == 0
+    ]
+    first_active_applied_sequence = min(
+        (event.sequence for event in active_applied_events), default=None)
+    active_same_before_real_apply = any(
         event.decision == "same" and
         (event.previous & LINK_ACTIVE) != 0 and
-        event.previous == event.requested
+        event.previous == event.requested and
+        (first_active_applied_sequence is None or
+         event.sequence < first_active_applied_sequence)
         for event in statuses
     )
-    active_applied = any(
-        event.decision == "applied" and
-        (event.requested & LINK_ACTIVE) != 0 and event.result == 0
-        for event in statuses
-    )
+    active_applied = bool(active_applied_events)
     queued = any(event.decision == "queued" and event.result == 0
                  for event in publishes)
     published = any(event.decision == "published" and event.result == 0
                     for event in publishes)
     abort_enter = any(event.phase == "enter" for event in aborts)
 
-    if ((pre.current_status & LINK_ACTIVE) != 0 and active_same and
+    if ((pre.current_status & LINK_ACTIVE) != 0 and active_same_before_real_apply and
             not published and abort_enter):
         return "PREMATURE_ACTIVE_SHORT_CIRCUIT", [
             "pre-trigger controller status was already active",
@@ -164,8 +172,11 @@ def classify(pre: Snapshot, post: Snapshot,
 
     reasons: list[str] = []
     if (pre.current_status & LINK_ACTIVE) != 0:
-        reasons.append("pre-trigger controller status was already active")
-    if active_same:
+        if active_applied:
+            reasons.append("pre-trigger controller status was active, but a later active transition was applied")
+        else:
+            reasons.append("pre-trigger controller status was already active")
+    if active_same_before_real_apply:
         reasons.append("an active link request was short-circuited as unchanged")
     if active_applied and not queued:
         reasons.append("active link status applied but no off-gate publication was queued")
@@ -251,6 +262,18 @@ def self_test() -> int:
         incomplete.mkdir()
         fixture(incomplete, 0x1, [])
         assert evaluate(incomplete)[0] == "DIAGNOSTIC_INCOMPLETE"
+
+        resolved = root / "resolved"
+        resolved.mkdir()
+        fixture(resolved, 0x3, [
+            "#0 kind=link-status path=link result=0x0 decision=applied previous=0x3 requested=0x1",
+            "#1 kind=link-status path=link result=0x0 decision=applied previous=0x1 requested=0x3",
+            "#2 kind=link-publish path=link result=0x0 decision=queued link_state=2 raw_code=0",
+            "#3 kind=link-publish path=link result=0xe00002d8 decision=off-gate-rejected link_state=2 raw_code=3",
+        ])
+        resolved_verdict, resolved_reasons, *_ = evaluate(resolved)
+        assert resolved_verdict == "LINK_PUBLICATION_INCOMPLETE"
+        assert "an active link request was short-circuited as unchanged" not in resolved_reasons
     print("PASS: Tahoe link-handoff diagnostic fixture matrix")
     return 0
 

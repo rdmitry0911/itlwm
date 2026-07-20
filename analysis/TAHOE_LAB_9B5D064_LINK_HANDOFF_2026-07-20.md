@@ -45,20 +45,26 @@ success.
 The epoch captures all adjacent link-handoff boundaries in one run:
 
 - pre and post snapshots both showed net80211 state `RUN` and controller
-  status `0x3` (already active);
-- `setLinkStatus` recorded four events: two applied and two unchanged;
+  status `0x3` (already active at the snapshot boundary);
+- `setLinkStatus` recorded four events: two applied and two unchanged. In
+  particular, the real post-clear `0x1 → 0x3` active transition was applied;
+  the later unchanged active event was only a duplicate, not a short-circuit
+  of that real transition;
 - link publication recorded two queued events and two `off-gate-rejected`
   events, with no accepted inherited publication;
 - both rejected worker events had `onThread=1` and `inGate=1` (encoded as
   raw predicate value `3`); and
 - no `JOIN_ABORT` event appeared during this 15-second settling window.
 
-The structural result is therefore `LINK_PUBLICATION_INCOMPLETE`. It confirms
-the pre-existing CR-479 safety boundary: the itlwm-owned work-loop event
-source is still serviced while the gate is held, so relaxing the guard to call
-the inherited WCL publication would reintroduce the known null-owner panic.
-This result neither attributes the failure to Keychain nor calls SAE/WPA3 the
-cause; pure SAE and PMF were not tested in this epoch.
+The structural result is therefore `LINK_PUBLICATION_INCOMPLETE`. The removal
+of the aliased low-latency early link-up did move the observed real transition
+through `setLinkStatus`; this is a successful narrower correction, not just a
+theory. The remaining boundary is the pre-existing CR-479 safety condition:
+the itlwm-owned work-loop event source is still serviced while the gate is
+held, so relaxing the guard to call the inherited WCL publication would
+reintroduce the known null-owner panic. This result neither attributes the
+failure to Keychain nor calls SAE/WPA3 the cause; pure SAE and PMF were not
+tested in this epoch.
 
 ## Network and evidence limits
 
@@ -70,7 +76,7 @@ guest query succeeded, but that is only a bounded reachability observation.
 
 The complete machine-checkable record is
 `evidence/runtime/tahoe_lab_9b5d064_link_handoff.json`, SHA-256
-`db2b28b758d04030673d2314ed03382d729ca6f640de9db467e43fd88abaedf5`.
+`151e1e2e86298eca79893997b1c8f7b6665ea571fb6cc0dccbf13c35ac0f07d6`.
 It contains only release identity, numeric state/counter facts, redacted
 profile identity, and SHA-256 witnesses for the private raw artifacts. The
 adjacent executable contract rejects any attempt to turn this safety and

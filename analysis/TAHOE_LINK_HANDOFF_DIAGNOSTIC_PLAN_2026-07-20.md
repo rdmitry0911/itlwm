@@ -50,10 +50,13 @@ retains the required base enable but removes that aliased premature link-up;
 only the real net80211 association-success path may publish active link state.
 
 The laboratory result must distinguish this correction from a coincidental
-change: a useful progress record requires a non-active pre-trigger status,
-an applied active `setLinkStatus`, a queued publication, and a successful
-off-gate `setLinkState` return. It still requires separate EAPOL, link,
-address, and traffic tests before any functional connection claim.
+change. A useful progress record requires either a non-active pre-trigger
+status or an observed valid-to-active transition after the initial state was
+cleared, plus an applied active `setLinkStatus`, a queued publication, and a
+successful off-gate `setLinkState` return. A duplicate active request after a
+real applied transition is not evidence that the real transition was
+short-circuited. The result still requires separate EAPOL, link, address, and
+traffic tests before any functional connection claim.
 
 ## Verification plan
 

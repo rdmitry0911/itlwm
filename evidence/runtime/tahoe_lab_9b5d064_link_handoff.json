@@ -26,7 +26,7 @@
     }
   },
   "artifact_hashes": {
-    "link_handoff_verdict_sha256": "6d0a3260202c32a4c0f5e8b286c1c4b4eabbc31dbba3f74dbb26f99cf773c93a",
+    "link_handoff_verdict_sha256": "9a7506f5eb4da44026c1755cc20663879638c42b7154ce688419114b07cebb01",
     "manifest_sha256": "1622ace9e2ab6727c17d19f0fc4f7acb921a8cd8989f80e645e7ef28893f68dd",
     "post_snapshot_sha256": "6e0e5a15c17f04050892d64985f7b2b65995c0646159d4af7159210155791201",
     "pre_snapshot_sha256": "87c49e8e1f26bd3c5d59ae3977159583791bbba0fe8bb5eaf05b77a8cece3f58",
@@ -112,10 +112,15 @@
         "controller_status": "0x3",
         "net80211_state": 4
       },
+      "real_active_transition": {
+        "applied": true,
+        "previous_status": "0x1",
+        "requested_status": "0x3",
+        "sequence": 10
+      },
       "verdict": "LINK_PUBLICATION_INCOMPLETE",
       "verdict_reasons": [
-        "pre-trigger controller status was already active",
-        "an active link request was short-circuited as unchanged",
+        "pre-trigger controller status was active, but a later active transition was applied",
         "off-gate link publication was queued but not accepted"
       ]
     },
@@ -152,7 +157,7 @@
   "script_identity": {
     "auxkc_preflight_sha256": "238794cf475a13bfeba0fcc8caf4af48581228086efd7d2ade798da4ca783520",
     "capture_sha256": "f3e6676a34f8f2ced5146ab6c69940b31abe279a5ca1be59dce5079582313b22",
-    "link_handoff_evaluator_sha256": "69ff81c67f4a6a15bc18f36d514cd013315f949f0760026ef50b6d97e084a438",
+    "link_handoff_evaluator_sha256": "b29900b12b479558904f39f241bdc7c1f626750af01ef366fe1d0a8c23f5b799",
     "sae_capture_evaluator_sha256": "63cc6b68ab96e0cbf4f390d23c419b08a2888f7cf4c02d12c82c46e0a85067a8"
   },
   "verdict": {
