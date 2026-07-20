@@ -97,13 +97,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 prepare_guest_transport() {
-    KNOWN_HOSTS="$(mktemp "${TMPDIR:-/tmp}/aiam-qemu-lab-known-hosts.XXXXXX")"
+    KNOWN_HOSTS="$(mktemp /tmp/aiam-qemu-lab-known-hosts.XXXXXX)"
     chmod 600 "$KNOWN_HOSTS"
     printf '%s\n' "$EXPECTED_GUEST_HOSTKEY_LINE" >"$KNOWN_HOSTS"
     GUEST=(
-        ssh -p 3322 -o BatchMode=yes -o ConnectTimeout=8
+        ssh -F /dev/null -p 3322 -o BatchMode=yes -o ConnectTimeout=8
         -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS"
-        -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR
+        -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR
         devops@127.0.0.1
     )
 }
