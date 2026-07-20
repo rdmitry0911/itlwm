@@ -22,7 +22,10 @@ MODE_SAE_PMK = 0x35  # enabled + assoc + control + PMK; no data/intervention
 POLICY_REJECT_WPA3 = 0x01
 POLICY_PSK_PMK_ELIGIBLE = 0x02
 POLICY_LOCAL_PSK = 0x04
+POLICY_AUDITED_WPA3_TRANSITION = 0x08
+WPA2_PSK = 0x0008
 PURE_SAE = 0x1000
+AUDITED_WPA3_PSK_TRANSITION = PURE_SAE | WPA2_PSK
 TRACE_CAPACITY = 128
 
 
@@ -38,6 +41,7 @@ class Event:
     generation: int | None = None
     eapol: bool | None = None
     link_state: int | None = None
+    pmf: int | None = None
 
 
 @dataclass(frozen=True)
@@ -101,13 +105,14 @@ def parse_event(line: str) -> Event | None:
     if not common:
         return None
     sequence, kind, path, result_hex = common.groups()
-    auth_upper = policy = generation = link_state = None
+    auth_upper = policy = generation = link_state = pmf = None
     decision: str | None = None
     eapol: bool | None = None
     if kind == "auth-policy":
         auth = re.search(r"\bauth=0x[0-9a-fA-F]+/0x([0-9a-fA-F]+)", line)
         auth_upper = int(auth.group(1), 16) if auth else None
         policy = field(line, "policy", 16)
+        pmf = field(line, "pmf")
     elif kind == "pmk-ingress":
         match = re.search(r"\bdecision=([a-z0-9-]+)", line)
         decision = match.group(1) if match else None
@@ -122,7 +127,7 @@ def parse_event(line: str) -> Event | None:
     elif kind == "link-state":
         link_state = field(line, "link_state")
     return Event(int(sequence), kind, path, int(result_hex, 16), auth_upper,
-                 policy, decision, generation, eapol, link_state)
+                 policy, decision, generation, eapol, link_state, pmf)
 
 
 def parse_capture(directory: Path) -> Capture:
@@ -258,23 +263,18 @@ def has_link_up(events: Iterable[Event]) -> bool:
                event.link_state == 2 for event in events)
 
 
-def evaluate_psk(capture: Capture) -> list[str]:
+def evaluate_psk_success(capture: Capture, candidates: Iterable[Event],
+                         profile_name: str) -> list[str]:
     reasons: list[str] = []
-    candidates = [
-        event for event in capture.events
-        if event.kind == "auth-policy" and event.policy is not None and
-        (event.policy & POLICY_REJECT_WPA3) == 0 and
-        (event.policy & (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)) ==
-        (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)
-    ]
+    candidates = list(candidates)
     if not candidates:
-        reasons.append("no PSK-eligible non-WPA3 association policy")
+        reasons.append(f"no exact {profile_name} association policy carrier")
         return reasons
     if not any(any(event.kind in {"public-assoc", "hidden-assoc"} and
                        event.result == 0 for event in events_after(capture.events,
                                                                     candidate.sequence))
                for candidate in candidates):
-        reasons.append("PSK association did not reach a successful driver ingress")
+        reasons.append(f"{profile_name} did not reach a successful driver ingress")
     if not has_psk_pmk_progress(capture.events):
         reasons.append("no accepted direct PMK or matched PLTI publish/deliver pair")
     if not has_eapol_pair(capture.events):
@@ -284,28 +284,53 @@ def evaluate_psk(capture: Capture) -> list[str]:
     return reasons
 
 
-def evaluate_sae_reject(capture: Capture) -> list[str]:
+def evaluate_wpa2_psk(capture: Capture) -> list[str]:
+    return evaluate_psk_success(
+        capture,
+        (event for event in capture.events
+         if event.kind == "auth-policy" and event.auth_upper == WPA2_PSK and
+         event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)),
+        "WPA2-PSK")
+
+
+def evaluate_sae_transition_psk(capture: Capture) -> list[str]:
+    return evaluate_psk_success(
+        capture,
+        (event for event in capture.events
+         if event.kind == "auth-policy" and
+         event.auth_upper == AUDITED_WPA3_PSK_TRANSITION and
+         event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK |
+                          POLICY_AUDITED_WPA3_TRANSITION)),
+        "audited SAE-transition+PSK")
+
+
+def evaluate_pure_sae_required_pmf_reject(capture: Capture) -> list[str]:
     reasons: list[str] = []
     candidates = [
         event for event in capture.events
-        if event.kind == "auth-policy" and event.auth_upper == PURE_SAE and
-        event.policy is not None and (event.policy & POLICY_REJECT_WPA3) != 0
+        if event.kind == "auth-policy" and event.path == "hidden-assoc" and
+        event.auth_upper == PURE_SAE and event.pmf == 1 and
+        event.policy == POLICY_REJECT_WPA3
     ]
     if not candidates:
-        return ["no pure-SAE reject policy carrier"]
+        return ["no hidden-WCL pure-SAE PMF-required reject policy carrier"]
+
+    contaminated = (has_psk_pmk_progress(capture.events) or
+                    any(event.kind in {"tx", "rx"} and event.eapol
+                        for event in capture.events) or
+                    has_link_up(capture.events))
     for candidate in candidates:
         tail = events_after(capture.events, candidate.sequence)
-        if not any(event.kind in {"public-assoc", "hidden-assoc"} and
-                   event.result != 0 for event in tail):
+        if not any(event.kind == "hidden-assoc" and event.result != 0
+                   for event in tail):
             continue
-        if has_psk_pmk_progress(tail):
-            continue
-        if any(event.kind in {"tx", "rx"} and event.eapol for event in tail):
-            continue
-        if has_link_up(tail):
+        if contaminated:
             continue
         return []
-    reasons.append("pure SAE did not terminate before PMK/PLTI/EAPOL/link")
+    if contaminated:
+        reasons.append("pure SAE carried PMK/PLTI/EAPOL/link activity in its isolated epoch")
+    else:
+        reasons.append("pure SAE did not terminate through hidden-WCL before PMK/PLTI/EAPOL/link")
     return reasons
 
 
@@ -314,9 +339,11 @@ def evaluate(capture: Capture, expected: str) -> tuple[bool, list[str]]:
     if not any(event.kind == "auth-policy" for event in capture.events):
         reasons.append("no association auth-policy carrier reached the driver")
     if expected == "wpa2-psk":
-        reasons.extend(evaluate_psk(capture))
-    elif expected == "sae-reject":
-        reasons.extend(evaluate_sae_reject(capture))
+        reasons.extend(evaluate_wpa2_psk(capture))
+    elif expected == "sae-transition-psk":
+        reasons.extend(evaluate_sae_transition_psk(capture))
+    elif expected in {"pure-sae-required-pmf-reject", "sae-reject"}:
+        reasons.extend(evaluate_pure_sae_required_pmf_reject(capture))
     return not reasons, reasons
 
 
@@ -373,7 +400,7 @@ def fixture(directory: Path, lines: list[str], *, control: str | None = None,
 def self_test() -> int:
     with tempfile.TemporaryDirectory(prefix="aiam-sae-evaluator-") as temp:
         root = Path(temp)
-        psk_lines = [
+        wpa2_direct_lines = [
             "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
             "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
             "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
@@ -382,34 +409,57 @@ def self_test() -> int:
             "#5 kind=rx path=rx result=0x0 eapol=1 length=120",
             "#6 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
         ]
-        sae_lines = [
+        wpa2_plti_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
+            "#3 kind=plti-publish path=plti result=0x0 decision=accepted generation=42 auth=0x8",
+            "#4 kind=plti-deliver path=plti result=0x0 decision=accepted generation=42 auth=0x8",
+            "#5 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#6 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#7 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
+        transition_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=1 auth=0x0/0x1008 rsn_len=22 policy=0xe",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x100800000000 arg2=0x16",
+            "#3 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x1008 key_len=32 decision=accepted",
+            "#4 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#5 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#6 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
+        pure_sae_lines = [
             "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
             "#1 kind=auth-policy path=hidden-assoc result=0xe00002c7 pmf=1 auth=0x0/0x1000 rsn_len=22 policy=0x1",
             "#2 kind=hidden-assoc path=hidden-assoc result=0xe00002c7 arg0=0 arg1=0x100000000000 arg2=0x16",
         ]
-        for directory, expected in ((root / "psk", "wpa2-psk"),
-                                    (root / "sae", "sae-reject")):
+        success_cases = (
+            ("wpa2-direct", "wpa2-psk", wpa2_direct_lines, (1, 1), 2),
+            ("wpa2-plti", "wpa2-psk", wpa2_plti_lines, (1, 1), 2),
+            ("transition", "sae-transition-psk", transition_lines, (1, 1), 2),
+            ("pure-sae", "pure-sae-required-pmf-reject", pure_sae_lines, (0, 0), 1),
+            ("legacy-pure-sae-alias", "sae-reject", pure_sae_lines, (0, 0), 1),
+        )
+        for name, expected, lines, counts, link_state in success_cases:
+            directory = root / name
             directory.mkdir()
-            fixture(directory, psk_lines if expected == "wpa2-psk" else sae_lines,
-                    counts=(1, 1) if expected == "wpa2-psk" else (0, 0),
-                    link_state=2 if expected == "wpa2-psk" else 1)
+            fixture(directory, lines, counts=counts, link_state=link_state)
             assert evaluate(parse_capture(directory), expected)[0], expected
         for name, expected, kwargs in (
-            ("drop", "wpa2-psk", {"dropped": 1, "counts": (1, 1), "link_state": 2}),
-            ("control", "wpa2-psk", {"control": "seq=7 applied=1 mode=0x15 block=0x0\n", "counts": (1, 1), "link_state": 2}),
-            ("contamination", "sae-reject", {"counts": (1, 0)}),
-            ("eapol", "wpa2-psk", {"counts": (1, 1), "link_state": 2}),
-            ("link", "wpa2-psk", {"counts": (1, 1), "link_state": 1}),
+            ("drop", "wpa2-psk", {"lines": wpa2_direct_lines, "dropped": 1, "counts": (1, 1), "link_state": 2}),
+            ("control", "wpa2-psk", {"lines": wpa2_direct_lines, "control": "seq=7 applied=1 mode=0x15 block=0x0\n", "counts": (1, 1), "link_state": 2}),
+            ("wpa2-eapol", "wpa2-psk", {"lines": wpa2_direct_lines[:4] + ["#4 kind=tx path=tx result=0xe00002c0 eapol=1 length=120"] + wpa2_direct_lines[5:], "counts": (1, 1), "link_state": 2}),
+            ("wpa2-link", "wpa2-psk", {"lines": wpa2_direct_lines[:-1] + ["#6 kind=link-state path=link result=0x0 link_state=1 raw_code=1"], "counts": (1, 1), "link_state": 1}),
+            ("transition-auth", "sae-transition-psk", {"lines": [line.replace("auth=0x0/0x1008", "auth=0x0/0x8").replace("auth=0x1008", "auth=0x8") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
+            ("transition-policy", "sae-transition-psk", {"lines": [line.replace("policy=0xe", "policy=0x6") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
+            ("pure-pmf", "pure-sae-required-pmf-reject", {"lines": [line.replace("pmf=1", "pmf=0") for line in pure_sae_lines], "counts": (0, 0), "link_state": 1}),
+            ("pure-pmk", "pure-sae-required-pmf-reject", {"lines": pure_sae_lines + ["#3 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x1000 key_len=32 decision=accepted"], "counts": (0, 0), "link_state": 1}),
+            ("pure-eapol", "pure-sae-required-pmf-reject", {"lines": pure_sae_lines + ["#3 kind=tx path=tx result=0x0 eapol=1 length=120", "#4 kind=rx path=rx result=0x0 eapol=1 length=120"], "counts": (1, 1), "link_state": 1}),
+            ("pure-link", "pure-sae-required-pmf-reject", {"lines": pure_sae_lines + ["#3 kind=link-state path=link result=0x0 link_state=2 raw_code=1"], "counts": (0, 0), "link_state": 2}),
         ):
             directory = root / name
             directory.mkdir()
-            lines = list(sae_lines if expected == "sae-reject" else psk_lines)
-            if name == "contamination":
-                lines.append("#3 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x1000 key_len=32 decision=accepted")
-            if name == "eapol":
-                lines[4] = "#4 kind=tx path=tx result=0xe00002c0 eapol=1 length=120"
-            if name == "link":
-                lines[-1] = "#6 kind=link-state path=link result=0x0 link_state=1 raw_code=1"
+            lines = list(kwargs.pop("lines"))
             fixture(directory, lines, **kwargs)
             assert not evaluate(parse_capture(directory), expected)[0], name
     print("PASS: SAE/PMK capture evaluator fixture matrix")
@@ -419,7 +469,9 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture_dir", nargs="?", type=Path)
-    parser.add_argument("--expect", choices=("auto", "wpa2-psk", "sae-reject"),
+    parser.add_argument("--expect", choices=(
+        "auto", "wpa2-psk", "sae-transition-psk",
+        "pure-sae-required-pmf-reject", "sae-reject"),
                         default="auto")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()

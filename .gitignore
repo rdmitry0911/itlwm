@@ -7,3 +7,4 @@ FwBinary.cpp
 *.pyc
 MacKernelSDK
 commit-approval/decisions/
+runtime-captures/

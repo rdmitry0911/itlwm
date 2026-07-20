@@ -16,7 +16,8 @@ EVALUATOR="$ROOT/scripts/evaluate_tahoe_sae_capture.py"
 usage() {
     cat >&2 <<'EOF'
 usage: capture_tahoe_sae_layer.sh [--tool PATH] [--out DIR] [--settle SEC]
-       [--expect auto|wpa2-psk|sae-reject] [--interface IFACE] [--strict]
+       [--expect auto|wpa2-psk|sae-transition-psk|pure-sae-required-pmf-reject]
+       [--interface IFACE] [--strict]
        -- COMMAND [ARG ...]
 
 Runs COMMAND exactly once while opt-in RegDiag SAE/PMK tracing is enabled,
@@ -24,6 +25,8 @@ then saves a non-secret association/PMK/PLTI/EAPOL report.  The caller owns
 the connection command; this wrapper never changes IP addressing or routing.
 --interface adds read-only before/after interface and routing evidence only.
 --strict makes an unmet --expect return non-zero after evidence is saved.
+The legacy `sae-reject` expectation remains an alias for the stricter
+pure-sae-required-pmf-reject profile.
 EOF
 }
 
@@ -83,9 +86,9 @@ done
     exit 1
 }
 case "$EXPECT" in
-    auto|wpa2-psk|sae-reject) ;;
+    auto|wpa2-psk|sae-transition-psk|pure-sae-required-pmf-reject|sae-reject) ;;
     *)
-        echo "--expect must be auto, wpa2-psk, or sae-reject" >&2
+        echo "unsupported --expect profile" >&2
         exit 2
         ;;
 esac
@@ -112,13 +115,26 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT_ROOT"
 EVIDENCE_DIR="$(mktemp -d "$OUT_ROOT/sae-layer-$STAMP.XXXXXX")"
 
+RUNNER_GIT_HEAD="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+if [ -z "$RUNNER_GIT_HEAD" ]; then
+    RUNNER_GIT_HEAD=unavailable
+    RUNNER_TREE_STATE=unavailable
+elif git -C "$ROOT" diff --quiet && git -C "$ROOT" diff --cached --quiet; then
+    RUNNER_TREE_STATE=clean
+else
+    RUNNER_TREE_STATE=dirty
+fi
+
 disable_diag() {
     "$TOOL" off >/dev/null 2>&1 || true
 }
 trap disable_diag EXIT HUP INT TERM
 
 {
+    printf 'schema_version=itlwm-tahoe-sae-pmk-capture/v2\n'
     printf 'capture_utc=%s\n' "$STAMP"
+    printf 'runner_git_head=%s\n' "$RUNNER_GIT_HEAD"
+    printf 'runner_tree_state=%s\n' "$RUNNER_TREE_STATE"
     printf 'trigger_program=%s\n' "$1"
     printf 'trigger_arg_count=%s\n' "$#"
     printf 'settle_seconds=%s\n' "$SETTLE_SECONDS"

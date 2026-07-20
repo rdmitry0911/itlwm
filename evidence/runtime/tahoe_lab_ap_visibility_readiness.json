@@ -1,19 +1,17 @@
 {
-  "candidate_fix": {
-    "source_delta_committed": true,
-    "source_delta_paths": [
-      "scripts/capture_tahoe_lab_ap_visibility.py",
-      "evidence/runtime/tahoe_lab_ap_visibility_readiness.json"
-    ]
+  "candidate_binding": {
+    "candidate_functional_verdict": "not-tested",
+    "loaded_kext_bound_to_checkout": false,
+    "reason": "visibility capture deliberately neither installs nor compares a kext artifact with the source checkout"
   },
-  "capture_ended_utc": "2026-07-01T14:17:35.005810Z",
-  "capture_started_utc": "2026-07-01T14:17:05.005602Z",
-  "capture_wallclock_seconds": 30.0,
+  "capture_ended_utc": "2026-07-20T20:40:22.230033Z",
+  "capture_started_utc": "2026-07-20T20:40:12.229860Z",
+  "capture_wallclock_seconds": 10.0,
   "driver": {
     "kext_loaded": true,
     "loaded_kext_query": {
       "redacted_lines": [
-        "118    0 0xffffff7f96661000 0xf132d2   0xf132d2   com.zxystd.AirportItlwm (2.4.0) 1CD7C4F3-691F-38A6-9AED-8A722382E647 <117 116 54 52 19 7 6 3 1>",
+        "125    0 0xffffff7f96668000 0xeeb8e8   0xeeb8e8   com.zxystd.AirportItlwm (2.4.0) 3CD3F4A6-B781-32C3-A6DE-DC4B59A2D8F1 <124 123 54 52 19 7 6 3 1>",
         "Warning: Permanently added '[127.0.0.1]:3322' (ED25519) to the list of known hosts."
       ],
       "returncode": 0,
@@ -21,26 +19,26 @@
     },
     "runtime_log_observations": {
       "redacted_lines": [
-        "2026-07-01 17:17:08.114 Df airportd[236:17456] [com.apple.WiFiManager:] [corewifi] END REQ [GET POWER] took 0.002117017s (pid=236 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=2065F err=0 reply=<redacted>",
-        "2026-07-01 17:17:08.114 Df airportd[236:17456] [com.apple.WiFiManager:] [corewifi] BEGIN REQ [GET OP MODE] (pid=236 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=A6104 info=(null))",
-        "2026-07-01 17:17:08.116 Df airportd[236:17456] [com.apple.WiFiManager:] [corewifi] END REQ [GET OP MODE] took 0.001053151s (pid=236 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=A6104 err=0 reply=<redacted>",
-        "2026-07-01 17:17:08.116 Df airportd[236:17283] [com.apple.WiFiManager:] [corewifi] BEGIN REQ [GET OP MODE] (pid=236 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=987B6 info=(null))",
-        "2026-07-01 17:17:08.117 Df airportd[236:17458] [com.apple.WiFiManager:] [corewifi] END REQ [GET OP MODE] took 0.001220508s (pid=236 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=987B6 err=0 reply=<redacted>",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] [com.apple.WiFiManager:] Scan: <airport[236]> -[CWXPCSubsystem performScanWithChannelList:ssidList:legacyScanSSID:dwellTimeOverride:interfaceName:scanParametersOverride:allowDuringAWDLRealTimeMode:connection:scannedChannels:error:]: Checking active P2P use cases",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] [com.apple.WiFiManager:] Info: <airport[236]> -[CWXPCSubsystem performScanWithChannelList:ssidList:legacyScanSSID:dwellTimeOverride:interfaceName:scanParametersOverride:allowDuringAWDLRealTimeMode:connection:scannedChannels:error:]: AWDL REALTIME is inactive, AIRPLAY is active, SIDECAR is active, ENSEMBLE is active, D2DMIGRATION is active",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] [com.apple.WiFiManager:] Info: <airport[236]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [ENTER] Report scanning state usage (interfaceName=en1, scanResultsCount=0, inProgress=1)",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] (IO80211) Apple80211GetWithIOCTL:13669 @[8981.600630] ifname['en1'] IOCTL type 9/'APPLE80211_IOC_BSSID' return -528342013/0xe0822403",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] (IO80211) Apple80211GetWithIOCTL:13669 @[8981.600699] ifname['en1'] IOCTL type 1/'APPLE80211_IOC_SSID' return -528342013/0xe0822403",
-        "2026-07-01 17:17:08.118 Df airportd[236:1745c] [com.apple.WiFiManager:] Info: <airport[236]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [EXIT] Report scanning state usage (interfaceName=en1, scanResultsCount=0, inProgress=1)",
-        "2026-07-01 17:17:08.371 Df airportd[236:391] [com.apple.WiFiManager:] Driver Event: <airport[236]> _bsd_80211_event_callback: SCAN_CACHE_UPDATED/15 (en1)",
-        "2026-07-01 17:17:08.371 Df airportd[236:391] (IO80211) airportdProcessTrafficEngineeringEvents: <en1> eventType[15] @[8981.853936], took 0.000000",
-        "2026-07-01 17:17:08.371 Df airportd[236:391] [com.apple.WiFiManager:] <airport[236]> airportdProcessTrafficEngineeringEvents: <en1> eventType[15] @[8981.853936], took 0.000000",
-        "2026-07-01 17:17:08.371 Df airportd[236:17455] (IO80211) airportdProcessDriverEvent: <en1> event=15, @[8981.853950], took 0.000002",
-        "2026-07-01 17:17:08.371 Df airportd[236:17455] [com.apple.WiFiManager:] <airport[236]> airportdProcessDriverEvent: <en1> event=15, @[8981.853950], took 0.000002",
-        "2026-07-01 17:17:08.372 Df airportd[236:1745c] (IO80211) Apple80211Scan:1497 @[8981.600800] ifname['en1'], total time [0.254415]",
-        "2026-07-01 17:17:08.372 Df airportd[236:1745c] [com.apple.WiFiManager:] Info: <airport[236]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [ENTER] Report scanning state usage (interfaceName=en1, scanResultsCount=3, inProgress=0)",
-        "2026-07-01 17:17:08.372 Df airportd[236:1745c] (IO80211) Apple80211GetWithIOCTL:13669 @[8981.855322] ifname['en1'] IOCTL type 9/'APPLE80211_IOC_BSSID' return -528342013/0xe0822403",
-        "2026-07-01 17:17:08.373 Df airportd[236:1745c] (IO80211) Apple80211GetWithIOCTL:13669 @[8981.855378] ifname['en1'] IOCTL type 1/'APPLE80211_IOC_SSID' return -528342013/0xe0822403"
+        "2026-07-20 23:40:14.814 Df airportd[234:124893] [com.apple.WiFiManager:] Scan: <airport[234]> -[CWXPCConnection __performScanWithChannelSubset:ssidList:legacyScanSSID:includeHiddenNetworks:mergeScanResults:maxAge:maxMissCount:maxWakeCount:maxAutoJoinCount:interfaceName:waitForWiFi:waitForBluetooth:token:priority:scanParametersOverride:allowDuringAWDLRealTimeMode:reply:]_block_invoke: [933FE] WIFI_REQ_SCAN (enter)",
+        "2026-07-20 23:40:14.814 Df airportd[234:124893] [com.apple.WiFiManager:] Scan: <airport[234]> Scan request for itlwm_corewlan_scan will not use the daemon cache (live scan)",
+        "2026-07-20 23:40:14.814 Df airportd[234:124893] [com.apple.WiFiManager:] Scan: <airport[234]> -[CWXPCSubsystem performScanWithChannelList:ssidList:legacyScanSSID:dwellTimeOverride:interfaceName:scanParametersOverride:allowDuringAWDLRealTimeMode:connection:scannedChannels:error:]: Perform live scan (enter)",
+        "2026-07-20 23:40:14.814 Df airportd[234:1243a2] [com.apple.WiFiManager:] [corewifi] BEGIN REQ [GET POWER] (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=34A0F info=(null))",
+        "2026-07-20 23:40:14.814 Df airportd[234:12417f] [com.apple.WiFiManager:] [corewifi] END REQ [GET POWER] took 0.000350356s (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=34A0F err=0 reply=<redacted>",
+        "2026-07-20 23:40:14.815 Df airportd[234:1243a2] [com.apple.WiFiManager:] [corewifi] BEGIN REQ [GET OP MODE] (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=E6E8F info=(null))",
+        "2026-07-20 23:40:14.815 Df airportd[234:12417f] [com.apple.WiFiManager:] [corewifi] END REQ [GET OP MODE] took 0.000348042s (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=E6E8F err=0 reply=<redacted>",
+        "2026-07-20 23:40:14.815 Df airportd[234:1243a2] [com.apple.WiFiManager:] [corewifi] BEGIN REQ [GET OP MODE] (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=7840B info=(null))",
+        "2026-07-20 23:40:14.816 Df airportd[234:1243a2] [com.apple.WiFiManager:] [corewifi] END REQ [GET OP MODE] took 0.000263310s (pid=234 proc=airportd bundleID=com.apple.airport.airportd codesignID=com.apple.airport.airportd service=com.apple.corewlan-xpc qos=21 intf=en1 uuid=7840B err=0 reply=<redacted>",
+        "2026-07-20 23:40:14.816 Df airportd[234:124893] [com.apple.WiFiManager:] Scan: <airport[234]> -[CWXPCSubsystem performScanWithChannelList:ssidList:legacyScanSSID:dwellTimeOverride:interfaceName:scanParametersOverride:allowDuringAWDLRealTimeMode:connection:scannedChannels:error:]: Checking active P2P use cases",
+        "2026-07-20 23:40:14.816 Df airportd[234:124893] [com.apple.WiFiManager:] Info: <airport[234]> -[CWXPCSubsystem performScanWithChannelList:ssidList:legacyScanSSID:dwellTimeOverride:interfaceName:scanParametersOverride:allowDuringAWDLRealTimeMode:connection:scannedChannels:error:]: AWDL REALTIME is inactive, AIRPLAY is active, SIDECAR is active, ENSEMBLE is active, D2DMIGRATION is active",
+        "2026-07-20 23:40:14.816 Df airportd[234:124893] [com.apple.WiFiManager:] Info: <airport[234]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [ENTER] Report scanning state usage (interfaceName=en1, scanResultsCount=0, inProgress=1)",
+        "2026-07-20 23:40:14.817 Df airportd[234:124893] [com.apple.WiFiManager:] Info: <airport[234]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [EXIT] Report scanning state usage (interfaceName=en1, scanResultsCount=0, inProgress=1)",
+        "2026-07-20 23:40:14.921 Df airportd[234:38e] [com.apple.WiFiManager:] Driver Event: <airport[234]> _bsd_80211_event_callback: SCAN_CACHE_UPDATED/15 (en1)",
+        "2026-07-20 23:40:14.922 Df airportd[234:38e] (IO80211) airportdProcessTrafficEngineeringEvents: <en1> eventType[15] @[54045.823506], took 0.000000",
+        "2026-07-20 23:40:14.922 Df airportd[234:38e] [com.apple.WiFiManager:] <airport[234]> airportdProcessTrafficEngineeringEvents: <en1> eventType[15] @[54045.823506], took 0.000000",
+        "2026-07-20 23:40:14.922 Df airportd[234:1243a0] (IO80211) airportdProcessDriverEvent: <en1> event=15, @[54045.823551], took 0.000024",
+        "2026-07-20 23:40:14.922 Df airportd[234:1243a0] [com.apple.WiFiManager:] <airport[234]> airportdProcessDriverEvent: <en1> event=15, @[54045.823551], took 0.000024",
+        "2026-07-20 23:40:14.922 Df airportd[234:124893] (IO80211) Apple80211Scan:1497 @[54045.718583] ifname['en1'], total time [0.105417]",
+        "2026-07-20 23:40:14.922 Df airportd[234:124893] [com.apple.WiFiManager:] Info: <airport[234]> -[CWXPCSubsystem reportScanningStateUsageMonitor:client:request:apple80211ScanResults:forInterface:]: [ENTER] Report scanning state usage (interfaceName=en1, scanResultsCount=1, inProgress=0)"
       ],
       "returncode": 0,
       "source": "guest driver/runtime log query"
@@ -56,13 +54,14 @@
   "non_claims": {
     "association": false,
     "authentication_response_ack": false,
+    "candidate_kext_tested": false,
     "data_transfer": false,
     "dhcp": false,
     "final_wifi_equivalence": false,
     "reconnect": false
   },
   "runtime_environment": {
-    "allowed_ap_identifier": "operator-env-ssid-sha256:23cdc738785da940",
+    "allowed_ap_identifier": "operator-env-ssid-sha256:552cb0ce6725ac3c",
     "allowed_ap_identifier_kind": "sha256_prefix_of_operator_env_ssid",
     "guest_os": {
       "build": "25C56",
@@ -77,18 +76,17 @@
   "scan": {
     "allowed_ap_observations": [
       {
-        "allowed_ap_identifier": "operator-env-ssid-sha256:23cdc738785da940",
+        "allowed_ap_identifier": "operator-env-ssid-sha256:552cb0ce6725ac3c",
         "bssid_redacted": true,
-        "directed_result_count": 2,
+        "directed_result_count": 1,
         "directed_result_summary": {
           "bssid_fields_present": 0,
           "channels": [
-            13,
             153
           ],
-          "result_count": 2,
-          "rssi_max_dbm": 0,
-          "rssi_min_dbm": 0,
+          "result_count": 1,
+          "rssi_max_dbm": -44,
+          "rssi_min_dbm": -44,
           "ssid_fields_present": 0
         },
         "matched_by": "operator_env_directed_scan_nonempty_result",
@@ -98,7 +96,7 @@
       }
     ],
     "allowed_ap_visible": true,
-    "aps_seen": 10,
+    "aps_seen": 9,
     "commands": [
       "guest CoreWLAN directed scan",
       "guest CoreWLAN directed scan"
@@ -107,12 +105,11 @@
       "directed_result_summary": {
         "bssid_fields_present": 0,
         "channels": [
-          13,
           153
         ],
-        "result_count": 2,
-        "rssi_max_dbm": 0,
-        "rssi_min_dbm": 0,
+        "result_count": 1,
+        "rssi_max_dbm": -44,
+        "rssi_min_dbm": -44,
         "ssid_fields_present": 0
       },
       "directed_scan_target": "operator_env_ssid_redacted",
@@ -121,9 +118,7 @@
         "bssid_fields_present": 0,
         "channels": [
           1,
-          6,
           9,
-          11,
           13,
           52,
           56,
@@ -131,15 +126,15 @@
           153,
           161
         ],
-        "result_count": 10,
+        "result_count": 9,
         "rssi_max_dbm": 0,
-        "rssi_min_dbm": 0,
+        "rssi_min_dbm": -44,
         "ssid_fields_present": 0
       }
     },
     "scan_attempts": [
       {
-        "duration_seconds": 1.241,
+        "duration_seconds": 0.896,
         "redacted_status_lines": [
           "Warning: Permanently added '[127.0.0.1]:3322' (ED25519) to the list of known hosts.",
           "/tmp/itlwm_corewlan_scan.m:10:43: warning: 'interfaceWithName:' is deprecated: first deprecated in macOS 10.10 - Use -[CWWiFiClient interfaceWithName:] instead [-Wdeprecated-declarations]",
@@ -148,10 +143,10 @@
         "returncode": 0,
         "source": "guest CoreWLAN directed scan",
         "stderr_line_count": 8,
-        "stdout_line_count": 10
+        "stdout_line_count": 9
       },
       {
-        "duration_seconds": 1.214,
+        "duration_seconds": 0.892,
         "redacted_status_lines": [
           "Warning: Permanently added '[127.0.0.1]:3322' (ED25519) to the list of known hosts.",
           "/tmp/itlwm_corewlan_scan.m:10:43: warning: 'interfaceWithName:' is deprecated: first deprecated in macOS 10.10 - Use -[CWWiFiClient interfaceWithName:] instead [-Wdeprecated-declarations]",
@@ -160,14 +155,14 @@
         "returncode": 0,
         "source": "guest CoreWLAN directed scan",
         "stderr_line_count": 8,
-        "stdout_line_count": 2
+        "stdout_line_count": 1
       }
     ],
     "source": "live_guest_corewlan_directed_scan"
   },
-  "schema_version": "itlwm-tahoe-lab-ap-visibility-readiness/v1",
+  "schema_version": "itlwm-tahoe-lab-ap-visibility-readiness/v2",
   "verdict": {
-    "ready_for_auth_response_ack_retry": true,
+    "ready_for_candidate_runtime_experiment": true,
     "reason": "allowed external AP visible from Tahoe guest Wi-Fi scan"
   }
 }

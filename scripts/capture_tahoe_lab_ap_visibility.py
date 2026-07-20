@@ -406,7 +406,7 @@ def build_evidence(args):
     )
 
     evidence = {
-        "schema_version": "itlwm-tahoe-lab-ap-visibility-readiness/v1",
+        "schema_version": "itlwm-tahoe-lab-ap-visibility-readiness/v2",
         "capture_started_utc": started_wall.isoformat().replace("+00:00", "Z"),
         "capture_ended_utc": ended_wall.isoformat().replace("+00:00", "Z"),
         "capture_wallclock_seconds": capture_seconds,
@@ -472,12 +472,13 @@ def build_evidence(args):
                 for result in scan_results
             ],
         },
-        "candidate_fix": {
-            "source_delta_committed": True,
-            "source_delta_paths": [
-                "scripts/capture_tahoe_lab_ap_visibility.py",
-                "evidence/runtime/tahoe_lab_ap_visibility_readiness.json",
-            ],
+        "candidate_binding": {
+            "loaded_kext_bound_to_checkout": False,
+            "candidate_functional_verdict": "not-tested",
+            "reason": (
+                "visibility capture deliberately neither installs nor compares "
+                "a kext artifact with the source checkout"
+            ),
         },
         "non_claims": {
             "authentication_response_ack": False,
@@ -486,9 +487,10 @@ def build_evidence(args):
             "data_transfer": False,
             "reconnect": False,
             "final_wifi_equivalence": False,
+            "candidate_kext_tested": False,
         },
         "verdict": {
-            "ready_for_auth_response_ack_retry": ready,
+            "ready_for_candidate_runtime_experiment": ready,
             "reason": "allowed external AP visible from Tahoe guest Wi-Fi scan"
             if ready
             else "required live AP visibility predicates were not all satisfied",
@@ -537,7 +539,7 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(payload, encoding="utf-8")
 
-    verdict = evidence["verdict"]["ready_for_auth_response_ack_retry"]
+    verdict = evidence["verdict"]["ready_for_candidate_runtime_experiment"]
     print(
         "wrote "
         + str(output)

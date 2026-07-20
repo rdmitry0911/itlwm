@@ -345,13 +345,15 @@ forbid(capture_evaluator, 'read_optional(directory / "report.txt")',
        "report.txt fallback in canonical evaluator")
 for needle in (
     "password_carrier=keychain-only",
-    "epoch_isolation=sae-on-clear-per-attempt",
-    "run_epoch sae sae-reject",
-    "run_epoch psk wpa2-psk",
+    "diagnostic_epoch=sae-on-clear-per-attempt",
+    "run_epoch wpa2-psk-baseline wpa2-psk",
+    "run_epoch pure-sae-required-pmf-reject pure-sae-required-pmf-reject",
+    "run_epoch sae-transition-psk sae-transition-psk",
+    "run_epoch wpa2-psk-recovery wpa2-psk",
     "--strict",
-    "/usr/sbin/networksetup -setairportnetwork",
+    "-- \"$NETWORKSETUP_TOOL\" -setairportnetwork",
 ):
-    require(profile_runner, needle, "two-epoch SAE lab runner")
+    require(profile_runner, needle, "four-epoch SAE/PMF lab runner")
 forbid(profile_runner, "PASSWORD=", "password carrier in SAE lab runner")
 forbid(profile_runner, "--password", "password command line in SAE lab runner")
 require(layer_runner, "./scripts/build_regdiag.sh",
@@ -389,3 +391,4 @@ PY
 
 python3 "$root/scripts/evaluate_tahoe_sae_capture.py" --self-test
 bash -n "$root/scripts/run_tahoe_sae_lab_profiles.sh"
+bash "$root/scripts/test_tahoe_sae_lab_scenario_contract.sh"
