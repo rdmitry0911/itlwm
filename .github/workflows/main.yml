@@ -4,6 +4,9 @@ on:
   push:
     branches: master
 
+permissions:
+  contents: write
+
 env:
   BUILD_OUTPUT: 'build/Build/Products/Debug'
 
@@ -11,13 +14,19 @@ jobs:
 
   build:
     
-    runs-on: macos-latest
+    # The Tahoe release kext is x86_64.
+    # Do not use macos-latest: GitHub maps it to an Arm runner.
+    runs-on: macos-26-intel
 
     steps:
 
     - uses: actions/checkout@v2
       with:
         fetch-depth: '5'
+
+    - name: Check x86_64 release runner
+      run: |
+        test "$(uname -m)" = x86_64
 
     - name: Manage Version
       run: |
@@ -37,6 +46,10 @@ jobs:
       run: |
         git clone --depth=1 https://github.com/acidanthera/MacKernelSDK.git
 
+    - name: Check Tahoe App Store controller contract
+      run: |
+        bash scripts/test_tahoe_appstore_iobuiltin_contract.sh
+
     - name: Build itlwm
       run: |
         xcodebuild -scheme itlwm -configuration Debug -derivedDataPath build GIT_COMMIT=_${SHORT_SHA} | xcpretty && exit ${PIPESTATUS[0]}
@@ -45,8 +58,37 @@ jobs:
       run: |
         xcodebuild -scheme "AirportItlwm (all)" -configuration Debug -derivedDataPath build GIT_COMMIT=_${SHORT_SHA} | xcpretty && exit ${PIPESTATUS[0]}
 
+    # Tahoe is intentionally outside the legacy "AirportItlwm (all)" scheme.
+    # Use the project-owned build wrapper: it aligns MacKernelSDK's Tahoe ABI
+    # declarations before building the dedicated target and stages a kext, but
+    # never installs, loads, signs for distribution, or reboots the runner.
+    - name: Build AirportItlwm Tahoe
+      run: |
+        check_tahoe_plist() {
+          python3 -c 'import plistlib, sys; p = plistlib.load(open(sys.argv[1], "rb")); assert p["IOKitPersonalities"]["NetworkController"]["IOBuiltin"] is False' "$1"
+        }
+        ITLWM_SOURCE_ID_OVERRIDE="${SHORT_SHA}" ./scripts/build_tahoe.sh
+        TAHOE_KEXT='Build/Debug/Tahoe/AirportItlwm.kext'
+        test -f "$TAHOE_KEXT/Contents/Info.plist"
+        test -f "$TAHOE_KEXT/Contents/MacOS/AirportItlwm"
+        check_tahoe_plist "$TAHOE_KEXT/Contents/Info.plist"
+        lipo -archs "$TAHOE_KEXT/Contents/MacOS/AirportItlwm" | grep -qx 'x86_64'
+
     - name: Pack Artifacts
       run: |
+        check_tahoe_plist() {
+          python3 -c 'import plistlib, sys; p = plistlib.load(open(sys.argv[1], "rb")); assert p["IOKitPersonalities"]["NetworkController"]["IOBuiltin"] is False' "$1"
+        }
+        TAHOE_KEXT='Build/Debug/Tahoe/AirportItlwm.kext'
+        TAHOE_ZIP="$BUILD_OUTPUT/AirportItlwm-Tahoe-v${ITLWM_VER}-DEBUG-alpha-${SHORT_SHA}.zip"
+        test -d "$TAHOE_KEXT"
+        ditto -c -k --sequesterRsrc --keepParent "$TAHOE_KEXT" "$TAHOE_ZIP"
+        unzip -Z1 "$TAHOE_ZIP" | grep -qx 'AirportItlwm.kext/Contents/Info.plist'
+        VERIFY_DIR="$(mktemp -d)"
+        trap 'rm -rf "$VERIFY_DIR"' EXIT
+        ditto -x -k "$TAHOE_ZIP" "$VERIFY_DIR"
+        test -f "$VERIFY_DIR/AirportItlwm.kext/Contents/MacOS/AirportItlwm"
+        check_tahoe_plist "$VERIFY_DIR/AirportItlwm.kext/Contents/Info.plist"
         cd $BUILD_OUTPUT
           zip -r itlwm-v${ITLWM_VER}-DEBUG-alpha-${SHORT_SHA}.zip itlwm.kext
           while read -r tgt ; do
@@ -64,6 +106,7 @@ jobs:
         git log -"5" --format="- %H %s" | sed '/^$/d' >> ReleaseNotes.md
 
     - name: Delete Old Prerelease
+      if: contains(github.event.head_commit.message, 'Bump version') == false
       uses: dev-drprasad/delete-tag-and-release@v0.2.1
       with:
         tag_name: ${{ env.OLD_PRE_TAG }}
@@ -78,4 +121,5 @@ jobs:
         bodyFile: ReleaseNotes.md
         artifacts: "${{ env.BUILD_OUTPUT }}/*.zip"
         tag: "v${{ env.ITLWM_VER }}-alpha"
+        commit: ${{ github.sha }}
         token: ${{ secrets.GITHUB_TOKEN }}

@@ -26,6 +26,17 @@
 			<string>com.zxystd.AirportItlwm</string>
 			<key>IOClass</key>
 			<string>AirportItlwm</string>
+			<!--
+				Tahoe's AppleMediaServices walks the first IORegistry node with
+				BSD Name=en0. AirportItlwm is that controller-side node, but its
+				IOPCIEDeviceWrapper parent is not an Ethernet interface and has no
+				IOMACAddress. Mark this controller non-built-in so AMS skips it and
+				continues to the real Skywalk interface, which owns IOMACAddress.
+				Keep this scoped to NetworkController: the itlwm wrapper and boot nub
+				must not be reclassified.
+			-->
+			<key>IOBuiltin</key>
+			<false/>
 			<key>IOMatchCategory</key>
 			<string>WiFiDriver</string>
 			<key>IONetworkRootType</key>
