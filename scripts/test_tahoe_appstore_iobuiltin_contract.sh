@@ -100,6 +100,7 @@ assert "setProperty(kIOMACAddress" in skywalk
 # GitHub release asset.
 assert 'name: Build AirportItlwm Tahoe' in workflow
 assert 'name: Check Tahoe App Store controller contract' in workflow
+assert 'workflow_dispatch:' in workflow
 assert 'runs-on: macos-26-intel' in workflow
 assert 'name: Check x86_64 release runner' in workflow
 assert 'test "$(uname -m)" = x86_64' in workflow
@@ -115,8 +116,24 @@ assert 'check_tahoe_plist "$VERIFY_DIR/AirportItlwm.kext/Contents/Info.plist"' i
 assert 'test -f "$VERIFY_DIR/AirportItlwm.kext/Contents/MacOS/AirportItlwm"' in workflow
 assert "lipo -archs \"$TAHOE_KEXT/Contents/MacOS/AirportItlwm\" | grep -qx 'x86_64'" in workflow
 assert 'permissions:\n  contents: write' in workflow
-assert 'commit: ${{ github.sha }}' in workflow
-assert workflow.count("if: contains(github.event.head_commit.message, 'Bump version') == false") == 2
+assert 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6' in workflow
+assert 'fetch-depth: 0' in workflow
+assert 'fetch-tags: true' in workflow
+assert 'git fetch --force --prune --tags' in workflow
+assert 'git fetch --prune --unshallow --tags' not in workflow
+assert 'xcpretty' not in workflow
+assert workflow.count('set -o pipefail\n        xcodebuild') == 2
+assert workflow.count('| xcbeautify') == 2
+assert 'uses: dev-drprasad/delete-tag-and-release@' not in workflow
+assert 'uses: ncipollo/release-action@' not in workflow
+assert 'name: Publish immutable prerelease' in workflow
+assert 'GH_TOKEN: ${{ github.token }}' in workflow
+assert 'TAG="v${ITLWM_VER}-alpha-${SHORT_SHA}"' in workflow
+assert 'gh release create "$TAG" "${assets[@]}"' in workflow
+assert '--target "$GITHUB_SHA" --prerelease --title "$TAG"' in workflow
+assert 'gh release view "$TAG" --json targetCommitish,assets > release.json' in workflow
+assert 'assert release["targetCommitish"] == sys.argv[1]' in workflow
+assert 'assert pathlib.Path(sys.argv[2]).name in {' in workflow
 assert 'TARGET="AirportItlwm-Tahoe"' in build_script
 assert 'OUTPUT_KEXT="$OUTPUT_ROOT/AirportItlwm.kext"' in build_script
 for forbidden in ("sudo ", "kmutil ", "kextload ", "reboot"):
