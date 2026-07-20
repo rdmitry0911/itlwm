@@ -1,0 +1,54 @@
+{
+  "candidate": {
+    "archive_members": [
+      "AirportItlwm.kext/Contents/Info.plist",
+      "AirportItlwm.kext/Contents/MacOS/AirportItlwm"
+    ],
+    "archive_sha256": "1d810192b993d289416102f8243056fdb965e4187276efd15e45ab3c124c4801",
+    "binary_sha256": "dd7acfc45a534fc22333f1811a359c8e0f6ec2bf7b583bc349c0fbd6617543b9",
+    "macho_uuid": "EC0C3E24-FA7A-354C-BC28-B4A005073309",
+    "release_tag": "v2.4.0-alpha-8fefad9",
+    "source_commit": "8fefad9fc07a65f1cea21f901a1336913f1fa99e"
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "non_claims": {
+    "association_completed": false,
+    "candidate_installed": false,
+    "candidate_loaded": false,
+    "data_transfer_completed": false,
+    "dhcp_completed": false,
+    "functional_wifi_connection_completed": false,
+    "network_association_attempted": false
+  },
+  "preflight": {
+    "auxkc_members": 5,
+    "candidate_copy_sha256_matches_release": true,
+    "candidate_private_codesign_verify_exit": 1,
+    "candidate_source_codesign_verify_exit": 1,
+    "canonical_mutation": "none",
+    "canonical_postflight": "PASS",
+    "helper_sha256": "238794cf475a13bfeba0fcc8caf4af48581228086efd7d2ade798da4ca783520",
+    "kmutil_create_exit": 0,
+    "non_airport_members_unchanged": true,
+    "private_admission_result": "PASS",
+    "private_auxkc_bootkc_inspect_exit": 0,
+    "private_auxkc_inspect_exit": 0
+  },
+  "run_utc": "20260720T225647Z",
+  "schema_version": "itlwm-tahoe-release-auxkc-preflight/v1",
+  "scope": {
+    "lab_guest_only": true,
+    "lab_guest_rebooted": false,
+    "physical_host_rebooted": false,
+    "remote_10_90_10_22_touched": false
+  },
+  "verdict": {
+    "exact_release_bundle_materialized_privately": true,
+    "private_auxkc_admission_passed": true,
+    "release_contains_kext": true
+  }
+}
