@@ -20,6 +20,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 header = (root / "include/ClientKit/AirportItlwmRegDiag.h").read_text()
+infra = (root / "include/Airport/IO80211InfraInterface.h").read_text()
 diag_hpp = (root / "AirportItlwm/AirportItlwmRegDiag.hpp").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 skywalk = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
@@ -42,6 +43,15 @@ def forbid(text: str, token: str, label: str) -> None:
         fail(f"forbidden {label}: {token}")
 
 
+def ordered(text: str, label: str, *tokens: str) -> None:
+    cursor = 0
+    for token in tokens:
+        position = text.find(token, cursor)
+        if position < 0:
+            fail(f"missing ordered {label}: {token}")
+        cursor = position + len(token)
+
+
 def body(text: str, marker: str, end: str) -> str:
     start = text.find(marker)
     if start < 0:
@@ -62,6 +72,7 @@ for token in (
     "kAirportItlwmRegDiagLinkPublishOffGateRejected",
     "kAirportItlwmRegDiagJoinAbortEnter",
     "kAirportItlwmRegDiagJoinAbortExit",
+    "AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE",
 ):
     require(header, token, "redaction-safe link diagnostic ABI")
 for token in (
@@ -97,6 +108,39 @@ for token in (
     "onThreadPred == 1 && inGatePred == 0",
 ):
     require(gated, token, "off-gate publication consumer")
+
+# Tahoe's parent entry point is a bool ABI.  The gate callback itself remains
+# IOReturn, so accepted=true must normalize to success=0 and rejected=false to
+# a non-zero IOReturn without altering the legacy target branch or forcing a
+# parent-false runtime transition.
+require(infra, "virtual bool setLinkState(IO80211LinkState,UInt,bool,UInt,UInt);",
+        "Tahoe parent bool setLinkState ABI")
+tahoe_gated = gated.split("#if __IO80211_TARGET >= __MAC_26_0", 1)[1].split("#else", 1)[0]
+ordered(tahoe_gated, "Tahoe bool-to-IOReturn normalization",
+        "const bool linkTransitionAccepted =",
+        "((IO80211InfraInterface *)that->fNetIf)->setLinkState(",
+        "const IOReturn ret = linkTransitionAccepted ? kIOReturnSuccess",
+        ": kIOReturnError;",
+        "kAirportItlwmRegDiagLinkPublishPublished")
+for token in (
+    "linkTransitionAccepted ? 1U : 0U",
+    "sRegDiag.snapshot.lastLinkStateResult = static_cast<int32_t>(ret)",
+    "AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE",
+):
+    require(gated, token, "normalized Tahoe link-state diagnostic")
+forbid(tahoe_gated,
+       "IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(",
+       "Tahoe bool assigned directly to IOReturn")
+forbid(tahoe_gated, "if (ret == kIOReturnSuccess) RT_SET(14);",
+       "Tahoe accepted-transition runtime bit derived from IOReturn")
+require(gated, "if (linkTransitionAccepted) RT_SET(14);",
+        "Tahoe accepted-transition runtime bit")
+for token in (
+    'parent_accepted=%" PRIu64',
+    "parent_accepted=n/a",
+    "AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE",
+):
+    require(client, token, "RegDiag target-honest parent-bool rendering")
 
 join_abort = body(skywalk, "setWCL_JOIN_ABORT(apple80211_wcl_abort_join *data)", "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_QOS_PARAMS")
 for token in (

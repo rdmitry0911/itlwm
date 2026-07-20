@@ -6082,14 +6082,26 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
     // The off-gate precondition (onThread==1, inGate==0) was guarded at the top
     // of this publication path; reaching here means it holds, so the inherited
     // publication is safe to invoke.
-    IOReturn ret = ((IO80211InfraInterface *)that->fNetIf)->setLinkState(linkState, setLinkCode, false, 0, 0);
+    // Tahoe's inherited selector returns bool, not IOReturn: true means the
+    // parent accepted the transition.  Keep that ABI value distinct and
+    // normalize it at this IOReturn callback boundary so diagnostics and the
+    // legacy caller do not invert accepted and rejected transitions.
+    const bool linkTransitionAccepted =
+        ((IO80211InfraInterface *)that->fNetIf)->setLinkState(
+            linkState, setLinkCode, false, 0, 0);
+    const IOReturn ret = linkTransitionAccepted ? kIOReturnSuccess
+                                                 : kIOReturnError;
     airportItlwmRegDiagRecordLinkPublish(
         kAirportItlwmRegDiagLinkPublishPublished,
         static_cast<uint32_t>(linkState), setLinkCode, ret);
 #else
-    IOReturn ret = that->fNetIf->setLinkState(linkState, rawCode);
+    const IOReturn ret = that->fNetIf->setLinkState(linkState, rawCode);
 #endif
+#if __IO80211_TARGET >= __MAC_26_0
+    if (linkTransitionAccepted) RT_SET(14);
+#else
     if (ret == kIOReturnSuccess) RT_SET(14);
+#endif
     if (airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeControl)) {
         sRegDiag.snapshot.linkStateCount++;
         sRegDiag.snapshot.lastLinkStateResult = static_cast<int32_t>(ret);
@@ -6097,7 +6109,12 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
         airportItlwmRegDiagTrace(kAirportItlwmRegDiagTraceLinkState,
                                  kAirportItlwmRegDiagPathLink, ret,
                                  static_cast<int32_t>((uint64_t)arg0),
-                                 static_cast<uint64_t>((uint64_t)arg1), 0);
+                                 static_cast<uint64_t>((uint64_t)arg1),
+#if __IO80211_TARGET >= __MAC_26_0
+                                 linkTransitionAccepted ? 1U : 0U);
+#else
+                                 AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE);
+#endif
     }
     RT2_SET(13);
     that->fNetIf->setRunningState(linkState == kIO80211NetworkLinkUp);

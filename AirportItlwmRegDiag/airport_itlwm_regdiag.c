@@ -377,8 +377,13 @@ get_trace(io_service_t service)
             printf(" eapol=%d length=%" PRIu64,
                    e->arg0 != 0 ? 1 : 0, e->arg1);
         } else if (e->kind == kAirportItlwmRegDiagTraceLinkState) {
-            printf(" link_state=%d raw_code=%" PRIu64,
-                   e->arg0, e->arg1);
+            printf(" link_state=%d raw_code=%" PRIu64, e->arg0, e->arg1);
+            if (e->arg2 ==
+                AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE) {
+                printf(" parent_accepted=n/a");
+            } else {
+                printf(" parent_accepted=%" PRIu64, e->arg2);
+            }
         } else if (e->kind == kAirportItlwmRegDiagTraceLinkStatus) {
             printf(" decision=%s previous=0x%x requested=0x%x",
                    link_status_decision_name((uint32_t)e->arg0),
