@@ -16,7 +16,7 @@ EVALUATOR="$ROOT/scripts/evaluate_tahoe_sae_capture.py"
 usage() {
     cat >&2 <<'EOF'
 usage: capture_tahoe_sae_layer.sh [--tool PATH] [--out DIR] [--settle SEC]
-       [--expect auto|wpa2-psk|sae-transition-psk|pure-sae-required-pmf-reject]
+       [--expect auto|wpa2-psk|wpa2-sha256-psk|sae-transition-psk|pure-sae-required-pmf-reject]
        [--interface IFACE] [--strict]
        -- COMMAND [ARG ...]
 
@@ -86,7 +86,7 @@ done
     exit 1
 }
 case "$EXPECT" in
-    auto|wpa2-psk|sae-transition-psk|pure-sae-required-pmf-reject|sae-reject) ;;
+    auto|wpa2-psk|wpa2-sha256-psk|sae-transition-psk|pure-sae-required-pmf-reject|sae-reject) ;;
     *)
         echo "unsupported --expect profile" >&2
         exit 2

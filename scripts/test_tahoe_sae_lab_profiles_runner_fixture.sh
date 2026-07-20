@@ -46,6 +46,11 @@ printf '%s\n' \
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
+    'if [ "$#" -gt 0 ] && [ "$1" = "-listpreferredwirelessnetworks" ]; then' \
+    '    printf "Preferred networks on %s\\n" "$2"' \
+    '    printf "\\t%s\\n" unit-wpa2-profile unit-pure-sae-profile unit-transition-profile' \
+    '    exit 0' \
+    'fi' \
     'printf "%s\n" "$*" >>"$MOCK_NETWORK_LOG"' \
     'exit 0' \
     >"$MOCK_NETWORKSETUP"
@@ -85,6 +90,13 @@ run_fixture() {
         >"$log_path" 2>&1
 }
 
+run_preflight_fixture() {
+    local out_root="$1"
+    local log_path="$2"
+    local transition_profile="$3"
+    AIAM_SAE_LAB_TEST_MODE=1 AIAM_SAE_LAB_CAPTURE_TOOL="$MOCK_CAPTURE" AIAM_SAE_LAB_NETWORKSETUP_TOOL="$MOCK_NETWORKSETUP" AIAM_SAE_LAB_ROUTE_TOOL="$MOCK_ROUTE" AIAM_SAE_CAPTURE_ROOT="$out_root" MOCK_NETWORK_LOG="$NETWORK_LOG" MOCK_ROUTE_COUNTER="$ROUTE_COUNTER" MOCK_ROUTE_CHANGE_AT=0 bash "$RUNNER" --preflight --interface en1 --wpa2-psk-ssid unit-wpa2-profile --pure-sae-ssid unit-pure-sae-profile --sae-transition-ssid "$transition_profile" --out "$out_root" --settle 1 >"$log_path" 2>&1
+}
+
 GUARD_LOG="$TMP_ROOT/override-guard.log"
 if AIAM_SAE_LAB_CAPTURE_TOOL="$MOCK_CAPTURE" \
    AIAM_SAE_LAB_NETWORKSETUP_TOOL="$MOCK_NETWORKSETUP" \
@@ -102,6 +114,49 @@ fi
 grep -Fq 'custom lab tools are accepted only with AIAM_SAE_LAB_TEST_MODE=1' "$GUARD_LOG" ||
     fail 'runner did not explain the custom-tool test-mode guard'
 
+: >"$NETWORK_LOG"
+rm -f "$ROUTE_COUNTER"
+PREFLIGHT_OUT="$TMP_ROOT/profile-preflight-out"
+PREFLIGHT_LOG="$TMP_ROOT/profile-preflight.log"
+run_preflight_fixture "$PREFLIGHT_OUT" "$PREFLIGHT_LOG" unit-transition-profile || {
+    sed -n '1,160p' "$PREFLIGHT_LOG" >&2
+    fail 'complete saved-profile preflight failed'
+}
+PREFLIGHT_ATTESTATION="$(sed -n 's/^  attestation: //p' "$PREFLIGHT_LOG" | tail -n 1)"
+[ -f "$PREFLIGHT_ATTESTATION" ] || fail 'profile preflight did not emit attestation'
+grep -Fxq 'overall=PROFILE_READINESS_PASS' "$PREFLIGHT_ATTESTATION" ||
+    fail 'complete profile preflight lacks PASS'
+grep -Fxq 'wpa2_profile_known=true' "$PREFLIGHT_ATTESTATION" ||
+    fail 'complete profile preflight lacks WPA2 profile'
+grep -Fxq 'pure_sae_profile_known=true' "$PREFLIGHT_ATTESTATION" ||
+    fail 'complete profile preflight lacks pure-SAE profile'
+grep -Fxq 'sae_transition_profile_known=true' "$PREFLIGHT_ATTESTATION" ||
+    fail 'complete profile preflight lacks transition profile'
+grep -Fxq 'credential_lookup_or_join=not-attempted' "$PREFLIGHT_ATTESTATION" ||
+    fail 'profile preflight made a credential or join claim'
+if grep -Fq 'unit-wpa2-profile\|unit-pure-sae-profile\|unit-transition-profile' "$PREFLIGHT_ATTESTATION"; then
+    fail 'profile preflight leaked a profile identifier'
+fi
+[ ! -s "$NETWORK_LOG" ] || fail 'profile preflight issued a network join trigger'
+
+: >"$NETWORK_LOG"
+rm -f "$ROUTE_COUNTER"
+INCOMPLETE_OUT="$TMP_ROOT/profile-preflight-incomplete-out"
+INCOMPLETE_LOG="$TMP_ROOT/profile-preflight-incomplete.log"
+if run_preflight_fixture "$INCOMPLETE_OUT" "$INCOMPLETE_LOG" unit-missing-profile; then
+    sed -n '1,160p' "$INCOMPLETE_LOG" >&2
+    fail 'profile preflight accepted a missing saved profile'
+fi
+INCOMPLETE_ATTESTATION="$(sed -n 's/^  attestation: //p' "$INCOMPLETE_LOG" | tail -n 1)"
+[ -f "$INCOMPLETE_ATTESTATION" ] || fail 'incomplete profile preflight did not emit attestation'
+grep -Fxq 'overall=PROFILE_READINESS_INCOMPLETE' "$INCOMPLETE_ATTESTATION" ||
+    fail 'incomplete profile preflight lacks incomplete verdict'
+grep -Fxq 'sae_transition_profile_known=false' "$INCOMPLETE_ATTESTATION" ||
+    fail 'incomplete profile preflight did not identify the missing profile'
+[ ! -s "$NETWORK_LOG" ] || fail 'incomplete profile preflight issued a network join trigger'
+
+: >"$NETWORK_LOG"
+rm -f "$ROUTE_COUNTER"
 SUCCESS_OUT="$TMP_ROOT/success-out"
 SUCCESS_LOG="$TMP_ROOT/success.log"
 run_fixture "$SUCCESS_OUT" "$SUCCESS_LOG" 0 || {
@@ -143,4 +198,4 @@ grep -Fxq 'overall=INCONCLUSIVE_OR_FAIL' "$FAIL_ATTESTATION" ||
 grep -Fxq 'default_route_preserved=false' "$FAIL_ATTESTATION" ||
     fail 'route-change fixture did not record the route safety failure'
 
-echo 'PASS: Tahoe SAE/PMF four-epoch runner fixture'
+echo 'PASS: Tahoe SAE/PMF profile-preflight and four-epoch runner fixture'

@@ -12,19 +12,22 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_ROOT="${AIAM_SAE_CAPTURE_ROOT:-$ROOT/runtime-captures}"
 CAPTURE_TOOL="${AIAM_SAE_LAB_CAPTURE_TOOL:-$ROOT/scripts/capture_tahoe_sae_layer.sh}"
 NETWORKSETUP_TOOL="${AIAM_SAE_LAB_NETWORKSETUP_TOOL:-/usr/sbin/networksetup}"
-ROUTE_TOOL="${AIAM_SAE_LAB_ROUTE_TOOL:-/usr/sbin/route}"
+# Tahoe 25C56 keeps route in /sbin. Using the stale /usr/sbin path made the
+# route-preservation guard fail before the first credential-safe epoch.
+ROUTE_TOOL="${AIAM_SAE_LAB_ROUTE_TOOL:-/sbin/route}"
 INTERFACE=""
 WPA2_PSK_SSID=""
 PURE_SAE_SSID=""
 TRANSITION_SSID=""
 SETTLE_SECONDS=15
 STRICT=1
+PREFLIGHT_ONLY=0
 
 usage() {
     cat >&2 <<'EOF'
 usage: run_tahoe_sae_lab_profiles.sh --interface IFACE \
        --wpa2-psk-ssid SSID --pure-sae-ssid SSID --sae-transition-ssid SSID
-       [--out DIR] [--settle SEC] [--no-strict]
+       [--out DIR] [--settle SEC] [--no-strict] [--preflight]
 
 Runs four independently cleared diagnostic epochs in this fixed order:
   1. WPA2-PSK baseline: exact auth=0x8, policy=0x6, PMK/EAPOL/link success;
@@ -41,6 +44,10 @@ makes the batch inconclusive even though the runner itself never mutates it.
 
 Compatibility aliases: --psk-ssid for --wpa2-psk-ssid and --sae-ssid for
 --pure-sae-ssid.  They do not relax the exact evaluator expectations.
+
+--preflight performs no join. It records only SHA-256 profile identifiers,
+whether each requested saved-profile name is present, and whether the default
+route can be observed. It never proves that a credential exists or works.
 EOF
 }
 
@@ -60,6 +67,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-strict)
             STRICT=0
+            shift
+            ;;
+        --preflight)
+            PREFLIGHT_ONLY=1
             shift
             ;;
         -h|--help)
@@ -89,16 +100,18 @@ command -v shasum >/dev/null 2>&1 || {
 }
 if [ "$CAPTURE_TOOL" != "$ROOT/scripts/capture_tahoe_sae_layer.sh" ] || \
    [ "$NETWORKSETUP_TOOL" != /usr/sbin/networksetup ] || \
-   [ "$ROUTE_TOOL" != /usr/sbin/route ]; then
+   [ "$ROUTE_TOOL" != /sbin/route ]; then
     [ "${AIAM_SAE_LAB_TEST_MODE:-}" = 1 ] || {
         echo "custom lab tools are accepted only with AIAM_SAE_LAB_TEST_MODE=1" >&2
         exit 2
     }
 fi
-[ -x "$CAPTURE_TOOL" ] || {
-    echo "missing SAE capture tool: $CAPTURE_TOOL" >&2
-    exit 1
-}
+if [ "$PREFLIGHT_ONLY" -eq 0 ]; then
+    [ -x "$CAPTURE_TOOL" ] || {
+        echo "missing SAE capture tool: $CAPTURE_TOOL" >&2
+        exit 1
+    }
+fi
 [ -x "$NETWORKSETUP_TOOL" ] || {
     echo "missing networksetup tool: $NETWORKSETUP_TOOL" >&2
     exit 1
@@ -147,10 +160,28 @@ runner_tree_state() {
     fi
 }
 
+profile_is_known() {
+    local wanted="$1"
+    "$NETWORKSETUP_TOOL" -listpreferredwirelessnetworks "$INTERFACE" 2>/dev/null |
+        awk -v wanted="$wanted" '
+            NR > 1 {
+                if (substr($0, 1, 1) == sprintf("%c", 9))
+                    $0 = substr($0, 2)
+                if ($0 == wanted)
+                    found = 1
+            }
+            END { exit found ? 0 : 1 }
+        '
+}
+
 umask 077
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT_ROOT"
-BATCH_DIR="$(mktemp -d "$OUT_ROOT/sae-pmf-four-epoch-$STAMP.XXXXXX")"
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+    BATCH_DIR="$(mktemp -d "$OUT_ROOT/sae-pmf-profile-preflight-$STAMP.XXXXXX")"
+else
+    BATCH_DIR="$(mktemp -d "$OUT_ROOT/sae-pmf-four-epoch-$STAMP.XXXXXX")"
+fi
 MANIFEST="$BATCH_DIR/manifest.txt"
 ATTESTATION="$BATCH_DIR/committable-attestation.txt"
 DEFAULT_ROUTE_BASELINE="$(default_route_signature)" || {
@@ -159,6 +190,56 @@ DEFAULT_ROUTE_BASELINE="$(default_route_signature)" || {
 }
 RUNNER_GIT_HEAD="$(runner_git_head)"
 RUNNER_TREE_STATE="$(runner_tree_state)"
+
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+    if profile_is_known "$WPA2_PSK_SSID"; then
+        WPA2_PROFILE_KNOWN=true
+    else
+        WPA2_PROFILE_KNOWN=false
+    fi
+    if profile_is_known "$PURE_SAE_SSID"; then
+        PURE_SAE_PROFILE_KNOWN=true
+    else
+        PURE_SAE_PROFILE_KNOWN=false
+    fi
+    if profile_is_known "$TRANSITION_SSID"; then
+        TRANSITION_PROFILE_KNOWN=true
+    else
+        TRANSITION_PROFILE_KNOWN=false
+    fi
+    if [ "$WPA2_PROFILE_KNOWN" = true ] && [ "$PURE_SAE_PROFILE_KNOWN" = true ] && [ "$TRANSITION_PROFILE_KNOWN" = true ]; then
+        PREFLIGHT=PROFILE_READINESS_PASS
+        PREFLIGHT_RC=0
+    else
+        PREFLIGHT=PROFILE_READINESS_INCOMPLETE
+        PREFLIGHT_RC=1
+    fi
+    {
+        printf 'schema_version=itlwm-tahoe-sae-pmf-profile-preflight/v1\n'
+        printf 'batch_utc=%s\n' "$STAMP"
+        printf 'runner_git_head=%s\n' "$RUNNER_GIT_HEAD"
+        printf 'runner_tree_state=%s\n' "$RUNNER_TREE_STATE"
+        printf 'interface=%s\n' "$INTERFACE"
+        printf 'profile_identifiers=sha256-only\n'
+        printf 'credential_lookup_or_join=not-attempted\n'
+        printf 'explicit_route_address_dhcp_mutation=false\n'
+        printf 'install_load_reboot_command=none\n'
+        printf 'default_route_observable=true\n'
+        printf 'wpa2_profile_identifier_sha256=%s\n' "$(sha256_text "$WPA2_PSK_SSID")"
+        printf 'wpa2_profile_known=%s\n' "$WPA2_PROFILE_KNOWN"
+        printf 'pure_sae_profile_identifier_sha256=%s\n' "$(sha256_text "$PURE_SAE_SSID")"
+        printf 'pure_sae_profile_known=%s\n' "$PURE_SAE_PROFILE_KNOWN"
+        printf 'sae_transition_profile_identifier_sha256=%s\n' "$(sha256_text "$TRANSITION_SSID")"
+        printf 'sae_transition_profile_known=%s\n' "$TRANSITION_PROFILE_KNOWN"
+        printf 'overall=%s\n' "$PREFLIGHT"
+    } >"$MANIFEST"
+    cp "$MANIFEST" "$ATTESTATION"
+    echo "CAPTURED: SAE/PMF saved-profile preflight"
+    echo "  evidence: $BATCH_DIR"
+    echo "  attestation: $ATTESTATION"
+    echo "  overall: $PREFLIGHT"
+    exit "$PREFLIGHT_RC"
+fi
 
 {
     printf 'schema_version=itlwm-tahoe-sae-pmf-four-epoch/v1\n'

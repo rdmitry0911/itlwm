@@ -24,6 +24,7 @@ POLICY_PSK_PMK_ELIGIBLE = 0x02
 POLICY_LOCAL_PSK = 0x04
 POLICY_AUDITED_WPA3_TRANSITION = 0x08
 WPA2_PSK = 0x0008
+WPA2_SHA256_PSK = 0x0400
 PURE_SAE = 0x1000
 AUDITED_WPA3_PSK_TRANSITION = PURE_SAE | WPA2_PSK
 TRACE_CAPACITY = 128
@@ -293,6 +294,15 @@ def evaluate_wpa2_psk(capture: Capture) -> list[str]:
         "WPA2-PSK")
 
 
+def evaluate_wpa2_sha256_psk(capture: Capture) -> list[str]:
+    return evaluate_psk_success(
+        capture,
+        (event for event in capture.events
+         if event.kind == "auth-policy" and event.auth_upper == WPA2_SHA256_PSK and
+         event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)),
+        "WPA2-SHA256-PSK")
+
+
 def evaluate_sae_transition_psk(capture: Capture) -> list[str]:
     return evaluate_psk_success(
         capture,
@@ -340,6 +350,8 @@ def evaluate(capture: Capture, expected: str) -> tuple[bool, list[str]]:
         reasons.append("no association auth-policy carrier reached the driver")
     if expected == "wpa2-psk":
         reasons.extend(evaluate_wpa2_psk(capture))
+    elif expected == "wpa2-sha256-psk":
+        reasons.extend(evaluate_wpa2_sha256_psk(capture))
     elif expected == "sae-transition-psk":
         reasons.extend(evaluate_sae_transition_psk(capture))
     elif expected in {"pure-sae-required-pmf-reject", "sae-reject"}:
@@ -419,6 +431,16 @@ def self_test() -> int:
             "#6 kind=rx path=rx result=0x0 eapol=1 length=120",
             "#7 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
         ]
+        wpa2_sha256_plti_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x400 rsn_len=22 policy=0x6",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x40000000000 arg2=0x16",
+            "#3 kind=plti-publish path=plti result=0x0 decision=accepted generation=42 auth=0x400",
+            "#4 kind=plti-deliver path=plti result=0x0 decision=accepted generation=42 auth=0x400",
+            "#5 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#6 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#7 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
         transition_lines = [
             "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
             "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=1 auth=0x0/0x1008 rsn_len=22 policy=0xe",
@@ -436,6 +458,7 @@ def self_test() -> int:
         success_cases = (
             ("wpa2-direct", "wpa2-psk", wpa2_direct_lines, (1, 1), 2),
             ("wpa2-plti", "wpa2-psk", wpa2_plti_lines, (1, 1), 2),
+            ("wpa2-sha256-plti", "wpa2-sha256-psk", wpa2_sha256_plti_lines, (1, 1), 2),
             ("transition", "sae-transition-psk", transition_lines, (1, 1), 2),
             ("pure-sae", "pure-sae-required-pmf-reject", pure_sae_lines, (0, 0), 1),
             ("legacy-pure-sae-alias", "sae-reject", pure_sae_lines, (0, 0), 1),
@@ -450,6 +473,7 @@ def self_test() -> int:
             ("control", "wpa2-psk", {"lines": wpa2_direct_lines, "control": "seq=7 applied=1 mode=0x15 block=0x0\n", "counts": (1, 1), "link_state": 2}),
             ("wpa2-eapol", "wpa2-psk", {"lines": wpa2_direct_lines[:4] + ["#4 kind=tx path=tx result=0xe00002c0 eapol=1 length=120"] + wpa2_direct_lines[5:], "counts": (1, 1), "link_state": 2}),
             ("wpa2-link", "wpa2-psk", {"lines": wpa2_direct_lines[:-1] + ["#6 kind=link-state path=link result=0x0 link_state=1 raw_code=1"], "counts": (1, 1), "link_state": 1}),
+            ("wpa2-sha256-auth", "wpa2-sha256-psk", {"lines": wpa2_plti_lines, "counts": (1, 1), "link_state": 2}),
             ("transition-auth", "sae-transition-psk", {"lines": [line.replace("auth=0x0/0x1008", "auth=0x0/0x8").replace("auth=0x1008", "auth=0x8") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
             ("transition-policy", "sae-transition-psk", {"lines": [line.replace("policy=0xe", "policy=0x6") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
             ("pure-pmf", "pure-sae-required-pmf-reject", {"lines": [line.replace("pmf=1", "pmf=0") for line in pure_sae_lines], "counts": (0, 0), "link_state": 1}),
@@ -470,7 +494,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture_dir", nargs="?", type=Path)
     parser.add_argument("--expect", choices=(
-        "auto", "wpa2-psk", "sae-transition-psk",
+        "auto", "wpa2-psk", "wpa2-sha256-psk", "sae-transition-psk",
         "pure-sae-required-pmf-reject", "sae-reject"),
                         default="auto")
     parser.add_argument("--self-test", action="store_true")

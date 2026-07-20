@@ -15,8 +15,11 @@ for path in \
     "$ROOT/analysis/TAHOE_SAE_PMF_LAB_SCENARIO_MATRIX_2026-07-20.md" \
     "$ROOT/analysis/TAHOE_LAB_AP_READINESS_2026-07-20.md" \
     "$ROOT/analysis/TAHOE_LAB_CANDIDATE_IDENTITY_BINDING_2026-07-20.md" \
+    "$ROOT/analysis/TAHOE_LAB_FF7B960_PROFILE_AND_SHA256_BASELINE_2026-07-20.md" \
     "$ROOT/evidence/runtime/tahoe_lab_ap_visibility_readiness.json" \
-    "$ROOT/evidence/runtime/tahoe_lab_kext_identity_a4d803c.json"; do
+    "$ROOT/evidence/runtime/tahoe_lab_kext_identity_a4d803c.json" \
+    "$ROOT/evidence/runtime/tahoe_lab_kext_identity_ff7b960.json" \
+    "$ROOT/evidence/runtime/tahoe_lab_ff7b960_profile_and_sha256_baseline.json"; do
     [ -f "$path" ] || {
         echo "FAIL: missing lab-scenario contract input: $path" >&2
         exit 1
@@ -47,11 +50,16 @@ identity = (root / "scripts/capture_tahoe_lab_kext_identity.py").read_text()
 matrix = (root / "analysis/TAHOE_SAE_PMF_LAB_SCENARIO_MATRIX_2026-07-20.md").read_text()
 readiness = (root / "analysis/TAHOE_LAB_AP_READINESS_2026-07-20.md").read_text()
 binding_doc = (root / "analysis/TAHOE_LAB_CANDIDATE_IDENTITY_BINDING_2026-07-20.md").read_text()
+runtime_doc = (root / "analysis/TAHOE_LAB_FF7B960_PROFILE_AND_SHA256_BASELINE_2026-07-20.md").read_text()
 gitignore = (root / ".gitignore").read_text()
 evidence_path = root / "evidence/runtime/tahoe_lab_ap_visibility_readiness.json"
 evidence = json.loads(evidence_path.read_text())
 identity_evidence_path = root / "evidence/runtime/tahoe_lab_kext_identity_a4d803c.json"
 identity_evidence = json.loads(identity_evidence_path.read_text())
+bound_identity_evidence_path = root / "evidence/runtime/tahoe_lab_kext_identity_ff7b960.json"
+bound_identity_evidence = json.loads(bound_identity_evidence_path.read_text())
+runtime_evidence_path = root / "evidence/runtime/tahoe_lab_ff7b960_profile_and_sha256_baseline.json"
+runtime_evidence = json.loads(runtime_evidence_path.read_text())
 
 
 def fail(message: str) -> None:
@@ -82,6 +90,12 @@ def ordered(text: str, label: str, *needles: str) -> None:
 for needle in (
     "schema_version=itlwm-tahoe-sae-pmf-four-epoch/v1",
     "schema_version=itlwm-tahoe-sae-pmf-committable-attestation/v1",
+    "schema_version=itlwm-tahoe-sae-pmf-profile-preflight/v1",
+    "PREFLIGHT_ONLY=0",
+    "--preflight",
+    "credential_lookup_or_join=not-attempted",
+    "PROFILE_READINESS_INCOMPLETE",
+    "-listpreferredwirelessnetworks",
     "password_carrier=keychain-only",
     "profile_identifiers=sha256-only",
     "raw_capture_material=local-only-not-versioned",
@@ -100,7 +114,8 @@ for needle in (
     "[ \"$verdict\" = PASS ] || rc=1",
     "CAPTURE_TOOL=\"${AIAM_SAE_LAB_CAPTURE_TOOL:-$ROOT/scripts/capture_tahoe_sae_layer.sh}\"",
     "NETWORKSETUP_TOOL=\"${AIAM_SAE_LAB_NETWORKSETUP_TOOL:-/usr/sbin/networksetup}\"",
-    "ROUTE_TOOL=\"${AIAM_SAE_LAB_ROUTE_TOOL:-/usr/sbin/route}\"",
+    "ROUTE_TOOL=\"${AIAM_SAE_LAB_ROUTE_TOOL:-/sbin/route}\"",
+    "[ \"$ROUTE_TOOL\" != /sbin/route ]",
     "[ \"${AIAM_SAE_LAB_TEST_MODE:-}\" = 1 ]",
     "-- \"$NETWORKSETUP_TOOL\" -setairportnetwork",
 ):
@@ -110,6 +125,9 @@ ordered(runner, "fixed SAE/PMF profile order",
         "run_epoch pure-sae-required-pmf-reject pure-sae-required-pmf-reject",
         "run_epoch sae-transition-psk sae-transition-psk",
         "run_epoch wpa2-psk-recovery wpa2-psk")
+ordered(runner, "saved-profile preflight before join-capable epoch body",
+        "profile_is_known()", "if [ \"$PREFLIGHT_ONLY\" -eq 1 ]",
+        "run_epoch wpa2-psk-baseline wpa2-psk")
 for needle in (
     "PASSWORD=",
     "--password",
@@ -139,6 +157,7 @@ for needle in (
     "schema_version=itlwm-tahoe-sae-pmk-capture/v2",
     "runner_git_head",
     "runner_tree_state",
+    "wpa2-sha256-psk",
     "sae-transition-psk",
     "pure-sae-required-pmf-reject",
     "\"$@\" >/dev/null 2>&1",
@@ -157,8 +176,11 @@ for needle in ("route add", "route delete", "route change", "ipconfig set",
 for needle in (
     "POLICY_AUDITED_WPA3_TRANSITION = 0x08",
     "WPA2_PSK = 0x0008",
+    "WPA2_SHA256_PSK = 0x0400",
     "AUDITED_WPA3_PSK_TRANSITION = PURE_SAE | WPA2_PSK",
     "event.auth_upper == WPA2_PSK",
+    "event.auth_upper == WPA2_SHA256_PSK",
+    "evaluate_wpa2_sha256_psk",
     "event.auth_upper == AUDITED_WPA3_PSK_TRANSITION",
     "event.path == \"hidden-assoc\"",
     "event.pmf == 1",
@@ -170,6 +192,8 @@ for needle in (
     "pure-pmk",
     "pure-eapol",
     "pure-link",
+    "wpa2-sha256-plti",
+    "wpa2-sha256-auth",
 ):
     require(evaluator, needle, "exact evaluator fixture/predicate")
 
@@ -234,6 +258,15 @@ for needle in (
     "Raw `trace.txt`, snapshots, reports, route dumps,",
 ):
     require(matrix, needle, "versioned scenario matrix")
+for needle in (
+    "actual successful exact-candidate identity scenario",
+    "PROFILE_READINESS_INCOMPLETE",
+    "auth=0x400",
+    "INCONCLUSIVE_OR_FAIL",
+    "no successful EAPOL TX/RX pair",
+    "no successful link-up publication",
+):
+    require(runtime_doc, needle, "bound-candidate runtime record")
 for needle in (
     "successful **scan readiness** record",
     "not a successful association",
@@ -307,6 +340,106 @@ if identity_evidence.get("command_result", {}).get("raw_guest_stdout_retained") 
 identity_evidence_hash = hashlib.sha256(identity_evidence_path.read_bytes()).hexdigest()
 if identity_evidence_hash not in binding_doc:
     fail("identity document does not bind the committed identity evidence hash")
+
+# The later record is deliberately the inverse of the stale-a4d803c
+# quarantine: all identities match, but it still keeps the identity-only and
+# incomplete-handshake boundaries explicit.  This turns successful laboratory
+# prerequisites into reviewable, source-bound evidence without overstating
+# Wi-Fi functionality.
+if bound_identity_evidence.get("schema_version") != "itlwm-tahoe-lab-kext-identity-binding/v1":
+    fail("bound identity evidence schema is not v1")
+bound_binding = bound_identity_evidence.get("candidate_binding", {})
+if bound_binding.get("candidate_kext_bound") is not True:
+    fail("bound identity evidence does not prove the released kext identity")
+for check in (
+    "pinned_guest_query_succeeded",
+    "wifi_interface_present",
+    "installed_bundle_present",
+    "installed_bundle_id_matches_release",
+    "installed_binary_sha256_matches_release",
+    "installed_macho_uuid_matches_release",
+    "kext_reported_loaded",
+    "loaded_uuid_matches_installed",
+    "loaded_uuid_matches_release",
+):
+    if bound_binding.get("checks", {}).get(check) is not True:
+        fail(f"bound identity evidence lacks matching check: {check}")
+if bound_binding.get("failure_reasons") != []:
+    fail("bound identity evidence retains an unexplained mismatch")
+if bound_identity_evidence.get("verdict", {}).get("ready_for_exact_candidate_runtime_experiment") is not True:
+    fail("bound identity evidence does not permit the exact-candidate experiment")
+if any(value is not False for value in bound_identity_evidence.get("non_claims", {}).values()):
+    fail("bound identity evidence contains an unbounded functional claim")
+
+if runtime_evidence.get("schema_version") != "itlwm-tahoe-sae-pmf-bound-candidate-runtime-record/v1":
+    fail("bound runtime evidence schema is not v1")
+candidate = runtime_evidence.get("candidate", {})
+bound_identity_hash = hashlib.sha256(bound_identity_evidence_path.read_bytes()).hexdigest()
+if candidate.get("identity_evidence_sha256") != bound_identity_hash:
+    fail("runtime record is not bound to the committed exact-candidate identity record")
+if candidate.get("release_tag") != "v2.4.0-alpha-ff7b960":
+    fail("runtime record names an unexpected release")
+if candidate.get("binary_sha256") != "8cc606410deb27d57ce9a0144eb894b5375c60563ff58deb69b4a7a31723d21a":
+    fail("runtime record names an unexpected released binary")
+if candidate.get("macho_uuid") != "25D5548C-5DF3-3383-9544-967CD3AE0C6F":
+    fail("runtime record names an unexpected released Mach-O UUID")
+for key in ("raw_capture_committed", "secret_material_committed", "ssid_or_bssid_committed"):
+    if runtime_evidence.get("commit_safety", {}).get(key) is not False:
+        fail(f"runtime record violates redaction boundary: {key}")
+profile = runtime_evidence.get("profile_preflight", {})
+if profile.get("schema_version") != "itlwm-tahoe-sae-pmf-profile-preflight/v1":
+    fail("profile preflight record has an unexpected schema")
+if profile.get("credential_lookup_or_join") != "not-attempted":
+    fail("profile preflight claims a credential lookup or join")
+if profile.get("default_route_observable") is not True:
+    fail("profile preflight did not observe the default route")
+if profile.get("explicit_route_address_dhcp_mutation") is not False:
+    fail("profile preflight made an unsafe network mutation claim")
+if profile.get("verdict") != "PROFILE_READINESS_INCOMPLETE":
+    fail("profile preflight does not retain its incomplete-matrix verdict")
+profiles = profile.get("profiles", {})
+if profiles.get("wpa2", {}).get("known") is not True:
+    fail("profile preflight lacks the known WPA2 saved-profile observation")
+for name in ("pure_sae", "sae_transition"):
+    item = profiles.get(name, {})
+    if item.get("known") is not False or len(item.get("identifier_sha256", "")) != 64:
+        fail(f"profile preflight does not retain the redacted missing-profile boundary: {name}")
+for script_name, evidence_key in (("scripts/run_tahoe_sae_lab_profiles.sh", "runner_script_sha256"),
+                                  ("scripts/evaluate_tahoe_sae_capture.py", "evaluator_script_sha256")):
+    expected_hash = hashlib.sha256((root / script_name).read_bytes()).hexdigest()
+    record = profile if evidence_key == "runner_script_sha256" else runtime_evidence.get("sha256_psk_baseline", {})
+    if record.get(evidence_key) != expected_hash:
+        fail(f"runtime record is not bound to the committed {script_name} source")
+sha256_psk = runtime_evidence.get("sha256_psk_baseline", {})
+if sha256_psk.get("strict_verdict") != "INCONCLUSIVE_OR_FAIL":
+    fail("SHA256-PSK diagnostic record is incorrectly marked successful")
+if sha256_psk.get("strict_verdict_reasons") != [
+        "missing successful EAPOL TX/RX pair",
+        "no successful link-up publication",
+]:
+    fail("SHA256-PSK diagnostic record does not retain the exact failure boundary")
+control = sha256_psk.get("control", {})
+if (control.get("abi"), control.get("mode"), control.get("block"),
+        control.get("trace_count"), control.get("trace_dropped")) != (2, "0x35", "0x0", 10, 0):
+    fail("SHA256-PSK diagnostic record has an unexpected RegDiag epoch")
+carrier = sha256_psk.get("expected_carrier", {})
+if carrier != {"auth_upper": "0x400", "policy": "0x6", "pmf": 0}:
+    fail("SHA256-PSK diagnostic record has an unexpected exact carrier")
+ingress = sha256_psk.get("ingress", {})
+if (ingress.get("association_ingress_status"), ingress.get("auth_policy_events"),
+        ingress.get("accepted_plti_publications"), ingress.get("accepted_plti_deliveries"),
+        ingress.get("join_abort_observed")) != (0, 2, 2, 2, True):
+    fail("SHA256-PSK diagnostic record loses the accepted-PMK boundary")
+if sha256_psk.get("stages") != {
+        "accepted_direct_pmk": 0, "eapol_rx": 0, "eapol_tx": 0, "link_up": 0}:
+    fail("SHA256-PSK diagnostic record has unexpected handshake counters")
+if sha256_psk.get("route_guard", {}).get("default_route_preserved") is not True:
+    fail("SHA256-PSK diagnostic record lacks the route-preservation observation")
+if any(value is not False for value in sha256_psk.get("non_claims", {}).values()):
+    fail("SHA256-PSK diagnostic record contains an unbounded functional claim")
+runtime_evidence_hash = hashlib.sha256(runtime_evidence_path.read_bytes()).hexdigest()
+if runtime_evidence_hash not in runtime_doc or bound_identity_hash not in runtime_doc:
+    fail("runtime document does not bind its committed evidence")
 
 print("PASS: Tahoe SAE/PMF lab scenario contract")
 PY

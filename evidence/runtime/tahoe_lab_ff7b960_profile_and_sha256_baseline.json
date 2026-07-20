@@ -1,0 +1,86 @@
+{
+  "candidate": {
+    "binary_sha256": "8cc606410deb27d57ce9a0144eb894b5375c60563ff58deb69b4a7a31723d21a",
+    "identity_evidence_sha256": "7d3c7bf3389a2930f88d588b9333304450bb3c119e7758abbc9a0a82324a9552",
+    "macho_uuid": "25D5548C-5DF3-3383-9544-967CD3AE0C6F",
+    "release_tag": "v2.4.0-alpha-ff7b960"
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "profile_preflight": {
+    "captured_at_utc": "2026-07-20T21:32:06Z",
+    "credential_lookup_or_join": "not-attempted",
+    "default_route_observable": true,
+    "explicit_route_address_dhcp_mutation": false,
+    "profiles": {
+      "pure_sae": {
+        "identifier_sha256": "c00939e65ad46bdf3c1fa512ab63b68254c19b6980644568883ca5372276ed32",
+        "known": false
+      },
+      "sae_transition": {
+        "identifier_sha256": "1120f8abd92f49b8523ee43dfc54b6ee42e993478e00454255e88b0ac2715310",
+        "known": false
+      },
+      "wpa2": {
+        "identifier_sha256": "552cb0ce6725ac3c13feef9e1c7947737b14201acd794cf5cd7c45808a8cac7d",
+        "known": true
+      }
+    },
+    "runner_script_sha256": "3a49252d9d0ece160e4de92f0ff3fd9b650229befe337ba47f068cc25d83c776",
+    "schema_version": "itlwm-tahoe-sae-pmf-profile-preflight/v1",
+    "verdict": "PROFILE_READINESS_INCOMPLETE"
+  },
+  "schema_version": "itlwm-tahoe-sae-pmf-bound-candidate-runtime-record/v1",
+  "sha256_psk_baseline": {
+    "captured_at_utc": "2026-07-20T21:32:30Z",
+    "control": {
+      "abi": 2,
+      "block": "0x0",
+      "mode": "0x35",
+      "trace_count": 10,
+      "trace_dropped": 0,
+      "trace_next": 10
+    },
+    "evaluator_script_sha256": "63cc6b68ab96e0cbf4f390d23c419b08a2888f7cf4c02d12c82c46e0a85067a8",
+    "expected_carrier": {
+      "auth_upper": "0x400",
+      "policy": "0x6",
+      "pmf": 0
+    },
+    "ingress": {
+      "accepted_plti_deliveries": 2,
+      "accepted_plti_publications": 2,
+      "association_ingress_status": 0,
+      "auth_policy_events": 2,
+      "join_abort_observed": true
+    },
+    "non_claims": {
+      "association_completed": false,
+      "authentication_completed": false,
+      "data_transfer_completed": false,
+      "eapol_exchange_completed": false,
+      "link_up_completed": false,
+      "pure_sae_or_pmf_tested": false,
+      "wpa2_psk_baseline_pass": false
+    },
+    "route_guard": {
+      "default_route_preserved": true,
+      "explicit_route_address_dhcp_mutation": false
+    },
+    "stages": {
+      "accepted_direct_pmk": 0,
+      "eapol_rx": 0,
+      "eapol_tx": 0,
+      "link_up": 0
+    },
+    "strict_verdict": "INCONCLUSIVE_OR_FAIL",
+    "strict_verdict_reasons": [
+      "missing successful EAPOL TX/RX pair",
+      "no successful link-up publication"
+    ],
+    "trigger_exit": 0
+  }
+}

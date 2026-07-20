@@ -25,9 +25,21 @@ or raw capture content.
 | 3 | `sae-transition-psk` | `auth=0x1008`, `policy=0xe`; successful association ingress, PMK/PLTI, EAPOL TX/RX, and link-up. | Only the explicitly audited SAE-transition + WPA2-PSK representation worked. A generic mixed-mode join that emits another carrier is inconclusive, not a transition PASS. |
 | 4 | `wpa2-psk-recovery` | The same exact `auth=0x8`, `policy=0x6` success criteria after the pure-SAE attempt. | The pure-SAE rejection did not leave the baseline PSK path unusable. |
 
+The single-epoch wpa2-sha256-psk expectation is intentionally separate from
+that matrix. It accepts only auth=0x400, policy=0x6, accepted direct PMK or
+matched PLTI, EAPOL TX/RX, and link-up. It is used for a saved Tahoe
+SHA256-PSK profile and never broadens the exact wpa2-psk carrier or turns a
+missing EAPOL/link sequence into a success.
+
 The runner requires three pre-existing saved macOS profiles: exact WPA2-PSK,
 pure SAE with required PMF, and SAE-transition + PSK.  Credentials must come
 only from Keychain/known-network state; there is no password option.
+
+Before a join-capable batch, --preflight can validate all three saved-profile
+names without joining any network. It records SHA-256 profile identifiers and
+the profile-presence booleans only. A preflight PASS does not claim that a
+credential exists or works; PROFILE_READINESS_INCOMPLETE is an explicit
+environment prerequisite result, not an association failure.
 
 ## Evidence and safety rules
 
@@ -36,6 +48,10 @@ command.  It observes the default route before the batch and after every
 epoch; an absent or changed default-route signature makes the scenario and
 overall batch `INCONCLUSIVE_OR_FAIL`.  That is an observation gate, not a
 claim that macOS performed no transient network work of its own.
+
+On the Tahoe 25C56 guest the observer is the platform path /sbin/route.
+/usr/sbin/route is absent there; selecting that stale path would fail before
+the first epoch and must never be represented as an association result.
 
 The evaluator rejects a trace with an ABI/control mismatch, ring overflow,
 counter mismatch, malformed ordering, wrong exact carrier, missing PMF
