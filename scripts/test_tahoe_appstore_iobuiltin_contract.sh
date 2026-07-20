@@ -122,8 +122,10 @@ assert 'fetch-tags: true' in workflow
 assert 'git fetch --force --prune --tags' in workflow
 assert 'git fetch --prune --unshallow --tags' not in workflow
 assert 'xcpretty' not in workflow
-assert workflow.count('set -o pipefail\n        xcodebuild') == 2
-assert workflow.count('| xcbeautify') == 2
+assert workflow.count('set -o pipefail\n        xcodebuild') == 1
+assert workflow.count('| xcbeautify') == 1
+assert 'xcodebuild -scheme "AirportItlwm (all)"' not in workflow
+assert 'must not block publication of the independently validated Tahoe kext' in workflow
 assert 'uses: dev-drprasad/delete-tag-and-release@' not in workflow
 assert 'uses: ncipollo/release-action@' not in workflow
 assert 'name: Publish immutable prerelease' in workflow

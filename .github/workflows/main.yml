@@ -53,12 +53,9 @@ jobs:
         set -o pipefail
         xcodebuild -scheme itlwm -configuration Debug -derivedDataPath build GIT_COMMIT=_${SHORT_SHA} | xcbeautify
 
-    - name: Build AirportItlwm
-      run: |
-        set -o pipefail
-        xcodebuild -scheme "AirportItlwm (all)" -configuration Debug -derivedDataPath build GIT_COMMIT=_${SHORT_SHA} | xcbeautify
-
     # Tahoe is intentionally outside the legacy "AirportItlwm (all)" scheme.
+    # That scheme builds obsolete target families with older private SPI and
+    # must not block publication of the independently validated Tahoe kext.
     # Use the project-owned build wrapper: it aligns MacKernelSDK's Tahoe ABI
     # declarations before building the dedicated target and stages a kext, but
     # never installs, loads, signs for distribution, or reboots the runner.
