@@ -513,7 +513,7 @@ do_preflight() {
 }
 
 do_activate() {
-    local network_signature
+    local network_signature current_signature pre_stop_failure=""
     require_state_dir
     [ ! -e "$(state_file)" ] && [ ! -L "$(state_file)" ] ||
         die "state directory is not fresh"
@@ -534,6 +534,23 @@ do_activate() {
     if ! start_watchdog; then
         clear_marker || true
         die "required-PMF rollback watchdog setup failed"
+    fi
+
+    # The original signature is a transaction admission predicate, not merely
+    # an eventual rollback assertion.  Re-read it after the independent
+    # watchdog is ready and immediately before the first hostapd mutation.
+    # A drift in that bounded interval must retain optional PMF rather than
+    # briefly enter required PMF and discover the mismatch only at rollback.
+    if ! current_signature="$(host_network_signature)"; then
+        pre_stop_failure="host network invariants are unreadable before optional-PMF stop"
+    elif [ "$current_signature" != "$network_signature" ]; then
+        pre_stop_failure="host network invariants changed before optional-PMF stop"
+    fi
+    if [ -n "$pre_stop_failure" ]; then
+        if finish_armed_rollback; then
+            die "$pre_stop_failure; optional-PMF state retained"
+        fi
+        die "$pre_stop_failure; rollback watchdog remains armed"
     fi
 
     if ! stop_configured_hostapd "$OPTIONAL_CONFIG" "$OPTIONAL_PID" ||

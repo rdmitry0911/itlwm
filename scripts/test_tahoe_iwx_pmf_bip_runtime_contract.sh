@@ -112,6 +112,8 @@ for needle in \
     'PMF_AP_WATCHDOG_READY' \
     '--ready-fd 8' \
     'read -r -t 5 -u 8' \
+    'host network invariants changed before optional-PMF stop' \
+    'optional-PMF state retained' \
     '9>&-' \
     'finish_armed_rollback' \
     'setsid "$SELF" --watchdog' \
@@ -231,6 +233,12 @@ ordered(activate, "AP activation rollback ownership",
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
+post_watchdog_activation = activate[activate.find("if ! start_watchdog;"):]
+ordered(post_watchdog_activation, "AP pre-stop host-network fence",
+        "start_watchdog",
+        'current_signature="$(host_network_signature)"',
+        '[ "$current_signature" != "$network_signature" ]',
+        'stop_configured_hostapd "$OPTIONAL_CONFIG"')
 
 watchdog_start = helper[helper.find("start_watchdog() {"):
                         helper.find("cancel_watchdog() {")]
@@ -249,6 +257,8 @@ ordered(watchdog, "watchdog ready acknowledgement",
         'sleep "$LEASE_SECONDS"')
 if "AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-ack watchdog failure discriminator")
+if "FAKE_DRIFT_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the pre-stop host-network drift discriminator")
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",
