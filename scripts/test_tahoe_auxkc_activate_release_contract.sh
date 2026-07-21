@@ -13,7 +13,7 @@ fail() {
 require_literal() {
     local literal="$1"
     local label="$2"
-    rg -F --quiet "$literal" "$HELPER" ||
+    grep -Fq "$literal" "$HELPER" ||
         fail "missing $label: $literal"
 }
 
@@ -32,7 +32,7 @@ require_literal 'rollback_bundle' 'bundle rollback path'
 require_literal 'rollback_auxkc' 'AuxKC rollback path'
 require_literal 'activation_state=READY_FOR_GUEST_REBOOT' 'explicit next-boot boundary'
 
-if rg -n 'kextload|kextunload|/sbin/reboot|kmutil[[:space:]]+(load|unload)|rm[[:space:]]+-rf' "$HELPER"; then
+if grep -nE 'kextload|kextunload|/sbin/reboot|kmutil[[:space:]]+(load|unload)|rm[[:space:]]+-rf' "$HELPER"; then
     fail 'helper contains a prohibited direct-load, reboot, or destructive removal command'
 fi
 
