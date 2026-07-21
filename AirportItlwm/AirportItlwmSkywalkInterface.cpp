@@ -1855,6 +1855,19 @@ processBSDCommand(ifnet_t interface, UInt cmd, void *data)
              */
             return super::processBSDCommand(interface, cmd, data);
         }
+        if (isApple80211SetIoctl(cmd) &&
+            (req->req_type == APPLE80211_IOC_IE ||
+             req->req_type == APPLE80211_IOC_WOW_TEST)) {
+            /*
+             * These no-backend SET selectors consume their complete nested
+             * carrier in the local helpers before returning Unsupported.  At
+             * this BSD ingress IO80211Family has marshalled only the outer
+             * apple80211req, so retain the raw request in the family transport
+             * rather than dereferencing a caller-owned nested carrier here.
+             * The typed local helpers remain available to kernel-owned callers.
+             */
+            return super::processBSDCommand(interface, cmd, data);
+        }
 #endif // __IO80211_TARGET >= __MAC_26_0
         if (req->req_type == TahoeBssBlacklistContracts::kSelector) {
             const uint32_t routeStatus =
