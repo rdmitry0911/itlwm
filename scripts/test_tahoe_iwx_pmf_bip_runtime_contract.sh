@@ -238,6 +238,16 @@ ordered(rollback, "AP rollback sequence",
         "cancel_watchdog",
     "clear_marker")
 
+rekey_helper = helper[helper.find("do_rekey() {"):helper.find("do_rollback() {")]
+ordered(rekey_helper, "AP rekey host-network fence",
+        'state_value host_network_signature_before',
+        'host_network_signature)',
+        'host network invariants changed before bounded group-rekey',
+        'raw REKEY_GTK',
+        'host_network_signature)',
+        'host network invariants changed during bounded group-rekey',
+        'rekey_requested=true')
+
 cleanup = runner[runner.find("cleanup() {"):runner.find("trap cleanup EXIT")]
 if '[ -n "$AP_STATE_DIR" ] && [ "$AP_ROLLBACK_VERIFIED" -eq 0 ]' not in cleanup:
     fail("cleanup does not own rollback from every allocated AP state directory")

@@ -44,6 +44,7 @@ FAKE_SYSCTL="$TMP_ROOT/sysctl"
 FAKE_SUDO="$TMP_ROOT/sudo"
 FAKE_HOSTAPD_LOG="$TMP_ROOT/fake-hostapd.log"
 FAKE_CLI_LOG="$TMP_ROOT/fake-cli.log"
+FAKE_NETWORK_STATE="$TMP_ROOT/fake-network-state"
 # This ephemeral token exists only inside the protected local fixture config.
 # It is never supplied to a real AP, printed, committed, or reused as a lab
 # credential; the helper needs a nonempty syntactic field to exercise its
@@ -116,6 +117,7 @@ printf '%s\n' \
     'set -euo pipefail' \
     '[ "$*" = "-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK" ] || exit 64' \
     'printf "%s\n" "$*" >>"$FAKE_CLI_LOG"' \
+    'if [ "${FAKE_MUTATE_DURING_REKEY:-0}" = 1 ]; then printf "drift\n" >"$FAKE_NETWORK_STATE"; fi' \
     'printf "OK\n"' \
     >"$FAKE_CLI"
 
@@ -131,7 +133,9 @@ printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'case "$*" in' \
-    '  "-4 route show default") printf "default fixture-route\n" ;;' \
+    '  "-4 route show default")' \
+    '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
+    '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
     '  "-4 -o addr show dev wlp0s20f3") printf "fixture-address\n" ;;' \
     '  *) exit 64 ;;' \
     'esac' \
@@ -167,7 +171,9 @@ export AIAM_PMF_AP_SUDO="$FAKE_SUDO"
 export AIAM_PMF_AP_RUN_DIR="$RUN_DIR"
 export AIAM_PMF_AP_STATE_PREFIX="$STATE_PREFIX"
 export AIAM_PMF_AP_CONTROL_DIR="$CONTROL_DIR"
-export FAKE_HOSTAPD_LOG FAKE_CLI_LOG
+export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE
+: >"$FAKE_CLI_LOG"
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
 
 "$FAKE_HOSTAPD" -B -P "$RUN_DIR/hostapd-5g.pid" \
     -f "$RUN_DIR/hostapd-5g.log" "$OPTIONAL"
@@ -190,6 +196,35 @@ grep -Fxq 'state=required' "$STATE_DIR/state.txt" ||
 [ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
     fail 'required hostapd pid was not created'
 [ ! -e "$RUN_DIR/hostapd-5g.pid" ] || fail 'optional hostapd pid survived activation'
+
+# A host-side route/address/forwarding drift must stop before the sole group
+# rekey stimulus reaches hostapd. The mock state is restored before rollback.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if FAKE_NETWORK_MUTATED=1 "$HELPER" --rekey --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-drift.out" 2>"$TMP_ROOT/rekey-drift.err"; then
+    fail 'group rekey accepted a changed host-network signature'
+fi
+grep -Fq 'host network invariants changed before bounded group-rekey' \
+    "$TMP_ROOT/rekey-drift.err" ||
+    fail 'group rekey drift retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'group rekey drift reached the hostapd CLI'
+
+# A signature change produced after hostapd accepts REKEY_GTK is also a
+# failure. It must not create the rekey witness used by the runtime runner.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if FAKE_MUTATE_DURING_REKEY=1 "$HELPER" --rekey --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-post-drift.out" 2>"$TMP_ROOT/rekey-post-drift.err"; then
+    fail 'group rekey accepted a post-command host-network signature change'
+fi
+grep -Fq 'host network invariants changed during bounded group-rekey' \
+    "$TMP_ROOT/rekey-post-drift.err" ||
+    fail 'post-command rekey drift retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" -eq $((REKEY_CLI_LINES_BEFORE + 1)) ] ||
+    fail 'post-command drift did not reach exactly one hostapd CLI request'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'post-command rekey drift wrote a success witness'
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
 
 "$HELPER" --rekey --state-dir "$STATE_DIR" \
     >"$TMP_ROOT/rekey.out" 2>"$TMP_ROOT/rekey.err" ||

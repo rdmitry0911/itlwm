@@ -44,7 +44,9 @@ The only post-initial stimulus is hostapd's canonical `REKEY_GTK` control
 command sent through its raw control transport. For an IEEE 802.11w-enabled
 group state machine, that standard rekey path rotates the alternate IGTK slot
 as well as the GTK; a lower-case CLI alias is not used because packaged client
-builds need not expose it.
+builds need not expose it. The helper compares its hash-only host-network
+baseline immediately before and after that command; a changed signature blocks
+the stimulus or makes it inconclusive before any success can be reported.
 
 The required configuration must represent the same saved-profile identity and
 credential as the optional configuration. A mismatch is a precondition failure.

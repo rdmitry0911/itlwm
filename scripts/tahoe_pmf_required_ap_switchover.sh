@@ -477,12 +477,19 @@ do_activate() {
 }
 
 do_rekey() {
+    local before_signature current_signature
     require_state_dir
     marker_matches_state || die "PMF-required state ownership is not current"
     [ "$(state_value state)" = required ] || die "state does not authorize a group rekey"
+    before_signature="$(state_value host_network_signature_before)" ||
+        die "state lacks the host network baseline"
     configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         die "required-PMF hostapd process is not exact"
     runtime_ap_is_pinned || die "the lab AP left the pinned channel/width"
+    current_signature="$(host_network_signature)" ||
+        die "host network invariants are unreadable before bounded group-rekey"
+    [ "$current_signature" = "$before_signature" ] ||
+        die "host network invariants changed before bounded group-rekey"
     # Use hostapd's documented raw control transport for its canonical
     # REKEY_GTK command.  A lower-case CLI alias is not consistently exposed
     # by packaged hostapd_cli builds; the daemon command drives the standard
@@ -494,6 +501,10 @@ do_rekey() {
     grep -Fxq OK "$STATE_DIR/rekey.stdout" ||
         die "hostapd did not acknowledge the bounded group-rekey request"
     runtime_ap_is_pinned || die "the lab AP left the pinned channel/width after rekey"
+    current_signature="$(host_network_signature)" ||
+        die "host network invariants are unreadable after bounded group-rekey"
+    [ "$current_signature" = "$before_signature" ] ||
+        die "host network invariants changed during bounded group-rekey"
     printf 'rekey_requested=true\n' >"$STATE_DIR/rekey.status"
     chmod 600 "$STATE_DIR/rekey.status"
     printf 'PMF_AP_REKEY=REQUESTED\n'
