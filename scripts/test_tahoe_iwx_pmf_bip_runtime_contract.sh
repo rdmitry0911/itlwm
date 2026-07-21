@@ -65,6 +65,7 @@ for needle in \
     'runtime-attestation.json' \
     'host_ip_nat_forwarding_route_mutated' \
     'AP_REQUIRED_WAS_ACTIVE' \
+    'AP_ROLLBACK_ATTEMPTED=1' \
     'AP_ROLLBACK_VERIFIED' \
     'RADIO_OFF_PENDING=1' \
     'RADIO_RECOVERY_ATTEMPTED=1'; do
@@ -220,7 +221,21 @@ ordered(rollback, "AP rollback sequence",
         "host_network_signature",
         "rollback_verified=true",
         "cancel_watchdog",
-        "clear_marker")
+    "clear_marker")
+
+cleanup = runner[runner.find("cleanup() {"):runner.find("trap cleanup EXIT")]
+if '[ -n "$AP_STATE_DIR" ] && [ "$AP_ROLLBACK_VERIFIED" -eq 0 ]' not in cleanup:
+    fail("cleanup does not own rollback from every allocated AP state directory")
+if 'AP_REQUIRED_ACTIVE" -eq 1' in cleanup:
+    fail("cleanup rollback remains gated on the advisory required-active flag")
+ordered(cleanup, "runner cleanup rollback ownership",
+        'AP_ROLLBACK_ATTEMPTED=1',
+        '"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"',
+        'rollback_verified=true')
+
+explicit_rollback = main.find('AP_ROLLBACK_ATTEMPTED=1\n"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"')
+if explicit_rollback < 0:
+    fail("normal PMF sequence lacks an explicit rollback-attempt witness")
 
 for token in ("wpa_passphrase", "optional_ssid", "required_ssid",
               "optional_passphrase", "required_passphrase"):

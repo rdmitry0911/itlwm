@@ -72,6 +72,13 @@ sequence:
    cross-slot rekey verdict, disable trace control, restore optional PMF, and
    re-check recovery/invariants and loaded candidate identity.
 
+The runner treats its restricted AP state directory as rollback ownership even
+if interruption occurs in the small interval after the external activation
+returns and before a local success flag is stored. Cleanup first accepts a
+watchdog-written rollback witness, otherwise requests the same marker-bound
+rollback immediately. A final `PASS` requires both an explicit rollback-attempt
+witness and verified optional-PMF restoration.
+
 Every missing acknowledgement, changed binding, trace drop, unsealed capture,
 failed rollback witness, or route/address deviation produces an inconclusive
 result. No generic association, ping, or initial-only trace may be promoted to

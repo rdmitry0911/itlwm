@@ -53,6 +53,7 @@ AP_PREFLIGHT_PASSED=0
 AP_REQUIRED_ACTIVE=0
 AP_REQUIRED_WAS_ACTIVE=0
 AP_ROLLBACK_VERIFIED=0
+AP_ROLLBACK_ATTEMPTED=0
 INITIAL_PMF_PROGRESS=0
 TRAFFIC_SUCCESS=0
 REKEY_REQUESTED=0
@@ -608,7 +609,7 @@ write_safe_attestation() {
     python3 - "$OUT_DIR/runtime-attestation.json" \
         "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" "$RELEASE_TAG" "$ARCHIVE_SHA256" "$BINARY_SHA256" "$MACHO_UUID" \
         "$IDENTITY_BEFORE_BOUND" "$IDENTITY_AFTER_BOUND" "$SAVED_PROFILE_READY" \
-        "$AP_PREFLIGHT_PASSED" "$AP_REQUIRED_WAS_ACTIVE" "$AP_ROLLBACK_VERIFIED" \
+        "$AP_PREFLIGHT_PASSED" "$AP_REQUIRED_WAS_ACTIVE" "$AP_ROLLBACK_ATTEMPTED" "$AP_ROLLBACK_VERIFIED" \
         "$INITIAL_PMF_PROGRESS" "$TRAFFIC_SUCCESS" "$REKEY_REQUESTED" "$CROSS_SLOT_REKEY_OBSERVED" "$NETWORK_INVARIANTS_OK" \
         "$RESET_SEQUENCE" "$CAPTURE_GENERATION" "$TRACE_BACKEND" "$TRACE_INTEGRITY" "$TRACE_ENTRY_COUNT" "$TRACE_EPISODE_COUNT" "$TRACE_DROPPED_ENTRIES" "$TRACE_VERDICT" "$TRACE_FIRST_MISSING_STAGE" \
         "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$TRACE_SEAL_ACKNOWLEDGED" "$FINAL_CONTROL_DISABLED" "$DOUBLE_READ_STABLE" \
@@ -619,7 +620,7 @@ from pathlib import Path
 
 (
     output, source_commit, source_identity, release_tag, archive_sha, binary_sha, macho_uuid,
-    identity_before, identity_after, saved_profile, ap_preflight, ap_required, ap_rollback,
+    identity_before, identity_after, saved_profile, ap_preflight, ap_required, ap_rollback_attempted, ap_rollback,
     initial_progress, traffic, rekey_requested, cross_slot, network_ok,
     reset_sequence, generation, backend, integrity, entry_count, episode_count, dropped,
     verdict, first_missing, reset_sync, initial_sync, sealed, disabled, double_read,
@@ -637,7 +638,7 @@ trace_pass = (
 )
 result = (
     b(identity_before) and b(identity_after) and b(saved_profile) and
-    b(ap_preflight) and b(ap_required) and b(ap_rollback) and
+    b(ap_preflight) and b(ap_required) and b(ap_rollback_attempted) and b(ap_rollback) and
     b(initial_progress) and b(traffic) and b(rekey_requested) and b(cross_slot) and
     b(network_ok) and b(radio_off) and b(radio_on) and b(run_complete) and trace_pass
 )
@@ -678,6 +679,7 @@ document = {
     "ap_switchover": {
         "optional_pmf_preflight_passed": b(ap_preflight),
         "required_pmf_was_active": b(ap_required),
+        "optional_pmf_rollback_attempted": b(ap_rollback_attempted),
         "optional_pmf_rollback_verified": b(ap_rollback),
         "host_ip_nat_forwarding_route_mutated": False,
     },
@@ -746,12 +748,22 @@ cleanup() {
             RADIO_OFF_PENDING=0
         fi
     fi
-    if [ "$AP_REQUIRED_ACTIVE" -eq 1 ] && [ -n "$AP_STATE_DIR" ]; then
-        if "$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR" \
-            >"$OUT_DIR/ap-rollback.stdout" 2>"$OUT_DIR/ap-rollback.stderr"; then
-            if grep -Fxq 'rollback_verified=true' "$AP_STATE_DIR/rollback.status"; then
-                AP_ROLLBACK_VERIFIED=1
-                AP_REQUIRED_ACTIVE=0
+    # The external activation can return immediately before this shell records
+    # AP_REQUIRED_ACTIVE. A fresh state directory is therefore the ownership
+    # boundary, not that advisory local flag. A valid watchdog-written witness
+    # is accepted first; otherwise ask the helper for an immediate rollback.
+    if [ -n "$AP_STATE_DIR" ] && [ "$AP_ROLLBACK_VERIFIED" -eq 0 ]; then
+        if grep -Fxq 'rollback_verified=true' "$AP_STATE_DIR/rollback.status" 2>/dev/null; then
+            AP_ROLLBACK_VERIFIED=1
+            AP_REQUIRED_ACTIVE=0
+        else
+            AP_ROLLBACK_ATTEMPTED=1
+            if "$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR" \
+                >"$OUT_DIR/ap-rollback-cleanup.stdout" 2>"$OUT_DIR/ap-rollback-cleanup.stderr"; then
+                if grep -Fxq 'rollback_verified=true' "$AP_STATE_DIR/rollback.status"; then
+                    AP_ROLLBACK_VERIFIED=1
+                    AP_REQUIRED_ACTIVE=0
+                fi
             fi
         fi
     fi
@@ -875,6 +887,7 @@ else
     fail_phase trace-cross-slot-rekey-verdict
 fi
 
+AP_ROLLBACK_ATTEMPTED=1
 "$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR" \
     >"$OUT_DIR/ap-rollback.stdout" 2>"$OUT_DIR/ap-rollback.stderr" || fail_phase ap-rollback
 grep -Fxq 'rollback_verified=true' "$AP_STATE_DIR/rollback.status" || fail_phase ap-rollback-verification

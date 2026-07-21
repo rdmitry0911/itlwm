@@ -126,7 +126,7 @@ def validate(document: dict) -> None:
     require(ap.get("host_ip_nat_forwarding_route_mutated") is False,
             "AP helper claims host network mutation")
     boolean_fields(ap, "optional_pmf_preflight_passed", "required_pmf_was_active",
-                   "optional_pmf_rollback_verified")
+                   "optional_pmf_rollback_attempted", "optional_pmf_rollback_verified")
 
     pmf_bip = document.get("pmf_bip")
     require(isinstance(pmf_bip, dict), "PMF/BIP section missing")
@@ -207,6 +207,7 @@ def validate(document: dict) -> None:
             "PASS lacks network-invariant preservation")
         require(all(ap[key] is True for key in (
             "optional_pmf_preflight_passed", "required_pmf_was_active",
+            "optional_pmf_rollback_attempted",
             "optional_pmf_rollback_verified")),
             "PASS lacks AP preflight, activation, or rollback")
         require(all(pmf_bip[key] is True for key in (
@@ -286,6 +287,7 @@ def fixture() -> dict:
         "ap_switchover": {
             "optional_pmf_preflight_passed": True,
             "required_pmf_was_active": True,
+            "optional_pmf_rollback_attempted": True,
             "optional_pmf_rollback_verified": True,
             "host_ip_nat_forwarding_route_mutated": False,
         },
