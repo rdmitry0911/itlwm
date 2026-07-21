@@ -1,0 +1,67 @@
+{
+  "candidate": {
+    "archive_sha256": "6525f196728ab663911c6ea60a866c7faf6c003381ea2ac28cbcba3cdd8368e9",
+    "binary_sha256": "7c1c899e72fd4e530dd657aa9645de5a5bf037e743db7ca58a237821f8a6ca7e",
+    "identity_binding_precondition": "PASS",
+    "macho_uuid": "4E110544-97DC-370F-AAAF-1CEF33BB8D11",
+    "release_publication_model": "single_mutable_release_per_semantic_version",
+    "release_tag": "v2.4.0-alpha",
+    "source_commit": "ba4a2f0833da4ca02d654f929bac8e5d4e8a6412",
+    "source_identity_sha256": "324713a6d42f1a4514f007bfdd0e4ca587389de4811b9733df16fd9c387af4bb"
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "wireless_identity_committed": false
+  },
+  "failure_phase": "none",
+  "local_only_raw_artifacts": {
+    "client_output_retained_local_only": true,
+    "raw_output_committed": false
+  },
+  "non_claims": [
+    "pure SAE or PMF functionality",
+    "generic Internet reachability",
+    "physical-host validation",
+    "proof beyond the categorical post-PLTI trace verdict"
+  ],
+  "radio_cycle": {
+    "connection_trigger": "saved_profile_autojoin_only",
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_join_command": false,
+    "explicit_route_command": false,
+    "radio_off_observed": true,
+    "radio_on_observed": true,
+    "radio_recovery_attempted": false,
+    "requested_cycles": 1,
+    "saved_profile_precondition": "external"
+  },
+  "result": "PASS",
+  "schema": "itlwm-tahoe-post-plti-trace-runtime/v3",
+  "scope": {
+    "environment": "pinned_disposable_qemu_guest",
+    "guest_network_identity_collected": false,
+    "guest_rebooted_by_runner": false,
+    "physical_host_rebooted": false,
+    "physical_host_touched": false
+  },
+  "trace": {
+    "backend": "iwn",
+    "capture_generation": 1,
+    "double_read_stable": true,
+    "dropped_entries": 0,
+    "entry_count": 33,
+    "episode_count": 1,
+    "final_control_disabled": true,
+    "first_missing_stage": "none",
+    "initial_snapshot_buffer_generation_synchronized": true,
+    "integrity": "ok",
+    "reset_ack_generation": 1,
+    "reset_ack_generation_synchronized": true,
+    "reset_control_sequence": 1784633638,
+    "seal_control_acknowledged": true,
+    "verdict": "KERNEL_CHAIN_OBSERVED"
+  }
+}

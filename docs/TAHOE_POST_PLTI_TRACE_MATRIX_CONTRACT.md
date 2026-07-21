@@ -88,6 +88,17 @@ continuation.  The evaluator accepts the resulting repeated categorical scan
 start markers before the one completion marker, without recording any band or
 channel identity.  Static coverage forbids trace-driven scan-policy changes.
 
+## Sanitized runtime record
+
+The successful isolated runtime record for source commit
+`ba4a2f0833da4ca02d654f929bac8e5d4e8a6412` is retained in
+`docs/TAHOE_RUNTIME_BA4A2F0.md` and the paired aggregate-only evidence files
+under `evidence/runtime/`.  It records one complete IWN categorical trace and
+a separate four-cycle radio baseline without committing a wireless identity,
+credential, address, route, packet, or raw client output.  The record uses
+the single mutable `v2.4.0-alpha` semantic-release model; it does not itself
+create or replace a release asset.
+
 ## Release handling
 
 A semantic version owns one mutable prerelease asset.  A fully verified

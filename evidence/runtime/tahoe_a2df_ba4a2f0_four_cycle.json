@@ -1,0 +1,70 @@
+{
+  "activation": {
+    "direct_load_or_unload": false,
+    "guest_only_reboot": true,
+    "preflight_canonical_mutation": "none",
+    "private_auxkc_admission": "PASS",
+    "transactional_activation": "ACTIVATION_READY"
+  },
+  "artifacts": {
+    "raw_artifacts_local_only": true,
+    "raw_summary_sha256": "f56733e1fab1843ca68613a2bb080191d006507bf877989c7498c4dfb0a63b21"
+  },
+  "candidate": {
+    "archive_sha256": "6525f196728ab663911c6ea60a866c7faf6c003381ea2ac28cbcba3cdd8368e9",
+    "binary_sha256": "7c1c899e72fd4e530dd657aa9645de5a5bf037e743db7ca58a237821f8a6ca7e",
+    "macho_uuid": "4E110544-97DC-370F-AAAF-1CEF33BB8D11",
+    "post_reboot_identity_binding": "PASS",
+    "release_publication_model": "single_mutable_release_per_semantic_version",
+    "release_tag": "v2.4.0-alpha",
+    "source_commit": "ba4a2f0833da4ca02d654f929bac8e5d4e8a6412",
+    "source_identity_sha256": "324713a6d42f1a4514f007bfdd0e4ca587389de4811b9733df16fd9c387af4bb"
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "wireless_identity_committed": false
+  },
+  "dhcp_observation": {
+    "explicit_state_mutating_command": false,
+    "ipconfig_getpacket_stdout_observation": "COMPLETE"
+  },
+  "non_claims": {
+    "general_internet_traffic_tested": false,
+    "physical_host_validation": false,
+    "pure_sae_or_pmf_functionality_verified": false
+  },
+  "results": {
+    "completed_cycles": 4,
+    "fresh_association_epochs": 4,
+    "ping_packets_per_cycle": 5,
+    "ping_successful_cycles": 4,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "stable_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "runner": {
+    "post_plti_evidence_contract_sha256": "2d326338e78400e3c1463f45a603fc60b475319a3ef88ba26143f9d7fa8bf521",
+    "script_sha256": "12fe0bebcacec91b3a5fcfb23893ec2513017579f8972473c163c9f9176c91fe",
+    "source_commit": "ba4a2f0833da4ca02d654f929bac8e5d4e8a6412"
+  },
+  "schema_version": "itlwm-tahoe-a2df-radio-baseline/v2",
+  "scope": {
+    "base_image_backing_chain_depth": 1,
+    "environment": "fresh_disposable_qemu_overlay",
+    "host_side_observation_only": true,
+    "physical_host_rebooted": false,
+    "radio_power_changed_on_pinned_guest": true,
+    "remote_validation_host_touched": false,
+    "saved_profile_autojoin_only": true
+  },
+  "verdict": {
+    "dhcp_textual_observation_complete": true,
+    "four_cycle_result": "PASS",
+    "management_and_default_route_preserved": true,
+    "pinned_direct_wifi_route_preserved": true
+  }
+}
