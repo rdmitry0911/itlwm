@@ -4,21 +4,28 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 CAPTURE="$ROOT/scripts/capture_tahoe_lab_kext_identity.py"
+PROVENANCE="$ROOT/scripts/create_tahoe_candidate_provenance.py"
 
 [ -x "$CAPTURE" ] || {
     echo "FAIL: missing executable read-only identity capture" >&2
     exit 1
 }
+[ -x "$PROVENANCE" ] || {
+    echo "FAIL: missing candidate provenance generator" >&2
+    exit 1
+}
 
 python3 "$CAPTURE" --self-test
+python3 "$PROVENANCE" --self-test
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$PROVENANCE" <<'PY'
 from pathlib import Path
 import sys
 
 
 root = Path(sys.argv[1])
 text = (root / "scripts/capture_tahoe_lab_kext_identity.py").read_text()
+provenance = Path(sys.argv[2]).read_text()
 
 
 def require(needle: str, label: str) -> None:
@@ -32,7 +39,10 @@ def forbid(needle: str, label: str) -> None:
 
 
 for needle, label in (
-    ("itlwm-tahoe-lab-kext-identity-binding/v1", "schema"),
+    ("itlwm-tahoe-lab-kext-identity-binding/v2", "schema"),
+    ("--candidate-provenance", "mandatory candidate provenance input"),
+    ("release_identity_from_candidate_provenance", "archive/provenance binding"),
+    ("source_commit", "identity-bound source commit"),
     ("StrictHostKeyChecking=yes", "strict host-key check"),
     ("GlobalKnownHostsFile=/dev/null", "isolated global known-hosts rule"),
     ("PINNED_HOST_KEY_SHA256", "pinned host-key fingerprint"),
@@ -55,6 +65,17 @@ for needle, label in (
     require(needle, label)
 
 for needle, label in (
+    ("itlwm-tahoe-candidate-provenance/v1", "provenance schema"),
+    ("require_clean_head", "clean committed source boundary"),
+    ("source_identity", "committed source identity"),
+    ("bind_candidate_provenance", "archive digest binding"),
+    ("candidate source worktree is not clean", "dirty-tree rejection"),
+    ("candidate_kext_installed\": False", "install non-claim"),
+):
+    if needle not in provenance:
+        raise SystemExit(f"identity binding contract: missing provenance {label}: {needle}")
+
+for needle, label in (
     ("StrictHostKeyChecking=no", "permissive host-key setting"),
     ("UserKnownHostsFile=/dev/null", "discarded host-key store"),
     ("kmutil load", "kext load"),
@@ -69,6 +90,8 @@ for needle, label in (
     ("ifconfig ", "interface configuration mutation"),
     ("parser.add_argument(\"--guest\"", "caller-selectable guest"),
     ("parser.add_argument(\"--port\"", "caller-selectable port"),
+    ("parser.add_argument(\"--release-tag\"", "free release tag"),
+    ("parser.add_argument(\"--source-commit\"", "free source commit"),
     ("release_zip_path", "artifact path in public evidence"),
 ):
     forbid(needle, label)

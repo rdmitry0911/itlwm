@@ -8,14 +8,22 @@ post-PLTI trace.
 
 ## Preconditions
 
-1. Build the exact source candidate and the `airport_itlwm_post_plti_trace`
-   client with the Tahoe gate.
+1. Build and package the exact source candidate and the
+   `airport_itlwm_post_plti_trace` client with the Tahoe gate.  From the clean
+   committed checkout that produced the archive, create a local
+   `create_tahoe_candidate_provenance.py` manifest.  It binds the full source
+   commit and source identity to the archive digest, binary digest, UUID, and
+   semantic release tag.
 2. Complete private AuxKC admission and transactional activation for the
    release archive.  Reboot only a fresh, disposable external-overlay guest.
-3. Capture the existing read-only exact-candidate identity attestation for
-   that guest and archive.  Every candidate-binding check and its
+3. Capture a fresh read-only v2 exact-candidate identity attestation for that
+   guest, archive, and provenance manifest.  Every candidate-binding check and its
    `ready_for_exact_candidate_runtime_experiment` verdict must be true.  The
-   release tag must end in the seven-character prefix of `--source-commit`.
+   release tag is a semantic version such as v2.4.0-alpha.  It is the single
+   mutable prerelease for that semantic version, not a new tag for every
+   commit.  The source commit, archive digest, binary digest, and Mach-O UUID
+   remain identity-bound fields in the sanitized attestation; the runner does
+   not accept a free source-commit label.
 4. Copy the built client before the run to a restricted guest-local path such
    as `/private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace`.
    This copy is not a KEXT install/load operation.
@@ -34,10 +42,17 @@ From the checkout that produced the candidate, run:
 
 ```bash
 scripts/test_tahoe_post_plti_trace_runtime_contract.sh
+scripts/create_tahoe_candidate_provenance.py \
+  --release-zip /local/safe/AirportItlwm-Tahoe.kext.zip \
+  --release-tag v2.4.0-alpha \
+  --output /local/safe/tahoe_candidate_provenance.json
+scripts/capture_tahoe_lab_kext_identity.py \
+  --expected-release-zip /local/safe/AirportItlwm-Tahoe.kext.zip \
+  --candidate-provenance /local/safe/tahoe_candidate_provenance.json \
+  --output /local/safe/tahoe_lab_kext_identity.json
 scripts/run_tahoe_post_plti_trace_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
   --identity-evidence /local/safe/tahoe_lab_kext_identity.json \
-  --source-commit FULL_GIT_SHA \
   --out runtime-captures/post-plti-CANDIDATE
 scripts/test_tahoe_post_plti_trace_runtime_evidence_contract.sh \
   --evidence runtime-captures/post-plti-CANDIDATE/runtime-attestation.json
@@ -58,14 +73,31 @@ The runner performs, in order:
    empty, undropped trace;
 3. observe the radio On, execute exactly one public OFF/ON transition, and
    let macOS use saved-profile autojoin without an explicit join command;
-4. collect two identical safe trace reads after a bounded settle period; and
-5. turn tracing off and wait for its acknowledgement.
+4. make at most five bounded local report reads after the settle period, solely
+   to allow an already ordered success chain to finish before capture is
+   frozen;
+5. seal the capture: block new episode admission, detach the active episode
+   token, append the categorical sealed terminal marker where applicable, and
+   wait for the acknowledged disabled control state;
+6. collect two identical frozen safe trace reads; and
+7. send a final off control and wait for its acknowledgement.
 
 `PASS` is intentionally strict: both radio states, generation synchronization,
-zero dropped entries, stable double-read, final trace shutdown, and the shared
+zero dropped entries, an acknowledged seal, a stable sealed double-read, final
+trace shutdown, `first_missing_stage=none`, and the shared
 `KERNEL_CHAIN_OBSERVED` verdict are required.  A missing branch,
 unsupported backend, incomplete ordering, post-reset race, or unstable read is
 `INCONCLUSIVE`, not a functional success.
+
+A structurally valid sealed diagnostic prefix is retained locally as an
+`INCONCLUSIVE` evidence result rather than being discarded as a runner failure.
+It is useful for locating the first categorical missing stage, but it is never
+an association-success claim.
+
+The runner exits successfully for such a valid diagnostic prefix so that its
+sanitized evidence is retained.  Release eligibility must instead require the
+evidence contract to report `result=PASS`; a zero process exit alone is not
+release authorization.
 
 The verdict requires the ordered categorical chain through port-valid after
 EAPOL enqueue.  Firmware submit/TX completion may arrive asynchronously and is

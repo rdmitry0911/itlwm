@@ -7,7 +7,7 @@
 #include <sys/time.h>
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
-#include <ClientKit/AirportItlwmPostPltiTraceContracts.h>
+#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>
 
 /*
  * This client intentionally reads only the separate safe-only trace
@@ -47,12 +47,13 @@ next_sequence(void)
 }
 
 static int
-set_control(io_service_t service, int enable, int reset)
+set_control(io_service_t service, int enable, int reset, int seal)
 {
-    char control[96];
+    char control[112];
     int written = snprintf(control, sizeof(control),
-                           "seq=%u;enable=%u;reset=%u", next_sequence(),
-                           enable != 0 ? 1U : 0U, reset != 0 ? 1U : 0U);
+                           "seq=%u;enable=%u;reset=%u;seal=%u", next_sequence(),
+                           enable != 0 ? 1U : 0U, reset != 0 ? 1U : 0U,
+                           seal != 0 ? 1U : 0U);
     if (written < 0 || (size_t)written >= sizeof(control))
         return 2;
 
@@ -151,6 +152,16 @@ event_name(uint32_t event)
         return "port-valid-transition";
     case kAirportItlwmPostPltiTraceEventEpisodeAborted:
         return "episode-aborted";
+    case kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved:
+        return "state-scan-self-request-observed";
+    case kAirportItlwmPostPltiTraceEventIwnScanStateEntered:
+        return "iwn-scan-state-entered";
+    case kAirportItlwmPostPltiTraceEventIwnScanCommandRejected:
+        return "iwn-scan-command-rejected";
+    case kAirportItlwmPostPltiTraceEventScanNoCandidate:
+        return "scan-no-candidate";
+    case kAirportItlwmPostPltiTraceEventCaptureWindowSealed:
+        return "capture-window-sealed";
     default:
         return "unknown";
     }
@@ -301,29 +312,88 @@ backend_name(uint32_t backend)
 }
 
 static const char *
-verdict_name(enum AirportItlwmPostPltiTraceVerdict verdict)
+verdict_name(enum AirportItlwmPostPltiTraceMatrixVerdict verdict)
 {
     switch (verdict) {
-    case kAirportItlwmPostPltiTraceVerdictIntegrityInconclusive:
+    case kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive:
         return "INTEGRITY_INCONCLUSIVE";
-    case kAirportItlwmPostPltiTraceVerdictBackendUnsupported:
+    case kAirportItlwmPostPltiTraceMatrixVerdictBackendUnsupported:
         return "BACKEND_UNSUPPORTED";
-    case kAirportItlwmPostPltiTraceVerdictBranchNotObserved:
+    case kAirportItlwmPostPltiTraceMatrixVerdictBranchNotObserved:
         return "BRANCH_NOT_OBSERVED";
-    case kAirportItlwmPostPltiTraceVerdictResumeNoScan:
-        return "RESUME_NO_SCAN";
-    case kAirportItlwmPostPltiTraceVerdictResumeNoSelection:
+    case kAirportItlwmPostPltiTraceMatrixVerdictResumeNoStateRequest:
+        return "RESUME_NO_STATE_REQUEST";
+    case kAirportItlwmPostPltiTraceMatrixVerdictResumeNoIwnDispatch:
+        return "RESUME_NO_IWN_DISPATCH";
+    case kAirportItlwmPostPltiTraceMatrixVerdictScanCommandRejected:
+        return "SCAN_COMMAND_REJECTED";
+    case kAirportItlwmPostPltiTraceMatrixVerdictScanIncomplete:
+        return "SCAN_INCOMPLETE";
+    case kAirportItlwmPostPltiTraceMatrixVerdictScanNoCandidate:
+        return "SCAN_NO_CANDIDATE";
+    case kAirportItlwmPostPltiTraceMatrixVerdictResumeNoSelection:
         return "RESUME_NO_SELECTION";
-    case kAirportItlwmPostPltiTraceVerdictAuthNotDrained:
+    case kAirportItlwmPostPltiTraceMatrixVerdictAuthNotDrained:
         return "AUTH_NOT_DRAINED";
-    case kAirportItlwmPostPltiTraceVerdictTxNoCompletion:
+    case kAirportItlwmPostPltiTraceMatrixVerdictTxNoCompletion:
         return "TX_NO_COMPLETION";
-    case kAirportItlwmPostPltiTraceVerdictNoEapol:
+    case kAirportItlwmPostPltiTraceMatrixVerdictNoEapol:
         return "NO_EAPOL";
-    case kAirportItlwmPostPltiTraceVerdictKernelChainObserved:
+    case kAirportItlwmPostPltiTraceMatrixVerdictKernelChainObserved:
         return "KERNEL_CHAIN_OBSERVED";
     }
     return "INTEGRITY_INCONCLUSIVE";
+}
+
+static const char *
+missing_stage_name(enum AirportItlwmPostPltiTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmPostPltiTraceMissingStageNone: return "none";
+    case kAirportItlwmPostPltiTraceMissingStageStateScanSelfRequest:
+        return "state-scan-self-request";
+    case kAirportItlwmPostPltiTraceMissingStageIwnScanState:
+        return "iwn-scan-state";
+    case kAirportItlwmPostPltiTraceMissingStageIwnScanCommand:
+        return "iwn-scan-command";
+    case kAirportItlwmPostPltiTraceMissingStageScanCompletion:
+        return "scan-completion";
+    case kAirportItlwmPostPltiTraceMissingStageBssSelection:
+        return "bss-selection";
+    case kAirportItlwmPostPltiTraceMissingStageJoinBss:
+        return "join-bss";
+    case kAirportItlwmPostPltiTraceMissingStageAuthState:
+        return "auth-state";
+    case kAirportItlwmPostPltiTraceMissingStageAuthEnqueue:
+        return "auth-enqueue";
+    case kAirportItlwmPostPltiTraceMissingStageAuthDequeue:
+        return "auth-dequeue";
+    case kAirportItlwmPostPltiTraceMissingStageAuthFirmwareSubmit:
+        return "auth-firmware-submit";
+    case kAirportItlwmPostPltiTraceMissingStageAuthExchange:
+        return "auth-exchange";
+    case kAirportItlwmPostPltiTraceMissingStageAssocState:
+        return "assoc-state";
+    case kAirportItlwmPostPltiTraceMissingStageAssocEnqueue:
+        return "assoc-enqueue";
+    case kAirportItlwmPostPltiTraceMissingStageAssocDequeue:
+        return "assoc-dequeue";
+    case kAirportItlwmPostPltiTraceMissingStageAssocFirmwareSubmit:
+        return "assoc-firmware-submit";
+    case kAirportItlwmPostPltiTraceMissingStageAssocExchange:
+        return "assoc-exchange";
+    case kAirportItlwmPostPltiTraceMissingStageRunState:
+        return "run-state";
+    case kAirportItlwmPostPltiTraceMissingStageEapolDecapped:
+        return "eapol-decapped";
+    case kAirportItlwmPostPltiTraceMissingStageEapolKernelPae:
+        return "eapol-kernel-pae";
+    case kAirportItlwmPostPltiTraceMissingStageEapolEnqueue:
+        return "eapol-enqueue";
+    case kAirportItlwmPostPltiTraceMissingStagePortValid:
+        return "port-valid";
+    default: return "unknown";
+    }
 }
 
 static int
@@ -403,16 +473,19 @@ get_report(io_service_t service)
         copy_buffer(service, &buffer) != 0)
         return 1;
     int integrity = collect_entries(&snapshot, &buffer, entries, &count);
-    enum AirportItlwmPostPltiTraceVerdict verdict =
-        airport_itlwm_post_plti_trace_classify_entries(
+    enum AirportItlwmPostPltiTraceMissingStage missing_stage =
+        kAirportItlwmPostPltiTraceMissingStageUnknown;
+    enum AirportItlwmPostPltiTraceMatrixVerdict verdict =
+        airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
             entries, count, integrity, snapshot.backend,
-            snapshot.episodeCount, snapshot.activeEpisode);
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
     printf("capture_generation=%u backend=%s entries=%u integrity=%s "
            "episode_count=%u active_episode=%u\n",
            snapshot.captureGeneration, backend_name(snapshot.backend), count,
            integrity ? "ok" : "inconclusive", snapshot.episodeCount,
            snapshot.activeEpisode);
-    printf("verdict=%s\n", verdict_name(verdict));
+    printf("verdict=%s first_missing_stage=%s\n", verdict_name(verdict),
+           missing_stage_name(missing_stage));
     return 0;
 }
 
@@ -421,7 +494,7 @@ usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
-            "  %s reset|on|off\n"
+            "  %s reset|on|off|seal\n"
             "  %s get control|snapshot|trace|report\n",
             program, program);
 }
@@ -441,11 +514,13 @@ main(int argc, char **argv)
 
     int rc = 2;
     if (strcmp(argv[1], "reset") == 0)
-        rc = set_control(service, 1, 1);
+        rc = set_control(service, 1, 1, 0);
     else if (strcmp(argv[1], "on") == 0)
-        rc = set_control(service, 1, 0);
+        rc = set_control(service, 1, 0, 0);
     else if (strcmp(argv[1], "off") == 0)
-        rc = set_control(service, 0, 0);
+        rc = set_control(service, 0, 0, 0);
+    else if (strcmp(argv[1], "seal") == 0)
+        rc = set_control(service, 0, 0, 1);
     else if (strcmp(argv[1], "get") == 0 && argc == 3) {
         if (strcmp(argv[2], "control") == 0)
             rc = get_control(service);

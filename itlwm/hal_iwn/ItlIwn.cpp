@@ -1968,6 +1968,10 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     ItlIwn *that = container_of(sc, ItlIwn, com);
     int error;
 
+    if (nstate == IEEE80211_S_SCAN)
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventIwnScanStateEntered);
+
     if (ic->ic_state == IEEE80211_S_RUN) {
         if (nstate == IEEE80211_S_SCAN) {
             /*
@@ -2014,6 +2018,7 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 
     switch (nstate) {
     case IEEE80211_S_SCAN:
+    {
         /* Make the link LED blink while we're scanning. */
         that->iwn_set_led(sc, IWN_LED_LINK, 10, 10);
 
@@ -2021,12 +2026,18 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             ieee80211_set_link_state(ic, LINK_STATE_DOWN);
             ieee80211_node_cleanup(ic, ic->ic_bss);
         }
+        uint16_t scanFlags = IEEE80211_CHAN_2GHZ;
+        if (ic->ic_bss != NULL &&
+            ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC &&
+            IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan))
+            scanFlags = IEEE80211_CHAN_5GHZ;
         ic->ic_state = nstate;
-        if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {
+        if ((error = that->iwn_scan(sc, scanFlags, 0)) != 0) {
             printf("%s: could not initiate scan\n",
                 sc->sc_dev.dv_xname);
         }
         return error;
+    }
 
     case IEEE80211_S_ASSOC:
         AirportItlwmPostPltiTraceRecord(
@@ -6053,6 +6064,8 @@ iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
     if (buf == NULL) {
         XYLog("%s: could not allocate buffer for scan command\n",
             sc->sc_dev.dv_xname);
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
         return ENOMEM;
     }
     hdr = (struct iwn_scan_hdr *)buf;
@@ -6256,6 +6269,9 @@ iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
             sc->sc_flags |= IWN_FLAG_BGSCAN;
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventIwnScanStarted);
+    } else {
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventIwnScanCommandRejected);
     }
     ::free(buf);
     return error;

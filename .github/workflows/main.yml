@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   BUILD_OUTPUT: 'build/Build/Products/Debug'
@@ -55,7 +55,7 @@ jobs:
 
     # Tahoe is intentionally outside the legacy "AirportItlwm (all)" scheme.
     # That scheme builds obsolete target families with older private SPI and
-    # must not block publication of the independently validated Tahoe kext.
+    # must not block preparation of a locally runtime-verified Tahoe candidate.
     # Use the project-owned build wrapper: it aligns MacKernelSDK's Tahoe ABI
     # declarations before building the dedicated target and stages a kext, but
     # never installs, loads, signs for distribution, or reboots the runner.
@@ -93,41 +93,6 @@ jobs:
           done < <(find . -mindepth 1 -maxdepth 1 -type d -not -path "*.kext" | cut -c 3-)
         cd -
 
-    - name: Generate Prerelease Release Notes
-      run: |
-        echo '### Disclaimer:' >> ReleaseNotes.md
-        echo '***This alpha version is for testing only.***' >> ReleaseNotes.md
-        echo 'It is not ready for daily use and we do not guarantee its usability.' >> ReleaseNotes.md
-        echo 'If you discovered an issue and you do not have debugging skills, please check with the [Gitter Chat Room](https://gitter.im/OpenIntelWireless/itlwm) in advance before opening an Issue.' >> ReleaseNotes.md
-        echo '### The latest five updates are:' >> ReleaseNotes.md
-        git log -"5" --format="- %H %s" | sed '/^$/d' >> ReleaseNotes.md
-
-    # A per-commit tag makes every release immutable and avoids deleting an
-    # unrelated prerelease. `gh` is part of the GitHub-hosted macOS image, so
-    # this does not depend on an obsolete Node 16 third-party action.
-    - name: Publish immutable prerelease
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        TAG="v${ITLWM_VER}-alpha-${SHORT_SHA}"
-        TAHOE_ZIP="$BUILD_OUTPUT/AirportItlwm-Tahoe-v${ITLWM_VER}-DEBUG-alpha-${SHORT_SHA}.zip"
-        test -f "$TAHOE_ZIP"
-        shopt -s nullglob
-        assets=("$BUILD_OUTPUT"/*.zip)
-        test "${#assets[@]}" -gt 0
-        gh release create "$TAG" "${assets[@]}" \
-          --target "$GITHUB_SHA" --prerelease --title "$TAG" \
-          --notes-file ReleaseNotes.md
-        gh release view "$TAG" --json targetCommitish,assets > release.json
-        python3 - "$GITHUB_SHA" "$TAHOE_ZIP" release.json <<'PY'
-        import json
-        import pathlib
-        import sys
-
-        release = json.load(open(sys.argv[3]))
-        assert release["targetCommitish"] == sys.argv[1]
-        assert pathlib.Path(sys.argv[2]).name in {
-            asset["name"] for asset in release["assets"]
-        }
-        PY
+    # CI is build-only.  It must not publish a release or replace the one
+    # semantic prerelease asset: that requires private AuxKC admission,
+    # exact-loaded-candidate binding, a guest reboot, and runtime evidence.

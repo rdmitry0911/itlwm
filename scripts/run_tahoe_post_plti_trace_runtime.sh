@@ -29,6 +29,7 @@ TRACE_TOOL=""
 OUT_DIR=""
 IDENTITY_EVIDENCE=""
 SOURCE_COMMIT=""
+SOURCE_IDENTITY_SHA256=""
 SETTLE_SECONDS=15
 ACK_ATTEMPTS=20
 RADIO_ATTEMPTS=30
@@ -47,10 +48,12 @@ TRACE_ENTRY_COUNT=0
 TRACE_EPISODE_COUNT=0
 TRACE_DROPPED_ENTRIES=0
 TRACE_VERDICT="INTEGRITY_INCONCLUSIVE"
+TRACE_FIRST_MISSING_STAGE="unknown"
 RESET_ACK_SYNC=0
 INITIAL_SNAPSHOT_BUFFER_SYNC=0
 DOUBLE_READ_STABLE=0
 TRACE_MAY_BE_ARMED=0
+TRACE_SEAL_ACKNOWLEDGED=0
 FINAL_CONTROL_DISABLED=0
 RADIO_OFF_PENDING=0
 RADIO_OFF_OBSERVED=0
@@ -66,15 +69,16 @@ usage() {
 usage: run_tahoe_post_plti_trace_runtime.sh \
   --trace-tool /private/tmp/aiam-post-plti-trace-CANDIDATE/airport_itlwm_post_plti_trace \
   --identity-evidence /local/path/tahoe_lab_kext_identity.json \
-  --source-commit FULL_GIT_SHA --out /fresh/local/evidence/dir \
+  --out /fresh/local/evidence/dir \
   [--settle-seconds 1..120] [--ack-attempts 1..60] \
   [--radio-attempts 1..60] [--stable-read-delay-seconds 1..10]
 
 Preconditions, deliberately outside this runner:
   * the exact candidate has passed private AuxKC admission, transactional
     guest-only activation, and a guest-only reboot;
-  * --identity-evidence is the read-only pinned-guest identity capture for
-    that exact archive and reports every candidate-binding check true;
+  * --identity-evidence is the read-only pinned-guest v2 identity capture for
+    that exact archive, source commit, and source identity, and reports every
+    candidate-binding check true;
   * the trace client was built for Tahoe and copied beforehand to the exact
     /private/tmp/aiam-post-plti-trace-CANDIDATE/ path supplied above;
   * the QEMU guest already has an authorized saved profile and its radio is On.
@@ -104,12 +108,11 @@ valid_trace_tool_path() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --trace-tool|--identity-evidence|--source-commit|--out|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
+        --trace-tool|--identity-evidence|--out|--settle-seconds|--ack-attempts|--radio-attempts|--stable-read-delay-seconds)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
                 --trace-tool) TRACE_TOOL="$2" ;;
                 --identity-evidence) IDENTITY_EVIDENCE="$2" ;;
-                --source-commit) SOURCE_COMMIT="$2" ;;
                 --out) OUT_DIR="$2" ;;
                 --settle-seconds) SETTLE_SECONDS="$2" ;;
                 --ack-attempts) ACK_ATTEMPTS="$2" ;;
@@ -129,7 +132,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$TRACE_TOOL" ] && [ -n "$IDENTITY_EVIDENCE" ] && [ -n "$SOURCE_COMMIT" ] && [ -n "$OUT_DIR" ] || {
+[ -n "$TRACE_TOOL" ] && [ -n "$IDENTITY_EVIDENCE" ] && [ -n "$OUT_DIR" ] || {
     usage
     exit 2
 }
@@ -141,11 +144,6 @@ valid_trace_tool_path "$TRACE_TOOL" || {
     printf 'ERROR: --identity-evidence is not a regular local file\n' >&2
     exit 2
 }
-[[ "$SOURCE_COMMIT" =~ ^[[:xdigit:]]{40}$ ]] || {
-    printf 'ERROR: --source-commit must be a full hexadecimal Git SHA\n' >&2
-    exit 2
-}
-SOURCE_COMMIT="$(printf '%s' "$SOURCE_COMMIT" | tr '[:upper:]' '[:lower:]')"
 is_decimal_in_range "$SETTLE_SECONDS" 1 120 || { usage; exit 2; }
 is_decimal_in_range "$ACK_ATTEMPTS" 1 60 || { usage; exit 2; }
 is_decimal_in_range "$RADIO_ATTEMPTS" 1 60 || { usage; exit 2; }
@@ -166,7 +164,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 try:
     evidence = json.loads(path.read_text(encoding="utf-8"))
-    if evidence.get("schema_version") != "itlwm-tahoe-lab-kext-identity-binding/v1":
+    if evidence.get("schema_version") != "itlwm-tahoe-lab-kext-identity-binding/v2":
         raise ValueError("identity schema")
     binding = evidence.get("candidate_binding")
     if not isinstance(binding, dict) or binding.get("candidate_kext_bound") is not True:
@@ -182,12 +180,20 @@ try:
     release = evidence.get("expected_release")
     if not isinstance(release, dict):
         raise ValueError("expected release")
+    source_commit = release.get("source_commit")
+    source_identity = release.get("source_identity_sha256")
     tag = release.get("release_tag")
     archive = release.get("archive_sha256")
     binary = release.get("binary_sha256")
     uuid = release.get("macho_uuid")
+    if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ValueError("identity-bound source commit")
+    if not isinstance(source_identity, str) or re.fullmatch(r"[0-9a-f]{64}", source_identity) is None:
+        raise ValueError("identity-bound source identity")
     if not isinstance(tag, str) or re.fullmatch(r"[A-Za-z0-9._-]+", tag) is None:
         raise ValueError("release tag")
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)?", tag) is None:
+        raise ValueError("semantic release tag")
     for value, label in ((archive, "archive digest"), (binary, "binary digest")):
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
             raise ValueError(label)
@@ -198,37 +204,41 @@ try:
 except Exception as exc:
     raise SystemExit(f"identity attestation rejected: {exc}")
 
+print(source_commit)
+print(source_identity)
 print(tag)
 print(archive)
 print(binary)
 print(uuid)
 PY
 )
-    [ "${#fields[@]}" -eq 4 ] || return 1
-    RELEASE_TAG="${fields[0]}"
-    ARCHIVE_SHA256="${fields[1]}"
-    BINARY_SHA256="${fields[2]}"
-    MACHO_UUID="${fields[3]}"
+    [ "${#fields[@]}" -eq 6 ] || return 1
+    SOURCE_COMMIT="${fields[0]}"
+    SOURCE_IDENTITY_SHA256="${fields[1]}"
+    RELEASE_TAG="${fields[2]}"
+    ARCHIVE_SHA256="${fields[3]}"
+    BINARY_SHA256="${fields[4]}"
+    MACHO_UUID="${fields[5]}"
 }
 
 write_safe_attestation() {
     [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] || return 0
     python3 - "$OUT_DIR/runtime-attestation.json" \
-        "$SOURCE_COMMIT" "$RELEASE_TAG" "$ARCHIVE_SHA256" "$BINARY_SHA256" "$MACHO_UUID" \
+        "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" "$RELEASE_TAG" "$ARCHIVE_SHA256" "$BINARY_SHA256" "$MACHO_UUID" \
         "$RESET_SEQUENCE" "$CAPTURE_GENERATION" "$TRACE_BACKEND" "$TRACE_INTEGRITY" \
         "$TRACE_ENTRY_COUNT" "$TRACE_EPISODE_COUNT" "$TRACE_DROPPED_ENTRIES" "$TRACE_VERDICT" \
-        "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$DOUBLE_READ_STABLE" \
-        "$FINAL_CONTROL_DISABLED" "$RADIO_OFF_OBSERVED" "$RADIO_ON_OBSERVED" \
+        "$TRACE_FIRST_MISSING_STAGE" "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$DOUBLE_READ_STABLE" \
+        "$TRACE_SEAL_ACKNOWLEDGED" "$FINAL_CONTROL_DISABLED" "$RADIO_OFF_OBSERVED" "$RADIO_ON_OBSERVED" \
         "$RADIO_RECOVERY_ATTEMPTED" "$FAILURE_PHASE" "$RUN_COMPLETE" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 (
-    output, source_commit, release_tag, archive_sha256, binary_sha256, macho_uuid,
+    output, source_commit, source_identity_sha256, release_tag, archive_sha256, binary_sha256, macho_uuid,
     reset_sequence, capture_generation, backend, integrity, entry_count,
-    episode_count, dropped_entries, verdict, reset_sync, initial_sync,
-    double_stable, final_disabled, radio_off, radio_on, recovery_attempted,
+    episode_count, dropped_entries, verdict, first_missing_stage, reset_sync,
+    initial_sync, double_stable, seal_acknowledged, final_disabled, radio_off, radio_on, recovery_attempted,
     failure_phase, run_complete,
 ) = sys.argv[1:]
 
@@ -241,16 +251,19 @@ trace_pass = (
     and as_bool(reset_sync)
     and as_bool(initial_sync)
     and as_bool(double_stable)
+    and as_bool(seal_acknowledged)
     and as_bool(final_disabled)
     and as_bool(radio_off)
     and as_bool(radio_on)
     and as_bool(run_complete)
 )
 document = {
-    "schema": "itlwm-tahoe-post-plti-trace-runtime/v1",
+    "schema": "itlwm-tahoe-post-plti-trace-runtime/v3",
     "candidate": {
         "source_commit": source_commit,
+        "source_identity_sha256": source_identity_sha256,
         "release_tag": release_tag,
+        "release_publication_model": "single_mutable_release_per_semantic_version",
         "archive_sha256": archive_sha256,
         "binary_sha256": binary_sha256,
         "macho_uuid": macho_uuid,
@@ -288,6 +301,8 @@ document = {
         "episode_count": int(episode_count),
         "dropped_entries": int(dropped_entries),
         "verdict": verdict,
+        "first_missing_stage": first_missing_stage,
+        "seal_control_acknowledged": as_bool(seal_acknowledged),
         "final_control_disabled": as_bool(final_disabled),
     },
     "result": "PASS" if trace_pass else "INCONCLUSIVE",
@@ -406,7 +421,7 @@ file_has_token() {
 }
 
 wait_for_control_ack() {
-    local label="$1" sequence="$2" expected_enable="$3" expected_reset="$4"
+    local label="$1" sequence="$2" expected_enable="$3" expected_reset="$4" expected_seal="$5"
     local attempt generation backend
     for attempt in $(seq 1 "$ACK_ATTEMPTS"); do
         if capture_trace_client "$label-$attempt" get control; then
@@ -414,6 +429,7 @@ wait_for_control_ack() {
                 file_has_token "$OUT_DIR/$label-$attempt.stdout" applied 1 &&
                 file_has_token "$OUT_DIR/$label-$attempt.stdout" enable "$expected_enable" &&
                 file_has_token "$OUT_DIR/$label-$attempt.stdout" reset "$expected_reset"; then
+                file_has_token "$OUT_DIR/$label-$attempt.stdout" seal "$expected_seal" || { sleep 1; continue; }
                 if [ "$expected_enable" = 1 ]; then
                     file_has_token "$OUT_DIR/$label-$attempt.stdout" bound 1 || {
                         sleep 1
@@ -485,7 +501,7 @@ wait_for_radio_state() {
 }
 
 read_trace_once() {
-    local label="$1" snapshot trace report
+    local label="$1" expected_enabled="$2" snapshot trace report
     local snapshot_generation trace_generation report_generation
     snapshot="$label-snapshot"
     trace="$label-trace"
@@ -503,7 +519,7 @@ read_trace_once() {
     file_has_token "$OUT_DIR/$snapshot.stdout" backend IWN || return 1
     file_has_token "$OUT_DIR/$trace.stdout" backend IWN || return 1
     file_has_token "$OUT_DIR/$report.stdout" backend IWN || return 1
-    file_has_token "$OUT_DIR/$snapshot.stdout" enabled 1 || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" enabled "$expected_enabled" || return 1
     file_has_token "$OUT_DIR/$snapshot.stdout" target_bound 1 || return 1
     file_has_token "$OUT_DIR/$trace.stdout" integrity ok || return 1
     file_has_token "$OUT_DIR/$report.stdout" integrity ok || return 1
@@ -512,8 +528,13 @@ read_trace_once() {
     TRACE_EPISODE_COUNT="$(extract_u32 "$OUT_DIR/$report.stdout" episode_count || true)"
     TRACE_DROPPED_ENTRIES="$(extract_u32 "$OUT_DIR/$snapshot.stdout" dropped || true)"
     TRACE_VERDICT="$(extract_token "$OUT_DIR/$report.stdout" verdict || true)"
+    TRACE_FIRST_MISSING_STAGE="$(extract_token "$OUT_DIR/$report.stdout" first_missing_stage || true)"
     case "$TRACE_VERDICT" in
-        KERNEL_CHAIN_OBSERVED|BRANCH_NOT_OBSERVED|RESUME_NO_SCAN|RESUME_NO_SELECTION|AUTH_NOT_DRAINED|TX_NO_COMPLETION|NO_EAPOL|BACKEND_UNSUPPORTED|INTEGRITY_INCONCLUSIVE) ;;
+        KERNEL_CHAIN_OBSERVED|BRANCH_NOT_OBSERVED|RESUME_NO_STATE_REQUEST|RESUME_NO_IWN_DISPATCH|SCAN_COMMAND_REJECTED|SCAN_INCOMPLETE|SCAN_NO_CANDIDATE|RESUME_NO_SELECTION|AUTH_NOT_DRAINED|TX_NO_COMPLETION|NO_EAPOL|BACKEND_UNSUPPORTED|INTEGRITY_INCONCLUSIVE) ;;
+        *) return 1 ;;
+    esac
+    case "$TRACE_FIRST_MISSING_STAGE" in
+        none|state-scan-self-request|iwn-scan-state|iwn-scan-command|scan-completion|bss-selection|join-bss|auth-state|auth-enqueue|auth-dequeue|auth-firmware-submit|auth-exchange|assoc-state|assoc-enqueue|assoc-dequeue|assoc-firmware-submit|assoc-exchange|run-state|eapol-decapped|eapol-kernel-pae|eapol-enqueue|port-valid|unknown) ;;
         *) return 1 ;;
     esac
     [ -n "$TRACE_ENTRY_COUNT" ] && [ -n "$TRACE_EPISODE_COUNT" ] &&
@@ -530,12 +551,40 @@ disable_trace() {
     fi
     off_sequence="$(extract_u32 "$OUT_DIR/final-off.stdout" seq || true)"
     [ -n "$off_sequence" ] || return 1
-    if wait_for_control_ack final-off-ack "$off_sequence" 0 0; then
+    if wait_for_control_ack final-off-ack "$off_sequence" 0 0 0; then
         FINAL_CONTROL_DISABLED=1
         TRACE_MAY_BE_ARMED=0
         return 0
     fi
     return 1
+}
+
+seal_trace() {
+    local seal_sequence
+    if ! capture_trace_client seal seal; then
+        return 1
+    fi
+    seal_sequence="$(extract_u32 "$OUT_DIR/seal.stdout" seq || true)"
+    [ -n "$seal_sequence" ] || return 1
+    if wait_for_control_ack seal-ack "$seal_sequence" 0 0 1; then
+        TRACE_MAY_BE_ARMED=0
+        TRACE_SEAL_ACKNOWLEDGED=1
+        return 0
+    fi
+    return 1
+}
+
+observe_trace_before_seal() {
+    local attempt
+    for attempt in $(seq 1 5); do
+        capture_trace_client "pre-seal-$attempt" get report || return 1
+        file_has_token "$OUT_DIR/pre-seal-$attempt.stdout" integrity ok || return 1
+        case "$(extract_token "$OUT_DIR/pre-seal-$attempt.stdout" verdict || true)" in
+            KERNEL_CHAIN_OBSERVED) return 0 ;;
+        esac
+        sleep 1
+    done
+    return 0
 }
 
 cleanup() {
@@ -563,10 +612,6 @@ trap 'exit 130' HUP INT
 trap 'exit 143' TERM
 
 read_identity_attestation || fail_phase identity-attestation
-case "$RELEASE_TAG" in
-    *-"${SOURCE_COMMIT:0:7}") ;;
-    *) fail_phase identity-release-sha-mismatch ;;
-esac
 umask 077
 mkdir -p "$OUT_DIR"
 chmod 700 "$OUT_DIR"
@@ -592,7 +637,7 @@ fi
 RESET_SEQUENCE="$(extract_u32 "$OUT_DIR/reset.stdout" seq || true)"
 [ "$RESET_SEQUENCE" -gt 0 ] 2>/dev/null || fail_phase trace-reset-sequence
 TRACE_MAY_BE_ARMED=1
-wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 || fail_phase trace-reset-ack
+wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 0 || fail_phase trace-reset-ack
 RESET_ACK_SYNC=1
 wait_for_reset_snapshot_buffer_sync || fail_phase trace-reset-snapshot-buffer-sync
 
@@ -609,9 +654,11 @@ RADIO_ON_OBSERVED=1
 RADIO_OFF_PENDING=0
 
 sleep "$SETTLE_SECONDS"
-read_trace_once read-1 || fail_phase trace-first-read
+observe_trace_before_seal || fail_phase trace-pre-seal-observation
+seal_trace || fail_phase trace-seal
+read_trace_once read-1 0 || fail_phase trace-first-read
 sleep "$STABLE_READ_DELAY_SECONDS"
-read_trace_once read-2 || fail_phase trace-second-read
+read_trace_once read-2 0 || fail_phase trace-second-read
 cmp -s "$OUT_DIR/read-1-snapshot.stdout" "$OUT_DIR/read-2-snapshot.stdout" &&
     cmp -s "$OUT_DIR/read-1-trace.stdout" "$OUT_DIR/read-2-trace.stdout" &&
     cmp -s "$OUT_DIR/read-1-report.stdout" "$OUT_DIR/read-2-report.stdout" ||
@@ -628,4 +675,6 @@ if [ "$TRACE_VERDICT" = KERNEL_CHAIN_OBSERVED ]; then
     printf 'PASS: post-PLTI categorical trace complete; safe aggregate is local-only\n'
     exit 0
 fi
-fail_phase trace-verdict-not-complete
+FAILURE_PHASE="trace-verdict-diagnostic"
+printf 'INCONCLUSIVE: sealed post-PLTI categorical trace retained as local-only diagnostic evidence\n'
+exit 0

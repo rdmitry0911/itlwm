@@ -224,7 +224,8 @@ require(gitignore, "runtime-captures/", "raw capture ignore rule")
 # archive, installed bundle, and already loaded bundle are proven identical.
 # This gate must itself remain strictly read-only and host-key pinned.
 for needle in (
-    "itlwm-tahoe-lab-kext-identity-binding/v1",
+    "itlwm-tahoe-lab-kext-identity-binding/v2",
+    "--candidate-provenance",
     "StrictHostKeyChecking=yes",
     "PINNED_HOST_KEY_SHA256",
     "installed_binary_sha256_matches_release",

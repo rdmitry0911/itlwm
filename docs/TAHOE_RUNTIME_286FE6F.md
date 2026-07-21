@@ -2,7 +2,9 @@
 
 This record binds the tested Tahoe candidate to source commit
 `286fe6fe7537c267b2ddddec367fc83a1dcf85f3` and release tag
-`v2.4.0-alpha-286fe6f`.  The archive, installed Mach-O, and loaded Mach-O
+`v2.4.0-alpha`.  The former per-commit suffix is retained only in historical
+evidence naming; it is not a published release tag under the one-release-per-
+semantic-version policy.  The archive, installed Mach-O, and loaded Mach-O
 matched the digests and UUID in the committed runtime evidence after a
 guest-only reboot.
 

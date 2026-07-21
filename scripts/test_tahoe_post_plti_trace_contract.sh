@@ -20,6 +20,7 @@ root = Path(sys.argv[1])
 abi = (root / "include/ClientKit/AirportItlwmPostPltiTrace.h").read_text()
 bridge = (root / "include/ClientKit/AirportItlwmPostPltiTraceBridge.h").read_text()
 shared = (root / "include/ClientKit/AirportItlwmPostPltiTraceContracts.h").read_text()
+matrix = (root / "include/ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h").read_text()
 facade = (root / "AirportItlwm/TahoePostPltiTraceContracts.hpp").read_text()
 v2 = (root / "AirportItlwm/AirportItlwmV2.cpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
@@ -29,6 +30,8 @@ node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
+protocol = (root / "docs/TAHOE_POST_PLTI_TRACE_RUNTIME_PROTOCOL.md").read_text()
+matrix_record = (root / "docs/TAHOE_POST_PLTI_TRACE_MATRIX_CONTRACT.md").read_text()
 pae_output = (root / "itl80211/openbsd/net80211/ieee80211_pae_output.c").read_text()
 pae_input = (root / "itl80211/openbsd/net80211/ieee80211_pae_input.c").read_text()
 auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
@@ -93,7 +96,7 @@ def struct_block(name):
 
 
 for needle in (
-        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 1U",
+        "AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 2U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY",
@@ -104,6 +107,11 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume",
         "kAirportItlwmPostPltiTraceEventPortValidTransition",
         "kAirportItlwmPostPltiTraceEventEpisodeAborted",
+        "kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved",
+        "kAirportItlwmPostPltiTraceEventIwnScanStateEntered",
+        "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
+        "kAirportItlwmPostPltiTraceEventScanNoCandidate",
+        "kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
@@ -162,8 +170,28 @@ for needle in (
 ):
     require(shared, needle, "shared ordered C verdict evaluator")
 for needle in (
-        "#include <ClientKit/AirportItlwmPostPltiTraceContracts.h>",
+        "enum AirportItlwmPostPltiTraceMatrixVerdict",
+        "enum AirportItlwmPostPltiTraceMissingStage",
+        "airport_itlwm_post_plti_trace_matrix_classify_entries",
+        "airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage",
+        "airport_itlwm_post_plti_trace_matrix_phase_missing_stage",
+        "CaptureWindowSealed",
+        "IwnScanCommandRejected",
+        "ScanNoCandidate",
+        "JoinBss",
+        "AuthDequeue",
+        "EapolEnqueue",
+        "out_missing_stage",
+        "terminal",
+        "saw_no_candidate",
+        "kAirportItlwmPostPltiTraceMatrixVerdictKernelChainObserved",
+):
+    require(matrix, needle, "v2 ordered trace matrix")
+for needle in (
+        "#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>",
         "inline Verdict\nclassifyEntries",
+        "MissingStage *outMissingStage",
+        "airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage",
         "A mask-only caller can never establish the ordered success verdict",
 ):
     require(facade, needle, "C++ trace verdict facade")
@@ -174,6 +202,14 @@ forbid(mask_only, "KernelChainObserved", "mask-only success verdict")
 # last is the only release publication from the hot path.
 recorder = body(v2, "airportItlwmPostPltiTraceRecordToken",
                 "fast-path trace recorder")
+for needle in (
+        "volatile uint8_t recorderLock",
+        "airportItlwmPostPltiTraceTryLock",
+        "airportItlwmPostPltiTraceLock",
+        "airportItlwmPostPltiTraceUnlock",
+        "they never reserve a sequence without publishing it",
+):
+    require(v2, needle, "trace reset/seal serialization")
 for needle in (
         "airportItlwmPostPltiTraceTokenIsCurrent(ic, token, requireActive)",
         "__atomic_add_fetch(&sPostPltiTrace.nextSequence",
@@ -201,11 +237,16 @@ close = body(v2, "airportItlwmPostPltiTraceCloseActive",
 ordered(close, "terminal token detached before terminal event",
         "__atomic_compare_exchange_n(&sPostPltiTrace.activeToken", "0, false",
         "airportItlwmPostPltiTraceRecordToken(ic, event, token, false)")
+may_begin = body(v2, "airportItlwmPostPltiTraceMayBegin",
+                 "episode admission gate")
+require(may_begin, "admitEpisodes", "episode admission state")
 begin = body(v2, "AirportItlwmPostPltiTraceBeginEpisode",
              "safe episode begin bridge")
 for needle in (
-        "activeToken", "initialScanPermitToken", "episodeCount",
+        "activeToken", "airportItlwmPostPltiTraceMayBegin", "episodeCount",
         "kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume",
+        "airportItlwmPostPltiTraceTryLock",
+        "airportItlwmPostPltiTraceUnlock",
 ):
     require(begin, needle, "one-token episode begin")
 for needle in ("AirportItlwmRegDiag", "IWX_AUTH_DIAG", "XYLog", "setProperty",
@@ -218,7 +259,8 @@ for needle in (
         "oldState == IEEE80211_S_SCAN && nextState == IEEE80211_S_AUTH",
         "oldState == IEEE80211_S_AUTH && nextState == IEEE80211_S_ASSOC",
         "oldState == IEEE80211_S_ASSOC && nextState == IEEE80211_S_RUN",
-        "AirportItlwmPostPltiTraceAbortEpisode(ic)",
+        "airportItlwmPostPltiTraceCloseActive",
+        "kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved",
 ):
     require(note_state, needle, "strict state lifecycle")
 
@@ -247,7 +289,12 @@ control = body(v2, "airportItlwmPostPltiTraceApplyControl",
                "trace control acknowledgement")
 for needle in (
         "generation=%u backend=%u", "captureGeneration",
-        "airportItlwmPostPltiTraceBind(driver)",
+        "airportItlwmPostPltiTraceBind(driver)", "admitEpisodes",
+        "airportItlwmPostPltiTraceLock()",
+        "airportItlwmPostPltiTraceUnlock()",
+        "uint32_t seal = 0",
+        "kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
+        "seal=%u",
 ):
     require(control, needle, "generation-aware control acknowledgement")
 publish = body(v2, "static void\nairportItlwmPostPltiTracePublish(AirportItlwm",
@@ -310,6 +357,16 @@ ordered(iwn_newstate, "IWN active SCAN coalesce trace",
         "if (ic->ic_state == IEEE80211_S_SCAN)", "IWN_FLAG_SCANNING",
         "kAirportItlwmPostPltiTraceEventIwnScanCoalesced", "return 0;")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventIwnScanStateEntered",
+        "uint16_t scanFlags = IEEE80211_CHAN_2GHZ",
+        "IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan)",
+        "iwn_scan(sc, scanFlags, 0)",
+        "case IEEE80211_S_SCAN:\n    {",
+):
+    require(iwn_newstate, needle, "IWN scan-state/band selection")
+forbid(iwn_newstate, "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
+       "hard-coded 2.4 GHz scan request")
+for needle in (
         "kAirportItlwmPostPltiTraceEventAuthStateEntered",
         "kAirportItlwmPostPltiTraceEventAssocStateEntered",
         "kAirportItlwmPostPltiTraceEventRunEntered",
@@ -319,6 +376,8 @@ iwn_scan = body(iwn, "int ItlIwn::\niwn_scan", "IWN scan")
 ordered(iwn_scan, "IWN trace records only successful scan submission",
         "error = iwn_cmd(sc, IWN_CMD_SCAN", "if (error == 0)",
         "IWN_FLAG_SCANNING", "kAirportItlwmPostPltiTraceEventIwnScanStarted")
+require(iwn_scan, "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
+        "categorical IWN scan failure marker")
 iwn_tx = body(iwn, "int ItlIwn::\niwn_tx", "IWN transmit")
 ordered(iwn_tx, "IWN per-slot class reaches canonical ring kick",
         "post_plti_trace_class = iwn_post_plti_trace_classify_tx",
@@ -350,6 +409,7 @@ end_scan = body(node, "void\nieee80211_end_scan", "net80211 scan completion")
 for needle in (
         "kAirportItlwmPostPltiTraceEventScanCompleted",
         "kAirportItlwmPostPltiTraceEventSelectionHeld",
+        "kAirportItlwmPostPltiTraceEventScanNoCandidate",
 ):
     require(end_scan, needle, "scan/selection event")
 join_bss = body(node, "void\nieee80211_node_join_bss", "net80211 BSS join")
@@ -391,8 +451,9 @@ require(auth, "return authtypeUpper == kAuditedWpa3PskTransitionAuth;",
 # invokes the ordered evaluator.  A missing generation, a changed backend,
 # an overflow, or a gap must therefore reach the evaluator as integrity=false.
 for needle in (
-        "#include <ClientKit/AirportItlwmPostPltiTraceContracts.h>",
-        "airport_itlwm_post_plti_trace_classify_entries",
+        "#include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>",
+        "airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage",
+        "first_missing_stage",
         "snapshot->captureGeneration != buffer->captureGeneration",
         "snapshot->backend != buffer->backend",
         "snapshot->firstSequence != buffer->firstSequence",
@@ -404,7 +465,7 @@ for needle in (
         "count != expected || count != snapshot->entryCount",
         "count != buffer->entryCount",
         "out[i].sequence != snapshot->firstSequence + i",
-        "kAirportItlwmPostPltiTraceVerdictBackendUnsupported",
+        "kAirportItlwmPostPltiTraceMatrixVerdictBackendUnsupported",
         "IORegistryEntrySetCFProperty",
 ):
     require(client, needle, "safe trace client integrity boundary")
@@ -427,9 +488,43 @@ require(aggregate, "test_tahoe_post_plti_trace_contract.sh",
 for needle in (
         "TahoePostPltiTraceContracts.hpp", "testTahoePostPltiTraceContracts",
         "wrongOrder", "mixedGeneration", "overflowGap", "BackendUnsupported",
-        "safe post-PLTI trace",
+        "testTahoePostPltiTraceMatrixSealedPrefixes",
+        "CaptureWindowSealed", "ScanCommandRejected", "ScanNoCandidate",
+        "JoinBss", "AuthDequeue", "PortValid",
+        "safe post-PLTI trace matrix",
 ):
     require(payload_test, needle, "ordered safe trace unit matrix")
+
+# The committed matrix record is itself contract-bound: it records every
+# verified sealed prefix, preserves the one-release policy, and cannot grow a
+# raw identity surface while serving as test evidence.
+for needle in (
+        "## Sealed capture rule",
+        "## Versioned synthetic scenarios",
+        "WCL resume followed by seal",
+        "A no-candidate retry",
+        "partial authentication prefix",
+        "A post-terminal event",
+        "The sole complete diagnostic trace classification is KernelChainObserved.",
+        "A semantic version owns one mutable prerelease asset.",
+        "This layer does not implement or prove pure SAE",
+):
+    require(matrix_record, needle, "committed trace-matrix evidence record")
+for pattern, label in (
+        (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IPv4 identity"),
+        (r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b", "MAC identity"),
+):
+    if re.search(pattern, matrix_record):
+        fail(f"unexpected {label} in committed trace-matrix evidence record")
+for needle in (
+        "seal the capture",
+        "two identical frozen safe trace reads",
+        "structurally valid sealed diagnostic prefix",
+        "create_tahoe_candidate_provenance.py",
+        "not accept a free source-commit label.",
+        "evidence contract to report `result=PASS`",
+):
+    require(protocol, needle, "sealed runtime protocol")
 
 print("post-PLTI safe trace contract ok")
 PY

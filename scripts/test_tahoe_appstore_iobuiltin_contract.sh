@@ -115,7 +115,7 @@ assert 'ditto -x -k "$TAHOE_ZIP" "$VERIFY_DIR"' in workflow
 assert 'check_tahoe_plist "$VERIFY_DIR/AirportItlwm.kext/Contents/Info.plist"' in workflow
 assert 'test -f "$VERIFY_DIR/AirportItlwm.kext/Contents/MacOS/AirportItlwm"' in workflow
 assert "lipo -archs \"$TAHOE_KEXT/Contents/MacOS/AirportItlwm\" | grep -qx 'x86_64'" in workflow
-assert 'permissions:\n  contents: write' in workflow
+assert 'permissions:\n  contents: read' in workflow
 assert 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6' in workflow
 assert 'fetch-depth: 0' in workflow
 assert 'fetch-tags: true' in workflow
@@ -125,21 +125,26 @@ assert 'xcpretty' not in workflow
 assert workflow.count('set -o pipefail\n        xcodebuild') == 1
 assert workflow.count('| xcbeautify') == 1
 assert 'xcodebuild -scheme "AirportItlwm (all)"' not in workflow
-assert 'must not block publication of the independently validated Tahoe kext' in workflow
+assert 'must not block preparation of a locally runtime-verified Tahoe candidate' in workflow
 assert 'uses: dev-drprasad/delete-tag-and-release@' not in workflow
 assert 'uses: ncipollo/release-action@' not in workflow
-assert 'name: Publish immutable prerelease' in workflow
-assert 'GH_TOKEN: ${{ github.token }}' in workflow
-assert 'TAG="v${ITLWM_VER}-alpha-${SHORT_SHA}"' in workflow
-assert 'gh release create "$TAG" "${assets[@]}"' in workflow
-assert '--target "$GITHUB_SHA" --prerelease --title "$TAG"' in workflow
-assert 'gh release view "$TAG" --json targetCommitish,assets > release.json' in workflow
-assert 'assert release["targetCommitish"] == sys.argv[1]' in workflow
-assert 'assert pathlib.Path(sys.argv[2]).name in {' in workflow
+assert 'CI is build-only.' in workflow
+assert 'semantic prerelease asset' in workflow
+assert 'private AuxKC admission' in workflow
+forbidden_release_tokens = (
+    'contents: write',
+    'Generate Prerelease Release Notes',
+    'Publish immutable prerelease',
+    'GH_TOKEN:',
+    'gh release ',
+    'TAG="v${ITLWM_VER}-alpha-${SHORT_SHA}"',
+)
+for token in forbidden_release_tokens:
+    assert token not in workflow, token
 assert 'TARGET="AirportItlwm-Tahoe"' in build_script
 assert 'OUTPUT_KEXT="$OUTPUT_ROOT/AirportItlwm.kext"' in build_script
 for forbidden in ("sudo ", "kmutil ", "kextload ", "reboot"):
     assert forbidden not in build_script, forbidden
 
-print("PASS: Tahoe controller mitigation is scoped and its kext is packaged for releases")
+print("PASS: Tahoe controller mitigation is scoped and its kext is build-only packaged")
 PY

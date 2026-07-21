@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 1U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 2U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -61,7 +61,12 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventEapolTxDone = 27,
     kAirportItlwmPostPltiTraceEventPortValidTransition = 28,
     kAirportItlwmPostPltiTraceEventEpisodeAborted = 29,
-    kAirportItlwmPostPltiTraceEventMax = 30
+    kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved = 30,
+    kAirportItlwmPostPltiTraceEventIwnScanStateEntered = 31,
+    kAirportItlwmPostPltiTraceEventIwnScanCommandRejected = 32,
+    kAirportItlwmPostPltiTraceEventScanNoCandidate = 33,
+    kAirportItlwmPostPltiTraceEventCaptureWindowSealed = 34,
+    kAirportItlwmPostPltiTraceEventMax = 35
 };
 
 /* Categorical backend coverage, never a hardware identifier. */

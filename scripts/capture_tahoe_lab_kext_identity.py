@@ -25,8 +25,13 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from create_tahoe_candidate_provenance import (
+    bind_candidate_provenance,
+    load_candidate_provenance,
+)
 
-SCHEMA_VERSION = "itlwm-tahoe-lab-kext-identity-binding/v1"
+
+SCHEMA_VERSION = "itlwm-tahoe-lab-kext-identity-binding/v2"
 PINNED_GUEST = "devops@127.0.0.1"
 PINNED_PORT = 3322
 PINNED_INTERFACE = "en1"
@@ -112,6 +117,14 @@ def release_identity(release_zip: Path, release_tag: str) -> dict[str, str]:
         "binary_sha256": sha256(binary),
         "macho_uuid": macho_uuid(binary),
     }
+
+
+def release_identity_from_candidate_provenance(
+    release_zip: Path, provenance_path: Path
+) -> dict[str, str]:
+    provenance = load_candidate_provenance(provenance_path)
+    archive = release_identity(release_zip, str(provenance["release_tag"]))
+    return bind_candidate_provenance(provenance, archive)
 
 
 def guest_probe_script() -> str:
@@ -286,8 +299,12 @@ def binding_result(
     }
 
 
-def capture(release_zip: Path, release_tag: str, timeout_seconds: int) -> dict[str, object]:
-    expected = release_identity(release_zip, release_tag)
+def capture(
+    release_zip: Path, candidate_provenance: Path, timeout_seconds: int
+) -> dict[str, object]:
+    expected = release_identity_from_candidate_provenance(
+        release_zip, candidate_provenance
+    )
     query = run_pinned_guest(timeout_seconds)
     guest = parse_guest_observation(str(query["stdout"]))
     binding = binding_result(expected, guest, query["returncode"] == 0)
@@ -356,11 +373,29 @@ def self_test() -> int:
         with zipfile.ZipFile(archive_path, "w") as archive:
             archive.writestr(ZIP_INFO, fixture_info)
             archive.writestr(ZIP_BINARY, fixture_binary)
-        parsed_fixture = release_identity(archive_path, "fixture-tag")
+        provenance_path = Path(temp) / "fixture-provenance.json"
+        provenance_path.write_text(json.dumps({
+            "schema": "itlwm-tahoe-candidate-provenance/v1",
+            "candidate": {
+                "source_commit": "a" * 40,
+                "source_identity_sha256": "b" * 64,
+                "source_identity_paths_count": 1,
+                "release_tag": "v2.4.0-alpha",
+                "archive_sha256": sha256(archive_path.read_bytes()),
+                "binary_sha256": sha256(fixture_binary),
+                "macho_uuid": expected_uuid,
+                "bundle_id": BUNDLE_ID,
+            },
+        }), encoding="utf-8")
+        parsed_fixture = release_identity_from_candidate_provenance(
+            archive_path, provenance_path
+        )
     if parsed_fixture["macho_uuid"] != expected_uuid:
         raise SystemExit("self-test: release archive UUID did not round-trip")
     if parsed_fixture["binary_sha256"] != sha256(fixture_binary):
         raise SystemExit("self-test: release archive hash did not round-trip")
+    if parsed_fixture["source_commit"] != "a" * 40:
+        raise SystemExit("self-test: provenance source commit did not bind")
     expected = {
         "bundle_id": BUNDLE_ID,
         "binary_sha256": "a" * 64,
@@ -390,17 +425,18 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-release-zip", type=Path)
-    parser.add_argument("--release-tag", default="unlabeled-local-release")
+    parser.add_argument("--candidate-provenance", type=Path)
     parser.add_argument("--output", default="-")
     parser.add_argument("--timeout-seconds", type=int, default=45)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-    if args.expected_release_zip is None:
-        parser.error("--expected-release-zip is required unless --self-test is used")
+    if args.expected_release_zip is None or args.candidate_provenance is None:
+        parser.error("--expected-release-zip and --candidate-provenance are required unless --self-test is used")
     try:
-        data = capture(args.expected_release_zip, args.release_tag, args.timeout_seconds)
+        data = capture(args.expected_release_zip, args.candidate_provenance,
+                       args.timeout_seconds)
     except (OSError, ValueError, subprocess.TimeoutExpired, zipfile.BadZipFile) as error:
         print(f"FAIL: read-only identity capture: {error}", file=sys.stderr)
         return 2

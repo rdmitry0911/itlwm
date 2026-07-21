@@ -69,16 +69,20 @@ def require(condition: bool, message: str) -> None:
 
 
 def validate(document: dict, record=None) -> None:
-    require(document.get("schema") == "itlwm-tahoe-post-plti-trace-runtime/v1",
+    require(document.get("schema") == "itlwm-tahoe-post-plti-trace-runtime/v3",
             "unexpected schema")
     candidate = document.get("candidate")
     require(isinstance(candidate, dict), "candidate section missing")
     require(re.fullmatch(r"[0-9a-f]{40}", str(candidate.get("source_commit", ""))) is not None,
-            "source commit is not exact")
-    require(re.fullmatch(r"[A-Za-z0-9._-]+", str(candidate.get("release_tag", ""))) is not None,
-            "release tag is malformed")
-    require(candidate["release_tag"].endswith("-" + candidate["source_commit"][:7]),
-            "release tag does not bind the source-commit short SHA")
+            "identity-bound source commit is not exact")
+    require(re.fullmatch(r"[0-9a-f]{64}", str(candidate.get("source_identity_sha256", ""))) is not None,
+            "identity-bound source identity is not exact")
+    require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)?",
+                         str(candidate.get("release_tag", ""))) is not None,
+            "release tag is not a semantic version")
+    require(candidate.get("release_publication_model") ==
+            "single_mutable_release_per_semantic_version",
+            "release policy is not the one-release-per-version model")
     for key in ("archive_sha256", "binary_sha256"):
         require(re.fullmatch(r"[0-9a-f]{64}", str(candidate.get(key, ""))) is not None,
                 f"candidate {key} is malformed")
@@ -114,7 +118,8 @@ def validate(document: dict, record=None) -> None:
             "trace backend category is invalid")
     for key in ("reset_ack_generation_synchronized",
                 "initial_snapshot_buffer_generation_synchronized",
-                "double_read_stable", "final_control_disabled"):
+                "double_read_stable", "seal_control_acknowledged",
+                "final_control_disabled"):
         require(isinstance(trace.get(key), bool), f"trace boolean missing: {key}")
     for key in ("reset_control_sequence", "reset_ack_generation", "capture_generation",
                 "entry_count", "episode_count", "dropped_entries"):
@@ -123,10 +128,21 @@ def validate(document: dict, record=None) -> None:
     require(trace.get("integrity") in {"ok", "inconclusive"}, "unknown trace integrity")
     allowed_verdicts = {
         "KERNEL_CHAIN_OBSERVED", "BRANCH_NOT_OBSERVED", "RESUME_NO_SCAN",
+        "RESUME_NO_STATE_REQUEST", "RESUME_NO_IWN_DISPATCH",
+        "SCAN_COMMAND_REJECTED", "SCAN_INCOMPLETE", "SCAN_NO_CANDIDATE",
         "RESUME_NO_SELECTION", "AUTH_NOT_DRAINED", "TX_NO_COMPLETION",
         "NO_EAPOL", "BACKEND_UNSUPPORTED", "INTEGRITY_INCONCLUSIVE",
     }
     require(trace.get("verdict") in allowed_verdicts, "unknown trace verdict")
+    require(trace.get("first_missing_stage") in {
+        "none", "state-scan-self-request", "iwn-scan-state",
+        "iwn-scan-command", "scan-completion", "bss-selection",
+        "join-bss", "auth-state", "auth-enqueue", "auth-dequeue",
+        "auth-firmware-submit", "auth-exchange", "assoc-state",
+        "assoc-enqueue", "assoc-dequeue", "assoc-firmware-submit",
+        "assoc-exchange", "run-state", "eapol-decapped",
+        "eapol-kernel-pae", "eapol-enqueue", "port-valid", "unknown",
+    }, "unknown categorical first missing stage")
 
     local_only = document.get("local_only_raw_artifacts")
     require(local_only == {
@@ -152,6 +168,7 @@ def validate(document: dict, record=None) -> None:
         require(trace.get("reset_ack_generation_synchronized") is True and
                 trace.get("initial_snapshot_buffer_generation_synchronized") is True and
                 trace.get("double_read_stable") is True and
+                trace.get("seal_control_acknowledged") is True and
                 trace.get("final_control_disabled") is True,
                 "PASS lacks a complete trace control lifecycle")
         require(trace.get("integrity") == "ok" and trace.get("dropped_entries") == 0,
@@ -165,6 +182,8 @@ def validate(document: dict, record=None) -> None:
                 "PASS lacks one exact reset/capture generation binding")
         require(trace.get("verdict") == "KERNEL_CHAIN_OBSERVED",
                 "PASS overclaims a partial categorical trace")
+        require(trace.get("first_missing_stage") == "none",
+                "PASS retains a missing categorical stage")
         require(document.get("failure_phase") == "none", "PASS retains a failure phase")
 
     serialized = json.dumps(document, sort_keys=True)
@@ -188,10 +207,12 @@ def validate(document: dict, record=None) -> None:
 mode, evidence_path, record_path = sys.argv[1:]
 if mode == "self-test":
     fixture = {
-        "schema": "itlwm-tahoe-post-plti-trace-runtime/v1",
+        "schema": "itlwm-tahoe-post-plti-trace-runtime/v3",
         "candidate": {
             "source_commit": "a" * 40,
-            "release_tag": "v2.4.0-alpha-aaaaaaa",
+            "source_identity_sha256": "d" * 64,
+            "release_tag": "v2.4.0-alpha",
+            "release_publication_model": "single_mutable_release_per_semantic_version",
             "archive_sha256": "b" * 64,
             "binary_sha256": "c" * 64,
             "macho_uuid": "01234567-89AB-CDEF-0123-456789ABCDEF",
@@ -229,6 +250,8 @@ if mode == "self-test":
             "episode_count": 1,
             "dropped_entries": 0,
             "verdict": "KERNEL_CHAIN_OBSERVED",
+            "first_missing_stage": "none",
+            "seal_control_acknowledged": True,
             "final_control_disabled": True,
         },
         "result": "PASS",

@@ -1394,6 +1394,8 @@ ieee80211_end_scan(struct _ifnet *ifp)
         DPRINTF(("no scan candidate\n"));
     notfound:
         
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventScanNoCandidate);
 #ifndef IEEE80211_STA_ONLY
         if (ic->ic_opmode == IEEE80211_M_IBSS &&
             (ic->ic_flags & IEEE80211_F_IBSSON) &&

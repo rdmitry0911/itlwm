@@ -1752,6 +1752,8 @@ void testTahoePostPltiTraceContracts()
     };
     const auto append_canonical = [&](bool includeEapolCompletion) {
         append(kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume);
+        append(kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved);
+        append(kAirportItlwmPostPltiTraceEventIwnScanStateEntered);
         append(kAirportItlwmPostPltiTraceEventIwnScanStarted);
         append(kAirportItlwmPostPltiTraceEventScanCompleted);
         append(kAirportItlwmPostPltiTraceEventBssSelected);
@@ -1783,7 +1785,7 @@ void testTahoePostPltiTraceContracts()
     const auto classify_shared = [&](bool integrity, uint32_t backend,
                                      uint32_t episodeCount,
                                      uint32_t activeEpisode) {
-        return airport_itlwm_post_plti_trace_classify_entries(
+        return airport_itlwm_post_plti_trace_matrix_classify_entries(
             entries, count, integrity ? 1 : 0, backend, episodeCount,
             activeEpisode);
     };
@@ -1851,7 +1853,7 @@ void testTahoePostPltiTraceContracts()
 
     AirportItlwmPostPltiTraceEntry coalesced[32] = {};
     std::memcpy(coalesced, entries, sizeof(entries));
-    coalesced[1].event = kAirportItlwmPostPltiTraceEventIwnScanCoalesced;
+    coalesced[3].event = kAirportItlwmPostPltiTraceEventIwnScanCoalesced;
     require(classifyEntries(coalesced, count, true,
                             kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
                 Verdict::KernelChainObserved,
@@ -1859,9 +1861,9 @@ void testTahoePostPltiTraceContracts()
 
     AirportItlwmPostPltiTraceEntry wrongOrder[32] = {};
     std::memcpy(wrongOrder, entries, sizeof(entries));
-    const uint32_t authDequeued = wrongOrder[7].event;
-    wrongOrder[7].event = wrongOrder[8].event;
-    wrongOrder[8].event = authDequeued;
+    const uint32_t authDequeued = wrongOrder[9].event;
+    wrongOrder[9].event = wrongOrder[10].event;
+    wrongOrder[10].event = authDequeued;
     require(classifyEntries(wrongOrder, count, true,
                             kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
                 Verdict::IntegrityInconclusive,
@@ -1922,6 +1924,181 @@ void testTahoePostPltiTraceContracts()
             "mask-only callers cannot manufacture an ordered success verdict");
     require(classify(0, true, 1) == Verdict::IntegrityInconclusive,
             "mask-only callers with an episode remain inconclusive");
+}
+
+void testTahoePostPltiTraceMatrixSealedPrefixes()
+{
+    using namespace TahoePostPltiTraceContracts;
+
+    constexpr uint32_t kGeneration = 63;
+    constexpr uint32_t kEpisode = 5;
+    const auto classify = [](const uint32_t *events, uint32_t eventCount,
+                             uint32_t backend =
+                                 kAirportItlwmPostPltiTraceBackendIwn,
+                             MissingStage *outMissingStage = nullptr) {
+        AirportItlwmPostPltiTraceEntry entries[40] = {};
+        for (uint32_t i = 0; i < eventCount; i++) {
+            entries[i] = { 200 + i, kGeneration, kEpisode, events[i] };
+        }
+        return classifyEntries(entries, eventCount, true, backend, 1, 0,
+                               outMissingStage);
+    };
+
+    const uint32_t wcl_seal[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    MissingStage stage = MissingStage::Unknown;
+    require(classify(wcl_seal, 2, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ResumeNoStateRequest &&
+                stage == MissingStage::StateScanSelfRequest,
+            "sealed WCL-only prefix identifies the absent state self-request");
+
+    const uint32_t state_seal[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(state_seal, 3, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ResumeNoIwnDispatch &&
+                stage == MissingStage::IwnScanState,
+            "sealed state prefix identifies the absent IWN callback");
+
+    const uint32_t command_rejected[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanCommandRejected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(command_rejected, 5,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ScanCommandRejected &&
+                stage == MissingStage::IwnScanCommand,
+            "categorical scan command rejection remains distinguishable");
+
+    const uint32_t scan_incomplete[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(scan_incomplete, 5,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ScanIncomplete &&
+                stage == MissingStage::ScanCompletion,
+            "sealed scan prefix identifies the absent completion");
+
+    const uint32_t no_candidate[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventScanNoCandidate,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(no_candidate, 7, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ScanNoCandidate &&
+                stage == MissingStage::BssSelection,
+            "no-candidate loop is not confused with scan submission failure");
+
+    const uint32_t multi_band_held[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventScanNoCandidate,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanCoalesced,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventSelectionHeld,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(multi_band_held, 12,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ResumeNoSelection &&
+                stage == MissingStage::BssSelection,
+            "repeated scan cycles and coalescing remain ordered diagnostics");
+
+    const uint32_t join_prefix[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventBssSelected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(join_prefix, 7, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::AuthNotDrained &&
+                stage == MissingStage::JoinBss,
+            "a selected BSS reports the exact missing join boundary");
+
+    const uint32_t auth_prefix[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventBssSelected,
+        kAirportItlwmPostPltiTraceEventJoinBssEntered,
+        kAirportItlwmPostPltiTraceEventAuthStateEntered,
+        kAirportItlwmPostPltiTraceEventAuthEnqueued,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(auth_prefix, 10, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::AuthNotDrained &&
+                stage == MissingStage::AuthDequeue,
+            "partial authentication prefix retains its exact missing boundary");
+
+    const uint32_t eapol_prefix[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventBssSelected,
+        kAirportItlwmPostPltiTraceEventJoinBssEntered,
+        kAirportItlwmPostPltiTraceEventAuthStateEntered,
+        kAirportItlwmPostPltiTraceEventAuthEnqueued,
+        kAirportItlwmPostPltiTraceEventAuthDequeued,
+        kAirportItlwmPostPltiTraceEventAuthFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAuthTxDone,
+        kAirportItlwmPostPltiTraceEventAuthRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAuthRxNet80211,
+        kAirportItlwmPostPltiTraceEventAssocStateEntered,
+        kAirportItlwmPostPltiTraceEventAssocEnqueued,
+        kAirportItlwmPostPltiTraceEventAssocDequeued,
+        kAirportItlwmPostPltiTraceEventAssocFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAssocTxDone,
+        kAirportItlwmPostPltiTraceEventAssocRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAssocRxNet80211,
+        kAirportItlwmPostPltiTraceEventRunEntered,
+        kAirportItlwmPostPltiTraceEventEapolRxDecapped,
+        kAirportItlwmPostPltiTraceEventEapolRxKernelPae,
+        kAirportItlwmPostPltiTraceEventEapolTxEnqueued,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(eapol_prefix, 26, kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::NoEapol &&
+                stage == MissingStage::PortValid,
+            "an observed EAPOL enqueue reports only the exact missing port-valid");
+
+    const uint32_t post_terminal[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+    };
+    require(classify(post_terminal, 3) == Verdict::IntegrityInconclusive,
+            "any categorical event after a sealed terminal is rejected");
+    require(classify(wcl_seal, 2,
+                     kAirportItlwmPostPltiTraceBackendUnsupported) ==
+                Verdict::BackendUnsupported,
+            "unsupported backends do not borrow the IWN matrix");
 }
 
 void testTahoeCountryCodeCarrierContracts()
@@ -2020,9 +2197,10 @@ int main()
     testTahoeAssociationAuthContracts();
     testTahoeExternalPmkScanResumeContracts();
     testTahoePostPltiTraceContracts();
+    testTahoePostPltiTraceMatrixSealedPrefixes();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 32 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI trace, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 33 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI trace matrix, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

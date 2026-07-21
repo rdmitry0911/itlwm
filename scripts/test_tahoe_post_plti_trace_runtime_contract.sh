@@ -34,11 +34,14 @@ for needle in \
     'PINNED_WIFI_INTERFACE="en1"' \
     'PINNED_GUEST_BUILD="25C56"' \
     '--identity-evidence' \
+    'itlwm-tahoe-lab-kext-identity-binding/v2' \
     'candidate_kext_bound' \
     'all(value is True for value in checks.values())' \
     'ready_for_exact_candidate_runtime_experiment' \
-    'identity-release-sha-mismatch' \
-    '${SOURCE_COMMIT:0:7}' \
+    'identity-bound source commit' \
+    'source_identity_sha256' \
+    'semantic release tag' \
+    'single_mutable_release_per_semantic_version' \
     'reset reset' \
     'get control' \
     'get snapshot' \
@@ -46,13 +49,21 @@ for needle in \
     'get report' \
     'final-off off' \
     'wait_for_control_ack' \
+    'seal_trace' \
+    'observe_trace_before_seal' \
+    'seal seal' \
     'wait_for_reset_snapshot_buffer_sync' \
     'backend IWN' \
     '[ "$backend" = 1 ]' \
     'read_trace_once read-1' \
     'read_trace_once read-2' \
+    'TRACE_FIRST_MISSING_STAGE' \
+    'TRACE_SEAL_ACKNOWLEDGED' \
+    'first_missing_stage' \
+    'seal_control_acknowledged' \
     'trace-double-read-unstable' \
     'KERNEL_CHAIN_OBSERVED' \
+    'trace-verdict-diagnostic' \
     'saved_profile_autojoin_only' \
     'requested_cycles": 1' \
     'physical_host_touched' \
@@ -90,6 +101,8 @@ for needle in \
     forbid_literal "$needle" "capability: $needle"
 done
 
+forbid_literal '--source-commit' 'free source-commit label'
+
 # A passing trace is stricter than merely observing a radio recovery: reset
 # generation, snapshot/buffer agreement, stable reads and diagnostic shutdown
 # all have to hold.  Optional asynchronous firmware completions are delegated
@@ -105,8 +118,10 @@ ordered = (
     'wait_for_reset_snapshot_buffer_sync',
     'remote_radio_power off',
     'remote_radio_power on',
-    'read_trace_once read-1',
-    'read_trace_once read-2',
+    'observe_trace_before_seal',
+    'seal_trace || fail_phase trace-seal',
+    'read_trace_once read-1 0',
+    'read_trace_once read-2 0',
     'disable_trace || fail_phase trace-final-off',
 )
 cursor = 0
