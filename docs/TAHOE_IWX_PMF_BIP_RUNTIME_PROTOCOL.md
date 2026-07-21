@@ -102,7 +102,8 @@ The runner treats its restricted AP state directory as rollback ownership even
 if interruption occurs in the small interval after the external activation
 returns and before a local success flag is stored. Cleanup first accepts a
 watchdog-written rollback witness, otherwise requests the same marker-bound
-rollback immediately. A final `PASS` requires both an explicit rollback-attempt
+rollback immediately; only after that attempt does it restore a still-pending
+guest radio-on state. A final `PASS` requires both an explicit rollback-attempt
 witness and verified optional-PMF restoration.
 
 Every missing acknowledgement, changed binding, trace drop, unsealed capture,

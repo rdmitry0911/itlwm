@@ -335,6 +335,150 @@
 
 ## ANOMALY
 
+- id: `LAB-PMF-RUNNER-CLEANUP-AP-BEFORE-RADIO-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned runtime-runner interruption cleanup ordering; no
+  kext, firmware, Apple80211, candidate, guest, or physical-AP claim.
+- symptom: when the runner has powered the guest radio off and then successfully
+  activated the required-PMF AP, its `cleanup()` turns the guest radio on before
+  it attempts marker-bound AP rollback.
+- expected system behavior: after an interrupted required-PMF activation, AP
+  rollback ownership must be attempted before the radio is restored.  This
+  prevents the saved-profile autojoin edge from observing required PMF outside
+  the bounded trace/authorization sequence.
+- actual behavior: `cleanup()` executes the `RADIO_OFF_PENDING` recovery block
+  first, then the fresh-`AP_STATE_DIR` rollback block.  The normal main path
+  leaves `RADIO_OFF_PENDING=1` from radio-off through required activation until
+  radio-on is both requested and observed, so a failure in that interval takes
+  the unsafe order.
+- divergence point: `scripts/run_tahoe_iwx_pmf_bip_runtime.sh::cleanup`.
+- evidence:
+  - local source establishes the exact two cleanup blocks and main-path flag
+    lifecycle above.
+  - the runner protocol defines required-PMF AP activation before saved-profile
+    radio-on/authorization and requires verified optional restoration before a
+    result; turning radio on first reverses that safety boundary under failure.
+  - deterministic local runtime reproduction: the contract fixture executed
+    the extracted real `cleanup()` body with a fake AP helper and fake radio
+    functions.  It observed `radio-on` before `ap-rollback`, and rejected the
+    unmodified runner with `runner cleanup restores radio before AP rollback
+    ownership` (exit 1), without SSH, guest, hostapd, or network operations.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: cleanup prioritizes guest radio recovery over the already
+    allocated AP rollback ownership boundary.
+- rejected causes:
+  - advisory `AP_REQUIRED_ACTIVE`: cleanup correctly does not trust this flag;
+    the issue is the order of two mandatory cleanup actions.
+  - normal successful path: it performs explicit AP rollback before return and
+    does not exercise `RADIO_OFF_PENDING` cleanup recovery.
+- confirmed deviation: a failure path can re-enable saved-profile autojoin
+  while required PMF is still the active AP configuration.
+- root cause: the radio-recovery block is positioned before AP rollback in
+  `cleanup()`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-RUNNER-CLEANUP-AP-BEFORE-RADIO-20260721`
+- symptom: interrupted execution can restore radio before optional PMF.
+- expected system behavior: attempt AP rollback from every allocated state
+  directory first, then restore a pending guest radio state.
+- actual behavior: the order is radio recovery, AP rollback, trace cleanup,
+  identity capture.
+- exact divergence point: the two leading `cleanup()` blocks are reversed from
+  the transaction ownership order.
+- evidence from runtime: an extracted-body local mock supplied no-op fake radio
+  and AP-helper functions with the real cleanup control flow.  The unmodified
+  source recorded `radio-on` before `ap-rollback` and the fixture failed
+  deterministically; no guest, AP, SSH, route, or hostapd command was invoked.
+- evidence from decomp: not applicable; no Apple component owns the external
+  runtime-runner cleanup order.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the SYSTEM_CONTRACT that the AP state
+  directory is the recovery owner after activation and required PMF must not
+  be exposed to saved-profile autojoin outside the bounded gate.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. host AP lifecycle: optional-PMF rollback is attempted first;
+  2. guest radio/autojoin: it remains off until that attempt completes;
+  3. AP state/marker/watchdog: the existing fresh-directory cleanup semantics
+     and valid watchdog witness handling are preserved;
+  4. trace/identity/evidence: their existing later cleanup order is unchanged;
+  5. route/address, kext, reboot, and physical host: no new command exists.
+- expected contract at each touchpoint:
+  1. no cleanup radio-on precedes an available AP rollback attempt;
+  2. a failure after activation cannot create an unbounded required-PMF
+     autojoin interval through runner ordering;
+  3. failed rollback still produces inconclusive evidence and keeps existing
+     helper ownership behavior;
+  4. trace is still disabled and identity captured after recovery attempts;
+  5. mutation scope remains unchanged.
+- why no relevant touchpoints are missing: only the first two cleanup actions
+  are swapped.  No action is removed, duplicated, or newly introduced, and
+  the AP helper retains all process/rollback authority.
+- why proposed path adds no extra system-visible side effects: it changes only
+  the order of already-required recovery calls.  It adds no retry, delay,
+  fallback, guest command, AP command, configuration write, or state format.
+- why this is root cause and not just correlation: the local mock invokes the
+  actual cleanup body and observes the exact reversed call order, which maps
+  directly to the unsafe source order.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  The system-contract fix respects the runner's
+  declared AP ownership boundary rather than introducing any new recovery
+  path.
+- files/functions to modify:
+  - `scripts/run_tahoe_iwx_pmf_bip_runtime.sh::cleanup`;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` extracted-body
+    ordering fixture;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` interruption wording.
+- forbidden alternative fixes considered and rejected:
+  - leave the order and rely on trace capture to make autojoin harmless;
+  - condition rollback on advisory `AP_REQUIRED_ACTIVE`;
+  - keep radio off indefinitely instead of attempting normal recovery;
+  - add guest joins, scans, route commands, or AP configuration mutations.
+- verification plan:
+  1. Completed: the extracted-body fixture confirmed radio-on before AP
+     rollback without external operations.
+  2. Completed: swapping only the cleanup actions makes the same extracted-body
+     mock record AP rollback before radio-on, with existing ownership/witness
+     behavior unchanged.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - `cleanup()` now processes the existing fresh-`AP_STATE_DIR` rollback
+    ownership/witness path before the existing `RADIO_OFF_PENDING` recovery
+    block.  Trace and identity cleanup retain their former relative order.
+  - no cleanup action was added or removed: the fix is solely the order of two
+    pre-existing recovery operations.
+  - the contract fixture extracts the actual cleanup function at test time,
+    executes it in a child shell with local mock radio/AP-helper functions, and
+    checks the observable sequence without executing any remote or AP command.
+- deterministic verification:
+  - Before implementation, the extracted-body fixture failed exactly at
+    `runner cleanup restores radio before AP rollback ownership`; this is the
+    controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  It records `ap-rollback`
+    before `radio-on`, writes the same synthetic rollback witness, and invokes
+    no SSH, guest, hostapd, route, or network operation.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only an interruption cleanup ordering
+  gap.  It is not a live AP result, candidate activation, guest reboot,
+  PMF/BIP association, or a proof that an external AP rollback itself succeeds.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-NETWORK-VERIFY-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned activation-failure recovery after the first AP

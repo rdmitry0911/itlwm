@@ -748,14 +748,6 @@ cleanup() {
     local rc=$?
     trap - EXIT HUP INT TERM
     set +e
-    if [ "$RADIO_OFF_PENDING" -eq 1 ]; then
-        RADIO_RECOVERY_ATTEMPTED=1
-        remote_radio_power on >/dev/null 2>&1
-        if wait_for_radio_state on; then
-            RADIO_ON_OBSERVED=1
-            RADIO_OFF_PENDING=0
-        fi
-    fi
     # The external activation can return immediately before this shell records
     # AP_REQUIRED_ACTIVE. A fresh state directory is therefore the ownership
     # boundary, not that advisory local flag. A valid watchdog-written witness
@@ -773,6 +765,17 @@ cleanup() {
                     AP_REQUIRED_ACTIVE=0
                 fi
             fi
+        fi
+    fi
+    # If activation happened while the guest radio is still off, recover the
+    # AP transaction first.  A saved-profile radio-on must not create an
+    # unbounded autojoin interval against required PMF before rollback runs.
+    if [ "$RADIO_OFF_PENDING" -eq 1 ]; then
+        RADIO_RECOVERY_ATTEMPTED=1
+        remote_radio_power on >/dev/null 2>&1
+        if wait_for_radio_state on; then
+            RADIO_ON_OBSERVED=1
+            RADIO_OFF_PENDING=0
         fi
     fi
     if [ "$TRACE_MAY_BE_ARMED" -eq 1 ]; then

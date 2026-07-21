@@ -30,6 +30,60 @@ forbid_literal() {
     ! grep -Fq -- "$needle" "$path" || fail "forbidden $label"
 }
 
+cleanup_order_fixture() {
+    local cleanup_source fixture_dir observed
+    cleanup_source="$(awk '
+        /^cleanup\(\) \{/ { capture = 1 }
+        capture { print }
+        capture && /^}$/ { exit }
+    ' "$RUNNER")"
+    [ -n "$cleanup_source" ] || fail 'runner cleanup body is missing'
+    fixture_dir="$(mktemp -d /tmp/aiam-pmf-cleanup-order.XXXXXX)"
+    if ! CLEANUP_SOURCE="$cleanup_source" CLEANUP_TEST_DIR="$fixture_dir" "$BASH" -c '
+        set -euo pipefail
+        eval "$CLEANUP_SOURCE"
+        remote_radio_power() { printf "radio-on\n" >>"$CLEANUP_TEST_DIR/sequence"; }
+        wait_for_radio_state() { return 0; }
+        mock_ap_helper() {
+            printf "ap-rollback\n" >>"$CLEANUP_TEST_DIR/sequence"
+            printf "rollback_verified=true\n" >"$AP_STATE_DIR/rollback.status"
+        }
+        write_safe_attestation() { :; }
+        disable_trace() { :; }
+        capture_identity() { :; }
+        OUT_DIR="$CLEANUP_TEST_DIR/out"
+        AP_STATE_DIR="$CLEANUP_TEST_DIR/state"
+        mkdir -p "$OUT_DIR" "$AP_STATE_DIR"
+        AP_HELPER=mock_ap_helper
+        RADIO_OFF_PENDING=1
+        RADIO_RECOVERY_ATTEMPTED=0
+        RADIO_ON_OBSERVED=0
+        AP_ROLLBACK_VERIFIED=0
+        AP_REQUIRED_ACTIVE=1
+        AP_ROLLBACK_ATTEMPTED=0
+        TRACE_MAY_BE_ARMED=0
+        IDENTITY_BEFORE_BOUND=0
+        IDENTITY_AFTER_BOUND=0
+        KNOWN_HOSTS=""
+        cleanup
+    '; then
+        unlink "$fixture_dir/sequence" 2>/dev/null || true
+        unlink "$fixture_dir/state/rollback.status" 2>/dev/null || true
+        unlink "$fixture_dir/out/ap-rollback-cleanup.stdout" 2>/dev/null || true
+        unlink "$fixture_dir/out/ap-rollback-cleanup.stderr" 2>/dev/null || true
+        rmdir "$fixture_dir/state" "$fixture_dir/out" "$fixture_dir" 2>/dev/null || true
+        fail 'runner cleanup mock did not complete'
+    fi
+    observed="$(sed -n '1,2p' "$fixture_dir/sequence")"
+    unlink "$fixture_dir/sequence" 2>/dev/null || true
+    unlink "$fixture_dir/state/rollback.status" 2>/dev/null || true
+    unlink "$fixture_dir/out/ap-rollback-cleanup.stdout" 2>/dev/null || true
+    unlink "$fixture_dir/out/ap-rollback-cleanup.stderr" 2>/dev/null || true
+    rmdir "$fixture_dir/state" "$fixture_dir/out" "$fixture_dir" 2>/dev/null || true
+    [ "$observed" = $'ap-rollback\nradio-on' ] ||
+        fail 'runner cleanup restores radio before AP rollback ownership'
+}
+
 for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" "$PROTOCOL" \
             "$OVERLAY_HELPER" "$OVERLAY_EVIDENCE_CONTRACT" "$OVERLAY_PROTOCOL"; do
     [ -f "$path" ] || fail "required file is missing: ${path##*/}"
@@ -44,6 +98,7 @@ bash -n "$AP_FIXTURE"
 "$AP_HELPER" --help >/dev/null 2>&1
 "$EVIDENCE_CONTRACT" --self-test
 "$AP_FIXTURE"
+cleanup_order_fixture
 
 for needle in \
     'PINNED_GUEST="devops@127.0.0.1"' \
@@ -321,7 +376,9 @@ if 'AP_REQUIRED_ACTIVE" -eq 1' in cleanup:
 ordered(cleanup, "runner cleanup rollback ownership",
         'AP_ROLLBACK_ATTEMPTED=1',
         '"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"',
-        'rollback_verified=true')
+        'rollback_verified=true',
+        'if [ "$RADIO_OFF_PENDING" -eq 1 ]',
+        'remote_radio_power on')
 
 explicit_rollback = main.find('AP_ROLLBACK_ATTEMPTED=1\n"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"')
 if explicit_rollback < 0:
