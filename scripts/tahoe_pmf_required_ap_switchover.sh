@@ -39,6 +39,7 @@ MODE=""
 STATE_DIR=""
 LEASE_SECONDS=180
 FROM_WATCHDOG=0
+WATCHDOG_READY_FD=""
 CONFIG_VALIDATION_FAILURE=unknown
 
 usage() {
@@ -101,6 +102,11 @@ while [ "$#" -gt 0 ]; do
             FROM_WATCHDOG=1
             shift
             ;;
+        --ready-fd)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            WATCHDOG_READY_FD="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -114,8 +120,12 @@ done
 
 [ -n "$MODE" ] || { usage; exit 2; }
 case "$MODE" in
-    preflight) [ -z "$STATE_DIR" ] || { usage; exit 2; };;
-    activate|rekey|rollback|watchdog) [ -n "$STATE_DIR" ] || { usage; exit 2; };;
+    preflight) [ -z "$STATE_DIR" ] && [ -z "$WATCHDOG_READY_FD" ] || { usage; exit 2; };;
+    activate|rekey|rollback) [ -n "$STATE_DIR" ] && [ -z "$WATCHDOG_READY_FD" ] || { usage; exit 2; };;
+    watchdog)
+        [ -n "$STATE_DIR" ] || { usage; exit 2; }
+        case "$WATCHDOG_READY_FD" in ''|8) ;; *) usage; exit 2;; esac
+        ;;
     *) usage; exit 2;;
 esac
 is_decimal_in_range "$LEASE_SECONDS" 60 300 || { usage; exit 2; }
@@ -384,25 +394,91 @@ watchdog_pid_file() {
     printf '%s/watchdog.pid\n' "$STATE_DIR"
 }
 
-start_watchdog() {
-    setsid "$SELF" --watchdog --state-dir "$STATE_DIR" \
-        --lease-seconds "$LEASE_SECONDS" 9>&- </dev/null >/dev/null 2>&1 &
-    local pid=$!
+watchdog_process_matches() {
+    local pid="$1" args
     case "$pid" in ''|*[!0-9]*) return 1;; esac
-    printf '%s\n' "$pid" >"$(watchdog_pid_file)"
-    chmod 600 "$(watchdog_pid_file)"
+    [ "$pid" -gt 1 ] || return 1
+    /bin/kill -0 "$pid" 2>/dev/null || return 1
+    args="$(/bin/ps -p "$pid" -o args= 2>/dev/null || true)"
+    [[ " $args " == *" $SELF "* &&
+       " $args " == *" --watchdog "* &&
+       "$args" == *"--state-dir $STATE_DIR"* ]]
+}
+
+stop_unready_watchdog() {
+    local pid="$1"
+    case "$pid" in ''|*[!0-9]*) return 0;; esac
+    [ "$pid" -gt 1 ] || return 0
+    /bin/kill "$pid" >/dev/null 2>&1 || true
+}
+
+write_watchdog_pid() {
+    local pid="$1" path
+    path="$(watchdog_pid_file)"
+    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    [ "$pid" -gt 1 ] || return 1
+    umask 077
+    printf '%s\n' "$pid" >"$path" || return 1
+    chmod 600 "$path"
+}
+
+start_watchdog() {
+    local ready_fifo="$STATE_DIR/.watchdog-ready-fifo.$$"
+    local launcher_pid watchdog_pid ready_line=""
+
+    [ ! -e "$ready_fifo" ] && [ ! -L "$ready_fifo" ] || return 1
+    umask 077
+    /usr/bin/mkfifo -m 600 "$ready_fifo" || return 1
+
+    # Open both directions before spawning so neither side can block at FIFO
+    # open.  The one-shot read below is a readiness handshake, not a retry or
+    # a timer-based assertion that a background PID probably execed.
+    exec 8<>"$ready_fifo"
+    setsid "$SELF" --watchdog --state-dir "$STATE_DIR" \
+        --lease-seconds "$LEASE_SECONDS" --ready-fd 8 \
+        8>&8 9>&- </dev/null >/dev/null 2>&1 &
+    launcher_pid=$!
+    case "$launcher_pid" in ''|*[!0-9]*)
+        exec 8>&-
+        /usr/bin/unlink "$ready_fifo" || true
+        return 1
+        ;;
+    esac
+
+    if ! IFS= read -r -t 5 -u 8 ready_line; then
+        stop_unready_watchdog "$launcher_pid"
+        exec 8>&-
+        /usr/bin/unlink "$ready_fifo" || true
+        return 1
+    fi
+    exec 8>&-
+    /usr/bin/unlink "$ready_fifo" || true
+
+    case "$ready_line" in
+        PMF_AP_WATCHDOG_READY:[0-9]*) watchdog_pid="${ready_line#PMF_AP_WATCHDOG_READY:}";;
+        *)
+            stop_unready_watchdog "$launcher_pid"
+            return 1
+            ;;
+    esac
+    if ! watchdog_process_matches "$watchdog_pid" ||
+        ! write_watchdog_pid "$watchdog_pid"; then
+        stop_unready_watchdog "$watchdog_pid"
+        if [ "$launcher_pid" != "$watchdog_pid" ]; then
+            stop_unready_watchdog "$launcher_pid"
+        fi
+        return 1
+    fi
 }
 
 cancel_watchdog() {
-    local pid args
+    local pid
     [ -r "$(watchdog_pid_file)" ] || return 0
     pid="$(/bin/cat "$(watchdog_pid_file)" | tr -d '[:space:]')"
     case "$pid" in ''|*[!0-9]*) return 1;; esac
     if /bin/kill -0 "$pid" 2>/dev/null; then
-        args="$(/bin/ps -p "$pid" -o args= 2>/dev/null || true)"
-        [[ " $args " == *" $SELF "* &&
-           " $args " == *" --watchdog "* &&
-           "$args" == *"--state-dir $STATE_DIR"* ]] || return 1
+        watchdog_process_matches "$pid" || return 1
         /bin/kill "$pid"
     fi
 }
@@ -544,6 +620,23 @@ do_rollback() {
 do_watchdog() {
     local attempt
     require_state_dir
+    marker_matches_state || return 1
+    case "$(state_value state)" in
+        rollback-armed|required) ;;
+        *) return 1;;
+    esac
+    # The fixture can prove that a watchdog which exits before this exact
+    # owner acknowledgement does not authorize the first AP transition.
+    if [ "$TEST_MODE" = 1 ] &&
+        [ "${AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY:-0}" = 1 ]; then
+        return 1
+    fi
+    if [ -n "$WATCHDOG_READY_FD" ]; then
+        # `--ready-fd` is accepted only as fd 8 above.  It is inherited from
+        # start_watchdog's private FIFO and identifies this actual process,
+        # after state-dir and marker ownership have both been checked.
+        printf 'PMF_AP_WATCHDOG_READY:%s\n' "$$" >&8 || return 1
+    fi
     sleep "$LEASE_SECONDS"
     for attempt in $(seq 1 3); do
         if "$SELF" --rollback --state-dir "$STATE_DIR" --from-watchdog; then

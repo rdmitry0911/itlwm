@@ -108,6 +108,10 @@ for needle in \
     'state=rollback-armed' \
     'mark_required_active' \
     'start_watchdog' \
+    'watchdog_process_matches' \
+    'PMF_AP_WATCHDOG_READY' \
+    '--ready-fd 8' \
+    'read -r -t 5 -u 8' \
     '9>&-' \
     'finish_armed_rollback' \
     'setsid "$SELF" --watchdog' \
@@ -227,6 +231,24 @@ ordered(activate, "AP activation rollback ownership",
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
+
+watchdog_start = helper[helper.find("start_watchdog() {"):
+                        helper.find("cancel_watchdog() {")]
+ordered(watchdog_start, "watchdog readiness ownership",
+        'mkfifo -m 600 "$ready_fifo"',
+        'setsid "$SELF" --watchdog',
+        '--ready-fd 8',
+        'read -r -t 5 -u 8 ready_line',
+        'watchdog_process_matches "$watchdog_pid"',
+        'write_watchdog_pid "$watchdog_pid"')
+watchdog = helper[helper.find("do_watchdog() {"):helper.find("with_lock() {")]
+ordered(watchdog, "watchdog ready acknowledgement",
+        "require_state_dir",
+        "marker_matches_state",
+        "PMF_AP_WATCHDOG_READY",
+        'sleep "$LEASE_SECONDS"')
+if "AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the pre-ack watchdog failure discriminator")
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",

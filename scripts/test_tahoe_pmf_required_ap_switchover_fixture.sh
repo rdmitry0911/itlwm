@@ -263,6 +263,33 @@ grep -Fq 'optional rollback verified' "$TMP_ROOT/failed-activate.err" ||
 [ ! -e "$CONTROL_DIR/active.state" ] ||
     fail 'failed activation left a live switchover marker'
 
+# A background PID is not proof that the detached rollback owner successfully
+# entered its state/marker-bound watchdog path.  The helper must reject a
+# fixture watchdog that exits before its one-shot acknowledgement without
+# stopping or replacing the optional-PMF process.
+WATCHDOG_FAIL_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+OPTIONAL_PID_BEFORE="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+if AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY=1 "$HELPER" --activate \
+    --state-dir "$WATCHDOG_FAIL_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/watchdog-failed-activate.out" \
+    2>"$TMP_ROOT/watchdog-failed-activate.err"; then
+    fail 'activation accepted a watchdog that exited before readiness acknowledgement'
+fi
+grep -Fq 'rollback watchdog setup failed' \
+    "$TMP_ROOT/watchdog-failed-activate.err" ||
+    fail 'pre-ack watchdog exit did not retain its categorical diagnostic'
+OPTIONAL_PID_AFTER="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+[ "$OPTIONAL_PID_BEFORE" = "$OPTIONAL_PID_AFTER" ] ||
+    fail 'pre-ack watchdog exit stopped or replaced optional hostapd'
+/bin/kill -0 "$OPTIONAL_PID_AFTER" >/dev/null 2>&1 ||
+    fail 'optional hostapd was not alive after pre-ack watchdog exit'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'pre-ack watchdog exit started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'pre-ack watchdog exit left a live switchover marker'
+[ ! -e "$WATCHDOG_FAIL_STATE_DIR/watchdog.pid" ] ||
+    fail 'pre-ack watchdog exit persisted a false watchdog PID'
+
 # A mismatched staged wireless identity is a read-only prerequisite failure;
 # the helper must not start a switchover merely because the other PMF fields
 # are valid.
