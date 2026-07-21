@@ -172,6 +172,7 @@ main = runner[main_start:]
 ordered(main, "runner PMF/BIP sequence",
         "capture_identity before",
         '"$AP_HELPER" --preflight',
+        "TRACE_MAY_BE_ARMED=1",
         "capture_trace_client reset reset",
         "wait_for_control_ack reset-ack",
         "wait_for_reset_snapshot_buffer_sync",
@@ -193,6 +194,20 @@ initial = main.find("wait_for_initial_pmf_progress")
 traffic = main.find("run_bounded_traffic_probe")
 if not (0 <= initial < traffic < rekey):
     fail("rekey is not gated by initial PMF progress and traffic")
+
+initial_progress = runner[runner.find("wait_for_initial_pmf_progress() {"):
+                          runner.find("read_final_trace_once() {")]
+for token in (
+    'extract_u32 "$OUT_DIR/$snapshot.stdout" active_episode',
+    'extract_u32 "$OUT_DIR/$progress.stdout" active_episode',
+    '[ "$snapshot_episode" -gt 0 ]',
+    '[ "$progress_episode" -gt 0 ]',
+    '[ "$snapshot_episode" = "$progress_episode" ]',
+    'file_has_token "$OUT_DIR/$snapshot.stdout" episode_count 1',
+    'file_has_token "$OUT_DIR/$progress.stdout" episode_count 1',
+):
+    if token not in initial_progress:
+        fail(f"initial PMF progress lacks live-episode fence: {token}")
 
 attestation = runner[runner.find("write_safe_attestation() {"):runner.find("cleanup() {")]
 for token in ("PINNED_PROFILE_SSID", "PINNED_LAB_GATEWAY",
@@ -236,6 +251,11 @@ ordered(cleanup, "runner cleanup rollback ownership",
 explicit_rollback = main.find('AP_ROLLBACK_ATTEMPTED=1\n"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"')
 if explicit_rollback < 0:
     fail("normal PMF sequence lacks an explicit rollback-attempt witness")
+
+trace_arm = main.find("TRACE_MAY_BE_ARMED=1")
+trace_reset = main.find("capture_trace_client reset reset")
+if not (0 <= trace_arm < trace_reset):
+    fail("trace cleanup is not armed before the reset request")
 
 for token in ("wpa_passphrase", "optional_ssid", "required_ssid",
               "optional_passphrase", "required_passphrase"):

@@ -21,6 +21,11 @@ accepts only one direct qcow2 backing image, creates no guest activity, and is
 not evidence of candidate activation or PMF/BIP behavior. The AP preflight
 must still pass before any later candidate sequence begins.
 
+The runner arms its trace cleanup before it submits reset, so a failed or
+interrupted reset can only leave an attempted final-off operation, never an
+unowned enabled capture. This remains a diagnostic safety boundary, not
+runtime PMF/BIP evidence.
+
 ## AP transition boundary
 
 The host helper is the sole component allowed to control the lab AP process.
@@ -64,7 +69,9 @@ sequence:
    autojoin only.
 4. Require a live initial active prefix: PMF receive, q0 doorbell/completion,
    post-acknowledgement IGTK publication, matching selected slot, and
-   port-valid in one active capture episode. This initial active prefix does not establish final success;
+   port-valid in one active capture episode. The snapshot and progress reads
+   must both name the same nonzero active episode and exactly one episode.
+   This initial active prefix does not establish final success;
    it only authorizes the next bounded stimulus.
 5. Require the bounded local traffic probe and all invariants before asking
    the helper for exactly one group rekey.

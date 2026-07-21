@@ -504,6 +504,7 @@ wait_for_reset_snapshot_buffer_sync() {
 
 wait_for_initial_pmf_progress() {
     local attempt snapshot progress snapshot_generation progress_generation
+    local snapshot_episode progress_episode
     for attempt in $(seq 1 "$INITIAL_ATTEMPTS"); do
         snapshot="initial-progress-$attempt-snapshot"
         progress="initial-progress-$attempt-report"
@@ -511,11 +512,18 @@ wait_for_initial_pmf_progress() {
             capture_trace_client "$progress" get pmf-bip-progress; then
             snapshot_generation="$(extract_u32 "$OUT_DIR/$snapshot.stdout" capture_generation || true)"
             progress_generation="$(extract_u32 "$OUT_DIR/$progress.stdout" capture_generation || true)"
+            snapshot_episode="$(extract_u32 "$OUT_DIR/$snapshot.stdout" active_episode || true)"
+            progress_episode="$(extract_u32 "$OUT_DIR/$progress.stdout" active_episode || true)"
             if [ "$snapshot_generation" = "$CAPTURE_GENERATION" ] &&
                 [ "$progress_generation" = "$CAPTURE_GENERATION" ] &&
+                [ -n "$snapshot_episode" ] && [ -n "$progress_episode" ] &&
+                [ "$snapshot_episode" -gt 0 ] && [ "$progress_episode" -gt 0 ] &&
+                [ "$snapshot_episode" = "$progress_episode" ] &&
                 file_has_token "$OUT_DIR/$snapshot.stdout" backend IWX &&
                 file_has_token "$OUT_DIR/$progress.stdout" backend IWX &&
                 file_has_token "$OUT_DIR/$snapshot.stdout" enabled 1 &&
+                file_has_token "$OUT_DIR/$snapshot.stdout" episode_count 1 &&
+                file_has_token "$OUT_DIR/$progress.stdout" episode_count 1 &&
                 file_has_token "$OUT_DIR/$snapshot.stdout" dropped 0 &&
                 file_has_token "$OUT_DIR/$progress.stdout" integrity ok &&
                 file_has_token "$OUT_DIR/$progress.stdout" pmf_bip_progress INITIAL_PMF_BIP_READY &&
@@ -822,10 +830,12 @@ assert_network_invariants preflight || fail_phase preflight-network-invariants
 grep -Fxq 'PMF_AP_PREFLIGHT=PASS' "$OUT_DIR/ap-preflight.stdout" || fail_phase ap-preflight-output
 AP_PREFLIGHT_PASSED=1
 
+# Arm cleanup before requesting reset: the remote control can enable capture
+# before this shell regains control to record the returned sequence.
+TRACE_MAY_BE_ARMED=1
 capture_trace_client reset reset || fail_phase trace-reset-request
 RESET_SEQUENCE="$(extract_u32 "$OUT_DIR/reset.stdout" seq || true)"
 [ "$RESET_SEQUENCE" -gt 0 ] 2>/dev/null || fail_phase trace-reset-sequence
-TRACE_MAY_BE_ARMED=1
 if ! wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 0; then
     fail_phase trace-backend-not-iwx
 fi
