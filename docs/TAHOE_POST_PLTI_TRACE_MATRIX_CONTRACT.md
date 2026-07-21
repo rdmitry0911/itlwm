@@ -3,16 +3,24 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v2 layer.  The ordered success evaluator is
-IWN-only.  IWX, including AX211, may emit only three fixed categorical
-PMF-owner observer markers: validated receive delivery, q0 doorbell, and q0
-completion observation.  IWX remains backend-unsupported for the ordered
-evaluator and cannot inherit an IWN verdict.
+ship with the Tahoe post-PLTI trace v3 layer.  The generic ordered association evaluator is IWN-only.
+IWX, including AX211, remains backend-unsupported for that evaluator and
+cannot inherit an IWN verdict.
 
-No presence, order, or absence of those IWX markers proves firmware
-acknowledgement, key installation, EAPOL success, PMF association, SAE,
-port-valid, link publication, or reachability.  They are raw diagnostic
-evidence only.
+v3 adds a dedicated IWX PMF/BIP evaluator with a distinct, sealed
+categorical chain: validated PMF receive delivery, q0 doorbell, q0
+completion observation, post-acknowledgement IGTK slot-4 or slot-5
+publication, matching selected TX slot, port-valid, and an explicit capture
+seal.  Its only positive outcomes are a completed initial PMF/BIP ownership
+chain or a completed cross-slot rekey.  A port-valid record intentionally
+keeps an IWX episode open until the explicit seal so the bounded rekey window
+remains attributable to the same capture generation.
+
+This evaluator reports only implementation-local, ordered instrumentation
+facts.  It does not prove PMF-required association, traffic, SAE, candidate
+activation, external reachability, physical radio behavior, or a successful
+application exchange.  It accepts neither a raw frame nor a firmware result,
+and it exposes neither key material nor a status value.
 
 The public ABI contains only generation, episode, sequence, backend, and
 categorical event identifiers.  It contains no network identity, channel,
@@ -80,8 +88,17 @@ scenarios in the same commit as the trace implementation:
 - IWX PMF receive delivery is recorded only after the worker's stale
   epoch/current-BSS rejection fence; q0 submit is recorded after its
   doorbell and completion only after q0/sleep unlocks.
-- An IWX raw trace remains BACKEND_UNSUPPORTED/INCONCLUSIVE in the ordered
-  evaluator even when all three categorical observer markers are present.
+- An IWX initial PMF/BIP fixture requires PMF receive, q0 doorbell and
+  completion, one post-acknowledgement slot publication, matching active TX
+  selection, port-valid, and a seal.
+- Slot 4 followed by slot 5, and slot 5 followed by slot 4, each exercise a
+  distinct cross-slot rekey classification.  Repeated selection, same-slot
+  replacement, publication without the PMF owner chain, or selection before
+  publication is inconclusive.
+- A missing q0 completion, active unsealed episode, cancellation, mixed
+  generation or episode, post-terminal event, drop, or overflow is
+  fail-closed.  The generic IWN evaluator remains BACKEND_UNSUPPORTED for
+  every IWX trace, including one with all PMF/BIP observer facts.
 - A post-terminal event, mixed episode/generation, sequence gap, drop, or
   unsupported backend is rejected or fail-closed.
 
@@ -122,7 +139,7 @@ completed version-level layer.
 ## Non-claims
 
 This layer does not implement or prove pure SAE, Algorithm 3 authentication,
-PMF-required association, IGTK installation, firmware acknowledgement,
-EAPOL success, port-valid, WCL link publication, generic reachability,
-traffic, or physical-host validation.  The IWX observer is categorical and
-fail-closed; it does not upgrade those non-claims.
+PMF-required association, external traffic success, candidate activation,
+WCL link publication, generic reachability, or physical-host validation.  The
+IWX observer is categorical and fail-closed; its post-acknowledgement
+publication and selected-slot facts do not upgrade those non-claims.

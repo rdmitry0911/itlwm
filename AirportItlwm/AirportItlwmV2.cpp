@@ -2063,6 +2063,17 @@ airportItlwmPostPltiTraceEventIsKnown(uint32_t event)
            event < kAirportItlwmPostPltiTraceEventMax;
 }
 
+/* Keep IWX-only PMF/BIP producer facts out of the established IWN ordered
+ * association matrix even though the post-publication BIP helper is shared.
+ * Keep the upper bound explicit: a future append-only generic event must not
+ * silently become IWX-only simply because it follows this vocabulary. */
+static bool
+airportItlwmPostPltiTraceEventRequiresIwx(uint32_t event)
+{
+    return event >= kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered &&
+           event <= kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected;
+}
+
 /*
  * The trace has a fixed, non-sleeping serialization gate.  A producer first
  * enters an even control epoch; reset/seal/invalidation turn that epoch odd
@@ -2239,6 +2250,9 @@ airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
 {
     /* Every caller holds recorderLock; state cannot change mid-reservation. */
     if (!airportItlwmPostPltiTraceEventIsKnown(event) ||
+        (airportItlwmPostPltiTraceEventRequiresIwx(event) &&
+         __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) !=
+             kAirportItlwmPostPltiTraceBackendIwx) ||
         !airportItlwmPostPltiTraceTokenIsCurrent(ic, token, requireActive))
         return;
 
@@ -2371,8 +2385,24 @@ AirportItlwmPostPltiTraceCompleteEpisode(struct ieee80211com *ic)
         airportItlwmPostPltiTraceProducerLeave();
         return;
     }
-    airportItlwmPostPltiTraceCloseActive(
-        ic, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    /*
+     * IWX needs one bounded post-port-valid observation window for the
+     * subsequent group rekey.  It records the normal port-valid boundary but
+     * leaves the same capture episode active until the explicit safe seal.
+     * IWN's established ordered evaluator keeps its historical close-on-port
+     * behavior unchanged.
+     */
+    if (__atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) ==
+        kAirportItlwmPostPltiTraceBackendIwx) {
+        const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                               __ATOMIC_ACQUIRE);
+        airportItlwmPostPltiTraceRecordToken(
+            ic, kAirportItlwmPostPltiTraceEventPortValidTransition, token,
+            true);
+    } else {
+        airportItlwmPostPltiTraceCloseActive(
+            ic, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    }
     airportItlwmPostPltiTraceUnlock();
     airportItlwmPostPltiTraceProducerLeave();
 }

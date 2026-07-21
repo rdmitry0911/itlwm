@@ -18,6 +18,7 @@
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
 #include "AirportItlwm/TahoeExternalPmkScanResumeContracts.hpp"
+#include "AirportItlwm/TahoeIwxPmfBipTraceContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoeOpModeContracts.hpp"
@@ -1936,7 +1937,7 @@ void testTahoePostPltiTraceMatrixSealedPrefixes()
 
     constexpr uint32_t kGeneration = 63;
     constexpr uint32_t kEpisode = 5;
-    const auto classify = [](const uint32_t *events, uint32_t eventCount,
+    const auto classify = [=](const uint32_t *events, uint32_t eventCount,
                              uint32_t backend =
                                  kAirportItlwmPostPltiTraceBackendIwn,
                              MissingStage *outMissingStage = nullptr) {
@@ -2229,6 +2230,158 @@ void testTahoePostPltiTraceMatrixSealedPrefixes()
             "all IWX raw observer markers remain ordered-evaluator unsupported");
 }
 
+void testTahoeIwxPmfBipTraceContracts()
+{
+    using namespace TahoeIwxPmfBipTraceContracts;
+
+    constexpr uint32_t kGeneration = 91;
+    constexpr uint32_t kEpisode = 6;
+    const auto classify = [](const uint32_t *events, uint32_t eventCount,
+                             uint32_t backend =
+                                 kAirportItlwmPostPltiTraceBackendIwx,
+                             bool integrity = true,
+                             MissingStage *outStage = nullptr) {
+        AirportItlwmPostPltiTraceEntry entries[32] = {};
+        for (uint32_t i = 0; i < eventCount; i++)
+            entries[i] = { 900 + i, kGeneration, kEpisode, events[i] };
+        const Verdict cpp = classifyEntries(entries, eventCount, integrity,
+                                            backend, 1, 0, outStage);
+        const auto c = static_cast<Verdict>(
+            airport_itlwm_iwx_pmf_bip_trace_classify_entries(
+                entries, eventCount, integrity ? 1 : 0, backend, 1, 0));
+        require(cpp == c, "C and C++ IWX PMF/BIP evaluators agree");
+        return cpp;
+    };
+
+    const uint32_t initial_slot4[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    MissingStage stage = MissingStage::Unknown;
+    require(classify(initial_slot4, 9,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::InitialPmfBipObserved && stage == MissingStage::None,
+            "IWX initial PMF transaction requires publication, selection, port-valid, and seal");
+
+    const uint32_t rekey_4_to_5[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(rekey_4_to_5, 13, kAirportItlwmPostPltiTraceBackendIwx,
+                     true, &stage) == Verdict::CrossSlotRekeyObserved &&
+                stage == MissingStage::None,
+            "slot 4 to slot 5 is a categorical cross-slot rekey");
+
+    const uint32_t rekey_5_to_4[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(rekey_5_to_4, 13, kAirportItlwmPostPltiTraceBackendIwx,
+                     true, &stage) == Verdict::CrossSlotRekeyObserved &&
+                stage == MissingStage::None,
+            "slot 5 to slot 4 is a categorical cross-slot rekey");
+
+    const uint32_t missing_completion[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(missing_completion, 4,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::Q0CompletionNotObserved &&
+                stage == MissingStage::Q0Completion,
+            "a missing q0 completion remains distinguishable");
+
+    const uint32_t active_before_publication[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+    };
+    require(classify(active_before_publication, 5,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::IntegrityInconclusive &&
+                stage == MissingStage::IgtkPublication,
+            "an active slot cannot precede its post-ack publication");
+
+    const uint32_t same_slot_replacement[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+    };
+    require(classify(same_slot_replacement, 12,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::IntegrityInconclusive &&
+                stage == MissingStage::CrossSlotRekey,
+            "a same-slot replacement cannot be relabeled as a rekey");
+
+    const uint32_t sealed_then_event[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+    };
+    require(classify(sealed_then_event, 9,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::IntegrityInconclusive,
+            "events after a terminal IWX seal are inconclusive");
+    require(classify(initial_slot4, 9, kAirportItlwmPostPltiTraceBackendIwn,
+                     true, &stage) == Verdict::BackendUnsupported,
+            "the IWX evaluator cannot borrow an IWN trace");
+    require(classify(initial_slot4, 9,
+                     kAirportItlwmPostPltiTraceBackendUnknown, true,
+                     &stage) == Verdict::BackendUnsupported,
+            "the IWX evaluator rejects an unknown backend");
+    require(classify(initial_slot4, 9, kAirportItlwmPostPltiTraceBackendIwx,
+                     false, &stage) == Verdict::IntegrityInconclusive,
+            "drop, overflow, or mixed capture metadata are fail-closed");
+}
+
 void testTahoeCountryCodeCarrierContracts()
 {
     require(APPLE80211_MAX_CC_LEN == 3,
@@ -2326,9 +2479,10 @@ int main()
     testTahoeExternalPmkScanResumeContracts();
     testTahoePostPltiTraceContracts();
     testTahoePostPltiTraceMatrixSealedPrefixes();
+    testTahoeIwxPmfBipTraceContracts();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 33 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI trace matrix, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 34 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI and IWX PMF/BIP trace matrices, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

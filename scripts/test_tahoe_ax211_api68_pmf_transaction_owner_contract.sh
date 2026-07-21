@@ -343,7 +343,11 @@ for token in (
     "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered = 35",
     "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled = 36",
     "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved = 37",
-    "kAirportItlwmPostPltiTraceEventMax = 38",
+    "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published = 38",
+    "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published = 39",
+    "kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected = 40",
+    "kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected = 41",
+    "kAirportItlwmPostPltiTraceEventMax = 42",
 ):
     require(trace_abi, token, "append-only IWX PMF observer ABI")
 for token in (

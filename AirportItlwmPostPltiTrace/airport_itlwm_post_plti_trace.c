@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include <ClientKit/AirportItlwmPostPltiTrace.h>
+#include <ClientKit/AirportItlwmIwxPmfBipTraceContracts.h>
 #include <ClientKit/AirportItlwmPostPltiTraceMatrixContracts.h>
 
 /*
@@ -168,6 +169,14 @@ event_name(uint32_t event)
         return "iwx-mfp-pae-q0-doorbelled";
     case kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved:
         return "iwx-mfp-pae-q0-completion-observed";
+    case kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published:
+        return "iwx-igtk-slot4-published";
+    case kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published:
+        return "iwx-igtk-slot5-published";
+    case kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected:
+        return "iwx-igtk-slot4-tx-selected";
+    case kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected:
+        return "iwx-igtk-slot5-tx-selected";
     default:
         return "unknown";
     }
@@ -403,6 +412,61 @@ missing_stage_name(enum AirportItlwmPostPltiTraceMissingStage stage)
     }
 }
 
+static const char *
+iwx_pmf_bip_verdict_name(enum AirportItlwmIwxPmfBipTraceVerdict verdict)
+{
+    switch (verdict) {
+    case kAirportItlwmIwxPmfBipTraceVerdictIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmIwxPmfBipTraceVerdictBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmIwxPmfBipTraceVerdictBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictPmfRxNotObserved:
+        return "PMF_RX_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictQ0DoorbellNotObserved:
+        return "Q0_DOORBELL_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictQ0CompletionNotObserved:
+        return "Q0_COMPLETION_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictIgtkPublicationNotObserved:
+        return "IGTK_PUBLICATION_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictActiveSlotNotObserved:
+        return "ACTIVE_SLOT_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictPortValidNotObserved:
+        return "PORT_VALID_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictInitialPmfBipObserved:
+        return "INITIAL_PMF_BIP_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceVerdictCrossSlotRekeyObserved:
+        return "CROSS_SLOT_REKEY_OBSERVED";
+    }
+    return "INTEGRITY_INCONCLUSIVE";
+}
+
+static const char *
+iwx_pmf_bip_missing_stage_name(
+    enum AirportItlwmIwxPmfBipTraceMissingStage stage)
+{
+    switch (stage) {
+    case kAirportItlwmIwxPmfBipTraceMissingStageNone: return "none";
+    case kAirportItlwmIwxPmfBipTraceMissingStageCaptureSeal:
+        return "capture-seal";
+    case kAirportItlwmIwxPmfBipTraceMissingStagePmfRx: return "pmf-rx";
+    case kAirportItlwmIwxPmfBipTraceMissingStageQ0Doorbell:
+        return "q0-doorbell";
+    case kAirportItlwmIwxPmfBipTraceMissingStageQ0Completion:
+        return "q0-completion";
+    case kAirportItlwmIwxPmfBipTraceMissingStageIgtkPublication:
+        return "igtk-publication";
+    case kAirportItlwmIwxPmfBipTraceMissingStageActiveSlot:
+        return "active-slot";
+    case kAirportItlwmIwxPmfBipTraceMissingStagePortValid:
+        return "port-valid";
+    case kAirportItlwmIwxPmfBipTraceMissingStageCrossSlotRekey:
+        return "cross-slot-rekey";
+    default: return "unknown";
+    }
+}
+
 static int
 get_control(io_service_t service)
 {
@@ -496,13 +560,43 @@ get_report(io_service_t service)
     return 0;
 }
 
+static int
+get_iwx_pmf_bip_report(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmIwxPmfBipTraceMissingStage missing_stage =
+        kAirportItlwmIwxPmfBipTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmIwxPmfBipTraceVerdict verdict =
+        airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("pmf_bip_verdict=%s first_missing_stage=%s\n",
+           iwx_pmf_bip_verdict_name(verdict),
+           iwx_pmf_bip_missing_stage_name(missing_stage));
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report\n",
             program, program);
 }
 
@@ -537,6 +631,8 @@ main(int argc, char **argv)
             rc = get_trace(service);
         else if (strcmp(argv[2], "report") == 0)
             rc = get_report(service);
+        else if (strcmp(argv[2], "pmf-bip-report") == 0)
+            rc = get_iwx_pmf_bip_report(service);
         else
             usage(argv[0]);
     } else

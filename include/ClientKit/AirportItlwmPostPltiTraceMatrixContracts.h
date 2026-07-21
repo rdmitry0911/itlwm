@@ -2,7 +2,7 @@
 #define AirportItlwmPostPltiTraceMatrixContracts_h
 
 /*
- * Ordered v2 evaluator for the safe-only post-PLTI trace.
+ * IWN ordered association evaluator for the safe-only post-PLTI trace.
  *
  * This contract accepts fixed categorical records only.  It is deliberately
  * IWN-only and does not carry a channel, BSS, address, key, status, or frame

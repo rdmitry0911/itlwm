@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 2U
+#define AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION 3U
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES 128U
 
 #define AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY \
@@ -69,7 +69,16 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered = 35,
     kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled = 36,
     kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved = 37,
-    kAirportItlwmPostPltiTraceEventMax = 38
+    /*
+     * IWX PMF/BIP evidence v3.  These are intentionally only categorical
+     * post-acknowledgement ownership facts; they carry neither key material
+     * nor a firmware status/identifier.  Keep this vocabulary append-only.
+     */
+    kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published = 38,
+    kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published = 39,
+    kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected = 40,
+    kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected = 41,
+    kAirportItlwmPostPltiTraceEventMax = 42
 };
 
 /*
