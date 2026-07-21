@@ -1,0 +1,80 @@
+{
+  "a2df_baseline_control": {
+    "connection_trigger": "saved_profile_autojoin_only",
+    "cycle_count": 4,
+    "cycle_pass_count": 4,
+    "dhcp_textual_observation": "COMPLETE",
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_join_command": false,
+    "explicit_route_command": false,
+    "four_cycle_result": "PASS",
+    "fresh_association_epochs": 4,
+    "ping_packets_per_cycle": 5,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "route_and_address_invariants": "PASS",
+    "stable_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "auxkc": {
+    "activation_state": "READY_FOR_GUEST_REBOOT",
+    "approved_member_count": 5,
+    "canonical_member_set_after_activation": "PASS",
+    "canonical_preflight_mutation": "none",
+    "direct_load_or_unload": false,
+    "private_admission_result": "PASS"
+  },
+  "candidate": {
+    "activated_candidate_sha256": "0b4c89517e7ffb856290eed57e2e2af406e5f6562fbe0a7bcdb443d57601fd9d",
+    "macho_uuid": "05CF8083-DBC4-3F82-BB6D-5AB203535348",
+    "post_boot_installed_to_candidate_match": true,
+    "post_boot_loaded_to_candidate_match": true,
+    "source_candidate_sha256": "0b4c89517e7ffb856290eed57e2e2af406e5f6562fbe0a7bcdb443d57601fd9d",
+    "source_commit": "2ebe2d1657936209a465cf3ff09c8e77db918210",
+    "source_to_private_preflight_match": true
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "wireless_identity_committed": false
+  },
+  "local_only_raw_artifacts": {
+    "retained_local_only": true,
+    "summary_sha256": "2d1de1b4d90568539be8aed338d13e9bc5feb55f5a0a823136ece4dbcc9c30b4"
+  },
+  "non_claims": {
+    "eapol_exchange_verified": false,
+    "generic_internet_reachability_verified": false,
+    "igtk_installation_verified": false,
+    "iwx_q0_observer_runtime_verified": false,
+    "physical_host_validation": false,
+    "pmf_q0_completion_verified": false,
+    "pmf_required_association_verified": false,
+    "pure_sae_verified": false,
+    "remote_validation_host_validation": false,
+    "wcl_link_publication_verified": false,
+    "wpa3_sae_verified": false
+  },
+  "release": {
+    "asset_or_tag_created": false,
+    "semantic_release_mutated": false
+  },
+  "runtime_execution": {
+    "iwx_q0_observer_exercised": false,
+    "iwn_ordered_trace_entries": 33,
+    "iwn_ordered_trace_verdict": "KERNEL_CHAIN_OBSERVED",
+    "iwn_trace_dropped_entries": 0,
+    "post_plti_backend": "iwn"
+  },
+  "schema_version": "itlwm-tahoe-private-candidate-runtime/v1",
+  "scope": {
+    "environment": "pinned_disposable_qemu_guest",
+    "guest_only_reboot": true,
+    "physical_host_rebooted": false,
+    "physical_host_touched": false,
+    "remote_validation_host_touched": false
+  }
+}
