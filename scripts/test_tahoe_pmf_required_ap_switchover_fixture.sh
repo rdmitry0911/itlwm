@@ -108,6 +108,7 @@ printf '%s\n' \
     'done' \
     '[ -n "$pidfile" ] && [ -n "$logfile" ] && [ -n "$config" ]' \
     'if [ "${FAKE_MUTATE_NETWORK_ON_REQUIRED_START:-0}" = 1 ] && [[ "$config" = *hostapd-5g-wpa2-pmf.conf ]]; then printf "drift\n" >"$FAKE_NETWORK_STATE"; fi' \
+    'if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_START:-0}" = 1 ] && [[ "$config" = *hostapd-5g-wpa2-pmf.conf ]]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     'if [ "${FAKE_FAIL_REQUIRED:-0}" = 1 ] && [[ "$config" = *hostapd-5g-wpa2-pmf.conf ]]; then exit 1; fi' \
     '"$0" --child -B -P "$pidfile" -f "$logfile" "$config" &' \
     'child=$!' \
@@ -210,10 +211,29 @@ grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' "$TMP_ROOT/activate.out" ||
     fail 'activation did not report required-PMF active'
 grep -Fxq 'state=required' "$STATE_DIR/state.txt" ||
     fail 'required AP was not promoted from rollback-armed state'
+grep -Eq '^config_pair_signature_before=[0-9a-f]{64}$' "$STATE_DIR/state.txt" ||
+    fail 'required AP state lacks its configuration-pair baseline'
 [ -r "$STATE_DIR/watchdog.pid" ] || fail 'activation did not retain a watchdog'
 [ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
     fail 'required hostapd pid was not created'
 [ ! -e "$RUN_DIR/hostapd-5g.pid" ] || fail 'optional hostapd pid survived activation'
+
+# A file-pair drift while required PMF is active must block the later rekey
+# micro-stimulus before it reaches hostapd.  Reset the generated staged file
+# before the remaining baseline rekey/rollback cases.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+printf 'wpa_group_rekey=1\n' >>"$REQUIRED"
+if "$HELPER" --rekey --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-config-drift.out" \
+        2>"$TMP_ROOT/rekey-config-drift.err"; then
+    fail 'group rekey accepted a changed staged configuration pair'
+fi
+grep -Fq 'staged PMF configuration pair changed before bounded group-rekey' \
+    "$TMP_ROOT/rekey-config-drift.err" ||
+    fail 'group rekey config drift retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'group rekey config drift reached the hostapd CLI'
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
 
 # A host-side route/address/forwarding drift must stop before the sole group
 # rekey stimulus reaches hostapd. The mock state is restored before rollback.
@@ -320,6 +340,50 @@ grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
     fail 'stable explicit rollback left the transition-drift marker'
 if /bin/kill -0 "$TRANSITION_DRIFT_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'stable explicit rollback left the transition-drift watchdog live'
+fi
+
+# A staged required config can change after the pre-stop fence but while the
+# required daemon consumes it.  The changed file must not be promoted, and the
+# helper must not restart optional hostapd from an unresolved pair.  Restoring
+# the generated baseline later permits the normal marker-bound rollback.
+TRANSITION_CONFIG_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+if FAKE_MUTATE_REQUIRED_CONFIG_ON_START=1 "$HELPER" --activate \
+    --state-dir "$TRANSITION_CONFIG_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/transition-config-activate.out" \
+    2>"$TMP_ROOT/transition-config-activate.err"; then
+    fail 'activation accepted a required config changed during daemon start'
+fi
+grep -Fq 'required-PMF configuration changed before state promotion; rollback watchdog remains armed' \
+    "$TMP_ROOT/transition-config-activate.err" ||
+    fail 'transition config drift did not retain its armed-watchdog diagnostic'
+! grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' \
+    "$TMP_ROOT/transition-config-activate.out" ||
+    fail 'transition config drift published required-active success'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'transition config drift did not quiesce required hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'transition config drift restarted optional hostapd from changed files'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'transition config drift cleared the rollback marker'
+[ -r "$TRANSITION_CONFIG_STATE_DIR/watchdog.pid" ] ||
+    fail 'transition config drift did not retain its watchdog receipt'
+TRANSITION_CONFIG_WATCHDOG_PID="$(tr -d '[:space:]' <"$TRANSITION_CONFIG_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$TRANSITION_CONFIG_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'transition config drift did not retain a live watchdog process'
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+"$HELPER" --rollback --state-dir "$TRANSITION_CONFIG_STATE_DIR" \
+    >"$TMP_ROOT/transition-config-rollback.out" \
+    2>"$TMP_ROOT/transition-config-rollback.err" ||
+    fail 'baseline restoration did not permit transition-config rollback'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/transition-config-rollback.out" ||
+    fail 'baseline restoration did not report optional restoration'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'baseline restoration did not restart optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'baseline restoration left the transition-config marker'
+if /bin/kill -0 "$TRANSITION_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'baseline restoration left the transition-config watchdog live'
 fi
 
 # A changed route/address/forwarding signature after the independent watchdog

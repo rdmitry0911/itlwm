@@ -335,6 +335,177 @@
 
 ## ANOMALY
 
+- id: `LAB-PMF-AP-TRANSITION-CONFIG-OWNERSHIP-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned staged configuration ownership across required-PMF
+  transition and rollback; no kext, firmware, Apple80211, candidate, guest,
+  or physical-AP claim.
+- symptom: `do_activate()` keeps the admitted configuration-pair digest only
+  in local variables.  A staged file can change after the final pre-stop fence
+  and while required hostapd is launched; the helper neither checks the digest
+  before state promotion nor records it for rollback.
+- expected system behavior: required-active publication and any optional-PMF
+  restart after a transition must be authorized only by the same staged pair
+  admitted at activation.  If either file changes after optional PMF stops,
+  required PMF must be quiesced and marker/watchdog retained until the original
+  pair is restored and verified.
+- actual behavior: `write_state()` stores only the host-network digest.
+  `start_configured_hostapd("$REQUIRED_CONFIG", ...)` consumes the path after
+  the last local config digest check, and the next operation is process/AP
+  attestation then `mark_required_active()`.  `do_rollback()` may subsequently
+  start optional hostapd from a changed file without a configuration baseline
+  comparison.
+- divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::{write_state,mark_required_active,
+  do_activate,restore_optional_after_activation_failure,do_rollback}`.
+- evidence:
+  - local source establishes that the config digest is not state-owned and is
+    absent from the post-start promotion and rollback paths.
+  - the protocol requires validated configuration shape before the AP process
+    transition; that contract applies to the required input and to a restart
+    claimed as optional recovery, not merely to an earlier file read.
+  - deterministic no-AP runtime reproduction: only the fixture generated
+    required config acquired the valid but unadmitted `wpa_group_rekey`
+    directive inside fake required-hostapd startup.  The current helper
+    published the synthetic transition, and the fixture stopped with
+    `activation accepted a required config changed during daemon start`
+    (exit 1).  No physical AP, guest, route, or real configuration was used.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: configuration ownership is local to admission rather than
+    durable transaction state, and recovery does not distinguish an already
+    running optional process from a restart that would consume changed bytes.
+- rejected causes:
+  - pre-stop configuration fence: it closes only the readiness interval before
+    optional stop, not the later stop/start interval.
+  - network recovery verification: it proves route/address/forwarding state,
+    not hostapd file identity.
+- confirmed deviation: an unadmitted staged config can become a required
+  hostapd input or optional rollback input after the last configuration check.
+- root cause: no config-pair baseline is preserved and enforced across the
+  transition/rollback owner boundary.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-TRANSITION-CONFIG-OWNERSHIP-20260721`
+- symptom: post-fence staged-file changes can be consumed by hostapd or treated
+  as verified optional recovery.
+- expected system behavior: state carries a hash-only pair baseline; a changed
+  pair blocks required promotion, blocks rekey, and allows optional restart
+  only once the baseline pair is restored.  A currently running optional
+  process may be retained without rereading the changed file.
+- actual behavior: no config digest is in state, and restart paths use paths
+  without comparing their current contents to an activation baseline.
+- exact divergence point: missing
+  `config_pair_signature_before` state value and missing equality checks after
+  required start and before any optional hostapd restart.
+- evidence from runtime: a fixture-only fake required-hostapd start changed
+  only its generated required file.  The unmodified helper reported required
+  active and the fixture deterministically rejected it (exit 1), without an
+  AP, route, guest, or real configuration operation.
+- evidence from decomp: not applicable; no Apple component owns hostapd staged
+  configuration transaction ownership.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the SYSTEM_CONTRACT that a categorical
+  AP transition and verified restoration consume only the admitted staged
+  configuration pair.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. required hostapd input: a changed pair cannot be promoted as active;
+  2. required process on a detected change: it is stopped without consuming a
+     new configuration file;
+  3. optional restart: it occurs only after the state pair baseline matches;
+  4. state/marker/watchdog: retain ownership while staged-file identity is
+     unresolved, and permit explicit rollback after baseline restoration;
+  5. rekey: it is blocked while the pair differs;
+  6. network, guest, candidate, and physical AP configuration: no new action.
+- expected contract at each touchpoint:
+  1. no `required` state or success line follows a changed pair;
+  2. a process launched from unverified bytes is quiesced;
+  3. no optional hostapd starts from changed bytes;
+  4. only a verified later rollback may clear marker/watchdog;
+  5. no group rekey reaches hostapd after a pair mismatch;
+  6. digest reads are local and values are never rendered.
+- why no relevant touchpoints are missing: the candidate covers every path that
+  can consume a staged config after activation: required promotion, rekey, the
+  shared activation-failure restore, normal rollback, and watchdog rollback.
+  Existing optional processes remain usable without a file reread.
+- why proposed path adds no extra system-visible side effects: normal paths add
+  hash-only reads and one state digest.  Mismatch paths stop only an already
+  required process, decline an untrusted optional restart, and retain the
+  existing recovery owner.  No retry, delay, config write, credential output,
+  route mutation, or guest operation is introduced.
+- why this is root cause and not just correlation: the exact source paths pass
+  config file names directly to hostapd after the last digest check, while no
+  state value permits recovery to prove the same bytes later.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  This narrow system-contract fix extends the
+  existing hash-only config admission predicate through the existing state and
+  rollback owner; it adds no alternate configuration source or process owner.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh` config state fields,
+    transition checks, rekey/restore/rollback guards;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` fake required
+    start mutation and baseline-restoration case;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` state/ordering guard;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` durable configuration wording.
+- forbidden alternative fixes considered and rejected:
+  - copy staged configuration/credentials into a new snapshot file;
+  - restart optional hostapd from an unverified changed path;
+  - ignore the post-start mismatch because required hostapd has a live PID;
+  - modify the staged files, AP settings, or host networking to make hashes
+    match.
+- verification plan:
+  1. Completed: the fixture confirmed that a fake required startup mutation was
+     incorrectly published as required active by the pre-fix helper.
+  2. Completed: state-owned digest guards quiesce required, refuse an optional
+     restart from changed bytes, and retain marker/watchdog until fixture
+     baseline restoration permits normal rollback.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - the activation state now carries `config_pair_signature_before` alongside
+    the existing host-network digest, and required-state promotion preserves
+    that same value.
+  - `config_pair_matches_state()` gates post-start promotion, bounded rekey,
+    and every optional-hostapd restart path.  An already-running optional
+    process may remain in place without rereading a changed staged file.
+  - on a changed pair after optional stop, recovery stops any required process
+    but does not start optional from untrusted bytes; marker/watchdog remain
+    until a later normal rollback sees the original pair again.
+  - the fixture changes only its generated required file during fake daemon
+    startup, then restores that generated baseline before its explicit rollback.
+- deterministic verification:
+  - Before implementation, the AP-helper fixture failed exactly at `activation
+    accepted a required config changed during daemon start`; this is the
+    controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  The changed pair produces
+    no required-active line, no required/optional PID from changed input, and
+    retains marker/live watchdog.  Restoring its generated pair allows normal
+    optional rollback and removes ownership.
+  - The fixture also changes the pair during an active required session and
+    proves `--rekey` fails before any fake hostapd CLI request, then restores
+    the generated pair for baseline cases.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only repository-owned staged-file
+  ownership across AP transition/recovery.  It is not a live AP result,
+  candidate activation, guest reboot, PMF/BIP association, or a replacement for
+  a separately reviewed real staged-profile configuration plan.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-RUNNER-CLEANUP-AP-BEFORE-RADIO-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned runtime-runner interruption cleanup ordering; no

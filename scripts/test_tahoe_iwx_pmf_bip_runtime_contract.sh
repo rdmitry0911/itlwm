@@ -169,8 +169,13 @@ for needle in \
     'read -r -t 5 -u 8' \
     'host network invariants changed before optional-PMF stop' \
     'config_pair_signature' \
+    'config_pair_signature_before' \
+    'config_pair_matches_state' \
     'PMF configurations changed before optional-PMF stop' \
     'required-PMF hostapd post-start attestation failed' \
+    'required-PMF configuration changed before state promotion' \
+    'staged PMF configuration pair changed before bounded group-rekey' \
+    'staged PMF configuration pair changed before optional-PMF restart' \
     'finish_post_transition_rollback' \
     'optional-PMF state retained' \
     '9>&-' \
@@ -290,18 +295,20 @@ ordered(activate, "AP configuration admission",
         '[ "$current_config_signature" = "$config_signature" ]',
         'network_signature="$(host_network_signature)"')
 ordered(activate, "AP activation rollback ownership",
-        "write_state \"$network_signature\"",
+        "write_state \"$network_signature\" \"$config_signature\"",
         "write_marker",
         "start_watchdog",
         'stop_configured_hostapd "$OPTIONAL_CONFIG"',
         'start_configured_hostapd "$REQUIRED_CONFIG"',
         'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
         "runtime_ap_is_pinned",
+        'current_config_signature="$(config_pair_signature)"',
+        '[ "$current_config_signature" != "$config_signature" ]',
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
 post_transition_activation = activate[activate.find('if ! stop_configured_hostapd'):]
-if post_transition_activation.count("finish_post_transition_rollback") != 3:
+if post_transition_activation.count("finish_post_transition_rollback") != 5:
     fail("post-transition activation failures do not all verify network recovery")
 post_watchdog_activation = activate[activate.find("if ! start_watchdog;"):]
 ordered(post_watchdog_activation, "AP pre-stop host-network fence",
@@ -337,10 +344,13 @@ if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_taho
     fail("AP fixture lacks the pre-promotion required-child death discriminator")
 if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition network drift discriminator")
+if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the transition configuration drift discriminator")
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",
         'stop_configured_hostapd "$REQUIRED_CONFIG"',
+        "config_pair_matches_state",
         'start_configured_hostapd "$OPTIONAL_CONFIG"',
         "runtime_ap_is_pinned",
         "host_network_signature",
@@ -358,9 +368,36 @@ ordered(post_transition_rollback, "post-transition rollback network verification
         "cancel_watchdog",
         "clear_marker")
 
+state_write = helper[helper.find("write_state() {"):helper.find("mark_required_active() {")]
+ordered(state_write, "AP state configuration baseline",
+        'host_network_signature_before=%s',
+        'config_pair_signature_before=%s',
+        'rollback_verified=false')
+state_mark = helper[helper.find("mark_required_active() {"):helper.find("marker_matches_state() {")]
+ordered(state_mark, "required AP state configuration baseline",
+        'state_value host_network_signature_before',
+        'state_value config_pair_signature_before',
+        'host_network_signature_before=%s',
+        'config_pair_signature_before=%s')
+state_pair = helper[helper.find("config_pair_matches_state() {"):helper.find("write_state() {")]
+ordered(state_pair, "AP state configuration comparison",
+        'state_value config_pair_signature_before',
+        'current_signature="$(config_pair_signature)"',
+        '[ "$current_signature" = "$before_signature" ]')
+restore = helper[helper.find("restore_optional_after_activation_failure() {"):
+                 helper.find("finish_armed_rollback() {")]
+ordered(restore, "optional restart configuration guard",
+        'configured_hostapd_active "$REQUIRED_CONFIG"',
+        'stop_configured_hostapd "$REQUIRED_CONFIG"',
+        'configured_hostapd_active "$OPTIONAL_CONFIG"',
+        "config_pair_matches_state",
+        'start_configured_hostapd "$OPTIONAL_CONFIG"',
+        "runtime_ap_is_pinned")
+
 rekey_helper = helper[helper.find("do_rekey() {"):helper.find("do_rollback() {")]
 ordered(rekey_helper, "AP rekey host-network fence",
         'state_value host_network_signature_before',
+        "config_pair_matches_state",
         'host_network_signature)',
         'host network invariants changed before bounded group-rekey',
         'raw REKEY_GTK',

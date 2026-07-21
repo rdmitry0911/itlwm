@@ -39,6 +39,14 @@ network and configuration-pair signatures immediately before that transition;
 a changed or unreadable signature retains optional PMF and makes the run
 inconclusive without starting required PMF.
 
+The same hash-only configuration-pair baseline is persisted in restricted AP
+state and carried into required promotion.  A changed or unreadable pair after
+the optional-PMF stop prevents required-active publication and is never used to
+restart optional hostapd.  The helper quiesces an already required process,
+retains marker/watchdog ownership, and permits a later normal rollback only
+after the original staged pair is restored; bounded rekey is likewise blocked
+while that pair differs.
+
 After a required-PMF process launch succeeds, the helper re-attests that exact
 PID and the pinned AP channel/width immediately before it promotes rollback
 state to `required`.  An exited, replaced, or unpinned process is restored to

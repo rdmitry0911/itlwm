@@ -347,8 +347,15 @@ state_value() {
     ' "$(state_file)"
 }
 
+config_pair_matches_state() {
+    local before_signature current_signature
+    before_signature="$(state_value config_pair_signature_before)" || return 1
+    current_signature="$(config_pair_signature)" || return 1
+    [ "$current_signature" = "$before_signature" ]
+}
+
 write_state() {
-    local network_signature="$1"
+    local network_signature="$1" config_signature="$2"
     umask 077
     {
         printf 'schema=itlwm-pmf-required-ap-switchover/v1\n'
@@ -357,15 +364,17 @@ write_state() {
         # the required process is explicitly promoted below.
         printf 'state=rollback-armed\n'
         printf 'host_network_signature_before=%s\n' "$network_signature"
+        printf 'config_pair_signature_before=%s\n' "$config_signature"
         printf 'rollback_verified=false\n'
     } >"$(state_file)"
     chmod 600 "$(state_file)"
 }
 
 mark_required_active() {
-    local network_signature tmp
+    local network_signature config_signature tmp
     [ "$(state_value state)" = rollback-armed ] || return 1
     network_signature="$(state_value host_network_signature_before)" || return 1
+    config_signature="$(state_value config_pair_signature_before)" || return 1
     tmp="$STATE_DIR/.state-required.$$"
     [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
     umask 077
@@ -373,6 +382,7 @@ mark_required_active() {
         printf 'schema=itlwm-pmf-required-ap-switchover/v1\n'
         printf 'state=required\n'
         printf 'host_network_signature_before=%s\n' "$network_signature"
+        printf 'config_pair_signature_before=%s\n' "$config_signature"
         printf 'rollback_verified=false\n'
     } >"$tmp" || return 1
     chmod 600 "$tmp" || return 1
@@ -497,6 +507,7 @@ restore_optional_after_activation_failure() {
         stop_configured_hostapd "$REQUIRED_CONFIG" "$REQUIRED_PID" || return 1
     fi
     if ! configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID"; then
+        config_pair_matches_state || return 1
         start_configured_hostapd "$OPTIONAL_CONFIG" "$OPTIONAL_PID" "$OPTIONAL_LOG" || return 1
     fi
     runtime_ap_is_pinned
@@ -555,7 +566,8 @@ do_activate() {
     # Establish the restoration owner before any hostapd process can change.
     # If this process dies between stop/start, the separate session restores
     # optional PMF from the restricted state directory.
-    write_state "$network_signature" || die "required-PMF rollback state setup failed"
+    write_state "$network_signature" "$config_signature" ||
+        die "required-PMF rollback state setup failed"
     write_marker || die "required-PMF active-state marker setup failed"
     if ! start_watchdog; then
         clear_marker || true
@@ -591,14 +603,26 @@ do_activate() {
         die "required-PMF hostapd activation failed; rollback watchdog remains armed"
     fi
     # wait_hostapd_active() establishes only the start helper's observation.
-    # Re-attest the exact required process and AP shape at the state-promotion
-    # edge so an immediately exited child cannot be published as active.
+    # Re-attest the exact required process, AP shape, and staged configuration
+    # at the state-promotion edge so a changed input cannot be published.
     if ! configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         ! runtime_ap_is_pinned; then
         if finish_post_transition_rollback; then
             die "required-PMF hostapd post-start attestation failed; optional rollback verified"
         fi
         die "required-PMF hostapd post-start attestation failed; rollback watchdog remains armed"
+    fi
+    if ! current_config_signature="$(config_pair_signature)"; then
+        if finish_post_transition_rollback; then
+            die "required-PMF configuration is unreadable before state promotion; optional rollback verified"
+        fi
+        die "required-PMF configuration is unreadable before state promotion; rollback watchdog remains armed"
+    fi
+    if [ "$current_config_signature" != "$config_signature" ]; then
+        if finish_post_transition_rollback; then
+            die "required-PMF configuration changed before state promotion; optional rollback verified"
+        fi
+        die "required-PMF configuration changed before state promotion; rollback watchdog remains armed"
     fi
     if ! mark_required_active; then
         if finish_post_transition_rollback; then
@@ -616,6 +640,8 @@ do_rekey() {
     [ "$(state_value state)" = required ] || die "state does not authorize a group rekey"
     before_signature="$(state_value host_network_signature_before)" ||
         die "state lacks the host network baseline"
+    config_pair_matches_state ||
+        die "staged PMF configuration pair changed before bounded group-rekey"
     configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         die "required-PMF hostapd process is not exact"
     runtime_ap_is_pinned || die "the lab AP left the pinned channel/width"
@@ -658,6 +684,8 @@ do_rollback() {
             die "required-PMF hostapd did not stop for rollback"
     fi
     if ! configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID"; then
+        config_pair_matches_state ||
+            die "staged PMF configuration pair changed before optional-PMF restart"
         start_configured_hostapd "$OPTIONAL_CONFIG" "$OPTIONAL_PID" "$OPTIONAL_LOG" ||
             die "optional-PMF hostapd did not restart during rollback"
     fi
