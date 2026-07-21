@@ -13,6 +13,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bash "$root/scripts/test_tahoe_openwrt_mbedtls_sae_intake_contract.sh"
+
 clang -std=c11 -Wall -Wextra -Werror \
     -I"$root/itl80211/openbsd/net80211" \
     "$root/tests/net80211_sae_policy_test.c" \

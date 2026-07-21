@@ -1,0 +1,33 @@
+# Test-only provenance lock for the Tahoe SAE group-19 crypto KAT.
+#
+# This file does not vendor hostap or mbedTLS and does not enable SAE in the
+# kext or Agent.  It pins the source inputs consumed by the isolated harness.
+schema_version=itlwm-openwrt-mbedtls-sae-group19-intake/v1
+hostap_git_url=https://w1.fi/hostap.git
+hostap_commit=b004de0bf1b54d669d358b7f33d6f474bd9719a6
+hostap_license=BSD-3-Clause
+openwrt_commit=0f256a0a7adf5741e4a061f59a08cd01c14dc526
+openwrt_patch_count=7
+openwrt_patch_1_name=110-mbedtls-TLS-crypto-option-initial-port.patch
+openwrt_patch_1_sha256=a53e30d8866a3b9a3af66f24ceead47821101be217769f2cf0ce3d2cf50a8d5e
+openwrt_patch_2_name=120-mbedtls-fips186_2_prf.patch
+openwrt_patch_2_sha256=7c60f8e4b260403a22e0340a153d0677f09256286f3793e70b12a6d717e9884e
+openwrt_patch_3_name=130-mbedtls-annotate-with-TEST_FAIL-for-hwsim-tests.patch
+openwrt_patch_3_sha256=d2eb8b2381b20b325bf61fd647fc6ed3e8a226cd170846b4b3fb14dfe82876b4
+openwrt_patch_4_name=135-mbedtls-fix-owe-association.patch
+openwrt_patch_4_sha256=2140662fd40f198674db350199b5aaceecdab6d03dc4f5f39b300116ce0cb873
+openwrt_patch_5_name=140-tests-Makefile-make-run-tests-with-CONFIG_TLS.patch
+openwrt_patch_5_sha256=f4f77e45adc96b02648835b41dd7012535fb06c5e43dd1d22aa73397ec500e8a
+openwrt_patch_6_name=150-add-NULL-checks-encountered-during-tests-hwsim.patch
+openwrt_patch_6_sha256=6554c4ffacfc1be1d3913a6e0bcbfa7334586c6996a8c4dd029283cfffb6fe17
+openwrt_patch_7_name=160-dpp_pkex-EC-point-mul-w-value-prime.patch
+openwrt_patch_7_sha256=38498a268c070db722675d71ad9ff2f1685dfae247ab5f5f4e652a1dacbcb93c
+hostap_patched_tree_sha1=a7bb37dda84e314ff252d27814007ff6e19de529
+mbedtls_version=3.6.6
+mbedtls_source_url=https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.6/mbedtls-3.6.6.tar.bz2
+mbedtls_source_sha256=8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a
+mbedtls_license_upstream=Apache-2.0 OR GPL-2.0-or-later
+mbedtls_license_choice=GPL-2.0-or-later
+kat_profile=sae-group19-hnp-h2e-vectors-only
+kat_linkage=static-libmbedcrypto-only
+runtime_sae_integration=false
