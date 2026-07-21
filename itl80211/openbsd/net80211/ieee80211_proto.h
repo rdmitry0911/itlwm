@@ -132,6 +132,11 @@ extern	u_int64_t ieee80211_pae_assoc_epoch_begin_replacement(
 extern	void ieee80211_pae_mfp_txn_complete(struct ieee80211com *,
 	    u_int64_t, u_int8_t, int);
 extern	void ieee80211_pae_mfp_txn_abort(struct ieee80211com *);
+/* Caller holds ic_pae_selected_bss_lock.  It transfers only a locally
+ * prepared software BIP context and value state into the live association;
+ * no callback, allocation, or retirement reap is permitted in this helper. */
+extern	int ieee80211_pae_mfp_txn_finish_publish_locked(
+	    struct ieee80211com *, u_int64_t);
 extern	int ieee80211_pae_mfp_txn_begin(struct ieee80211com *,
 	    struct ieee80211_node *, const struct ieee80211_ptk *,
 	    const struct ieee80211_key *, int, const struct ieee80211_key *, int,

@@ -643,6 +643,11 @@ setCIPHER_KEY(OSObject *object, struct apple80211_key *key)
                     getNetworkInterface()->postMessage(APPLE80211_M_RSN_HANDSHAKE_DONE);
                     break;
                 case 0: // GTK
+                    /* key_index is u16 at the Apple80211 boundary. Validate
+                     * it before setGTK narrows it to u8, so 0x0104 cannot
+                     * alias IGTK slot 4 or an out-of-range table entry. */
+                    if (key->key_index >= IEEE80211_WEP_NKID)
+                        return kIOReturnBadArgument;
                     setGTK(key->key, key->key_len, key->key_index, key->key_rsc);
                     getNetworkInterface()->postMessage(APPLE80211_M_RSN_HANDSHAKE_DONE);
                     break;

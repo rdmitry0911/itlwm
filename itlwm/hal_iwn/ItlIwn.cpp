@@ -149,6 +149,8 @@ releaseAll()
 
 void ItlIwn::free()
 {
+	if (ieee80211_bip_lifetime_drain(&com.sc_ic) != 0)
+		panic("ItlIwn::free BIP lifetime");
 	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }
@@ -4031,7 +4033,14 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
         /* Retrieve key for TX. */
         k = ieee80211_get_txkey(ic, wh, ni);
-        if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
+        if (k == NULL) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        /* BIP table identity must be routed before any live descriptor
+         * field is observed.  The later hardware-IV path sees k == NULL. */
+        if (ieee80211_bip_key_is_slot(ic, k) ||
+            k->k_cipher != IEEE80211_CIPHER_CCMP) {
             /* Do software encryption. */
             if ((m = ieee80211_encrypt(ic, m, k)) == NULL)
                 return ENOBUFS;
@@ -4039,6 +4048,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
             wh = mtod(m, struct ieee80211_frame *);
             //    totlen = m->m_pkthdr.len;
             totlen = mbuf_pkthdr_len(m);
+            k = NULL;
 
         } else    /* HW appends CCMP MIC. */
             totlen += IEEE80211_CCMP_HDRLEN;
@@ -6600,6 +6610,10 @@ iwn_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwn_node_info node;
     uint16_t kflags;
 
+    /* Do not expose a selected-BSS BIP slot to a legacy hardware command.
+     * Legitimate BIP installation remains a local software-key carrier. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return EINVAL;
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         k->k_cipher != IEEE80211_CIPHER_CCMP)
         return ieee80211_set_key(ic, ni, k);
@@ -6628,6 +6642,9 @@ iwn_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwn_node *wn = (struct iwn_node *)ni;
     struct iwn_node_info node;
 
+    /* Teardown callbacks receive only a value after generic unpublication. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return;
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         k->k_cipher != IEEE80211_CIPHER_CCMP) {
         /* See comment about other ciphers above. */

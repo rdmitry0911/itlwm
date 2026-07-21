@@ -342,8 +342,12 @@ ordered(disassoc, "disassoc fence before roamscan branch",
         "ic->ic_stats.is_rx_disassoc")
 
 iwx_stop = body(iwx_cpp, "void ItlIwx::\niwx_stop_internal", "AX211 stop")
-ordered(iwx_stop, "direct AX211 stop fence before gate close",
-        "ieee80211_pae_assoc_epoch_begin(ic)", "iwx_task_gate_close")
+# AX211 stops close task admission before the epoch fence.  That lets the
+# reset-authoritative backend mark win before generic cancellation asks it to
+# issue a normal q0 delete; the stopped device itself erases the key slots.
+ordered(iwx_stop, "AX211 reset owner before direct epoch fence",
+        "iwx_task_gate_close", "iwx_mfp_pae_abort_all(sc, true)",
+        "ieee80211_pae_assoc_epoch_begin(ic)")
 ordered(iwx_stop, "direct AX211 stop fence before direct newstate",
         "ieee80211_pae_assoc_epoch_begin(ic)",
         "sc->sc_newstate(ic, IEEE80211_S_INIT, -1)")
@@ -393,8 +397,9 @@ for token in (
     require(var_h, token, "PMF epoch owner state")
 for transaction_begin in (begin, replacement):
     ordered(transaction_begin, "PMF cancellation after selected-BSS leaf unlock",
-            "ieee80211_pae_mfp_txn_cancel_locked(ic)",
+            "ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared)",
             "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+            "ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared)",
             "(*cancel)(ic, txn_id)")
     if "ic->ic_pae_mfp_requested = 0;" in transaction_begin:
         fail("epoch replacement must not erase the valid WCL PMF request")

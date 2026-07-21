@@ -101,6 +101,39 @@ ieee80211_pae_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     return (*ic->ic_set_key)(ic, ni, k);
 }
 
+/* A received IGTK is built as a local value/context, offered to the driver,
+ * then atomically published.  No ingress path may mutate an RX-visible
+ * ic_nw_keys[4/5] descriptor or make a BIP_LOCAL context live. */
+static int
+ieee80211_pae_install_igtk(struct ieee80211com *ic,
+    struct ieee80211_node *ni, struct ieee80211_key *key)
+{
+    int error;
+
+    error = ieee80211_pae_set_key(ic, ni, key);
+    if (error != 0)
+        return error;
+    if (key->k_priv == NULL ||
+        (key->k_flags & IEEE80211_KEY_BIP_LOCAL) == 0) {
+        if (ic->ic_delete_key != NULL)
+            (*ic->ic_delete_key)(ic, ni, key);
+        else
+            ieee80211_delete_key(ic, ni, key);
+        return EIO;
+    }
+    error = ieee80211_bip_key_publish_retire(ic,
+        &ic->ic_nw_keys[key->k_id], key);
+    if (error != 0) {
+        /* The driver accepted a local carrier but the slot changed before
+         * publication.  Delete that local key; never overwrite the slot. */
+        if (ic->ic_delete_key != NULL)
+            (*ic->ic_delete_key)(ic, ni, key);
+        else
+            ieee80211_delete_key(ic, ni, key);
+    }
+    return error;
+}
+
 /*
  * Build a value-only PMF Msg3 plan.  The raw EAPOL frame remains owned by
  * this ingress worker; the asynchronous owner receives only freshly-built
@@ -183,9 +216,8 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
     const u_int8_t *gtk, const u_int8_t *igtk, u_int16_t info)
 {
     struct ieee80211_key gtk_key, igtk_key;
-    struct ieee80211_key *old_igtk;
     u_int16_t kid;
-    int keylen, have_igtk = 0, old_kid;
+    int keylen, have_igtk = 0;
 
     if (gtk == NULL || ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP)
         return EINVAL;
@@ -217,15 +249,11 @@ ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
         memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
         have_igtk = 1;
     } else {
-        /* A rekey may omit IGTK only after a live BIP key is installed. */
-        old_kid = ic->ic_igtk_kid;
-        if (old_kid < 4 || old_kid >= IEEE80211_GROUP_NKID)
-            return EINVAL;
-        old_igtk = &ic->ic_nw_keys[old_kid];
-        if (old_igtk->k_id != old_kid ||
-            old_igtk->k_cipher != IEEE80211_CIPHER_BIP ||
-            (old_igtk->k_flags & IEEE80211_KEY_IGTK) == 0 ||
-            old_igtk->k_len != 16 || old_igtk->k_priv == NULL)
+        /* A rekey may omit IGTK only after either retained RX IGTK slot is
+         * live.  Do not observe descriptor fields or k_priv outside its
+         * selected-BSS lock. */
+        if (!ieee80211_bip_key_slot_live(ic, 4) &&
+            !ieee80211_bip_key_slot_live(ic, 5))
             return EINVAL;
     }
 
@@ -854,6 +882,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     }
     if (igtk != NULL) {    /* implies MFP && gtk != NULL */
         u_int16_t kid;
+        struct ieee80211_key bip_key;
+        int bip_update, bip_error;
         
         /* check that the IGTK KDE is valid */
         if (igtk[1] != 4 + 24) {
@@ -866,21 +896,25 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
-        /* map IGTK to 802.11 key */
-        k = &ic->ic_nw_keys[kid];
-        if (ieee80211_must_update_group_key(k, &igtk[14], 16)) {
-            memset(k, 0, sizeof(*k));
-            k->k_id = kid;    /* either 4 or 5 */
-            k->k_cipher = ni->ni_rsngroupmgmtcipher;
-            k->k_flags = IEEE80211_KEY_IGTK;
-            k->k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            k->k_len = 16;
-            memcpy(k->k_key, &igtk[14], k->k_len);
-            /* install the IGTK */
-            switch (ieee80211_pae_set_key(ic, ni, k)) {
+        bip_update = ieee80211_bip_key_needs_update(ic, kid, &igtk[14],
+            IEEE80211_BIP_KEYLEN);
+        if (bip_update < 0) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        if (bip_update) {
+            bzero(&bip_key, sizeof(bip_key));
+            bip_key.k_id = kid;    /* either 4 or 5 */
+            bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+            bip_key.k_flags = IEEE80211_KEY_IGTK;
+            bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
+            bip_key.k_len = IEEE80211_BIP_KEYLEN;
+            memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
+            bip_error = ieee80211_pae_install_igtk(ic, ni, &bip_key);
+            explicit_bzero(&bip_key, sizeof(bip_key));
+            switch (bip_error) {
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
-                    ic->ic_igtk_kid = kid;
                     break;
                 case EBUSY:
                     deferlink = 1;
@@ -1164,6 +1198,9 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         }
     }
     if (igtk != NULL) {    /* implies MFP */
+        struct ieee80211_key bip_key;
+        int bip_update, bip_error;
+
         /* check that the IGTK KDE is valid */
         if (igtk[1] != 4 + 24) {
             reason = IEEE80211_REASON_AUTH_LEAVE;
@@ -1175,21 +1212,25 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
-        /* map IGTK to 802.11 key */
-        k = &ic->ic_nw_keys[kid];
-        if (ieee80211_must_update_group_key(k, &igtk[14], 16)) {
-            memset(k, 0, sizeof(*k));
-            k->k_id = kid;    /* either 4 or 5 */
-            k->k_cipher = ni->ni_rsngroupmgmtcipher;
-            k->k_flags = IEEE80211_KEY_IGTK;
-            k->k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            k->k_len = 16;
-            memcpy(k->k_key, &igtk[14], k->k_len);
-            /* install the IGTK */
-            switch (ieee80211_pae_set_key(ic, ni, k)) {
+        bip_update = ieee80211_bip_key_needs_update(ic, kid, &igtk[14],
+            IEEE80211_BIP_KEYLEN);
+        if (bip_update < 0) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        if (bip_update) {
+            bzero(&bip_key, sizeof(bip_key));
+            bip_key.k_id = kid;    /* either 4 or 5 */
+            bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+            bip_key.k_flags = IEEE80211_KEY_IGTK;
+            bip_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
+            bip_key.k_len = IEEE80211_BIP_KEYLEN;
+            memcpy(bip_key.k_key, &igtk[14], bip_key.k_len);
+            bip_error = ieee80211_pae_install_igtk(ic, ni, &bip_key);
+            explicit_bzero(&bip_key, sizeof(bip_key));
+            switch (bip_error) {
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
-                    ic->ic_igtk_kid = kid;
                     break;
                 case EBUSY:
                     break;

@@ -109,6 +109,8 @@ struct ieee80211_key {
 #define IEEE80211_KEY_TX	0x00000002	/* Tx+Rx */
 #define IEEE80211_KEY_IGTK	0x00000004	/* integrity group key */
 #define IEEE80211_KEY_SWCRYPTO	0x00000080	/* loaded for software crypto */
+/* A BIP context belongs to a private, not-yet-published key descriptor. */
+#define IEEE80211_KEY_BIP_LOCAL	0x00000100
 
 	u_int			k_len;
 	u_int64_t		k_rsc[IEEE80211_NUM_TID];
@@ -218,6 +220,54 @@ mbuf_t ieee80211_bip_encap(struct ieee80211com *, mbuf_t,
 	    struct ieee80211_key *);
 mbuf_t ieee80211_bip_decap(struct ieee80211com *, mbuf_t,
 	    struct ieee80211_key *);
+
+/* BIP table descriptors are published and retired under the selected-BSS
+ * leaf lock.  Readers claim before observing a descriptor and never free a
+ * retired context; the timeout reaper does that after all claims leave. */
+#define IEEE80211_BIP_KEYLEN	16
+
+struct ieee80211_bip_ctx;
+TAILQ_HEAD(ieee80211_bip_retired_head, ieee80211_bip_ctx);
+
+void	ieee80211_bip_crypto_attach(struct ieee80211com *);
+void	ieee80211_bip_crypto_detach(struct ieee80211com *);
+int	ieee80211_bip_key_is_slot(const struct ieee80211com *,
+	    const struct ieee80211_key *);
+/* Caller holds ic_pae_selected_bss_lock.  On failure neither descriptor is
+ * modified.  On success local ownership moves from new_key to slot.  The
+ * caller must invoke ieee80211_bip_reap_schedule() after dropping that lock. */
+int	ieee80211_bip_key_publish_retire_locked(struct ieee80211com *,
+	    struct ieee80211_key *slot, struct ieee80211_key *new_key);
+/* Unlocked publication/snapshot APIs never expose a live k_priv. */
+int	ieee80211_bip_key_publish_retire(struct ieee80211com *,
+	    struct ieee80211_key *slot, struct ieee80211_key *new_key);
+int	ieee80211_bip_key_install_publish(struct ieee80211com *,
+	    struct ieee80211_node *, struct ieee80211_key *);
+int	ieee80211_bip_key_snapshot(struct ieee80211com *,
+	    const struct ieee80211_key *slot, struct ieee80211_key *out);
+int	ieee80211_bip_key_slot_live(struct ieee80211com *, u_int16_t);
+int	ieee80211_bip_active_key_snapshot(struct ieee80211com *,
+	    struct ieee80211_key *out);
+/* Returns only stable slot identity; BIP readers validate contents under lock. */
+struct ieee80211_key *ieee80211_bip_active_slot(struct ieee80211com *);
+int	ieee80211_bip_key_needs_update(struct ieee80211com *, u_int16_t,
+	    const u_int8_t *, u_int);
+int	ieee80211_bip_pending_stage(struct ieee80211com *,
+	    const struct ieee80211_key *);
+int	ieee80211_bip_pending_snapshot(struct ieee80211com *,
+	    struct ieee80211_key *);
+int	ieee80211_bip_pending_take(struct ieee80211com *,
+	    struct ieee80211_key *);
+int	ieee80211_bip_pending_restore(struct ieee80211com *,
+	    const struct ieee80211_key *);
+int	ieee80211_bip_next_kid(struct ieee80211com *, u_int16_t *);
+/* Unpublish before a driver callback; out is a value-only callback copy. */
+int	ieee80211_bip_key_unpublish_retire(struct ieee80211com *,
+	    struct ieee80211_key *slot, struct ieee80211_key *out);
+/* Reaping never runs from a reader exit or while the selected-BSS lock is held. */
+void	ieee80211_bip_reap_schedule(struct ieee80211com *);
+int	ieee80211_bip_reap(struct ieee80211com *);
+int	ieee80211_bip_lifetime_drain(struct ieee80211com *);
 
 #endif /* _KERNEL */
 #endif /* _NET80211_IEEE80211_CRYPTO_H_ */

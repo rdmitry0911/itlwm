@@ -53,6 +53,8 @@ attach(IOPCIDevice *device)
 void ItlIwm::
 free()
 {
+	if (ieee80211_bip_lifetime_drain(&com.sc_ic) != 0)
+		panic("ItlIwm::free BIP lifetime");
 	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
 }

@@ -194,8 +194,10 @@ detach(IOPCIDevice *device)
     /* close() also publishes permanent SHUTDOWN under the admission lock. */
     int detach_generation;
     (void)iwx_task_gate_close(sc, true, &detach_generation);
+    /* Device teardown is the firmware-key erase authority; do this before
+     * generic epoch cancellation can request an ordinary q0 cleanup. */
+    iwx_mfp_pae_abort_all(sc, true);
     ieee80211_pae_mfp_txn_abort(&sc->sc_ic);
-    iwx_mfp_pae_abort_all(sc);
     iwx_cmdq_detach_begin(sc);
 
     /* Mask new producers while barriers drain callbacks already dequeued. */
@@ -221,7 +223,7 @@ detach(IOPCIDevice *device)
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
     iwx_security_rx_purge(sc);
-    iwx_mfp_pae_abort_all(sc);
+    iwx_mfp_pae_abort_all(sc, true);
 
     /*
      * A successful iwx_start_hw() may have armed DMA.  Halt it while the
@@ -334,6 +336,8 @@ void ItlIwx::free()
     // controller/IRQ/task producer has been fenced; this is the sole point
     // at which freeing that lock cannot race a pointer load in iwx_cmdq_enter.
     iwx_cmdq_destroy(&com);
+	KASSERT(ieee80211_bip_lifetime_drain(&com.sc_ic) == 0,
+	    "BIP readers, retirement, or published slot remains at final free");
 	/* The same terminal lifetime fence now owns the PAE snapshot leaf lock. */
 	ieee80211_pae_selected_bss_lock_destroy(&com.sc_ic);
     super::free();
@@ -5051,7 +5055,10 @@ iwx_ccmp_decap(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni,
     
    /* find key for decryption */
    k = ieee80211_get_rxkey(ic, m, ni);
-   if (k == NULL || k->k_cipher != IEEE80211_CIPHER_CCMP)
+   /* BIP uses the generic software reader; do not inspect its descriptor
+    * from the hardware CCMP helper. */
+   if (k == NULL || ieee80211_bip_key_is_slot(ic, k) ||
+       k->k_cipher != IEEE80211_CIPHER_CCMP)
        return 1;
 
    /* Check that ExtIV bit is be set. */
@@ -6713,12 +6720,14 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     if (hcmd->async_owner != IWX_CMD_ASYNC_OWNER_NONE) {
         if (!async || hcmd->async_cookie == 0 ||
             (hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_HEADER &&
-             hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_ADD_STA_STATUS)) {
+             hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_ADD_STA_STATUS) ||
+            hcmd->async_identity == NULL) {
             err = EINVAL;
             goto out;
         }
     } else if (hcmd->async_cookie != 0 ||
-               hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_NONE) {
+               hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_NONE ||
+               hcmd->async_identity != NULL) {
         err = EINVAL;
         goto out;
     }
@@ -6879,6 +6888,13 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     sc->sc_cmdq_slots[idx].async_owner = hcmd->async_owner;
     sc->sc_cmdq_slots[idx].async_ack_kind = hcmd->async_ack_kind;
     sc->sc_cmdq_slots[idx].async_cookie = hcmd->async_cookie;
+    if (hcmd->async_identity != NULL) {
+        hcmd->async_identity->slot_serial = slot_serial;
+        hcmd->async_identity->slot_epoch = slot_epoch;
+        hcmd->async_identity->code = hcmd->id;
+        hcmd->async_identity->ack_kind = hcmd->async_ack_kind;
+        hcmd->async_identity->valid = true;
+    }
     sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_SUBMITTED;
     if (resp_buf != NULL) {
         sc->sc_cmd_resp_pkt[idx] = resp_buf;
@@ -6995,7 +7011,8 @@ iwx_send_cmd_pdu(struct iwx_softc *sc, uint32_t id, uint32_t flags,
  */
 int ItlIwx::
 iwx_send_cmd_pdu_mfp_async(struct iwx_softc *sc, uint32_t id, uint16_t len,
-                           const void *data, uint64_t cookie, uint8_t ack_kind)
+                           const void *data, uint64_t cookie, uint8_t ack_kind,
+                           struct iwx_cmd_async_identity *identity)
 {
     struct iwx_host_cmd cmd = {
         .id = id,
@@ -7005,8 +7022,11 @@ iwx_send_cmd_pdu_mfp_async(struct iwx_softc *sc, uint32_t id, uint16_t len,
         .async_owner = IWX_CMD_ASYNC_OWNER_MFP_PAE,
         .async_ack_kind = ack_kind,
         .async_cookie = cookie,
+        .async_identity = identity,
     };
 
+    if (identity != NULL)
+        bzero(identity, sizeof(*identity));
     return iwx_send_cmd(sc, &cmd);
 }
 
@@ -7509,7 +7529,14 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     
     if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
         k = ieee80211_get_txkey(ic, wh, ni);
-        if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
+        if (k == NULL) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        /* A live IGTK descriptor is opaque here.  Route it to the generic
+         * BIP reader before touching k_cipher/k_flags/k_priv. */
+        if (ieee80211_bip_key_is_slot(ic, k) ||
+            k->k_cipher != IEEE80211_CIPHER_CCMP) {
             if ((m = ieee80211_encrypt(ic, m, k)) == NULL)
                 return ENOBUFS;
             /* 802.11 header may have moved. */
@@ -10927,7 +10954,10 @@ iwx_set_key_impl(struct ieee80211com *ic, struct ieee80211_node *ni,
     int err;
     uint32_t status;
 
-    if (k == NULL)
+    /* A live slot belongs to the selected-BSS BIP publisher, never to a HAL
+     * command.  PAE installation supplies a local descriptor; teardown
+     * supplies a value-only descriptor after generic unpublication. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
         return EINVAL;
 
     /* Firmware ABI support alone is not a safe PAE serialization contract. */
@@ -11007,6 +11037,9 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwx_add_sta_key_cmd cmd;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 
+    /* See iwx_set_key_impl(): never inspect a live BIP slot here. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return;
     if (k->k_cipher == IEEE80211_CIPHER_BIP) {
         if ((k->k_flags & IEEE80211_KEY_IGTK) != 0 &&
             iwx_mfp_runtime_enabled(sc) &&
@@ -11863,10 +11896,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    int i, s;
+    int i, s, stop_generation;
 
-    /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
-    (void)ieee80211_pae_assoc_epoch_begin(ic);
     s = splnet();
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
@@ -11879,11 +11910,21 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
      * deliberately starting the replacement epoch after this stop.
      */
     /* close() atomically sets SHUTDOWN and becomes this stop's owner ref. */
-    int stop_generation;
     if (!that->iwx_task_gate_close(sc, false, &stop_generation)) {
         splx(s);
         return;
     }
+
+    /*
+     * The device stop below is the authoritative firmware-key erase edge.
+     * Close task admission first, then mark the backend reset owner before
+     * epoch cancellation invokes its generic callback.  This prevents a
+     * queued PMF worker from publishing a new q0 command in the interval.
+     */
+    that->iwx_mfp_pae_abort_all(sc, true);
+
+    /* This direct sc_newstate(INIT) path intentionally bypasses the macro. */
+    (void)ieee80211_pae_assoc_epoch_begin(ic);
     
     /* Cancel queued task callbacks before fencing already-dequeued ones. */
     if (sc->sc_taskq_initialized && sc->sc_task_callbacks_ready) {
@@ -11901,7 +11942,7 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
 
     /* Epoch cancellation has invalidated the generic owner; drop its node
      * ref and timer before q0 turns every outstanding command terminal. */
-    that->iwx_mfp_pae_abort_all(sc);
+    that->iwx_mfp_pae_abort_all(sc, true);
 
     /* Wake synchronous task senders before waiting for their callbacks. */
     that->iwx_cmdq_stop(sc);
@@ -11922,6 +11963,13 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
     
     iwx_stop_device(sc);
+
+    /* The stopped device has discarded every firmware key slot. */
+    if (sc->sc_mfp_pae_lock != NULL) {
+        IOSimpleLockLock(sc->sc_mfp_pae_lock);
+        sc->sc_mfp_pae_reset_pending = false;
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    }
     
     /* Reset soft state. */
     
@@ -13308,6 +13356,124 @@ iwx_mfp_pae_stage_index(uint8_t stage)
     return (unsigned int)stage - IEEE80211_PAE_MFP_STAGE_PTK;
 }
 
+static uint8_t
+iwx_mfp_pae_stage_mask(uint8_t stage)
+{
+    return (uint8_t)(1U << iwx_mfp_pae_stage_index(stage));
+}
+
+static uint8_t
+iwx_mfp_pae_highest_stage(uint8_t mask)
+{
+    if (mask & iwx_mfp_pae_stage_mask(IEEE80211_PAE_MFP_STAGE_IGTK))
+        return IEEE80211_PAE_MFP_STAGE_IGTK;
+    if (mask & iwx_mfp_pae_stage_mask(IEEE80211_PAE_MFP_STAGE_GTK))
+        return IEEE80211_PAE_MFP_STAGE_GTK;
+    if (mask & iwx_mfp_pae_stage_mask(IEEE80211_PAE_MFP_STAGE_PTK))
+        return IEEE80211_PAE_MFP_STAGE_PTK;
+    return IEEE80211_PAE_MFP_STAGE_NONE;
+}
+
+static const struct ieee80211_key *
+iwx_mfp_pae_stage_key(const struct iwx_mfp_pae_txn *txn, uint8_t stage)
+{
+    if (txn == NULL || !iwx_mfp_pae_stage_valid(stage))
+        return NULL;
+    return &txn->staged_keys[iwx_mfp_pae_stage_index(stage)];
+}
+
+/* Caller holds sc_mfp_pae_lock and consumes the returned node after unlock. */
+static struct ieee80211_node *
+iwx_mfp_pae_scrub_locked(struct iwx_mfp_pae_txn *txn)
+{
+    struct ieee80211_node *ni;
+
+    if (txn == NULL)
+        return NULL;
+    ni = txn->ni;
+    explicit_bzero(txn, sizeof(*txn));
+    return ni;
+}
+
+static void
+iwx_mfp_pae_set_q0_identity_locked(struct iwx_mfp_pae_txn *txn,
+                                   const struct iwx_cmd_async_identity *id)
+{
+    if (txn == NULL || id == NULL)
+        return;
+    txn->expected_slot_serial = id->slot_serial;
+    txn->expected_slot_epoch = id->slot_epoch;
+    txn->expected_code = id->code;
+    txn->expected_ack_kind = id->ack_kind;
+    txn->expected_identity_ready = id->valid && id->slot_serial != 0;
+}
+
+static bool
+iwx_mfp_pae_q0_identity_matches(const struct iwx_mfp_pae_txn *txn,
+                                const struct iwx_async_cmd_result *result)
+{
+    return txn != NULL && result != NULL && txn->expected_identity_ready &&
+        result->slot_serial == txn->expected_slot_serial &&
+        result->slot_epoch == txn->expected_slot_epoch &&
+        result->code == txn->expected_code &&
+        result->ack_kind == txn->expected_ack_kind;
+}
+
+static void
+iwx_mfp_pae_arm_timeout(struct iwx_softc *sc,
+                         uint64_t txn_id, uint64_t cookie,
+                         enum iwx_mfp_pae_timeout_kind kind)
+{
+    struct iwx_mfp_pae_txn *txn;
+    bool arm = false;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && txn->txn_id == txn_id &&
+        txn->expected_cookie == cookie && txn->timeout_armed &&
+        txn->timeout_kind == kind &&
+        kind != IWX_MFP_PAE_TIMEOUT_NONE) {
+        arm = true;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    if (arm)
+        timeout_add_msec(&sc->sc_mfp_pae_timeout, 1000);
+}
+
+/*
+ * This is deliberately a deferred reset request.  mfp_pae_task is one of the
+ * tasks drained by iwx_stop_internal(), so it must never invoke that stop
+ * path directly.  init_task already owns the safe stop/reinit sequencing.
+ */
+static void
+iwx_mfp_pae_request_deferred_reset(struct iwx_softc *sc)
+{
+    ItlIwx *that;
+    bool cancel_timeout = false;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return;
+    that = container_of(sc, ItlIwx, com);
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    sc->sc_mfp_pae_reset_pending = true;
+    if (sc->sc_mfp_pae_txn.active) {
+        sc->sc_mfp_pae_txn.state = IWX_MFP_PAE_RESET_PENDING;
+        sc->sc_mfp_pae_txn.cancelled = true;
+        sc->sc_mfp_pae_txn.release_pending = true;
+        sc->sc_mfp_pae_txn.finish_requested = false;
+        sc->sc_mfp_pae_txn.timeout_report_pending = false;
+        cancel_timeout = sc->sc_mfp_pae_txn.timeout_armed;
+        sc->sc_mfp_pae_txn.timeout_armed = false;
+        sc->sc_mfp_pae_txn.timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    if (cancel_timeout)
+        timeout_del(&sc->sc_mfp_pae_timeout);
+    that->iwx_add_task(sc, systq, &sc->init_task);
+}
+
 void ItlIwx::
 iwx_mfp_pae_mark_q0_timeout(struct iwx_softc *sc, u_int64_t cookie)
 {
@@ -13337,7 +13503,8 @@ iwx_mfp_pae_timeout(void *arg)
     struct iwx_softc *sc = (struct iwx_softc *)arg;
     ItlIwx *that;
     struct iwx_mfp_pae_txn *txn;
-    bool schedule = false;
+    bool schedule_task = false;
+    bool request_reset = false;
     u_int64_t cookie = 0;
 
     if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
@@ -13346,24 +13513,59 @@ iwx_mfp_pae_timeout(void *arg)
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
-    if (txn->active && !txn->cancelled && txn->q0_inflight &&
+    if (!txn->active || !txn->timeout_armed) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        return;
+    }
+    if (txn->timeout_kind == IWX_MFP_PAE_TIMEOUT_REPLY &&
+        txn->state == IWX_MFP_PAE_INSTALL &&
+        txn->operation == IWX_MFP_PAE_OP_INSTALL && txn->q0_inflight &&
         !txn->result_ready && txn->expected_cookie != 0) {
+        /*
+         * The command reached q0, so the timer is a terminal result only
+         * for the generic transaction.  It is not proof that firmware did
+         * not install the key: retain its descriptor until the late ACK.
+         */
         cookie = txn->expected_cookie;
         txn->q0_inflight = false;
-        txn->timeout_armed = false;
-        bzero(&txn->result, sizeof(txn->result));
-        txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
-        txn->result.cookie = cookie;
-        txn->result.error = ETIMEDOUT;
-        txn->result_ready = true;
-        schedule = true;
+        txn->late_q0_pending = true;
+        txn->late_cookie = cookie;
+        txn->state = IWX_MFP_PAE_WAIT_LATE_INSTALL;
+        txn->timeout_report_pending = !txn->install_result_delivered;
+        if (txn->timeout_report_pending) {
+            bzero(&txn->result, sizeof(txn->result));
+            txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
+            txn->result.cookie = cookie;
+            txn->result.error = ETIMEDOUT;
+            txn->result_ready = true;
+            schedule_task = true;
+        }
+    } else if (txn->timeout_kind == IWX_MFP_PAE_TIMEOUT_LATE_DRAIN &&
+        txn->state == IWX_MFP_PAE_WAIT_LATE_INSTALL &&
+        txn->late_q0_pending) {
+        /* A doorbelled install never produced its terminal response. */
+        txn->state = IWX_MFP_PAE_RESET_PENDING;
+        request_reset = true;
+    } else if (txn->timeout_kind == IWX_MFP_PAE_TIMEOUT_REPLY &&
+        txn->state == IWX_MFP_PAE_ROLLBACK_DELETE &&
+        txn->operation == IWX_MFP_PAE_OP_DELETE && txn->q0_inflight &&
+        txn->expected_cookie != 0) {
+        /* A delete without a terminal ACK cannot prove key removal. */
+        cookie = txn->expected_cookie;
+        txn->q0_inflight = false;
+        txn->state = IWX_MFP_PAE_RESET_PENDING;
+        request_reset = true;
     }
+    txn->timeout_armed = false;
+    txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
 
-    if (!schedule)
-        return;
-    that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
-    that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+    if (cookie != 0)
+        that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
+    if (schedule_task)
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+    if (request_reset)
+        iwx_mfp_pae_request_deferred_reset(sc);
 }
 
 void ItlIwx::
@@ -13381,14 +13583,65 @@ iwx_mfp_pae_q0_done(struct iwx_softc *sc,
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
-    if (txn->active && !txn->cancelled && txn->q0_inflight &&
+    if (txn->active && txn->driver_generation == sc->sc_generation &&
+        txn->state == IWX_MFP_PAE_INSTALL &&
+        txn->operation == IWX_MFP_PAE_OP_INSTALL && !txn->cancelled &&
+        txn->q0_inflight && !txn->result_ready &&
+        txn->expected_cookie == result->cookie) {
+        txn->q0_inflight = false;
+        cancel_timeout = txn->timeout_armed;
+        txn->timeout_armed = false;
+        txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+        txn->result = *result;
+        txn->result_ready = true;
+        if (!txn->expected_identity_ready && txn->submit_call_active) {
+            /* The sender has not yet copied q0's identity into the owner.
+             * Hold this terminal value; do not let a worker consume it. */
+            txn->result_identity_pending = true;
+        } else {
+            if (!iwx_mfp_pae_q0_identity_matches(txn, result))
+                txn->result.error = EIO;
+            txn->result_identity_pending = false;
+            schedule = true;
+        }
+    } else if (txn->active && txn->driver_generation == sc->sc_generation &&
+        txn->state == IWX_MFP_PAE_WAIT_LATE_INSTALL &&
+        txn->operation == IWX_MFP_PAE_OP_INSTALL &&
+        txn->late_q0_pending && txn->late_cookie == result->cookie) {
+        /* A timed-out install is now terminal; only cleanup may follow. */
+        txn->late_q0_pending = false;
+        txn->late_cookie = 0;
+        cancel_timeout = txn->timeout_armed;
+        txn->timeout_armed = false;
+        txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+        txn->result = *result;
+        txn->result_ready = true;
+        if (!txn->expected_identity_ready && txn->submit_call_active) {
+            txn->result_identity_pending = true;
+        } else {
+            if (!iwx_mfp_pae_q0_identity_matches(txn, result))
+                txn->result.error = EIO;
+            txn->result_identity_pending = false;
+            schedule = true;
+        }
+    } else if (txn->active && txn->driver_generation == sc->sc_generation &&
+        txn->state == IWX_MFP_PAE_ROLLBACK_DELETE &&
+        txn->operation == IWX_MFP_PAE_OP_DELETE && txn->q0_inflight &&
         !txn->result_ready && txn->expected_cookie == result->cookie) {
         txn->q0_inflight = false;
         cancel_timeout = txn->timeout_armed;
         txn->timeout_armed = false;
+        txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
         txn->result = *result;
         txn->result_ready = true;
-        schedule = true;
+        if (!txn->expected_identity_ready && txn->submit_call_active) {
+            txn->result_identity_pending = true;
+        } else {
+            if (!iwx_mfp_pae_q0_identity_matches(txn, result))
+                txn->result.error = EIO;
+            txn->result_identity_pending = false;
+            schedule = true;
+        }
     }
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
 
@@ -13396,6 +13649,151 @@ iwx_mfp_pae_q0_done(struct iwx_softc *sc,
         timeout_del(&sc->sc_mfp_pae_timeout);
     if (schedule)
         iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+}
+
+/* Submit exactly one reverse-order delete after an install is terminal. */
+static int
+iwx_mfp_pae_submit_delete(struct iwx_softc *sc, u_int64_t txn_id)
+{
+    struct iwx_mfp_pae_txn *txn;
+    const struct ieee80211_key *stored_key;
+    struct ieee80211_key key;
+    struct iwx_add_sta_key_cmd sta_cmd;
+    struct iwx_mgmt_mcast_key_cmd_v2 igtk_cmd;
+    struct iwx_cmd_async_identity identity;
+    ItlIwx *that;
+    uint8_t stage;
+    uint64_t cookie;
+    bool arm_timeout = false;
+    bool retire_q0 = false;
+    bool schedule_task = false;
+    bool request_reset = false;
+    int err;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return EINVAL;
+    that = container_of(sc, ItlIwx, com);
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (!txn->active || txn->txn_id != txn_id || !txn->cancelled ||
+        txn->task_active || txn->q0_inflight || txn->result_ready ||
+        sc->sc_mfp_pae_reset_pending) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        return EBUSY;
+    }
+    stage = iwx_mfp_pae_highest_stage(txn->rollback_pending_mask);
+    if (stage == IEEE80211_PAE_MFP_STAGE_NONE) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        return 0;
+    }
+    stored_key = iwx_mfp_pae_stage_key(txn, stage);
+    if (stored_key == NULL) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        return EINVAL;
+    }
+    key = *stored_key;
+    key.k_priv = NULL;
+    sc->sc_mfp_pae_next_cookie++;
+    if (sc->sc_mfp_pae_next_cookie == 0)
+        sc->sc_mfp_pae_next_cookie++;
+    cookie = sc->sc_mfp_pae_next_cookie;
+    txn->state = IWX_MFP_PAE_ROLLBACK_DELETE;
+    txn->operation = IWX_MFP_PAE_OP_DELETE;
+    txn->op_stage = stage;
+    txn->expected_stage = stage;
+    txn->expected_cookie = cookie;
+    txn->expected_identity_ready = false;
+    txn->result_identity_pending = false;
+    txn->expected_slot_serial = 0;
+    txn->expected_slot_epoch = 0;
+    txn->expected_code = 0;
+    txn->expected_ack_kind = IWX_CMD_ASYNC_ACK_NONE;
+    txn->q0_inflight = true;
+    txn->submit_call_active = true;
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (stage == IEEE80211_PAE_MFP_STAGE_IGTK) {
+        bzero(&igtk_cmd, sizeof(igtk_cmd));
+        igtk_cmd.key_id = htole32(key.k_id);
+        igtk_cmd.sta_id = htole32(IWX_STATION_ID);
+        igtk_cmd.ctrl_flags = htole32(IWX_STA_KEY_NOT_VALID);
+        /* No delete payload reads or carries key.k_key. */
+        err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_MGMT_MCAST_KEY,
+                                                sizeof(igtk_cmd), &igtk_cmd,
+                                                cookie,
+                                                IWX_CMD_ASYNC_ACK_HEADER,
+                                                &identity);
+    } else {
+        bzero(&sta_cmd, sizeof(sta_cmd));
+        sta_cmd.common.key_flags = htole16(IWX_STA_KEY_NOT_VALID |
+            IWX_STA_KEY_FLG_NO_ENC | IWX_STA_KEY_FLG_WEP_KEY_MAP |
+            ((key.k_id << IWX_STA_KEY_FLG_KEYID_POS) &
+             IWX_STA_KEY_FLG_KEYID_MSK));
+        sta_cmd.common.key_offset =
+            stage == IEEE80211_PAE_MFP_STAGE_GTK ? 1 : 0;
+        sta_cmd.common.sta_id = IWX_STATION_ID;
+        /* No delete payload reads or carries key.k_key. */
+        err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_ADD_STA_KEY,
+                                                sizeof(sta_cmd), &sta_cmd,
+                                                cookie,
+                                                IWX_CMD_ASYNC_ACK_ADD_STA_STATUS,
+                                                &identity);
+    }
+    explicit_bzero(&key, sizeof(key));
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && txn->txn_id == txn_id &&
+        txn->operation == IWX_MFP_PAE_OP_DELETE &&
+        txn->expected_cookie == cookie) {
+        txn->submit_call_active = false;
+        if (err != 0) {
+            txn->q0_inflight = false;
+            bzero(&txn->result, sizeof(txn->result));
+            txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
+            txn->result.cookie = cookie;
+            txn->result.error = err;
+            txn->result_ready = true;
+            schedule_task = true;
+        } else if (!identity.valid) {
+            txn->state = IWX_MFP_PAE_RESET_PENDING;
+            request_reset = true;
+            retire_q0 = true;
+        } else {
+            iwx_mfp_pae_set_q0_identity_locked(txn, &identity);
+            if (txn->result_identity_pending) {
+                if (!iwx_mfp_pae_q0_identity_matches(txn, &txn->result))
+                    txn->result.error = EIO;
+                txn->result_identity_pending = false;
+                schedule_task = true;
+            }
+            if (!request_reset && !txn->result_ready &&
+                !sc->sc_mfp_pae_reset_pending &&
+                txn->state == IWX_MFP_PAE_ROLLBACK_DELETE &&
+                txn->q0_inflight) {
+                txn->timeout_armed = true;
+                txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_REPLY;
+                arm_timeout = true;
+            } else if (!txn->result_ready) {
+                retire_q0 = true;
+            }
+        }
+    } else if (err == 0) {
+        retire_q0 = true;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (retire_q0)
+        that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
+    if (arm_timeout)
+        iwx_mfp_pae_arm_timeout(sc, txn_id, cookie,
+                                 IWX_MFP_PAE_TIMEOUT_REPLY);
+    if (schedule_task)
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+    if (request_reset)
+        iwx_mfp_pae_request_deferred_reset(sc);
+    return 0;
 }
 
 void ItlIwx::
@@ -13418,8 +13816,14 @@ iwx_mfp_pae_task(void *arg)
     struct iwx_async_cmd_result result;
     struct ieee80211_node *ni;
     u_int64_t txn_id, assoc_epoch;
-    uint8_t stage;
-    int error;
+    u_int64_t late_cookie = 0;
+    uint8_t stage, operation;
+    bool call_generic = false;
+    bool request_reset = false;
+    bool start_delete = false;
+    bool arm_late_drain = false;
+    struct ieee80211_node *release_ni = NULL;
+    int error = 0;
 
     if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
         return;
@@ -13440,46 +13844,122 @@ iwx_mfp_pae_task(void *arg)
     txn->task_active = true;
     txn_id = txn->txn_id;
     assoc_epoch = txn->assoc_epoch;
-    stage = txn->expected_stage;
+    stage = txn->op_stage;
+    operation = txn->operation;
     ni = txn->ni;
-    error = txn->cancelled ? ECANCELED : result.error;
-    if (error == 0)
-        txn->accepted_mask |= 1U << iwx_mfp_pae_stage_index(stage);
+    if (operation == IWX_MFP_PAE_OP_INSTALL) {
+        if (result.error == 0)
+            txn->accepted_mask |= iwx_mfp_pae_stage_mask(stage);
+        if (!txn->cancelled && !sc->sc_mfp_pae_reset_pending &&
+            !txn->install_result_delivered) {
+            /* A late ACK must never turn an already-expired install into
+             * generic success.  The late result only permits rollback. */
+            error = txn->timeout_report_pending ? ETIMEDOUT : result.error;
+            txn->timeout_report_pending = false;
+            txn->install_result_delivered = true;
+            call_generic = true;
+        } else {
+            txn->timeout_report_pending = false;
+        }
+    }
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
 
-    /* Revalidate after leaving the driver leaf lock, before PAE mutation. */
-    if (error == 0 &&
-        (ieee80211_pae_assoc_epoch_current(&sc->sc_ic) != assoc_epoch ||
-         sc->sc_ic.ic_bss != ni))
-        error = ECANCELED;
-    ieee80211_pae_mfp_txn_complete(&sc->sc_ic, txn_id, stage, error);
+    if (call_generic) {
+        /* Revalidate after leaving the driver leaf lock, before PAE mutation. */
+        if (error == 0 &&
+            (ieee80211_pae_assoc_epoch_current(&sc->sc_ic) != assoc_epoch ||
+             sc->sc_ic.ic_bss != ni))
+            error = ECANCELED;
+        ieee80211_pae_mfp_txn_complete(&sc->sc_ic, txn_id, stage, error);
+    }
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
     if (txn->active && txn->txn_id == txn_id && txn->task_active) {
-        struct ieee80211_node *release_ni = NULL;
-
         txn->task_active = false;
-        if (txn->release_pending || txn->cancelled) {
-            release_ni = txn->ni;
-            explicit_bzero(txn, sizeof(*txn));
+        if (sc->sc_mfp_pae_reset_pending ||
+            txn->state == IWX_MFP_PAE_RESET_PENDING) {
+            release_ni = iwx_mfp_pae_scrub_locked(txn);
+        } else if (txn->finish_requested) {
+            /* Generic commit succeeded: never turn this into a rollback. */
+            if (txn->q0_inflight || txn->late_q0_pending ||
+                txn->submit_call_active) {
+                request_reset = true;
+            } else {
+                release_ni = iwx_mfp_pae_scrub_locked(txn);
+            }
+        } else if (operation == IWX_MFP_PAE_OP_DELETE) {
+            if (result.error != 0) {
+                /* A delete NACK is not evidence that a key is absent. */
+                request_reset = true;
+            } else {
+                txn->rollback_pending_mask &= ~iwx_mfp_pae_stage_mask(stage);
+                txn->rollback_deleted_mask |= iwx_mfp_pae_stage_mask(stage);
+                if (txn->rollback_pending_mask != 0)
+                    start_delete = true;
+                else
+                    release_ni = iwx_mfp_pae_scrub_locked(txn);
+            }
+        } else if (operation == IWX_MFP_PAE_OP_INSTALL) {
+            /* A failed generic handoff must not retain accepted firmware
+             * keys merely because an upper callback was unavailable. */
+            if (call_generic && error != 0 && !txn->cancelled) {
+                txn->cancelled = true;
+                txn->release_pending = true;
+            }
+            if (txn->cancelled || txn->release_pending) {
+                if (txn->late_q0_pending) {
+                    if (!txn->timeout_armed && txn->late_cookie != 0) {
+                        txn->timeout_armed = true;
+                        txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_LATE_DRAIN;
+                        late_cookie = txn->late_cookie;
+                        arm_late_drain = true;
+                    }
+                } else if (!txn->result_ready) {
+                    /* A late terminal q0 result has already queued another
+                     * serial pass.  It must choose rollback after this task
+                     * drops its node handoff, rather than forcing EBUSY/reset. */
+                    txn->rollback_pending_mask |=
+                        txn->possibly_installed_mask &
+                        ~txn->rollback_deleted_mask;
+                    if (txn->rollback_pending_mask != 0)
+                        start_delete = true;
+                    else
+                        release_ni = iwx_mfp_pae_scrub_locked(txn);
+                }
+            }
         }
         IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
-        if (release_ni != NULL)
-            ieee80211_release_node(&sc->sc_ic, release_ni);
+    } else {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    }
+
+    if (request_reset) {
+        iwx_mfp_pae_request_deferred_reset(sc);
         return;
     }
-    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    if (release_ni != NULL) {
+        ieee80211_release_node(&sc->sc_ic, release_ni);
+        return;
+    }
+    if (arm_late_drain)
+        iwx_mfp_pae_arm_timeout(sc, txn_id, late_cookie,
+                                 IWX_MFP_PAE_TIMEOUT_LATE_DRAIN);
+    if (start_delete && iwx_mfp_pae_submit_delete(sc, txn_id) != 0)
+        iwx_mfp_pae_request_deferred_reset(sc);
 }
 
 static void
 iwx_mfp_pae_release_transaction(struct iwx_softc *sc, u_int64_t txn_id,
-                                bool match_id)
+                                bool match_id, bool reset_authoritative)
 {
     struct iwx_mfp_pae_txn *txn;
     struct ieee80211_node *ni = NULL;
     ItlIwx *that;
     bool cancel_timeout = false;
+    bool arm_late_drain = false;
+    bool schedule_task = false;
+    bool request_reset = false;
     u_int64_t q0_cookie = 0;
 
     if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
@@ -13488,36 +13968,113 @@ iwx_mfp_pae_release_transaction(struct iwx_softc *sc, u_int64_t txn_id,
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
     if (txn->active && (!match_id || txn->txn_id == txn_id)) {
-        cancel_timeout = txn->timeout_armed;
-        if (txn->q0_inflight && txn->expected_cookie != 0)
-            q0_cookie = txn->expected_cookie;
-        txn->q0_inflight = false;
-        txn->timeout_armed = false;
-        txn->result_ready = false;
-        txn->cancelled = true;
-        if (txn->task_active) {
+        /* finish() has already atomically published the generic software
+         * values under selected-BSS lock and transferred the firmware keys
+         * to normal association lifetime.  An epoch which wins only after
+         * that transition must not reinterpret the private transaction as
+         * an uncommitted q0 owner and delete the accepted keys in reverse
+         * order.  Stop/detach remains the authoritative reset exception. */
+        if (!reset_authoritative && !sc->sc_mfp_pae_reset_pending &&
+            (txn->finish_requested || txn->state == IWX_MFP_PAE_COMMITTED)) {
+            cancel_timeout = txn->timeout_armed;
+            txn->timeout_armed = false;
+            txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+            txn->release_pending = true;
+            if (!txn->task_active)
+                ni = iwx_mfp_pae_scrub_locked(txn);
+        } else {
+            cancel_timeout = txn->timeout_armed;
+            txn->timeout_armed = false;
+            txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+            txn->cancelled = true;
+            txn->release_pending = true;
+            txn->finish_requested = false;
+            txn->timeout_report_pending = false;
+
+        if (reset_authoritative || sc->sc_mfp_pae_reset_pending) {
+            /* stop/detach will erase firmware keys.  Never enqueue a q0
+             * delete behind its closed admission gate. */
+            sc->sc_mfp_pae_reset_pending = true;
+            txn->state = IWX_MFP_PAE_RESET_PENDING;
+            txn->q0_inflight = false;
+            txn->late_q0_pending = false;
+            txn->late_cookie = 0;
+            if (!txn->task_active)
+                ni = iwx_mfp_pae_scrub_locked(txn);
+        } else if (txn->result_ready) {
+            /*
+             * q0 has already produced a serial result.  In particular, an
+             * ACK may precede the sender's return and still await publication
+             * of its slot identity.  Do not discard that terminal evidence
+             * or manufacture a second late wait: the sender will validate and
+             * queue it when result_identity_pending clears.  A timeout report
+             * is likewise consumed by the serial worker, which retains its
+             * real late-q0 drain state separately.
+             */
+            if (!txn->result_identity_pending && !txn->task_active)
+                schedule_task = true;
+        } else if (txn->operation == IWX_MFP_PAE_OP_DELETE &&
+            (txn->q0_inflight || txn->submit_call_active ||
+             txn->late_q0_pending)) {
+            /* A cancellation cannot prove whether the delete reached FW. */
+            txn->state = IWX_MFP_PAE_RESET_PENDING;
+            request_reset = true;
+        } else if (txn->q0_inflight || txn->submit_call_active) {
+            /* The initial command may already be doorbelled.  Its terminal
+             * result must drain before reverse-order deletion can begin. */
+            if (txn->expected_cookie != 0) {
+                q0_cookie = txn->expected_cookie;
+                txn->q0_inflight = false;
+                txn->late_q0_pending = true;
+                txn->late_cookie = q0_cookie;
+                txn->state = IWX_MFP_PAE_WAIT_LATE_INSTALL;
+                txn->timeout_armed = true;
+                txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_LATE_DRAIN;
+                arm_late_drain = true;
+            } else {
+                txn->state = IWX_MFP_PAE_RESET_PENDING;
+                request_reset = true;
+            }
+        } else if (!txn->task_active) {
+            /* Give the serial owner one cancellation result so it can start
+             * the tokenized rollback or release an empty transaction. */
+            bzero(&txn->result, sizeof(txn->result));
+            txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
+            txn->result.error = ECANCELED;
+            txn->result_ready = true;
+            schedule_task = true;
+        } else {
             /* The task holds ni until it returns from net80211. */
             txn->release_pending = true;
-        } else {
-            ni = txn->ni;
-            explicit_bzero(txn, sizeof(*txn));
+        }
         }
     }
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
 
     if (cancel_timeout)
         timeout_del(&sc->sc_mfp_pae_timeout);
-    /* A cancelled owner must not leave a submitted q0 descriptor forever. */
+    /* A cancelled owner must not leave a submitted q0 descriptor reusable
+     * before its terminal ACK.  A sender that has not returned repeats this
+     * mark once it has made the q0 slot visible. */
     if (q0_cookie != 0)
         that->iwx_mfp_pae_mark_q0_timeout(sc, q0_cookie);
+    if (arm_late_drain)
+        iwx_mfp_pae_arm_timeout(sc, txn_id, q0_cookie,
+                                 IWX_MFP_PAE_TIMEOUT_LATE_DRAIN);
+    if (request_reset) {
+        iwx_mfp_pae_request_deferred_reset(sc);
+        return;
+    }
+    if (schedule_task)
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
     if (ni != NULL)
         ieee80211_release_node(&sc->sc_ic, ni);
 }
 
 void ItlIwx::
-iwx_mfp_pae_abort_all(struct iwx_softc *sc)
+iwx_mfp_pae_abort_all(struct iwx_softc *sc, bool reset_authoritative)
 {
-    iwx_mfp_pae_release_transaction(sc, 0, false);
+    iwx_mfp_pae_release_transaction(sc, 0, false, reset_authoritative);
 }
 
 void ItlIwx::
@@ -13530,13 +14087,109 @@ iwx_pae_mfp_txn_cancel(struct ieee80211com *ic, u_int64_t txn_id)
     sc = (struct iwx_softc *)ic->ic_softc;
     if (sc == NULL)
         return;
-    iwx_mfp_pae_release_transaction(sc, txn_id, true);
+    iwx_mfp_pae_release_transaction(sc, txn_id, true, false);
 }
 
-void ItlIwx::
+/* Caller holds ic_pae_selected_bss_lock followed by sc_mfp_pae_lock. */
+static bool
+iwx_mfp_pae_finish_handoff_live_locked(struct ieee80211com *ic,
+                                       const struct iwx_mfp_pae_txn *txn,
+                                       u_int64_t txn_id)
+{
+    const struct ieee80211_pae_mfp_txn *generic;
+
+    if (ic == NULL || txn == NULL)
+        return false;
+    generic = &ic->ic_pae_mfp_txn;
+    return generic->active && generic->id == txn_id &&
+        generic->assoc_epoch == txn->assoc_epoch && generic->ni == txn->ni &&
+        generic->phase == IEEE80211_PAE_MFP_STAGE_NONE &&
+        ic->ic_bss == txn->ni &&
+        ieee80211_pae_assoc_epoch_current(ic) == txn->assoc_epoch;
+}
+
+int ItlIwx::
 iwx_pae_mfp_txn_finish(struct ieee80211com *ic, u_int64_t txn_id)
 {
-    iwx_pae_mfp_txn_cancel(ic, txn_id);
+    struct iwx_softc *sc;
+    struct iwx_mfp_pae_txn *txn;
+    struct ieee80211_node *ni = NULL;
+    IOSimpleLock *bss_lock;
+    IOInterruptState irq;
+    bool request_reset = false;
+    int handoff_error = ECANCELED;
+
+    if (ic == NULL)
+        return EINVAL;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL ||
+        (bss_lock = ic->ic_pae_selected_bss_lock) == NULL)
+        return EOPNOTSUPP;
+
+    /*
+     * Generic completion deliberately retains its record through this call.
+     * Taking the same association fence first makes the backend handoff and
+     * an epoch cancellation mutually exclusive: cancellation then owns the
+     * driver rollback, while a successful handoff transfers ownership to the
+     * normal associated-key lifetime before that epoch can advance.
+     */
+    irq = IOSimpleLockLockDisableInterrupt(bss_lock);
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && txn->txn_id == txn_id && !txn->cancelled &&
+        !sc->sc_mfp_pae_reset_pending) {
+        if (!iwx_mfp_pae_finish_handoff_live_locked(ic, txn, txn_id)) {
+            /* A missing generic record is normally an epoch cancellation
+             * which will call cancel after dropping bss_lock.  A still-live
+             * but inconsistent record is an ownership violation: reset.
+             * Return EIO so generic never mistakes this for an accepted
+             * handoff and clears its cancellation authority as a no-op. */
+            if (ic->ic_pae_mfp_txn.active &&
+                ic->ic_pae_mfp_txn.id == txn_id) {
+                request_reset = true;
+                handoff_error = EIO;
+            }
+        } else {
+            /* Publish generic software key/value state while this same
+             * selected-BSS fence still excludes epoch cancellation.  The
+             * helper only transfers already-local BIP and copies values; it
+             * cannot allocate, reap, or call out under either leaf lock. */
+            if (txn->q0_inflight || txn->late_q0_pending ||
+                txn->submit_call_active) {
+                request_reset = true;
+                handoff_error = EIO;
+            } else {
+                handoff_error =
+                    ieee80211_pae_mfp_txn_finish_publish_locked(ic, txn_id);
+                if (handoff_error != 0) {
+                    request_reset = true;
+                } else {
+                    txn->finish_requested = true;
+                    txn->release_pending = true;
+                    txn->state = IWX_MFP_PAE_COMMITTED;
+                    if (!txn->task_active)
+                        ni = iwx_mfp_pae_scrub_locked(txn);
+                }
+            }
+        }
+    } else if (ic->ic_pae_mfp_txn.active &&
+        ic->ic_pae_mfp_txn.id == txn_id) {
+        /* Generic still owns this id, but the backend cannot prove that it
+         * has a matching live transaction.  Reset and make generic cancel
+         * explicitly rather than silently accepting a vanished owner. */
+        request_reset = true;
+        handoff_error = EIO;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    IOSimpleLockUnlockEnableInterrupt(bss_lock, irq);
+
+    if (request_reset) {
+        iwx_mfp_pae_request_deferred_reset(sc);
+        return handoff_error;
+    }
+    if (ni != NULL)
+        ieee80211_release_node(ic, ni);
+    return handoff_error;
 }
 
 int ItlIwx::
@@ -13551,10 +14204,15 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
     struct ieee80211_key key_copy;
     struct iwx_add_sta_key_cmd sta_cmd;
     struct iwx_mgmt_mcast_key_cmd_v2 igtk_cmd;
+    struct iwx_cmd_async_identity identity;
     uint64_t cookie = 0;
     bool arm_timeout = false;
+    bool arm_late_drain = false;
     bool cancel_timeout = false;
     bool retire_q0 = false;
+    bool schedule_task = false;
+    bool request_reset = false;
+    uint8_t stage_mask;
     int err;
 
     if (ic == NULL || ni == NULL || key == NULL || txn_id == 0 ||
@@ -13575,6 +14233,7 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
     } else if (key->k_cipher != IEEE80211_CIPHER_CCMP) {
         return EINVAL;
     }
+    stage_mask = iwx_mfp_pae_stage_mask(stage);
 
     /* The node ref is acquired before the driver leaf lock. */
     held_ni = ieee80211_ref_node(ni);
@@ -13584,6 +14243,11 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
+    if (sc->sc_mfp_pae_reset_pending) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        ieee80211_release_node(ic, held_ni);
+        return EBUSY;
+    }
     if (!txn->active) {
         if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
             IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
@@ -13596,14 +14260,19 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
         txn->assoc_epoch = assoc_epoch;
         txn->driver_generation = sc->sc_generation;
         txn->ni = held_ni;
+        txn->state = IWX_MFP_PAE_INSTALL;
+        txn->operation = IWX_MFP_PAE_OP_INSTALL;
         held_ni = NULL;
     } else if (txn->txn_id != txn_id || txn->assoc_epoch != assoc_epoch ||
-               txn->ni != ni || txn->cancelled) {
+               txn->ni != ni || txn->cancelled || txn->release_pending ||
+               txn->finish_requested ||
+               txn->state != IWX_MFP_PAE_INSTALL) {
         IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
         ieee80211_release_node(ic, held_ni);
         return EBUSY;
     }
-    if (txn->q0_inflight || txn->result_ready) {
+    if (txn->q0_inflight || txn->submit_call_active || txn->result_ready ||
+        txn->late_q0_pending) {
         IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
         if (held_ni != NULL)
             ieee80211_release_node(ic, held_ni);
@@ -13615,7 +14284,24 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
     cookie = sc->sc_mfp_pae_next_cookie;
     txn->expected_cookie = cookie;
     txn->expected_stage = stage;
+    txn->op_stage = stage;
+    txn->operation = IWX_MFP_PAE_OP_INSTALL;
+    txn->state = IWX_MFP_PAE_INSTALL;
     txn->q0_inflight = true;
+    txn->submit_call_active = true;
+    txn->timeout_armed = false;
+    txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+    txn->timeout_report_pending = false;
+    txn->expected_identity_ready = false;
+    txn->result_identity_pending = false;
+    txn->expected_slot_serial = 0;
+    txn->expected_slot_epoch = 0;
+    txn->expected_code = 0;
+    txn->expected_ack_kind = IWX_CMD_ASYNC_ACK_NONE;
+    txn->install_result_delivered = false;
+    /* This mark precedes the async sender: only a non-doorbelled sender
+     * error may clear it. */
+    txn->possibly_installed_mask |= stage_mask;
     txn->staged_keys[iwx_mfp_pae_stage_index(stage)] = key_copy;
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
     if (held_ni != NULL)
@@ -13631,7 +14317,8 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
         err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_MGMT_MCAST_KEY,
                                                 sizeof(igtk_cmd), &igtk_cmd,
                                                 cookie,
-                                                IWX_CMD_ASYNC_ACK_HEADER);
+                                                IWX_CMD_ASYNC_ACK_HEADER,
+                                                &identity);
     } else {
         bzero(&sta_cmd, sizeof(sta_cmd));
         sta_cmd.common.key_flags = htole16(IWX_STA_KEY_FLG_CCM |
@@ -13653,30 +14340,73 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
         err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_ADD_STA_KEY,
                                                 sizeof(sta_cmd), &sta_cmd,
                                                 cookie,
-                                                IWX_CMD_ASYNC_ACK_ADD_STA_STATUS);
+                                                IWX_CMD_ASYNC_ACK_ADD_STA_STATUS,
+                                                &identity);
     }
     explicit_bzero(&key_copy, sizeof(key_copy));
 
     IOSimpleLockLock(sc->sc_mfp_pae_lock);
     txn = &sc->sc_mfp_pae_txn;
     if (txn->active && txn->txn_id == txn_id &&
-        txn->expected_cookie == cookie && txn->q0_inflight) {
-        if (err == 0) {
-            txn->submitted_mask |= 1U << iwx_mfp_pae_stage_index(stage);
-            txn->timeout_armed = true;
-            arm_timeout = true;
-        } else {
+        txn->operation == IWX_MFP_PAE_OP_INSTALL &&
+        txn->expected_cookie == cookie) {
+        txn->submit_call_active = false;
+        if (err != 0) {
             txn->q0_inflight = false;
+            txn->possibly_installed_mask &= ~stage_mask;
+            if (txn->state == IWX_MFP_PAE_WAIT_LATE_INSTALL &&
+                txn->late_cookie == cookie) {
+                cancel_timeout = txn->timeout_armed;
+                txn->timeout_armed = false;
+                txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_NONE;
+                txn->late_q0_pending = false;
+                txn->late_cookie = 0;
+                txn->state = IWX_MFP_PAE_INSTALL;
+            }
             bzero(&txn->result, sizeof(txn->result));
             txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
             txn->result.cookie = cookie;
             txn->result.error = err;
             txn->result_ready = true;
+            schedule_task = !txn->task_active;
+        } else if (!identity.valid) {
+            txn->state = IWX_MFP_PAE_RESET_PENDING;
+            request_reset = true;
+            retire_q0 = true;
+        } else {
+            iwx_mfp_pae_set_q0_identity_locked(txn, &identity);
+            txn->submitted_mask |= stage_mask;
+            if (txn->result_identity_pending) {
+                if (!iwx_mfp_pae_q0_identity_matches(txn, &txn->result))
+                    txn->result.error = EIO;
+                txn->result_identity_pending = false;
+                schedule_task = true;
+            }
+            if (!txn->result_ready && !sc->sc_mfp_pae_reset_pending &&
+                !txn->cancelled && txn->state == IWX_MFP_PAE_INSTALL &&
+                txn->q0_inflight) {
+                txn->timeout_armed = true;
+                txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_REPLY;
+                arm_timeout = true;
+            } else if (!txn->result_ready && !sc->sc_mfp_pae_reset_pending &&
+                txn->state == IWX_MFP_PAE_WAIT_LATE_INSTALL &&
+                txn->late_q0_pending && txn->late_cookie == cookie) {
+                /* Cancellation raced the sender after its possible-key mark.
+                 * Retain the q0 token until the terminal late response. */
+                txn->timeout_armed = true;
+                txn->timeout_kind = IWX_MFP_PAE_TIMEOUT_LATE_DRAIN;
+                arm_late_drain = true;
+                retire_q0 = true;
+            } else if (!txn->result_ready &&
+                (sc->sc_mfp_pae_reset_pending || txn->cancelled)) {
+                retire_q0 = true;
+            }
         }
     } else if (err == 0 &&
         (!txn->active || txn->txn_id != txn_id ||
-         txn->expected_cookie != cookie || txn->cancelled)) {
-        /* Cancellation raced submission before q0 had a visible slot. */
+         txn->expected_cookie != cookie || txn->cancelled ||
+         sc->sc_mfp_pae_reset_pending)) {
+        /* Reset/cancellation raced submission after its doorbell. */
         retire_q0 = true;
     }
     IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
@@ -13684,21 +14414,20 @@ iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
     if (retire_q0)
         that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
 
-    if (arm_timeout) {
-        timeout_add_msec(&sc->sc_mfp_pae_timeout, 1000);
-        IOSimpleLockLock(sc->sc_mfp_pae_lock);
-        txn = &sc->sc_mfp_pae_txn;
-        if (!txn->active || txn->txn_id != txn_id ||
-            txn->expected_cookie != cookie || !txn->q0_inflight ||
-            !txn->timeout_armed)
-            cancel_timeout = true;
-        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
-        if (cancel_timeout)
-            timeout_del(&sc->sc_mfp_pae_timeout);
-    } else if (err != 0) {
+    if (arm_timeout)
+        iwx_mfp_pae_arm_timeout(sc, txn_id, cookie,
+                                 IWX_MFP_PAE_TIMEOUT_REPLY);
+    if (arm_late_drain)
+        iwx_mfp_pae_arm_timeout(sc, txn_id, cookie,
+                                 IWX_MFP_PAE_TIMEOUT_LATE_DRAIN);
+    if (cancel_timeout)
+        timeout_del(&sc->sc_mfp_pae_timeout);
+    if (schedule_task) {
         /* Submission failure is delivered through the same serial owner. */
         that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
     }
+    if (request_reset)
+        iwx_mfp_pae_request_deferred_reset(sc);
     return 0;
 }
 
@@ -14934,6 +15663,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_security_rx_worker = NULL;
     sc->sc_mfp_pae_lock = NULL;
     explicit_bzero(&sc->sc_mfp_pae_txn, sizeof(sc->sc_mfp_pae_txn));
+    sc->sc_mfp_pae_reset_pending = false;
     sc->sc_mfp_pae_next_cookie = 0;
     sc->sc_mfp_pae_timeout = NULL;
     

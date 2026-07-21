@@ -407,9 +407,11 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     struct ieee80211_eapol_key *key;
     struct ieee80211_key *k = NULL;
+    struct ieee80211_key igtk_key;
     mbuf_t m;
     u_int16_t info, keylen;
     u_int8_t *frm;
+    int error;
     
     ni->ni_rsn_state = RSNA_PTKINITNEGOTIATING;
     if (++ni->ni_rsn_retries > 3) {
@@ -430,6 +432,12 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
     }
     if (m == NULL)
         return ENOMEM;
+    bzero(&igtk_key, sizeof(igtk_key));
+    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        ieee80211_bip_active_key_snapshot(ic, &igtk_key) != 0) {
+        mbuf_freem(m);
+        return EIO;
+    }
     key = mtod(m, struct ieee80211_eapol_key *);
     memset(key, 0, sizeof(*key));
     
@@ -454,10 +462,8 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
         frm = ieee80211_add_gtk_kde(frm, ni, k);
         LE_WRITE_6(key->rsc, k->k_tsc);
         /* encapsulate the IGTK if MFP was negotiated */
-        if (ni->ni_flags & IEEE80211_NODE_MFP) {
-            frm = ieee80211_add_igtk_kde(frm,
-                                         &ic->ic_nw_keys[ic->ic_igtk_kid]);
-        }
+        if (ni->ni_flags & IEEE80211_NODE_MFP)
+            frm = ieee80211_add_igtk_kde(frm, &igtk_key);
         /* ask that the EAPOL-Key frame be encrypted */
         info |= EAPOL_KEY_ENCRYPTED | EAPOL_KEY_SECURE;
     } else	/* WPA */
@@ -470,7 +476,9 @@ ieee80211_send_4way_msg3(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
     
-    return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
+    error = ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
+    explicit_bzero(&igtk_key, sizeof(igtk_key));
+    return error;
 }
 #endif	/* IEEE80211_STA_ONLY */
 
@@ -523,10 +531,12 @@ ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     struct ieee80211_eapol_key *key;
     const struct ieee80211_key *k;
+    struct ieee80211_key igtk_key;
     mbuf_t m;
     u_int16_t info;
     u_int8_t *frm;
     u_int8_t kid;
+    int error;
     
     ni->ni_rsn_gstate = RSNA_REKEYNEGOTIATING;
     if (++ni->ni_rsn_retries > 3) {
@@ -548,6 +558,17 @@ ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
                                 15);
     if (m == NULL)
         return ENOMEM;
+    bzero(&igtk_key, sizeof(igtk_key));
+    if (ni->ni_flags & IEEE80211_NODE_MFP) {
+        if (ni->ni_flags & IEEE80211_NODE_REKEY)
+            error = ieee80211_bip_pending_snapshot(ic, &igtk_key);
+        else
+            error = ieee80211_bip_active_key_snapshot(ic, &igtk_key);
+        if (error != 0) {
+            mbuf_freem(m);
+            return EIO;
+        }
+    }
     key = mtod(m, struct ieee80211_eapol_key *);
     memset(key, 0, sizeof(*key));
     
@@ -568,14 +589,8 @@ ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
             info |= EAPOL_KEY_WPA_TX;
     } else {	/* RSN */
         frm = ieee80211_add_gtk_kde(frm, ni, k);
-        if (ni->ni_flags & IEEE80211_NODE_MFP) {
-            if (ni->ni_flags & IEEE80211_NODE_REKEY)
-                kid = (ic->ic_igtk_kid == 4) ? 5 : 4;
-            else
-                kid = ic->ic_igtk_kid;
-            frm = ieee80211_add_igtk_kde(frm,
-                                         &ic->ic_nw_keys[kid]);
-        }
+        if (ni->ni_flags & IEEE80211_NODE_MFP)
+            frm = ieee80211_add_igtk_kde(frm, &igtk_key);
     }
     /* RSC = last transmit sequence number for the GTK */
     LE_WRITE_6(key->rsc, k->k_tsc);
@@ -587,7 +602,9 @@ ieee80211_send_group_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
     
-    return ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
+    error = ieee80211_send_eapol_key(ic, m, ni, &ni->ni_ptk);
+    explicit_bzero(&igtk_key, sizeof(igtk_key));
+    return error;
 }
 #endif	/* IEEE80211_STA_ONLY */
 

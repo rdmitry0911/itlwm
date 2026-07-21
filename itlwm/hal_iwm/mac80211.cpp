@@ -1715,7 +1715,14 @@ iwm_tx(struct iwm_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     
     if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
         k = ieee80211_get_txkey(ic, wh, ni);
-        if ((k->k_flags & IEEE80211_KEY_GROUP) ||
+        if (k == NULL) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        /* Check BIP slot identity before any descriptor field: generic BIP
+         * owns live IGTK lifetime and software encapsulation. */
+        if (ieee80211_bip_key_is_slot(ic, k) ||
+            (k->k_flags & IEEE80211_KEY_GROUP) ||
             (k->k_cipher != IEEE80211_CIPHER_CCMP)) {
             if ((m = ieee80211_encrypt(ic, m, k)) == NULL)
                 return ENOBUFS;
@@ -2611,6 +2618,9 @@ iwm_set_key_v1(struct ieee80211com *ic, struct ieee80211_node *ni,
    struct iwm_softc *sc = (struct iwm_softc *)ic->ic_softc;
    struct iwm_add_sta_key_cmd_v1 cmd;
 
+   if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+       return EINVAL;
+
    memset(&cmd, 0, sizeof(cmd));
 
    cmd.common.key_flags = htole16(IWM_STA_KEY_FLG_CCM |
@@ -2636,6 +2646,10 @@ iwm_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwm_add_sta_key_cmd cmd;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     
+    /* Live BIP slots are only observable by the generic reader.  HAL key
+     * callbacks receive a local install carrier or an unpublished value. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return EINVAL;
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         k->k_cipher != IEEE80211_CIPHER_CCMP)  {
         /* Fallback to software crypto for other ciphers. */
@@ -2671,6 +2685,9 @@ iwm_delete_key_v1(struct ieee80211com *ic, struct ieee80211_node *ni,
    struct iwm_softc *sc = (struct iwm_softc *)ic->ic_softc;
    struct iwm_add_sta_key_cmd_v1 cmd;
 
+   if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+       return;
+
    memset(&cmd, 0, sizeof(cmd));
 
    cmd.common.key_flags = htole16(IWM_STA_KEY_NOT_VALID |
@@ -2692,6 +2709,9 @@ iwm_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct iwm_add_sta_key_cmd cmd;
     ItlIwm *that = container_of(sc, ItlIwm, com);
     
+    /* Live BIP slots must first cross generic unpublish/retirement. */
+    if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
+        return;
     if ((k->k_flags & IEEE80211_KEY_GROUP) ||
         (k->k_cipher != IEEE80211_CIPHER_CCMP)) {
         /* Fallback to software crypto for other ciphers. */

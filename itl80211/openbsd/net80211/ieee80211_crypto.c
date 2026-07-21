@@ -72,6 +72,7 @@ ieee80211_crypto_attach(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
 
     TAILQ_INIT(&ic->ic_pmksa);
+    ieee80211_bip_crypto_attach(ic);
     if (ic->ic_caps & IEEE80211_C_RSN) {
         ic->ic_rsnprotos = IEEE80211_PROTO_RSN;
         ic->ic_rsnakms = IEEE80211_AKM_PSK;
@@ -104,6 +105,9 @@ ieee80211_crypto_detach(struct _ifnet *ifp)
 
 	/* clear all group keys from memory */
 	ieee80211_crypto_clear_groupkeys(ic);
+	/* A quiescent teardown can reclaim old IGTK contexts now; an active
+	 * reader intentionally leaves them for the terminal driver drain. */
+	ieee80211_bip_crypto_detach(ic);
 
 	/* clear pre-shared key from memory */
 	explicit_bzero(ic->ic_psk, IEEE80211_PMK_LEN);
@@ -121,6 +125,30 @@ ieee80211_crypto_clear_groupkeys(struct ieee80211com *ic)
 
 	for (i = 0; i < IEEE80211_GROUP_NKID; i++) {
         struct ieee80211_key *k = &ic->ic_nw_keys[i];
+		struct ieee80211_key callback_key;
+		int error;
+
+		if (ieee80211_bip_key_is_slot(ic, k)) {
+			/* Do not expose a live BIP descriptor to a driver callback: it
+			 * could synchronously invoke generic delete and free a context a
+			 * PMF reader still owns. */
+			/* Before the selected-BSS leaf lock exists no BIP context can have
+			 * been published; early attach unwind is intentionally a no-op. */
+			if (ic->ic_pae_selected_bss_lock == NULL) {
+				explicit_bzero(k, sizeof(*k));
+				continue;
+			}
+			bzero(&callback_key, sizeof(callback_key));
+			error = ieee80211_bip_key_unpublish_retire(ic, k,
+			    &callback_key);
+			if (error != 0)
+				panic("ieee80211_crypto_clear_groupkeys BIP %d", error);
+			if (callback_key.k_cipher != IEEE80211_CIPHER_NONE &&
+			    ic->ic_delete_key != NULL)
+				(*ic->ic_delete_key)(ic, NULL, &callback_key);
+			explicit_bzero(&callback_key, sizeof(callback_key));
+			continue;
+		}
         if (k->k_cipher != IEEE80211_CIPHER_NONE)
             (*ic->ic_delete_key)(ic, NULL, k);
         explicit_bzero(k, sizeof(*k));
@@ -187,6 +215,24 @@ void
 ieee80211_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct ieee80211_key *k)
 {
+	struct ieee80211_key callback_key;
+	int error;
+
+	/* Table BIP contexts are reader-visible and cannot use the ordinary
+	 * delete+bzero tail.  Unpublish first and let the timeout reaper own the
+	 * retired context; direct callers never get to lose k_priv silently. */
+	if (ieee80211_bip_key_is_slot(ic, k)) {
+		if (ic->ic_pae_selected_bss_lock == NULL) {
+			explicit_bzero(k, sizeof(*k));
+			return;
+		}
+		bzero(&callback_key, sizeof(callback_key));
+		error = ieee80211_bip_key_unpublish_retire(ic, k, &callback_key);
+		if (error != 0)
+			panic("ieee80211_delete_key live BIP %d", error);
+		explicit_bzero(&callback_key, sizeof(callback_key));
+		return;
+	}
 	switch (k->k_cipher) {
     case IEEE80211_CIPHER_WEP40:
     case IEEE80211_CIPHER_WEP104:
@@ -220,8 +266,13 @@ ieee80211_get_txkey(struct ieee80211com *ic, const struct ieee80211_frame *wh,
         return &ni->ni_pairwise_key;
 
     /* All other cases (including WEP) use a group key. */
-    if (ni->ni_flags & IEEE80211_NODE_MFP)
-        kid = ic->ic_igtk_kid;
+    /* BIP protects multicast management only.  Multicast data remains on
+     * GTK just as get_rxkey() selects it; otherwise BIP encap would receive
+     * an ARP/IPv6 data frame and violate its management-frame contract. */
+    if ((ni->ni_flags & IEEE80211_NODE_MFP) &&
+        IEEE80211_IS_MULTICAST(wh->i_addr1) &&
+        (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT)
+        return ieee80211_bip_active_slot(ic);
     else
         kid = ic->ic_def_txkey;
 
@@ -276,6 +327,11 @@ mbuf_t
 ieee80211_encrypt(struct ieee80211com *ic, mbuf_t m0,
     struct ieee80211_key *k)
 {
+	/* k_flags/k_cipher/k_priv in a live IGTK descriptor must only be read by
+	 * the BIP reader protocol.  Pointer identity is stable across rekeys. */
+	if (ieee80211_bip_key_is_slot(ic, k))
+		return ieee80211_bip_encap(ic, m0, k);
+
     if ((k->k_flags & IEEE80211_KEY_SWCRYPTO) == 0) {
 		XYLog("%s: BUG! key unset for sw crypto. k_id: %d k_cipher: %d k_flags: %d\n", __FUNCTION__, k->k_id, k->k_cipher, k->k_flags);
         mbuf_freem(m0);
@@ -311,6 +367,8 @@ ieee80211_decrypt(struct ieee80211com *ic, mbuf_t m0,
 
 	/* find key for decryption */
     k = ieee80211_get_rxkey(ic, m0, ni);
+	if (k != NULL && ieee80211_bip_key_is_slot(ic, k))
+		return ieee80211_bip_decap(ic, m0, k);
     if (k == NULL || (k->k_flags & IEEE80211_KEY_SWCRYPTO) == 0) {
         mbuf_freem(m0);
         return NULL;

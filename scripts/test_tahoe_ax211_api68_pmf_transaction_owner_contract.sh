@@ -118,6 +118,7 @@ for token in (
     "int ieee80211_pae_mfp_txn_begin",
     "void ieee80211_pae_mfp_txn_complete",
     "void ieee80211_pae_mfp_txn_abort",
+    "int ieee80211_pae_mfp_txn_finish_publish_locked",
 ):
     require(proto_h, token, "generic PMF owner API")
 
@@ -218,39 +219,119 @@ order(group, "group owner-before-commit", "ieee80211_pae_mfp_group_begin",
       "check that key length matches")
 group_plan = body(pae, "static int\nieee80211_pae_mfp_group_begin",
                   "group PMF plan")
+# A Group Msg1 without a new IGTK may retain either RX slot across a 4<->5
+# overlap.  The owner must ask the BIP core under its leaf lock, rather than
+# dereference a table descriptor or k_priv in this ingress worker.
 for token in (
-    "old_igtk = &ic->ic_nw_keys[old_kid];",
-    "old_igtk->k_cipher != IEEE80211_CIPHER_BIP",
-    "old_igtk->k_priv == NULL",
+    "ieee80211_bip_key_slot_live(ic, 4)",
+    "ieee80211_bip_key_slot_live(ic, 5)",
 ):
-    require(group_plan, token, "rekey-without-IGTK live-key requirement")
+    require(group_plan, token, "rekey-without-IGTK retained-slot requirement")
+for token in ("old_igtk", "ic_nw_keys[", "->k_priv"):
+    forbid(group_plan, token, "rekey-without-IGTK raw descriptor access")
 
 # The generic owner serializes callbacks outside its leaf lock, verifies the
-# identity tuple on every completion, and rolls firmware state back if BIP
-# setup cannot commit after the key ACKs.
+# identity tuple on every completion, and retains its value record through an
+# atomic backend finish+software-publication handoff.  A prepared BIP context
+# is local until that handoff and is extracted/disposed after any cancellation.
 proto = source["proto"]
 begin = body(proto, "int\nieee80211_pae_mfp_txn_begin", "PMF begin")
 order(begin, "begin callback after lock", "IOSimpleLockUnlockEnableInterrupt(lock, irq);",
       "error = (*submit)")
+for token in (
+    "submit == NULL || cancel == NULL || finish == NULL",
+    "ieee80211_pae_mfp_igtk_shape_valid(igtk_key)",
+    "return EOPNOTSUPP;",
+):
+    require(begin, token, "complete backend owner contract")
+abort = body(proto, "void\nieee80211_pae_mfp_txn_abort", "PMF abort")
+order(abort, "abort extracts local BIP before backend cancellation",
+      "ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared)",
+      "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+      "ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared)",
+      "(*cancel)(ic, id)")
 complete = body(proto, "void\nieee80211_pae_mfp_txn_complete", "PMF complete")
 for token in (
     "txn->id != id", "txn->phase != stage",
     "ieee80211_pae_mfp_txn_live_locked", "txn->assoc_epoch",
     "ieee80211_pae_mfp_txn_cancel_locked", "(*cancel)(ic, id)",
     "(*finish)(ic, id)",
+    "final_commit = ieee80211_pae_mfp_txn_prepare_reply",
+    "txn->prepared_bip_key = prepared.bip_key;",
+    "txn->prepared_bip_installed = 1;",
+    "finish_error = (*finish)(ic, id);",
+    "if (finish_error == 0 && txn->finish_published)",
+    "ieee80211_pae_mfp_txn_dispose_prepared(ic, &cancelled_prepared);",
 ):
     require(complete, token, "generic completion fence")
 order(complete, "completion callback after lock", "IOSimpleLockUnlockEnableInterrupt(lock, irq);",
       "(*cancel)(ic, id)")
-commit = body(proto, "static int\nieee80211_pae_mfp_txn_commit", "PMF commit")
-order(commit, "BIP failure rollback", "ieee80211_set_key(ic, ni, &bip_key)",
-      "ieee80211_pae_mfp_txn_rollback_firmware", "return EIO;")
+handoff = complete[complete.find("if (final_commit == 0) {"):]
+for token in (
+    "finish = ic->ic_pae_mfp_txn_finish;",
+    "(*finish)(ic, id);",
+    "finish_error = (*finish)(ic, id);",
+    "txn->finish_published",
+    "cancel_id = ieee80211_pae_mfp_txn_cancel_locked(ic,",
+    "ieee80211_pae_mfp_txn_dispose_prepared(ic, &cancelled_prepared);",
+    "if (finish_error != 0 && cancel_id != 0 && cancel != NULL)",
+    "if (ieee80211_pae_mfp_txn_live_locked",
+):
+    require(handoff, token, "atomic generic-to-backend finish handoff")
+order(complete, "finish handoff retains epoch cancellation authority",
+      "final_commit = ieee80211_pae_mfp_txn_prepare_reply",
+      "txn->prepared_bip_key = prepared.bip_key;",
+      "finish = ic->ic_pae_mfp_txn_finish;", "(*finish)(ic, id);",
+      "if (ieee80211_pae_mfp_txn_live_locked",
+      "cancel_id = ieee80211_pae_mfp_txn_cancel_locked(ic,",
+      "(*cancel)(ic, cancel_id);")
+prepare = body(proto, "static int\nieee80211_pae_mfp_txn_prepare_reply",
+               "PMF reply preparation")
+forbid(prepare, "ieee80211_pae_mfp_txn_rollback_firmware",
+       "generic firmware rollback")
+forbid(prepare, "ieee80211_pae_mfp_txn_finish_publish_locked",
+       "pre-finish software publication")
+for forbidden, label in (
+    ("ic->ic_nw_keys[", "pre-finish live-key-table publication"),
+    ("ni->ni_port_valid = 1;", "pre-finish port publication"),
+    ("IEEE80211_NODE_TXMGMTPROT", "pre-finish MFP flag publication"),
+):
+    forbid(prepare, forbidden, label)
 for token in (
     "rollback_error:", "rollback_cancelled:",
-    "ieee80211_pae_mfp_txn_rollback_firmware(ic, txn)",
-    "ieee80211_send_4way_msg4", "ni->ni_port_valid = 1",
+    "ieee80211_pae_mfp_txn_stage_mic_state", "ieee80211_send_4way_msg4",
+    "ieee80211_pae_mfp_txn_restore_mic_state",
+    "ieee80211_pae_mfp_txn_dispose_prepared",
 ):
-    require(commit, token, "commit rollback/port gate")
+    require(prepare, token, "reply preparation rollback/local-BIP gate")
+order(prepare, "reply MIC state is restored before finish",
+      "ieee80211_pae_mfp_txn_stage_mic_state", "ieee80211_send_4way_msg4",
+      "ieee80211_pae_mfp_txn_restore_mic_state")
+finish_publish = body(proto,
+                      "int\nieee80211_pae_mfp_txn_finish_publish_locked",
+                      "atomic PMF software publication")
+forbid(finish_publish, "ieee80211_delete_key",
+       "atomic publication copied-descriptor deletion")
+for forbidden, label in (
+    ("ieee80211_set_key", "atomic publication allocation"),
+    ("ieee80211_bip_reap", "atomic publication retirement reap"),
+    ("ic->ic_igtk_kid =", "out-of-helper IGTK-index publication"),
+):
+    forbid(finish_publish, forbidden, label)
+for token in (
+    "ieee80211_bip_key_publish_retire_locked",
+    "txn->prepared_bip_installed = 0;",
+    "ni->ni_ptk = txn->ptk;",
+    "ni->ni_pairwise_key = txn->ptk_key;",
+    "ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;",
+    "ni->ni_port_valid = 1;",
+    "txn->finish_published = 1;",
+):
+    require(finish_publish, token, "atomic PMF software publication")
+order(finish_publish, "BIP transfer precedes all infallible value publication",
+      "ieee80211_bip_key_publish_retire_locked",
+      "txn->prepared_bip_installed = 0;",
+      "ni->ni_ptk = txn->ptk;", "txn->finish_published = 1;")
 
 # q0 contains value-only async metadata.  Errors are decoded after q0 is
 # unlocked; cancellation and timeout preserve the token as TIMED_OUT so that
@@ -273,11 +354,14 @@ for token in (
 for token in (
     "IWX_CMD_ASYNC_OWNER_MFP_PAE", "async_cookie", "async_ack_kind",
     "IWX_CMD_SLOT_TIMED_OUT", "bool task_active;", "bool release_pending;",
+    "bool expected_identity_ready;", "bool result_identity_pending;",
+    "uint64_t expected_slot_serial;", "uint32_t expected_slot_epoch;",
 ):
     require(iwxvar, token, "q0/owner state")
 send = body(cpp, "int ItlIwx::\niwx_send_cmd", "q0 sender")
 for token in (
     "hcmd->async_owner", "hcmd->async_ack_kind", "hcmd->async_cookie",
+    "hcmd->async_identity", "hcmd->async_identity->slot_serial = slot_serial",
     "sc->sc_cmdq_slots[idx].async_cookie = hcmd->async_cookie",
 ):
     require(send, token, "q0 value metadata")
@@ -330,17 +414,56 @@ order(timeout, "timeout retains q0 token", "txn->result.error = ETIMEDOUT;",
 release = body(cpp, "static void\niwx_mfp_pae_release_transaction", "PMF cancellation")
 order(release, "cancellation retains q0 token", "txn->q0_inflight = false;",
       "that->iwx_mfp_pae_mark_q0_timeout(sc, q0_cookie)")
+forbid(release, "txn->result_ready = false;",
+       "cancellation discarding a terminal q0 result")
+for token in (
+    "} else if (txn->result_ready) {",
+    "!txn->result_identity_pending && !txn->task_active",
+    "Do not discard that terminal evidence",
+):
+    require(release, token, "terminal-result-before-cancel fence")
+order(release, "terminal result precedes nonterminal cancellation",
+      "} else if (txn->result_ready) {",
+      "} else if (txn->operation == IWX_MFP_PAE_OP_DELETE",
+      "} else if (txn->q0_inflight || txn->submit_call_active)")
 task = body(cpp, "void ItlIwx::\niwx_mfp_pae_task(void *arg)", "PMF serial worker")
 for token in (
-    "txn->task_active = true;", "txn->release_pending || txn->cancelled",
-    "ieee80211_pae_mfp_txn_complete",
+    "txn->task_active = true;", "txn->cancelled || txn->release_pending",
+    "ieee80211_pae_mfp_txn_complete", "} else if (!txn->result_ready) {",
 ):
     require(task, token, "node lifetime handoff")
+order(task, "late ACK result drains before rollback submit",
+      "} else if (!txn->result_ready) {", "start_delete = true;",
+      "iwx_mfp_pae_submit_delete(sc, txn_id)")
+finish_backend = body(cpp, "int ItlIwx::\niwx_pae_mfp_txn_finish",
+                      "PMF backend finish")
+for token in (
+    "(bss_lock = ic->ic_pae_selected_bss_lock) == NULL",
+    "IOSimpleLockLockDisableInterrupt(bss_lock)",
+    "iwx_mfp_pae_finish_handoff_live_locked",
+    "IOSimpleLockUnlockEnableInterrupt(bss_lock, irq)",
+    "int handoff_error = ECANCELED;",
+    "ieee80211_pae_mfp_txn_finish_publish_locked(ic, txn_id)",
+    "txn->finish_requested = true;",
+    "return handoff_error;",
+):
+    require(finish_backend, token, "atomic backend finish handoff")
+order(finish_backend, "finish takes association fence before backend owner",
+      "IOSimpleLockLockDisableInterrupt(bss_lock)",
+      "IOSimpleLockLock(sc->sc_mfp_pae_lock)",
+      "iwx_mfp_pae_finish_handoff_live_locked",
+      "ieee80211_pae_mfp_txn_finish_publish_locked(ic, txn_id)",
+      "txn->finish_requested = true;",
+      "IOSimpleLockUnlock(sc->sc_mfp_pae_lock)",
+      "IOSimpleLockUnlockEnableInterrupt(bss_lock, irq)")
+require(cpp, "generic->phase == IEEE80211_PAE_MFP_STAGE_NONE",
+        "finish handoff final generic phase fence")
 
 stop = body(cpp, "void ItlIwx::\niwx_stop_internal", "AX211 stop")
 detach = body(cpp, "void ItlIwx::\ndetach", "AX211 detach")
 for text, label in ((stop, "stop"), (detach, "detach")):
-    require(text, "iwx_mfp_pae_abort_all(sc)", f"{label} PMF cancellation")
+    require(text, "iwx_mfp_pae_abort_all(sc, true)",
+            f"{label} PMF cancellation")
     order(text, f"{label} PMF task drain",
           "iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task)",
           "taskq_barrier(sc->sc_nswq)")
@@ -482,6 +605,213 @@ for reason in ("deauth", "disassoc", "roam", "replacement", "reassoc",
 m = PmfModel(); m.begin(initial=True, includes_igtk=True); old_epoch = m.epoch
 m.replace_epoch()
 assert m.epoch != old_epoch and m.txn is None and "msg4" not in m.events
+
+
+class FinishHandoffModel:
+    """The selected-BSS fence owns an all-or-nothing BIP publication."""
+
+    def __init__(self):
+        self.generic_live = True
+        self.backend_private_live = True
+        self.local_bip = True
+        self.software_published = False
+        self.associated_owner = False
+        self.reset_pending = False
+        self.events = []
+
+    def _dispose_local_bip(self):
+        if self.local_bip:
+            self.local_bip = False
+            self.events.append("dispose-local-bip")
+
+    def _backend_release(self):
+        assert self.backend_private_live
+        self.backend_private_live = False
+        if self.software_published:
+            # An epoch after atomic publication may release only the private
+            # PAE owner.  It must not submit reverse key deletes for normal
+            # association-owned firmware keys.
+            self.events.append("backend-normal-scrub")
+        elif self.reset_pending:
+            self.events.append("backend-reset-owned")
+        else:
+            self.events.append("backend-cancel")
+
+    def epoch_cancel(self):
+        if self.generic_live:
+            self.generic_live = False
+            if not self.software_published:
+                self._dispose_local_bip()
+            if self.backend_private_live:
+                self._backend_release()
+
+    def backend_finish(self, accepts):
+        # This method models the one selected-BSS-locked backend callback.
+        if not self.generic_live:
+            self.events.append("finish-observes-cancel")
+            return "ECANCELED"
+        if not accepts:
+            self.events.append("finish-rejected")
+            # The real driver requests its authoritative reset before
+            # generic cancellation releases the still-local BIP context.
+            self.reset_pending = True
+            return "EIO"
+        assert self.backend_private_live and self.local_bip
+        # This is indivisible while selected-BSS is held: BIP leaves the
+        # local record only when the normal software association state is
+        # published.  No failure remains after this point.
+        self.local_bip = False
+        self.software_published = True
+        self.associated_owner = True
+        self.events.append("atomic-publish")
+        return 0
+
+    def generic_resume_after_finish(self, error):
+        if not self.generic_live:
+            self.events.append("generic-observes-epoch")
+            return
+        if error:
+            self.generic_live = False
+            self._dispose_local_bip()
+            if self.backend_private_live:
+                self._backend_release()
+            return
+        assert self.software_published and not self.local_bip
+        # Generic now clears only its value record; the driver's serial owner
+        # still holds a node reference until its task returns.
+        self.generic_live = False
+        self.events.append("generic-clears-record")
+
+    def serial_owner_returns(self):
+        assert self.software_published
+        if self.backend_private_live:
+            self._backend_release()
+
+
+# Cancellation before the finish fence owns the still-local BIP and backend.
+h = FinishHandoffModel()
+h.epoch_cancel()
+assert h.backend_finish(accepts=True) == "ECANCELED"
+assert h.events == ["dispose-local-bip", "backend-cancel",
+                    "finish-observes-cancel"]
+assert not h.local_bip and not h.software_published
+assert not h.backend_private_live and not h.associated_owner
+
+# A rejecting finish cannot publish a partial software association.  Generic
+# extracts the local BIP while it still owns its value record; reset remains
+# the backend's authoritative firmware-key erase path.
+h = FinishHandoffModel()
+h_error = h.backend_finish(accepts=False)
+assert h_error == "EIO" and not h.software_published
+h.generic_resume_after_finish(h_error)
+assert h.events == ["finish-rejected", "dispose-local-bip",
+                    "backend-reset-owned"]
+assert not h.generic_live and not h.local_bip and not h.software_published
+assert not h.backend_private_live and not h.associated_owner
+
+# On success, publication precedes generic-record clear and the serial owner
+# subsequently scrubs only its private bookkeeping.
+h = FinishHandoffModel()
+assert h.backend_finish(accepts=True) == 0
+assert h.software_published and not h.local_bip and h.associated_owner
+h.generic_resume_after_finish(0); h.serial_owner_returns()
+assert h.events == ["atomic-publish", "generic-clears-record",
+                    "backend-normal-scrub"]
+assert not h.generic_live and not h.backend_private_live
+assert h.software_published and h.associated_owner
+
+# The narrow race after backend atomic publication but before generic record
+# clear is also safe: epoch cancellation releases only the private owner,
+# never rolls back the newly normal-lifetime BIP/FW keys.
+h = FinishHandoffModel()
+assert h.backend_finish(accepts=True) == 0
+h.epoch_cancel(); h.generic_resume_after_finish(0)
+assert h.events == ["atomic-publish", "backend-normal-scrub",
+                    "generic-observes-epoch"]
+assert not h.local_bip and h.software_published and h.associated_owner
+assert not h.backend_private_live and "backend-cancel" not in h.events
+
+
+class TerminalResultCancelModel:
+    """An ACK before sender return remains the one serial cleanup result."""
+
+    def __init__(self):
+        self.result_ready = False
+        self.identity_pending = False
+        self.late_wait = False
+        self.task_queued = False
+        self.cancelled = False
+        self.delete_started = False
+
+    def ack_before_sender_return(self):
+        self.result_ready = True
+        self.identity_pending = True
+
+    def cancel(self):
+        self.cancelled = True
+        if self.result_ready:
+            # Preserve terminal q0 evidence; it is not a second late wait.
+            if not self.identity_pending:
+                self.task_queued = True
+            return
+        self.late_wait = True
+
+    def sender_returns(self):
+        assert self.result_ready and self.identity_pending
+        self.identity_pending = False
+        self.task_queued = True
+
+    def serial_cleanup(self):
+        assert self.task_queued and self.result_ready
+        self.task_queued = False
+        self.result_ready = False
+        if self.cancelled and not self.late_wait:
+            self.delete_started = True
+
+
+# A terminal ACK racing cancel does not get erased merely because its q0 slot
+# identity is still being copied back to the sender.
+q = TerminalResultCancelModel()
+q.ack_before_sender_return(); q.cancel()
+assert q.result_ready and q.identity_pending and not q.late_wait
+q.sender_returns(); q.serial_cleanup()
+assert q.delete_started and not q.result_ready
+
+
+class LateAckDrainModel:
+    """A late ACK queued during an active cleanup gets the next pass."""
+
+    def __init__(self):
+        self.task_active = True
+        self.result_ready = False
+        self.queued = False
+        self.delete_started = False
+        self.reset = False
+
+    def late_ack(self):
+        self.result_ready = True
+        self.queued = True
+
+    def first_cleanup_pass(self):
+        self.task_active = False
+        if self.result_ready:
+            return  # The source gate must not submit delete yet.
+        self.delete_started = True
+
+    def queued_cleanup_pass(self):
+        assert self.queued and self.result_ready
+        self.queued = False
+        self.result_ready = False
+        self.delete_started = True
+
+
+# No EBUSY→reset path is taken merely because the ACK's worker is queued behind
+# the task that timed out/cancelled it.
+l = LateAckDrainModel()
+l.late_ack(); l.first_cleanup_pass()
+assert not l.delete_started and l.queued and not l.reset
+l.queued_cleanup_pass()
+assert l.delete_started and not l.reset
 
 try:
     PmfModel().begin(pure_sae=True)

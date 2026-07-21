@@ -453,6 +453,10 @@ struct ieee80211_pae_mfp_txn {
 	struct ieee80211_key	ptk_key;
 	struct ieee80211_key	gtk_key;
 	struct ieee80211_key	igtk_key;
+	/* Local software BIP context created for the reply.  It remains owned by
+	 * this value record until finish_publish_locked() transfers it into the
+	 * live IGTK slot under the selected-BSS fence. */
+	struct ieee80211_key	prepared_bip_key;
 	u_int64_t		replaycnt;
 	u_int16_t		key_info;
 	u_int8_t		phase;
@@ -460,6 +464,9 @@ struct ieee80211_pae_mfp_txn {
 	u_int8_t		have_ptk;
 	u_int8_t		have_gtk;
 	u_int8_t		have_igtk;
+	u_int8_t		prepared_bip_installed;
+	u_int8_t		finish_published;
+	u_int8_t		finish_port_became_valid;
 };
 
 struct ieee80211com {
@@ -517,7 +524,10 @@ struct ieee80211com {
 				    const struct ieee80211_key *, u_int8_t);
 	void			(*ic_pae_mfp_txn_cancel)(struct ieee80211com *,
 				    u_int64_t);
-	void			(*ic_pae_mfp_txn_finish)(struct ieee80211com *,
+	/* Returns zero only after the backend atomically accepts normal
+	 * associated-key lifetime; a failure leaves generic cancellation as the
+	 * owner of the backend rollback. */
+	int			(*ic_pae_mfp_txn_finish)(struct ieee80211com *,
 				    u_int64_t);
 	int			(*ic_ampdu_tx_start)(struct ieee80211com *,
 				    struct ieee80211_node *, u_int8_t);
@@ -614,6 +624,18 @@ struct ieee80211com {
 	 * allowed while held.  A failed allocation keeps publication fail-closed.
 	 */
 	IOSimpleLock		*ic_pae_selected_bss_lock;
+	/*
+	 * BIP's two IGTK slots are independently published under the same leaf
+	 * lock.  Retired software contexts remain off-table until the timeout
+	 * reaper observes that all PMF reader claims have left.  HostAP rekeys
+	 * keep their not-yet-advertised descriptor value here rather than writing
+	 * over a live RX slot before Group Message 1 completes.
+	 */
+	volatile u_int32_t	ic_bip_readers;
+	struct ieee80211_bip_retired_head ic_bip_retired;
+	CTimeout		*ic_bip_reap_to;
+	struct ieee80211_key	ic_bip_pending_key;
+	int			ic_bip_pending_valid;
 	/*
 	 * Writer-only canonical identity of the BSS actually copied into ic_bss.
 	 * Its epoch is zeroed on every association fence and published only after

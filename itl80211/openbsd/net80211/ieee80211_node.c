@@ -942,6 +942,8 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
     }
     if (ic->ic_flags & IEEE80211_F_RSNON) {
         struct ieee80211_key *k;
+        struct ieee80211_key bip_key;
+        int bip_error;
         
         /* initialize 256-bit global key counter to a random value */
         arc4random_buf(ic->ic_globalcnt, EAPOL_KEY_NONCE_LEN);
@@ -972,15 +974,17 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
         
         if ((ic->ic_caps & IEEE80211_C_MFP) &&
             ic->ic_pae_mfp_requested) {
-            ic->ic_igtk_kid = 4;
-            k = &ic->ic_nw_keys[ic->ic_igtk_kid];
-            memset(k, 0, sizeof(*k));
-            k->k_id = ic->ic_igtk_kid;
-            k->k_cipher = ni->ni_rsngroupmgmtcipher;
-            k->k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
-            k->k_len = 16;
-            arc4random_buf(k->k_key, k->k_len);
-            (*ic->ic_set_key)(ic, ni, k);	/* XXX */
+            bzero(&bip_key, sizeof(bip_key));
+            bip_key.k_id = 4;
+            bip_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+            bip_key.k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
+            bip_key.k_len = IEEE80211_BIP_KEYLEN;
+            arc4random_buf(bip_key.k_key, bip_key.k_len);
+            bip_error = ieee80211_bip_key_install_publish(ic, ni,
+                &bip_key);
+            explicit_bzero(&bip_key, sizeof(bip_key));
+            if (bip_error != 0)
+                return;
         }
         /*
          * In HostAP mode, multicast traffic is sent using ic_bss

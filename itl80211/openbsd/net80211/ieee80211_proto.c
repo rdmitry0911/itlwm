@@ -100,6 +100,16 @@ const char * const ieee80211_phymode_name[] = {
 void ieee80211_set_beacon_miss_threshold(struct ieee80211com *);
 int ieee80211_newstate(struct ieee80211com *, enum ieee80211_state, int);
 
+/* Value moved out of a cancelled generic transaction while the selected-BSS
+ * leaf lock is held, then destroyed only after that lock is dropped. */
+struct ieee80211_pae_mfp_prepared {
+	struct ieee80211_key bip_key;
+	int bip_installed;
+};
+
+static void ieee80211_pae_mfp_txn_dispose_prepared(struct ieee80211com *,
+	struct ieee80211_pae_mfp_prepared *);
+
 /*
  * Future asynchronous owners must snapshot through this acquire load rather
  * than reading the volatile field directly.  The field is written from reset
@@ -121,14 +131,21 @@ ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
  * paths without creating an inversion with q0 or the driver task gate.
  */
 static u_int64_t
-ieee80211_pae_mfp_txn_cancel_locked(struct ieee80211com *ic)
+ieee80211_pae_mfp_txn_cancel_locked(struct ieee80211com *ic,
+	struct ieee80211_pae_mfp_prepared *prepared)
 {
 	struct ieee80211_pae_mfp_txn *txn = &ic->ic_pae_mfp_txn;
 	u_int64_t id;
 
+	_KASSERT(prepared != NULL);
+	bzero(prepared, sizeof(*prepared));
 	if (!txn->active)
 		return 0;
 	id = txn->id;
+	if (txn->prepared_bip_installed) {
+		prepared->bip_key = txn->prepared_bip_key;
+		prepared->bip_installed = 1;
+	}
 	explicit_bzero(txn, sizeof(*txn));
 	return id;
 }
@@ -188,39 +205,172 @@ ieee80211_pae_mfp_txn_live(struct ieee80211com *ic, u_int64_t id,
 	return live;
 }
 
-/*
- * Firmware may have accepted a data or management key before software BIP
- * setup rejects the final commit.  Remove every staged key best-effort while
- * still in the serial PAE worker; the caller then deauthenticates rather than
- * leaving an accepted key behind for a failed association.
- */
-static void
-ieee80211_pae_mfp_txn_rollback_firmware(struct ieee80211com *ic,
-	const struct ieee80211_pae_mfp_txn *txn)
-{
-	struct ieee80211_key key;
+/* The reply path needs a temporary MIC view of this node before the final
+ * commit.  Keep that short-lived mutation under the same selected-BSS lock
+ * as the transaction record so an epoch replacement cannot restore state
+ * into a different BSS. */
+struct ieee80211_pae_mfp_mic_state {
+	struct ieee80211_ptk ptk;
+	u_int64_t replaycnt;
+	u_int8_t replaycnt_ok;
+	u_int rsn_supp_state;
+};
 
-	if (ic == NULL || txn == NULL || txn->ni == NULL ||
-	    ic->ic_delete_key == NULL)
-		return;
-	if (txn->have_igtk) {
-		key = txn->igtk_key;
-		key.k_priv = NULL;
-		(*ic->ic_delete_key)(ic, txn->ni, &key);
-		explicit_bzero(&key, sizeof(key));
+/* The BIP context is deliberately local until the backend has accepted the
+ * successful key handoff.  It therefore has no RX/TX reader and can be
+ * synchronously destroyed on a rejected handoff without touching a live
+ * group-key slot. */
+static int
+ieee80211_pae_mfp_txn_stage_mic_state(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn,
+	struct ieee80211_pae_mfp_mic_state *old)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_node *ni;
+	int live = 0;
+
+	if (ic == NULL || txn == NULL || old == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	ni = txn->ni;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ieee80211_pae_mfp_txn_live_locked(ic, &ic->ic_pae_mfp_txn,
+	    txn->id, txn->assoc_epoch, ni)) {
+		old->ptk = ni->ni_ptk;
+		old->replaycnt = ni->ni_replaycnt;
+		old->replaycnt_ok = ni->ni_replaycnt_ok;
+		old->rsn_supp_state = ni->ni_rsn_supp_state;
+		if (txn->have_ptk)
+			ni->ni_ptk = txn->ptk;
+		ni->ni_replaycnt = txn->replaycnt;
+		ni->ni_replaycnt_ok = 1;
+		live = 1;
 	}
-	if (txn->have_gtk) {
-		key = txn->gtk_key;
-		key.k_priv = NULL;
-		(*ic->ic_delete_key)(ic, txn->ni, &key);
-		explicit_bzero(&key, sizeof(key));
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return live;
+}
+
+static void
+ieee80211_pae_mfp_txn_restore_mic_state(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn,
+	const struct ieee80211_pae_mfp_mic_state *old)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_node *ni;
+
+	if (ic == NULL || txn == NULL || old == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	ni = txn->ni;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ieee80211_pae_mfp_txn_live_locked(ic, &ic->ic_pae_mfp_txn,
+	    txn->id, txn->assoc_epoch, ni)) {
+		if (txn->have_ptk)
+			ni->ni_ptk = old->ptk;
+		ni->ni_replaycnt = old->replaycnt;
+		ni->ni_replaycnt_ok = old->replaycnt_ok;
+		ni->ni_rsn_supp_state = old->rsn_supp_state;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+static int
+ieee80211_pae_mfp_igtk_shape_valid(const struct ieee80211_key *key)
+{
+	return key != NULL && key->k_id >= IEEE80211_WEP_NKID &&
+	    key->k_id < IEEE80211_GROUP_NKID &&
+	    key->k_cipher == IEEE80211_CIPHER_BIP &&
+	    (key->k_flags & IEEE80211_KEY_IGTK) != 0 && key->k_len == 16;
+}
+
+/* Read-only current-BSS/epoch fence for post-handoff notifications.  Unlike
+ * terminal_current(), it must not mutate the WCL request on a successful
+ * association merely to decide whether LinkUp/RSN_DONE is still current. */
+static int
+ieee80211_pae_mfp_txn_current(struct ieee80211com *ic,
+	struct ieee80211_node *ni, u_int64_t epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current = 0;
+
+	if (ic == NULL || ni == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	current = ic->ic_bss == ni &&
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) == epoch;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
+}
+
+/* Caller holds ic_pae_selected_bss_lock.  This is the one atomic transition
+ * from an accepted backend PAE owner to normal associated-key lifetime: the
+ * BIP helper only moves/queues contexts and does not allocate, reap, call
+ * back, or drop this leaf lock. */
+int
+ieee80211_pae_mfp_txn_finish_publish_locked(struct ieee80211com *ic,
+	u_int64_t id)
+{
+	struct ieee80211_pae_mfp_txn *txn;
+	struct ieee80211_node *ni;
+	int error;
+
+	if (ic == NULL)
+		return EINVAL;
+	txn = &ic->ic_pae_mfp_txn;
+	ni = txn->ni;
+	if (!ieee80211_pae_mfp_txn_live_locked(ic, txn, id,
+	    txn->assoc_epoch, ni) || txn->phase != IEEE80211_PAE_MFP_STAGE_NONE ||
+	    txn->finish_published)
+		return ECANCELED;
+	if (txn->have_igtk &&
+	    (!txn->prepared_bip_installed ||
+	     !ieee80211_pae_mfp_igtk_shape_valid(&txn->prepared_bip_key) ||
+	     txn->prepared_bip_key.k_priv == NULL))
+		return EIO;
+
+	/* Do the only fallible transfer first: every remaining publication below
+	 * is a value copy under this lock.  On error the helper leaves both slots
+	 * untouched and the generic cancellation path still owns local BIP. */
+	if (txn->have_igtk) {
+		error = ieee80211_bip_key_publish_retire_locked(ic,
+		    &ic->ic_nw_keys[txn->prepared_bip_key.k_id],
+		    &txn->prepared_bip_key);
+		if (error != 0)
+			return error;
+		txn->prepared_bip_installed = 0;
+		explicit_bzero(&txn->prepared_bip_key,
+		    sizeof(txn->prepared_bip_key));
 	}
 	if (txn->have_ptk) {
-		key = txn->ptk_key;
-		key.k_priv = NULL;
-		(*ic->ic_delete_key)(ic, txn->ni, &key);
-		explicit_bzero(&key, sizeof(key));
+		ni->ni_ptk = txn->ptk;
+		ni->ni_pairwise_key = txn->ptk_key;
+		ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
+		ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
+		ni->ni_flags |= IEEE80211_NODE_RXPROT;
 	}
+	if (txn->have_gtk)
+		ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;
+	if (txn->have_igtk)
+		ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT |
+		    IEEE80211_NODE_RXMGMTPROT;
+	if (txn->key_info & EAPOL_KEY_INSTALL)
+		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
+	ni->ni_replaycnt = txn->replaycnt;
+	ni->ni_replaycnt_ok = 1;
+	if (txn->key_info & EAPOL_KEY_SECURE) {
+		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
+		txn->finish_port_became_valid = !ni->ni_port_valid;
+		ni->ni_port_valid = 1;
+		ni->ni_assoc_fail = 0;
+		if (ic->ic_opmode == IEEE80211_M_STA)
+			ic->ic_rsngroupcipher = ni->ni_rsngroupcipher;
+	}
+	txn->finish_published = 1;
+	return 0;
 }
 
 /* Clear the one WCL PMF request only for the still-current failed BSS. */
@@ -252,14 +402,16 @@ ieee80211_pae_mfp_txn_abort(struct ieee80211com *ic)
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	void (*cancel)(struct ieee80211com *, u_int64_t);
+	struct ieee80211_pae_mfp_prepared prepared;
 	u_int64_t id;
 
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
-	id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+	id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (id != 0 && cancel != NULL)
 		(*cancel)(ic, id);
 }
@@ -279,6 +431,8 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	struct ieee80211_key key_copy;
 	int (*submit)(struct ieee80211com *, u_int64_t, u_int64_t,
 	    struct ieee80211_node *, const struct ieee80211_key *, u_int8_t);
+	void (*cancel)(struct ieee80211com *, u_int64_t);
+	int (*finish)(struct ieee80211com *, u_int64_t);
 	u_int64_t id, epoch;
 	u_int8_t stage;
 	int error;
@@ -295,9 +449,13 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	    (have_gtk && gtk_key->k_priv != NULL) ||
 	    (have_igtk && igtk_key->k_priv != NULL))
 		return EINVAL;
+	if (have_igtk && !ieee80211_pae_mfp_igtk_shape_valid(igtk_key))
+		return EINVAL;
 	lock = ic->ic_pae_selected_bss_lock;
 	submit = ic->ic_pae_mfp_txn_submit;
-	if (lock == NULL || submit == NULL)
+	cancel = ic->ic_pae_mfp_txn_cancel;
+	finish = ic->ic_pae_mfp_txn_finish;
+	if (lock == NULL || submit == NULL || cancel == NULL || finish == NULL)
 		return EOPNOTSUPP;
 
 	irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -350,114 +508,95 @@ ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
 	return error;
 }
 
+static void
+ieee80211_pae_mfp_txn_dispose_prepared(struct ieee80211com *ic,
+	struct ieee80211_pae_mfp_prepared *prepared)
+{
+	if (prepared == NULL)
+		return;
+	/* This is a local, never-published BIP context.  It has no readers and
+	 * must not go through the live-slot retirement path. */
+	if (prepared->bip_installed)
+		ieee80211_delete_key(ic, NULL, &prepared->bip_key);
+	explicit_bzero(prepared, sizeof(*prepared));
+}
+
+/* Prepare only the fallible reply side of the transaction.  In particular,
+ * BIP stays in `prepared` and the temporary MIC view is restored before this
+ * returns: no PTK/GTK/IGTK/protection/port state is visible until the driver
+ * has explicitly accepted the generic-to-backend finish handoff. */
 static int
-ieee80211_pae_mfp_txn_commit(struct ieee80211com *ic,
-	const struct ieee80211_pae_mfp_txn *txn)
+ieee80211_pae_mfp_txn_prepare_reply(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn,
+	struct ieee80211_pae_mfp_prepared *prepared)
 {
 	struct ieee80211_node *ni = txn->ni;
-	struct ieee80211_key bip_key;
-	int bip_installed = 0;
-	int was_port_valid;
+	struct ieee80211_pae_mfp_mic_state old_mic;
+	int state_staged = 0;
+	int error = 0;
 
+	if (prepared == NULL)
+		return EINVAL;
+	bzero(prepared, sizeof(*prepared));
+	bzero(&old_mic, sizeof(old_mic));
 	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni))
 		return ECANCELED;
 
-	/* Firmware has ACKed data keys. BIP remains software-owned. */
+	/* Firmware has ACKed data keys. BIP remains local software state until
+	 * both the reply and backend ownership handoff have succeeded. */
 	if (txn->have_igtk) {
-		bip_key = txn->igtk_key;
-		bip_key.k_priv = NULL;
-		if (ieee80211_set_key(ic, ni, &bip_key) != 0) {
-			/* FW has ACKed staged keys; remove them before failing closed. */
-			ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
-			explicit_bzero(&bip_key, sizeof(bip_key));
+		prepared->bip_key = txn->igtk_key;
+		prepared->bip_key.k_priv = NULL;
+		if (ieee80211_set_key(ic, ni, &prepared->bip_key) != 0) {
+			explicit_bzero(prepared, sizeof(*prepared));
 			return EIO;
 		}
-		bip_installed = 1;
+		prepared->bip_installed = 1;
 		if (!ieee80211_pae_mfp_txn_live(ic, txn->id,
 		    txn->assoc_epoch, ni)) {
-			ieee80211_delete_key(ic, ni, &bip_key);
-			ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
-			explicit_bzero(&bip_key, sizeof(bip_key));
-			return ECANCELED;
+			error = ECANCELED;
+			goto rollback;
 		}
 	}
 	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni)) {
-		if (bip_installed)
-			ieee80211_delete_key(ic, ni, &bip_key);
-		ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
-		if (txn->have_igtk)
-			explicit_bzero(&bip_key, sizeof(bip_key));
-		return ECANCELED;
+		error = ECANCELED;
+		goto rollback;
 	}
 
-	if (txn->have_ptk) {
-		ni->ni_ptk = txn->ptk;
-		ni->ni_pairwise_key = txn->ptk_key;
+	/* Message 4 / group message 2 needs a temporary PTK/replay MIC view. */
+	if (!ieee80211_pae_mfp_txn_stage_mic_state(ic, txn, &old_mic)) {
+		error = ECANCELED;
+		goto rollback;
 	}
-	if (txn->have_gtk)
-		ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;
-	if (txn->have_igtk) {
-		ic->ic_nw_keys[bip_key.k_id] = bip_key;
-		ic->ic_igtk_kid = bip_key.k_id;
-		ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT |
-		    IEEE80211_NODE_RXMGMTPROT;
-	}
-	if (txn->have_ptk) {
-		ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
-		ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
-		ni->ni_flags |= IEEE80211_NODE_RXPROT;
-	}
-	if (txn->key_info & EAPOL_KEY_INSTALL)
-		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
-	ni->ni_replaycnt = txn->replaycnt;
-	ni->ni_replaycnt_ok = 1;
-
+	state_staged = 1;
 	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni))
 		goto rollback_cancelled;
 	if (txn->reply == IEEE80211_PAE_MFP_REPLY_4WAY_MSG4) {
 		if (ieee80211_send_4way_msg4(ic, ni) != 0)
 			goto rollback_error;
-	} else {
-		(void)ieee80211_send_group_msg2(ic, ni, NULL);
-	}
+	} else if (ieee80211_send_group_msg2(ic, ni, NULL) != 0)
+		goto rollback_error;
+	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni))
+		goto rollback_cancelled;
 
-	if (txn->key_info & EAPOL_KEY_SECURE) {
-		if (!ieee80211_pae_mfp_txn_live(ic, txn->id,
-		    txn->assoc_epoch, ni))
-			goto rollback_cancelled;
-		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
-		was_port_valid = ni->ni_port_valid;
-		ni->ni_port_valid = 1;
-		if (!was_port_valid) {
-			AirportItlwmPostPltiTraceCompleteEpisode(ic);
-			ieee80211_set_link_state(ic, LINK_STATE_UP);
-			if (ic->ic_event_handler != NULL)
-				(*ic->ic_event_handler)(ic,
-				    IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE, NULL);
-		}
-		ni->ni_assoc_fail = 0;
-		if (ic->ic_opmode == IEEE80211_M_STA)
-			ic->ic_rsngroupcipher = ni->ni_rsngroupcipher;
-	}
-	if (txn->have_igtk)
-		explicit_bzero(&bip_key, sizeof(bip_key));
+	/* The reply is on the wire; remove its temporary node mutation before the
+	 * backend handoff so a reject leaves no software key/protection state. */
+	ieee80211_pae_mfp_txn_restore_mic_state(ic, txn, &old_mic);
+	state_staged = 0;
+	explicit_bzero(&old_mic, sizeof(old_mic));
 	return 0;
 
 rollback_error:
-	if (bip_installed)
-		ieee80211_delete_key(ic, ni, &bip_key);
-	ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
-	if (txn->have_igtk)
-		explicit_bzero(&bip_key, sizeof(bip_key));
-	return EIO;
-
+	error = EIO;
+	goto rollback;
 rollback_cancelled:
-	if (bip_installed)
-		ieee80211_delete_key(ic, ni, &bip_key);
-	ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
-	if (txn->have_igtk)
-		explicit_bzero(&bip_key, sizeof(bip_key));
-	return ECANCELED;
+	error = ECANCELED;
+rollback:
+	if (state_staged)
+		ieee80211_pae_mfp_txn_restore_mic_state(ic, txn, &old_mic);
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, prepared);
+	explicit_bzero(&old_mic, sizeof(old_mic));
+	return error;
 }
 
 void
@@ -468,16 +607,22 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 	IOInterruptState irq;
 	struct ieee80211_pae_mfp_txn *txn;
 	struct ieee80211_pae_mfp_txn snapshot;
+	struct ieee80211_pae_mfp_prepared prepared;
+	struct ieee80211_pae_mfp_prepared cancelled_prepared;
 	const struct ieee80211_key *key;
 	struct ieee80211_key key_copy;
 	struct ieee80211_node *ni;
 	int (*submit)(struct ieee80211com *, u_int64_t, u_int64_t,
 	    struct ieee80211_node *, const struct ieee80211_key *, u_int8_t);
-	void (*finish)(struct ieee80211com *, u_int64_t) = NULL;
+	int (*finish)(struct ieee80211com *, u_int64_t) = NULL;
 	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
-	u_int64_t epoch;
+	u_int64_t epoch, cancel_id;
 	u_int8_t next;
-	int final_commit = 0;
+	int final_commit = 0, finish_error = 0;
+	int port_became_valid = 0, published = 0;
+
+	bzero(&prepared, sizeof(prepared));
+	bzero(&cancelled_prepared, sizeof(cancelled_prepared));
 
 	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
 		return;
@@ -492,8 +637,10 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 	if (error != 0 || !ieee80211_pae_mfp_txn_live_locked(ic, txn, id,
 	    epoch, ni)) {
 		cancel = ic->ic_pae_mfp_txn_cancel;
-		(void)ieee80211_pae_mfp_txn_cancel_locked(ic);
+		(void)ieee80211_pae_mfp_txn_cancel_locked(ic,
+		    &cancelled_prepared);
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		ieee80211_pae_mfp_txn_dispose_prepared(ic, &cancelled_prepared);
 		if (cancel != NULL)
 			(*cancel)(ic, id);
 		/* A stale epoch belongs to a replacement BSS and must not deauth it. */
@@ -525,25 +672,95 @@ ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
 	txn->phase = IEEE80211_PAE_MFP_STAGE_NONE;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
 
-	final_commit = ieee80211_pae_mfp_txn_commit(ic, &snapshot);
+	final_commit = ieee80211_pae_mfp_txn_prepare_reply(ic, &snapshot,
+	    &prepared);
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	txn = &ic->ic_pae_mfp_txn;
 	if (!ieee80211_pae_mfp_txn_live_locked(ic, txn, id, epoch,
 	    snapshot.ni)) {
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 		explicit_bzero(&snapshot, sizeof(snapshot));
 		return;
 	}
-	if (final_commit == 0)
-		finish = ic->ic_pae_mfp_txn_finish;
-	else
-		cancel = ic->ic_pae_mfp_txn_cancel;
-	(void)ieee80211_pae_mfp_txn_cancel_locked(ic);
-	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (final_commit == 0 && prepared.bip_installed) {
+		/* Move the unpublished context into the generic value record while
+		 * the epoch fence is held.  A competing cancellation will extract it
+		 * and free it only after dropping this lock. */
+		if (txn->prepared_bip_installed) {
+			final_commit = EIO;
+		} else {
+			txn->prepared_bip_key = prepared.bip_key;
+			txn->prepared_bip_installed = 1;
+			bzero(&prepared.bip_key, sizeof(prepared.bip_key));
+			prepared.bip_installed = 0;
+		}
+	}
 	if (final_commit == 0) {
+		/*
+		 * The backend takes selected-BSS first, then its owner lock, and calls
+		 * finish_publish_locked() before it accepts the handoff.  Publication,
+		 * backend ownership transfer, and an epoch replacement are therefore
+		 * one atomic choice; a nonzero result retains generic cancellation.
+		 */
+		finish = ic->ic_pae_mfp_txn_finish;
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 		if (finish != NULL)
-			(*finish)(ic, id);
+			finish_error = (*finish)(ic, id);
+		else
+			finish_error = EOPNOTSUPP;
+		/* finish_publish_locked() may have retired the destination slot's old
+		 * context.  Queue its out-of-lock reap before re-entering the PAE
+		 * leaf lock; reader exits themselves never free/reap. */
+		if (finish_error == 0)
+			ieee80211_bip_reap_schedule(ic);
+
+		irq = IOSimpleLockLockDisableInterrupt(lock);
+		txn = &ic->ic_pae_mfp_txn;
+		cancel_id = 0;
+		if (ieee80211_pae_mfp_txn_live_locked(ic, txn, id, epoch,
+		    snapshot.ni)) {
+			if (finish_error == 0 && txn->finish_published) {
+				published = 1;
+				port_became_valid = txn->finish_port_became_valid;
+			} else {
+				/* A zero callback result without atomic publication would be
+				 * an ownership hole; fail closed while local BIP is still in
+				 * the value record. */
+				if (finish_error == 0)
+					finish_error = EIO;
+				cancel = ic->ic_pae_mfp_txn_cancel;
+			}
+			cancel_id = ieee80211_pae_mfp_txn_cancel_locked(ic,
+			    &cancelled_prepared);
+		}
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		ieee80211_pae_mfp_txn_dispose_prepared(ic, &cancelled_prepared);
+		if (finish_error != 0 && cancel_id != 0 && cancel != NULL)
+			(*cancel)(ic, cancel_id);
+		if (finish_error != 0 && finish_error != ECANCELED &&
+		    cancel_id != 0 && ieee80211_pae_mfp_txn_terminal_current(ic,
+		    snapshot.ni, snapshot.assoc_epoch)) {
+			IEEE80211_SEND_MGMT(ic, snapshot.ni,
+			    IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+			ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+		}
+		if (finish_error == 0 && published && port_became_valid &&
+		    ieee80211_pae_mfp_txn_current(ic, snapshot.ni,
+		    snapshot.assoc_epoch)) {
+			AirportItlwmPostPltiTraceCompleteEpisode(ic);
+			ieee80211_set_link_state(ic, LINK_STATE_UP);
+			if (ic->ic_event_handler != NULL)
+				(*ic->ic_event_handler)(ic,
+				    IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE, NULL);
+		}
 	} else {
+		cancel = ic->ic_pae_mfp_txn_cancel;
+		(void)ieee80211_pae_mfp_txn_cancel_locked(ic,
+		    &cancelled_prepared);
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		ieee80211_pae_mfp_txn_dispose_prepared(ic, &cancelled_prepared);
+		ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 		if (cancel != NULL)
 			(*cancel)(ic, id);
 		if (final_commit != ECANCELED &&
@@ -690,9 +907,11 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
+	struct ieee80211_pae_mfp_prepared prepared;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
+	bzero(&prepared, sizeof(prepared));
 	lock = ic->ic_pae_selected_bss_lock;
 	if (lock != NULL)
 		irq = IOSimpleLockLockDisableInterrupt(lock);
@@ -701,11 +920,12 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
 	if (lock != NULL) {
-		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 		cancel = ic->ic_pae_mfp_txn_cancel;
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
 	}
 	/* Epoch cancellation only marks and notifies after the leaf lock. */
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
 	return epoch;
@@ -720,6 +940,7 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	IOSimpleLock *lock;
 	IOInterruptState irq;
 	void (*cancel)(struct ieee80211com *, u_int64_t);
+	struct ieee80211_pae_mfp_prepared prepared;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
@@ -728,14 +949,16 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 		(void)ieee80211_pae_assoc_epoch_begin(ic);
 		return 0;
 	}
+	bzero(&prepared, sizeof(prepared));
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	epoch = ieee80211_pae_assoc_epoch_advance_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
-	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	ieee80211_pae_mfp_txn_dispose_prepared(ic, &prepared);
 	if (txn_id != 0 && cancel != NULL)
 		(*cancel)(ic, txn_id);
 	return epoch;
@@ -1076,8 +1299,28 @@ void
 ieee80211_setkeys(struct ieee80211com *ic)
 {
 	struct ieee80211_key *k;
+	struct ieee80211_key bip_key;
 	u_int8_t kid;
-    int rekeysta = 0;
+	u_int16_t bip_kid;
+    int error, rekeysta = 0;
+
+	/* Keep the next IGTK off-table until every station has received its KDE.
+	 * A table slot can still be validating MMIEs from the previous epoch. */
+	if (ic->ic_caps & IEEE80211_C_MFP) {
+		bzero(&bip_key, sizeof(bip_key));
+		error = ieee80211_bip_next_kid(ic, &bip_kid);
+		if (error == 0) {
+			bip_key.k_id = bip_kid;
+			bip_key.k_cipher = ic->ic_bss->ni_rsngroupmgmtcipher;
+			bip_key.k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
+			bip_key.k_len = IEEE80211_BIP_KEYLEN;
+			arc4random_buf(bip_key.k_key, bip_key.k_len);
+			error = ieee80211_bip_pending_stage(ic, &bip_key);
+		}
+		explicit_bzero(&bip_key, sizeof(bip_key));
+		if (error != 0)
+			return;
+	}
 
 	/* Swap(GM, GN) */
 	kid = (ic->ic_def_txkey == 1) ? 2 : 1;
@@ -1088,18 +1331,6 @@ ieee80211_setkeys(struct ieee80211com *ic)
 	k->k_flags = IEEE80211_KEY_GROUP | IEEE80211_KEY_TX;
 	k->k_len = ieee80211_cipher_keylen(k->k_cipher);
 	arc4random_buf(k->k_key, k->k_len);
-
-	if (ic->ic_caps & IEEE80211_C_MFP) {
-		/* Swap(GM_igtk, GN_igtk) */
-		kid = (ic->ic_igtk_kid == 4) ? 5 : 4;
-		k = &ic->ic_nw_keys[kid];
-		memset(k, 0, sizeof(*k));
-		k->k_id = kid;
-		k->k_cipher = ic->ic_bss->ni_rsngroupmgmtcipher;
-		k->k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
-		k->k_len = 16;
-		arc4random_buf(k->k_key, k->k_len);
-	}
 
 	ieee80211_iterate_nodes(ic, ieee80211_node_gtk_rekey, ic);
     ieee80211_iterate_nodes(ic, ieee80211_count_rekeysta, &rekeysta);
@@ -1114,6 +1345,8 @@ void
 ieee80211_setkeysdone(struct ieee80211com *ic)
 {
 	u_int8_t kid;
+	struct ieee80211_key bip_key, retry_key;
+	int error;
 
 	/* install GTK */
 	kid = (ic->ic_def_txkey == 1) ? 2 : 1;
@@ -1127,16 +1360,23 @@ ieee80211_setkeysdone(struct ieee80211com *ic)
     }
 
 	if (ic->ic_caps & IEEE80211_C_MFP) {
-		/* install IGTK */
-		kid = (ic->ic_igtk_kid == 4) ? 5 : 4;
-        switch ((*ic->ic_set_key)(ic, ic->ic_bss, &ic->ic_nw_keys[kid])) {
-            case 0:
-            case EBUSY:
-                ic->ic_igtk_kid = kid;
-                break;
-            default:
-                break;
-        }
+		/* Install the value that was actually advertised in Group Msg1.  The
+		 * local BIP context is created outside the leaf lock and only then
+		 * atomically replaces its destination slot. */
+		bzero(&bip_key, sizeof(bip_key));
+		bzero(&retry_key, sizeof(retry_key));
+		error = ieee80211_bip_pending_take(ic, &bip_key);
+		if (error == 0) {
+			retry_key = bip_key;
+			retry_key.k_priv = NULL;
+			retry_key.k_flags &= ~IEEE80211_KEY_BIP_LOCAL;
+			error = ieee80211_bip_key_install_publish(ic, ic->ic_bss,
+			    &bip_key);
+			if (error != 0)
+				(void)ieee80211_bip_pending_restore(ic, &retry_key);
+		}
+		explicit_bzero(&retry_key, sizeof(retry_key));
+		explicit_bzero(&bip_key, sizeof(bip_key));
 	}
 }
 

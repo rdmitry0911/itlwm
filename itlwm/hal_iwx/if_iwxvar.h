@@ -318,6 +318,16 @@ enum iwx_cmd_async_ack_kind {
     IWX_CMD_ASYNC_ACK_ADD_STA_STATUS,
 };
 
+/* Filled synchronously by q0 before the doorbell.  The sender owns this
+ * stack value; q0 retains only its value fields in iwx_cmd_slot. */
+struct iwx_cmd_async_identity {
+    uint64_t slot_serial;
+    uint32_t slot_epoch;
+    uint32_t code;
+    uint8_t ack_kind;
+    bool valid;
+};
+
 struct iwx_host_cmd {
 	const void *data[IWX_MAX_CMD_TBS_PER_TFD];
 	struct iwx_rx_packet *resp_pkt;
@@ -333,6 +343,7 @@ struct iwx_host_cmd {
 	uint8_t async_owner;
 	uint8_t async_ack_kind;
 	uint64_t async_cookie;
+	struct iwx_cmd_async_identity *async_identity;
 };
 
 /*
@@ -687,25 +698,87 @@ struct iwx_security_rx_entry {
     uint64_t assoc_epoch;
 };
 
-/* One serialized AX211/API-68 MFP PAE command owner per interface. */
+/*
+ * One serialized AX211/API-68 MFP PAE command owner per interface.
+ *
+ * A key command that has reached q0's doorbell is only *possibly* installed
+ * until its terminal response is observed.  In particular, a timeout cannot
+ * be treated as an ordinary completion: a delete submitted behind an
+ * undrained command has no reviewed ordering contract.  The owner therefore
+ * retains the key snapshot and TIMED_OUT q0 cookie until the late terminal
+ * response, then removes possible keys one at a time in reverse order.  A
+ * missing or failed cleanup response takes the existing deferred reset path,
+ * which is the authoritative firmware-key erase boundary.
+ */
+enum iwx_mfp_pae_state {
+    IWX_MFP_PAE_IDLE = 0,
+    IWX_MFP_PAE_INSTALL,
+    IWX_MFP_PAE_WAIT_LATE_INSTALL,
+    IWX_MFP_PAE_ROLLBACK_DELETE,
+    IWX_MFP_PAE_RESET_PENDING,
+    IWX_MFP_PAE_COMMITTED,
+};
+
+enum iwx_mfp_pae_operation {
+    IWX_MFP_PAE_OP_NONE = 0,
+    IWX_MFP_PAE_OP_INSTALL,
+    IWX_MFP_PAE_OP_DELETE,
+};
+
+enum iwx_mfp_pae_timeout_kind {
+    IWX_MFP_PAE_TIMEOUT_NONE = 0,
+    IWX_MFP_PAE_TIMEOUT_REPLY,
+    IWX_MFP_PAE_TIMEOUT_LATE_DRAIN,
+};
+
 struct iwx_mfp_pae_txn {
     bool active;
+    /* Set by cancel; retained state is not freed until cleanup/reset. */
     bool cancelled;
+    /* Sender has not yet returned, so cancellation may race its doorbell. */
+    bool submit_call_active;
     bool q0_inflight;
+    /* q0 command timed out/cancelled and awaits its late terminal result. */
+    bool late_q0_pending;
     bool result_ready;
     bool timeout_armed;
+    /* Report the original install deadline once, never as a late success. */
+    bool timeout_report_pending;
+    /* q0 publishes this exact tuple before its doorbell; a response received
+     * while the sender is still returning is held until it can be checked. */
+    bool expected_identity_ready;
+    bool result_identity_pending;
+    /* The matching install result was already handed to generic net80211. */
+    bool install_result_delivered;
     /* A serial continuation holds the driver-owned node ref until it exits. */
     bool task_active;
     bool release_pending;
+    bool finish_requested;
+    uint8_t state;
+    uint8_t operation;
+    uint8_t timeout_kind;
+    uint8_t op_stage;
     uint64_t txn_id;
     uint64_t assoc_epoch;
     uint64_t expected_cookie;
+    uint64_t late_cookie;
+    uint64_t expected_slot_serial;
+    uint32_t expected_slot_epoch;
+    uint32_t expected_code;
+    uint8_t expected_ack_kind;
     uint8_t expected_stage;
     int driver_generation;
     struct ieee80211_node *ni;
     struct ieee80211_key staged_keys[3];
+    /* Stages marked before async send: only sender failure may clear them. */
+    uint8_t possibly_installed_mask;
+    /* Stages whose initial command returned from the async sender. */
     uint8_t submitted_mask;
+    /* Install ACKs with a valid success result. */
     uint8_t accepted_mask;
+    /* Possible keys still awaiting an ACKed firmware delete. */
+    uint8_t rollback_pending_mask;
+    uint8_t rollback_deleted_mask;
     struct iwx_async_cmd_result result;
 };
 
@@ -783,6 +856,8 @@ struct iwx_softc {
      */
     IOSimpleLock *sc_mfp_pae_lock;
     struct iwx_mfp_pae_txn sc_mfp_pae_txn;
+    /* Blocks MFP reuse while the deferred firmware-reset owner is queued. */
+    bool sc_mfp_pae_reset_pending;
     uint64_t sc_mfp_pae_next_cookie;
     CTimeout *sc_mfp_pae_timeout;
 

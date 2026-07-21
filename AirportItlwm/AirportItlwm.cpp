@@ -270,6 +270,13 @@ void AirportItlwm::setGTK(const u_int8_t *gtk, size_t key_len, u_int8_t kid, u_i
     struct ieee80211_node	* ni = ic->ic_bss;
     struct ieee80211_key *k;
     int keylen;
+
+    /* Slots 4 and 5 are IGTKs. This legacy GTK ingress may not overwrite
+     * protected-management state even if a caller bypasses its outer gate. */
+    if (kid >= IEEE80211_WEP_NKID) {
+        XYLog("%s: refusing non-GTK key index %u\n", __FUNCTION__, kid);
+        return;
+    }
     
     if (gtk != NULL) {
         /* check that key length matches that of group cipher */

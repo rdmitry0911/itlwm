@@ -1241,6 +1241,13 @@ void AirportItlwmSkywalkInterface::setGTK(const u_int8_t *gtk, size_t key_len, u
     struct ieee80211_node    * ni = ic->ic_bss;
     struct ieee80211_key *k;
     int keylen;
+
+    /* IGTK slots 4/5 are owned solely by validated PMF publication. Keep
+     * this legacy GTK helper from rewriting them if its caller is bypassed. */
+    if (kid >= IEEE80211_WEP_NKID) {
+        XYLog("%s: refusing non-GTK key index %u\n", __FUNCTION__, kid);
+        return;
+    }
     
     if (gtk != NULL) {
         /* check that key length matches that of group cipher */
@@ -4132,6 +4139,11 @@ setCIPHER_KEY(struct apple80211_key *key)
                     setPTK(key->key, key->key_len);
                     break;
                 case 0: // GTK
+                    /* Validate the full-width Apple80211 value before the
+                     * u8 conversion in setGTK; wrapped and IGTK indices
+                     * must not alias the group-key table. */
+                    if (key->key_index >= IEEE80211_WEP_NKID)
+                        return kIOReturnBadArgument;
                     setGTK(key->key, key->key_len, key->key_index, key->key_rsc);
                     break;
             }

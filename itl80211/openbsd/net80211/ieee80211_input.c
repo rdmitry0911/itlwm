@@ -183,7 +183,9 @@ ieee80211_input_hwdecrypt(struct ieee80211com *ic, struct ieee80211_node *ni,
    int hdrlen;
 
    k = ieee80211_get_rxkey(ic, m, ni);
-   if (k == NULL)
+   /* BIP is software-owned.  An unexpected HWDEC indication must not read
+    * a live IGTK descriptor outside its reader claim protocol. */
+   if (k == NULL || ieee80211_bip_key_is_slot(ic, k))
        return NULL;
 
    wh = mtod(m, struct ieee80211_frame *);
