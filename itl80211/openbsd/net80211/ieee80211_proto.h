@@ -76,6 +76,7 @@ extern	void ieee80211_proto_detach(struct _ifnet *);
 struct ieee80211_node;
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
+struct ieee80211_pae_selected_bss;
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, mbuf_t);
@@ -131,6 +132,8 @@ extern	u_int64_t ieee80211_pae_assoc_epoch_begin_replacement(
 extern	void ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *);
 extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 	    const struct ieee80211_node *, int, u_int64_t);
+extern	int ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *,
+	    u_int64_t, struct ieee80211_pae_selected_bss *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \

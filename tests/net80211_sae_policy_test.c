@@ -59,6 +59,17 @@ main(void)
 	};
 	size_t index;
 
+	/* Fixed byte layout: no raw IE, credential, or pointer can join this value. */
+	assert(offsetof(struct ieee80211_pae_selected_bss, epoch) == 0);
+	assert(offsetof(struct ieee80211_pae_selected_bss, sae_scan_flags) == 8);
+	assert(offsetof(struct ieee80211_pae_selected_bss, bssid) == 12);
+	assert(offsetof(struct ieee80211_pae_selected_bss, ssid_len) == 18);
+	assert(offsetof(struct ieee80211_pae_selected_bss, ssid) == 19);
+	assert(offsetof(struct ieee80211_pae_selected_bss,
+	    strict_pure_sae_profile) == 51);
+	assert(offsetof(struct ieee80211_pae_selected_bss, reserved) == 52);
+	assert(sizeof(selected) == 56);
+
     extcap_password_id[10] = 0x02;
     extcap_password_id_exclusive[10] = 0x04;
     extcap_sae_pk_exclusive[11] = 0x01;
@@ -147,14 +158,24 @@ main(void)
     assert(selected.ssid[sizeof(selected_ssid)] == 0);
     assert(selected.sae_scan_flags == IEEE80211_SAE_SCAN_RSNXE_H2E);
     assert(selected.strict_pure_sae_profile == 0);
-    assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
-        selected_ssid, sizeof(selected_ssid),
-        IEEE80211_SAE_SCAN_RSNXE_H2E, 2));
-    assert(selected.strict_pure_sae_profile == 1);
+	assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
+	    selected_ssid, sizeof(selected_ssid),
+	    IEEE80211_SAE_SCAN_RSNXE_H2E, 2));
+	assert(selected.strict_pure_sae_profile == 1);
+	selected.epoch = 17;
 	ieee80211_pae_selected_bss_clear_payload(&selected);
+	assert(selected.epoch == 17);
 	assert(selected.ssid_len == 0);
 	assert(selected.sae_scan_flags == 0);
 	assert(selected.strict_pure_sae_profile == 0);
+	for (index = 0; index < sizeof(selected.bssid); index++)
+		assert(selected.bssid[index] == 0);
+	for (index = 0; index < sizeof(selected.ssid); index++)
+		assert(selected.ssid[index] == 0);
+	for (index = 0; index < sizeof(selected.reserved); index++)
+		assert(selected.reserved[index] == 0);
+	assert(!ieee80211_pae_selected_bss_identity_matches(&selected, 17,
+	    selected_bssid, selected_ssid, sizeof(selected_ssid)));
 	assert(ieee80211_pae_selected_bss_populate(&selected, selected_bssid,
 	    selected_ssid, sizeof(selected_ssid),
 	    IEEE80211_SAE_SCAN_RSNXE_H2E, 1));

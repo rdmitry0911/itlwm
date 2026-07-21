@@ -117,11 +117,15 @@ def parse_event(line: str) -> Event | None:
     elif kind == "pmk-ingress":
         match = re.search(r"\bdecision=([a-z0-9-]+)", line)
         decision = match.group(1) if match else None
+        auth = re.search(r"\bauth=0x([0-9a-fA-F]+)", line)
+        auth_upper = int(auth.group(1), 16) if auth else None
     elif kind in {"plti-publish", "plti-deliver"}:
         match = re.search(r"\bdecision=([a-z0-9-]+)\s+generation=(\d+)", line)
         if match:
             decision, generation_text = match.groups()
             generation = int(generation_text)
+        auth = re.search(r"\bauth=0x([0-9a-fA-F]+)", line)
+        auth_upper = int(auth.group(1), 16) if auth else None
     elif kind in {"tx", "rx"}:
         value = field(line, "eapol")
         eapol = None if value is None else value != 0
@@ -238,7 +242,95 @@ def events_after(events: Iterable[Event], sequence: int) -> list[Event]:
     return [event for event in events if event.sequence > sequence]
 
 
+def association_attempt_window(events: Iterable[Event], candidate: Event) -> list[Event]:
+    """Return the conservative trace window owned by one auth-policy record.
+
+    RegDiag v2 deliberately records no raw association identifier.  Its
+    contiguous, non-overflowing trace does, however, make every later
+    ``auth-policy`` record an unambiguous new policy boundary.  Do not allow a
+    candidate to borrow progress from before itself or after a later policy
+    carrier: a complex overlapping trace must become inconclusive rather than
+    a false association success.
+    """
+    event_list = list(events)
+    next_policy_sequence = next(
+        (event.sequence for event in event_list
+         if event.kind == "auth-policy" and event.sequence > candidate.sequence),
+        None)
+    return [event for event in event_list
+            if event.sequence > candidate.sequence and
+            (next_policy_sequence is None or
+             event.sequence < next_policy_sequence)]
+
+
+def successful_driver_ingress(events: Iterable[Event], candidate: Event) -> list[Event]:
+    """Return successful ingress records on the candidate's exact path."""
+    return [event for event in events
+            if event.kind == candidate.path and event.path == candidate.path and
+            event.result == 0]
+
+
+def matching_psk_pmk_completions(events: Iterable[Event],
+                                 auth_upper: int) -> list[int]:
+    """Return terminal PMK/PLTI sequences for one exact policy carrier.
+
+    A direct PMK acceptance must carry the same upper auth mask.  A PLTI
+    completion is accepted only when its matching successful publication
+    precedes the delivery in this same attempt window.  Missing auth metadata
+    is deliberately not inferred from nearby records.
+    """
+    event_list = list(events)
+    completions = [
+        event.sequence for event in event_list
+        if event.kind == "pmk-ingress" and event.result == 0 and
+        event.decision == "accepted" and event.auth_upper == auth_upper
+    ]
+    published: dict[int, list[int]] = {}
+    for event in event_list:
+        if (event.kind != "plti-publish" or
+                event.result != 0 or event.decision != "accepted" or
+                event.auth_upper != auth_upper or
+                event.generation in {None, 0}):
+            continue
+        published.setdefault(event.generation, []).append(event.sequence)
+    for event in event_list:
+        if (event.kind != "plti-deliver" or
+                event.result != 0 or event.decision != "accepted" or
+                event.auth_upper != auth_upper or
+                event.generation in {None, 0}):
+            continue
+        if any(sequence < event.sequence
+               for sequence in published.get(event.generation, [])):
+            completions.append(event.sequence)
+    return sorted(set(completions))
+
+
+def successful_eapol_completion(events: Iterable[Event],
+                                after_sequence: int) -> int | None:
+    """Return the point after a successful EAPOL TX/RX pair, if present."""
+    tx = [event.sequence for event in events
+          if event.sequence > after_sequence and event.kind == "tx" and
+          event.eapol and event.result == 0]
+    rx = [event.sequence for event in events
+          if event.sequence > after_sequence and event.kind == "rx" and
+          event.eapol and event.result == 0]
+    if not tx or not rx:
+        return None
+    return max(min(tx), min(rx))
+
+
+def has_link_up_after(events: Iterable[Event], sequence: int) -> bool:
+    return any(event.sequence > sequence and event.kind == "link-state" and
+               event.result == 0 and event.link_state == 2 for event in events)
+
+
 def has_psk_pmk_progress(events: Iterable[Event]) -> bool:
+    """Detect any PMK/PLTI activity for pure-SAE contamination quarantine.
+
+    This intentionally remains broad: the pure-SAE evaluator must fail closed
+    on *any* PMK/PLTI activity in its separately isolated epoch.  Successful
+    PSK/transition verdicts use the policy-scoped helpers above instead.
+    """
     if any(event.kind == "pmk-ingress" and event.decision == "accepted"
            for event in events):
         return True
@@ -251,17 +343,44 @@ def has_psk_pmk_progress(events: Iterable[Event]) -> bool:
                event.generation in published for event in events)
 
 
-def has_eapol_pair(events: Iterable[Event]) -> bool:
-    event_list = list(events)
-    return (any(event.kind == "tx" and event.eapol and event.result == 0
-                for event in event_list) and
-            any(event.kind == "rx" and event.eapol and event.result == 0
-                for event in event_list))
-
-
 def has_link_up(events: Iterable[Event]) -> bool:
     return any(event.kind == "link-state" and event.result == 0 and
                event.link_state == 2 for event in events)
+
+
+def correlated_psk_success_stages(capture: Capture,
+                                  candidates: Iterable[Event]) -> tuple[bool, bool, bool, bool]:
+    """Return ingress, PMK, EAPOL, and link stages for one policy attempt.
+
+    Every stage is constrained to the same exact auth-policy window.  The
+    current WCL PLTI producer may publish and deliver a PMK before the outer
+    association callback records its ingress return, so ingress and PMK/PLTI
+    are deliberately unordered within that window; EAPOL TX/RX and link-up
+    still must follow the exact PMK/PLTI completion.  A later policy carrier
+    terminates the window, so traces from a previous attempt or a wrong policy
+    cannot make a candidate look successful.
+    """
+    saw_ingress = saw_pmk = saw_eapol = saw_link = False
+    for candidate in candidates:
+        if candidate.auth_upper is None:
+            continue
+        window = association_attempt_window(capture.events, candidate)
+        ingress = successful_driver_ingress(window, candidate)
+        if not ingress:
+            continue
+        saw_ingress = True
+        for pmk_sequence in matching_psk_pmk_completions(
+                window, candidate.auth_upper):
+            saw_pmk = True
+            eapol_completion = successful_eapol_completion(
+                window, pmk_sequence)
+            if eapol_completion is None:
+                continue
+            saw_eapol = True
+            if has_link_up_after(window, eapol_completion):
+                saw_link = True
+                return saw_ingress, saw_pmk, saw_eapol, saw_link
+    return saw_ingress, saw_pmk, saw_eapol, saw_link
 
 
 def evaluate_psk_success(capture: Capture, candidates: Iterable[Event],
@@ -271,16 +390,15 @@ def evaluate_psk_success(capture: Capture, candidates: Iterable[Event],
     if not candidates:
         reasons.append(f"no exact {profile_name} association policy carrier")
         return reasons
-    if not any(any(event.kind in {"public-assoc", "hidden-assoc"} and
-                       event.result == 0 for event in events_after(capture.events,
-                                                                    candidate.sequence))
-               for candidate in candidates):
+    ingress, pmk, eapol, link_up = correlated_psk_success_stages(
+        capture, candidates)
+    if not ingress:
         reasons.append(f"{profile_name} did not reach a successful driver ingress")
-    if not has_psk_pmk_progress(capture.events):
+    if not pmk:
         reasons.append("no accepted direct PMK or matched PLTI publish/deliver pair")
-    if not has_eapol_pair(capture.events):
+    if not eapol:
         reasons.append("missing successful EAPOL TX/RX pair")
-    if not has_link_up(capture.events):
+    if not link_up:
         reasons.append("no successful link-up publication")
     return reasons
 
@@ -289,7 +407,8 @@ def evaluate_wpa2_psk(capture: Capture) -> list[str]:
     return evaluate_psk_success(
         capture,
         (event for event in capture.events
-         if event.kind == "auth-policy" and event.auth_upper == WPA2_PSK and
+         if event.kind == "auth-policy" and event.result == 0 and
+         event.auth_upper == WPA2_PSK and
          event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)),
         "WPA2-PSK")
 
@@ -298,7 +417,8 @@ def evaluate_wpa2_sha256_psk(capture: Capture) -> list[str]:
     return evaluate_psk_success(
         capture,
         (event for event in capture.events
-         if event.kind == "auth-policy" and event.auth_upper == WPA2_SHA256_PSK and
+         if event.kind == "auth-policy" and event.result == 0 and
+         event.auth_upper == WPA2_SHA256_PSK and
          event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK)),
         "WPA2-SHA256-PSK")
 
@@ -307,7 +427,7 @@ def evaluate_sae_transition_psk(capture: Capture) -> list[str]:
     return evaluate_psk_success(
         capture,
         (event for event in capture.events
-         if event.kind == "auth-policy" and
+         if event.kind == "auth-policy" and event.result == 0 and
          event.auth_upper == AUDITED_WPA3_PSK_TRANSITION and
          event.policy == (POLICY_PSK_PMK_ELIGIBLE | POLICY_LOCAL_PSK |
                           POLICY_AUDITED_WPA3_TRANSITION)),
@@ -431,6 +551,20 @@ def self_test() -> int:
             "#6 kind=rx path=rx result=0x0 eapol=1 length=120",
             "#7 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
         ]
+        # The WCL producer can finish the PLTI exchange inside associateSSID
+        # before the outer hidden-association callback records its return.
+        # This is a valid, policy-scoped success ordering, not cross-attempt
+        # evidence borrowing.
+        wpa2_plti_before_ingress_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
+            "#2 kind=plti-publish path=plti result=0x0 decision=accepted generation=42 auth=0x8",
+            "#3 kind=plti-deliver path=plti result=0x0 decision=accepted generation=42 auth=0x8",
+            "#4 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
+            "#5 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#6 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#7 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
         wpa2_sha256_plti_lines = [
             "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
             "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x400 rsn_len=22 policy=0x6",
@@ -455,9 +589,47 @@ def self_test() -> int:
             "#1 kind=auth-policy path=hidden-assoc result=0xe00002c7 pmf=1 auth=0x0/0x1000 rsn_len=22 policy=0x1",
             "#2 kind=hidden-assoc path=hidden-assoc result=0xe00002c7 arg0=0 arg1=0x100000000000 arg2=0x16",
         ]
+        # These traces intentionally contain all of the old global-success
+        # ingredients.  They must remain failures because the ingredients
+        # belong to a previous attempt, a later wrong policy, or a different
+        # PMK/PLTI auth carrier rather than the exact candidate.
+        wpa2_prior_policy_progress_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x400 rsn_len=22 policy=0x6",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x40000000000 arg2=0x16",
+            "#3 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x400 key_len=32 decision=accepted",
+            "#4 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#5 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#6 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+            "#7 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
+            "#8 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
+        ]
+        wpa2_next_policy_progress_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
+            "#3 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x400 rsn_len=22 policy=0x6",
+            "#4 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x40000000000 arg2=0x16",
+            "#5 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x400 key_len=32 decision=accepted",
+            "#6 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#7 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#8 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
+        transition_next_policy_progress_lines = [
+            "#0 kind=control path=unknown result=0x0 arg0=0 arg1=0x35 arg2=0x0",
+            "#1 kind=auth-policy path=hidden-assoc result=0x0 pmf=1 auth=0x0/0x1008 rsn_len=22 policy=0xe",
+            "#2 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x100800000000 arg2=0x16",
+            "#3 kind=auth-policy path=hidden-assoc result=0x0 pmf=0 auth=0x0/0x8 rsn_len=22 policy=0x6",
+            "#4 kind=hidden-assoc path=hidden-assoc result=0x0 arg0=0 arg1=0x800000000 arg2=0x16",
+            "#5 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x8 key_len=32 decision=accepted",
+            "#6 kind=tx path=tx result=0x0 eapol=1 length=120",
+            "#7 kind=rx path=rx result=0x0 eapol=1 length=120",
+            "#8 kind=link-state path=link result=0x0 link_state=2 raw_code=1",
+        ]
         success_cases = (
             ("wpa2-direct", "wpa2-psk", wpa2_direct_lines, (1, 1), 2),
             ("wpa2-plti", "wpa2-psk", wpa2_plti_lines, (1, 1), 2),
+            ("wpa2-plti-before-ingress", "wpa2-psk", wpa2_plti_before_ingress_lines, (1, 1), 2),
             ("wpa2-sha256-plti", "wpa2-sha256-psk", wpa2_sha256_plti_lines, (1, 1), 2),
             ("transition", "sae-transition-psk", transition_lines, (1, 1), 2),
             ("pure-sae", "pure-sae-required-pmf-reject", pure_sae_lines, (0, 0), 1),
@@ -468,6 +640,14 @@ def self_test() -> int:
             directory.mkdir()
             fixture(directory, lines, counts=counts, link_state=link_state)
             assert evaluate(parse_capture(directory), expected)[0], expected
+        correlation_negatives = {
+            "wpa2-prior-policy-progress",
+            "wpa2-next-policy-progress",
+            "transition-next-policy-progress",
+            "wpa2-mismatched-direct-pmk-auth",
+            "wpa2-mismatched-plti-auth",
+        }
+        carrier_result_negatives = {"wpa2-policy-result"}
         for name, expected, kwargs in (
             ("drop", "wpa2-psk", {"lines": wpa2_direct_lines, "dropped": 1, "counts": (1, 1), "link_state": 2}),
             ("control", "wpa2-psk", {"lines": wpa2_direct_lines, "control": "seq=7 applied=1 mode=0x15 block=0x0\n", "counts": (1, 1), "link_state": 2}),
@@ -476,6 +656,12 @@ def self_test() -> int:
             ("wpa2-sha256-auth", "wpa2-sha256-psk", {"lines": wpa2_plti_lines, "counts": (1, 1), "link_state": 2}),
             ("transition-auth", "sae-transition-psk", {"lines": [line.replace("auth=0x0/0x1008", "auth=0x0/0x8").replace("auth=0x1008", "auth=0x8") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
             ("transition-policy", "sae-transition-psk", {"lines": [line.replace("policy=0xe", "policy=0x6") for line in transition_lines], "counts": (1, 1), "link_state": 2}),
+            ("wpa2-prior-policy-progress", "wpa2-psk", {"lines": wpa2_prior_policy_progress_lines, "counts": (1, 1), "link_state": 2}),
+            ("wpa2-next-policy-progress", "wpa2-psk", {"lines": wpa2_next_policy_progress_lines, "counts": (1, 1), "link_state": 2}),
+            ("transition-next-policy-progress", "sae-transition-psk", {"lines": transition_next_policy_progress_lines, "counts": (1, 1), "link_state": 2}),
+            ("wpa2-policy-result", "wpa2-psk", {"lines": [line.replace("result=0x0", "result=0xe00002c7") if "kind=auth-policy" in line else line for line in wpa2_direct_lines], "counts": (1, 1), "link_state": 2}),
+            ("wpa2-mismatched-direct-pmk-auth", "wpa2-psk", {"lines": [line.replace("auth=0x8 key_len=32", "auth=0x400 key_len=32") for line in wpa2_direct_lines], "counts": (1, 1), "link_state": 2}),
+            ("wpa2-mismatched-plti-auth", "wpa2-psk", {"lines": [line.replace("auth=0x8", "auth=0x400") if "kind=plti-" in line else line for line in wpa2_plti_lines], "counts": (1, 1), "link_state": 2}),
             ("pure-pmf", "pure-sae-required-pmf-reject", {"lines": [line.replace("pmf=1", "pmf=0") for line in pure_sae_lines], "counts": (0, 0), "link_state": 1}),
             ("pure-pmk", "pure-sae-required-pmf-reject", {"lines": pure_sae_lines + ["#3 kind=pmk-ingress path=pmk result=0x0 source=cipher-key auth=0x1000 key_len=32 decision=accepted"], "counts": (0, 0), "link_state": 1}),
             ("pure-eapol", "pure-sae-required-pmf-reject", {"lines": pure_sae_lines + ["#3 kind=tx path=tx result=0x0 eapol=1 length=120", "#4 kind=rx path=rx result=0x0 eapol=1 length=120"], "counts": (1, 1), "link_state": 1}),
@@ -485,7 +671,12 @@ def self_test() -> int:
             directory.mkdir()
             lines = list(kwargs.pop("lines"))
             fixture(directory, lines, **kwargs)
-            assert not evaluate(parse_capture(directory), expected)[0], name
+            passed, reasons = evaluate(parse_capture(directory), expected)
+            assert not passed, name
+            if name in correlation_negatives:
+                assert "no accepted direct PMK or matched PLTI publish/deliver pair" in reasons, name
+            if name in carrier_result_negatives:
+                assert "no exact WPA2-PSK association policy carrier" in reasons, name
     print("PASS: SAE/PMK capture evaluator fixture matrix")
     return 0
 

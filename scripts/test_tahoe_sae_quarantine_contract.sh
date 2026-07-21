@@ -40,6 +40,7 @@ capture_script = (root / "scripts/capture_tahoe_sae_layer.sh").read_text()
 capture_evaluator = (root / "scripts/evaluate_tahoe_sae_capture.py").read_text()
 profile_runner = (root / "scripts/run_tahoe_sae_lab_profiles.sh").read_text()
 layer_runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
+copyout_record = (root / "analysis/TAHOE_SAE_COPYOUT_EVIDENCE_CORRELATION_2026-07-21.md").read_text()
 
 
 def fail(message):
@@ -340,6 +341,11 @@ for needle in (
     "event.auth_upper == PURE_SAE",
     "event.generation in published",
     "no successful link-up publication",
+    "association_attempt_window",
+    "correlated_psk_success_stages",
+    "wpa2-prior-policy-progress",
+    "wpa2-policy-result",
+    "wpa2-mismatched-plti-auth",
 ):
     require(capture_evaluator, needle, "strict SAE/PMK capture evaluator")
 forbid(capture_evaluator, 'read_optional(directory / "report.txt")',
@@ -364,6 +370,23 @@ for needle in ("git -C \"$ROOT\" diff --cached --quiet",
                "git -C \"$ROOT\" ls-files --others --exclude-standard"):
     require(layer_runner, needle,
             "layer gate source identity includes staged changes")
+
+# Successful synthetic scenarios are versioned with their source changes, so
+# a later layer cannot silently reclassify test-only or quarantine evidence as
+# a functional pure-SAE result.
+for needle in (
+    "exact current-epoch copyout", "wpa2-prior-policy-progress",
+    "pure-sae-required-pmf-reject", "no production consumer",
+    "not a functional pure-SAE association", "Raw captures",
+):
+    require(copyout_record, needle, "copyout/evaluator test record")
+forbidden_record_claims = (
+    "working pure-SAE connection passed",
+    "functional pure-SAE association passed",
+    "PMF key lifecycle passed",
+)
+for needle in forbidden_record_claims:
+    forbid(copyout_record, needle, "overbroad copyout/evaluator test claim")
 
 # The remote build runner is confined to the fixed QEMU laboratory guest.
 # It creates a private known_hosts file from a source-controlled literal pin;

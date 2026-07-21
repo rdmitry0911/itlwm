@@ -85,6 +85,7 @@ for token in (
     "uint8_t ssid_len;",
     "uint8_t ssid[IEEE80211_PAE_SELECTED_BSS_MAX_SSID_LEN];",
     "uint8_t strict_pure_sae_profile;",
+	"ieee80211_pae_selected_bss_clear_payload",
     "ieee80211_pae_selected_bss_populate",
     "ieee80211_pae_selected_bss_identity_matches",
 ):
@@ -99,6 +100,10 @@ require(proto_h, "void ieee80211_pae_selected_bss_lock_destroy",
         "terminal selected-BSS lock destruction declaration")
 require(proto_h, "void ieee80211_pae_selected_bss_capture",
         "selected BSS capture declaration")
+require(proto_h, "struct ieee80211_pae_selected_bss;",
+	"selected BSS forward declaration")
+require(proto_h, "int ieee80211_pae_selected_bss_copyout_current",
+	"selected BSS serialized copyout declaration")
 require(proto_h, "void ieee80211_pae_assoc_epoch_note_newstate",
         "epoch newstate declaration")
 ordered(proto_h, "newstate macro pre-driver fence",
@@ -123,7 +128,13 @@ for token in ("ic->ic_opmode != IEEE80211_M_STA",
               "ic->ic_pae_assoc_replace_epoch, 0",
               "ieee80211_pae_selected_bss_invalidate(ic)",
               "IOSimpleLockUnlockEnableInterrupt"):
-    require(begin, token, "epoch begin semantics")
+	    require(begin, token, "epoch begin semantics")
+
+invalidate = body(proto_c, "static void\nieee80211_pae_selected_bss_invalidate",
+			  "selected BSS invalidation")
+ordered(invalidate, "selected BSS scrub after invalid publication",
+	"__atomic_store_n(&ic->ic_pae_selected_bss.epoch, 0",
+	"__ATOMIC_RELEASE", "ieee80211_pae_selected_bss_clear_payload")
 
 replacement = body(proto_c,
                    "u_int64_t\nieee80211_pae_assoc_epoch_begin_replacement",
@@ -159,6 +170,54 @@ for token in ("ieee80211_node_copy", "ieee80211_new_state",
               "IEEE80211_AKM_SAE", "IEEE80211_AUTH_ALG_SAE"):
     if token in snapshot_capture:
         fail(f"selected BSS capture must not activate association: {token}")
+
+copyout = body(proto_c,
+		       "int\nieee80211_pae_selected_bss_copyout_current",
+		       "selected BSS serialized copyout")
+for token in (
+	"out == NULL", "out == &ic->ic_pae_selected_bss",
+	"memset(out, 0, sizeof(*out))", "expected_epoch == 0",
+	"IOSimpleLockLockDisableInterrupt", "IOSimpleLockUnlockEnableInterrupt",
+	"ic->ic_opmode == IEEE80211_M_STA",
+	"ic->ic_pae_assoc_epoch", "ic->ic_pae_assoc_replace_epoch",
+	"ic->ic_pae_selected_bss.epoch",
+	"ieee80211_pae_selected_bss_populate(out,",
+	"ic->ic_pae_selected_bss.bssid", "ic->ic_pae_selected_bss.ssid",
+	"ic->ic_pae_selected_bss.ssid_len",
+	"ic->ic_pae_selected_bss.sae_scan_flags",
+	"ic->ic_pae_selected_bss.strict_pure_sae_profile",
+	"out->epoch = expected_epoch", "return copied",
+):
+	require(copyout, token, "selected BSS serialized copyout semantics")
+ordered(copyout, "copyout non-alias scrub before fallible checks",
+	"out == &ic->ic_pae_selected_bss", "memset(out, 0, sizeof(*out))",
+	"expected_epoch == 0")
+ordered(copyout, "copyout exact live epoch before fixed-value publication",
+	"ic->ic_pae_assoc_epoch", "ic->ic_pae_assoc_replace_epoch",
+	"ic->ic_pae_selected_bss.epoch",
+	"ieee80211_pae_selected_bss_populate(out,", "out->epoch = expected_epoch")
+for token in (
+	"*out =", "memcpy", "IOUserClient", "AirportItlwmSaeRelayV1",
+	"ic_psk", "IEEE80211_AUTH_ALG_SAE", "IEEE80211_C_MFP",
+	"ic_set_key_wait", "ieee80211_send_mgmt", "kIOReturn",
+):
+	if token in copyout:
+		fail(f"selected BSS copyout must remain fixed-value and inactive: {token}")
+
+# The API is a future-owner foundation, not a new production handoff.  The
+# declaration and definition are its only source references until an owner can
+# prove a HAL lifecycle claim through terminal destruction.
+copyout_references = []
+for directory in (root / "itl80211", root / "AirportItlwm"):
+	for suffix in ("*.c", "*.h", "*.cpp", "*.hpp"):
+		for source in directory.rglob(suffix):
+			if "ieee80211_pae_selected_bss_copyout_current(" in source.read_text():
+				copyout_references.append(source.relative_to(root).as_posix())
+if sorted(copyout_references) != [
+	"itl80211/openbsd/net80211/ieee80211_proto.c",
+	"itl80211/openbsd/net80211/ieee80211_proto.h",
+]:
+	fail("selected BSS copyout must have no production caller")
 
 require(var_h, "#include <IOKit/IOLocks.h>",
         "selected-BSS spin-lock API")
@@ -359,11 +418,25 @@ class SnapshotModel:
         self.snapshot_epoch = 0
         self.bssid = bytes(6)
         self.ssid = b""
+        self.sae_scan_flags = 0
+        self.strict_pure_sae_profile = 0
+
+    @staticmethod
+    def zeroed_value():
+        return {
+            "epoch": 0,
+            "sae_scan_flags": 0,
+            "bssid": bytes(6),
+            "ssid": b"",
+            "strict_pure_sae_profile": 0,
+        }
 
     def invalidate(self):
         self.snapshot_epoch = 0
         self.bssid = bytes(6)
         self.ssid = b""
+        self.sae_scan_flags = 0
+        self.strict_pure_sae_profile = 0
 
     def begin(self):
         self.association_epoch = (self.association_epoch + 1) & ((1 << 64) - 1)
@@ -382,7 +455,8 @@ class SnapshotModel:
         # The default node copy owns no independent cancellation edge.
         return self.association_epoch
 
-    def capture(self, expected_epoch, bssid, ssid):
+    def capture(self, expected_epoch, bssid, ssid, sae_scan_flags=0,
+                strict_pure_sae_profile=0):
         if expected_epoch == 0 or expected_epoch != self.association_epoch or \
                 expected_epoch != self.replacement_epoch:
             return False
@@ -392,6 +466,8 @@ class SnapshotModel:
             return False
         self.bssid = bssid
         self.ssid = ssid
+        self.sae_scan_flags = sae_scan_flags
+        self.strict_pure_sae_profile = 1 if strict_pure_sae_profile else 0
         self.snapshot_epoch = expected_epoch
         self.replacement_epoch = 0
         return True
@@ -399,6 +475,21 @@ class SnapshotModel:
     def matches(self, epoch, bssid, ssid):
         return epoch != 0 and self.snapshot_epoch == epoch and \
             self.bssid == bssid and self.ssid == ssid
+
+    def copyout_current(self, expected_epoch):
+        out = self.zeroed_value()
+        if expected_epoch == 0 or expected_epoch != self.association_epoch or \
+                self.replacement_epoch != 0 or \
+                self.snapshot_epoch != expected_epoch:
+            return out
+        out.update({
+            "epoch": expected_epoch,
+            "sae_scan_flags": self.sae_scan_flags,
+            "bssid": self.bssid,
+            "ssid": self.ssid,
+            "strict_pure_sae_profile": self.strict_pure_sae_profile,
+        })
+        return out
 
 
 # One deterministic matrix covers accepted forward phases, retries/teardown,
@@ -440,9 +531,26 @@ bssid = bytes.fromhex("021122334455")
 ssid = b"s\x00ae"
 token = snapshot.begin_replacement()
 snapshot.nested_node_copy_cleanup()
-assert snapshot.capture(token, bssid, ssid)
+assert snapshot.capture(token, bssid, ssid, 0x20, 1)
 assert snapshot.matches(token, bssid, ssid)
 assert not snapshot.matches(token + 1, bssid, ssid)
+assert snapshot.copyout_current(token) == {
+	"epoch": token,
+	"sae_scan_flags": 0x20,
+	"bssid": bssid,
+	"ssid": ssid,
+	"strict_pure_sae_profile": 1,
+}
+assert snapshot.copyout_current(token + 1) == SnapshotModel.zeroed_value()
+
+# A replacement token means post-copy publication may still be changing; even
+# an otherwise matching old snapshot cannot be observed by a future owner.
+replacement_token = snapshot.begin_replacement()
+assert snapshot.copyout_current(replacement_token) == SnapshotModel.zeroed_value()
+assert snapshot.copyout_current(token) == SnapshotModel.zeroed_value()
+snapshot.nested_node_copy_cleanup()
+assert snapshot.capture(replacement_token, bssid, ssid)
+assert snapshot.copyout_current(replacement_token)["epoch"] == replacement_token
 
 # A cancel after replacement admission but before its post-copy publication
 # clears the owner token. The stale producer cannot resurrect its BSS under
@@ -453,6 +561,8 @@ cancel_epoch = snapshot.begin()
 assert cancel_epoch != stale_token
 assert not snapshot.capture(stale_token, bssid, ssid)
 assert snapshot.snapshot_epoch == 0
+assert snapshot.copyout_current(stale_token) == SnapshotModel.zeroed_value()
+assert snapshot.copyout_current(cancel_epoch) == SnapshotModel.zeroed_value()
 
 # Capture can publish only while it owns the token; a later cancellation
 # serializes after publication and revokes the record again.
@@ -462,6 +572,7 @@ assert snapshot.capture(token, bssid, ssid)
 assert snapshot.matches(token, bssid, ssid)
 snapshot.begin()
 assert snapshot.snapshot_epoch == 0
+assert snapshot.copyout_current(token) == SnapshotModel.zeroed_value()
 
-print("PASS: association epoch fences, selected-BSS identity, terminal RX, credential/reset, roam, and WCL reassociation")
+print("PASS: association epoch fences, selected-BSS scrub/copyout, terminal RX, credential/reset, roam, and WCL reassociation")
 PY

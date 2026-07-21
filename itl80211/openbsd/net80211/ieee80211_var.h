@@ -564,7 +564,8 @@ struct ieee80211com {
 	 * Writer-only canonical identity of the BSS actually copied into ic_bss.
 	 * Its epoch is zeroed on every association fence and published only after
 	 * post-copy BSSID/SSID/scan facts are complete.  No current path consumes
-	 * it; a future cross-context owner needs an explicit serialized copy-out.
+	 * it; a future cross-context owner must hold a HAL/lifecycle lifetime claim
+	 * and use the explicit serialized copy-out instead of this live field.
 	 */
 	struct ieee80211_pae_selected_bss ic_pae_selected_bss;
 	u_int32_t		*ic_aid_bitmap;

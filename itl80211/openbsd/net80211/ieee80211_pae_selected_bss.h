@@ -5,8 +5,8 @@
  * keys, or credential material.  Its epoch is published by net80211 only
  * after the fixed fields are populated; zero means invalid.  This header
  * supplies byte-level helpers only.  A future cross-context consumer must
- * use a separately specified serialized copy-out contract rather than read
- * the live ieee80211com field directly.
+ * hold an explicit HAL/lifecycle lifetime claim and use the serialized
+ * copy-out contract rather than read the live ieee80211com field directly.
  */
 #ifndef _NET80211_IEEE80211_PAE_SELECTED_BSS_H_
 #define _NET80211_IEEE80211_PAE_SELECTED_BSS_H_

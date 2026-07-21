@@ -147,7 +147,6 @@ if epoch.get("post_epoch_pinned_guest_query_succeeded") is not True:
 
 expected_scripts = {
     "capture_sha256": "scripts/capture_tahoe_sae_layer.sh",
-    "sae_capture_evaluator_sha256": "scripts/evaluate_tahoe_sae_capture.py",
     "link_handoff_evaluator_sha256": "scripts/evaluate_tahoe_link_handoff.py",
     "auxkc_preflight_sha256": "scripts/tahoe_auxkc_admission_preflight.sh",
 }
@@ -155,6 +154,12 @@ for evidence_key, source_path in expected_scripts.items():
     expected_hash = hashlib.sha256((root / source_path).read_bytes()).hexdigest()
     if evidence.get("script_identity", {}).get(evidence_key) != expected_hash:
         fail(f"runtime record is not bound to {source_path}")
+# The SAE evaluator record is historical evidence from the captured epoch.
+# A later evaluator may become stricter without retroactively changing which
+# source produced this bounded, non-success result.
+historical_sae_evaluator_hash = "63cc6b68ab96e0cbf4f390d23c419b08a2888f7cf4c02d12c82c46e0a85067a8"
+if evidence.get("script_identity", {}).get("sae_capture_evaluator_sha256") != historical_sae_evaluator_hash:
+    fail("runtime record is not bound to its historical SAE evaluator source")
 if not all(len(value) == 64 for value in evidence.get("artifact_hashes", {}).values()):
     fail("raw-artifact witnesses are not SHA-256 values")
 for key, value in evidence.get("non_claims", {}).items():

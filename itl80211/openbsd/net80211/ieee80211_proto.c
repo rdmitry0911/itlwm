@@ -120,6 +120,7 @@ ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
 		return;
 	__atomic_store_n(&ic->ic_pae_selected_bss.epoch, 0,
 	    __ATOMIC_RELEASE);
+	ieee80211_pae_selected_bss_clear_payload(&ic->ic_pae_selected_bss);
 }
 
 /* Advance a nonzero association epoch while its leaf writer lock is held. */
@@ -176,6 +177,58 @@ out:
 		__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 		    __ATOMIC_RELEASE);
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/*
+ * Copy only the fixed selected-BSS value for an exact, fully published epoch.
+ * The caller already holds the HAL/lifecycle claim that keeps ic and this leaf
+ * lock alive through the call and supplies a kernel-resident, caller-owned,
+ * non-aliasing output value.  The leaf lock serializes fields but does not
+ * create that object-lifetime claim, and this API may not race final lock
+ * destruction.  There are deliberately no production consumers until a
+ * future owner can satisfy that precondition.  This is not association
+ * admission, credential delivery, or authentication permission.
+ */
+int
+ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *ic,
+    u_int64_t expected_epoch, struct ieee80211_pae_selected_bss *out)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int copied = 0;
+
+	if (out == NULL)
+		return 0;
+	/* The live record is never a valid external output destination. */
+	if (ic != NULL && out == &ic->ic_pae_selected_bss)
+		return 0;
+	memset(out, 0, sizeof(*out));
+	if (ic == NULL || expected_epoch == 0 ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_opmode == IEEE80211_M_STA && expected_epoch != 0 &&
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) ==
+		expected_epoch &&
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		__ATOMIC_ACQUIRE) == 0 &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+		__ATOMIC_ACQUIRE) == expected_epoch) {
+		if (ieee80211_pae_selected_bss_populate(out,
+		    ic->ic_pae_selected_bss.bssid,
+		    ic->ic_pae_selected_bss.ssid,
+		    ic->ic_pae_selected_bss.ssid_len,
+		    ic->ic_pae_selected_bss.sae_scan_flags,
+		    ic->ic_pae_selected_bss.strict_pure_sae_profile)) {
+			out->epoch = expected_epoch;
+			copied = 1;
+		}
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return copied;
 }
 
 /*
