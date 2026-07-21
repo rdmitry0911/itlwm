@@ -156,9 +156,12 @@ rsync -a -e "$RSYNC_RSH" \
 "${SSH[@]}" "test -f '$REMOTE_SDK/Headers/IOKit/network/IONetworkController.h'"
 "${SSH[@]}" "cp -R '$REMOTE_SDK' '$REMOTE_DIR/MacKernelSDK'"
 
-echo "[5/5] safe trace client, Tahoe kext BootKC gate, Agent clean build, and RegDiag"
-"${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh"
+echo "[5/5] Tahoe kext BootKC gate, trace producer audit, Agent clean build, and RegDiag"
+# build_post_plti_trace.sh inspects the actual producer objects with nm; build
+# the isolated kext first so it cannot accidentally pass against stale objects
+# from a prior guest directory.
 "${SSH[@]}" "cd '$REMOTE_DIR' && ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'"
+"${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh"
 "${SSH[@]}" "cd '$REMOTE_DIR/AirportItlwmAgent' && make clean && make"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_regdiag.sh"
 

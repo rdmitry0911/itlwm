@@ -649,8 +649,9 @@ for needle in (
 ):
     require(build, needle, "safe trace client build")
 require(payload_script, "-Iinclude", "unit build include path for shared C contract")
-require(runner, "./scripts/build_post_plti_trace.sh",
-        "isolated Tahoe gate builds safe trace client")
+ordered(runner, "isolated Tahoe producer build precedes trace audit",
+        "ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'",
+        "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh")
 require(aggregate, "test_tahoe_post_plti_trace_contract.sh",
         "SAE aggregate includes safe trace contract")
 for needle in (
