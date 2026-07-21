@@ -11,6 +11,9 @@ AP_HELPER="$ROOT/scripts/tahoe_pmf_required_ap_switchover.sh"
 AP_FIXTURE="$ROOT/scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh"
 EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh"
 PROTOCOL="$ROOT/docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md"
+OVERLAY_HELPER="$ROOT/scripts/tahoe_prepare_disposable_overlay.sh"
+OVERLAY_EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_disposable_overlay_evidence_contract.sh"
+OVERLAY_PROTOCOL="$ROOT/docs/TAHOE_DISPOSABLE_OVERLAY_PROTOCOL.md"
 
 fail() {
     printf 'FAIL: IWX PMF/BIP runtime contract: %s\n' "$*" >&2
@@ -27,10 +30,12 @@ forbid_literal() {
     ! grep -Fq -- "$needle" "$path" || fail "forbidden $label"
 }
 
-for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" "$PROTOCOL"; do
+for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" "$PROTOCOL" \
+            "$OVERLAY_HELPER" "$OVERLAY_EVIDENCE_CONTRACT" "$OVERLAY_PROTOCOL"; do
     [ -f "$path" ] || fail "required file is missing: ${path##*/}"
 done
-[ -x "$RUNNER" ] && [ -x "$AP_HELPER" ] && [ -x "$AP_FIXTURE" ] && [ -x "$EVIDENCE_CONTRACT" ] ||
+[ -x "$RUNNER" ] && [ -x "$AP_HELPER" ] && [ -x "$AP_FIXTURE" ] && [ -x "$EVIDENCE_CONTRACT" ] && \
+    [ -x "$OVERLAY_HELPER" ] && [ -x "$OVERLAY_EVIDENCE_CONTRACT" ] ||
     fail 'runtime scripts must be executable'
 bash -n "$RUNNER"
 bash -n "$AP_HELPER"
@@ -226,6 +231,7 @@ for token in (
     "initial active prefix", "does not establish final success",
     "rollback watchdog", "local-only", "does not prove pure SAE",
     "precondition failure", "fresh disposable overlay", "REKEY_GTK",
+    "tahoe_prepare_disposable_overlay.sh", "local-only receipt",
 ):
     if token not in protocol:
         fail(f"runtime protocol omits boundary: {token}")

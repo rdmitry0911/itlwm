@@ -21,6 +21,7 @@ bash "$root/scripts/test_tahoe_wcl_plti_scan_resume_contract.sh"
 bash "$root/scripts/test_tahoe_wcl_plti_scan_resume_runtime_evidence_contract.sh"
 bash "$root/scripts/test_tahoe_post_plti_trace_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh"
+bash "$root/scripts/test_tahoe_prepare_disposable_overlay_contract.sh"
 
 python3 - "$root" <<'PY'
 import json

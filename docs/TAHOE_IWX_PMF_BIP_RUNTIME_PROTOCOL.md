@@ -15,6 +15,12 @@ trace client path. It never changes a guest address, route, DHCP state,
 default route, direct kext state, guest reboot state, or the physical
 validation host.
 
+The fresh-overlay precondition is prepared separately by
+`tahoe_prepare_disposable_overlay.sh` and its local-only receipt. That helper
+accepts only one direct qcow2 backing image, creates no guest activity, and is
+not evidence of candidate activation or PMF/BIP behavior. The AP preflight
+must still pass before any later candidate sequence begins.
+
 ## AP transition boundary
 
 The host helper is the sole component allowed to control the lab AP process.

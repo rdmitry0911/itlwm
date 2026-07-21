@@ -31,7 +31,9 @@ usage: tahoe_auxkc_activate_release.sh \
 Performs a transactional replacement of the canonical AirportItlwm bundle and
 AuxKC only after validating the exact five-member collection.  It creates
 immutable, timestamped rollback copies, never direct-loads/unloads a kext, and
-does not reboot.  Candidate and work-root must resolve below /private.
+does not reboot.  After its first canonical swap, an EXIT/HUP/INT/TERM path
+attempts rollback before reporting failure. Candidate and work-root must
+resolve below /private.
 EOF
 }
 
@@ -119,6 +121,8 @@ new_auxkc="/Library/KernelCollections/AuxiliaryKernelExtensions.kc.new-${stamp}"
 auxkc_backup="/Library/KernelCollections/AuxiliaryKernelExtensions.kc.preinstall-bak.${stamp}"
 auxkc_displaced="/Library/KernelCollections/AuxiliaryKernelExtensions.kc.preinstall-displaced.${stamp}"
 auxkc_failed="/Library/KernelCollections/AuxiliaryKernelExtensions.kc.failed-${stamp}"
+transaction_armed=0
+rollback_in_progress=0
 
 validate_auxkc() {
     local kc="$1"
@@ -171,6 +175,39 @@ rollback_auxkc() {
     fi
 }
 
+emergency_rollback() {
+    local status="$1"
+    local rollback_failed=0
+
+    # Do not recurse through EXIT while recovering a partially moved canonical
+    # bundle/collection. SIGKILL cannot be trapped; this covers ordinary shell
+    # failure and the interrupt signals a bounded caller can deliver.
+    trap - EXIT HUP INT TERM
+    [ "$transaction_armed" = 1 ] || exit "$status"
+    [ "$rollback_in_progress" = 0 ] || exit "$status"
+    rollback_in_progress=1
+
+    # Restore the collection before the bundle so every recoverable
+    # interruption returns the original matching canonical pair.
+    if ! rollback_auxkc; then
+        rollback_failed=1
+    fi
+    if ! rollback_bundle; then
+        rollback_failed=1
+    fi
+    if [ "$rollback_failed" = 0 ]; then
+        printf 'ACTIVATION_ABORT_ROLLED_BACK\n' >&2
+    else
+        printf 'ACTIVATION_ABORT_ROLLBACK_FAILED\n' >&2
+    fi
+    exit "$status"
+}
+
+trap 'emergency_rollback $?' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 for path in "$CANONICAL_BUNDLE" "$CANONICAL_AUXKC" "$BOOTKC" "$SYSTEMKC"; do
     [ -e "$path" ] || fail "required current system path is missing: $path"
 done
@@ -205,6 +242,9 @@ if [ "$staged_sha" != "$expected_sha" ] || [ "$staged_uuid" != "$expected_uuid" 
     fail "candidate staging identity mismatch"
 fi
 
+# From this point a normal failure or an interrupt must restore both canonical
+# artifacts before the helper returns. Arm before the first move, not after it.
+transaction_armed=1
 if ! /bin/mv "$CANONICAL_BUNDLE" "$bundle_displaced"; then
     fail "bundle displacement failed"
 fi
@@ -280,4 +320,5 @@ fi
     printf 'activation_state=READY_FOR_GUEST_REBOOT\n'
 } >"$work/activation-summary.txt"
 /bin/chmod 600 "$work/activation-summary.txt"
+transaction_armed=0
 printf 'ACTIVATION_READY:%s\n' "$work"
