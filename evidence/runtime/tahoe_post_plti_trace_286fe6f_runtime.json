@@ -1,0 +1,63 @@
+{
+  "schema": "itlwm-tahoe-post-plti-trace-runtime/v1",
+  "candidate": {
+    "source_commit": "286fe6fe7537c267b2ddddec367fc83a1dcf85f3",
+    "release_tag": "v2.4.0-alpha-286fe6f",
+    "archive_sha256": "f5939656e924aa29d49262df50faa8047aa59dfda92c0cfc0ae48a443a5a416e",
+    "binary_sha256": "5df98db930a11344ebefa88808d119e22063614e4b8030306cae46f993cebb79",
+    "macho_uuid": "0D7710CA-EE0C-3395-97E3-DC88B99414B3",
+    "identity_binding_precondition": "PASS"
+  },
+  "scope": {
+    "environment": "pinned_disposable_qemu_guest",
+    "physical_host_touched": false,
+    "physical_host_rebooted": false,
+    "guest_rebooted_by_runner": false,
+    "guest_network_identity_collected": false
+  },
+  "radio_cycle": {
+    "requested_cycles": 1,
+    "connection_trigger": "saved_profile_autojoin_only",
+    "saved_profile_precondition": "external",
+    "radio_off_observed": true,
+    "radio_on_observed": true,
+    "radio_recovery_attempted": false,
+    "explicit_join_command": false,
+    "explicit_route_command": false,
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false
+  },
+  "trace": {
+    "reset_control_sequence": 1783864844,
+    "reset_ack_generation": 1,
+    "backend": "iwn",
+    "reset_ack_generation_synchronized": true,
+    "initial_snapshot_buffer_generation_synchronized": true,
+    "double_read_stable": true,
+    "capture_generation": 1,
+    "integrity": "ok",
+    "entry_count": 1,
+    "episode_count": 1,
+    "dropped_entries": 0,
+    "verdict": "INTEGRITY_INCONCLUSIVE",
+    "final_control_disabled": true
+  },
+  "result": "INCONCLUSIVE",
+  "failure_phase": "trace-verdict-not-complete",
+  "local_only_raw_artifacts": {
+    "client_output_retained_local_only": true,
+    "raw_output_committed": false
+  },
+  "commit_safety": {
+    "wireless_identity_committed": false,
+    "ip_or_route_committed": false,
+    "secret_material_committed": false,
+    "raw_capture_committed": false
+  },
+  "non_claims": [
+    "pure SAE or PMF functionality",
+    "generic Internet reachability",
+    "physical-host validation",
+    "proof beyond the categorical post-PLTI trace verdict"
+  ]
+}
