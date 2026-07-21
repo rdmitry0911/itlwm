@@ -2026,13 +2026,8 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             ieee80211_set_link_state(ic, LINK_STATE_DOWN);
             ieee80211_node_cleanup(ic, ic->ic_bss);
         }
-        uint16_t scanFlags = IEEE80211_CHAN_2GHZ;
-        if (ic->ic_bss != NULL &&
-            ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC &&
-            IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan))
-            scanFlags = IEEE80211_CHAN_5GHZ;
         ic->ic_state = nstate;
-        if ((error = that->iwn_scan(sc, scanFlags, 0)) != 0) {
+        if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {
             printf("%s: could not initiate scan\n",
                 sc->sc_dev.dv_xname);
         }

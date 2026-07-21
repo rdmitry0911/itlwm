@@ -1990,6 +1990,50 @@ void testTahoePostPltiTraceMatrixSealedPrefixes()
                 stage == MissingStage::ScanCompletion,
             "sealed scan prefix identifies the absent completion");
 
+    const uint32_t dual_band_scan[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(dual_band_scan, 7,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ResumeNoSelection &&
+                stage == MissingStage::BssSelection,
+            "ordinary dual-band IWN continuation remains one scan cycle");
+
+    const uint32_t second_band_rejected[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventIwnScanCommandRejected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(second_band_rejected, 6,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ScanCommandRejected &&
+                stage == MissingStage::ScanCompletion,
+            "second-band rejection without completion remains categorical");
+
+    const uint32_t second_band_rejected_completed[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventIwnScanCommandRejected,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(second_band_rejected_completed, 7,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::ResumeNoSelection &&
+                stage == MissingStage::BssSelection,
+            "second-band rejection may still complete the first-band scan");
+
     const uint32_t no_candidate[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
         kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
@@ -2087,6 +2131,77 @@ void testTahoePostPltiTraceMatrixSealedPrefixes()
                      &stage) == Verdict::NoEapol &&
                 stage == MissingStage::PortValid,
             "an observed EAPOL enqueue reports only the exact missing port-valid");
+
+    const uint32_t four_way_eapol[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventBssSelected,
+        kAirportItlwmPostPltiTraceEventJoinBssEntered,
+        kAirportItlwmPostPltiTraceEventAuthStateEntered,
+        kAirportItlwmPostPltiTraceEventAuthEnqueued,
+        kAirportItlwmPostPltiTraceEventAuthDequeued,
+        kAirportItlwmPostPltiTraceEventAuthFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAuthTxDone,
+        kAirportItlwmPostPltiTraceEventAuthRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAuthRxNet80211,
+        kAirportItlwmPostPltiTraceEventAssocStateEntered,
+        kAirportItlwmPostPltiTraceEventAssocEnqueued,
+        kAirportItlwmPostPltiTraceEventAssocDequeued,
+        kAirportItlwmPostPltiTraceEventAssocFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAssocTxDone,
+        kAirportItlwmPostPltiTraceEventAssocRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAssocRxNet80211,
+        kAirportItlwmPostPltiTraceEventRunEntered,
+        kAirportItlwmPostPltiTraceEventEapolRxDecapped,
+        kAirportItlwmPostPltiTraceEventEapolRxKernelPae,
+        kAirportItlwmPostPltiTraceEventEapolTxEnqueued,
+        kAirportItlwmPostPltiTraceEventEapolRxDecapped,
+        kAirportItlwmPostPltiTraceEventEapolFwSubmitted,
+        kAirportItlwmPostPltiTraceEventEapolTxDone,
+        kAirportItlwmPostPltiTraceEventEapolRxKernelPae,
+        kAirportItlwmPostPltiTraceEventEapolTxEnqueued,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+    };
+    require(classify(four_way_eapol, 31,
+                     kAirportItlwmPostPltiTraceBackendIwn,
+                     &stage) == Verdict::KernelChainObserved &&
+                stage == MissingStage::None,
+            "two inbound EAPOL rounds and interleaved TX completion reach port-valid");
+
+    const uint32_t malformed_eapol_optional[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwnScanStateEntered,
+        kAirportItlwmPostPltiTraceEventIwnScanStarted,
+        kAirportItlwmPostPltiTraceEventScanCompleted,
+        kAirportItlwmPostPltiTraceEventBssSelected,
+        kAirportItlwmPostPltiTraceEventJoinBssEntered,
+        kAirportItlwmPostPltiTraceEventAuthStateEntered,
+        kAirportItlwmPostPltiTraceEventAuthEnqueued,
+        kAirportItlwmPostPltiTraceEventAuthDequeued,
+        kAirportItlwmPostPltiTraceEventAuthFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAuthTxDone,
+        kAirportItlwmPostPltiTraceEventAuthRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAuthRxNet80211,
+        kAirportItlwmPostPltiTraceEventAssocStateEntered,
+        kAirportItlwmPostPltiTraceEventAssocEnqueued,
+        kAirportItlwmPostPltiTraceEventAssocDequeued,
+        kAirportItlwmPostPltiTraceEventAssocFwSubmitted,
+        kAirportItlwmPostPltiTraceEventAssocTxDone,
+        kAirportItlwmPostPltiTraceEventAssocRxFromFirmware,
+        kAirportItlwmPostPltiTraceEventAssocRxNet80211,
+        kAirportItlwmPostPltiTraceEventRunEntered,
+        kAirportItlwmPostPltiTraceEventEapolRxDecapped,
+        kAirportItlwmPostPltiTraceEventEapolRxKernelPae,
+        kAirportItlwmPostPltiTraceEventEapolFwSubmitted,
+        kAirportItlwmPostPltiTraceEventEapolTxEnqueued,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+    };
+    require(classify(malformed_eapol_optional, 27) == Verdict::IntegrityInconclusive,
+            "EAPOL TX corroboration before an enqueue cannot establish a chain");
 
     const uint32_t post_terminal[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,

@@ -1175,6 +1175,9 @@ struct AirportItlwmPostPltiTraceState {
     volatile uint64_t activeToken;
     volatile uint32_t admitEpisodes;
     volatile uint8_t recorderLock;
+    /* Even is open; odd fences a reset/seal/invalidation transition. */
+    volatile uint32_t controlEpoch;
+    volatile uint32_t producerCount;
     volatile uint32_t nextEpisode;
     volatile uint32_t episodeCount;
     volatile uint32_t droppedEntries;
@@ -2061,11 +2064,13 @@ airportItlwmPostPltiTraceEventIsKnown(uint32_t event)
 }
 
 /*
- * The trace has a fixed, non-sleeping serialization gate.  Producer-side
- * hooks use try-lock and simply omit a diagnostic event under contention;
- * they never reserve a sequence without publishing it.  Control, snapshot,
- * and invalidation take the same gate, so reset/seal cannot leave a sequence
- * hole or admit an episode after its capture has been frozen.
+ * The trace has a fixed, non-sleeping serialization gate.  A producer first
+ * enters an even control epoch; reset/seal/invalidation turn that epoch odd
+ * and wait for established producers before changing capture state.  A
+ * producer-side try-lock failure is accounted as a dropped entry while that
+ * epoch guard is held, so an omitted categorical event cannot produce an
+ * exact negative diagnostic verdict.
+ * Producers never reserve a sequence without publishing it.
  */
 static bool
 airportItlwmPostPltiTraceTryLock()
@@ -2085,6 +2090,65 @@ static void
 airportItlwmPostPltiTraceUnlock()
 {
     __atomic_clear(&sPostPltiTrace.recorderLock, __ATOMIC_RELEASE);
+}
+
+/*
+ * This is a non-sleeping reader-style guard for the state transitions that
+ * change capture meaning.  A producer that loses the epoch race is discarded
+ * rather than relabeled into the transition's new capture generation.
+ */
+static bool
+airportItlwmPostPltiTraceProducerEnter()
+{
+    const uint32_t epoch = __atomic_load_n(&sPostPltiTrace.controlEpoch,
+                                           __ATOMIC_ACQUIRE);
+    if ((epoch & 1U) != 0)
+        return false;
+    __atomic_add_fetch(&sPostPltiTrace.producerCount, 1, __ATOMIC_ACQ_REL);
+    if (epoch == __atomic_load_n(&sPostPltiTrace.controlEpoch,
+                                 __ATOMIC_ACQUIRE))
+        return true;
+    /* A call racing a transition must not be relabeled into its new epoch. */
+    __atomic_sub_fetch(&sPostPltiTrace.producerCount, 1, __ATOMIC_RELEASE);
+    return false;
+}
+
+static void
+airportItlwmPostPltiTraceProducerLeave()
+{
+    __atomic_sub_fetch(&sPostPltiTrace.producerCount, 1, __ATOMIC_RELEASE);
+}
+
+/*
+ * A control transition becomes visible before it waits, then excludes all
+ * newly arriving producers.  Existing producers either publish an event or
+ * mark a loss before this function is allowed to take recorderLock.
+ */
+static void
+airportItlwmPostPltiTraceControlLock()
+{
+    for (;;) {
+        uint32_t epoch = __atomic_load_n(&sPostPltiTrace.controlEpoch,
+                                         __ATOMIC_ACQUIRE);
+        if ((epoch & 1U) != 0)
+            continue;
+        const uint32_t closingEpoch = epoch + 1;
+        if (__atomic_compare_exchange_n(&sPostPltiTrace.controlEpoch, &epoch,
+                                        closingEpoch, false, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE))
+            break;
+    }
+    while (__atomic_load_n(&sPostPltiTrace.producerCount,
+                           __ATOMIC_ACQUIRE) != 0) {
+    }
+    airportItlwmPostPltiTraceLock();
+}
+
+static void
+airportItlwmPostPltiTraceControlUnlock()
+{
+    airportItlwmPostPltiTraceUnlock();
+    __atomic_add_fetch(&sPostPltiTrace.controlEpoch, 1, __ATOMIC_RELEASE);
 }
 
 static uint64_t
@@ -2142,6 +2206,32 @@ airportItlwmPostPltiTraceTokenIsCurrent(struct ieee80211com *ic,
 }
 
 static void
+airportItlwmPostPltiTraceMarkDropped()
+{
+    uint32_t observed = __atomic_load_n(&sPostPltiTrace.droppedEntries,
+                                        __ATOMIC_ACQUIRE);
+    while (observed != UINT32_MAX) {
+        if (__atomic_compare_exchange_n(&sPostPltiTrace.droppedEntries,
+                                        &observed, observed + 1, false,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE))
+            return;
+    }
+}
+
+/* The caller holds a producer epoch guard while it accounts this loss. */
+static void
+airportItlwmPostPltiTraceNoteContendedProducer(struct ieee80211com *ic,
+                                                bool mayBegin)
+{
+    const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                           __ATOMIC_ACQUIRE);
+    if (airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true) ||
+        (mayBegin && airportItlwmPostPltiTraceMayBegin(ic)))
+        airportItlwmPostPltiTraceMarkDropped();
+}
+
+static void
 airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
                                      uint64_t token, bool requireActive)
 {
@@ -2159,8 +2249,7 @@ airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
     const uint32_t first = __atomic_load_n(
         &sPostPltiTrace.captureFirstSequence, __ATOMIC_ACQUIRE);
     if (sequence - first >= AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES)
-        __atomic_add_fetch(&sPostPltiTrace.droppedEntries, 1,
-                           __ATOMIC_RELAXED);
+        airportItlwmPostPltiTraceMarkDropped();
 
     AirportItlwmPostPltiTraceEntry *entry =
         &sPostPltiTrace.entries[
@@ -2193,22 +2282,34 @@ airportItlwmPostPltiTraceCloseActive(struct ieee80211com *ic, uint32_t event)
 extern "C" void
 AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic, uint32_t event)
 {
-    if (!airportItlwmPostPltiTraceTryLock())
+    if (!airportItlwmPostPltiTraceProducerEnter())
         return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
                                            __ATOMIC_ACQUIRE);
     airportItlwmPostPltiTraceRecordToken(ic, event, token, true);
     airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 extern "C" void
 AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
 {
-    if (!airportItlwmPostPltiTraceTryLock())
+    if (!airportItlwmPostPltiTraceProducerEnter())
         return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, true);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     if (!airportItlwmPostPltiTraceMayBegin(ic))
     {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
 
@@ -2218,6 +2319,7 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
     if (!airportItlwmPostPltiTraceMayBegin(ic))
     {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
 
@@ -2228,6 +2330,7 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
     if (generation == 0 || episode == 0)
     {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
     const uint64_t token = airportItlwmPostPltiTraceToken(generation, episode);
@@ -2237,6 +2340,7 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
                                      __ATOMIC_ACQUIRE))
     {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
     if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true)) {
@@ -2245,32 +2349,46 @@ AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
                                           &expected, 0, false,
                                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
     __atomic_add_fetch(&sPostPltiTrace.episodeCount, 1, __ATOMIC_RELAXED);
     airportItlwmPostPltiTraceRecordToken(
         ic, kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume, token, true);
     airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 extern "C" void
 AirportItlwmPostPltiTraceCompleteEpisode(struct ieee80211com *ic)
 {
-    if (!airportItlwmPostPltiTraceTryLock())
+    if (!airportItlwmPostPltiTraceProducerEnter())
         return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     airportItlwmPostPltiTraceCloseActive(
         ic, kAirportItlwmPostPltiTraceEventPortValidTransition);
     airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 extern "C" void
 AirportItlwmPostPltiTraceAbortEpisode(struct ieee80211com *ic)
 {
-    if (!airportItlwmPostPltiTraceTryLock())
+    if (!airportItlwmPostPltiTraceProducerEnter())
         return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     airportItlwmPostPltiTraceCloseActive(
         ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
     airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 extern "C" void
@@ -2278,12 +2396,18 @@ AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
                                           uint32_t oldState,
                                           uint32_t nextState)
 {
-    if (!airportItlwmPostPltiTraceTryLock())
+    if (!airportItlwmPostPltiTraceProducerEnter())
         return;
+    if (!airportItlwmPostPltiTraceTryLock()) {
+        airportItlwmPostPltiTraceNoteContendedProducer(ic, false);
+        airportItlwmPostPltiTraceProducerLeave();
+        return;
+    }
     const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
                                            __ATOMIC_ACQUIRE);
     if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true)) {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
 
@@ -2292,6 +2416,7 @@ AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
             ic, kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
             token, true);
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
 
@@ -2300,11 +2425,13 @@ AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
         (oldState == IEEE80211_S_ASSOC && nextState == IEEE80211_S_RUN))
     {
         airportItlwmPostPltiTraceUnlock();
+        airportItlwmPostPltiTraceProducerLeave();
         return;
     }
     airportItlwmPostPltiTraceCloseActive(
         ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
     airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceProducerLeave();
 }
 
 static bool
@@ -2407,7 +2534,7 @@ airportItlwmPostPltiTraceBind(AirportItlwm *driver)
                      reinterpret_cast<uintptr_t>(ic), __ATOMIC_RELEASE);
 }
 
-/* Control owns recorderLock while it changes capture state or binding. */
+/* Control fences established producers before it changes capture state. */
 static void
 airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
                                       const char *command)
@@ -2423,14 +2550,17 @@ airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
             &sPostPltiTrace.lastControlSequence, __ATOMIC_ACQUIRE))
         return;
 
-    airportItlwmPostPltiTraceLock();
+    airportItlwmPostPltiTraceControlLock();
     if (sequence == __atomic_load_n(&sPostPltiTrace.lastControlSequence,
                                     __ATOMIC_ACQUIRE)) {
-        airportItlwmPostPltiTraceUnlock();
+        if (__atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) != 0)
+            airportItlwmPostPltiTraceMarkDropped();
+        airportItlwmPostPltiTraceControlUnlock();
         return;
     }
     uint32_t enable = __atomic_load_n(&sPostPltiTrace.enabled,
                                       __ATOMIC_ACQUIRE);
+    const uint32_t wasEnabled = enable;
     uint32_t reset = 0;
     uint32_t seal = 0;
     (void)airportItlwmPostPltiTraceReadU32Key(command, "enable", &enable);
@@ -2469,6 +2599,9 @@ airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
             ic, kAirportItlwmPostPltiTraceEventCaptureWindowSealed);
         enable = 0;
     } else if (enable != 0) {
+        /* Rebinding an armed capture is a diagnostic loss boundary. */
+        if (wasEnabled != 0)
+            airportItlwmPostPltiTraceMarkDropped();
         airportItlwmPostPltiTraceBind(driver);
     } else {
         __atomic_store_n(&sPostPltiTrace.admitEpisodes, 0,
@@ -2493,7 +2626,7 @@ airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
         &sPostPltiTrace.captureGeneration, __ATOMIC_ACQUIRE);
     const uint32_t backend = __atomic_load_n(&sPostPltiTrace.backend,
                                               __ATOMIC_ACQUIRE);
-    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceControlUnlock();
 
     char ack[176];
     snprintf(ack, sizeof(ack),
@@ -2614,24 +2747,28 @@ airportItlwmPostPltiTracePoll(AirportItlwm *driver)
         struct ieee80211com *actual =
             driver->fHalService != nullptr ?
             driver->fHalService->get80211Controller() : nullptr;
-        airportItlwmPostPltiTraceLock();
-        if (__atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) != 0 &&
-            reinterpret_cast<uintptr_t>(actual) !=
-                __atomic_load_n(&sPostPltiTrace.targetController,
-                                __ATOMIC_ACQUIRE)) {
-            /* Never silently rebind a live capture to a replacement HAL. */
-            __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
-            __atomic_store_n(&sPostPltiTrace.admitEpisodes, 0,
-                             __ATOMIC_RELEASE);
-            __atomic_store_n(&sPostPltiTrace.activeToken, 0,
-                             __ATOMIC_RELEASE);
-            __atomic_store_n(&sPostPltiTrace.targetController, 0,
-                             __ATOMIC_RELEASE);
-            __atomic_store_n(&sPostPltiTrace.backend,
-                             kAirportItlwmPostPltiTraceBackendUnknown,
-                             __ATOMIC_RELEASE);
+        const uintptr_t bound = __atomic_load_n(
+            &sPostPltiTrace.targetController, __ATOMIC_ACQUIRE);
+        if (reinterpret_cast<uintptr_t>(actual) != bound) {
+            airportItlwmPostPltiTraceControlLock();
+            if (__atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) != 0 &&
+                reinterpret_cast<uintptr_t>(actual) !=
+                    __atomic_load_n(&sPostPltiTrace.targetController,
+                                    __ATOMIC_ACQUIRE)) {
+                /* Never silently rebind a live capture to a replacement HAL. */
+                __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
+                __atomic_store_n(&sPostPltiTrace.admitEpisodes, 0,
+                                 __ATOMIC_RELEASE);
+                __atomic_store_n(&sPostPltiTrace.activeToken, 0,
+                                 __ATOMIC_RELEASE);
+                __atomic_store_n(&sPostPltiTrace.targetController, 0,
+                                 __ATOMIC_RELEASE);
+                __atomic_store_n(&sPostPltiTrace.backend,
+                                 kAirportItlwmPostPltiTraceBackendUnknown,
+                                 __ATOMIC_RELEASE);
+            }
+            airportItlwmPostPltiTraceControlUnlock();
         }
-        airportItlwmPostPltiTraceUnlock();
     }
     airportItlwmPostPltiTracePublish(driver);
 }
@@ -2639,7 +2776,7 @@ airportItlwmPostPltiTracePoll(AirportItlwm *driver)
 static void
 airportItlwmPostPltiTraceInvalidate()
 {
-    airportItlwmPostPltiTraceLock();
+    airportItlwmPostPltiTraceControlLock();
     __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
     uint32_t generation = __atomic_add_fetch(
         &sPostPltiTrace.captureGeneration, 1, __ATOMIC_RELAXED);
@@ -2661,7 +2798,7 @@ airportItlwmPostPltiTraceInvalidate()
                      __atomic_load_n(&sPostPltiTrace.nextSequence,
                                      __ATOMIC_ACQUIRE) + 1,
                      __ATOMIC_RELEASE);
-    airportItlwmPostPltiTraceUnlock();
+    airportItlwmPostPltiTraceControlUnlock();
 }
 #endif /* __IO80211_TARGET >= __MAC_26_0 */
 /* END SAFE_POST_PLTI_TRACE */
@@ -2674,6 +2811,10 @@ AirportItlwm::setProperties(OSObject *properties)
         OSObject *postPltiControl = dict->getObject(
             AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY);
         if (OSString *command = OSDynamicCast(OSString, postPltiControl)) {
+            AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false);
+            if (!lifecycle.admitted())
+                return kIOReturnNotReady;
+
             setProperty(AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY,
                         command);
             airportItlwmPostPltiTraceApplyControl(this,

@@ -22,10 +22,14 @@ are consequently evidence of one stable capture window rather than a
 teardown-induced partial trace.
 
 A fixed non-sleeping trace gate serializes every recorder reservation with
-reset, seal, snapshot, and invalidation.  A contended producer omits its
-diagnostic event before reserving a sequence; it cannot leave a sequence hole
-or create an episode after a seal.  Such an omitted required event is
-fail-closed as an incomplete diagnostic classification, never a success.
+snapshot publication.  Reset, seal, and invalidation first close an epoch and
+wait for producers that had already entered it before changing capture state.
+A contended producer in that established epoch increments the public dropped
+counter before leaving; the client rejects every nonzero count as an integrity
+failure rather than assigning a missing functional stage.  A producer that
+loses the epoch race is discarded instead of being relabeled into the new
+capture; it cannot create an episode after a seal.  Thus no omitted required
+event can produce either an exact negative diagnosis or a success.
 
 ## Versioned synthetic scenarios
 
@@ -39,10 +43,16 @@ scenarios in the same commit as the trace implementation:
 - A scan start without completion identifies an incomplete scan stage.
 - A no-candidate retry followed by a second coalesced scan remains one ordered
   episode and can end in selection-held.
+- An IWN second-band command rejection can still be followed by the existing
+  first-band completion and selection boundary; a rejection without that
+  completion remains a sealed diagnostic failure.
 - A selected BSS followed by seal identifies the missing join boundary, and a
   partial authentication prefix identifies its exact missing dequeue boundary.
 - An EAPOL enqueue followed by seal identifies the remaining port-valid
   boundary instead of relabeling the observed EAPOL stage as absent.
+- Two ordered inbound EAPOL rounds, including interleaved optional TX
+  corroboration after a real enqueue, remain eligible for the port-valid
+  terminal; those optional TX markers never establish success on their own.
 - A post-terminal event, mixed episode/generation, sequence gap, drop, or
   unsupported backend is rejected or fail-closed.
 
@@ -53,13 +63,13 @@ above is a completed diagnostic evidence run with an INCONCLUSIVE result,
 never a successful association claim.  Its `first_missing_stage` is derived
 from the parser's terminal phase, not reconstructed from a coarse verdict.
 
-## 5 GHz scan selection
+## Scan-policy preservation
 
-For IWN scan entry, the requested band now derives from the current net80211
-scan channel.  A current 5 GHz channel requests the 5 GHz scan class; the
-safe fallback is the 2.4 GHz class.  The trace records no band or channel
-identity.  Static contract coverage forbids the prior hard-coded 2.4 GHz
-request.
+The trace does not choose a scan band or alter IWN scan flags.  It preserves
+the existing first-pass scan policy, including IWN's ordinary second-band
+continuation.  The evaluator accepts the resulting repeated categorical scan
+start markers before the one completion marker, without recording any band or
+channel identity.  Static coverage forbids trace-driven scan-policy changes.
 
 ## Release handling
 

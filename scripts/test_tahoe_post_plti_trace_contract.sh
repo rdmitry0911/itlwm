@@ -184,6 +184,11 @@ for needle in (
         "out_missing_stage",
         "terminal",
         "saw_no_candidate",
+        "eapol_enqueued",
+        "eapol_submitted",
+        "eapol_done",
+        "eapol_submitted >= eapol_enqueued",
+        "eapol_done >= eapol_submitted",
         "kAirportItlwmPostPltiTraceMatrixVerdictKernelChainObserved",
 ):
     require(matrix, needle, "v2 ordered trace matrix")
@@ -204,10 +209,16 @@ recorder = body(v2, "airportItlwmPostPltiTraceRecordToken",
                 "fast-path trace recorder")
 for needle in (
         "volatile uint8_t recorderLock",
+        "volatile uint32_t controlEpoch",
+        "volatile uint32_t producerCount",
         "airportItlwmPostPltiTraceTryLock",
         "airportItlwmPostPltiTraceLock",
         "airportItlwmPostPltiTraceUnlock",
-        "they never reserve a sequence without publishing it",
+        "airportItlwmPostPltiTraceProducerEnter",
+        "airportItlwmPostPltiTraceControlLock",
+        "airportItlwmPostPltiTraceNoteContendedProducer",
+        "producer-side try-lock failure is accounted as a dropped entry",
+        "Producers never reserve a sequence without publishing it",
 ):
     require(v2, needle, "trace reset/seal serialization")
 for needle in (
@@ -231,6 +242,39 @@ ordered(recorder, "entry invalidated before categorical write",
 for needle in ("AirportItlwmRegDiag", "IWX_AUTH_DIAG", "XYLog", "setProperty",
                "OSData", "OSString", "fHalService"):
     forbid(recorder, needle, "unsafe fast-path recorder dependency")
+
+# Every producer establishes the epoch guard before it can attempt the
+# non-sleeping recorder lock, and a failed attempt must poison exact verdicts
+# through the existing dropped-entry integrity boundary before it leaves.
+for marker in (
+        "AirportItlwmPostPltiTraceRecord",
+        "AirportItlwmPostPltiTraceBeginEpisode",
+        "AirportItlwmPostPltiTraceCompleteEpisode",
+        "AirportItlwmPostPltiTraceAbortEpisode",
+        "AirportItlwmPostPltiTraceNoteStateRequest",
+):
+    producer = body(v2, marker, f"epoch-guarded producer {marker}")
+    require(producer, "airportItlwmPostPltiTraceProducerEnter",
+            f"producer epoch entry {marker}")
+    require(producer, "airportItlwmPostPltiTraceProducerLeave",
+            f"producer epoch release {marker}")
+    require(producer, "airportItlwmPostPltiTraceNoteContendedProducer",
+            f"producer loss accounting {marker}")
+
+for marker in (
+        "airportItlwmPostPltiTraceApplyControl",
+        "airportItlwmPostPltiTraceInvalidate",
+):
+    control = body(v2, marker, f"epoch-fenced control {marker}")
+    require(control, "airportItlwmPostPltiTraceControlLock",
+            f"control epoch closure {marker}")
+    require(control, "airportItlwmPostPltiTraceControlUnlock",
+            f"control epoch reopening {marker}")
+
+poll = body(v2, "airportItlwmPostPltiTracePoll", "trace watchdog poll")
+ordered(poll, "no-op watchdog poll does not close the producer epoch",
+        "const uintptr_t bound", "if (reinterpret_cast<uintptr_t>(actual) != bound)",
+        "airportItlwmPostPltiTraceControlLock")
 
 close = body(v2, "airportItlwmPostPltiTraceCloseActive",
              "safe episode close")
@@ -290,8 +334,8 @@ control = body(v2, "airportItlwmPostPltiTraceApplyControl",
 for needle in (
         "generation=%u backend=%u", "captureGeneration",
         "airportItlwmPostPltiTraceBind(driver)", "admitEpisodes",
-        "airportItlwmPostPltiTraceLock()",
-        "airportItlwmPostPltiTraceUnlock()",
+        "airportItlwmPostPltiTraceControlLock()",
+        "airportItlwmPostPltiTraceControlUnlock()",
         "uint32_t seal = 0",
         "kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
         "seal=%u",
@@ -315,6 +359,16 @@ require(v2, "airportItlwmPostPltiTracePoll(this);",
 set_properties = body(v2, "AirportItlwm::setProperties", "controller setProperties")
 ordered(set_properties, "isolated trace control route",
         "AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
+        "airportItlwmPostPltiTraceApplyControl", "return kIOReturnSuccess;")
+for needle in (
+        "AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false)",
+        "if (!lifecycle.admitted())",
+        "return kIOReturnNotReady",
+):
+    require(set_properties, needle, "trace control lifecycle admission")
+ordered(set_properties, "trace control is held through bind and acknowledgement",
+        "AirportItlwmControllerLifecycleOperationGuard lifecycle(this, false)",
+        "setProperty(AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY",
         "airportItlwmPostPltiTraceApplyControl", "return kIOReturnSuccess;")
 
 hidden_assoc = body(sky, "IOReturn AirportItlwmSkywalkInterface::\nsetWCL_ASSOCIATEImpl",
@@ -358,14 +412,12 @@ ordered(iwn_newstate, "IWN active SCAN coalesce trace",
         "kAirportItlwmPostPltiTraceEventIwnScanCoalesced", "return 0;")
 for needle in (
         "kAirportItlwmPostPltiTraceEventIwnScanStateEntered",
-        "uint16_t scanFlags = IEEE80211_CHAN_2GHZ",
-        "IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan)",
-        "iwn_scan(sc, scanFlags, 0)",
+        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
         "case IEEE80211_S_SCAN:\n    {",
 ):
-    require(iwn_newstate, needle, "IWN scan-state/band selection")
-forbid(iwn_newstate, "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
-       "hard-coded 2.4 GHz scan request")
+    require(iwn_newstate, needle, "IWN scan-state trace without scan-policy change")
+for needle in ("scanFlags", "IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan)"):
+    forbid(iwn_newstate, needle, "trace-driven scan-policy change")
 for needle in (
         "kAirportItlwmPostPltiTraceEventAuthStateEntered",
         "kAirportItlwmPostPltiTraceEventAssocStateEntered",

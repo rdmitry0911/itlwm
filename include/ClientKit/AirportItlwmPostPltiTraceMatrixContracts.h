@@ -143,7 +143,7 @@ airport_itlwm_post_plti_trace_matrix_phase_missing_stage(
 static inline enum AirportItlwmPostPltiTraceMatrixVerdict
 airport_itlwm_post_plti_trace_matrix_sealed_verdict(
     enum airport_itlwm_post_plti_trace_matrix_phase phase,
-    uint32_t saw_no_candidate)
+    uint32_t saw_no_candidate, uint32_t saw_scan_rejection)
 {
     switch (phase) {
     case airport_itlwm_post_plti_trace_phase_need_state_scan:
@@ -153,8 +153,11 @@ airport_itlwm_post_plti_trace_matrix_sealed_verdict(
     case airport_itlwm_post_plti_trace_phase_need_iwn_scan_state:
         return kAirportItlwmPostPltiTraceMatrixVerdictResumeNoIwnDispatch;
     case airport_itlwm_post_plti_trace_phase_need_scan_outcome:
-    case airport_itlwm_post_plti_trace_phase_need_scan_complete:
         return kAirportItlwmPostPltiTraceMatrixVerdictScanIncomplete;
+    case airport_itlwm_post_plti_trace_phase_need_scan_complete:
+        return saw_scan_rejection ?
+            kAirportItlwmPostPltiTraceMatrixVerdictScanCommandRejected :
+            kAirportItlwmPostPltiTraceMatrixVerdictScanIncomplete;
     case airport_itlwm_post_plti_trace_phase_need_seal_scan_rejected:
         return kAirportItlwmPostPltiTraceMatrixVerdictScanCommandRejected;
     case airport_itlwm_post_plti_trace_phase_need_selection:
@@ -195,14 +198,16 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
     enum airport_itlwm_post_plti_trace_matrix_phase phase;
     uint32_t episode;
     uint32_t saw_no_candidate = 0;
+    uint32_t saw_scan_rejection = 0;
     uint32_t auth_tx_done = 0;
     uint32_t auth_fw_rx = 0;
     uint32_t auth_net_rx = 0;
     uint32_t assoc_tx_done = 0;
     uint32_t assoc_fw_rx = 0;
     uint32_t assoc_net_rx = 0;
-    uint32_t eapol_fw_submitted = 0;
-    uint32_t eapol_tx_done = 0;
+    uint32_t eapol_enqueued = 0;
+    uint32_t eapol_submitted = 0;
+    uint32_t eapol_done = 0;
     uint32_t terminal = 0;
     enum AirportItlwmPostPltiTraceMatrixVerdict terminal_verdict;
     enum AirportItlwmPostPltiTraceMissingStage terminal_missing_stage =
@@ -243,7 +248,7 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
             terminal = 1;
             terminal_verdict =
                 airport_itlwm_post_plti_trace_matrix_sealed_verdict(
-                    phase, saw_no_candidate);
+                    phase, saw_no_candidate, saw_scan_rejection);
             terminal_missing_stage =
                 airport_itlwm_post_plti_trace_matrix_phase_missing_stage(
                     phase, saw_no_candidate);
@@ -257,6 +262,19 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
                 kAirportItlwmPostPltiTraceMatrixVerdictKernelChainObserved;
             terminal_missing_stage =
                 kAirportItlwmPostPltiTraceMissingStageNone;
+            continue;
+        }
+        /* Optional TX corroboration must still follow a real EAPOL enqueue. */
+        if (event == kAirportItlwmPostPltiTraceEventEapolFwSubmitted) {
+            if (eapol_submitted >= eapol_enqueued)
+                return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
+            eapol_submitted++;
+            continue;
+        }
+        if (event == kAirportItlwmPostPltiTraceEventEapolTxDone) {
+            if (eapol_done >= eapol_submitted)
+                return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
+            eapol_done++;
             continue;
         }
 
@@ -285,6 +303,13 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
             }
             return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
         case airport_itlwm_post_plti_trace_phase_need_scan_complete:
+            /* IWN may launch its ordinary second-band pass before completion. */
+            if (event == kAirportItlwmPostPltiTraceEventIwnScanStarted)
+                break;
+            if (event == kAirportItlwmPostPltiTraceEventIwnScanCommandRejected) {
+                saw_scan_rejection = 1;
+                break;
+            }
             if (event != kAirportItlwmPostPltiTraceEventScanCompleted)
                 return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
             phase = airport_itlwm_post_plti_trace_phase_need_selection;
@@ -415,18 +440,15 @@ airport_itlwm_post_plti_trace_matrix_classify_entries_with_stage(
         case airport_itlwm_post_plti_trace_phase_need_eapol_enqueue:
             if (event != kAirportItlwmPostPltiTraceEventEapolTxEnqueued)
                 return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
+            eapol_enqueued++;
             phase =
                 airport_itlwm_post_plti_trace_phase_wait_port_valid;
             break;
         case airport_itlwm_post_plti_trace_phase_wait_port_valid:
-            if (event == kAirportItlwmPostPltiTraceEventEapolFwSubmitted &&
-                !eapol_fw_submitted) {
-                eapol_fw_submitted = 1;
-                break;
-            }
-            if (event == kAirportItlwmPostPltiTraceEventEapolTxDone &&
-                eapol_fw_submitted && !eapol_tx_done) {
-                eapol_tx_done = 1;
+            if (event == kAirportItlwmPostPltiTraceEventEapolRxDecapped) {
+                /* A normal 4-way exchange has more than one inbound EAPOL. */
+                phase =
+                    airport_itlwm_post_plti_trace_phase_need_eapol_kernel_pae;
                 break;
             }
             return kAirportItlwmPostPltiTraceMatrixVerdictIntegrityInconclusive;
