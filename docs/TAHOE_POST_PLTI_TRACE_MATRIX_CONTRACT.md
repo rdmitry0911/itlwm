@@ -16,6 +16,12 @@ chain or a completed cross-slot rekey.  A port-valid record intentionally
 keeps an IWX episode open until the explicit seal so the bounded rekey window
 remains attributable to the same capture generation.
 
+The companion active-prefix classifier is narrower still: it accepts only the
+one live initial PMF/BIP chain through port-valid while the same episode remains
+open.  It is a rekey authorization predicate for the bounded runner, never a sealed verdict or final success.
+Any seal, abort, mixed identity, trace drop,
+or extra post-port-valid PMF/BIP fact makes that progress result inconclusive.
+
 This evaluator reports only implementation-local, ordered instrumentation
 facts.  It does not prove PMF-required association, traffic, SAE, candidate
 activation, external reachability, physical radio behavior, or a successful

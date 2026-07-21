@@ -64,6 +64,16 @@ classify(const struct fixture *fixture, int integrity, uint32_t backend,
         active_episode, out_stage);
 }
 
+static enum AirportItlwmIwxPmfBipTraceInitialProgress
+classify_initial_progress(const struct fixture *fixture, int integrity,
+    uint32_t backend, uint32_t active_episode,
+    enum AirportItlwmIwxPmfBipTraceMissingStage *out_stage)
+{
+    return airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
+        fixture->entries, fixture->count, integrity, backend, 1,
+        active_episode, out_stage);
+}
+
 static void
 expect(const struct fixture *fixture, int integrity, uint32_t backend,
     uint32_t active_episode, enum AirportItlwmIwxPmfBipTraceVerdict verdict,
@@ -76,6 +86,23 @@ expect(const struct fixture *fixture, int integrity, uint32_t backend,
 
     require(actual == verdict, message);
     require(actual_stage == stage, "fixture reports deterministic stage");
+}
+
+static void
+expect_initial_progress(const struct fixture *fixture, int integrity,
+    uint32_t backend, uint32_t active_episode,
+    enum AirportItlwmIwxPmfBipTraceInitialProgress progress,
+    enum AirportItlwmIwxPmfBipTraceMissingStage stage, const char *message)
+{
+    enum AirportItlwmIwxPmfBipTraceMissingStage actual_stage =
+        kAirportItlwmIwxPmfBipTraceMissingStageUnknown;
+    const enum AirportItlwmIwxPmfBipTraceInitialProgress actual =
+        classify_initial_progress(fixture, integrity, backend, active_episode,
+            &actual_stage);
+
+    require(actual == progress, message);
+    require(actual_stage == stage,
+        "initial progress reports deterministic stage");
 }
 
 int
@@ -103,6 +130,11 @@ main(void)
         kAirportItlwmIwxPmfBipTraceVerdictIntegrityInconclusive,
         kAirportItlwmIwxPmfBipTraceMissingStageCaptureSeal,
         "a still-active IWX episode is explicitly missing its capture seal");
+    expect_initial_progress(&fixture, 1,
+        kAirportItlwmPostPltiTraceBackendIwx, 9,
+        kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady,
+        kAirportItlwmIwxPmfBipTraceMissingStageNone,
+        "only the exact active initial PMF chain authorizes a later rekey");
 
     begin(&fixture);
     append_q0_igtk(&fixture,
@@ -141,6 +173,12 @@ main(void)
         kAirportItlwmIwxPmfBipTraceVerdictQ0CompletionNotObserved,
         kAirportItlwmIwxPmfBipTraceMissingStageQ0Completion,
         "a missing q0 completion cannot publish PMF ownership");
+    fixture.count--;
+    expect_initial_progress(&fixture, 1,
+        kAirportItlwmPostPltiTraceBackendIwx, 9,
+        kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive,
+        kAirportItlwmIwxPmfBipTraceMissingStageQ0Completion,
+        "initial progress rejects a q0 chain that has not completed");
 
     begin(&fixture);
     append(&fixture, kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published);

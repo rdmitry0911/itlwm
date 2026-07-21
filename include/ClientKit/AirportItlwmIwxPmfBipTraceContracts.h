@@ -42,6 +42,17 @@ enum AirportItlwmIwxPmfBipTraceMissingStage {
     kAirportItlwmIwxPmfBipTraceMissingStageUnknown,
 };
 
+/* A progress result is deliberately narrower than a sealed verdict.  It lets
+ * a bounded runner authorize a later group-rekey request only after the
+ * initial post-acknowledgement PMF/BIP chain has been observed in the still
+ * active episode.  It never turns an unsealed episode into a final success. */
+enum AirportItlwmIwxPmfBipTraceInitialProgress {
+    kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive = 0,
+    kAirportItlwmIwxPmfBipTraceInitialProgressBackendUnsupported,
+    kAirportItlwmIwxPmfBipTraceInitialProgressBranchNotObserved,
+    kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady,
+};
+
 enum airport_itlwm_iwx_pmf_bip_trace_phase {
     airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx = 0,
     airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell,
@@ -376,6 +387,154 @@ airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage(
         kAirportItlwmIwxPmfBipTraceVerdictInitialPmfBipObserved;
 }
 
+static inline enum AirportItlwmIwxPmfBipTraceInitialProgress
+airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
+    const AirportItlwmPostPltiTraceEntry *entries, uint32_t count,
+    int integrity, uint32_t backend, uint32_t episode_count,
+    uint32_t active_episode,
+    enum AirportItlwmIwxPmfBipTraceMissingStage *out_stage)
+{
+    enum airport_itlwm_iwx_pmf_bip_trace_phase phase =
+        airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx;
+    uint32_t episode;
+    uint32_t generation;
+    uint32_t published_slot = 0;
+    uint32_t initial_active = 0;
+    uint32_t port_valid = 0;
+
+    airport_itlwm_iwx_pmf_bip_trace_set_stage(
+        out_stage, kAirportItlwmIwxPmfBipTraceMissingStageUnknown);
+    if (!integrity)
+        return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+    if (backend != kAirportItlwmPostPltiTraceBackendIwx)
+        return kAirportItlwmIwxPmfBipTraceInitialProgressBackendUnsupported;
+    if (episode_count == 0) {
+        if (count == 0 && active_episode == 0) {
+            airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                out_stage, kAirportItlwmIwxPmfBipTraceMissingStageNone);
+            return kAirportItlwmIwxPmfBipTraceInitialProgressBranchNotObserved;
+        }
+        return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+    }
+    if (episode_count != 1 || active_episode == 0 || entries == 0 ||
+        count == 0)
+        return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+
+    episode = entries[0].episode;
+    generation = entries[0].captureGeneration;
+    if (episode == 0 || generation == 0 || active_episode != episode ||
+        entries[0].sequence == 0 || entries[0].event !=
+            kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume)
+        return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+
+    for (uint32_t i = 1; i < count; i++) {
+        const uint32_t event = entries[i].event;
+        const uint32_t publication_slot =
+            airport_itlwm_iwx_pmf_bip_trace_published_slot(event);
+        const uint32_t selected_slot =
+            airport_itlwm_iwx_pmf_bip_trace_selected_slot(event);
+
+        if (entries[i].sequence != entries[0].sequence + i ||
+            entries[i].captureGeneration != generation ||
+            entries[i].episode != episode || event ==
+                kAirportItlwmPostPltiTraceEventUnknown || event >=
+                kAirportItlwmPostPltiTraceEventMax || event ==
+                kAirportItlwmPostPltiTraceEventEpisodeAborted || event ==
+                kAirportItlwmPostPltiTraceEventCaptureWindowSealed)
+            return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+
+        if (airport_itlwm_iwx_pmf_bip_trace_event_is_neutral(event))
+            continue;
+        if (event == kAirportItlwmPostPltiTraceEventPortValidTransition) {
+            if (!initial_active || port_valid || phase !=
+                    airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage,
+                    airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            port_valid = 1;
+            continue;
+        }
+        if (port_valid) {
+            airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                out_stage, kAirportItlwmIwxPmfBipTraceMissingStageCrossSlotRekey);
+            return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+        }
+        if (event == kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered) {
+            if (phase != airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage,
+                    airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            phase = airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell;
+            continue;
+        }
+        if (event == kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled) {
+            if (phase != airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage,
+                    airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            phase =
+                airport_itlwm_iwx_pmf_bip_trace_phase_wait_q0_completion;
+            continue;
+        }
+        if (event ==
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved) {
+            if (phase !=
+                airport_itlwm_iwx_pmf_bip_trace_phase_wait_q0_completion) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage,
+                    airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            phase =
+                airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication;
+            continue;
+        }
+        if (publication_slot != 0) {
+            if (phase !=
+                airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage,
+                    airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            published_slot = publication_slot;
+            phase =
+                airport_itlwm_iwx_pmf_bip_trace_phase_need_active_slot;
+            continue;
+        }
+        if (selected_slot != 0) {
+            if (phase !=
+                    airport_itlwm_iwx_pmf_bip_trace_phase_need_active_slot ||
+                selected_slot != published_slot) {
+                airport_itlwm_iwx_pmf_bip_trace_set_stage(
+                    out_stage, kAirportItlwmIwxPmfBipTraceMissingStageIgtkPublication);
+                return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+            }
+            initial_active = 1;
+            published_slot = 0;
+            phase = airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx;
+            continue;
+        }
+        return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+    }
+
+    if (initial_active && port_valid && phase ==
+            airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx) {
+        airport_itlwm_iwx_pmf_bip_trace_set_stage(
+            out_stage, kAirportItlwmIwxPmfBipTraceMissingStageNone);
+        return kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady;
+    }
+    airport_itlwm_iwx_pmf_bip_trace_set_stage(
+        out_stage, airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));
+    return kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive;
+}
+
 static inline enum AirportItlwmIwxPmfBipTraceVerdict
 airport_itlwm_iwx_pmf_bip_trace_classify_entries(
     const AirportItlwmPostPltiTraceEntry *entries, uint32_t count,
@@ -383,6 +542,17 @@ airport_itlwm_iwx_pmf_bip_trace_classify_entries(
     uint32_t active_episode)
 {
     return airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage(
+        entries, count, integrity, backend, episode_count, active_episode,
+        0);
+}
+
+static inline enum AirportItlwmIwxPmfBipTraceInitialProgress
+airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix(
+    const AirportItlwmPostPltiTraceEntry *entries, uint32_t count,
+    int integrity, uint32_t backend, uint32_t episode_count,
+    uint32_t active_episode)
+{
+    return airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
         entries, count, integrity, backend, episode_count, active_episode,
         0);
 }

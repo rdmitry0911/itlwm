@@ -47,6 +47,17 @@ enum class MissingStage : uint32_t {
     Unknown = kAirportItlwmIwxPmfBipTraceMissingStageUnknown,
 };
 
+enum class InitialProgress : uint32_t {
+    IntegrityInconclusive =
+        kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive,
+    BackendUnsupported =
+        kAirportItlwmIwxPmfBipTraceInitialProgressBackendUnsupported,
+    BranchNotObserved =
+        kAirportItlwmIwxPmfBipTraceInitialProgressBranchNotObserved,
+    InitialPmfBipReady =
+        kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady,
+};
+
 inline Verdict
 classifyEntries(const AirportItlwmPostPltiTraceEntry *entries, uint32_t count,
                 bool integrity, uint32_t backend, uint32_t episodeCount,
@@ -61,6 +72,23 @@ classifyEntries(const AirportItlwmPostPltiTraceEntry *entries, uint32_t count,
     if (outMissingStage != nullptr)
         *outMissingStage = static_cast<MissingStage>(stage);
     return verdict;
+}
+
+inline InitialProgress
+classifyInitialPrefix(const AirportItlwmPostPltiTraceEntry *entries,
+                      uint32_t count, bool integrity, uint32_t backend,
+                      uint32_t episodeCount, uint32_t activeEpisode,
+                      MissingStage *outMissingStage = nullptr)
+{
+    enum AirportItlwmIwxPmfBipTraceMissingStage stage =
+        kAirportItlwmIwxPmfBipTraceMissingStageUnknown;
+    const InitialProgress progress = static_cast<InitialProgress>(
+        airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
+            entries, count, integrity ? 1 : 0, backend, episodeCount,
+            activeEpisode, &stage));
+    if (outMissingStage != nullptr)
+        *outMissingStage = static_cast<MissingStage>(stage);
+    return progress;
 }
 
 } // namespace TahoeIwxPmfBipTraceContracts

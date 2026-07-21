@@ -416,8 +416,10 @@ forbid(shared, "kAirportItlwmPostPltiTraceBackendIwx",
 # doorbell/completion -> post-ack publication -> matching active-slot chain.
 for needle in (
         "AirportItlwmIwxPmfBipTraceVerdictCrossSlotRekeyObserved",
+        "AirportItlwmIwxPmfBipTraceInitialProgress",
         "AirportItlwmIwxPmfBipTraceMissingStageCaptureSeal",
         "airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage",
+        "airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage",
         "backend != kAirportItlwmPostPltiTraceBackendIwx",
         "kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
         "kAirportItlwmPostPltiTraceEventPortValidTransition",
@@ -433,11 +435,16 @@ for needle in (
         "selected_slot != published_slot",
         "selected_slot == active_slot",
         "active_episode != 0",
+        "active_episode != episode",
+        "InitialPmfBipReady",
+        "if (port_valid)",
 ):
     require(iwx_pmf_bip, needle, "IWX PMF/BIP evaluator fence")
 for needle in (
         "enum class Verdict", "CrossSlotRekeyObserved",
         "enum class MissingStage", "CaptureSeal", "classifyEntries",
+        "enum class InitialProgress", "InitialPmfBipReady",
+        "classifyInitialPrefix",
 ):
     require(iwx_pmf_bip_facade, needle, "C++ IWX PMF/BIP evaluator facade")
 
@@ -736,6 +743,10 @@ for needle in (
         "get_iwx_pmf_bip_report",
         "pmf-bip-report",
         "pmf_bip_verdict=%s first_missing_stage=%s",
+        "get_iwx_pmf_bip_progress",
+        "pmf-bip-progress",
+        "pmf_bip_progress=%s first_missing_stage=%s",
+        "INITIAL_PMF_BIP_READY",
         "kAirportItlwmIwxPmfBipTraceVerdictCrossSlotRekeyObserved",
         "kAirportItlwmPostPltiTraceBackendIwx",
         "return \"IWX\";",
@@ -755,6 +766,7 @@ for needle in (
 for needle in (
         "initial slot-4 PMF transaction", "slot-4 initial followed by slot-5",
         "slot-5 initial followed by slot-4", "missing q0 completion",
+        "still-active IWX episode",
         "publication without a PMF owner sequence", "active-slot fact before publication",
         "repeated active-slot selection", "same-slot replacement",
         "mixed episode", "mixed generation", "caller-detected drop or overflow",
@@ -773,6 +785,8 @@ for needle in (
         "testTahoePostPltiTraceMatrixSealedPrefixes",
         "TahoeIwxPmfBipTraceContracts.hpp", "testTahoeIwxPmfBipTraceContracts",
         "InitialPmfBipObserved", "CrossSlotRekeyObserved", "same_slot_replacement",
+        "classifyInitialPrefix", "InitialPmfBipReady",
+        "sole rekey authorization progress state",
         "CaptureWindowSealed", "ScanCommandRejected", "ScanNoCandidate",
         "JoinBss", "AuthDequeue", "PortValid",
         "safe post-PLTI and IWX PMF/BIP trace matrices",
@@ -801,6 +815,9 @@ for needle in (
         "does not prove PMF-required association, traffic, SAE",
         "port-valid record intentionally",
         "keeps an IWX episode open until the explicit seal",
+        "active-prefix classifier",
+        "rekey authorization predicate",
+        "never a sealed verdict or final success",
         "Slot 4 followed by slot 5, and slot 5 followed by slot 4",
         "Repeated selection, same-slot",
         "replacement, publication without the PMF owner chain",

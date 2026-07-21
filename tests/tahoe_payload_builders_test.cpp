@@ -2270,6 +2270,22 @@ void testTahoeIwxPmfBipTraceContracts()
                 Verdict::InitialPmfBipObserved && stage == MissingStage::None,
             "IWX initial PMF transaction requires publication, selection, port-valid, and seal");
 
+    AirportItlwmPostPltiTraceEntry active_initial[32] = {};
+    for (uint32_t i = 0; i < 8; i++)
+        active_initial[i] = { 950 + i, kGeneration, kEpisode,
+                              initial_slot4[i] };
+    const InitialProgress initial_progress = classifyInitialPrefix(
+        active_initial, 8, true, kAirportItlwmPostPltiTraceBackendIwx, 1,
+        kEpisode, &stage);
+    const auto c_initial_progress = static_cast<InitialProgress>(
+        airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix(
+            active_initial, 8, 1, kAirportItlwmPostPltiTraceBackendIwx, 1,
+            kEpisode));
+    require(initial_progress == InitialProgress::InitialPmfBipReady &&
+                c_initial_progress == initial_progress &&
+                stage == MissingStage::None,
+            "an active exact initial PMF chain is the sole rekey authorization progress state");
+
     const uint32_t rekey_4_to_5[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
         kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,

@@ -467,6 +467,23 @@ iwx_pmf_bip_missing_stage_name(
     }
 }
 
+static const char *
+iwx_pmf_bip_initial_progress_name(
+    enum AirportItlwmIwxPmfBipTraceInitialProgress progress)
+{
+    switch (progress) {
+    case kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive:
+        return "INTEGRITY_INCONCLUSIVE";
+    case kAirportItlwmIwxPmfBipTraceInitialProgressBackendUnsupported:
+        return "BACKEND_UNSUPPORTED";
+    case kAirportItlwmIwxPmfBipTraceInitialProgressBranchNotObserved:
+        return "BRANCH_NOT_OBSERVED";
+    case kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady:
+        return "INITIAL_PMF_BIP_READY";
+    }
+    return "INTEGRITY_INCONCLUSIVE";
+}
+
 static int
 get_control(io_service_t service)
 {
@@ -590,13 +607,43 @@ get_iwx_pmf_bip_report(io_service_t service)
     return 0;
 }
 
+static int
+get_iwx_pmf_bip_progress(io_service_t service)
+{
+    AirportItlwmPostPltiTraceSnapshot snapshot;
+    AirportItlwmPostPltiTraceBuffer buffer;
+    AirportItlwmPostPltiTraceEntry entries[
+        AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    uint32_t count = 0;
+    enum AirportItlwmIwxPmfBipTraceMissingStage missing_stage =
+        kAirportItlwmIwxPmfBipTraceMissingStageUnknown;
+
+    if (copy_snapshot(service, &snapshot) != 0 ||
+        copy_buffer(service, &buffer) != 0)
+        return 1;
+    const int integrity = collect_entries(&snapshot, &buffer, entries, &count);
+    const enum AirportItlwmIwxPmfBipTraceInitialProgress progress =
+        airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
+            entries, count, integrity, snapshot.backend,
+            snapshot.episodeCount, snapshot.activeEpisode, &missing_stage);
+    printf("capture_generation=%u backend=%s entries=%u integrity=%s "
+           "episode_count=%u active_episode=%u\n",
+           snapshot.captureGeneration, backend_name(snapshot.backend), count,
+           integrity ? "ok" : "inconclusive", snapshot.episodeCount,
+           snapshot.activeEpisode);
+    printf("pmf_bip_progress=%s first_missing_stage=%s\n",
+           iwx_pmf_bip_initial_progress_name(progress),
+           iwx_pmf_bip_missing_stage_name(missing_stage));
+    return 0;
+}
+
 static void
 usage(const char *program)
 {
     fprintf(stderr,
             "usage:\n"
             "  %s reset|on|off|seal\n"
-            "  %s get control|snapshot|trace|report|pmf-bip-report\n",
+            "  %s get control|snapshot|trace|report|pmf-bip-report|pmf-bip-progress\n",
             program, program);
 }
 
@@ -633,6 +680,8 @@ main(int argc, char **argv)
             rc = get_report(service);
         else if (strcmp(argv[2], "pmf-bip-report") == 0)
             rc = get_iwx_pmf_bip_report(service);
+        else if (strcmp(argv[2], "pmf-bip-progress") == 0)
+            rc = get_iwx_pmf_bip_progress(service);
         else
             usage(argv[0]);
     } else
