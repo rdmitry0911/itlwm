@@ -20,6 +20,18 @@ clang -std=c11 -Wall -Wextra -Werror \
 "$tmpdir/net80211-sae-policy"
 
 clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/itl80211/openbsd/net80211" \
+    "$root/tests/net80211_sae_auth_contract_test.c" \
+    -o "$tmpdir/net80211-sae-auth-contract-c"
+"$tmpdir/net80211-sae-auth-contract-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/itl80211/openbsd/net80211" \
+    "$root/tests/net80211_sae_auth_contract_test.c" \
+    -o "$tmpdir/net80211-sae-auth-contract-cpp"
+"$tmpdir/net80211-sae-auth-contract-cpp"
+
+clang -std=c11 -Wall -Wextra -Werror \
     -I"$root/include/ClientKit" \
     "$root/tests/tahoe_sae_relay_abi_layout_test.c" \
     -o "$tmpdir/sae-relay-c"
@@ -39,11 +51,14 @@ import sys
 root = Path(sys.argv[1])
 relay = (root / "include/ClientKit/AirportItlwmSaeRelayV1.h").read_text()
 policy = (root / "itl80211/openbsd/net80211/ieee80211_sae_policy.h").read_text()
+auth_contract = (root / "itl80211/openbsd/net80211/ieee80211_sae_auth_contract.h").read_text()
+auth_test = (root / "tests/net80211_sae_auth_contract_test.c").read_text()
 ieee80211_h = (root / "itl80211/openbsd/net80211/ieee80211.h").read_text()
 crypto_h = (root / "itl80211/openbsd/net80211/ieee80211_crypto.h").read_text()
 crypto_c = (root / "itl80211/openbsd/net80211/ieee80211_crypto.c").read_text()
 input_c = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 output_c = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
+proto_c = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
 node_h = (root / "itl80211/openbsd/net80211/ieee80211_node.h").read_text()
 node_c = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 priv_h = (root / "itl80211/openbsd/net80211/ieee80211_priv.h").read_text()
@@ -132,6 +147,49 @@ for token in (
     require(v2, token, "legacy PLTI selector")
 forbid(v2, "kAirportItlwmUserClientMethod_WaitSaeTarget",
        "premature SAE PLTI selector wiring")
+
+# Algorithm 3 and its two standard transaction values are available as a
+# self-contained host-order taxonomy only.  The classifier deliberately has
+# no frame, status, credential, retry, anti-clogging, epoch, or authorization
+# semantics, and it has no production caller yet.
+for token in (
+    "#include <stdint.h>",
+    "#define IEEE80211_AUTH_ALG_SAE 0x0003u",
+    "IEEE80211_SAE_AUTH_TRANSACTION_COMMIT = 1u",
+    "IEEE80211_SAE_AUTH_TRANSACTION_CONFIRM = 2u",
+    "IEEE80211_SAE_AUTH_STATE_INVALID = 0",
+    "IEEE80211_SAE_AUTH_STATE_COMMIT",
+    "IEEE80211_SAE_AUTH_STATE_CONFIRM",
+    "ieee80211_sae_auth_state_from_fixed_fields",
+    "algorithm != IEEE80211_AUTH_ALG_SAE",
+):
+    require(auth_contract, token, "Algorithm-3 host-order taxonomy")
+for token in (
+    "not an SAE state machine",
+    "does not interpret",
+    "status, body, pointers, credentials, group selection, retries,",
+    "anti-clogging, epochs, or authorization.",
+):
+    require(auth_contract, token, "taxonomy scope boundary")
+require(ieee80211_h, '#include "ieee80211_sae_auth_contract.h"',
+        "canonical Algorithm-3 taxonomy inclusion")
+require(auth_test, '#include "ieee80211_sae_auth_contract.h"',
+        "standalone Algorithm-3 taxonomy unit test")
+for text, label in ((input_c, "net80211 RX"),
+                    (output_c, "net80211 TX"),
+                    (proto_c, "net80211 protocol"),
+                    (crypto_c, "net80211 crypto"),
+                    (v2, "Tahoe controller")):
+    forbid(text, "ieee80211_sae_auth_contract.h",
+           "premature Algorithm-3 production include in " + label)
+    forbid(text, "IEEE80211_AUTH_ALG_SAE",
+           "premature Algorithm-3 production use in " + label)
+require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
+        "active Open-System-only RX gate")
+require(output_c, "LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN)",
+        "active Open-System-only TX builder")
+require(proto_c, "IEEE80211_AUTH_OPEN_REQUEST",
+        "active Open-System request producer")
 
 # RSN AKM type 8 is recognized only as a discovery/KDF taxonomy. The active
 # device configuration remains PSK-only, and no association output advertises

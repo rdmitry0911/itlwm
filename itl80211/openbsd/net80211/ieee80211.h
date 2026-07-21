@@ -966,6 +966,8 @@ enum ieee80211_edca_ac {
 #define IEEE80211_AUTH_ALG_SHARED		0x0001
 #define IEEE80211_AUTH_ALG_LEAP			0x0080
 
+#include "ieee80211_sae_auth_contract.h"
+
 /*
  * 802.11n HT Capability IE
  * NB: these reflect D1.10
