@@ -45,6 +45,12 @@ state to `required`.  An exited, replaced, or unpinned process is restored to
 optional PMF through the existing rollback owner and never emits a
 required-active result.
 
+If any failure occurs after the first optional-PMF process stop, recovery also
+compares the post-restore hash-only host-network signature with the state
+baseline before it cancels the watchdog or clears the marker.  A mismatch keeps
+that rollback owner armed for a later verified rollback; pre-stop rejections,
+where no AP process changed, retain their lighter cleanup path.
+
 The watchdog retries restoration to optional PMF if the caller disappears or
 if an intermediate AP transition cannot be verified. The helper has no
 address, route, NAT, forwarding, DHCP, firewall, service-manager, or reboot

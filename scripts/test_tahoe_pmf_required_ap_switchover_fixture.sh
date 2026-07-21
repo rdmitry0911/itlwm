@@ -107,6 +107,7 @@ printf '%s\n' \
     '    esac' \
     'done' \
     '[ -n "$pidfile" ] && [ -n "$logfile" ] && [ -n "$config" ]' \
+    'if [ "${FAKE_MUTATE_NETWORK_ON_REQUIRED_START:-0}" = 1 ] && [[ "$config" = *hostapd-5g-wpa2-pmf.conf ]]; then printf "drift\n" >"$FAKE_NETWORK_STATE"; fi' \
     'if [ "${FAKE_FAIL_REQUIRED:-0}" = 1 ] && [[ "$config" = *hostapd-5g-wpa2-pmf.conf ]]; then exit 1; fi' \
     '"$0" --child -B -P "$pidfile" -f "$logfile" "$config" &' \
     'child=$!' \
@@ -279,6 +280,47 @@ grep -Fq 'optional rollback verified' "$TMP_ROOT/failed-activate.err" ||
     fail 'failed activation left required hostapd active'
 [ ! -e "$CONTROL_DIR/active.state" ] ||
     fail 'failed activation left a live switchover marker'
+
+# If the host network drifts during a required start that then fails, optional
+# PMF may be restored but recovery is not verified.  The marker-bound watchdog
+# must remain armed until a stable explicit rollback can prove the baseline.
+TRANSITION_DRIFT_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+if FAKE_MUTATE_NETWORK_ON_REQUIRED_START=1 FAKE_FAIL_REQUIRED=1 "$HELPER" --activate \
+    --state-dir "$TRANSITION_DRIFT_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/transition-drift-activate.out" \
+    2>"$TMP_ROOT/transition-drift-activate.err"; then
+    fail 'activation accepted a required-start failure with network drift'
+fi
+grep -Fq 'required-PMF hostapd activation failed; rollback watchdog remains armed' \
+    "$TMP_ROOT/transition-drift-activate.err" ||
+    fail 'post-transition drift did not retain its armed-watchdog diagnostic'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-transition drift did not restore optional hostapd'
+TRANSITION_DRIFT_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$TRANSITION_DRIFT_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'post-transition drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'post-transition drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-transition drift cleared the rollback marker'
+[ -r "$TRANSITION_DRIFT_STATE_DIR/watchdog.pid" ] ||
+    fail 'post-transition drift did not retain its watchdog receipt'
+TRANSITION_DRIFT_WATCHDOG_PID="$(tr -d '[:space:]' <"$TRANSITION_DRIFT_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$TRANSITION_DRIFT_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'post-transition drift did not retain a live watchdog process'
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
+"$HELPER" --rollback --state-dir "$TRANSITION_DRIFT_STATE_DIR" \
+    >"$TMP_ROOT/transition-drift-rollback.out" \
+    2>"$TMP_ROOT/transition-drift-rollback.err" ||
+    fail 'stable explicit rollback did not recover post-transition drift'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/transition-drift-rollback.out" ||
+    fail 'stable explicit rollback did not report optional restoration'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'stable explicit rollback left the transition-drift marker'
+if /bin/kill -0 "$TRANSITION_DRIFT_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'stable explicit rollback left the transition-drift watchdog live'
+fi
 
 # A changed route/address/forwarding signature after the independent watchdog
 # is ready must be rejected *before* optional hostapd is stopped.  The fake

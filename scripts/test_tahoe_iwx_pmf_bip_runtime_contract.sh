@@ -116,6 +116,7 @@ for needle in \
     'config_pair_signature' \
     'PMF configurations changed before optional-PMF stop' \
     'required-PMF hostapd post-start attestation failed' \
+    'finish_post_transition_rollback' \
     'optional-PMF state retained' \
     '9>&-' \
     'finish_armed_rollback' \
@@ -244,6 +245,9 @@ ordered(activate, "AP activation rollback ownership",
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
+post_transition_activation = activate[activate.find('if ! stop_configured_hostapd'):]
+if post_transition_activation.count("finish_post_transition_rollback") != 3:
+    fail("post-transition activation failures do not all verify network recovery")
 post_watchdog_activation = activate[activate.find("if ! start_watchdog;"):]
 ordered(post_watchdog_activation, "AP pre-stop host-network fence",
         "start_watchdog",
@@ -276,6 +280,8 @@ if "FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_nam
     fail("AP fixture lacks the pre-stop configuration drift discriminator")
 if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-promotion required-child death discriminator")
+if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-transition network drift discriminator")
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",
@@ -285,7 +291,17 @@ ordered(rollback, "AP rollback sequence",
         "host_network_signature",
         "rollback_verified=true",
         "cancel_watchdog",
-    "clear_marker")
+        "clear_marker")
+
+post_transition_rollback = helper[helper.find("finish_post_transition_rollback() {"):
+                                  helper.find("do_preflight() {")]
+ordered(post_transition_rollback, "post-transition rollback network verification",
+        'state_value host_network_signature_before',
+        "restore_optional_after_activation_failure",
+        'after_signature="$(host_network_signature)"',
+        '[ "$after_signature" = "$before_signature" ]',
+        "cancel_watchdog",
+        "clear_marker")
 
 rekey_helper = helper[helper.find("do_rekey() {"):helper.find("do_rollback() {")]
 ordered(rekey_helper, "AP rekey host-network fence",

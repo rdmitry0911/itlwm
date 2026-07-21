@@ -335,6 +335,175 @@
 
 ## ANOMALY
 
+- id: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-NETWORK-VERIFY-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned activation-failure recovery after the first AP
+  process transition; no kext, firmware, Apple80211, candidate, guest, or
+  physical-AP claim.
+- symptom: activation branches that can run after optional hostapd has been
+  stopped call `finish_armed_rollback()`.  That helper restores optional PMF
+  and clears marker/watchdog without comparing the saved host-network baseline
+  to the post-restore network state.
+- expected system behavior: once a hostapd process transition has begun, an
+  immediate recovery may clear its rollback owner only if optional PMF is
+  restored *and* the hash-only host route/address/forwarding invariant still
+  equals the recorded baseline.  Otherwise the activation is inconclusive and
+  the marker-bound watchdog remains armed.
+- actual behavior: the ordinary `do_rollback()` path reads
+  `host_network_signature_before` and rejects a mismatched post-restore
+  signature before it cancels its watchdog.  In contrast,
+  `finish_armed_rollback()` calls only
+  `restore_optional_after_activation_failure()`, `cancel_watchdog()`, and
+  `clear_marker()`.  The start-failure, post-start-attestation, and
+  state-promotion-failure branches invoke this weaker helper after a possible
+  optional-process stop.
+- divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::finish_armed_rollback` and its
+  post-transition callers in `do_activate()`.
+- evidence:
+  - local source directly shows the stronger normal rollback invariant check
+    and its absence from the activation-failure helper.
+  - the documented runtime boundary requires verified recovery and makes every
+    route/address deviation inconclusive; clearing the only recovery owner
+    after a changed invariant contradicts that contract.
+  - deterministic no-AP runtime reproduction: the fixture fake required-hostapd
+    start set only its generated network signature source to drift and then
+    failed.  The current helper restored fake optional hostapd but emitted the
+    verified-rollback branch instead of retaining its armed watchdog; the
+    fixture stopped at `post-transition drift did not retain its
+    armed-watchdog diagnostic` (exit 1).  No physical AP, route, or real
+    configuration was touched.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: one cleanup helper is reused on both pre-stop rejections (where
+    no AP mutation occurred) and after-transition recovery (where a baseline
+    verification is required), despite their different contracts.
+- rejected causes:
+  - normal `--rollback`: it already has the required signature comparison and
+    does not explain the weaker activation-failure branches.
+  - pre-stop network/config fences: they prevent known stale admission but
+    cannot detect a drift introduced during stop/start recovery.
+- confirmed deviation: a recovery result labelled verified omits the same
+  host-network postcondition that the normal recovery path enforces.
+- root cause: `finish_armed_rollback()` lacks a transition-aware host-network
+  verification mode.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-NETWORK-VERIFY-20260721`
+- symptom: a network drift during a failed AP transition can remove the last
+  rollback owner and claim optional recovery verified.
+- expected system behavior: all branches after the first optional-PMF stop use
+  a recovery helper that compares the current hash-only network signature to
+  the state baseline before canceling watchdog/marker ownership.
+- actual behavior: those branches use `finish_armed_rollback()` with no such
+  comparison.
+- exact divergence point: missing `host_network_signature()` equality test
+  between `restore_optional_after_activation_failure()` and
+  `cancel_watchdog()` for post-transition activation failures.
+- evidence from runtime: the fixture-only required-start path changed its fake
+  network signature immediately before it returned failure.  The unmodified
+  helper nevertheless took its optional-rollback-verified branch; the fixture
+  deterministically rejected the missing armed-watchdog diagnostic (exit 1),
+  with no AP, route, or real configuration touched.
+- evidence from decomp: not applicable; no Apple component owns this host-side
+  transaction recovery.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the explicit SYSTEM_CONTRACT shared
+  by `do_rollback()` and the runner: verified optional recovery includes the
+  preserved host-network invariant.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. optional/required hostapd lifecycle: optional must be restored before an
+     invariant can be evaluated;
+  2. host route/address/forwarding: read/hash only, and a mismatch must block
+     verified cleanup;
+  3. state/marker/watchdog: remain owned when recovery cannot be verified;
+  4. pre-stop rejections: retain their existing lightweight cleanup because no
+     hostapd transition has occurred;
+  5. staged files, rekey, candidate, and guest: not reached or changed.
+- expected contract at each touchpoint:
+  1. required PMF is absent and optional PMF is exact before a verified result;
+  2. unchanged signature is mandatory after a transition recovery;
+  3. only verified recovery cancels watchdog and clears marker;
+  4. a pre-stop drift still leaves optional untouched and needs no transition
+     recovery assertion;
+  5. no new network/configuration/guest operation occurs.
+- why no relevant touchpoints are missing: the candidate adds a dedicated
+  recovery wrapper only to the three post-transition failure branches.  It
+  reuses existing process restoration, signature hashing, and watchdog logic;
+  it changes neither normal rollback nor pre-stop rejection behavior.
+- why proposed path adds no extra system-visible side effects: success adds
+  one read-only signature hash after existing restoration.  Failure preserves
+  an existing watchdog rather than clearing it.  There is no retry, delay,
+  fallback, configuration write, or guest action.
+- why this is root cause and not just correlation: the same fixture drift is
+  rejected by `do_rollback()`'s existing postcondition but accepted by the
+  activation-failure helper solely because that comparison is absent.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  The system-contract fix makes the existing
+  activation-failure path use the same recovery invariant as normal rollback,
+  without creating a new owner or recovery mechanism.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh` dedicated post-transition
+    recovery helper and `do_activate` callers;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` synthetic
+    drift-on-required-start case and bounded cleanup;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` ordering assertion;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` recovery wording.
+- forbidden alternative fixes considered and rejected:
+  - weaken `do_rollback()` to match the existing activation helper;
+  - clear marker/watchdog after an unverified recovery and rely on later
+    runner checks;
+  - modify host route/address/forwarding to force the hash to match;
+  - apply the stricter post-transition condition to pre-stop rejections where
+    no AP process changed.
+- verification plan:
+  1. Completed: the fixture confirmed that the pre-fix helper incorrectly
+     reported its synthetic network drift as verified optional rollback.
+  2. Completed: the transition-aware recovery helper restores optional PMF but
+     preserves marker/watchdog until a subsequent stable normal rollback.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - `finish_post_transition_rollback()` reads the saved network baseline,
+    performs the existing optional-PMF restoration, and compares the current
+    hash-only network signature before it may cancel watchdog or clear marker.
+  - only the three `do_activate()` branches after a possible optional-process
+    stop use that helper: required start failure, post-start attestation
+    failure, and state-promotion failure.  Pre-stop rejections retain their
+    prior cleanup because no AP process transition occurred.
+  - when the post-restore signature differs, the helper reports an armed
+    rollback watchdog; the existing watchdog/normal rollback owner can later
+    complete cleanup only after the invariant becomes true.
+- deterministic verification:
+  - Before implementation, the AP-helper fixture failed exactly at
+    `post-transition drift did not retain its armed-watchdog diagnostic`; this
+    is the controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  Its drifted start failure
+    restores a live optional PID but keeps marker/live watchdog; after the
+    fixture restores its synthetic network baseline, an explicit normal
+    rollback reports optional restoration and removes both ownership records.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only an activation-failure recovery
+  invariant gap.  It is not a live AP result, candidate activation, guest
+  reboot, PMF/BIP association, or proof that an external network change will
+  itself return to baseline.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-AP-PREPROMOTION-REQUIRED-ATTESTATION-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned required-PMF state promotion; no kext, firmware,

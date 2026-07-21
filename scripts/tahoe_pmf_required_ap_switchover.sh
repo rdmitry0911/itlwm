@@ -511,6 +511,16 @@ finish_armed_rollback() {
     clear_marker
 }
 
+finish_post_transition_rollback() {
+    local before_signature after_signature
+    before_signature="$(state_value host_network_signature_before)" || return 1
+    restore_optional_after_activation_failure || return 1
+    after_signature="$(host_network_signature)" || return 1
+    [ "$after_signature" = "$before_signature" ] || return 1
+    cancel_watchdog || return 1
+    clear_marker
+}
+
 do_preflight() {
     validate_config_pair ||
         die "optional/required PMF configurations failed validation ($CONFIG_VALIDATION_FAILURE)"
@@ -575,7 +585,7 @@ do_activate() {
 
     if ! stop_configured_hostapd "$OPTIONAL_CONFIG" "$OPTIONAL_PID" ||
         ! start_configured_hostapd "$REQUIRED_CONFIG" "$REQUIRED_PID" "$REQUIRED_LOG"; then
-        if finish_armed_rollback; then
+        if finish_post_transition_rollback; then
             die "required-PMF hostapd activation failed; optional rollback verified"
         fi
         die "required-PMF hostapd activation failed; rollback watchdog remains armed"
@@ -585,13 +595,13 @@ do_activate() {
     # edge so an immediately exited child cannot be published as active.
     if ! configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         ! runtime_ap_is_pinned; then
-        if finish_armed_rollback; then
+        if finish_post_transition_rollback; then
             die "required-PMF hostapd post-start attestation failed; optional rollback verified"
         fi
         die "required-PMF hostapd post-start attestation failed; rollback watchdog remains armed"
     fi
     if ! mark_required_active; then
-        if finish_armed_rollback; then
+        if finish_post_transition_rollback; then
             die "required-PMF state promotion failed; optional rollback verified"
         fi
         die "required-PMF state promotion failed; rollback watchdog remains armed"
