@@ -318,11 +318,13 @@ void
 ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
     enum ieee80211_state nstate)
 {
-	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
+	if (ic == NULL)
 		return;
 	/* Passive trace ownership follows the same pre-callback state boundary. */
 	AirportItlwmPostPltiTraceNoteStateRequest(ic, (uint32_t)ic->ic_state,
 	    (uint32_t)nstate);
+	if (ic->ic_opmode != IEEE80211_M_STA)
+		return;
 	if ((ic->ic_state == IEEE80211_S_SCAN &&
 	     nstate == IEEE80211_S_AUTH) ||
 	    (ic->ic_state == IEEE80211_S_AUTH &&

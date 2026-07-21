@@ -312,6 +312,9 @@ proto_note = body(proto, "ieee80211_pae_assoc_epoch_note_newstate",
                   "net80211 state lifecycle hook")
 ordered(proto_note, "trace state hook remains passive and pre-callback",
         "AirportItlwmPostPltiTraceNoteStateRequest", "if ((ic->ic_state")
+ordered(proto_note, "trace state hook is not hidden by the STA epoch gate",
+        "if (ic == NULL)", "AirportItlwmPostPltiTraceNoteStateRequest",
+        "if (ic->ic_opmode != IEEE80211_M_STA)")
 pae_terminal = body(pae_input, "void\nieee80211_recv_4way_msg3",
                     "kernel PAE terminal transition")
 require(pae_terminal, "AirportItlwmPostPltiTraceCompleteEpisode(ic)",

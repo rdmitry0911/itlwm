@@ -31,6 +31,11 @@ loses the epoch race is discarded instead of being relabeled into the new
 capture; it cannot create an episode after a seal.  Thus no omitted required
 event can produce either an exact negative diagnosis or a success.
 
+The passive state-request observation follows the null check but precedes the
+STA-only security-epoch gate.  It therefore reports an actual state macro
+request even where epoch bookkeeping intentionally has no STA work to do; it
+does not alter the state transition or loosen that security gate.
+
 ## Versioned synthetic scenarios
 
 The payload-builder unit and source contract successfully exercise these
