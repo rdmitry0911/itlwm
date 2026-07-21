@@ -76,6 +76,10 @@ as well as the GTK; a lower-case CLI alias is not used because packaged client
 builds need not expose it. The helper compares its hash-only host-network
 baseline immediately before and after that command; a changed signature blocks
 the stimulus or makes it inconclusive before any success can be reported.
+The sealed categorical evaluator admits exactly one opposite-slot transition
+after the initial selected IGTK slot. A second cross-slot transition in that
+same capture is ambiguous with respect to the one permitted request and is
+therefore inconclusive rather than a PMF/BIP success.
 
 The required configuration must represent the same saved-profile identity and
 credential as the optional configuration. A mismatch is a precondition failure.
@@ -106,7 +110,7 @@ sequence:
    it only authorizes the next bounded stimulus.
 5. Require the bounded local traffic probe and all invariants before asking
    the helper for exactly one group rekey.
-6. Seal the trace, require two identical frozen reads and the sealed
+6. Seal the trace, require two identical frozen reads and exactly one sealed
    cross-slot rekey verdict, disable trace control, restore optional PMF, and
    re-check recovery/invariants and loaded candidate identity.
 
@@ -134,6 +138,7 @@ credential, packet, or raw capture.
 `test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh` accepts `PASS` only if
 all of these are true: before/after identity binding, saved-profile preflight,
 required-PMF activation and verified rollback, preserved network invariants,
-the initial prefix and traffic-before-rekey gate, one bounded group rekey, and
-an intact sealed IWX cross-slot verdict. It otherwise accepts only an
+the initial prefix and traffic-before-rekey gate, one bounded group rekey,
+exactly one resulting sealed IWX cross-slot transition, and an intact trace
+verdict. It otherwise accepts only an
 inconclusive record with an explicit failure phase.

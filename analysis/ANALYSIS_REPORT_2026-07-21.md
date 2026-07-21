@@ -335,6 +335,174 @@
 
 ## ANOMALY
 
+- id: `LAB-IWX-PMF-BIP-EXACT-REKEY-CARDINALITY-20260721`
+- status: `FIX_VERIFIED`
+- scope: safe categorical IWX PMF/BIP trace evaluation and its future runtime
+  evidence gate; no physical AP, guest, candidate activation, or driver
+  functionality result is claimed by this source-level finding.
+- symptom: the sealed evaluator reports `CROSS_SLOT_REKEY_OBSERVED` whenever
+  its internal `rekey_count` is nonzero.  It does not reject a second or later
+  cross-slot transition in the same single capture episode.
+- expected system behavior: the bounded runtime protocol permits exactly one
+  post-initial AP stimulus: one canonical `REKEY_GTK` request.  A successful
+  PMF/BIP evidence verdict must therefore contain the initial slot selection
+  and exactly one subsequent opposite-slot publication/selection chain.  Any
+  extra cross-slot transition is an unbounded or ambiguous event and must be
+  inconclusive rather than attributed to the one permitted stimulus.
+- actual behavior: after initial slot 4 and port-valid, the evaluator accepts
+  a valid slot-5 chain, increments `rekey_count` to one, then accepts a second
+  valid slot-4 chain, increments it to two, and returns
+  `CROSS_SLOT_REKEY_OBSERVED` because its final predicate is
+  `rekey_count != 0`.
+- divergence point:
+  - `include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h` increments
+    `rekey_count` for every valid post-port-valid opposite-slot selection;
+  - the final result maps every positive cardinality to the same success
+    verdict;
+  - neither the C fixture nor the C++ payload fixture covers a second valid
+    cross-slot chain.
+- evidence:
+  - local source: the only final cardinality predicate is
+    `return rekey_count != 0 ? ...CrossSlotRekeyObserved ...`.
+  - deterministic local C probe, compiled only from the checked-in evaluator
+    header and run without a kext/AP/guest, supplied the sealed sequence
+    initial slot 4, valid slot 5 rekey, valid slot 4 rekey.  The current code
+    returned `verdict=10 stage=0`, i.e. categorical cross-slot success with
+    no missing stage.
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` defines the sole
+    post-initial stimulus as hostapd's canonical `REKEY_GTK`; the safety
+    closure records hash-only fences around the one bounded group rekey.
+  - decomp: not applicable.  This is a repository-owned evidence evaluator,
+    not an assertion about an Apple binary path.
+- candidate causes:
+  - confirmed: the evaluator models existence of a cross-slot transition but
+    not the cardinality of the bounded transaction it is meant to attest.
+  - confirmed: the runner's one request and the trace's one episode do not by
+    themselves prevent a timer-driven or otherwise independent extra rekey
+    from being folded into the success verdict.
+- rejected interpretations:
+  - this does not prove that the lab AP ever emits a second rekey;
+  - it does not justify issuing an additional AP command, widening the wait,
+    or running a live PMF experiment;
+  - it does not imply a driver BIP failure.  It is an evidence attribution
+    boundary that must fail closed before runtime.
+- confirmed deviation: the evaluator's accepted language is ``initial + one
+  or more cross-slot chains'', while the documented bounded gate authorizes
+  ``initial + exactly one cross-slot chain''.
+- root cause: `rekey_count` is used only as a boolean instead of enforcing the
+  exact cardinality of the one authorised rekey stimulus.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-IWX-PMF-BIP-EXACT-REKEY-CARDINALITY-20260721`
+- symptom: a trace containing two cross-slot IGTK transitions can be promoted
+  to the same verdict as the one bounded rekey transaction.
+- expected system behavior: a sealed IWX PMF/BIP success contains exactly one
+  cross-slot transition after the initial active slot and port-valid boundary;
+  a second transition returns `INTEGRITY_INCONCLUSIVE` with the categorical
+  first-missing stage `cross-slot-rekey`.
+- actual behavior: the second transition increments `rekey_count` and leaves
+  the final `rekey_count != 0` success predicate true.
+- exact divergence point: the selected-slot branch and final verdict mapping
+  in `airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage()`.
+- evidence from runtime: the local C evaluator probe above deterministically
+  returns a successful cross-slot verdict for two post-initial transitions;
+  it performs no guest, hostapd, AP, network, firmware, or kext action.
+- evidence from decomp: N/A.  The candidate is a safe trace-contract
+  correction and changes no reverse-engineered implementation claim.
+- exact semantic mismatch: a one-stimulus runtime contract is represented by
+  an existential rather than exact-cardinality trace predicate.
+- fix justification path: `DIAGNOSTIC_INSTRUMENTATION` with an evidence
+  admission correction.  The evaluator only narrows a future PASS condition;
+  it does not change association, key installation, radio, AP, or traffic
+  behavior.
+- exact hypotheses being disambiguated:
+  - exactly the runner-authorised group-rekey chain occurred after initial
+    PMF/BIP activation;
+  - an additional AP/driver/environment transition occurred during the same
+    capture and must not be attributed to that request.
+- exact probe points: the existing categorical IGTK publication and selected
+  slot events in one sealed, generation/episode-consistent trace; no new
+  producer, trace field, raw packet, key material, timer, or runtime command
+  is needed.
+- why these probe points are sufficient: a second opposite-slot selection is
+  the complete observable indication of a second cross-slot rekey within this
+  deliberately categorical ABI.  Rejecting it preserves all single-rekey
+  positive evidence and fails closed for an unbound extra transition.
+- why instrumentation is behavior-neutral: the patch changes only local
+  evaluator classification of already recorded fixed event IDs.  It adds no
+  allocation, logging, event producer, AP command, guest operation, route,
+  address, DHCP, radio, kext, firmware, or packet action.
+- files/functions to modify:
+  - `include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h`:
+    reject `rekey_count > 1` at the second selected-slot transition before a
+    final success can be reached;
+  - `tests/iwx_pmf_bip_trace_contract_test.c`: add a sealed two-rekey negative
+    fixture that currently demonstrates the false success and after the fix
+    requires `INTEGRITY_INCONCLUSIVE/cross-slot-rekey`;
+  - `tests/tahoe_payload_builders_test.cpp`: mirror that cardinality boundary
+    through the C++ wrapper;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md`: state the exact-one
+    cross-slot admission rule;
+  - `analysis/ANALYSIS_REPORT_2026-07-21.md`: record deterministic source
+    evidence and verification.
+- forbidden alternative fixes considered and rejected:
+  - accepting multiple transitions because the runner made only one request;
+  - adding a second live AP observation or a retry to determine which
+    transition belongs to the request;
+  - emitting key identifiers, timestamps, command cookies, or raw trace data
+    to correlate the transition;
+  - weakening the final verdict to accept a mixed/extra event sequence.
+- verification plan:
+  1. add the two-cross-slot fixture and confirm it fails on the pre-fix
+     evaluator with the current success verdict;
+  2. make the minimal evaluator cardinality check and require the fixture to
+     return `INTEGRITY_INCONCLUSIVE/cross-slot-rekey`, while both single
+     4-to-5 and 5-to-4 positives remain successful;
+  3. run the trace contracts, full PMF static/evidence contracts, and the
+     isolated Tahoe build-only gate; do not activate a candidate, reboot a
+     guest, or touch the live AP.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - the sealed evaluator now rejects the second otherwise-valid cross-slot
+    selected-slot event once `rekey_count` is already nonzero, with
+    `INTEGRITY_INCONCLUSIVE/cross-slot-rekey`;
+  - the final mapping explicitly requires `rekey_count == 1` for
+    `CROSS_SLOT_REKEY_OBSERVED`;
+  - the C fixture and C++ wrapper fixture both cover initial slot 4, one
+    valid slot-5 rekey, a second valid slot-4 rekey, and seal; both require
+    the new fail-closed verdict while retaining the existing one-rekey 4-to-5
+    and 5-to-4 positives;
+  - the static trace contract and runtime protocol now make exact-one
+    cardinality explicit.
+- deterministic verification:
+  - before implementation, the standalone local C probe returned
+    `verdict=10 stage=0` for the sealed two-rekey sequence, demonstrating
+    that the pre-fix evaluator emitted cross-slot success;
+  - after implementation,
+    `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS, including
+    the C and C++ IWX PMF/BIP trace matrices;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned
+    isolated Tahoe guest.  The kext, trace client, Agent, and RegDiag built,
+    and all 959 undefined symbols resolved against BootKC.  The gate made no
+    kext install/load/publish/release operation.
+- verification boundary: this narrows only the future safe-trace evidence
+  admission predicate.  It is not a PMF-required association, group-rekey
+  runtime observation, driver-functionality result, candidate activation,
+  guest reboot, or live AP operation.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-AP-RESTRICTED-STATE-INTEGRITY-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned AP transaction state-directory admission; no kext,

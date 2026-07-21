@@ -2326,6 +2326,32 @@ void testTahoeIwxPmfBipTraceContracts()
                 stage == MissingStage::None,
             "slot 5 to slot 4 is a categorical cross-slot rekey");
 
+    const uint32_t multiple_cross_slot_rekeys[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    require(classify(multiple_cross_slot_rekeys, 18,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::IntegrityInconclusive &&
+                stage == MissingStage::CrossSlotRekey,
+            "multiple cross-slot rekeys cannot be attributed to one bounded request");
+
     const uint32_t missing_completion[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
         kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,

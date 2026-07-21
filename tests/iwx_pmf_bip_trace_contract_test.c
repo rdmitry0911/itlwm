@@ -165,6 +165,23 @@ main(void)
         "slot-5 initial followed by slot-4 rekey remains distinct");
 
     begin(&fixture);
+    append_q0_igtk(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected);
+    append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    append_q0_igtk(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot5TxSelected);
+    append_q0_igtk(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected);
+    append(&fixture, kAirportItlwmPostPltiTraceEventCaptureWindowSealed);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwx, 0,
+        kAirportItlwmIwxPmfBipTraceVerdictIntegrityInconclusive,
+        kAirportItlwmIwxPmfBipTraceMissingStageCrossSlotRekey,
+        "more than one cross-slot rekey is not attributed to one bounded request");
+
+    begin(&fixture);
     append(&fixture, kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered);
     append(&fixture,
         kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);

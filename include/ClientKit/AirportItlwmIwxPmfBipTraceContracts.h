@@ -323,7 +323,11 @@ airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage(
             if (!initial_active) {
                 initial_active = 1;
             } else {
-                if (!port_valid || selected_slot == active_slot) {
+                /* The bounded runner authorizes one REKEY_GTK request only.
+                 * A second otherwise-valid cross-slot chain is not evidence
+                 * for that request: retain no ambiguous success verdict. */
+                if (!port_valid || selected_slot == active_slot ||
+                    rekey_count != 0) {
                     airport_itlwm_iwx_pmf_bip_trace_set_stage(
                         out_stage,
                         kAirportItlwmIwxPmfBipTraceMissingStageCrossSlotRekey);
@@ -382,7 +386,7 @@ airport_itlwm_iwx_pmf_bip_trace_classify_entries_with_stage(
     }
     airport_itlwm_iwx_pmf_bip_trace_set_stage(
         out_stage, kAirportItlwmIwxPmfBipTraceMissingStageNone);
-    return rekey_count != 0 ?
+    return rekey_count == 1 ?
         kAirportItlwmIwxPmfBipTraceVerdictCrossSlotRekeyObserved :
         kAirportItlwmIwxPmfBipTraceVerdictInitialPmfBipObserved;
 }
