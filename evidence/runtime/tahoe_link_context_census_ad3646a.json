@@ -1,0 +1,57 @@
+{
+  "build_admission": {
+    "agent_clean_build_passed": true,
+    "all_undefined_symbols_resolved": 959,
+    "appstore_iobuiltin_contract_passed": true,
+    "kext_debug_build_passed": true,
+    "link_context_contract_passed": true,
+    "regdiag_build_passed": true,
+    "sae_quarantine_contract_passed": true,
+    "thread_call_cancel_wait_absent": true
+  },
+  "commit_safety": {
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "non_claims": {
+    "association_completed": false,
+    "candidate_installed": false,
+    "candidate_loaded": false,
+    "data_transfer_completed": false,
+    "dhcp_completed": false,
+    "network_association_attempted": false,
+    "physical_host_touched": false,
+    "radio_state_changed": false,
+    "remote_physical_validation_host_touched": false,
+    "routes_or_addresses_changed": false,
+    "system_rebooted": false
+  },
+  "provenance": {
+    "bootkc_sha256": "eb5691e94b750df8316f8474245966e02d1badd696f78aa27f003766c9bff06d",
+    "guest_os_build": "25C56",
+    "source_commit": "ad3646ab09316b2c6d26f8f63d956705aefe0bb3"
+  },
+  "run_utc": "2026-07-21T00:17:49Z",
+  "runtime_observation": {
+    "parent_result_trace_collected": false,
+    "runtime_owner_context_trace_collected": false,
+    "trace_drop_observed": false
+  },
+  "schema_version": "itlwm-tahoe-link-context-census/v1",
+  "static_semantics": {
+    "bsd_and_io80211_link_state_directions_correlated": true,
+    "bridge_has_no_controller_or_workloop_read": true,
+    "epoch_stage_chain_required": true,
+    "evaluator_fixture_matrix_passed": true,
+    "link_context_is_opt_in_only": true,
+    "macro_first_skywalk_guards_preserved": true,
+    "parent_attestation_uses_latest_link_up": true,
+    "trace_drop_fails_closed": true
+  },
+  "verdict": {
+    "abi_build_admission_passed": true,
+    "passive_census_static_verified": true,
+    "runtime_owner_context_not_claimed": true
+  }
+}
