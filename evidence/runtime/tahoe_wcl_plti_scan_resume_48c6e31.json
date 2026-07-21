@@ -1,0 +1,52 @@
+{
+  "schema": "itlwm-tahoe-wcl-plti-scan-resume-runtime/v1",
+  "candidate": {
+    "commit": "48c6e31a0e19c766e81db29a78f7eaabf244765e",
+    "release_tag": "v2.4.0-alpha-48c6e31",
+    "release_prerelease": true,
+    "release_archive_sha256": "6cea29782d0409ffb59680e8677b39a03d1e4854dda76d2555e9cd3a50726cbe",
+    "binary_sha256": "ba605bb025e3d5a264513d9b352db3b1dc73c4d7601250c6252156b8a488cfea",
+    "macho_uuid": "61CA36C9-7E7B-39BD-AE53-8244BA630E87",
+    "archive_required_members_verified": true,
+    "bundle_identifier_verified": true,
+    "iobuiltin_false_verified": true
+  },
+  "activation": {
+    "environment": "disposable_qemu_external_overlay",
+    "private_auxkc_preflight_pass": true,
+    "canonical_mutation_during_preflight": "none",
+    "approved_auxkc_member_count": 5,
+    "transactional_activation_ready": true,
+    "guest_rebooted_only": true,
+    "post_boot_installed_identity_matches_release": true,
+    "post_a2df_loaded_identity_matches_release": true,
+    "physical_validation_host_touched": false,
+    "physical_host_rebooted": false
+  },
+  "a2df_baseline_control": {
+    "cycle_count": 4,
+    "cycle_pass_count": 4,
+    "four_cycle_result": "PASS",
+    "ipconfig_getpacket_observation": "COMPLETE",
+    "explicit_route_command": "none",
+    "explicit_address_command": "none",
+    "explicit_dhcp_state_mutating_command": "none",
+    "connection_trigger": "saved_profile_autojoin_only",
+    "route_and_address_invariants": "PASS",
+    "kernel_panic_marker_count_after_run": 0
+  },
+  "branch_observation": {
+    "wcl_pmk_ready_scan_resume_marker_observed": false,
+    "interpretation": "The four-cycle candidate result proves no observed regression in this saved-profile scenario; it does not prove that the new WCL branch was entered."
+  },
+  "local_only_raw_artifacts": {
+    "runner_log_sha256": "2953a3da98ee8bc79fc49e1b9f6e3bd7da84153fb50242807cdf47eda97df551",
+    "retained_local_only": true
+  },
+  "non_claims": [
+    "pure SAE or PMF functionality",
+    "physical-host validation",
+    "generic Internet reachability",
+    "proof that the WCL PMK-ready scan-resume branch was entered"
+  ]
+}
