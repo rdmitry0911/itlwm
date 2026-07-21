@@ -30,13 +30,14 @@ runtime PMF/BIP evidence.
 
 The host helper is the sole component allowed to control the lab AP process.
 Before it stops the optional-PMF process, it validates the exact process,
-configuration shape, channel-width runtime state, and a hash-only host network
-invariant. It then writes restricted temporary state and a one-at-a-time
-marker, and requires a separate rollback watchdog to acknowledge that exact
-marker-bound state and its actual PID before the first process transition.
-It then re-reads the same hash-only network signature immediately before that
-transition; a changed or unreadable signature retains optional PMF and makes
-the run inconclusive without starting required PMF.
+configuration shape, a hash-only configuration-pair invariant, channel-width
+runtime state, and a hash-only host network invariant. It then writes
+restricted temporary state and a one-at-a-time marker, and requires a separate
+rollback watchdog to acknowledge that exact marker-bound state and its actual
+PID before the first process transition. It then re-reads the same hash-only
+network and configuration-pair signatures immediately before that transition;
+a changed or unreadable signature retains optional PMF and makes the run
+inconclusive without starting required PMF.
 
 The watchdog retries restoration to optional PMF if the caller disappears or
 if an intermediate AP transition cannot be verified. The helper has no

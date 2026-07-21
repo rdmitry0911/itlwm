@@ -231,6 +231,15 @@ validate_config_pair() {
     }
 }
 
+config_pair_signature() {
+    [ -f "$OPTIONAL_CONFIG" ] && [ ! -L "$OPTIONAL_CONFIG" ] || return 1
+    [ -f "$REQUIRED_CONFIG" ] && [ ! -L "$REQUIRED_CONFIG" ] || return 1
+    {
+        sha256sum <"$OPTIONAL_CONFIG"
+        sha256sum <"$REQUIRED_CONFIG"
+    } | sha256sum | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $1; exit }'
+}
+
 runtime_ap_is_pinned() {
     sudo_cmd "$IW_TOOL" dev "$AP_IF" info 2>/dev/null | awk \
         -v iface="$AP_IF" -v channel="$EXPECTED_CHANNEL" \
@@ -513,14 +522,21 @@ do_preflight() {
 }
 
 do_activate() {
-    local network_signature current_signature pre_stop_failure=""
+    local network_signature current_signature config_signature current_config_signature
+    local pre_stop_failure=""
     require_state_dir
     [ ! -e "$(state_file)" ] && [ ! -L "$(state_file)" ] ||
         die "state directory is not fresh"
     [ ! -e "$ACTIVE_MARKER" ] && [ ! -L "$ACTIVE_MARKER" ] ||
         die "another PMF-required AP switchover is already active"
+    config_signature="$(config_pair_signature)" ||
+        die "optional/required PMF configuration pair is unreadable"
     validate_config_pair ||
         die "optional/required PMF configurations failed validation ($CONFIG_VALIDATION_FAILURE)"
+    current_config_signature="$(config_pair_signature)" ||
+        die "optional/required PMF configuration pair is unreadable after validation"
+    [ "$current_config_signature" = "$config_signature" ] ||
+        die "optional/required PMF configurations changed during activation admission"
     configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID" ||
         die "the current optional-PMF hostapd process is not exact"
     runtime_ap_is_pinned || die "the lab AP is not at the pinned channel/width"
@@ -545,6 +561,10 @@ do_activate() {
         pre_stop_failure="host network invariants are unreadable before optional-PMF stop"
     elif [ "$current_signature" != "$network_signature" ]; then
         pre_stop_failure="host network invariants changed before optional-PMF stop"
+    elif ! current_config_signature="$(config_pair_signature)"; then
+        pre_stop_failure="optional/required PMF configurations are unreadable before optional-PMF stop"
+    elif [ "$current_config_signature" != "$config_signature" ]; then
+        pre_stop_failure="optional/required PMF configurations changed before optional-PMF stop"
     fi
     if [ -n "$pre_stop_failure" ]; then
         if finish_armed_rollback; then

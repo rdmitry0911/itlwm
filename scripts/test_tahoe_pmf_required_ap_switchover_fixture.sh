@@ -46,6 +46,7 @@ FAKE_HOSTAPD_LOG="$TMP_ROOT/fake-hostapd.log"
 FAKE_CLI_LOG="$TMP_ROOT/fake-cli.log"
 FAKE_NETWORK_STATE="$TMP_ROOT/fake-network-state"
 FAKE_ROUTE_CALL_COUNT="$TMP_ROOT/fake-route-call-count"
+FAKE_REQUIRED_CONFIG="$LAB_ROOT/hostapd-5g-wpa2-pmf.conf"
 # This ephemeral token exists only inside the protected local fixture config.
 # It is never supplied to a real AP, printed, committed, or reused as a lab
 # credential; the helper needs a nonempty syntactic field to exercise its
@@ -140,6 +141,7 @@ printf '%s\n' \
     '      case "$calls" in ""|*[!0-9]*) exit 65;; esac' \
     '      calls=$((calls + 1))' \
     '      printf "%s\n" "$calls" >"$FAKE_ROUTE_CALL_COUNT"' \
+    '      if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
     '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ] || [ "${FAKE_DRIFT_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
     '  "-4 -o addr show dev wlp0s20f3") printf "fixture-address\n" ;;' \
@@ -177,7 +179,8 @@ export AIAM_PMF_AP_SUDO="$FAKE_SUDO"
 export AIAM_PMF_AP_RUN_DIR="$RUN_DIR"
 export AIAM_PMF_AP_STATE_PREFIX="$STATE_PREFIX"
 export AIAM_PMF_AP_CONTROL_DIR="$CONTROL_DIR"
-export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE FAKE_ROUTE_CALL_COUNT
+export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE FAKE_ROUTE_CALL_COUNT \
+    FAKE_REQUIRED_CONFIG
 : >"$FAKE_CLI_LOG"
 printf 'stable\n' >"$FAKE_NETWORK_STATE"
 printf '0\n' >"$FAKE_ROUTE_CALL_COUNT"
@@ -303,6 +306,42 @@ PRESTOP_WATCHDOG_PID="$(tr -d '[:space:]' <"$PRESTOP_DRIFT_STATE_DIR/watchdog.pi
 if /bin/kill -0 "$PRESTOP_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'pre-stop drift left a live watchdog process'
 fi
+
+# A staged required configuration can be modified after its initial semantic
+# validation yet before hostapd consumes it.  The mutation is a valid but
+# previously unadmitted group-rekey directive and occurs on activation's
+# second route probe: after watchdog readiness and before the required launch.
+# The helper must reject that stale configuration before it stops optional PMF.
+PRESTOP_CONFIG_DRIFT_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+OPTIONAL_PID_BEFORE="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+PRESTOP_CONFIG_DRIFT_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL="$PRESTOP_CONFIG_DRIFT_CALL" "$HELPER" --activate \
+    --state-dir "$PRESTOP_CONFIG_DRIFT_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/prestop-config-drift-activate.out" \
+    2>"$TMP_ROOT/prestop-config-drift-activate.err"; then
+    fail 'activation accepted a staged configuration changed before optional-PMF stop'
+fi
+grep -Fq 'PMF configurations changed before optional-PMF stop' \
+    "$TMP_ROOT/prestop-config-drift-activate.err" ||
+    fail 'pre-stop configuration drift did not retain its categorical diagnostic'
+OPTIONAL_PID_AFTER="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+[ "$OPTIONAL_PID_BEFORE" = "$OPTIONAL_PID_AFTER" ] ||
+    fail 'pre-stop configuration drift stopped or replaced optional hostapd'
+/bin/kill -0 "$OPTIONAL_PID_AFTER" >/dev/null 2>&1 ||
+    fail 'optional hostapd was not alive after pre-stop configuration drift'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'pre-stop configuration drift started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'pre-stop configuration drift left a live switchover marker'
+[ -r "$PRESTOP_CONFIG_DRIFT_STATE_DIR/watchdog.pid" ] ||
+    fail 'pre-stop configuration drift did not retain its watchdog receipt for liveness check'
+PRESTOP_CONFIG_WATCHDOG_PID="$(tr -d '[:space:]' <"$PRESTOP_CONFIG_DRIFT_STATE_DIR/watchdog.pid")"
+if /bin/kill -0 "$PRESTOP_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'pre-stop configuration drift left a live watchdog process'
+fi
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
 
 # A background PID is not proof that the detached rollback owner successfully
 # entered its state/marker-bound watchdog path.  The helper must reject a

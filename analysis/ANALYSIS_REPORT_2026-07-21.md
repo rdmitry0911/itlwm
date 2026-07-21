@@ -332,3 +332,168 @@
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
+
+## ANOMALY
+
+- id: `LAB-PMF-AP-PRESTOP-CONFIG-FRESHNESS-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned staged-configuration admission for the AP helper;
+  no kext, firmware, Apple80211, candidate, guest, or physical-AP claim.
+- symptom: `do_activate()` validates the optional/required configuration pair
+  before it writes rollback state and waits for watchdog readiness, but it does
+  not bind those exact file contents to the later first hostapd transition.
+- expected system behavior: the configuration shape admitted for a switchover
+  must be the same configuration pair consumed at the first process mutation.
+  Any unreadable, symlinked, or content-changed staged file during the bounded
+  readiness interval must retain the already-running optional PMF process.
+- actual behavior: `validate_config_pair()` runs before `write_state()`,
+  `write_marker()`, and `start_watchdog()`.  After the asynchronous readiness
+  interval, `stop_configured_hostapd()` and
+  `start_configured_hostapd("$REQUIRED_CONFIG", ...)` use the paths without a
+  current content equality check.  A changed required file can therefore be
+  passed to hostapd despite having been absent from the original admission.
+- divergence point: `scripts/tahoe_pmf_required_ap_switchover.sh::do_activate`.
+- evidence:
+  - local source establishes the exact pre-watchdog validation and later
+    path-based hostapd launch order.
+  - the documented AP boundary promises that configuration shape is validated
+    before optional PMF is stopped; an earlier sample does not enforce that
+    promise across the asynchronous owner-readiness interval.
+  - deterministic no-AP runtime reproduction: the local fixture appended the
+    valid but previously unadmitted `wpa_group_rekey` directive to its staged
+    required file during the second network probe.  The current helper
+    accepted the synthetic transition, and the fixture stopped with
+    `activation accepted a staged configuration changed before
+    optional-PMF stop` (exit 1).  No physical AP or real configuration was
+    contacted.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: no hash-only configuration-pair baseline is compared at the
+    final pre-stop admission edge.
+- rejected causes:
+  - saved-profile identity mismatch: it remains an earlier, categorical
+    blocker and does not cover a mutation after its initial validation.
+  - rekey host-network fencing: it occurs only after a required AP has already
+    been started and cannot authorize the first process transition.
+- confirmed deviation: a pre-watchdog configuration read is treated as if it
+  authorized the later file bytes supplied to hostapd.
+- root cause: `do_activate()` has no configuration freshness predicate between
+  successful watchdog readiness and `stop_configured_hostapd()`.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-PRESTOP-CONFIG-FRESHNESS-20260721`
+- symptom: a staged configuration can change after validation and still become
+  the required-PMF hostapd input.
+- expected system behavior: either staged file changing during readiness
+  rejects the activation before optional PMF is stopped.
+- actual behavior: validation checks selected directives and pair equality
+  only before the bounded readiness interval; the later hostapd invocation is
+  path-bound rather than content-bound.
+- exact divergence point: the missing hash-only
+  `config_pair_signature() == baseline` comparison immediately after the
+  existing post-watchdog network fence and before the first hostapd stop.
+- evidence from runtime: the local fake-IP route source altered only the
+  fixture required configuration on activation's second signature probe.  The
+  unmodified helper accepted its synthetic hostapd transition; the fixture
+  deterministically reported that acceptance and exited 1, with no AP, route,
+  or real configuration operation.
+- evidence from decomp: not applicable; no Apple component owns staged
+  hostapd file admission.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the explicit SYSTEM_CONTRACT that the
+  configuration shape checked before stopping optional PMF is the one used for
+  the transition.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. optional hostapd lifecycle: no stop is permitted for stale configuration;
+  2. required hostapd input: it must be exactly the validated file pair;
+  3. watchdog/state/marker: a pre-stop rejection must reuse existing rollback
+     owner cleanup while optional PMF remains active;
+  4. staged files and credentials: they are read only into a hash pipeline and
+     never rendered, copied, or changed;
+  5. host networking, rekey, candidate, and guest: none is reached on this
+     rejection path.
+- expected contract at each touchpoint:
+  1. the original optional PID remains live and no required PID appears;
+  2. a changed or unreadable pair produces a categorical inconclusive result;
+  3. no marker or live watchdog survives proven pre-stop cleanup;
+  4. only SHA-256 digests are compared in-process, with no value emitted;
+  5. no AP configuration command, network command, or guest operation occurs.
+- why no relevant touchpoints are missing: the candidate adds read-only
+  fingerprints around initial semantic validation and at the exact final
+  boundary.  It does not alter hostapd command construction, config semantics,
+  rollback, rekey, or any driver path.
+- why proposed path adds no extra system-visible side effects: success adds
+  only local content hashes around validation and at the final boundary;
+  failure prevents an AP process transition.
+  It adds no retry, delay, fallback, configuration write, state publication,
+  or credential output.
+- why this is root cause and not just correlation: the unbound file paths are
+  passed directly to the first mutation after the stale validation interval;
+  no intervening code compares their contents.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  This narrow host-side transaction admission fence
+  mirrors the existing hash-only network freshness contract and retains the
+  existing one-owner rollback architecture.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::config_pair_signature` and
+    `do_activate`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` fake-IP
+    mutation source and configuration-drift case;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` source-ordering
+    assertion;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` freshness wording.
+- forbidden alternative fixes considered and rejected:
+  - re-run only directive validation, which cannot detect a changed but still
+    syntactically valid unadmitted hostapd directive;
+  - rely on later rollback after optional PMF has been stopped;
+  - pin or rewrite staged configuration files, alter their permissions, or
+    modify the physical AP;
+  - treat the host-network hash as a substitute for configuration identity.
+- verification plan:
+  1. Completed: the new fixture confirmed that the pre-fix helper incorrectly
+     accepted its controlled changed-file case without a real AP.
+  2. Completed: the pair fingerprint fence made the same injection preserve
+     the exact optional PID, create no required PID, clear the marker, and
+     leave no live watchdog.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - `config_pair_signature()` verifies that both staged files are regular,
+    non-symlink files and reduces their ordered contents to one in-process
+    SHA-256 digest.  Neither file content nor digest is rendered by the
+    helper.
+  - `do_activate()` takes that baseline before directive validation, confirms
+    the pair did not change while it was being validated, and compares it once
+    more after watchdog readiness and the existing network freshness fence.
+  - A changed or unreadable pair takes `finish_armed_rollback()` while optional
+    PMF is still active, so required hostapd, rekey, and guest work are not
+    reached.
+  - The fixture changes only its generated required file by adding the valid
+    but previously unadmitted `wpa_group_rekey` directive on the exact second
+    network probe, then restores the generated file for later cases.
+- deterministic verification:
+  - Before implementation, the AP-helper fixture failed exactly at `activation
+    accepted a staged configuration changed before optional-PMF stop`; this is
+    the controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  Its configuration-drift
+    case preserves the exact optional hostapd PID, creates no required PID,
+    clears the marker, and leaves no live watchdog process.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only the host-side staged-file admission
+  freshness surface.  It is not a live AP result, candidate activation, guest
+  reboot, PMF/BIP association, or a proof against a file change occurring after
+  the first hostapd process transition has already begun.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
