@@ -36,6 +36,7 @@ STATE_PREFIX="$TMP_ROOT/state."
 CONTROL_DIR="$TMP_ROOT/control"
 OPTIONAL="$LAB_ROOT/hostapd-5g.conf"
 REQUIRED="$LAB_ROOT/hostapd-5g-wpa2-pmf.conf"
+FAKE_REQUIRED_PID="$RUN_DIR/hostapd-5g-pmf-required.pid"
 FAKE_HOSTAPD="$TMP_ROOT/hostapd"
 FAKE_CLI="$TMP_ROOT/hostapd_cli"
 FAKE_IW="$TMP_ROOT/iw"
@@ -126,6 +127,12 @@ printf '%s\n' \
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
+    'if [ "${FAKE_TERMINATE_REQUIRED_ON_IW:-0}" = 1 ] && [ -r "$FAKE_REQUIRED_PID" ]; then' \
+    '    pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"' \
+    '    case "$pid" in ""|*[!0-9]*) exit 65;; esac' \
+    '    /bin/kill -KILL "$pid" >/dev/null 2>&1 || true' \
+    '    /bin/rm -f -- "$FAKE_REQUIRED_PID"' \
+    'fi' \
     'printf "Interface wlp0s20f3\n"' \
     'printf "\ttype AP\n"' \
     'printf "\tchannel 153 (5775 MHz), width: 80 MHz, center1: 5775 MHz\n"' \
@@ -180,7 +187,7 @@ export AIAM_PMF_AP_RUN_DIR="$RUN_DIR"
 export AIAM_PMF_AP_STATE_PREFIX="$STATE_PREFIX"
 export AIAM_PMF_AP_CONTROL_DIR="$CONTROL_DIR"
 export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE FAKE_ROUTE_CALL_COUNT \
-    FAKE_REQUIRED_CONFIG
+    FAKE_REQUIRED_CONFIG FAKE_REQUIRED_PID
 : >"$FAKE_CLI_LOG"
 printf 'stable\n' >"$FAKE_NETWORK_STATE"
 printf '0\n' >"$FAKE_ROUTE_CALL_COUNT"
@@ -342,6 +349,39 @@ if /bin/kill -0 "$PRESTOP_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'pre-stop configuration drift left a live watchdog process'
 fi
 write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+
+# The start helper's own liveness observation is not a state-promotion proof.
+# Here fake iw terminates the generated required child after wait_hostapd_active
+# has observed it and immediately before that helper returns.  Activation must
+# not publish required state from that stale observation.
+PREPROMOTION_DEATH_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+if FAKE_TERMINATE_REQUIRED_ON_IW=1 "$HELPER" --activate \
+    --state-dir "$PREPROMOTION_DEATH_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/prepromotion-death-activate.out" \
+    2>"$TMP_ROOT/prepromotion-death-activate.err"; then
+    fail 'activation accepted a required hostapd that died before state promotion'
+fi
+grep -Fq 'required-PMF hostapd post-start attestation failed' \
+    "$TMP_ROOT/prepromotion-death-activate.err" ||
+    fail 'pre-promotion child death did not retain its categorical diagnostic'
+! grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' \
+    "$TMP_ROOT/prepromotion-death-activate.out" ||
+    fail 'pre-promotion child death published required-active success'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'pre-promotion child death did not restore optional hostapd'
+PREPROMOTION_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$PREPROMOTION_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'pre-promotion child death restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'pre-promotion child death left required hostapd active'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'pre-promotion child death left a live switchover marker'
+[ -r "$PREPROMOTION_DEATH_STATE_DIR/watchdog.pid" ] ||
+    fail 'pre-promotion child death did not retain its watchdog receipt for liveness check'
+PREPROMOTION_WATCHDOG_PID="$(tr -d '[:space:]' <"$PREPROMOTION_DEATH_STATE_DIR/watchdog.pid")"
+if /bin/kill -0 "$PREPROMOTION_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'pre-promotion child death left a live watchdog process'
+fi
 
 # A background PID is not proof that the detached rollback owner successfully
 # entered its state/marker-bound watchdog path.  The helper must reject a

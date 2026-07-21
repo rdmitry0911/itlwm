@@ -115,6 +115,7 @@ for needle in \
     'host network invariants changed before optional-PMF stop' \
     'config_pair_signature' \
     'PMF configurations changed before optional-PMF stop' \
+    'required-PMF hostapd post-start attestation failed' \
     'optional-PMF state retained' \
     '9>&-' \
     'finish_armed_rollback' \
@@ -238,6 +239,8 @@ ordered(activate, "AP activation rollback ownership",
         "start_watchdog",
         'stop_configured_hostapd "$OPTIONAL_CONFIG"',
         'start_configured_hostapd "$REQUIRED_CONFIG"',
+        'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
+        "runtime_ap_is_pinned",
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
@@ -271,6 +274,8 @@ if "FAKE_DRIFT_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf
     fail("AP fixture lacks the pre-stop host-network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-stop configuration drift discriminator")
+if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the pre-promotion required-child death discriminator")
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",

@@ -335,6 +335,162 @@
 
 ## ANOMALY
 
+- id: `LAB-PMF-AP-PREPROMOTION-REQUIRED-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned required-PMF state promotion; no kext, firmware,
+  Apple80211, candidate, guest, or physical-AP claim.
+- symptom: `do_activate()` lets `start_configured_hostapd()` return and then
+  marks rollback state as `required` without reattesting that the exact
+  required hostapd PID is still live and that the AP remains pinned.
+- expected system behavior: `PMF_AP_SWITCHOVER=REQUIRED_ACTIVE` must be
+  emitted only if the exact required-PMF process and pinned channel/width are
+  still present at the state-promotion edge.  A post-start disappearance must
+  restore optional PMF and report an inconclusive activation instead.
+- actual behavior: `wait_hostapd_active()` checks process identity and channel
+  state inside `start_configured_hostapd()`, then returns.  The caller's next
+  operation is `mark_required_active()`; no required-process or channel
+  attestation occurs between that return and the state/public success claim.
+- divergence point: `scripts/tahoe_pmf_required_ap_switchover.sh::do_activate`
+  after `start_configured_hostapd("$REQUIRED_CONFIG", ...)` and before
+  `mark_required_active()`.
+- evidence:
+  - local source establishes the missing final predicate at the sole state
+    promotion edge.
+  - the helper's state file and `PMF_AP_SWITCHOVER=REQUIRED_ACTIVE` are
+    consumed as authorization for the later bounded runner sequence, so a
+    stale process snapshot cannot be treated as current required-PMF state.
+  - deterministic no-AP runtime reproduction: the fixture fake-IW helper
+    terminated its generated required child after `wait_hostapd_active()` had
+    read it but immediately before that function returned.  The current helper
+    accepted the transition, and the fixture stopped with `activation accepted
+    a required hostapd that died before state promotion` (exit 1).  No physical
+    AP, host network, or real hostapd was involved.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: promotion relies on a liveness observation made by a different
+    function rather than an explicit predicate at the promotion edge.
+- rejected causes:
+  - ordinary required-hostapd start failure: the existing failure branch
+    handles a failed `start_configured_hostapd()` but not a process that exits
+    immediately after that function's successful observation.
+  - watchdog readiness: it proves rollback ownership before transition, not
+    that the required process remains alive when success is claimed.
+- confirmed deviation: an asynchronous process is represented as current
+  required state after an earlier, now-stale liveness observation.
+- root cause: the `mark_required_active()` branch lacks a final required PID
+  and AP-pinned attestation.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-PREPROMOTION-REQUIRED-ATTESTATION-20260721`
+- symptom: a dead or unpinned required AP can be promoted as active.
+- expected system behavior: the promotion edge rechecks exact required process
+  identity and pinned radio state; failure follows the existing full rollback
+  path rather than emitting required-active success.
+- actual behavior: no check separates the successful start helper return from
+  `mark_required_active()`.
+- exact divergence point: the missing
+  `configured_hostapd_active("$REQUIRED_CONFIG", "$REQUIRED_PID")` and
+  `runtime_ap_is_pinned()` predicates immediately before promotion.
+- evidence from runtime: a fixture-only fake-IW termination injection ran
+  after the successful child identity observation inside
+  `wait_hostapd_active()`.  The unmodified helper accepted that synthetic
+  activation and the fixture deterministically reported it (exit 1); no
+  physical AP, host network, or real hostapd was involved.
+- evidence from decomp: not applicable; no Apple component owns the external
+  AP lifecycle transaction.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the SYSTEM_CONTRACT that a categorical
+  active-state publication represents a live, pinned required AP at that exact
+  publication boundary.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. required hostapd PID: must remain the exact configured process at promote;
+  2. AP channel/width: must remain pinned at promote;
+  3. optional hostapd/rollback ownership: a failed promotion check must use
+     the existing marker-bound full rollback path;
+  4. state/marker/watchdog: success is withheld until attestation, and a
+     failed rollback retains watchdog ownership if restoration cannot prove its
+     invariant;
+  5. network, staged configuration, rekey, candidate, and guest: no new
+     operation is performed by this check.
+- expected contract at each touchpoint:
+  1. no `required` state is written for a dead/replaced process;
+  2. no required-active claim occurs for an unpinned AP;
+  3. optional PMF is restored when the full rollback can verify it;
+  4. marker/watchdog are cleared only through verified rollback;
+  5. the added checks are read-only and do not broaden capabilities.
+- why no relevant touchpoints are missing: the candidate acts only in the
+  narrow gap after the existing start function and before existing state
+  promotion.  It reuses `finish_armed_rollback()` because that existing
+  activation-failure path validates optional restoration and preserves watchdog
+  ownership if restoration cannot be proved.
+- why proposed path adds no extra system-visible side effects: it adds one
+  process identity observation and one `iw` read in the success path.  The
+  failure path restores existing optional PMF rather than publishing a false
+  required state; it adds no retry, delay, configuration write, or guest work.
+- why this is root cause and not just correlation: the fake child dies at the
+  exact only unguarded boundary, while the source directly maps the stale
+  return to `mark_required_active()`.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  The narrow system-contract fence uses the existing
+  exact-process and pin predicates and existing rollback owner, without new
+  process ownership or state format.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::do_activate`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` fake-IW
+    termination source and pre-promotion case;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` ordering assertion;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` promotion wording.
+- forbidden alternative fixes considered and rejected:
+  - sleep, poll, or retry after start;
+  - mark required state first and let later rekey detect the missing process;
+  - rely only on watchdog expiry instead of immediate verified rollback;
+  - alter hostapd configuration, routing, AP settings, or guest state.
+- verification plan:
+  1. Completed: the fixture confirmed that the pre-fix helper incorrectly
+     reported the controlled post-start child death as required active.
+  2. Completed: final attestation makes the same injection fail, restores
+     optional PMF, leaves no required PID or marker, and no live watchdog.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - after `start_configured_hostapd()` returns, `do_activate()` now immediately
+    rechecks the exact required PID and pinned AP channel/width before calling
+    `mark_required_active()`.
+  - a failed post-start attestation takes the existing
+    `finish_armed_rollback()` path.  It restores optional PMF when verifiable,
+    otherwise preserves marker/watchdog ownership; it never writes `state=required`
+    or prints `PMF_AP_SWITCHOVER=REQUIRED_ACTIVE`.
+  - the fake-IW fixture hook is confined to test mode and kills only its
+    generated fake required child at the exact stale-observation boundary.
+- deterministic verification:
+  - Before implementation, the AP-helper fixture failed exactly at `activation
+    accepted a required hostapd that died before state promotion`; this is the
+    controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  The injected child death
+    yields a categorical failure, restores optional hostapd, leaves no required
+    PID/marker/live watchdog, and emits no required-active success line.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only a repository-local required-state
+  publication race.  It is not a live AP result, candidate activation, guest
+  reboot, PMF/BIP association, or proof that a process cannot die after the
+  final immediate attestation.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-AP-PRESTOP-CONFIG-FRESHNESS-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned staged-configuration admission for the AP helper;

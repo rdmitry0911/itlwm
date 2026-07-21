@@ -39,6 +39,12 @@ network and configuration-pair signatures immediately before that transition;
 a changed or unreadable signature retains optional PMF and makes the run
 inconclusive without starting required PMF.
 
+After a required-PMF process launch succeeds, the helper re-attests that exact
+PID and the pinned AP channel/width immediately before it promotes rollback
+state to `required`.  An exited, replaced, or unpinned process is restored to
+optional PMF through the existing rollback owner and never emits a
+required-active result.
+
 The watchdog retries restoration to optional PMF if the caller disappears or
 if an intermediate AP transition cannot be verified. The helper has no
 address, route, NAT, forwarding, DHCP, firewall, service-manager, or reboot

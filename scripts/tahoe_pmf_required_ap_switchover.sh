@@ -580,6 +580,16 @@ do_activate() {
         fi
         die "required-PMF hostapd activation failed; rollback watchdog remains armed"
     fi
+    # wait_hostapd_active() establishes only the start helper's observation.
+    # Re-attest the exact required process and AP shape at the state-promotion
+    # edge so an immediately exited child cannot be published as active.
+    if ! configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
+        ! runtime_ap_is_pinned; then
+        if finish_armed_rollback; then
+            die "required-PMF hostapd post-start attestation failed; optional rollback verified"
+        fi
+        die "required-PMF hostapd post-start attestation failed; rollback watchdog remains armed"
+    fi
     if ! mark_required_active; then
         if finish_armed_rollback; then
             die "required-PMF state promotion failed; optional rollback verified"
