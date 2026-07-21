@@ -77,6 +77,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 int	ieee80211_mgmt_output(struct _ifnet *, struct ieee80211_node *,
 	    mbuf_t, int);
@@ -257,6 +258,17 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
             auth_seq = (uint16_t)(auth_body[2] | (auth_body[3] << 8));
         }
         enqueue_dropped = mq_enqueue(&ic->ic_mgtq, m);
+        if (enqueue_dropped == 0) {
+            const int subtype = type & IEEE80211_FC0_SUBTYPE_MASK;
+            if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+                AirportItlwmPostPltiTraceRecord(
+                    ic, kAirportItlwmPostPltiTraceEventAuthEnqueued);
+            } else if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+                       subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ) {
+                AirportItlwmPostPltiTraceRecord(
+                    ic, kAirportItlwmPostPltiTraceEventAssocEnqueued);
+            }
+        }
         if ((type & IEEE80211_FC0_SUBTYPE_MASK) ==
             IEEE80211_FC0_SUBTYPE_AUTH) {
             IWX_AUTH_DIAG("ieee80211_mgmt_output: enqueue AUTH "

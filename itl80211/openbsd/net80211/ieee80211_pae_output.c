@@ -55,6 +55,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 int		ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
                                  struct ieee80211_node *ni, const struct ieee80211_ptk *ptk);
@@ -143,6 +144,8 @@ ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
         XYLog("%s enqueue fail!!\n", __FUNCTION__);
         return (error);
     }
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
     (*ifp->if_start)(ifp);
     return 0;
 }

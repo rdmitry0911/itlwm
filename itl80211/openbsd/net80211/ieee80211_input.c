@@ -74,6 +74,7 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_sae_policy.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 mbuf_t ieee80211_input_hwdecrypt(struct ieee80211com *,
                                  struct ieee80211_node *, mbuf_t,
@@ -1138,6 +1139,8 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
     if (m != NULL) {
         if ((ic->ic_flags & IEEE80211_F_RSNON) &&
             eh->ether_type == htons(ETHERTYPE_PAE)) {
+            AirportItlwmPostPltiTraceRecord(
+                ic, kAirportItlwmPostPltiTraceEventEapolRxDecapped);
             ifp->netStat->inputPackets++;
 #if NBPFILTER > 0
             /*
@@ -1174,6 +1177,8 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
             if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
                 ml_enqueue(ml, m);
             } else {
+                AirportItlwmPostPltiTraceRecord(
+                    ic, kAirportItlwmPostPltiTraceEventEapolRxKernelPae);
                 if (ic->ic_eapol_key_input != NULL)
                     (*ic->ic_eapol_key_input)(ic, m, ni);
                 else
@@ -2434,6 +2439,8 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     wh = mtod(m, struct ieee80211_frame *);
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventAuthRxNet80211);
     frm = (const u_int8_t *)&wh[1];
 
     algo   = LE_READ_2(frm); frm += 2;
@@ -2876,6 +2883,8 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     wh = mtod(m, struct ieee80211_frame *);
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventAssocRxNet80211);
     frm = (const u_int8_t *)&wh[1];
     efrm = mtod(m, u_int8_t *) + mbuf_len(m);
     

@@ -53,6 +53,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 void	ieee80211_recv_4way_msg1(struct ieee80211com *,
                                  struct ieee80211_eapol_key *, struct ieee80211_node *);
@@ -749,6 +750,9 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             if (deferlink == 0) {
                 int was_port_valid = ni->ni_port_valid;
                 ni->ni_port_valid = 1;
+                if (!was_port_valid) {
+                    AirportItlwmPostPltiTraceCompleteEpisode(ic);
+                }
                 ieee80211_set_link_state(ic, LINK_STATE_UP);
                 /*
                  * Notify the driver that the in-kernel 4-way handshake

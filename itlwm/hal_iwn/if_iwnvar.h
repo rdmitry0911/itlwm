@@ -80,6 +80,14 @@ struct iwn_dma_info {
     IODMACommand *cmd;
 };
 
+/* Safe-only categorical class for the post-PLTI trace. */
+enum iwn_post_plti_trace_tx_class {
+    IWN_POST_PLTI_TRACE_TX_NONE = 0,
+    IWN_POST_PLTI_TRACE_TX_AUTH,
+    IWN_POST_PLTI_TRACE_TX_ASSOC,
+    IWN_POST_PLTI_TRACE_TX_EAPOL,
+};
+
 struct iwn_tx_data {
     bus_dmamap_t        map;
     bus_addr_t        cmd_paddr;
@@ -94,6 +102,7 @@ struct iwn_tx_data {
 
     uint32_t tx_apple_nrate;
     uint8_t tx_apple_nrate_valid;
+    uint8_t post_plti_trace_class;
 
     /*
      * Diagnostic identity captured by iwn_tx() BEFORE the

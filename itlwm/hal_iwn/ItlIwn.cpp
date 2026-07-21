@@ -37,6 +37,7 @@
 #include "ItlIwn.hpp"
 #include "IwnHt40Contracts.hpp"
 #include "../../AirportItlwm/TahoeNrateContracts.hpp"
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -47,6 +48,7 @@
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <net/ethernet.h>
+#include <net/if_llc.h>
 
 #include <sys/_task.h>
 #include <kern/clock.h>
@@ -76,6 +78,8 @@ static void iwn_clear_apple_nrate_cache(struct iwn_softc *sc);
 static void iwn_publish_apple_nrate(struct iwn_softc *sc, uint32_t nrate);
 static bool iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags,
                                      uint32_t *nrate);
+static void iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
+                                                   uint8_t txClass);
 
 #ifndef IWN_APGO_FIRMWARE_BACKEND_OPT_IN
 #define IWN_APGO_FIRMWARE_BACKEND_OPT_IN 0
@@ -1523,6 +1527,7 @@ iwn_alloc_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring, int qid)
         data->scratch_paddr = paddr + 12;
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
+        data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
         paddr += sizeof (struct iwn_tx_cmd);
 
         error = bus_dmamap_create(sc->sc_dmat, MCLBYTES,
@@ -1557,6 +1562,7 @@ iwn_reset_tx_ring(struct iwn_softc *sc, struct iwn_tx_ring *ring)
         }
         data->tx_apple_nrate = 0;
         data->tx_apple_nrate_valid = 0;
+        data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
     }
     /* Clear TX descriptors. */
     memset(ring->desc, 0, ring->desc_dma.size);
@@ -1979,8 +1985,11 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 
     if (ic->ic_state == IEEE80211_S_SCAN) {
         if (nstate == IEEE80211_S_SCAN) {
-            if (sc->sc_flags & IWN_FLAG_SCANNING)
+            if (sc->sc_flags & IWN_FLAG_SCANNING) {
+                AirportItlwmPostPltiTraceRecord(
+                    ic, kAirportItlwmPostPltiTraceEventIwnScanCoalesced);
                 return 0;
+            }
         } else
             sc->sc_flags &= ~IWN_FLAG_SCANNING;
         /* Turn LED off when leaving scan state. */
@@ -2020,10 +2029,16 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         return error;
 
     case IEEE80211_S_ASSOC:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventAssocStateEntered);
         if (ic->ic_state != IEEE80211_S_RUN)
             break;
         /* FALLTHROUGH */
     case IEEE80211_S_AUTH:
+        if (nstate == IEEE80211_S_AUTH) {
+            AirportItlwmPostPltiTraceRecord(
+                ic, kAirportItlwmPostPltiTraceEventAuthStateEntered);
+        }
         if ((error = that->iwn_auth(sc, arg)) != 0) {
             XYLog("%s: could not move to auth state\n",
                 sc->sc_dev.dv_xname);
@@ -2037,6 +2052,8 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
                 sc->sc_dev.dv_xname);
             return error;
         }
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventRunEntered);
         break;
 
     case IEEE80211_S_INIT:
@@ -2312,6 +2329,18 @@ iwn_rx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
         ifp->netStat->inputErrors++;
         mbuf_freem(m);
         return;
+    }
+    if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
+        IEEE80211_FC0_TYPE_MGT) {
+        const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+            AirportItlwmPostPltiTraceRecord(
+                ic, kAirportItlwmPostPltiTraceEventAuthRxFromFirmware);
+        } else if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_RESP ||
+                   subtype == IEEE80211_FC0_SUBTYPE_REASSOC_RESP) {
+            AirportItlwmPostPltiTraceRecord(
+                ic, kAirportItlwmPostPltiTraceEventAssocRxFromFirmware);
+        }
     }
     ni = ieee80211_find_rxnode(ic, wh);
 
@@ -3020,6 +3049,7 @@ iwn_tx_done_free_txdata(struct iwn_softc *sc, struct iwn_tx_data *data)
     data->ampdu_txmcs = 0;
     data->tx_apple_nrate = 0;
     data->tx_apple_nrate_valid = 0;
+    data->post_plti_trace_class = IWN_POST_PLTI_TRACE_TX_NONE;
 }
 
 void ItlIwn::
@@ -3138,6 +3168,9 @@ iwn_tx_done(struct iwn_softc *sc, struct iwn_rx_desc *desc,
               txfail, ackfailcnt, rate, rflags,
               (unsigned)len);
     }
+
+    /* Completion is categorical only; the trace intentionally omits status. */
+    iwn_post_plti_trace_record_completion(ic, data->post_plti_trace_class);
 
     iwn_tx_done_free_txdata(sc, data);
 
@@ -3750,6 +3783,84 @@ iwn_build_ht_apple_nrate(uint8_t rate, uint8_t rflags, uint32_t *nrate)
         rate, (rflags & IWN_RFLAG_HT40) != 0, nrate);
 }
 
+/*
+ * Classify only fixed 802.11/LLC protocol fields before iwn_tx() trims the
+ * header.  The class is retained in a ring slot solely until TX_DONE; no
+ * address, sequence, status, rate, length, or frame bytes are retained.
+ */
+static uint8_t
+iwn_post_plti_trace_classify_tx(const struct ieee80211_frame *wh,
+                                uint8_t type, uint8_t subtype, u_int hdrlen,
+                                mbuf_t m)
+{
+    if (wh == NULL || m == NULL)
+        return IWN_POST_PLTI_TRACE_TX_NONE;
+    if (type == IEEE80211_FC0_TYPE_MGT) {
+        if (subtype == IEEE80211_FC0_SUBTYPE_AUTH)
+            return IWN_POST_PLTI_TRACE_TX_AUTH;
+        if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+            subtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ)
+            return IWN_POST_PLTI_TRACE_TX_ASSOC;
+        return IWN_POST_PLTI_TRACE_TX_NONE;
+    }
+    if (type != IEEE80211_FC0_TYPE_DATA ||
+        mbuf_len(m) < hdrlen + LLC_SNAPFRAMELEN)
+        return IWN_POST_PLTI_TRACE_TX_NONE;
+
+    const struct llc *llc = reinterpret_cast<const struct llc *>(
+        reinterpret_cast<const uint8_t *>(wh) + hdrlen);
+    if (llc->llc_dsap == LLC_SNAP_LSAP &&
+        llc->llc_ssap == LLC_SNAP_LSAP && llc->llc_control == LLC_UI &&
+        llc->llc_snap.org_code[0] == 0 && llc->llc_snap.org_code[1] == 0 &&
+        llc->llc_snap.org_code[2] == 0 &&
+        llc->llc_snap.ether_type == htons(ETHERTYPE_PAE))
+        return IWN_POST_PLTI_TRACE_TX_EAPOL;
+    return IWN_POST_PLTI_TRACE_TX_NONE;
+}
+
+static void
+iwn_post_plti_trace_record_submit(struct ieee80211com *ic, uint8_t txClass)
+{
+    switch (txClass) {
+    case IWN_POST_PLTI_TRACE_TX_AUTH:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventAuthFwSubmitted);
+        break;
+    case IWN_POST_PLTI_TRACE_TX_ASSOC:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventAssocFwSubmitted);
+        break;
+    case IWN_POST_PLTI_TRACE_TX_EAPOL:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventEapolFwSubmitted);
+        break;
+    default:
+        break;
+    }
+}
+
+static void
+iwn_post_plti_trace_record_completion(struct ieee80211com *ic,
+                                      uint8_t txClass)
+{
+    switch (txClass) {
+    case IWN_POST_PLTI_TRACE_TX_AUTH:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventAuthTxDone);
+        break;
+    case IWN_POST_PLTI_TRACE_TX_ASSOC:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventAssocTxDone);
+        break;
+    case IWN_POST_PLTI_TRACE_TX_EAPOL:
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventEapolTxDone);
+        break;
+    default:
+        break;
+    }
+}
+
 int ItlIwn::
 iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
 {
@@ -3775,6 +3886,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     uint32_t tx_apple_nrate = 0;
     bool tx_apple_nrate_valid = false;
     uint8_t *ivp, tid, ridx, txant, type, subtype;
+    uint8_t post_plti_trace_class;
     int i, totlen, hasqos, error, pad;
 
     wh = mtod(m, struct ieee80211_frame *);
@@ -3784,6 +3896,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+    post_plti_trace_class = iwn_post_plti_trace_classify_tx(
+        wh, type, subtype, hdrlen, m);
 
     /* Capture-before-mbuf_adj diagnostic identity. iwn_tx()
      * calls mbuf_adj(m, hdrlen) below (in both the CCMP-trim
@@ -4125,6 +4239,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     data->ampdu_txmcs = ni->ni_txmcs; /* updated upon Tx interrupt */
     data->tx_apple_nrate = tx_apple_nrate;
     data->tx_apple_nrate_valid = tx_apple_nrate_valid ? 1 : 0;
+    data->post_plti_trace_class = post_plti_trace_class;
     if (data->tx_apple_nrate_valid)
         iwn_publish_apple_nrate(sc, data->tx_apple_nrate);
     /* Store captured diagnostic identity onto the per-tx-buffer
@@ -4166,6 +4281,7 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni)
     /* Kick TX ring. */
     ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
     IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
+    iwn_post_plti_trace_record_submit(ic, data->post_plti_trace_class);
     if (diag_subtype == IEEE80211_FC0_SUBTYPE_AUTH) {
         char auth_tx_path_buf[224];
         snprintf(auth_tx_path_buf, sizeof(auth_tx_path_buf),
@@ -4317,6 +4433,16 @@ _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
                 uint8_t mtype = mwh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
                 uint8_t msubtype = mwh->i_fc[0] &
                     IEEE80211_FC0_SUBTYPE_MASK;
+                if (mtype == IEEE80211_FC0_TYPE_MGT) {
+                    if (msubtype == IEEE80211_FC0_SUBTYPE_AUTH) {
+                        AirportItlwmPostPltiTraceRecord(
+                            ic, kAirportItlwmPostPltiTraceEventAuthDequeued);
+                    } else if (msubtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
+                               msubtype == IEEE80211_FC0_SUBTYPE_REASSOC_REQ) {
+                        AirportItlwmPostPltiTraceRecord(
+                            ic, kAirportItlwmPostPltiTraceEventAssocDequeued);
+                    }
+                }
                 if (mtype == IEEE80211_FC0_TYPE_MGT &&
                     msubtype == IEEE80211_FC0_SUBTYPE_AUTH) {
                     uint16_t auth_seq = 0xffff;
@@ -6128,6 +6254,8 @@ iwn_scan(struct iwn_softc *sc, uint16_t flags, int bgscan)
         sc->sc_flags |= IWN_FLAG_SCANNING;
         if (bgscan)
             sc->sc_flags |= IWN_FLAG_BGSCAN;
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventIwnScanStarted);
     }
     ::free(buf);
     return error;

@@ -25,6 +25,7 @@
 #include "TahoeSkywalkIoctlRoutes.hpp"
 #include "TahoeTxRxChainContracts.hpp"
 #include "Airport/IO80211BssManager.h"
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -6347,10 +6348,11 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
         if (TahoeExternalPmkScanResumeContracts::
                 shouldResumeScanAfterExternalPmk(scanResumeFacts)) {
             // Do not select a BSS or synthesize AUTH here.  SCAN->SCAN lets
-            // the IWX backend preserve an active scan or restart its normal
-            // scan completion path, where net80211 performs ordinary
+            // backend preserve an active scan or restart its normal scan
+            // completion path, where net80211 performs ordinary
             // selection.
             XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
+            AirportItlwmPostPltiTraceBeginEpisode(ic);
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
         }
     }

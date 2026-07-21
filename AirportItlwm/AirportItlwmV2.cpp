@@ -16,6 +16,8 @@
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
 #include <ClientKit/AirportItlwmRegDiagBridge.h>
+#include <ClientKit/AirportItlwmPostPltiTrace.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
@@ -1158,6 +1160,33 @@ static AirportItlwmRegDiagState sRegDiag = {};
 static volatile uint32_t sEapolRxProbeLogCount = 0;
 static volatile uint32_t sEapolTxProbeLogCount = 0;
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * Isolated safe-only post-PLTI trace.  Unlike RegDiag, this state has no
+ * identity-bearing fields and its fast path never publishes or allocates.
+ * activeToken couples capture generation and episode atomically, so a reset
+ * cannot relabel a pre-reset producer as a fresh capture.
+ */
+struct AirportItlwmPostPltiTraceState {
+    volatile uint32_t enabled;
+    volatile uint32_t captureGeneration;
+    volatile uint32_t backend;
+    volatile uintptr_t targetController;
+    volatile uint64_t activeToken;
+    volatile uint64_t initialScanPermitToken;
+    volatile uint32_t nextEpisode;
+    volatile uint32_t episodeCount;
+    volatile uint32_t droppedEntries;
+    volatile uint32_t nextSequence;
+    volatile uint32_t captureFirstSequence;
+    volatile uint32_t lastControlSequence;
+    AirportItlwmPostPltiTraceEntry
+        entries[AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+};
+
+static AirportItlwmPostPltiTraceState sPostPltiTrace = {};
+#endif
+
 static const uint32_t kAirportItlwmEapolProbeLogLimit = 16;
 
 static bool
@@ -2015,10 +2044,545 @@ airportItlwmRegDiagPoll(AirportItlwm *driver)
                                    sizeof(sRegDiag.trace));
 }
 
+/*
+ * BEGIN SAFE_POST_PLTI_TRACE
+ *
+ * This recorder is deliberately separate from AirportItlwmRegDiag.  The
+ * recorder only writes categorical event identifiers into a preallocated
+ * fixed ring.  Property publication occurs solely from watchdog polling.
+ */
+#if __IO80211_TARGET >= __MAC_26_0
+static bool
+airportItlwmPostPltiTraceEventIsKnown(uint32_t event)
+{
+    return event > kAirportItlwmPostPltiTraceEventUnknown &&
+           event < kAirportItlwmPostPltiTraceEventMax;
+}
+
+static uint64_t
+airportItlwmPostPltiTraceToken(uint32_t generation, uint32_t episode)
+{
+    return (static_cast<uint64_t>(generation) << 32) | episode;
+}
+
+static uint32_t
+airportItlwmPostPltiTraceTokenGeneration(uint64_t token)
+{
+    return static_cast<uint32_t>(token >> 32);
+}
+
+static uint32_t
+airportItlwmPostPltiTraceTokenEpisode(uint64_t token)
+{
+    return static_cast<uint32_t>(token);
+}
+
+static bool
+airportItlwmPostPltiTraceAdmits(struct ieee80211com *ic)
+{
+    if (ic == nullptr ||
+        __atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) == 0 ||
+        __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) !=
+            kAirportItlwmPostPltiTraceBackendIwn)
+        return false;
+    return __atomic_load_n(&sPostPltiTrace.targetController,
+                           __ATOMIC_ACQUIRE) ==
+        reinterpret_cast<uintptr_t>(ic);
+}
+
+static bool
+airportItlwmPostPltiTraceTokenIsCurrent(struct ieee80211com *ic,
+                                        uint64_t token, bool requireActive)
+{
+    const uint32_t generation = airportItlwmPostPltiTraceTokenGeneration(token);
+    if (token == 0 || generation == 0 ||
+        airportItlwmPostPltiTraceTokenEpisode(token) == 0 ||
+        !airportItlwmPostPltiTraceAdmits(ic) ||
+        generation != __atomic_load_n(&sPostPltiTrace.captureGeneration,
+                                      __ATOMIC_ACQUIRE))
+        return false;
+    return !requireActive ||
+        __atomic_load_n(&sPostPltiTrace.activeToken, __ATOMIC_ACQUIRE) == token;
+}
+
+static void
+airportItlwmPostPltiTraceRecordToken(struct ieee80211com *ic, uint32_t event,
+                                     uint64_t token, bool requireActive)
+{
+    if (!airportItlwmPostPltiTraceEventIsKnown(event) ||
+        !airportItlwmPostPltiTraceTokenIsCurrent(ic, token, requireActive))
+        return;
+
+    const uint32_t generation = airportItlwmPostPltiTraceTokenGeneration(token);
+    const uint32_t episode = airportItlwmPostPltiTraceTokenEpisode(token);
+    const uint32_t sequence =
+        __atomic_add_fetch(&sPostPltiTrace.nextSequence, 1,
+                           __ATOMIC_RELAXED);
+    /* A reset or terminal close after reservation invalidates this writer. */
+    if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, requireActive))
+        return;
+
+    const uint32_t first = __atomic_load_n(
+        &sPostPltiTrace.captureFirstSequence, __ATOMIC_ACQUIRE);
+    if (sequence - first >= AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES)
+        __atomic_add_fetch(&sPostPltiTrace.droppedEntries, 1,
+                           __ATOMIC_RELAXED);
+
+    AirportItlwmPostPltiTraceEntry *entry =
+        &sPostPltiTrace.entries[
+            (sequence - 1) % AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES];
+    /* A sequence release store publishes atomic categorical fields only. */
+    __atomic_store_n(&entry->sequence, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&entry->captureGeneration, generation, __ATOMIC_RELAXED);
+    __atomic_store_n(&entry->episode, episode, __ATOMIC_RELAXED);
+    __atomic_store_n(&entry->event, event, __ATOMIC_RELAXED);
+    __atomic_store_n(&entry->sequence, sequence, __ATOMIC_RELEASE);
+}
+
+static void
+airportItlwmPostPltiTraceCloseActive(struct ieee80211com *ic, uint32_t event)
+{
+    uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                     __ATOMIC_ACQUIRE);
+    if (token == 0)
+        return;
+    uint64_t expected = token;
+    if (!__atomic_compare_exchange_n(&sPostPltiTrace.activeToken, &expected,
+                                     0, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE))
+        return;
+    expected = token;
+    (void)__atomic_compare_exchange_n(&sPostPltiTrace.initialScanPermitToken,
+                                      &expected, 0, false, __ATOMIC_ACQ_REL,
+                                      __ATOMIC_ACQUIRE);
+    /* The token was detached first, so later traffic cannot append to it. */
+    airportItlwmPostPltiTraceRecordToken(ic, event, token, false);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceRecord(struct ieee80211com *ic, uint32_t event)
+{
+    const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                           __ATOMIC_ACQUIRE);
+    airportItlwmPostPltiTraceRecordToken(ic, event, token, true);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceBeginEpisode(struct ieee80211com *ic)
+{
+    if (!airportItlwmPostPltiTraceAdmits(ic))
+        return;
+
+    if (__atomic_load_n(&sPostPltiTrace.activeToken, __ATOMIC_ACQUIRE) != 0)
+        airportItlwmPostPltiTraceCloseActive(
+            ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
+    if (!airportItlwmPostPltiTraceAdmits(ic))
+        return;
+
+    const uint32_t generation = __atomic_load_n(
+        &sPostPltiTrace.captureGeneration, __ATOMIC_ACQUIRE);
+    const uint32_t episode = __atomic_add_fetch(&sPostPltiTrace.nextEpisode,
+                                                 1, __ATOMIC_RELAXED);
+    if (generation == 0 || episode == 0)
+        return;
+    const uint64_t token = airportItlwmPostPltiTraceToken(generation, episode);
+    uint64_t expected = 0;
+    if (!__atomic_compare_exchange_n(&sPostPltiTrace.activeToken, &expected,
+                                     token, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE))
+        return;
+    if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true)) {
+        expected = token;
+        (void)__atomic_compare_exchange_n(&sPostPltiTrace.activeToken,
+                                          &expected, 0, false,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        return;
+    }
+    __atomic_store_n(&sPostPltiTrace.initialScanPermitToken, token,
+                     __ATOMIC_RELEASE);
+    __atomic_add_fetch(&sPostPltiTrace.episodeCount, 1, __ATOMIC_RELAXED);
+    airportItlwmPostPltiTraceRecordToken(
+        ic, kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume, token, true);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceCompleteEpisode(struct ieee80211com *ic)
+{
+    airportItlwmPostPltiTraceCloseActive(
+        ic, kAirportItlwmPostPltiTraceEventPortValidTransition);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceAbortEpisode(struct ieee80211com *ic)
+{
+    airportItlwmPostPltiTraceCloseActive(
+        ic, kAirportItlwmPostPltiTraceEventEpisodeAborted);
+}
+
+extern "C" void
+AirportItlwmPostPltiTraceNoteStateRequest(struct ieee80211com *ic,
+                                          uint32_t oldState,
+                                          uint32_t nextState)
+{
+    const uint64_t token = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                           __ATOMIC_ACQUIRE);
+    if (!airportItlwmPostPltiTraceTokenIsCurrent(ic, token, true))
+        return;
+
+    if (__atomic_load_n(&sPostPltiTrace.initialScanPermitToken,
+                        __ATOMIC_ACQUIRE) == token) {
+        if (oldState == IEEE80211_S_SCAN && nextState == IEEE80211_S_SCAN) {
+            uint64_t expected = token;
+            (void)__atomic_compare_exchange_n(
+                &sPostPltiTrace.initialScanPermitToken, &expected, 0, false,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+            return;
+        }
+        AirportItlwmPostPltiTraceAbortEpisode(ic);
+        return;
+    }
+
+    if ((oldState == IEEE80211_S_SCAN && nextState == IEEE80211_S_AUTH) ||
+        (oldState == IEEE80211_S_AUTH && nextState == IEEE80211_S_ASSOC) ||
+        (oldState == IEEE80211_S_ASSOC && nextState == IEEE80211_S_RUN))
+        return;
+    AirportItlwmPostPltiTraceAbortEpisode(ic);
+}
+
+static bool
+airportItlwmPostPltiTraceParseU32(const char *value, uint32_t *out)
+{
+    if (value == nullptr || out == nullptr)
+        return false;
+
+    uint32_t base = 10;
+    if (value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
+        base = 16;
+        value += 2;
+    }
+
+    uint32_t result = 0;
+    bool seen = false;
+    const char *p = value;
+    for (; *p != '\0'; p++) {
+        uint32_t digit;
+        if (*p >= '0' && *p <= '9')
+            digit = static_cast<uint32_t>(*p - '0');
+        else if (base == 16 && *p >= 'a' && *p <= 'f')
+            digit = static_cast<uint32_t>(*p - 'a' + 10);
+        else if (base == 16 && *p >= 'A' && *p <= 'F')
+            digit = static_cast<uint32_t>(*p - 'A' + 10);
+        else
+            break;
+        if (digit >= base)
+            break;
+        result = result * base + digit;
+        seen = true;
+    }
+    if (!seen || (*p != '\0' && *p != ';' && *p != ',' && *p != ' ' &&
+                  *p != '\t'))
+        return false;
+    *out = result;
+    return true;
+}
+
+static bool
+airportItlwmPostPltiTraceReadU32Key(const char *command, const char *key,
+                                    uint32_t *out)
+{
+    if (command == nullptr || key == nullptr || out == nullptr)
+        return false;
+
+    const size_t keyLen = strlen(key);
+    const char *p = command;
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == ';' || *p == ',')
+            p++;
+        if (strncmp(p, key, keyLen) == 0 && p[keyLen] == '=')
+            return airportItlwmPostPltiTraceParseU32(p + keyLen + 1, out);
+        while (*p != '\0' && *p != ';' && *p != ',' && *p != ' ' &&
+               *p != '\t')
+            p++;
+    }
+    return false;
+}
+
+static void
+airportItlwmPostPltiTracePublishData(AirportItlwm *driver, const char *name,
+                                     const void *bytes, uint32_t size)
+{
+    if (driver == nullptr || name == nullptr || bytes == nullptr || size == 0)
+        return;
+    OSData *data = OSData::withBytes(bytes, size);
+    if (data != nullptr) {
+        driver->setProperty(name, data);
+        data->release();
+    }
+}
+
+static void
+airportItlwmPostPltiTracePublishString(AirportItlwm *driver, const char *name,
+                                       const char *value)
+{
+    if (driver == nullptr || name == nullptr || value == nullptr)
+        return;
+    OSString *string = OSString::withCString(value);
+    if (string != nullptr) {
+        driver->setProperty(name, string);
+        string->release();
+    }
+}
+
+static void
+airportItlwmPostPltiTraceBind(AirportItlwm *driver)
+{
+    struct ieee80211com *ic = nullptr;
+    uint32_t backend = kAirportItlwmPostPltiTraceBackendUnknown;
+    if (driver != nullptr && driver->fHalService != nullptr) {
+        ic = driver->fHalService->get80211Controller();
+        backend = OSDynamicCast(ItlIwn, driver->fHalService) != nullptr ?
+            kAirportItlwmPostPltiTraceBackendIwn :
+            kAirportItlwmPostPltiTraceBackendUnsupported;
+    }
+    __atomic_store_n(&sPostPltiTrace.backend, backend, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.targetController,
+                     reinterpret_cast<uintptr_t>(ic), __ATOMIC_RELEASE);
+}
+
+static void
+airportItlwmPostPltiTraceApplyControl(AirportItlwm *driver,
+                                      const char *command)
+{
+    uint32_t sequence = 0;
+    if (!airportItlwmPostPltiTraceReadU32Key(command, "seq", &sequence)) {
+        airportItlwmPostPltiTracePublishString(
+            driver, AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY,
+            "seq=0 applied=0 error=missing-seq");
+        return;
+    }
+    if (sequence == 0 || sequence == __atomic_load_n(
+            &sPostPltiTrace.lastControlSequence, __ATOMIC_ACQUIRE))
+        return;
+
+    uint32_t enable = __atomic_load_n(&sPostPltiTrace.enabled,
+                                      __ATOMIC_ACQUIRE);
+    uint32_t reset = 0;
+    (void)airportItlwmPostPltiTraceReadU32Key(command, "enable", &enable);
+    (void)airportItlwmPostPltiTraceReadU32Key(command, "reset", &reset);
+
+    if (reset != 0) {
+        /* Stop new admissions first; stale writers retain their old epoch. */
+        __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
+        uint32_t generation = __atomic_add_fetch(
+            &sPostPltiTrace.captureGeneration, 1, __ATOMIC_RELAXED);
+        if (generation == 0) {
+            generation = 1;
+            __atomic_store_n(&sPostPltiTrace.captureGeneration, generation,
+                             __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&sPostPltiTrace.activeToken, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.initialScanPermitToken, 0,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.nextEpisode, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.episodeCount, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.droppedEntries, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&sPostPltiTrace.captureFirstSequence,
+                         __atomic_load_n(&sPostPltiTrace.nextSequence,
+                                         __ATOMIC_ACQUIRE) + 1,
+                         __ATOMIC_RELEASE);
+        airportItlwmPostPltiTraceBind(driver);
+    } else if (enable != 0) {
+        airportItlwmPostPltiTraceBind(driver);
+    } else {
+        struct ieee80211com *ic = reinterpret_cast<struct ieee80211com *>(
+            __atomic_load_n(&sPostPltiTrace.targetController,
+                            __ATOMIC_ACQUIRE));
+        AirportItlwmPostPltiTraceAbortEpisode(ic);
+    }
+
+    __atomic_store_n(&sPostPltiTrace.enabled, enable != 0 ? 1U : 0U,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.lastControlSequence, sequence,
+                     __ATOMIC_RELEASE);
+
+    char ack[160];
+    snprintf(ack, sizeof(ack),
+             "seq=%u applied=1 enable=%u reset=%u bound=%u generation=%u backend=%u",
+             sequence, enable != 0 ? 1U : 0U, reset != 0 ? 1U : 0U,
+             __atomic_load_n(&sPostPltiTrace.targetController,
+                             __ATOMIC_ACQUIRE) != 0 ? 1U : 0U,
+             __atomic_load_n(&sPostPltiTrace.captureGeneration,
+                             __ATOMIC_ACQUIRE),
+             __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE));
+    airportItlwmPostPltiTracePublishString(
+        driver, AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_ACK_PROPERTY, ack);
+}
+
+static void
+airportItlwmPostPltiTracePublish(AirportItlwm *driver)
+{
+    const uint32_t generation = __atomic_load_n(
+        &sPostPltiTrace.captureGeneration, __ATOMIC_ACQUIRE);
+    if (generation == 0)
+        return;
+
+    const uint32_t firstSequence = __atomic_load_n(
+        &sPostPltiTrace.captureFirstSequence, __ATOMIC_ACQUIRE);
+    const uint32_t latestSequence = __atomic_load_n(
+        &sPostPltiTrace.nextSequence, __ATOMIC_ACQUIRE);
+    const uint32_t backend = __atomic_load_n(&sPostPltiTrace.backend,
+                                              __ATOMIC_ACQUIRE);
+    AirportItlwmPostPltiTraceBuffer buffer = {};
+    buffer.version = AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION;
+    buffer.captureGeneration = generation;
+    buffer.backend = backend;
+    buffer.droppedEntries = __atomic_load_n(&sPostPltiTrace.droppedEntries,
+                                            __ATOMIC_ACQUIRE);
+    buffer.firstSequence = firstSequence;
+    buffer.latestSequence = latestSequence;
+
+    for (uint32_t i = 0; i < AIRPORT_ITLWM_POST_PLTI_TRACE_MAX_ENTRIES; i++) {
+        const AirportItlwmPostPltiTraceEntry *source =
+            &sPostPltiTrace.entries[i];
+        const uint32_t entrySequence = __atomic_load_n(&source->sequence,
+                                                        __ATOMIC_ACQUIRE);
+        if (entrySequence == 0 || entrySequence < firstSequence ||
+            entrySequence > latestSequence)
+            continue;
+        AirportItlwmPostPltiTraceEntry entry = {};
+        entry.sequence = entrySequence;
+        entry.captureGeneration = __atomic_load_n(&source->captureGeneration,
+                                                  __ATOMIC_RELAXED);
+        entry.episode = __atomic_load_n(&source->episode, __ATOMIC_RELAXED);
+        entry.event = __atomic_load_n(&source->event, __ATOMIC_RELAXED);
+        if (entrySequence != __atomic_load_n(&source->sequence,
+                                             __ATOMIC_ACQUIRE) ||
+            entry.captureGeneration != generation || entry.episode == 0 ||
+            !airportItlwmPostPltiTraceEventIsKnown(entry.event))
+            continue;
+        buffer.entries[i] = entry;
+        buffer.entryCount++;
+    }
+
+    /* Do not relabel a pre-reset snapshot as the current generation. */
+    if (generation != __atomic_load_n(&sPostPltiTrace.captureGeneration,
+                                      __ATOMIC_ACQUIRE) ||
+        firstSequence != __atomic_load_n(
+            &sPostPltiTrace.captureFirstSequence, __ATOMIC_ACQUIRE) ||
+        backend != __atomic_load_n(&sPostPltiTrace.backend,
+                                   __ATOMIC_ACQUIRE))
+        return;
+
+    AirportItlwmPostPltiTraceSnapshot snapshot = {};
+    snapshot.version = AIRPORT_ITLWM_POST_PLTI_TRACE_ABI_VERSION;
+    snapshot.size = sizeof(snapshot);
+    snapshot.captureGeneration = generation;
+    snapshot.backend = backend;
+    snapshot.enabled = __atomic_load_n(&sPostPltiTrace.enabled,
+                                       __ATOMIC_ACQUIRE);
+    snapshot.targetBound = __atomic_load_n(&sPostPltiTrace.targetController,
+                                           __ATOMIC_ACQUIRE) != 0 ? 1U : 0U;
+    const uint64_t activeToken = __atomic_load_n(&sPostPltiTrace.activeToken,
+                                                 __ATOMIC_ACQUIRE);
+    snapshot.activeEpisode =
+        airportItlwmPostPltiTraceTokenGeneration(activeToken) == generation ?
+        airportItlwmPostPltiTraceTokenEpisode(activeToken) : 0;
+    snapshot.episodeCount = __atomic_load_n(&sPostPltiTrace.episodeCount,
+                                            __ATOMIC_ACQUIRE);
+    snapshot.firstSequence = buffer.firstSequence;
+    snapshot.entryCount = buffer.entryCount;
+    snapshot.droppedEntries = buffer.droppedEntries;
+    snapshot.latestSequence = buffer.latestSequence;
+
+    airportItlwmPostPltiTracePublishData(
+        driver, AIRPORT_ITLWM_POST_PLTI_TRACE_SNAPSHOT_PROPERTY, &snapshot,
+        sizeof(snapshot));
+    airportItlwmPostPltiTracePublishData(
+        driver, AIRPORT_ITLWM_POST_PLTI_TRACE_BUFFER_PROPERTY, &buffer,
+        sizeof(buffer));
+}
+
+static void
+airportItlwmPostPltiTracePoll(AirportItlwm *driver)
+{
+    if (driver == nullptr)
+        return;
+
+    OSObject *control = driver->copyProperty(
+        AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY);
+    if (control != nullptr) {
+        if (OSString *command = OSDynamicCast(OSString, control))
+            airportItlwmPostPltiTraceApplyControl(driver,
+                                                   command->getCStringNoCopy());
+        control->release();
+    }
+    if (__atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) != 0) {
+        struct ieee80211com *actual =
+            driver->fHalService != nullptr ?
+            driver->fHalService->get80211Controller() : nullptr;
+        if (reinterpret_cast<uintptr_t>(actual) !=
+            __atomic_load_n(&sPostPltiTrace.targetController,
+                            __ATOMIC_ACQUIRE)) {
+            /* Never silently rebind a live capture to a replacement HAL. */
+            __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
+            __atomic_store_n(&sPostPltiTrace.activeToken, 0,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&sPostPltiTrace.initialScanPermitToken, 0,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&sPostPltiTrace.targetController, 0,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&sPostPltiTrace.backend,
+                             kAirportItlwmPostPltiTraceBackendUnknown,
+                             __ATOMIC_RELEASE);
+        }
+    }
+    airportItlwmPostPltiTracePublish(driver);
+}
+
+static void
+airportItlwmPostPltiTraceInvalidate()
+{
+    __atomic_store_n(&sPostPltiTrace.enabled, 0, __ATOMIC_RELEASE);
+    uint32_t generation = __atomic_add_fetch(
+        &sPostPltiTrace.captureGeneration, 1, __ATOMIC_RELAXED);
+    if (generation == 0)
+        __atomic_store_n(&sPostPltiTrace.captureGeneration, 1,
+                         __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.activeToken, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.initialScanPermitToken, 0,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.targetController, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.backend,
+                     kAirportItlwmPostPltiTraceBackendUnknown,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.nextEpisode, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.episodeCount, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.droppedEntries, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.lastControlSequence, 0,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&sPostPltiTrace.captureFirstSequence,
+                     __atomic_load_n(&sPostPltiTrace.nextSequence,
+                                     __ATOMIC_ACQUIRE) + 1,
+                     __ATOMIC_RELEASE);
+}
+#endif /* __IO80211_TARGET >= __MAC_26_0 */
+/* END SAFE_POST_PLTI_TRACE */
+
 IOReturn
 AirportItlwm::setProperties(OSObject *properties)
 {
     if (OSDictionary *dict = OSDynamicCast(OSDictionary, properties)) {
+#if __IO80211_TARGET >= __MAC_26_0
+        OSObject *postPltiControl = dict->getObject(
+            AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY);
+        if (OSString *command = OSDynamicCast(OSString, postPltiControl)) {
+            setProperty(AIRPORT_ITLWM_POST_PLTI_TRACE_CONTROL_PROPERTY,
+                        command);
+            airportItlwmPostPltiTraceApplyControl(this,
+                                                   command->getCStringNoCopy());
+            return kIOReturnSuccess;
+        }
+#endif
         OSObject *control = dict->getObject(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY);
         if (OSString *command = OSDynamicCast(OSString, control)) {
             setProperty(AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY, command);
@@ -3714,6 +4278,11 @@ void AirportItlwm::stopHalAndDrainClaimed()
     stopTahoeBootThreadCallAndDrain();
     teardownLinkStatePublishSource(this, _fWorkloop);
     stopWatchdogAndDrain();
+#if __IO80211_TARGET >= __MAC_26_0
+    // The producer fence above makes this global trace disarm safe before the
+    // controller address can be detached or released.
+    airportItlwmPostPltiTraceInvalidate();
+#endif
     releaseAPSTAOwnerClaimed();
 
     // The direct Skywalk RX trampoline is published before registration and
@@ -4420,6 +4989,9 @@ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
     // Reading a single int is safe without locking.
     sRT.nodeCount = (uint32_t)ic->ic_nnodes;
     airportItlwmRegDiagPoll(this);
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmPostPltiTracePoll(this);
+#endif
     if (ifp->if_watchdog)
         (*ifp->if_watchdog)(ifp);
     if (!fWatchdogStopping && timer == watchdogTimer)

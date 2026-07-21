@@ -22,6 +22,7 @@ auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
 sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 sky_header = (root / "AirportItlwm/AirportItlwmSkywalkInterface.hpp").read_text()
 iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
+iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
 layer_runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
 sae_gate = (root / "scripts/test_tahoe_sae_quarantine_contract.sh").read_text()
@@ -125,14 +126,21 @@ if resume.count("ieee80211_new_state(") != 1:
     fail("WCL scan-resume block must contain exactly one normal state request")
 require(resume, "PMK_READY_SCAN_RESUME", "credential-safe local progress marker")
 
-# Preserve the two lower-layer semantics that make SCAN->SCAN safe: IWX
-# coalesces an active scan and restarts an inactive one; net80211 still holds
-# an empty AUTO_JOIN scan for airportd instead of selecting a random BSS.
+# Preserve the lower-layer semantics that make SCAN->SCAN safe. IWX and the
+# actual Tahoe-QEMU legacy IWN backend both coalesce an active scan and restart
+# an inactive one; net80211 still holds an empty AUTO_JOIN scan for airportd
+# instead of selecting a random BSS.
 iwx_newstate = body(iwx, "void ItlIwx::\niwx_newstate_task(void *psc)", "IWX newstate task")
 ordered(iwx_newstate, "IWX SCAN->SCAN preservation",
         "if (ostate == IEEE80211_S_SCAN)",
         "if (nstate == ostate)",
         "IWX_FLAG_SCANNING", "goto next_scan", "iwx_scan(sc)")
+iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate", "IWN newstate")
+ordered(iwn_newstate, "IWN SCAN->SCAN preservation",
+        "if (ic->ic_state == IEEE80211_S_SCAN)",
+        "if (nstate == IEEE80211_S_SCAN)",
+        "IWN_FLAG_SCANNING", "return 0;",
+        "case IEEE80211_S_SCAN:", "iwn_scan(sc,")
 end_scan = body(node, "void\nieee80211_end_scan", "net80211 end_scan")
 ordered(end_scan, "Apple AUTO_JOIN empty-ESS hold",
         "IEEE80211_F_AUTO_JOIN", "ic->ic_des_esslen == 0", "return;",

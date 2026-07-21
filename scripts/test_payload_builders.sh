@@ -21,6 +21,7 @@ esac
   -D__IO80211_TARGET=260000 \
   $compat_flags \
   -I. \
+  -Iinclude \
   tests/tahoe_payload_builders_test.cpp \
   -o "$tmpdir/tahoe_payload_builders_test"
 

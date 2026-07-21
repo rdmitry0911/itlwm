@@ -98,6 +98,7 @@ bash "$ROOT/scripts/test_tahoe_boot_thread_call_auxkc_contract.sh"
 bash "$ROOT/scripts/test_tahoe_auxkc_admission_preflight_contract.sh"
 bash "$ROOT/scripts/test_tahoe_release_auxkc_preflight_result_contract.sh"
 bash -n "$ROOT/scripts/build_tahoe.sh"
+bash -n "$ROOT/scripts/build_post_plti_trace.sh"
 bash -n "$ROOT/scripts/tahoe_auxkc_admission_preflight.sh"
 bash -n "$ROOT/scripts/capture_tahoe_sae_layer.sh"
 git -C "$ROOT" diff --check
@@ -155,7 +156,8 @@ rsync -a -e "$RSYNC_RSH" \
 "${SSH[@]}" "test -f '$REMOTE_SDK/Headers/IOKit/network/IONetworkController.h'"
 "${SSH[@]}" "cp -R '$REMOTE_SDK' '$REMOTE_DIR/MacKernelSDK'"
 
-echo "[5/5] Tahoe kext BootKC gate, Agent clean build, and RegDiag client"
+echo "[5/5] safe trace client, Tahoe kext BootKC gate, Agent clean build, and RegDiag"
+"${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_post_plti_trace.sh"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ITLWM_SOURCE_ID_OVERRIDE='$SOURCE_ID' ./scripts/build_tahoe.sh '$BOOTKC'"
 "${SSH[@]}" "cd '$REMOTE_DIR/AirportItlwmAgent' && make clean && make"
 "${SSH[@]}" "cd '$REMOTE_DIR' && ./scripts/build_regdiag.sh"

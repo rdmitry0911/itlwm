@@ -69,6 +69,7 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_sae_policy.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 struct ieee80211_node *ieee80211_node_alloc(struct ieee80211com *);
 void ieee80211_node_free(struct ieee80211com *, struct ieee80211_node *);
@@ -1172,6 +1173,11 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     uint32_t assoc_fail = 0;
     u_int64_t replacement_epoch;
     int strict_pure_sae_profile;
+
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventBssSelected);
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventJoinBssEntered);
     
     /* Reinitialize media mode and channels if needed. */
     mode = ieee80211_chan2mode(ic, selbs->ni_chan);
@@ -1340,6 +1346,9 @@ ieee80211_end_scan(struct _ifnet *ifp)
                   ic->ic_state == IEEE80211_S_RUN);
     int roamscan = bgscan &&
                 (ic->ic_flags & IEEE80211_F_DISABLE_BG_AUTO_CONNECT) == 0;
+
+    AirportItlwmPostPltiTraceRecord(
+        ic, kAirportItlwmPostPltiTraceEventScanCompleted);
     
     if (ic->ic_event_handler)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_DONE, NULL);
@@ -1435,8 +1444,11 @@ ieee80211_end_scan(struct _ifnet *ifp)
      * returns — no BSS selection or auto-join at the driver level.
      */
     if (ISSET(ic->ic_flags, IEEE80211_F_AUTO_JOIN) &&
-        ic->ic_des_esslen == 0)
+        ic->ic_des_esslen == 0) {
+        AirportItlwmPostPltiTraceRecord(
+            ic, kAirportItlwmPostPltiTraceEventSelectionHeld);
         return;
+    }
 
     selbs = ieee80211_node_choose_bss(ic, bgscan, &curbs);
     if (bgscan) {

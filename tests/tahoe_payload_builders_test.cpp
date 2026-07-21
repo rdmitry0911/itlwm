@@ -1,5 +1,5 @@
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -24,6 +24,7 @@
 #include "AirportItlwm/TahoeOwnerRegistry.hpp"
 #include "AirportItlwm/TahoePayloadBuilders.hpp"
 #include "AirportItlwm/TahoePhyModeContracts.hpp"
+#include "AirportItlwm/TahoePostPltiTraceContracts.hpp"
 #include "AirportItlwm/TahoeQosDynsarContracts.hpp"
 #include "AirportItlwm/TahoeScanContracts.hpp"
 #include "AirportItlwm/TahoeSkywalkIoctlRoutes.hpp"
@@ -1710,6 +1711,219 @@ void testTahoeExternalPmkScanResumeContracts()
             "external-PMK scan resume preserves only audited PSK transition policy");
 }
 
+void testTahoePostPltiTraceContracts()
+{
+    using namespace TahoePostPltiTraceContracts;
+
+    require(sizeof(AirportItlwmPostPltiTraceEntry) == 16,
+            "safe post-PLTI trace entry carries four categorical dwords only");
+    require(sizeof(AirportItlwmPostPltiTraceSnapshot) == 48,
+            "safe post-PLTI trace snapshot includes only categorical generation/window fields");
+    require(sizeof(AirportItlwmPostPltiTraceBuffer) == 2076,
+            "safe post-PLTI trace buffer is fixed at 128 categorical entries");
+    require(offsetof(AirportItlwmPostPltiTraceEntry, sequence) == 0 &&
+                offsetof(AirportItlwmPostPltiTraceEntry, captureGeneration) == 4 &&
+                offsetof(AirportItlwmPostPltiTraceEntry, episode) == 8 &&
+                offsetof(AirportItlwmPostPltiTraceEntry, event) == 12,
+            "safe post-PLTI entry ABI keeps categorical sequence/generation/episode/event offsets");
+    require(offsetof(AirportItlwmPostPltiTraceSnapshot, captureGeneration) == 8 &&
+                offsetof(AirportItlwmPostPltiTraceSnapshot, backend) == 12 &&
+                offsetof(AirportItlwmPostPltiTraceSnapshot, activeEpisode) == 24 &&
+                offsetof(AirportItlwmPostPltiTraceSnapshot, firstSequence) == 32 &&
+                offsetof(AirportItlwmPostPltiTraceSnapshot, latestSequence) == 44,
+            "safe post-PLTI snapshot ABI fixes categorical generation and contiguous-window offsets");
+    require(offsetof(AirportItlwmPostPltiTraceBuffer, captureGeneration) == 4 &&
+                offsetof(AirportItlwmPostPltiTraceBuffer, backend) == 8 &&
+                offsetof(AirportItlwmPostPltiTraceBuffer, firstSequence) == 20 &&
+                offsetof(AirportItlwmPostPltiTraceBuffer, latestSequence) == 24 &&
+                offsetof(AirportItlwmPostPltiTraceBuffer, entries) == 28,
+            "safe post-PLTI buffer ABI fixes the categorical contiguous-window header");
+
+    constexpr uint32_t kGeneration = 41;
+    constexpr uint32_t kEpisode = 7;
+    constexpr uint32_t kFirstSequence = 101;
+    AirportItlwmPostPltiTraceEntry entries[32] = {};
+    uint32_t count = 0;
+    const auto append = [&](uint32_t event) {
+        entries[count] = {
+            kFirstSequence + count, kGeneration, kEpisode, event,
+        };
+        count++;
+    };
+    const auto append_canonical = [&](bool includeEapolCompletion) {
+        append(kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume);
+        append(kAirportItlwmPostPltiTraceEventIwnScanStarted);
+        append(kAirportItlwmPostPltiTraceEventScanCompleted);
+        append(kAirportItlwmPostPltiTraceEventBssSelected);
+        append(kAirportItlwmPostPltiTraceEventJoinBssEntered);
+        append(kAirportItlwmPostPltiTraceEventAuthStateEntered);
+        append(kAirportItlwmPostPltiTraceEventAuthEnqueued);
+        append(kAirportItlwmPostPltiTraceEventAuthDequeued);
+        append(kAirportItlwmPostPltiTraceEventAuthFwSubmitted);
+        append(kAirportItlwmPostPltiTraceEventAuthTxDone);
+        append(kAirportItlwmPostPltiTraceEventAuthRxFromFirmware);
+        append(kAirportItlwmPostPltiTraceEventAuthRxNet80211);
+        append(kAirportItlwmPostPltiTraceEventAssocStateEntered);
+        append(kAirportItlwmPostPltiTraceEventAssocEnqueued);
+        append(kAirportItlwmPostPltiTraceEventAssocDequeued);
+        append(kAirportItlwmPostPltiTraceEventAssocFwSubmitted);
+        append(kAirportItlwmPostPltiTraceEventAssocTxDone);
+        append(kAirportItlwmPostPltiTraceEventAssocRxFromFirmware);
+        append(kAirportItlwmPostPltiTraceEventAssocRxNet80211);
+        append(kAirportItlwmPostPltiTraceEventRunEntered);
+        append(kAirportItlwmPostPltiTraceEventEapolRxDecapped);
+        append(kAirportItlwmPostPltiTraceEventEapolRxKernelPae);
+        append(kAirportItlwmPostPltiTraceEventEapolTxEnqueued);
+        if (includeEapolCompletion) {
+            append(kAirportItlwmPostPltiTraceEventEapolFwSubmitted);
+            append(kAirportItlwmPostPltiTraceEventEapolTxDone);
+        }
+        append(kAirportItlwmPostPltiTraceEventPortValidTransition);
+    };
+    const auto classify_shared = [&](bool integrity, uint32_t backend,
+                                     uint32_t episodeCount,
+                                     uint32_t activeEpisode) {
+        return airport_itlwm_post_plti_trace_classify_entries(
+            entries, count, integrity ? 1 : 0, backend, episodeCount,
+            activeEpisode);
+    };
+    const auto require_shared_cpp_agree =
+        [&](bool integrity, uint32_t backend, uint32_t episodeCount,
+            uint32_t activeEpisode, Verdict expected, const char *message) {
+            const Verdict facade = classifyEntries(
+                entries, count, integrity, backend, episodeCount,
+                activeEpisode);
+            require(facade == expected, message);
+            require(static_cast<uint32_t>(facade) ==
+                        static_cast<uint32_t>(classify_shared(
+                            integrity, backend, episodeCount, activeEpisode)),
+                    "C and C++ post-PLTI trace classifiers agree");
+        };
+
+    // Port-valid closes the trace synchronously after the kernel enqueues M4.
+    // Firmware submit/TX_DONE may have happened earlier, but cannot be
+    // required after the token is closed.
+    append_canonical(false);
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendIwn, 1, 0,
+        Verdict::KernelChainObserved,
+        "the minimal closed IWN kernel chain reaches the kernel-only verdict");
+
+    AirportItlwmPostPltiTraceEntry completedBeforePortValid[32] = {};
+    std::memcpy(completedBeforePortValid, entries, sizeof(entries));
+    const uint32_t terminal = count - 1;
+    completedBeforePortValid[terminal + 2] = completedBeforePortValid[terminal];
+    completedBeforePortValid[terminal + 2].sequence += 2;
+    completedBeforePortValid[terminal].event =
+        kAirportItlwmPostPltiTraceEventEapolFwSubmitted;
+    completedBeforePortValid[terminal + 1] = {
+        completedBeforePortValid[terminal].sequence + 1, kGeneration,
+        kEpisode, kAirportItlwmPostPltiTraceEventEapolTxDone,
+    };
+    completedBeforePortValid[terminal + 2].event =
+        kAirportItlwmPostPltiTraceEventPortValidTransition;
+    require(classifyEntries(completedBeforePortValid, count + 2, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::KernelChainObserved,
+            "optional EAPOL firmware completion before port-valid remains ordered");
+
+    AirportItlwmPostPltiTraceEntry afterTerminal[32] = {};
+    std::memcpy(afterTerminal, entries, sizeof(entries));
+    afterTerminal[count] = {
+        afterTerminal[count - 1].sequence + 1, kGeneration, kEpisode,
+        kAirportItlwmPostPltiTraceEventEapolFwSubmitted,
+    };
+    require(classifyEntries(afterTerminal, count + 1, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "an event after token-closing port-valid is inconclusive");
+
+    AirportItlwmPostPltiTraceEntry terminalBeforeEnqueue[32] = {};
+    std::memcpy(terminalBeforeEnqueue, entries, sizeof(entries));
+    terminalBeforeEnqueue[count - 2].event =
+        kAirportItlwmPostPltiTraceEventPortValidTransition;
+    terminalBeforeEnqueue[count - 1].event =
+        kAirportItlwmPostPltiTraceEventEapolTxEnqueued;
+    require(classifyEntries(terminalBeforeEnqueue, count, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "port-valid before the kernel EAPOL enqueue is not a valid chain");
+
+    AirportItlwmPostPltiTraceEntry coalesced[32] = {};
+    std::memcpy(coalesced, entries, sizeof(entries));
+    coalesced[1].event = kAirportItlwmPostPltiTraceEventIwnScanCoalesced;
+    require(classifyEntries(coalesced, count, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::KernelChainObserved,
+            "the coalesced IWN scan alternative remains an ordered success");
+
+    AirportItlwmPostPltiTraceEntry wrongOrder[32] = {};
+    std::memcpy(wrongOrder, entries, sizeof(entries));
+    const uint32_t authDequeued = wrongOrder[7].event;
+    wrongOrder[7].event = wrongOrder[8].event;
+    wrongOrder[8].event = authDequeued;
+    require(classifyEntries(wrongOrder, count, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "out-of-order categorical events cannot imply a successful chain");
+
+    AirportItlwmPostPltiTraceEntry aborted[32] = {};
+    std::memcpy(aborted, entries, sizeof(entries));
+    aborted[count - 1].event = kAirportItlwmPostPltiTraceEventEpisodeAborted;
+    require(classifyEntries(aborted, count, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "an aborted episode is never reported as a completed kernel chain");
+
+    AirportItlwmPostPltiTraceEntry mixedEpisode[32] = {};
+    std::memcpy(mixedEpisode, entries, sizeof(entries));
+    mixedEpisode[12].episode = kEpisode + 1;
+    require(classifyEntries(mixedEpisode, count, true,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "events mixed from episodes are inconclusive");
+
+    AirportItlwmPostPltiTraceEntry mixedGeneration[32] = {};
+    std::memcpy(mixedGeneration, entries, sizeof(entries));
+    mixedGeneration[12].captureGeneration = kGeneration + 1;
+    require(classifyEntries(mixedGeneration, count, false,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "caller-rejected mixed capture generations are inconclusive");
+    AirportItlwmPostPltiTraceEntry overflowGap[32] = {};
+    std::memcpy(overflowGap, entries, sizeof(entries));
+    overflowGap[12].sequence++;
+    require(classifyEntries(overflowGap, count, false,
+                            kAirportItlwmPostPltiTraceBackendIwn, 1, 0) ==
+                Verdict::IntegrityInconclusive,
+            "a caller-detected sequence gap or ring overflow is inconclusive");
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendIwn, 2, 0,
+        Verdict::IntegrityInconclusive,
+        "multiple episodes remain inconclusive");
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendIwn, 1, kEpisode,
+        Verdict::IntegrityInconclusive,
+        "an active episode cannot be treated as a completed experiment");
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendUnsupported, 1, 0,
+        Verdict::BackendUnsupported,
+        "unsupported backends do not borrow the IWN trace verdict");
+
+    const uint32_t savedCount = count;
+    count = 0;
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendIwn, 0, 0,
+        Verdict::BranchNotObserved,
+        "a clean, empty IWN capture is reported as not observed");
+    count = savedCount;
+
+    require(classify(0, true, 0) == Verdict::BranchNotObserved,
+            "mask-only callers cannot manufacture an ordered success verdict");
+    require(classify(0, true, 1) == Verdict::IntegrityInconclusive,
+            "mask-only callers with an episode remain inconclusive");
+}
+
 void testTahoeCountryCodeCarrierContracts()
 {
     require(APPLE80211_MAX_CC_LEN == 3,
@@ -1805,9 +2019,10 @@ int main()
     testTahoeBssManagerContracts();
     testTahoeAssociationAuthContracts();
     testTahoeExternalPmkScanResumeContracts();
+    testTahoePostPltiTraceContracts();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 31 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 32 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, safe post-PLTI trace, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

@@ -68,6 +68,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 #if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
 #include <ClientKit/AirportItlwmRegDiagBridge.h>
@@ -319,6 +320,9 @@ ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *ic,
 {
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return;
+	/* Passive trace ownership follows the same pre-callback state boundary. */
+	AirportItlwmPostPltiTraceNoteStateRequest(ic, (uint32_t)ic->ic_state,
+	    (uint32_t)nstate);
 	if ((ic->ic_state == IEEE80211_S_SCAN &&
 	     nstate == IEEE80211_S_AUTH) ||
 	    (ic->ic_state == IEEE80211_S_AUTH &&
