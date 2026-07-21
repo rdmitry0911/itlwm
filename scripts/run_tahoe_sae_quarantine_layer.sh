@@ -88,10 +88,12 @@ assert_pinned_guest_provenance() {
     fi
 }
 
-echo "[1/5] static SAE/PMF, PMK, raw-BSD, and MFP contracts"
+echo "[1/5] static SAE/PMF, owner-context, PMK, raw-BSD, and MFP contracts"
 bash "$ROOT/scripts/test_tahoe_sae_quarantine_contract.sh"
 bash "$ROOT/scripts/test_tahoe_link_handoff_diagnostic_contract.sh"
+bash "$ROOT/scripts/test_tahoe_link_context_census_contract.sh"
 bash "$ROOT/scripts/test_tahoe_link_handoff_lab_result_contract.sh"
+bash "$ROOT/scripts/test_tahoe_appstore_iobuiltin_contract.sh"
 bash "$ROOT/scripts/test_tahoe_boot_thread_call_auxkc_contract.sh"
 bash "$ROOT/scripts/test_tahoe_auxkc_admission_preflight_contract.sh"
 bash "$ROOT/scripts/test_tahoe_release_auxkc_preflight_result_contract.sh"

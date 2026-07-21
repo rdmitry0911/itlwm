@@ -69,6 +69,10 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 
+#if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
+#include <ClientKit/AirportItlwmRegDiagBridge.h>
+#endif
+
 const char * const ieee80211_mgt_subtype_name[] = {
 	"assoc_req",	"assoc_resp",	"reassoc_req",	"reassoc_resp",
 	"probe_req",	"probe_resp",	"reserved#6",	"reserved#7",
@@ -1859,6 +1863,16 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
     link_state = nstate;
     if (link_state != ifp->if_link_state) {
         ifp->if_link_state = link_state;
+#if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
+        /*
+         * Passive Tahoe census marker for the actual net80211 bridge edge.
+         * Take the existing atomic association epoch before the unchanged
+         * controller call below; the bridge cannot publish, defer, retry, or
+         * otherwise alter this link-state transition.
+         */
+        AirportItlwmRegDiagNet80211LinkContext(
+            ic, (uint32_t)link_state, ieee80211_pae_assoc_epoch_current(ic));
+#endif
         if (link_state == LINK_STATE_UP) {
             ifp->controller->setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, ifp->controller->getCurrentMedium());
         } else {

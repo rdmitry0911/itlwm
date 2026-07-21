@@ -27,6 +27,7 @@ kind_name(uint32_t kind)
         case kAirportItlwmRegDiagTraceLinkStatus: return "link-status";
         case kAirportItlwmRegDiagTraceLinkPublish: return "link-publish";
         case kAirportItlwmRegDiagTraceWclJoinAbort: return "join-abort";
+        case kAirportItlwmRegDiagTraceLinkContext: return "link-context";
         default: return "unknown";
     }
 }
@@ -112,6 +113,94 @@ link_publish_decision_name(uint32_t decision)
         case kAirportItlwmRegDiagLinkPublishPublished: return "published";
         case kAirportItlwmRegDiagLinkPublishActionUnavailable: return "action-unavailable";
         default: return "unknown";
+    }
+}
+
+static const char *
+link_context_route_name(uint32_t route)
+{
+    switch (route) {
+        case kAirportItlwmRegDiagLinkContextNet80211Bridge:
+            return "net80211-bridge";
+        case kAirportItlwmRegDiagLinkContextControllerStatus:
+            return "controller-status";
+        case kAirportItlwmRegDiagLinkContextPublishQueue:
+            return "publish-queue";
+        case kAirportItlwmRegDiagLinkContextPublishAction:
+            return "publish-action";
+        case kAirportItlwmRegDiagLinkContextGate:
+            return "link-gate";
+        case kAirportItlwmRegDiagLinkContextSkywalkParent:
+            return "skywalk-parent";
+        case kAirportItlwmRegDiagLinkContextWclUpdate:
+            return "wcl-update";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *
+link_context_stage_name(uint32_t stage)
+{
+    switch (stage) {
+        case kAirportItlwmRegDiagLinkContextEnter: return "enter";
+        case kAirportItlwmRegDiagLinkContextSameStatus: return "same-status";
+        case kAirportItlwmRegDiagLinkContextLifecycleRejected:
+            return "lifecycle-rejected";
+        case kAirportItlwmRegDiagLinkContextBaseApplied: return "base-applied";
+        case kAirportItlwmRegDiagLinkContextSourceUnavailable:
+            return "source-unavailable";
+        case kAirportItlwmRegDiagLinkContextSourceReady: return "source-ready";
+        case kAirportItlwmRegDiagLinkContextActionUnavailable:
+            return "action-unavailable";
+        case kAirportItlwmRegDiagLinkContextActionReady: return "action-ready";
+        case kAirportItlwmRegDiagLinkContextGateRejected: return "gate-rejected";
+        case kAirportItlwmRegDiagLinkContextGateReady: return "gate-ready";
+        case kAirportItlwmRegDiagLinkContextParentEnter: return "parent-enter";
+        case kAirportItlwmRegDiagLinkContextParentAccepted:
+            return "parent-accepted";
+        case kAirportItlwmRegDiagLinkContextParentRejected:
+            return "parent-rejected";
+        case kAirportItlwmRegDiagLinkContextWclDecoded: return "wcl-decoded";
+        case kAirportItlwmRegDiagLinkContextWclReturn: return "wcl-return";
+        default: return "unknown";
+    }
+}
+
+static const char *
+link_context_predicate_name(uint32_t predicate)
+{
+    switch (predicate) {
+        case kAirportItlwmRegDiagLinkContextPredicateFalse: return "no";
+        case kAirportItlwmRegDiagLinkContextPredicateTrue: return "yes";
+        default: return "unknown";
+    }
+}
+
+static const char *
+link_context_lifecycle_name(uint32_t lifecycle)
+{
+    switch (lifecycle) {
+        case kAirportItlwmRegDiagLinkContextLifecycleControllerSame:
+            return "controller-same";
+        case kAirportItlwmRegDiagLinkContextLifecycleControllerAdmitted:
+            return "controller-admitted";
+        case kAirportItlwmRegDiagLinkContextLifecycleControllerRejected:
+            return "controller-rejected";
+        case kAirportItlwmRegDiagLinkContextLifecycleControllerDrainOwner:
+            return "controller-drain-owner";
+        case kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable:
+            return "publication-unavailable";
+        case kAirportItlwmRegDiagLinkContextLifecyclePublicationReady:
+            return "publication-ready";
+        case kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted:
+            return "internal-admitted";
+        case kAirportItlwmRegDiagLinkContextLifecycleParentAccepted:
+            return "parent-accepted";
+        case kAirportItlwmRegDiagLinkContextLifecycleParentRejected:
+            return "parent-rejected";
+        default:
+            return "unknown";
     }
 }
 
@@ -392,6 +481,45 @@ get_trace(io_service_t service)
             printf(" decision=%s link_state=%" PRIu64 " raw_code=%" PRIu64,
                    link_publish_decision_name((uint32_t)e->arg0),
                    e->arg1, e->arg2);
+        } else if (e->kind == kAirportItlwmRegDiagTraceLinkContext) {
+            const uint32_t context = (uint32_t)e->arg0;
+            const uint32_t route =
+                context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ROUTE_MASK;
+            const uint32_t stage =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_SHIFT;
+            const uint32_t on_thread =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_SHIFT;
+            const uint32_t in_gate =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_SHIFT;
+            const uint32_t on_dispatch =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_SHIFT;
+            const uint32_t lifecycle =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_SHIFT;
+            const uint32_t link_state =
+                (context & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_MASK) >>
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_SHIFT;
+            const uint32_t raw_code = (uint32_t)e->arg2;
+            const uint32_t controller_status = (uint32_t)(e->arg2 >> 32);
+            printf(" route=%s stage=%s epoch=%" PRIu64
+                   " link_state=%u raw_code=%u controller_status=",
+                   link_context_route_name(route), link_context_stage_name(stage),
+                   e->arg1, link_state, raw_code);
+            if (controller_status ==
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE) {
+                printf("n/a");
+            } else {
+                printf("0x%x", controller_status);
+            }
+            printf(" lifecycle=%s on_thread=%s in_gate=%s on_dispatch=%s",
+                   link_context_lifecycle_name(lifecycle),
+                   link_context_predicate_name(on_thread),
+                   link_context_predicate_name(in_gate),
+                   link_context_predicate_name(on_dispatch));
         } else if (e->kind == kAirportItlwmRegDiagTraceWclJoinAbort) {
             printf(" phase=%s ic_state=%" PRIu64 " request_completion=%" PRIu64,
                    join_abort_phase_name((uint32_t)e->arg0), e->arg1,
@@ -415,7 +543,7 @@ usage(const char *prog)
             "  %s set enable 1 assoc 1 control 1 data 1 log 0 clear 1\n"
             "  %s set block 0x0 intervention 0\n"
             "  %s get snapshot|trace|control|report\n"
-            "  %s on|sae-on|off\n",
+            "  %s on|sae-on|link-context-on|off\n",
             prog, prog, prog, prog);
 }
 
@@ -443,17 +571,19 @@ main(int argc, char **argv)
             (char *)"control", (char *)"1",
             (char *)"data", (char *)"1",
             (char *)"log", (char *)"0",
+            (char *)"context", (char *)"0",
             (char *)"intervention", (char *)"0",
             (char *)"clear", (char *)"1",
         };
-        rc = set_control(service, 14, args);
+        rc = set_control(service, 16, args);
     } else if (strcmp(argv[1], "off") == 0) {
         char *args[] = {
             (char *)"enable", (char *)"0",
+            (char *)"context", (char *)"0",
             (char *)"intervention", (char *)"0",
             (char *)"block", (char *)"0",
         };
-        rc = set_control(service, 6, args);
+        rc = set_control(service, 8, args);
     } else if (strcmp(argv[1], "sae-on") == 0) {
         char *args[] = {
             (char *)"enable", (char *)"1",
@@ -462,11 +592,26 @@ main(int argc, char **argv)
             (char *)"pmk", (char *)"1",
             (char *)"data", (char *)"0",
             (char *)"log", (char *)"0",
+            (char *)"context", (char *)"0",
             (char *)"intervention", (char *)"0",
             (char *)"block", (char *)"0",
             (char *)"clear", (char *)"1",
         };
-        rc = set_control(service, 18, args);
+        rc = set_control(service, 20, args);
+    } else if (strcmp(argv[1], "link-context-on") == 0) {
+        char *args[] = {
+            (char *)"enable", (char *)"1",
+            (char *)"assoc", (char *)"0",
+            (char *)"control", (char *)"1",
+            (char *)"pmk", (char *)"0",
+            (char *)"data", (char *)"0",
+            (char *)"log", (char *)"0",
+            (char *)"context", (char *)"1",
+            (char *)"intervention", (char *)"0",
+            (char *)"block", (char *)"0",
+            (char *)"clear", (char *)"1",
+        };
+        rc = set_control(service, 20, args);
     } else if (strcmp(argv[1], "get") == 0 && argc >= 3) {
         if (strcmp(argv[2], "snapshot") == 0)
             rc = get_snapshot(service);

@@ -410,6 +410,20 @@ public:
                                UInt64                  speed        = 0,
                                OSData *                data         = 0) override;
     static IOReturn setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * Passive owner-context census helpers.  Callers provide either the
+     * already-sampled net80211 association epoch or currentTahoeAssociationEpoch();
+     * neither helper publishes, queues, gates, or retains anything.
+     */
+    uint64_t currentTahoeAssociationEpoch() const;
+    void recordTahoeLinkContext(uint32_t route, uint32_t stage,
+                                uint32_t linkState, uint32_t rawCode,
+                                uint32_t controllerStatus,
+                                uint32_t lifecycle, IOReturn result,
+                                uint64_t assocEpoch,
+                                int32_t onDispatchQueue);
+#endif
     static IOReturn postRsnHandshakeDoneGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postMessageGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn postWclScanResultsGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);

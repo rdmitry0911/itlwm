@@ -15,6 +15,7 @@
 #include "TahoeDriverAvailabilityContracts.hpp"
 #include <linux/iwx_diag_log.h>
 #include "AirportItlwmRegDiag.hpp"
+#include <ClientKit/AirportItlwmRegDiagBridge.h>
 #include "AirportItlwmAPSTAOwner.hpp"
 #include "TahoeScanContracts.hpp"
 #include "TahoeSkywalkIoctlRoutes.hpp"
@@ -699,6 +700,15 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     if (state.settingUp || state.stopping || state.tearingDown ||
         sender != state.source || state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+#if __IO80211_TARGET >= __MAC_26_0
+        that->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextPublishAction,
+            kAirportItlwmRegDiagLinkContextActionUnavailable, 0, 0,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable,
+            kIOReturnNotReady,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, -1);
+#endif
         airportItlwmRegDiagRecordLinkPublish(
             kAirportItlwmRegDiagLinkPublishActionUnavailable, 0, 0,
             kIOReturnNotReady);
@@ -718,6 +728,16 @@ static void publishLinkStateInterruptAction(OSObject *owner,
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
     if (!valid)
         return;
+#if __IO80211_TARGET >= __MAC_26_0
+    that->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextPublishAction,
+        kAirportItlwmRegDiagLinkContextActionReady,
+        static_cast<uint32_t>(linkState), rawCode,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecyclePublicationReady,
+        kIOReturnSuccess, AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+        -1);
+#endif
     AirportItlwm::setLinkStateGated(that, (void *)(uintptr_t)linkState,
                                     (void *)(uintptr_t)rawCode, NULL, NULL);
 }
@@ -826,6 +846,16 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
     if (state.settingUp || state.stopping || state.tearingDown ||
         state.source == NULL || state.payloadLock == NULL) {
         IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+#if __IO80211_TARGET >= __MAC_26_0
+        that->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextPublishQueue,
+            kAirportItlwmRegDiagLinkContextSourceUnavailable,
+            static_cast<uint32_t>(linkState), rawCode,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable,
+            kIOReturnNotReady,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, -1);
+#endif
         airportItlwmRegDiagRecordLinkPublish(
             kAirportItlwmRegDiagLinkPublishSourceUnavailable,
             static_cast<uint32_t>(linkState), rawCode, kIOReturnNotReady);
@@ -842,6 +872,16 @@ static void queueOffGateLinkStatePublish(AirportItlwm *that,
     state.pendingRawCode = rawCode;
     state.pendingValid = true;
     IOSimpleLockUnlockEnableInterrupt(payloadLock, irq);
+#if __IO80211_TARGET >= __MAC_26_0
+    that->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextPublishQueue,
+        kAirportItlwmRegDiagLinkContextSourceReady,
+        static_cast<uint32_t>(linkState), rawCode,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecyclePublicationReady,
+        kIOReturnSuccess, AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+        -1);
+#endif
     airportItlwmRegDiagRecordLinkPublish(
         kAirportItlwmRegDiagLinkPublishQueued,
         static_cast<uint32_t>(linkState), rawCode, kIOReturnSuccess);
@@ -1356,6 +1396,9 @@ airportItlwmRegDiagApplyControl(AirportItlwm *driver, const char *command)
     airportItlwmRegDiagSetFlagFromControl(command, "pmk",
                                           kAirportItlwmRegDiagModePmk,
                                           &modeFlags);
+    airportItlwmRegDiagSetFlagFromControl(command, "context",
+                                          kAirportItlwmRegDiagModeLinkContext,
+                                          &modeFlags);
     airportItlwmRegDiagSetFlagFromControl(command, "intervention",
                                           kAirportItlwmRegDiagModeIntervention,
                                           &modeFlags);
@@ -1751,6 +1794,118 @@ airportItlwmRegDiagRecordLinkPublish(uint32_t decision, uint32_t linkState,
                              static_cast<int32_t>(decision), linkState,
                              rawCode);
 }
+
+bool
+airportItlwmRegDiagShouldRecordLinkContext()
+{
+    return airportItlwmRegDiagEnabled(kAirportItlwmRegDiagModeLinkContext);
+}
+
+static uint32_t
+airportItlwmRegDiagLinkContextPredicate(int32_t value)
+{
+    if (value > 0)
+        return kAirportItlwmRegDiagLinkContextPredicateTrue;
+    if (value == 0)
+        return kAirportItlwmRegDiagLinkContextPredicateFalse;
+    return kAirportItlwmRegDiagLinkContextPredicateUnknown;
+}
+
+void
+airportItlwmRegDiagRecordLinkContext(uint32_t route, uint32_t stage,
+                                     uint32_t linkState, uint32_t rawCode,
+                                     uint32_t controllerStatus,
+                                     uint32_t lifecycle, uint64_t assocEpoch,
+                                     int32_t onThread, int32_t inGate,
+                                     int32_t onDispatchQueue, IOReturn result)
+{
+    if (!airportItlwmRegDiagShouldRecordLinkContext())
+        return;
+
+    const uint32_t context =
+        (route & AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ROUTE_MASK) |
+        ((stage << AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_MASK) |
+        ((airportItlwmRegDiagLinkContextPredicate(onThread) <<
+          AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_MASK) |
+        ((airportItlwmRegDiagLinkContextPredicate(inGate) <<
+          AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_MASK) |
+        ((airportItlwmRegDiagLinkContextPredicate(onDispatchQueue) <<
+          AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_MASK) |
+        ((lifecycle << AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_MASK) |
+        ((linkState << AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_SHIFT) &
+         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_MASK);
+    airportItlwmRegDiagTrace(
+        kAirportItlwmRegDiagTraceLinkContext, kAirportItlwmRegDiagPathLink,
+        result, static_cast<int32_t>(context), assocEpoch,
+        (static_cast<uint64_t>(controllerStatus) << 32) | rawCode);
+}
+
+#if __IO80211_TARGET >= __MAC_26_0
+uint64_t
+AirportItlwm::currentTahoeAssociationEpoch() const
+{
+    ItlHalService *hal = fHalService;
+    if (hal == nullptr)
+        return 0;
+    const struct ieee80211com *ic = hal->get80211Controller();
+    return ieee80211_pae_assoc_epoch_current(ic);
+}
+
+void
+AirportItlwm::recordTahoeLinkContext(uint32_t route, uint32_t stage,
+                                     uint32_t linkState, uint32_t rawCode,
+                                     uint32_t controllerStatus,
+                                     uint32_t lifecycle, IOReturn result,
+                                     uint64_t assocEpoch,
+                                     int32_t onDispatchQueue)
+{
+    if (!airportItlwmRegDiagShouldRecordLinkContext())
+        return;
+
+    if (assocEpoch == AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT)
+        assocEpoch = currentTahoeAssociationEpoch();
+
+    IOWorkLoop *workLoop = getWorkLoop();
+    const int32_t onThread = workLoop != nullptr && workLoop->onThread() ? 1 :
+                             workLoop != nullptr ? 0 : -1;
+    const int32_t inGate = workLoop != nullptr && workLoop->inGate() ? 1 :
+                           workLoop != nullptr ? 0 : -1;
+    airportItlwmRegDiagRecordLinkContext(
+        route, stage, linkState, rawCode, controllerStatus, lifecycle,
+        assocEpoch, onThread, inGate, onDispatchQueue, result);
+}
+
+extern "C" void
+AirportItlwmRegDiagNet80211LinkContext(struct ieee80211com *ic,
+                                       uint32_t linkState,
+                                       uint64_t assocEpoch)
+{
+    if (!airportItlwmRegDiagShouldRecordLinkContext() || ic == nullptr)
+        return;
+
+    /*
+     * net80211 can call this from a producer context without a controller
+     * lifecycle admission.  Keep the bridge strictly self-contained: it
+     * records the already-sampled atomic epoch but never casts, dereferences
+     * the controller, samples a work loop, or reaches HAL state.
+     *
+     * linkState is the local BSD LINK_STATE_* value here; downstream Tahoe
+     * route markers use IO80211LinkState.  The shared epoch and ordered stage
+     * chain, not those route-local numeric encodings, correlate the census.
+     */
+    airportItlwmRegDiagRecordLinkContext(
+        kAirportItlwmRegDiagLinkContextNet80211Bridge,
+        kAirportItlwmRegDiagLinkContextEnter, linkState, 0,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecycleUnknown, kIOReturnSuccess,
+        assocEpoch, -1, -1, -1);
+}
+#endif
 
 void
 airportItlwmRegDiagRecordJoinAbort(uint32_t phase, int32_t icState,
@@ -5954,10 +6109,25 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
     RT_SET(6);
     (void)speed;
     const UInt32 previousStatus = currentStatus;
+#if __IO80211_TARGET >= __MAC_26_0
+    recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextControllerStatus,
+        kAirportItlwmRegDiagLinkContextEnter, 0, status, previousStatus,
+        kAirportItlwmRegDiagLinkContextLifecycleUnknown, kIOReturnSuccess,
+        0, -1);
+#endif
     if (status == previousStatus) {
         airportItlwmRegDiagRecordLinkStatus(
             kAirportItlwmRegDiagLinkStatusSame, previousStatus, status,
             kIOReturnSuccess);
+#if __IO80211_TARGET >= __MAC_26_0
+        recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextControllerStatus,
+            kAirportItlwmRegDiagLinkContextSameStatus, 0, status,
+            previousStatus,
+            kAirportItlwmRegDiagLinkContextLifecycleControllerSame,
+            kIOReturnSuccess, 0, -1);
+#endif
         return true;
     }
 
@@ -5971,6 +6141,14 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
         airportItlwmRegDiagRecordLinkStatus(
             kAirportItlwmRegDiagLinkStatusLifecycleRejected, previousStatus,
             status, kIOReturnNotReady);
+#if __IO80211_TARGET >= __MAC_26_0
+        recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextControllerStatus,
+            kAirportItlwmRegDiagLinkContextLifecycleRejected, 0, status,
+            previousStatus,
+            kAirportItlwmRegDiagLinkContextLifecycleControllerRejected,
+            kIOReturnNotReady, 0, -1);
+#endif
         return false;
     }
 
@@ -5979,6 +6157,15 @@ setLinkStatus(UInt32 status, const IONetworkMedium * activeMedium, UInt64 speed,
     airportItlwmRegDiagRecordLinkStatus(
         kAirportItlwmRegDiagLinkStatusApplied, previousStatus, status,
         ret ? kIOReturnSuccess : kIOReturnError);
+#if __IO80211_TARGET >= __MAC_26_0
+    recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextControllerStatus,
+        kAirportItlwmRegDiagLinkContextBaseApplied, 0, status, status,
+        drainOwner ? kAirportItlwmRegDiagLinkContextLifecycleControllerDrainOwner :
+                     kAirportItlwmRegDiagLinkContextLifecycleControllerAdmitted,
+        ret ? kIOReturnSuccess : kIOReturnError,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, -1);
+#endif
 
     // In the stop owner's Draining phase complete only the base transition.
     // A late non-owner was rejected before super; neither path can touch
@@ -6052,6 +6239,13 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
      */
     if (that->fNetIf == NULL) {
         XYLog("DEBUG %s skipped: null fNetIf\n", __FUNCTION__);
+        that->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextGate,
+            kAirportItlwmRegDiagLinkContextActionUnavailable,
+            static_cast<uint32_t>(linkState), rawCode,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable,
+            kIOReturnNotReady, 0, -1);
         airportItlwmRegDiagRecordLinkPublish(
             kAirportItlwmRegDiagLinkPublishActionUnavailable,
             static_cast<uint32_t>(linkState), rawCode, kIOReturnNotReady);
@@ -6063,7 +6257,19 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
             publishWorkLoop ? (publishWorkLoop->onThread() ? 1 : 0) : -1;
         const int inGatePred =
             publishWorkLoop ? (publishWorkLoop->inGate() ? 1 : 0) : -1;
-        if (!(onThreadPred == 1 && inGatePred == 0)) {
+        const bool offGateOwner = onThreadPred == 1 && inGatePred == 0;
+        if (airportItlwmRegDiagShouldRecordLinkContext()) {
+            airportItlwmRegDiagRecordLinkContext(
+                kAirportItlwmRegDiagLinkContextGate,
+                offGateOwner ? kAirportItlwmRegDiagLinkContextGateReady :
+                               kAirportItlwmRegDiagLinkContextGateRejected,
+                static_cast<uint32_t>(linkState), rawCode,
+                AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+                kAirportItlwmRegDiagLinkContextLifecyclePublicationReady,
+                that->currentTahoeAssociationEpoch(), onThreadPred, inGatePred,
+                -1, offGateOwner ? kIOReturnSuccess : kIOReturnNotReady);
+        }
+        if (!offGateOwner) {
             const uint32_t predicates =
                 (onThreadPred == 1 ? 0x1U : 0U) |
                 (inGatePred == 1 ? 0x2U : 0U);
@@ -6091,6 +6297,16 @@ setLinkStateGated(OSObject *target, void *arg0, void *arg1, void *arg2, void *ar
             linkState, setLinkCode, false, 0, 0);
     const IOReturn ret = linkTransitionAccepted ? kIOReturnSuccess
                                                  : kIOReturnError;
+    that->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextGate,
+        linkTransitionAccepted ? kAirportItlwmRegDiagLinkContextParentAccepted :
+                                 kAirportItlwmRegDiagLinkContextParentRejected,
+        static_cast<uint32_t>(linkState), setLinkCode,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        linkTransitionAccepted ?
+            kAirportItlwmRegDiagLinkContextLifecycleParentAccepted :
+            kAirportItlwmRegDiagLinkContextLifecycleParentRejected,
+        ret, AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, -1);
     airportItlwmRegDiagRecordLinkPublish(
         kAirportItlwmRegDiagLinkPublishPublished,
         static_cast<uint32_t>(linkState), setLinkCode, ret);

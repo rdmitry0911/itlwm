@@ -10,6 +10,25 @@
 #define AIRPORT_ITLWM_REGDIAG_MAX_NAME_LEN 32U
 /* TraceLinkState arg2: parent bool is unavailable on pre-Tahoe targets. */
 #define AIRPORT_ITLWM_REGDIAG_LINK_STATE_PARENT_ACCEPTED_UNAVAILABLE UINT64_MAX
+/* TraceLinkContext arg2[63:32]: controller status was not sampled here. */
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE UINT32_MAX
+/* Recorder sentinel: load the safe atomic association epoch after opt-in. */
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT UINT64_MAX
+
+/* TraceLinkContext arg0 packs compact, redaction-safe owner predicates. */
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ROUTE_MASK 0x0000003fU
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_SHIFT 6U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STAGE_MASK 0x000007c0U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_SHIFT 11U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_THREAD_MASK 0x00001800U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_SHIFT 13U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_IN_GATE_MASK 0x00006000U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_SHIFT 15U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_ON_DISPATCH_MASK 0x00018000U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_SHIFT 17U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LIFECYCLE_MASK 0x001e0000U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_SHIFT 21U
+#define AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_LINK_STATE_MASK 0x00e00000U
 
 #define AIRPORT_ITLWM_REGDIAG_CONTROL_PROPERTY "AirportItlwmDiagControl"
 #define AIRPORT_ITLWM_REGDIAG_CONTROL_ACK_PROPERTY "AirportItlwmDiagControlAck"
@@ -24,6 +43,8 @@ enum AirportItlwmRegDiagModeFlag {
     kAirportItlwmRegDiagModeControl = 0x00000010U,
     /* Opt-in association/PMK timeline; carries no key bytes. */
     kAirportItlwmRegDiagModePmk = 0x00000020U,
+    /* Opt-in passive Tahoe link-owner census; no publication is performed. */
+    kAirportItlwmRegDiagModeLinkContext = 0x00000040U,
     kAirportItlwmRegDiagModeIntervention = 0x80000000U
 };
 
@@ -53,7 +74,9 @@ enum AirportItlwmRegDiagTraceKind {
     /* Tahoe link-handoff timeline; no packet, identifier, or key material. */
     kAirportItlwmRegDiagTraceLinkStatus = 13,
     kAirportItlwmRegDiagTraceLinkPublish = 14,
-    kAirportItlwmRegDiagTraceWclJoinAbort = 15
+    kAirportItlwmRegDiagTraceWclJoinAbort = 15,
+    /* Tahoe passive owner-context census; no publication is performed. */
+    kAirportItlwmRegDiagTraceLinkContext = 16
 };
 
 enum AirportItlwmRegDiagPath {
@@ -120,6 +143,57 @@ enum AirportItlwmRegDiagLinkPublishDecision {
     kAirportItlwmRegDiagLinkPublishOffGateRejected = 2,
     kAirportItlwmRegDiagLinkPublishPublished = 3,
     kAirportItlwmRegDiagLinkPublishActionUnavailable = 4
+};
+
+/* Passive route markers for TraceLinkContext. */
+enum AirportItlwmRegDiagLinkContextRoute {
+    kAirportItlwmRegDiagLinkContextNet80211Bridge = 1,
+    kAirportItlwmRegDiagLinkContextControllerStatus = 2,
+    kAirportItlwmRegDiagLinkContextPublishQueue = 3,
+    kAirportItlwmRegDiagLinkContextPublishAction = 4,
+    kAirportItlwmRegDiagLinkContextGate = 5,
+    kAirportItlwmRegDiagLinkContextSkywalkParent = 6,
+    kAirportItlwmRegDiagLinkContextWclUpdate = 7
+};
+
+/* Passive route-local stages for TraceLinkContext. */
+enum AirportItlwmRegDiagLinkContextStage {
+    kAirportItlwmRegDiagLinkContextEnter = 0,
+    kAirportItlwmRegDiagLinkContextSameStatus = 1,
+    kAirportItlwmRegDiagLinkContextLifecycleRejected = 2,
+    kAirportItlwmRegDiagLinkContextBaseApplied = 3,
+    kAirportItlwmRegDiagLinkContextSourceUnavailable = 4,
+    kAirportItlwmRegDiagLinkContextSourceReady = 5,
+    kAirportItlwmRegDiagLinkContextActionUnavailable = 6,
+    kAirportItlwmRegDiagLinkContextActionReady = 7,
+    kAirportItlwmRegDiagLinkContextGateRejected = 8,
+    kAirportItlwmRegDiagLinkContextGateReady = 9,
+    kAirportItlwmRegDiagLinkContextParentEnter = 10,
+    kAirportItlwmRegDiagLinkContextParentAccepted = 11,
+    kAirportItlwmRegDiagLinkContextParentRejected = 12,
+    kAirportItlwmRegDiagLinkContextWclDecoded = 13,
+    kAirportItlwmRegDiagLinkContextWclReturn = 14
+};
+
+/* Three-valued owner predicates: unknown, false, true. */
+enum AirportItlwmRegDiagLinkContextPredicate {
+    kAirportItlwmRegDiagLinkContextPredicateUnknown = 0,
+    kAirportItlwmRegDiagLinkContextPredicateFalse = 1,
+    kAirportItlwmRegDiagLinkContextPredicateTrue = 2
+};
+
+/* Locally-known admission facts, never an unlocked lifecycle-field read. */
+enum AirportItlwmRegDiagLinkContextLifecycle {
+    kAirportItlwmRegDiagLinkContextLifecycleUnknown = 0,
+    kAirportItlwmRegDiagLinkContextLifecycleControllerSame = 1,
+    kAirportItlwmRegDiagLinkContextLifecycleControllerAdmitted = 2,
+    kAirportItlwmRegDiagLinkContextLifecycleControllerRejected = 3,
+    kAirportItlwmRegDiagLinkContextLifecycleControllerDrainOwner = 4,
+    kAirportItlwmRegDiagLinkContextLifecyclePublicationUnavailable = 5,
+    kAirportItlwmRegDiagLinkContextLifecyclePublicationReady = 6,
+    kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted = 7,
+    kAirportItlwmRegDiagLinkContextLifecycleParentAccepted = 8,
+    kAirportItlwmRegDiagLinkContextLifecycleParentRejected = 9
 };
 
 enum AirportItlwmRegDiagJoinAbortPhase {

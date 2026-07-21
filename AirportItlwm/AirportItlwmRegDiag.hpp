@@ -38,6 +38,17 @@ void airportItlwmRegDiagRecordLinkPublish(uint32_t decision,
                                           uint32_t linkState,
                                           uint32_t rawCode,
                                           IOReturn result);
+bool airportItlwmRegDiagShouldRecordLinkContext();
+void airportItlwmRegDiagRecordLinkContext(uint32_t route, uint32_t stage,
+                                          uint32_t linkState,
+                                          uint32_t rawCode,
+                                          uint32_t controllerStatus,
+                                          uint32_t lifecycle,
+                                          uint64_t assocEpoch,
+                                          int32_t onThread,
+                                          int32_t inGate,
+                                          int32_t onDispatchQueue,
+                                          IOReturn result);
 void airportItlwmRegDiagRecordJoinAbort(uint32_t phase, int32_t icState,
                                         uint32_t requestCompletion,
                                         IOReturn result);

@@ -3652,10 +3652,33 @@ setLinkStateInternal(IO80211LinkState state, uint debounceTimeout, bool debounce
                      uint code, uint connectionId)
 {
     AIRPORT_ITLWM_REQUIRE_INTERNAL_BOOL_OPERATION();
+#if __IO80211_TARGET >= __MAC_26_0
+    const bool traceLinkContext = airportItlwmRegDiagShouldRecordLinkContext();
+    const int32_t onDispatchQueuePred = traceLinkContext
+        ? (this->onDispatchQueue() ? 1 : 0) : -1;
+    airportItlwmLifecycleController->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextSkywalkParent,
+        kAirportItlwmRegDiagLinkContextParentEnter,
+        static_cast<uint32_t>(state), code,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+        kIOReturnSuccess,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
+#endif
     struct ieee80211com *ic = fHalService ? fHalService->get80211Controller() : nullptr;
     bool ret = IO80211InfraInterface::setLinkStateInternal(
         state, debounceTimeout, debounce, code, connectionId);
 #if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmLifecycleController->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextSkywalkParent,
+        ret ? kAirportItlwmRegDiagLinkContextParentAccepted :
+              kAirportItlwmRegDiagLinkContextParentRejected,
+        static_cast<uint32_t>(state), code,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        ret ? kAirportItlwmRegDiagLinkContextLifecycleParentAccepted :
+              kAirportItlwmRegDiagLinkContextLifecycleParentRejected,
+        ret ? kIOReturnSuccess : kIOReturnError,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
     /*
      * Tahoe APPLE80211_M_LINK_CHANGED single-owner publisher on the
      * Skywalk link-state transition.
@@ -3757,35 +3780,135 @@ IOReturn AirportItlwmSkywalkInterface::
 setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state *data)
 {
     AIRPORT_ITLWM_REQUIRE_INTERNAL_OPERATION();
+#if __IO80211_TARGET >= __MAC_26_0
+    const bool traceLinkContext = airportItlwmRegDiagShouldRecordLinkContext();
+    const int32_t onDispatchQueuePred = traceLinkContext
+        ? (this->onDispatchQueue() ? 1 : 0) : -1;
+    airportItlwmLifecycleController->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextWclUpdate,
+        kAirportItlwmRegDiagLinkContextEnter, 0, 0,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+        kIOReturnSuccess,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
+#endif
     (void)IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
-    if (data == nullptr)
+    if (data == nullptr) {
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, 0, 0,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnBadArgumentTahoe,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnBadArgumentTahoe;
+    }
 
     const uint8_t *payload = reinterpret_cast<const uint8_t *>(data);
     const bool linkUp = payload[6] != 0;
     const bool refreshCurrentBss = payload[8] != 0;
-    if (instance == nullptr || instance->getBssManager() == nullptr)
+    const uint32_t contextLinkState = linkUp ?
+        static_cast<uint32_t>(kIO80211NetworkLinkUp) :
+        static_cast<uint32_t>(kIO80211NetworkLinkDown);
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmLifecycleController->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextWclUpdate,
+        kAirportItlwmRegDiagLinkContextWclDecoded, contextLinkState,
+        refreshCurrentBss ? 1U : 0U,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+        kIOReturnSuccess,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
+#endif
+    if (instance == nullptr || instance->getBssManager() == nullptr) {
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState,
+            refreshCurrentBss ? 1U : 0U,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnNotReady,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnNotReady;
+    }
 
     if (!linkUp) {
         instance->stopTahoeLqmStatsTimer();
         instance->clearTahoeCurrentBss();
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState,
+            refreshCurrentBss ? 1U : 0U,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnSuccess,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnSuccess;
     }
 
     if (!refreshCurrentBss) {
         instance->startTahoeLqmStatsTimer();
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState,
+            0, AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnSuccess,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnSuccess;
     }
 
     TahoeBssManagerContracts::BeaconPayload currentBss{};
-    if (!buildTahoeCurrentBssPayload(fHalService, &currentBss))
+    if (!buildTahoeCurrentBssPayload(fHalService, &currentBss)) {
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState, 1,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnError,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnError;
-    if (!instance->setTahoeCurrentBss(currentBss.meta, currentBss.ie))
+    }
+    if (!instance->setTahoeCurrentBss(currentBss.meta, currentBss.ie)) {
+#if __IO80211_TARGET >= __MAC_26_0
+        airportItlwmLifecycleController->recordTahoeLinkContext(
+            kAirportItlwmRegDiagLinkContextWclUpdate,
+            kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState, 1,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+            kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+            kIOReturnError,
+            AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT,
+            onDispatchQueuePred);
+#endif
         return kIOReturnError;
+    }
 
     updateDriverBssManagerRateAndMcs();
     instance->startTahoeLqmStatsTimer();
+#if __IO80211_TARGET >= __MAC_26_0
+    airportItlwmLifecycleController->recordTahoeLinkContext(
+        kAirportItlwmRegDiagLinkContextWclUpdate,
+        kAirportItlwmRegDiagLinkContextWclReturn, contextLinkState, 1,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
+        kAirportItlwmRegDiagLinkContextLifecycleInternalAdmitted,
+        kIOReturnSuccess,
+        AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_EPOCH_CURRENT, onDispatchQueuePred);
+#endif
     return kIOReturnSuccess;
 }
 
