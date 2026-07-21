@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Strict four-cycle lab radio gate.  It controls only the pinned QEMU guest's
-# public Wi-Fi radio power. It makes no explicit state-mutating DHCP, address,
-# or route command; its explicit `ipconfig getpacket` query is read-only. It
-# captures and checks persistent network invariants after every completed cycle.
-# It deliberately does not claim that radio power transitions cannot trigger
-# transient OS-managed network work.
+# Strict lab radio gate, with a four-cycle baseline by default.  It controls
+# only the pinned QEMU guest's public Wi-Fi radio power. It makes no explicit
+# state-mutating DHCP, address, or route command; its explicit `ipconfig
+# getpacket` query is read-only. It captures and checks persistent network
+# invariants after every completed cycle. A caller may request one to four
+# cycles only for a bounded diagnostic trace window; anything other than four
+# is explicitly not reported as the A2DF four-cycle baseline. It deliberately
+# does not claim that radio power transitions cannot trigger transient
+# OS-managed network work.
 #
 # The runner is limited to the QEMU lab guest and 10.77.0.1.  It uses public
 # radio power controls, host-side station observations, and read-only network
@@ -22,6 +25,7 @@ LAB_GATEWAY="${LAB_GATEWAY:-10.77.0.1}"
 LAB_IPV4_PREFIX="${LAB_IPV4_PREFIX:-10.77.0.}"
 ASSOC_TIMEOUT_ATTEMPTS="${ASSOC_TIMEOUT_ATTEMPTS:-60}"
 OFF_STATE_TIMEOUT_ATTEMPTS="${OFF_STATE_TIMEOUT_ATTEMPTS:-30}"
+CYCLE_COUNT="${AIAM_A2DF_CYCLE_COUNT:-4}"
 EXPECTED_GUEST_HOSTKEY_SHA256="SHA256:4Q/9OkSwSE09YhXRdAbdbPl7WTqRNJHyn+vAM6p8QiY"
 EXPECTED_GUEST_HOSTKEY_LINE="[127.0.0.1]:3322 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPrOLzo9N+8YgP4rFTWH4scBkBT8EYGNVy87QWgvdT2"
 EXPECTED_GUEST_BUILD="25C56"
@@ -54,6 +58,9 @@ valid_name "$AP_IF" || die "AP_IF contains unsupported characters"
 case "$OUT_DIR" in '') die "OUT_DIR must not be empty";; esac
 case "$ASSOC_TIMEOUT_ATTEMPTS" in ''|*[!0-9]*) die "ASSOC_TIMEOUT_ATTEMPTS must be numeric";; esac
 case "$OFF_STATE_TIMEOUT_ATTEMPTS" in ''|*[!0-9]*) die "OFF_STATE_TIMEOUT_ATTEMPTS must be numeric";; esac
+case "$CYCLE_COUNT" in ''|*[!0-9]*) die "AIAM_A2DF_CYCLE_COUNT must be numeric";; esac
+[ "$CYCLE_COUNT" -ge 1 ] && [ "$CYCLE_COUNT" -le 4 ] ||
+    die "AIAM_A2DF_CYCLE_COUNT must be between 1 and 4"
 [ ! -e "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || die "OUT_DIR already exists; refuse to overwrite evidence"
 
 # Refuse a mismatched topology before changing the guest radio.
@@ -582,6 +589,7 @@ printf 'explicit_dhcp_state_mutating_command=none\n'
 printf 'read_only_dhcp_observation=ipconfig_getpacket\n'
 printf 'os_managed_transient_network_activity_not_claimed=true\n'
 printf 'connection_trigger=saved_profile_autojoin_only\n'
+printf 'requested_cycle_count=%s\n' "$CYCLE_COUNT"
 printf 'default_route_baseline=%s\n' "$DEFAULT_ROUTE_BASELINE"
 printf 'target_route_baseline=%s\n' "$TARGET_ROUTE_BASELINE"
 printf 'preexisting_lab_ip=%s\n' "$PREEXISTING_LAB_IP"
@@ -589,7 +597,7 @@ printf 'preexisting_management_ip=%s\n' "$PREEXISTING_MANAGEMENT_IP"
 printf 'client_mac_preflight=%s\n' "$ACTIVE_CLIENT_MAC"
 capture_read_only_state preflight
 
-for cycle in $(seq 1 4); do
+for cycle in $(seq 1 "$CYCLE_COUNT"); do
     printf '\ncycle=%s begin\n' "$cycle"
     refresh_active_client_mac "cycle-$cycle-before-off" ||
         die "cycle $cycle cannot read guest Wi-Fi MAC before radio off"
@@ -661,10 +669,20 @@ if ! assert_guest_radio_power_on final; then
 fi
 assert_pinned_lab_ap
 if [ "$DHCP_OBSERVATION_INCONCLUSIVE" -ne 0 ]; then
-    printf 'four_cycle_functional_result=PASS\n'
+    if [ "$CYCLE_COUNT" -eq 4 ]; then
+        printf 'four_cycle_functional_result=PASS\n'
+    else
+        printf 'bounded_trace_window_functional_result=PASS\n'
+    fi
     printf 'ipconfig_getpacket_stdout_observation_result=INCONCLUSIVE\n'
     die "one or more ipconfig getpacket textual observations were unavailable or incomplete"
 fi
-printf 'four_cycle_functional_result=PASS\n'
 printf 'ipconfig_getpacket_stdout_observation_result=COMPLETE\n'
-printf 'four_cycle_result=PASS\n'
+if [ "$CYCLE_COUNT" -eq 4 ]; then
+    printf 'four_cycle_functional_result=PASS\n'
+    printf 'four_cycle_result=PASS\n'
+else
+    printf 'bounded_trace_window_cycle_count=%s\n' "$CYCLE_COUNT"
+    printf 'bounded_trace_window_functional_result=PASS\n'
+    printf 'bounded_trace_window_result=PASS\n'
+fi

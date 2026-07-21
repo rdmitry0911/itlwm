@@ -40,7 +40,7 @@ require_ordered_on_recovery() {
 
 require_ordered_off_recovery() {
     awk '
-        /for cycle in \$\(seq 1 4\); do/ { in_cycle = 1; next }
+        /for cycle in \$\(seq 1 "\$CYCLE_COUNT"\); do/ { in_cycle = 1; next }
         in_cycle && /RADIO_OFF=1/ { recovery_pending = 1; next }
         recovery_pending && /guest "sudo -n networksetup -setairportpower \$GUEST_IF off"/ {
             requested_off = 1
@@ -66,7 +66,7 @@ require_preflight_known_on_authorized() {
 
 require_cycle_known_on_authorized() {
     awk '
-        /for cycle in \$\(seq 1 4\); do/ { in_cycle = 1; next }
+        /for cycle in \$\(seq 1 "\$CYCLE_COUNT"\); do/ { in_cycle = 1; next }
         in_cycle && /station_authorized \|\|/ { authorized = 1; next }
         authorized && /assert_guest_radio_power_on "cycle-\$cycle-pre-off"/ { known_on = 1; next }
         known_on && /RADIO_OFF=1/ { recovery_pending = 1; exit }
@@ -335,7 +335,10 @@ require_literal 'explicit_address_command=none' 'address-command scope label'
 require_literal 'explicit_dhcp_state_mutating_command=none' 'DHCP state-mutation scope label'
 require_literal 'read_only_dhcp_observation=ipconfig_getpacket' 'read-only DHCP-observation scope label'
 require_literal 'os_managed_transient_network_activity_not_claimed=true' 'bounded transient claim'
-require_literal 'for cycle in $(seq 1 4); do' 'four-cycle bound'
+require_literal 'CYCLE_COUNT="${AIAM_A2DF_CYCLE_COUNT:-4}"' 'default four-cycle bound'
+require_literal '[ "$CYCLE_COUNT" -ge 1 ] && [ "$CYCLE_COUNT" -le 4 ]' 'bounded trace-window cycle count'
+require_literal 'for cycle in $(seq 1 "$CYCLE_COUNT"); do' 'cycle-count controlled bound'
+require_literal 'bounded_trace_window_result=PASS' 'non-baseline trace-window PASS marker'
 require_ordered_on_recovery
 require_ordered_off_recovery
 require_preflight_known_on_authorized

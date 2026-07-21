@@ -1,0 +1,147 @@
+{
+  "activation": {
+    "canonical_activation": {
+      "activation_state": "READY_FOR_GUEST_REBOOT",
+      "auxkc_member_set": "PASS",
+      "canonical_member_set": "PASS"
+    },
+    "guest_reboot_completed": true,
+    "private_auxkc_admission": {
+      "canonical_mutation": "none",
+      "canonical_postflight": "PASS",
+      "kmutil_create_exit": 0,
+      "private_admission_result": "PASS",
+      "private_auxkc_bootkc_inspect_exit": 0,
+      "private_auxkc_inspect_exit": 0
+    }
+  },
+  "a2df_radio_baseline": {
+    "completed_cycles": 4,
+    "dhcp_textual_observation": "COMPLETE",
+    "fresh_association_epochs": 4,
+    "management_and_default_route_preserved": true,
+    "ping_packets_per_cycle": 5,
+    "pinned_direct_wifi_route_preserved": true,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "result": "PASS",
+    "stable_ap_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "artifact_hashes": {
+    "a2df_four_cycle_summary_sha256": "2025d8e012f7f311e1b40a1f56e9baec85456d6d02a6f3516e5ddf7b1226afe1",
+    "bounded_trace_window_summary_sha256": "dfaeb1fec3cce6576350b303018e6f6d549886ceb6746fcf3631bcbcd56136b6",
+    "identity_evidence_sha256": "c54e96cc396d6b9a583883cbe2f9166853bf60eb16a9341c477bdb9e02da27c3",
+    "link_context_census_output_sha256": "24dc6930b775d7a0a06c3174a9566ada389c582d833dcce36545102dd718c01f",
+    "link_context_control_sha256": "7182b868dda20d75ffc91d56ea2ac3b2e4c0f7b1011361c19a58062e961c15ab",
+    "link_context_final_control_sha256": "f1c8d70c4d88fc86c5c9a148147381b61293963581a8ba136c930efba23fdfdd",
+    "link_context_parent_output_sha256": "06375732c5aa019ecaece81c53b529d269ee0aeadd782bf6c843f9da96d9735b",
+    "link_context_trace_sha256": "23b484558d13a1b12b9b218367cce55aab266a5d49bafe219f4111e9e914c337"
+  },
+  "candidate": {
+    "archive_members": [
+      "AirportItlwm.kext/Contents/Info.plist",
+      "AirportItlwm.kext/Contents/MacOS/AirportItlwm"
+    ],
+    "archive_sha256": "a1be31cbd228a3ddff9f3b37a093e4e9ccbedaa85cc8f374828af7b8dfde41b3",
+    "binary_sha256": "11ea0856190f388a464ac720c485b5d767ffce20c35c93047365fdb17c586813",
+    "macho_uuid": "2022FED1-AAC0-335C-915D-CB4A0CA4E274",
+    "release_tag": "v2.4.0-alpha-181b114",
+    "source_commit": "181b114314cd6db4d1da9223363bfa4e4454e58a"
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "link_context": {
+    "bounded_trace_window": {
+      "completed_cycles": 1,
+      "data_plane_packets_received": 5,
+      "data_plane_packets_transmitted": 5,
+      "dhcp_textual_observation": "COMPLETE",
+      "fresh_association_epochs": 1,
+      "management_and_default_route_preserved": true,
+      "result": "PASS"
+    },
+    "census": {
+      "events": 29,
+      "main_chain_complete": false,
+      "nonzero_epochs": 3,
+      "trace_dropped": 0,
+      "verdict": "OWNER_CONTEXT_GATE_HELD"
+    },
+    "control_block": "0x0",
+    "control_mode": "0x51",
+    "final_control": {
+      "enabled": false,
+      "link_context_enabled": false,
+      "mode": "0x10"
+    },
+    "initial_four_cycle_trace": {
+      "census_verdict": "OWNER_CONTEXT_CENSUS_TRACE_TRUNCATED",
+      "dropped": 21,
+      "parent_verdict": "TAHOE_PARENT_LINK_UP_TRACE_TRUNCATED",
+      "trace_count": 128,
+      "trace_next_sequence": 149
+    },
+    "parent_attestation": {
+      "accepted": 0,
+      "link_up_events": 0,
+      "rejected": 0,
+      "trace_dropped": 0,
+      "unattested": 0,
+      "verdict": "TAHOE_PARENT_LINK_UP_NOT_OBSERVED"
+    },
+    "regdiag": {
+      "abi": 2,
+      "build_passed": true,
+      "source_commit": "181b114314cd6db4d1da9223363bfa4e4454e58a",
+      "source_inputs_sha256": {
+        "build_script": "cd8525b175cda4815d15aae247c1213f17bc2ec1232159cefa73b010a38b945f",
+        "client_source": "de7604ee8ac6c53f784d5f9c9716ac241490614782c0f353ed9f64cf8704c70a",
+        "header": "0d24c4180f9e43b68b0bc3615d6b8acb5354cfece8a00ac7c581e771227667b0"
+      }
+    },
+    "trace_count": 38,
+    "trace_dropped": 0
+  },
+  "non_claims": {
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_route_command": false,
+    "general_internet_traffic_tested": false,
+    "parent_link_up_accepted": false,
+    "pure_sae_or_pmf_functionality_verified": false
+  },
+  "postboot_identity": {
+    "all_identity_checks_passed": true,
+    "candidate_kext_bound": true,
+    "identity_evidence": "evidence/runtime/tahoe_lab_kext_identity_181b114.json"
+  },
+  "release": {
+    "archive_integrity_passed": true,
+    "cd_run_id": "29790038703",
+    "release_contains_kext": true
+  },
+  "run_window_utc": {
+    "end": "2026-07-21T01:02:55Z",
+    "start": "2026-07-21T00:38:37Z"
+  },
+  "runtime_harness": {
+    "a2df_runner_sha256": "12fe0bebcacec91b3a5fcfb23893ec2513017579f8972473c163c9f9176c91fe",
+    "a2df_static_contract_passed": true,
+    "auxkc_activation_helper_sha256": "ebff15c916c8aecf5209d00aaa412952ff1fef9709b4e84803de5704eba8fb1a",
+    "auxkc_activation_static_contract_passed": true,
+    "trace_window_is_not_four_cycle_baseline": true
+  },
+  "schema_version": "itlwm-tahoe-release-bound-overlay-runtime/v1",
+  "scope": {
+    "base_disk_used_as_read_only_backing": true,
+    "lab_guest_overlay_only": true,
+    "physical_host_rebooted": false,
+    "remote_10_90_10_22_touched": false
+  }
+}
