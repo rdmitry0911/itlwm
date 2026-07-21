@@ -122,6 +122,12 @@ printf '%s\n' \
     'set -euo pipefail' \
     '[ "$*" = "-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK" ] || exit 64' \
     'printf "%s\n" "$*" >>"$FAKE_CLI_LOG"' \
+    'if [ "${FAKE_TERMINATE_REQUIRED_DURING_REKEY:-0}" = 1 ] && [ -r "$FAKE_REQUIRED_PID" ]; then' \
+    '    pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"' \
+    '    case "$pid" in ""|*[!0-9]*) exit 65;; esac' \
+    '    /bin/kill -KILL "$pid" >/dev/null 2>&1 || true' \
+    '    /bin/rm -f -- "$FAKE_REQUIRED_PID"' \
+    'fi' \
     'if [ "${FAKE_MUTATE_DURING_REKEY:-0}" = 1 ]; then printf "drift\n" >"$FAKE_NETWORK_STATE"; fi' \
     'printf "OK\n"' \
     >"$FAKE_CLI"
@@ -263,6 +269,67 @@ grep -Fq 'host network invariants changed during bounded group-rekey' \
 [ ! -e "$STATE_DIR/rekey.status" ] ||
     fail 'post-command rekey drift wrote a success witness'
 printf 'stable\n' >"$FAKE_NETWORK_STATE"
+
+# The required process may disappear after its first exact-PID observation
+# but before the raw control command.  The fake AP-shape response remains
+# pinned, so a process fence at the actual command edge is the only way to
+# reject this stale ownership snapshot before the fake CLI is reached.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if FAKE_TERMINATE_REQUIRED_ON_IW=1 "$HELPER" --rekey --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-pre-command-death.out" \
+        2>"$TMP_ROOT/rekey-pre-command-death.err"; then
+    fail 'group rekey accepted a required hostapd that died before the command edge'
+fi
+grep -Fq 'required-PMF hostapd process is not exact before bounded group-rekey' \
+    "$TMP_ROOT/rekey-pre-command-death.err" ||
+    fail 'pre-command required-child death retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'pre-command required-child death reached the hostapd CLI'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'pre-command required-child death wrote a success witness'
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-pre-command-death-rollback.out" \
+    2>"$TMP_ROOT/rekey-pre-command-death-rollback.err" ||
+    fail 'pre-command required-child death did not restore optional PMF'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'pre-command required-child death did not restore optional hostapd'
+
+# Re-arm an isolated generated transaction.  This injection lets the fake
+# control client acknowledge exactly one canonical command and then removes
+# its required child.  The helper must withhold the rekey witness until its
+# post-ack exact-process fence succeeds.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-post-ack-activate.out" \
+    2>"$TMP_ROOT/rekey-post-ack-activate.err" ||
+    fail 'post-ack rekey fixture could not activate required PMF'
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if FAKE_TERMINATE_REQUIRED_DURING_REKEY=1 "$HELPER" --rekey --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-post-ack-death.out" \
+        2>"$TMP_ROOT/rekey-post-ack-death.err"; then
+    fail 'group rekey accepted a required hostapd that died after the command acknowledgement'
+fi
+grep -Fq 'required-PMF hostapd process is not exact after bounded group-rekey' \
+    "$TMP_ROOT/rekey-post-ack-death.err" ||
+    fail 'post-ack required-child death retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" -eq $((REKEY_CLI_LINES_BEFORE + 1)) ] ||
+    fail 'post-ack required-child death did not reach exactly one hostapd CLI request'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'post-ack required-child death wrote a success witness'
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-post-ack-death-rollback.out" \
+    2>"$TMP_ROOT/rekey-post-ack-death-rollback.err" ||
+    fail 'post-ack required-child death did not restore optional PMF'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-ack required-child death did not restore optional hostapd'
+
+# Restore a fresh required transaction for the existing stable positive rekey
+# and rollback checks below.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-stable-activate.out" \
+    2>"$TMP_ROOT/rekey-stable-activate.err" ||
+    fail 'stable rekey fixture could not activate required PMF'
 
 "$HELPER" --rekey --state-dir "$STATE_DIR" \
     >"$TMP_ROOT/rekey.out" 2>"$TMP_ROOT/rekey.err" ||

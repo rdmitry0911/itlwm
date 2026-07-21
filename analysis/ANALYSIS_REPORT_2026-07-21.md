@@ -1440,3 +1440,177 @@
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
+
+## ANOMALY
+
+- id: `LAB-PMF-AP-REKEY-PROCESS-EDGE-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned required-PMF hostapd transaction evidence around the
+  single bounded group-rekey command; no physical AP, guest, candidate, or
+  driver-functionality result is claimed.
+- symptom: `do_rekey()` verifies the exact required hostapd process only at
+  the beginning of the function.  It then performs AP-shape and host-network
+  reads, sends `REKEY_GTK`, accepts `OK`, and writes the rekey success witness
+  without a process-identity check at either command boundary.
+- expected system behavior: `PMF_AP_REKEY=REQUESTED` and
+  `rekey_requested=true` must attest that the sole request was admitted by the
+  exact marker-bound required-PMF hostapd process and that the same process
+  remains current when that success witness is published.  A process exit or
+  replacement during the intervening probes or the raw-control exchange is
+  inconclusive and must not produce the witness.
+- actual behavior: `configured_hostapd_active()` precedes
+  `runtime_ap_is_pinned()` and `host_network_signature()`.  Neither probe
+  validates the configured hostapd PID.  After the raw CLI `OK`, the code
+  checks only AP radio shape and the host-network signature before writing
+  `rekey.status` and success output.
+- divergence point: `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey`,
+  between its first `configured_hostapd_active()` call and the sole
+  `REKEY_GTK` command, and again between the CLI acknowledgement and the
+  `rekey_requested=true` witness.
+- evidence:
+  - local source directly orders the one initial process check before several
+    non-PID probes and contains no later `configured_hostapd_active()` call;
+  - the existing no-AP fixture already provides a generated required PID and
+    a fake-`iw` termination hook, demonstrating that the AP-shape probe can
+    remain syntactically pinned after the exact process has been removed;
+  - the runner treats the helper's categorical output as admission for the
+    final cross-slot trace verdict, so a stale process observation cannot
+    support that causal attribution;
+  - decomp: not applicable.  This is host-side experiment ownership, not a
+    claim about an Apple or firmware implementation.
+- candidate causes:
+  - confirmed: rekey ownership is modeled as a precondition only, rather than
+    an edge predicate that remains true across the command acknowledgement.
+  - confirmed: AP channel/width and host route/address/forwarding signatures
+    do not establish the identity or liveness of the hostapd process that
+    accepted the control request.
+- rejected interpretations:
+  - this does not prove that a live hostapd daemon will spontaneously exit;
+  - a successful later guest authorization does not retroactively bind the
+    helper's one raw control acknowledgement to the original process;
+  - the fix must not add another group-rekey, a retry, a process restart, or
+    a live AP action.
+- confirmed deviation: the success witness currently means only that a
+  process was exact at an earlier observation and that the raw control client
+  printed `OK`; the declared bounded transaction requires exact required-AP
+  ownership at the request and witness edges.
+- root cause: the lifecycle check is not repeated after the non-PID admission
+  probes or after the asynchronous raw-control acknowledgement.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-PROCESS-EDGE-20260721`
+- symptom: a dead or replaced required AP can be represented as the owner of
+  the bounded rekey request.
+- expected system behavior: re-attest the exact required hostapd process
+  immediately before the raw `REKEY_GTK` command and immediately after a
+  positive acknowledgement, before AP/network postconditions or success
+  state/output are recorded.
+- actual behavior: the only exact-process test occurs before the AP-shape and
+  network admission probes; the success path after `OK` contains no process
+  identity test.
+- exact divergence point: `do_rekey()` pre-command and post-ack command
+  boundaries.
+- evidence from runtime: the deterministic local fixture will kill only its
+  generated fake required child either during the existing AP-shape probe or
+  immediately after its fake CLI records `OK`.  On the unmodified helper this
+  reaches the rekey success path; no host network, real hostapd, AP, guest, or
+  credential is involved.
+- evidence from decomp: N/A; no reverse-engineered driver path is changed.
+- exact semantic mismatch: a stale liveness snapshot is accepted where the
+  categorical transaction witness claims current process ownership.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. required hostapd lifecycle: exact PID/argument/config identity is
+     required at both raw-control command edges;
+  2. raw control transport: the original one `REKEY_GTK` request remains the
+     only stimulus and is not retried;
+  3. AP pin/network invariants: existing read-only postconditions remain in
+     their current order after the new process fences;
+  4. marker/watchdog/rollback: a failed rekey leaves the existing rollback
+     owner intact for the caller/watchdog rather than fabricating recovery;
+  5. guest, routes, addresses, DHCP, candidate, kext, and physical host: no
+     new operation is introduced.
+- expected contract at each touchpoint:
+  1. no rekey witness is written when the required PID vanishes before or
+     after the acknowledged request;
+  2. exactly one raw-control command is issued only after a current pre-edge
+     required-process observation;
+  3. process/AP/network postconditions all remain mandatory for success;
+  4. failure is categorical and leaves cleanup ownership unchanged;
+  5. test injections are local fake-process operations only.
+- why no relevant touchpoints are missing: the candidate closes the two
+  unguarded process-identity edges around the sole existing stimulus.  It
+  neither changes configuration/state formats nor adds an AP lifecycle path.
+- why proposed path adds no extra system-visible side effects: the normal path
+  adds two read-only `ps`/PID-file observations.  The failure path withholds a
+  witness; it does not launch, stop, reload, retry, or reconfigure hostapd.
+- why this is root cause and not just correlation: the helper's direct source
+  order permits the synthetic child death after its only PID check, and its
+  remaining success predicates make no reference to that process.
+- why proposed path is 1:1 with reference architecture and semantics: no
+  Apple reference implementation applies.  The correction reuses the helper's
+  established exact-process predicate at the actual command boundaries.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: local
+    before-command and post-ack required-child death injections;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: static ordering
+    contract for both rekey process fences;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md`: rekey ownership wording;
+  - `analysis/ANALYSIS_REPORT_2026-07-21.md`: source evidence and results.
+- forbidden alternative fixes considered and rejected:
+  - trust `hostapd_cli` output alone;
+  - retry `REKEY_GTK`, restart hostapd, or use a timer to infer liveness;
+  - weaken the AP process identity predicate to channel/width alone;
+  - add a guest join, scan, route/address/DHCP mutation, or touch the live AP.
+- verification plan:
+  1. add local generated-child-death cases and show the pre-fix helper emits
+     rekey success despite process loss;
+  2. add the two exact-process fences and require both cases to fail without a
+     `rekey.status` witness, while the stable one-request fixture still
+     passes;
+  3. run AP/runtime/SAE contracts and the isolated Tahoe build-only gate.  Do
+     not activate a candidate, reboot a guest, or operate the live AP.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - `do_rekey()` now reuses `configured_hostapd_active()` immediately after
+    the existing host-network precondition and immediately after a positive
+    raw-control acknowledgement;
+  - only after the post-ack exact-process fence do the existing AP-shape and
+    host-network postconditions permit `rekey_requested=true` and
+    `PMF_AP_REKEY=REQUESTED`;
+  - the local fixture's pre-command fake-`iw` termination proves that a stale
+    earlier PID observation cannot reach `hostapd_cli`; its post-ack fake CLI
+    termination proves that one acknowledged command cannot write a success
+    witness after the required child disappears;
+  - each failure is recovered through the pre-existing explicit rollback and
+    a fresh generated required transaction is used for the stable one-request
+    positive case.  No process restart is added to the helper itself.
+- deterministic verification:
+  - before implementation, the new fixture stopped exactly at `group rekey
+    accepted a required hostapd that died before the command edge`; this was a
+    generated local child only and made no real AP or network operation;
+  - after implementation,
+    `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS.
+    The pre-command injection makes zero fake CLI calls and no witness; the
+    post-ack injection makes exactly one fake CLI call and no witness; both
+    restore generated optional PMF, and the stable single request passes;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned
+    isolated Tahoe guest.  The kext, trace client, Agent, and RegDiag built,
+    all 959 undefined symbols resolved against BootKC, and no kext was
+    installed, loaded, published, or released.
+- verification boundary: this closes only a host-side rekey ownership race.
+  It is not a live hostapd result, candidate activation, guest reboot,
+  PMF-required association, IGTK runtime observation, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.

@@ -345,6 +345,8 @@ if "FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_nam
     fail("AP fixture lacks the pre-stop configuration drift discriminator")
 if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-promotion required-child death discriminator")
+if "FAKE_TERMINATE_REQUIRED_DURING_REKEY" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-ack required-child death discriminator")
 if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -413,7 +415,10 @@ ordered(rekey_helper, "AP rekey host-network fence",
         "config_pair_matches_state",
         'host_network_signature)',
         'host network invariants changed before bounded group-rekey',
+        'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
         'raw REKEY_GTK',
+        'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
+        'required-PMF hostapd process is not exact after bounded group-rekey',
         'host_network_signature)',
         'host network invariants changed during bounded group-rekey',
         'rekey_requested=true')

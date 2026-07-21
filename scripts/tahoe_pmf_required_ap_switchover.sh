@@ -656,6 +656,11 @@ do_rekey() {
         die "host network invariants are unreadable before bounded group-rekey"
     [ "$current_signature" = "$before_signature" ] ||
         die "host network invariants changed before bounded group-rekey"
+    # The initial process observation predates the AP-shape and network
+    # admission probes.  Re-attest at the actual raw-control edge so a dead
+    # or replaced daemon cannot receive a categorical rekey witness.
+    configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
+        die "required-PMF hostapd process is not exact before bounded group-rekey"
     # Use hostapd's documented raw control transport for its canonical
     # REKEY_GTK command.  A lower-case CLI alias is not consistently exposed
     # by packaged hostapd_cli builds; the daemon command drives the standard
@@ -666,6 +671,8 @@ do_rekey() {
     fi
     grep -Fxq OK "$STATE_DIR/rekey.stdout" ||
         die "hostapd did not acknowledge the bounded group-rekey request"
+    configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
+        die "required-PMF hostapd process is not exact after bounded group-rekey"
     runtime_ap_is_pinned || die "the lab AP left the pinned channel/width after rekey"
     current_signature="$(host_network_signature)" ||
         die "host network invariants are unreadable after bounded group-rekey"

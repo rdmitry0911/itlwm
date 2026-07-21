@@ -76,6 +76,10 @@ as well as the GTK; a lower-case CLI alias is not used because packaged client
 builds need not expose it. The helper compares its hash-only host-network
 baseline immediately before and after that command; a changed signature blocks
 the stimulus or makes it inconclusive before any success can be reported.
+It also re-attests the exact marker-bound required hostapd process immediately
+before the raw command and immediately after its `OK` acknowledgement.  A
+dead or replaced process at either edge is inconclusive and never receives a
+rekey success witness.
 The sealed categorical evaluator admits exactly one opposite-slot transition
 after the initial selected IGTK slot. A second cross-slot transition in that
 same capture is ambiguous with respect to the one permitted request and is
