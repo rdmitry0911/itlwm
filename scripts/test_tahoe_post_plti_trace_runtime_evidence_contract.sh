@@ -114,7 +114,7 @@ def validate(document: dict, record=None) -> None:
 
     trace = document.get("trace")
     require(isinstance(trace, dict), "trace section missing")
-    require(trace.get("backend") in {"iwn", "unsupported", "unknown"},
+    require(trace.get("backend") in {"iwn", "iwx", "unsupported", "unknown"},
             "trace backend category is invalid")
     for key in ("reset_ack_generation_synchronized",
                 "initial_snapshot_buffer_generation_synchronized",
@@ -161,6 +161,17 @@ def validate(document: dict, record=None) -> None:
 
     result = document.get("result")
     require(result in {"PASS", "INCONCLUSIVE"}, "result is invalid")
+    if trace.get("backend") == "iwx":
+        require(result == "INCONCLUSIVE",
+                "the IWN-only runner cannot pass an IWX ordered trace")
+        require(trace.get("verdict") == "BACKEND_UNSUPPORTED",
+                "IWX ordered trace lacks an explicit unsupported verdict")
+        require(document.get("failure_phase") ==
+                "trace-backend-iwx-ordered-unsupported",
+                "IWX ordered trace lacks its explicit boundary")
+        require(radio.get("radio_off_observed") is False and
+                radio.get("radio_on_observed") is False,
+                "IWX ordered mismatch must stop before the radio cycle")
     if result == "PASS":
         require(trace.get("backend") == "iwn", "PASS is not on the supported legacy IWN backend")
         require(radio.get("radio_off_observed") is True and radio.get("radio_on_observed") is True,
@@ -281,6 +292,33 @@ if mode == "self-test":
         pass
     else:
         fail("self-test accepted partial trace as PASS")
+    fixture["result"] = "INCONCLUSIVE"
+    fixture["failure_phase"] = "trace-backend-iwx-ordered-unsupported"
+    fixture["radio_cycle"]["radio_off_observed"] = False
+    fixture["radio_cycle"]["radio_on_observed"] = False
+    fixture["trace"].update({
+        "backend": "iwx",
+        "reset_ack_generation_synchronized": False,
+        "initial_snapshot_buffer_generation_synchronized": False,
+        "double_read_stable": False,
+        "integrity": "inconclusive",
+        "entry_count": 0,
+        "episode_count": 0,
+        "dropped_entries": 0,
+        "verdict": "BACKEND_UNSUPPORTED",
+        "first_missing_stage": "unknown",
+        "seal_control_acknowledged": False,
+        "final_control_disabled": True,
+    })
+    validate(fixture)
+    fixture["result"] = "PASS"
+    try:
+        validate(fixture)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted IWX ordered trace as PASS")
+
     print("PASS: post-PLTI runtime evidence contract skeleton")
 else:
     evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8"))

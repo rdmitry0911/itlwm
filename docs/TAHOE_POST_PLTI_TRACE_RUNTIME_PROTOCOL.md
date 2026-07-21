@@ -9,6 +9,13 @@ post-PLTI trace.
 The current release-bound runner remains IWN-only.  It is not the runtime
 protocol for the IWX PMF q0 categorical observer.
 
+If reset control identifies `backend=iwx`, the IWN-only runner records a
+local `INCONCLUSIVE` aggregate with `verdict=BACKEND_UNSUPPORTED` and
+`failure_phase=trace-backend-iwx-ordered-unsupported`, then stops before the
+radio OFF/ON transition.  This is an explicit protocol-boundary result, not
+an IWX PMF-observer experiment or evidence of PMF, SAE, association, or data
+plane behavior.
+
 ## Preconditions
 
 1. Build and package the exact source candidate and the

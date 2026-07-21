@@ -1911,6 +1911,10 @@ void testTahoePostPltiTraceContracts()
         true, kAirportItlwmPostPltiTraceBackendUnsupported, 1, 0,
         Verdict::BackendUnsupported,
         "unsupported backends do not borrow the IWN trace verdict");
+    require_shared_cpp_agree(
+        true, kAirportItlwmPostPltiTraceBackendIwx, 1, 0,
+        Verdict::BackendUnsupported,
+        "the IWX raw observer cannot borrow the IWN trace verdict");
 
     const uint32_t savedCount = count;
     count = 0;
@@ -2214,6 +2218,15 @@ void testTahoePostPltiTraceMatrixSealedPrefixes()
                      kAirportItlwmPostPltiTraceBackendUnsupported) ==
                 Verdict::BackendUnsupported,
             "unsupported backends do not borrow the IWN matrix");
+    const uint32_t iwx_mfp_observer[] = {
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+    };
+    require(classify(iwx_mfp_observer, 3,
+                     kAirportItlwmPostPltiTraceBackendIwx) ==
+                Verdict::BackendUnsupported,
+            "all IWX raw observer markers remain ordered-evaluator unsupported");
 }
 
 void testTahoeCountryCodeCarrierContracts()

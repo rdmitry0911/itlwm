@@ -55,6 +55,10 @@ for needle in \
     'wait_for_reset_snapshot_buffer_sync' \
     'backend IWN' \
     '[ "$backend" = 1 ]' \
+    '[ "$backend" = 3 ]' \
+    'TRACE_BACKEND="iwx"' \
+    'trace-backend-iwx-ordered-unsupported' \
+    'backend == "iwn"' \
     'read_trace_once read-1' \
     'read_trace_once read-2' \
     'TRACE_FIRST_MISSING_STAGE' \
@@ -132,5 +136,12 @@ for item in ordered:
     cursor += len(item)
 if 'EapolTxDone' in text or 'eapol-txdone' in text:
     raise SystemExit('FAIL: shell runner must not independently require asynchronous EAPOL TX completion')
+iwx = text.find('TRACE_BACKEND="iwx"')
+iwx_boundary = text.find('fail_phase trace-backend-iwx-ordered-unsupported')
+radio = text.find('remote_radio_power off')
+if iwx < 0 or iwx_boundary < 0:
+    raise SystemExit('FAIL: post-PLTI runtime runner lacks an explicit IWX ordered boundary')
+if radio < 0 or iwx >= radio or iwx_boundary >= radio:
+    raise SystemExit('FAIL: IWX ordered boundary must precede the radio cycle')
 print('PASS: post-PLTI runtime runner static safety contract')
 PY

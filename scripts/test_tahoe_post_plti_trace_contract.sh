@@ -687,6 +687,14 @@ for needle in (
     require(matrix_record, needle, "IWX raw-observer evidence boundary")
 require(protocol, "The current release-bound runner remains IWN-only.",
         "IWN-only release-bound runtime protocol")
+for needle in (
+        "backend=iwx",
+        "verdict=BACKEND_UNSUPPORTED",
+        "trace-backend-iwx-ordered-unsupported",
+        "then stops before the",
+        "radio OFF/ON transition.",
+):
+    require(protocol, needle, "IWX ordered-runner boundary")
 for pattern, label in (
         (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IPv4 identity"),
         (r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b", "MAC identity"),

@@ -246,7 +246,8 @@ def as_bool(value: str) -> bool:
     return value == "1"
 
 trace_pass = (
-    verdict == "KERNEL_CHAIN_OBSERVED"
+    backend == "iwn"
+    and verdict == "KERNEL_CHAIN_OBSERVED"
     and integrity == "ok"
     and as_bool(reset_sync)
     and as_bool(initial_sync)
@@ -445,6 +446,15 @@ wait_for_control_ack() {
                     if [ "$backend" = 2 ] && [ -n "$generation" ] && [ "$generation" -gt 0 ]; then
                         CAPTURE_GENERATION="$generation"
                         TRACE_BACKEND="unsupported"
+                        TRACE_VERDICT="BACKEND_UNSUPPORTED"
+                        TRACE_FIRST_MISSING_STAGE="unknown"
+                        return 2
+                    fi
+                    if [ "$backend" = 3 ] && [ -n "$generation" ] && [ "$generation" -gt 0 ]; then
+                        CAPTURE_GENERATION="$generation"
+                        TRACE_BACKEND="iwx"
+                        TRACE_VERDICT="BACKEND_UNSUPPORTED"
+                        TRACE_FIRST_MISSING_STAGE="unknown"
                         return 2
                     fi
                 else
@@ -637,7 +647,15 @@ fi
 RESET_SEQUENCE="$(extract_u32 "$OUT_DIR/reset.stdout" seq || true)"
 [ "$RESET_SEQUENCE" -gt 0 ] 2>/dev/null || fail_phase trace-reset-sequence
 TRACE_MAY_BE_ARMED=1
-wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 0 || fail_phase trace-reset-ack
+if wait_for_control_ack reset-ack "$RESET_SEQUENCE" 1 1 0; then
+    :
+else
+    case "$TRACE_BACKEND" in
+        iwx) fail_phase trace-backend-iwx-ordered-unsupported ;;
+        unsupported) fail_phase trace-backend-unsupported ;;
+        *) fail_phase trace-reset-ack ;;
+    esac
+fi
 RESET_ACK_SYNC=1
 wait_for_reset_snapshot_buffer_sync || fail_phase trace-reset-snapshot-buffer-sync
 
