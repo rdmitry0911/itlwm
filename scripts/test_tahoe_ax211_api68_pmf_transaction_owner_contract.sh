@@ -27,6 +27,8 @@ paths = {
     "cpp": "itlwm/hal_iwx/ItlIwx.cpp",
     "hpp": "itlwm/hal_iwx/ItlIwx.hpp",
     "iwxvar": "itlwm/hal_iwx/if_iwxvar.h",
+    "trace_abi": "include/ClientKit/AirportItlwmPostPltiTrace.h",
+    "trace_bridge": "include/ClientKit/AirportItlwmPostPltiTraceBridge.h",
 }
 source = {name: (root / path).read_text() for name, path in paths.items()}
 
@@ -70,6 +72,18 @@ def body(text, marker, label):
             if depth == 0:
                 return text[opening + 1:pos]
     fail(f"unterminated {label}")
+
+
+def require_categorical_record(text, event, controller, label):
+    match = re.search(
+        r"AirportItlwmPostPltiTraceRecord\(\s*([^,]+),\s*" +
+        re.escape(event) + r"\s*\)",
+        text,
+    )
+    if match is None:
+        fail(f"missing categorical trace record for {label}")
+    if match.group(1).strip() != controller:
+        fail(f"trace record carries non-controller data for {label}")
 
 
 # Value-only generic transaction state.  It owns no raw packet, userspace
@@ -242,6 +256,20 @@ for token in (
 # unlocked; cancellation and timeout preserve the token as TIMED_OUT so that
 # a late response can free it without continuing PAE.
 iwxvar = source["iwxvar"]
+trace_abi = source["trace_abi"]
+trace_bridge = source["trace_bridge"]
+for token in (
+    "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered = 35",
+    "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled = 36",
+    "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved = 37",
+    "kAirportItlwmPostPltiTraceEventMax = 38",
+):
+    require(trace_abi, token, "append-only IWX PMF observer ABI")
+for token in (
+    "neither allocate, log, publish",
+    "nor inspect or retain frame contents",
+):
+    require(trace_bridge, token, "safe IWX PMF observer bridge")
 for token in (
     "IWX_CMD_ASYNC_OWNER_MFP_PAE", "async_cookie", "async_ack_kind",
     "IWX_CMD_SLOT_TIMED_OUT", "bool task_active;", "bool release_pending;",
@@ -262,9 +290,39 @@ for token in (
     "IWX_ADD_STA_STATUS_MASK",
 ):
     require(ack, token, "strict async ACK failure")
+require(cpp, "#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>",
+        "IWX PMF observer bridge include")
+security_task = body(cpp, "void ItlIwx::\niwx_security_rx_task(void *arg)",
+                     "security RX worker")
+order(security_task, "PMF RX observer after stale-epoch/BSS gate",
+      "entry.assoc_epoch == 0",
+      "ieee80211_pae_assoc_epoch_current(ic) != entry.assoc_epoch",
+      "ic->ic_bss != entry.ni",
+      "AirportItlwmPostPltiTraceRecord",
+      "ieee80211_eapol_key_input(ic, entry.m, entry.ni)")
+require_categorical_record(
+    security_task, "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered",
+    "ic", "PMF RX delivery")
+order(send, "PMF q0 observer records only a doorbelled MFP owner",
+      "sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_SUBMITTED;",
+      "IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR",
+      "hcmd->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE",
+      "AirportItlwmPostPltiTraceRecord",
+      "unlock:",
+      "IOSimpleLockUnlock(sc->sc_cmdq_lock);")
+require_categorical_record(
+    send, "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled",
+    "&sc->sc_ic", "PMF q0 doorbell")
 done = body(cpp, "void ItlIwx::\niwx_cmd_done", "q0 completion")
-order(done, "completion unlock-before-owner", "IOSimpleLockUnlock(sc->sc_cmdq_lock);",
-      "unlockTsleep();", "that->iwx_mfp_pae_q0_done")
+order(done, "completion observer unlock-before-owner",
+      "IOSimpleLockUnlock(sc->sc_cmdq_lock);",
+      "unlockTsleep();",
+      "async_result_ready",
+      "AirportItlwmPostPltiTraceRecord",
+      "that->iwx_mfp_pae_q0_done")
+require_categorical_record(
+    done, "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved",
+    "&sc->sc_ic", "PMF q0 completion")
 require(done, "iwx_async_cmd_ack_error", "q0 decoded PMF completion")
 timeout = body(cpp, "void ItlIwx::\niwx_mfp_pae_timeout", "PMF timeout")
 order(timeout, "timeout retains q0 token", "txn->result.error = ETIMEDOUT;",

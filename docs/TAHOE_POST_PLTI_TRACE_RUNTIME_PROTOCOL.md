@@ -6,6 +6,9 @@ the A2DF four-cycle baseline: it uses one radio OFF/ON transition to create a
 single saved-profile autojoin opportunity and records only the safe categorical
 post-PLTI trace.
 
+The current release-bound runner remains IWN-only.  It is not the runtime
+protocol for the IWX PMF q0 categorical observer.
+
 ## Preconditions
 
 1. Build and package the exact source candidate and the

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Contract for the isolated, safe-only post-PLTI association trace.
 #
-# It admits only a categorical, one-episode IWN trace.  A successful runtime
-# scenario still needs a separate sanitized evidence record after this source
-# contract and the Tahoe build gate pass.
+# IWN retains the sole ordered success evaluator.  IWX admits only categorical
+# PMF-owner raw observations and therefore remains BACKEND_UNSUPPORTED for the
+# ordered verdict.  A successful runtime scenario still needs a separate
+# sanitized evidence record after this source contract and the Tahoe build gate
+# pass.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -27,6 +29,7 @@ sky = (root / "AirportItlwm/AirportItlwmSkywalkInterface.cpp").read_text()
 iwn = (root / "itlwm/hal_iwn/ItlIwn.cpp").read_text()
 iwnvar = (root / "itlwm/hal_iwn/if_iwnvar.h").read_text()
 node = (root / "itl80211/openbsd/net80211/ieee80211_node.c").read_text()
+iwx = (root / "itlwm/hal_iwx/ItlIwx.cpp").read_text()
 output = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text()
 input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text()
 proto = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text()
@@ -85,6 +88,18 @@ def body(text, marker, label):
     fail(f"unterminated {label}")
 
 
+def require_categorical_record(text, event, controller, label):
+    match = re.search(
+        r"AirportItlwmPostPltiTraceRecord\(\s*([^,]+),\s*" +
+        re.escape(event) + r"\s*\)",
+        text,
+    )
+    if match is None:
+        fail(f"missing categorical trace record for {label}")
+    if match.group(1).strip() != controller:
+        fail(f"trace record carries non-controller data for {label}")
+
+
 def struct_block(name):
     marker = f"typedef struct {name}"
     start = abi.find(marker)
@@ -105,6 +120,7 @@ for needle in (
         "AIRPORT_ITLWM_POST_PLTI_TRACE_BUFFER_PROPERTY",
         "kAirportItlwmPostPltiTraceBackendIwn",
         "kAirportItlwmPostPltiTraceBackendUnsupported",
+        "kAirportItlwmPostPltiTraceBackendIwx",
         "kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume",
         "kAirportItlwmPostPltiTraceEventPortValidTransition",
         "kAirportItlwmPostPltiTraceEventEpisodeAborted",
@@ -113,9 +129,22 @@ for needle in (
         "kAirportItlwmPostPltiTraceEventIwnScanCommandRejected",
         "kAirportItlwmPostPltiTraceEventScanNoCandidate",
         "kAirportItlwmPostPltiTraceEventCaptureWindowSealed",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved",
         "kAirportItlwmPostPltiTraceEventMax",
 ):
     require(abi, needle, "safe-only public ABI")
+for needle in (
+        "kAirportItlwmPostPltiTraceBackendUnsupported = 2",
+        "kAirportItlwmPostPltiTraceBackendIwx = 3",
+        "kAirportItlwmPostPltiTraceEventCaptureWindowSealed = 34",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered = 35",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled = 36",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved = 37",
+        "kAirportItlwmPostPltiTraceEventMax = 38",
+):
+    require(abi, needle, "append-only IWX PMF observer ABI")
 
 # Every public ABI field remains a categorical/bookkeeping dword.  The public
 # data layout deliberately has no byte carrier, pointer-width field, or
@@ -171,6 +200,7 @@ for needle in (
         "require_external_bridge ieee80211_pae_output AirportItlwmPostPltiTraceRecord",
         "require_external_bridge ieee80211_proto AirportItlwmPostPltiTraceNoteStateRequest",
         "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord",
         "__ZL.*AirportItlwmPostPltiTrace",
         "external trace bridge",
         "ITLWM_DERIVED_DATA_OVERRIDE",
@@ -354,12 +384,21 @@ bind = body(v2, "airportItlwmPostPltiTraceBind", "categorical backend bind")
 for needle in (
         "OSDynamicCast(ItlIwn, driver->fHalService)",
         "kAirportItlwmPostPltiTraceBackendIwn",
+        "OSDynamicCast(ItlIwx, driver->fHalService)",
+        "kAirportItlwmPostPltiTraceBackendIwx",
         "kAirportItlwmPostPltiTraceBackendUnsupported",
 ):
-    require(bind, needle, "IWN-only trace backend")
-admit = body(v2, "airportItlwmPostPltiTraceAdmits", "IWN trace admission")
-require(admit, "kAirportItlwmPostPltiTraceBackendIwn",
-        "only the implemented IWN backend admits events")
+    require(bind, needle, "categorical trace backend bind")
+admit = body(v2, "airportItlwmPostPltiTraceAdmits", "IWN/IWX trace admission")
+for needle in (
+        "kAirportItlwmPostPltiTraceBackendIwn",
+        "kAirportItlwmPostPltiTraceBackendIwx",
+):
+    require(admit, needle, "implemented categorical trace backend admission")
+require(shared, "backend != kAirportItlwmPostPltiTraceBackendIwn",
+        "IWN-only ordered trace evaluator")
+forbid(shared, "kAirportItlwmPostPltiTraceBackendIwx",
+       "IWX ordered trace success path")
 control = body(v2, "airportItlwmPostPltiTraceApplyControl",
                "trace control acknowledgement")
 for needle in (
@@ -499,6 +538,41 @@ join_bss = body(node, "void\nieee80211_node_join_bss", "net80211 BSS join")
 ordered(join_bss, "selection before join marker",
         "kAirportItlwmPostPltiTraceEventBssSelected",
         "kAirportItlwmPostPltiTraceEventJoinBssEntered")
+require(iwx, "#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>",
+        "IWX safe trace bridge")
+iwx_rx_task = body(iwx, "void ItlIwx::\niwx_security_rx_task(void *arg)",
+                   "IWX PMF security RX worker")
+ordered(iwx_rx_task, "IWX PMF RX trace follows stale-entry rejection",
+        "entry.assoc_epoch == 0",
+        "ieee80211_pae_assoc_epoch_current(ic) != entry.assoc_epoch",
+        "ic->ic_bss != entry.ni",
+        "AirportItlwmPostPltiTraceRecord",
+        "ieee80211_eapol_key_input")
+require_categorical_record(
+    iwx_rx_task, "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered",
+    "ic", "IWX PMF RX delivery")
+iwx_send = body(iwx, "int ItlIwx::\niwx_send_cmd", "IWX q0 sender")
+ordered(iwx_send, "IWX PMF q0 trace follows the observed doorbell",
+        "sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_SUBMITTED;",
+        "IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR",
+        "hcmd->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE",
+        "AirportItlwmPostPltiTraceRecord",
+        "unlock:",
+        "IOSimpleLockUnlock(sc->sc_cmdq_lock);")
+require_categorical_record(
+    iwx_send, "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled",
+    "&sc->sc_ic", "IWX PMF q0 doorbell")
+iwx_done = body(iwx, "void ItlIwx::\niwx_cmd_done", "IWX q0 completion")
+ordered(iwx_done, "IWX PMF completion trace leaves q0 and sleep locks first",
+        "IOSimpleLockUnlock(sc->sc_cmdq_lock);",
+        "unlockTsleep();",
+        "async_result_ready",
+        "AirportItlwmPostPltiTraceRecord",
+        "that->iwx_mfp_pae_q0_done")
+require_categorical_record(
+    iwx_done, "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved",
+    "&sc->sc_ic", "IWX PMF q0 completion")
+
 mgmt_output = body(output, "int\nieee80211_mgmt_output", "net80211 management output")
 for needle in (
         "enqueue_dropped == 0",
@@ -558,6 +632,17 @@ for needle in ("static enum trace_verdict", "uint64_t *out_events",
                "IOMACAddress"):
     forbid(client, needle, "unsafe or bitset-only client surface")
 for needle in (
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered",
+        "iwx-mfp-pae-rx-delivered",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled",
+        "iwx-mfp-pae-q0-doorbelled",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved",
+        "iwx-mfp-pae-q0-completion-observed",
+        "kAirportItlwmPostPltiTraceBackendIwx",
+        "return \"IWX\";",
+):
+    require(client, needle, "IWX categorical client mapping")
+for needle in (
         "-std=c11 -Wall -Wextra -Werror",
         "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c",
         "-framework IOKit",
@@ -593,6 +678,15 @@ for needle in (
         "This layer does not implement or prove pure SAE",
 ):
     require(matrix_record, needle, "committed trace-matrix evidence record")
+for needle in (
+        "The ordered success evaluator is",
+        "IWX remains backend-unsupported for the ordered",
+        "No presence, order, or absence of those IWX markers proves firmware",
+        "The IWX observer is categorical and",
+):
+    require(matrix_record, needle, "IWX raw-observer evidence boundary")
+require(protocol, "The current release-bound runner remains IWN-only.",
+        "IWN-only release-bound runtime protocol")
 for pattern, label in (
         (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IPv4 identity"),
         (r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b", "MAC identity"),

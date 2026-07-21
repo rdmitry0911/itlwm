@@ -55,6 +55,7 @@ require_external_bridge ieee80211_pae_input AirportItlwmPostPltiTraceCompleteEpi
 require_external_bridge ieee80211_pae_output AirportItlwmPostPltiTraceRecord
 require_external_bridge ieee80211_proto AirportItlwmPostPltiTraceNoteStateRequest
 require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord
+require_external_bridge ItlIwx AirportItlwmPostPltiTraceRecord
 
 echo "Built $OUTPUT"
 echo "OK: all Tahoe trace producer objects link external trace bridges"

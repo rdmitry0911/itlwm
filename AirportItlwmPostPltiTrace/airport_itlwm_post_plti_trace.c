@@ -162,6 +162,12 @@ event_name(uint32_t event)
         return "scan-no-candidate";
     case kAirportItlwmPostPltiTraceEventCaptureWindowSealed:
         return "capture-window-sealed";
+    case kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered:
+        return "iwx-mfp-pae-rx-delivered";
+    case kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled:
+        return "iwx-mfp-pae-q0-doorbelled";
+    case kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved:
+        return "iwx-mfp-pae-q0-completion-observed";
     default:
         return "unknown";
     }
@@ -307,6 +313,7 @@ backend_name(uint32_t backend)
     switch (backend) {
     case kAirportItlwmPostPltiTraceBackendIwn: return "IWN";
     case kAirportItlwmPostPltiTraceBackendUnsupported: return "UNSUPPORTED";
+    case kAirportItlwmPostPltiTraceBackendIwx: return "IWX";
     default: return "UNKNOWN";
     }
 }

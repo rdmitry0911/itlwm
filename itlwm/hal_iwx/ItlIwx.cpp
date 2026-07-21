@@ -108,6 +108,7 @@
 
 #include "ItlIwx.hpp"
 #include "IwxMfpIgtkContracts.hpp"
+#include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 #include <linux/types.h>
 #include <linux/iwx_diag_log.h>
 #include <linux/kernel.h>
@@ -6892,6 +6893,17 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     ring->cur = (ring->cur + 1) % txq_size;
     IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
 
+    if (hcmd->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE) {
+        /*
+         * The safe trace bridge is categorical, non-sleeping, and uses a
+         * producer try-lock only.  Recording after the doorbell but before
+         * q0 unlock preserves the observed submit-before-completion order.
+         */
+        AirportItlwmPostPltiTraceRecord(
+            &sc->sc_ic,
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);
+    }
+
 unlock:
     IOSimpleLockUnlock(sc->sc_cmdq_lock);
     if (err)
@@ -7213,6 +7225,10 @@ iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code,
     if (wchan != NULL)
         wakeupOn(wchan);
     unlockTsleep();
+
+    if (async_result_ready)
+        AirportItlwmPostPltiTraceRecord(&sc->sc_ic,
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved);
 
     /* Free only after leaving both the raw-RX q0 and sleep mutexes. */
     if (m != NULL)
@@ -9844,6 +9860,8 @@ iwx_security_rx_task(void *arg)
         }
 
         /* ieee80211_eapol_key_input consumes entry.m. */
+        AirportItlwmPostPltiTraceRecord(ic,
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered);
         ieee80211_eapol_key_input(ic, entry.m, entry.ni);
         ieee80211_release_node(ic, entry.ni);
     }

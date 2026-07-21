@@ -2172,10 +2172,12 @@ airportItlwmPostPltiTraceTokenEpisode(uint64_t token)
 static bool
 airportItlwmPostPltiTraceAdmits(struct ieee80211com *ic)
 {
+    const uint32_t backend = __atomic_load_n(&sPostPltiTrace.backend,
+                                              __ATOMIC_ACQUIRE);
     if (ic == nullptr ||
         __atomic_load_n(&sPostPltiTrace.enabled, __ATOMIC_ACQUIRE) == 0 ||
-        __atomic_load_n(&sPostPltiTrace.backend, __ATOMIC_ACQUIRE) !=
-            kAirportItlwmPostPltiTraceBackendIwn)
+        (backend != kAirportItlwmPostPltiTraceBackendIwn &&
+         backend != kAirportItlwmPostPltiTraceBackendIwx))
         return false;
     return __atomic_load_n(&sPostPltiTrace.targetController,
                            __ATOMIC_ACQUIRE) ==
@@ -2525,9 +2527,12 @@ airportItlwmPostPltiTraceBind(AirportItlwm *driver)
     uint32_t backend = kAirportItlwmPostPltiTraceBackendUnknown;
     if (driver != nullptr && driver->fHalService != nullptr) {
         ic = driver->fHalService->get80211Controller();
-        backend = OSDynamicCast(ItlIwn, driver->fHalService) != nullptr ?
-            kAirportItlwmPostPltiTraceBackendIwn :
-            kAirportItlwmPostPltiTraceBackendUnsupported;
+        if (OSDynamicCast(ItlIwn, driver->fHalService) != nullptr)
+            backend = kAirportItlwmPostPltiTraceBackendIwn;
+        else if (OSDynamicCast(ItlIwx, driver->fHalService) != nullptr)
+            backend = kAirportItlwmPostPltiTraceBackendIwx;
+        else
+            backend = kAirportItlwmPostPltiTraceBackendUnsupported;
     }
     __atomic_store_n(&sPostPltiTrace.backend, backend, __ATOMIC_RELEASE);
     __atomic_store_n(&sPostPltiTrace.targetController,

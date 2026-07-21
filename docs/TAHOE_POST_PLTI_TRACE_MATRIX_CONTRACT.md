@@ -3,9 +3,16 @@
 ## Scope
 
 This document records the verified, non-functional diagnostic scenarios that
-ship with the Tahoe post-PLTI trace v2 layer.  The trace is IWN-only.  IWX,
-including AX211, remains explicitly backend-unsupported for this trace and
-cannot inherit an IWN verdict.
+ship with the Tahoe post-PLTI trace v2 layer.  The ordered success evaluator is
+IWN-only.  IWX, including AX211, may emit only three fixed categorical
+PMF-owner observer markers: validated receive delivery, q0 doorbell, and q0
+completion observation.  IWX remains backend-unsupported for the ordered
+evaluator and cannot inherit an IWN verdict.
+
+No presence, order, or absence of those IWX markers proves firmware
+acknowledgement, key installation, EAPOL success, PMF association, SAE,
+port-valid, link publication, or reachability.  They are raw diagnostic
+evidence only.
 
 The public ABI contains only generation, episode, sequence, backend, and
 categorical event identifiers.  It contains no network identity, channel,
@@ -13,10 +20,10 @@ signal, address, route, credential, key, packet, firmware-status, or pointer
 field.
 
 The Tahoe bridge selects its real implementation from the Tahoe-only
-`IO80211FAMILY_V3` target marker.  Shared trace producer sources can include
+`IO80211FAMILY_V3` target marker.  Shared IWN/IWX trace producer sources can include
 the bridge before Tahoe compatibility headers declare availability markers, so
 an availability predicate would silently select their local no-op fallback.
-The post-build gate verifies every state, RX, TX, EAPOL, and IWN producer
+The post-build gate verifies every state, RX, TX, EAPOL, IWN, and IWX producer
 object references its external bridge and rejects that fallback.  Candidate
 builds use one fresh absolute DerivedData override for both the Tahoe build
 and this linkage gate, so an incrementally stale object cannot be admitted as
@@ -70,6 +77,11 @@ scenarios in the same commit as the trace implementation:
 - Two ordered inbound EAPOL rounds, including interleaved optional TX
   corroboration after a real enqueue, remain eligible for the port-valid
   terminal; those optional TX markers never establish success on their own.
+- IWX PMF receive delivery is recorded only after the worker's stale
+  epoch/current-BSS rejection fence; q0 submit is recorded after its
+  doorbell and completion only after q0/sleep unlocks.
+- An IWX raw trace remains BACKEND_UNSUPPORTED/INCONCLUSIVE in the ordered
+  evaluator even when all three categorical observer markers are present.
 - A post-terminal event, mixed episode/generation, sequence gap, drop, or
   unsupported backend is rejected or fail-closed.
 
@@ -110,5 +122,7 @@ completed version-level layer.
 ## Non-claims
 
 This layer does not implement or prove pure SAE, Algorithm 3 authentication,
-PMF, IGTK, AX211 runtime behavior, generic reachability, traffic, or
-physical-host validation.
+PMF-required association, IGTK installation, firmware acknowledgement,
+EAPOL success, port-valid, WCL link publication, generic reachability,
+traffic, or physical-host validation.  The IWX observer is categorical and
+fail-closed; it does not upgrade those non-claims.

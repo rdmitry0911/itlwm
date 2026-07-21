@@ -66,14 +66,22 @@ enum AirportItlwmPostPltiTraceEvent {
     kAirportItlwmPostPltiTraceEventIwnScanCommandRejected = 32,
     kAirportItlwmPostPltiTraceEventScanNoCandidate = 33,
     kAirportItlwmPostPltiTraceEventCaptureWindowSealed = 34,
-    kAirportItlwmPostPltiTraceEventMax = 35
+    kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered = 35,
+    kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled = 36,
+    kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved = 37,
+    kAirportItlwmPostPltiTraceEventMax = 38
 };
 
-/* Categorical backend coverage, never a hardware identifier. */
+/*
+ * Categorical backend coverage, never a hardware identifier.  IWX exposes
+ * raw PMF-owner observations only; the ordered IWN trace verdict remains
+ * deliberately unsupported for IWX.
+ */
 enum AirportItlwmPostPltiTraceBackend {
     kAirportItlwmPostPltiTraceBackendUnknown = 0,
     kAirportItlwmPostPltiTraceBackendIwn = 1,
     kAirportItlwmPostPltiTraceBackendUnsupported = 2,
+    kAirportItlwmPostPltiTraceBackendIwx = 3,
 };
 
 typedef struct AirportItlwmPostPltiTraceEntry {
