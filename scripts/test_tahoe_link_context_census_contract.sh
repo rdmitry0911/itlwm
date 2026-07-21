@@ -153,6 +153,8 @@ for token in (
     "OWNER_CONTEXT_CENSUS_INCOMPLETE",
     "OWNER_CONTEXT_CENSUS_TRACE_TRUNCATED",
     "trace_dropped",
+    "BSD_LINK_STATE_UP",
+    "IO80211_LINK_STATE_UP",
     "scope=execution-context only; no functional network claim",
     "SSIDs, BSSIDs, pointers, packets, or keys",
 ):

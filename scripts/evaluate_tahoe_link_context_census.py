@@ -24,6 +24,13 @@ MAIN_CHAIN = (
     ("link-gate", "gate-ready"),
 )
 
+# The bridge observes BSD LINK_STATE_* while the lower Tahoe stages observe
+# IO80211LinkState.  These route-local encodings deliberately differ.
+BSD_LINK_STATE_DOWN = 2
+BSD_LINK_STATE_UP = 4
+IO80211_LINK_STATE_DOWN = 1
+IO80211_LINK_STATE_UP = 2
+
 
 @dataclass(frozen=True)
 class ContextEvent:
@@ -124,7 +131,22 @@ def chain_before_terminal(events: list[ContextEvent],
                 return found
         return None
 
-    return find_prefix(0, -1, [])
+    chain = find_prefix(0, -1, [])
+    if chain is None:
+        return None
+
+    bridge, _controller, queue, action, gate = chain
+    canonical_bridge_state = {
+        BSD_LINK_STATE_DOWN: IO80211_LINK_STATE_DOWN,
+        BSD_LINK_STATE_UP: IO80211_LINK_STATE_UP,
+    }.get(bridge.link_state)
+    if canonical_bridge_state is None:
+        return None
+    if queue.link_state != canonical_bridge_state or \
+            action.link_state != canonical_bridge_state or \
+            gate.link_state != canonical_bridge_state:
+        return None
+    return chain
 
 
 def complete_chain(events: list[ContextEvent]) -> list[ContextEvent] | None:
@@ -261,6 +283,22 @@ def self_test() -> int:
             line(4, "link-gate", "gate-rejected", on_thread="yes", in_gate="yes"),
         ])
         assert verdict(parse_trace(read(rejected / "trace.txt"))) == "OWNER_CONTEXT_GATE_HELD"
+
+        direction_mismatch = root / "direction-mismatch"
+        direction_mismatch.mkdir()
+        fixture(direction_mismatch, [
+            line(0, "net80211-bridge", "enter", link_state=BSD_LINK_STATE_UP,
+                 on_thread="no", in_gate="no"),
+            line(1, "controller-status", "base-applied", on_thread="no", in_gate="no"),
+            line(2, "publish-queue", "source-ready",
+                 link_state=IO80211_LINK_STATE_DOWN, on_thread="no", in_gate="no"),
+            line(3, "publish-action", "action-ready",
+                 link_state=IO80211_LINK_STATE_DOWN, on_thread="yes", in_gate="no"),
+            line(4, "link-gate", "gate-ready",
+                 link_state=IO80211_LINK_STATE_DOWN, on_thread="yes", in_gate="no"),
+        ])
+        assert verdict(parse_trace(read(direction_mismatch / "trace.txt"))) == \
+            "OWNER_CONTEXT_PARTIAL"
 
         truncated = root / "truncated"
         truncated.mkdir()
