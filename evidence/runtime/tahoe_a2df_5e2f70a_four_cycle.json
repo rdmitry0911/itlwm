@@ -1,0 +1,82 @@
+{
+  "a2df_baseline_control": {
+    "connection_trigger": "saved_profile_autojoin_only",
+    "cycle_count": 4,
+    "cycle_pass_count": 4,
+    "dhcp_textual_observation": "COMPLETE",
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_join_command": false,
+    "explicit_route_command": false,
+    "four_cycle_result": "PASS",
+    "fresh_association_epochs": 4,
+    "ping_packets_per_cycle": 5,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "route_and_address_invariants": "PASS",
+    "stable_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "auxkc": {
+    "activation_state": "READY_FOR_GUEST_REBOOT",
+    "approved_member_count": 5,
+    "canonical_member_set_after_activation": "PASS",
+    "canonical_preflight_mutation": "none",
+    "direct_load_or_unload": false,
+    "private_admission_result": "PASS"
+  },
+  "candidate": {
+    "activated_candidate_sha256": "d69bd5f028f46c8a76968d30d0a7a157f094136953a77dd9edc4a12027cbed6e",
+    "macho_uuid": "034BABDD-BFDF-316F-B547-122C74246607",
+    "post_boot_installed_to_candidate_match": true,
+    "post_boot_loaded_to_candidate_match": true,
+    "source_candidate_sha256": "d69bd5f028f46c8a76968d30d0a7a157f094136953a77dd9edc4a12027cbed6e",
+    "source_commit": "5e2f70a52eaa53b6c2633e95af76452dfe3e3774",
+    "source_identity_sha256": "05b089d66b36efaea28c4cd3f33ca10fde1437a5f139feb77fe6e4e9b9c73b4b",
+    "source_to_private_preflight_match": true
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "wireless_identity_committed": false
+  },
+  "local_only_raw_artifacts": {
+    "retained_local_only": true,
+    "summary_sha256": "82eb0a958e3a00a0335165a605a7cf51d3ef7466e085e89193b3ff4ff98aef34"
+  },
+  "non_claims": {
+    "eapol_exchange_verified": false,
+    "generic_internet_reachability_verified": false,
+    "igtk_installation_verified": false,
+    "physical_host_validation": false,
+    "pmf_q0_completion_verified": false,
+    "pmf_required_association_verified": false,
+    "pure_sae_verified": false,
+    "raw_bsd_setter_apple_parity_verified": false,
+    "raw_bsd_user_pointer_rejection_verified": false,
+    "remote_validation_host_validation": false,
+    "wcl_link_publication_verified": false,
+    "wpa3_sae_verified": false
+  },
+  "release": {
+    "asset_or_tag_created": false,
+    "semantic_release_mutated": false
+  },
+  "runtime_surface": {
+    "fenced_raw_bsd_setters_runtime_invoked": false,
+    "normal_saved_profile_a2df_regression": "PASS",
+    "originating_panic_reproduced": false,
+    "prior_panic_fix_proven": false,
+    "static_no_backend_set_fence_contract": "PASS"
+  },
+  "schema_version": "itlwm-tahoe-private-candidate-runtime/v1",
+  "scope": {
+    "environment": "pinned_disposable_qemu_guest",
+    "guest_only_reboot": true,
+    "physical_host_rebooted": false,
+    "physical_host_touched": false,
+    "remote_validation_host_touched": false
+  }
+}
