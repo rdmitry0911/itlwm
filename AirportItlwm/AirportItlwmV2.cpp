@@ -1902,8 +1902,8 @@ AirportItlwmRegDiagNet80211LinkContext(struct ieee80211com *ic,
         kAirportItlwmRegDiagLinkContextNet80211Bridge,
         kAirportItlwmRegDiagLinkContextEnter, linkState, 0,
         AIRPORT_ITLWM_REGDIAG_LINK_CONTEXT_STATUS_UNAVAILABLE,
-        kAirportItlwmRegDiagLinkContextLifecycleUnknown, kIOReturnSuccess,
-        assocEpoch, -1, -1, -1);
+        kAirportItlwmRegDiagLinkContextLifecycleUnknown, assocEpoch,
+        -1, -1, -1, kIOReturnSuccess);
 }
 #endif
 

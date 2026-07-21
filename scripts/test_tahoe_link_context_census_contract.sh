@@ -129,6 +129,12 @@ for forbidden in ("setLinkState(", "setLinkStatus(", "runAction(",
                   "interruptOccurred(", "retain(", "OSDynamicCast(",
                   "getWorkLoop(", "get80211Controller("):
     forbid(c_bridge, forbidden, "behavioral net80211 bridge action")
+bridge_tail = """kAirportItlwmRegDiagLinkContextLifecycleUnknown, assocEpoch,
+        -1, -1, -1, kIOReturnSuccess);"""
+require(c_bridge, bridge_tail, "net80211 bridge recorder argument order")
+bridge_call = c_bridge[c_bridge.index("airportItlwmRegDiagRecordLinkContext("):]
+if bridge_call.index("assocEpoch") > bridge_call.index("kIOReturnSuccess"):
+    fail("net80211 bridge must pass sampled epoch before recorder result")
 
 for marker in (
     "kAirportItlwmRegDiagLinkContextControllerStatus",
