@@ -17,6 +17,7 @@
 #include "AirportItlwm/TahoeBssManagerContracts.hpp"
 #include "AirportItlwm/TahoeCapabilityContracts.hpp"
 #include "AirportItlwm/TahoeDriverAvailabilityContracts.hpp"
+#include "AirportItlwm/TahoeExternalPmkScanResumeContracts.hpp"
 #include "AirportItlwm/TahoeLqmContracts.hpp"
 #include "AirportItlwm/TahoeNrateContracts.hpp"
 #include "AirportItlwm/TahoeOpModeContracts.hpp"
@@ -1655,6 +1656,60 @@ void testTahoeAssociationAuthContracts()
     }
 }
 
+void testTahoeExternalPmkScanResumeContracts()
+{
+    using namespace TahoeExternalPmkScanResumeContracts;
+
+    const Facts accepted = {
+        true,  // audited local PSK/PMK policy
+        true,  // association configuration succeeded
+        true,  // paired PLTI wait observed PMK readiness
+        true,  // net80211 still waits in SCAN
+        true,  // PMK install retained IEEE80211_F_PSK
+        false, // external owner released after delivery
+    };
+    require(shouldResumeScanAfterExternalPmk(accepted),
+            "external-PMK scan resume accepts the complete observed-safe handoff");
+
+    Facts rejected = accepted;
+    rejected.pskPmkPolicyAllowed = false;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume rejects non-PSK policy");
+    rejected = accepted;
+    rejected.associationAccepted = false;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume rejects failed association setup");
+    rejected = accepted;
+    rejected.observedExternalPmkReady = false;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume rejects timeout or stale PMK state");
+    rejected = accepted;
+    rejected.stateIsScan = false;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume preserves later net80211 states");
+    rejected = accepted;
+    rejected.pskFlagSet = false;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume requires retained PSK eligibility");
+    rejected = accepted;
+    rejected.externalPmkOwner = true;
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume remains fail-closed before PMK delivery");
+
+    rejected = accepted;
+    rejected.pskPmkPolicyAllowed =
+        TahoeAssociationAuthContracts::mayUseLocalPskPmk(
+            TahoeAssociationAuthContracts::kAuthWpa3Sae);
+    require(!shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume cannot reopen pure SAE");
+    rejected = accepted;
+    rejected.pskPmkPolicyAllowed =
+        TahoeAssociationAuthContracts::mayUseLocalPskPmk(
+            TahoeAssociationAuthContracts::kAuditedWpa3PskTransitionAuth);
+    require(shouldResumeScanAfterExternalPmk(rejected),
+            "external-PMK scan resume preserves only audited PSK transition policy");
+}
+
 void testTahoeCountryCodeCarrierContracts()
 {
     require(APPLE80211_MAX_CC_LEN == 3,
@@ -1749,9 +1804,10 @@ int main()
     testTahoeBeaconIeBuilder();
     testTahoeBssManagerContracts();
     testTahoeAssociationAuthContracts();
+    testTahoeExternalPmkScanResumeContracts();
     testTahoeCountryCodeCarrierContracts();
     testTahoeWclAuthAssocCarrierContracts();
     testTahoeDriverAvailabilityContracts();
-    std::cout << "tahoe payload builders ok: 30 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
+    std::cout << "tahoe payload builders ok: 31 contracts, 10 builder families, APSTA public setter carriers, Skywalk IOC routes, association RSN/auth, external-PMK scan resume, WCL auth/assoc complete, driver-availability lifecycle, BSSID_CHANGED, CARD_CAPABILITIES, scan/current-network layout/renderability, beacon IE stream, driver-owned BssManager, BSS blacklist async owner, OP_MODE, PHY_MODE, nrate, TXRX chain masks, LQM, country-code, AX211 IGTK ABI and BssManager writer contracts covered\n";
     return 0;
 }

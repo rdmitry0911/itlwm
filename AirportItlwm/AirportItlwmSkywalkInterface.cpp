@@ -15,6 +15,7 @@
 #include "TahoeBssBlacklistContracts.hpp"
 #include "TahoeBssManagerContracts.hpp"
 #include "TahoeCapabilityContracts.hpp"
+#include "TahoeExternalPmkScanResumeContracts.hpp"
 #include "TahoeLqmContracts.hpp"
 #include "TahoeNrateContracts.hpp"
 #include "TahoeOpModeContracts.hpp"
@@ -955,8 +956,13 @@ static_assert(sizeof(apple80211_wcl_wnm_offload_t) == 0x30,
 
 static constexpr IOReturn kIOReturnBadArgumentTahoe = static_cast<IOReturn>(0xe00002bc);
 
-IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner)
+IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssid_len, const struct ether_addr &bssid, uint32_t authtype_lower, uint32_t authtype_upper, uint8_t *key, uint32_t key_len, int key_index, bool importLocalPmk, bool externalPmkOwner, bool *externalPmkReadyObserved)
 {
+    // Control-flow result only: never expose PMK material through this
+    // optional caller-local output.
+    if (externalPmkReadyObserved != nullptr)
+        *externalPmkReadyObserved = false;
+
     /*
      * SAE is not an AKM alias for PSK: it needs an SAE password exchange and
      * PMF/IGTK. Do not let an unsupported WPA3 request fall through to
@@ -1129,6 +1135,9 @@ IOReturn AirportItlwmSkywalkInterface::associateSSID(uint8_t *ssid, uint32_t ssi
                         assocGeneration, kExternalPmkWaitTimeoutMs,
                         &waitedMs, &pmkNonZero, &externalOwner,
                         &sleepResult, &inCommandGate);
+
+                    if (externalPmkReadyObserved != nullptr)
+                        *externalPmkReadyObserved = pmkReady;
 
                     if (!pmkReady) {
                         XYLog("external_pmk_wait TIMEOUT generation=%llu "
@@ -5751,7 +5760,7 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
                                     ad->ad_bssid, ad->ad_auth_lower,
                                     ad->ad_auth_upper, ad->ad_key.key,
                                     ad->ad_key.key_len, ad->ad_key.key_index,
-                                    true, false);
+                                    true, false, nullptr);
     }
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathPublicAssoc,
                                    ad->ad_ssid, ad->ad_ssid_len,
@@ -6308,6 +6317,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
     IOReturn assocResult = kIOReturnSuccess;
     if (ap_mode != APPLE80211_AP_MODE_IBSS) {
+        bool externalPmkReadyObserved = false;
         disassocIsVoluntary = false;
 
         struct apple80211_authtype_data auth_type_data;
@@ -6323,8 +6333,28 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
         assocResult = associateSSID(const_cast<uint8_t *>(ssid), ssid_len,
                                     *bssid, auth_lower, auth_upper, NULL, 0,
-                                    0, false, true);
+                                    0, false, true,
+                                    &externalPmkReadyObserved);
+
+        const TahoeExternalPmkScanResumeContracts::Facts scanResumeFacts = {
+            TahoeAssociationAuthContracts::mayUseLocalPskPmk(auth_upper),
+            assocResult == kIOReturnSuccess,
+            externalPmkReadyObserved,
+            ic->ic_state == IEEE80211_S_SCAN,
+            (ic->ic_flags & IEEE80211_F_PSK) != 0,
+            ic->ic_external_pmk_owner != 0,
+        };
+        if (TahoeExternalPmkScanResumeContracts::
+                shouldResumeScanAfterExternalPmk(scanResumeFacts)) {
+            // Do not select a BSS or synthesize AUTH here.  SCAN->SCAN lets
+            // the IWX backend preserve an active scan or restart its normal
+            // scan completion path, where net80211 performs ordinary
+            // selection.
+            XYLog("wcl_assoc PMK_READY_SCAN_RESUME\n");
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        }
     }
+
     airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                    ssid, ssid_len,
                                    reinterpret_cast<const uint8_t *>(bssid),
