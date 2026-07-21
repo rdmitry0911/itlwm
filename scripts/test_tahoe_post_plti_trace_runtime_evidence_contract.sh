@@ -68,7 +68,7 @@ def require(condition: bool, message: str) -> None:
         fail(message)
 
 
-def validate(document: dict, record: str | None = None) -> None:
+def validate(document: dict, record=None) -> None:
     require(document.get("schema") == "itlwm-tahoe-post-plti-trace-runtime/v1",
             "unexpected schema")
     candidate = document.get("candidate")
