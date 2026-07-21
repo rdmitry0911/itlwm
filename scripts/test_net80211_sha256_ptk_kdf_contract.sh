@@ -47,6 +47,10 @@ expected_sha256 = bytes.fromhex(
 )
 assert sha256_kdf(pmk, aa, spa, anonce, snonce, 48) == expected_sha256
 assert sha256_kdf(pmk, spa, aa, snonce, anonce, 48) == expected_sha256
+sha256_ptk_carrier = expected_sha256 + bytes(64 - len(expected_sha256))
+assert len(sha256_ptk_carrier) == 64
+assert sha256_ptk_carrier[:48] == expected_sha256
+assert sha256_ptk_carrier[48:] == bytes(16)
 
 expected_sha1 = bytes.fromhex(
     "79c315817da2ce917e3264eeac39f908"
@@ -58,6 +62,7 @@ assert sha1_prf(pmk, aa, spa, anonce, snonce, 64) == expected_sha1
 
 text = pathlib.Path(sys.argv[1]).read_text()
 for anchor in (
+    "memset(ptk, 0, sizeof(*ptk));",
     "kdf = ieee80211_is_sha256_akm(akm) ? ieee80211_kdf : ieee80211_prf;",
     "? sizeof(ptk_label) - 1 : sizeof(ptk_label);",
     "? MIN(48, sizeof(*ptk)) : sizeof(*ptk);",
@@ -65,6 +70,9 @@ for anchor in (
     "(u_int8_t *)ptk, ptk_len);",
 ):
     assert anchor in text, anchor
+assert text.index("memset(ptk, 0, sizeof(*ptk));") < text.index(
+    "(*kdf)(pmk, IEEE80211_PMK_LEN"
+)
 
-print("PASS: net80211 SHA256 PTK KDF contract")
+print("PASS: net80211 SHA256 PTK KDF and zero-tail contract")
 PY

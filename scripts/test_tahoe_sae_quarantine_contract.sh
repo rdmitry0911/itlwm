@@ -10,6 +10,7 @@ set -euo pipefail
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 bash "$root/scripts/test_payload_builders.sh"
+bash "$root/scripts/test_net80211_sha256_ptk_kdf_contract.sh"
 bash "$root/scripts/test_net80211_mfp_lifecycle_contract.sh"
 bash "$root/scripts/test_tahoe_sae_product_foundation_contract.sh"
 bash "$root/scripts/test_net80211_pae_epoch_contract.sh"

@@ -439,6 +439,8 @@ ieee80211_derive_ptk(enum ieee80211_akm akm, const u_int8_t *pmk,
      */
     ptk_len = ieee80211_is_sha256_akm(akm)
         ? MIN(48, sizeof(*ptk)) : sizeof(*ptk);
+    /* SHA256/CCMP derives 48 bytes; never leave the larger carrier stale. */
+    memset(ptk, 0, sizeof(*ptk));
     (*kdf)(pmk, IEEE80211_PMK_LEN, ptk_label, ptk_label_len,
         buf, sizeof buf, (u_int8_t *)ptk, ptk_len);
 }
