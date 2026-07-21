@@ -33,6 +33,38 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
     -o "$tmpdir/net80211-sae-auth-contract-cpp"
 "$tmpdir/net80211-sae-auth-contract-cpp"
 
+# The future pure-SAE admission and relay FSM are deliberately standalone
+# until their kernel/UserClient owners exist.  Compile their semantic models
+# as both C and C++ on every foundation run so their ABI-neutral boundaries
+# cannot silently rot while the product path remains fail-closed.
+clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/itl80211/openbsd" \
+    -I"$root/itl80211/openbsd/net80211" \
+    "$root/tests/net80211_sae_admission_test.c" \
+    -o "$tmpdir/net80211-sae-admission-c"
+"$tmpdir/net80211-sae-admission-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/itl80211/openbsd" \
+    -I"$root/itl80211/openbsd/net80211" \
+    "$root/tests/net80211_sae_admission_test.c" \
+    -o "$tmpdir/net80211-sae-admission-cpp"
+"$tmpdir/net80211-sae-admission-cpp"
+
+clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/include" \
+    -I"$root/include/ClientKit" \
+    "$root/tests/tahoe_sae_relay_fsm_v1_test.c" \
+    -o "$tmpdir/tahoe-sae-relay-fsm-c"
+"$tmpdir/tahoe-sae-relay-fsm-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/include" \
+    -I"$root/include/ClientKit" \
+    "$root/tests/tahoe_sae_relay_fsm_v1_test.c" \
+    -o "$tmpdir/tahoe-sae-relay-fsm-cpp"
+"$tmpdir/tahoe-sae-relay-fsm-cpp"
+
 clang -std=c11 -Wall -Wextra -Werror \
     -I"$root/include/ClientKit" \
     "$root/tests/tahoe_sae_relay_abi_layout_test.c" \
