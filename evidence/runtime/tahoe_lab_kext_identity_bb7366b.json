@@ -1,0 +1,67 @@
+{
+  "candidate_binding": {
+    "candidate_kext_bound": true,
+    "checks": {
+      "installed_binary_sha256_matches_release": true,
+      "installed_bundle_id_matches_release": true,
+      "installed_bundle_present": true,
+      "installed_macho_uuid_matches_release": true,
+      "kext_reported_loaded": true,
+      "loaded_uuid_matches_installed": true,
+      "loaded_uuid_matches_release": true,
+      "pinned_guest_query_succeeded": true,
+      "wifi_interface_present": true
+    },
+    "failure_reasons": []
+  },
+  "capture_mode": "read-only-pinned-guest",
+  "captured_at_utc": "2026-07-21T01:31:00+00:00",
+  "command_result": {
+    "duration_seconds": 3.155,
+    "guest_command": "read-only installed-and-loaded-kext identity query",
+    "raw_guest_stderr_retained": false,
+    "raw_guest_stdout_retained": false,
+    "ssh_returncode": 0,
+    "stderr_line_count": 0
+  },
+  "expected_release": {
+    "archive_sha256": "bb459e4c42641e7a302b41997a1c07467ad1119744086eb0d3e20111d14e19c6",
+    "binary_sha256": "eb52702282620242ff844be796e7ca6c1476dda7800e7ebd75b96f715a75a525",
+    "bundle_id": "com.zxystd.AirportItlwm",
+    "bundle_version": "2.4.0",
+    "macho_uuid": "7A9DE189-CA48-39C4-B1B1-5D74E4258419",
+    "release_tag": "v2.4.0-alpha-bb7366b",
+    "short_version": "2.4.0",
+    "source": "local_release_zip"
+  },
+  "guest_observation": {
+    "installed_binary_sha256": "eb52702282620242ff844be796e7ca6c1476dda7800e7ebd75b96f715a75a525",
+    "installed_bundle_id": "com.zxystd.AirportItlwm",
+    "installed_bundle_present": true,
+    "installed_bundle_version": "2.4.0",
+    "installed_macho_uuid": "7A9DE189-CA48-39C4-B1B1-5D74E4258419",
+    "installed_short_version": "2.4.0",
+    "kext_reported_loaded": true,
+    "loaded_driver_line_count": 2,
+    "loaded_uuids_observed": [
+      "7A9DE189-CA48-39C4-B1B1-5D74E4258419"
+    ],
+    "os_build": "25C56",
+    "wifi_interface_present": true
+  },
+  "non_claims": {
+    "association_tested": false,
+    "authentication_tested": false,
+    "candidate_kext_installed_by_capture": false,
+    "candidate_kext_loaded_by_capture": false,
+    "data_transfer_tested": false,
+    "dhcp_tested": false,
+    "host_or_guest_rebooted_by_capture": false,
+    "kext_unloaded_by_capture": false
+  },
+  "schema_version": "itlwm-tahoe-lab-kext-identity-binding/v1",
+  "verdict": {
+    "candidate_runtime_test_performed": false,
+    "ready_for_exact_candidate_runtime_experiment": true
+  }
+}

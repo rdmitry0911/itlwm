@@ -1,0 +1,163 @@
+{
+  "a2df_radio_baseline": {
+    "completed_cycles": 4,
+    "dhcp_textual_observation": "COMPLETE",
+    "fresh_association_epochs": 4,
+    "management_and_default_route_preserved": true,
+    "ping_packets_per_cycle": 5,
+    "pinned_direct_wifi_route_preserved": true,
+    "radio_off_observed_cycles": 4,
+    "radio_on_observed_cycles": 4,
+    "result": "PASS",
+    "saved_profile_autojoin_only": true,
+    "stable_ap_authorization_cycles": 4,
+    "total_ping_packets_received": 20,
+    "total_ping_packets_transmitted": 20
+  },
+  "activation": {
+    "canonical_activation": {
+      "activation_state": "READY_FOR_GUEST_REBOOT",
+      "auxkc_member_set": "PASS",
+      "canonical_member_set": "PASS"
+    },
+    "guest_reboot_completed": true,
+    "private_auxkc_admission": {
+      "canonical_mutation": "none",
+      "private_admission_result": "PASS"
+    }
+  },
+  "appstore_controller_topology": {
+    "airport_itlwm_skywalk_interface_nodes": 1,
+    "airport_itlwm_skywalk_six_byte_mac_nodes": 1,
+    "app_store_smoke_tested": false,
+    "controller_bsd_name_present": true,
+    "controller_iobuiltin_false": true,
+    "controller_iomacaddress_length": 6,
+    "controller_nodes": 1,
+    "direct_parent_iomacaddress_absent": true,
+    "direct_parent_is_iopciedevicewrapper": true,
+    "topology_probe_result": "PASS"
+  },
+  "artifact_hashes": {
+    "a2df_four_cycle_summary_sha256": "eacde764708554fe67e76c1e254798919f838e1fb544344166d7833d04b87aa7",
+    "appstore_controller_topology_sha256": "711f095aacaccbd6988d9312e349a60a10cac565d919de4cb4700365a60028c4",
+    "appstore_skywalk_topology_sha256": "2d2b54fb6a90effb5b86aa35cf756de151c793393e761a862d7aebde3e58f004",
+    "bounded_trace_window_summary_sha256": "10cf7ad404e387ff7152ac0767db0304a458be5b5356a48d8b4300d34e4672f9",
+    "identity_evidence_sha256": "3391605c1b7373e111a590e988a7dad8043e501b1bfde0ccfd8c0006d36fd20a",
+    "link_context_census_output_sha256": "0bc564a5e45d157eeb114e2b368241dcadb7bf4e1343d7c60bc43f15dfa9aa74",
+    "link_context_control_sha256": "3a069247a839c55eb6e8bc16ff7bfff63442b258d94ef88626518a37f340afca",
+    "link_context_final_control_sha256": "355a99383a8860201a9820a73e4380cc7592c6fbfcc62f7c9e2c8dd2e955ede9",
+    "link_context_parent_output_sha256": "06375732c5aa019ecaece81c53b529d269ee0aeadd782bf6c843f9da96d9735b",
+    "link_context_trace_sha256": "08c78fc1dd91bcd3c3e783a4daaa5c426b2308ffaf1f6377b1e8c2a1f97ed3dd"
+  },
+  "candidate": {
+    "archive_members": [
+      "AirportItlwm.kext/Contents/Info.plist",
+      "AirportItlwm.kext/Contents/MacOS/AirportItlwm"
+    ],
+    "archive_sha256": "bb459e4c42641e7a302b41997a1c07467ad1119744086eb0d3e20111d14e19c6",
+    "binary_sha256": "eb52702282620242ff844be796e7ca6c1476dda7800e7ebd75b96f715a75a525",
+    "macho_uuid": "7A9DE189-CA48-39C4-B1B1-5D74E4258419",
+    "release_tag": "v2.4.0-alpha-bb7366b",
+    "source_commit": "bb7366b5a99cadbb3b831b74acc2902f90b6a53a"
+  },
+  "commit_safety": {
+    "ip_or_route_committed": false,
+    "raw_capture_committed": false,
+    "secret_material_committed": false,
+    "ssid_or_bssid_committed": false
+  },
+  "link_context": {
+    "bounded_trace_window": {
+      "completed_cycles": 1,
+      "data_plane_packets_received": 5,
+      "data_plane_packets_transmitted": 5,
+      "dhcp_textual_observation": "COMPLETE",
+      "fresh_association_epochs": 1,
+      "management_and_default_route_preserved": true,
+      "result": "PASS"
+    },
+    "bridge_argument_order_runtime": {
+      "net80211_bridge_events": 2,
+      "nonzero_epoch_events": 2,
+      "success_result_events": 2,
+      "verdict": "PASS"
+    },
+    "census": {
+      "events": 29,
+      "main_chain_complete": false,
+      "nonzero_epochs": 3,
+      "trace_dropped": 0,
+      "verdict": "OWNER_CONTEXT_GATE_HELD"
+    },
+    "control_block": "0x0",
+    "control_mode": "0x51",
+    "final_control": {
+      "enabled": false,
+      "link_context_enabled": false,
+      "mode": "0x10"
+    },
+    "parent_attestation": {
+      "accepted": 0,
+      "link_up_events": 0,
+      "rejected": 0,
+      "trace_dropped": 0,
+      "unattested": 0,
+      "verdict": "TAHOE_PARENT_LINK_UP_NOT_OBSERVED"
+    },
+    "regdiag": {
+      "abi": 2,
+      "build_passed": true,
+      "source_commit": "bb7366b5a99cadbb3b831b74acc2902f90b6a53a",
+      "source_inputs_sha256": {
+        "build_script": "cd8525b175cda4815d15aae247c1213f17bc2ec1232159cefa73b010a38b945f",
+        "client_source": "de7604ee8ac6c53f784d5f9c9716ac241490614782c0f353ed9f64cf8704c70a",
+        "header": "0d24c4180f9e43b68b0bc3615d6b8acb5354cfece8a00ac7c581e771227667b0"
+      }
+    },
+    "trace_count": 38,
+    "trace_dropped": 0
+  },
+  "non_claims": {
+    "app_store_crash_reproduced_or_fixed": false,
+    "explicit_address_command": false,
+    "explicit_dhcp_state_mutating_command": false,
+    "explicit_join_command": false,
+    "explicit_route_command": false,
+    "general_internet_traffic_tested": false,
+    "parent_link_up_accepted": false,
+    "physical_target_os_build_tested": false,
+    "pure_sae_or_pmf_functionality_verified": false
+  },
+  "postboot_identity": {
+    "all_identity_checks_passed": true,
+    "candidate_kext_bound": true,
+    "identity_evidence": "evidence/runtime/tahoe_lab_kext_identity_bb7366b.json"
+  },
+  "prebaseline_public_radio_recovery": {
+    "explicit_join_command": false,
+    "radio_off_command_succeeded": true,
+    "radio_on_command_succeeded": true,
+    "saved_profile_address_ready": true
+  },
+  "release": {
+    "archive_integrity_passed": true,
+    "cd_run_id": "29792872649",
+    "release_contains_kext": true
+  },
+  "runtime_harness": {
+    "a2df_runner_sha256": "12fe0bebcacec91b3a5fcfb23893ec2513017579f8972473c163c9f9176c91fe",
+    "a2df_static_contract_passed": true,
+    "auxkc_activation_helper_sha256": "ebff15c916c8aecf5209d00aaa412952ff1fef9709b4e84803de5704eba8fb1a",
+    "auxkc_activation_static_contract_passed": true,
+    "appstore_controller_static_contract_passed": true,
+    "trace_window_is_not_four_cycle_baseline": true
+  },
+  "schema_version": "itlwm-tahoe-release-bound-overlay-runtime/v1",
+  "scope": {
+    "base_disk_used_as_read_only_backing": true,
+    "lab_guest_overlay_only": true,
+    "physical_host_rebooted": false,
+    "remote_physical_validation_host_touched": false
+  }
+}
