@@ -327,11 +327,18 @@ start_configured_hostapd() {
 }
 
 require_state_dir() {
-    local resolved
+    local resolved owner mode
     case "$STATE_DIR" in "$STATE_PREFIX"*) ;; *) die "state directory is outside the restricted temporary prefix";; esac
     [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] || die "state directory is missing or symlinked"
     resolved="$(cd -P -- "$STATE_DIR" && pwd)"
     [ "$resolved" = "$STATE_DIR" ] || die "state directory must be canonical"
+    owner="$(/usr/bin/stat -c %u -- "$STATE_DIR" 2>/dev/null)" ||
+        die "state directory owner is unreadable"
+    [ "$owner" = "$(/usr/bin/id -u)" ] ||
+        die "state directory is not owned by the invoking user"
+    mode="$(/usr/bin/stat -c %a -- "$STATE_DIR" 2>/dev/null)" ||
+        die "state directory permissions are unreadable"
+    [ "$mode" = 700 ] || die "state directory permissions are not restricted"
 }
 
 state_file() {

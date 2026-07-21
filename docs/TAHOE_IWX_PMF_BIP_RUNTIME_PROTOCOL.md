@@ -39,6 +39,10 @@ network and configuration-pair signatures immediately before that transition;
 a changed or unreadable signature retains optional PMF and makes the run
 inconclusive without starting required PMF.
 
+The state directory itself must be canonical, owned by the invoking user, and
+mode `0700`; the helper rejects a shared or writable-by-others namespace before
+it writes state, launches a watchdog, or changes an AP process.
+
 The same hash-only configuration-pair baseline is persisted in restricted AP
 state and carried into required promotion.  A changed or unreadable pair after
 the optional-PMF stop prevents required-active publication and is never used to

@@ -286,6 +286,36 @@ grep -Fxq 'rollback_verified=true' "$STATE_DIR/rollback.status" ||
     fail 'required hostapd pid survived rollback'
 [ ! -e "$CONTROL_DIR/active.state" ] || fail 'rollback left the active marker behind'
 
+# The transaction state directory itself is rollback authority and must not be
+# writable by another local principal.  A generated mode-0777 directory must
+# be rejected before the helper writes state, starts a watchdog, or touches
+# optional hostapd.
+UNSAFE_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+chmod 777 "$UNSAFE_STATE_DIR"
+OPTIONAL_PID_BEFORE="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+if "$HELPER" --activate --state-dir "$UNSAFE_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/unsafe-state-activate.out" \
+    2>"$TMP_ROOT/unsafe-state-activate.err"; then
+    fail 'activation accepted an other-writable rollback state directory'
+fi
+grep -Fq 'state directory permissions are not restricted' \
+    "$TMP_ROOT/unsafe-state-activate.err" ||
+    fail 'unsafe state directory did not retain its categorical diagnostic'
+OPTIONAL_PID_AFTER="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+[ "$OPTIONAL_PID_BEFORE" = "$OPTIONAL_PID_AFTER" ] ||
+    fail 'unsafe state directory stopped or replaced optional hostapd'
+/bin/kill -0 "$OPTIONAL_PID_AFTER" >/dev/null 2>&1 ||
+    fail 'optional hostapd was not alive after unsafe-state rejection'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'unsafe state directory started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'unsafe state directory left a live switchover marker'
+[ ! -e "$UNSAFE_STATE_DIR/state.txt" ] ||
+    fail 'unsafe state directory received transaction state'
+[ ! -e "$UNSAFE_STATE_DIR/watchdog.pid" ] ||
+    fail 'unsafe state directory received a watchdog receipt'
+chmod 700 "$UNSAFE_STATE_DIR"
+
 FAIL_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
 if FAKE_FAIL_REQUIRED=1 "$HELPER" --activate --state-dir "$FAIL_STATE_DIR" \
     --lease-seconds 60 >"$TMP_ROOT/failed-activate.out" \

@@ -335,6 +335,141 @@
 
 ## ANOMALY
 
+- id: `LAB-PMF-AP-RESTRICTED-STATE-INTEGRITY-20260721`
+- status: `FIX_VERIFIED`
+- scope: repository-owned AP transaction state-directory admission; no kext,
+  firmware, Apple80211, candidate, guest, or physical-AP claim.
+- symptom: `require_state_dir()` checks only prefix, existence, non-symlink,
+  and canonical spelling.  It accepts a group/other-writable state directory
+  even though state, watchdog receipt, and later rollback authority are placed
+  inside it.
+- expected system behavior: the marker-bound state directory must be owned by
+  the invoking user and mode `0700` before any state write, watchdog launch, or
+  AP process transition.  A writable-by-others directory must reject activation
+  while optional PMF remains untouched.
+- actual behavior: a canonical `0777` directory under the accepted temporary
+  prefix reaches `write_state()`, `write_marker()`, watchdog start, and the
+  optional/required hostapd transition without an ownership or permission test.
+- divergence point: `scripts/tahoe_pmf_required_ap_switchover.sh::require_state_dir`.
+- evidence:
+  - local source establishes the missing UID/mode predicates while later code
+    treats state file, watchdog PID, and marker contents as rollback authority.
+  - the runtime protocol calls that state restricted and marker-bound; a
+    directory writable by other local principals cannot satisfy that ownership
+    contract.
+  - deterministic no-AP runtime reproduction: the fixture gave only its
+    generated state directory mode `0777`.  The current helper accepted
+    synthetic activation, and the fixture stopped with `activation accepted an
+    other-writable rollback state directory` (exit 1).  No physical AP, guest,
+    route, or real configuration was used.
+  - decomp: not applicable; this is external laboratory transaction control.
+- candidate causes:
+  - confirmed: directory path validation was implemented without access-mode
+    or owner validation.
+- rejected causes:
+  - state-file `0600`: it is written only after the unsafe directory is
+    admitted, and cannot protect marker/FIFO/PID names from directory changes.
+  - control-directory lock mode: it protects the lock/marker parent but does
+    not secure the caller-selected transaction state directory.
+- confirmed deviation: untrusted writable namespace is accepted as trusted
+  rollback ownership.
+- root cause: `require_state_dir()` has no current-UID or exact-mode check.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-RESTRICTED-STATE-INTEGRITY-20260721`
+- symptom: other-writable temporary state can authorize a PMF AP transaction.
+- expected system behavior: only a canonical, invoking-user-owned `0700`
+  directory beneath the restricted prefix can enter any helper mode with state.
+- actual behavior: prefix/canonical checks alone admit `0777` state.
+- exact divergence point: missing `stat` UID and mode equality checks in
+  `require_state_dir()` before `state_file()` is used.
+- evidence from runtime: the fixture-only `0777` state directory let the
+  unmodified helper report synthetic required activation, and the fixture
+  deterministically rejected that acceptance (exit 1); no physical AP, route,
+  guest, or real configuration was involved.
+- evidence from decomp: not applicable; no Apple component owns the external
+  temporary-directory transaction protocol.
+- exact semantic mismatch between reference and our code: no reference-driver
+  path applies.  The mismatch is against the SYSTEM_CONTRACT that rollback
+  authority is restricted and marker-bound, not a shared temporary namespace.
+- fix justification path: `SYSTEM_CONTRACT_FIX`.
+- enumerated system-facing touchpoints:
+  1. state/marker/watchdog PID/FIFO names: must live in private ownership;
+  2. optional/required hostapd: no transition begins when that ownership fails;
+  3. control lock: unchanged and remains a separate one-at-a-time guard;
+  4. host networking, staged configs, rekey, guest, and candidate: untouched.
+- expected contract at each touchpoint:
+  1. only caller UID with `0700` directory can create/read transaction state;
+  2. optional PID remains live and required PID never appears on rejection;
+  3. no state format or lock semantics change;
+  4. added checks are metadata reads only.
+- why no relevant touchpoints are missing: the candidate gates the sole common
+  `require_state_dir()` entrance used by activation, rekey, rollback, and
+  watchdog.  It changes no downstream process or network behavior.
+- why proposed path adds no extra system-visible side effects: it performs two
+  local metadata reads before existing work.  Failure prevents an AP operation;
+  it adds no retry, delay, file permission change, configuration write, or
+  guest action.
+- why this is root cause and not just correlation: all state-owning modes call
+  this exact function, and no other path validates the directory's owner/mode.
+- why proposed fix is 1:1 with reference architecture and semantics: no Apple
+  implementation applies.  The system-contract fix makes the existing
+  restricted-state premise explicit without altering state contents or owners.
+- files/functions to modify:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::require_state_dir`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` unsafe-state
+    rejection case;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` static predicate;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` restricted-state wording.
+- forbidden alternative fixes considered and rejected:
+  - chmod a caller-selected directory inside the helper;
+  - trust state-file mode after opening an unsafe directory;
+  - loosen marker ownership or rely solely on `flock`;
+  - move/rename state after activation begins.
+- verification plan:
+  1. Completed: the fixture confirmed its generated `0777` state directory was
+     incorrectly accepted for synthetic required activation by the pre-fix
+     helper.
+  2. Completed: UID/`0700` admission categorically rejects before optional PID
+     changes, required PID, marker, state, or watchdog appear.
+  3. Completed: PMF static/evidence contracts and the isolated Tahoe build-only
+     gate passed.  No candidate activation, guest reboot, or live AP operation
+     occurred.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION
+
+- implementation:
+  - `require_state_dir()` now requires the canonical state directory to be
+    owned by the invoking UID and exactly mode `0700` before it permits any
+    state-owning helper mode.
+  - the helper does not chmod, move, or repair caller-provided directories; it
+    simply rejects an unsafe namespace before state, marker, FIFO, watchdog, or
+    hostapd work begins.
+  - the local fixture changes only its generated directory to mode `0777` and
+    confirms that no transaction artifact is created there.
+- deterministic verification:
+  - Before implementation, the AP-helper fixture failed exactly at `activation
+    accepted an other-writable rollback state directory`; this is the
+    controlled reproduction recorded above.
+  - After implementation, the same fixture: PASS.  The `0777` directory gets
+    a categorical permission diagnostic while the exact optional PID remains
+    live; required PID, marker, state file, and watchdog receipt are absent.
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS.
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS.
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS on the pinned
+    isolated guest.  The Tahoe kext built successfully, all 959 undefined
+    symbols resolved against BootKC, trace producers/Agent/RegDiag built, and
+    the gate made no kext install/load/publish/release operation.
+- verification boundary: this closes only state-directory admission integrity.
+  It is not a live AP result, candidate activation, guest reboot, PMF/BIP
+  association, or a substitute for operating-system filesystem isolation.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
+## ANOMALY
+
 - id: `LAB-PMF-AP-TRANSITION-CONFIG-OWNERSHIP-20260721`
 - status: `FIX_VERIFIED`
 - scope: repository-owned staged configuration ownership across required-PMF

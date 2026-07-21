@@ -160,6 +160,9 @@ for needle in \
     'EXPECTED_WIDTH_MHZ=80' \
     'EXPECTED_CENTER1_MHZ=5775' \
     'CONFIG_VALIDATION_FAILURE=ssid-pair-mismatch' \
+    'state directory permissions are not restricted' \
+    '/usr/bin/stat -c %u' \
+    '/usr/bin/stat -c %a' \
     'state=rollback-armed' \
     'mark_required_active' \
     'start_watchdog' \
@@ -346,6 +349,16 @@ if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("t
     fail("AP fixture lacks the post-transition network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
+if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the restricted-state admission discriminator")
+
+state_dir = helper[helper.find("require_state_dir() {"):helper.find("state_file() {")]
+ordered(state_dir, "restricted AP state directory admission",
+        'state directory must be canonical',
+        '/usr/bin/stat -c %u',
+        '/usr/bin/id -u',
+        '/usr/bin/stat -c %a',
+        '[ "$mode" = 700 ]')
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",
