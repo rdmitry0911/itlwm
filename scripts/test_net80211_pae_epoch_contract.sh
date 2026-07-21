@@ -380,11 +380,48 @@ ordered(wcl_ota, "OTA WCL reassociation request fence",
         "ieee80211_pae_assoc_epoch_begin(ic)",
         "ic->ic_wcl_reassoc_owner_active = 1", "ieee80211_send_mgmt")
 
-# Keep the exact quarantine intact: this spine alone must not make an MFP
-# session partially live.
-require(crypto_c, "ic->ic_set_key_wait = NULL;", "default wait-key quarantine")
-require(crypto_c, "ic->ic_eapol_key_input = NULL;", "default EAPOL quarantine")
-require(iwx_cpp, "return EOPNOTSUPP;", "AX211 wait-key unsupported result")
+# Epoch/replacement cancellation now owns an active PMF transaction as well.
+# It must snapshot/cancel under the selected-BSS leaf lock, invoke the driver
+# only after unlocking, and preserve the WCL request across a valid replacement
+# (node_join_bss begins that replacement before it chooses RSN parameters).
+for token in (
+    "struct ieee80211_pae_mfp_txn ic_pae_mfp_txn;",
+    "ic_pae_mfp_txn_submit",
+    "ic_pae_mfp_txn_cancel",
+    "ic_pae_mfp_txn_finish",
+):
+    require(var_h, token, "PMF epoch owner state")
+for transaction_begin in (begin, replacement):
+    ordered(transaction_begin, "PMF cancellation after selected-BSS leaf unlock",
+            "ieee80211_pae_mfp_txn_cancel_locked(ic)",
+            "IOSimpleLockUnlockEnableInterrupt(lock, irq)",
+            "(*cancel)(ic, txn_id)")
+    if "ic->ic_pae_mfp_requested = 0;" in transaction_begin:
+        fail("epoch replacement must not erase the valid WCL PMF request")
+pmf_complete = body(proto_c, "void\nieee80211_pae_mfp_txn_complete",
+                    "PMF transaction completion")
+for token in (
+    "txn->id != id", "txn->phase != stage",
+    "ieee80211_pae_mfp_txn_live_locked",
+    "ieee80211_pae_mfp_txn_terminal_current",
+):
+    require(pmf_complete, token, "PMF completion epoch fence")
+pmf_terminal = body(proto_c,
+                    "static int\nieee80211_pae_mfp_txn_terminal_current",
+                    "PMF terminal request clear")
+for token in ("ic->ic_bss == ni", "ic->ic_pae_assoc_epoch",
+              "ic->ic_pae_mfp_requested = 0;"):
+    require(pmf_terminal, token, "current-BSS-only PMF clear")
+pmf_publish = body(iwx_cpp, "static void\niwx_publish_mfp_capability",
+                   "AX211 PMF publication")
+for token in (
+    "ic->ic_caps |= IEEE80211_C_MFP;",
+    "ItlIwx::iwx_security_rx_eapol_input",
+    "ItlIwx::iwx_pae_mfp_txn_submit",
+    "ItlIwx::iwx_pae_mfp_txn_cancel",
+    "ItlIwx::iwx_pae_mfp_txn_finish",
+):
+    require(pmf_publish, token, "complete AX211 PMF owner publication")
 
 
 class EpochModel:

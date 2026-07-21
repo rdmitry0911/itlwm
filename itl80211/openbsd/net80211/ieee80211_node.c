@@ -952,7 +952,8 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
         ni->ni_rsngroupcipher = ic->ic_rsngroupcipher;
         ni->ni_rsngroupmgmtcipher = ic->ic_rsngroupmgmtcipher;
         ni->ni_rsncaps = 0;
-        if (ic->ic_caps & IEEE80211_C_MFP) {
+        if ((ic->ic_caps & IEEE80211_C_MFP) &&
+            ic->ic_pae_mfp_requested) {
             ni->ni_rsncaps |= IEEE80211_RSNCAP_MFPC;
             if (ic->ic_flags & IEEE80211_F_MFPR)
                 ni->ni_rsncaps |= IEEE80211_RSNCAP_MFPR;
@@ -969,7 +970,8 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
         arc4random_buf(k->k_key, k->k_len);
         (*ic->ic_set_key)(ic, ni, k);	/* XXX */
         
-        if (ic->ic_caps & IEEE80211_C_MFP) {
+        if ((ic->ic_caps & IEEE80211_C_MFP) &&
+            ic->ic_pae_mfp_requested) {
             ic->ic_igtk_kid = 4;
             k = &ic->ic_nw_keys[ic->ic_igtk_kid];
             memset(k, 0, sizeof(*k));
@@ -1101,12 +1103,14 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         
         /* we do not support MFP but AP requires it */
-        if (!(ic->ic_caps & IEEE80211_C_MFP) &&
+        if ((!(ic->ic_caps & IEEE80211_C_MFP) ||
+             !ic->ic_pae_mfp_requested) &&
             (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPR))
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         
         /* we require MFP but AP does not support it */
         if ((ic->ic_caps & IEEE80211_C_MFP) &&
+            ic->ic_pae_mfp_requested &&
             (ic->ic_flags & IEEE80211_F_MFPR) &&
             !(ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
@@ -1593,7 +1597,8 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     ni->ni_rsncipher = (enum ieee80211_cipher)ni->ni_rsnciphers;
     
     /* use MFP if we both support it */
-    if ((ic->ic_caps & IEEE80211_C_MFP) &&
+    ni->ni_flags &= ~IEEE80211_NODE_MFP;
+    if ((ic->ic_caps & IEEE80211_C_MFP) && ic->ic_pae_mfp_requested &&
         (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
         ni->ni_flags |= IEEE80211_NODE_MFP;
 }

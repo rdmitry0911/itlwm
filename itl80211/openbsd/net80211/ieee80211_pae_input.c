@@ -102,6 +102,140 @@ ieee80211_pae_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 }
 
 /*
+ * Build a value-only PMF Msg3 plan.  The raw EAPOL frame remains owned by
+ * this ingress worker; the asynchronous owner receives only freshly-built
+ * kernel key values with no crypto-private pointer.  A retransmit with no
+ * new keys returns ENOENT so the historical Msg4 retry path remains intact.
+ */
+static int
+ieee80211_pae_mfp_msg3_begin(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const struct ieee80211_ptk *tptk,
+    struct ieee80211_eapol_key *key, const u_int8_t *gtk,
+    const u_int8_t *igtk, u_int16_t info)
+{
+    struct ieee80211_key ptk_key, gtk_key, igtk_key;
+    u_int64_t prsc;
+    u_int16_t kid;
+    int keylen, have_ptk = 0, have_gtk = 0, have_igtk = 0;
+
+    memset(&ptk_key, 0, sizeof(ptk_key));
+    memset(&gtk_key, 0, sizeof(gtk_key));
+    memset(&igtk_key, 0, sizeof(igtk_key));
+
+    if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP &&
+        (ni->ni_flags & IEEE80211_NODE_RSN_NEW_PTK)) {
+        keylen = ieee80211_cipher_keylen(ni->ni_rsncipher);
+        if (BE_READ_2(key->keylen) != keylen)
+            return EINVAL;
+        prsc = (gtk == NULL) ? LE_READ_6(key->rsc) : 0;
+        ptk_key.k_cipher = ni->ni_rsncipher;
+        ptk_key.k_rsc[0] = prsc;
+        ptk_key.k_len = keylen;
+        memcpy(ptk_key.k_key, tptk->tk, ptk_key.k_len);
+        have_ptk = 1;
+    }
+    if (gtk != NULL) {
+        u_int8_t gtk_kid;
+
+        keylen = ieee80211_cipher_keylen(ni->ni_rsngroupcipher);
+        if (gtk[1] != 6 + keylen)
+            return EINVAL;
+        gtk_kid = gtk[6] & 3;
+        gtk_key.k_id = gtk_kid;
+        gtk_key.k_cipher = ni->ni_rsngroupcipher;
+        gtk_key.k_flags = IEEE80211_KEY_GROUP;
+        if (gtk[6] & (1 << 2))
+            gtk_key.k_flags |= IEEE80211_KEY_TX;
+        gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
+        gtk_key.k_len = keylen;
+        memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
+        have_gtk = 1;
+    }
+    if (igtk != NULL) {
+        if (igtk[1] != 4 + 24)
+            return EINVAL;
+        kid = LE_READ_2(&igtk[6]);
+        if (kid != 4 && kid != 5)
+            return EINVAL;
+        igtk_key.k_id = kid;
+        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        igtk_key.k_flags = IEEE80211_KEY_IGTK;
+        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+        igtk_key.k_len = 16;
+        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
+        have_igtk = 1;
+    }
+    if ((ni->ni_flags & IEEE80211_NODE_RSN_NEW_PTK) &&
+        (!have_ptk || !have_gtk || !have_igtk))
+        return EINVAL;
+    if (!have_ptk && !have_gtk && !have_igtk)
+        return ENOENT;
+
+    return ieee80211_pae_mfp_txn_begin(ic, ni, tptk, &ptk_key, have_ptk,
+        &gtk_key, have_gtk, &igtk_key, have_igtk,
+        BE_READ_8(key->replaycnt), info,
+        IEEE80211_PAE_MFP_REPLY_4WAY_MSG4);
+}
+
+static int
+ieee80211_pae_mfp_group_begin(struct ieee80211com *ic,
+    struct ieee80211_node *ni, struct ieee80211_eapol_key *key,
+    const u_int8_t *gtk, const u_int8_t *igtk, u_int16_t info)
+{
+    struct ieee80211_key gtk_key, igtk_key;
+    struct ieee80211_key *old_igtk;
+    u_int16_t kid;
+    int keylen, have_igtk = 0, old_kid;
+
+    if (gtk == NULL || ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP)
+        return EINVAL;
+    memset(&gtk_key, 0, sizeof(gtk_key));
+    memset(&igtk_key, 0, sizeof(igtk_key));
+    keylen = ieee80211_cipher_keylen(ni->ni_rsngroupcipher);
+    if (gtk[1] != 6 + keylen)
+        return EINVAL;
+    gtk_key.k_id = gtk[6] & 3;
+    gtk_key.k_cipher = ni->ni_rsngroupcipher;
+    gtk_key.k_flags = IEEE80211_KEY_GROUP;
+    if (gtk[6] & (1 << 2))
+        gtk_key.k_flags |= IEEE80211_KEY_TX;
+    gtk_key.k_rsc[0] = LE_READ_6(key->rsc);
+    gtk_key.k_len = keylen;
+    memcpy(gtk_key.k_key, &gtk[8], gtk_key.k_len);
+
+    if (igtk != NULL) {
+        if (igtk[1] != 4 + 24)
+            return EINVAL;
+        kid = LE_READ_2(&igtk[6]);
+        if (kid != 4 && kid != 5)
+            return EINVAL;
+        igtk_key.k_id = kid;
+        igtk_key.k_cipher = ni->ni_rsngroupmgmtcipher;
+        igtk_key.k_flags = IEEE80211_KEY_IGTK;
+        igtk_key.k_mgmt_rsc = LE_READ_6(&igtk[8]);
+        igtk_key.k_len = 16;
+        memcpy(igtk_key.k_key, &igtk[14], igtk_key.k_len);
+        have_igtk = 1;
+    } else {
+        /* A rekey may omit IGTK only after a live BIP key is installed. */
+        old_kid = ic->ic_igtk_kid;
+        if (old_kid < 4 || old_kid >= IEEE80211_GROUP_NKID)
+            return EINVAL;
+        old_igtk = &ic->ic_nw_keys[old_kid];
+        if (old_igtk->k_id != old_kid ||
+            old_igtk->k_cipher != IEEE80211_CIPHER_BIP ||
+            (old_igtk->k_flags & IEEE80211_KEY_IGTK) == 0 ||
+            old_igtk->k_len != 16 || old_igtk->k_priv == NULL)
+            return EINVAL;
+    }
+
+    return ieee80211_pae_mfp_txn_begin(ic, ni, &ni->ni_ptk,
+        NULL, 0, &gtk_key, 1, &igtk_key, have_igtk,
+        BE_READ_8(key->replaycnt), info,
+        IEEE80211_PAE_MFP_REPLY_GROUP_MSG2);
+}
+
+/*
  * Process an incoming EAPOL frame.  Notice that we are only interested in
  * EAPOL-Key frames with an IEEE 802.11 or WPA descriptor type.
  */
@@ -482,12 +616,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         ic->ic_stats.is_rx_eapol_badmic++;
         return;
     }
-    /* install TPTK as PTK now that MIC is verified */
-    memcpy(&ni->ni_ptk, &tptk, sizeof(tptk));
-    
-    /* if encrypted, decrypt Key Data field using KEK */
+    /* Keep TPTK staged until all protected-management firmware ACKs land. */
+
+    /* if encrypted, decrypt Key Data field using the staged KEK */
     if ((info & EAPOL_KEY_ENCRYPTED) &&
-        ieee80211_eapol_key_decrypt(key, ni->ni_ptk.kek) != 0) {
+        ieee80211_eapol_key_decrypt(key, tptk.kek) != 0) {
         DPRINTF(("decryption failed\n"));
         return;
     }
@@ -605,6 +738,28 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             ni->ni_rsncipher = (enum ieee80211_cipher)ni->ni_rsnciphers;
         }
     }
+
+    /*
+     * A negotiated MFP Msg3 is the only path that may enter the async owner.
+     * Do not publish replay state, Msg4, key material, protection flags, or
+     * link state until PTK -> GTK -> IGTK firmware ACKs have committed.
+     */
+    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        ic->ic_pae_mfp_txn_submit != NULL) {
+        int mfp_error;
+
+        mfp_error = ieee80211_pae_mfp_msg3_begin(ic, ni, &tptk, key,
+            gtk, igtk, info);
+        if (mfp_error == 0 || mfp_error == EBUSY)
+            return;
+        if (mfp_error != ENOENT) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+    }
+
+    /* Historical non-MFP/retransmit path commits TPTK synchronously. */
+    memcpy(&ni->ni_ptk, &tptk, sizeof(tptk));
     
     /* update the last seen value of the key replay counter field */
     ni->ni_replaycnt = BE_READ_8(key->replaycnt);
@@ -966,6 +1121,18 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
     if (gtk == NULL) {
         DPRINTF(("GTK KDE missing\n"));
         return;
+    }
+
+    if ((ni->ni_flags & IEEE80211_NODE_MFP) != 0 &&
+        ic->ic_pae_mfp_txn_submit != NULL) {
+        int mfp_error;
+
+        mfp_error = ieee80211_pae_mfp_group_begin(ic, ni, key, gtk,
+            igtk, info);
+        if (mfp_error == 0 || mfp_error == EBUSY)
+            return;
+        reason = IEEE80211_REASON_AUTH_LEAVE;
+        goto deauth;
     }
     
     /* check that key length matches that of group cipher */

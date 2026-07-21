@@ -168,6 +168,12 @@ store_response = method("iwx_cmdq_store_response")
 start_locked = body_from_marker(cpp, "static bool\niwx_cmdq_start_locked",
                                 "iwx_cmdq_start_locked")
 send_status = method("iwx_send_cmd_status")
+async_ack_error = body_from_marker(cpp, "static int\niwx_async_cmd_ack_error",
+                                   "iwx_async_cmd_ack_error")
+mfp_timeout = method("iwx_mfp_pae_timeout")
+mfp_release = body_from_marker(cpp,
+                                "static void\niwx_mfp_pae_release_transaction",
+                                "iwx_mfp_pae_release_transaction")
 gate_close = method("iwx_task_gate_close")
 gate_begin = method("iwx_task_gate_begin_epoch")
 gate_open = method("iwx_task_gate_open")
@@ -237,15 +243,30 @@ require(done, "if (expected_code != (uint32_t)code)",
         "completion opcode validation")
 require(done, "IWX_CMD_SLOT_TIMED_OUT", "late-timeout completion state")
 
-# IWX_CMD_FAILED_MSK remains the old response-buffer disposition only.  q0
-# completion is driven by qid/index plus the slot state; it must not grow an
-# independent firmware-status interpretation in this phase.
-if "IWX_CMD_FAILED_MSK" in done or "IWX_CMD_FAILED_MSK" in store_response:
-    fail("q0 completion path treats IWX_CMD_FAILED_MSK as slot authority")
+# PMF is the only tokenized async q0 owner.  Its decoder may interpret a
+# failed firmware header, short reply, opcode mismatch, or ADD_STA status,
+# but the legacy response-buffer policy remains unchanged for every other
+# command owner.
+require(done, "iwx_async_cmd_ack_error", "PMF async completion decoder")
+require(done, "that->iwx_mfp_pae_q0_done(sc, &async_result);",
+        "post-unlock PMF owner continuation")
+for needle in (
+    "slot->code != (uint32_t)code",
+    "pkt->hdr.group_id & IWX_CMD_FAILED_MSK",
+    "IWX_CMD_ASYNC_ACK_ADD_STA_STATUS",
+    "IWX_ADD_STA_STATUS_MASK",
+):
+    require(async_ack_error, needle, "PMF-only ACK failure decoder")
+if "IWX_CMD_FAILED_MSK" in done:
+    fail("q0 completion must delegate failed-mask semantics to PMF decoder")
 require(rx, "Preserve the pre-existing response-buffer policy for this",
         "legacy failed-response disposition comment")
 require(rx, "!!(pkt->hdr.group_id & IWX_CMD_FAILED_MSK)",
         "legacy failed-response disposition call")
+order(mfp_timeout, "txn->result.error = ETIMEDOUT;",
+      "that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);")
+order(mfp_release, "txn->q0_inflight = false;",
+      "that->iwx_mfp_pae_mark_q0_timeout(sc, q0_cookie);")
 if send_status.count("*status = le32toh(resp->status);") != 1:
     fail("iwx_send_cmd_status must assign firmware status exactly once")
 
@@ -347,7 +368,7 @@ order(start_locked, "sc->sc_cmdq_detaching", "!sc->sc_cmdq_stopping",
 # back to an unlocked q0 txdata read.
 order(rx, "raw_qid = pkt->hdr.qid;", "qid = raw_qid & ~(1 << 7);")
 require(rx, "qid != IWX_DQA_CMD_QUEUE", "q0 raw-flag fallback exclusion")
-require(rx, "iwx_cmd_done(sc, qid, idx, code);", "normalized q0 completion")
+require(rx, "iwx_cmd_done(sc, qid, idx, code, pkt,", "normalized q0 completion")
 
 # Task callback lifetime: task_del() handles queued work only.  The serial
 # marker fences copied work; the gate tracks callback bodies and has an

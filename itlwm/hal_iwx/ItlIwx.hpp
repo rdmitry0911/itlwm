@@ -393,6 +393,8 @@ public:
     int    iwx_send_cmd(struct iwx_softc *, struct iwx_host_cmd *);
     int    iwx_send_cmd_pdu(struct iwx_softc *, uint32_t, uint32_t, uint16_t,
             const void *);
+    int    iwx_send_cmd_pdu_mfp_async(struct iwx_softc *, uint32_t, uint16_t,
+            const void *, uint64_t, uint8_t);
     int    iwx_send_cmd_pdu_checked(struct iwx_softc *, uint32_t, uint16_t,
             const void *);
     int    iwx_send_cmd_status(struct iwx_softc *, struct iwx_host_cmd *,
@@ -409,11 +411,13 @@ public:
     bool    iwx_cmdq_enter(struct iwx_softc *);
     void    iwx_cmdq_leave(struct iwx_softc *);
     bool    iwx_cmdq_is_narrow(struct iwx_softc *, int, int);
+    bool    iwx_cmdq_has_mfp_owner(struct iwx_softc *, int, int);
     void    iwx_cmdq_snapshot(struct iwx_softc *, int *, int *);
     void    iwx_cmdq_store_response(struct iwx_softc *, int, int,
             struct iwx_rx_packet *, size_t, bool legacy_drop_response);
     void    iwx_interrupt_teardown(struct iwx_softc *);
-    void    iwx_cmd_done(struct iwx_softc *, int, int, int);
+    void    iwx_cmd_done(struct iwx_softc *, int, int, int,
+            const struct iwx_rx_packet *, size_t);
     const struct iwx_rate *iwx_tx_fill_cmd(struct iwx_softc *, struct iwx_node *,
             struct ieee80211_frame *, uint32_t *, uint32_t *);
     uint32_t iwx_get_tx_ant(struct iwx_softc *sc, struct ieee80211_node *ni,
@@ -510,6 +514,18 @@ public:
            struct ieee80211_node *);
     bool    iwx_security_rx_wait_context(struct iwx_softc *);
     void    iwx_security_rx_purge(struct iwx_softc *);
+    static void    iwx_mfp_pae_task(void *);
+    static void    iwx_mfp_pae_task_dispatch(void *);
+    static int     iwx_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
+            u_int64_t, struct ieee80211_node *, const struct ieee80211_key *,
+            u_int8_t);
+    static void    iwx_pae_mfp_txn_cancel(struct ieee80211com *, u_int64_t);
+    static void    iwx_pae_mfp_txn_finish(struct ieee80211com *, u_int64_t);
+    void    iwx_mfp_pae_q0_done(struct iwx_softc *,
+            const struct iwx_async_cmd_result *);
+    void    iwx_mfp_pae_mark_q0_timeout(struct iwx_softc *, u_int64_t);
+    void    iwx_mfp_pae_abort_all(struct iwx_softc *);
+    static void    iwx_mfp_pae_timeout(void *);
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
     static void    iwx_newstate_task_dispatch(void *);

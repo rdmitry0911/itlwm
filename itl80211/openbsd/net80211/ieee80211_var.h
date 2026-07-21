@@ -425,6 +425,43 @@ struct ieee80211_defrag {
 
 #define IEEE80211_GROUP_NKID	6
 
+/*
+ * A negotiated protected-management Msg3 is committed asynchronously by the
+ * backend. The PAE plan is fixed-size and carries only kernel-resident staged
+ * keys: no raw EAPOL frame, user credential, or backend completion object
+ * survives the ingress worker.
+ */
+enum ieee80211_pae_mfp_stage {
+	IEEE80211_PAE_MFP_STAGE_NONE = 0,
+	IEEE80211_PAE_MFP_STAGE_PTK,
+	IEEE80211_PAE_MFP_STAGE_GTK,
+	IEEE80211_PAE_MFP_STAGE_IGTK,
+};
+
+enum ieee80211_pae_mfp_reply {
+	IEEE80211_PAE_MFP_REPLY_NONE = 0,
+	IEEE80211_PAE_MFP_REPLY_4WAY_MSG4,
+	IEEE80211_PAE_MFP_REPLY_GROUP_MSG2,
+};
+
+struct ieee80211_pae_mfp_txn {
+	volatile u_int32_t	active;
+	u_int64_t		id;
+	u_int64_t		assoc_epoch;
+	struct ieee80211_node	*ni;
+	struct ieee80211_ptk	ptk;
+	struct ieee80211_key	ptk_key;
+	struct ieee80211_key	gtk_key;
+	struct ieee80211_key	igtk_key;
+	u_int64_t		replaycnt;
+	u_int16_t		key_info;
+	u_int8_t		phase;
+	u_int8_t		reply;
+	u_int8_t		have_ptk;
+	u_int8_t		have_gtk;
+	u_int8_t		have_igtk;
+};
+
 struct ieee80211com {
 	struct arpcom		ic_ac;
 	LIST_ENTRY(ieee80211com) ic_list;	/* chain of all ieee80211com */
@@ -469,6 +506,19 @@ struct ieee80211com {
 	 */
 	void			(*ic_eapol_key_input)(struct ieee80211com *, mbuf_t,
 				    struct ieee80211_node *);
+	/*
+	 * Optional owner for an asynchronous MFP PAE key transaction. Submission
+	 * copies one staged key into the backend and returns without sleeping;
+	 * completion reaches ieee80211_pae_mfp_txn_complete() only from the
+	 * backend's serial worker.
+	 */
+	int			(*ic_pae_mfp_txn_submit)(struct ieee80211com *,
+				    u_int64_t, u_int64_t, struct ieee80211_node *,
+				    const struct ieee80211_key *, u_int8_t);
+	void			(*ic_pae_mfp_txn_cancel)(struct ieee80211com *,
+				    u_int64_t);
+	void			(*ic_pae_mfp_txn_finish)(struct ieee80211com *,
+				    u_int64_t);
 	int			(*ic_ampdu_tx_start)(struct ieee80211com *,
 				    struct ieee80211_node *, u_int8_t);
 	void			(*ic_ampdu_tx_stop)(struct ieee80211com *,
@@ -551,6 +601,10 @@ struct ieee80211com {
 	 * key or callback path begins to depend on a partially wired transaction.
 	 */
 	volatile u_int64_t	ic_pae_assoc_epoch;
+	/* Hardware capability alone never auto-negotiates MFP; WCL opts in per association. */
+	u_int8_t		ic_pae_mfp_requested;
+	u_int64_t		ic_pae_mfp_next_txn;
+	struct ieee80211_pae_mfp_txn ic_pae_mfp_txn;
 	/* Private owner token for one controlled current-BSS replacement. */
 	volatile u_int64_t	ic_pae_assoc_replace_epoch;
 	/*

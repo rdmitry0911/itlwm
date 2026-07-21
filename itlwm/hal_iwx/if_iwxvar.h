@@ -302,6 +302,22 @@ struct iwx_nvm_data {
 /* max bufs per tfd the driver will use */
 #define IWX_MAX_CMD_TBS_PER_TFD 2
 
+/*
+ * Async q0 owners are value-only cookies.  A firmware RX action may record a
+ * terminal result, but it must never retain a raw packet, key pointer, or C++
+ * callback across the q0 lock boundary.
+ */
+enum iwx_cmd_async_owner {
+    IWX_CMD_ASYNC_OWNER_NONE = 0,
+    IWX_CMD_ASYNC_OWNER_MFP_PAE,
+};
+
+enum iwx_cmd_async_ack_kind {
+    IWX_CMD_ASYNC_ACK_NONE = 0,
+    IWX_CMD_ASYNC_ACK_HEADER,
+    IWX_CMD_ASYNC_ACK_ADD_STA_STATUS,
+};
+
 struct iwx_host_cmd {
 	const void *data[IWX_MAX_CMD_TBS_PER_TFD];
 	struct iwx_rx_packet *resp_pkt;
@@ -314,6 +330,9 @@ struct iwx_host_cmd {
 	uint16_t len[IWX_MAX_CMD_TBS_PER_TFD];
 	uint8_t dataflags[IWX_MAX_CMD_TBS_PER_TFD];
 	uint32_t id;
+	uint8_t async_owner;
+	uint8_t async_ack_kind;
+	uint64_t async_cookie;
 };
 
 /*
@@ -383,11 +402,25 @@ enum iwx_cmd_slot_state {
 };
 
 struct iwx_cmd_slot {
-    uint64_t serial;
-    uint32_t epoch;
+	uint64_t serial;
+	uint32_t epoch;
+	uint32_t code;
+	uint8_t state;
+	uint8_t async;
+	uint8_t async_owner;
+	uint8_t async_ack_kind;
+	uint64_t async_cookie;
+};
+
+struct iwx_async_cmd_result {
+    uint8_t owner;
+    uint8_t ack_kind;
+    uint64_t cookie;
+    uint64_t slot_serial;
+    uint32_t slot_epoch;
     uint32_t code;
-    uint8_t state;
-    uint8_t async;
+    int error;
+    uint32_t fw_status;
 };
 
 struct iwx_tx_ring {
@@ -651,6 +684,29 @@ struct iwx_ba_task_data {
 struct iwx_security_rx_entry {
     mbuf_t m;
     struct ieee80211_node *ni;
+    uint64_t assoc_epoch;
+};
+
+/* One serialized AX211/API-68 MFP PAE command owner per interface. */
+struct iwx_mfp_pae_txn {
+    bool active;
+    bool cancelled;
+    bool q0_inflight;
+    bool result_ready;
+    bool timeout_armed;
+    /* A serial continuation holds the driver-owned node ref until it exits. */
+    bool task_active;
+    bool release_pending;
+    uint64_t txn_id;
+    uint64_t assoc_epoch;
+    uint64_t expected_cookie;
+    uint8_t expected_stage;
+    int driver_generation;
+    struct ieee80211_node *ni;
+    struct ieee80211_key staged_keys[3];
+    uint8_t submitted_mask;
+    uint8_t accepted_mask;
+    struct iwx_async_cmd_result result;
 };
 
 struct iwx_softc {
@@ -664,6 +720,7 @@ struct iwx_softc {
 //	struct refcnt		task_refs;
 	struct task newstate_task;
 	struct task security_rx_task;
+	struct task mfp_pae_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 
@@ -718,6 +775,16 @@ struct iwx_softc {
     uint8_t sc_security_rx_tail;
     uint8_t sc_security_rx_count;
     thread_t sc_security_rx_worker;
+
+    /*
+     * The q0 RX action and the command-gated timeout only record a terminal
+     * value under this leaf lock. The serial mfp_pae_task owns all net80211
+     * continuation, node release, key scrubbing, and firmware rollback.
+     */
+    IOSimpleLock *sc_mfp_pae_lock;
+    struct iwx_mfp_pae_txn sc_mfp_pae_txn;
+    uint64_t sc_mfp_pae_next_cookie;
+    CTimeout *sc_mfp_pae_timeout;
 
 	/* TX/RX rings. */
 	struct iwx_tx_ring txq[IWX_MAX_TVQM_QUEUES];

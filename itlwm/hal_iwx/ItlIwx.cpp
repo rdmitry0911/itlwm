@@ -193,6 +193,8 @@ detach(IOPCIDevice *device)
     /* close() also publishes permanent SHUTDOWN under the admission lock. */
     int detach_generation;
     (void)iwx_task_gate_close(sc, true, &detach_generation);
+    ieee80211_pae_mfp_txn_abort(&sc->sc_ic);
+    iwx_mfp_pae_abort_all(sc);
     iwx_cmdq_detach_begin(sc);
 
     /* Mask new producers while barriers drain callbacks already dequeued. */
@@ -204,6 +206,8 @@ detach(IOPCIDevice *device)
             iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         iwx_del_task(sc, systq, &sc->init_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
@@ -216,6 +220,7 @@ detach(IOPCIDevice *device)
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
     iwx_security_rx_purge(sc);
+    iwx_mfp_pae_abort_all(sc);
 
     /*
      * A successful iwx_start_hw() may have armed DMA.  Halt it while the
@@ -238,6 +243,9 @@ detach(IOPCIDevice *device)
     if (sc->sc_if_attached) {
         sc->sc_ic.ic_eapol_key_input = NULL;
         sc->sc_ic.ic_set_key_wait = NULL;
+        sc->sc_ic.ic_pae_mfp_txn_submit = NULL;
+        sc->sc_ic.ic_pae_mfp_txn_cancel = NULL;
+        sc->sc_ic.ic_pae_mfp_txn_finish = NULL;
         ieee80211_ifdetach(ifp);
         sc->sc_if_attached = false;
     }
@@ -255,6 +263,12 @@ detach(IOPCIDevice *device)
     if (sc->sc_security_rx_lock != NULL) {
         IOSimpleLockFree(sc->sc_security_rx_lock);
         sc->sc_security_rx_lock = NULL;
+    }
+    if (sc->sc_mfp_pae_lock != NULL) {
+        timeout_del(&sc->sc_mfp_pae_timeout);
+        timeout_free(&sc->sc_mfp_pae_timeout);
+        IOSimpleLockFree(sc->sc_mfp_pae_lock);
+        sc->sc_mfp_pae_lock = NULL;
     }
 
     for (int txq_i = 0; txq_i < nitems(sc->txq); txq_i++)
@@ -6491,6 +6505,11 @@ iwx_cmdq_stop(struct iwx_softc *sc)
         for (i = 0; i < (int)nitems(sc->sc_cmdq_slots); i++) {
             if (sc->sc_cmdq_slots[i].state != IWX_CMD_SLOT_FREE) {
                 sc->sc_cmdq_slots[i].state = IWX_CMD_SLOT_ABORTED;
+                sc->sc_cmdq_slots[i].async_owner =
+                    IWX_CMD_ASYNC_OWNER_NONE;
+                sc->sc_cmdq_slots[i].async_ack_kind =
+                    IWX_CMD_ASYNC_ACK_NONE;
+                sc->sc_cmdq_slots[i].async_cookie = 0;
             }
         }
     }
@@ -6586,6 +6605,35 @@ iwx_cmdq_is_narrow(struct iwx_softc *sc, int qid, int idx)
     return narrow;
 }
 
+/*
+ * An unknown direct firmware response must still complete a tokenized PMF
+ * slot as a failure.  The normal RX switch deliberately ignores unknown
+ * notifications, so this narrow predicate keeps that legacy policy while
+ * preventing a malformed/mismatched PMF reply from pinning q0 forever.
+ */
+bool ItlIwx::
+iwx_cmdq_has_mfp_owner(struct iwx_softc *sc, int qid, int idx)
+{
+    struct iwx_tx_ring *ring;
+    bool owned = false;
+
+    if (qid != IWX_DQA_CMD_QUEUE || sc->sc_cmdq_lock == NULL)
+        return false;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    ring = &sc->txq[IWX_DQA_CMD_QUEUE];
+    if (!sc->sc_cmdq_stopping && !sc->sc_cmdq_detaching &&
+        iwx_cmdq_ring_valid(sc, ring) && idx >= 0 &&
+        idx < (int)ring->ring_count &&
+        sc->sc_cmdq_slots[idx].state != IWX_CMD_SLOT_FREE &&
+        sc->sc_cmdq_slots[idx].state != IWX_CMD_SLOT_ABORTED &&
+        sc->sc_cmdq_slots[idx].async_owner ==
+            IWX_CMD_ASYNC_OWNER_MFP_PAE)
+        owned = true;
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+    return owned;
+}
+
 void ItlIwx::
 iwx_cmdq_store_response(struct iwx_softc *sc, int qid, int idx,
                         struct iwx_rx_packet *pkt, size_t pkt_len,
@@ -6659,6 +6707,20 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     async = hcmd->flags & IWX_CMD_ASYNC;
     hdrlen = sizeof(((struct iwx_device_cmd *)0)->hdr_wide);
     datasz = sizeof(((struct iwx_device_cmd *)0)->data_wide);
+
+    /* A tokenized owner is meaningful only for a non-blocking q0 command. */
+    if (hcmd->async_owner != IWX_CMD_ASYNC_OWNER_NONE) {
+        if (!async || hcmd->async_cookie == 0 ||
+            (hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_HEADER &&
+             hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_ADD_STA_STATUS)) {
+            err = EINVAL;
+            goto out;
+        }
+    } else if (hcmd->async_cookie != 0 ||
+               hcmd->async_ack_kind != IWX_CMD_ASYNC_ACK_NONE) {
+        err = EINVAL;
+        goto out;
+    }
     
     for (i = 0, paylen = 0; i < nitems(hcmd->len); i++) {
         paylen += hcmd->len[i];
@@ -6813,6 +6875,9 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     sc->sc_cmdq_slots[idx].epoch = slot_epoch;
     sc->sc_cmdq_slots[idx].code = hcmd->id;
     sc->sc_cmdq_slots[idx].async = !!async;
+    sc->sc_cmdq_slots[idx].async_owner = hcmd->async_owner;
+    sc->sc_cmdq_slots[idx].async_ack_kind = hcmd->async_ack_kind;
+    sc->sc_cmdq_slots[idx].async_cookie = hcmd->async_cookie;
     sc->sc_cmdq_slots[idx].state = IWX_CMD_SLOT_SUBMITTED;
     if (resp_buf != NULL) {
         sc->sc_cmd_resp_pkt[idx] = resp_buf;
@@ -6912,6 +6977,28 @@ iwx_send_cmd_pdu(struct iwx_softc *sc, uint32_t id, uint32_t flags,
 }
 
 /*
+ * PMF PAE owns completion through the q0 token bridge below.  It intentionally
+ * does not request a response buffer: raw RX validates the reply under q0 and
+ * exports only a compact result to the serial owner task after q0 is unlocked.
+ */
+int ItlIwx::
+iwx_send_cmd_pdu_mfp_async(struct iwx_softc *sc, uint32_t id, uint16_t len,
+                           const void *data, uint64_t cookie, uint8_t ack_kind)
+{
+    struct iwx_host_cmd cmd = {
+        .id = id,
+        .len = { len, },
+        .data = { data, },
+        .flags = IWX_CMD_ASYNC,
+        .async_owner = IWX_CMD_ASYNC_OWNER_MFP_PAE,
+        .async_ack_kind = ack_kind,
+        .async_cookie = cookie,
+    };
+
+    return iwx_send_cmd(sc, &cmd);
+}
+
+/*
  * A q0 completion alone only proves that firmware consumed the descriptor.
  * The API-68 management-multicast key command has no status payload, so this
  * path retains its response header: failed commands deliberately drop that
@@ -7002,15 +7089,52 @@ iwx_free_resp(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     hcmd->resp_pkt = NULL;
 }
 
+static int
+iwx_async_cmd_ack_error(const struct iwx_cmd_slot *slot, int code,
+                        const struct iwx_rx_packet *pkt, size_t pkt_len,
+                        uint32_t *fw_status)
+{
+    if (fw_status != NULL)
+        *fw_status = 0;
+    if (slot == NULL || pkt == NULL || pkt_len < sizeof(pkt->len_n_flags) +
+        sizeof(pkt->hdr) || slot->code != (uint32_t)code ||
+        (pkt->hdr.group_id & IWX_CMD_FAILED_MSK) != 0)
+        return EIO;
+
+    switch (slot->async_ack_kind) {
+    case IWX_CMD_ASYNC_ACK_HEADER:
+        return 0;
+    case IWX_CMD_ASYNC_ACK_ADD_STA_STATUS: {
+        const struct iwx_cmd_response *resp;
+        uint32_t status;
+
+        if (iwx_rx_packet_payload_len(pkt) != sizeof(*resp))
+            return EIO;
+        resp = (const struct iwx_cmd_response *)pkt->data;
+        status = le32toh(resp->status);
+        if (fw_status != NULL)
+            *fw_status = status;
+        return (status & IWX_ADD_STA_STATUS_MASK) == IWX_ADD_STA_SUCCESS ?
+            0 : EIO;
+    }
+    default:
+        return EIO;
+    }
+}
+
 void ItlIwx::
-iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code)
+iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code,
+             const struct iwx_rx_packet *pkt, size_t pkt_len)
 {
     struct iwx_tx_ring *ring;
     struct iwx_tx_data *data;
     struct iwx_cmd_slot *slot;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
     mbuf_t m = NULL;
     uint8_t *resp_to_free = NULL;
     void *wchan = NULL;
+    struct iwx_async_cmd_result async_result = {};
+    bool async_result_ready = false;
     bool unexpected = false;
     bool code_mismatch = false;
     uint32_t expected_code = 0;
@@ -7057,11 +7181,26 @@ iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code)
         if (expected_code != (uint32_t)code)
             code_mismatch = true;
 
+        if (slot->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE) {
+            async_result.owner = slot->async_owner;
+            async_result.ack_kind = slot->async_ack_kind;
+            async_result.cookie = slot->async_cookie;
+            async_result.slot_serial = slot->serial;
+            async_result.slot_epoch = slot->epoch;
+            async_result.code = code;
+            async_result.error = iwx_async_cmd_ack_error(
+                slot, code, pkt, pkt_len, &async_result.fw_status);
+            async_result_ready = true;
+        }
+
         if (slot->state == IWX_CMD_SLOT_TIMED_OUT || slot->async) {
-            /* Async WANT_RESP has no caller-visible completion API. */
+            /* Tokenized async owners are published only after q0 unlock. */
             resp_to_free = sc->sc_cmd_resp_pkt[idx];
             sc->sc_cmd_resp_pkt[idx] = NULL;
             sc->sc_cmd_resp_len[idx] = 0;
+            slot->async_owner = IWX_CMD_ASYNC_OWNER_NONE;
+            slot->async_ack_kind = IWX_CMD_ASYNC_ACK_NONE;
+            slot->async_cookie = 0;
             slot->state = IWX_CMD_SLOT_FREE;
         } else {
             slot->state = IWX_CMD_SLOT_COMPLETED;
@@ -7080,6 +7219,8 @@ iwx_cmd_done(struct iwx_softc *sc, int qid, int idx, int code)
         mbuf_freem(m);
     if (resp_to_free != NULL)
         ::free(resp_to_free);
+    if (async_result_ready)
+        that->iwx_mfp_pae_q0_done(sc, &async_result);
     if (code_mismatch) {
         DPRINTF(("%s: command completion code 0x%x mismatches slot 0x%x "
                  "at q0[%d]\n", DEVNAME(sc), code, expected_code, idx));
@@ -9594,6 +9735,7 @@ iwx_security_rx_enqueue(struct iwx_softc *sc, mbuf_t m,
 {
     struct iwx_security_rx_entry *entry;
     struct ieee80211_node *held_ni;
+    uint64_t assoc_epoch;
     bool queued = false;
 
     if (sc == NULL || m == NULL || ni == NULL ||
@@ -9607,6 +9749,11 @@ iwx_security_rx_enqueue(struct iwx_softc *sc, mbuf_t m,
      * reverse order would create a stop-vs-RX ABBA deadlock.
      */
     held_ni = ieee80211_ref_node(ni);
+    assoc_epoch = ieee80211_pae_assoc_epoch_current(&sc->sc_ic);
+    if (assoc_epoch == 0) {
+        ieee80211_release_node(&sc->sc_ic, held_ni);
+        return false;
+    }
 
     /*
      * Admission and task enqueue share the lifecycle gate. Stop closes it
@@ -9621,6 +9768,7 @@ iwx_security_rx_enqueue(struct iwx_softc *sc, mbuf_t m,
             entry = &sc->sc_security_rxq[sc->sc_security_rx_tail];
             entry->m = m;
             entry->ni = held_ni;
+            entry->assoc_epoch = assoc_epoch;
             held_ni = NULL;
             sc->sc_security_rx_tail =
                 (sc->sc_security_rx_tail + 1) % IWX_SECURITY_RXQ_LEN;
@@ -9686,6 +9834,14 @@ iwx_security_rx_task(void *arg)
             (sc->sc_security_rx_head + 1) % IWX_SECURITY_RXQ_LEN;
         sc->sc_security_rx_count--;
         IOSimpleLockUnlock(sc->sc_security_rx_lock);
+
+        if (entry.assoc_epoch == 0 ||
+            ieee80211_pae_assoc_epoch_current(ic) != entry.assoc_epoch ||
+            ic->ic_bss != entry.ni) {
+            mbuf_freem(entry.m);
+            ieee80211_release_node(ic, entry.ni);
+            continue;
+        }
 
         /* ieee80211_eapol_key_input consumes entry.m. */
         ieee80211_eapol_key_input(ic, entry.m, entry.ni);
@@ -11718,10 +11874,16 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
             iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         iwx_del_task(sc, systq, &sc->ba_task);
         iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         iwx_del_task(sc, systq, &sc->chan_ctxt_task);
     }
+
+    /* Epoch cancellation has invalidated the generic owner; drop its node
+     * ref and timer before q0 turns every outstanding command terminal. */
+    that->iwx_mfp_pae_abort_all(sc);
 
     /* Wake synchronous task senders before waiting for their callbacks. */
     that->iwx_cmdq_stop(sc);
@@ -12587,8 +12749,10 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
          * For example, uCode issues IWX_REPLY_RX when it sends a
          * received frame to the driver.
          */
-        if (handled && !(raw_qid & (1 << 7))) {
-            iwx_cmd_done(sc, qid, idx, code);
+        if (!(raw_qid & (1 << 7)) &&
+            (handled || that->iwx_cmdq_has_mfp_owner(sc, qid, idx))) {
+            iwx_cmd_done(sc, qid, idx, code, pkt,
+                         sizeof(pkt->len_n_flags) + iwx_rx_packet_len(pkt));
         }
         
         offset += roundup(len, IWX_FH_RSCSR_FRAME_ALIGN);
@@ -13035,17 +13199,39 @@ iwx_ax211_api68_igtk_v2_ok(const struct iwx_softc *sc)
 static bool
 iwx_mfp_runtime_enabled(const struct iwx_softc *sc)
 {
-    (void)sc;
-    return false;
+    return sc != NULL && iwx_ax211_api68_igtk_v2_ok(sc) &&
+        sc->sc_mfp_pae_lock != NULL && sc->sc_cmdq_lock != NULL &&
+        sc->sc_task_gate_lock != NULL && sc->sc_taskq_initialized &&
+        sc->sc_task_callbacks_ready && sc->sc_nswq != NULL &&
+        sc->sc_ic.ic_pae_selected_bss_lock != NULL;
 }
 
-/* Firmware flags are not advertised until the full PAE continuation exists. */
+/*
+ * Firmware eligibility is necessary but intentionally not sufficient for a
+ * connection: WCL must set ic_pae_mfp_requested for each exact audited PSK
+ * association.  This publishes only the completed async owner, never a
+ * global "turn PMF on for every AP" policy.
+ */
 static void
 iwx_publish_mfp_capability(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
 
-    ic->ic_caps &= ~IEEE80211_C_MFP;
+    if (!iwx_mfp_runtime_enabled(sc)) {
+        ic->ic_caps &= ~IEEE80211_C_MFP;
+        ic->ic_eapol_key_input = NULL;
+        ic->ic_pae_mfp_txn_submit = NULL;
+        ic->ic_pae_mfp_txn_cancel = NULL;
+        ic->ic_pae_mfp_txn_finish = NULL;
+        return;
+    }
+
+    ic->ic_caps |= IEEE80211_C_MFP;
+    ic->ic_eapol_key_input = ItlIwx::iwx_security_rx_eapol_input;
+    ic->ic_set_key_wait = NULL;
+    ic->ic_pae_mfp_txn_submit = ItlIwx::iwx_pae_mfp_txn_submit;
+    ic->ic_pae_mfp_txn_cancel = ItlIwx::iwx_pae_mfp_txn_cancel;
+    ic->ic_pae_mfp_txn_finish = ItlIwx::iwx_pae_mfp_txn_finish;
 }
 
 static int
@@ -13087,6 +13273,415 @@ iwx_set_sta_igtk_v2(struct iwx_softc *sc, struct ieee80211_node *ni,
                                               sizeof(cmd), &cmd);
     return that->iwx_send_cmd_pdu(sc, IWX_MGMT_MCAST_KEY, IWX_CMD_ASYNC,
                                   sizeof(cmd), &cmd);
+}
+
+static bool
+iwx_mfp_pae_stage_valid(uint8_t stage)
+{
+    return stage == IEEE80211_PAE_MFP_STAGE_PTK ||
+        stage == IEEE80211_PAE_MFP_STAGE_GTK ||
+        stage == IEEE80211_PAE_MFP_STAGE_IGTK;
+}
+
+static unsigned int
+iwx_mfp_pae_stage_index(uint8_t stage)
+{
+    KASSERT(iwx_mfp_pae_stage_valid(stage), "valid PMF PAE stage");
+    return (unsigned int)stage - IEEE80211_PAE_MFP_STAGE_PTK;
+}
+
+void ItlIwx::
+iwx_mfp_pae_mark_q0_timeout(struct iwx_softc *sc, u_int64_t cookie)
+{
+    int i;
+
+    if (sc == NULL || cookie == 0 || sc->sc_cmdq_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_cmdq_lock);
+    for (i = 0; i < (int)nitems(sc->sc_cmdq_slots); i++) {
+        struct iwx_cmd_slot *slot = &sc->sc_cmdq_slots[i];
+
+        if (slot->state == IWX_CMD_SLOT_SUBMITTED &&
+            slot->async_owner == IWX_CMD_ASYNC_OWNER_MFP_PAE &&
+            slot->async_cookie == cookie) {
+            /* Keep the token until a late ACK frees this descriptor. */
+            slot->state = IWX_CMD_SLOT_TIMED_OUT;
+            break;
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_cmdq_lock);
+}
+
+void ItlIwx::
+iwx_mfp_pae_timeout(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that;
+    struct iwx_mfp_pae_txn *txn;
+    bool schedule = false;
+    u_int64_t cookie = 0;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return;
+    that = container_of(sc, ItlIwx, com);
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && !txn->cancelled && txn->q0_inflight &&
+        !txn->result_ready && txn->expected_cookie != 0) {
+        cookie = txn->expected_cookie;
+        txn->q0_inflight = false;
+        txn->timeout_armed = false;
+        bzero(&txn->result, sizeof(txn->result));
+        txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
+        txn->result.cookie = cookie;
+        txn->result.error = ETIMEDOUT;
+        txn->result_ready = true;
+        schedule = true;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (!schedule)
+        return;
+    that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
+    that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+}
+
+void ItlIwx::
+iwx_mfp_pae_q0_done(struct iwx_softc *sc,
+                    const struct iwx_async_cmd_result *result)
+{
+    struct iwx_mfp_pae_txn *txn;
+    bool schedule = false;
+    bool cancel_timeout = false;
+
+    if (sc == NULL || result == NULL ||
+        result->owner != IWX_CMD_ASYNC_OWNER_MFP_PAE ||
+        result->cookie == 0 || sc->sc_mfp_pae_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && !txn->cancelled && txn->q0_inflight &&
+        !txn->result_ready && txn->expected_cookie == result->cookie) {
+        txn->q0_inflight = false;
+        cancel_timeout = txn->timeout_armed;
+        txn->timeout_armed = false;
+        txn->result = *result;
+        txn->result_ready = true;
+        schedule = true;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (cancel_timeout)
+        timeout_del(&sc->sc_mfp_pae_timeout);
+    if (schedule)
+        iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+}
+
+void ItlIwx::
+iwx_mfp_pae_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+    iwx_mfp_pae_task(arg);
+    that->iwx_task_gate_leave(sc);
+}
+
+void ItlIwx::
+iwx_mfp_pae_task(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    struct iwx_mfp_pae_txn *txn;
+    struct iwx_async_cmd_result result;
+    struct ieee80211_node *ni;
+    u_int64_t txn_id, assoc_epoch;
+    uint8_t stage;
+    int error;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (!txn->active || !txn->result_ready || txn->task_active) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        return;
+    }
+    result = txn->result;
+    txn->result_ready = false;
+    /*
+     * Keep the driver's node reference pinned through the unlocked
+     * net80211 continuation.  A concurrent epoch cancellation can then
+     * mark this owner cancelled but cannot free ni underneath the worker.
+     */
+    txn->task_active = true;
+    txn_id = txn->txn_id;
+    assoc_epoch = txn->assoc_epoch;
+    stage = txn->expected_stage;
+    ni = txn->ni;
+    error = txn->cancelled ? ECANCELED : result.error;
+    if (error == 0)
+        txn->accepted_mask |= 1U << iwx_mfp_pae_stage_index(stage);
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    /* Revalidate after leaving the driver leaf lock, before PAE mutation. */
+    if (error == 0 &&
+        (ieee80211_pae_assoc_epoch_current(&sc->sc_ic) != assoc_epoch ||
+         sc->sc_ic.ic_bss != ni))
+        error = ECANCELED;
+    ieee80211_pae_mfp_txn_complete(&sc->sc_ic, txn_id, stage, error);
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && txn->txn_id == txn_id && txn->task_active) {
+        struct ieee80211_node *release_ni = NULL;
+
+        txn->task_active = false;
+        if (txn->release_pending || txn->cancelled) {
+            release_ni = txn->ni;
+            explicit_bzero(txn, sizeof(*txn));
+        }
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        if (release_ni != NULL)
+            ieee80211_release_node(&sc->sc_ic, release_ni);
+        return;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+}
+
+static void
+iwx_mfp_pae_release_transaction(struct iwx_softc *sc, u_int64_t txn_id,
+                                bool match_id)
+{
+    struct iwx_mfp_pae_txn *txn;
+    struct ieee80211_node *ni = NULL;
+    ItlIwx *that;
+    bool cancel_timeout = false;
+    u_int64_t q0_cookie = 0;
+
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL)
+        return;
+    that = container_of(sc, ItlIwx, com);
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && (!match_id || txn->txn_id == txn_id)) {
+        cancel_timeout = txn->timeout_armed;
+        if (txn->q0_inflight && txn->expected_cookie != 0)
+            q0_cookie = txn->expected_cookie;
+        txn->q0_inflight = false;
+        txn->timeout_armed = false;
+        txn->result_ready = false;
+        txn->cancelled = true;
+        if (txn->task_active) {
+            /* The task holds ni until it returns from net80211. */
+            txn->release_pending = true;
+        } else {
+            ni = txn->ni;
+            explicit_bzero(txn, sizeof(*txn));
+        }
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (cancel_timeout)
+        timeout_del(&sc->sc_mfp_pae_timeout);
+    /* A cancelled owner must not leave a submitted q0 descriptor forever. */
+    if (q0_cookie != 0)
+        that->iwx_mfp_pae_mark_q0_timeout(sc, q0_cookie);
+    if (ni != NULL)
+        ieee80211_release_node(&sc->sc_ic, ni);
+}
+
+void ItlIwx::
+iwx_mfp_pae_abort_all(struct iwx_softc *sc)
+{
+    iwx_mfp_pae_release_transaction(sc, 0, false);
+}
+
+void ItlIwx::
+iwx_pae_mfp_txn_cancel(struct ieee80211com *ic, u_int64_t txn_id)
+{
+    struct iwx_softc *sc;
+
+    if (ic == NULL)
+        return;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (sc == NULL)
+        return;
+    iwx_mfp_pae_release_transaction(sc, txn_id, true);
+}
+
+void ItlIwx::
+iwx_pae_mfp_txn_finish(struct ieee80211com *ic, u_int64_t txn_id)
+{
+    iwx_pae_mfp_txn_cancel(ic, txn_id);
+}
+
+int ItlIwx::
+iwx_pae_mfp_txn_submit(struct ieee80211com *ic, u_int64_t txn_id,
+                       u_int64_t assoc_epoch, struct ieee80211_node *ni,
+                       const struct ieee80211_key *key, u_int8_t stage)
+{
+    struct iwx_softc *sc;
+    ItlIwx *that;
+    struct iwx_mfp_pae_txn *txn;
+    struct ieee80211_node *held_ni = NULL;
+    struct ieee80211_key key_copy;
+    struct iwx_add_sta_key_cmd sta_cmd;
+    struct iwx_mgmt_mcast_key_cmd_v2 igtk_cmd;
+    uint64_t cookie = 0;
+    bool arm_timeout = false;
+    bool cancel_timeout = false;
+    bool retire_q0 = false;
+    int err;
+
+    if (ic == NULL || ni == NULL || key == NULL || txn_id == 0 ||
+        assoc_epoch == 0 || !iwx_mfp_pae_stage_valid(stage))
+        return EINVAL;
+    sc = (struct iwx_softc *)ic->ic_softc;
+    if (sc == NULL || sc->sc_mfp_pae_lock == NULL ||
+        !iwx_ax211_api68_igtk_v2_ok(sc) ||
+        ieee80211_pae_assoc_epoch_current(ic) != assoc_epoch ||
+        ic->ic_bss != ni)
+        return EOPNOTSUPP;
+    if (stage == IEEE80211_PAE_MFP_STAGE_IGTK) {
+        if (key->k_cipher != IEEE80211_CIPHER_BIP ||
+            (key->k_flags & IEEE80211_KEY_IGTK) == 0 ||
+            !IwxMfpIgtkContracts::hasValidIgtkShape(key->k_id,
+                                                     key->k_len))
+            return EINVAL;
+    } else if (key->k_cipher != IEEE80211_CIPHER_CCMP) {
+        return EINVAL;
+    }
+
+    /* The node ref is acquired before the driver leaf lock. */
+    held_ni = ieee80211_ref_node(ni);
+    that = container_of(sc, ItlIwx, com);
+    key_copy = *key;
+    key_copy.k_priv = NULL;
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (!txn->active) {
+        if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
+            IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+            ieee80211_release_node(ic, held_ni);
+            return ENXIO;
+        }
+        explicit_bzero(txn, sizeof(*txn));
+        txn->active = true;
+        txn->txn_id = txn_id;
+        txn->assoc_epoch = assoc_epoch;
+        txn->driver_generation = sc->sc_generation;
+        txn->ni = held_ni;
+        held_ni = NULL;
+    } else if (txn->txn_id != txn_id || txn->assoc_epoch != assoc_epoch ||
+               txn->ni != ni || txn->cancelled) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        ieee80211_release_node(ic, held_ni);
+        return EBUSY;
+    }
+    if (txn->q0_inflight || txn->result_ready) {
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        if (held_ni != NULL)
+            ieee80211_release_node(ic, held_ni);
+        return EBUSY;
+    }
+    sc->sc_mfp_pae_next_cookie++;
+    if (sc->sc_mfp_pae_next_cookie == 0)
+        sc->sc_mfp_pae_next_cookie++;
+    cookie = sc->sc_mfp_pae_next_cookie;
+    txn->expected_cookie = cookie;
+    txn->expected_stage = stage;
+    txn->q0_inflight = true;
+    txn->staged_keys[iwx_mfp_pae_stage_index(stage)] = key_copy;
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+    if (held_ni != NULL)
+        ieee80211_release_node(ic, held_ni);
+
+    if (stage == IEEE80211_PAE_MFP_STAGE_IGTK) {
+        bzero(&igtk_cmd, sizeof(igtk_cmd));
+        igtk_cmd.key_id = htole32(key_copy.k_id);
+        igtk_cmd.sta_id = htole32(IWX_STATION_ID);
+        igtk_cmd.ctrl_flags = htole32(IWX_STA_KEY_FLG_CCM);
+        memcpy(igtk_cmd.IGTK, key_copy.k_key, key_copy.k_len);
+        igtk_cmd.receive_seq_cnt = htole64(key_copy.k_mgmt_rsc);
+        err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_MGMT_MCAST_KEY,
+                                                sizeof(igtk_cmd), &igtk_cmd,
+                                                cookie,
+                                                IWX_CMD_ASYNC_ACK_HEADER);
+    } else {
+        bzero(&sta_cmd, sizeof(sta_cmd));
+        sta_cmd.common.key_flags = htole16(IWX_STA_KEY_FLG_CCM |
+            IWX_STA_KEY_FLG_WEP_KEY_MAP |
+            ((key_copy.k_id << IWX_STA_KEY_FLG_KEYID_POS) &
+             IWX_STA_KEY_FLG_KEYID_MSK));
+        if (stage == IEEE80211_PAE_MFP_STAGE_GTK ||
+            (key_copy.k_flags & IEEE80211_KEY_GROUP)) {
+            sta_cmd.common.key_offset = 1;
+            sta_cmd.common.key_flags |= htole16(IWX_STA_KEY_MULTICAST);
+        } else {
+            sta_cmd.common.key_offset = 0;
+            sta_cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
+        }
+        memcpy(sta_cmd.common.key, key_copy.k_key,
+               MIN(sizeof(sta_cmd.common.key), key_copy.k_len));
+        sta_cmd.common.sta_id = IWX_STATION_ID;
+        sta_cmd.transmit_seq_cnt = htole64(key_copy.k_tsc);
+        err = that->iwx_send_cmd_pdu_mfp_async(sc, IWX_ADD_STA_KEY,
+                                                sizeof(sta_cmd), &sta_cmd,
+                                                cookie,
+                                                IWX_CMD_ASYNC_ACK_ADD_STA_STATUS);
+    }
+    explicit_bzero(&key_copy, sizeof(key_copy));
+
+    IOSimpleLockLock(sc->sc_mfp_pae_lock);
+    txn = &sc->sc_mfp_pae_txn;
+    if (txn->active && txn->txn_id == txn_id &&
+        txn->expected_cookie == cookie && txn->q0_inflight) {
+        if (err == 0) {
+            txn->submitted_mask |= 1U << iwx_mfp_pae_stage_index(stage);
+            txn->timeout_armed = true;
+            arm_timeout = true;
+        } else {
+            txn->q0_inflight = false;
+            bzero(&txn->result, sizeof(txn->result));
+            txn->result.owner = IWX_CMD_ASYNC_OWNER_MFP_PAE;
+            txn->result.cookie = cookie;
+            txn->result.error = err;
+            txn->result_ready = true;
+        }
+    } else if (err == 0 &&
+        (!txn->active || txn->txn_id != txn_id ||
+         txn->expected_cookie != cookie || txn->cancelled)) {
+        /* Cancellation raced submission before q0 had a visible slot. */
+        retire_q0 = true;
+    }
+    IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+
+    if (retire_q0)
+        that->iwx_mfp_pae_mark_q0_timeout(sc, cookie);
+
+    if (arm_timeout) {
+        timeout_add_msec(&sc->sc_mfp_pae_timeout, 1000);
+        IOSimpleLockLock(sc->sc_mfp_pae_lock);
+        txn = &sc->sc_mfp_pae_txn;
+        if (!txn->active || txn->txn_id != txn_id ||
+            txn->expected_cookie != cookie || !txn->q0_inflight ||
+            !txn->timeout_armed)
+            cancel_timeout = true;
+        IOSimpleLockUnlock(sc->sc_mfp_pae_lock);
+        if (cancel_timeout)
+            timeout_del(&sc->sc_mfp_pae_timeout);
+    } else if (err != 0) {
+        /* Submission failure is delivered through the same serial owner. */
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
+    }
+    return 0;
 }
 
 const struct iwl_cfg iwlax210_2ax_cfg_ty_gf_a0 = {
@@ -14291,6 +14886,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memset(&sc->init_task, 0, sizeof(sc->init_task));
     memset(&sc->newstate_task, 0, sizeof(sc->newstate_task));
     memset(&sc->security_rx_task, 0, sizeof(sc->security_rx_task));
+    memset(&sc->mfp_pae_task, 0, sizeof(sc->mfp_pae_task));
     memset(&sc->ba_task, 0, sizeof(sc->ba_task));
     memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
     memset(&sc->chan_ctxt_task, 0, sizeof(sc->chan_ctxt_task));
@@ -14318,6 +14914,10 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_security_rx_tail = 0;
     sc->sc_security_rx_count = 0;
     sc->sc_security_rx_worker = NULL;
+    sc->sc_mfp_pae_lock = NULL;
+    explicit_bzero(&sc->sc_mfp_pae_txn, sizeof(sc->sc_mfp_pae_txn));
+    sc->sc_mfp_pae_next_cookie = 0;
+    sc->sc_mfp_pae_timeout = NULL;
     
     //    rw_init(&sc->ioctl_rwl, "iwxioctl");
     
@@ -14557,6 +15157,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         XYLog("%s: could not allocate deferred security RX lock\n", DEVNAME(sc));
         goto fail;
     }
+    sc->sc_mfp_pae_lock = IOSimpleLockAlloc();
+    if (sc->sc_mfp_pae_lock == NULL) {
+        XYLog("%s: could not allocate PMF PAE owner lock\n", DEVNAME(sc));
+        goto fail;
+    }
+    timeout_set(&sc->sc_mfp_pae_timeout, iwx_mfp_pae_timeout, sc);
     
     taskq_init();
     sc->sc_taskq_initialized = true;
@@ -14637,6 +15243,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              "iwx_newstate_task");
     task_set(&sc->security_rx_task, iwx_security_rx_task_dispatch, sc,
              "iwx_security_rx_task");
+    task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
+             "iwx_mfp_pae_task");
     task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");
     task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task_dispatch, sc,
              "iwx_mac_ctxt_task");
@@ -14650,6 +15258,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_set_key_wait = NULL;
     ic->ic_delete_key = iwx_delete_key;
     ic->ic_eapol_key_input = NULL;
+    ic->ic_pae_mfp_txn_submit = NULL;
+    ic->ic_pae_mfp_txn_cancel = NULL;
+    ic->ic_pae_mfp_txn_finish = NULL;
     
     /* Override 802.11 state transition machine. */
     sc->sc_newstate = ic->ic_newstate;

@@ -129,6 +129,13 @@ extern	u_int64_t ieee80211_pae_assoc_epoch_current(const struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin(struct ieee80211com *);
 extern	u_int64_t ieee80211_pae_assoc_epoch_begin_replacement(
 	    struct ieee80211com *);
+extern	void ieee80211_pae_mfp_txn_complete(struct ieee80211com *,
+	    u_int64_t, u_int8_t, int);
+extern	void ieee80211_pae_mfp_txn_abort(struct ieee80211com *);
+extern	int ieee80211_pae_mfp_txn_begin(struct ieee80211com *,
+	    struct ieee80211_node *, const struct ieee80211_ptk *,
+	    const struct ieee80211_key *, int, const struct ieee80211_key *, int,
+	    const struct ieee80211_key *, int, u_int64_t, u_int16_t, u_int8_t);
 extern	void ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *);
 extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 	    const struct ieee80211_node *, int, u_int64_t);

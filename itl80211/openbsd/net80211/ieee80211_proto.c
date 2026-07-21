@@ -113,6 +113,450 @@ ieee80211_pae_assoc_epoch_current(const struct ieee80211com *ic)
 	return __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
 }
 
+/*
+ * The selected-BSS leaf lock also serializes the compact PMF transaction
+ * record.  It deliberately protects values only: driver callbacks, crypto,
+ * EAPOL output, node release, and state changes all happen after it is
+ * dropped.  This keeps epoch cancellation usable from deauth/roam/stop
+ * paths without creating an inversion with q0 or the driver task gate.
+ */
+static u_int64_t
+ieee80211_pae_mfp_txn_cancel_locked(struct ieee80211com *ic)
+{
+	struct ieee80211_pae_mfp_txn *txn = &ic->ic_pae_mfp_txn;
+	u_int64_t id;
+
+	if (!txn->active)
+		return 0;
+	id = txn->id;
+	explicit_bzero(txn, sizeof(*txn));
+	return id;
+}
+
+static int
+ieee80211_pae_mfp_txn_live_locked(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn, u_int64_t id,
+	u_int64_t epoch, const struct ieee80211_node *ni)
+{
+	return txn->active && txn->id == id && txn->assoc_epoch == epoch &&
+	txn->ni == ni && ic->ic_bss == ni &&
+	__atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) == epoch;
+}
+
+static u_int8_t
+ieee80211_pae_mfp_txn_next_stage(const struct ieee80211_pae_mfp_txn *txn,
+	u_int8_t stage)
+{
+	if (stage == IEEE80211_PAE_MFP_STAGE_PTK && txn->have_gtk)
+		return IEEE80211_PAE_MFP_STAGE_GTK;
+	if ((stage == IEEE80211_PAE_MFP_STAGE_PTK ||
+	     stage == IEEE80211_PAE_MFP_STAGE_GTK) && txn->have_igtk)
+		return IEEE80211_PAE_MFP_STAGE_IGTK;
+	return IEEE80211_PAE_MFP_STAGE_NONE;
+}
+
+static const struct ieee80211_key *
+ieee80211_pae_mfp_txn_key(const struct ieee80211_pae_mfp_txn *txn,
+	u_int8_t stage)
+{
+	switch (stage) {
+	case IEEE80211_PAE_MFP_STAGE_PTK:
+		return &txn->ptk_key;
+	case IEEE80211_PAE_MFP_STAGE_GTK:
+		return &txn->gtk_key;
+	case IEEE80211_PAE_MFP_STAGE_IGTK:
+		return &txn->igtk_key;
+	default:
+		return NULL;
+	}
+}
+
+static int
+ieee80211_pae_mfp_txn_live(struct ieee80211com *ic, u_int64_t id,
+	u_int64_t epoch, const struct ieee80211_node *ni)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int live;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	live = ieee80211_pae_mfp_txn_live_locked(ic, &ic->ic_pae_mfp_txn,
+	    id, epoch, ni);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return live;
+}
+
+/*
+ * Firmware may have accepted a data or management key before software BIP
+ * setup rejects the final commit.  Remove every staged key best-effort while
+ * still in the serial PAE worker; the caller then deauthenticates rather than
+ * leaving an accepted key behind for a failed association.
+ */
+static void
+ieee80211_pae_mfp_txn_rollback_firmware(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn)
+{
+	struct ieee80211_key key;
+
+	if (ic == NULL || txn == NULL || txn->ni == NULL ||
+	    ic->ic_delete_key == NULL)
+		return;
+	if (txn->have_igtk) {
+		key = txn->igtk_key;
+		key.k_priv = NULL;
+		(*ic->ic_delete_key)(ic, txn->ni, &key);
+		explicit_bzero(&key, sizeof(key));
+	}
+	if (txn->have_gtk) {
+		key = txn->gtk_key;
+		key.k_priv = NULL;
+		(*ic->ic_delete_key)(ic, txn->ni, &key);
+		explicit_bzero(&key, sizeof(key));
+	}
+	if (txn->have_ptk) {
+		key = txn->ptk_key;
+		key.k_priv = NULL;
+		(*ic->ic_delete_key)(ic, txn->ni, &key);
+		explicit_bzero(&key, sizeof(key));
+	}
+}
+
+/* Clear the one WCL PMF request only for the still-current failed BSS. */
+static int
+ieee80211_pae_mfp_txn_terminal_current(struct ieee80211com *ic,
+	struct ieee80211_node *ni, u_int64_t epoch)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	int current = 0;
+
+	if (ic == NULL || ni == NULL ||
+	    (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_bss == ni &&
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) ==
+	    epoch) {
+		ic->ic_pae_mfp_requested = 0;
+		current = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	return current;
+}
+
+void
+ieee80211_pae_mfp_txn_abort(struct ieee80211com *ic)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	void (*cancel)(struct ieee80211com *, u_int64_t);
+	u_int64_t id;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+	cancel = ic->ic_pae_mfp_txn_cancel;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (id != 0 && cancel != NULL)
+		(*cancel)(ic, id);
+}
+
+int
+ieee80211_pae_mfp_txn_begin(struct ieee80211com *ic,
+	struct ieee80211_node *ni, const struct ieee80211_ptk *ptk,
+	const struct ieee80211_key *ptk_key, int have_ptk,
+	const struct ieee80211_key *gtk_key, int have_gtk,
+	const struct ieee80211_key *igtk_key, int have_igtk,
+	u_int64_t replaycnt, u_int16_t key_info, u_int8_t reply)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_pae_mfp_txn *txn;
+	const struct ieee80211_key *key;
+	struct ieee80211_key key_copy;
+	int (*submit)(struct ieee80211com *, u_int64_t, u_int64_t,
+	    struct ieee80211_node *, const struct ieee80211_key *, u_int8_t);
+	u_int64_t id, epoch;
+	u_int8_t stage;
+	int error;
+
+	if (ic == NULL || ni == NULL || ptk == NULL ||
+	    (reply != IEEE80211_PAE_MFP_REPLY_4WAY_MSG4 &&
+	     reply != IEEE80211_PAE_MFP_REPLY_GROUP_MSG2) ||
+	    (!have_ptk && !have_gtk && !have_igtk) ||
+	    (have_ptk && ptk_key == NULL) ||
+	    (have_gtk && gtk_key == NULL) ||
+	    (have_igtk && igtk_key == NULL))
+		return EINVAL;
+	if ((have_ptk && ptk_key->k_priv != NULL) ||
+	    (have_gtk && gtk_key->k_priv != NULL) ||
+	    (have_igtk && igtk_key->k_priv != NULL))
+		return EINVAL;
+	lock = ic->ic_pae_selected_bss_lock;
+	submit = ic->ic_pae_mfp_txn_submit;
+	if (lock == NULL || submit == NULL)
+		return EOPNOTSUPP;
+
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (epoch == 0 || ic->ic_bss != ni || ic->ic_pae_mfp_txn.active) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return EBUSY;
+	}
+	do {
+		id = ++ic->ic_pae_mfp_next_txn;
+	} while (id == 0);
+	txn = &ic->ic_pae_mfp_txn;
+	explicit_bzero(txn, sizeof(*txn));
+	txn->active = 1;
+	txn->id = id;
+	txn->assoc_epoch = epoch;
+	txn->ni = ni;
+	txn->ptk = *ptk;
+	txn->replaycnt = replaycnt;
+	txn->key_info = key_info;
+	txn->reply = reply;
+	txn->have_ptk = !!have_ptk;
+	txn->have_gtk = !!have_gtk;
+	txn->have_igtk = !!have_igtk;
+	if (have_ptk) {
+		txn->ptk_key = *ptk_key;
+		txn->ptk_key.k_priv = NULL;
+	}
+	if (have_gtk) {
+		txn->gtk_key = *gtk_key;
+		txn->gtk_key.k_priv = NULL;
+	}
+	if (have_igtk) {
+		txn->igtk_key = *igtk_key;
+		txn->igtk_key.k_priv = NULL;
+	}
+	stage = have_ptk ? IEEE80211_PAE_MFP_STAGE_PTK :
+	    (have_gtk ? IEEE80211_PAE_MFP_STAGE_GTK :
+	     IEEE80211_PAE_MFP_STAGE_IGTK);
+	txn->phase = stage;
+	key = ieee80211_pae_mfp_txn_key(txn, stage);
+	key_copy = *key;
+	key_copy.k_priv = NULL;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	error = (*submit)(ic, id, epoch, ni, &key_copy, stage);
+	explicit_bzero(&key_copy, sizeof(key_copy));
+	if (error != 0)
+		ieee80211_pae_mfp_txn_abort(ic);
+	return error;
+}
+
+static int
+ieee80211_pae_mfp_txn_commit(struct ieee80211com *ic,
+	const struct ieee80211_pae_mfp_txn *txn)
+{
+	struct ieee80211_node *ni = txn->ni;
+	struct ieee80211_key bip_key;
+	int bip_installed = 0;
+	int was_port_valid;
+
+	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni))
+		return ECANCELED;
+
+	/* Firmware has ACKed data keys. BIP remains software-owned. */
+	if (txn->have_igtk) {
+		bip_key = txn->igtk_key;
+		bip_key.k_priv = NULL;
+		if (ieee80211_set_key(ic, ni, &bip_key) != 0) {
+			/* FW has ACKed staged keys; remove them before failing closed. */
+			ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
+			explicit_bzero(&bip_key, sizeof(bip_key));
+			return EIO;
+		}
+		bip_installed = 1;
+		if (!ieee80211_pae_mfp_txn_live(ic, txn->id,
+		    txn->assoc_epoch, ni)) {
+			ieee80211_delete_key(ic, ni, &bip_key);
+			ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
+			explicit_bzero(&bip_key, sizeof(bip_key));
+			return ECANCELED;
+		}
+	}
+	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni)) {
+		if (bip_installed)
+			ieee80211_delete_key(ic, ni, &bip_key);
+		ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
+		if (txn->have_igtk)
+			explicit_bzero(&bip_key, sizeof(bip_key));
+		return ECANCELED;
+	}
+
+	if (txn->have_ptk) {
+		ni->ni_ptk = txn->ptk;
+		ni->ni_pairwise_key = txn->ptk_key;
+	}
+	if (txn->have_gtk)
+		ic->ic_nw_keys[txn->gtk_key.k_id] = txn->gtk_key;
+	if (txn->have_igtk) {
+		ic->ic_nw_keys[bip_key.k_id] = bip_key;
+		ic->ic_igtk_kid = bip_key.k_id;
+		ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT |
+		    IEEE80211_NODE_RXMGMTPROT;
+	}
+	if (txn->have_ptk) {
+		ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
+		ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
+		ni->ni_flags |= IEEE80211_NODE_RXPROT;
+	}
+	if (txn->key_info & EAPOL_KEY_INSTALL)
+		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
+	ni->ni_replaycnt = txn->replaycnt;
+	ni->ni_replaycnt_ok = 1;
+
+	if (!ieee80211_pae_mfp_txn_live(ic, txn->id, txn->assoc_epoch, ni))
+		goto rollback_cancelled;
+	if (txn->reply == IEEE80211_PAE_MFP_REPLY_4WAY_MSG4) {
+		if (ieee80211_send_4way_msg4(ic, ni) != 0)
+			goto rollback_error;
+	} else {
+		(void)ieee80211_send_group_msg2(ic, ni, NULL);
+	}
+
+	if (txn->key_info & EAPOL_KEY_SECURE) {
+		if (!ieee80211_pae_mfp_txn_live(ic, txn->id,
+		    txn->assoc_epoch, ni))
+			goto rollback_cancelled;
+		ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
+		was_port_valid = ni->ni_port_valid;
+		ni->ni_port_valid = 1;
+		if (!was_port_valid) {
+			AirportItlwmPostPltiTraceCompleteEpisode(ic);
+			ieee80211_set_link_state(ic, LINK_STATE_UP);
+			if (ic->ic_event_handler != NULL)
+				(*ic->ic_event_handler)(ic,
+				    IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE, NULL);
+		}
+		ni->ni_assoc_fail = 0;
+		if (ic->ic_opmode == IEEE80211_M_STA)
+			ic->ic_rsngroupcipher = ni->ni_rsngroupcipher;
+	}
+	if (txn->have_igtk)
+		explicit_bzero(&bip_key, sizeof(bip_key));
+	return 0;
+
+rollback_error:
+	if (bip_installed)
+		ieee80211_delete_key(ic, ni, &bip_key);
+	ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
+	if (txn->have_igtk)
+		explicit_bzero(&bip_key, sizeof(bip_key));
+	return EIO;
+
+rollback_cancelled:
+	if (bip_installed)
+		ieee80211_delete_key(ic, ni, &bip_key);
+	ieee80211_pae_mfp_txn_rollback_firmware(ic, txn);
+	if (txn->have_igtk)
+		explicit_bzero(&bip_key, sizeof(bip_key));
+	return ECANCELED;
+}
+
+void
+ieee80211_pae_mfp_txn_complete(struct ieee80211com *ic, u_int64_t id,
+	u_int8_t stage, int error)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_pae_mfp_txn *txn;
+	struct ieee80211_pae_mfp_txn snapshot;
+	const struct ieee80211_key *key;
+	struct ieee80211_key key_copy;
+	struct ieee80211_node *ni;
+	int (*submit)(struct ieee80211com *, u_int64_t, u_int64_t,
+	    struct ieee80211_node *, const struct ieee80211_key *, u_int8_t);
+	void (*finish)(struct ieee80211com *, u_int64_t) = NULL;
+	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
+	u_int64_t epoch;
+	u_int8_t next;
+	int final_commit = 0;
+
+	if (ic == NULL || (lock = ic->ic_pae_selected_bss_lock) == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	txn = &ic->ic_pae_mfp_txn;
+	if (!txn->active || txn->id != id || txn->phase != stage) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		return;
+	}
+	epoch = txn->assoc_epoch;
+	ni = txn->ni;
+	if (error != 0 || !ieee80211_pae_mfp_txn_live_locked(ic, txn, id,
+	    epoch, ni)) {
+		cancel = ic->ic_pae_mfp_txn_cancel;
+		(void)ieee80211_pae_mfp_txn_cancel_locked(ic);
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		if (cancel != NULL)
+			(*cancel)(ic, id);
+		/* A stale epoch belongs to a replacement BSS and must not deauth it. */
+		if (error != ECANCELED &&
+		    ieee80211_pae_mfp_txn_terminal_current(ic, ni, epoch)) {
+			IEEE80211_SEND_MGMT(ic, ni,
+			    IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+			ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+		}
+		return;
+	}
+	next = ieee80211_pae_mfp_txn_next_stage(txn, stage);
+	if (next != IEEE80211_PAE_MFP_STAGE_NONE) {
+		txn->phase = next;
+		key = ieee80211_pae_mfp_txn_key(txn, next);
+		key_copy = *key;
+		key_copy.k_priv = NULL;
+		submit = ic->ic_pae_mfp_txn_submit;
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		if (submit == NULL || (*submit)(ic, id, epoch, ni, &key_copy,
+		    next) != 0) {
+			explicit_bzero(&key_copy, sizeof(key_copy));
+			ieee80211_pae_mfp_txn_complete(ic, id, next, EIO);
+		} else
+			explicit_bzero(&key_copy, sizeof(key_copy));
+		return;
+	}
+	snapshot = *txn;
+	txn->phase = IEEE80211_PAE_MFP_STAGE_NONE;
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+
+	final_commit = ieee80211_pae_mfp_txn_commit(ic, &snapshot);
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	txn = &ic->ic_pae_mfp_txn;
+	if (!ieee80211_pae_mfp_txn_live_locked(ic, txn, id, epoch,
+	    snapshot.ni)) {
+		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+		explicit_bzero(&snapshot, sizeof(snapshot));
+		return;
+	}
+	if (final_commit == 0)
+		finish = ic->ic_pae_mfp_txn_finish;
+	else
+		cancel = ic->ic_pae_mfp_txn_cancel;
+	(void)ieee80211_pae_mfp_txn_cancel_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (final_commit == 0) {
+		if (finish != NULL)
+			(*finish)(ic, id);
+	} else {
+		if (cancel != NULL)
+			(*cancel)(ic, id);
+		if (final_commit != ECANCELED &&
+		    ieee80211_pae_mfp_txn_terminal_current(ic, snapshot.ni,
+		    snapshot.assoc_epoch)) {
+			IEEE80211_SEND_MGMT(ic, snapshot.ni,
+			    IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
+			ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+		}
+	}
+	explicit_bzero(&snapshot, sizeof(snapshot));
+}
+
 /* All callers hold ic_pae_selected_bss_lock when it is available. */
 static void
 ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
@@ -242,8 +686,10 @@ u_int64_t
 ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 {
 	u_int64_t epoch;
+	u_int64_t txn_id = 0;
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	void (*cancel)(struct ieee80211com *, u_int64_t) = NULL;
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
@@ -254,8 +700,14 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
-	if (lock != NULL)
+	if (lock != NULL) {
+		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+		cancel = ic->ic_pae_mfp_txn_cancel;
 		IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	}
+	/* Epoch cancellation only marks and notifies after the leaf lock. */
+	if (txn_id != 0 && cancel != NULL)
+		(*cancel)(ic, txn_id);
 	return epoch;
 }
 
@@ -264,8 +716,10 @@ u_int64_t
 ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 {
 	u_int64_t epoch;
+	u_int64_t txn_id;
 	IOSimpleLock *lock;
 	IOInterruptState irq;
+	void (*cancel)(struct ieee80211com *, u_int64_t);
 
 	if (ic == NULL || ic->ic_opmode != IEEE80211_M_STA)
 		return 0;
@@ -279,7 +733,11 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
+	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic);
+	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (txn_id != 0 && cancel != NULL)
+		(*cancel)(ic, txn_id);
 	return epoch;
 }
 

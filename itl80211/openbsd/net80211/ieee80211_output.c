@@ -230,6 +230,7 @@ ieee80211_mgmt_output(struct _ifnet *ifp, struct ieee80211_node *ni,
 
         /* check if protection is required for this mgmt frame */
         if ((ic->ic_caps & IEEE80211_C_MFP) &&
+            (ni->ni_flags & IEEE80211_NODE_MFP) &&
             (type == IEEE80211_FC0_SUBTYPE_DISASSOC ||
              type == IEEE80211_FC0_SUBTYPE_DEAUTH ||
              type == IEEE80211_FC0_SUBTYPE_ACTION)) {
@@ -1147,7 +1148,7 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
     /* write RSN Capabilities field */
     rsncaps = (ni->ni_rsncaps & (IEEE80211_RSNCAP_PTKSA_RCNT_MASK |
         IEEE80211_RSNCAP_GTKSA_RCNT_MASK));
-    if (ic->ic_caps & IEEE80211_C_MFP) {
+    if ((ic->ic_caps & IEEE80211_C_MFP) && ic->ic_pae_mfp_requested) {
         rsncaps |= IEEE80211_RSNCAP_MFPC;
         if (ic->ic_flags & IEEE80211_F_MFPR)
             rsncaps |= IEEE80211_RSNCAP_MFPR;
@@ -1164,7 +1165,7 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
         frm += IEEE80211_PMKID_LEN;
     }
 
-    if (!(ic->ic_caps & IEEE80211_C_MFP))
+    if (!(ic->ic_caps & IEEE80211_C_MFP) || !ic->ic_pae_mfp_requested)
         return frm;
 
     if ((ni->ni_flags & IEEE80211_NODE_PMKID) == 0) {

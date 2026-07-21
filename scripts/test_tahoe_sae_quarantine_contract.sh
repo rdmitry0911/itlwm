@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# One-pass contract gate for the complete current SAE/PMF quarantine layer.
+# One-pass contract gate for the pure-SAE quarantine and audited PMF owner.
 #
 # This intentionally combines semantic mask tests, every association ingress,
 # PLTI/Agent PMK boundaries, net80211's Open-System limitation, and the AX211
-# MFP runtime quarantine.  It is a source-and-build admission gate, not a
-# claim that SAE itself is implemented.
+# PMF transaction owner.  It is a source-and-build admission gate, not a
+# claim that pure SAE itself is implemented.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 bash "$root/scripts/test_payload_builders.sh"
 bash "$root/scripts/test_net80211_sha256_ptk_kdf_contract.sh"
-bash "$root/scripts/test_net80211_mfp_lifecycle_contract.sh"
+bash "$root/scripts/test_tahoe_ax211_api68_pmf_transaction_owner_contract.sh"
 bash "$root/scripts/test_tahoe_sae_product_foundation_contract.sh"
 bash "$root/scripts/test_net80211_pae_epoch_contract.sh"
 bash "$root/scripts/test_net80211_auth_status_contract.sh"
@@ -540,7 +540,7 @@ auth_rx = body(input_source, "void\nieee80211_recv_auth", "net80211 auth RX")
 require(auth_rx, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
         "Open-System-only auth RX")
 
-print("PASS: Tahoe SAE/PMF quarantine layer contracts")
+print("PASS: Tahoe pure-SAE quarantine and audited PMF-owner contracts")
 PY
 
 python3 "$root/scripts/evaluate_tahoe_sae_capture.py" --self-test

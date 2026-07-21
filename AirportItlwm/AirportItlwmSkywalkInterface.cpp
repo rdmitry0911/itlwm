@@ -5711,6 +5711,10 @@ setASSOCIATE(struct apple80211_assoc_data *ad)
         return kIOReturnError;
     }
 
+    /* Public IOC_ASSOCIATE carries no audited PMF request field. Never let a
+     * prior hidden WCL carrier auto-enable protected management here. */
+    ic->ic_pae_mfp_requested = 0;
+
     airportItlwmRegDiagRecordAssocPolicy(
         kAirportItlwmRegDiagPathPublicAssoc, ad->ad_auth_lower,
         ad->ad_auth_upper, ad->ad_rsn_ie_len, 0, 0, 0,
@@ -5787,6 +5791,7 @@ setDISASSOCIATE(void *ad)
     // disassociate edge takes from here. The clear logs only a
     // credential-safe reason marker and never the PMK bytes.
     clearExternalPmkEligibilityLocked("setDISASSOCIATE");
+    ic->ic_pae_mfp_requested = 0;
 
     if (ic->ic_state < IEEE80211_S_SCAN) {
         XYLog("DEBUG %s SKIP: ic_state=%d < SCAN\n", __FUNCTION__, ic->ic_state);
@@ -6242,6 +6247,7 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
 
     if (TahoeAssociationAuthContracts::requiresUnsupportedWpa3Auth(
             auth_upper)) {
+        ic->ic_pae_mfp_requested = 0;
         airportItlwmRegDiagRecordAssoc(kAirportItlwmRegDiagPathHiddenAssoc,
                                        ssid, ssid_len,
                                        reinterpret_cast<const uint8_t *>(bssid),
@@ -6249,6 +6255,13 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
                                        kIOReturnUnsupported);
         return kIOReturnUnsupported;
     }
+
+    /* PMF is an explicit WCL association property, not a device-wide mode.
+     * Transition/SAE carriers remain out of scope even if their opaque field
+     * happens to carry the PMF-capable bit. */
+    ic->ic_pae_mfp_requested =
+        TahoeAssociationContracts::pmfCapable(pmf_capability) &&
+        TahoeAssociationAuthContracts::isAuditedPskPmkAuth(auth_upper);
 
     auto &associationOwner = instance->getTahoeOwnerRegistry().association;
     associationOwner.hasCarrier = true;
@@ -6379,6 +6392,7 @@ setWCL_LEAVE_NETWORK(apple80211_leave_network *data)
     // the host supplicant PMK store does not survive a leave into the
     // next association attempt, regardless of the ic state at entry.
     clearExternalPmkEligibilityLocked("setWCL_LEAVE_NETWORK");
+    ic->ic_pae_mfp_requested = 0;
 
     if (ic->ic_state < IEEE80211_S_SCAN)
         return kIOReturnSuccess;
