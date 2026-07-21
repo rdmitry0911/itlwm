@@ -12,6 +12,18 @@ categorical event identifiers.  It contains no network identity, channel,
 signal, address, route, credential, key, packet, firmware-status, or pointer
 field.
 
+The Tahoe bridge selects its real implementation from the Tahoe-only
+`IO80211FAMILY_V3` target marker.  Shared trace producer sources can include
+the bridge before Tahoe compatibility headers declare availability markers, so
+an availability predicate would silently select their local no-op fallback.
+The post-build gate verifies every state, RX, TX, EAPOL, and IWN producer
+object references its external bridge and rejects that fallback.  Candidate
+builds use one fresh absolute DerivedData override for both the Tahoe build
+and this linkage gate, so an incrementally stale object cannot be admitted as
+evidence.  The gate drains each producer's symbol listing rather than using an
+early-exit probe, so its `pipefail` policy cannot turn a successful match into
+a false admission failure.
+
 ## Sealed capture rule
 
 A control seal first blocks new episodes, then detaches the active token and

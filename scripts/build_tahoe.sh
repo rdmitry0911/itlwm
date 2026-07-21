@@ -71,6 +71,16 @@ else
     EXTRA_PP=""
 fi
 
+if [ -n "${ITLWM_DERIVED_DATA_OVERRIDE:-}" ]; then
+    case "$ITLWM_DERIVED_DATA_OVERRIDE" in
+        /*) DERIVED_DATA="$ITLWM_DERIVED_DATA_OVERRIDE" ;;
+        *)
+            echo "ERROR: ITLWM_DERIVED_DATA_OVERRIDE must be an absolute path" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 OUTPUT_ROOT="$PROJECT_DIR/Build/$CONFIGURATION/$VARIANT_LABEL"
 OUTPUT_KEXT="$OUTPUT_ROOT/AirportItlwm.kext"
 OUTPUT_BINARY="$OUTPUT_KEXT/Contents/MacOS/AirportItlwm"

@@ -37,6 +37,7 @@ pae_input = (root / "itl80211/openbsd/net80211/ieee80211_pae_input.c").read_text
 auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
 client = (root / "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c").read_text()
 build = (root / "scripts/build_post_plti_trace.sh").read_text()
+tahoe_build = (root / "scripts/build_tahoe.sh").read_text()
 runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
 aggregate = (root / "scripts/test_tahoe_sae_quarantine_contract.sh").read_text()
 payload_script = (root / "scripts/test_payload_builders.sh").read_text()
@@ -153,9 +154,36 @@ for needle in (
         "AirportItlwmPostPltiTraceNoteStateRequest",
         "neither allocate, log, publish",
         "static inline void",
-        "__IO80211_TARGET >= __MAC_26_0",
+        "Shared producer sources",
+        "defined(IO80211FAMILY_V3)",
 ):
     require(bridge, needle, "safe bridge lifecycle contract")
+forbid(bridge, "defined(__MAC_26_0)",
+       "availability-dependent trace bridge selection")
+for needle in (
+        "OBJECT_DIR=",
+        "require_external_bridge()",
+        "AirportItlwm-Tahoe.build/Objects-normal/x86_64",
+        "require_external_bridge ieee80211_input AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ieee80211_node AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ieee80211_output AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ieee80211_pae_input AirportItlwmPostPltiTraceCompleteEpisode",
+        "require_external_bridge ieee80211_pae_output AirportItlwmPostPltiTraceRecord",
+        "require_external_bridge ieee80211_proto AirportItlwmPostPltiTraceNoteStateRequest",
+        "require_external_bridge ItlIwn AirportItlwmPostPltiTraceRecord",
+        "__ZL.*AirportItlwmPostPltiTrace",
+        "external trace bridge",
+        "ITLWM_DERIVED_DATA_OVERRIDE",
+):
+    require(build, needle, "Tahoe trace linkage gate")
+require(build, "grep -E", "pipefail-safe Tahoe trace linkage gate")
+forbid(build, "grep -Eq", "early-exit Tahoe trace linkage probe")
+for needle in (
+        "ITLWM_DERIVED_DATA_OVERRIDE",
+        "must be an absolute path",
+        "DERIVED_DATA=\"$ITLWM_DERIVED_DATA_OVERRIDE\"",
+):
+    require(tahoe_build, needle, "fresh Tahoe derived-data override")
 
 for needle in (
         "enum AirportItlwmPostPltiTraceVerdict",

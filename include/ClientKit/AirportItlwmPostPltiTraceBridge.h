@@ -6,8 +6,13 @@
 
 struct ieee80211com;
 
-#if defined(__IO80211_TARGET) && defined(__MAC_26_0) && \
-    __IO80211_TARGET >= __MAC_26_0
+/*
+ * Shared producer sources can reach this header before the Tahoe compatibility
+ * headers declare __MAC_26_0.  The Tahoe target alone supplies
+ * IO80211FAMILY_V3 in both configurations, so select the real bridge from
+ * that build identity instead of silently compiling a local no-op stub.
+ */
+#if defined(IO80211FAMILY_V3)
 
 #ifdef __cplusplus
 extern "C" {
