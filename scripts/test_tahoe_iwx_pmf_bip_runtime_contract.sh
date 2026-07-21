@@ -106,7 +106,7 @@ for needle in \
     'finish_armed_rollback' \
     'setsid "$SELF" --watchdog' \
     'for attempt in $(seq 1 3)' \
-    'rekey_gtk' \
+    'raw REKEY_GTK' \
     'rollback_verified=true' \
     'host_network_signature' \
     'runtime_ap_is_pinned'; do
@@ -130,6 +130,8 @@ for needle in \
     'config_sha256'; do
     forbid_literal "$AP_HELPER" "$needle" "AP helper capability: $needle"
 done
+
+forbid_literal "$AP_HELPER" 'rekey_gtk' 'non-portable lower-case hostapd CLI alias'
 
 python3 - "$RUNNER" "$AP_HELPER" "$PROTOCOL" <<'PY'
 from pathlib import Path
@@ -223,7 +225,7 @@ for token in ("wpa_passphrase", "optional_ssid", "required_ssid",
 for token in (
     "initial active prefix", "does not establish final success",
     "rollback watchdog", "local-only", "does not prove pure SAE",
-    "precondition failure", "fresh disposable overlay",
+    "precondition failure", "fresh disposable overlay", "REKEY_GTK",
 ):
     if token not in protocol:
         fail(f"runtime protocol omits boundary: {token}")

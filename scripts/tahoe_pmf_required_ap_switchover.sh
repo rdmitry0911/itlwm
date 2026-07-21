@@ -483,7 +483,11 @@ do_rekey() {
     configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         die "required-PMF hostapd process is not exact"
     runtime_ap_is_pinned || die "the lab AP left the pinned channel/width"
-    if ! sudo_cmd "$HOSTAPD_CLI" -p /run/hostapd -i "$AP_IF" rekey_gtk \
+    # Use hostapd's documented raw control transport for its canonical
+    # REKEY_GTK command.  A lower-case CLI alias is not consistently exposed
+    # by packaged hostapd_cli builds; the daemon command drives the standard
+    # group state machine that rotates both GTK and PMF IGTK slots.
+    if ! sudo_cmd "$HOSTAPD_CLI" -p /run/hostapd -i "$AP_IF" raw REKEY_GTK \
         >"$STATE_DIR/rekey.stdout" 2>"$STATE_DIR/rekey.stderr"; then
         die "bounded hostapd group-rekey request failed"
     fi

@@ -29,6 +29,12 @@ address, route, NAT, forwarding, DHCP, firewall, service-manager, or reboot
 operation. Its output is categorical; configuration values, credentials, and
 wireless identifiers are never rendered.
 
+The only post-initial stimulus is hostapd's canonical `REKEY_GTK` control
+command sent through its raw control transport. For an IEEE 802.11w-enabled
+group state machine, that standard rekey path rotates the alternate IGTK slot
+as well as the GTK; a lower-case CLI alias is not used because packaged client
+builds need not expose it.
+
 The required configuration must represent the same saved-profile identity and
 credential as the optional configuration. A mismatch is a precondition failure.
 The current read-only preflight reports the categorical

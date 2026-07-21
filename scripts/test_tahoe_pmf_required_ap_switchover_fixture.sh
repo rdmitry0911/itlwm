@@ -114,6 +114,7 @@ printf '%s\n' \
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
+    '[ "$*" = "-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK" ] || exit 64' \
     'printf "%s\n" "$*" >>"$FAKE_CLI_LOG"' \
     'printf "OK\n"' \
     >"$FAKE_CLI"
@@ -197,7 +198,8 @@ grep -Fxq 'PMF_AP_REKEY=REQUESTED' "$TMP_ROOT/rekey.out" ||
     fail 'group rekey did not report categorical acknowledgement'
 grep -Fxq 'rekey_requested=true' "$STATE_DIR/rekey.status" ||
     fail 'group rekey state witness is missing'
-grep -Fq 'rekey_gtk' "$FAKE_CLI_LOG" || fail 'fake hostapd CLI did not receive only the rekey request'
+grep -Fxq -- '-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK' "$FAKE_CLI_LOG" ||
+    fail 'fake hostapd CLI did not receive the canonical group-rekey command'
 
 "$HELPER" --rollback --state-dir "$STATE_DIR" \
     >"$TMP_ROOT/rollback.out" 2>"$TMP_ROOT/rollback.err" ||
