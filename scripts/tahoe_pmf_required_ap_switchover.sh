@@ -583,7 +583,7 @@ do_preflight() {
 
 do_activate() {
     local network_signature current_signature config_signature current_config_signature
-    local pre_stop_failure=""
+    local pre_stop_failure="" post_start_failure=""
     require_state_dir
     [ ! -e "$(state_file)" ] && [ ! -L "$(state_file)" ] ||
         die "state directory is not fresh"
@@ -652,6 +652,20 @@ do_activate() {
             die "required-PMF hostapd post-start attestation failed; optional rollback verified"
         fi
         die "required-PMF hostapd post-start attestation failed; rollback watchdog remains armed"
+    fi
+    # Required-hostapd startup is itself part of the bounded host-network
+    # transaction.  Do not publish required state if that process transition
+    # changed the route/address/forwarding baseline after the pre-stop fence.
+    if ! current_signature="$(host_network_signature)"; then
+        post_start_failure="required-PMF host-network invariants are unreadable before state promotion"
+    elif [ "$current_signature" != "$network_signature" ]; then
+        post_start_failure="required-PMF host-network invariants changed before state promotion"
+    fi
+    if [ -n "$post_start_failure" ]; then
+        if finish_post_transition_rollback; then
+            die "$post_start_failure; optional rollback verified"
+        fi
+        die "$post_start_failure; rollback watchdog remains armed"
     fi
     if ! current_config_signature="$(config_pair_signature)"; then
         if finish_post_transition_rollback; then

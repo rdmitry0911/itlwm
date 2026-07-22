@@ -501,6 +501,144 @@
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-POSTSTART-NETWORK-ATTESTATION-20260721`
+
+### Observation
+
+`do_activate()` records its hash-only host route/address/forwarding signature
+before it establishes the rollback owner and correctly rechecks it directly
+before the first optional-PMF process mutation.  After that mutation,
+however, it starts the required-PMF daemon, reattests only the required PID,
+pinned AP shape, and staged configuration pair, and then calls
+`mark_required_active()`.  There is no corresponding host-network equality
+test at the state-promotion edge.  A route/address/forwarding change caused
+while the required daemon starts can therefore be published as
+`PMF_AP_SWITCHOVER=REQUIRED_ACTIVE`, even though the transaction baseline no
+longer holds.
+
+- scope: repository-owned disposable PMF-required AP helper and its local
+  fake-hostapd fixture; no kext, firmware, Apple80211, candidate, guest, or
+  physical-AP behavior claim.
+- expected system behavior: a required-active state must mean that the exact
+  required process, pinned AP shape, admitted configuration pair, and original
+  hash-only host-network invariant all held at the promotion edge.  If the
+  invariant is unreadable or changed after the optional-to-required process
+  transition, required-active publication must be refused.  The established
+  post-transition recovery must restore optional PMF and release ownership
+  only if it can also reprove the original baseline; otherwise its independent
+  rollback watchdog and marker remain armed.
+- actual behavior: the successful path following
+  `start_configured_hostapd("$REQUIRED_CONFIG", ...)` reaches required
+  process/AP and configuration checks and then `mark_required_active()` with
+  no `host_network_signature()` comparison against `network_signature`.
+  `finish_post_transition_rollback()` contains the needed baseline comparison,
+  but it is currently reached only after another failure.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_activate()` between the
+  successful required-process/AP post-start attestation and
+  `mark_required_active()`.
+- source evidence: the fake hostapd already has a fixture-only
+  `FAKE_MUTATE_NETWORK_ON_REQUIRED_START=1` hook that writes a different
+  fake-network state immediately when it is invoked for the required config.
+  The existing failure case uses it together with `FAKE_FAIL_REQUIRED=1`, so
+  it covers rollback after a failed required start but cannot prove the
+  successful-promotion branch.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-POSTSTART-NETWORK-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. extend the fixture with a fresh-state successful required-start case that
+     enables only `FAKE_MUTATE_NETWORK_ON_REQUIRED_START=1`; before a fix the
+     assertion must stop because the helper accepts activation and emits the
+     required-active result;
+  2. after the existing required-process/AP post-start reattestation, sample
+     `host_network_signature()` and require equality with the transaction's
+     `network_signature` before configuration/state promotion;
+  3. on unreadable or changed post-start network state, use the existing
+     `finish_post_transition_rollback()` result convention: report optional
+     rollback verified only when optional process/AP and the original network
+     baseline are all restored; otherwise retain the marker-bound watchdog;
+  4. extend the static runtime contract and PMF runtime protocol to require
+     this post-start network predicate before required-active publication.
+- safety and side effects: the fix adds only read-only signature sampling to
+  a local helper transaction.  It introduces no AP config rewrite, retry,
+  restart loop, kext action, guest reboot, live access-point action, network
+  mutation, or credential/identity output.  The fake state mutation exists
+  only under the test fixture's generated environment.
+- forbidden alternatives considered and rejected:
+  - accepting the changed invariant and relying on a later runner-side
+    assertion would still publish a false required-active helper state;
+  - clearing marker/watchdog unconditionally after optional restart would
+    contradict the established post-transition rollback proof;
+  - changing the saved AP configuration or live route to make the signature
+    match would expand scope and bypass the external preflight blocker.
+- deterministic verification plan:
+  - pre-fix, the fixture must fail at an assertion that successful required
+    startup with injected network drift was accepted;
+  - post-fix, the same local event must produce a categorical post-start
+    network diagnostic, no `REQUIRED_ACTIVE`, no live required child, a live
+    restored optional child, and retained marker/watchdog while fake network
+    output remains drifted;
+  - restoring only generated fake network output and invoking the existing
+    explicit rollback must clear the retained owner and report normal optional
+    restoration;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate.  No live AP/candidate/guest operation is
+    authorized.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-POSTSTART-NETWORK-ATTESTATION-20260721`
+
+- implementation:
+  - `do_activate()` now retains a local `post_start_failure` reason after the
+    exact required PID/AP-shape reattestation and samples the existing
+    hash-only `host_network_signature()` once more before configuration/state
+    promotion;
+  - an unreadable or changed value relative to the admitted
+    `network_signature` takes `finish_post_transition_rollback()`.  It emits
+    `optional rollback verified` only if the already-existing recovery helper
+    restores optional PMF and re-proves the saved baseline; otherwise it
+    retains marker/watchdog ownership and reports the categorical armed result;
+  - the fixture now covers a successful required-hostapd launch that changes
+    only its generated fake-network source.  It requires no required-active
+    result, no required child, restored live optional child, and retained
+    marker/watchdog until a stable explicit rollback;
+  - the static contract requires the new post-start signature comparison after
+    required process/AP attestation and before configuration/state promotion,
+    and the runtime protocol records the required-active invariant.
+- deterministic fixture evidence:
+  - before implementation, the new fixture stopped at
+    `activation accepted host-network drift during successful required start`,
+    directly proving that the old helper published a successful required state
+    after its fake required launch had changed the signature;
+  - after implementation, the same source-local event reports
+    `required-PMF host-network invariants changed before state promotion;
+    rollback watchdog remains armed`, publishes no `REQUIRED_ACTIVE`, quiesces
+    the generated required child, and restores the generated optional child;
+  - returning only the generated fake-network state to its baseline lets the
+    following explicit rollback report `PMF_AP_ROLLBACK=OPTIONAL_RESTORED` and
+    remove the retained marker/watchdog.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty5e8364e5fafd`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side required-active
+  promotion fence.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

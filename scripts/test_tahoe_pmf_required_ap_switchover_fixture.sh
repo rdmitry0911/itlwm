@@ -618,6 +618,51 @@ if /bin/kill -0 "$TRANSITION_DRIFT_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'stable explicit rollback left the transition-drift watchdog live'
 fi
 
+# A required daemon can succeed while its launch changes the host-network
+# signature.  Required-active publication must still be refused: the
+# post-transition recovery restores optional PMF but retains its marker-bound
+# watchdog until a stable explicit rollback can prove the original baseline.
+POSTSTART_NETWORK_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+if FAKE_MUTATE_NETWORK_ON_REQUIRED_START=1 "$HELPER" --activate \
+    --state-dir "$POSTSTART_NETWORK_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/poststart-network-activate.out" \
+    2>"$TMP_ROOT/poststart-network-activate.err"; then
+    fail 'activation accepted host-network drift during successful required start'
+fi
+grep -Fq 'required-PMF host-network invariants changed before state promotion; rollback watchdog remains armed' \
+    "$TMP_ROOT/poststart-network-activate.err" ||
+    fail 'successful required-start drift did not retain its armed-watchdog diagnostic'
+! grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' \
+    "$TMP_ROOT/poststart-network-activate.out" ||
+    fail 'successful required-start drift published required-active success'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'successful required-start drift did not restore optional hostapd'
+POSTSTART_NETWORK_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$POSTSTART_NETWORK_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'successful required-start drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'successful required-start drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'successful required-start drift cleared the rollback marker'
+[ -r "$POSTSTART_NETWORK_STATE_DIR/watchdog.pid" ] ||
+    fail 'successful required-start drift did not retain its watchdog receipt'
+POSTSTART_NETWORK_WATCHDOG_PID="$(tr -d '[:space:]' <"$POSTSTART_NETWORK_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$POSTSTART_NETWORK_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'successful required-start drift did not retain a live watchdog process'
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
+"$HELPER" --rollback --state-dir "$POSTSTART_NETWORK_STATE_DIR" \
+    >"$TMP_ROOT/poststart-network-rollback.out" \
+    2>"$TMP_ROOT/poststart-network-rollback.err" ||
+    fail 'stable explicit rollback did not recover successful required-start drift'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/poststart-network-rollback.out" ||
+    fail 'successful required-start drift rollback did not report optional restoration'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'successful required-start drift rollback left the active marker'
+if /bin/kill -0 "$POSTSTART_NETWORK_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'successful required-start drift rollback left the watchdog live'
+fi
+
 # A staged required config can change after the pre-stop fence but while the
 # required daemon consumes it.  The changed file must not be promoted, and the
 # helper must not restart optional hostapd from an unresolved pair.  Restoring

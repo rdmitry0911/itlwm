@@ -53,10 +53,11 @@ after the original staged pair is restored; bounded rekey is likewise blocked
 while that pair differs.
 
 After a required-PMF process launch succeeds, the helper re-attests that exact
-PID and the pinned AP channel/width immediately before it promotes rollback
-state to `required`.  An exited, replaced, or unpinned process is restored to
-optional PMF through the existing rollback owner and never emits a
-required-active result.
+PID and the pinned AP channel/width and re-reads the original hash-only host
+network invariant immediately before it promotes rollback state to `required`.
+An exited, replaced, unpinned, unreadable, or host-network-divergent process
+transition is restored to optional PMF through the existing rollback owner and
+never emits a required-active result.
 
 If any failure occurs after the first optional-PMF process stop, recovery also
 compares the post-restore hash-only host-network signature with the state
