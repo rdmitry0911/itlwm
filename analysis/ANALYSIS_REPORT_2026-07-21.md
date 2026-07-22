@@ -4508,3 +4508,97 @@ is not and must not become a proxy for PID/configuration ownership.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
+
+## ANOMALY: `LAB-SAE-RELAY-EVENT-DELIVERY-FENCE-20260722`
+
+### Observation
+
+The dormant SAE relay FSM can accept an identity-bound Agent reply or
+completion before the peer event that supplies its required semantic input has
+been delivered through `TakeEvent()`. `EmitPeerEvent()` saves the validated
+peer Commit/Confirm, records its sequence, and sets `event_pending=1`.
+`TakeEvent()` is the sole model delivery boundary and clears that flag only
+after it copies the event. However, `AcceptReply()` admits the retry/confirm
+phases and `AcceptCompletion()` admits the complete phase based on the stored
+sequence alone, without requiring `event_pending==0`.
+
+- scope: inactive C/C++ relay model and generated unit fixtures only. There is
+  no production caller, UserClient selector, Algorithm-3 RX/TX path,
+  credential, PMK ingress, association, packet, AP, guest, or radio action.
+- expected behavior: the initial Commit at sequence zero remains allowed after
+  target/client binding. Every later Agent reply or completion must be blocked
+  as `NotReady` until the identity-bound peer event has been copied to the
+  Agent through `TakeEvent()`.
+- deterministic proof: construct a valid bound initial Commit, emit a valid
+  peer Commit, then construct a valid Confirm using the visible stored event
+  sequence without calling `TakeEvent()`. The current model accepts it and
+  advances to `AwaitPeerConfirm`; the same failure exists for anti-clogging
+  commit retry and for completion after peer Confirm. No cryptographic or
+  wireless input is needed.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-SAE-RELAY-EVENT-DELIVERY-FENCE-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. preserve initial `AwaitAgentInitialCommit` acceptance at sequence zero;
+  2. in `AcceptReply()`, return `NotReady` while `event_pending!=0` for the
+     retry and Confirm reply phases, before any reply-shape rejection can
+     abort an otherwise pending relay transaction;
+  3. in `AcceptCompletion()`, return `NotReady` while the peer Confirm event
+     remains pending;
+  4. add a C/C++ unit sequence covering normal Confirm, anti-clogging retry,
+     and completion both before and after `TakeEvent()`, plus static product
+     foundation coverage of the delivery fence.
+- safety and alternatives:
+  - do not enable a dormant selector, add a production caller, pass PMK
+    material, or change Open-System-only association behavior;
+  - do not make sequence equality alone proof of Agent delivery, and do not
+    block `AcceptAbort()`, which remains an intentionally fail-closed terminal
+    action;
+  - this creates only an ordering fence in an inactive model, not a claim of
+    WPA3/SAE authentication or cryptographic verification.
+- verification plan:
+  - add the local assertions first and capture their deterministic pre-fix
+    failure;
+  - run the SAE product foundation contract in C and C++, the SAE quarantine
+    static aggregate, payload/trace contracts, and the isolated Tahoe
+    build-only gate; preserve the no-live-runtime boundary.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-SAE-RELAY-EVENT-DELIVERY-FENCE-20260722`
+
+- implementation:
+  - `AcceptReply()` now returns `NotReady` while a peer Commit event is still
+    pending in either the anti-clogging retry or Confirm reply phase; the
+    initial sequence-zero Commit remains unchanged;
+  - `AcceptCompletion()` now returns `NotReady` until the preceding peer
+    Confirm has been copied through `TakeEvent()`;
+  - `AcceptAbort()` remains an unrestricted fail-closed terminal action;
+  - added a C/C++ fixture for ordinary Confirm, anti-clogging retry, and
+    completion: each is rejected before `TakeEvent()` and accepted after the
+    identity-bound copyout.  The static product contract now requires the
+    ordering fence before reply/completion-shape parsing.
+- deterministic fixture evidence:
+  - before implementation, the new fixture failed exactly at
+    `AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+    kAirportItlwmSaeRelayFsmNotReady`: the model accepted a valid Confirm
+    constructed from a still-pending peer Commit sequence;
+  - after implementation, all three pre-delivery attempts return `NotReady`,
+    preserve the awaiting phase and pending flag, and their identical
+    post-`TakeEvent()` attempts are accepted.
+- verification:
+  - `bash scripts/test_tahoe_sae_product_foundation_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_openwrt_mbedtls_sae_intake_contract.sh`: PASS;
+  - `bash scripts/test_payload_builders.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - pinned isolated Tahoe build-only gate: source identity
+    `dirty4ae09425f2e9`; the kext, trace producer, Agent, and RegDiag built,
+    and all 959 undefined symbols resolved against BootKC.  No kext was
+    installed, loaded, published, or released.
+- verification boundary: this is an inactive relay-model ordering fence only.
+  It is not a WPA3/SAE association, PWE/PMK calculation, Algorithm-3 RX/TX,
+  IGTK observation, AP action, guest reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched. No live configuration was read,
+  changed, or bypassed.

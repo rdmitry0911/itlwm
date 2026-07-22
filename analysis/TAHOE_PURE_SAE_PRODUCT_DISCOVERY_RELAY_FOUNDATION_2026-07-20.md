@@ -67,6 +67,13 @@ records and no password, PWE, KCK, raw RSNXE, or generic frame-injection field.
 future verified-Confirm handoff, but this declaration creates no live PMK
 ingress or selector.
 
+Within the inactive relay model, a validated peer Commit or Confirm is not
+available to an Agent merely because its bound event sequence exists. The
+model must first copy that event through `TakeEvent()`; pending peer input
+blocks the subsequent Agent reply or completion. This is a delivery-order
+fence only and does not enable a selector, cryptographic handoff, or SAE
+association.
+
 This header does **not** change the live PLTI table. Existing selectors 0
 (`DeliverPMK`) and 1 (`WaitAssociationTarget`) remain the v1 PSK carrier;
 selectors 2–6 are declarations only until an Algorithm-3 state machine can

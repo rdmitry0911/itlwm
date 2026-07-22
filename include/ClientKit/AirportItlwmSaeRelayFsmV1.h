@@ -251,6 +251,10 @@ AirportItlwmSaeRelayFsmV1AcceptReply(
         return kAirportItlwmSaeRelayFsmBadArgument;
     if (!AirportItlwmSaeRelayFsmV1TargetBound(state))
         return kAirportItlwmSaeRelayFsmNotReady;
+    if ((state->phase == kAirportItlwmSaeRelayFsmAwaitAgentCommitRetry ||
+         state->phase == kAirportItlwmSaeRelayFsmAwaitAgentConfirm) &&
+        state->event_pending != 0)
+        return kAirportItlwmSaeRelayFsmNotReady;
     if (reply->version != kAirportItlwmSaeRelayV1Version ||
         reply->size != sizeof(*reply) ||
         reply->body_len == 0 ||
@@ -396,7 +400,8 @@ AirportItlwmSaeRelayFsmV1AcceptCompletion(
     if (state == NULL || completion == NULL)
         return kAirportItlwmSaeRelayFsmBadArgument;
     if (state->phase != kAirportItlwmSaeRelayFsmAwaitAgentComplete ||
-        !AirportItlwmSaeRelayFsmV1TargetBound(state))
+        !AirportItlwmSaeRelayFsmV1TargetBound(state) ||
+        state->event_pending != 0)
         return kAirportItlwmSaeRelayFsmNotReady;
     if (completion->version != kAirportItlwmSaeRelayV1Version ||
         completion->size != sizeof(*completion) ||

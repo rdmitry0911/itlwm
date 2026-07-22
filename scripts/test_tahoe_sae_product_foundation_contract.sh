@@ -84,6 +84,8 @@ import sys
 
 root = Path(sys.argv[1])
 relay = (root / "include/ClientKit/AirportItlwmSaeRelayV1.h").read_text()
+relay_fsm = (root / "include/ClientKit/AirportItlwmSaeRelayFsmV1.h").read_text()
+relay_fsm_test = (root / "tests/tahoe_sae_relay_fsm_v1_test.c").read_text()
 policy = (root / "itl80211/openbsd/net80211/ieee80211_sae_policy.h").read_text()
 auth_contract = (root / "itl80211/openbsd/net80211/ieee80211_sae_auth_contract.h").read_text()
 auth_test = (root / "tests/net80211_sae_auth_contract_test.c").read_text()
@@ -134,6 +136,24 @@ def struct_body(text, name):
     return text[start:end]
 
 
+def function_body(text, marker):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing relay FSM function: {marker}")
+    opening = text.find("{", start)
+    if opening < 0:
+        fail(f"missing relay FSM function body: {marker}")
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1:index]
+    fail(f"unterminated relay FSM function: {marker}")
+
+
 # Product relay ABI is naturally aligned, append-only, and binds every reply
 # to a particular controller, UserClient, BSS, and attempt. It remains a
 # declaration-only contract until the kext state machine owns it.
@@ -165,6 +185,33 @@ for record in ("AirportItlwmSaeAuthEventV1", "AirportItlwmSaeAuthReplyV1",
                "AirportItlwmSaeCompletionV1", "AirportItlwmSaeAbortV1"):
     require(struct_body(relay, record), "uint64_t event_sequence;",
             f"{record} event ordering")
+
+# A post-peer event is an Agent input only after TakeEvent() copies it. The
+# sequence is an identity binding, not a substitute for that delivery fence;
+# the initial sequence-zero Commit remains outside these post-peer phases.
+relay_reply = function_body(relay_fsm, "AirportItlwmSaeRelayFsmV1AcceptReply(")
+ordered(relay_reply, "relay post-peer reply delivery fence",
+        "AirportItlwmSaeRelayFsmV1TargetBound(state)",
+        "kAirportItlwmSaeRelayFsmAwaitAgentCommitRetry",
+        "kAirportItlwmSaeRelayFsmAwaitAgentConfirm",
+        "state->event_pending != 0",
+        "reply->version")
+relay_completion = function_body(relay_fsm,
+                                 "AirportItlwmSaeRelayFsmV1AcceptCompletion(")
+ordered(relay_completion, "relay completion delivery fence",
+        "kAirportItlwmSaeRelayFsmAwaitAgentComplete",
+        "AirportItlwmSaeRelayFsmV1TargetBound(state)",
+        "state->event_pending != 0",
+        "completion->version")
+for token in (
+        "test_peer_event_delivery_fence",
+        "kAirportItlwmSaeRelayFsmAwaitAgentConfirm",
+        "kAirportItlwmSaeRelayFsmAwaitAgentComplete",
+        "kAirportItlwmSaeRelayFsmAwaitAgentCommitRetry",
+        "kAirportItlwmSaeRelayFsmNotReady",
+        "AirportItlwmSaeRelayFsmV1TakeEvent",
+):
+    require(relay_fsm_test, token, "relay peer-event delivery fixture")
 require(relay, "kAirportItlwmSaeRelayRsnxeH2e = 1u << 0",
         "canonical product RSNXE H2E fact")
 require(v2_hpp, "#include <ClientKit/AirportItlwmSaeRelayV1.h>",

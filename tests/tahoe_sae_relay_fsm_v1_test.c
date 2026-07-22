@@ -202,6 +202,83 @@ test_anti_clogging_retry(void)
 }
 
 static void
+test_peer_event_delivery_fence(void)
+{
+    struct AirportItlwmSaeRelayFsmV1 state;
+    struct AirportItlwmSaeTargetV1 target;
+    struct AirportItlwmSaeAuthReplyV1 reply;
+    struct AirportItlwmSaeAuthEventV1 event;
+    struct AirportItlwmSaeCompletionV1 completion;
+    uint8_t peer_commit[kAirportItlwmSaeRelayV1HnpCommitMinLength];
+    uint8_t peer_confirm[kAirportItlwmSaeRelayV1HnpConfirmLength];
+    const uint8_t token[] = { 19, 0, 7 };
+
+    fill_target(&target);
+    fill_peer_commit(peer_commit);
+    fill_peer_confirm(peer_confirm);
+    assert(AirportItlwmSaeRelayFsmV1Begin(&state, &target) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    bind(&state);
+    fill_reply(&state, &reply, kAirportItlwmSaeRelayReplyCommit, 0);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+
+    assert(AirportItlwmSaeRelayFsmV1EmitPeerEvent(&state,
+        kAirportItlwmSaeRelayTransactionCommit,
+        kAirportItlwmSaeRelayStatusSuccess, peer_commit,
+        sizeof(peer_commit)) == kAirportItlwmSaeRelayFsmAccepted);
+    fill_reply(&state, &reply, kAirportItlwmSaeRelayReplyConfirm,
+        state.event.event_sequence);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmNotReady);
+    assert(state.phase == kAirportItlwmSaeRelayFsmAwaitAgentConfirm);
+    assert(state.event_pending == 1);
+    assert(AirportItlwmSaeRelayFsmV1TakeEvent(&state,
+        state.target.client_cookie, 0, &event) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+
+    assert(AirportItlwmSaeRelayFsmV1EmitPeerEvent(&state,
+        kAirportItlwmSaeRelayTransactionConfirm,
+        kAirportItlwmSaeRelayStatusSuccess, peer_confirm,
+        sizeof(peer_confirm)) == kAirportItlwmSaeRelayFsmAccepted);
+    fill_completion(&state, &completion);
+    assert(AirportItlwmSaeRelayFsmV1AcceptCompletion(&state, &completion) ==
+        kAirportItlwmSaeRelayFsmNotReady);
+    assert(state.phase == kAirportItlwmSaeRelayFsmAwaitAgentComplete);
+    assert(state.event_pending == 1);
+    assert(AirportItlwmSaeRelayFsmV1TakeEvent(&state,
+        state.target.client_cookie, event.event_sequence, &event) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    assert(AirportItlwmSaeRelayFsmV1AcceptCompletion(&state, &completion) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+
+    fill_target(&target);
+    assert(AirportItlwmSaeRelayFsmV1Begin(&state, &target) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    bind(&state);
+    fill_reply(&state, &reply, kAirportItlwmSaeRelayReplyCommit, 0);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    assert(AirportItlwmSaeRelayFsmV1EmitPeerEvent(&state,
+        kAirportItlwmSaeRelayTransactionCommit,
+        kAirportItlwmSaeRelayStatusAntiCloggingTokenRequired, token,
+        sizeof(token)) == kAirportItlwmSaeRelayFsmAccepted);
+    fill_reply(&state, &reply, kAirportItlwmSaeRelayReplyCommit,
+        state.event.event_sequence);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmNotReady);
+    assert(state.phase == kAirportItlwmSaeRelayFsmAwaitAgentCommitRetry);
+    assert(state.event_pending == 1);
+    assert(AirportItlwmSaeRelayFsmV1TakeEvent(&state,
+        state.target.client_cookie, 0, &event) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+    assert(AirportItlwmSaeRelayFsmV1AcceptReply(&state, &reply) ==
+        kAirportItlwmSaeRelayFsmAccepted);
+}
+
+static void
 test_fail_closed(void)
 {
     struct AirportItlwmSaeRelayFsmV1 state;
@@ -343,6 +420,7 @@ main(void)
 {
     test_happy_path();
     test_anti_clogging_retry();
+    test_peer_event_delivery_fence();
     test_fail_closed();
     test_wire_shape_rejections();
     return 0;
