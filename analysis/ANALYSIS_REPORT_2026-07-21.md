@@ -2442,6 +2442,115 @@ and release recovery ownership despite a late network-baseline change.
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-REKEY-POSTFINALREQUIRED-NETWORK-ATTESTATION-20260722`
+
+### Observation
+
+The one-shot raw rekey path samples its host-network baseline after the
+acknowledged command, then checks staged configuration, exact required PID/AP,
+and the independent watchdog before it writes `rekey.status`.  The final
+required PID/AP observation is later than that network sample.  A baseline
+change while it runs has no subsequent comparison, so the current
+`do_rekey()` can emit a categorical rekey success witness from stale
+host-network evidence.
+
+- scope: repository-owned bounded rekey helper and generated fixture only; no
+  kext, firmware, Apple80211, candidate, guest, physical AP, live profile, or
+  credential behavior claim.
+- expected system behavior: before `rekey.status` or
+  `PMF_AP_REKEY=REQUESTED`, the original hash-only host-network signature must
+  remain current after the final required PID/AP observation.  Late drift is
+  inconclusive; the already-consumed one-shot request remains recorded and
+  marker/watchdog ownership remains for explicit rollback.
+- actual behavior: final ordering is post-command network -> staged pair ->
+  exact required PID/AP -> watchdog -> success receipt, without a network
+  fence after the final process/AP observation.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey()` between its final
+  `runtime_ap_is_pinned` and `watchdog_owner_is_current`/`rekey.status`.
+- source-local proof mechanism: generated fake `iw` preserves its pinned
+  AP-shape output while changing only the fixture's private fake-network state
+  at rekey's third AP-shape read, which is the final required PID/AP
+  attestation.  The current source accepts the fake-only drift and writes the
+  success witness.  No real AP, route, profile, identity, credential, or
+  network action is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-POSTFINALREQUIRED-NETWORK-ATTESTATION-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh generated required transaction whose fake `iw` changes only
+     private fake-network state during the final rekey PID/AP attestation;
+     before a fix it must prove false success-witness publication;
+  2. repeat the hash-only `host_network_signature` equality after that final
+     process/AP observation and before the watchdog/success-receipt edge;
+  3. withhold `rekey.status` and categorical output on drift while retaining
+     the one-shot request receipt and marker/watchdog for explicit rollback;
+  4. add static ordering and runtime-protocol coverage for this rekey success
+     network fence.
+- safety and side effects: the helper correction adds only a read-only
+  signature sample.  The drift is confined to an ephemeral generated fixture;
+  it introduces no live route/address/NAT/forwarding mutation, retry, AP
+  restart, kext action, guest action, raw live rekey, or live AP operation.
+- forbidden alternatives considered and rejected:
+  - treat the pre-final PID/AP network sample as permanently current;
+  - emit a rekey success witness after late baseline drift;
+  - issue a compensating second raw rekey, restart an AP, or rewrite networking;
+  - erase the one-shot request receipt to permit a retry.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that rekey accepted network
+    drift after final required attestation;
+  - post-fix, it must preserve required state/marker/watchdog and the one-shot
+    request receipt, write no success witness, and allow only explicit rollback
+    after fake baseline restoration;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-REKEY-POSTFINALREQUIRED-NETWORK-ATTESTATION-20260722`
+
+- implementation:
+  - `do_rekey()` now re-samples and compares the original hash-only
+    host-network signature after its final exact required PID/AP attestation
+    and before the watchdog/success-receipt edge;
+  - a late network change makes the already-issued one-shot rekey inconclusive:
+    it retains the request receipt, required state, marker, and watchdog while
+    withholding `rekey.status` and `PMF_AP_REKEY=REQUESTED`.  The helper adds
+    no retry, AP restart, route/address/NAT/forwarding mutation, kext action,
+    guest action, raw live rekey, or live AP operation;
+  - static ordering and the runtime protocol bind the final rekey network
+    fence to the categorical success edge.
+- deterministic fixture evidence:
+  - before implementation, a generated required transaction with fake network
+    drift injected only at the third rekey AP-shape read stopped at `group rekey
+    accepted network drift after final required attestation`; the old source
+    sent exactly one generated raw request and falsely wrote success;
+  - after implementation, the same fake-only drift emits `host network
+    invariants changed before rekey success publication`, retains a live
+    generated required process, marker/watchdog, and `rekey.requested`, and
+    leaves `rekey.status` absent;
+  - restoring only generated fake network output permits explicit rollback to
+    emit `PMF_AP_ROLLBACK=OPTIONAL_RESTORED` and release both owner receipts.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirtyd7d545654d52`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rekey success network
+  freshness fence.  It is not a live hostapd result, WPA3/SAE association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

@@ -407,6 +407,8 @@ if "FINAL_REKEY_WATCHDOG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_ta
     fail("AP fixture lacks the final bounded-rekey watchdog discriminator")
 if "FINAL_REKEY_CONFIG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the final bounded-rekey configuration discriminator")
+if "FINAL_REKEY_POSTFINALREQUIRED_NETWORK_IW_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-final-required bounded-rekey network discriminator")
 if "ROLLBACK_FINAL_CONFIG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the final rollback configuration discriminator")
 if "FAKE_MUTATE_NETWORK_ON_IW_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -544,6 +546,8 @@ ordered(rekey_helper, "AP rekey host-network fence",
         'staged PMF configuration pair changed before rekey success publication',
         'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
         "runtime_ap_is_pinned",
+        'host_network_signature)',
+        'host network invariants changed before rekey success publication',
         "watchdog_owner_is_current",
         'rollback watchdog is not exact before rekey success publication',
         'rekey_requested=true')
