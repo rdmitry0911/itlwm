@@ -310,6 +310,19 @@ for token in ("PINNED_PROFILE_SSID", "PINNED_LAB_GATEWAY",
     if token in attestation:
         fail(f"sanitized attestation serializes runtime identity: {token}")
 
+config_signature = helper[helper.find("config_pair_signature() {"):
+                          helper.find("runtime_ap_is_pinned() {")]
+network_signature = helper[helper.find("host_network_signature() {"):
+                           helper.find("pid_from_file() {")]
+if re.search(r'sha256sum <"\$OPTIONAL_CONFIG"\s*&&\s*'
+             r'sha256sum <"\$REQUIRED_CONFIG"', config_signature) is None:
+    fail("configuration signature does not fail closed on a component read")
+if re.search(r'sudo_cmd "\$IP_TOOL" -4 route show default\s*&&\s*'
+             r'sudo_cmd "\$IP_TOOL" -4 -o addr show dev "\$AP_IF"\s*&&\s*'
+             r'sudo_cmd "\$SYSCTL_TOOL" -n net\.ipv4\.ip_forward',
+             network_signature) is None:
+    fail("host-network signature does not fail closed on a component read")
+
 activate = helper[helper.find("do_activate() {"):helper.find("do_rekey() {")]
 ordered(activate, "AP configuration admission",
         'config_signature="$(config_pair_signature)"',
@@ -373,6 +386,14 @@ if "AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY" not in Path(sys.argv[2]).with_n
     fail("AP fixture lacks the pre-ack watchdog failure discriminator")
 if "FAKE_DRIFT_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-stop host-network drift discriminator")
+if "FAKE_FAIL_ROUTE_ON_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the unreadable default-route discriminator")
+if "FAKE_FAIL_ADDRESS_READ" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the unreadable AP-address discriminator")
+if "PREFLIGHT_UNREADABLE_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the unreadable-network preflight discriminator")
+if "preflight-unreadable-address" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the unreadable AP-address preflight case")
 if "FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-transition watchdog death discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):

@@ -174,13 +174,16 @@ printf '%s\n' \
     '      case "$calls" in ""|*[!0-9]*) exit 65;; esac' \
     '      calls=$((calls + 1))' \
     '      printf "%s\n" "$calls" >"$FAKE_ROUTE_CALL_COUNT"' \
+    '      if [ "${FAKE_FAIL_ROUTE_ON_CALL:-}" = "$calls" ]; then exit 66; fi' \
     '      if [ "${FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "${FAKE_WATCHDOG_PID_FILE:-}" ]; then pid="$(tr -d "[:space:]" <"$FAKE_WATCHDOG_PID_FILE")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_WATCHDOG_PID_FILE"; fi' \
     '      if [ "${FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "$FAKE_REQUIRED_PID" ]; then pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_REQUIRED_PID"; fi' \
     '      if [ "${FAKE_TERMINATE_OPTIONAL_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "$FAKE_OPTIONAL_PID" ]; then pid="$(tr -d "[:space:]" <"$FAKE_OPTIONAL_PID")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_OPTIONAL_PID"; fi' \
     '      if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
     '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ] || [ "${FAKE_DRIFT_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
-    '  "-4 -o addr show dev wlp0s20f3") printf "fixture-address\n" ;;' \
+    '  "-4 -o addr show dev wlp0s20f3")' \
+    '      [ "${FAKE_FAIL_ADDRESS_READ:-0}" != 1 ] || exit 66' \
+    '      printf "fixture-address\n" ;;' \
     '  *) exit 64 ;;' \
     'esac' \
     >"$FAKE_IP"
@@ -225,6 +228,44 @@ printf '0\n' >"$FAKE_IW_CALL_COUNT"
 "$FAKE_HOSTAPD" -B -P "$RUN_DIR/hostapd-5g.pid" \
     -f "$RUN_DIR/hostapd-5g.log" "$OPTIONAL"
 sleep 1
+
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid before unreadable preflight';; esac
+PREFLIGHT_UNREADABLE_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 1))
+OPTIONAL_PID_BEFORE="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+if FAKE_FAIL_ROUTE_ON_CALL="$PREFLIGHT_UNREADABLE_ROUTE_CALL" \
+        "$HELPER" --preflight >"$TMP_ROOT/preflight-unreadable-route.out" \
+        2>"$TMP_ROOT/preflight-unreadable-route.err"; then
+    fail 'preflight accepted an unreadable default-route invariant'
+fi
+grep -Fq 'PMF_AP_SWITCHOVER_FAIL:host network invariants are unreadable' \
+    "$TMP_ROOT/preflight-unreadable-route.err" ||
+    fail 'unreadable default-route preflight retained no categorical diagnostic'
+! grep -Fxq 'PMF_AP_PREFLIGHT=PASS' "$TMP_ROOT/preflight-unreadable-route.out" ||
+    fail 'unreadable default-route preflight published categorical success'
+/bin/kill -0 "$OPTIONAL_PID_BEFORE" >/dev/null 2>&1 ||
+    fail 'unreadable default-route preflight disturbed optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'unreadable default-route preflight started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'unreadable default-route preflight created an active marker'
+
+if FAKE_FAIL_ADDRESS_READ=1 "$HELPER" --preflight \
+        >"$TMP_ROOT/preflight-unreadable-address.out" \
+        2>"$TMP_ROOT/preflight-unreadable-address.err"; then
+    fail 'preflight accepted an unreadable AP-address invariant'
+fi
+grep -Fq 'PMF_AP_SWITCHOVER_FAIL:host network invariants are unreadable' \
+    "$TMP_ROOT/preflight-unreadable-address.err" ||
+    fail 'unreadable AP-address preflight retained no categorical diagnostic'
+! grep -Fxq 'PMF_AP_PREFLIGHT=PASS' "$TMP_ROOT/preflight-unreadable-address.out" ||
+    fail 'unreadable AP-address preflight published categorical success'
+/bin/kill -0 "$OPTIONAL_PID_BEFORE" >/dev/null 2>&1 ||
+    fail 'unreadable AP-address preflight disturbed optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'unreadable AP-address preflight started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'unreadable AP-address preflight created an active marker'
 
 "$HELPER" --preflight >"$TMP_ROOT/preflight.out" 2>"$TMP_ROOT/preflight.err" ||
     fail 'synthetic optional-PMF preflight failed'

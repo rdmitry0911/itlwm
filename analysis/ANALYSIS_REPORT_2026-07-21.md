@@ -333,6 +333,105 @@
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-SIGNATURE-READ-FAIL-CLOSED-20260722`
+
+### Observation
+
+The helper's hash-only network and configuration signatures can mask producer
+read failures.  Each currently has a multi-command brace group feeding
+`sha256sum | awk`; Bash assigns the brace group the status of its last command.
+Because the helper invokes the signature through command substitution guarded
+by `||` or `if !`, `errexit` does not rescue a failed earlier command.  Thus a
+failed default-route or AP-address read followed by a successful forwarding
+read produces a stable hash of incomplete input and lets `--preflight` print
+`PMF_AP_PREFLIGHT=PASS`.  The same structural flaw exists for the optional and
+required configuration digests.
+
+- scope: helper shell code and its generated local fake-command fixture only;
+  no real route/address/configuration read, AP process, hostapd control call,
+  profile, credential, radio, guest, or network mutation is used.
+- source-local proof: under `set -o pipefail`, a brace group whose first
+  producer fails and whose final producer succeeds returns a 64-character
+  downstream hash with status zero.  A generated fake `ip` can fail only its
+  private route or address branch, while all later fake state remains stable;
+  the current helper then falsely reports preflight success.
+- expected behavior: each signature must be absent on any component read
+  failure.  Preflight must fail before state allocation, watchdog setup,
+  marker creation, optional stop, required start, or any AP transition.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-SIGNATURE-READ-FAIL-CLOSED-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. make every signature producer fail closed by joining its component reads
+     with `&&` inside the existing hash-only brace group;
+  2. add fake-only route-call and address-read failure switches, then assert
+     that two separate preflight invocations emit the categorical unreadable
+     network-invariants diagnostic, emit no PASS, preserve the optional fake
+     process, and create neither required PID nor active marker;
+  3. add scoped static checks that both the network and configuration
+     signatures retain the `&&` failure propagation, rather than relying on
+     formatting or global token matches;
+  4. keep route/address/configuration bytes inside the hash pipeline and
+     preserve the existing no-network-mutation helper capability boundary.
+- safety and alternatives:
+  - do not hash partial command output, synthesize a replacement baseline,
+    retry an AP transition, or continue after a failed signature read;
+  - do not expose the raw values or change host routing, addresses,
+    forwarding, AP configuration, hostapd, kext, guest, or radio state;
+  - `&&` is required even with `set -euo pipefail`: command substitution used
+    in conditional contexts suppresses `errexit`, whereas a failed brace group
+    is reliably propagated by `pipefail`.
+- verification plan:
+  - capture the deterministic pre-fix fixture false PASS for both route and
+    address reads;
+  - verify post-fix categorical refusal and absence of all AP-transition
+    artifacts, then run the helper fixture, IWX runtime static contract, trace
+    contracts, SAE static contracts, and the pinned isolated Tahoe build-only
+    gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-SIGNATURE-READ-FAIL-CLOSED-20260722`
+
+- implementation:
+  - joined the two configuration digest reads and the route/address/forwarding
+    reads with `&&` inside their existing hash-only producer groups.  With the
+    script's `pipefail`, a failed component now makes the signature command
+    fail even if downstream hashing consumed partial bytes;
+  - added generated fake-only switches for a default-route read failure at an
+    exact private call number and for an AP-address read failure;
+  - each new preflight case requires the categorical unreadable-network
+    diagnostic, forbids `PMF_AP_PREFLIGHT=PASS`, retains the original optional
+    fake process, and proves that no required PID or active marker exists;
+  - added scoped static regex checks for both `&&` signature chains and
+    documented that partial reads can never establish a baseline.
+- deterministic fixture evidence:
+  - before the helper correction, the route failure fixture exited through
+    `preflight accepted an unreadable default-route invariant`: the later
+    successful fake forwarding read caused an incomplete hash to be accepted
+    and `--preflight` emitted PASS;
+  - after the correction, both independent route and address read failures
+    are categorically refused before any AP-transition artifact is created;
+    the complete generated helper rollback fixture passes;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` passes in full,
+    including the fixture and scoped static checks.  The prior trace C/C++ and
+    post-PLTI contracts continue to pass.
+- isolated Tahoe build-only verification:
+  - the pinned guest provenance and BootKC digest were checked before a fresh
+    temporary build directory was allocated;
+  - source identity `dirty9981134c385d` built the Tahoe kext, trace producer,
+    Agent, and RegDiag; all 959 undefined symbols resolved against BootKC;
+  - no kext was installed, loaded, published, or released, and no AP, saved
+    profile, guest runtime, radio, association, traffic, or rekey operation
+    occurred.
+- verification boundary: this closes only a helper admission/evidence
+  false-PASS on unreadable inputs.  It is not a live hostapd result,
+  WPA3/SAE association, PMF-required association, IGTK observation, candidate
+  activation, guest reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY
 
 - id: `LAB-IWX-PMF-BIP-EXACT-REKEY-CARDINALITY-20260721`
@@ -500,6 +599,80 @@
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
+
+## ANOMALY: `LAB-IWX-PMF-BIP-INITIAL-M1-MSG3-MULTI-RX-PREFIX-20260722`
+
+### Observation
+
+The active IWX PMF/BIP prefix gate has a deterministic false-negative for a
+normal initial MFP four-way exchange.  The IWX security worker records the
+categorical `IwxMfpPaeRxDelivered` event before it parses every MFP EAPOL-Key.
+That includes the incoming four-way Msg1 and the later Msg3.  Msg1 produces no
+MFP transaction; Msg3 then produces the sequential PTK, GTK, and IGTK Q0
+submissions.  The sealed evaluator already admits an RX while it is waiting
+for a Q0 doorbell, but the active-prefix evaluator admits RX only in its
+initial phase.  Consequently the normal local event sequence
+`WCL, neutral, RX(M1), RX(M3), Q0 D/C x3, IGTK publish/select, port-valid`
+is classified as `INITIAL_PMF_BIP_INCONCLUSIVE` at `q0-doorbell`, even though
+the same sealed sequence is categorically observed.
+
+- scope: repository-owned categorical trace evaluator and generated C/C++
+  fixtures only.  No live AP, hostapd, saved profile, credential, kext
+  activation, guest, firmware, radio, packet, or rekey action is involved.
+- source evidence:
+  - `itlwm/hal_iwx/ItlIwx.cpp::iwx_security_rx_task()` records the RX event
+    immediately before `ieee80211_eapol_key_input()`;
+  - `itl80211/openbsd/net80211/ieee80211_pae_input.c` dispatches Msg1 without
+    an MFP transaction and dispatches Msg3 into the asynchronous MFP
+    transaction;
+  - the sealed evaluator in
+    `AirportItlwmIwxPmfBipTraceContracts.h` allows RX from
+    `need_pmf_rx`, `need_q0_doorbell`, and `need_igtk_publication`, while
+    `classify_initial_prefix_with_stage()` allows only `need_pmf_rx`.
+- expected behavior: the active gate must admit the producer's normal
+  categorical Msg1/Msg3 prefix, while still requiring each Q0 doorbell to be
+  followed by its completion and still requiring IGTK publication, matching
+  selection, and port-valid before it authorizes the single bounded rekey.
+- deterministic proof mechanism: add a local C/C++ fixture for two early RX
+  markers followed by the three sequential Q0 pairs.  Before the evaluator
+  correction it must fail active-prefix authorization at `q0-doorbell`; the
+  sealed evaluator already accepts it.  A negative fixture must keep an RX
+  occurring while a Q0 completion is outstanding inconclusive.  No hardware
+  input is required.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-IWX-PMF-BIP-INITIAL-M1-MSG3-MULTI-RX-PREFIX-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add deterministic C and C++ fixtures for the real producer's
+     `RX(M1), RX(M3), Q0 D/C x3` initial prefix, plus a negative RX-before-Q0-
+     completion sequence;
+  2. make the active-prefix RX transition match the sealed evaluator exactly:
+     allow it only from `need_pmf_rx`, `need_q0_doorbell`, or
+     `need_igtk_publication`, then require a fresh Q0 doorbell;
+  3. retain rejection of RX while a Q0 completion is outstanding and after
+     active-slot/port-valid progression; do not treat RX alone as PMF/BIP
+     evidence or bypass publication/selection/port-valid requirements;
+  4. bind the local invariant in the static trace contract and update the
+     protocol wording so it describes the two early producer deliveries rather
+     than incorrectly calling every extra RX inconclusive.
+- safety and alternatives:
+  - do not weaken the trace to accept arbitrary events, incomplete Q0 pairs,
+    a second cross-slot rekey, or a raw rekey without the active-prefix proof;
+  - relocating the producer marker into the net80211 MFP transaction would be
+    semantically narrower but is a larger cross-subsystem production change.
+    Matching the already-shipped sealed evaluator is the minimal deterministic
+    correction and retains its existing categorical constraints;
+  - no association, control request, packet injection, AP mutation, live
+    network change, guest action, or kext operation is introduced.
+- verification plan:
+  - capture the pre-fix active-prefix fixture failure and sealed acceptance;
+  - run the C/C++ payload fixture, post-PLTI static contract, IWX runtime and
+    evidence contracts, SAE quarantine contract, and the pinned isolated
+    Tahoe build-only gate;
+  - verify that all results remain build/static evidence only and that the
+    unchanged saved-profile identity preflight remains external.
 
 ## ANOMALY: `LAB-PMF-AP-POSTSTART-NETWORK-ATTESTATION-20260721`
 
@@ -4288,3 +4461,50 @@ is not and must not become a proxy for PID/configuration ownership.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-IWX-PMF-BIP-INITIAL-M1-MSG3-MULTI-RX-PREFIX-20260722`
+
+- implementation:
+  - synchronized the active-prefix RX admission with the pre-existing sealed
+    evaluator: it accepts the categorical RX marker only from
+    `need_pmf_rx`, `need_q0_doorbell`, and `need_igtk_publication`, then
+    returns to `need_q0_doorbell`;
+  - therefore the unparsed IWX producer's normal Msg1 then Msg3 delivery pair
+    is admissible before its sequential PTK/GTK/IGTK Q0 chain;
+  - RX during `wait_q0_completion`, after active-slot selection, and after
+    port-valid remains integrity-inconclusive.  The change does not make a
+    received frame, an incomplete Q0 sequence, or an unsealed trace into a
+    rekey or PMF/BIP success;
+  - added C and C++ positive fixtures for the two-RX initial chain and a
+    negative RX-while-completion-pending fixture; the static contract and
+    runtime protocol now preserve that categorical distinction.
+- deterministic fixture evidence:
+  - before the DFA correction, the new payload-builder fixture failed exactly
+    at `MFP Msg1 then Msg3 remains an active rekey authorization`; the same
+    full sealed evaluator sequence was already accepted, proving the
+    active/sealed split rather than a synthetic association claim;
+  - after the correction, C and C++ active-prefix evaluation returns
+    `INITIAL_PMF_BIP_READY`, the sealed form returns
+    `INITIAL_PMF_BIP_OBSERVED`, and the RX while a Q0 completion is pending
+    remains `INTEGRITY_INCONCLUSIVE` at `q0-completion`;
+  - `bash scripts/test_payload_builders.sh` and
+    `bash scripts/test_tahoe_post_plti_trace_contract.sh` both pass.  The
+    in-memory IWX evidence contract also prints its categorical PASS.  The
+    aggregate helper fixture retains its known inherited-descriptor hang after
+    its PASS line in this execution environment, so it was not represented as
+    a completed aggregate exit.
+- isolated Tahoe build-only verification:
+  - the pinned guest provenance and BootKC digest were checked before a fresh
+    temporary build directory was allocated;
+  - source identity `dirtyb283d690c095` built the Tahoe kext, trace producer,
+    Agent, and RegDiag; all 959 undefined symbols resolved against BootKC;
+  - no kext was installed, loaded, published, or released, and no AP, saved
+    profile, guest runtime, radio, association, traffic, or rekey operation
+    occurred.
+- verification boundary: this closes a local categorical trace-gate
+  false-negative only.  It is not a live WPA3/SAE association, IGTK
+  observation, PMF rekey proof, candidate activation, guest reboot, or
+  driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.

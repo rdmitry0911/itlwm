@@ -2321,6 +2321,42 @@ void testTahoeIwxPmfBipTraceContracts()
                 Verdict::InitialPmfBipObserved && stage == MissingStage::None,
             "the three-stage initial PMF Msg3 remains a sealed initial verdict");
 
+    const uint32_t initial_m1_msg3_slot4[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    AirportItlwmPostPltiTraceEntry active_initial_m1_msg3[32] = {};
+    for (uint32_t i = 0; i < 13; i++)
+        active_initial_m1_msg3[i] = { 1010 + i, kGeneration, kEpisode,
+                                      initial_m1_msg3_slot4[i] };
+    const InitialProgress initial_m1_msg3_progress = classifyInitialPrefix(
+        active_initial_m1_msg3, 13, true,
+        kAirportItlwmPostPltiTraceBackendIwx, 1, kEpisode, &stage);
+    const auto c_initial_m1_msg3_progress = static_cast<InitialProgress>(
+        airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix(
+            active_initial_m1_msg3, 13, 1,
+            kAirportItlwmPostPltiTraceBackendIwx, 1, kEpisode));
+    require(initial_m1_msg3_progress == InitialProgress::InitialPmfBipReady &&
+                c_initial_m1_msg3_progress == initial_m1_msg3_progress &&
+                stage == MissingStage::None,
+            "MFP Msg1 then Msg3 remains an active rekey authorization");
+    require(classify(initial_m1_msg3_slot4, 14,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::InitialPmfBipObserved && stage == MissingStage::None,
+            "MFP Msg1 then Msg3 remains a sealed initial PMF verdict");
+
     const uint32_t rekey_4_to_5[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
         kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
@@ -2398,6 +2434,27 @@ void testTahoeIwxPmfBipTraceContracts()
                 Verdict::Q0CompletionNotObserved &&
                 stage == MissingStage::Q0Completion,
             "a missing q0 completion remains distinguishable");
+
+    const uint32_t rx_while_q0_completion_pending[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+    };
+    AirportItlwmPostPltiTraceEntry active_rx_while_q0_completion_pending[32] = {};
+    for (uint32_t i = 0; i < 5; i++)
+        active_rx_while_q0_completion_pending[i] = {
+            1050 + i, kGeneration, kEpisode,
+            rx_while_q0_completion_pending[i]
+        };
+    const InitialProgress rx_while_q0_completion_pending_progress =
+        classifyInitialPrefix(active_rx_while_q0_completion_pending, 5, true,
+            kAirportItlwmPostPltiTraceBackendIwx, 1, kEpisode, &stage);
+    require(rx_while_q0_completion_pending_progress ==
+                InitialProgress::IntegrityInconclusive &&
+                stage == MissingStage::Q0Completion,
+            "an MFP RX while q0 completion is outstanding remains inconclusive");
 
     const uint32_t active_before_publication[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,

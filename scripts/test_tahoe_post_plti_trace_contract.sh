@@ -457,6 +457,12 @@ ordered(iwx_initial_prefix, "IWX initial MFP multi-q0 progression",
         "airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell &&",
         "airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication",
         "airport_itlwm_iwx_pmf_bip_trace_phase_wait_q0_completion")
+ordered(iwx_initial_prefix, "IWX initial M1/Msg3 pre-q0 progression",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_pmf_rx &&",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell &&",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell;")
 
 trace_publish = body(bip, "ieee80211_bip_trace_publish_locked",
                      "post-ack BIP trace publisher")
@@ -777,7 +783,9 @@ for needle in (
         "initial slot-4 PMF transaction", "slot-4 initial followed by slot-5",
         "slot-5 initial followed by slot-4", "missing q0 completion",
         "one PMF Msg3 with PTK/GTK/IGTK q0 stages",
+        "MFP Msg1 then Msg3 with PTK/GTK/IGTK q0 stages",
         "repeated q0 doorbell still requires the preceding completion",
+        "MFP RX while q0 completion is outstanding",
         "still-active IWX episode",
         "publication without a PMF owner sequence", "active-slot fact before publication",
         "repeated active-slot selection", "same-slot replacement",

@@ -235,7 +235,7 @@ config_pair_signature() {
     [ -f "$OPTIONAL_CONFIG" ] && [ ! -L "$OPTIONAL_CONFIG" ] || return 1
     [ -f "$REQUIRED_CONFIG" ] && [ ! -L "$REQUIRED_CONFIG" ] || return 1
     {
-        sha256sum <"$OPTIONAL_CONFIG"
+        sha256sum <"$OPTIONAL_CONFIG" &&
         sha256sum <"$REQUIRED_CONFIG"
     } | sha256sum | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $1; exit }'
 }
@@ -255,8 +255,8 @@ runtime_ap_is_pinned() {
 
 host_network_signature() {
     {
-        sudo_cmd "$IP_TOOL" -4 route show default
-        sudo_cmd "$IP_TOOL" -4 -o addr show dev "$AP_IF"
+        sudo_cmd "$IP_TOOL" -4 route show default &&
+        sudo_cmd "$IP_TOOL" -4 -o addr show dev "$AP_IF" &&
         sudo_cmd "$SYSCTL_TOOL" -n net.ipv4.ip_forward
     } | sha256sum | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $1; exit }'
 }

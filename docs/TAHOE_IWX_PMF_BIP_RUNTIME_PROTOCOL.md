@@ -40,6 +40,12 @@ receipt immediately before that transition; a changed, unreadable, exited, or
 replaced predicate retains optional PMF and makes the run inconclusive without
 starting required PMF.
 
+Each hash-only signature exists only if every one of its component reads
+succeeds. A failed route, address, forwarding, optional-configuration, or
+required-configuration read cannot be normalized into a partial baseline by a
+later successful reader; it is categorically unreadable and stops before any
+AP-transition owner is created.
+
 The state directory itself must be canonical, owned by the invoking user, and
 mode `0700`; the helper rejects a shared or writable-by-others namespace before
 it writes state, launches a watchdog, or changes an AP process.
@@ -128,12 +134,16 @@ after the initial selected IGTK slot. A second cross-slot transition in that
 same capture is ambiguous with respect to the one permitted request and is
 therefore inconclusive rather than a PMF/BIP success.
 
-An initial MFP Msg3 may submit PTK, GTK, and IGTK sequentially after one PMF
-receive.  The active prefix therefore accepts multiple Q0 doorbell/completion
-pairs before IGTK publication, but only when each later doorbell follows the
-previous completion; an extra PMF receive or an incomplete Q0 pair remains
-inconclusive.  This permits the normal initial PMF chain without broadening the
-single bounded-rekey authorization surface.
+The IWX worker categorically records each MFP EAPOL-Key delivery before
+net80211 parses it.  A normal initial four-way exchange therefore has an early
+Msg1 receive followed by a Msg3 receive; Msg3 may then submit PTK, GTK, and
+IGTK sequentially.  The active prefix accepts those early receives only while
+a new Q0 doorbell is permissible, and accepts multiple Q0
+doorbell/completion pairs only when each later doorbell follows the previous
+completion.  A receive while a Q0 completion is outstanding, an incomplete Q0
+pair, or a receive after initial active-slot/port-valid progression remains
+inconclusive.  This permits the normal initial PMF chain without broadening
+the single bounded-rekey authorization surface.
 
 The required configuration must represent the same saved-profile identity and
 credential as the optional configuration. A mismatch is a precondition failure.
