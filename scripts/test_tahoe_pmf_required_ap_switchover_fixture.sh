@@ -174,6 +174,7 @@ printf '%s\n' \
     '      calls=$((calls + 1))' \
     '      printf "%s\n" "$calls" >"$FAKE_ROUTE_CALL_COUNT"' \
     '      if [ "${FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "${FAKE_WATCHDOG_PID_FILE:-}" ]; then pid="$(tr -d "[:space:]" <"$FAKE_WATCHDOG_PID_FILE")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_WATCHDOG_PID_FILE"; fi' \
+    '      if [ "${FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "$FAKE_REQUIRED_PID" ]; then pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_REQUIRED_PID"; fi' \
     '      if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
     '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ] || [ "${FAKE_DRIFT_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
@@ -662,6 +663,33 @@ grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
 if /bin/kill -0 "$POSTSTART_NETWORK_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'successful required-start drift rollback left the watchdog live'
 fi
+
+# A pre-stop watchdog proof does not authorize required-active publication
+# after the AP process transition.  Fake ip kills only the generated watchdog
+# at activation's third route probe, after required startup and before the
+# helper writes its required state.
+POSTPROMOTION_WATCHDOG_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+POSTPROMOTION_WATCHDOG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 3))
+if FAKE_WATCHDOG_PID_FILE="$POSTPROMOTION_WATCHDOG_STATE_DIR/watchdog.pid" FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL="$POSTPROMOTION_WATCHDOG_ROUTE_CALL" "$HELPER" --activate --state-dir "$POSTPROMOTION_WATCHDOG_STATE_DIR" --lease-seconds 60 >"$TMP_ROOT/postpromotion-watchdog-activate.out" 2>"$TMP_ROOT/postpromotion-watchdog-activate.err"; then
+    fail 'activation accepted a watchdog that died during required-PMF startup'
+fi
+grep -Fq 'rollback watchdog is not exact before required-PMF state promotion; optional rollback verified' "$TMP_ROOT/postpromotion-watchdog-activate.err" ||
+    fail 'post-promotion watchdog death did not retain its categorical diagnostic'
+! grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' "$TMP_ROOT/postpromotion-watchdog-activate.out" ||
+    fail 'post-promotion watchdog death published required-active success'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-promotion watchdog death did not restore optional hostapd'
+POSTPROMOTION_WATCHDOG_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$POSTPROMOTION_WATCHDOG_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'post-promotion watchdog death restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'post-promotion watchdog death left required hostapd active'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-promotion watchdog death left a live switchover marker'
+[ ! -e "$POSTPROMOTION_WATCHDOG_STATE_DIR/watchdog.pid" ] ||
+    fail 'post-promotion watchdog death retained a stale watchdog receipt'
 
 # A staged required config can change after the pre-stop fence but while the
 # required daemon consumes it.  The changed file must not be promoted, and the

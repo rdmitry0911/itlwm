@@ -639,6 +639,129 @@ longer holds.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-WATCHDOG-PREPROMOTION-ATTESTATION-20260721`
+
+### Observation
+
+The helper now proves its independent marker-bound watchdog immediately before
+the first optional-PMF stop, but after the AP process transition it reattests
+only required hostapd, AP shape, host-network, and configuration inputs.  It
+can write `state=required` and publish `PMF_AP_SWITCHOVER=REQUIRED_ACTIVE`
+without re-reading `watchdog_owner_is_current()`.  A watchdog that exits while
+required hostapd starts leaves required PMF active with no autonomous
+restoration owner if the caller subsequently disappears.
+
+- scope: repository-owned PMF-required AP transition helper and its generated
+  local fixture only; no kext, firmware, Apple80211, candidate, guest, or
+  physical-AP behavior claim.
+- expected system behavior: `REQUIRED_ACTIVE` must be committed only while an
+  exact marker/state-bound independent watchdog still owns a bounded recovery
+  path.  A missing, dead, replaced, or mismatched receipt before promotion must
+  refuse required-active publication and use the existing post-transition
+  recovery.  If synchronous recovery restores optional PMF and all existing
+  postconditions hold, it may report verified optional rollback; otherwise it
+  must leave recovery ownership intact.
+- actual behavior: `do_activate()` invokes `watchdog_owner_is_current()` only
+  in its pre-stop admission chain.  Its successful post-start sequence reaches
+  `mark_required_active()` after process/AP, network, and configuration checks
+  without any final watchdog identity predicate.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_activate()` between the
+  post-start configuration check and `mark_required_active()`.
+- source-local proof mechanism: fake `ip` already counts route probes and can
+  kill/remove only a generated watchdog receipt at a selected route call.  On
+  a normal activation the first two probes are baseline/pre-stop; the third is
+  the post-start network reattestation.  Killing the watchdog at that third
+  probe leaves the fake network stable and lets the unmodified helper publish
+  required-active, proving the stale-owner promotion path without a real AP,
+  guest, route, or profile action.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-WATCHDOG-PREPROMOTION-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh-state fixture case that terminates only its generated watchdog
+     during the third activation route probe, after required startup begins;
+     before a fix it must stop because activation was accepted;
+  2. reattest `watchdog_owner_is_current()` after all required process/AP,
+     host-network, and staged-configuration promotion predicates and directly
+     before `mark_required_active()`;
+  3. on failure, take the established `finish_post_transition_rollback()`
+     path and use its existing verified-vs-armed diagnostic convention;
+  4. require that final ordering in the static runtime contract and document
+     the independent-owner predicate for required-active publication.
+- safety and side effects: this adds no process start/retry, configuration
+  write, network mutation, kext operation, guest action, or live AP action.
+  The only synthetic kill occurs in the generated local fixture and targets
+  its own temporary watchdog PID.
+- forbidden alternatives considered and rejected:
+  - treating a pre-stop owner proof as permanent ignores the interval when the
+    optional AP has already been stopped and recovery ownership matters most;
+  - publishing required state and trusting later runner cleanup cannot protect
+    against a caller exit before cleanup;
+  - adding a replacement watchdog after loss would introduce an unbounded
+    retry/recovery policy rather than refusing the invalid promotion.
+- deterministic verification plan:
+  - pre-fix, the isolated fixture must fail at its assertion that required
+    activation accepted a watchdog killed during required startup;
+  - post-fix, it must emit no `REQUIRED_ACTIVE`, restore a live generated
+    optional process, leave no generated required process/marker/watchdog
+    receipt, and report verified optional rollback under its unchanged fake
+    network signature;
+  - run local fixture, static contracts, trace/evidence tests, and the pinned
+    isolated Tahoe build-only gate.  Do not touch any live AP, candidate, or
+    guest.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-WATCHDOG-PREPROMOTION-ATTESTATION-20260721`
+
+- implementation:
+  - `do_activate()` now invokes the existing exact
+    `watchdog_owner_is_current()` predicate after its required process/AP,
+    host-network, and configuration promotion predicates and immediately
+    before `mark_required_active()`;
+  - a failed final owner proof uses `finish_post_transition_rollback()`.
+    It therefore restores optional PMF and releases state only under the
+    existing optional-process/AP/network recovery proof; no replacement
+    watchdog, retry, or live-network operation was added;
+  - the local fixture uses the existing generated route-call discriminator to
+    kill/remove only its temporary watchdog receipt at the third activation
+    route probe, after required hostapd has started; the static contract now
+    enforces this final owner predicate before state promotion, and the
+    runtime protocol makes it part of required-active semantics.
+- deterministic fixture evidence:
+  - before implementation, the isolated test stopped at
+    `activation accepted a watchdog that died during required-PMF startup`,
+    directly proving that the old source emitted required-active without its
+    independent restoration owner;
+  - after implementation, the same fake-only event reports
+    `rollback watchdog is not exact before required-PMF state promotion;
+    optional rollback verified`, emits no `REQUIRED_ACTIVE`, restores a live
+    generated optional process, quiesces the generated required process, and
+    leaves no marker or stale watchdog receipt;
+  - the static activation ordering requires process/AP -> host network ->
+    staged configuration -> exact watchdog owner -> `mark_required_active`,
+    and counts all seven post-transition failure paths that verify recovery.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty0483a17fa681`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rollback-owner liveness
+  fence.  It is not a live hostapd result, PMF-required association, IGTK
+  observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

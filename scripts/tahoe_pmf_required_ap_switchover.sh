@@ -679,6 +679,14 @@ do_activate() {
         fi
         die "required-PMF configuration changed before state promotion; rollback watchdog remains armed"
     fi
+    # The independent restoration owner must survive all post-start admission
+    # work and still be exact at the required-state publication edge.
+    if ! watchdog_owner_is_current; then
+        if finish_post_transition_rollback; then
+            die "rollback watchdog is not exact before required-PMF state promotion; optional rollback verified"
+        fi
+        die "rollback watchdog is not exact before required-PMF state promotion; rollback watchdog remains armed"
+    fi
     if ! mark_required_active; then
         if finish_post_transition_rollback; then
             die "required-PMF state promotion failed; optional rollback verified"
