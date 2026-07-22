@@ -813,6 +813,53 @@ if /bin/kill -0 "$ROLLBACK_POSTNETWORK_OPTIONAL_WATCHDOG_PID" >/dev/null 2>&1; t
     fail 'rollback post-network optional recovery left the watchdog live'
 fi
 
+# The completion-witness pathname is a rollback admission dependency, not a
+# late best-effort write after marker/watchdog release.  This directory exists
+# only in the fixture's own restricted state path.
+ROLLBACK_RECEIPT_TARGET_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$ROLLBACK_RECEIPT_TARGET_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rollback-receipt-target-activate.out" \
+    2>"$TMP_ROOT/rollback-receipt-target-activate.err" ||
+    fail 'rollback-receipt-target fixture could not activate required PMF'
+mkdir "$ROLLBACK_RECEIPT_TARGET_STATE_DIR/rollback.status"
+if "$HELPER" --rollback --state-dir "$ROLLBACK_RECEIPT_TARGET_STATE_DIR" \
+        >"$TMP_ROOT/rollback-receipt-target-blocked.out" \
+        2>"$TMP_ROOT/rollback-receipt-target-blocked.err"; then
+    fail 'rollback accepted a blocked completion receipt target'
+fi
+grep -Fq 'rollback completion receipt target is not fresh' \
+    "$TMP_ROOT/rollback-receipt-target-blocked.err" ||
+    fail 'rollback receipt obstruction released ownership before receipt publication'
+[ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'rollback receipt obstruction stopped required hostapd before admission'
+ROLLBACK_RECEIPT_TARGET_REQUIRED_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g-pmf-required.pid")"
+/bin/kill -0 "$ROLLBACK_RECEIPT_TARGET_REQUIRED_PID" >/dev/null 2>&1 ||
+    fail 'rollback receipt obstruction retained no live required hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rollback receipt obstruction restored optional hostapd before admission'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback receipt obstruction cleared the active marker'
+[ -r "$ROLLBACK_RECEIPT_TARGET_STATE_DIR/watchdog.pid" ] ||
+    fail 'rollback receipt obstruction did not retain its watchdog receipt'
+ROLLBACK_RECEIPT_TARGET_WATCHDOG_PID="$(tr -d '[:space:]' <"$ROLLBACK_RECEIPT_TARGET_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$ROLLBACK_RECEIPT_TARGET_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'rollback receipt obstruction did not retain a live watchdog'
+/usr/bin/rmdir "$ROLLBACK_RECEIPT_TARGET_STATE_DIR/rollback.status"
+"$HELPER" --rollback --state-dir "$ROLLBACK_RECEIPT_TARGET_STATE_DIR" \
+    >"$TMP_ROOT/rollback-receipt-target-recovery.out" \
+    2>"$TMP_ROOT/rollback-receipt-target-recovery.err" ||
+    fail 'rollback receipt target removal did not permit cleanup'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rollback-receipt-target-recovery.out" ||
+    fail 'rollback receipt target recovery did not report optional restoration'
+grep -Fxq 'rollback_verified=true' "$ROLLBACK_RECEIPT_TARGET_STATE_DIR/rollback.status" ||
+    fail 'rollback receipt target recovery did not commit its witness'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback receipt target recovery left the active marker'
+if /bin/kill -0 "$ROLLBACK_RECEIPT_TARGET_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'rollback receipt target recovery left the watchdog live'
+fi
+
 # `rollback_verified=true` is a transaction-completion receipt, not a record
 # that optional hostapd was merely restored.  Replace only this fixture's
 # private watchdog receipt with an unrelated generated process: cancellation

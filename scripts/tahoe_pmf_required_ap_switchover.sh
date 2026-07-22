@@ -357,6 +357,11 @@ rekey_request_is_fresh() {
         [ ! -L "$STATE_DIR/rekey.status" ]
 }
 
+rollback_receipt_is_fresh() {
+    local path="$STATE_DIR/rollback.status"
+    [ ! -e "$path" ] && [ ! -L "$path" ]
+}
+
 record_rekey_request() {
     local path="$STATE_DIR/rekey.requested"
     [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
@@ -774,6 +779,8 @@ do_rekey() {
 do_rollback() {
     local before_signature after_signature
     require_state_dir
+    rollback_receipt_is_fresh ||
+        die "rollback completion receipt target is not fresh"
     marker_matches_state || die "PMF-required state ownership is not current"
     case "$(state_value state)" in
         rollback-armed|required) ;;

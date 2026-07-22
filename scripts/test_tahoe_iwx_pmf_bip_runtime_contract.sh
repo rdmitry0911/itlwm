@@ -176,6 +176,8 @@ for needle in \
     'config_pair_signature' \
     'config_pair_signature_before' \
     'config_pair_matches_state' \
+    'rollback_receipt_is_fresh' \
+    'rollback completion receipt target is not fresh' \
     'PMF configurations changed before optional-PMF stop' \
     'required-PMF hostapd post-start attestation failed' \
     'required-PMF host-network invariants changed before state promotion' \
@@ -417,6 +419,8 @@ if "FAKE_TERMINATE_OPTIONAL_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("t
     fail("AP fixture lacks the post-network rollback optional-process discriminator")
 if "ROLLBACK_POSTNETWORK_OPTIONAL_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the final rollback optional-loss discriminator")
+if "ROLLBACK_RECEIPT_TARGET_STATE_DIR" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the rollback completion-receipt target discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
 if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -432,6 +436,7 @@ ordered(state_dir, "restricted AP state directory admission",
 
 rollback = helper[helper.find("do_rollback() {"):helper.find("do_watchdog() {")]
 ordered(rollback, "AP rollback sequence",
+        "rollback_receipt_is_fresh",
         'stop_configured_hostapd "$REQUIRED_CONFIG"',
         "config_pair_matches_state",
         'start_configured_hostapd "$OPTIONAL_CONFIG"',

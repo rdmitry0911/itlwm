@@ -58,6 +58,10 @@ invariant, then repeats the pair check at the ownership/receipt edge before it
 re-attests the exact optional PID/AP shape and releases marker/watchdog
 ownership or writes `rollback_verified=true`.  Thus a post-restart file,
 network, or optional-process change cannot be represented as verified recovery.
+Before it begins any rollback process mutation, the helper also requires its
+restricted `rollback.status` completion-witness path to be absent and
+non-symlinked.  A blocked target retains the required transaction and its
+marker/watchdog rather than failing only after ownership has been released.
 
 After a required-PMF process launch succeeds, the helper re-attests that exact
 PID and the pinned AP channel/width, re-reads the original hash-only host

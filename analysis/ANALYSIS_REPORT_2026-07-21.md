@@ -1775,6 +1775,120 @@ optional process is still current, so the old helper can publish
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-ROLLBACK-RECEIPT-TARGET-ADMISSION-20260721`
+
+### Observation
+
+`do_rollback()` creates `rollback.status` only after it has stopped required
+PMF, restored/attested optional PMF, cancelled the watchdog, and cleared the
+active marker.  Although the parent state directory is restricted at admission,
+the helper never verifies that this mandatory completion-witness pathname is
+fresh and non-symlinked before it begins those lifecycle mutations.  A
+pre-existing generated directory at `rollback.status` makes the final shell
+redirection fail after ownership has already been released.  The caller gets a
+failure and no completion receipt, but neither marker nor watchdog remains to
+authorize a normal retry.
+
+- scope: repository-owned restricted state and generated fixture only; no kext,
+  firmware, Apple80211, candidate, guest, physical AP, live profile, or
+  credential behavior claim.
+- expected system behavior: a rollback must reject a non-fresh completion
+  receipt target before it stops required hostapd or releases any recovery
+  ownership.  The resulting categorical failure must retain the required
+  transaction, marker, and watchdog; removing only the private obstruction must
+  permit one later ordinary rollback.
+- actual behavior: no predicate checks `$STATE_DIR/rollback.status` until the
+  final `printf ... >"$STATE_DIR/rollback.status"`, which is after
+  `cancel_watchdog()` and `clear_marker()`.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rollback()` between state
+  admission and the first required-hostapd stop, relative to the later receipt
+  redirection.
+- source-local proof mechanism: a fixture makes only a directory named
+  `rollback.status` in its own mode-0700 generated state directory after a
+  generated required activation.  The unmodified helper performs its full
+  generated rollback, then cannot redirect the receipt and has already dropped
+  marker/watchdog ownership.  No real AP, route, profile, identity, credential,
+  or network action is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-ROLLBACK-RECEIPT-TARGET-ADMISSION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a read-only `rollback_receipt_is_fresh` predicate requiring an absent,
+     non-symlinked `$STATE_DIR/rollback.status` at rollback admission;
+  2. reject a blocked target before required hostapd can be stopped, retaining
+     marker/watchdog ownership and emitting a categorical diagnostic;
+  3. add a generated directory-obstruction fixture that fails on the old late
+     redirection, then removes only its private obstruction and completes one
+     normal rollback after the correction;
+  4. bind the receipt-target admission to the static runtime contract and
+     protocol.
+- safety and side effects: the helper change is a read-only pathname predicate.
+  The obstructing directory exists only in the fixture's restricted temporary
+  state.  It adds no live process/config/network mutation, retry, AP restart,
+  kext action, guest action, or live AP operation.
+- forbidden alternatives considered and rejected:
+  - allow the receipt redirection to be the first target validation after
+    ownership release;
+  - overwrite an existing receipt/path or follow a symlink;
+  - infer success from restored AP shape after the no-receipt failure;
+  - restart AP/watchdog or alter host networking to conceal the broken
+    transaction.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that a blocked receipt target
+    released ownership before receipt publication;
+  - post-fix, it must report the categorical target-admission diagnostic,
+    preserve required hostapd plus marker/watchdog, and succeed only after the
+    generated obstruction is removed and explicit rollback is invoked;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-ROLLBACK-RECEIPT-TARGET-ADMISSION-20260721`
+
+- implementation:
+  - added `rollback_receipt_is_fresh()`, a read-only absent/non-symlinked
+    predicate for the transaction's `rollback.status` target;
+  - `do_rollback()` now applies it immediately after restricted state-directory
+    admission and before it can stop required hostapd.  A blocked target emits
+    `rollback completion receipt target is not fresh`, while marker/watchdog
+    and required PMF remain current;
+  - the protocol and static contract make completion-witness target admission a
+    first rollback step, rather than treating final shell redirection as a
+    best-effort post-release action.  No AP restart, retry, config/network
+    mutation, kext action, guest action, or live AP operation was added.
+- deterministic fixture evidence:
+  - before implementation, a directory at only the generated
+    `rollback.status` path caused the final redirection to fail after ownership
+    release; the fixture stopped at `rollback receipt obstruction released
+    ownership before receipt publication`;
+  - after implementation, that same private directory produces the categorical
+    admission diagnostic before required hostapd is stopped, retaining the live
+    required process, active marker, and watchdog with no optional restart;
+  - removing only the generated empty directory permits the following explicit
+    rollback to report `PMF_AP_ROLLBACK=OPTIONAL_RESTORED`, write
+    `rollback_verified=true`, clear the marker, and cancel the watchdog.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirtyda57a0518d58`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rollback receipt-target
+  admission gap.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation
