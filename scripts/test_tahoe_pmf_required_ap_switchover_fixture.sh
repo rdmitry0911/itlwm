@@ -173,6 +173,7 @@ printf '%s\n' \
     '      case "$calls" in ""|*[!0-9]*) exit 65;; esac' \
     '      calls=$((calls + 1))' \
     '      printf "%s\n" "$calls" >"$FAKE_ROUTE_CALL_COUNT"' \
+    '      if [ "${FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "${FAKE_WATCHDOG_PID_FILE:-}" ]; then pid="$(tr -d "[:space:]" <"$FAKE_WATCHDOG_PID_FILE")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_WATCHDOG_PID_FILE"; fi' \
     '      if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
     '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ] || [ "${FAKE_DRIFT_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
@@ -730,6 +731,32 @@ if /bin/kill -0 "$PRESTOP_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'pre-stop configuration drift left a live watchdog process'
 fi
 write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+
+# A readiness acknowledgement does not prove the detached recovery owner
+# survived until the first AP mutation.  Fake ip removes only the generated
+# watchdog on activation's final route probe while keeping the route output
+# stable; optional PMF must remain untouched rather than entering required PMF.
+WATCHDOG_EDGE_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+OPTIONAL_PID_BEFORE="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+WATCHDOG_EDGE_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_WATCHDOG_PID_FILE="$WATCHDOG_EDGE_STATE_DIR/watchdog.pid" FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL="$WATCHDOG_EDGE_ROUTE_CALL" "$HELPER" --activate --state-dir "$WATCHDOG_EDGE_STATE_DIR" --lease-seconds 60 >"$TMP_ROOT/watchdog-edge-activate.out" 2>"$TMP_ROOT/watchdog-edge-activate.err"; then
+    fail 'activation accepted a watchdog that died before optional-PMF stop'
+fi
+grep -Fq 'rollback watchdog is not exact before optional-PMF stop; optional-PMF state retained' "$TMP_ROOT/watchdog-edge-activate.err" ||
+    fail 'pre-transition watchdog death retained no categorical diagnostic'
+OPTIONAL_PID_AFTER="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+[ "$OPTIONAL_PID_BEFORE" = "$OPTIONAL_PID_AFTER" ] ||
+    fail 'pre-transition watchdog death stopped or replaced optional hostapd'
+/bin/kill -0 "$OPTIONAL_PID_AFTER" >/dev/null 2>&1 ||
+    fail 'optional hostapd was not alive after pre-transition watchdog death'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'pre-transition watchdog death started required hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'pre-transition watchdog death left a live switchover marker'
+[ ! -e "$WATCHDOG_EDGE_STATE_DIR/watchdog.pid" ] ||
+    fail 'pre-transition watchdog death retained a stale watchdog receipt'
 
 # The start helper's own liveness observation is not a state-promotion proof.
 # Here fake iw terminates the generated required child after wait_hostapd_active

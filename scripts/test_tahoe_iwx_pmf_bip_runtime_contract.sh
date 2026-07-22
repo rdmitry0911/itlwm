@@ -167,10 +167,12 @@ for needle in \
     'mark_required_active' \
     'start_watchdog' \
     'watchdog_process_matches' \
+    'watchdog_owner_is_current' \
     'PMF_AP_WATCHDOG_READY' \
     '--ready-fd 8' \
     'read -r -t 5 -u 8' \
     'host network invariants changed before optional-PMF stop' \
+    'rollback watchdog is not exact before optional-PMF stop' \
     'config_pair_signature' \
     'config_pair_signature_before' \
     'config_pair_matches_state' \
@@ -325,6 +327,7 @@ ordered(post_watchdog_activation, "AP pre-stop host-network fence",
         '[ "$current_signature" != "$network_signature" ]',
         'current_config_signature="$(config_pair_signature)"',
         '[ "$current_config_signature" != "$config_signature" ]',
+        "watchdog_owner_is_current",
         'stop_configured_hostapd "$OPTIONAL_CONFIG"')
 
 watchdog_start = helper[helper.find("start_watchdog() {"):
@@ -335,7 +338,13 @@ ordered(watchdog_start, "watchdog readiness ownership",
         '--ready-fd 8',
         'read -r -t 5 -u 8 ready_line',
         'watchdog_process_matches "$watchdog_pid"',
-        'write_watchdog_pid "$watchdog_pid"')
+        'write_watchdog_pid "$watchdog_pid"',
+        "watchdog_owner_is_current")
+watchdog_owner = helper[helper.find("watchdog_owner_is_current() {"):
+                        helper.find("stop_unready_watchdog() {")]
+ordered(watchdog_owner, "watchdog owner identity",
+        'pid_from_file "$(watchdog_pid_file)"',
+        "watchdog_process_matches")
 watchdog = helper[helper.find("do_watchdog() {"):helper.find("with_lock() {")]
 ordered(watchdog, "watchdog ready acknowledgement",
         "require_state_dir",
@@ -346,6 +355,8 @@ if "AIAM_PMF_AP_TEST_WATCHDOG_EXIT_BEFORE_READY" not in Path(sys.argv[2]).with_n
     fail("AP fixture lacks the pre-ack watchdog failure discriminator")
 if "FAKE_DRIFT_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-stop host-network drift discriminator")
+if "FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the pre-transition watchdog death discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the pre-stop configuration drift discriminator")
 if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):

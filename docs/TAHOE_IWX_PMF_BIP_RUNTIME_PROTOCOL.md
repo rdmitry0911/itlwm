@@ -35,9 +35,10 @@ runtime state, and a hash-only host network invariant. It then writes
 restricted temporary state and a one-at-a-time marker, and requires a separate
 rollback watchdog to acknowledge that exact marker-bound state and its actual
 PID before the first process transition. It then re-reads the same hash-only
-network and configuration-pair signatures immediately before that transition;
-a changed or unreadable signature retains optional PMF and makes the run
-inconclusive without starting required PMF.
+network and configuration-pair signatures and re-attests that exact watchdog
+receipt immediately before that transition; a changed, unreadable, exited, or
+replaced predicate retains optional PMF and makes the run inconclusive without
+starting required PMF.
 
 The state directory itself must be canonical, owned by the invoking user, and
 mode `0700`; the helper rejects a shared or writable-by-others namespace before

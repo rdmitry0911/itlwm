@@ -501,6 +501,75 @@
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
+
+### Observation
+
+`start_watchdog()` validates the ready watchdog process before it writes the
+restricted PID receipt, but `do_activate()` never rechecks that independent
+recovery owner after its later host-network/configuration fences and before it
+stops optional hostapd.  A watchdog that exits in that interval leaves an
+otherwise valid marker/state transaction with no autonomous restoration owner;
+the current source can still transition to required PMF and publish
+`REQUIRED_ACTIVE`.
+
+This is deterministically reproducible only in the local fixture.  Its fake
+route command counts calls; on activation's second route read, after watchdog
+readiness and before optional stop, it kills the generated watchdog and removes
+only the generated PID receipt while preserving normal route output.  The
+unmodified helper then accepts required activation.  No real AP, network,
+guest, profile, credential, route, or address is read or changed.
+
+### Root Cause
+
+Watchdog liveness is proved at setup time but not at the actual first AP
+mutation edge.  The pre-stop network/configuration admission predicates do not
+imply that the separate session-bound watchdog remains alive.
+
+### FIX_CANDIDATE: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
+
+- status: `FIX_VERIFIED`; the fixture demonstrated current required-active
+  publication without an owner and now rejects it before optional stop.
+- system contract to preserve:
+  1. optional hostapd is never stopped unless the exact marker/state-bound
+     watchdog process is current at the final pre-transition edge;
+  2. a dead/missing/replaced watchdog after setup is a categorical pre-stop
+     failure that retains optional PMF and performs only the lighter rollback
+     cleanup;
+  3. the separate watchdog remains an independent owner; no caller-local
+     sleep, retry, restart, or ownership substitution is introduced;
+  4. all host-network/configuration and process checks retain their existing
+     ordering and semantics.
+- proposed minimal correction:
+  - add one read-only `watchdog_owner_is_current()` predicate using the
+    existing restricted PID receipt and exact watchdog argv/state matcher;
+  - recheck it after `write_watchdog_pid()` in setup and after the final
+    network/configuration pre-stop fences immediately before optional stop;
+  - extend fixture/static ordering/protocol coverage for the generated
+    second-route watchdog death.
+- scope and touchpoints:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::start_watchdog`,
+    `watchdog_owner_is_current`, and `do_activate`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md`;
+  - this analysis record.
+- rejected alternatives:
+  - rely on the earlier readiness acknowledgement indefinitely;
+  - transition first and let the caller discover missing rollback ownership;
+  - replace the watchdog with a retry/timer/local process, or restart hostapd;
+  - make any live AP, guest, profile, route/address, firewall, or DHCP change.
+- verification plan:
+  1. demonstrate that the current generated second-route death publishes
+     required-active despite a missing watchdog receipt;
+  2. require the correction to report an exact watchdog pre-stop failure,
+     retain the original live optional hostapd, start no required hostapd, and
+     clear the temporary marker through the pre-stop cleanup path;
+  3. run AP/runtime/trace/SAE contracts and the isolated Tahoe build-only gate.
+- verification boundary: this is a host-side lifecycle ownership fence only;
+  it is not evidence of a live PMF association, IGTK behavior, or driver
+  functionality.
+
 ## ANOMALY: `LAB-PMF-AP-EXACT-ONE-RAW-REKEY-REQUEST-20260721`
 
 ### Observation
@@ -1854,6 +1923,53 @@ is not and must not become a proxy for PID/configuration ownership.
 - verification boundary: this closes only a host-side rekey ownership race.
   It is not a live hostapd result, candidate activation, guest reboot,
   PMF-required association, IGTK runtime observation, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
+
+- implementation:
+  - added `watchdog_owner_is_current()`, which rereads the restricted
+    watchdog PID receipt through the existing PID validator and requires the
+    exact session/state-bound watchdog argv match;
+  - `start_watchdog()` now repeats that predicate after it writes the PID
+    receipt, so setup itself cannot return a stale owner observation;
+  - `do_activate()` repeats it after all final host-network/configuration
+    pre-stop fences and immediately before optional hostapd can be stopped;
+  - a failed final predicate follows the existing pre-stop failure path:
+    optional PMF remains active, the lighter cleanup clears marker state, and
+    no required process is started.  No watchdog replacement, timer/retry, AP
+    restart, or live-network action was introduced.
+- deterministic fixture evidence:
+  - before implementation, fake route call number two killed only the
+    generated watchdog and removed its fixture receipt while returning the
+    normal route text.  The old helper still returned required-active, and the
+    fixture stopped at `activation accepted a watchdog that died before
+    optional-PMF stop`;
+  - after implementation, that same local event produces
+    `rollback watchdog is not exact before optional-PMF stop; optional-PMF
+    state retained`, preserves the original live optional PID, starts no
+    required child, clears the marker, and leaves no stale fake receipt;
+  - static ordering now requires watchdog re-attestation after PID receipt
+    persistence and after final configuration/network fences before optional
+    stop.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty110c9d102b8c`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rollback-owner freshness
+  gap.  It is not a live hostapd result, PMF-required association, IGTK
+  observation, candidate activation, guest reboot, or driver-functionality
   result.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was

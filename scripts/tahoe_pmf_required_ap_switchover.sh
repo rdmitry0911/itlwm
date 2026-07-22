@@ -451,6 +451,12 @@ watchdog_process_matches() {
        "$args" == *"--state-dir $STATE_DIR"* ]]
 }
 
+watchdog_owner_is_current() {
+    local pid
+    pid="$(pid_from_file "$(watchdog_pid_file)")" || return 1
+    watchdog_process_matches "$pid"
+}
+
 stop_unready_watchdog() {
     local pid="$1"
     case "$pid" in ''|*[!0-9]*) return 0;; esac
@@ -509,7 +515,8 @@ start_watchdog() {
             ;;
     esac
     if ! watchdog_process_matches "$watchdog_pid" ||
-        ! write_watchdog_pid "$watchdog_pid"; then
+        ! write_watchdog_pid "$watchdog_pid" ||
+        ! watchdog_owner_is_current; then
         stop_unready_watchdog "$watchdog_pid"
         if [ "$launcher_pid" != "$watchdog_pid" ]; then
             stop_unready_watchdog "$launcher_pid"
@@ -619,6 +626,8 @@ do_activate() {
         pre_stop_failure="optional/required PMF configurations are unreadable before optional-PMF stop"
     elif [ "$current_config_signature" != "$config_signature" ]; then
         pre_stop_failure="optional/required PMF configurations changed before optional-PMF stop"
+    elif ! watchdog_owner_is_current; then
+        pre_stop_failure="rollback watchdog is not exact before optional-PMF stop"
     fi
     if [ -n "$pre_stop_failure" ]; then
         if finish_armed_rollback; then
