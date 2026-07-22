@@ -77,6 +77,7 @@ struct ieee80211_node;
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 struct ieee80211_pae_selected_bss;
+struct ItlSaeAuthTxRequestV1;
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, mbuf_t);
@@ -91,6 +92,15 @@ extern	void ieee80211_recv_mgmt(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *, struct ieee80211_rxinfo *, int);
 extern	int ieee80211_send_mgmt(struct ieee80211com *, struct ieee80211_node *,
 		int, int, int);
+/*
+ * Dedicated, bounded SAE Algorithm-3 frame builder. This deliberately does
+ * not use ieee80211_send_mgmt(): the generic AUTH path is Open-System-only.
+ * The caller retains one reference on ni until the backend accepts m and
+ * assumes that reference on successful TX submission.
+ */
+extern	mbuf_t ieee80211_sae_auth_frame_build(struct ieee80211com *,
+		struct ieee80211_node *,
+		const struct ItlSaeAuthTxRequestV1 *);
 extern	void ieee80211_eapol_key_input(struct ieee80211com *, mbuf_t,
 		struct ieee80211_node *);
 extern	void ieee80211_tx_compressed_bar(struct ieee80211com *,

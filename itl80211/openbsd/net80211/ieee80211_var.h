@@ -872,6 +872,22 @@ struct ieee80211_ess {
 #define IEEE80211_EVT_STA_RSN_HANDSHAKE_DONE    7
 
 /*
+ * Internal deferred IWX-to-controller SAE transport completion. The `data` pointer is
+ * valid only synchronously for the existing ic_event_handler invocation and
+ * points to a credential-free ItlSaeAuthTransportEventV1 copied by IWX's
+ * deferred task. It is not a peer-RX event and does not change STA state.
+ */
+#define IEEE80211_EVT_SAE_AUTH_TRANSPORT        8
+
+/*
+ * Internal IWX reset invalidation for the same credential-free transport
+ * value. Unlike the ordinary terminal event, this is emitted only after the
+ * IWX reset/purge boundary and means the controller must clear a matching
+ * relay without attempting another HAL cancellation or accepting a reply.
+ */
+#define IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET  9
+
+/*
  * Host-owned WCL reassociation owner contract recovered from the public
  * AppleBCMWLAN binary (AppleBCMWLANCore::setWCL_REASSOC and the
  * NetAdapter::sendReassocCommand callback/event family). The local Intel

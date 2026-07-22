@@ -107,6 +107,7 @@
 #include <net80211/ieee80211_amrr.h>
 #include <net80211/ieee80211_mira.h>
 #include <net80211/ieee80211_radiotap.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -395,6 +396,19 @@ struct iwx_tx_data {
     uint8_t  diag_subtype;
     uint16_t diag_auth_seq;
     uint8_t  diag_peer[6];
+    /*
+     * Controller-owned SAE identity. Unlike diag_*, this is not telemetry:
+     * the exact ticket is copied before the header trim and is consumed once
+     * by iwx_rx_tx_cmd_single() to produce the deferred terminal event.
+     */
+    bool     sae_active;
+    uint8_t  sae_transaction;
+    uint16_t sae_auth_status;
+    uint64_t sae_association_epoch;
+    uint64_t sae_relay_generation;
+    uint64_t sae_ticket;
+    uint8_t  sae_bssid[kItlSaeAuthTransportV1MacLength];
+    uint8_t  sae_sta[kItlSaeAuthTransportV1MacLength];
 };
 
 /*
@@ -699,6 +713,18 @@ struct iwx_security_rx_entry {
 };
 
 /*
+ * A single Algorithm-3 TX may be owned at a time. RX/TX interrupt context
+ * only pushes a fixed terminal event; controller entry happens later in the
+ * serial nswq task. A cancel-through ticket rejects a submit that races a
+ * controller cancellation before it reaches the main command gate.
+ */
+#define IWX_SAE_TX_EVENTQ_LEN 4
+
+struct iwx_sae_tx_event_entry {
+    struct ItlSaeAuthTransportEventV1 event;
+};
+
+/*
  * One serialized AX211/API-68 MFP PAE command owner per interface.
  *
  * A key command that has reached q0's doorbell is only *possibly* installed
@@ -793,6 +819,7 @@ struct iwx_softc {
 //	struct refcnt		task_refs;
 	struct task newstate_task;
 	struct task security_rx_task;
+	struct task sae_tx_task;
 	struct task mfp_pae_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
@@ -848,6 +875,33 @@ struct iwx_softc {
     uint8_t sc_security_rx_tail;
     uint8_t sc_security_rx_count;
     thread_t sc_security_rx_worker;
+
+    /*
+ * sc_sae_tx_lock protects one accepted Algorithm-3 ticket, its retained
+ * credential-free completion identity, a last delivered terminal identity
+ * retained only until the next ticket/reset (so an autonomous reset can
+ * invalidate a just-completed controller relay), and the fixed terminal-event
+ * FIFO.
+ * The frame builder/TX leaf executes under ItlIwx's separate workloop gate,
+ * never under AirportItlwm's command gate. A cancel-through ticket suppresses
+ * reverse delivery but never releases an already-doorbelled descriptor: only
+ * its terminal completion or post-reset purge may do that. The leaf lock is
+ * never held across net80211 frame construction or ic_event_handler callback;
+ * it is held only through the final non-sleeping doorbell write so cancellation
+ * cannot win between the liveness check and MMIO.
+     */
+    IOSimpleLock *sc_sae_tx_lock;
+    bool sc_sae_tx_active;
+    bool sc_sae_tx_doorbelled;
+    uint64_t sc_sae_tx_active_ticket;
+    uint64_t sc_sae_tx_cancel_through;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_active_event;
+    bool sc_sae_tx_last_event_valid;
+    struct ItlSaeAuthTransportEventV1 sc_sae_tx_last_event;
+    struct iwx_sae_tx_event_entry sc_sae_tx_eventq[IWX_SAE_TX_EVENTQ_LEN];
+    uint8_t sc_sae_tx_event_head;
+    uint8_t sc_sae_tx_event_tail;
+    uint8_t sc_sae_tx_event_count;
 
     /*
      * The q0 RX action and the command-gated timeout only record a terminal

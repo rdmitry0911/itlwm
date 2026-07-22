@@ -182,6 +182,11 @@ public:
     IOReturn startAPMode(const struct ItlHalApConfig *config) override;
     IOReturn stopAPMode() override;
 
+    /* One-ticket, real firmware TX path for the controller SAE relay. */
+    IOReturn submitSaeAuthFrame(
+        const struct ItlSaeAuthTxRequestV1 *request) override;
+    void cancelSaeAuthFrame(uint64_t ticket) override;
+
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
     
@@ -425,7 +430,10 @@ public:
                             const struct iwx_rate *rinfo, int type, struct ieee80211_frame *wh);
     void    iwx_toggle_tx_ant(struct iwx_softc *sc, uint8_t *ant);
     void    iwx_tx_update_byte_tbl(struct iwx_softc *, struct iwx_tx_ring *, int, uint16_t, uint16_t);
-    int    iwx_tx(struct iwx_softc *, mbuf_t, struct ieee80211_node *, int);
+    bool    iwx_sae_tx_commit_doorbell(struct iwx_softc *, uint64_t,
+            int, int);
+    int    iwx_tx(struct iwx_softc *, mbuf_t, struct ieee80211_node *, int,
+                  const struct ItlSaeAuthTxRequestV1 * = nullptr);
     int    iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t);
     int    iwx_flush_sta(struct iwx_softc *, struct iwx_node *);
     int    iwx_drain_sta(struct iwx_softc *sc, struct iwx_node *, int);
@@ -515,6 +523,22 @@ public:
            struct ieee80211_node *);
     bool    iwx_security_rx_wait_context(struct iwx_softc *);
     void    iwx_security_rx_purge(struct iwx_softc *);
+    static IOReturn iwx_sae_tx_gate_action(OSObject *, void *, void *,
+            void *, void *);
+    IOReturn iwx_sae_tx_submit_on_gate(struct iwx_softc *,
+            const struct ItlSaeAuthTxRequestV1 *);
+    static void    iwx_sae_tx_task_dispatch(void *);
+    bool    iwx_sae_tx_queue_terminal(struct iwx_softc *,
+            const struct ItlSaeAuthTransportEventV1 *);
+    void    iwx_sae_tx_report_terminal(struct iwx_softc *,
+            struct iwx_tx_data *, int32_t);
+    void    iwx_sae_tx_retire_unsubmitted(struct iwx_softc *, uint64_t);
+    void    iwx_sae_tx_cancel_all(struct iwx_softc *);
+    void    iwx_sae_tx_purge(struct iwx_softc *);
+    bool    iwx_sae_tx_snapshot_reset(struct iwx_softc *,
+            struct ItlSaeAuthTransportEventV1 *);
+    void    iwx_sae_tx_emit_reset_event(struct iwx_softc *,
+            const struct ItlSaeAuthTransportEventV1 *);
     static void    iwx_mfp_pae_task(void *);
     static void    iwx_mfp_pae_task_dispatch(void *);
     static int     iwx_pae_mfp_txn_submit(struct ieee80211com *, u_int64_t,
@@ -592,6 +616,13 @@ public:
     
 public:
     IOInterruptEventSource* fInterrupt;
+    /*
+     * This is deliberately distinct from AirportItlwm's command gate.  It
+     * lives on the same IWX workloop so the bounded SAE builder/TX leaf is
+     * serialized with normal output and firmware completion ring ownership,
+     * without acquiring the controller's policy/state gate.
+     */
+    IOCommandGate *fSaeTxGate;
     struct pci_attach_args pci;
     struct iwx_softc com;
 };

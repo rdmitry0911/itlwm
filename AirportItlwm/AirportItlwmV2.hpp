@@ -20,6 +20,7 @@
 #include "TahoeCommanderV2.hpp"
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
 #include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 
 #include "IOKit/network/IOGatedOutputQueue.h"
 #include <libkern/c++/OSNumber.h>
@@ -269,6 +270,39 @@ struct AirportItlwmScanSourceLifecycle {
     uint32_t users;
 };
 
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * IWX completion must never make its nswq worker wait for AirportItlwm's
+ * command gate: power-off can hold that gate while it drains IWX tasks.
+ * This source is a bounded, ordered value mailbox. One physical SAE ticket
+ * permits at most its terminal record plus one reset invalidation; capacity
+ * four leaves margin without coalescing or silently discarding either edge.
+ */
+enum : uint8_t {
+    kAirportItlwmSaeTransportMailboxCapacity = 4,
+};
+
+struct AirportItlwmSaeTransportMailboxEntry {
+    ItlSaeAuthTransportEventV1 event;
+    bool isReset;
+};
+
+struct AirportItlwmSaeTransportMailboxLifecycle {
+    IOSimpleLock *admissionLock;
+    IOInterruptEventSource *source;
+    IOSimpleLock *payloadLock;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+    AirportItlwmSaeTransportMailboxEntry
+        entries[kAirportItlwmSaeTransportMailboxCapacity];
+    uint8_t head;
+    uint8_t tail;
+    uint8_t count;
+};
+#endif
+
 enum AirportItlwmLifecyclePhase : uint32_t {
     kAirportItlwmLifecycleStarting = 0,
     kAirportItlwmLifecycleLive,
@@ -434,6 +468,14 @@ public:
 
     static IOReturn tsleepHandler(OSObject* owner, void* arg0 = 0, void* arg1 = 0, void* arg2 = 0, void* arg3 = 0);
     static void eventHandler(struct ieee80211com *, int, void *);
+#if __IO80211_TARGET >= __MAC_26_0
+    // Called for either a deferred IWX TX terminal worker record or the
+    // post-reset invalidation carrier. The borrowed event is copied into a
+    // controller-owned asynchronous mailbox; this path never enters the
+    // controller command gate or the PostOffice synchronously.
+    static void handleSaeAuthTransportEvent(
+        AirportItlwm *, const struct ItlSaeAuthTransportEventV1 *, bool);
+#endif
     IOReturn enableAdapter(IONetworkInterface *netif);
     void disableAdapterCore(IONetworkInterface *netif);
     void disableAdapter(IONetworkInterface *netif);
@@ -864,9 +906,10 @@ public:
      * from the legacy PLTI PMK carrier above: they exchange only the versioned
      * public relay records, keep identity/cancellation under the controller
      * command gate, and never write ic_psk or select a PSK AKM.  Algorithm-3
-     * TX/RX and an SAE PMK owner are not enabled by this surface yet, so reply
-     * and completion admission remain fail-closed until a later real
-     * TX-completion fence exists.
+     * A bounded outbound Algorithm-3 TX/completion fence exists below this
+     * owner.  It is still not an SAE association: selected-BSS join dispatch,
+     * inbound Algorithm-3 RX, Agent cryptography/credentials, SAE PMK/AKM,
+     * and PMF activation remain disabled in later layers.
      */
     IOReturn beginSaeRelay(const struct AirportItlwmSaeTargetV1 *target);
     IOReturn waitSaeTarget(const uint8_t client_cookie[
@@ -908,6 +951,16 @@ public:
     // fields are accessed only by file-static command-gate actions in
     // AirportItlwmV2.cpp.
     AirportItlwmSaeRelayFsmV1    fSaeRelay;
+    // Exactly one Agent reply may be physically in flight.  These copies are
+    // command-gate-only and are scrubbed on every terminal/cancellation edge;
+    // the HAL sees only the credential-free transport request.
+    AirportItlwmSaeAuthReplyV1   fSaePendingTxReply;
+    ItlSaeAuthTxRequestV1        fSaePendingTxRequest;
+    uint64_t                      fSaeNextTxTicket;
+    bool                          fSaePendingTxActive;
+    /* Last terminal identity is retained only until next TX/cancel/reset. */
+    ItlSaeAuthTransportEventV1    fSaeLastTerminalTxEvent;
+    bool                          fSaeLastTerminalTxEventValid;
     uint8_t                       fSaeControllerNonce[
         kAirportItlwmSaeRelayV1NonceLength];
     uint8_t                       fSaeRelayWaitingCookie[
@@ -947,6 +1000,9 @@ public:
 
     AirportItlwmLinkStatePublishLifecycle fLinkStatePublishLifecycle;
     AirportItlwmScanSourceLifecycle fScanSourceLifecycle;
+#if __IO80211_TARGET >= __MAC_26_0
+    AirportItlwmSaeTransportMailboxLifecycle fSaeTransportMailbox;
+#endif
 
     // Keep teardown ownership at the class tail so existing controller member
     // offsets stay stable. fNetIf->attach(), attachInterface(), and

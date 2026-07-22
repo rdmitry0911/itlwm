@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # One-pass static/build contract for the product SAE foundation and its
-# controller-owned, bridge-only relay transport.
+# controller-owned bounded Algorithm-3 TX-completion transport.
 #
-# This proves discovery/ABI and relay-lifecycle prerequisites while retaining
-# the non-enable boundary: Open-System auth, MFP capability, pure-SAE ingress
-# quarantine, and PSK-only configuration remain unchanged.
+# This proves discovery/ABI, relay lifecycle, and one physical outbound-frame
+# spine while retaining the non-enable boundary: generic Open-System auth,
+# pure-SAE ingress quarantine, and PSK-only configuration remain unchanged.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -78,7 +78,20 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
     -o "$tmpdir/sae-relay-cpp"
 "$tmpdir/sae-relay-cpp"
 
+clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/include" \
+    "$root/tests/itl_sae_auth_transport_v1_test.c" \
+    -o "$tmpdir/iwx-sae-auth-transport-c"
+"$tmpdir/iwx-sae-auth-transport-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/include" \
+    "$root/tests/itl_sae_auth_transport_v1_test.c" \
+    -o "$tmpdir/iwx-sae-auth-transport-cpp"
+"$tmpdir/iwx-sae-auth-transport-cpp"
+
 bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
+bash "$root/scripts/test_tahoe_iwx_sae_auth_transport_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -220,9 +233,9 @@ require(relay, "kAirportItlwmSaeRelayRsnxeH2e = 1u << 0",
 require(v2_hpp, "#include <ClientKit/AirportItlwmSaeRelayV1.h>",
         "Tahoe compile-only relay ABI inclusion")
 
-# The bridge contract above owns exact selectors 0--6 and their dispatch
-# shapes.  Keep the two legacy PSK selector identities explicitly pinned here
-# as part of the broader discovery/product foundation proof.
+# The controller relay owns exact selectors 0--6 and their dispatch shapes.
+# Keep the two legacy PSK selector identities explicitly pinned here as part
+# of the broader discovery/product foundation proof.
 for token in (
     "kAirportItlwmUserClientMethod_DeliverPMK = 0",
     "kAirportItlwmUserClientMethod_WaitAssociationTarget = 1",
@@ -230,10 +243,10 @@ for token in (
 ):
     require(v2, token, "legacy PLTI selector")
 
-# Algorithm 3 and its two standard transaction values are available as a
-# self-contained host-order taxonomy only.  The classifier deliberately has
-# no frame, status, credential, retry, anti-clogging, epoch, or authorization
-# semantics, and it has no production caller yet.
+# Algorithm 3 and its two standard transaction values remain a self-contained
+# host-order taxonomy. The isolated transport builder uses the constants, but
+# this classifier deliberately has no frame, status, credential, retry,
+# anti-clogging, epoch, or authorization semantics.
 for token in (
     "#include <stdint.h>",
     "#define IEEE80211_AUTH_ALG_SAE 0x0003u",
@@ -258,7 +271,6 @@ require(ieee80211_h, '#include "ieee80211_sae_auth_contract.h"',
 require(auth_test, '#include "ieee80211_sae_auth_contract.h"',
         "standalone Algorithm-3 taxonomy unit test")
 for text, label in ((input_c, "net80211 RX"),
-                    (output_c, "net80211 TX"),
                     (proto_c, "net80211 protocol"),
                     (crypto_c, "net80211 crypto"),
                     (v2, "Tahoe controller")):
@@ -269,9 +281,20 @@ for text, label in ((input_c, "net80211 RX"),
 require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
         "active Open-System-only RX gate")
 require(output_c, "LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN)",
-        "active Open-System-only TX builder")
+        "active generic Open-System-only TX builder")
 require(proto_c, "IEEE80211_AUTH_OPEN_REQUEST",
         "active Open-System request producer")
+generic_auth = function_body(output_c, "mbuf_t\nieee80211_get_auth(")
+if "IEEE80211_AUTH_ALG_SAE" in generic_auth:
+    fail("generic Open-System TX builder must not emit Algorithm 3")
+sae_builder = function_body(output_c,
+                            "mbuf_t\nieee80211_sae_auth_frame_build(")
+for token in ("itl_sae_auth_transport_request_is_well_formed",
+              "IEEE80211_S_AUTH", "IEEE80211_AUTH_ALG_SAE",
+              "request->transaction", "request->auth_status"):
+    require(sae_builder, token, "isolated bounded Algorithm-3 builder")
+if output_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only the isolated transport builder may emit Algorithm 3")
 
 # RSN AKM type 8 is recognized only as a discovery/KDF taxonomy. The active
 # device configuration remains PSK-only, and no association output advertises
@@ -426,5 +449,5 @@ require(input_c, "if (frm[1] < 1) {\n\t\t\t\tic->ic_stats.is_rx_elem_toosmall++;
 if input_c.count("IEEE80211_ELEMID_RSNXE") != 1:
     fail("RSNXE must be handled only by the beacon/probe scan path")
 
-print("PASS: Tahoe product SAE discovery and bridge-only relay foundations")
+print("PASS: Tahoe product SAE discovery and bounded TX relay foundations")
 PY

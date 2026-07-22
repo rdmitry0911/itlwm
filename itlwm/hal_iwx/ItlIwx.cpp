@@ -166,8 +166,317 @@ void iwx_auth_diag_init(void)
 }
 } /* extern "C" */
 
+namespace {
+
+static void
+iwx_sae_tx_make_terminal_event(const struct ItlSaeAuthTxRequestV1 *request,
+                               int32_t result,
+                               struct ItlSaeAuthTransportEventV1 *event)
+{
+    if (request == NULL || event == NULL)
+        return;
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->kind = kItlSaeAuthTransportEventTxComplete;
+    event->result = result;
+    event->association_epoch = request->association_epoch;
+    event->relay_generation = request->relay_generation;
+    event->ticket = request->ticket;
+    event->transaction = request->transaction;
+    event->auth_status = request->auth_status;
+    memcpy(event->bssid, request->bssid, sizeof(event->bssid));
+    memcpy(event->sta, request->sta, sizeof(event->sta));
+}
+
+static void
+iwx_sae_tx_make_terminal_event_from_data(const struct iwx_tx_data *data,
+                                         int32_t result,
+                                         struct ItlSaeAuthTransportEventV1 *event)
+{
+    if (data == NULL || event == NULL)
+        return;
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->kind = kItlSaeAuthTransportEventTxComplete;
+    event->result = result;
+    event->association_epoch = data->sae_association_epoch;
+    event->relay_generation = data->sae_relay_generation;
+    event->ticket = data->sae_ticket;
+    event->transaction = data->sae_transaction;
+    event->auth_status = data->sae_auth_status;
+    memcpy(event->bssid, data->sae_bssid, sizeof(event->bssid));
+    memcpy(event->sta, data->sae_sta, sizeof(event->sta));
+}
+
+static void
+iwx_sae_tx_data_clear(struct iwx_tx_data *data)
+{
+    if (data == NULL)
+        return;
+    data->sae_active = false;
+    data->sae_transaction = 0;
+    data->sae_auth_status = 0;
+    data->sae_association_epoch = 0;
+    data->sae_relay_generation = 0;
+    data->sae_ticket = 0;
+    explicit_bzero(data->sae_bssid, sizeof(data->sae_bssid));
+    explicit_bzero(data->sae_sta, sizeof(data->sae_sta));
+}
+
+static bool
+iwx_sae_tx_request_is_live(struct iwx_softc *sc, uint64_t ticket)
+{
+    bool live = false;
+
+    if (sc == NULL || ticket == 0 || sc->sc_task_gate_lock == NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return false;
+    /* Keep the task-admission -> SAE leaf ordering used by submission. */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        !sc->sc_task_gate_detaching) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        live = sc->sc_sae_tx_active &&
+            sc->sc_sae_tx_active_ticket == ticket &&
+            ticket > sc->sc_sae_tx_cancel_through;
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return live;
+}
+
+} // namespace
+
+namespace {
+
+struct IwxSaeTxGateArgs {
+    struct ItlSaeAuthTxRequestV1 request;
+    IOReturn rc;
+};
+
+} // namespace
+
+IOReturn ItlIwx::
+submitSaeAuthFrame(const struct ItlSaeAuthTxRequestV1 *request)
+{
+    struct iwx_softc *sc = &com;
+    IwxSaeTxGateArgs args;
+    IOCommandGate *gate = NULL;
+    IOReturn rc = kIOReturnNotReady;
+
+    if (!itl_sae_auth_transport_request_is_well_formed(request))
+        return kIOReturnBadArgument;
+    if (sc->sc_task_gate_lock == NULL || sc->sc_sae_tx_lock == NULL)
+        return kIOReturnNotReady;
+
+    /*
+     * Reserve exactly one ticket while admission is open, then invoke the
+     * IWX-owned workloop gate after releasing both locks.  That gate shares
+     * the workloop with normal output and RX completion but is not the
+     * AirportItlwm command gate, so the builder/TX leaf sees real driver
+     * serialization without acquiring controller policy state.
+     */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        !sc->sc_task_gate_detaching && fSaeTxGate != NULL) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (request->ticket <= sc->sc_sae_tx_cancel_through)
+            rc = kIOReturnAborted;
+        else if (sc->sc_sae_tx_active || sc->sc_sae_tx_event_count != 0)
+            rc = kIOReturnNotReady;
+        else {
+            sc->sc_sae_tx_active = true;
+            sc->sc_sae_tx_doorbelled = false;
+            sc->sc_sae_tx_active_ticket = request->ticket;
+            iwx_sae_tx_make_terminal_event(request, EIO,
+                                           &sc->sc_sae_tx_active_event);
+            sc->sc_sae_tx_last_event_valid = false;
+            explicit_bzero(&sc->sc_sae_tx_last_event,
+                           sizeof(sc->sc_sae_tx_last_event));
+            gate = fSaeTxGate;
+            gate->retain();
+            /*
+             * Keep the softc alive from reservation through attemptAction().
+             * A caller may have retained the gate immediately before stop
+             * closes admission but not yet entered its action; the outer
+             * lease makes iwx_task_gate_drain() wait for that interval too.
+             */
+            sc->sc_task_gate_active++;
+            rc = kIOReturnSuccess;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    if (rc != kIOReturnSuccess)
+        return rc;
+
+    explicit_bzero(&args, sizeof(args));
+    memcpy(&args.request, request, sizeof(args.request));
+    args.rc = kIOReturnNotReady;
+    /*
+     * Do not sleep behind the IWX workloop gate here. A concurrent power-off
+     * owns that gate while it closes task admission and drains our outer lease;
+     * runAction() would therefore form a stop-versus-submit deadlock. The
+     * single ticket is simply retired if the gate is busy, and the controller
+     * treats that transient outcome as no accepted physical transmission.
+     */
+    rc = gate->attemptAction(&ItlIwx::iwx_sae_tx_gate_action, &args);
+    gate->release();
+    if (rc == kIOReturnCannotLock)
+        rc = kIOReturnNotReady;
+    if (rc != kIOReturnSuccess)
+        iwx_sae_tx_retire_unsubmitted(sc, request->ticket);
+    iwx_task_gate_leave(sc);
+    explicit_bzero(&args, sizeof(args));
+    return rc;
+}
+
+void ItlIwx::
+cancelSaeAuthFrame(uint64_t ticket)
+{
+    struct iwx_softc *sc = &com;
+
+    if (ticket == 0 || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = ticket;
+    /* A pre-doorbell reservation has no descriptor to retain. */
+    if (sc->sc_sae_tx_active &&
+        sc->sc_sae_tx_active_ticket == ticket &&
+        !sc->sc_sae_tx_doorbelled) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+                       sizeof(sc->sc_sae_tx_active_event));
+    }
+    if (sc->sc_sae_tx_last_event_valid &&
+        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        sc->sc_sae_tx_last_event_valid = false;
+        explicit_bzero(&sc->sc_sae_tx_last_event,
+                       sizeof(sc->sc_sae_tx_last_event));
+    }
+    if (!sc->sc_sae_tx_active && sc->sc_sae_tx_event_count != 0) {
+        explicit_bzero(sc->sc_sae_tx_eventq,
+                       sizeof(sc->sc_sae_tx_eventq));
+        sc->sc_sae_tx_event_head = 0;
+        sc->sc_sae_tx_event_tail = 0;
+        sc->sc_sae_tx_event_count = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+IOReturn ItlIwx::
+iwx_sae_tx_gate_action(OSObject *owner, void *arg0, void * /*arg1*/,
+                       void * /*arg2*/, void * /*arg3*/)
+{
+    ItlIwx *that = OSDynamicCast(ItlIwx, owner);
+    IwxSaeTxGateArgs *args = (IwxSaeTxGateArgs *)arg0;
+    struct iwx_softc *sc;
+
+    if (that == NULL || args == NULL ||
+        !itl_sae_auth_transport_request_is_well_formed(&args->request))
+        return kIOReturnBadArgument;
+    sc = &that->com;
+
+    /* Stop may have closed admission after attemptAction obtained the workloop. */
+    if (!that->iwx_task_gate_enter(sc, false)) {
+        that->iwx_sae_tx_retire_unsubmitted(sc, args->request.ticket);
+        args->rc = kIOReturnAborted;
+        return args->rc;
+    }
+    args->rc = that->iwx_sae_tx_submit_on_gate(sc, &args->request);
+    that->iwx_task_gate_leave(sc);
+    return args->rc;
+}
+
+IOReturn ItlIwx::
+iwx_sae_tx_submit_on_gate(struct iwx_softc *sc,
+                          const struct ItlSaeAuthTxRequestV1 *request)
+{
+    struct ieee80211com *ic;
+    struct _ifnet *ifp;
+    struct ieee80211_node *ni = NULL;
+    mbuf_t m = NULL;
+    IOReturn rc = kIOReturnError;
+    int error;
+
+    if (sc == NULL || !itl_sae_auth_transport_request_is_well_formed(request))
+        return kIOReturnBadArgument;
+    ic = &sc->sc_ic;
+    ifp = IC2IFP(ic);
+    if (!iwx_sae_tx_request_is_live(sc, request->ticket)) {
+        iwx_sae_tx_retire_unsubmitted(sc, request->ticket);
+        return kIOReturnAborted;
+    }
+    if (!sc->sc_hw_active || !(ifp->if_flags & IFF_RUNNING) ||
+        sc->qfullmsk != 0 || (sc->sc_flags & IWX_FLAG_TXFLUSH) != 0 ||
+        ic->ic_bss == NULL) {
+        iwx_sae_tx_retire_unsubmitted(sc, request->ticket);
+        return kIOReturnNotReady;
+    }
+
+    ni = ieee80211_ref_node(ic->ic_bss);
+    if (ni == NULL)
+        goto out;
+    m = ieee80211_sae_auth_frame_build(ic, ni, request);
+    if (m == NULL)
+        goto out;
+
+    /* Cancellation may have won while the bounded public frame was built. */
+    if (!iwx_sae_tx_request_is_live(sc, request->ticket)) {
+        rc = kIOReturnAborted;
+        goto out;
+    }
+
+    /*
+     * A node reference prevents UAF, not a stale on-air frame.  The separate
+     * IWX gate serializes this fence with normal output/RX mutation without
+     * entering AirportItlwm's controller gate.
+     */
+    if (ic->ic_state != IEEE80211_S_AUTH || ic->ic_bss != ni ||
+        ieee80211_pae_assoc_epoch_current(ic) != request->association_epoch ||
+        memcmp(ni->ni_macaddr, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ni->ni_bssid, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ic->ic_myaddr, request->sta, sizeof(request->sta)) != 0)
+        goto out;
+
+    error = iwx_tx(sc, m, ni, EDCA_AC_BE, request);
+    /* iwx_tx() consumes m on both accepted and pre-doorbell error paths. */
+    m = NULL;
+    if (error != 0) {
+        rc = error == ENOMEM ? kIOReturnNoMemory : kIOReturnError;
+        goto out;
+    }
+
+    if (ifp->netStat != NULL)
+        ifp->netStat->outputPackets++;
+    if (ifp->if_flags & IFF_UP) {
+        sc->sc_tx_timer = 15;
+        ifp->if_timer = 1;
+    }
+    /* The accepted descriptor owns the node reference until completion. */
+    ni = NULL;
+    return kIOReturnSuccess;
+
+out:
+    if (m != NULL)
+        mbuf_freem(m);
+    if (ni != NULL)
+        ieee80211_release_node(ic, ni);
+    iwx_sae_tx_retire_unsubmitted(sc, request->ticket);
+    return rc;
+}
+
 bool ItlIwx::attach(IOPCIDevice *device)
 {
+    /* iwx_attach() may fail partway through; detach() owns this pointer. */
+    fSaeTxGate = NULL;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
     if (!iwx_attach(&com, &pci)) {
@@ -184,6 +493,7 @@ detach(IOPCIDevice *device)
 {
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwx_softc *sc = &com;
+    IOCommandGate *sae_tx_gate = NULL;
 
     /*
      * The order here is a lifetime fence, not just shutdown hygiene:
@@ -194,6 +504,21 @@ detach(IOPCIDevice *device)
     /* close() also publishes permanent SHUTDOWN under the admission lock. */
     int detach_generation;
     (void)iwx_task_gate_close(sc, true, &detach_generation);
+    /*
+     * No new submitter may retain the private workloop gate after close.
+     * A submitter that already did so also owns an outer task-gate lease, so
+     * the drain below covers the interval before its attemptAction() begins.
+     */
+    if (sc->sc_task_gate_lock != NULL) {
+        IOLockLock(sc->sc_task_gate_lock);
+        sae_tx_gate = fSaeTxGate;
+        fSaeTxGate = NULL;
+        IOLockUnlock(sc->sc_task_gate_lock);
+    } else {
+        sae_tx_gate = fSaeTxGate;
+        fSaeTxGate = NULL;
+    }
+    iwx_sae_tx_cancel_all(sc);
     /* Device teardown is the firmware-key erase authority; do this before
      * generic epoch cancellation can request an ordinary q0 cleanup. */
     iwx_mfp_pae_abort_all(sc, true);
@@ -210,6 +535,8 @@ detach(IOPCIDevice *device)
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
         if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->sae_tx_task);
+        if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         iwx_del_task(sc, systq, &sc->init_task);
         iwx_del_task(sc, systq, &sc->ba_task);
@@ -222,6 +549,24 @@ detach(IOPCIDevice *device)
         taskq_barrier(systq);
     }
     iwx_task_gate_drain(sc, 0, 0, 0);
+    /*
+     * task_gate_drain() covers both already-running gate actions and callers
+     * that retained the gate before close but had not entered it yet.  It is
+     * therefore now safe to remove the source before the workloop or softc
+     * locks disappear.
+     */
+    if (sae_tx_gate != NULL) {
+        /*
+         * Command-gate disable() itself requires the workloop gate. There
+         * are no blocking runAction users (submission uses attemptAction),
+         * and close + drain above owns every retained gate/action lease, so
+         * synchronous removeEventSource() is the correct final withdrawal.
+         */
+        if (pci.workloop != NULL)
+            pci.workloop->removeEventSource(sae_tx_gate);
+        sae_tx_gate->release();
+        sae_tx_gate = NULL;
+    }
     iwx_security_rx_purge(sc);
     iwx_mfp_pae_abort_all(sc, true);
 
@@ -235,6 +580,8 @@ detach(IOPCIDevice *device)
         iwx_stop_device(sc);
         iwx_disable_interrupts(sc);
     }
+    /* iwx_stop_device() reset every descriptor; retained SAE state is stale. */
+    iwx_sae_tx_purge(sc);
     iwx_interrupt_teardown(sc);
 
     /*
@@ -279,6 +626,10 @@ detach(IOPCIDevice *device)
     iwx_free_rx_ring(sc, &sc->rxq);
     iwx_dma_contig_free(&sc->ict_dma);
     iwx_dma_contig_free(&com.ctxt_info_dma);
+    if (sc->sc_sae_tx_lock != NULL) {
+        IOSimpleLockFree(sc->sc_sae_tx_lock);
+        sc->sc_sae_tx_lock = NULL;
+    }
     /*
      * Keep the stopped/detaching q0 lock alive through the detached HAL
      * object's lifetime. A late controller call may still reach
@@ -2703,6 +3054,15 @@ iwx_reset_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     
     for (i = 0; i < ring->ring_count; i++) {
         struct iwx_tx_data *data = &ring->data[i];
+
+        /* A ring reset has no firmware response; it is fail-closed only. */
+        if (data->sae_active) {
+            iwx_sae_tx_report_terminal(sc, data, EIO);
+            if (data->in != NULL) {
+                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
+                data->in = NULL;
+            }
+        }
         
         if (data->m != NULL) {
             //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
@@ -2743,6 +3103,15 @@ iwx_free_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring)
     
     for (i = 0; i < ring->ring_count; i++) {
         struct iwx_tx_data *data = &ring->data[i];
+
+        /* Attach-unwind/detach may reclaim without a firmware completion. */
+        if (data->sae_active) {
+            iwx_sae_tx_report_terminal(sc, data, EIO);
+            if (data->in != NULL) {
+                ieee80211_release_node(&sc->sc_ic, &data->in->in_ni);
+                data->in = NULL;
+            }
+        }
         
         if (data->m != NULL) {
             //            bus_dmamap_sync(sc->sc_dmat, data->map, 0,
@@ -5879,6 +6248,18 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
               tx_resp->failure_frame,
               le16toh(tx_resp->wireless_media_time));
     }
+
+    /*
+     * This executes in firmware completion context, before the caller
+     * recycles txd through iwx_ampdu_txq_advance(). It only copies a bounded
+     * value record to the deferred worker; it never enters the controller
+     * command gate itself.
+     */
+    if (txd->sae_active) {
+        ItlIwx *that = container_of(sc, ItlIwx, com);
+        that->iwx_sae_tx_report_terminal(sc, txd,
+            txfail ? (status != 0 ? status : EIO) : 0);
+    }
 }
 
 void
@@ -5904,6 +6285,12 @@ void ItlIwx::
 iwx_txd_done(struct iwx_softc *sc, struct iwx_tx_data *txd)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+
+    /* BA/flush reclaim without a single-TX response can never mean success. */
+    if (txd->sae_active) {
+        ItlIwx *that = container_of(sc, ItlIwx, com);
+        that->iwx_sae_tx_report_terminal(sc, txd, EIO);
+    }
     
     //    bus_dmamap_sync(sc->sc_dmat, txd->map, 0, txd->map->dm_mapsize,
     //        BUS_DMASYNC_POSTWRITE);
@@ -7390,8 +7777,45 @@ iwx_tx_update_byte_tbl(struct iwx_softc *sc, struct iwx_tx_ring *txq, int idx, u
     }
 }
 
+bool ItlIwx::
+iwx_sae_tx_commit_doorbell(struct iwx_softc *sc, uint64_t ticket,
+                           int qid, int next_cur)
+{
+    bool committed = false;
+
+    if (sc == NULL || ticket == 0 || sc->sc_task_gate_lock == NULL ||
+        sc->sc_sae_tx_lock == NULL)
+        return false;
+
+    /*
+     * Close, cancellation, and the actual register write share this short
+     * task-admission -> SAE-leaf critical section. Thus a stop/cancel either
+     * wins before the doorbell or observes a descriptor already owned by
+     * firmware. Do not extend this lock over frame build, DMA mapping, or
+     * callbacks.
+     */
+    IOLockLock(sc->sc_task_gate_lock);
+    if (!sc->sc_task_gate_closed &&
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0 &&
+        !sc->sc_task_gate_detaching) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        committed = sc->sc_sae_tx_active &&
+            !sc->sc_sae_tx_doorbelled &&
+            sc->sc_sae_tx_active_ticket == ticket &&
+            ticket > sc->sc_sae_tx_cancel_through;
+        if (committed) {
+            sc->sc_sae_tx_doorbelled = true;
+            IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, qid << 16 | next_cur);
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    IOLockUnlock(sc->sc_task_gate_lock);
+    return committed;
+}
+
 int ItlIwx::
-iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
+iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
+       const struct ItlSaeAuthTxRequestV1 *sae_request)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ni;
@@ -7426,6 +7850,40 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
         hdrlen = sizeof(struct ieee80211_frame_min);
     else
         hdrlen = ieee80211_get_hdrlen(wh);
+
+    /*
+     * The controller-owned direct path may carry exactly one raw Algorithm-3
+     * Authentication frame. Verify the complete pre-trim framing here rather
+     * than trusting an mbuf carrier or later descriptor diagnostics.
+     */
+    if (sae_request != NULL) {
+        const u_int8_t *auth;
+
+        if (!itl_sae_auth_transport_request_is_well_formed(sae_request) ||
+            type != IEEE80211_FC0_TYPE_MGT ||
+            subtype != IEEE80211_FC0_SUBTYPE_AUTH ||
+            hdrlen != sizeof(struct ieee80211_frame) ||
+            mbuf_len(m) < hdrlen + 6 + sae_request->body_len ||
+            mbuf_pkthdr_len(m) != hdrlen + 6 + sae_request->body_len ||
+            memcmp(wh->i_addr1, sae_request->bssid,
+                   sizeof(sae_request->bssid)) != 0 ||
+            memcmp(wh->i_addr2, sae_request->sta,
+                   sizeof(sae_request->sta)) != 0 ||
+            memcmp(wh->i_addr3, sae_request->bssid,
+                   sizeof(sae_request->bssid)) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+        auth = (const u_int8_t *)wh + hdrlen;
+        if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE ||
+            LE_READ_2(auth + 2) != sae_request->transaction ||
+            LE_READ_2(auth + 4) != sae_request->auth_status ||
+            memcmp(auth + 6, sae_request->body,
+                   sae_request->body_len) != 0) {
+            mbuf_freem(m);
+            return EINVAL;
+        }
+    }
     /*
      * Capture diagnostic identity (subtype, peer/i_addr1, auth
      * transaction sequence) BEFORE the later mbuf_adj(m, hdrlen)
@@ -7593,6 +8051,23 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     data->in = in;
     data->type = type;
     /*
+     * Store the SAE completion identity only after the payload mapping has
+     * succeeded. This is the last point that can still fail before the TX
+     * doorbell and the only descriptor state visible to firmware completion.
+     */
+    iwx_sae_tx_data_clear(data);
+    if (sae_request != NULL) {
+        data->sae_active = true;
+        data->sae_transaction = sae_request->transaction;
+        data->sae_auth_status = sae_request->auth_status;
+        data->sae_association_epoch = sae_request->association_epoch;
+        data->sae_relay_generation = sae_request->relay_generation;
+        data->sae_ticket = sae_request->ticket;
+        memcpy(data->sae_bssid, sae_request->bssid,
+               sizeof(data->sae_bssid));
+        memcpy(data->sae_sta, sae_request->sta, sizeof(data->sae_sta));
+    }
+    /*
      * Persist the pre-trim diagnostic identity. Reading from
      * wh here would be unsafe -- mbuf_adj above advanced the
      * mbuf data pointer, and the original header bytes may be
@@ -7643,9 +8118,30 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     
     iwx_tx_update_byte_tbl(sc, ring, idx, totlen, num_tbs);
     
-    /* Kick TX ring. */
-    ring->cur = (ring->cur + 1) % getTxQueueSize();
-    IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+    /* Kick TX ring.  SAE commits its final liveness check with the write. */
+    if (sae_request != NULL) {
+        const int saved_cur = ring->cur;
+        const int next_cur = (ring->cur + 1) % getTxQueueSize();
+
+        ring->cur = next_cur;
+        if (!iwx_sae_tx_commit_doorbell(sc, sae_request->ticket,
+                                        ring->qid, next_cur)) {
+            ring->cur = saved_cur;
+            iwx_clear_tx_desc(sc, ring, idx);
+            mbuf_freem(data->m);
+            data->m = NULL;
+            data->in = NULL;
+            data->type = 0;
+            data->diag_subtype = 0xff;
+            data->diag_auth_seq = 0xffff;
+            explicit_bzero(data->diag_peer, sizeof(data->diag_peer));
+            iwx_sae_tx_data_clear(data);
+            return EIO;
+        }
+    } else {
+        ring->cur = (ring->cur + 1) % getTxQueueSize();
+        IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, ring->qid << 16 | ring->cur);
+    }
     
     /* Mark TX ring as full if we reach a certain threshold. */
     if (++ring->queued > ring->hi_mark) {
@@ -9715,6 +10211,57 @@ iwx_security_rx_task_dispatch(void *arg)
 }
 
 void ItlIwx::
+iwx_sae_tx_task_dispatch(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ItlSaeAuthTransportEventV1 event;
+    bool have_event = false;
+    bool suppressed = false;
+    bool more = false;
+
+    if (!that->iwx_task_gate_enter(sc, false))
+        return;
+
+    /*
+     * Own only the bounded FIFO pop while the IWX lifecycle lease is held.
+     * The pop is the delivery-claim linearization point. A later cancel may
+     * suppress a still-queued record, but cannot revoke a value already
+     * claimed here; the controller mailbox's exact identity action is the
+     * second fence for that race. The callback returns after value-copying
+     * into that mailbox and never waits for AirportItlwm's command gate.
+     */
+    if (sc->sc_sae_tx_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_tx_lock);
+        if (sc->sc_sae_tx_event_count != 0) {
+            event = sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head].event;
+            explicit_bzero(&sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head],
+                           sizeof(sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head]));
+            sc->sc_sae_tx_event_head = (sc->sc_sae_tx_event_head + 1) %
+                IWX_SAE_TX_EVENTQ_LEN;
+            sc->sc_sae_tx_event_count--;
+            suppressed = event.ticket <= sc->sc_sae_tx_cancel_through;
+            more = sc->sc_sae_tx_event_count != 0;
+            have_event = true;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    }
+    that->iwx_task_gate_leave(sc);
+
+    if (have_event && !suppressed &&
+        itl_sae_auth_transport_event_is_well_formed(&event) &&
+        ic->ic_event_handler != NULL) {
+        /* Deferred process context only; never an RX/TX interrupt leaf. */
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_SAE_AUTH_TRANSPORT,
+                                &event);
+    }
+    explicit_bzero(&event, sizeof(event));
+    if (more)
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->sae_tx_task);
+}
+
+void ItlIwx::
 iwx_init_task_dispatch(void *arg)
 {
     struct iwx_softc *sc = (struct iwx_softc *)arg;
@@ -9928,6 +10475,209 @@ iwx_security_rx_purge(struct iwx_softc *sc)
         if (entry.ni != NULL)
             ieee80211_release_node(ic, entry.ni);
     }
+}
+
+bool ItlIwx::
+iwx_sae_tx_queue_terminal(struct iwx_softc *sc,
+                          const struct ItlSaeAuthTransportEventV1 *event)
+{
+    bool queued = false;
+
+    if (sc == NULL || event == NULL || sc->sc_sae_tx_lock == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return false;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (!sc->sc_sae_tx_active || !sc->sc_sae_tx_doorbelled ||
+        sc->sc_sae_tx_active_ticket != event->ticket) {
+        IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+        return false;
+    }
+
+    /* A firmware terminal result is the only normal release of this slot. */
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_active_ticket = 0;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+                   sizeof(sc->sc_sae_tx_active_event));
+    if (event->ticket > sc->sc_sae_tx_cancel_through) {
+        /*
+         * One active ticket and admission blocked while count != 0 make a
+         * full FIFO structurally impossible. Do not silently discard a
+         * terminal record if that ownership invariant is ever violated.
+         */
+        KASSERT(sc->sc_sae_tx_event_count < IWX_SAE_TX_EVENTQ_LEN,
+                "sc->sc_sae_tx_event_count < IWX_SAE_TX_EVENTQ_LEN");
+        if (sc->sc_sae_tx_event_count >= IWX_SAE_TX_EVENTQ_LEN) {
+            IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+            panic("%s: SAE TX terminal FIFO ownership violation",
+                  __FUNCTION__);
+        }
+        sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_tail].event = *event;
+        sc->sc_sae_tx_last_event = *event;
+        sc->sc_sae_tx_last_event_valid = true;
+        sc->sc_sae_tx_event_tail = (sc->sc_sae_tx_event_tail + 1) %
+            IWX_SAE_TX_EVENTQ_LEN;
+        sc->sc_sae_tx_event_count++;
+        queued = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+
+    /* A cancelled ticket is terminally retired but deliberately unpublished. */
+    if (queued)
+        iwx_add_task(sc, sc->sc_nswq, &sc->sae_tx_task);
+    return true;
+}
+
+void ItlIwx::
+iwx_sae_tx_report_terminal(struct iwx_softc *sc, struct iwx_tx_data *data,
+                           int32_t result)
+{
+    struct ItlSaeAuthTransportEventV1 event;
+
+    if (data == NULL || !data->sae_active)
+        return;
+    iwx_sae_tx_make_terminal_event_from_data(data, result, &event);
+    iwx_sae_tx_data_clear(data);
+    if (!iwx_sae_tx_queue_terminal(sc, &event)) {
+        /* A cancelled/stale descriptor is not a successful controller TX. */
+        XYLog("%s: SAE TX terminal ticket %llu not deliverable\n",
+              __FUNCTION__, (unsigned long long)event.ticket);
+    }
+    explicit_bzero(&event, sizeof(event));
+}
+
+void ItlIwx::
+iwx_sae_tx_retire_unsubmitted(struct iwx_softc *sc, uint64_t ticket)
+{
+    if (sc == NULL || ticket == 0 || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = ticket;
+    /* This helper is used only on paths proven not to have doorbelled. */
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled &&
+        sc->sc_sae_tx_active_ticket == ticket) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+                       sizeof(sc->sc_sae_tx_active_event));
+    }
+    if (sc->sc_sae_tx_last_event_valid &&
+        sc->sc_sae_tx_last_event.ticket <= sc->sc_sae_tx_cancel_through) {
+        sc->sc_sae_tx_last_event_valid = false;
+        explicit_bzero(&sc->sc_sae_tx_last_event,
+                       sizeof(sc->sc_sae_tx_last_event));
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwx::
+iwx_sae_tx_cancel_all(struct iwx_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through)
+        sc->sc_sae_tx_cancel_through = sc->sc_sae_tx_active_ticket;
+    if (sc->sc_sae_tx_active && !sc->sc_sae_tx_doorbelled) {
+        sc->sc_sae_tx_active = false;
+        sc->sc_sae_tx_active_ticket = 0;
+        explicit_bzero(&sc->sc_sae_tx_active_event,
+                       sizeof(sc->sc_sae_tx_active_event));
+    }
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+                   sizeof(sc->sc_sae_tx_last_event));
+    /* A terminal record has no descriptor and is always stale at stop. */
+    if (!sc->sc_sae_tx_active && sc->sc_sae_tx_event_count != 0) {
+        explicit_bzero(sc->sc_sae_tx_eventq,
+                       sizeof(sc->sc_sae_tx_eventq));
+        sc->sc_sae_tx_event_head = 0;
+        sc->sc_sae_tx_event_tail = 0;
+        sc->sc_sae_tx_event_count = 0;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+void ItlIwx::
+iwx_sae_tx_purge(struct iwx_softc *sc)
+{
+    if (sc == NULL || sc->sc_sae_tx_lock == NULL)
+        return;
+
+    /* Caller has closed admission and reset/freed every TX descriptor. */
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_active_ticket = 0;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+                   sizeof(sc->sc_sae_tx_active_event));
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+                   sizeof(sc->sc_sae_tx_last_event));
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+bool ItlIwx::
+iwx_sae_tx_snapshot_reset(struct iwx_softc *sc,
+                          struct ItlSaeAuthTransportEventV1 *snapshot)
+{
+    bool have_snapshot = false;
+
+    if (sc == NULL || snapshot == NULL || sc->sc_sae_tx_lock == NULL)
+        return false;
+    explicit_bzero(snapshot, sizeof(*snapshot));
+    IOSimpleLockLock(sc->sc_sae_tx_lock);
+    if (sc->sc_sae_tx_active && sc->sc_sae_tx_doorbelled &&
+        sc->sc_sae_tx_active_ticket > sc->sc_sae_tx_cancel_through &&
+        itl_sae_auth_transport_event_is_well_formed(
+            &sc->sc_sae_tx_active_event)) {
+        *snapshot = sc->sc_sae_tx_active_event;
+        snapshot->result = EIO;
+        have_snapshot = true;
+    } else if (sc->sc_sae_tx_event_count != 0) {
+        const struct ItlSaeAuthTransportEventV1 *event =
+            &sc->sc_sae_tx_eventq[sc->sc_sae_tx_event_head].event;
+        if (event->ticket > sc->sc_sae_tx_cancel_through &&
+            itl_sae_auth_transport_event_is_well_formed(event)) {
+            *snapshot = *event;
+            snapshot->result = EIO;
+            have_snapshot = true;
+        }
+    } else if (sc->sc_sae_tx_last_event_valid &&
+               sc->sc_sae_tx_last_event.ticket >
+                   sc->sc_sae_tx_cancel_through &&
+               itl_sae_auth_transport_event_is_well_formed(
+                   &sc->sc_sae_tx_last_event)) {
+        *snapshot = sc->sc_sae_tx_last_event;
+        snapshot->result = EIO;
+        have_snapshot = true;
+    }
+    IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    return have_snapshot;
+}
+
+void ItlIwx::
+iwx_sae_tx_emit_reset_event(
+    struct iwx_softc *sc,
+    const struct ItlSaeAuthTransportEventV1 *snapshot)
+{
+    struct ieee80211com *ic;
+
+    if (sc == NULL || snapshot == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(snapshot))
+        return;
+    ic = &sc->sc_ic;
+    if (ic->ic_event_handler != NULL)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET,
+                                (void *)snapshot);
 }
 
 void ItlIwx::
@@ -11897,8 +12647,11 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     int i, s, stop_generation;
+    struct ItlSaeAuthTransportEventV1 reset_event;
+    bool emit_reset_event = false;
 
     s = splnet();
+    explicit_bzero(&reset_event, sizeof(reset_event));
 
     //    rw_assert_wrlock(&sc->ioctl_rwl);
 
@@ -11914,7 +12667,6 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
         splx(s);
         return;
     }
-
     /*
      * The device stop below is the authoritative firmware-key erase edge.
      * Close task admission first, then mark the backend reset owner before
@@ -11933,6 +12685,8 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
             iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->security_rx_task);
+        if (sc->sc_nswq != NULL)
+            iwx_del_task(sc, sc->sc_nswq, &sc->sae_tx_task);
         if (sc->sc_nswq != NULL)
             iwx_del_task(sc, sc->sc_nswq, &sc->mfp_pae_task);
         iwx_del_task(sc, systq, &sc->ba_task);
@@ -11959,10 +12713,22 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
                               caller_is_init_epoch ? 1 : 0, 1);
     that->iwx_security_rx_purge(sc);
 
+    /*
+     * A reset is terminal failure even if firmware had just completed the
+     * descriptor before the deferred worker reached the controller. Snapshot
+     * the exact bounded identity after all task bodies have left, before the
+     * reset clears descriptor state. Explicit controller cancellation has
+     * already advanced reject-through and therefore suppresses this notice.
+     */
+    emit_reset_event = that->iwx_sae_tx_snapshot_reset(sc, &reset_event);
+    that->iwx_sae_tx_cancel_all(sc);
+
     KASSERT(sc->task_refs.refs >= 1, "sc->task_refs.refs >= 1");
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
     
     iwx_stop_device(sc);
+    /* Device reset is the last edge required before active-slot release. */
+    that->iwx_sae_tx_purge(sc);
 
     /* The stopped device has discarded every firmware key slot. */
     if (sc->sc_mfp_pae_lock != NULL) {
@@ -12009,8 +12775,12 @@ iwx_stop_internal(struct _ifnet *ifp, bool caller_is_init_task,
 
     /* Stop is complete; permit exactly a subsequent, fresh init epoch. */
     that->iwx_task_gate_rearm(sc, stop_generation);
-    
+
     splx(s);
+    /* No IWX task, lifecycle, q0, or SAE leaf lock is held on this callback. */
+    if (emit_reset_event)
+        that->iwx_sae_tx_emit_reset_event(sc, &reset_event);
+    explicit_bzero(&reset_event, sizeof(reset_event));
 }
 
 void ItlIwx::
@@ -15633,6 +16403,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     memset(&sc->init_task, 0, sizeof(sc->init_task));
     memset(&sc->newstate_task, 0, sizeof(sc->newstate_task));
     memset(&sc->security_rx_task, 0, sizeof(sc->security_rx_task));
+    memset(&sc->sae_tx_task, 0, sizeof(sc->sae_tx_task));
     memset(&sc->mfp_pae_task, 0, sizeof(sc->mfp_pae_task));
     memset(&sc->ba_task, 0, sizeof(sc->ba_task));
     memset(&sc->mac_ctxt_task, 0, sizeof(sc->mac_ctxt_task));
@@ -15661,6 +16432,20 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_security_rx_tail = 0;
     sc->sc_security_rx_count = 0;
     sc->sc_security_rx_worker = NULL;
+    sc->sc_sae_tx_lock = NULL;
+    sc->sc_sae_tx_active = false;
+    sc->sc_sae_tx_doorbelled = false;
+    sc->sc_sae_tx_active_ticket = 0;
+    sc->sc_sae_tx_cancel_through = 0;
+    explicit_bzero(&sc->sc_sae_tx_active_event,
+                   sizeof(sc->sc_sae_tx_active_event));
+    sc->sc_sae_tx_last_event_valid = false;
+    explicit_bzero(&sc->sc_sae_tx_last_event,
+                   sizeof(sc->sc_sae_tx_last_event));
+    explicit_bzero(sc->sc_sae_tx_eventq, sizeof(sc->sc_sae_tx_eventq));
+    sc->sc_sae_tx_event_head = 0;
+    sc->sc_sae_tx_event_tail = 0;
+    sc->sc_sae_tx_event_count = 0;
     sc->sc_mfp_pae_lock = NULL;
     explicit_bzero(&sc->sc_mfp_pae_txn, sizeof(sc->sc_mfp_pae_txn));
     sc->sc_mfp_pae_reset_pending = false;
@@ -15900,9 +16685,30 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         goto fail;
     }
 
+    /*
+     * This gate deliberately shares the IWX workloop with the normal output
+     * and firmware-completion sources, but it is not AirportItlwm's policy
+     * command gate. It serializes only the bounded raw Algorithm-3 TX leaf.
+     */
+    fSaeTxGate = IOCommandGate::commandGate(this);
+    if (fSaeTxGate == NULL || pa->workloop == NULL ||
+        pa->workloop->addEventSource(fSaeTxGate) != kIOReturnSuccess) {
+        if (fSaeTxGate != NULL) {
+            fSaeTxGate->release();
+            fSaeTxGate = NULL;
+        }
+        XYLog("%s: could not establish SAE TX workloop gate\n", DEVNAME(sc));
+        goto fail;
+    }
+
     sc->sc_security_rx_lock = IOSimpleLockAlloc();
     if (sc->sc_security_rx_lock == NULL) {
         XYLog("%s: could not allocate deferred security RX lock\n", DEVNAME(sc));
+        goto fail;
+    }
+    sc->sc_sae_tx_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_tx_lock == NULL) {
+        XYLog("%s: could not allocate SAE TX owner lock\n", DEVNAME(sc));
         goto fail;
     }
     sc->sc_mfp_pae_lock = IOSimpleLockAlloc();
@@ -15991,6 +16797,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
              "iwx_newstate_task");
     task_set(&sc->security_rx_task, iwx_security_rx_task_dispatch, sc,
              "iwx_security_rx_task");
+    task_set(&sc->sae_tx_task, iwx_sae_tx_task_dispatch, sc,
+             "iwx_sae_tx_task");
     task_set(&sc->mfp_pae_task, iwx_mfp_pae_task_dispatch, sc,
              "iwx_mfp_pae_task");
     task_set(&sc->ba_task, iwx_ba_task_dispatch, sc, "iwx_ba_task");

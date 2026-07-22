@@ -77,6 +77,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 int	ieee80211_mgmt_output(struct _ifnet *, struct ieee80211_node *,
@@ -1575,6 +1576,74 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
     LE_WRITE_2(frm, status);
 
 	return m;
+}
+
+/*
+ * Build one controller-owned SAE Authentication (Algorithm 3) frame.
+ *
+ * This is intentionally separate from ieee80211_get_auth()/send_mgmt(),
+ * whose protocol-state callers must remain Open-System-only until the SAE
+ * state owner replaces SCAN -> AUTH. The request is already a bounded
+ * semantic reply; this function owns only exact generic 802.11 framing and
+ * refuses every stale BSS/epoch/address identity before allocating a frame.
+ * It neither queues the frame nor takes a node reference.
+ */
+mbuf_t
+ieee80211_sae_auth_frame_build(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const struct ItlSaeAuthTxRequestV1 *request)
+{
+    struct ieee80211_frame *wh;
+    u_int8_t *frm;
+    mbuf_t m;
+    size_t total_len;
+
+    if (ic == NULL || ni == NULL ||
+        !itl_sae_auth_transport_request_is_well_formed(request) ||
+        ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_AUTH || ic->ic_bss != ni ||
+        ieee80211_pae_assoc_epoch_current(ic) != request->association_epoch ||
+        memcmp(ni->ni_macaddr, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ni->ni_bssid, request->bssid, sizeof(request->bssid)) != 0 ||
+        memcmp(ic->ic_myaddr, request->sta, sizeof(request->sta)) != 0)
+        return NULL;
+
+    total_len = sizeof(*wh) + 6 + request->body_len;
+    if (total_len > MCLBYTES)
+        return NULL;
+
+    mbuf_gethdr(MBUF_DONTWAIT, MT_DATA, &m);
+    if (m == NULL)
+        return NULL;
+    if (total_len > mbuf_get_mhlen()) {
+        mbuf_mclget(MBUF_DONTWAIT, MT_DATA, &m);
+        if ((mbuf_flags(m) & MBUF_EXT) == 0)
+            return mbuf_free(m);
+    }
+    mbuf_align_32(m, total_len);
+    mbuf_pkthdr_setlen(m, total_len);
+    mbuf_setlen(m, total_len);
+
+    wh = mtod(m, struct ieee80211_frame *);
+    memset(wh, 0, sizeof(*wh));
+    wh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_MGT |
+        IEEE80211_FC0_SUBTYPE_AUTH;
+    wh->i_fc[1] = IEEE80211_FC1_DIR_NODS;
+    *(u_int16_t *)&wh->i_seq[0] =
+        htole16(ni->ni_txseq << IEEE80211_SEQ_SEQ_SHIFT);
+    ni->ni_txseq = (ni->ni_txseq + 1) & 0xfff;
+    IEEE80211_ADDR_COPY(wh->i_addr1, request->bssid);
+    IEEE80211_ADDR_COPY(wh->i_addr2, request->sta);
+    IEEE80211_ADDR_COPY(wh->i_addr3, request->bssid);
+
+    frm = (u_int8_t *)&wh[1];
+    LE_WRITE_2(frm, IEEE80211_AUTH_ALG_SAE); frm += 2;
+    LE_WRITE_2(frm, request->transaction); frm += 2;
+    LE_WRITE_2(frm, request->auth_status); frm += 2;
+    memcpy(frm, request->body, request->body_len);
+
+    /* rcvif retains its established meaning: it carries ni, never ticket. */
+    mbuf_pkthdr_setrcvif(m, (ifnet_t)ni);
+    return m;
 }
 
 /*-

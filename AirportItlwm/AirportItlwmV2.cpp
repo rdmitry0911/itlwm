@@ -721,6 +721,19 @@ static constexpr UInt32 kAirportItlwmSkywalkQueueCapacity = 256;
 IO80211WorkQueue *_fWorkloop;
 IOCommandGate *_fCommandGate;
 
+#if __IO80211_TARGET >= __MAC_26_0
+static bool setupSaeTransportMailboxSource(AirportItlwm *that,
+                                           IOWorkLoop *workloop);
+static void teardownSaeTransportMailboxSource(AirportItlwm *that,
+                                              IOWorkLoop *workloop);
+static void queueSaeTransportMailbox(
+    AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
+    bool isReset);
+static void dispatchSaeTransportMailboxEvent(
+    AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
+    bool isReset);
+#endif
+
 // Off-gate link-state publication layer.
 //
 // The inherited IO80211InfraInterface::setLinkState publication reaches
@@ -1084,6 +1097,283 @@ static void teardownLinkStatePublishSource(AirportItlwm *that,
     state.tearingDown = false;
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 }
+
+#if __IO80211_TARGET >= __MAC_26_0
+/*
+ * The IWX nswq terminal worker must never synchronously wait for this
+ * controller's command gate: a power-off path may own that gate while it
+ * waits taskq_barrier(sc_nswq).  This mailbox owns a bounded copied record,
+ * signals an IOInterruptEventSource, and returns.  Its action runs later on
+ * the controller workloop, where the command gate is recursively available.
+ */
+static void
+saeTransportMailboxInterruptAction(OSObject *owner,
+                                   IOInterruptEventSource *sender,
+                                   int /*count*/)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == NULL)
+        return;
+
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(that, true);
+    if (!lifecycle.admitted())
+        return;
+
+    AirportItlwmSaeTransportMailboxLifecycle &state =
+        that->fSaeTransportMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    for (;;) {
+        AirportItlwmSaeTransportMailboxEntry entry;
+        bool haveEntry = false;
+
+        explicit_bzero(&entry, sizeof(entry));
+        IOInterruptState admissionIrq =
+            IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (state.settingUp || state.stopping || state.tearingDown ||
+            sender != state.source || state.payloadLock == NULL) {
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            return;
+        }
+        IOSimpleLock *payloadLock = state.payloadLock;
+        IOInterruptState payloadIrq =
+            IOSimpleLockLockDisableInterrupt(payloadLock);
+        if (state.count != 0) {
+            entry = state.entries[state.head];
+            explicit_bzero(&state.entries[state.head],
+                           sizeof(state.entries[state.head]));
+            state.head = (state.head + 1) %
+                kAirportItlwmSaeTransportMailboxCapacity;
+            state.count--;
+            haveEntry = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+        if (!haveEntry)
+            return;
+        if (itl_sae_auth_transport_event_is_well_formed(&entry.event))
+            dispatchSaeTransportMailboxEvent(that, &entry.event,
+                                             entry.isReset);
+        explicit_bzero(&entry, sizeof(entry));
+    }
+}
+
+static bool
+setupSaeTransportMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
+{
+    if (that == NULL || workloop == NULL)
+        return false;
+
+    AirportItlwmSaeTransportMailboxLifecycle &state =
+        that->fSaeTransportMailbox;
+    IOSimpleLock *lifecycleLock = that->fLifecycleAdmissionLock;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (lifecycleLock == NULL || admissionLock == NULL)
+        return false;
+
+    IOInterruptState lifecycleIrq =
+        IOSimpleLockLockDisableInterrupt(lifecycleLock);
+    if (that->fLifecyclePhase != kAirportItlwmLifecycleStarting &&
+        that->fLifecyclePhase != kAirportItlwmLifecycleLive) {
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source != NULL || state.payloadLock != NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    state.settingUp = true;
+    state.stopping = false;
+    state.tearingDown = false;
+    workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+
+    IOSimpleLock *payloadLock = IOSimpleLockAlloc();
+    IOInterruptEventSource *source = IOInterruptEventSource::
+        interruptEventSource(that,
+            (IOInterruptEventSource::Action)saeTransportMailboxInterruptAction);
+    bool sourceAdded = false;
+    bool installed = false;
+    if (payloadLock != NULL && source != NULL &&
+        workloop->addEventSource(source) == kIOReturnSuccess) {
+        sourceAdded = true;
+        source->enable();
+
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (!state.stopping && !state.tearingDown) {
+            state.source = source;
+            state.payloadLock = payloadLock;
+            state.users = 0;
+            state.head = 0;
+            state.tail = 0;
+            state.count = 0;
+            explicit_bzero(state.entries, sizeof(state.entries));
+            state.settingUp = false;
+            installed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    }
+
+    if (installed) {
+        workloop->release();
+        return true;
+    }
+
+    if (source != NULL) {
+        source->disable();
+        if (sourceAdded)
+            workloop->removeEventSource(source);
+        source->release();
+    }
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.settingUp = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    workloop->release();
+    return false;
+}
+
+static void
+queueSaeTransportMailbox(
+    AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
+    bool isReset)
+{
+    if (that == NULL || event == NULL ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return;
+
+    AirportItlwmSaeTransportMailboxLifecycle &state =
+        that->fSaeTransportMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == NULL || state.payloadLock == NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        /* A lifecycle-admitted SAE event without its mandatory source is fatal. */
+        panic("%s: SAE transport mailbox unavailable", __FUNCTION__);
+    }
+    ++state.users;
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    source->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    bool overflow = false;
+    IOInterruptState payloadIrq = IOSimpleLockLockDisableInterrupt(payloadLock);
+    if (state.count >= kAirportItlwmSaeTransportMailboxCapacity) {
+        overflow = true;
+    } else {
+        state.entries[state.tail].event = *event;
+        state.entries[state.tail].isReset = isReset;
+        state.tail = (state.tail + 1) %
+            kAirportItlwmSaeTransportMailboxCapacity;
+        state.count++;
+    }
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+
+    if (!overflow)
+        source->interruptOccurred(0, 0, 0);
+    source->release();
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    KASSERT(state.users != 0, "state.users != 0");
+    state.users--;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (overflow)
+        panic("%s: SAE transport mailbox overflow", __FUNCTION__);
+}
+
+static void
+teardownSaeTransportMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
+{
+    if (that == NULL)
+        return;
+
+    AirportItlwmSaeTransportMailboxLifecycle &state =
+        that->fSaeTransportMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.tearingDown) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        for (;;) {
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            const bool complete = !state.tearingDown;
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (complete)
+                return;
+            IOSleep(1);
+        }
+    }
+    state.stopping = true;
+    state.tearingDown = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    /* Producers retain the source while they copy/signal outside this lock. */
+    for (;;) {
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = !state.settingUp && state.users == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        if (drained)
+            break;
+        IOSleep(1);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    if (source != NULL)
+        source->retain();
+    if (workloop != NULL)
+        workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (source != NULL) {
+        source->disable();
+        if (workloop != NULL)
+            workloop->removeEventSource(source);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.source = NULL;
+    state.payloadLock = NULL;
+    state.head = 0;
+    state.tail = 0;
+    state.count = 0;
+    explicit_bzero(state.entries, sizeof(state.entries));
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    if (source != NULL) {
+        source->release();
+        source->release();
+    }
+    if (workloop != NULL)
+        workloop->release();
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.tearingDown = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+#endif
 
 // The Skywalk interface historically copied AirportItlwm::scanSource into a
 // second raw field. Keep that field layout-compatible, but the per-controller
@@ -4646,6 +4936,9 @@ void AirportItlwm::stopHalAndDrainClaimed()
     // removed/released its workloop registration.
     prepareLifecycleDrain();
     stopTahoeBootThreadCallAndDrain();
+#if __IO80211_TARGET >= __MAC_26_0
+    teardownSaeTransportMailboxSource(this, _fWorkloop);
+#endif
     teardownLinkStatePublishSource(this, _fWorkloop);
     stopWatchdogAndDrain();
 #if __IO80211_TARGET >= __MAC_26_0
@@ -5211,6 +5504,23 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
         return;
     }
 
+#if __IO80211_TARGET >= __MAC_26_0
+    /*
+     * IWX invokes this from its terminal nswq worker and from reset. Keep
+     * this branch strictly nonblocking: it only copies/signals the private
+     * mailbox, so taskq_barrier(sc_nswq) can never wait for this command gate.
+     */
+    if (msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT ||
+        msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET) {
+        if (data != nullptr) {
+            handleSaeAuthTransportEvent(that,
+                (const struct ItlSaeAuthTransportEventV1 *)data,
+                msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET);
+        }
+        return;
+    }
+#endif
+
     IOCommandGate *gate = that->getCommandGate();
     if (gate == nullptr) {
         XYLog("DEBUG %s SKIP: command gate unavailable\n", __FUNCTION__);
@@ -5526,8 +5836,14 @@ bool AirportItlwm::init(OSDictionary *properties)
     memset(&fLinkStatePublishLifecycle, 0,
            sizeof(fLinkStatePublishLifecycle));
     memset(&fScanSourceLifecycle, 0, sizeof(fScanSourceLifecycle));
+#if __IO80211_TARGET >= __MAC_26_0
+    memset(&fSaeTransportMailbox, 0, sizeof(fSaeTransportMailbox));
+#endif
     fLinkStatePublishLifecycle.admissionLock = IOSimpleLockAlloc();
     fScanSourceLifecycle.admissionLock = IOSimpleLockAlloc();
+#if __IO80211_TARGET >= __MAC_26_0
+    fSaeTransportMailbox.admissionLock = IOSimpleLockAlloc();
+#endif
     fWatchdogStopping = false;
     tahoeBootThreadCall = nullptr;
     fTahoeBootCallLock = IOLockAlloc();
@@ -5543,7 +5859,11 @@ bool AirportItlwm::init(OSDictionary *properties)
     if (fTahoeBootCallLock == nullptr || fLifecycleLock == nullptr ||
         fLifecycleAdmissionLock == nullptr ||
         fLinkStatePublishLifecycle.admissionLock == nullptr ||
-        fScanSourceLifecycle.admissionLock == nullptr)
+        fScanSourceLifecycle.admissionLock == nullptr
+#if __IO80211_TARGET >= __MAC_26_0
+        || fSaeTransportMailbox.admissionLock == nullptr
+#endif
+        )
         ret = false;
     awdlSyncEnable = true;
     power_state = 0;
@@ -6123,6 +6443,13 @@ bool AirportItlwm::start(IOService *provider)
     fAssocTargetCanceled   = false;
     fAssocTargetTerminating = false;
     AirportItlwmSaeRelayFsmV1Clear(&fSaeRelay);
+    explicit_bzero(&fSaePendingTxReply, sizeof(fSaePendingTxReply));
+    explicit_bzero(&fSaePendingTxRequest, sizeof(fSaePendingTxRequest));
+    fSaeNextTxTicket = 0;
+    fSaePendingTxActive = false;
+    explicit_bzero(&fSaeLastTerminalTxEvent,
+                   sizeof(fSaeLastTerminalTxEvent));
+    fSaeLastTerminalTxEventValid = false;
     memset(fSaeControllerNonce, 0, sizeof(fSaeControllerNonce));
     if (!airportItlwmSaeFillNonZero(fSaeControllerNonce)) {
         XYLog("DEBUG %s [STEP 4] FAIL: SAE relay nonce\n", __FUNCTION__);
@@ -6235,6 +6562,18 @@ bool AirportItlwm::start(IOService *provider)
         DISARM_PANIC_TIMER();
         return false;
     }
+
+#if __IO80211_TARGET >= __MAC_26_0
+    if (!setupSaeTransportMailboxSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 7] FAIL: SAE transport mailbox source alloc\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+#endif
 
     SD_SET(10); // watchdog/scan timers OK
     sDiag.step = 7;
@@ -6902,6 +7241,12 @@ void AirportItlwm::free()
         IOSimpleLockFree(fScanSourceLifecycle.admissionLock);
         fScanSourceLifecycle.admissionLock = NULL;
     }
+#if __IO80211_TARGET >= __MAC_26_0
+    if (fSaeTransportMailbox.admissionLock != NULL) {
+        IOSimpleLockFree(fSaeTransportMailbox.admissionLock);
+        fSaeTransportMailbox.admissionLock = NULL;
+    }
+#endif
     if (fLifecycleAdmissionLock != NULL) {
         IOSimpleLockFree(fLifecycleAdmissionLock);
         fLifecycleAdmissionLock = NULL;
@@ -7498,6 +7843,10 @@ IOReturn AirportItlwm::setHardwareAddress(const void *addrP, UInt32 addrBytes)
         return kIOReturnNotReady;
     if (!fNetIf || !addrP)
         return kIOReturnError;
+#if __IO80211_TARGET >= __MAC_26_0
+    /* Invalidate an old-station SAE request before changing its identity. */
+    cancelSaeRelay("setHardwareAddress", false);
+#endif
     if_setlladdr(&fHalService->get80211Controller()->ic_ac.ac_if, (const UInt8 *)addrP);
     if (fHalService->get80211Controller()->ic_state > IEEE80211_S_INIT) {
 #if __IO80211_TARGET >= __MAC_26_0
@@ -8070,8 +8419,13 @@ void AirportItlwm::disableAdapterCore(IONetworkInterface *netif)
     skywalkTxDrainCompletionPackets(this);
     skywalkRxDrainPendingPackets(this);
 #endif
-    if (fHalService)
+    if (fHalService) {
+#if __IO80211_TARGET >= __MAC_26_0
+        /* Cancel while HAL is still live; disable() may reset TX rings. */
+        cancelSaeRelay("disableAdapterCore", false);
+#endif
         fHalService->disable(netif);
+    }
 }
 
 void AirportItlwm::disableAdapter(IONetworkInterface *netif)
@@ -8972,7 +9326,32 @@ struct AirportItlwmWaitSaeTargetArgs {
 
 struct AirportItlwmSaeReplyArgs {
     AirportItlwm *self;
-    const struct AirportItlwmSaeAuthReplyV1 *reply;
+    struct AirportItlwmSaeAuthReplyV1 reply;
+    struct ItlSaeAuthTxRequestV1 request;
+    uint64_t ticket;
+    IOReturn rc;
+};
+
+/* HAL admission failure is reconciled after submitSaeAuthFrame() returns. */
+struct AirportItlwmSaeSubmitFailureArgs {
+    AirportItlwm *self;
+    uint64_t ticket;
+    uint64_t cancel_ticket;
+    IOReturn rc;
+};
+
+/* IWX terminal record copied out of the deferred event-handler callback. */
+struct AirportItlwmSaeTxCompletionArgs {
+    AirportItlwm *self;
+    struct ItlSaeAuthTransportEventV1 event;
+    uint64_t cancel_ticket;
+    IOReturn rc;
+};
+
+/* IWX reset has already purged the descriptor; this action never cancels HAL. */
+struct AirportItlwmSaeTxResetArgs {
+    AirportItlwm *self;
+    struct ItlSaeAuthTransportEventV1 event;
     IOReturn rc;
 };
 
@@ -8994,17 +9373,20 @@ struct AirportItlwmSaeCompletionArgs {
 struct AirportItlwmSaeAbortArgs {
     AirportItlwm *self;
     const struct AirportItlwmSaeAbortV1 *abort_message;
+    uint64_t cancel_ticket;
     IOReturn rc;
 };
 
 struct AirportItlwmCancelSaeRelayArgs {
     AirportItlwm *self;
     bool terminating;
+    uint64_t cancel_ticket;
 };
 
 struct AirportItlwmAbortSaeClientArgs {
     AirportItlwm *self;
     uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength];
+    uint64_t cancel_ticket;
 };
 
 static IOReturn
@@ -9051,11 +9433,57 @@ airportItlwmClearSaeRelayWaiterLocked(
     self->fSaeRelayWaiterActive = false;
 }
 
+static uint64_t
+airportItlwmClearSaePendingTxLocked(AirportItlwm *self)
+{
+    uint64_t ticket = 0;
+
+    if (self == nullptr)
+        return 0;
+    if (self->fSaePendingTxActive)
+        ticket = self->fSaePendingTxRequest.ticket;
+    explicit_bzero(&self->fSaePendingTxReply,
+                   sizeof(self->fSaePendingTxReply));
+    explicit_bzero(&self->fSaePendingTxRequest,
+                   sizeof(self->fSaePendingTxRequest));
+    self->fSaePendingTxActive = false;
+    return ticket;
+}
+
 static void
-airportItlwmClearSaeRelayLocked(AirportItlwm *self, bool canceled)
+airportItlwmClearSaeLastTerminalTxLocked(AirportItlwm *self)
 {
     if (self == nullptr)
         return;
+    explicit_bzero(&self->fSaeLastTerminalTxEvent,
+                   sizeof(self->fSaeLastTerminalTxEvent));
+    self->fSaeLastTerminalTxEventValid = false;
+}
+
+static bool
+airportItlwmSaeTerminalEventMatches(
+    const struct ItlSaeAuthTransportEventV1 *left,
+    const struct ItlSaeAuthTransportEventV1 *right)
+{
+    return left != nullptr && right != nullptr &&
+        left->association_epoch == right->association_epoch &&
+        left->relay_generation == right->relay_generation &&
+        left->ticket == right->ticket &&
+        left->transaction == right->transaction &&
+        left->auth_status == right->auth_status &&
+        memcmp(left->bssid, right->bssid, sizeof(left->bssid)) == 0 &&
+        memcmp(left->sta, right->sta, sizeof(left->sta)) == 0;
+}
+
+static uint64_t
+airportItlwmClearSaeRelayLocked(AirportItlwm *self, bool canceled)
+{
+    uint64_t ticket;
+
+    if (self == nullptr)
+        return 0;
+    ticket = airportItlwmClearSaePendingTxLocked(self);
+    airportItlwmClearSaeLastTerminalTxLocked(self);
     AirportItlwmSaeRelayFsmV1Clear(&self->fSaeRelay);
     airportItlwmAdvanceSaeRelayCancelEpochLocked(self);
     memset(self->fSaeRelayWaitingCookie, 0,
@@ -9064,6 +9492,7 @@ airportItlwmClearSaeRelayLocked(AirportItlwm *self, bool canceled)
     self->fSaeRelayCanceled = canceled;
     self->getCommandGate()->commandWakeup(&self->fSaeRelay,
                                            /*oneThread=*/false);
+    return ticket;
 }
 
 static IOReturn
@@ -9079,7 +9508,8 @@ airportItlwmBeginSaeRelayAction(OSObject * /*owner*/, void *arg0,
         return kIOReturnSuccess;
     }
     /* A Begin is not a reset primitive: never erase a bound/live session. */
-    if (s->fSaeRelay.phase != kAirportItlwmSaeRelayFsmIdle) {
+    if (s->fSaeRelay.phase != kAirportItlwmSaeRelayFsmIdle ||
+        s->fSaePendingTxActive) {
         a->rc = kIOReturnNotReady;
         return kIOReturnSuccess;
     }
@@ -9159,6 +9589,8 @@ airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
 {
     AirportItlwmSaeReplyArgs *a = (AirportItlwmSaeReplyArgs *)arg0;
     AirportItlwm *s = a->self;
+    enum AirportItlwmSaeRelayFsmResultV1 validation;
+
     if (s->fSaeRelayTerminating || s->fSaeRelayCanceled) {
         a->rc = kIOReturnAborted;
         return kIOReturnSuccess;
@@ -9168,18 +9600,203 @@ airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
         return kIOReturnSuccess;
     }
     if (!AirportItlwmSaeRelayFsmV1IdentityMatches(&s->fSaeRelay,
-            a->reply->generation, a->reply->association_epoch,
-            a->reply->controller_nonce, a->reply->client_cookie,
-            a->reply->bssid, a->reply->sta)) {
+            a->reply.generation, a->reply.association_epoch,
+            a->reply.controller_nonce, a->reply.client_cookie,
+            a->reply.bssid, a->reply.sta)) {
         a->rc = kIOReturnNotPermitted;
         return kIOReturnSuccess;
     }
     /*
-     * A reply cannot be accepted until a future Algorithm-3 TX path owns a
-     * per-frame completion token.  Do not call AcceptReply here: that FSM
-     * transition would incorrectly authorize peer RX after enqueue alone.
+     * One relay may own only one physical Algorithm-3 ticket.  This fence is
+     * distinct from the FSM phase: it covers the interval from accepted HAL
+     * admission until IWX's deferred terminal completion reaches this gate.
      */
-    a->rc = kIOReturnNotReady;
+    if (s->fSaePendingTxActive) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+
+    /* Validate on a scrubbed FSM copy; live state advances only on TX success. */
+    validation = AirportItlwmSaeRelayFsmV1ValidateReply(&s->fSaeRelay,
+                                                          &a->reply);
+    if (validation != kAirportItlwmSaeRelayFsmAccepted) {
+        a->rc = airportItlwmSaeFsmResultToIOReturn(validation);
+        /* Match the FSM's terminal invalid-body semantics without accepting it. */
+        if (validation == kAirportItlwmSaeRelayFsmNotPermitted)
+            (void)airportItlwmClearSaeRelayLocked(s, true);
+        return kIOReturnSuccess;
+    }
+    if (s->fSaeNextTxTicket == UINT64_MAX) {
+        /* IWX cancellation uses a monotonic numerical reject-through fence. */
+        a->rc = kIOReturnNoResources;
+        return kIOReturnSuccess;
+    }
+
+    explicit_bzero(&a->request, sizeof(a->request));
+    a->ticket = ++s->fSaeNextTxTicket;
+    a->request.version = kItlSaeAuthTransportV1Version;
+    a->request.size = sizeof(a->request);
+    a->request.association_epoch = a->reply.association_epoch;
+    a->request.relay_generation = a->reply.generation;
+    a->request.ticket = a->ticket;
+    a->request.transaction =
+        a->reply.kind == kAirportItlwmSaeRelayReplyCommit ?
+            kItlSaeAuthTransportTransactionCommit :
+            kItlSaeAuthTransportTransactionConfirm;
+    a->request.auth_status = 0;
+    a->request.body_len = a->reply.body_len;
+    memcpy(a->request.bssid, a->reply.bssid, sizeof(a->request.bssid));
+    memcpy(a->request.sta, a->reply.sta, sizeof(a->request.sta));
+    memcpy(a->request.body, a->reply.body, a->request.body_len);
+    if (!itl_sae_auth_transport_request_is_well_formed(&a->request)) {
+        explicit_bzero(&a->request, sizeof(a->request));
+        a->ticket = 0;
+        a->rc = kIOReturnBadArgument;
+        return kIOReturnSuccess;
+    }
+
+    /* A delayed reset for the preceding terminal ticket must not match this. */
+    airportItlwmClearSaeLastTerminalTxLocked(s);
+    memcpy(&s->fSaePendingTxReply, &a->reply,
+           sizeof(s->fSaePendingTxReply));
+    memcpy(&s->fSaePendingTxRequest, &a->request,
+           sizeof(s->fSaePendingTxRequest));
+    s->fSaePendingTxActive = true;
+    /* Do not call AcceptReply(): HAL admission is not a peer-visible TX. */
+    a->rc = kIOReturnSuccess;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSaeSubmitFailureAction(OSObject * /*owner*/, void *arg0,
+                                   void * /*arg1*/, void * /*arg2*/,
+                                   void * /*arg3*/)
+{
+    AirportItlwmSaeSubmitFailureArgs *a =
+        (AirportItlwmSaeSubmitFailureArgs *)arg0;
+    AirportItlwm *s = a->self;
+
+    if (!s->fSaePendingTxActive || a->ticket == 0 ||
+        s->fSaePendingTxRequest.ticket != a->ticket) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    /* submitSaeAuthFrame() returned before a successful doorbell ownership. */
+    a->cancel_ticket = airportItlwmClearSaePendingTxLocked(s);
+    a->rc = kIOReturnSuccess;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSaeTxCompletionAction(OSObject * /*owner*/, void *arg0,
+                                  void * /*arg1*/, void * /*arg2*/,
+                                  void * /*arg3*/)
+{
+    AirportItlwmSaeTxCompletionArgs *a =
+        (AirportItlwmSaeTxCompletionArgs *)arg0;
+    AirportItlwm *s = a->self;
+    struct ieee80211com *ic;
+    enum AirportItlwmSaeRelayFsmResultV1 result;
+
+    if (!itl_sae_auth_transport_event_is_well_formed(&a->event)) {
+        a->rc = kIOReturnBadArgument;
+        return kIOReturnSuccess;
+    }
+    if (!s->fSaePendingTxActive) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    /* A late completion may never erase a newer pending controller request. */
+    if (!itl_sae_auth_transport_event_matches_request(
+            &a->event, &s->fSaePendingTxRequest)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+
+    ic = s->fHalService != nullptr
+        ? s->fHalService->get80211Controller() : nullptr;
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled ||
+        !AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay) ||
+        s->fSaeRelay.target.generation != a->event.relay_generation ||
+        s->fSaeRelay.target.association_epoch !=
+            a->event.association_epoch ||
+        memcmp(s->fSaeRelay.target.bssid, a->event.bssid,
+               sizeof(a->event.bssid)) != 0 ||
+        memcmp(s->fSaeRelay.target.sta, a->event.sta,
+               sizeof(a->event.sta)) != 0 ||
+        ic == nullptr ||
+        ieee80211_pae_assoc_epoch_current(ic) !=
+            a->event.association_epoch) {
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    if (a->event.result != 0) {
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        a->rc = kIOReturnError;
+        return kIOReturnSuccess;
+    }
+
+    /* This is the sole live-FSM AcceptReply() site in the TX spine. */
+    result = AirportItlwmSaeRelayFsmV1AcceptReply(
+        &s->fSaeRelay, &s->fSaePendingTxReply);
+    if (result != kAirportItlwmSaeRelayFsmAccepted) {
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        a->rc = airportItlwmSaeFsmResultToIOReturn(result);
+        return kIOReturnSuccess;
+    }
+    /* Retain exact non-secret identity until next TX/cancel/reset. */
+    s->fSaeLastTerminalTxEvent = a->event;
+    s->fSaeLastTerminalTxEventValid = true;
+    (void)airportItlwmClearSaePendingTxLocked(s);
+    a->rc = kIOReturnSuccess;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSaeTxResetAction(OSObject * /*owner*/, void *arg0,
+                             void * /*arg1*/, void * /*arg2*/,
+                             void * /*arg3*/)
+{
+    AirportItlwmSaeTxResetArgs *a = (AirportItlwmSaeTxResetArgs *)arg0;
+    AirportItlwm *s = a->self;
+
+    if (!itl_sae_auth_transport_event_is_well_formed(&a->event)) {
+        a->rc = kIOReturnBadArgument;
+        return kIOReturnSuccess;
+    }
+    const bool matchesPending = s->fSaePendingTxActive &&
+        itl_sae_auth_transport_event_matches_request(
+            &a->event, &s->fSaePendingTxRequest);
+    /*
+     * Firmware may have completed successfully just before reset. The normal
+     * completion action has then cleared pending state, but the reset still
+     * invalidates the relay; match its retained exact ticket, never merely a
+     * BSSID, so a delayed reset cannot clear a newer same-target TX.
+     */
+    const bool matchesLastTerminal = !s->fSaePendingTxActive &&
+        s->fSaeLastTerminalTxEventValid &&
+        airportItlwmSaeTerminalEventMatches(
+            &a->event, &s->fSaeLastTerminalTxEvent);
+    if (!matchesPending && !matchesLastTerminal) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled ||
+        !AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay) ||
+        s->fSaeRelay.target.generation != a->event.relay_generation ||
+        s->fSaeRelay.target.association_epoch != a->event.association_epoch ||
+        memcmp(s->fSaeRelay.target.bssid, a->event.bssid,
+               sizeof(a->event.bssid)) != 0 ||
+        memcmp(s->fSaeRelay.target.sta, a->event.sta,
+               sizeof(a->event.sta)) != 0) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+
+    /* The lower driver has reset/purged it: no AcceptReply or HAL callback. */
+    (void)airportItlwmClearSaeRelayLocked(s, true);
+    a->rc = kIOReturnSuccess;
     return kIOReturnSuccess;
 }
 
@@ -9261,7 +9878,7 @@ airportItlwmAbortSaeAction(OSObject * /*owner*/, void *arg0,
         AirportItlwmSaeRelayFsmV1AcceptAbort(&s->fSaeRelay,
                                                a->abort_message));
     if (a->rc == kIOReturnSuccess)
-        airportItlwmClearSaeRelayLocked(s, true);
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
     return kIOReturnSuccess;
 }
 
@@ -9275,7 +9892,7 @@ airportItlwmCancelSaeRelayAction(OSObject * /*owner*/, void *arg0,
     AirportItlwm *s = a->self;
     if (a->terminating)
         s->fSaeRelayTerminating = true;
-    airportItlwmClearSaeRelayLocked(s, true);
+    a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
     return kIOReturnSuccess;
 }
 
@@ -9298,7 +9915,7 @@ airportItlwmAbortSaeClientAction(OSObject * /*owner*/, void *arg0,
             kAirportItlwmSaeRelayV1NonceLength);
     if (!s->fSaeRelayTerminating && !s->fSaeRelayCanceled &&
         (owns_bound_target || owns_pending_wait))
-        airportItlwmClearSaeRelayLocked(s, true);
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
     return kIOReturnSuccess;
 }
 
@@ -9537,6 +10154,62 @@ airportItlwmDeliverPmkAction(OSObject * /*owner*/, void *arg0,
 
 } // namespace
 
+#if __IO80211_TARGET >= __MAC_26_0
+static void
+dispatchSaeTransportMailboxEvent(
+    AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
+    bool isReset)
+{
+    IOCommandGate *gate;
+
+    if (that == nullptr || event == nullptr ||
+        !itl_sae_auth_transport_event_is_well_formed(event))
+        return;
+    gate = that->getCommandGate();
+    if (gate == nullptr)
+        return;
+
+    /* The mailbox owns `event`; action now runs on the controller workloop. */
+    if (isReset) {
+        AirportItlwmSaeTxResetArgs args;
+
+        explicit_bzero(&args, sizeof(args));
+        args.self = that;
+        memcpy(&args.event, event, sizeof(args.event));
+        args.rc = kIOReturnNotReady;
+        (void)gate->runAction(&airportItlwmSaeTxResetAction, &args);
+        explicit_bzero(&args, sizeof(args));
+        return;
+    }
+
+    AirportItlwmSaeTxCompletionArgs args;
+    ItlHalService *hal;
+    uint64_t cancel_ticket;
+
+    explicit_bzero(&args, sizeof(args));
+    args.self = that;
+    memcpy(&args.event, event, sizeof(args.event));
+    args.rc = kIOReturnNotReady;
+    (void)gate->runAction(&airportItlwmSaeTxCompletionAction, &args);
+
+    /* Cancellation may re-enter IWX, so it is intentionally outside this gate. */
+    hal = that->fHalService;
+    cancel_ticket = args.cancel_ticket;
+    explicit_bzero(&args, sizeof(args));
+    if (cancel_ticket != 0 && hal != nullptr)
+        hal->cancelSaeAuthFrame(cancel_ticket);
+}
+
+void AirportItlwm::
+handleSaeAuthTransportEvent(
+    AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
+    bool isReset)
+{
+    /* Strict nswq-side path: value-copy, signal source, return. */
+    queueSaeTransportMailbox(that, event, isReset);
+}
+#endif
+
 uint64_t AirportItlwm::
 publishPendingAssocTarget(const uint8_t *ssid,
                           uint32_t ssid_len,
@@ -9752,17 +10425,40 @@ waitSaeTarget(const uint8_t client_cookie[
 IOReturn AirportItlwm::
 submitSaeReply(const struct AirportItlwmSaeAuthReplyV1 *reply)
 {
+    AirportItlwmSaeReplyArgs args;
+    AirportItlwmSaeSubmitFailureArgs failure;
     if (reply == nullptr)
         return kIOReturnBadArgument;
     IOCommandGate *gate = getCommandGate();
     if (gate == nullptr)
         return kIOReturnNotReady;
-    AirportItlwmSaeReplyArgs a;
-    a.self = this;
-    a.reply = reply;
-    a.rc = kIOReturnNotReady;
-    gate->runAction(&airportItlwmSubmitSaeReplyAction, &a);
-    return a.rc;
+    explicit_bzero(&args, sizeof(args));
+    args.self = this;
+    memcpy(&args.reply, reply, sizeof(args.reply));
+    args.rc = kIOReturnNotReady;
+    (void)gate->runAction(&airportItlwmSubmitSaeReplyAction, &args);
+    if (args.rc != kIOReturnSuccess) {
+        IOReturn rc = args.rc;
+        explicit_bzero(&args, sizeof(args));
+        return rc;
+    }
+
+    /* The controller gate protects the pending record, never HAL submission. */
+    ItlHalService *hal = fHalService;
+    IOReturn rc = hal != nullptr
+        ? hal->submitSaeAuthFrame(&args.request) : kIOReturnNotReady;
+    if (rc != kIOReturnSuccess) {
+        explicit_bzero(&failure, sizeof(failure));
+        failure.self = this;
+        failure.ticket = args.ticket;
+        failure.rc = kIOReturnNotReady;
+        (void)gate->runAction(&airportItlwmSaeSubmitFailureAction, &failure);
+        if (failure.cancel_ticket != 0 && hal != nullptr)
+            hal->cancelSaeAuthFrame(failure.cancel_ticket);
+        explicit_bzero(&failure, sizeof(failure));
+    }
+    explicit_bzero(&args, sizeof(args));
+    return rc;
 }
 
 IOReturn AirportItlwm::
@@ -9815,10 +10511,14 @@ abortSae(const struct AirportItlwmSaeAbortV1 *abort_message)
     if (gate == nullptr)
         return kIOReturnNotReady;
     AirportItlwmSaeAbortArgs a;
+    memset(&a, 0, sizeof(a));
     a.self = this;
     a.abort_message = abort_message;
     a.rc = kIOReturnNotReady;
-    gate->runAction(&airportItlwmAbortSaeAction, &a);
+    (void)gate->runAction(&airportItlwmAbortSaeAction, &a);
+    ItlHalService *hal = fHalService;
+    if (a.cancel_ticket != 0 && hal != nullptr)
+        hal->cancelSaeAuthFrame(a.cancel_ticket);
     return a.rc;
 }
 
@@ -9830,9 +10530,13 @@ cancelSaeRelay(const char *reason, bool terminating)
     if (gate == nullptr)
         return;
     AirportItlwmCancelSaeRelayArgs a;
+    memset(&a, 0, sizeof(a));
     a.self = this;
     a.terminating = terminating;
-    gate->runAction(&airportItlwmCancelSaeRelayAction, &a);
+    (void)gate->runAction(&airportItlwmCancelSaeRelayAction, &a);
+    ItlHalService *hal = fHalService;
+    if (a.cancel_ticket != 0 && hal != nullptr)
+        hal->cancelSaeAuthFrame(a.cancel_ticket);
 }
 
 void AirportItlwm::
@@ -9850,8 +10554,11 @@ abortSaeRelayForClient(const uint8_t client_cookie[
     memset(&a, 0, sizeof(a));
     a.self = this;
     memcpy(a.client_cookie, client_cookie, sizeof(a.client_cookie));
-    gate->runAction(&airportItlwmAbortSaeClientAction, &a);
-    memset(a.client_cookie, 0, sizeof(a.client_cookie));
+    (void)gate->runAction(&airportItlwmAbortSaeClientAction, &a);
+    ItlHalService *hal = fHalService;
+    if (a.cancel_ticket != 0 && hal != nullptr)
+        hal->cancelSaeAuthFrame(a.cancel_ticket);
+    explicit_bzero(&a, sizeof(a));
 }
 
 IOReturn AirportItlwm::

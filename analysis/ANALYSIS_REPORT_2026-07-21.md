@@ -600,6 +600,180 @@ required configuration digests.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-SAE-ALGORITHM3-TX-COMPLETION-SPINE-20260722`
+
+### Observation
+
+The controller-owned SAE relay can bind one Agent, preserve the exact
+selected-target identity, and keep replies fail-closed, but the reply has no
+path into the real AX211 driver. In particular, normal net80211 AUTH output
+always writes Open-System Algorithm 0 (`ieee80211_get_auth()`), while IWX
+removes the 802.11 header before the firmware completion arrives. A future
+SAE reply therefore cannot safely be treated as sent merely because a caller
+has copied its body into an mbuf or queued it on `ic_mgtq`.
+
+This is the highest-priority remaining prerequisite for the frequently used
+saved WPA3-network join path. It is selected ahead of isolated diagnostics
+under the persistent frequency-first rule: a usable WPA3 join needs a
+real-driver Algorithm-3 TX completion boundary before it can safely consume a
+peer Commit or Confirm. The existing pure-WPA3 ingress reject remains
+necessary meanwhile, because the current `SCAN -> AUTH` path would otherwise
+immediately issue an Open-System AUTH frame.
+
+- source evidence: `ieee80211_output.c` hard-codes Algorithm 0 in the generic
+  AUTH builder and `ieee80211_proto.c` starts that generic AUTH producer;
+  `ieee80211_input.c` also deliberately rejects Algorithm 3;
+- source evidence: `ItlIwx::iwx_tx()` validates the exact Algorithm-3 frame
+  while its header is still present, then (only after payload DMA mapping
+  succeeds and before the TX doorbell) can copy the opaque controller ticket
+  into `iwx_tx_data`; `iwx_rx_tx_cmd_single()` receives the corresponding
+  firmware terminal status before the descriptor is recycled;
+- source evidence: the existing controller bridge correctly refuses to call
+  `AirportItlwmSaeRelayFsmV1AcceptReply()` before such a completion fence
+  exists. It must retain that invariant when a real submission path is added.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-SAE-ALGORITHM3-TX-COMPLETION-SPINE-20260722`
+- status: `IMPLEMENTED_BUILD_ONLY_VERIFIED`
+- priority rationale:
+  - this is a direct, unavoidable dependency of saved WPA3 join rather than a
+    standalone evidence/diagnostic improvement; it therefore outranks the
+    remaining lower-frequency discrepancy layers;
+  - it is deliberately limited to outbound Algorithm-3 and its terminal
+    firmware completion. A bounded deferred RX relay, SAE state hold at
+    selected-BSS join, Agent HnP crypto/credentials, SAE PMK/AKM/PMF owner,
+    and association/4-way completion remain later layers.
+- proposed change:
+  1. add one internal, C/C++-neutral, credential-free Algorithm-3 transport
+     contract containing only version/size, association epoch, relay
+     generation, a monotonic TX ticket, transaction/status, BSSID/STA, and a
+     bounded public body. It must exclude password, PWE, KCK, PMK, PMKID,
+     raw scan IEs, and UserClient-private cookies;
+  2. add a dedicated net80211 Algorithm-3 frame builder that writes a normal
+     management header and exact Authentication fixed fields, validates the
+     current STA/BSS/epoch/address identity, and never routes through the
+     Open-System `ieee80211_send_mgmt()` builder or repurposes
+     `mbuf_pkthdr.rcvif` (which already owns the node reference);
+  3. add a one-ticket IWX TX owner. It accepts at most one controller request,
+     validates the exact frame before `mbuf_adj()`, then copies the exact
+     ticket and identity into `iwx_tx_data` only after successful payload DMA
+     mapping and before the normal TX descriptor/doorbell path. It emits a
+     terminal success only from `IWX_TX_STATUS_SUCCESS`. Enqueue,
+     mapping, reset, cancellation, and every other firmware status are
+     terminal non-success; cancellation advances a monotonic reject-through
+     ticket so a racing late submission cannot re-arm a cancelled request.
+     Critically, cancellation suppresses reverse delivery but does not free
+     an already-doorbelled slot: the one-ticket reservation remains until
+     firmware terminal completion or a closed-admission post-reset purge, so
+     two physical Algorithm-3 frames cannot overlap;
+  4. move IWX terminal records through a bounded, allocation-free deferred
+     task before invoking the existing net80211 controller event handler.
+     Neither the interrupt completion nor the frame-builder leaf may enter
+     the AirportItlwm command gate. Teardown closes admission, drains/purges
+     the FIFO, and scrubs every retained public body/identity;
+  5. let the controller copy and validate an Agent reply into one pending TX
+     record under its command gate, then call the HAL outside that gate.
+     The reply is only *queued* on successful HAL admission; the relay FSM
+     advances with `AcceptReply()` only after a matching deferred firmware
+     success event. A stale/malformed completion that does not match the
+     current pending request is rejected without touching a possible newer
+     request; a matching request with terminal failure, current-owner
+     epoch/identity divergence, owner close, or lifecycle cancel clears and
+     scrubs the pending record. No PMK is accepted or installed in this layer;
+  6. retain the public and hidden pure-WPA3 ingress rejects, PSK-only active
+     AKM configuration, Open-System generic TX/RX behavior, MFP quarantine,
+     and all current association states. The new path has no production
+     `beginSaeRelay()` caller until the following selected-BSS SAE hold layer.
+- files/functions expected to change:
+  - an internal SAE transport contract plus standalone C/C++ unit fixtures;
+  - `itl80211/openbsd/net80211/ieee80211_output.c` and `.proto.h` for the
+    bounded dedicated builder only;
+  - `include/HAL/ItlHalService.hpp`, `itlwm/hal_iwx/if_iwxvar.h`,
+    `ItlIwx.hpp`, and `ItlIwx.cpp` for one-ticket ownership, descriptor
+    identity capture, completion FIFO/task, cancellation, and lifecycle
+    purge;
+  - `AirportItlwmV2.hpp/.cpp` and the SAE relay static contract for
+    controller pending-TX ownership and completion-only FSM advancement;
+  - product/quarantine contracts so they permit only this constrained
+    Algorithm-3 sender while continuing to reject all ingress/RX/AKM/PMK
+    activation.
+- forbidden alternatives considered and rejected:
+  - do not call `beginSaeRelay()` from scan/join yet, because that would reach
+    generic `SCAN -> AUTH` and send Open-System authentication;
+  - do not use Algorithm/BSSID/sequence guessing, `m_tag`, or
+    `mbuf_pkthdr.rcvif` as a completion identity carrier;
+  - do not report Agent reply success as a verified transmit, call
+    `AcceptReply()` at enqueue, use a diagnostic log as a completion, or
+    issue a controller gate call from IWX interrupt context;
+  - do not add an RX consumer, password lookup, PBKDF2/legacy PMK path,
+    RSN SAE AKM, PMF enablement, AP action, kext activation, guest/AP/radio
+    operation, or association claim in this candidate.
+- verification plan:
+  - deterministic C/C++ transport tests for malformed/bounded requests,
+    exact Algorithm-3 header/body construction, node/epoch/BSSID/STA match,
+    ticket cancellation and stale completion rejection, and success-only FSM
+    advancement;
+  - static contracts that the dedicated builder bypasses generic Open AUTH,
+    IWX validates before trim, publishes the ticket after successful mapping
+    and before doorbell, and dispatches it only through a deferred bounded
+    worker; cancellation/teardown scrub state, and pure WPA3 ingress/RX/AKM/
+    PMK quarantine is retained;
+  - run the SAE relay/product/quarantine contracts, relevant payload/trace
+    checks, `git diff --check`, and the pinned isolated Tahoe build-only gate.
+    No kext install/load/publish/release, real AP association, guest reboot,
+    saved-profile mutation, or radio operation is authorized.
+
+## IMPLEMENTATION AND BUILD-ONLY VERIFICATION: `LAB-SAE-ALGORITHM3-TX-COMPLETION-SPINE-20260722`
+
+- implementation:
+  - added `ItlSaeAuthTransportV1`, a bounded, C/C++-neutral internal ABI with
+    exact epoch/generation/ticket/BSSID/STA identity.  It carries no
+    credential, PWE, KCK, PMK, PMKID, scan-IE, or UserClient-private material;
+  - added a dedicated net80211 Algorithm-3 builder.  The normal generic AUTH
+    path remains Open-System/Algorithm 0, while this builder accepts only the
+    selected STA target and exact association identity;
+  - `ItlIwx` now admits one bounded request through a private command gate,
+    validates the complete Algorithm-3 management frame before its 802.11
+    header is trimmed, attaches the opaque identity only after DMA mapping,
+    and rings the real IWX TX write pointer.  A successful enqueue is not a
+    successful SAE reply: only the matching terminal firmware TX status is
+    returned through a bounded deferred worker;
+  - the controller owns the pending request and receives terminal events in a
+    mailbox before its command gate.  It calls the relay FSM's `AcceptReply()`
+    exactly once only for an exact, current, terminal-success event.  Reset,
+    power-down, MAC change, stale identity, cancellation, and failed status
+    clear the relay without granting that success;
+  - teardown closes admission, drains the IWX work, and scrubs every active,
+    queued, and terminal identity.  The initial `runAction()` design was
+    tightened to non-blocking `attemptAction()`: when the main workloop is
+    already held by power-off/drain it fails closed as `NotReady` rather than
+    deadlocking while an outer task lease is being drained.  A later
+    user-visible selected-BSS layer must supply a bounded retry/admission
+    policy; this dormant sender never converts that condition into success.
+- verification:
+  - `tests/itl_sae_auth_transport_v1_test.c` passed in C11, C++14, and C++17,
+    covering malformed fields, body bounds, and exact success/event matching;
+  - `bash scripts/test_tahoe_sae_controller_relay_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_sae_auth_transport_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_product_foundation_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `git diff --check`: PASS;
+  - an isolated, pinned Tahoe guest build for source identity
+    `dirtye7bd63d1bf9f` produced the kext, post-PLTI trace client, Agent, and
+    RegDiag in `/tmp/aiam-tahoe-sae-layer-gate.jDKGBE`.  Independent
+    post-build comparison found all 959 kext undefined symbols resolved by
+    the pinned BootKC and no private `_thread_call_cancel_wait` dependency.
+    No kext was installed, loaded, published, or released.
+- verification boundary:
+  - this is a real driver TX-completion spine, not an SAE implementation.
+    There is still no production selected-BSS SAE hold, inbound Algorithm-3
+    relay, Agent HnP/PWE/credential backend, PMK ingress, SAE AKM/PMF owner,
+    or WPA3 association/4-way completion;
+  - pure-WPA3 ingress remains fail-closed and generic AUTH remains Open-System.
+    No AP, saved-profile mutation, guest runtime, radio, association, or data
+    traffic was exercised.
+
 ## ANOMALY: `LAB-SAE-CONTROLLER-OWNED-RELAY-BRIDGE-20260722`
 
 ### Observation

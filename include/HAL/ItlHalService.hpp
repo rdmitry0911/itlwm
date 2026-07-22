@@ -18,6 +18,7 @@
 #include <libkern/c++/OSObject.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -230,6 +231,24 @@ public:
     virtual IOReturn getAPKeyRSC(const struct ItlHalApKeyRscQuery *query) {
         (void)query;
         return kIOReturnUnsupported;
+    }
+
+    /*
+     * Internal SAE Algorithm-3 TX ownership surface.
+     *
+     * This is intentionally not a generic raw-management injection API. A
+     * backend must copy the fixed public request before returning, retain at
+     * most one ticketed request, and report terminal completion only through
+     * the bounded net80211 transport event. The default preserves the
+     * fail-closed behaviour of HALs without the AX211 implementation.
+     */
+    virtual IOReturn submitSaeAuthFrame(
+        const struct ItlSaeAuthTxRequestV1 *request) {
+        (void)request;
+        return kIOReturnUnsupported;
+    }
+    virtual void cancelSaeAuthFrame(uint64_t ticket) {
+        (void)ticket;
     }
 
     virtual void free() override;

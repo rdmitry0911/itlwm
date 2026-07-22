@@ -302,6 +302,30 @@ AirportItlwmSaeRelayFsmV1AcceptReply(
     return kAirportItlwmSaeRelayFsmAccepted;
 }
 
+/*
+ * Check whether a reply could advance this relay without mutating its live
+ * state.  The controller uses this before it hands a public body to the HAL:
+ * successful firmware TX, not queue admission, remains the only place that
+ * calls AcceptReply() on the owned state.  Keeping the predicate here also
+ * prevents a second, subtly different copy of the phase/body checks at the
+ * controller/driver boundary.
+ */
+static inline enum AirportItlwmSaeRelayFsmResultV1
+AirportItlwmSaeRelayFsmV1ValidateReply(
+    const struct AirportItlwmSaeRelayFsmV1 *state,
+    const struct AirportItlwmSaeAuthReplyV1 *reply)
+{
+    struct AirportItlwmSaeRelayFsmV1 copy;
+    enum AirportItlwmSaeRelayFsmResultV1 result;
+
+    if (state == NULL || reply == NULL)
+        return kAirportItlwmSaeRelayFsmBadArgument;
+    memcpy(&copy, state, sizeof(copy));
+    result = AirportItlwmSaeRelayFsmV1AcceptReply(&copy, reply);
+    memset(&copy, 0, sizeof(copy));
+    return result;
+}
+
 static inline enum AirportItlwmSaeRelayFsmResultV1
 AirportItlwmSaeRelayFsmV1EmitPeerEvent(
     struct AirportItlwmSaeRelayFsmV1 *state, uint16_t transaction,

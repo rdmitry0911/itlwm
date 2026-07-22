@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Static/local contract for the controller-owned, bridge-only SAE relay.
+# Static/local contract for the controller-owned SAE relay and its bounded
+# outbound Algorithm-3 TX-completion handoff.
 #
-# This intentionally proves transport and lifecycle ownership only.  It must
-# not turn the relay into an Algorithm-3 sender, an SAE PMK ingress, or a
-# replacement for the existing PSK PLTI path.
+# This proves one credential-free frame can advance the relay only after the
+# lower IWX backend reports terminal TX success.  It is deliberately not a
+# WPA3 association implementation: join ownership, peer RX, cryptography,
+# PMK/AKM selection, and PMF activation remain outside this layer.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -375,33 +377,84 @@ for token in ("AirportItlwmSaeRelayFsmV1Begin", "fSaeRelay",
               "kIOReturnNotReady"):
     require(begin_action, token, "SAE relay start ownership")
 
-# This layer is deliberately transport-only until an actual TX completion
-# fence exists.  No user reply/completion may be accepted as transmission or
-# PMK state.  Abort remains the only permitted FSM terminal operation.
-for token in ("AirportItlwmSaeRelayFsmV1AcceptReply",
-              "AirportItlwmSaeRelayFsmV1AcceptCompletion"):
-    forbid(v2, token, "premature SAE FSM advancement")
+# The controller owns one bounded outbound frame at a time.  It validates an
+# Agent reply on a copy, reserves an exact transport ticket under the command
+# gate, and only then calls the HAL outside that gate.  HAL admission is not
+# an on-air success and therefore cannot advance the relay itself.
+submit_api = member_body(v2, "AirportItlwm", "submitSaeReply")
+for token in ("airportItlwmSubmitSaeReplyAction", "fHalService",
+              "submitSaeAuthFrame", "airportItlwmSaeSubmitFailureAction",
+              "cancelSaeAuthFrame"):
+    require(submit_api, token, "controller-owned SAE TX submission")
+forbid(submit_api, "AirportItlwmSaeRelayFsmV1AcceptReply",
+       "HAL admission as an SAE FSM advance")
+
+submit_action = c_function_body(v2, "airportItlwmSubmitSaeReplyAction")
+for token in ("AirportItlwmSaeRelayFsmV1TargetBound",
+              "AirportItlwmSaeRelayFsmV1IdentityMatches",
+              "AirportItlwmSaeRelayFsmV1ValidateReply",
+              "fSaePendingTxActive", "fSaeNextTxTicket",
+              "itl_sae_auth_transport_request_is_well_formed",
+              "fSaePendingTxRequest", "fSaePendingTxReply"):
+    require(submit_action, token, "SAE reply-to-TX exact identity fence")
+forbid(submit_action, "AirportItlwmSaeRelayFsmV1AcceptReply",
+       "premature SAE reply acceptance")
+
+# There is exactly one live reply acceptance in this translation unit.  It is
+# reached only from a matching firmware-terminal success event; all other
+# completion/reset/cancellation paths scrub rather than advance the FSM.
+if v2.count("AirportItlwmSaeRelayFsmV1AcceptReply(") != 1:
+    fail("there must be exactly one live SAE AcceptReply() call")
+tx_completion_action = c_function_body(v2, "airportItlwmSaeTxCompletionAction")
+for token in ("itl_sae_auth_transport_event_is_well_formed",
+              "itl_sae_auth_transport_event_matches_request",
+              "AirportItlwmSaeRelayFsmV1TargetBound",
+              "a->event.result != 0",
+              "AirportItlwmSaeRelayFsmV1AcceptReply",
+              "fSaeLastTerminalTxEvent"):
+    require(tx_completion_action, token,
+            "firmware-terminal SAE completion fence")
+if (tx_completion_action.find("itl_sae_auth_transport_event_matches_request") >
+        tx_completion_action.find("AirportItlwmSaeRelayFsmV1AcceptReply") or
+        tx_completion_action.find("a->event.result != 0") >
+        tx_completion_action.find("AirportItlwmSaeRelayFsmV1AcceptReply")):
+    fail("SAE AcceptReply() must follow identity and terminal-success checks")
+for token in ("deliverExternalPMK", "ic_psk", "IEEE80211_F_PSK",
+              "ieee80211_ioctl_setwpaparms", "IEEE80211_AKM_SAE",
+              "IEEE80211_SEND_MGMT"):
+    forbid(tx_completion_action, token,
+           "SAE completion PMK/legacy-management side effect")
+
+reset_action = c_function_body(v2, "airportItlwmSaeTxResetAction")
+for token in ("fSaePendingTxActive", "fSaeLastTerminalTxEventValid",
+              "airportItlwmSaeTerminalEventMatches",
+              "airportItlwmClearSaeRelayLocked"):
+    require(reset_action, token, "exact SAE reset invalidation fence")
+for token in ("AirportItlwmSaeRelayFsmV1AcceptReply", "cancelSaeAuthFrame",
+              "ieee80211_pae_assoc_epoch_current"):
+    forbid(reset_action, token,
+           "reset must neither accept nor re-enter a stale lower HAL")
+
+forbid(v2, "AirportItlwmSaeRelayFsmV1AcceptCompletion",
+       "premature SAE PMK completion acceptance")
 require(v2, "AirportItlwmSaeRelayFsmV1AcceptAbort",
         "cookie-bound SAE relay abort")
-for controller_method in ("submitSaeReply", "completeSae"):
-    body = member_body(v2, "AirportItlwm", controller_method)
-    require(body, "kIOReturnNotReady",
-            f"{controller_method} bridge-only fail-closed result")
-    for token in ("deliverExternalPMK", "ic_psk", "IEEE80211_F_PSK",
-                  "ieee80211_ioctl_setwpaparms", "IEEE80211_AKM_SAE",
-                  "IEEE80211_AUTH_ALG_SAE", "IEEE80211_SEND_MGMT"):
-        forbid(body, token, f"{controller_method} PSK/Algorithm-3 side effect")
+complete_api = member_body(v2, "AirportItlwm", "completeSae")
+require(complete_api, "kIOReturnNotReady",
+        "SAE PMK completion remains fail-closed")
+complete_action = c_function_body(v2, "airportItlwmCompleteSaeAction")
+for token in ("AirportItlwmSaeRelayFsmV1TargetBound",
+              "AirportItlwmSaeRelayFsmV1IdentityMatches",
+              "kIOReturnNotReady"):
+    require(complete_action, token,
+            "SAE completion identity/fail-closed fence")
 for action_name in ("airportItlwmSubmitSaeReplyAction",
                     "airportItlwmCompleteSaeAction"):
     body = c_function_body(v2, action_name)
-    for token in ("AirportItlwmSaeRelayFsmV1TargetBound",
-                  "AirportItlwmSaeRelayFsmV1IdentityMatches",
-                  "kIOReturnNotReady"):
-        require(body, token, f"{action_name} identity/fail-closed fence")
     for token in ("deliverExternalPMK", "ic_psk", "IEEE80211_F_PSK",
                   "ieee80211_ioctl_setwpaparms", "IEEE80211_AKM_SAE",
-                  "IEEE80211_AUTH_ALG_SAE", "IEEE80211_SEND_MGMT"):
-        forbid(body, token, f"{action_name} PSK/Algorithm-3 side effect")
+                  "IEEE80211_SEND_MGMT"):
+        forbid(body, token, f"{action_name} PSK/legacy-management side effect")
 abort_client_action = c_function_body(v2, "airportItlwmAbortSaeClientAction")
 for token in ("AirportItlwmSaeRelayFsmV1BytesEqual",
               "fSaeRelay.target.client_cookie",
@@ -476,9 +529,9 @@ for token in ("AgentWaitSaeTarget", "AgentSubmitSaeReply",
               "AgentWaitSaeAuthEvent", "AgentCompleteSae", "AgentAbortSae"):
     forbid(agent_main, token, "premature Agent SAE worker")
 
-# The newly real transport must not weaken the existing pure-SAE quarantine.
-# Until TX/RX/crypto/PMK ownership land, product association still rejects
-# WPA3 at ingress and net80211 remains Open-System-only.
+# The bounded sender does not weaken the existing pure-SAE quarantine.  The
+# generic net80211 state machine remains Open-System-only; exactly one
+# separate builder writes Algorithm 3 and no association/PMK route is enabled.
 require(skywalk, "requiresUnsupportedWpa3Auth",
         "pure-SAE association ingress reject")
 require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
@@ -489,13 +542,23 @@ require(proto_c, "IEEE80211_AUTH_OPEN_REQUEST",
         "Open-System auth request producer")
 require(crypto_c, "ic->ic_rsnakms = IEEE80211_AKM_PSK;",
         "PSK-only active AKM configuration")
+generic_auth = c_function_body(output_c, "ieee80211_get_auth")
+forbid(generic_auth, "IEEE80211_AUTH_ALG_SAE",
+       "generic Open-System auth builder Algorithm-3 use")
+sae_builder = c_function_body(output_c, "ieee80211_sae_auth_frame_build")
+for token in ("itl_sae_auth_transport_request_is_well_formed",
+              "IEEE80211_S_AUTH", "IEEE80211_AUTH_ALG_SAE",
+              "request->transaction", "request->auth_status"):
+    require(sae_builder, token, "isolated SAE auth frame builder")
+if output_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only the isolated SAE frame builder may write Algorithm 3")
 for text, label in ((v2, "controller"), (input_c, "RX"),
-                    (output_c, "TX"), (proto_c, "protocol")):
+                    (proto_c, "protocol")):
     forbid(text, "ieee80211_sae_auth_contract.h",
            "premature Algorithm-3 production include in " + label)
     forbid(text, "IEEE80211_AUTH_ALG_SAE",
            "premature Algorithm-3 production use in " + label)
 forbid(crypto_c, "IEEE80211_AKM_SAE", "premature active SAE AKM")
 
-print("PASS: SAE controller-owned relay bridge static contract")
+print("PASS: SAE controller relay and bounded TX-completion contract")
 PY
