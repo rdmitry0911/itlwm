@@ -719,12 +719,16 @@ do_rollback() {
         die "host IP/default-route/forwarding invariant changed during AP switchover"
     optional_hostapd_exact_and_pinned ||
         die "optional-PMF hostapd process or AP shape is not exact before rollback verification"
-    printf 'rollback_verified=true\n' >"$STATE_DIR/rollback.status"
-    chmod 600 "$STATE_DIR/rollback.status"
     if [ "$FROM_WATCHDOG" -eq 0 ]; then
         cancel_watchdog || die "rollback could not safely cancel its watchdog"
     fi
     clear_marker || die "rollback could not clear the active state marker"
+    # This receipt is consumed by the runtime cleanup as a completed rollback
+    # witness.  Commit it only after every marker/watchdog ownership release
+    # has succeeded; an earlier write could convert a failed teardown into a
+    # false categorical recovery result.
+    printf 'rollback_verified=true\n' >"$STATE_DIR/rollback.status"
+    chmod 600 "$STATE_DIR/rollback.status"
     printf 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED\n'
 }
 

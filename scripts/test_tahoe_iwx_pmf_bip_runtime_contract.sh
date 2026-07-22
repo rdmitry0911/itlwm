@@ -181,6 +181,7 @@ for needle in \
     'staged PMF configuration pair changed before optional-PMF restart' \
     'optional_hostapd_exact_and_pinned' \
     'optional-PMF hostapd process or AP shape is not exact before rollback verification' \
+    'rollback could not safely cancel its watchdog' \
     'finish_post_transition_rollback' \
     'optional-PMF state retained' \
     '9>&-' \
@@ -353,6 +354,8 @@ if "FAKE_TERMINATE_OPTIONAL_ON_IW" not in Path(sys.argv[2]).with_name("test_taho
     fail("AP fixture lacks the rollback optional-child death discriminator")
 if "FAKE_TERMINATE_OPTIONAL_ON_IW_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition optional-child death discriminator")
+if "FOREIGN_WATCHDOG_PID" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the rollback witness commit-order discriminator")
 if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -376,9 +379,9 @@ ordered(rollback, "AP rollback sequence",
         "runtime_ap_is_pinned",
         "host_network_signature",
         "optional_hostapd_exact_and_pinned",
-        "rollback_verified=true",
         "cancel_watchdog",
-        "clear_marker")
+        "clear_marker",
+        "rollback_verified=true")
 
 post_transition_rollback = helper[helper.find("finish_post_transition_rollback() {"):
                                   helper.find("do_preflight() {")]

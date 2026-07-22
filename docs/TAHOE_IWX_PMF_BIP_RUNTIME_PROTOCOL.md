@@ -70,6 +70,12 @@ AP shape; post-transition recovery repeats that attestation after its network
 comparison.  A generated or real process loss at either edge withholds the
 witness and retains recovery ownership for a later explicit rollback.
 
+`rollback_verified=true` is a transaction-completion receipt, not an
+intermediate AP-restoration observation.  The helper writes it only after the
+applicable watchdog disposition and marker removal succeed.  Thus the runner
+may safely consume a watchdog-written receipt during cleanup without treating
+a failed ownership release as verified rollback.
+
 The watchdog retries restoration to optional PMF if the caller disappears or
 if an intermediate AP transition cannot be verified. The helper has no
 address, route, NAT, forwarding, DHCP, firewall, service-manager, or reboot

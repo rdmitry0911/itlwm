@@ -501,6 +501,78 @@
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-ROLLBACK-WITNESS-COMMIT-ORDER-20260721`
+
+### Observation
+
+`do_rollback()` currently writes the categorical
+`rollback_verified=true` receipt before it attempts to cancel the watchdog or
+clear the active marker.  Either trailing operation can fail.  The runtime
+runner's cleanup deliberately treats the presence of that receipt as a
+watchdog-written success and skips another rollback attempt, so an interrupted
+or failed teardown can be promoted to verified recovery merely because the AP
+shape/network predicates were earlier true.
+
+This is directly reproducible without a real AP: after a generated required
+transaction, the fixture replaces only its private `watchdog.pid` receipt with
+the PID of a generated unrelated child.  The existing `cancel_watchdog()`
+correctly rejects that process identity, but the current source has already
+written `rollback.status` when it emits its categorical cancellation failure.
+The original generated watchdog and marker remain present; no live hostapd,
+network, guest, profile, or physical AP is touched.
+
+### Root Cause
+
+The rollback witness is committed before the transaction's ownership-release
+postconditions.  It is therefore an intermediate AP-restoration observation,
+not proof that the marker-bound recovery transaction completed.  The runner's
+intentional receipt-first cleanup behavior makes that ordering system-visible.
+
+### FIX_CANDIDATE: `LAB-PMF-AP-ROLLBACK-WITNESS-COMMIT-ORDER-20260721`
+
+- status: `FIX_VERIFIED`; the local fixture demonstrated the false receipt on
+  the old ordering and now requires its absence until teardown completes.
+- system contract to preserve:
+  1. `rollback_verified=true` exists only after optional process/AP/network
+     predicates, watchdog disposition, and marker release have all succeeded;
+  2. a failed watchdog identity or marker release leaves no success receipt
+     and preserves the recovery authority for a later safe retry;
+  3. the watchdog-owned rollback keeps its existing `FROM_WATCHDOG` behavior:
+     it clears the marker, writes the receipt, and then exits;
+  4. no rollback retry, AP restart, network change, or live action is added.
+- proposed minimal correction:
+  - retain all current rollback admission/restore/attestation checks;
+  - move the `rollback.status` write and its permission mode after successful
+    `cancel_watchdog` (when applicable) and successful `clear_marker`;
+  - make the static contract require that commit order and add fixture cases
+    for a rejected watchdog receipt followed by a normal local recovery.
+- scope and touchpoints:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::do_rollback`;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` with a
+    generated unrelated PID written only to its own restricted state file;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` ordering assertion;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` witness semantics;
+  - this analysis report.
+- rejected alternatives:
+  - trust the receipt despite a failed owner release;
+  - make the runner infer success from optional AP shape alone;
+  - suppress watchdog identity checks, kill an unrelated process, or add a
+    restart/retry loop;
+  - touch a real AP, saved profile, guest, address/route, firewall, or DHCP
+    state.
+- verification plan:
+  1. show the unmodified ordering leaves `rollback.status` after a generated
+     foreign watchdog receipt makes cancellation fail;
+  2. after reordering, require that failure to retain marker/original watchdog
+     and write no receipt, then restore the original fixture receipt and
+     complete one normal rollback;
+  3. run the AP fixture, runtime/trace/SAE contracts, and the isolated
+     build-only Tahoe gate.  Do not activate a candidate or operate live AP
+     infrastructure.
+- verification boundary: this is a host-side transaction-receipt ordering fix,
+  not evidence of PMF-required association, IGTK behavior, or driver
+  functionality.
+
 ## ANOMALY: `LAB-PMF-AP-ROLLBACK-OPTIONAL-PROCESS-ATTESTATION-20260721`
 
 ### Observation
@@ -1701,6 +1773,55 @@ is not and must not become a proxy for PID/configuration ownership.
 - verification boundary: this closes only a host-side rekey ownership race.
   It is not a live hostapd result, candidate activation, guest reboot,
   PMF-required association, IGTK runtime observation, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-ROLLBACK-WITNESS-COMMIT-ORDER-20260721`
+
+- implementation:
+  - `do_rollback()` now keeps all existing optional-process, AP-shape, and
+    host-network checks in place; it then cancels the non-watchdog caller's
+    exact watchdog, clears the marker, and only then creates the restricted
+    `rollback.status` witness;
+  - watchdog-owned rollback retains its existing no-self-cancel behavior but
+    likewise clears the marker before it writes the receipt;
+  - the runner remains receipt-first during cleanup, but the receipt now
+    denotes completed recovery ownership release rather than an intermediate
+    restoration observation;
+  - no AP restart/retry, configuration mutation, network operation, or live
+    infrastructure action was added.
+- deterministic fixture evidence:
+  - before implementation, a fixture-only unrelated local `sleep` PID replaced
+    the private watchdog receipt after a generated required activation.  The
+    helper correctly failed with `rollback could not safely cancel its
+    watchdog`, retained its original watchdog and marker, but had already
+    written `rollback.status`; the fixture stopped at
+    `rollback verification was published before watchdog ownership released`;
+  - after implementation, the same failure creates no receipt and retains the
+    original generated watchdog/marker.  Restoring the original private PID
+    receipt then permits one normal rollback, commits the witness, clears the
+    marker, and terminates the original watchdog;
+  - the static contract requires the final ordering
+    optional-process/AP/network attestation -> watchdog disposition -> marker
+    release -> `rollback_verified=true` and requires the foreign-watchdog
+    fixture discriminator.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty989cc7e4bc4f`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rollback receipt-order
+  race.  It is not a live hostapd result, PMF-required association, IGTK
+  observation, candidate activation, guest reboot, or driver-functionality
   result.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was

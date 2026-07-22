@@ -8,6 +8,8 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 HELPER="$ROOT/scripts/tahoe_pmf_required_ap_switchover.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/aiam-pmf-ap-helper-fixture.XXXXXX")"
+WATCHDOG_BACKUP_PIDS="$TMP_ROOT/original-watchdog-pids"
+FOREIGN_WATCHDOG_PIDS="$TMP_ROOT/foreign-watchdog-pids"
 umask 077
 
 cleanup() {
@@ -15,6 +17,8 @@ cleanup() {
     set +e
     for pidfile in "$TMP_ROOT/run/hostapd-5g.pid" \
                    "$TMP_ROOT/run/hostapd-5g-pmf-required.pid" \
+                   "$WATCHDOG_BACKUP_PIDS" \
+                   "$FOREIGN_WATCHDOG_PIDS" \
                    "$TMP_ROOT"/state.*/watchdog.pid; do
         [ -r "$pidfile" ] || continue
         pid="$(tr -d '[:space:]' <"$pidfile" 2>/dev/null || true)"
@@ -387,6 +391,58 @@ grep -Fxq 'rollback_verified=true' "$STATE_DIR/rollback.status" ||
 [ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
     fail 'required hostapd pid survived rollback'
 [ ! -e "$CONTROL_DIR/active.state" ] || fail 'rollback left the active marker behind'
+
+# `rollback_verified=true` is a transaction-completion receipt, not a record
+# that optional hostapd was merely restored.  Replace only this fixture's
+# private watchdog receipt with an unrelated generated process: cancellation
+# must fail without publishing success, and restoring the original receipt
+# must still permit one normal cleanup.
+WITNESS_ORDER_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$WITNESS_ORDER_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/witness-order-activate.out" \
+    2>"$TMP_ROOT/witness-order-activate.err" ||
+    fail 'witness-order fixture could not activate required PMF'
+WITNESS_ORDER_WATCHDOG_PID="$(tr -d '[:space:]' <"$WITNESS_ORDER_STATE_DIR/watchdog.pid")"
+case "$WITNESS_ORDER_WATCHDOG_PID" in ''|*[!0-9]*) fail 'witness-order watchdog PID is invalid';; esac
+/bin/kill -0 "$WITNESS_ORDER_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'witness-order watchdog was not live before receipt substitution'
+printf '%s\n' "$WITNESS_ORDER_WATCHDOG_PID" >"$WATCHDOG_BACKUP_PIDS"
+/bin/sleep 300 &
+FOREIGN_WATCHDOG_PID=$!
+printf '%s\n' "$FOREIGN_WATCHDOG_PID" >"$FOREIGN_WATCHDOG_PIDS"
+printf '%s\n' "$FOREIGN_WATCHDOG_PID" >"$WITNESS_ORDER_STATE_DIR/watchdog.pid"
+chmod 600 "$WITNESS_ORDER_STATE_DIR/watchdog.pid"
+if "$HELPER" --rollback --state-dir "$WITNESS_ORDER_STATE_DIR" \
+        >"$TMP_ROOT/witness-order-rollback.out" \
+        2>"$TMP_ROOT/witness-order-rollback.err"; then
+    fail 'rollback accepted a foreign watchdog receipt'
+fi
+grep -Fq 'rollback could not safely cancel its watchdog' \
+    "$TMP_ROOT/witness-order-rollback.err" ||
+    fail 'foreign watchdog receipt retained no categorical diagnostic'
+[ ! -e "$WITNESS_ORDER_STATE_DIR/rollback.status" ] ||
+    fail 'rollback verification was published before watchdog ownership released'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'foreign watchdog receipt cleared the active marker'
+/bin/kill -0 "$WITNESS_ORDER_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'foreign watchdog receipt stopped the original watchdog'
+printf '%s\n' "$WITNESS_ORDER_WATCHDOG_PID" >"$WITNESS_ORDER_STATE_DIR/watchdog.pid"
+chmod 600 "$WITNESS_ORDER_STATE_DIR/watchdog.pid"
+"$HELPER" --rollback --state-dir "$WITNESS_ORDER_STATE_DIR" \
+    >"$TMP_ROOT/witness-order-recovery.out" \
+    2>"$TMP_ROOT/witness-order-recovery.err" ||
+    fail 'witness-order fixture could not complete a normal rollback'
+grep -Fxq 'rollback_verified=true' "$WITNESS_ORDER_STATE_DIR/rollback.status" ||
+    fail 'witness-order fixture did not commit the final rollback receipt'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'witness-order fixture left the active marker behind'
+if /bin/kill -0 "$WITNESS_ORDER_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'witness-order fixture left the original watchdog live'
+fi
+/bin/rm -f -- "$WATCHDOG_BACKUP_PIDS"
+/bin/kill "$FOREIGN_WATCHDOG_PID" >/dev/null 2>&1 || true
+wait "$FOREIGN_WATCHDOG_PID" 2>/dev/null || true
+/bin/rm -f -- "$FOREIGN_WATCHDOG_PIDS"
 
 # The transaction state directory itself is rollback authority and must not be
 # writable by another local principal.  A generated mode-0777 directory must
