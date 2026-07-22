@@ -55,8 +55,9 @@ while that pair differs.
 Rollback repeats that state-bound pair check after optional-PMF restoration and
 its final process checks, re-reads the original hash-only host-network
 invariant, then repeats the pair check at the ownership/receipt edge before it
-releases marker/watchdog ownership or writes `rollback_verified=true`.  Thus a
-post-restart file or network change cannot be represented as verified recovery.
+re-attests the exact optional PID/AP shape and releases marker/watchdog
+ownership or writes `rollback_verified=true`.  Thus a post-restart file,
+network, or optional-process change cannot be represented as verified recovery.
 
 After a required-PMF process launch succeeds, the helper re-attests that exact
 PID and the pinned AP channel/width, re-reads the original hash-only host

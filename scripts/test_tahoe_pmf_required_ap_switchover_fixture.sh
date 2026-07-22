@@ -176,6 +176,7 @@ printf '%s\n' \
     '      printf "%s\n" "$calls" >"$FAKE_ROUTE_CALL_COUNT"' \
     '      if [ "${FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "${FAKE_WATCHDOG_PID_FILE:-}" ]; then pid="$(tr -d "[:space:]" <"$FAKE_WATCHDOG_PID_FILE")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_WATCHDOG_PID_FILE"; fi' \
     '      if [ "${FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "$FAKE_REQUIRED_PID" ]; then pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_REQUIRED_PID"; fi' \
+    '      if [ "${FAKE_TERMINATE_OPTIONAL_ON_ROUTE_CALL:-}" = "$calls" ] && [ -r "$FAKE_OPTIONAL_PID" ]; then pid="$(tr -d "[:space:]" <"$FAKE_OPTIONAL_PID")"; case "$pid" in ""|*[!0-9]*) exit 65;; esac; /bin/kill -KILL "$pid" >/dev/null 2>&1 || true; /bin/rm -f -- "$FAKE_OPTIONAL_PID"; fi' \
     '      if [ "${FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "wpa_group_rekey=1\n" >>"$FAKE_REQUIRED_CONFIG"; fi' \
     '      state="$(cat "$FAKE_NETWORK_STATE" 2>/dev/null || true)"' \
     '      if [ "${FAKE_NETWORK_MUTATED:-0}" = 1 ] || [ "$state" = drift ] || [ "${FAKE_DRIFT_ON_ROUTE_CALL:-}" = "$calls" ]; then printf "default fixture-route-mutated\n"; else printf "default fixture-route\n"; fi ;;' \
@@ -763,6 +764,53 @@ grep -Fxq 'rollback_verified=true' "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR/rollb
     fail 'rollback post-network configuration recovery left the active marker'
 if /bin/kill -0 "$ROLLBACK_POSTNETWORK_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'rollback post-network configuration recovery left the watchdog live'
+fi
+
+# The optional process must remain current through final network/configuration
+# fences.  Fake ip terminates only the generated optional child on that second
+# rollback route read, after the current final optional/AP attestation.
+ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rollback-postnetwork-optional-activate.out" \
+    2>"$TMP_ROOT/rollback-postnetwork-optional-activate.err" ||
+    fail 'rollback-postnetwork-optional fixture could not activate required PMF'
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+ROLLBACK_POSTNETWORK_OPTIONAL_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_TERMINATE_OPTIONAL_ON_ROUTE_CALL="$ROLLBACK_POSTNETWORK_OPTIONAL_ROUTE_CALL" "$HELPER" --rollback --state-dir "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR" >"$TMP_ROOT/rollback-postnetwork-optional-death.out" 2>"$TMP_ROOT/rollback-postnetwork-optional-death.err"; then
+    fail 'rollback accepted an optional hostapd lost after final network verification'
+fi
+grep -Fq 'optional-PMF hostapd process or AP shape is not exact before rollback receipt' \
+    "$TMP_ROOT/rollback-postnetwork-optional-death.err" ||
+    fail 'rollback post-network optional loss did not retain its categorical diagnostic'
+[ ! -e "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR/rollback.status" ] ||
+    fail 'rollback post-network optional loss wrote a verification receipt'
+[ ! -e "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rollback post-network optional loss retained an optional pid receipt'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'rollback post-network optional loss left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback post-network optional loss cleared the active marker'
+[ -r "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR/watchdog.pid" ] ||
+    fail 'rollback post-network optional loss did not retain its watchdog receipt'
+ROLLBACK_POSTNETWORK_OPTIONAL_WATCHDOG_PID="$(tr -d '[:space:]' <"$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$ROLLBACK_POSTNETWORK_OPTIONAL_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'rollback post-network optional loss did not retain a live watchdog'
+"$HELPER" --rollback --state-dir "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR" \
+    >"$TMP_ROOT/rollback-postnetwork-optional-recovery.out" \
+    2>"$TMP_ROOT/rollback-postnetwork-optional-recovery.err" ||
+    fail 'rollback post-network optional recovery did not permit cleanup'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rollback-postnetwork-optional-recovery.out" ||
+    fail 'rollback post-network optional recovery did not report optional restoration'
+grep -Fxq 'rollback_verified=true' "$ROLLBACK_POSTNETWORK_OPTIONAL_STATE_DIR/rollback.status" ||
+    fail 'rollback post-network optional recovery did not commit its witness'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rollback post-network optional recovery did not restore optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback post-network optional recovery left the active marker'
+if /bin/kill -0 "$ROLLBACK_POSTNETWORK_OPTIONAL_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'rollback post-network optional recovery left the watchdog live'
 fi
 
 # `rollback_verified=true` is a transaction-completion receipt, not a record
