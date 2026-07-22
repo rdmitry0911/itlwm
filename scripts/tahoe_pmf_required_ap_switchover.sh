@@ -755,6 +755,13 @@ do_rekey() {
         die "host network invariants are unreadable after bounded group-rekey"
     [ "$current_signature" = "$before_signature" ] ||
         die "host network invariants changed during bounded group-rekey"
+    # The post-ack process/AP observation predates the final network read.
+    # Re-attest at success publication so a later disappearance is not sealed
+    # as a categorical bounded-rekey result.
+    configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
+        die "required-PMF hostapd process is not exact before rekey success publication"
+    runtime_ap_is_pinned ||
+        die "the lab AP left the pinned channel/width before rekey success publication"
     printf 'rekey_requested=true\n' >"$STATE_DIR/rekey.status"
     chmod 600 "$STATE_DIR/rekey.status"
     printf 'PMF_AP_REKEY=REQUESTED\n'

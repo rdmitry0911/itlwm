@@ -993,6 +993,120 @@ is no autonomous bounded rollback owner.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-REKEY-FINAL-REQUIRED-ATTESTATION-20260721`
+
+### Observation
+
+After raw `REKEY_GTK` returns `OK`, `do_rekey()` reattests required hostapd
+and AP shape, then reads the post-command host-network signature before it
+writes `rekey.status` and emits success.  The network probe creates an interval
+in which the previously attested required PID can exit or be replaced.  The
+current source does not repeat its required PID/AP predicate after that probe,
+so it can publish a categorical rekey success witness from stale process
+evidence.
+
+- scope: repository-owned bounded rekey helper and generated fixture only; no
+  kext, firmware, Apple80211, candidate, guest, or physical-AP behavior claim.
+- expected system behavior: `PMF_AP_REKEY=REQUESTED` and its success receipt
+  require the exact required process/configuration and pinned AP shape at the
+  actual final success edge, after both post-ack network comparison and the
+  raw command's one-shot receipt.  A post-ack process loss must remain
+  inconclusive and leave no success witness.
+- actual behavior: `configured_hostapd_active("$REQUIRED_CONFIG", ...)` and
+  `runtime_ap_is_pinned()` precede the post-command
+  `host_network_signature()`; after the comparison the helper writes
+  `rekey.status` without a final required process/AP reattestation.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey()` between the
+  post-command host-network comparison and `rekey_requested=true`.
+- source-local proof mechanism: the fake route helper can kill/remove only
+  its generated required hostapd PID receipt on the second rekey route probe
+  (the post-ack network read).  It keeps fake network output stable.  The
+  unmodified helper nevertheless writes its rekey success witness and emits
+  success, without any real AP, guest, route, identity, or credential action.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-FINAL-REQUIRED-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh generated transaction that kills required hostapd only on the
+     second rekey route probe; before a fix it must fail because rekey success
+     was accepted;
+  2. repeat the existing exact required PID/configuration and pinned AP-shape
+     predicate after post-command network comparison and directly before
+     `rekey.status` success publication;
+  3. on loss, fail categorically after the already-consumed one-shot request
+     while withholding `rekey.status`; leave existing explicit rollback for
+     cleanup;
+  4. require final required process/AP ordering in the static contract and
+     state the final-success boundary in the runtime protocol.
+- safety and side effects: this adds only read-only reattestation and a
+  temporary fixture-only child kill.  No retry, additional raw command,
+  restart, configuration/network mutation, kext operation, guest action, or
+  live AP action is introduced.
+- forbidden alternatives considered and rejected:
+  - treating the first post-ack process observation as proof through later
+    network reads can publish a false success witness;
+  - retrying the raw command after a lost process breaks the exact-one command
+    invariant;
+  - restarting required hostapd to regain evidence changes AP behavior outside
+    the bounded, observational runtime contract.
+- deterministic verification plan:
+  - pre-fix, the local fixture must stop at its assertion that rekey accepted a
+    required process killed before final success publication;
+  - post-fix, it must issue exactly the one already-authorized fake raw command
+    but publish no success witness, retain its one-shot receipt, and clean up
+    only via a subsequent explicit rollback;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-REKEY-FINAL-REQUIRED-ATTESTATION-20260721`
+
+- implementation:
+  - after its post-ack host-network equality check, `do_rekey()` now repeats
+    the existing exact required PID/configuration and pinned AP-shape
+    predicates immediately before it writes `rekey.status` or reports
+    `PMF_AP_REKEY=REQUESTED`;
+  - a failed final process/AP predicate withholds the success witness while
+    retaining the already-written one-shot request receipt.  It introduces no
+    second raw command, retry, restart, configuration/network mutation, kext,
+    guest, or live AP operation;
+  - the fixture's generated fake route probe now covers a required child loss
+    on the second rekey route call.  Static ordering requires post-ack network
+    comparison -> final required PID/AP -> success receipt, and the protocol
+    documents that final success edge.
+- deterministic fixture evidence:
+  - before implementation, the test stopped at
+    `group rekey accepted a required hostapd that died before final success
+    publication`, proving a false success result after the one permitted raw
+    control command;
+  - after implementation, that same fixture-only loss reaches exactly one fake
+    raw CLI request and preserves `rekey.requested`, but reports
+    `required-PMF hostapd process is not exact before rekey success
+    publication`, writes no `rekey.status`, and emits no success result;
+  - the following explicit rollback restores generated optional PMF, removes
+    its marker, and terminates the still-live generated watchdog.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty5cf0dac63169`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side bounded-rekey success
+  freshness fence.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

@@ -413,6 +413,52 @@ grep -Fq 'required-PMF hostapd process is not exact after bounded group-rekey' \
 [ -r "$RUN_DIR/hostapd-5g.pid" ] ||
     fail 'post-ack required-child death did not restore optional hostapd'
 
+# Re-arm a generated transaction to prove that the post-ack process proof must
+# remain current through the final host-network comparison and success witness.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-final-required-activate.out" \
+    2>"$TMP_ROOT/rekey-final-required-activate.err" ||
+    fail 'final-required rekey fixture could not activate required PMF'
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+FINAL_REKEY_REQUIRED_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL="$FINAL_REKEY_REQUIRED_ROUTE_CALL" "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-final-required-death.out" 2>"$TMP_ROOT/rekey-final-required-death.err"; then
+    fail 'group rekey accepted a required hostapd that died before final success publication'
+fi
+grep -Fq 'required-PMF hostapd process is not exact before rekey success publication' "$TMP_ROOT/rekey-final-required-death.err" ||
+    fail 'final rekey required-child death did not retain its categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" -eq $((REKEY_CLI_LINES_BEFORE + 1)) ] ||
+    fail 'final rekey required-child death did not reach exactly one hostapd CLI request'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'final rekey required-child death wrote a success witness'
+grep -Fxq 'rekey_attempted=true' "$STATE_DIR/rekey.requested" ||
+    fail 'final rekey required-child death did not retain its one-shot receipt'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'final rekey required-child death left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey required-child death cleared the required-state marker'
+[ -r "$STATE_DIR/watchdog.pid" ] ||
+    fail 'final rekey required-child death did not retain its watchdog receipt'
+FINAL_REKEY_REQUIRED_WATCHDOG_PID="$(tr -d '[:space:]' <"$STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$FINAL_REKEY_REQUIRED_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'final rekey required-child death did not retain a live watchdog'
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-final-required-rollback.out" \
+    2>"$TMP_ROOT/rekey-final-required-rollback.err" ||
+    fail 'final rekey required-child death did not permit explicit optional rollback'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rekey-final-required-rollback.out" ||
+    fail 'final rekey required-child death rollback did not report optional restoration'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'final rekey required-child death rollback did not restore optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey required-child death rollback left the active marker'
+if /bin/kill -0 "$FINAL_REKEY_REQUIRED_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'final rekey required-child death rollback left the watchdog live'
+fi
+
 # Restore a fresh required transaction for the existing stable positive rekey
 # and rollback checks below.
 STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
