@@ -2223,6 +2223,115 @@ baseline at this final automatic-recovery edge.
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-OPTIONAL-ATTESTATION-20260721`
+
+### Observation
+
+Automatic recovery now finishes with a second network comparison and a final
+staged-pair check, but its most recent exact optional PID/AP attestation still
+precedes both.  The optional process can disappear during that final network
+read.  The subsequent configuration predicate does not prove optional process
+liveness, so the old `finish_post_transition_rollback()` can return success,
+letting `do_activate()` report `optional rollback verified` after it has
+restored no live optional-PMF daemon.
+
+- scope: repository-owned automatic recovery helper and generated fixture only;
+  no kext, firmware, Apple80211, candidate, guest, physical AP, live profile,
+  or credential behavior claim.
+- expected system behavior: an automatic verified-recovery branch requires the
+  exact optional PID/configuration/AP-shape to remain current after the final
+  network and staged-pair reads.  Late process loss must be inconclusive and
+  retain marker/watchdog for a later explicit stable rollback.
+- actual behavior: the final `optional_hostapd_exact_and_pinned` precedes the
+  second `host_network_signature`; after it, only a configuration comparison
+  occurs before `cancel_watchdog()` and `clear_marker()`.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::finish_post_transition_rollback()`
+  between the final network/pair checks and ownership release.
+- source-local proof mechanism: the generated fake `ip` can terminate only its
+  generated optional child and remove only its generated PID receipt at a
+  selected route read.  On a generated required-start failure, the fourth
+  activation route read is the second/final recovery network signature.  The
+  old source reports verified optional recovery after that process-only loss.
+  No real AP, route, profile, identity, credential, or network action is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-OPTIONAL-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a generated required-start-failure fixture that terminates only its
+     private optional child at the final recovery route read; before a fix it
+     must prove false verified recovery;
+  2. repeat `optional_hostapd_exact_and_pinned` after final network/pair checks
+     and immediately before watchdog/marker release;
+  3. retain marker/watchdog and withhold verified recovery on late loss, then
+     prove an explicit rollback can start generated optional PMF and complete;
+  4. add static ordering and runtime-protocol coverage for the post-network
+     automatic-recovery optional attestation.
+- safety and side effects: the correction is read-only PID/AP observation; the
+  process termination is confined to an ephemeral generated fixture child.  It
+  introduces no live process/config/network mutation, retry, AP restart, kext
+  action, guest action, or live AP operation.
+- forbidden alternatives considered and rejected:
+  - trust an optional PID/AP observation across final network/file reads;
+  - report a dead daemon as a verified optional recovery;
+  - clear marker/watchdog or restart a daemon automatically to mask the loss;
+  - make a host-network or live AP adjustment.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that post-transition
+    recovery accepted optional loss after final network verification;
+  - post-fix, it must retain marker/watchdog with the armed-recovery branch and
+    succeed only during a later explicit generated rollback;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-OPTIONAL-ATTESTATION-20260721`
+
+- implementation:
+  - `finish_post_transition_rollback()` now repeats
+    `optional_hostapd_exact_and_pinned` after its second/final host-network
+    signature and staged-pair comparisons, immediately before it can release
+    watchdog/marker ownership;
+  - a late optional PID/AP loss makes automatic recovery inconclusive and
+    retains marker/watchdog for explicit stable rollback, rather than reporting
+    `optional rollback verified`.  The helper gained no process restart,
+    configuration/network mutation, retry, kext action, guest action, or live
+    AP operation;
+  - static ordering and the runtime protocol bind this final exact optional
+    attestation to the automatic-recovery ownership edge.
+- deterministic fixture evidence:
+  - before implementation, a generated required-start failure combined with
+    generated optional-child termination only at the fourth activation route
+    read stopped at `post-transition recovery accepted optional loss after
+    final network verification`; the old source falsely reported verified
+    optional recovery;
+  - after implementation, the same private-only process loss leaves no
+    optional/required PID receipt, retains marker and watchdog, selects the
+    armed-recovery branch, and writes no rollback receipt;
+  - a subsequent explicit rollback restarts only the generated optional daemon,
+    emits `PMF_AP_ROLLBACK=OPTIONAL_RESTORED`, and releases both owner
+    receipts.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty1b594d9c2efd`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only an automatic host-side recovery
+  optional-process freshness fence.  It is not a live hostapd result,
+  PMF-required association, IGTK observation, candidate activation, guest
+  reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation
