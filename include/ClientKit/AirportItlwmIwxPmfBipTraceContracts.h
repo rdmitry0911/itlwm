@@ -476,7 +476,8 @@ airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage(
             continue;
         }
         if (event == kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled) {
-            if (phase != airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell) {
+            if (phase != airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell &&
+                phase != airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication) {
                 airport_itlwm_iwx_pmf_bip_trace_set_stage(
                     out_stage,
                     airport_itlwm_iwx_pmf_bip_trace_phase_stage(phase));

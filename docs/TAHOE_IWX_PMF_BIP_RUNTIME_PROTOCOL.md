@@ -128,6 +128,13 @@ after the initial selected IGTK slot. A second cross-slot transition in that
 same capture is ambiguous with respect to the one permitted request and is
 therefore inconclusive rather than a PMF/BIP success.
 
+An initial MFP Msg3 may submit PTK, GTK, and IGTK sequentially after one PMF
+receive.  The active prefix therefore accepts multiple Q0 doorbell/completion
+pairs before IGTK publication, but only when each later doorbell follows the
+previous completion; an extra PMF receive or an incomplete Q0 pair remains
+inconclusive.  This permits the normal initial PMF chain without broadening the
+single bounded-rekey authorization surface.
+
 The required configuration must represent the same saved-profile identity and
 credential as the optional configuration. A mismatch is a precondition failure.
 The current read-only preflight reports the categorical
@@ -149,10 +156,11 @@ sequence:
 3. Turn the radio off, re-check every route/address invariant, activate the
    required-PMF AP through the helper, then turn the radio on for saved-profile
    autojoin only.
-4. Require a live initial active prefix: PMF receive, q0 doorbell/completion,
-   post-acknowledgement IGTK publication, matching selected slot, and
-   port-valid in one active capture episode. The snapshot and progress reads
-   must both name the same nonzero active episode and exactly one episode.
+4. Require a live initial active prefix: one PMF receive, one or more completed
+   sequential q0 doorbell/completion pairs, post-acknowledgement IGTK
+   publication, matching selected slot, and port-valid in one active capture
+   episode. The snapshot and progress reads must both name the same nonzero
+   active episode and exactly one episode.
    This initial active prefix does not establish final success;
    it only authorizes the next bounded stimulus.
 5. Require the bounded local traffic probe and all invariants before asking

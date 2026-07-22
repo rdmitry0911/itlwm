@@ -448,6 +448,15 @@ for needle in (
         "classifyInitialPrefix",
 ):
     require(iwx_pmf_bip_facade, needle, "C++ IWX PMF/BIP evaluator facade")
+iwx_initial_prefix = body(
+    iwx_pmf_bip,
+    "airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage",
+    "IWX PMF/BIP active-prefix evaluator")
+ordered(iwx_initial_prefix, "IWX initial MFP multi-q0 progression",
+        "kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_q0_doorbell &&",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_need_igtk_publication",
+        "airport_itlwm_iwx_pmf_bip_trace_phase_wait_q0_completion")
 
 trace_publish = body(bip, "ieee80211_bip_trace_publish_locked",
                      "post-ack BIP trace publisher")
@@ -767,6 +776,8 @@ for needle in (
 for needle in (
         "initial slot-4 PMF transaction", "slot-4 initial followed by slot-5",
         "slot-5 initial followed by slot-4", "missing q0 completion",
+        "one PMF Msg3 with PTK/GTK/IGTK q0 stages",
+        "repeated q0 doorbell still requires the preceding completion",
         "still-active IWX episode",
         "publication without a PMF owner sequence", "active-slot fact before publication",
         "repeated active-slot selection", "same-slot replacement",
@@ -789,6 +800,8 @@ for needle in (
         "InitialPmfBipObserved", "CrossSlotRekeyObserved", "same_slot_replacement",
         "multiple_cross_slot_rekeys",
         "classifyInitialPrefix", "InitialPmfBipReady",
+        "one RX with PTK/GTK/IGTK q0 stages",
+        "three-stage initial PMF Msg3",
         "sole rekey authorization progress state",
         "CaptureWindowSealed", "ScanCommandRejected", "ScanNoCandidate",
         "JoinBss", "AuthDequeue", "PortValid",

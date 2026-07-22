@@ -54,6 +54,21 @@ append_q0_igtk(struct fixture *fixture, uint32_t publication,
     append(fixture, selection);
 }
 
+static void
+append_initial_mfp_msg3_chain(struct fixture *fixture, uint32_t publication,
+    uint32_t selection)
+{
+    append(fixture, kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered);
+    for (uint32_t stage = 0; stage < 3; stage++) {
+        append(fixture,
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);
+        append(fixture,
+            kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved);
+    }
+    append(fixture, publication);
+    append(fixture, selection);
+}
+
 static enum AirportItlwmIwxPmfBipTraceVerdict
 classify(const struct fixture *fixture, int integrity, uint32_t backend,
     uint32_t active_episode,
@@ -120,6 +135,38 @@ main(void)
         kAirportItlwmIwxPmfBipTraceVerdictInitialPmfBipObserved,
         kAirportItlwmIwxPmfBipTraceMissingStageNone,
         "initial slot-4 PMF transaction reaches a sealed initial verdict");
+
+    begin(&fixture);
+    append_initial_mfp_msg3_chain(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected);
+    append(&fixture, kAirportItlwmPostPltiTraceEventPortValidTransition);
+    expect_initial_progress(&fixture, 1,
+        kAirportItlwmPostPltiTraceBackendIwx, 9,
+        kAirportItlwmIwxPmfBipTraceInitialProgressInitialPmfBipReady,
+        kAirportItlwmIwxPmfBipTraceMissingStageNone,
+        "one PMF Msg3 with PTK/GTK/IGTK q0 stages authorizes the active prefix");
+    append(&fixture, kAirportItlwmPostPltiTraceEventCaptureWindowSealed);
+    expect(&fixture, 1, kAirportItlwmPostPltiTraceBackendIwx, 0,
+        kAirportItlwmIwxPmfBipTraceVerdictInitialPmfBipObserved,
+        kAirportItlwmIwxPmfBipTraceMissingStageNone,
+        "the three-stage initial MFP transaction reaches a sealed initial verdict");
+
+    begin(&fixture);
+    append(&fixture, kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);
+    append(&fixture,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled);
+    expect_initial_progress(&fixture, 1,
+        kAirportItlwmPostPltiTraceBackendIwx, 9,
+        kAirportItlwmIwxPmfBipTraceInitialProgressIntegrityInconclusive,
+        kAirportItlwmIwxPmfBipTraceMissingStageQ0Completion,
+        "a repeated q0 doorbell still requires the preceding completion");
 
     begin(&fixture);
     append_q0_igtk(&fixture,

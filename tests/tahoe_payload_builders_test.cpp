@@ -2286,6 +2286,41 @@ void testTahoeIwxPmfBipTraceContracts()
                 stage == MissingStage::None,
             "an active exact initial PMF chain is the sole rekey authorization progress state");
 
+    const uint32_t initial_msg3_slot4[] = {
+        kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
+        kAirportItlwmPostPltiTraceEventStateScanSelfRequestObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0Doorbelled,
+        kAirportItlwmPostPltiTraceEventIwxMfpPaeQ0CompletionObserved,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4Published,
+        kAirportItlwmPostPltiTraceEventIwxIgtkSlot4TxSelected,
+        kAirportItlwmPostPltiTraceEventPortValidTransition,
+        kAirportItlwmPostPltiTraceEventCaptureWindowSealed,
+    };
+    AirportItlwmPostPltiTraceEntry active_initial_msg3[32] = {};
+    for (uint32_t i = 0; i < 12; i++)
+        active_initial_msg3[i] = { 980 + i, kGeneration, kEpisode,
+                                   initial_msg3_slot4[i] };
+    const InitialProgress initial_msg3_progress = classifyInitialPrefix(
+        active_initial_msg3, 12, true, kAirportItlwmPostPltiTraceBackendIwx,
+        1, kEpisode, &stage);
+    const auto c_initial_msg3_progress = static_cast<InitialProgress>(
+        airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix(
+            active_initial_msg3, 12, 1,
+            kAirportItlwmPostPltiTraceBackendIwx, 1, kEpisode));
+    require(initial_msg3_progress == InitialProgress::InitialPmfBipReady &&
+                c_initial_msg3_progress == initial_msg3_progress &&
+                stage == MissingStage::None,
+            "one RX with PTK/GTK/IGTK q0 stages remains an active rekey authorization");
+    require(classify(initial_msg3_slot4, 13,
+                     kAirportItlwmPostPltiTraceBackendIwx, true, &stage) ==
+                Verdict::InitialPmfBipObserved && stage == MissingStage::None,
+            "the three-stage initial PMF Msg3 remains a sealed initial verdict");
+
     const uint32_t rekey_4_to_5[] = {
         kAirportItlwmPostPltiTraceEventWclPmkReadyScanResume,
         kAirportItlwmPostPltiTraceEventIwxMfpPaeRxDelivered,

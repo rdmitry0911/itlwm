@@ -2551,6 +2551,118 @@ host-network evidence.
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-IWX-PMF-BIP-INITIAL-MFP-MULTI-Q0-PREFIX-20260722`
+
+### Observation
+
+The active IWX PMF/BIP prefix gate rejects the normal initial MFP Msg3
+PTK -> GTK -> IGTK submission chain.  The net80211 MFP transaction begins all
+three stages from one received EAPOL Msg3 and each completion submits the next
+stage, so the trace has one PMF RX followed by three Q0 doorbell/completion
+pairs before IGTK publication, selection, and port-valid.  The full sealed
+evaluator permits another Q0 doorbell from `need_igtk_publication`, but
+`classify_initial_prefix_with_stage()` admits it only from
+`need_q0_doorbell`; it rejects the second normal submit before the runner can
+authorize its one bounded group rekey.
+
+- scope: repository-owned IWX PMF/BIP trace evaluator and local C contract
+  fixture only; no live AP, hostapd, profile, credential, kext activation,
+  guest, firmware, or radio action.
+- expected system behavior: an active, unsealed episode with one valid PMF RX,
+  three completed sequential Q0 submissions, matching IGTK publication/slot,
+  and port-valid must classify as `INITIAL_PMF_BIP_READY`; after sealing the
+  same trace must classify as initial PMF/BIP observed.
+- actual behavior: after the first completion, prefix phase is
+  `need_igtk_publication`; a second `IwxMfpPaeQ0Doorbelled` is treated as
+  integrity-inconclusive even though the full evaluator accepts that phase
+  transition and net80211 deterministically uses it for GTK/IGTK submits.
+- exact divergence points:
+  - `include/ClientKit/AirportItlwmIwxPmfBipTraceContracts.h::
+    airport_itlwm_iwx_pmf_bip_trace_classify_initial_prefix_with_stage()`;
+  - `itl80211/openbsd/net80211/ieee80211_proto.c::
+    ieee80211_pae_mfp_txn_begin()/ieee80211_pae_mfp_txn_complete()`;
+  - runner authorization is `airport_itlwm_post_plti_trace.c` initial-progress
+    evaluation before `run_tahoe_iwx_pmf_bip_runtime.sh` can request rekey.
+- source-local proof mechanism: add only a C contract trace with start, one
+  RX, Q0/completion repeated three times, slot-4 publication/selection,
+  port-valid, and active episode `9`.  On the current source its prefix result
+  is inconclusive despite a valid sealed full-evaluator verdict.  No packet,
+  AP, credential, guest, or device input is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-IWX-PMF-BIP-INITIAL-MFP-MULTI-Q0-PREFIX-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add the deterministic active-prefix and sealed evaluator C fixtures for
+     the normal one-RX/three-Q0 initial MFP chain;
+  2. permit `IwxMfpPaeQ0Doorbelled` from
+     `need_igtk_publication` in the active-prefix DFA, matching the already
+     stricter full evaluator's sequential completion rule;
+  3. retain narrow RX semantics and reject a doorbell without its preceding
+     completion, so the correction removes only the false-negative chain;
+  4. bind the multi-Q0 initial-progress shape into the post-PLTI static
+     contract and protocol.
+- safety and side effects: this changes only local categorical trace
+  interpretation.  It creates no association, control request, rekey, packet
+  injection, AP process change, kext action, guest action, or live hardware
+  operation.
+- forbidden alternatives considered and rejected:
+  - weaken the gate by allowing arbitrary repeated PMF RX events;
+  - treat an incomplete Q0 sequence as initial PMF/BIP progress;
+  - bypass initial-progress gating to issue a raw rekey;
+  - claim runtime WPA3 success from the local trace fixture.
+- deterministic verification plan:
+  - pre-fix, the new C fixture must reject the active normal chain at the
+    IGTK-publication stage while the full sealed evaluator accepts it;
+  - post-fix, active classification must be `INITIAL_PMF_BIP_READY`, sealed
+    classification must remain initial PMF/BIP observed, and malformed
+    duplicate/incomplete sequences must remain rejected;
+  - run C/C++ trace contracts, static/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-IWX-PMF-BIP-INITIAL-MFP-MULTI-Q0-PREFIX-20260722`
+
+- implementation:
+  - the active-prefix DFA now accepts
+    `IwxMfpPaeQ0Doorbelled` from `need_igtk_publication` as well as its first
+    `need_q0_doorbell` phase, matching the already-existing full sealed DFA;
+  - each further Q0 still must be preceded by a recorded completion because the
+    DFA returns to `wait_q0_completion`.  PMF RX remains restricted to the
+    initial phase, so this does not accept arbitrary extra RX events or an
+    incomplete key-install chain;
+  - the C fixture, C++ facade matrix, post-PLTI static contract, and runtime
+    protocol now bind one-RX PTK/GTK/IGTK multi-Q0 initial MFP behavior.
+- deterministic fixture evidence:
+  - before implementation, a local trace containing one PMF RX, three
+    Q0-doorbell/completion pairs, slot-4 publication/selection, port-valid,
+    and active episode `9` stopped at `one PMF Msg3 with PTK/GTK/IGTK q0 stages
+    authorizes the active prefix`; the sealed full evaluator already accepted
+    the same chain;
+  - after implementation, C and C++ active-prefix evaluation returns
+    `INITIAL_PMF_BIP_READY` with no missing stage, and the sealed version
+    returns initial PMF/BIP observed;
+  - the fixture also proves a repeated doorbell without the intervening
+    completion remains integrity-inconclusive at `Q0Completion`.
+- verification:
+  - `bash scripts/test_payload_builders.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty83dc8dcd86d5`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this fixes a local IWX trace-gate false-negative; it
+  is not a live WPA3/SAE association, IGTK observation, candidate activation,
+  guest reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation
