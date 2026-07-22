@@ -33,7 +33,7 @@ PREVIOUS_PROGRESS_HEADS = [
     },
 ]
 
-SOURCE_PATHS = [
+SOURCE_PATHS_V1 = [
     "AirportItlwm",
     "include",
     "itl80211",
@@ -42,6 +42,24 @@ SOURCE_PATHS = [
     "scripts/build_tahoe.sh",
     "scripts/tahoe_source_identity.py",
 ]
+
+SOURCE_PATHS_V2 = [
+    "AirportItlwm",
+    "AirportItlwmPostPltiTrace",
+    "include",
+    "itl80211",
+    "itlwm",
+    "itlwm.xcodeproj",
+    "scripts/build_post_plti_trace.sh",
+    "scripts/build_tahoe.sh",
+    "scripts/tahoe_source_identity.py",
+]
+
+# Default build identity is v2. The v1 path remains only to interpret historic
+# receipts; new candidate provenance is always v2.
+SOURCE_PATHS = SOURCE_PATHS_V2
+IDENTITY_DOMAIN_V1 = b"tahoe-airportitlwm-source-identity-v1\0"
+IDENTITY_DOMAIN_V2 = b"tahoe-airportitlwm-source-identity-v2\0"
 
 EXCLUDED_PROGRESS_PATHS = [
     "docs/progress-evidence.yaml",
@@ -78,8 +96,24 @@ def repo_root() -> Path:
     return Path(output.stdout.strip())
 
 
-def source_records(root: Path, ref: str) -> list[dict[str, str]]:
-    raw = run_git(["ls-tree", "-r", "-z", ref, "--", *SOURCE_PATHS], root)
+def source_paths(version: str) -> list[str]:
+    if version == "v1":
+        return SOURCE_PATHS_V1
+    if version == "v2":
+        return SOURCE_PATHS_V2
+    raise ValueError("unsupported Tahoe source identity version")
+
+
+def source_identity_domain(version: str) -> bytes:
+    if version == "v1":
+        return IDENTITY_DOMAIN_V1
+    if version == "v2":
+        return IDENTITY_DOMAIN_V2
+    raise ValueError("unsupported Tahoe source identity version")
+
+
+def source_records(root: Path, ref: str, version: str = "v2") -> list[dict[str, str]]:
+    raw = run_git(["ls-tree", "-r", "-z", ref, "--", *source_paths(version)], root)
     records: list[dict[str, str]] = []
 
     for entry in raw.split(b"\0"):
@@ -100,10 +134,10 @@ def source_records(root: Path, ref: str) -> list[dict[str, str]]:
     return sorted(records, key=lambda record: record["path"])
 
 
-def source_identity(root: Path, ref: str = "HEAD") -> dict[str, Any]:
-    records = source_records(root, ref)
+def source_identity(root: Path, ref: str = "HEAD", version: str = "v2") -> dict[str, Any]:
+    records = source_records(root, ref, version)
     digest = hashlib.sha256()
-    digest.update(b"tahoe-airportitlwm-source-identity-v1\0")
+    digest.update(source_identity_domain(version))
     for record in records:
         digest.update(
             f"{record['mode']} {record['object']} {record['path']}\0".encode(
@@ -181,6 +215,7 @@ def make_report(root: Path) -> dict[str, Any]:
         path
         for path in changed_paths
         if path == "scripts/build_tahoe.sh"
+        or path == "scripts/build_post_plti_trace.sh"
         or path == "scripts/tahoe_source_identity.py"
         or any(path.startswith(prefix + "/") for prefix in SOURCE_PATHS if "/" not in prefix)
     ]

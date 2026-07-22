@@ -10,6 +10,7 @@ RUNNER="$ROOT/scripts/run_tahoe_iwx_pmf_bip_runtime.sh"
 AP_HELPER="$ROOT/scripts/tahoe_pmf_required_ap_switchover.sh"
 AP_FIXTURE="$ROOT/scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh"
 EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh"
+TRACE_CLIENT_BINDING_FIXTURE="$ROOT/scripts/test_tahoe_iwx_pmf_bip_trace_client_binding_fixture.sh"
 PROTOCOL="$ROOT/docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md"
 OVERLAY_HELPER="$ROOT/scripts/tahoe_prepare_disposable_overlay.sh"
 OVERLAY_EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_disposable_overlay_evidence_contract.sh"
@@ -84,11 +85,13 @@ cleanup_order_fixture() {
         fail 'runner cleanup restores radio before AP rollback ownership'
 }
 
-for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" "$PROTOCOL" \
+for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" \
+            "$TRACE_CLIENT_BINDING_FIXTURE" "$PROTOCOL" \
             "$OVERLAY_HELPER" "$OVERLAY_EVIDENCE_CONTRACT" "$OVERLAY_PROTOCOL"; do
     [ -f "$path" ] || fail "required file is missing: ${path##*/}"
 done
 [ -x "$RUNNER" ] && [ -x "$AP_HELPER" ] && [ -x "$AP_FIXTURE" ] && [ -x "$EVIDENCE_CONTRACT" ] && \
+    [ -x "$TRACE_CLIENT_BINDING_FIXTURE" ] && \
     [ -x "$OVERLAY_HELPER" ] && [ -x "$OVERLAY_EVIDENCE_CONTRACT" ] ||
     fail 'runtime scripts must be executable'
 bash -n "$RUNNER"
@@ -98,6 +101,7 @@ bash -n "$AP_FIXTURE"
 "$AP_HELPER" --help >/dev/null 2>&1
 "$EVIDENCE_CONTRACT" --self-test
 "$AP_FIXTURE"
+"$TRACE_CLIENT_BINDING_FIXTURE"
 cleanup_order_fixture
 
 for needle in \
@@ -118,6 +122,11 @@ for needle in \
     'run_bounded_traffic_probe' \
     'saved_profile_autojoin_only' \
     'runtime-attestation.json' \
+    'trace_client_sha256_from_provenance' \
+    'TRACE_CLIENT_PRE_RESET_BOUND=1' \
+    'trace_client' \
+    'expected_sha256' \
+    'pre_reset_bound' \
     'host_ip_nat_forwarding_route_mutated' \
     'AP_REQUIRED_WAS_ACTIVE' \
     'AP_ROLLBACK_ATTEMPTED=1' \
@@ -256,6 +265,16 @@ def ordered(text: str, label: str, *tokens: str) -> None:
         cursor = pos + len(token)
 
 
+def shell_function(text: str, marker: str, following_marker: str) -> str:
+    start = text.find(marker)
+    if start < 0:
+        fail(f"runner function is missing: {marker}")
+    end = text.find(following_marker, start)
+    if end < 0:
+        fail(f"runner function terminator is missing: {marker}")
+    return text[start:end]
+
+
 # Exclude cleanup definitions so the static ordering describes the successful
 # main line, not an emergency restoration path.
 main_start = runner.find('umask 077\nmkdir "$OUT_DIR"')
@@ -263,6 +282,8 @@ if main_start < 0:
     fail("runner main entry is missing")
 main = runner[main_start:]
 ordered(main, "runner PMF/BIP sequence",
+        "remote_trace_client_exists || fail_phase trace-client-preflight",
+        "TRACE_CLIENT_PRE_RESET_BOUND=1",
         "capture_identity before",
         '"$AP_HELPER" --preflight',
         "TRACE_MAY_BE_ARMED=1",
@@ -281,6 +302,30 @@ ordered(main, "runner PMF/BIP sequence",
         "disable_trace || fail_phase trace-final-off",
         '"$AP_HELPER" --rollback --state-dir "$AP_STATE_DIR"',
         "capture_identity after")
+
+local_trace_receipt = runner.find('TRACE_CLIENT_SHA256="$(trace_client_sha256_from_provenance)"')
+ssh_setup = runner.find('SSH=(')
+if not (0 <= local_trace_receipt < ssh_setup):
+    fail("trace-client digest is not extracted locally before SSH setup")
+
+trace_preflight = shell_function(
+    runner, "remote_trace_client_exists() {", "capture_trace_client() {")
+trace_exec = shell_function(
+    runner, "remote_trace() {", "remote_trace_client_exists() {")
+for body, label in ((trace_preflight, "trace-client preflight"),
+                    (trace_exec, "trace-client execution")):
+    ordered(body, label,
+            '"${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256"',
+            'expected_sha256="$2"',
+            'test -d "$parent" && test ! -L "$parent"',
+            'physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)"',
+            '[ "$physical_parent" = "$parent" ]',
+            'test -f "$tool" && test ! -L "$tool" && test -x "$tool"',
+            '/usr/bin/shasum -a 256 "$tool"',
+            '[ "$observed" = "$expected_sha256" ]')
+ordered(trace_exec, "trace-client execution guard before exec",
+        'trace_client_binding "$tool" "$expected_sha256"',
+        'exec "$tool" "$@"')
 
 rekey = main.find('"$AP_HELPER" --rekey --state-dir "$AP_STATE_DIR"')
 initial = main.find("wait_for_initial_pmf_progress")
@@ -306,7 +351,7 @@ attestation = runner[runner.find("write_safe_attestation() {"):runner.find("clea
 for token in ("PINNED_PROFILE_SSID", "PINNED_LAB_GATEWAY",
               "PINNED_WIFI_INTERFACE", "ACTIVE_CLIENT_MAC",
               "DEFAULT_ROUTE_BASELINE", "MANAGEMENT_IPV4_BASELINE",
-              "LAB_IPV4_BASELINE", "LAB_ROUTE_BASELINE"):
+              "LAB_IPV4_BASELINE", "LAB_ROUTE_BASELINE", "TRACE_TOOL"):
     if token in attestation:
         fail(f"sanitized attestation serializes runtime identity: {token}")
 
@@ -613,6 +658,7 @@ for token in (
     "rollback watchdog", "local-only", "does not prove pure SAE",
     "precondition failure", "fresh disposable overlay", "REKEY_GTK",
     "tahoe_prepare_disposable_overlay.sh", "local-only receipt",
+    "receipt-named trace-client", "TOCTOU", "unbound final-off",
 ):
     if token not in protocol:
         fail(f"runtime protocol omits boundary: {token}")

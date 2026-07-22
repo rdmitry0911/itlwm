@@ -15,6 +15,23 @@ trace client path. It never changes a guest address, route, DHCP state,
 default route, direct kext state, guest reboot state, or the physical
 validation host.
 
+The IWX-specific candidate receipt is v2 and is created with the locally built
+regular, non-symlink trace client as `--trace-client`. Its SHA-256 is a
+local-only input; the receipt's source identity also covers the trace-client
+source and build recipe. Before the first trace-client control request, the
+runner requires the remote leaf and its immediate staging directory to be
+non-symlinks, resolves that directory physically within the restricted
+namespace, and compares the remote bytes with the receipt. It repeats the
+same check immediately before every trace-client `exec`, including cleanup
+attempts. A byte mismatch is inconclusive rather than permission to issue an
+unbound final-off request.
+
+This is a stale/wrong/symlink artifact fence under the pinned guest boundary,
+not proof that the guest filesystem is immutable. A replacement between a
+hash and `exec` remains a narrow TOCTOU limit; eliminating it requires a
+protected pre-provisioned artifact or an attested launcher outside this shell
+runner.
+
 The fresh-overlay precondition is prepared separately by
 `tahoe_prepare_disposable_overlay.sh` and its local-only receipt. That helper
 accepts only one direct qcow2 backing image, creates no guest activity, and is
@@ -157,8 +174,9 @@ separately reviewed configuration/profile plan; the runner must not bypass it.
 When all external prerequisites are satisfied, the gate has one bounded
 sequence:
 
-1. Bind the exact loaded candidate before the experiment and snapshot the
-   existing management/default-route, direct-lab-route, and lab-address
+1. Bind the receipt-named trace-client bytes before candidate identity capture,
+   trace arming, or reset; then bind the exact loaded candidate and snapshot
+   the existing management/default-route, direct-lab-route, and lab-address
    invariants.
 2. Confirm the saved profile and optional-PMF AP preflight, reset the safe IWX
    trace, and require one acknowledged bound capture generation with an empty
@@ -196,12 +214,14 @@ a PMF/BIP success claim.
 
 The runner leaves raw trace, hostapd, interface, and route output local-only in
 its fresh output directory. Its JSON attestation carries only exact candidate
-digests/UUID, categorical trace counts/verdicts, booleans, and non-claims. It
-must contain no wireless identity, address, route, hardware address,
-credential, packet, or raw capture.
+digests/UUID, the receipt-named trace-client digest and pre-reset binding
+boolean, categorical trace counts/verdicts, booleans, and non-claims. It must
+contain no wireless identity, address, route, hardware address, credential,
+packet, raw capture, remote path, or remote-observed digest.
 
 `test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh` accepts `PASS` only if
 all of these are true: before/after identity binding, saved-profile preflight,
+pre-reset trace-client byte binding,
 required-PMF activation and verified rollback, preserved network invariants,
 the initial prefix and traffic-before-rekey gate, one bounded group rekey,
 exactly one resulting sealed IWX cross-slot transition, and an intact trace

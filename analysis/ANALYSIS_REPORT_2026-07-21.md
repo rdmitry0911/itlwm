@@ -4602,3 +4602,120 @@ sequence alone, without requiring `event_pending==0`.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched. No live configuration was read,
   changed, or bypassed.
+
+## ANOMALY: `LAB-IWX-PMF-BIP-TRACE-CLIENT-UNBOUND-20260722`
+
+### Observation
+
+The bounded IWX PMF/BIP runner cryptographically binds the candidate kext but
+does not bind the Tahoe trace-client executable whose stdout supplies every
+control, progress, and sealed-rekey predicate. The accepted `--trace-tool`
+name is restricted, but the remote preflight and every later invocation test
+only that the path is executable. A different executable, or a symlink at an
+allowed leaf path, can therefore emit syntactically valid control/snapshot/
+trace/report records which the runner can treat as evidence before it reaches
+the existing kext identity attestation.
+
+- scope: runner/evidence receipt and local synthetic fixtures only. No guest,
+  AP, saved profile, radio, candidate kext, or network state is contacted or
+  changed to demonstrate the defect.
+- deterministic proof: an isolated fake transport accepts the old executable
+  predicate for a trusted executable, a different executable, and a symlink
+  to the trusted executable at the permitted leaf. The last case proves that
+  digest-only comparison is insufficient when the leaf itself is a symlink.
+- trust boundary: a pinned SSH host key authenticates the endpoint, not every
+  mutable guest filesystem pathname. A byte receipt can detect a wrong, stale,
+  or symlinked client under the pinned guest boundary; it cannot establish
+  immutable deployment against an adversary able to swap a file after hashing.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-IWX-PMF-BIP-TRACE-CLIENT-UNBOUND-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. extend the clean-tree candidate provenance receipt and source-identity
+     inputs to cover the Tahoe trace-client source/build recipe and a strict
+     SHA-256 of one locally supplied, regular non-symlink trace-client file;
+  2. extract that expected digest locally from the receipt, never from remote
+     stdout or a free-form guest value;
+  3. before identity capture, trace arming, and reset, require the remote
+     path to be a regular executable, not a leaf or parent-directory symlink,
+     beneath the physically resolved restricted directory, and to hash exactly
+     to the expected receipt; repeat that guard immediately before every
+     remote trace-client `exec` so a post-preflight swap cannot silently feed
+     later lifecycle evidence;
+  4. record only the expected digest and boolean pre-reset binding in a v2
+     sanitized attestation, require the boolean for `PASS`, and retain raw
+     path/output exclusively local;
+  5. add a local fake-transport fixture showing trusted regular input binds,
+     wrong bytes and a matching-target symlink fail before reset, plus
+     provenance/evidence self-tests and static ordering coverage.
+- safety and alternatives:
+  - do not contact the pinned guest or AP, alter a trace client, copy a file,
+    activate a kext, or run runtime radio/network commands in the fixture;
+  - do not call this a proof of adversarial guest-filesystem integrity: closing
+    hash-to-exec TOCTOU completely would require a protected pre-provisioned
+    artifact or an attested file-descriptor launcher beyond this runner;
+  - do not apply this IWX-specific hardening to the separate legacy post-PLTI
+    runner without its own anomaly and verification plan.
+- verification plan:
+  - capture the old local model's executable/symlink acceptance first;
+  - run the candidate-provenance and source-identity self-tests, IWX evidence
+    contract, IWX runtime static/fixture contract, payload/trace contracts,
+    SAE quarantine aggregate, and the isolated Tahoe build-only gate;
+  - preserve the existing no-live-runtime and profile-mismatch boundaries.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-IWX-PMF-BIP-TRACE-CLIENT-UNBOUND-20260722`
+
+- implementation:
+  - new candidate provenance is schema v2; schema v1 remains parse-only
+    compatibility for historical generic receipts.  The v2 source identity
+    covers both `AirportItlwmPostPltiTrace` and
+    `scripts/build_post_plti_trace.sh`, while the IWX runner requires the v2
+    receipt's locally calculated trace-client SHA-256;
+  - before any remote identity capture, trace arm, or reset, the runner reads
+    that receipt digest locally and requires the remote client to be a regular
+    executable with neither a leaf nor ancestor symlink, under the physically
+    resolved restricted directory, with an exact strict SHA-256 match;
+  - the same physical-path, regular-file, non-symlink, and digest guards run
+    again immediately before every trace-client execution, including later
+    cleanup reads.  A failure therefore cannot use the final-off path as a
+    bypass for unbound evidence;
+  - sanitized runtime evidence is schema v2 and records only the expected
+    digest plus `pre_reset_bound`; categorical `PASS` requires that boolean.
+    It serializes neither the remote pathname nor an observed remote digest.
+- deterministic fixture evidence:
+  - before implementation, the local fixture failed exactly with
+    `FAIL: IWX trace-client binding fixture: trace client binding fixture
+    accepted executable symlink`;
+  - after implementation, a trusted regular executable is admitted, while a
+    wrong regular executable, a matching-byte leaf symlink, and a
+    parent-directory symlink all fail before the simulated reset witness;
+  - after a successful preflight, replacing the leaf first with wrong bytes
+    and then with a matching-digest symlink makes the repeated pre-exec guard
+    fail before simulated execution.  This demonstrates the intended
+    post-preflight recheck without any SSH, AP, guest, radio, or network
+    operation.
+- verification:
+  - `python3 -m py_compile scripts/tahoe_source_identity.py
+    scripts/create_tahoe_candidate_provenance.py
+    scripts/capture_tahoe_lab_kext_identity.py`: PASS;
+  - `python3 scripts/create_tahoe_candidate_provenance.py --self-test`: PASS;
+  - `bash scripts/test_tahoe_lab_kext_identity_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_trace_client_binding_fixture.sh`:
+    PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS.  Pinned isolated
+    Tahoe build-only source identity `dirtybec978e8ebfa` built the kext,
+    trace producer, Agent, and RegDiag; all 959 undefined symbols resolved
+    against BootKC.  No kext was installed, loaded, published, or released.
+- verification boundary: this closes a local runner/evidence byte-binding
+  gap, not the general hash-to-exec scheduling TOCTOU against an adversary
+  able to replace the guest file after the final hash and before `exec`.
+  It is not a live WPA3/SAE association, IGTK observation, PMF rekey proof,
+  candidate activation, guest reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.

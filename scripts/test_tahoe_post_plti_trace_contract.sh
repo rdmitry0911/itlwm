@@ -41,6 +41,7 @@ pae_input = (root / "itl80211/openbsd/net80211/ieee80211_pae_input.c").read_text
 auth = (root / "AirportItlwm/TahoeAssociationAuthContracts.hpp").read_text()
 client = (root / "AirportItlwmPostPltiTrace/airport_itlwm_post_plti_trace.c").read_text()
 build = (root / "scripts/build_post_plti_trace.sh").read_text()
+source_identity = (root / "scripts/tahoe_source_identity.py").read_text()
 tahoe_build = (root / "scripts/build_tahoe.sh").read_text()
 runner = (root / "scripts/run_tahoe_sae_quarantine_layer.sh").read_text()
 aggregate = (root / "scripts/test_tahoe_sae_quarantine_contract.sh").read_text()
@@ -774,6 +775,12 @@ for needle in (
         "-framework IOKit",
 ):
     require(build, needle, "safe trace client build")
+for needle in (
+        '"AirportItlwmPostPltiTrace"',
+        '"scripts/build_post_plti_trace.sh"',
+        'tahoe-airportitlwm-source-identity-v2',
+):
+    require(source_identity, needle, "trace-client source identity coverage")
 for needle in (
         "-Iinclude", "tests/iwx_pmf_bip_trace_contract_test.c",
         "iwx_pmf_bip_trace_contract_test",

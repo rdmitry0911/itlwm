@@ -67,7 +67,7 @@ def boolean_fields(mapping: dict, *keys: str) -> None:
 
 
 def validate(document: dict) -> None:
-    require(document.get("schema") == "itlwm-tahoe-iwx-pmf-bip-runtime/v1",
+    require(document.get("schema") == "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
             "unexpected schema")
 
     candidate = document.get("candidate")
@@ -89,6 +89,13 @@ def validate(document: dict) -> None:
                          str(candidate.get("macho_uuid", ""))) is not None,
             "candidate Mach-O UUID is malformed")
     boolean_fields(candidate, "identity_before_bound", "identity_after_bound")
+
+    trace_client = document.get("trace_client")
+    require(isinstance(trace_client, dict), "trace-client section missing")
+    require(re.fullmatch(r"[0-9a-f]{64}",
+                         str(trace_client.get("expected_sha256", ""))) is not None,
+            "trace-client expected digest is malformed")
+    boolean_fields(trace_client, "pre_reset_bound")
 
     scope = document.get("scope")
     require(isinstance(scope, dict), "scope section missing")
@@ -197,6 +204,8 @@ def validate(document: dict) -> None:
         require(candidate["identity_before_bound"] is True and
                 candidate["identity_after_bound"] is True,
                 "PASS lacks before/after identity binding")
+        require(trace_client["pre_reset_bound"] is True,
+                "PASS lacks pre-reset trace-client byte binding")
         require(scope["host_ap_process_touched"] is True,
                 "PASS lacks a required-PMF AP switchover")
         require(saved["preflight_observed"] is True,
@@ -251,7 +260,7 @@ def validate(document: dict) -> None:
 
 def fixture() -> dict:
     return {
-        "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v1",
+        "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
         "candidate": {
             "source_commit": "a" * 40,
             "source_identity_sha256": "b" * 64,
@@ -262,6 +271,10 @@ def fixture() -> dict:
             "macho_uuid": "01234567-89AB-CDEF-0123-456789ABCDEF",
             "identity_before_bound": True,
             "identity_after_bound": True,
+        },
+        "trace_client": {
+            "expected_sha256": "e" * 64,
+            "pre_reset_bound": True,
         },
         "scope": {
             "environment": "pinned_disposable_qemu_guest_with_pinned_lab_ap",
@@ -356,6 +369,16 @@ if mode == "self-test":
     document["failure_phase"] = "bounded-group-rekey"
     validate(document)
     document["pmf_bip"]["bounded_group_rekey_requested"] = True
+    document["trace_client"]["pre_reset_bound"] = False
+    try:
+        document["result"] = "PASS"
+        document["failure_phase"] = "none"
+        validate(document)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted a PASS without trace-client byte binding")
+    document["trace_client"]["pre_reset_bound"] = True
     document["trace"]["verdict"] = "INITIAL_PMF_BIP_OBSERVED"
     try:
         document["result"] = "PASS"

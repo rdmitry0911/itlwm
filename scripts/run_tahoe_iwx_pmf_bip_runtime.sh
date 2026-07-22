@@ -45,9 +45,11 @@ RELEASE_TAG=""
 ARCHIVE_SHA256=""
 BINARY_SHA256=""
 MACHO_UUID=""
+TRACE_CLIENT_SHA256=""
 
 IDENTITY_BEFORE_BOUND=0
 IDENTITY_AFTER_BOUND=0
+TRACE_CLIENT_PRE_RESET_BOUND=0
 SAVED_PROFILE_READY=0
 AP_PREFLIGHT_PASSED=0
 AP_REQUIRED_ACTIVE=0
@@ -100,7 +102,8 @@ usage: run_tahoe_iwx_pmf_bip_runtime.sh \
 Preconditions outside this runner:
   * the exact clean candidate passed private AuxKC admission, transactional
     activation, and a guest-only reboot on a fresh disposable overlay;
-  * the Tahoe trace client has been copied to the restricted private path;
+  * the Tahoe trace client was included as --trace-client in the IWX v2
+    candidate provenance and copied byte-for-byte to the restricted path;
   * the guest has a pre-existing Keychain/saved profile for the pinned lab AP.
 
 The runner captures exact loaded-candidate identity before and after the test,
@@ -174,6 +177,28 @@ valid_trace_tool_path "$TRACE_TOOL" || {
     printf 'ERROR: --candidate-provenance must be a regular local file\n' >&2
     exit 2
 }
+
+trace_client_sha256_from_provenance() {
+    python3 - "$ROOT/scripts" "$CANDIDATE_PROVENANCE" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from create_tahoe_candidate_provenance import (
+    trace_client_sha256_from_candidate_provenance,
+)
+
+print(trace_client_sha256_from_candidate_provenance(sys.argv[2]))
+PY
+}
+
+TRACE_CLIENT_SHA256="$(trace_client_sha256_from_provenance)" || {
+    printf 'ERROR: --candidate-provenance lacks a valid IWX trace-client receipt\n' >&2
+    exit 2
+}
+[[ "$TRACE_CLIENT_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+    printf 'ERROR: IWX trace-client receipt digest is malformed\n' >&2
+    exit 2
+}
 [ -x "$IDENTITY_CAPTURE" ] && [ -x "$AP_HELPER" ] || {
     printf 'ERROR: required identity/AP helper is unavailable\n' >&2
     exit 2
@@ -191,28 +216,88 @@ done
 }
 
 remote_trace() {
-    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$@" <<'REMOTE'
+    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256" "$@" <<'REMOTE'
 set -euo pipefail
 tool="$1"
-shift
-case "$tool" in
-    /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
-    *) exit 64 ;;
-esac
-test -x "$tool"
+expected_sha256="$2"
+shift 2
+trace_client_binding() {
+    local tool="$1" expected_sha256="$2" parent physical_parent observed
+    case "$tool" in
+        /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
+        *) return 64 ;;
+    esac
+    [[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] || return 65
+    parent="${tool%/airport_itlwm_post_plti_trace}"
+    test -d "$parent" && test ! -L "$parent" || return 65
+    physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)" || return 65
+    case "$physical_parent" in
+        /private/tmp/aiam-post-plti-trace|/private/tmp/aiam-post-plti-trace-*) ;;
+        *) return 65 ;;
+    esac
+    [ "$physical_parent" = "$parent" ] || return 65
+    test -f "$tool" && test ! -L "$tool" && test -x "$tool" || return 65
+    observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
+        /usr/bin/awk -v path="$tool" '
+            function is_lower_hex64(value) {
+                return length(value) == 64 && value !~ /[^0-9a-f]/
+            }
+            NR == 1 && NF == 2 && is_lower_hex64($1) && $2 == path {
+                value = $1
+                next
+            }
+            { invalid = 1 }
+            END {
+                if (NR != 1 || invalid || value == "") exit 1
+                print value
+            }
+        ')" || return 65
+    [ "$observed" = "$expected_sha256" ] || return 65
+}
+trace_client_binding "$tool" "$expected_sha256"
 exec "$tool" "$@"
 REMOTE
 }
 
 remote_trace_client_exists() {
-    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" <<'REMOTE'
+    "${SSH[@]}" /bin/bash -s -- "$TRACE_TOOL" "$TRACE_CLIENT_SHA256" <<'REMOTE'
 set -euo pipefail
 tool="$1"
-case "$tool" in
-    /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
-    *) exit 64 ;;
-esac
-test -x "$tool"
+expected_sha256="$2"
+trace_client_binding() {
+    local tool="$1" expected_sha256="$2" parent physical_parent observed
+    case "$tool" in
+        /private/tmp/aiam-post-plti-trace/airport_itlwm_post_plti_trace|/private/tmp/aiam-post-plti-trace-*/airport_itlwm_post_plti_trace) ;;
+        *) return 64 ;;
+    esac
+    [[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] || return 65
+    parent="${tool%/airport_itlwm_post_plti_trace}"
+    test -d "$parent" && test ! -L "$parent" || return 65
+    physical_parent="$(CDPATH= cd -P -- "$parent" && pwd -P)" || return 65
+    case "$physical_parent" in
+        /private/tmp/aiam-post-plti-trace|/private/tmp/aiam-post-plti-trace-*) ;;
+        *) return 65 ;;
+    esac
+    [ "$physical_parent" = "$parent" ] || return 65
+    test -f "$tool" && test ! -L "$tool" && test -x "$tool" || return 65
+    observed="$(LC_ALL=C PATH=/usr/bin:/bin /usr/bin/shasum -a 256 "$tool" |
+        /usr/bin/awk -v path="$tool" '
+            function is_lower_hex64(value) {
+                return length(value) == 64 && value !~ /[^0-9a-f]/
+            }
+            NR == 1 && NF == 2 && is_lower_hex64($1) && $2 == path {
+                value = $1
+                next
+            }
+            { invalid = 1 }
+            END {
+                if (NR != 1 || invalid || value == "") exit 1
+                print value
+            }
+        ')" || return 65
+    [ "$observed" = "$expected_sha256" ] || return 65
+}
+trace_client_binding "$tool" "$expected_sha256"
 REMOTE
 }
 
@@ -616,6 +701,7 @@ write_safe_attestation() {
     [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] || return 0
     python3 - "$OUT_DIR/runtime-attestation.json" \
         "$SOURCE_COMMIT" "$SOURCE_IDENTITY_SHA256" "$RELEASE_TAG" "$ARCHIVE_SHA256" "$BINARY_SHA256" "$MACHO_UUID" \
+        "$TRACE_CLIENT_SHA256" "$TRACE_CLIENT_PRE_RESET_BOUND" \
         "$IDENTITY_BEFORE_BOUND" "$IDENTITY_AFTER_BOUND" "$SAVED_PROFILE_READY" \
         "$AP_PREFLIGHT_PASSED" "$AP_REQUIRED_WAS_ACTIVE" "$AP_ROLLBACK_ATTEMPTED" "$AP_ROLLBACK_VERIFIED" \
         "$INITIAL_PMF_PROGRESS" "$TRAFFIC_SUCCESS" "$REKEY_REQUESTED" "$CROSS_SLOT_REKEY_OBSERVED" "$NETWORK_INVARIANTS_OK" \
@@ -628,6 +714,7 @@ from pathlib import Path
 
 (
     output, source_commit, source_identity, release_tag, archive_sha, binary_sha, macho_uuid,
+    trace_client_sha256, trace_client_pre_reset_bound,
     identity_before, identity_after, saved_profile, ap_preflight, ap_required, ap_rollback_attempted, ap_rollback,
     initial_progress, traffic, rekey_requested, cross_slot, network_ok,
     reset_sequence, generation, backend, integrity, entry_count, episode_count, dropped,
@@ -642,7 +729,7 @@ trace_pass = (
     backend == "iwx" and integrity == "ok" and dropped == "0" and
     verdict == "CROSS_SLOT_REKEY_OBSERVED" and first_missing == "none" and
     int(episode_count) == 1 and int(entry_count) > 0 and
-    b(reset_sync) and b(initial_sync) and b(sealed) and b(disabled) and b(double_read)
+    b(trace_client_pre_reset_bound) and b(reset_sync) and b(initial_sync) and b(sealed) and b(disabled) and b(double_read)
 )
 result = (
     b(identity_before) and b(identity_after) and b(saved_profile) and
@@ -651,7 +738,7 @@ result = (
     b(network_ok) and b(radio_off) and b(radio_on) and b(run_complete) and trace_pass
 )
 document = {
-    "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v1",
+    "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
     "candidate": {
         "source_commit": source_commit,
         "source_identity_sha256": source_identity,
@@ -712,6 +799,10 @@ document = {
         "dropped_entries": int(dropped),
         "verdict": verdict,
         "first_missing_stage": first_missing,
+    },
+    "trace_client": {
+        "expected_sha256": trace_client_sha256,
+        "pre_reset_bound": b(trace_client_pre_reset_bound),
     },
     "radio_cycle": {
         "requested_cycles": 1,
@@ -811,6 +902,7 @@ SSH=(
 guest_build="$("${SSH[@]}" 'sw_vers -buildVersion' 2>/dev/null || true)"
 [ "$guest_build" = "$PINNED_GUEST_BUILD" ] || fail_phase guest-build-pin
 remote_trace_client_exists || fail_phase trace-client-preflight
+TRACE_CLIENT_PRE_RESET_BOUND=1
 capture_identity before || fail_phase candidate-identity-before
 
 DEFAULT_ROUTE_BASELINE="$(guest_default_route_signature 2>/dev/null || true)"

@@ -26,6 +26,7 @@ import sys
 root = Path(sys.argv[1])
 text = (root / "scripts/capture_tahoe_lab_kext_identity.py").read_text()
 provenance = Path(sys.argv[2]).read_text()
+source_identity = (root / "scripts/tahoe_source_identity.py").read_text()
 
 
 def require(needle: str, label: str) -> None:
@@ -61,19 +62,35 @@ for needle, label in (
     ("candidate_kext_loaded_by_capture\": False", "load non-claim"),
     ("association_tested\": False", "association non-claim"),
     ("data_transfer_tested\": False", "traffic non-claim"),
+    ("itlwm-tahoe-candidate-provenance/v2", "IWX receipt compatibility"),
 ):
     require(needle, label)
 
 for needle, label in (
-    ("itlwm-tahoe-candidate-provenance/v1", "provenance schema"),
+    ("itlwm-tahoe-candidate-provenance/v1", "legacy provenance schema"),
+    ("itlwm-tahoe-candidate-provenance/v2", "IWX provenance schema"),
+    ("New candidate provenance is always v2", "new provenance migration rule"),
+    ('"schema": SCHEMA_V2', "new manifest v2 emission"),
     ("require_clean_head", "clean committed source boundary"),
     ("source_identity", "committed source identity"),
     ("bind_candidate_provenance", "archive digest binding"),
+    ("--trace-client", "IWX trace-client receipt input"),
+    ("trace_client_sha256", "IWX trace-client digest"),
+    ("trace_client_sha256_from_candidate_provenance", "IWX trace-client receipt reader"),
+    ("sha256_regular_trace_client", "local regular trace-client fence"),
     ("candidate source worktree is not clean", "dirty-tree rejection"),
     ("candidate_kext_installed\": False", "install non-claim"),
 ):
     if needle not in provenance:
         raise SystemExit(f"identity binding contract: missing provenance {label}: {needle}")
+
+for needle, label in (
+    ("AirportItlwmPostPltiTrace", "trace-client source identity input"),
+    ("scripts/build_post_plti_trace.sh", "trace-client build identity input"),
+    ("tahoe-airportitlwm-source-identity-v2", "expanded source-identity domain"),
+):
+    if needle not in source_identity:
+        raise SystemExit(f"identity binding contract: missing source identity {label}: {needle}")
 
 for needle, label in (
     ("StrictHostKeyChecking=no", "permissive host-key setting"),

@@ -390,12 +390,32 @@ def self_test() -> int:
         parsed_fixture = release_identity_from_candidate_provenance(
             archive_path, provenance_path
         )
+        iwx_provenance_path = Path(temp) / "fixture-iwx-provenance.json"
+        iwx_provenance_path.write_text(json.dumps({
+            "schema": "itlwm-tahoe-candidate-provenance/v2",
+            "candidate": {
+                "source_commit": "a" * 40,
+                "source_identity_sha256": "b" * 64,
+                "source_identity_paths_count": 1,
+                "release_tag": "v2.4.0-alpha",
+                "archive_sha256": sha256(archive_path.read_bytes()),
+                "binary_sha256": sha256(fixture_binary),
+                "macho_uuid": expected_uuid,
+                "bundle_id": BUNDLE_ID,
+                "trace_client_sha256": "c" * 64,
+            },
+        }), encoding="utf-8")
+        parsed_iwx_fixture = release_identity_from_candidate_provenance(
+            archive_path, iwx_provenance_path
+        )
     if parsed_fixture["macho_uuid"] != expected_uuid:
         raise SystemExit("self-test: release archive UUID did not round-trip")
     if parsed_fixture["binary_sha256"] != sha256(fixture_binary):
         raise SystemExit("self-test: release archive hash did not round-trip")
     if parsed_fixture["source_commit"] != "a" * 40:
         raise SystemExit("self-test: provenance source commit did not bind")
+    if parsed_iwx_fixture["source_identity_sha256"] != "b" * 64:
+        raise SystemExit("self-test: IWX v2 provenance was not accepted")
     expected = {
         "bundle_id": BUNDLE_ID,
         "binary_sha256": "a" * 64,
