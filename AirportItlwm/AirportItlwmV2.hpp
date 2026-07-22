@@ -301,6 +301,38 @@ struct AirportItlwmSaeTransportMailboxLifecycle {
     uint8_t tail;
     uint8_t count;
 };
+
+/*
+ * Peer RX is deliberately not multiplexed into the terminal-TX mailbox:
+ * Algorithm-3 frames originate outside the driver and must never consume the
+ * one-ticket completion queue or make a remote flood panic the controller.
+ * One copied candidate plus one exact-identity conflict record is enough for
+ * the relay FSM's single outstanding peer-event fence.
+ */
+struct AirportItlwmSaePeerRxMailboxLifecycle {
+    IOSimpleLock *admissionLock;
+    IOInterruptEventSource *source;
+    IOSimpleLock *payloadLock;
+    bool settingUp;
+    bool stopping;
+    bool tearingDown;
+    uint32_t users;
+    /*
+     * A producer may have passed the net80211 selected-BSS check just before
+     * a relay is cleared.  Keep an independent exact identity binding here,
+     * under admissionLock, so that producer cannot write after clear/purge
+     * or become a conflict for a later same-BSS relay generation.
+     */
+    bool admissionActive;
+    uint64_t associationEpoch;
+    uint64_t relayGeneration;
+    uint8_t bssid[6];
+    uint8_t sta[6];
+    bool pending;
+    bool conflict;
+    ItlSaeAuthPeerEventV1 event;
+    ItlSaeAuthPeerEventV1 conflictEvent;
+};
 #endif
 
 enum AirportItlwmLifecyclePhase : uint32_t {
@@ -475,6 +507,10 @@ public:
     // controller command gate or the PostOffice synchronously.
     static void handleSaeAuthTransportEvent(
         AirportItlwm *, const struct ItlSaeAuthTransportEventV1 *, bool);
+    // Borrowed peer RX values are copied into a distinct one-slot mailbox;
+    // this RX-adjacent intake never enters the command gate or touches HAL.
+    static void handleSaeAuthPeerEvent(
+        AirportItlwm *, const struct ItlSaeAuthPeerEventV1 *);
 #endif
     IOReturn enableAdapter(IONetworkInterface *netif);
     void disableAdapterCore(IONetworkInterface *netif);
@@ -906,10 +942,10 @@ public:
      * from the legacy PLTI PMK carrier above: they exchange only the versioned
      * public relay records, keep identity/cancellation under the controller
      * command gate, and never write ic_psk or select a PSK AKM.  Algorithm-3
-     * A bounded outbound Algorithm-3 TX/completion fence exists below this
-     * owner.  It is still not an SAE association: selected-BSS join dispatch,
-     * inbound Algorithm-3 RX, Agent cryptography/credentials, SAE PMK/AKM,
-     * and PMF activation remain disabled in later layers.
+     * Bounded outbound TX and selected-BSS-admitted peer-RX handoff exist
+     * below this owner. They remain dormant without a selected-BSS join owner
+     * and are still not an SAE association: Agent cryptography/credentials,
+     * SAE PMK/AKM, and PMF activation remain disabled in later layers.
      */
     IOReturn beginSaeRelay(const struct AirportItlwmSaeTargetV1 *target);
     IOReturn waitSaeTarget(const uint8_t client_cookie[
@@ -958,6 +994,10 @@ public:
     ItlSaeAuthTxRequestV1        fSaePendingTxRequest;
     uint64_t                      fSaeNextTxTicket;
     bool                          fSaePendingTxActive;
+    // One public peer event may arrive before delayed terminal TX success.
+    // It is command-gate-owned, replay-bound, and scrubbed on every clear.
+    ItlSaeAuthPeerEventV1         fSaePendingPeerRx;
+    bool                          fSaePendingPeerRxActive;
     /* Last terminal identity is retained only until next TX/cancel/reset. */
     ItlSaeAuthTransportEventV1    fSaeLastTerminalTxEvent;
     bool                          fSaeLastTerminalTxEventValid;
@@ -1002,6 +1042,7 @@ public:
     AirportItlwmScanSourceLifecycle fScanSourceLifecycle;
 #if __IO80211_TARGET >= __MAC_26_0
     AirportItlwmSaeTransportMailboxLifecycle fSaeTransportMailbox;
+    AirportItlwmSaePeerRxMailboxLifecycle fSaePeerRxMailbox;
 #endif
 
     // Keep teardown ownership at the class tail so existing controller member

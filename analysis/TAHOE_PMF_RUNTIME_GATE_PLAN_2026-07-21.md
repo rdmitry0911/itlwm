@@ -135,3 +135,34 @@ is:
 
 Direct kext load/unload, physical-host actions, host reboot, arbitrary join
 commands, or a PMF claim based on ordinary WPA2 traffic are out of scope.
+
+## Saved-WPA3 priority lane — bounded Algorithm-3 peer RX (2026-07-22)
+
+Under the persistent frequency-first rule, the next eligible user-facing
+layer is saved WPA3-profile join, rather than additional independent PMF
+diagnostic work.  Its first hard prerequisite is now implemented and
+build-only verified: a selected-BSS-bound peer Algorithm-3 Commit/Confirm
+copy path through net80211, a separate bounded AirportItlwm mailbox, and the
+real IWX TX-terminal fence.
+
+The layer remains dormant because no join owner publishes it.  The next
+implementation must be an exact selected-BSS join handoff, not an ad-hoc
+association enable:
+
+1. form the controller target only from the actual selected BSS at the real
+   join edge;
+2. bind the controller mailbox and net80211 admission immediately before
+   `ieee80211_new_state(..., S_AUTH)`, while snapshot RX itself continues to
+   reject any frame before `S_AUTH`;
+3. wake the Agent only after the state transition, preventing a first
+   Algorithm-3 TX from racing the builder's `S_AUTH` condition;
+4. route epoch/replacement/state cancellation nonblockingly to a controller
+   relay clear/wakeup, so a quiet cancelled attempt cannot leave an old
+   waiter/identity live;
+5. retain PSK-only AKM and the generic Open-System quarantine until all of
+   the above, Agent cryptography, SAE AKM/PMF policy, and key/association
+   ownership layers are independently ready.
+
+The 2026-07-22 isolated build (`dirtyc3403b973130`, 959/959 BootKC symbols)
+is compile/link evidence only.  It is not permission for candidate activation
+or a WPA3/SAE/PMF runtime claim; all runtime gates above remain in force.

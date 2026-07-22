@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Source-level lifecycle gate for the inactive association-epoch fence.
+# Source-level lifecycle gate for the association-epoch fence and its one
+# bounded selected-BSS Algorithm-3 peer-RX consumer.
 #
 # This is intentionally broader than a single reassociation assertion: it
 # verifies every current invalidation edge (selection, state retry, RSN
@@ -78,6 +79,10 @@ require(var_h, "IOSimpleLock\t\t*ic_pae_selected_bss_lock;",
         "selected-BSS leaf writer lock")
 require(var_h, "struct ieee80211_pae_selected_bss ic_pae_selected_bss;",
         "writer-only selected BSS snapshot")
+require(var_h, "struct ieee80211_sae_peer_rx_admission",
+        "bounded peer-RX admission record")
+require(var_h, "ic_sae_peer_rx_admission;",
+        "selected-BSS-lock-owned peer-RX admission")
 for token in (
     "uint64_t epoch;",
     "uint32_t sae_scan_flags;",
@@ -104,6 +109,10 @@ require(proto_h, "struct ieee80211_pae_selected_bss;",
 	"selected BSS forward declaration")
 require(proto_h, "int ieee80211_pae_selected_bss_copyout_current",
 	"selected BSS serialized copyout declaration")
+for token in ("ieee80211_sae_peer_rx_admit",
+              "ieee80211_sae_peer_rx_revoke",
+              "ieee80211_sae_peer_rx_snapshot_admission"):
+    require(proto_h, token, "bounded peer-RX admission declaration")
 require(proto_h, "void ieee80211_pae_assoc_epoch_note_newstate",
         "epoch newstate declaration")
 ordered(proto_h, "newstate macro pre-driver fence",
@@ -127,6 +136,7 @@ for token in ("ic->ic_opmode != IEEE80211_M_STA",
               "ieee80211_pae_assoc_epoch_advance_locked(ic)",
               "ic->ic_pae_assoc_replace_epoch, 0",
               "ieee80211_pae_selected_bss_invalidate(ic)",
+              "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
               "IOSimpleLockUnlockEnableInterrupt"):
 	    require(begin, token, "epoch begin semantics")
 
@@ -143,6 +153,7 @@ for token in ("ic->ic_pae_selected_bss_lock", "lock == NULL",
               "ieee80211_pae_assoc_epoch_advance_locked(ic)",
               "ic->ic_pae_assoc_replace_epoch, epoch",
               "ieee80211_pae_selected_bss_invalidate(ic)",
+              "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
               "IOSimpleLockUnlockEnableInterrupt"):
     require(replacement, token, "controlled replacement semantics")
 
@@ -150,6 +161,7 @@ destroy = body(proto_c, "void\nieee80211_pae_selected_bss_lock_destroy",
                "terminal selected-BSS lock destroy")
 for token in ("IOSimpleLockLockDisableInterrupt",
               "ieee80211_pae_selected_bss_invalidate(ic)",
+              "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
               "ic->ic_pae_selected_bss_lock = NULL",
               "IOSimpleLockUnlockEnableInterrupt", "IOSimpleLockFree(lock)"):
     require(destroy, token, "terminal selected-BSS lock destruction")
@@ -204,9 +216,9 @@ for token in (
 	if token in copyout:
 		fail(f"selected BSS copyout must remain fixed-value and inactive: {token}")
 
-# The API is a future-owner foundation, not a new production handoff.  The
-# declaration and definition are its only source references until an owner can
-# prove a HAL lifecycle claim through terminal destruction.
+# The selected-BSS copyout has exactly one production consumer: the bounded
+# Algorithm-3 RX leaf. It must remain a value-only pre-callback identity check,
+# never a node/credential/association handoff.
 copyout_references = []
 for directory in (root / "itl80211", root / "AirportItlwm"):
 	for suffix in ("*.c", "*.h", "*.cpp", "*.hpp"):
@@ -214,10 +226,46 @@ for directory in (root / "itl80211", root / "AirportItlwm"):
 			if "ieee80211_pae_selected_bss_copyout_current(" in source.read_text():
 				copyout_references.append(source.relative_to(root).as_posix())
 if sorted(copyout_references) != [
+	"itl80211/openbsd/net80211/ieee80211_input.c",
 	"itl80211/openbsd/net80211/ieee80211_proto.c",
 	"itl80211/openbsd/net80211/ieee80211_proto.h",
 ]:
-	fail("selected BSS copyout must have no production caller")
+	fail("selected BSS copyout must have only the bounded peer-RX caller")
+
+peer_admit = body(proto_c, "int\nieee80211_sae_peer_rx_admit",
+                  "peer-RX admission publish")
+for token in ("ic_pae_selected_bss_lock", "expected_epoch",
+              "relay_generation", "ieee80211_sae_admission_group19_hnp",
+              "ic->ic_pae_selected_bss.bssid", "ic->ic_bss->ni_bssid",
+              "ic->ic_myaddr", "ic_sae_peer_rx_admission.active = 1",
+              "IOSimpleLockLockDisableInterrupt",
+              "IOSimpleLockUnlockEnableInterrupt"):
+    require(peer_admit, token, "strict selected-BSS peer-RX admission")
+for token in ("ic_event_handler", "ieee80211_new_state", "ic_psk",
+              "IEEE80211_AKM_SAE", "IOCommandGate"):
+    if token in peer_admit:
+        fail(f"peer-RX admission must stay leaf/value-only: {token}")
+peer_snapshot = body(proto_c,
+                     "int\nieee80211_sae_peer_rx_snapshot_admission",
+                     "peer-RX admission snapshot")
+for token in ("ic->ic_state == IEEE80211_S_AUTH",
+              "ic_sae_peer_rx_admission.association_epoch == epoch",
+              "ic_sae_peer_rx_admission.relay_generation",
+              "ic_pae_selected_bss.epoch", "ic->ic_bss->ni_bssid",
+              "IOSimpleLockLockDisableInterrupt",
+              "IOSimpleLockUnlockEnableInterrupt"):
+    require(peer_snapshot, token, "peer-RX current identity snapshot")
+peer_rx = body(input_c, "static int\nieee80211_recv_sae_peer_auth",
+               "bounded peer-RX consumer")
+for token in ("ieee80211_pae_selected_bss_copyout_current",
+              "ieee80211_sae_peer_rx_snapshot_admission",
+              "mbuf_pkthdr_len(m)", "mbuf_copydata",
+              "IEEE80211_EVT_SAE_AUTH_PEER"):
+    require(peer_rx, token, "bounded peer-RX copyout consumer")
+for token in ("getCommandGate", "runAction", "commandSleep", "ic_psk",
+              "ieee80211_new_state", "IEEE80211_AKM_SAE"):
+    if token in peer_rx:
+        fail(f"bounded peer-RX must not mutate association/key state: {token}")
 
 require(var_h, "#include <IOKit/IOLocks.h>",
         "selected-BSS spin-lock API")

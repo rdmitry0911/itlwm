@@ -217,9 +217,11 @@ ieee80211_ifattach(struct _ifnet *ifp, IOEthernetController *controller)
 	if (ic->ic_pae_selected_bss_lock == NULL)
 		ic->ic_pae_selected_bss_lock = IOSimpleLockAlloc();
     __atomic_store_n(&ic->ic_pae_assoc_epoch, 0, __ATOMIC_RELAXED);
-	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
+    __atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELAXED);
     memset(&ic->ic_pae_selected_bss, 0, sizeof(ic->ic_pae_selected_bss));
+    memset(&ic->ic_sae_peer_rx_admission, 0,
+           sizeof(ic->ic_sae_peer_rx_admission));
     memset(ic->ic_bss_blacklist_requested, 0,
            sizeof(ic->ic_bss_blacklist_requested));
     ic->ic_bss_blacklist_count = 0;

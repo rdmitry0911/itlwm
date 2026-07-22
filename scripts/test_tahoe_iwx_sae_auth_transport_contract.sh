@@ -4,8 +4,10 @@
 # This checks source-level ownership all the way from the controller's
 # credential-free request to a real IWX descriptor/doorbell and back through
 # a deferred terminal completion.  It deliberately does not claim an SAE or
-# WPA3 association: there is still no selected-BSS join owner, inbound
-# Algorithm-3 RX, cryptographic backend, PMK/AKM activation, or PMF enable.
+# WPA3 association: there is still no selected-BSS join owner, cryptographic
+# backend, PMK/AKM activation, or PMF enable. A separately admitted bounded
+# peer-RX bridge exists solely to preserve real AP Commit/Confirm values for
+# the future selected-BSS owner.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -105,9 +107,12 @@ for token in (
         "kItlSaeAuthTransportV1MaxBodyLength 768u",
         "struct ItlSaeAuthTxRequestV1",
         "struct ItlSaeAuthTransportEventV1",
+        "struct ItlSaeAuthPeerEventV1",
         "itl_sae_auth_transport_request_is_well_formed",
         "itl_sae_auth_transport_event_is_well_formed",
         "itl_sae_auth_transport_event_matches_request",
+        "itl_sae_auth_peer_event_is_well_formed",
+        "itl_sae_auth_peer_event_equals",
         "ticket", "association_epoch", "relay_generation"):
     require(transport, token, "bounded transport ABI")
 for secret in ("password[", "pwe[", "kck[", "pmk[", "pmkid[",
@@ -192,10 +197,24 @@ for token in ("itl_sae_auth_transport_request_is_well_formed",
               "request->wire_transaction", "request->auth_status"):
     require(sae_builder, token, "isolated Algorithm-3 builder")
 if output.count("IEEE80211_AUTH_ALG_SAE") != 1:
-    fail("only the isolated builder may use IEEE80211_AUTH_ALG_SAE")
-for source, label in ((input_c, "RX"), (proto, "protocol")):
-    forbid(source, "IEEE80211_AUTH_ALG_SAE",
-           f"generic {label} Algorithm-3 production route")
+    fail("only the isolated TX builder may emit IEEE80211_AUTH_ALG_SAE")
+peer_rx = function_body(input_c, "ieee80211_recv_sae_peer_auth")
+for token in ("IEEE80211_S_AUTH", "ieee80211_pae_selected_bss_copyout_current",
+              "ieee80211_sae_peer_rx_snapshot_admission",
+              "kItlSaeAuthTransportPeerWireTransactionCommit",
+              "kItlSaeAuthTransportPeerWireTransactionConfirm",
+              "kItlSaeAuthTransportPhaseCommit",
+              "kItlSaeAuthTransportPhaseConfirm", "mbuf_pkthdr_len(m)",
+              "mbuf_copydata", "itl_sae_auth_peer_event_is_well_formed",
+              "IEEE80211_EVT_SAE_AUTH_PEER"):
+    require(peer_rx, token, "bounded selected-BSS peer RX leaf")
+for token in ("getCommandGate", "runAction", "commandSleep",
+              "submitSaeAuthFrame", "cancelSaeAuthFrame"):
+    forbid(peer_rx, token, "peer RX leaf gate/HAL reentry")
+if input_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only the explicit bounded peer RX aperture may parse Algorithm 3")
+require(proto, "ieee80211_sae_peer_rx_admit",
+        "selected-BSS-bound peer RX admission owner")
 
 # The actual IWX TX ring revalidates raw bytes before trim, records identity
 # only after DMA mapping, prepares the normal descriptor/TB/byte table, then
@@ -255,6 +274,8 @@ require(var_h, "IEEE80211_EVT_SAE_AUTH_TRANSPORT        8",
         "normal IWX SAE terminal event")
 require(var_h, "IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET  9",
         "IWX SAE reset invalidation event")
+require(var_h, "IEEE80211_EVT_SAE_AUTH_PEER             10",
+        "bounded peer-RX event")
 
 # Stop snapshots exact identity after queued work has left but before the ring
 # is purged, then emits reset only after rearm/splx. This cannot turn reset
@@ -271,19 +292,116 @@ for token in ("snapshot->result = EIO", "sc_sae_tx_active_event",
     require(snapshot, token, "exact terminal/reset identity snapshot")
 
 # The controller callback is deliberately a value-copy mailbox. It never
-# waits on AirportItlwm's command gate from IWX nswq; the later source action
-# drains all records and only then recursively enters that gate.
+# waits on AirportItlwm's command gate from IWX nswq; a later source action
+# serializes terminal TX or one bounded peer-RX record into that gate.
 for token in ("AirportItlwmSaeTransportMailboxLifecycle",
-              "fSaeTransportMailbox", "handleSaeAuthTransportEvent"):
+              "fSaeTransportMailbox", "handleSaeAuthTransportEvent",
+              "AirportItlwmSaePeerRxMailboxLifecycle",
+              "fSaePeerRxMailbox", "handleSaeAuthPeerEvent"):
     require(v2_hpp, token, "controller SAE mailbox ownership")
 event_handler = airport_method("eventHandler")
 ordered(event_handler, "nonblocking controller SAE event routing",
+        "IEEE80211_EVT_SAE_AUTH_PEER", "handleSaeAuthPeerEvent", "return;",
         "IEEE80211_EVT_SAE_AUTH_TRANSPORT", "handleSaeAuthTransportEvent",
         "return;", "IOCommandGate *gate")
 handler = function_body(v2, "handleSaeAuthTransportEvent")
 require(handler, "queueSaeTransportMailbox", "SAE event mailbox intake")
 forbid(handler, "getCommandGate", "mailbox intake controller-gate wait")
 forbid(handler, "runAction", "mailbox intake controller-gate wait")
+peer_handler = function_body(v2, "handleSaeAuthPeerEvent")
+require(peer_handler, "queueSaePeerRxMailbox", "peer RX mailbox intake")
+forbid(peer_handler, "getCommandGate", "peer mailbox intake gate wait")
+forbid(peer_handler, "runAction", "peer mailbox intake gate wait")
+peer_mailbox_action = function_body(v2, "saePeerRxMailboxInterruptAction")
+for token in ("state.pending", "state.conflict",
+              "dispatchSaePeerRxMailboxEvent"):
+    require(peer_mailbox_action, token, "peer RX one-slot conflict drain")
+forbid(peer_mailbox_action, "for (;;)",
+       "unbounded RF-controlled peer RX drain")
+if peer_mailbox_action.count("dispatchSaePeerRxMailboxEvent") != 1:
+    fail("peer RX source must dispatch at most one record per workloop turn")
+peer_mailbox_queue = function_body(v2, "queueSaePeerRxMailbox")
+for token in ("itl_sae_auth_peer_event_equals", "state.conflict = true",
+              "source->interruptOccurred", "state.admissionActive",
+              "state.associationEpoch", "state.relayGeneration",
+              "memcmp(state.bssid", "memcmp(state.sta"):
+    require(peer_mailbox_queue, token, "peer RX duplicate/conflict handling")
+forbid(peer_mailbox_queue, "panic(", "remote peer RX queue panic")
+admit_check = peer_mailbox_queue.find("state.admissionActive")
+payload_lock = peer_mailbox_queue.find(
+    "IOSimpleLockLockDisableInterrupt(payloadLock)")
+admit_unlock = peer_mailbox_queue.find(
+    "IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq)",
+    payload_lock)
+if admit_check < 0 or payload_lock < admit_check or admit_unlock < payload_lock:
+    fail("peer RX exact mailbox admission must cover payload mutation")
+peer_mailbox_activate = function_body(v2,
+                                      "activateSaePeerRxMailboxAdmission")
+for token in ("AirportItlwmSaeRelayFsmV1TargetWellFormed",
+              "state.associationEpoch = target->association_epoch",
+              "state.relayGeneration = target->generation",
+              "memcpy(state.bssid", "memcpy(state.sta",
+              "state.admissionActive = true"):
+    require(peer_mailbox_activate, token, "peer RX mailbox exact bind")
+peer_mailbox_clear = function_body(v2,
+                                   "clearSaePeerRxMailboxAdmissionAndPurge")
+for token in ("state.admissionActive = false",
+              "explicit_bzero(state.bssid", "explicit_bzero(state.sta",
+              "explicit_bzero(&state.event",
+              "explicit_bzero(&state.conflictEvent"):
+    require(peer_mailbox_clear, token, "peer RX mailbox atomic clear")
+begin_relay = function_body(v2, "airportItlwmBeginSaeRelayAction")
+if begin_relay.find("activateSaePeerRxMailboxAdmission") < 0 or \
+        begin_relay.find("ieee80211_sae_peer_rx_admit") < \
+        begin_relay.find("activateSaePeerRxMailboxAdmission"):
+    fail("controller mailbox binding must precede net80211 peer RX admission")
+clear_relay = function_body(v2, "airportItlwmClearSaeRelayLocked")
+if clear_relay.find("clearSaePeerRxMailboxAdmissionAndPurge") < 0 or \
+        clear_relay.find("ieee80211_sae_peer_rx_revoke") < \
+        clear_relay.find("clearSaePeerRxMailboxAdmissionAndPurge"):
+    fail("controller mailbox clear must precede net80211 peer RX revoke")
+
+# Race model: a producer that passed net80211 just before clear must not be
+# able to populate (or conflict with) the next generation after it resumes.
+class PeerMailboxModel:
+    def __init__(self):
+        self.active = None
+        self.pending = None
+        self.conflict = False
+
+    def bind(self, identity):
+        assert self.active is None
+        self.active = identity
+        self.pending = None
+        self.conflict = False
+
+    def clear(self):
+        self.active = None
+        self.pending = None
+        self.conflict = False
+
+    def queue(self, identity):
+        if identity != self.active:
+            return
+        if self.pending is None:
+            self.pending = identity
+        elif self.pending != identity:
+            self.pending = None
+            self.conflict = True
+
+old = (17, 3, b"old-bssid", b"old-sta")
+new = (17, 4, b"old-bssid", b"old-sta")
+mailbox = PeerMailboxModel()
+mailbox.bind(old)
+mailbox.clear()                 # clear wins after admitted producer's write
+mailbox.bind(new)
+mailbox.queue(old)              # old producer resumes after rebind
+assert mailbox.pending is None and not mailbox.conflict
+peer_dispatch = function_body(v2, "dispatchSaePeerRxMailboxEvent")
+for token in ("airportItlwmSaePeerRxAction",
+              "airportItlwmSaePeerRxFaultAction",
+              "hal->cancelSaeAuthFrame(cancel_ticket)"):
+    require(peer_dispatch, token, "peer RX deferred controller route")
 mailbox_action = function_body(v2, "saeTransportMailboxInterruptAction")
 for token in ("for (;;) ", "state.entries[state.head]",
               "state.count--", "dispatchSaeTransportMailboxEvent"):
@@ -306,8 +424,9 @@ ordered(disable, "power-off SAE cancellation", "cancelSaeRelay",
         "fHalService->disable")
 
 # The usable-product boundary remains fail-closed for WPA3 despite the
-# isolated physical sender: ingress rejects it, active AKM remains PSK-only,
-# generic auth/RX are Open-only, and Agent completion cannot install a PMK.
+# isolated physical sender/receiver: association ingress still rejects it,
+# active AKM remains PSK-only, generic auth remains Open-only outside the
+# explicit selected-BSS admission, and Agent completion cannot install a PMK.
 require(skywalk, "requiresUnsupportedWpa3Auth",
         "WPA3 association ingress quarantine")
 require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",

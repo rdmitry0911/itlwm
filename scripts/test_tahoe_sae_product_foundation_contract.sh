@@ -270,16 +270,34 @@ require(ieee80211_h, '#include "ieee80211_sae_auth_contract.h"',
         "canonical Algorithm-3 taxonomy inclusion")
 require(auth_test, '#include "ieee80211_sae_auth_contract.h"',
         "standalone Algorithm-3 taxonomy unit test")
-for text, label in ((input_c, "net80211 RX"),
-                    (proto_c, "net80211 protocol"),
+for text, label in ((proto_c, "net80211 protocol"),
                     (crypto_c, "net80211 crypto"),
                     (v2, "Tahoe controller")):
     forbid(text, "ieee80211_sae_auth_contract.h",
            "premature Algorithm-3 production include in " + label)
     forbid(text, "IEEE80211_AUTH_ALG_SAE",
-           "premature Algorithm-3 production use in " + label)
+        "unexpected generic Algorithm-3 production use in " + label)
 require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
-        "active Open-System-only RX gate")
+        "generic Open-System RX fallback")
+peer_rx = function_body(input_c, "ieee80211_recv_sae_peer_auth(")
+for token in ("ieee80211_pae_selected_bss_copyout_current",
+              "ieee80211_sae_peer_rx_snapshot_admission",
+              "kItlSaeAuthTransportPeerWireTransactionCommit",
+              "kItlSaeAuthTransportPeerWireTransactionConfirm",
+              "kItlSaeAuthTransportPhaseCommit",
+              "kItlSaeAuthTransportPhaseConfirm", "mbuf_pkthdr_len(m)",
+              "mbuf_copydata", "itl_sae_auth_peer_event_is_well_formed",
+              "IEEE80211_EVT_SAE_AUTH_PEER"):
+    require(peer_rx, token, "bounded selected-BSS Algorithm-3 peer RX")
+for token in ("getCommandGate", "runAction", "commandSleep",
+              "submitSaeAuthFrame", "cancelSaeAuthFrame"):
+    forbid(peer_rx, token, "peer RX gate/HAL side effect")
+if input_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only the bounded selected-BSS peer RX leaf may parse Algorithm 3")
+for token in ("ieee80211_sae_peer_rx_admit",
+              "ieee80211_sae_peer_rx_revoke",
+              "ieee80211_sae_peer_rx_snapshot_admission"):
+    require(proto_c, token, "peer RX admission lifecycle")
 require(output_c, "LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN)",
         "active generic Open-System-only TX builder")
 require(proto_c, "IEEE80211_AUTH_OPEN_REQUEST",

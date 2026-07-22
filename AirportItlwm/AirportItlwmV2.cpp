@@ -732,6 +732,18 @@ static void queueSaeTransportMailbox(
 static void dispatchSaeTransportMailboxEvent(
     AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
     bool isReset);
+static bool setupSaePeerRxMailboxSource(AirportItlwm *that,
+                                        IOWorkLoop *workloop);
+static void teardownSaePeerRxMailboxSource(AirportItlwm *that,
+                                           IOWorkLoop *workloop);
+static void queueSaePeerRxMailbox(
+    AirportItlwm *that, const struct ItlSaeAuthPeerEventV1 *event);
+static bool activateSaePeerRxMailboxAdmission(
+    AirportItlwm *that, const struct AirportItlwmSaeTargetV1 *target);
+static void clearSaePeerRxMailboxAdmissionAndPurge(AirportItlwm *that);
+static void dispatchSaePeerRxMailboxEvent(
+    AirportItlwm *that, const struct ItlSaeAuthPeerEventV1 *event,
+    bool conflict);
 #endif
 
 // Off-gate link-state publication layer.
@@ -1358,6 +1370,376 @@ teardownSaeTransportMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
     state.tail = 0;
     state.count = 0;
     explicit_bzero(state.entries, sizeof(state.entries));
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    if (source != NULL) {
+        source->release();
+        source->release();
+    }
+    if (workloop != NULL)
+        workloop->release();
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.tearingDown = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+
+/*
+ * A peer RX producer is RF-controlled, unlike the one-ticket IWX terminal
+ * producer above.  Keep its one-record conflict-aware mailbox completely
+ * separate so remote traffic cannot overflow/panic or reorder TX terminal
+ * records.  The source action releases both leaf locks before it dispatches
+ * deferred controller-gate work, and processes only one record per workloop
+ * turn so an AP flood cannot monopolize the SAE TX completion path.
+ */
+static void
+saePeerRxMailboxInterruptAction(OSObject *owner,
+                                IOInterruptEventSource *sender,
+                                int /*count*/)
+{
+    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
+    if (that == NULL)
+        return;
+
+    AirportItlwmControllerLifecycleOperationGuard lifecycle(that, true);
+    if (!lifecycle.admitted())
+        return;
+
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    ItlSaeAuthPeerEventV1 event;
+    bool haveEvent = false;
+    bool conflict = false;
+
+    explicit_bzero(&event, sizeof(event));
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        sender != state.source || state.payloadLock == NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+    IOSimpleLock *payloadLock = state.payloadLock;
+    IOInterruptState payloadIrq =
+        IOSimpleLockLockDisableInterrupt(payloadLock);
+    if (state.conflict) {
+        event = state.conflictEvent;
+        explicit_bzero(&state.conflictEvent, sizeof(state.conflictEvent));
+        state.conflict = false;
+        haveEvent = true;
+        conflict = true;
+    } else if (state.pending) {
+        event = state.event;
+        explicit_bzero(&state.event, sizeof(state.event));
+        state.pending = false;
+        haveEvent = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (!haveEvent)
+        return;
+    if (itl_sae_auth_peer_event_is_well_formed(&event))
+        dispatchSaePeerRxMailboxEvent(that, &event, conflict);
+    explicit_bzero(&event, sizeof(event));
+}
+
+static bool
+setupSaePeerRxMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
+{
+    if (that == NULL || workloop == NULL)
+        return false;
+
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *lifecycleLock = that->fLifecycleAdmissionLock;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (lifecycleLock == NULL || admissionLock == NULL)
+        return false;
+
+    IOInterruptState lifecycleIrq =
+        IOSimpleLockLockDisableInterrupt(lifecycleLock);
+    if (that->fLifecyclePhase != kAirportItlwmLifecycleStarting &&
+        that->fLifecyclePhase != kAirportItlwmLifecycleLive) {
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source != NULL || state.payloadLock != NULL) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+        return false;
+    }
+    state.settingUp = true;
+    state.stopping = false;
+    state.tearingDown = false;
+    workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    IOSimpleLockUnlockEnableInterrupt(lifecycleLock, lifecycleIrq);
+
+    IOSimpleLock *payloadLock = IOSimpleLockAlloc();
+    IOInterruptEventSource *source = IOInterruptEventSource::
+        interruptEventSource(that,
+            (IOInterruptEventSource::Action)saePeerRxMailboxInterruptAction);
+    bool sourceAdded = false;
+    bool installed = false;
+    if (payloadLock != NULL && source != NULL &&
+        workloop->addEventSource(source) == kIOReturnSuccess) {
+        sourceAdded = true;
+        source->enable();
+
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        if (!state.stopping && !state.tearingDown) {
+            state.source = source;
+            state.payloadLock = payloadLock;
+            state.users = 0;
+            state.admissionActive = false;
+            state.associationEpoch = 0;
+            state.relayGeneration = 0;
+            explicit_bzero(state.bssid, sizeof(state.bssid));
+            explicit_bzero(state.sta, sizeof(state.sta));
+            state.pending = false;
+            state.conflict = false;
+            explicit_bzero(&state.event, sizeof(state.event));
+            explicit_bzero(&state.conflictEvent, sizeof(state.conflictEvent));
+            state.settingUp = false;
+            installed = true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    }
+
+    if (installed) {
+        workloop->release();
+        return true;
+    }
+
+    if (source != NULL) {
+        source->disable();
+        if (sourceAdded)
+            workloop->removeEventSource(source);
+        source->release();
+    }
+    if (payloadLock != NULL)
+        IOSimpleLockFree(payloadLock);
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.settingUp = false;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    workloop->release();
+    return false;
+}
+
+static void
+queueSaePeerRxMailbox(AirportItlwm *that,
+                      const struct ItlSaeAuthPeerEventV1 *event)
+{
+    if (that == NULL || event == NULL ||
+        !itl_sae_auth_peer_event_is_well_formed(event))
+        return;
+
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == NULL || state.payloadLock == NULL ||
+        !state.admissionActive ||
+        state.associationEpoch != event->association_epoch ||
+        state.relayGeneration != event->relay_generation ||
+        memcmp(state.bssid, event->bssid, sizeof(state.bssid)) != 0 ||
+        memcmp(state.sta, event->sta, sizeof(state.sta)) != 0) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return;
+    }
+    ++state.users;
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    source->retain();
+
+    bool signal = false;
+    IOInterruptState payloadIrq = IOSimpleLockLockDisableInterrupt(payloadLock);
+    if (!state.conflict) {
+        if (!state.pending) {
+            state.event = *event;
+            state.pending = true;
+            signal = true;
+        } else if (!itl_sae_auth_peer_event_equals(&state.event, event)) {
+            /* Preserve the first identity so fault action cannot hit a new relay. */
+            state.conflictEvent = state.event;
+            explicit_bzero(&state.event, sizeof(state.event));
+            state.pending = false;
+            state.conflict = true;
+            signal = true;
+        }
+        /* Exact public retransmissions are intentionally coalesced. */
+    }
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+    /*
+     * Keep admissionLock through the payload write.  A concurrent relay clear
+     * therefore waits for this admitted producer, then atomically deactivates
+     * and purges it before a later generation can bind this mailbox.
+     */
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (signal)
+        source->interruptOccurred(0, 0, 0);
+    source->release();
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    KASSERT(state.users != 0, "state.users != 0");
+    state.users--;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+
+/*
+ * Publish the controller-side half of peer RX admission before net80211 opens
+ * its selected-BSS aperture.  The caller owns the controller gate; this leaf
+ * lock only serializes RF-side producers and never reaches net80211.
+ */
+static bool
+activateSaePeerRxMailboxAdmission(
+    AirportItlwm *that, const struct AirportItlwmSaeTargetV1 *target)
+{
+    if (that == NULL ||
+        !AirportItlwmSaeRelayFsmV1TargetWellFormed(target))
+        return false;
+
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return false;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.settingUp || state.stopping || state.tearingDown ||
+        state.source == NULL || state.payloadLock == NULL ||
+        state.admissionActive) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        return false;
+    }
+    IOSimpleLock *payloadLock = state.payloadLock;
+    IOInterruptState payloadIrq =
+        IOSimpleLockLockDisableInterrupt(payloadLock);
+    explicit_bzero(&state.event, sizeof(state.event));
+    explicit_bzero(&state.conflictEvent, sizeof(state.conflictEvent));
+    state.pending = false;
+    state.conflict = false;
+    state.associationEpoch = target->association_epoch;
+    state.relayGeneration = target->generation;
+    memcpy(state.bssid, target->bssid, sizeof(state.bssid));
+    memcpy(state.sta, target->sta, sizeof(state.sta));
+    state.admissionActive = true;
+    IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+    return true;
+}
+
+/*
+ * Safe under the controller gate: no peer-mailbox path holds that gate.
+ * Deactivation and payload purge share admissionLock, closing the race where
+ * an RX producer passed net80211 just before revoke but had not queued yet.
+ */
+static void
+clearSaePeerRxMailboxAdmissionAndPurge(AirportItlwm *that)
+{
+    if (that == NULL)
+        return;
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.admissionActive = false;
+    state.associationEpoch = 0;
+    state.relayGeneration = 0;
+    explicit_bzero(state.bssid, sizeof(state.bssid));
+    explicit_bzero(state.sta, sizeof(state.sta));
+    IOSimpleLock *payloadLock = state.payloadLock;
+    if (payloadLock != NULL) {
+        IOInterruptState payloadIrq =
+            IOSimpleLockLockDisableInterrupt(payloadLock);
+        explicit_bzero(&state.event, sizeof(state.event));
+        explicit_bzero(&state.conflictEvent, sizeof(state.conflictEvent));
+        state.pending = false;
+        state.conflict = false;
+        IOSimpleLockUnlockEnableInterrupt(payloadLock, payloadIrq);
+    }
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+}
+
+static void
+teardownSaePeerRxMailboxSource(AirportItlwm *that, IOWorkLoop *workloop)
+{
+    if (that == NULL)
+        return;
+
+    AirportItlwmSaePeerRxMailboxLifecycle &state = that->fSaePeerRxMailbox;
+    IOSimpleLock *admissionLock = state.admissionLock;
+    if (admissionLock == NULL)
+        return;
+
+    IOInterruptState admissionIrq =
+        IOSimpleLockLockDisableInterrupt(admissionLock);
+    if (state.tearingDown) {
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        for (;;) {
+            admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+            const bool complete = !state.tearingDown;
+            IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+            if (complete)
+                return;
+            IOSleep(1);
+        }
+    }
+    state.stopping = true;
+    state.tearingDown = true;
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    for (;;) {
+        admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+        const bool drained = !state.settingUp && state.users == 0;
+        IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+        if (drained)
+            break;
+        IOSleep(1);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    IOInterruptEventSource *source = state.source;
+    IOSimpleLock *payloadLock = state.payloadLock;
+    if (source != NULL)
+        source->retain();
+    if (workloop != NULL)
+        workloop->retain();
+    IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
+
+    if (source != NULL) {
+        source->disable();
+        if (workloop != NULL)
+            workloop->removeEventSource(source);
+    }
+
+    admissionIrq = IOSimpleLockLockDisableInterrupt(admissionLock);
+    state.source = NULL;
+    state.payloadLock = NULL;
+    state.admissionActive = false;
+    state.associationEpoch = 0;
+    state.relayGeneration = 0;
+    explicit_bzero(state.bssid, sizeof(state.bssid));
+    explicit_bzero(state.sta, sizeof(state.sta));
+    state.pending = false;
+    state.conflict = false;
+    explicit_bzero(&state.event, sizeof(state.event));
+    explicit_bzero(&state.conflictEvent, sizeof(state.conflictEvent));
     IOSimpleLockUnlockEnableInterrupt(admissionLock, admissionIrq);
 
     if (payloadLock != NULL)
@@ -4937,6 +5319,7 @@ void AirportItlwm::stopHalAndDrainClaimed()
     prepareLifecycleDrain();
     stopTahoeBootThreadCallAndDrain();
 #if __IO80211_TARGET >= __MAC_26_0
+    teardownSaePeerRxMailboxSource(this, _fWorkloop);
     teardownSaeTransportMailboxSource(this, _fWorkloop);
 #endif
     teardownLinkStatePublishSource(this, _fWorkloop);
@@ -5506,10 +5889,18 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 
 #if __IO80211_TARGET >= __MAC_26_0
     /*
-     * IWX invokes this from its terminal nswq worker and from reset. Keep
-     * this branch strictly nonblocking: it only copies/signals the private
-     * mailbox, so taskq_barrier(sc_nswq) can never wait for this command gate.
+     * IWX terminal/reset and net80211 Algorithm-3 RX invoke this outside the
+     * controller gate. Keep each branch strictly nonblocking: it only copies
+     * and signals its private mailbox, so neither taskq_barrier(sc_nswq) nor
+     * RX delivery can wait for this command gate.
      */
+    if (msgCode == IEEE80211_EVT_SAE_AUTH_PEER) {
+        if (data != nullptr) {
+            handleSaeAuthPeerEvent(that,
+                (const struct ItlSaeAuthPeerEventV1 *)data);
+        }
+        return;
+    }
     if (msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT ||
         msgCode == IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET) {
         if (data != nullptr) {
@@ -5838,11 +6229,13 @@ bool AirportItlwm::init(OSDictionary *properties)
     memset(&fScanSourceLifecycle, 0, sizeof(fScanSourceLifecycle));
 #if __IO80211_TARGET >= __MAC_26_0
     memset(&fSaeTransportMailbox, 0, sizeof(fSaeTransportMailbox));
+    memset(&fSaePeerRxMailbox, 0, sizeof(fSaePeerRxMailbox));
 #endif
     fLinkStatePublishLifecycle.admissionLock = IOSimpleLockAlloc();
     fScanSourceLifecycle.admissionLock = IOSimpleLockAlloc();
 #if __IO80211_TARGET >= __MAC_26_0
     fSaeTransportMailbox.admissionLock = IOSimpleLockAlloc();
+    fSaePeerRxMailbox.admissionLock = IOSimpleLockAlloc();
 #endif
     fWatchdogStopping = false;
     tahoeBootThreadCall = nullptr;
@@ -5862,6 +6255,7 @@ bool AirportItlwm::init(OSDictionary *properties)
         fScanSourceLifecycle.admissionLock == nullptr
 #if __IO80211_TARGET >= __MAC_26_0
         || fSaeTransportMailbox.admissionLock == nullptr
+        || fSaePeerRxMailbox.admissionLock == nullptr
 #endif
         )
         ret = false;
@@ -6447,6 +6841,8 @@ bool AirportItlwm::start(IOService *provider)
     explicit_bzero(&fSaePendingTxRequest, sizeof(fSaePendingTxRequest));
     fSaeNextTxTicket = 0;
     fSaePendingTxActive = false;
+    explicit_bzero(&fSaePendingPeerRx, sizeof(fSaePendingPeerRx));
+    fSaePendingPeerRxActive = false;
     explicit_bzero(&fSaeLastTerminalTxEvent,
                    sizeof(fSaeLastTerminalTxEvent));
     fSaeLastTerminalTxEventValid = false;
@@ -6566,6 +6962,15 @@ bool AirportItlwm::start(IOService *provider)
 #if __IO80211_TARGET >= __MAC_26_0
     if (!setupSaeTransportMailboxSource(this, _fWorkloop)) {
         XYLog("DEBUG %s [STEP 7] FAIL: SAE transport mailbox source alloc\n",
+              __FUNCTION__);
+        stopHalAndDrain();
+        super::stop(pciNub);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    if (!setupSaePeerRxMailboxSource(this, _fWorkloop)) {
+        XYLog("DEBUG %s [STEP 7] FAIL: SAE peer RX mailbox source alloc\n",
               __FUNCTION__);
         stopHalAndDrain();
         super::stop(pciNub);
@@ -7245,6 +7650,10 @@ void AirportItlwm::free()
     if (fSaeTransportMailbox.admissionLock != NULL) {
         IOSimpleLockFree(fSaeTransportMailbox.admissionLock);
         fSaeTransportMailbox.admissionLock = NULL;
+    }
+    if (fSaePeerRxMailbox.admissionLock != NULL) {
+        IOSimpleLockFree(fSaePeerRxMailbox.admissionLock);
+        fSaePeerRxMailbox.admissionLock = NULL;
     }
 #endif
     if (fLifecycleAdmissionLock != NULL) {
@@ -9355,6 +9764,21 @@ struct AirportItlwmSaeTxResetArgs {
     IOReturn rc;
 };
 
+/* Peer RX value copied from the separate nonblocking mailbox. */
+struct AirportItlwmSaePeerRxArgs {
+    AirportItlwm *self;
+    struct ItlSaeAuthPeerEventV1 event;
+    uint64_t cancel_ticket;
+    IOReturn rc;
+};
+
+/* A distinct peer event while one is queued: abort only its exact relay. */
+struct AirportItlwmSaePeerRxFaultArgs {
+    AirportItlwm *self;
+    struct ItlSaeAuthPeerEventV1 event;
+    uint64_t cancel_ticket;
+};
+
 struct AirportItlwmWaitSaeEventArgs {
     AirportItlwm *self;
     uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength];
@@ -9451,6 +9875,86 @@ airportItlwmClearSaePendingTxLocked(AirportItlwm *self)
 }
 
 static void
+airportItlwmClearSaePendingPeerRxLocked(AirportItlwm *self)
+{
+    if (self == nullptr)
+        return;
+    explicit_bzero(&self->fSaePendingPeerRx,
+                   sizeof(self->fSaePendingPeerRx));
+    self->fSaePendingPeerRxActive = false;
+}
+
+/* The wire number is never passed into the FSM as its semantic transaction. */
+static uint16_t
+airportItlwmSaeSemanticPhaseForPeerWire(uint16_t wire_transaction)
+{
+    if (wire_transaction == kItlSaeAuthTransportPeerWireTransactionCommit)
+        return kItlSaeAuthTransportPhaseCommit;
+    if (wire_transaction == kItlSaeAuthTransportPeerWireTransactionConfirm)
+        return kItlSaeAuthTransportPhaseConfirm;
+    return 0;
+}
+
+static bool
+airportItlwmSaePeerEventTargetsRelay(
+    const AirportItlwm *self, const struct ItlSaeAuthPeerEventV1 *event)
+{
+    return self != nullptr && event != nullptr &&
+        AirportItlwmSaeRelayFsmV1TargetBound(&self->fSaeRelay) &&
+        self->fSaeRelay.target.association_epoch ==
+            event->association_epoch &&
+        self->fSaeRelay.target.generation == event->relay_generation &&
+        memcmp(self->fSaeRelay.target.bssid, event->bssid,
+               sizeof(event->bssid)) == 0 &&
+        memcmp(self->fSaeRelay.target.sta, event->sta,
+               sizeof(event->sta)) == 0;
+}
+
+static bool
+airportItlwmSaePeerEventStillAdmitted(AirportItlwm *self,
+    const struct ItlSaeAuthPeerEventV1 *event)
+{
+    struct ieee80211com *ic;
+    uint64_t admission_epoch = 0;
+    uint64_t admission_generation = 0;
+
+    if (self == nullptr || event == nullptr)
+        return false;
+    ic = self->fHalService != nullptr
+        ? self->fHalService->get80211Controller() : nullptr;
+    if (ic == nullptr || ic->ic_state != IEEE80211_S_AUTH ||
+        ieee80211_pae_assoc_epoch_current(ic) != event->association_epoch)
+        return false;
+    if (!ieee80211_sae_peer_rx_snapshot_admission(ic, event->bssid,
+        event->sta, &admission_epoch, &admission_generation))
+        return false;
+    return admission_epoch == event->association_epoch &&
+        admission_generation == event->relay_generation;
+}
+
+static bool
+airportItlwmSaePeerEventMatchesLastFsmEvent(
+    const AirportItlwm *self, const struct ItlSaeAuthPeerEventV1 *event)
+{
+    const struct AirportItlwmSaeAuthEventV1 *last;
+
+    if (self == nullptr || event == nullptr ||
+        !AirportItlwmSaeRelayFsmV1TargetBound(&self->fSaeRelay))
+        return false;
+    last = &self->fSaeRelay.event;
+    return last->version == kAirportItlwmSaeRelayV1Version &&
+        last->size == sizeof(*last) &&
+        last->generation == event->relay_generation &&
+        last->association_epoch == event->association_epoch &&
+        last->transaction == event->phase &&
+        last->status == event->auth_status &&
+        last->body_len == event->body_len &&
+        memcmp(last->bssid, event->bssid, sizeof(last->bssid)) == 0 &&
+        memcmp(last->sta, event->sta, sizeof(last->sta)) == 0 &&
+        memcmp(last->body, event->body, event->body_len) == 0;
+}
+
+static void
 airportItlwmClearSaeLastTerminalTxLocked(AirportItlwm *self)
 {
     if (self == nullptr)
@@ -9480,11 +9984,33 @@ static uint64_t
 airportItlwmClearSaeRelayLocked(AirportItlwm *self, bool canceled)
 {
     uint64_t ticket;
+    uint64_t association_epoch = 0;
+    uint64_t relay_generation = 0;
+    struct ieee80211com *ic;
 
     if (self == nullptr)
         return 0;
+    /* Begin publishes RX before a UserClient binds its cookie; cleanup must
+     * therefore use the target's nonzero controller identity, not TargetBound. */
+    if (self->fSaeRelay.target.association_epoch != 0 &&
+        self->fSaeRelay.target.generation != 0) {
+        association_epoch = self->fSaeRelay.target.association_epoch;
+        relay_generation = self->fSaeRelay.target.generation;
+    }
     ticket = airportItlwmClearSaePendingTxLocked(self);
+    airportItlwmClearSaePendingPeerRxLocked(self);
     airportItlwmClearSaeLastTerminalTxLocked(self);
+    /*
+     * Close the controller-side producer fence first.  A net80211 RX path
+     * that passed its selected-BSS snapshot immediately before this clear
+     * then cannot enqueue after the old payload has been purged or after a
+     * new generation binds the same BSSID.
+     */
+    clearSaePeerRxMailboxAdmissionAndPurge(self);
+    ic = self->fHalService != nullptr
+        ? self->fHalService->get80211Controller() : nullptr;
+    if (ic != nullptr && association_epoch != 0 && relay_generation != 0)
+        ieee80211_sae_peer_rx_revoke(ic, association_epoch, relay_generation);
     AirportItlwmSaeRelayFsmV1Clear(&self->fSaeRelay);
     airportItlwmAdvanceSaeRelayCancelEpochLocked(self);
     memset(self->fSaeRelayWaitingCookie, 0,
@@ -9504,6 +10030,7 @@ airportItlwmBeginSaeRelayAction(OSObject * /*owner*/, void *arg0,
     AirportItlwmBeginSaeRelayArgs *a =
         (AirportItlwmBeginSaeRelayArgs *)arg0;
     AirportItlwm *s = a->self;
+    struct ieee80211com *ic;
     if (s->fSaeRelayTerminating) {
         a->rc = kIOReturnAborted;
         return kIOReturnSuccess;
@@ -9525,6 +10052,23 @@ airportItlwmBeginSaeRelayAction(OSObject * /*owner*/, void *arg0,
     a->rc = airportItlwmSaeFsmResultToIOReturn(
         AirportItlwmSaeRelayFsmV1Begin(&s->fSaeRelay, &a->target));
     if (a->rc == kIOReturnSuccess) {
+        /*
+         * The relay does not open generic SAE RX. It publishes exactly this
+         * target only after net80211 proves it is the current selected strict
+         * profile and gives RX a generation value without touching this gate.
+         */
+        ic = s->fHalService != nullptr
+            ? s->fHalService->get80211Controller() : nullptr;
+        if (ic == nullptr || !activateSaePeerRxMailboxAdmission(s,
+                &s->fSaeRelay.target) ||
+            !ieee80211_sae_peer_rx_admit(ic,
+                s->fSaeRelay.target.association_epoch,
+                s->fSaeRelay.target.generation,
+                s->fSaeRelay.target.bssid, s->fSaeRelay.target.sta)) {
+            (void)airportItlwmClearSaeRelayLocked(s, true);
+            a->rc = kIOReturnNotReady;
+            return kIOReturnSuccess;
+        }
         s->fSaeRelayCanceled = false;
         s->getCommandGate()->commandWakeup(&s->fSaeRelay,
                                             /*oneThread=*/false);
@@ -9661,6 +10205,8 @@ airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
 
     /* A delayed reset for the preceding terminal ticket must not match this. */
     airportItlwmClearSaeLastTerminalTxLocked(s);
+    /* A previous failed/unsubmitted TX cannot donate an early peer response. */
+    airportItlwmClearSaePendingPeerRxLocked(s);
     memcpy(&s->fSaePendingTxReply, &a->reply,
            sizeof(s->fSaePendingTxReply));
     memcpy(&s->fSaePendingTxRequest, &a->request,
@@ -9687,7 +10233,163 @@ airportItlwmSaeSubmitFailureAction(OSObject * /*owner*/, void *arg0,
     }
     /* submitSaeAuthFrame() returned before a successful doorbell ownership. */
     a->cancel_ticket = airportItlwmClearSaePendingTxLocked(s);
+    airportItlwmClearSaePendingPeerRxLocked(s);
     a->rc = kIOReturnSuccess;
+    return kIOReturnSuccess;
+}
+
+/*
+ * Consume a copied peer value only from a live semantic peer window.  A stale
+ * retransmission outside that window is a no-op; a malformed/status-invalid
+ * value in the window lets the FSM terminally abort the exact relay.
+ */
+static IOReturn
+airportItlwmSaeConsumePeerEventLocked(
+    AirportItlwm *s, const struct ItlSaeAuthPeerEventV1 *event,
+    uint64_t *cancel_ticket)
+{
+    enum AirportItlwmSaeRelayFsmResultV1 result;
+
+    if (cancel_ticket != nullptr)
+        *cancel_ticket = 0;
+    if (!itl_sae_auth_peer_event_is_well_formed(event) ||
+        event->phase !=
+            airportItlwmSaeSemanticPhaseForPeerWire(
+                event->wire_transaction))
+        return kIOReturnBadArgument;
+    if (s == nullptr || s->fSaeRelayTerminating || s->fSaeRelayCanceled)
+        return kIOReturnAborted;
+    if (!AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay))
+        return kIOReturnNotReady;
+    if (!airportItlwmSaePeerEventTargetsRelay(s, event))
+        return kIOReturnNotPermitted;
+    if (!airportItlwmSaePeerEventStillAdmitted(s, event)) {
+        if (cancel_ticket != nullptr)
+            *cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        return kIOReturnAborted;
+    }
+    if (s->fSaePendingTxActive)
+        return kIOReturnNotReady;
+    if (s->fSaeRelay.event_pending != 0) {
+        if (airportItlwmSaePeerEventMatchesLastFsmEvent(s, event))
+            return kIOReturnSuccess;
+        if (cancel_ticket != nullptr)
+            *cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        return kIOReturnAborted;
+    }
+    if (!((s->fSaeRelay.phase == kAirportItlwmSaeRelayFsmAwaitPeerCommit &&
+           event->phase == kItlSaeAuthTransportPhaseCommit) ||
+          (s->fSaeRelay.phase == kAirportItlwmSaeRelayFsmAwaitPeerConfirm &&
+           event->phase == kItlSaeAuthTransportPhaseConfirm))) {
+        /* A response from an already-completed/retried phase is stale. */
+        return kIOReturnNotReady;
+    }
+
+    result = AirportItlwmSaeRelayFsmV1EmitPeerEvent(&s->fSaeRelay,
+        event->phase, event->auth_status, event->body, event->body_len);
+    if (result != kAirportItlwmSaeRelayFsmAccepted) {
+        if (cancel_ticket != nullptr)
+            *cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        return airportItlwmSaeFsmResultToIOReturn(result);
+    }
+    s->getCommandGate()->commandWakeup(&s->fSaeRelay, /*oneThread=*/false);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSaeConsumePendingPeerRxLocked(AirportItlwm *s,
+                                          uint64_t *cancel_ticket)
+{
+    ItlSaeAuthPeerEventV1 event;
+    IOReturn rc;
+
+    if (cancel_ticket != nullptr)
+        *cancel_ticket = 0;
+    if (s == nullptr || !s->fSaePendingPeerRxActive)
+        return kIOReturnSuccess;
+    event = s->fSaePendingPeerRx;
+    airportItlwmClearSaePendingPeerRxLocked(s);
+    rc = airportItlwmSaeConsumePeerEventLocked(s, &event, cancel_ticket);
+    explicit_bzero(&event, sizeof(event));
+    return rc;
+}
+
+static IOReturn
+airportItlwmSaePeerRxAction(OSObject * /*owner*/, void *arg0,
+                            void * /*arg1*/, void * /*arg2*/,
+                            void * /*arg3*/)
+{
+    AirportItlwmSaePeerRxArgs *a = (AirportItlwmSaePeerRxArgs *)arg0;
+    AirportItlwm *s = a->self;
+
+    a->cancel_ticket = 0;
+    if (!itl_sae_auth_peer_event_is_well_formed(&a->event) ||
+        a->event.phase != airportItlwmSaeSemanticPhaseForPeerWire(
+            a->event.wire_transaction)) {
+        a->rc = kIOReturnBadArgument;
+        return kIOReturnSuccess;
+    }
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    if (!AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay)) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    /* A delayed old-generation mailbox record cannot clear a new relay. */
+    if (!airportItlwmSaePeerEventTargetsRelay(s, &a->event)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+    if (!airportItlwmSaePeerEventStillAdmitted(s, &a->event)) {
+        a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+
+    if (s->fSaePendingTxActive) {
+        /* A retransmitted earlier phase cannot poison a later TX fence. */
+        if (a->event.phase != s->fSaePendingTxRequest.phase) {
+            a->rc = kIOReturnNotReady;
+            return kIOReturnSuccess;
+        }
+        if (s->fSaePendingPeerRxActive) {
+            if (itl_sae_auth_peer_event_equals(&s->fSaePendingPeerRx,
+                                                &a->event)) {
+                a->rc = kIOReturnSuccess;
+                return kIOReturnSuccess;
+            }
+            a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+        s->fSaePendingPeerRx = a->event;
+        s->fSaePendingPeerRxActive = true;
+        a->rc = kIOReturnSuccess;
+        return kIOReturnSuccess;
+    }
+
+    a->rc = airportItlwmSaeConsumePeerEventLocked(s, &a->event,
+                                                    &a->cancel_ticket);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmSaePeerRxFaultAction(OSObject * /*owner*/, void *arg0,
+                                 void * /*arg1*/, void * /*arg2*/,
+                                 void * /*arg3*/)
+{
+    AirportItlwmSaePeerRxFaultArgs *a =
+        (AirportItlwmSaePeerRxFaultArgs *)arg0;
+    AirportItlwm *s = a->self;
+
+    a->cancel_ticket = 0;
+    if (s == nullptr || !itl_sae_auth_peer_event_is_well_formed(&a->event) ||
+        !AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay) ||
+        !airportItlwmSaePeerEventTargetsRelay(s, &a->event))
+        return kIOReturnSuccess;
+    a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
     return kIOReturnSuccess;
 }
 
@@ -9701,6 +10403,8 @@ airportItlwmSaeTxCompletionAction(OSObject * /*owner*/, void *arg0,
     AirportItlwm *s = a->self;
     struct ieee80211com *ic;
     enum AirportItlwmSaeRelayFsmResultV1 result;
+    IOReturn peer_rc;
+    uint64_t peer_cancel_ticket = 0;
 
     if (!itl_sae_auth_transport_event_is_well_formed(&a->event)) {
         a->rc = kIOReturnBadArgument;
@@ -9729,6 +10433,7 @@ airportItlwmSaeTxCompletionAction(OSObject * /*owner*/, void *arg0,
         memcmp(s->fSaeRelay.target.sta, a->event.sta,
                sizeof(a->event.sta)) != 0 ||
         ic == nullptr ||
+        ic->ic_state != IEEE80211_S_AUTH ||
         ieee80211_pae_assoc_epoch_current(ic) !=
             a->event.association_epoch) {
         a->cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
@@ -9753,6 +10458,17 @@ airportItlwmSaeTxCompletionAction(OSObject * /*owner*/, void *arg0,
     s->fSaeLastTerminalTxEvent = a->event;
     s->fSaeLastTerminalTxEventValid = true;
     (void)airportItlwmClearSaePendingTxLocked(s);
+    /* A peer reply may have arrived after the radio TX but before this gate. */
+    peer_rc = airportItlwmSaeConsumePendingPeerRxLocked(s,
+                                                         &peer_cancel_ticket);
+    if (peer_rc != kIOReturnSuccess) {
+        if (!s->fSaeRelayCanceled)
+            peer_cancel_ticket = airportItlwmClearSaeRelayLocked(s, true);
+        a->cancel_ticket = peer_cancel_ticket;
+        a->rc = peer_rc;
+        return kIOReturnSuccess;
+    }
+    a->cancel_ticket = peer_cancel_ticket;
     a->rc = kIOReturnSuccess;
     return kIOReturnSuccess;
 }
@@ -10204,6 +10920,50 @@ dispatchSaeTransportMailboxEvent(
         hal->cancelSaeAuthFrame(cancel_ticket);
 }
 
+static void
+dispatchSaePeerRxMailboxEvent(
+    AirportItlwm *that, const struct ItlSaeAuthPeerEventV1 *event,
+    bool conflict)
+{
+    IOCommandGate *gate;
+    ItlHalService *hal;
+    uint64_t cancel_ticket = 0;
+
+    if (that == nullptr || event == nullptr ||
+        !itl_sae_auth_peer_event_is_well_formed(event))
+        return;
+    gate = that->getCommandGate();
+    if (gate == nullptr)
+        return;
+
+    /* The peer mailbox owns `event`; run the deferred controller action now. */
+    if (conflict) {
+        AirportItlwmSaePeerRxFaultArgs args;
+
+        explicit_bzero(&args, sizeof(args));
+        args.self = that;
+        args.event = *event;
+        (void)gate->runAction(&airportItlwmSaePeerRxFaultAction, &args);
+        cancel_ticket = args.cancel_ticket;
+        explicit_bzero(&args, sizeof(args));
+    } else {
+        AirportItlwmSaePeerRxArgs args;
+
+        explicit_bzero(&args, sizeof(args));
+        args.self = that;
+        args.event = *event;
+        args.rc = kIOReturnNotReady;
+        (void)gate->runAction(&airportItlwmSaePeerRxAction, &args);
+        cancel_ticket = args.cancel_ticket;
+        explicit_bzero(&args, sizeof(args));
+    }
+
+    /* A peer conflict can cancel a physical TX; never re-enter HAL on gate. */
+    hal = that->fHalService;
+    if (cancel_ticket != 0 && hal != nullptr)
+        hal->cancelSaeAuthFrame(cancel_ticket);
+}
+
 void AirportItlwm::
 handleSaeAuthTransportEvent(
     AirportItlwm *that, const struct ItlSaeAuthTransportEventV1 *event,
@@ -10211,6 +10971,14 @@ handleSaeAuthTransportEvent(
 {
     /* Strict nswq-side path: value-copy, signal source, return. */
     queueSaeTransportMailbox(that, event, isReset);
+}
+
+void AirportItlwm::
+handleSaeAuthPeerEvent(
+    AirportItlwm *that, const struct ItlSaeAuthPeerEventV1 *event)
+{
+    /* Strict RX-side path: value-copy, signal distinct source, return. */
+    queueSaePeerRxMailbox(that, event);
 }
 #endif
 

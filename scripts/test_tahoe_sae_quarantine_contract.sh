@@ -526,23 +526,34 @@ for needle in (
 ):
     require(transport_doc, needle, "transport-pinned gate evidence document")
 
-# Passive BSS discovery recognizes the RSN SAE suite so a later state machine
-# can consume an exact selected-BSS snapshot. It remains strictly inactive:
-# active configuration stays PSK-only and net80211 still emits and accepts
-# only Open-System authentication. Letting Algorithm 3 cross this boundary
-# now would be a false implementation claim rather than a working exchange.
+# Passive BSS discovery recognizes the RSN SAE suite and an exact
+# selected-BSS/controller admission may now carry one bounded peer
+# Authentication value. Active configuration remains PSK-only: no association
+# ingress, PMK/AKM selection, or PMF activation is enabled by this bridge.
 require(crypto, "IEEE80211_AKM_SAE", "passive net80211 SAE AKM taxonomy")
 require(crypto_source, "ic->ic_rsnakms = IEEE80211_AKM_PSK;",
         "PSK-only active net80211 configuration")
 forbid(crypto_source, "IEEE80211_AKM_SAE",
        "active net80211 SAE configuration")
-forbid(input_source, "IEEE80211_AUTH_ALG_SAE", "net80211 SAE auth algorithm")
+peer_rx = body(input_source, "static int\nieee80211_recv_sae_peer_auth",
+               "bounded net80211 SAE peer RX")
+for token in ("ieee80211_pae_selected_bss_copyout_current",
+              "ieee80211_sae_peer_rx_snapshot_admission",
+              "kItlSaeAuthTransportPeerWireTransactionCommit",
+              "kItlSaeAuthTransportPeerWireTransactionConfirm",
+              "mbuf_copydata", "IEEE80211_EVT_SAE_AUTH_PEER"):
+    require(peer_rx, token, "bounded SAE peer RX identity/copy fence")
+for token in ("getCommandGate", "runAction", "commandSleep", "ic_psk",
+              "IEEE80211_AKM_SAE", "ieee80211_new_state"):
+    forbid(peer_rx, token, "peer RX association/key side effect")
+if input_source.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only bounded peer RX may parse net80211 Algorithm 3")
 auth_tx = body(output, "mbuf_t\nieee80211_get_auth", "net80211 auth TX")
 require(auth_tx, "LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN)",
         "Open-System-only auth TX")
 auth_rx = body(input_source, "void\nieee80211_recv_auth", "net80211 auth RX")
 require(auth_rx, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
-        "Open-System-only auth RX")
+        "generic Open-System auth RX fallback")
 
 print("PASS: Tahoe pure-SAE quarantine and audited PMF-owner contracts")
 PY

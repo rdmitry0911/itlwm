@@ -529,9 +529,9 @@ for token in ("AgentWaitSaeTarget", "AgentSubmitSaeReply",
               "AgentWaitSaeAuthEvent", "AgentCompleteSae", "AgentAbortSae"):
     forbid(agent_main, token, "premature Agent SAE worker")
 
-# The bounded sender does not weaken the existing pure-SAE quarantine.  The
-# generic net80211 state machine remains Open-System-only; exactly one
-# separate builder writes Algorithm 3 and no association/PMK route is enabled.
+# The bounded sender/receiver does not weaken pure-SAE association quarantine.
+# Generic net80211 remains Open-System-only except for one explicitly admitted
+# selected-BSS peer-RX value bridge; no association/PMK route is enabled.
 require(skywalk, "requiresUnsupportedWpa3Auth",
         "pure-SAE association ingress reject")
 require(input_c, "if (algo != IEEE80211_AUTH_ALG_OPEN)",
@@ -554,12 +554,41 @@ require(v2, "itl_sae_auth_transport_sta_wire_transaction_for_phase",
         "controller semantic-phase/wire-sequence mapping")
 if output_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
     fail("only the isolated SAE frame builder may write Algorithm 3")
-for text, label in ((v2, "controller"), (input_c, "RX"),
-                    (proto_c, "protocol")):
+peer_rx = c_function_body(input_c, "ieee80211_recv_sae_peer_auth")
+for token in (
+        "ieee80211_pae_selected_bss_copyout_current",
+        "ieee80211_sae_peer_rx_snapshot_admission",
+        "kItlSaeAuthTransportPeerWireTransactionCommit",
+        "kItlSaeAuthTransportPeerWireTransactionConfirm",
+        "kItlSaeAuthTransportPhaseCommit",
+        "kItlSaeAuthTransportPhaseConfirm",
+        "mbuf_pkthdr_len(m)", "mbuf_copydata",
+        "IEEE80211_EVT_SAE_AUTH_PEER",
+        "itl_sae_auth_peer_event_is_well_formed",
+):
+    require(peer_rx, token, "bounded selected-BSS peer RX leaf")
+for token in ("getCommandGate", "runAction", "commandSleep",
+              "submitSaeAuthFrame", "cancelSaeAuthFrame"):
+    forbid(peer_rx, token, "peer RX gate/HAL reentry")
+if input_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
+    fail("only the explicit peer-RX aperture may parse Algorithm 3")
+for text, label in ((v2, "controller"), (proto_c, "protocol")):
     forbid(text, "ieee80211_sae_auth_contract.h",
            "premature Algorithm-3 production include in " + label)
     forbid(text, "IEEE80211_AUTH_ALG_SAE",
            "premature Algorithm-3 production use in " + label)
+for token in ("ieee80211_sae_peer_rx_admit",
+              "ieee80211_sae_peer_rx_snapshot_admission",
+              "ieee80211_sae_peer_rx_revoke"):
+    require(proto_c, token, "selected-BSS peer RX admission lifecycle")
+for token in ("AirportItlwmSaePeerRxMailboxLifecycle",
+              "fSaePeerRxMailbox", "fSaePendingPeerRx",
+              "airportItlwmSaePeerRxAction",
+              "airportItlwmSaeConsumePendingPeerRxLocked",
+              "airportItlwmSaeSemanticPhaseForPeerWire"):
+    require(v2, token, "controller deferred peer RX ownership")
+for token in ("password[", "pwe[", "kck[", "pmk["):
+    forbid(v2_hpp, token, "controller peer RX credential field")
 forbid(crypto_c, "IEEE80211_AKM_SAE", "premature active SAE AKM")
 
 print("PASS: SAE controller relay and bounded TX-completion contract")

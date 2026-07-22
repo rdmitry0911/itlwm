@@ -469,6 +469,21 @@ struct ieee80211_pae_mfp_txn {
 	u_int8_t		finish_port_became_valid;
 };
 
+/*
+ * One explicit, controller-published Algorithm-3 peer-RX admission.  It is
+ * protected exclusively by ic_pae_selected_bss_lock and contains only
+ * replay-binding/public frame identity.  It is not an RSN/AKM enable flag,
+ * does not retain a node or mbuf, and defaults to inactive.
+ */
+struct ieee80211_sae_peer_rx_admission {
+	u_int64_t		association_epoch;
+	u_int64_t		relay_generation;
+	u_int8_t		bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		sta[IEEE80211_ADDR_LEN];
+	u_int8_t		active;
+	u_int8_t		reserved[3];
+};
+
 struct ieee80211com {
 	struct arpcom		ic_ac;
 	LIST_ENTRY(ieee80211com) ic_list;	/* chain of all ieee80211com */
@@ -624,6 +639,8 @@ struct ieee80211com {
 	 * allowed while held.  A failed allocation keeps publication fail-closed.
 	 */
 	IOSimpleLock		*ic_pae_selected_bss_lock;
+	/* Same leaf lock as the selected-BSS value above/below. */
+	struct ieee80211_sae_peer_rx_admission ic_sae_peer_rx_admission;
 	/*
 	 * BIP's two IGTK slots are independently published under the same leaf
 	 * lock.  Retired software contexts remain off-table until the timeout
@@ -886,6 +903,14 @@ struct ieee80211_ess {
  * relay without attempting another HAL cancellation or accepting a reply.
  */
 #define IEEE80211_EVT_SAE_AUTH_TRANSPORT_RESET  9
+
+/*
+ * Internal bounded Algorithm-3 peer RX. The borrowed pointer is valid only
+ * for this ic_event_handler invocation and points to an
+ * ItlSaeAuthPeerEventV1 value copied by the controller's distinct peer-RX
+ * mailbox. It neither enters generic Open-System auth nor changes STA state.
+ */
+#define IEEE80211_EVT_SAE_AUTH_PEER             10
 
 /*
  * Host-owned WCL reassociation owner contract recovered from the public

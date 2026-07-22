@@ -600,6 +600,84 @@ required configuration digests.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## IMPLEMENTATION AND BUILD-ONLY VERIFICATION: `LAB-SAE-ALGORITHM3-BOUNDED-PEER-RX-20260722`
+
+- priority rationale: saved WPA3 profiles are a frequent user-facing path.
+  A real AP Commit/Confirm ingress is a hard prerequisite for that path, so
+  this layer takes priority over further standalone diagnostic polish.  It is
+  still deliberately narrower than a join: it supplies a bounded driver path
+  without claiming that the kext can yet select SAE, calculate SAE secrets,
+  install a PMK, or finish association.
+- implementation:
+  - added the credential-free `ItlSaeAuthPeerEventV1` ABI: a fixed-size copied
+    value containing only public Algorithm-3 fixed fields, exact BSSID/STA,
+    association epoch, controller generation, and at most 768 public body
+    bytes.  It carries no mbuf/node/pointer, password, PWE, KCK, PMK, or
+    UserClient cookie;
+  - net80211 now keeps one selected-BSS-lock-owned peer-RX admission record.
+    Publication validates the current STA identity, association epoch,
+    selected BSS, strict group-19 HnP profile, BSSID and STA; snapshot RX
+    requires the same values plus `S_AUTH`.  Epoch/replacement/lock-destroy
+    paths scrub the record;
+  - `ieee80211_recv_auth()` has one narrow SAE exception.  It accepts only an
+    admitted current-BSS peer wire sequence (`2 -> Commit`, `4 -> Confirm`),
+    copies a bounded chained mbuf body with `mbuf_copydata`, then sends the
+    value through the existing event callback.  Generic authentication stays
+    Open-System-only outside that aperture;
+  - AirportItlwm owns a distinct one-slot peer-RX mailbox rather than sharing
+    the IWX terminal-TX FIFO.  Exact public retransmissions coalesce; a
+    distinct concurrent candidate becomes a bounded fail-closed conflict;
+    remote traffic cannot panic, overflow, or reorder the physical TX
+    completion path;
+  - the mailbox binds an exact `(epoch, generation, BSSID, STA)` identity
+    before net80211 admission, holds that binding lock through payload
+    mutation, and atomically deactivates/purges it before net80211 revoke.
+    Thus an RX producer which passed net80211 immediately before a clear
+    cannot enqueue into a later same-BSSID generation.  Its source processes
+    at most one record per workloop turn, preventing an AP flood from
+    monopolizing TX-terminal progress;
+  - controller consumption repeats current-admission/identity checks, maps
+    peer wire sequence back to the FSM semantic phase, and latches an early
+    peer reply until the matching physical IWX TX terminal success.  No peer
+    value can advance the live FSM before that TX fence.
+- deterministic/local verification:
+  - C11 and C++14 `ItlSaeAuthTransportV1` ABI/validator tests: PASS;
+  - `test_tahoe_iwx_sae_auth_transport_contract.sh`,
+    `test_tahoe_sae_controller_relay_contract.sh`, and
+    `test_net80211_pae_epoch_contract.sh`: PASS;
+  - full `test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - the transport contract includes a generation-race model proving that an
+    old producer resumed after clear/rebind cannot create a candidate or
+    conflict for the new generation, and rejects an unbounded peer source
+    drain;
+  - `git diff --check`: PASS.
+- isolated Tahoe build-only verification:
+  - pinned Tahoe 25C56 / pinned BootKC provenance passed;
+  - source identity `dirtyc3403b973130` built kext, trace producer,
+    AirportItlwmAgent, and RegDiag in
+    `/tmp/aiam-tahoe-sae-layer-gate.yAVfzG`;
+  - `** BUILD SUCCEEDED **`; all 959 undefined symbols resolved against
+    BootKC; no `_thread_call_cancel_wait` dependency;
+  - no kext was installed, loaded, published, or released; no AP, saved
+    profile, radio, association, traffic, or guest reboot was attempted.
+- next required saved-WPA3 join layer:
+  1. establish the selected-BSS join owner that creates this exact relay
+     target at the real join edge;
+  2. preserve the intentional two-stage admission: pre-arm exact identity
+     immediately before `ieee80211_new_state(..., S_AUTH)`, but release the
+     Agent only after that state transition so its first Algorithm-3 TX cannot
+     race the builder's `S_AUTH` predicate;
+  3. add an explicit nonblocking epoch/state-cancel -> controller relay
+     clear/wakeup edge.  Snapshot revalidation alone is insufficient because
+     a quiet cancelled relay could otherwise leave a waiter until some later
+     peer or TX event;
+  4. only after those ownership/cancellation fences can the next layers add
+     Agent cryptography, SAE AKM/PMF selection, and the association/key path.
+- verification boundary: this is a bounded real-driver ingress/relay spine
+  that is dormant absent the next selected-BSS join owner.  It is not WPA3
+  support, SAE authentication, PMK derivation or installation, AKM/PMF
+  activation, association completion, or runtime radio evidence.
+
 ## ANOMALY: `LAB-SAE-ALGORITHM3-TX-COMPLETION-SPINE-20260722`
 
 ### Observation

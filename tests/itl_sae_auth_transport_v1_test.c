@@ -54,6 +54,25 @@ assert_event_rejected(const struct ItlSaeAuthTransportEventV1 *event)
 }
 
 static void
+fill_peer_event(struct ItlSaeAuthPeerEventV1 *event)
+{
+    memset(event, 0, sizeof(*event));
+    event->version = kItlSaeAuthTransportV1Version;
+    event->size = sizeof(*event);
+    event->association_epoch = 9;
+    event->relay_generation = 11;
+    event->phase = kItlSaeAuthTransportPhaseCommit;
+    event->wire_transaction =
+        itl_sae_auth_transport_peer_wire_transaction_for_phase(event->phase);
+    event->body_len = 98;
+    event->bssid[0] = 0x02;
+    event->bssid[5] = 0x01;
+    event->sta[0] = 0x02;
+    event->sta[5] = 0x02;
+    event->body[0] = 19;
+}
+
+static void
 test_null_arguments(void)
 {
     struct ItlSaeAuthTxRequestV1 request;
@@ -297,6 +316,56 @@ test_semantic_phase_and_wire_sequence_mapping(void)
     assert(itl_sae_auth_transport_peer_wire_transaction_for_phase(3) == 0);
 }
 
+static void
+test_peer_event_schema_and_exact_retransmission_identity(void)
+{
+    struct ItlSaeAuthPeerEventV1 peer;
+    struct ItlSaeAuthPeerEventV1 equal;
+
+    fill_peer_event(&peer);
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+    equal = peer;
+    assert(itl_sae_auth_peer_event_equals(&peer, &equal));
+
+    peer.phase = kItlSaeAuthTransportPhaseConfirm;
+    peer.wire_transaction =
+        itl_sae_auth_transport_peer_wire_transaction_for_phase(peer.phase);
+    peer.body_len = 34;
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
+    peer.auth_status = 76;
+    peer.body_len = 32;
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    peer.phase = kItlSaeAuthTransportPhaseConfirm;
+    peer.wire_transaction =
+        itl_sae_auth_transport_peer_wire_transaction_for_phase(peer.phase);
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
+    peer.wire_transaction =
+        kItlSaeAuthTransportStaWireTransactionCommit;
+    assert(!itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
+    peer.body_len = 0;
+    peer.auth_status = 1;
+    assert(itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
+    peer.body_len = kItlSaeAuthTransportV1MaxBodyLength + 1u;
+    assert(!itl_sae_auth_peer_event_is_well_formed(&peer));
+
+    fill_peer_event(&peer);
+    equal = peer;
+    equal.body[0] ^= 1u;
+    assert(!itl_sae_auth_peer_event_equals(&peer, &equal));
+    equal = peer;
+    equal.relay_generation++;
+    assert(!itl_sae_auth_peer_event_equals(&peer, &equal));
+}
+
 int
 main(void)
 {
@@ -305,6 +374,7 @@ main(void)
     test_event_well_formed_fixed_fields_and_result();
     test_event_request_identity_matching();
     test_semantic_phase_and_wire_sequence_mapping();
+    test_peer_event_schema_and_exact_retransmission_identity();
 
     return 0;
 }

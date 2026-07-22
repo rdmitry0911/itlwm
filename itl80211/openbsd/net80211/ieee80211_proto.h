@@ -156,6 +156,20 @@ extern	void ieee80211_pae_selected_bss_capture(struct ieee80211com *,
 	    const struct ieee80211_node *, int, u_int64_t);
 extern	int ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *,
 	    u_int64_t, struct ieee80211_pae_selected_bss *);
+/*
+ * A controller may admit exactly one bounded Algorithm-3 peer-RX relay for
+ * the current selected BSS.  The RX path receives a copied epoch/generation
+ * only after snapshot_admission() validates that admission under the same
+ * leaf lock.  These APIs never retain nodes, mbufs, credentials, or IEs.
+ */
+extern	int ieee80211_sae_peer_rx_admit(struct ieee80211com *, u_int64_t,
+	    u_int64_t, const u_int8_t[IEEE80211_ADDR_LEN],
+	    const u_int8_t[IEEE80211_ADDR_LEN]);
+extern	void ieee80211_sae_peer_rx_revoke(struct ieee80211com *, u_int64_t,
+	    u_int64_t);
+extern	int ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *,
+	    const u_int8_t[IEEE80211_ADDR_LEN],
+	    const u_int8_t[IEEE80211_ADDR_LEN], u_int64_t *, u_int64_t *);
 extern	void ieee80211_pae_assoc_epoch_note_newstate(struct ieee80211com *,
 		enum ieee80211_state);
 #define    ieee80211_new_state(_ic, _nstate, _arg) \

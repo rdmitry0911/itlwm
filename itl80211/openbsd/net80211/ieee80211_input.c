@@ -74,6 +74,7 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 #include <net80211/ieee80211_sae_policy.h>
+#include <HAL/ItlSaeAuthTransportV1.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 mbuf_t ieee80211_input_hwdecrypt(struct ieee80211com *,
@@ -2389,11 +2390,12 @@ ieee80211_recv_probe_req(struct ieee80211com *ic, mbuf_t m,
  * Retain a real authentication rejection only for the selected STA BSS's
  * expected response to an active Open-System attempt.  This is status-only:
  * it neither adds an authentication algorithm nor advances the state machine.
- * In particular, an SAE frame remains rejected by the Open-System-only
- * dispatcher below; a zero-status SAE frame is made visible as the standard
- * unsupported-algorithm result, never as success.  A nonzero return means a
- * failure status was written, so the non-Open caller can revoke that selected
- * attempt.
+ * An SAE frame can bypass that historic Open-System-only path only through
+ * the separately admitted, selected-BSS-bound bounded peer relay below.
+ * Every other SAE frame remains an unsupported-algorithm rejection; a
+ * zero-status frame is never treated as authentication success here.  A
+ * nonzero return means a failure status was written, so the non-Open caller
+ * can revoke that selected attempt.
  */
 static int
 ieee80211_record_sta_auth_failure(struct ieee80211com *ic,
@@ -2415,7 +2417,90 @@ ieee80211_record_sta_auth_failure(struct ieee80211com *ic,
         ic->ic_assoc_status = IEEE80211_STATUS_ALG;
     else
         return 0;
-    return 1;
+	return 1;
+}
+
+/*
+ * The only Algorithm-3 RX aperture is a controller-published, exact
+ * selected-BSS admission.  This leaf parses and copies a bounded public
+ * value, then invokes the existing event callback synchronously; it never
+ * retains m/ni, enters a command gate, changes STA state, or interprets SAE
+ * cryptography.  The controller mailbox owns the next deferred boundary.
+ */
+static int
+ieee80211_recv_sae_peer_auth(struct ieee80211com *ic, mbuf_t m,
+    struct ieee80211_node *ni, const struct ieee80211_frame *wh,
+    u_int16_t seq, u_int16_t status)
+{
+	struct ItlSaeAuthPeerEventV1 event;
+	struct ieee80211_pae_selected_bss selected;
+	size_t frame_len;
+	size_t body_len;
+	u_int64_t expected_epoch;
+	u_int16_t phase;
+	int accepted = 0;
+
+	if (ic == NULL || m == NULL || ni == NULL || wh == NULL ||
+	    ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_AUTH || ni != ic->ic_bss ||
+	    ic->ic_bss == NULL ||
+	    !IEEE80211_ADDR_EQ(wh->i_addr1, ic->ic_myaddr) ||
+	    !IEEE80211_ADDR_EQ(wh->i_addr2, ic->ic_bss->ni_bssid) ||
+	    !IEEE80211_ADDR_EQ(wh->i_addr3, ic->ic_bss->ni_bssid))
+		return 0;
+	if (seq == kItlSaeAuthTransportPeerWireTransactionCommit)
+		phase = kItlSaeAuthTransportPhaseCommit;
+	else if (seq == kItlSaeAuthTransportPeerWireTransactionConfirm)
+		phase = kItlSaeAuthTransportPhaseConfirm;
+	else
+		return 0;
+
+	/* The fixed fields were already contiguous; only the variable body may chain. */
+	frame_len = mbuf_pkthdr_len(m);
+	if (frame_len < sizeof(*wh) + 6)
+		return 0;
+	body_len = frame_len - sizeof(*wh) - 6;
+	if (body_len > kItlSaeAuthTransportV1MaxBodyLength)
+		return 0;
+	expected_epoch = ieee80211_pae_assoc_epoch_current(ic);
+	if (expected_epoch == 0)
+		return 0;
+	explicit_bzero(&selected, sizeof(selected));
+	if (!ieee80211_pae_selected_bss_copyout_current(ic, expected_epoch,
+	    &selected) ||
+	    !IEEE80211_ADDR_EQ(selected.bssid, wh->i_addr2) ||
+	    !IEEE80211_ADDR_EQ(selected.bssid, wh->i_addr3) ||
+	    !IEEE80211_ADDR_EQ(selected.bssid, ni->ni_bssid))
+		goto out;
+
+	explicit_bzero(&event, sizeof(event));
+	event.version = kItlSaeAuthTransportV1Version;
+	event.size = sizeof(event);
+	if (!ieee80211_sae_peer_rx_snapshot_admission(ic, selected.bssid,
+	    wh->i_addr1, &event.association_epoch, &event.relay_generation) ||
+	    event.association_epoch != expected_epoch)
+		goto out_event;
+	event.phase = phase;
+	event.wire_transaction = seq;
+	event.auth_status = status;
+	event.body_len = (uint32_t)body_len;
+	IEEE80211_ADDR_COPY(event.bssid, selected.bssid);
+	IEEE80211_ADDR_COPY(event.sta, wh->i_addr1);
+	if (body_len != 0 &&
+	    mbuf_copydata(m, sizeof(*wh) + 6, body_len, event.body) != 0)
+		goto out_event;
+	if (!itl_sae_auth_peer_event_is_well_formed(&event) ||
+	    ic->ic_event_handler == NULL)
+		goto out_event;
+
+	/* Borrowed value is copied by the controller's nonblocking peer mailbox. */
+	ic->ic_event_handler(ic, IEEE80211_EVT_SAE_AUTH_PEER, &event);
+	accepted = 1;
+out_event:
+	explicit_bzero(&event, sizeof(event));
+out:
+	explicit_bzero(&selected, sizeof(selected));
+	return accepted;
 }
 
 void
@@ -2471,7 +2556,16 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
           ((const u_int8_t *)wh->i_addr2)[4],
           ((const u_int8_t *)wh->i_addr2)[5]);
     
-    /* only "open" auth mode is supported */
+    /*
+     * A bounded peer Algorithm-3 value is the sole exception to generic
+     * Open-System RX.  Without the exact selected-BSS/controller admission,
+     * this falls through to the historic unsupported-algorithm reject below.
+     */
+    if (algo == IEEE80211_AUTH_ALG_SAE &&
+        ieee80211_recv_sae_peer_auth(ic, m, ni, wh, seq, status))
+        return;
+
+    /* only "open" auth mode is supported outside that narrow relay aperture */
     if (algo != IEEE80211_AUTH_ALG_OPEN) {
         if (ieee80211_record_sta_auth_failure(ic, wh, ni, algo, seq,
             status))

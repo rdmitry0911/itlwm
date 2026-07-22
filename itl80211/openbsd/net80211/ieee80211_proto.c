@@ -68,6 +68,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_sae_admission.h>
 #include <ClientKit/AirportItlwmPostPltiTraceBridge.h>
 
 #if defined(__IO80211_TARGET) && __IO80211_TARGET >= __MAC_26_0
@@ -785,6 +786,33 @@ ieee80211_pae_selected_bss_invalidate(struct ieee80211com *ic)
 	ieee80211_pae_selected_bss_clear_payload(&ic->ic_pae_selected_bss);
 }
 
+/* Caller holds ic_pae_selected_bss_lock whenever that lock exists. */
+static void
+ieee80211_sae_peer_rx_admission_clear_locked(struct ieee80211com *ic)
+{
+	if (ic == NULL)
+		return;
+	explicit_bzero(&ic->ic_sae_peer_rx_admission,
+	    sizeof(ic->ic_sae_peer_rx_admission));
+}
+
+static int
+ieee80211_sae_peer_rx_mac_is_unicast_nonzero(const u_int8_t *mac)
+{
+	size_t index;
+	int nonzero = 0;
+
+	if (mac == NULL || (mac[0] & 0x01) != 0)
+		return 0;
+	for (index = 0; index < IEEE80211_ADDR_LEN; index++) {
+		if (mac[index] != 0) {
+			nonzero = 1;
+			break;
+		}
+	}
+	return nonzero;
+}
+
 /* Advance a nonzero association epoch while its leaf writer lock is held. */
 static u_int64_t
 ieee80211_pae_assoc_epoch_advance_locked(struct ieee80211com *ic)
@@ -894,6 +922,138 @@ ieee80211_pae_selected_bss_copyout_current(struct ieee80211com *ic,
 }
 
 /*
+ * Publish one exact, selected-BSS-bound peer-RX admission.  The controller
+ * owns its generation; net80211 merely preserves that value in a copied
+ * public peer event after this leaf-lock validation.  No callback, allocation
+ * or node retention is permitted here.  This intentionally pre-arms the
+ * exact selected identity without requiring S_AUTH: the selected-BSS join
+ * owner will publish immediately before ieee80211_new_state(..., S_AUTH).
+ * snapshot_admission() is the sole RX gate and still requires S_AUTH, so this
+ * publication cannot accept an Algorithm-3 frame before that transition.
+ */
+int
+ieee80211_sae_peer_rx_admit(struct ieee80211com *ic, u_int64_t expected_epoch,
+    u_int64_t relay_generation, const u_int8_t bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t sta[IEEE80211_ADDR_LEN])
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	struct ieee80211_sae_admission profile;
+	int admitted = 0;
+
+	if (ic == NULL || expected_epoch == 0 || relay_generation == 0 ||
+	    bssid == NULL || sta == NULL ||
+	    !ieee80211_sae_peer_rx_mac_is_unicast_nonzero(bssid) ||
+	    !ieee80211_sae_peer_rx_mac_is_unicast_nonzero(sta) ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	bzero(&profile, sizeof(profile));
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	/* Never leave an old generation admitted after a failed replacement. */
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	if (ic->ic_opmode == IEEE80211_M_STA && ic->ic_bss != NULL &&
+	    __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE) ==
+		expected_epoch &&
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		__ATOMIC_ACQUIRE) == 0 &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+		__ATOMIC_ACQUIRE) == expected_epoch &&
+	    IEEE80211_ADDR_EQ(ic->ic_pae_selected_bss.bssid, bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_myaddr, sta) &&
+	    ieee80211_sae_admission_group19_hnp(&ic->ic_pae_selected_bss,
+		&profile)) {
+		ic->ic_sae_peer_rx_admission.association_epoch = expected_epoch;
+		ic->ic_sae_peer_rx_admission.relay_generation = relay_generation;
+		IEEE80211_ADDR_COPY(ic->ic_sae_peer_rx_admission.bssid, bssid);
+		IEEE80211_ADDR_COPY(ic->ic_sae_peer_rx_admission.sta, sta);
+		ic->ic_sae_peer_rx_admission.active = 1;
+		admitted = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	explicit_bzero(&profile, sizeof(profile));
+	return admitted;
+}
+
+void
+ieee80211_sae_peer_rx_revoke(struct ieee80211com *ic,
+    u_int64_t expected_epoch, u_int64_t relay_generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+
+	if (ic == NULL || expected_epoch == 0 || relay_generation == 0)
+		return;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	if (ic->ic_sae_peer_rx_admission.active != 0 &&
+	    ic->ic_sae_peer_rx_admission.association_epoch == expected_epoch &&
+	    ic->ic_sae_peer_rx_admission.relay_generation == relay_generation)
+		ieee80211_sae_peer_rx_admission_clear_locked(ic);
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+}
+
+/*
+ * RX obtains a value snapshot only after all current-BSS/epoch/admission
+ * identities agree under the same leaf lock.  It drops that lock before it
+ * touches an mbuf or invokes the controller event handler.
+ */
+int
+ieee80211_sae_peer_rx_snapshot_admission(struct ieee80211com *ic,
+    const u_int8_t bssid[IEEE80211_ADDR_LEN],
+    const u_int8_t sta[IEEE80211_ADDR_LEN], u_int64_t *association_epoch,
+    u_int64_t *relay_generation)
+{
+	IOSimpleLock *lock;
+	IOInterruptState irq;
+	u_int64_t epoch = 0;
+	u_int64_t generation = 0;
+	int copied = 0;
+
+	if (association_epoch != NULL)
+		*association_epoch = 0;
+	if (relay_generation != NULL)
+		*relay_generation = 0;
+	if (ic == NULL || bssid == NULL || sta == NULL ||
+	    association_epoch == NULL || relay_generation == NULL ||
+	    ic->ic_opmode != IEEE80211_M_STA)
+		return 0;
+	lock = ic->ic_pae_selected_bss_lock;
+	if (lock == NULL)
+		return 0;
+	irq = IOSimpleLockLockDisableInterrupt(lock);
+	epoch = __atomic_load_n(&ic->ic_pae_assoc_epoch, __ATOMIC_ACQUIRE);
+	if (epoch != 0 && ic->ic_state == IEEE80211_S_AUTH &&
+	    ic->ic_sae_peer_rx_admission.active != 0 &&
+	    ic->ic_sae_peer_rx_admission.association_epoch == epoch &&
+	    ic->ic_sae_peer_rx_admission.relay_generation != 0 &&
+	    __atomic_load_n(&ic->ic_pae_assoc_replace_epoch,
+		__ATOMIC_ACQUIRE) == 0 &&
+	    __atomic_load_n(&ic->ic_pae_selected_bss.epoch,
+		__ATOMIC_ACQUIRE) == epoch &&
+	    ic->ic_bss != NULL &&
+	    IEEE80211_ADDR_EQ(ic->ic_pae_selected_bss.bssid, bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_myaddr, sta) &&
+	    IEEE80211_ADDR_EQ(ic->ic_sae_peer_rx_admission.bssid, bssid) &&
+	    IEEE80211_ADDR_EQ(ic->ic_sae_peer_rx_admission.sta, sta)) {
+		generation = ic->ic_sae_peer_rx_admission.relay_generation;
+		copied = 1;
+	}
+	IOSimpleLockUnlockEnableInterrupt(lock, irq);
+	if (copied) {
+		*association_epoch = epoch;
+		*relay_generation = generation;
+	}
+	return copied;
+}
+
+/*
  * Advance a transaction fence before a new STA association owner replaces
  * node/RSN state.  The future SAE relay and PAE continuation queues may read
  * this from a different execution context, hence an atomic increment.  Zero
@@ -919,6 +1079,7 @@ ieee80211_pae_assoc_epoch_begin(struct ieee80211com *ic)
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	if (lock != NULL) {
 		txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 		cancel = ic->ic_pae_mfp_txn_cancel;
@@ -955,6 +1116,7 @@ ieee80211_pae_assoc_epoch_begin_replacement(struct ieee80211com *ic)
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, epoch,
 	    __ATOMIC_RELEASE);
 	ieee80211_pae_selected_bss_invalidate(ic);
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	txn_id = ieee80211_pae_mfp_txn_cancel_locked(ic, &prepared);
 	cancel = ic->ic_pae_mfp_txn_cancel;
 	IOSimpleLockUnlockEnableInterrupt(lock, irq);
@@ -982,6 +1144,7 @@ ieee80211_pae_selected_bss_lock_destroy(struct ieee80211com *ic)
 		return;
 	irq = IOSimpleLockLockDisableInterrupt(lock);
 	ieee80211_pae_selected_bss_invalidate(ic);
+	ieee80211_sae_peer_rx_admission_clear_locked(ic);
 	__atomic_store_n(&ic->ic_pae_assoc_replace_epoch, 0,
 	    __ATOMIC_RELEASE);
 	ic->ic_pae_selected_bss_lock = NULL;

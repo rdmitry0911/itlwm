@@ -81,6 +81,32 @@ struct ItlSaeAuthTransportEventV1 {
     uint8_t reserved[6];
 };
 
+/*
+ * A peer Authentication frame is copied by net80211 only after the exact
+ * controller-published RX admission record matches its current STA BSS.
+ * `relay_generation` is copied from that admission record, never inferred
+ * from an on-air field, so a delayed frame from a cancelled relay cannot be
+ * consumed by a new relay for the same BSS and association epoch.
+ *
+ * This remains a credential-free value boundary: it contains only public SAE
+ * Authentication fixed fields and the bounded public body.  It owns neither
+ * an mbuf nor a node reference and is valid after the RX worker returns.
+ */
+struct ItlSaeAuthPeerEventV1 {
+    uint32_t version;
+    uint32_t size;
+    uint64_t association_epoch;
+    uint64_t relay_generation;
+    uint16_t phase;
+    uint16_t wire_transaction;
+    uint16_t auth_status;
+    uint16_t reserved;
+    uint32_t body_len;
+    uint8_t bssid[kItlSaeAuthTransportV1MacLength];
+    uint8_t sta[kItlSaeAuthTransportV1MacLength];
+    uint8_t body[kItlSaeAuthTransportV1MaxBodyLength];
+};
+
 #if defined(__cplusplus)
 #define ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(condition, message) \
     static_assert((condition), message)
@@ -93,6 +119,8 @@ ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(sizeof(struct ItlSaeAuthTxRequestV1) == 824
     "SAE transport request ABI size");
 ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(sizeof(struct ItlSaeAuthTransportEventV1) == 64,
     "SAE transport event ABI size");
+ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(sizeof(struct ItlSaeAuthPeerEventV1) == 816,
+    "SAE peer event ABI size");
 ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTxRequestV1,
     body) == 56, "SAE transport request body offset");
 ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTransportEventV1,
@@ -101,6 +129,8 @@ ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTxRequestV1,
     wire_transaction) == 52, "SAE transport request wire transaction offset");
 ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTransportEventV1,
     wire_transaction) == 56, "SAE transport event wire transaction offset");
+ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthPeerEventV1,
+    body) == 48, "SAE peer event body offset");
 
 static inline uint16_t
 itl_sae_auth_transport_sta_wire_transaction_for_phase(uint16_t phase)
@@ -211,6 +241,52 @@ itl_sae_auth_transport_event_matches_request(
         event->auth_status == request->auth_status &&
         memcmp(event->bssid, request->bssid, sizeof(event->bssid)) == 0 &&
         memcmp(event->sta, request->sta, sizeof(event->sta)) == 0;
+}
+
+/*
+ * Only the two peer sequences valid when this device is the STA are legal.
+ * Status/body semantics deliberately remain with the controller FSM: a real
+ * peer may report a non-success SAE status with an empty body, and dropping
+ * that bounded failure at the parser would turn it into a misleading timeout.
+ */
+static inline bool
+itl_sae_auth_peer_event_is_well_formed(
+    const struct ItlSaeAuthPeerEventV1 *event)
+{
+    if (event == NULL ||
+        event->version != kItlSaeAuthTransportV1Version ||
+        event->size != sizeof(*event) ||
+        event->association_epoch == 0 ||
+        event->relay_generation == 0 ||
+        (event->phase != kItlSaeAuthTransportPhaseCommit &&
+         event->phase != kItlSaeAuthTransportPhaseConfirm) ||
+        event->wire_transaction !=
+            itl_sae_auth_transport_peer_wire_transaction_for_phase(
+                event->phase) ||
+        event->body_len > kItlSaeAuthTransportV1MaxBodyLength ||
+        !itl_sae_auth_transport_mac_is_unicast_nonzero(event->bssid) ||
+        !itl_sae_auth_transport_mac_is_unicast_nonzero(event->sta) ||
+        event->reserved != 0)
+        return false;
+    return true;
+}
+
+/* Exact public retransmissions may be coalesced without changing FSM state. */
+static inline bool
+itl_sae_auth_peer_event_equals(const struct ItlSaeAuthPeerEventV1 *left,
+                               const struct ItlSaeAuthPeerEventV1 *right)
+{
+    return itl_sae_auth_peer_event_is_well_formed(left) &&
+        itl_sae_auth_peer_event_is_well_formed(right) &&
+        left->association_epoch == right->association_epoch &&
+        left->relay_generation == right->relay_generation &&
+        left->phase == right->phase &&
+        left->wire_transaction == right->wire_transaction &&
+        left->auth_status == right->auth_status &&
+        left->body_len == right->body_len &&
+        memcmp(left->bssid, right->bssid, sizeof(left->bssid)) == 0 &&
+        memcmp(left->sta, right->sta, sizeof(left->sta)) == 0 &&
+        memcmp(left->body, right->body, left->body_len) == 0;
 }
 
 #undef ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT

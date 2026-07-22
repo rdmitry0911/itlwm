@@ -151,3 +151,37 @@ recovery/data-plane gate after activation, but it is not PMF/BIP proof.
 Any missing saved profile, disposable-overlay mechanism, PMF trace integrity,
 or rollback witness is an explicit prerequisite failure—not a reason to infer
 PMF/BIP success from a generic association.
+
+## Continuation checkpoint — bounded real SAE peer RX (2026-07-22)
+
+The newest implementation layer is a deliberately dormant but real
+IWX/net80211/controller Algorithm-3 peer ingress spine.  It has passed the
+pinned isolated Tahoe build gate with source identity `dirtyc3403b973130` in
+`/tmp/aiam-tahoe-sae-layer-gate.yAVfzG`: kext, trace producer, Agent, and
+RegDiag built; all 959 undefined symbols resolve against BootKC.  The gate
+did not install, load, publish, release, reboot, join, or touch radio/AP
+state.
+
+What is now present:
+
+- `ieee80211_recv_auth()` can copy only an exact current-selected-BSS,
+  `S_AUTH`, group-19-HnP-admitted peer SAE Commit/Confirm into a bounded,
+  credential-free event;
+- net80211 epoch/replacement invalidation, exact controller generation, and a
+  separate conflict-aware AirportItlwm peer mailbox prevent delayed or
+  AP-flooded RX from reaching a later relay generation or starving IWX TX
+  terminal completion;
+- physical IWX TX terminal success remains the required fence before a peer
+  value advances the relay FSM.
+
+This is not WPA3 support.  It has no selected-BSS join owner, no enabled SAE
+association ingress, no Agent cryptography, no PMK/AKM/PMF activation, and no
+runtime association evidence.  Do not weaken the existing WPA3 quarantine or
+represent the build as an on-air result.
+
+Next autonomous layer, because it unblocks saved WPA3 profiles, is the real
+selected-BSS join handoff.  It must pre-arm exact RX admission before the
+transition to `S_AUTH`, wake the Agent only after that state is live, and add
+a nonblocking epoch/state-cancellation callback that clears/wakes the
+controller relay even if no later peer/TX event arrives.  Those three fences
+are prerequisites to activating this bridge.
