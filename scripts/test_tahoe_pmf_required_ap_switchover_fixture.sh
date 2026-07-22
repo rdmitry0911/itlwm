@@ -716,6 +716,55 @@ if /bin/kill -0 "$ROLLBACK_FINAL_NETWORK_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'rollback final network recovery left the watchdog live'
 fi
 
+# The staged pair must remain current through the final network fence as well.
+# Fake ip changes only the generated required config on that second rollback
+# route read, after the existing final configuration predicate has passed.
+ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rollback-postnetwork-config-activate.out" \
+    2>"$TMP_ROOT/rollback-postnetwork-config-activate.err" ||
+    fail 'rollback-postnetwork-config fixture could not activate required PMF'
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+ROLLBACK_POSTNETWORK_CONFIG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL="$ROLLBACK_POSTNETWORK_CONFIG_ROUTE_CALL" "$HELPER" --rollback --state-dir "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR" >"$TMP_ROOT/rollback-postnetwork-config-drift.out" 2>"$TMP_ROOT/rollback-postnetwork-config-drift.err"; then
+    fail 'rollback accepted a configuration changed after final network verification'
+fi
+grep -Fq 'staged PMF configuration pair changed before rollback receipt' \
+    "$TMP_ROOT/rollback-postnetwork-config-drift.err" ||
+    fail 'rollback post-network configuration drift did not retain its categorical diagnostic'
+[ ! -e "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR/rollback.status" ] ||
+    fail 'rollback post-network configuration drift wrote a verification receipt'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rollback post-network configuration drift did not restore optional hostapd'
+ROLLBACK_POSTNETWORK_CONFIG_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$ROLLBACK_POSTNETWORK_CONFIG_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'rollback post-network configuration drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'rollback post-network configuration drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback post-network configuration drift cleared the active marker'
+[ -r "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR/watchdog.pid" ] ||
+    fail 'rollback post-network configuration drift did not retain its watchdog receipt'
+ROLLBACK_POSTNETWORK_CONFIG_WATCHDOG_PID="$(tr -d '[:space:]' <"$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$ROLLBACK_POSTNETWORK_CONFIG_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'rollback post-network configuration drift did not retain a live watchdog'
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+"$HELPER" --rollback --state-dir "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR" \
+    >"$TMP_ROOT/rollback-postnetwork-config-recovery.out" \
+    2>"$TMP_ROOT/rollback-postnetwork-config-recovery.err" ||
+    fail 'rollback post-network configuration restoration did not permit cleanup'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rollback-postnetwork-config-recovery.out" ||
+    fail 'rollback post-network configuration recovery did not report optional restoration'
+grep -Fxq 'rollback_verified=true' "$ROLLBACK_POSTNETWORK_CONFIG_STATE_DIR/rollback.status" ||
+    fail 'rollback post-network configuration recovery did not commit its witness'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback post-network configuration recovery left the active marker'
+if /bin/kill -0 "$ROLLBACK_POSTNETWORK_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'rollback post-network configuration recovery left the watchdog live'
+fi
+
 # `rollback_verified=true` is a transaction-completion receipt, not a record
 # that optional hostapd was merely restored.  Replace only this fixture's
 # private watchdog receipt with an unrelated generated process: cancellation

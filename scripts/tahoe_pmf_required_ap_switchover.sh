@@ -803,6 +803,8 @@ do_rollback() {
         die "host network invariants are unreadable before rollback verification"
     [ "$after_signature" = "$before_signature" ] ||
         die "host network invariants changed before rollback verification"
+    config_pair_matches_state ||
+        die "staged PMF configuration pair changed before rollback receipt"
     if [ "$FROM_WATCHDOG" -eq 0 ]; then
         cancel_watchdog || die "rollback could not safely cancel its watchdog"
     fi

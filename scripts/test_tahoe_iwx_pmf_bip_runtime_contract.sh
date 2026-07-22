@@ -189,6 +189,7 @@ for needle in \
     'staged PMF configuration pair changed before bounded group-rekey' \
     'staged PMF configuration pair changed before rollback verification' \
     'host network invariants changed before rollback verification' \
+    'staged PMF configuration pair changed before rollback receipt' \
     'staged PMF configuration pair changed before optional-PMF restart' \
     'optional_hostapd_exact_and_pinned' \
     'optional-PMF hostapd process or AP shape is not exact before rollback verification' \
@@ -409,6 +410,8 @@ if "FAKE_MUTATE_NETWORK_ON_IW_CALL" not in Path(sys.argv[2]).with_name("test_tah
     fail("AP fixture lacks the final rollback network mutation discriminator")
 if "ROLLBACK_FINAL_NETWORK_IW_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the final rollback network drift discriminator")
+if "ROLLBACK_POSTNETWORK_CONFIG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-network rollback configuration discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
 if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -434,6 +437,8 @@ ordered(rollback, "AP rollback sequence",
         'staged PMF configuration pair changed before rollback verification',
         "host_network_signature",
         '[ "$after_signature" = "$before_signature" ]',
+        "config_pair_matches_state",
+        'staged PMF configuration pair changed before rollback receipt',
         "cancel_watchdog",
         "clear_marker",
         "rollback_verified=true")

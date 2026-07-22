@@ -52,11 +52,11 @@ retains marker/watchdog ownership, and permits a later normal rollback only
 after the original staged pair is restored; bounded rekey is likewise blocked
 while that pair differs.
 
-Rollback also repeats that state-bound pair check after optional-PMF restoration
-and its final process checks, then re-reads the original hash-only host-network
-invariant before it releases marker/watchdog ownership or writes
-`rollback_verified=true`.  Thus a post-restart file or network change cannot
-be represented as verified recovery.
+Rollback repeats that state-bound pair check after optional-PMF restoration and
+its final process checks, re-reads the original hash-only host-network
+invariant, then repeats the pair check at the ownership/receipt edge before it
+releases marker/watchdog ownership or writes `rollback_verified=true`.  Thus a
+post-restart file or network change cannot be represented as verified recovery.
 
 After a required-PMF process launch succeeds, the helper re-attests that exact
 PID and the pinned AP channel/width, re-reads the original hash-only host

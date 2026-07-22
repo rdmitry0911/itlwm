@@ -1548,6 +1548,119 @@ baseline no longer holding.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+
+### Observation
+
+The final rollback network fence added at the receipt edge follows the final
+staged-configuration comparison.  The network signature necessarily performs
+another route/address/forwarding read.  A staged configuration file can change
+after that earlier pair comparison but while this new final network read is in
+progress.  The old helper then sees an unchanged network signature and releases
+watchdog/marker ownership with `rollback_verified=true`, even though the
+state-bound optional/required configuration pair no longer matches the content
+it certified earlier in the same rollback.
+
+- scope: repository-owned rollback helper and generated fixture only; no kext,
+  firmware, Apple80211, candidate, guest, physical AP, live profile, or
+  credential behavior claim.
+- expected system behavior: the staged pair must match the state-bound hashes
+  at the actual rollback receipt edge, after every later read which can overlap
+  a configuration change.  A changed pair is inconclusive: it must retain the
+  marker/watchdog and withhold the completion receipt until an explicit stable
+  rollback can finish.
+- actual behavior: `config_pair_matches_state` occurs before the final
+  `host_network_signature` call and no configuration predicate separates that
+  call from `cancel_watchdog`, `clear_marker`, and `rollback_verified=true`.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rollback()` between the
+  final host-network comparison and ownership/receipt release.
+- source-local proof mechanism: the generated fake `ip` counts only its route
+  reads and can append a harmless generated directive to the generated
+  required-PMF config at a selected call.  One rollback route read occurs
+  before the existing final configuration predicate; the new final network
+  fence makes a second route read after it.  Mutating only at that second read
+  leaves all fake AP/network output valid, but the unmodified helper accepts a
+  verified receipt.  No real AP, route, profile, identity, credential, or
+  network action is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a generated rollback fixture that mutates only its private required
+     config on the second rollback route read; before a fix it must fail because
+     a changed pair was accepted at receipt publication;
+  2. repeat `config_pair_matches_state` after the final host-network signature
+     comparison and immediately before watchdog/marker/receipt release;
+  3. retain recovery ownership and withhold `rollback.status` on this late
+     mismatch, then prove an explicit cleanup after restoring the generated
+     config;
+  4. add static ordering and runtime-protocol coverage for the post-network
+     pair attestation.
+- safety and side effects: the proposed helper change is a read-only local
+  staged-file comparison.  The mutation exists only in the generated fixture;
+  no live config write, network mutation, retry, AP restart, kext action,
+  guest action, or live AP operation is introduced.
+- forbidden alternatives considered and rejected:
+  - treating the pre-network pair comparison as permanently current permits a
+    false verified rollback after a later file mutation;
+  - clearing marker/watchdog on mismatch discards the bounded recovery path;
+  - rewriting or restoring the staged file from the helper exceeds its
+    validation-only scope and could overwrite an operator change.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that a post-network config
+    change was accepted before receipt publication;
+  - post-fix, it must emit the categorical late-pair diagnostic, write no
+    receipt, retain generated marker/watchdog/optional state, and succeed only
+    after generated config restoration and explicit rollback;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+
+- implementation:
+  - `do_rollback()` now repeats `config_pair_matches_state` after its final
+    host-network baseline comparison and before it cancels the watchdog, clears
+    the marker, or writes the rollback completion receipt;
+  - a late file mismatch emits `staged PMF configuration pair changed before
+    rollback receipt`, retains recovery ownership, and writes no receipt.  The
+    helper gained no config/network mutation, retry, AP restart, kext action,
+    guest action, or live AP operation;
+  - the runtime protocol and static contract bind the second pair comparison to
+    the post-network receipt edge.
+- deterministic fixture evidence:
+  - before implementation, its second rollback route read appended only to the
+    generated required config and stopped at `rollback accepted a configuration
+    changed after final network verification`, proving that the old source
+    accepted the stale pair;
+  - after implementation, the same generated-only mutation produces the
+    categorical late-pair diagnostic, preserves the generated optional process,
+    marker, and watchdog, and leaves `rollback.status` absent;
+  - after restoring only the generated required config, an explicit rollback
+    emits `PMF_AP_ROLLBACK=OPTIONAL_RESTORED`, writes
+    `rollback_verified=true`, clears the marker, and cancels that watchdog.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirtydad6879b1d59`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side rollback staged-file
+  freshness fence.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation
