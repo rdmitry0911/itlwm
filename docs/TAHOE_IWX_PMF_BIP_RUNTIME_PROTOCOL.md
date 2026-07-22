@@ -94,9 +94,10 @@ builds need not expose it. The helper compares its hash-only host-network
 baseline immediately before and after that command; a changed signature blocks
 the stimulus or makes it inconclusive before any success can be reported.
 It also re-attests the exact marker-bound required hostapd process immediately
-before the raw command and immediately after its `OK` acknowledgement.  A
-dead or replaced process at either edge is inconclusive and never receives a
-rekey success witness.
+before the raw command and immediately after its `OK` acknowledgement, and
+re-attests the independent marker-bound rollback watchdog before that raw
+command.  A dead, replaced, or ownerless process state at either edge is
+inconclusive and never receives a rekey success witness.
 After that final pre-command attestation, the helper writes a restricted
 one-shot request receipt immediately before the raw command.  The receipt
 consumes the sole permitted stimulus even when acknowledgement or a later

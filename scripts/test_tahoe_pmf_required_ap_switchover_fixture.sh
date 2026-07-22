@@ -316,6 +316,50 @@ STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
 "$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 >"$TMP_ROOT/rekey-pre-command-activate.out" 2>"$TMP_ROOT/rekey-pre-command-activate.err" ||
     fail 'pre-command rekey fixture could not activate required PMF'
 
+# A required-state receipt alone does not prove its independent recovery owner
+# survived until the raw rekey edge.  Fake ip kills only the generated
+# watchdog on the first rekey route probe while preserving the fake baseline.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+REKEY_WATCHDOG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 1))
+if FAKE_WATCHDOG_PID_FILE="$STATE_DIR/watchdog.pid" FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL="$REKEY_WATCHDOG_ROUTE_CALL" "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-watchdog-death.out" 2>"$TMP_ROOT/rekey-watchdog-death.err"; then
+    fail 'group rekey accepted a watchdog that died before the raw command edge'
+fi
+grep -Fq 'rollback watchdog is not exact before bounded group-rekey' "$TMP_ROOT/rekey-watchdog-death.err" ||
+    fail 'rekey watchdog death did not retain its categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'rekey watchdog death reached the hostapd CLI'
+[ ! -e "$STATE_DIR/rekey.requested" ] ||
+    fail 'rekey watchdog death consumed the one-shot request receipt'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'rekey watchdog death wrote a success witness'
+[ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'rekey watchdog death disturbed required hostapd before rollback'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rekey watchdog death cleared the required-state marker'
+[ ! -e "$STATE_DIR/watchdog.pid" ] ||
+    fail 'rekey watchdog death retained a stale watchdog receipt'
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-watchdog-death-rollback.out" \
+    2>"$TMP_ROOT/rekey-watchdog-death-rollback.err" ||
+    fail 'rekey watchdog death did not permit explicit optional rollback'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rekey-watchdog-death-rollback.out" ||
+    fail 'rekey watchdog death rollback did not report optional restoration'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rekey watchdog death rollback did not restore optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rekey watchdog death rollback left the active marker'
+
+# Re-arm a fresh generated transaction after the owner-loss rejection so the
+# following required-process command-edge case has its own one-shot receipt.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-pre-command-after-watchdog-activate.out" \
+    2>"$TMP_ROOT/rekey-pre-command-after-watchdog-activate.err" ||
+    fail 'post-watchdog rekey fixture could not activate required PMF'
+
 # The required process may disappear after its first exact-PID observation
 # but before the raw control command.  The fake AP-shape response remains
 # pinned, so a process fence at the actual command edge is the only way to

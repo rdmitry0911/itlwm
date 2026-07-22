@@ -729,6 +729,10 @@ do_rekey() {
     # or replaced daemon cannot receive a categorical rekey witness.
     configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         die "required-PMF hostapd process is not exact before bounded group-rekey"
+    # The raw control side effect also requires the independent restoration
+    # owner to remain current at this command edge.
+    watchdog_owner_is_current ||
+        die "rollback watchdog is not exact before bounded group-rekey"
     # Record the sole allowed raw side effect before it is sent.  A later
     # acknowledgement or postcondition failure is inconclusive, not authority
     # to issue a second group-rekey request for the same transaction.

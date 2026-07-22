@@ -880,6 +880,119 @@ hostapd ownership, so the current source can still publish
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-REKEY-WATCHDOG-COMMAND-ATTESTATION-20260721`
+
+### Observation
+
+The bounded rekey path verifies marker/state, staged configuration, required
+hostapd, AP shape, and host-network baseline, and it repeats required-process
+proof immediately before it records the sole raw `REKEY_GTK` request.  It does
+not prove that the independent marker-bound watchdog remains alive at that
+command edge.  A watchdog that dies after activation can therefore allow the
+only permitted AP control side effect and a rekey success witness while there
+is no autonomous bounded rollback owner.
+
+- scope: repository-owned PMF-required rekey helper and generated local
+  fixture only; no kext, firmware, Apple80211, candidate, guest, or physical
+  AP behavior claim.
+- expected system behavior: raw `REKEY_GTK` must be admitted only under the
+  exact required process/AP, unmodified configuration/network state, and a
+  current independent marker/state-bound watchdog.  A lost owner before the
+  raw command must be categorical, issue no raw request, consume no one-shot
+  request receipt, and leave the existing rollback path available.
+- actual behavior: `do_rekey()` goes from its final
+  `configured_hostapd_active("$REQUIRED_CONFIG", ...)` directly to
+  `record_rekey_request()` and raw control without `watchdog_owner_is_current`.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey()` between the final
+  required-process check and `record_rekey_request()`.
+- source-local proof mechanism: fake `ip` can kill/remove only the temporary
+  watchdog receipt at the next route probe.  The first rekey signature probe
+  occurs after required process/AP admission and before the final command-edge
+  process check.  With unchanged fake network output, the unmodified helper
+  still records/sends raw `REKEY_GTK` and publishes success, without any live
+  AP, guest, route, profile, or credential operation.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-WATCHDOG-COMMAND-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh generated required transaction whose watchdog is killed only
+     at its first rekey route probe; before a fix the fixture must fail because
+     a raw CLI request was accepted;
+  2. invoke `watchdog_owner_is_current()` after final required-process
+     reattestation and immediately before `record_rekey_request()`;
+  3. reject a missing/dead/replaced owner before receipt write and raw control,
+     preserving the existing explicit rollback cleanup path;
+  4. require this ordering in the static contract and describe command-edge
+     watchdog ownership in the runtime protocol.
+- safety and side effects: the change is an existing read-only PID/argv/state
+  predicate and a fixture-only temporary PID kill.  It adds no retry, AP
+  restart, configuration/network mutation, kext operation, guest action, or
+  live AP action.
+- forbidden alternatives considered and rejected:
+  - relying on activation-time watchdog proof ignores subsequent lease/process
+    loss before a later raw AP control side effect;
+  - recording the one-shot request before owner proof would consume the only
+    permissible stimulus even though no command could safely be authorized;
+  - adding a new watchdog at rekey time would alter transaction ownership and
+    create a second recovery policy.
+- deterministic verification plan:
+  - pre-fix, the local fixture must stop at an assertion that rekey accepted a
+    watchdog killed before its raw command edge;
+  - post-fix, it must reach no fake CLI request and create neither request nor
+    success receipt, retain the required state for one normal explicit rollback,
+    and report the categorical owner diagnostic;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-REKEY-WATCHDOG-COMMAND-ATTESTATION-20260721`
+
+- implementation:
+  - `do_rekey()` now invokes the pre-existing exact
+    `watchdog_owner_is_current()` predicate after its final required-process
+    command-edge reattestation and immediately before it can write
+    `rekey.requested` or send raw `REKEY_GTK`;
+  - a failed owner predicate is categorical and leaves the one-shot request
+    receipt untouched, so it authorizes neither a raw command nor a retry;
+    existing explicit rollback remains the only cleanup path for the generated
+    required state;
+  - the local fixture kills/removes only its temporary watchdog on the first
+    rekey route probe.  Static ordering now requires final required-process ->
+    exact watchdog -> request receipt -> raw command, and the protocol records
+    that command-edge ownership predicate.
+- deterministic fixture evidence:
+  - before implementation, the isolated test stopped at
+    `group rekey accepted a watchdog that died before the raw command edge`,
+    proving that the old helper sent its fake raw command and published a
+    success path without an independent owner;
+  - after implementation, the same fake-only event reports
+    `rollback watchdog is not exact before bounded group-rekey`, reaches no
+    fake CLI request, writes neither `rekey.requested` nor `rekey.status`, and
+    retains the generated required state/marker for the next explicit rollback;
+  - that explicit rollback restores generated optional PMF and clears the
+    marker even though the fixture-only watchdog receipt was removed.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty54306ea56392`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side raw-rekey admission
+  fence.  It is not a live hostapd result, PMF-required association, IGTK
+  observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation
