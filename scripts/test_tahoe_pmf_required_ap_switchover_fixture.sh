@@ -1002,6 +1002,55 @@ if /bin/kill -0 "$OPTIONAL_DEATH_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'optional-child recovery rollback left the watchdog live'
 fi
 
+# A post-transition recovery cannot report verified optional rollback if the
+# state-bound staged pair changes during its final host-network read.  Fake ip
+# appends only to generated required config at that third activation route read.
+POSTTRANSITION_CONFIG_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+POSTTRANSITION_CONFIG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 3))
+if FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL="$POSTTRANSITION_CONFIG_ROUTE_CALL" \
+    FAKE_FAIL_REQUIRED=1 "$HELPER" --activate \
+    --state-dir "$POSTTRANSITION_CONFIG_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/posttransition-config-activate.out" \
+    2>"$TMP_ROOT/posttransition-config-activate.err"; then
+    fail 'activation accepted a post-transition configuration drift'
+fi
+grep -Fq 'required-PMF hostapd activation failed; rollback watchdog remains armed' \
+    "$TMP_ROOT/posttransition-config-activate.err" ||
+    fail 'post-transition recovery accepted configuration drift after final network verification'
+! grep -Fq 'optional rollback verified' "$TMP_ROOT/posttransition-config-activate.err" ||
+    fail 'post-transition configuration drift claimed verified optional rollback'
+[ ! -e "$POSTTRANSITION_CONFIG_STATE_DIR/rollback.status" ] ||
+    fail 'post-transition configuration drift wrote a rollback receipt'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-transition configuration drift did not restore optional hostapd'
+POSTTRANSITION_CONFIG_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$POSTTRANSITION_CONFIG_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'post-transition configuration drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'post-transition configuration drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-transition configuration drift cleared the rollback marker'
+[ -r "$POSTTRANSITION_CONFIG_STATE_DIR/watchdog.pid" ] ||
+    fail 'post-transition configuration drift did not retain its watchdog receipt'
+POSTTRANSITION_CONFIG_WATCHDOG_PID="$(tr -d '[:space:]' <"$POSTTRANSITION_CONFIG_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$POSTTRANSITION_CONFIG_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'post-transition configuration drift did not retain a live watchdog process'
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+"$HELPER" --rollback --state-dir "$POSTTRANSITION_CONFIG_STATE_DIR" \
+    >"$TMP_ROOT/posttransition-config-rollback.out" \
+    2>"$TMP_ROOT/posttransition-config-rollback.err" ||
+    fail 'stable explicit rollback did not recover post-transition configuration drift'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/posttransition-config-rollback.out" ||
+    fail 'post-transition configuration drift rollback did not report optional restoration'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-transition configuration drift rollback left the active marker'
+if /bin/kill -0 "$POSTTRANSITION_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'post-transition configuration drift rollback left the watchdog live'
+fi
+
 # If the host network drifts during a required start that then fails, optional
 # PMF may be restored but recovery is not verified.  The marker-bound watchdog
 # must remain armed until a stable explicit rollback can prove the baseline.

@@ -421,6 +421,8 @@ if "ROLLBACK_POSTNETWORK_OPTIONAL_ROUTE_CALL" not in Path(sys.argv[2]).with_name
     fail("AP fixture lacks the final rollback optional-loss discriminator")
 if "ROLLBACK_RECEIPT_TARGET_STATE_DIR" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the rollback completion-receipt target discriminator")
+if "POSTTRANSITION_CONFIG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-transition rollback configuration discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
 if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -462,6 +464,7 @@ ordered(post_transition_rollback, "post-transition rollback network verification
         "restore_optional_after_activation_failure",
         'after_signature="$(host_network_signature)"',
         '[ "$after_signature" = "$before_signature" ]',
+        "config_pair_matches_state",
         "optional_hostapd_exact_and_pinned",
         "cancel_watchdog",
         "clear_marker")
