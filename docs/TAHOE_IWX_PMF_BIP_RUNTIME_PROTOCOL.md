@@ -77,16 +77,18 @@ compares the post-restore hash-only host-network signature with the state
 baseline and repeats the state-bound configuration-pair comparison before it
 cancels the watchdog or clears the marker.  After its final optional PID/AP
 attestation it re-reads that network baseline once more and repeats the pair
-comparison plus the exact optional PID/AP attestation at the ownership edge. A
-mismatch keeps that rollback owner armed for a later verified rollback; pre-stop
+comparison plus the exact optional PID/AP attestation at the ownership edge,
+then re-reads the network baseline immediately before release.  A mismatch
+keeps that rollback owner armed for a later verified rollback; pre-stop
 rejections, where no AP process changed, retain their lighter cleanup path.
 
 Neither the pinned AP shape nor that host-network signature proves hostapd
 ownership.  Immediately before any rollback witness or marker/watchdog release,
 the helper re-attests the exact optional-PMF PID/configuration and the pinned
 AP shape; post-transition recovery repeats that attestation after its network
-comparison.  A generated or real process loss at either edge withholds the
-witness and retains recovery ownership for a later explicit rollback.
+comparison and repeats the hash-only network baseline after that attestation.
+A generated or real process loss at either edge withholds the witness and
+retains recovery ownership for a later explicit rollback.
 
 `rollback_verified=true` is a transaction-completion receipt, not an
 intermediate AP-restoration observation.  The helper writes it only after the

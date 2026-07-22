@@ -1196,6 +1196,57 @@ if /bin/kill -0 "$POSTTRANSITION_POSTNETWORK_OPTIONAL_WATCHDOG_PID" >/dev/null 2
     fail 'post-transition post-network optional loss rollback left the watchdog live'
 fi
 
+# A final optional PID/AP attestation is itself later than the final network
+# read.  Fake iw preserves its generated pinned shape but changes only private
+# fake-network state at that fifth activation shape probe after required-start
+# failure.  Recovery must not release ownership from the stale network sample.
+POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+IW_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_IW_CALL_COUNT")"
+case "$IW_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake iw call counter is invalid';; esac
+POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_IW_CALL=$((IW_CALLS_BEFORE + 5))
+if FAKE_MUTATE_NETWORK_ON_IW_CALL="$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_IW_CALL" \
+    FAKE_FAIL_REQUIRED=1 "$HELPER" --activate \
+    --state-dir "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/posttransition-postfinaloptional-network-activate.out" \
+    2>"$TMP_ROOT/posttransition-postfinaloptional-network-activate.err"; then
+    fail 'activation accepted a post-transition post-final-optional network drift'
+fi
+grep -Fq 'required-PMF hostapd activation failed; rollback watchdog remains armed' \
+    "$TMP_ROOT/posttransition-postfinaloptional-network-activate.err" ||
+    fail 'post-transition recovery accepted network drift after final optional attestation'
+! grep -Fq 'optional rollback verified' \
+    "$TMP_ROOT/posttransition-postfinaloptional-network-activate.err" ||
+    fail 'post-transition post-final-optional network drift claimed verified optional rollback'
+[ ! -e "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR/rollback.status" ] ||
+    fail 'post-transition post-final-optional network drift wrote a rollback receipt'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-transition post-final-optional network drift did not restore optional hostapd'
+POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'post-transition post-final-optional network drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'post-transition post-final-optional network drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-transition post-final-optional network drift cleared the rollback marker'
+[ -r "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR/watchdog.pid" ] ||
+    fail 'post-transition post-final-optional network drift did not retain its watchdog receipt'
+POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_WATCHDOG_PID="$(tr -d '[:space:]' <"$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'post-transition post-final-optional network drift did not retain a live watchdog process'
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
+"$HELPER" --rollback --state-dir "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_STATE_DIR" \
+    >"$TMP_ROOT/posttransition-postfinaloptional-network-rollback.out" \
+    2>"$TMP_ROOT/posttransition-postfinaloptional-network-rollback.err" ||
+    fail 'stable explicit rollback did not recover post-transition post-final-optional network drift'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/posttransition-postfinaloptional-network-rollback.out" ||
+    fail 'post-transition post-final-optional network drift rollback did not report optional restoration'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'post-transition post-final-optional network drift rollback left the active marker'
+if /bin/kill -0 "$POSTTRANSITION_POSTFINALOPTIONAL_NETWORK_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'post-transition post-final-optional network drift rollback left the watchdog live'
+fi
+
 # If the host network drifts during a required start that then fails, optional
 # PMF may be restored but recovery is not verified.  The marker-bound watchdog
 # must remain armed until a stable explicit rollback can prove the baseline.

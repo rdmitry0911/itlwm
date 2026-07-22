@@ -577,6 +577,8 @@ finish_post_transition_rollback() {
     [ "$after_signature" = "$before_signature" ] || return 1
     config_pair_matches_state || return 1
     optional_hostapd_exact_and_pinned || return 1
+    after_signature="$(host_network_signature)" || return 1
+    [ "$after_signature" = "$before_signature" ] || return 1
     cancel_watchdog || return 1
     clear_marker
 }
