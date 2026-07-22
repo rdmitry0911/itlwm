@@ -181,6 +181,7 @@ for needle in \
     'required-PMF host-network invariants changed before state promotion' \
     'required-PMF configuration changed before state promotion' \
     'rollback watchdog is not exact before required-PMF state promotion' \
+    'required-PMF hostapd is not exact before final state promotion' \
     'staged PMF configuration pair changed before bounded group-rekey' \
     'staged PMF configuration pair changed before optional-PMF restart' \
     'optional_hostapd_exact_and_pinned' \
@@ -319,11 +320,13 @@ ordered(activate, "AP activation rollback ownership",
         'current_config_signature="$(config_pair_signature)"',
         '[ "$current_config_signature" != "$config_signature" ]',
         "watchdog_owner_is_current",
+        'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
+        "runtime_ap_is_pinned",
         "mark_required_active")
 if "finish_armed_rollback" not in activate:
     fail("activation failure does not retain a rollback owner")
 post_transition_activation = activate[activate.find('if ! stop_configured_hostapd'):]
-if post_transition_activation.count("finish_post_transition_rollback") != 7:
+if post_transition_activation.count("finish_post_transition_rollback") != 8:
     fail("post-transition activation failures do not all verify network recovery")
 post_watchdog_activation = activate[activate.find("if ! start_watchdog;"):]
 ordered(post_watchdog_activation, "AP pre-stop host-network fence",
@@ -382,6 +385,10 @@ if "POSTSTART_NETWORK_STATE_DIR" not in Path(sys.argv[2]).with_name("test_tahoe_
     fail("AP fixture lacks the successful required-start network drift discriminator")
 if "POSTPROMOTION_WATCHDOG_STATE_DIR" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-start watchdog death discriminator")
+if "FINAL_REQUIRED_PROMOTION_STATE_DIR" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the final required-process death discriminator")
+if "FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-start required-process route discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
 if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):

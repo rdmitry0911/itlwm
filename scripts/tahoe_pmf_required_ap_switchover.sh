@@ -687,6 +687,16 @@ do_activate() {
         fi
         die "rollback watchdog is not exact before required-PMF state promotion; rollback watchdog remains armed"
     fi
+    # The earlier post-start observation predates network/configuration and
+    # rollback-owner work.  Re-attest the required process/AP at the actual
+    # state-commit edge so a later disappearance cannot publish success.
+    if ! configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
+        ! runtime_ap_is_pinned; then
+        if finish_post_transition_rollback; then
+            die "required-PMF hostapd is not exact before final state promotion; optional rollback verified"
+        fi
+        die "required-PMF hostapd is not exact before final state promotion; rollback watchdog remains armed"
+    fi
     if ! mark_required_active; then
         if finish_post_transition_rollback; then
             die "required-PMF state promotion failed; optional rollback verified"

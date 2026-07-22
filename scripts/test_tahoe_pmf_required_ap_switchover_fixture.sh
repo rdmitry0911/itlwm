@@ -691,6 +691,36 @@ POSTPROMOTION_WATCHDOG_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.p
 [ ! -e "$POSTPROMOTION_WATCHDOG_STATE_DIR/watchdog.pid" ] ||
     fail 'post-promotion watchdog death retained a stale watchdog receipt'
 
+# Required-hostapd startup evidence can become stale while later promotion
+# gates run.  Fake ip removes only the generated required child at the third
+# route probe, after the first process/AP attestation and before state commit.
+FINAL_REQUIRED_PROMOTION_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+FINAL_REQUIRED_PROMOTION_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 3))
+if FAKE_TERMINATE_REQUIRED_ON_ROUTE_CALL="$FINAL_REQUIRED_PROMOTION_ROUTE_CALL" "$HELPER" --activate --state-dir "$FINAL_REQUIRED_PROMOTION_STATE_DIR" --lease-seconds 60 >"$TMP_ROOT/final-required-promotion-activate.out" 2>"$TMP_ROOT/final-required-promotion-activate.err"; then
+    fail 'activation accepted a required hostapd that died before final state promotion'
+fi
+grep -Fq 'required-PMF hostapd is not exact before final state promotion; optional rollback verified' "$TMP_ROOT/final-required-promotion-activate.err" ||
+    fail 'final required-process death did not retain its categorical diagnostic'
+! grep -Fxq 'PMF_AP_SWITCHOVER=REQUIRED_ACTIVE' "$TMP_ROOT/final-required-promotion-activate.out" ||
+    fail 'final required-process death published required-active success'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'final required-process death did not restore optional hostapd'
+FINAL_REQUIRED_PROMOTION_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$FINAL_REQUIRED_PROMOTION_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'final required-process death restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'final required-process death left required hostapd active'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final required-process death left a live switchover marker'
+[ -r "$FINAL_REQUIRED_PROMOTION_STATE_DIR/watchdog.pid" ] ||
+    fail 'final required-process death did not retain its watchdog receipt for liveness check'
+FINAL_REQUIRED_PROMOTION_WATCHDOG_PID="$(tr -d '[:space:]' <"$FINAL_REQUIRED_PROMOTION_STATE_DIR/watchdog.pid")"
+if /bin/kill -0 "$FINAL_REQUIRED_PROMOTION_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'final required-process death left the watchdog live'
+fi
+
 # A staged required config can change after the pre-stop fence but while the
 # required daemon consumes it.  The changed file must not be promoted, and the
 # helper must not restart optional hostapd from an unresolved pair.  Restoring

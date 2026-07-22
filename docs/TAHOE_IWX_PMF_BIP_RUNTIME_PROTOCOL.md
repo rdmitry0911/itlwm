@@ -54,11 +54,12 @@ while that pair differs.
 
 After a required-PMF process launch succeeds, the helper re-attests that exact
 PID and the pinned AP channel/width, re-reads the original hash-only host
-network invariant, and re-attests the exact marker-bound rollback watchdog
-immediately before it promotes rollback state to `required`.  An exited,
-replaced, unpinned, unreadable, host-network-divergent, or ownerless process
-transition is restored to optional PMF through the established transition
-recovery and never emits a required-active result.
+network invariant, and re-attests the exact marker-bound rollback watchdog.
+It then repeats the exact required-PID/AP-shape predicate immediately before
+it promotes rollback state to `required`; an exited, replaced, unpinned,
+unreadable, host-network-divergent, or ownerless process transition is restored
+to optional PMF through the established transition recovery and never emits a
+required-active result.
 
 If any failure occurs after the first optional-PMF process stop, recovery also
 compares the post-restore hash-only host-network signature with the state
