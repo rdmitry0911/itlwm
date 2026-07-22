@@ -179,6 +179,8 @@ for needle in \
     'required-PMF configuration changed before state promotion' \
     'staged PMF configuration pair changed before bounded group-rekey' \
     'staged PMF configuration pair changed before optional-PMF restart' \
+    'optional_hostapd_exact_and_pinned' \
+    'optional-PMF hostapd process or AP shape is not exact before rollback verification' \
     'finish_post_transition_rollback' \
     'optional-PMF state retained' \
     '9>&-' \
@@ -347,6 +349,10 @@ if "FAKE_TERMINATE_REQUIRED_ON_IW" not in Path(sys.argv[2]).with_name("test_taho
     fail("AP fixture lacks the pre-promotion required-child death discriminator")
 if "FAKE_TERMINATE_REQUIRED_DURING_REKEY" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-ack required-child death discriminator")
+if "FAKE_TERMINATE_OPTIONAL_ON_IW" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the rollback optional-child death discriminator")
+if "FAKE_TERMINATE_OPTIONAL_ON_IW_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the post-transition optional-child death discriminator")
 if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -369,6 +375,7 @@ ordered(rollback, "AP rollback sequence",
         'start_configured_hostapd "$OPTIONAL_CONFIG"',
         "runtime_ap_is_pinned",
         "host_network_signature",
+        "optional_hostapd_exact_and_pinned",
         "rollback_verified=true",
         "cancel_watchdog",
         "clear_marker")
@@ -380,6 +387,15 @@ ordered(post_transition_rollback, "post-transition rollback network verification
         "restore_optional_after_activation_failure",
         'after_signature="$(host_network_signature)"',
         '[ "$after_signature" = "$before_signature" ]',
+        "optional_hostapd_exact_and_pinned",
+        "cancel_watchdog",
+        "clear_marker")
+
+armed_rollback = helper[helper.find("finish_armed_rollback() {"):
+                        helper.find("finish_post_transition_rollback() {")]
+ordered(armed_rollback, "armed rollback final optional-process attestation",
+        "restore_optional_after_activation_failure",
+        "optional_hostapd_exact_and_pinned",
         "cancel_watchdog",
         "clear_marker")
 
@@ -407,6 +423,12 @@ ordered(restore, "optional restart configuration guard",
         'configured_hostapd_active "$OPTIONAL_CONFIG"',
         "config_pair_matches_state",
         'start_configured_hostapd "$OPTIONAL_CONFIG"',
+        "optional_hostapd_exact_and_pinned")
+
+optional_attestation = helper[helper.find("optional_hostapd_exact_and_pinned() {"):
+                              helper.find("wait_hostapd_active() {")]
+ordered(optional_attestation, "optional rollback process/AP attestation",
+        'configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID"',
         "runtime_ap_is_pinned")
 
 rekey_helper = helper[helper.find("do_rekey() {"):helper.find("do_rollback() {")]

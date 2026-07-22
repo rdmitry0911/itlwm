@@ -63,6 +63,13 @@ baseline before it cancels the watchdog or clears the marker.  A mismatch keeps
 that rollback owner armed for a later verified rollback; pre-stop rejections,
 where no AP process changed, retain their lighter cleanup path.
 
+Neither the pinned AP shape nor that host-network signature proves hostapd
+ownership.  Immediately before any rollback witness or marker/watchdog release,
+the helper re-attests the exact optional-PMF PID/configuration and the pinned
+AP shape; post-transition recovery repeats that attestation after its network
+comparison.  A generated or real process loss at either edge withholds the
+witness and retains recovery ownership for a later explicit rollback.
+
 The watchdog retries restoration to optional PMF if the caller disappears or
 if an intermediate AP transition cannot be verified. The helper has no
 address, route, NAT, forwarding, DHCP, firewall, service-manager, or reboot

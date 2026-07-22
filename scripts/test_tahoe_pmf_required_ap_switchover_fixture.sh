@@ -36,6 +36,7 @@ STATE_PREFIX="$TMP_ROOT/state."
 CONTROL_DIR="$TMP_ROOT/control"
 OPTIONAL="$LAB_ROOT/hostapd-5g.conf"
 REQUIRED="$LAB_ROOT/hostapd-5g-wpa2-pmf.conf"
+FAKE_OPTIONAL_PID="$RUN_DIR/hostapd-5g.pid"
 FAKE_REQUIRED_PID="$RUN_DIR/hostapd-5g-pmf-required.pid"
 FAKE_HOSTAPD="$TMP_ROOT/hostapd"
 FAKE_CLI="$TMP_ROOT/hostapd_cli"
@@ -47,6 +48,7 @@ FAKE_HOSTAPD_LOG="$TMP_ROOT/fake-hostapd.log"
 FAKE_CLI_LOG="$TMP_ROOT/fake-cli.log"
 FAKE_NETWORK_STATE="$TMP_ROOT/fake-network-state"
 FAKE_ROUTE_CALL_COUNT="$TMP_ROOT/fake-route-call-count"
+FAKE_IW_CALL_COUNT="$TMP_ROOT/fake-iw-call-count"
 FAKE_REQUIRED_CONFIG="$LAB_ROOT/hostapd-5g-wpa2-pmf.conf"
 # This ephemeral token exists only inside the protected local fixture config.
 # It is never supplied to a real AP, printed, committed, or reused as a lab
@@ -135,11 +137,22 @@ printf '%s\n' \
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
+    'calls=0' \
+    'if [ -r "$FAKE_IW_CALL_COUNT" ]; then calls="$(cat "$FAKE_IW_CALL_COUNT")"; fi' \
+    'case "$calls" in ""|*[!0-9]*) exit 65;; esac' \
+    'calls=$((calls + 1))' \
+    'printf "%s\n" "$calls" >"$FAKE_IW_CALL_COUNT"' \
     'if [ "${FAKE_TERMINATE_REQUIRED_ON_IW:-0}" = 1 ] && [ -r "$FAKE_REQUIRED_PID" ]; then' \
     '    pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"' \
     '    case "$pid" in ""|*[!0-9]*) exit 65;; esac' \
     '    /bin/kill -KILL "$pid" >/dev/null 2>&1 || true' \
     '    /bin/rm -f -- "$FAKE_REQUIRED_PID"' \
+    'fi' \
+    'if { [ "${FAKE_TERMINATE_OPTIONAL_ON_IW:-0}" = 1 ] || [ "${FAKE_TERMINATE_OPTIONAL_ON_IW_CALL:-}" = "$calls" ]; } && [ -r "$FAKE_OPTIONAL_PID" ]; then' \
+    '    pid="$(tr -d "[:space:]" <"$FAKE_OPTIONAL_PID")"' \
+    '    case "$pid" in ""|*[!0-9]*) exit 65;; esac' \
+    '    /bin/kill -KILL "$pid" >/dev/null 2>&1 || true' \
+    '    /bin/rm -f -- "$FAKE_OPTIONAL_PID"' \
     'fi' \
     'printf "Interface wlp0s20f3\n"' \
     'printf "\ttype AP\n"' \
@@ -194,11 +207,12 @@ export AIAM_PMF_AP_SUDO="$FAKE_SUDO"
 export AIAM_PMF_AP_RUN_DIR="$RUN_DIR"
 export AIAM_PMF_AP_STATE_PREFIX="$STATE_PREFIX"
 export AIAM_PMF_AP_CONTROL_DIR="$CONTROL_DIR"
-export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE FAKE_ROUTE_CALL_COUNT \
-    FAKE_REQUIRED_CONFIG FAKE_REQUIRED_PID
+export FAKE_HOSTAPD_LOG FAKE_CLI_LOG FAKE_NETWORK_STATE FAKE_ROUTE_CALL_COUNT FAKE_IW_CALL_COUNT \
+    FAKE_REQUIRED_CONFIG FAKE_OPTIONAL_PID FAKE_REQUIRED_PID
 : >"$FAKE_CLI_LOG"
 printf 'stable\n' >"$FAKE_NETWORK_STATE"
 printf '0\n' >"$FAKE_ROUTE_CALL_COUNT"
+printf '0\n' >"$FAKE_IW_CALL_COUNT"
 
 "$FAKE_HOSTAPD" -B -P "$RUN_DIR/hostapd-5g.pid" \
     -f "$RUN_DIR/hostapd-5g.log" "$OPTIONAL"
@@ -341,9 +355,30 @@ grep -Fxq 'rekey_requested=true' "$STATE_DIR/rekey.status" ||
 grep -Fxq -- '-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK' "$FAKE_CLI_LOG" ||
     fail 'fake hostapd CLI did not receive the canonical group-rekey command'
 
+# The optional child can disappear after the start helper observes its exact
+# PID but before rollback publishes its witness.  Fake iw continues to report
+# the pinned AP shape, so only a final optional-process attestation can keep
+# this generated loss from releasing marker/watchdog ownership.
+if FAKE_TERMINATE_OPTIONAL_ON_IW=1 "$HELPER" --rollback --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rollback-optional-death.out" \
+        2>"$TMP_ROOT/rollback-optional-death.err"; then
+    fail 'rollback accepted an optional hostapd that died before verification'
+fi
+grep -Fq 'optional-PMF hostapd process or AP shape is not exact before rollback verification' \
+    "$TMP_ROOT/rollback-optional-death.err" ||
+    fail 'optional-child rollback death retained no categorical diagnostic'
+[ ! -e "$STATE_DIR/rollback.status" ] ||
+    fail 'optional-child rollback death wrote a verified rollback witness'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'optional-child rollback death cleared the active marker'
+[ -r "$STATE_DIR/watchdog.pid" ] ||
+    fail 'optional-child rollback death did not retain its watchdog receipt'
+[ ! -e "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'optional-child rollback death left a stale optional pid receipt'
+
 "$HELPER" --rollback --state-dir "$STATE_DIR" \
     >"$TMP_ROOT/rollback.out" 2>"$TMP_ROOT/rollback.err" ||
-    fail 'synthetic optional-PMF rollback failed'
+    fail 'stable optional-PMF rollback failed after optional-child death'
 grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' "$TMP_ROOT/rollback.out" ||
     fail 'rollback did not report optional-PMF restoration'
 grep -Fxq 'rollback_verified=true' "$STATE_DIR/rollback.status" ||
@@ -397,6 +432,51 @@ grep -Fq 'optional rollback verified' "$TMP_ROOT/failed-activate.err" ||
     fail 'failed activation left required hostapd active'
 [ ! -e "$CONTROL_DIR/active.state" ] ||
     fail 'failed activation left a live switchover marker'
+
+# The post-transition recovery path has the same final ownership obligation.
+# This local injection kills only the generated optional child while fake iw
+# preserves the pinned shape.  A failed required start must retain the marker
+# and watchdog instead of claiming that optional rollback was verified.
+OPTIONAL_DEATH_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+OPTIONAL_DEATH_IW_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_IW_CALL_COUNT")"
+case "$OPTIONAL_DEATH_IW_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake iw call counter is invalid';; esac
+OPTIONAL_DEATH_IW_CALL=$((OPTIONAL_DEATH_IW_CALLS_BEFORE + 2))
+if FAKE_TERMINATE_OPTIONAL_ON_IW_CALL="$OPTIONAL_DEATH_IW_CALL" FAKE_FAIL_REQUIRED=1 "$HELPER" --activate \
+    --state-dir "$OPTIONAL_DEATH_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/optional-death-activate.out" \
+    2>"$TMP_ROOT/optional-death-activate.err"; then
+    fail 'activation accepted an optional hostapd that died during recovery'
+fi
+grep -Fq 'required-PMF hostapd activation failed; rollback watchdog remains armed' \
+    "$TMP_ROOT/optional-death-activate.err" ||
+    fail 'optional-child recovery death did not retain its armed-watchdog diagnostic'
+! grep -Fq 'optional rollback verified' "$TMP_ROOT/optional-death-activate.err" ||
+    fail 'optional-child recovery death claimed verified optional rollback'
+[ ! -e "$OPTIONAL_DEATH_STATE_DIR/rollback.status" ] ||
+    fail 'optional-child recovery death wrote a verified rollback witness'
+[ ! -e "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'optional-child recovery death left a stale optional pid receipt'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'optional-child recovery death left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'optional-child recovery death cleared the rollback marker'
+[ -r "$OPTIONAL_DEATH_STATE_DIR/watchdog.pid" ] ||
+    fail 'optional-child recovery death did not retain its watchdog receipt'
+OPTIONAL_DEATH_WATCHDOG_PID="$(tr -d '[:space:]' <"$OPTIONAL_DEATH_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$OPTIONAL_DEATH_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'optional-child recovery death did not retain a live watchdog process'
+"$HELPER" --rollback --state-dir "$OPTIONAL_DEATH_STATE_DIR" \
+    >"$TMP_ROOT/optional-death-rollback.out" \
+    2>"$TMP_ROOT/optional-death-rollback.err" ||
+    fail 'stable explicit rollback did not recover optional-child death'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/optional-death-rollback.out" ||
+    fail 'optional-child recovery rollback did not report optional restoration'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'optional-child recovery rollback left the active marker'
+if /bin/kill -0 "$OPTIONAL_DEATH_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'optional-child recovery rollback left the watchdog live'
+fi
 
 # If the host network drifts during a required start that then fails, optional
 # PMF may be restored but recovery is not verified.  The marker-bound watchdog

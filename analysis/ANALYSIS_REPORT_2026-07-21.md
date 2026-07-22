@@ -501,6 +501,97 @@
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-ROLLBACK-OPTIONAL-PROCESS-ATTESTATION-20260721`
+
+### Observation
+
+`do_rollback()` can publish `rollback_verified=true`, cancel the independent
+rollback watchdog, and clear the marker after an optional-PMF process has
+already disappeared.  Its post-start evidence is currently only
+`runtime_ap_is_pinned()` and the host-network signature.  Both can remain true
+after the child validated by `wait_hostapd_active()` exits: AP shape is a radio
+observation, and the network signature intentionally excludes the hostapd
+process identity.
+
+The same stale-observation boundary appears in the two automatic recovery
+paths.  `restore_optional_after_activation_failure()` calls
+`start_configured_hostapd()` (whose successful wait is an earlier observation)
+and ends with only `runtime_ap_is_pinned()`.  `finish_armed_rollback()` then
+releases marker/watchdog ownership immediately; `finish_post_transition_rollback()`
+first reads the network signature, then releases ownership, without a final
+optional-PMF exact-process observation.
+
+This is source-local and deterministic: the fixture's fake `iw` can kill only
+the generated optional child after the start helper's PID check while continuing
+to emit the pinned AP shape.  On the current source an explicit rollback then
+reaches `rollback_verified=true`; a failed required start can likewise report
+`optional rollback verified`.  No real AP, configuration, interface, route,
+or guest is involved.
+
+### Root Cause
+
+The rollback success witness is bound to a historical optional-hostapd start
+observation instead of an exact optional process at the final ownership-release
+edge.  `runtime_ap_is_pinned()` is correctly a separate topology predicate; it
+is not and must not become a proxy for PID/configuration ownership.
+
+### FIX_CANDIDATE: `LAB-PMF-AP-ROLLBACK-OPTIONAL-PROCESS-ATTESTATION-20260721`
+
+- status: `FIX_VERIFIED`; the local fixture demonstrated the false success
+  before the correction and now rejects it while retaining recovery ownership.
+- system contract to preserve:
+  1. a rollback witness and cancellation/clear of the marker-bound watchdog
+     mean the exact optional-PMF hostapd process for the admitted config is
+     still live and the AP remains pinned at that final edge;
+  2. a process loss during recovery withholds the witness and retains the
+     marker/watchdog owner for a later explicit rollback;
+  3. host-network signature equality remains an independent required recovery
+     predicate, not a substitute for process identity;
+  4. recovery must not retry, restart, reload, or otherwise add new AP
+     lifecycle side effects after a failed final attestation.
+- proposed minimal correction:
+  - introduce one read-only helper that requires both
+    `configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID"` and
+    `runtime_ap_is_pinned`;
+  - use it as the terminal predicate of
+    `restore_optional_after_activation_failure()`;
+  - reapply it after the post-transition network-signature comparison and
+    before marker/watchdog release;
+  - use it after the explicit rollback network comparison and before
+    `rollback_verified=true`.
+- scope and touchpoints:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh` only in optional recovery
+    completion predicates;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh` only for
+    generated optional-child death injection and recovery assertions;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh` only for static
+    ordering/coverage assertions;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md` only for the ownership
+    boundary description;
+  - this analysis report for before/after evidence.
+- excluded alternatives:
+  - treat a channel/width response, a host-network hash, or a PID file alone
+    as proof of optional hostapd ownership;
+  - add sleeps, retries, a hostapd restart, or a second AP switchover;
+  - weaken the existing exact argv/config PID predicate;
+  - touch a live AP, guest, saved profile, route/address, firewall, or DHCP
+    state.
+- expected fixture proof before the fix:
+  - fake `iw` removes the generated optional PID at the start-observation edge
+    while it reports the existing pinned shape;
+  - current explicit rollback falsely succeeds and writes `rollback_verified`;
+  - current failed-required activation falsely reports verified optional
+    rollback under the same generated death condition.
+- expected proof after the fix:
+  - both paths fail categorically without a rollback witness and retain the
+    marker/watchdog; a subsequent fixture rollback with the injection removed
+    restores optional PMF normally;
+  - stable rollback remains a single restoration with no added helper retry;
+  - AP/runtime/trace/SAE contracts and the isolated build-only gate still pass.
+- verification boundary: this candidate closes a host-side recovery ownership
+  race only.  It cannot demonstrate a real hostapd result, PMF-required
+  association, IGTK observation, or driver functionality.
+
 ## ANOMALY
 
 - id: `LAB-PMF-AP-RESTRICTED-STATE-INTEGRITY-20260721`
@@ -1610,6 +1701,60 @@
 - verification boundary: this closes only a host-side rekey ownership race.
   It is not a live hostapd result, candidate activation, guest reboot,
   PMF-required association, IGTK runtime observation, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-ROLLBACK-OPTIONAL-PROCESS-ATTESTATION-20260721`
+
+- implementation:
+  - added `optional_hostapd_exact_and_pinned()`, a read-only conjunction of
+    the existing exact PID/argv/configuration predicate and the existing
+    pinned AP-shape predicate;
+  - `restore_optional_after_activation_failure()` now ends with that
+    conjunction rather than AP shape alone;
+  - `finish_armed_rollback()` repeats the conjunction immediately before it
+    cancels the watchdog, and `finish_post_transition_rollback()` repeats it
+    after its host-network comparison and before releasing ownership;
+  - `do_rollback()` retains its existing start/AP/network sequence and adds
+    the same final conjunction immediately before it writes
+    `rollback_verified=true`;
+  - no restart, retry, reload, configuration write, network mutation, or new
+    live operation was added to the helper.
+- deterministic fixture evidence:
+  - before implementation, the new local fake-`iw` injection removed only the
+    generated optional child after `wait_hostapd_active()` had observed it,
+    continued reporting the pinned shape, and stopped at
+    `rollback accepted an optional hostapd that died before verification`;
+    this proves that the old helper wrote a false success witness without
+    contacting a real AP or guest;
+  - after implementation, the explicit rollback injection fails with
+    `optional-PMF hostapd process or AP shape is not exact before rollback
+    verification`, leaves no `rollback.status`, and retains the generated
+    marker/watchdog; the subsequent injection-free explicit rollback restores
+    optional PMF and clears both owner receipts;
+  - the failed-required-start injection likewise reports
+    `rollback watchdog remains armed`, does not claim verified recovery, and
+    leaves its marker/watchdog for the following stable explicit rollback;
+  - static ordering now requires the optional exact-process/AP fence in the
+    restore, armed recovery, post-transition recovery, and explicit rollback
+    release paths.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory.  The kext, trace producer, Agent, and
+    RegDiag built; all 959 undefined symbols resolved against BootKC; no kext
+    was installed, loaded, published, or released (source identity
+    `dirtyec8a262ec8c6`).
+- verification boundary: this fixes only a host-side AP recovery ownership
+  race.  It is not a live hostapd result, PMF-required association, IGTK
+  observation, guest reboot, candidate activation, or driver-functionality
   result.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was

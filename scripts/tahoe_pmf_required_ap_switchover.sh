@@ -291,6 +291,11 @@ configured_hostapd_active() {
     hostapd_matches "$pid" "$config" "$pidfile"
 }
 
+optional_hostapd_exact_and_pinned() {
+    configured_hostapd_active "$OPTIONAL_CONFIG" "$OPTIONAL_PID" &&
+        runtime_ap_is_pinned
+}
+
 wait_hostapd_active() {
     local config="$1" pidfile="$2" attempt
     for attempt in $(seq 1 20); do
@@ -517,7 +522,10 @@ restore_optional_after_activation_failure() {
         config_pair_matches_state || return 1
         start_configured_hostapd "$OPTIONAL_CONFIG" "$OPTIONAL_PID" "$OPTIONAL_LOG" || return 1
     fi
-    runtime_ap_is_pinned
+    # A start helper has only observed one instant.  Recovery may release its
+    # marker-bound owner only while the exact optional process is still live
+    # and the AP shape remains pinned at this final restoration edge.
+    optional_hostapd_exact_and_pinned
 }
 
 finish_armed_rollback() {
@@ -525,6 +533,7 @@ finish_armed_rollback() {
     # cancellation cannot be proven.  A stale marker is preferable to a
     # required-PMF AP without a bounded restoration owner.
     restore_optional_after_activation_failure || return 1
+    optional_hostapd_exact_and_pinned || return 1
     cancel_watchdog || return 1
     clear_marker
 }
@@ -535,6 +544,7 @@ finish_post_transition_rollback() {
     restore_optional_after_activation_failure || return 1
     after_signature="$(host_network_signature)" || return 1
     [ "$after_signature" = "$before_signature" ] || return 1
+    optional_hostapd_exact_and_pinned || return 1
     cancel_watchdog || return 1
     clear_marker
 }
@@ -707,6 +717,8 @@ do_rollback() {
     after_signature="$(host_network_signature)" || die "host network invariants are unreadable after rollback"
     [ "$after_signature" = "$before_signature" ] ||
         die "host IP/default-route/forwarding invariant changed during AP switchover"
+    optional_hostapd_exact_and_pinned ||
+        die "optional-PMF hostapd process or AP shape is not exact before rollback verification"
     printf 'rollback_verified=true\n' >"$STATE_DIR/rollback.status"
     chmod 600 "$STATE_DIR/rollback.status"
     if [ "$FROM_WATCHDOG" -eq 0 ]; then
