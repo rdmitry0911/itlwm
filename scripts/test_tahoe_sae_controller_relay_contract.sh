@@ -548,8 +548,10 @@ forbid(generic_auth, "IEEE80211_AUTH_ALG_SAE",
 sae_builder = c_function_body(output_c, "ieee80211_sae_auth_frame_build")
 for token in ("itl_sae_auth_transport_request_is_well_formed",
               "IEEE80211_S_AUTH", "IEEE80211_AUTH_ALG_SAE",
-              "request->transaction", "request->auth_status"):
+              "request->wire_transaction", "request->auth_status"):
     require(sae_builder, token, "isolated SAE auth frame builder")
+require(v2, "itl_sae_auth_transport_sta_wire_transaction_for_phase",
+        "controller semantic-phase/wire-sequence mapping")
 if output_c.count("IEEE80211_AUTH_ALG_SAE") != 1:
     fail("only the isolated SAE frame builder may write Algorithm 3")
 for text, label in ((v2, "controller"), (input_c, "RX"),

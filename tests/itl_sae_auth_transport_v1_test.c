@@ -12,7 +12,9 @@ fill_request(struct ItlSaeAuthTxRequestV1 *request)
     request->association_epoch = 9;
     request->relay_generation = 11;
     request->ticket = 13;
-    request->transaction = kItlSaeAuthTransportTransactionCommit;
+    request->phase = kItlSaeAuthTransportPhaseCommit;
+    request->wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(request->phase);
     request->body_len = 98;
     request->bssid[0] = 0x02;
     request->bssid[5] = 0x01;
@@ -32,8 +34,9 @@ fill_event(const struct ItlSaeAuthTxRequestV1 *request,
     event->association_epoch = request->association_epoch;
     event->relay_generation = request->relay_generation;
     event->ticket = request->ticket;
-    event->transaction = request->transaction;
+    event->phase = request->phase;
     event->auth_status = request->auth_status;
+    event->wire_transaction = request->wire_transaction;
     memcpy(event->bssid, request->bssid, sizeof(event->bssid));
     memcpy(event->sta, request->sta, sizeof(event->sta));
 }
@@ -76,7 +79,9 @@ test_request_well_formed_boundaries_and_fixed_fields(void)
     assert(itl_sae_auth_transport_request_is_well_formed(&request));
 
     fill_request(&request);
-    request.transaction = kItlSaeAuthTransportTransactionConfirm;
+    request.phase = kItlSaeAuthTransportPhaseConfirm;
+    request.wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(request.phase);
     request.body_len = kItlSaeAuthTransportV1MaxBodyLength;
     assert(itl_sae_auth_transport_request_is_well_formed(&request));
 
@@ -101,11 +106,15 @@ test_request_well_formed_boundaries_and_fixed_fields(void)
     assert_request_rejected(&request);
 
     fill_request(&request);
-    request.transaction = 0;
+    request.phase = 0;
     assert_request_rejected(&request);
 
     fill_request(&request);
-    request.transaction = 3;
+    request.phase = 3;
+    assert_request_rejected(&request);
+
+    fill_request(&request);
+    request.wire_transaction = kItlSaeAuthTransportPeerWireTransactionCommit;
     assert_request_rejected(&request);
 
     fill_request(&request);
@@ -183,11 +192,16 @@ test_event_well_formed_fixed_fields_and_result(void)
     assert_event_rejected(&event);
 
     fill_event(&request, &event);
-    event.transaction = 0;
+    event.phase = 0;
     assert_event_rejected(&event);
 
     fill_event(&request, &event);
-    event.transaction = 3;
+    event.phase = 3;
+    assert_event_rejected(&event);
+
+    fill_event(&request, &event);
+    event.wire_transaction =
+        kItlSaeAuthTransportPeerWireTransactionCommit;
     assert_event_rejected(&event);
 
     fill_event(&request, &event);
@@ -246,7 +260,9 @@ test_event_request_identity_matching(void)
     assert_identity_mismatch(&event, &request);
 
     fill_event(&request, &event);
-    event.transaction = kItlSaeAuthTransportTransactionConfirm;
+    event.phase = kItlSaeAuthTransportPhaseConfirm;
+    event.wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(event.phase);
     assert_identity_mismatch(&event, &request);
 
     fill_event(&request, &event);
@@ -262,6 +278,25 @@ test_event_request_identity_matching(void)
     assert(!itl_sae_auth_transport_event_matches_request(&event, &request));
 }
 
+static void
+test_semantic_phase_and_wire_sequence_mapping(void)
+{
+    assert(itl_sae_auth_transport_sta_wire_transaction_for_phase(
+        kItlSaeAuthTransportPhaseCommit) ==
+        kItlSaeAuthTransportStaWireTransactionCommit);
+    assert(itl_sae_auth_transport_sta_wire_transaction_for_phase(
+        kItlSaeAuthTransportPhaseConfirm) ==
+        kItlSaeAuthTransportStaWireTransactionConfirm);
+    assert(itl_sae_auth_transport_peer_wire_transaction_for_phase(
+        kItlSaeAuthTransportPhaseCommit) ==
+        kItlSaeAuthTransportPeerWireTransactionCommit);
+    assert(itl_sae_auth_transport_peer_wire_transaction_for_phase(
+        kItlSaeAuthTransportPhaseConfirm) ==
+        kItlSaeAuthTransportPeerWireTransactionConfirm);
+    assert(itl_sae_auth_transport_sta_wire_transaction_for_phase(0) == 0);
+    assert(itl_sae_auth_transport_peer_wire_transaction_for_phase(3) == 0);
+}
+
 int
 main(void)
 {
@@ -269,6 +304,7 @@ main(void)
     test_request_well_formed_boundaries_and_fixed_fields();
     test_event_well_formed_fixed_fields_and_result();
     test_event_request_identity_matching();
+    test_semantic_phase_and_wire_sequence_mapping();
 
     return 0;
 }

@@ -183,8 +183,9 @@ iwx_sae_tx_make_terminal_event(const struct ItlSaeAuthTxRequestV1 *request,
     event->association_epoch = request->association_epoch;
     event->relay_generation = request->relay_generation;
     event->ticket = request->ticket;
-    event->transaction = request->transaction;
+    event->phase = request->phase;
     event->auth_status = request->auth_status;
+    event->wire_transaction = request->wire_transaction;
     memcpy(event->bssid, request->bssid, sizeof(event->bssid));
     memcpy(event->sta, request->sta, sizeof(event->sta));
 }
@@ -204,8 +205,9 @@ iwx_sae_tx_make_terminal_event_from_data(const struct iwx_tx_data *data,
     event->association_epoch = data->sae_association_epoch;
     event->relay_generation = data->sae_relay_generation;
     event->ticket = data->sae_ticket;
-    event->transaction = data->sae_transaction;
+    event->phase = data->sae_phase;
     event->auth_status = data->sae_auth_status;
+    event->wire_transaction = data->sae_wire_transaction;
     memcpy(event->bssid, data->sae_bssid, sizeof(event->bssid));
     memcpy(event->sta, data->sae_sta, sizeof(event->sta));
 }
@@ -216,8 +218,9 @@ iwx_sae_tx_data_clear(struct iwx_tx_data *data)
     if (data == NULL)
         return;
     data->sae_active = false;
-    data->sae_transaction = 0;
+    data->sae_phase = 0;
     data->sae_auth_status = 0;
+    data->sae_wire_transaction = 0;
     data->sae_association_epoch = 0;
     data->sae_relay_generation = 0;
     data->sae_ticket = 0;
@@ -7876,7 +7879,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
         }
         auth = (const u_int8_t *)wh + hdrlen;
         if (LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE ||
-            LE_READ_2(auth + 2) != sae_request->transaction ||
+            LE_READ_2(auth + 2) != sae_request->wire_transaction ||
             LE_READ_2(auth + 4) != sae_request->auth_status ||
             memcmp(auth + 6, sae_request->body,
                    sae_request->body_len) != 0) {
@@ -8058,8 +8061,9 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac,
     iwx_sae_tx_data_clear(data);
     if (sae_request != NULL) {
         data->sae_active = true;
-        data->sae_transaction = sae_request->transaction;
+        data->sae_phase = sae_request->phase;
         data->sae_auth_status = sae_request->auth_status;
+        data->sae_wire_transaction = sae_request->wire_transaction;
         data->sae_association_epoch = sae_request->association_epoch;
         data->sae_relay_generation = sae_request->relay_generation;
         data->sae_ticket = sae_request->ticket;

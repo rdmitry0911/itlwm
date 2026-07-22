@@ -400,10 +400,11 @@ struct iwx_tx_data {
      * Controller-owned SAE identity. Unlike diag_*, this is not telemetry:
      * the exact ticket is copied before the header trim and is consumed once
      * by iwx_rx_tx_cmd_single() to produce the deferred terminal event.
-     */
+    */
     bool     sae_active;
-    uint8_t  sae_transaction;
+    uint8_t  sae_phase;
     uint16_t sae_auth_status;
+    uint16_t sae_wire_transaction;
     uint64_t sae_association_epoch;
     uint64_t sae_relay_generation;
     uint64_t sae_ticket;

@@ -1637,7 +1637,8 @@ ieee80211_sae_auth_frame_build(struct ieee80211com *ic,
 
     frm = (u_int8_t *)&wh[1];
     LE_WRITE_2(frm, IEEE80211_AUTH_ALG_SAE); frm += 2;
-    LE_WRITE_2(frm, request->transaction); frm += 2;
+    /* `phase` is semantic; only the prevalidated STA wire value is on air. */
+    LE_WRITE_2(frm, request->wire_transaction); frm += 2;
     LE_WRITE_2(frm, request->auth_status); frm += 2;
     memcpy(frm, request->body, request->body_len);
 

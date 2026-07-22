@@ -113,6 +113,15 @@ for token in (
 for secret in ("password[", "pwe[", "kck[", "pmk[", "pmkid[",
                "rsnxe_payload", "client_cookie"):
     forbid(transport, secret, "credential/cookie transport field")
+for token in ("kItlSaeAuthTransportPhaseCommit 1u",
+              "kItlSaeAuthTransportPhaseConfirm 2u",
+              "kItlSaeAuthTransportStaWireTransactionCommit 1u",
+              "kItlSaeAuthTransportStaWireTransactionConfirm 3u",
+              "kItlSaeAuthTransportPeerWireTransactionCommit 2u",
+              "kItlSaeAuthTransportPeerWireTransactionConfirm 4u",
+              "itl_sae_auth_transport_sta_wire_transaction_for_phase",
+              "itl_sae_auth_transport_peer_wire_transaction_for_phase"):
+    require(transport, token, "semantic-phase/wire-sequence split")
 require(hal, "virtual IOReturn submitSaeAuthFrame(",
         "HAL SAE submission contract")
 require(hal, "return kIOReturnUnsupported;", "fail-closed non-IWX HAL")
@@ -180,7 +189,7 @@ for token in ("itl_sae_auth_transport_request_is_well_formed",
               "ic->ic_state != IEEE80211_S_AUTH", "ic->ic_bss != ni",
               "ieee80211_pae_assoc_epoch_current(ic)",
               "IEEE80211_FC0_SUBTYPE_AUTH", "IEEE80211_AUTH_ALG_SAE",
-              "request->transaction", "request->auth_status"):
+              "request->wire_transaction", "request->auth_status"):
     require(sae_builder, token, "isolated Algorithm-3 builder")
 if output.count("IEEE80211_AUTH_ALG_SAE") != 1:
     fail("only the isolated builder may use IEEE80211_AUTH_ALG_SAE")
@@ -196,7 +205,10 @@ for token in ("if (sae_request != NULL)",
               "mbuf_len(m) < hdrlen + 6 + sae_request->body_len",
               "mbuf_pkthdr_len(m) != hdrlen + 6 + sae_request->body_len",
               "LE_READ_2(auth) != IEEE80211_AUTH_ALG_SAE",
+              "LE_READ_2(auth + 2) != sae_request->wire_transaction",
               "getPhysicalSegmentsWithCoalesce", "data->sae_active = true",
+              "data->sae_phase = sae_request->phase",
+              "data->sae_wire_transaction = sae_request->wire_transaction",
               "iwx_tx_update_byte_tbl", "iwx_sae_tx_commit_doorbell",
               "IWX_HBUS_TARG_WRPTR"):
     require(tx, token, "real IWX descriptor/doorbell TX path")

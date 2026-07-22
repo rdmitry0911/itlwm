@@ -770,9 +770,82 @@ immediately issue an Open-System AUTH frame.
     There is still no production selected-BSS SAE hold, inbound Algorithm-3
     relay, Agent HnP/PWE/credential backend, PMK ingress, SAE AKM/PMF owner,
     or WPA3 association/4-way completion;
-  - pure-WPA3 ingress remains fail-closed and generic AUTH remains Open-System.
+- pure-WPA3 ingress remains fail-closed and generic AUTH remains Open-System.
     No AP, saved-profile mutation, guest runtime, radio, association, or data
     traffic was exercised.
+
+## ANOMALY: `LAB-SAE-ALGORITHM3-WIRE-SEQUENCE-SPLIT-20260722`
+
+### Observation
+
+The first bounded TX spine used the relay's semantic Commit/Confirm values
+`1/2` as if they were on-air Authentication transaction sequence values.
+That makes a controller Confirm serialize as `2`, although an STA must emit
+SAE Commit/Confirm as wire sequences `1/3`; the AP peer equivalents are
+`2/4`.  The dormant sender has no production caller, so this has not sent a
+bad frame, but it is an activation blocker for the high-frequency saved WPA3
+join path and for any inbound Algorithm-3 relay.
+
+- source evidence: `AirportItlwmSaeRelayFsmV1` and Agent relay ABI use
+  semantic Commit/Confirm phases `1/2`; the original transport copied that
+  value directly into `ieee80211_sae_auth_frame_build()`;
+- source evidence: IWX then validated and retained the same value across DMA,
+  descriptor completion, and the terminal mailbox, so correcting only the
+  net80211 writer would break the exact completion identity contract;
+- required ordering: repair this representation before enabling inbound peer
+  sequence mapping (`2 -> Commit`, `4 -> Confirm`) or a selected-BSS join
+  hold.  Those two following layers are still the direct path toward WPA3
+  join under the frequency-first rule.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-SAE-ALGORITHM3-WIRE-SEQUENCE-SPLIT-20260722`
+- status: `IMPLEMENTED_BUILD_ONLY_VERIFIED`
+- proposed change:
+  1. preserve semantic phase (`Commit=1`, `Confirm=2`) separately from the
+     validated STA wire transaction (`1`, `3`) in the credential-free private
+     transport and its terminal event; reserve peer mapping (`2`, `4`) for the
+     later RX boundary;
+  2. make the controller derive the wire value once, make the frame builder
+     serialize only that value, and require IWX raw-frame validation plus
+     post-DMA descriptor state to retain both semantic and wire identities;
+  3. make every request/event matcher reject a phase/wire mismatch rather than
+     treating a valid peer sequence as a possible outbound Confirm;
+  4. add C/C++ mapping and negative mismatch fixtures, static source fences,
+     and a fresh pinned Tahoe build-only gate.  Do not enable SAE ingress,
+     association, credentials, PMK, AKM, PMF, or radio actions.
+
+## IMPLEMENTATION AND BUILD-ONLY VERIFICATION: `LAB-SAE-ALGORITHM3-WIRE-SEQUENCE-SPLIT-20260722`
+
+- implementation:
+  - `ItlSaeAuthTransportV1` now explicitly carries `phase` and
+    `wire_transaction`, with exact helpers for STA `1/3` and future peer
+    `2/4` mapping.  Its fixed record sizes remain unchanged; mismatched or
+    zero mappings are malformed;
+  - the controller maps Agent reply kind to semantic phase and derives the
+    STA wire value.  net80211 writes only `wire_transaction`; IWX checks that
+    raw pre-trim byte, then preserves both values through DMA, terminal
+    completion, reset matching, and controller comparison;
+  - no generic Open-System builder, RX ingress, SAE AKM, PMK path, or PMF
+    state was changed.
+- verification:
+  - `tests/itl_sae_auth_transport_v1_test.c` passed in C11, C++14, and C++17,
+    including `Commit -> 1`, `Confirm -> 3`, peer `Commit -> 2`, peer
+    `Confirm -> 4`, and phase/wire mismatch rejection;
+  - `bash scripts/test_tahoe_sae_product_foundation_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_controller_relay_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_sae_auth_transport_contract.sh`: PASS;
+  - `git diff --check`: PASS;
+  - source identity `dirty405df00b25c7` built in the pinned isolated Tahoe
+    directory `/tmp/aiam-tahoe-sae-layer-gate.ekGq9D`: kext, post-PLTI trace
+    client, Agent, and RegDiag all built.  Independent post-build comparison
+    found all 959 kext undefined symbols resolved by the pinned BootKC and no
+    `_thread_call_cancel_wait` dependency.  No kext was installed, loaded,
+    published, or released.
+- verification boundary: this corrects a dormant real-driver framing
+  prerequisite only. It is not inbound SAE, a selected-BSS join hold, HnP/PWE
+  credential processing, SAE PMK/AKM/PMF activation, WPA3 association, or a
+  live AP/guest/radio result.
 
 ## ANOMALY: `LAB-SAE-CONTROLLER-OWNED-RELAY-BRIDGE-20260722`
 

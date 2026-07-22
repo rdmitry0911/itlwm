@@ -19,9 +19,19 @@
 #define kItlSaeAuthTransportV1MacLength 6u
 #define kItlSaeAuthTransportV1MaxBodyLength 768u
 
-/* IEEE 802.11 SAE Authentication transaction sequence values. */
-#define kItlSaeAuthTransportTransactionCommit 1u
-#define kItlSaeAuthTransportTransactionConfirm 2u
+/*
+ * Relay phase is deliberately distinct from the Authentication transaction
+ * sequence carried on the air.  The Agent/FSM speaks semantic Commit/Confirm
+ * phases (1/2); an STA emits those as SAE wire sequences 1/3 and receives the
+ * peer equivalents as 2/4.  Keeping both values in this private ABI prevents
+ * a semantic Confirm value from ever being serialized as wire sequence 2.
+ */
+#define kItlSaeAuthTransportPhaseCommit 1u
+#define kItlSaeAuthTransportPhaseConfirm 2u
+#define kItlSaeAuthTransportStaWireTransactionCommit 1u
+#define kItlSaeAuthTransportStaWireTransactionConfirm 3u
+#define kItlSaeAuthTransportPeerWireTransactionCommit 2u
+#define kItlSaeAuthTransportPeerWireTransactionConfirm 4u
 
 enum ItlSaeAuthTransportEventKindV1 {
     kItlSaeAuthTransportEventTxComplete = 1u,
@@ -39,12 +49,13 @@ struct ItlSaeAuthTxRequestV1 {
     uint64_t association_epoch;
     uint64_t relay_generation;
     uint64_t ticket;
-    uint16_t transaction;
+    uint16_t phase;
     uint16_t auth_status;
     uint32_t body_len;
     uint8_t bssid[kItlSaeAuthTransportV1MacLength];
     uint8_t sta[kItlSaeAuthTransportV1MacLength];
-    uint8_t reserved[4];
+    uint16_t wire_transaction;
+    uint8_t reserved[2];
     uint8_t body[kItlSaeAuthTransportV1MaxBodyLength];
 };
 
@@ -62,11 +73,12 @@ struct ItlSaeAuthTransportEventV1 {
     uint64_t association_epoch;
     uint64_t relay_generation;
     uint64_t ticket;
-    uint16_t transaction;
+    uint16_t phase;
     uint16_t auth_status;
     uint8_t bssid[kItlSaeAuthTransportV1MacLength];
     uint8_t sta[kItlSaeAuthTransportV1MacLength];
-    uint8_t reserved[8];
+    uint16_t wire_transaction;
+    uint8_t reserved[6];
 };
 
 #if defined(__cplusplus)
@@ -85,6 +97,30 @@ ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTxRequestV1,
     body) == 56, "SAE transport request body offset");
 ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTransportEventV1,
     association_epoch) == 16, "SAE transport event epoch offset");
+ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTxRequestV1,
+    wire_transaction) == 52, "SAE transport request wire transaction offset");
+ITL_SAE_AUTH_TRANSPORT_STATIC_ASSERT(offsetof(struct ItlSaeAuthTransportEventV1,
+    wire_transaction) == 56, "SAE transport event wire transaction offset");
+
+static inline uint16_t
+itl_sae_auth_transport_sta_wire_transaction_for_phase(uint16_t phase)
+{
+    if (phase == kItlSaeAuthTransportPhaseCommit)
+        return kItlSaeAuthTransportStaWireTransactionCommit;
+    if (phase == kItlSaeAuthTransportPhaseConfirm)
+        return kItlSaeAuthTransportStaWireTransactionConfirm;
+    return 0;
+}
+
+static inline uint16_t
+itl_sae_auth_transport_peer_wire_transaction_for_phase(uint16_t phase)
+{
+    if (phase == kItlSaeAuthTransportPhaseCommit)
+        return kItlSaeAuthTransportPeerWireTransactionCommit;
+    if (phase == kItlSaeAuthTransportPhaseConfirm)
+        return kItlSaeAuthTransportPeerWireTransactionConfirm;
+    return 0;
+}
 
 static inline bool
 itl_sae_auth_transport_bytes_all_zero(const uint8_t *bytes, size_t length)
@@ -119,8 +155,11 @@ itl_sae_auth_transport_request_is_well_formed(
         request->association_epoch == 0 ||
         request->relay_generation == 0 ||
         request->ticket == 0 ||
-        (request->transaction != kItlSaeAuthTransportTransactionCommit &&
-         request->transaction != kItlSaeAuthTransportTransactionConfirm) ||
+        (request->phase != kItlSaeAuthTransportPhaseCommit &&
+         request->phase != kItlSaeAuthTransportPhaseConfirm) ||
+        request->wire_transaction !=
+            itl_sae_auth_transport_sta_wire_transaction_for_phase(
+                request->phase) ||
         request->auth_status != 0 ||
         request->body_len == 0 ||
         request->body_len > kItlSaeAuthTransportV1MaxBodyLength ||
@@ -143,8 +182,11 @@ itl_sae_auth_transport_event_is_well_formed(
         event->association_epoch == 0 ||
         event->relay_generation == 0 ||
         event->ticket == 0 ||
-        (event->transaction != kItlSaeAuthTransportTransactionCommit &&
-         event->transaction != kItlSaeAuthTransportTransactionConfirm) ||
+        (event->phase != kItlSaeAuthTransportPhaseCommit &&
+         event->phase != kItlSaeAuthTransportPhaseConfirm) ||
+        event->wire_transaction !=
+            itl_sae_auth_transport_sta_wire_transaction_for_phase(
+                event->phase) ||
         event->auth_status != 0 ||
         !itl_sae_auth_transport_mac_is_unicast_nonzero(event->bssid) ||
         !itl_sae_auth_transport_mac_is_unicast_nonzero(event->sta) ||
@@ -164,7 +206,8 @@ itl_sae_auth_transport_event_matches_request(
         event->association_epoch == request->association_epoch &&
         event->relay_generation == request->relay_generation &&
         event->ticket == request->ticket &&
-        event->transaction == request->transaction &&
+        event->phase == request->phase &&
+        event->wire_transaction == request->wire_transaction &&
         event->auth_status == request->auth_status &&
         memcmp(event->bssid, request->bssid, sizeof(event->bssid)) == 0 &&
         memcmp(event->sta, request->sta, sizeof(event->sta)) == 0;

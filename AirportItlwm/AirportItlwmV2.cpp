@@ -9469,7 +9469,8 @@ airportItlwmSaeTerminalEventMatches(
         left->association_epoch == right->association_epoch &&
         left->relay_generation == right->relay_generation &&
         left->ticket == right->ticket &&
-        left->transaction == right->transaction &&
+        left->phase == right->phase &&
+        left->wire_transaction == right->wire_transaction &&
         left->auth_status == right->auth_status &&
         memcmp(left->bssid, right->bssid, sizeof(left->bssid)) == 0 &&
         memcmp(left->sta, right->sta, sizeof(left->sta)) == 0;
@@ -9639,10 +9640,13 @@ airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
     a->request.association_epoch = a->reply.association_epoch;
     a->request.relay_generation = a->reply.generation;
     a->request.ticket = a->ticket;
-    a->request.transaction =
+    a->request.phase =
         a->reply.kind == kAirportItlwmSaeRelayReplyCommit ?
-            kItlSaeAuthTransportTransactionCommit :
-            kItlSaeAuthTransportTransactionConfirm;
+            kItlSaeAuthTransportPhaseCommit :
+            kItlSaeAuthTransportPhaseConfirm;
+    a->request.wire_transaction =
+        itl_sae_auth_transport_sta_wire_transaction_for_phase(
+            a->request.phase);
     a->request.auth_status = 0;
     a->request.body_len = a->reply.body_len;
     memcpy(a->request.bssid, a->reply.bssid, sizeof(a->request.bssid));
