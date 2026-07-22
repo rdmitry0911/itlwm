@@ -501,6 +501,87 @@
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-EXACT-ONE-RAW-REKEY-REQUEST-20260721`
+
+### Observation
+
+The runtime protocol permits exactly one post-initial `REKEY_GTK` stimulus,
+and the trace evaluator now rejects more than one observed cross-slot
+transition.  The AP helper itself does not bind that cardinality to its
+marker-bound transaction: `do_rekey()` writes its success-only `rekey.status`
+after post-command checks but has no pre-command request receipt or admission
+check.  A second direct `--rekey` against the same required state therefore
+issues another raw command.  More subtly, a raw command that receives `OK` but
+then fails a process/AP/network postcondition leaves no success status, so a
+retry can issue a second real command even though the first command already
+reached hostapd.
+
+The local fixture can demonstrate this safely.  Its fake CLI logs commands;
+after a generated post-command network drift, restoring only the local fake
+network state lets the current helper issue a second raw command and write
+success.  A separately stable generated transaction also accepts a second
+success command.  Neither case reads or changes a real AP, guest, saved
+profile, route/address, or credential.
+
+### Root Cause
+
+The code treats `rekey.status` as both a success witness and an implicit
+one-shot guard, but commits it too late to prove whether the raw side effect
+has occurred.  The protocol's exact-one semantic therefore lives only in the
+consumer/evaluator, not in the producer that can create the side effect.
+
+### FIX_CANDIDATE: `LAB-PMF-AP-EXACT-ONE-RAW-REKEY-REQUEST-20260721`
+
+- status: `FIX_VERIFIED`; the fixture demonstrated the second raw request on
+  the old ordering and now proves both retry and duplicate rejection.
+- system contract to preserve:
+  1. every marker-bound required-PMF transaction may issue at most one raw
+     `REKEY_GTK` command, whether its eventual outcome is success or
+     inconclusive;
+  2. a read-only/pre-command rejection does not consume the sole request;
+  3. a durable request receipt is committed only after all pre-command
+     predicates including the exact required-process fence and immediately
+     before the one raw command;
+  4. `rekey.status` remains a success-only witness and a request receipt alone
+     never promotes PMF/BIP evidence;
+  5. a post-command failure remains inconclusive, leaves rollback ownership
+     intact, and forbids a second stimulus rather than retrying it.
+- proposed minimal correction:
+  - add a restricted `rekey.requested` receipt helper that rejects an existing
+    file or symlink, writes `rekey_attempted=true` mode `0600`, and is invoked
+    after the final pre-command process attestation and before `REKEY_GTK`;
+  - reject `--rekey` when that receipt already exists before any AP/control
+    operation;
+  - retain the existing `rekey.status` only after all command postconditions;
+  - extend the local fake-CLI fixture for both post-command-failure retry and
+    stable duplicate-command rejection; extend static ordering and protocol
+    wording.
+- scope and touchpoints:
+  - `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey` plus a small
+    restricted-state receipt helper;
+  - `scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`;
+  - `scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`;
+  - `docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md`;
+  - this analysis record.
+- rejected alternatives:
+  - rely solely on the trace evaluator to detect an extra AP command;
+  - write the existing success witness before hostapd acknowledgement;
+  - retry after a failed acknowledgement/postcondition, add timers, or
+    restart/reload hostapd;
+  - make a live AP, guest, profile, address/route, firewall, or DHCP change.
+- verification plan:
+  1. make the current fixture stop when it accepts a retry after an
+     acknowledged-but-inconclusive command;
+  2. add the pre-command request receipt and require no second fake CLI line,
+     no success witness for the failed attempt, and normal rollback;
+  3. require a separately successful transaction to reject a duplicate
+     command while retaining its original success witness;
+  4. run AP/runtime/trace/SAE contracts and the isolated Tahoe build-only
+     gate without a candidate activation or live AP operation.
+- verification boundary: this is a repository-owned raw-command cardinality
+  fence only.  It cannot establish a real hostapd result, PMF-required
+  association, IGTK transition, or driver functionality.
+
 ## ANOMALY: `LAB-PMF-AP-ROLLBACK-WITNESS-COMMIT-ORDER-20260721`
 
 ### Observation
@@ -1774,6 +1855,55 @@ is not and must not become a proxy for PID/configuration ownership.
   It is not a live hostapd result, candidate activation, guest reboot,
   PMF-required association, IGTK runtime observation, or driver-functionality
   result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-EXACT-ONE-RAW-REKEY-REQUEST-20260721`
+
+- implementation:
+  - added a restricted `rekey.requested` receipt containing only
+    `rekey_attempted=true`; its freshness predicate also treats an existing
+    legacy/success `rekey.status` as a consumed transaction;
+  - `do_rekey()` rejects a consumed request before AP/control admission,
+    then records the request after its final exact required-process
+    pre-command fence and immediately before the sole raw `REKEY_GTK`;
+  - the pre-existing `rekey.status` remains success-only and is still written
+    only after acknowledgement plus process/AP/network postconditions;
+  - a failed receipt write or any post-command failure is inconclusive and
+    leaves the AP rollback owner intact; no retry, restart, reload, or extra
+    network/live action was introduced.
+- deterministic fixture evidence:
+  - before implementation, a generated post-command host-network drift made
+    the first raw request inconclusive with no success witness; after restoring
+    only fake network output, a second helper invocation reached fake CLI and
+    stopped at `group rekey accepted a retry after an acknowledged
+    inconclusive request`;
+  - after implementation, that first raw request persists
+    `rekey.requested`; the retry produces the categorical already-recorded
+    diagnostic, adds no fake CLI line, writes no success witness, and then
+    rolls back normally;
+  - a fresh stable transaction writes both the request receipt and its normal
+    success witness.  Its duplicate invocation is rejected before fake CLI
+    and preserves the original witness;
+  - existing pre-command drift/death cases still reach no raw command and do
+    not consume the request before the final command edge.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty79108b9e6293`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side bounded-rekey command
+  cardinality gap.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver
+  functionality result.
 - external blocker unchanged: the optional/required saved-profile identity
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.

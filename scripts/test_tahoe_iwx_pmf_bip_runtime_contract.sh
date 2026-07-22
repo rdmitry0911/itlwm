@@ -189,6 +189,8 @@ for needle in \
     'setsid "$SELF" --watchdog' \
     'for attempt in $(seq 1 3)' \
     'raw REKEY_GTK' \
+    'rekey_attempted=true' \
+    'bounded group-rekey request was already recorded for this PMF-required transaction' \
     'rollback_verified=true' \
     'host_network_signature' \
     'runtime_ap_is_pinned'; do
@@ -356,6 +358,8 @@ if "FAKE_TERMINATE_OPTIONAL_ON_IW_CALL" not in Path(sys.argv[2]).with_name("test
     fail("AP fixture lacks the post-transition optional-child death discriminator")
 if "FOREIGN_WATCHDOG_PID" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the rollback witness commit-order discriminator")
+if "rekey-post-drift-retry" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the acknowledged-rekey retry discriminator")
 if "FAKE_MUTATE_NETWORK_ON_REQUIRED_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the post-transition network drift discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -436,17 +440,29 @@ ordered(optional_attestation, "optional rollback process/AP attestation",
 
 rekey_helper = helper[helper.find("do_rekey() {"):helper.find("do_rollback() {")]
 ordered(rekey_helper, "AP rekey host-network fence",
+        "rekey_request_is_fresh",
         'state_value host_network_signature_before',
         "config_pair_matches_state",
         'host_network_signature)',
         'host network invariants changed before bounded group-rekey',
         'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
+        'required-PMF hostapd process is not exact before bounded group-rekey',
+        "record_rekey_request",
         'raw REKEY_GTK',
         'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
         'required-PMF hostapd process is not exact after bounded group-rekey',
         'host_network_signature)',
         'host network invariants changed during bounded group-rekey',
         'rekey_requested=true')
+
+rekey_receipt = helper[helper.find("rekey_request_is_fresh() {"):
+                       helper.find("state_value() {")]
+ordered(rekey_receipt, "one-shot AP rekey receipt",
+        'rekey.requested',
+        'rekey.status',
+        "record_rekey_request",
+        'rekey_attempted=true',
+        "chmod 600")
 
 cleanup = runner[runner.find("cleanup() {"):runner.find("trap cleanup EXIT")]
 if '[ -n "$AP_STATE_DIR" ] && [ "$AP_ROLLBACK_VERIFIED" -eq 0 ]' not in cleanup:

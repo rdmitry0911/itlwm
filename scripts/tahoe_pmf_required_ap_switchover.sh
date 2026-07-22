@@ -350,6 +350,21 @@ state_file() {
     printf '%s/state.txt\n' "$STATE_DIR"
 }
 
+rekey_request_is_fresh() {
+    [ ! -e "$STATE_DIR/rekey.requested" ] &&
+        [ ! -L "$STATE_DIR/rekey.requested" ] &&
+        [ ! -e "$STATE_DIR/rekey.status" ] &&
+        [ ! -L "$STATE_DIR/rekey.status" ]
+}
+
+record_rekey_request() {
+    local path="$STATE_DIR/rekey.requested"
+    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+    umask 077
+    printf 'rekey_attempted=true\n' >"$path" || return 1
+    chmod 600 "$path"
+}
+
 state_value() {
     local key="$1"
     [ -f "$(state_file)" ] && [ ! -L "$(state_file)" ] || return 1
@@ -655,6 +670,8 @@ do_rekey() {
     require_state_dir
     marker_matches_state || die "PMF-required state ownership is not current"
     [ "$(state_value state)" = required ] || die "state does not authorize a group rekey"
+    rekey_request_is_fresh ||
+        die "bounded group-rekey request was already recorded for this PMF-required transaction"
     before_signature="$(state_value host_network_signature_before)" ||
         die "state lacks the host network baseline"
     config_pair_matches_state ||
@@ -671,6 +688,11 @@ do_rekey() {
     # or replaced daemon cannot receive a categorical rekey witness.
     configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID" ||
         die "required-PMF hostapd process is not exact before bounded group-rekey"
+    # Record the sole allowed raw side effect before it is sent.  A later
+    # acknowledgement or postcondition failure is inconclusive, not authority
+    # to issue a second group-rekey request for the same transaction.
+    record_rekey_request ||
+        die "could not record bounded group-rekey request"
     # Use hostapd's documented raw control transport for its canonical
     # REKEY_GTK command.  A lower-case CLI alias is not consistently exposed
     # by packaged hostapd_cli builds; the daemon command drives the standard

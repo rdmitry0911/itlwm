@@ -93,6 +93,11 @@ It also re-attests the exact marker-bound required hostapd process immediately
 before the raw command and immediately after its `OK` acknowledgement.  A
 dead or replaced process at either edge is inconclusive and never receives a
 rekey success witness.
+After that final pre-command attestation, the helper writes a restricted
+one-shot request receipt immediately before the raw command.  The receipt
+consumes the sole permitted stimulus even when acknowledgement or a later
+postcondition is inconclusive; only a separately written success witness may
+support the runtime result, and no retry is allowed for that AP transaction.
 The sealed categorical evaluator admits exactly one opposite-slot transition
 after the initial selected IGTK slot. A second cross-slot transition in that
 same capture is ambiguous with respect to the one permitted request and is

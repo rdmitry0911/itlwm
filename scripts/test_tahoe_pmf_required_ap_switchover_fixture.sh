@@ -288,6 +288,32 @@ grep -Fq 'host network invariants changed during bounded group-rekey' \
     fail 'post-command rekey drift wrote a success witness'
 printf 'stable\n' >"$FAKE_NETWORK_STATE"
 
+# An acknowledged raw command that later becomes inconclusive still consumed
+# the protocol's only permitted stimulus.  A second helper invocation must
+# not turn that local failure into a second fake control request.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-post-drift-retry.out" 2>"$TMP_ROOT/rekey-post-drift-retry.err"; then
+    fail 'group rekey accepted a retry after an acknowledged inconclusive request'
+fi
+grep -Fq 'bounded group-rekey request was already recorded for this PMF-required transaction' "$TMP_ROOT/rekey-post-drift-retry.err" ||
+    fail 'post-command rekey retry retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'post-command rekey retry reached the hostapd CLI'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'post-command rekey retry wrote a success witness'
+grep -Fxq 'rekey_attempted=true' "$STATE_DIR/rekey.requested" ||
+    fail 'post-command rekey attempt receipt is missing'
+"$HELPER" --rollback --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-post-drift-rollback.out" 2>"$TMP_ROOT/rekey-post-drift-rollback.err" ||
+    fail 'post-command rekey drift did not restore optional PMF'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'post-command rekey drift did not restore optional hostapd'
+
+# Re-arm a fresh generated transaction: the preceding state carries a raw
+# command attempt and must never be reused for another rekey stimulus.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 >"$TMP_ROOT/rekey-pre-command-activate.out" 2>"$TMP_ROOT/rekey-pre-command-activate.err" ||
+    fail 'pre-command rekey fixture could not activate required PMF'
+
 # The required process may disappear after its first exact-PID observation
 # but before the raw control command.  The fake AP-shape response remains
 # pinned, so a process fence at the actual command edge is the only way to
@@ -358,6 +384,22 @@ grep -Fxq 'rekey_requested=true' "$STATE_DIR/rekey.status" ||
     fail 'group rekey state witness is missing'
 grep -Fxq -- '-p /run/hostapd -i wlp0s20f3 raw REKEY_GTK' "$FAKE_CLI_LOG" ||
     fail 'fake hostapd CLI did not receive the canonical group-rekey command'
+grep -Fxq 'rekey_attempted=true' "$STATE_DIR/rekey.requested" ||
+    fail 'stable group rekey attempt receipt is missing'
+
+# A successful one-request transaction remains one-request only.  The second
+# local helper call must not reach the fake raw control endpoint or overwrite
+# the original success witness.
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+if "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-duplicate.out" 2>"$TMP_ROOT/rekey-duplicate.err"; then
+    fail 'group rekey accepted a second request for one PMF-required transaction'
+fi
+grep -Fq 'bounded group-rekey request was already recorded for this PMF-required transaction' "$TMP_ROOT/rekey-duplicate.err" ||
+    fail 'duplicate rekey retained no categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" = "$REKEY_CLI_LINES_BEFORE" ] ||
+    fail 'duplicate rekey reached the hostapd CLI'
+grep -Fxq 'rekey_requested=true' "$STATE_DIR/rekey.status" ||
+    fail 'duplicate rekey altered the original success witness'
 
 # The optional child can disappear after the start helper observes its exact
 # PID but before rollback publishes its witness.  Fake iw continues to report
