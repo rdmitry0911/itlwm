@@ -97,9 +97,10 @@ It also re-attests the exact marker-bound required hostapd process immediately
 before the raw command and immediately after its `OK` acknowledgement, and
 re-attests the independent marker-bound rollback watchdog before that raw
 command.  It repeats the required-process/AP-shape check after the final
-post-ack network comparison and then re-attests the independent watchdog
-before success publication.  A dead, replaced, or ownerless process state at
-any of those edges is inconclusive and never receives a rekey success witness.
+post-ack network comparison, after re-attesting the staged configuration pair,
+and then re-attests the independent watchdog before success publication.  A
+dead, replaced, configuration-divergent, or ownerless process state at any of
+those edges is inconclusive and never receives a rekey success witness.
 After that final pre-command attestation, the helper writes a restricted
 one-shot request receipt immediately before the raw command.  The receipt
 consumes the sole permitted stimulus even when acknowledgement or a later

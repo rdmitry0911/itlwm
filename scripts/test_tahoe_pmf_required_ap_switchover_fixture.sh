@@ -500,6 +500,58 @@ grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
 [ ! -e "$CONTROL_DIR/active.state" ] ||
     fail 'final rekey watchdog death rollback left the active marker'
 
+# A config pair that changes during the raw command's post-ack probes cannot
+# support a categorical rekey witness or an immediate optional restart.  Fake
+# ip mutates only the generated required config on the second rekey route read.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-final-config-activate.out" \
+    2>"$TMP_ROOT/rekey-final-config-activate.err" ||
+    fail 'final-config rekey fixture could not activate required PMF'
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+FINAL_REKEY_CONFIG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_MUTATE_REQUIRED_CONFIG_ON_ROUTE_CALL="$FINAL_REKEY_CONFIG_ROUTE_CALL" "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-final-config-drift.out" 2>"$TMP_ROOT/rekey-final-config-drift.err"; then
+    fail 'group rekey accepted a configuration changed before final success publication'
+fi
+grep -Fq 'staged PMF configuration pair changed before rekey success publication' "$TMP_ROOT/rekey-final-config-drift.err" ||
+    fail 'final rekey configuration drift did not retain its categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" -eq $((REKEY_CLI_LINES_BEFORE + 1)) ] ||
+    fail 'final rekey configuration drift did not reach exactly one hostapd CLI request'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'final rekey configuration drift wrote a success witness'
+grep -Fxq 'rekey_attempted=true' "$STATE_DIR/rekey.requested" ||
+    fail 'final rekey configuration drift did not retain its one-shot receipt'
+[ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'final rekey configuration drift disturbed required hostapd before rollback'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey configuration drift cleared the required-state marker'
+if "$HELPER" --rollback --state-dir "$STATE_DIR" \
+        >"$TMP_ROOT/rekey-final-config-rollback-drift.out" \
+        2>"$TMP_ROOT/rekey-final-config-rollback-drift.err"; then
+    fail 'final rekey configuration drift rollback accepted the changed pair'
+fi
+grep -Fq 'staged PMF configuration pair changed before optional-PMF restart' \
+    "$TMP_ROOT/rekey-final-config-rollback-drift.err" ||
+    fail 'final rekey configuration drift rollback did not retain its categorical diagnostic'
+[ ! -e "$STATE_DIR/rollback.status" ] ||
+    fail 'final rekey configuration drift rollback wrote a success witness'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey configuration drift rollback cleared the active marker'
+write_config "$REQUIRED" 2 'WPA-PSK-SHA256' fixture-network
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-final-config-rollback.out" \
+    2>"$TMP_ROOT/rekey-final-config-rollback.err" ||
+    fail 'final rekey configuration restoration did not permit explicit rollback'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rekey-final-config-rollback.out" ||
+    fail 'final rekey configuration restoration did not report optional restoration'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'final rekey configuration restoration did not restore optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey configuration restoration left the active marker'
+
 # Restore a fresh required transaction for the existing stable positive rekey
 # and rollback checks below.
 STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"

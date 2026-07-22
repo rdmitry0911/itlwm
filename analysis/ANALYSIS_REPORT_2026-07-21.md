@@ -1214,6 +1214,116 @@ success witness despite no longer having an autonomous rollback owner.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-REKEY-FINAL-CONFIG-ATTESTATION-20260721`
+
+### Observation
+
+`do_rekey()` binds the staged optional/required configuration pair to the
+transaction before it issues raw `REKEY_GTK`, but its post-ack success path
+checks process/AP, network, and watchdog only.  A staged file can change while
+the raw command or final network probe runs; the helper can then write
+`rekey.status` even though the rollback configuration baseline has become
+unresolved and a later optional-PMF restart must be refused.
+
+- scope: repository-owned bounded rekey helper and generated local fixture;
+  no kext, firmware, Apple80211, candidate, guest, or physical-AP behavior
+  claim.
+- expected system behavior: the rekey success witness must attest the same
+  staged configuration pair recorded in restricted state.  A changed or
+  unreadable pair after the raw command makes its outcome inconclusive, holds
+  no success receipt, and requires restoring the generated baseline before an
+  explicit rollback may restart optional PMF.
+- actual behavior: `config_pair_matches_state()` runs only before raw control.
+  After post-command network/process/AP/watchdog checks, `do_rekey()` writes
+  `rekey.status` without checking that the state-bound configuration pair is
+  still current.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey()` between final
+  post-command attestation and `rekey_requested=true`.
+- source-local proof mechanism: fake `ip` can append only a syntactically
+  acceptable generated directive to its temporary required config on rekey's
+  second route probe, after raw ACK and before success publication.  The
+  unmodified helper accepts success.  Restoring only the generated fixture file
+  then allows its normal explicit rollback; no real AP/configuration/identity
+  is touched.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-FINAL-CONFIG-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh generated transaction that mutates only its temporary staged
+     required config on the second rekey route probe; before a fix the fixture
+     must fail because success was accepted;
+  2. repeat `config_pair_matches_state()` after post-command network/process/
+     AP/watchdog checks and immediately before success receipt publication;
+  3. withhold `rekey.status` while retaining the already-consumed raw-command
+     receipt and require fixture baseline restoration before explicit rollback;
+  4. require this ordering in static contract and protocol language.
+- safety and side effects: this is a read-only digest comparison and a local
+  fixture-only temp-file append.  It adds no raw retry, daemon restart,
+  configuration rewrite in production, network mutation, kext action, guest
+  action, or live AP operation.
+- forbidden alternatives considered and rejected:
+  - assuming the pre-command configuration read remains true across the raw
+    command leaves state/rollback authority stale;
+  - restarting optional from a changed pair violates existing rollback guards;
+  - treating the rekey as successful because hostapd was already running hides
+    an unresolved staged input needed by later recovery.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that rekey accepted a
+    configuration changed before final success publication;
+  - post-fix, it must send exactly one fake raw command, retain only the
+    one-shot request receipt, emit no success witness, and reject rollback
+    until the generated baseline is restored;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-REKEY-FINAL-CONFIG-ATTESTATION-20260721`
+
+- implementation:
+  - after post-ack network equality and before final required PID/AP/watchdog
+    success checks, `do_rekey()` now requires `config_pair_matches_state()`;
+  - a changed pair after the raw command retains the already-consumed
+    `rekey.requested` receipt but withholds `rekey.status` and categorical
+    success.  It adds no second raw command, retry, restart, production config
+    write, network mutation, kext action, guest action, or live AP operation;
+  - the generated fixture mutates only its required config on rekey's second
+    route probe, verifies that immediate rollback refuses the stale pair, then
+    restores only the generated baseline before the normal explicit rollback.
+    Static ordering and runtime protocol now require that final pair proof.
+- deterministic fixture evidence:
+  - before implementation, the fixture stopped at
+    `group rekey accepted a configuration changed before final success
+    publication`, proving a false success witness despite an unresolved staged
+    rollback input;
+  - after implementation, the same fake-only mutation issues exactly one raw
+    request and retains `rekey.requested`, but reports
+    `staged PMF configuration pair changed before rekey success publication`,
+    writes no `rekey.status`, and emits no success result;
+  - explicit rollback first rejects the changed generated pair without a
+    rollback witness.  Restoring the generated config baseline then restores
+    optional PMF and clears the marker normally.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty2662fc2b10a0`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side final rekey-config
+  freshness fence.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

@@ -755,6 +755,8 @@ do_rekey() {
         die "host network invariants are unreadable after bounded group-rekey"
     [ "$current_signature" = "$before_signature" ] ||
         die "host network invariants changed during bounded group-rekey"
+    config_pair_matches_state ||
+        die "staged PMF configuration pair changed before rekey success publication"
     # The post-ack process/AP observation predates the final network read.
     # Re-attest at success publication so a later disappearance is not sealed
     # as a categorical bounded-rekey result.
