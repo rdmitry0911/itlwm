@@ -19,6 +19,7 @@
 #include "TahoeStateMachineClosure.hpp"
 #include "TahoeCommanderV2.hpp"
 #include <ClientKit/AirportItlwmSaeRelayV1.h>
+#include <ClientKit/AirportItlwmSaeRelayFsmV1.h>
 
 #include "IOKit/network/IOGatedOutputQueue.h"
 #include <libkern/c++/OSNumber.h>
@@ -857,6 +858,30 @@ public:
     bool     cancelPendingAssocTarget(const char *reason,
                                       bool terminating = false);
     void     invalidatePendingAssocTargetOnly(const char *reason);
+
+    /*
+     * SAE relay transport/lifecycle owner.  These are deliberately separate
+     * from the legacy PLTI PMK carrier above: they exchange only the versioned
+     * public relay records, keep identity/cancellation under the controller
+     * command gate, and never write ic_psk or select a PSK AKM.  Algorithm-3
+     * TX/RX and an SAE PMK owner are not enabled by this surface yet, so reply
+     * and completion admission remain fail-closed until a later real
+     * TX-completion fence exists.
+     */
+    IOReturn beginSaeRelay(const struct AirportItlwmSaeTargetV1 *target);
+    IOReturn waitSaeTarget(const uint8_t client_cookie[
+                                  kAirportItlwmSaeRelayV1NonceLength],
+                             struct AirportItlwmSaeTargetV1 *out);
+    IOReturn submitSaeReply(const struct AirportItlwmSaeAuthReplyV1 *reply);
+    IOReturn waitSaeAuthEvent(const uint8_t client_cookie[
+                                      kAirportItlwmSaeRelayV1NonceLength],
+                                  uint64_t last_seen_sequence,
+                                  struct AirportItlwmSaeAuthEventV1 *out);
+    IOReturn completeSae(const struct AirportItlwmSaeCompletionV1 *completion);
+    IOReturn abortSae(const struct AirportItlwmSaeAbortV1 *abort_message);
+    void     cancelSaeRelay(const char *reason, bool terminating = false);
+    void     abortSaeRelayForClient(const uint8_t client_cookie[
+                                       kAirportItlwmSaeRelayV1NonceLength]);
 #endif // __IO80211_TARGET >= __MAC_26_0
 
 #if __IO80211_TARGET >= __MAC_26_0
@@ -876,6 +901,21 @@ public:
     uint64_t                      fAssocGenCounter;
     bool                          fAssocTargetCanceled;
     bool                          fAssocTargetTerminating;
+
+    // The SAE relay is controller-owned, not an Agent-owned source of truth.
+    // Its records contain only bounded public management-frame semantics;
+    // target/event buffers are scrubbed on every cancellation edge.  All
+    // fields are accessed only by file-static command-gate actions in
+    // AirportItlwmV2.cpp.
+    AirportItlwmSaeRelayFsmV1    fSaeRelay;
+    uint8_t                       fSaeControllerNonce[
+        kAirportItlwmSaeRelayV1NonceLength];
+    uint8_t                       fSaeRelayWaitingCookie[
+        kAirportItlwmSaeRelayV1NonceLength];
+    uint64_t                      fSaeRelayCancelEpoch;
+    bool                          fSaeRelayWaiterActive;
+    bool                          fSaeRelayCanceled;
+    bool                          fSaeRelayTerminating;
 #endif
 
 private:

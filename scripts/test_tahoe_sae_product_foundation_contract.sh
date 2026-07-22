@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# One-pass static/build contract for the inactive product SAE foundation.
+# One-pass static/build contract for the product SAE foundation and its
+# controller-owned, bridge-only relay transport.
 #
-# This proves discovery/ABI prerequisites and simultaneously proves that they
-# are not a runtime SAE enable: the current PLTI ABI, Open-System auth path,
-# MFP capability, and PSK-only configuration remain unchanged.
+# This proves discovery/ABI and relay-lifecycle prerequisites while retaining
+# the non-enable boundary: Open-System auth, MFP capability, pure-SAE ingress
+# quarantine, and PSK-only configuration remain unchanged.
 set -euo pipefail
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -76,6 +77,8 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
     "$root/tests/tahoe_sae_relay_abi_layout_test.c" \
     -o "$tmpdir/sae-relay-cpp"
 "$tmpdir/sae-relay-cpp"
+
+bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path
@@ -217,17 +220,15 @@ require(relay, "kAirportItlwmSaeRelayRsnxeH2e = 1u << 0",
 require(v2_hpp, "#include <ClientKit/AirportItlwmSaeRelayV1.h>",
         "Tahoe compile-only relay ABI inclusion")
 
-# The current table is intentionally still the legacy two-selector carrier.
-# New selectors cannot be accidentally exposed before the lifecycle/FSM owner
-# exists, while 0/1 remain byte-for-byte pinned.
+# The bridge contract above owns exact selectors 0--6 and their dispatch
+# shapes.  Keep the two legacy PSK selector identities explicitly pinned here
+# as part of the broader discovery/product foundation proof.
 for token in (
     "kAirportItlwmUserClientMethod_DeliverPMK = 0",
     "kAirportItlwmUserClientMethod_WaitAssociationTarget = 1",
     "kAirportItlwmUserClientMethod_NumMethods",
 ):
     require(v2, token, "legacy PLTI selector")
-forbid(v2, "kAirportItlwmUserClientMethod_WaitSaeTarget",
-       "premature SAE PLTI selector wiring")
 
 # Algorithm 3 and its two standard transaction values are available as a
 # self-contained host-order taxonomy only.  The classifier deliberately has
@@ -425,5 +426,5 @@ require(input_c, "if (frm[1] < 1) {\n\t\t\t\tic->ic_stats.is_rx_elem_toosmall++;
 if input_c.count("IEEE80211_ELEMID_RSNXE") != 1:
     fail("RSNXE must be handled only by the beacon/probe scan path")
 
-print("PASS: Tahoe inactive product SAE discovery and relay foundations")
+print("PASS: Tahoe product SAE discovery and bridge-only relay foundations")
 PY

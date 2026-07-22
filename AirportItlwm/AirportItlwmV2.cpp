@@ -445,6 +445,28 @@ public:
 // in `AirportItlwm::newUserClient` below.
 #define kAirportItlwmUserClientType  ('PLTI')   // 0x504C5449
 
+/*
+ * The relay cookie is generated in the kext and never accepted as a caller
+ * input.  `arc4random_buf` is the project-owned kernel CSPRNG wrapper used by
+ * net80211 nonce/key material; retrying an all-zero result preserves zero as
+ * the explicit invalid/unbound sentinel in the V1 relay ABI.
+ */
+static bool
+airportItlwmSaeFillNonZero(uint8_t value[
+                              kAirportItlwmSaeRelayV1NonceLength])
+{
+    if (value == nullptr)
+        return false;
+    for (unsigned int attempt = 0; attempt != 4; ++attempt) {
+        arc4random_buf(value, kAirportItlwmSaeRelayV1NonceLength);
+        if (!AirportItlwmSaeRelayFsmV1BytesAllZero(value,
+                kAirportItlwmSaeRelayV1NonceLength))
+            return true;
+    }
+    memset(value, 0, kAirportItlwmSaeRelayV1NonceLength);
+    return false;
+}
+
 enum {
     // [0] DeliverPMK
     //   in: scalar[0] = generation echo (uint64_t) — must match the
@@ -466,7 +488,21 @@ enum {
     //   out: struct    = AirportItlwmAssociationTarget snapshot.
     kAirportItlwmUserClientMethod_DeliverPMK = 0,
     kAirportItlwmUserClientMethod_WaitAssociationTarget = 1,
-    kAirportItlwmUserClientMethod_NumMethods
+    // SAE relay selectors are append-only V1 ABI values.  They remain a
+    // transport/lifecycle surface only until Algorithm-3 TX completion and
+    // the Agent's SAE cryptographic owner arrive in later layers.
+    kAirportItlwmUserClientMethod_WaitSaeTarget =
+        kAirportItlwmSaeRelayWaitTargetSelector,
+    kAirportItlwmUserClientMethod_SubmitSaeReply =
+        kAirportItlwmSaeRelaySubmitReplySelector,
+    kAirportItlwmUserClientMethod_WaitSaeAuthEvent =
+        kAirportItlwmSaeRelayWaitAuthEventSelector,
+    kAirportItlwmUserClientMethod_CompleteSae =
+        kAirportItlwmSaeRelayCompleteSelector,
+    kAirportItlwmUserClientMethod_AbortSae =
+        kAirportItlwmSaeRelayAbortSelector,
+    kAirportItlwmUserClientMethod_NumMethods =
+        kAirportItlwmSaeRelaySelectorCount
 };
 
 class AirportItlwmUserClient : public IOUserClient
@@ -497,14 +533,33 @@ public:
     static IOReturn sExtWaitAssociationTarget(AirportItlwmUserClient *target,
                                               void *reference,
                                               IOExternalMethodArguments *args);
+    static IOReturn sExtWaitSaeTarget(AirportItlwmUserClient *target,
+                                      void *reference,
+                                      IOExternalMethodArguments *args);
+    static IOReturn sExtSubmitSaeReply(AirportItlwmUserClient *target,
+                                       void *reference,
+                                       IOExternalMethodArguments *args);
+    static IOReturn sExtWaitSaeAuthEvent(AirportItlwmUserClient *target,
+                                          void *reference,
+                                          IOExternalMethodArguments *args);
+    static IOReturn sExtCompleteSae(AirportItlwmUserClient *target,
+                                    void *reference,
+                                    IOExternalMethodArguments *args);
+    static IOReturn sExtAbortSae(AirportItlwmUserClient *target,
+                                 void *reference,
+                                 IOExternalMethodArguments *args);
 
     AirportItlwm *retainProvider();
 
 private:
     AirportItlwm *takeProvider();
+    bool copySaeClientCookie(uint8_t out[
+                             kAirportItlwmSaeRelayV1NonceLength]);
+    void clearSaeClientCookie();
     AirportItlwm *fProvider;
     IOLock       *fProviderLock;
     task_t       fOwningTask;
+    uint8_t      fSaeClientCookie[kAirportItlwmSaeRelayV1NonceLength];
 };
 
 // Pin the carrier ABI for the helper-side mirror in
@@ -533,6 +588,46 @@ sAirportItlwmUserClientMethods[kAirportItlwmUserClientMethod_NumMethods] = {
         0,                                        // checkStructureInputSize
         0,                                        // checkScalarOutputCount
         sizeof(struct AirportItlwmAssociationTarget) // checkStructureOutputSize
+    },
+    // [2] kAirportItlwmSaeRelayWaitTargetSelector
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtWaitSaeTarget,
+        0,                                        // checkScalarInputCount
+        0,                                        // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        sizeof(struct AirportItlwmSaeTargetV1)     // checkStructureOutputSize
+    },
+    // [3] kAirportItlwmSaeRelaySubmitReplySelector
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtSubmitSaeReply,
+        0,                                        // checkScalarInputCount
+        sizeof(struct AirportItlwmSaeAuthReplyV1), // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        0                                         // checkStructureOutputSize
+    },
+    // [4] kAirportItlwmSaeRelayWaitAuthEventSelector
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtWaitSaeAuthEvent,
+        1,                                        // checkScalarInputCount (last event sequence)
+        0,                                        // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        sizeof(struct AirportItlwmSaeAuthEventV1)  // checkStructureOutputSize
+    },
+    // [5] kAirportItlwmSaeRelayCompleteSelector
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtCompleteSae,
+        0,                                        // checkScalarInputCount
+        sizeof(struct AirportItlwmSaeCompletionV1), // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        0                                         // checkStructureOutputSize
+    },
+    // [6] kAirportItlwmSaeRelayAbortSelector
+    {
+        (IOExternalMethodAction)&AirportItlwmUserClient::sExtAbortSae,
+        0,                                        // checkScalarInputCount
+        sizeof(struct AirportItlwmSaeAbortV1),     // checkStructureInputSize
+        0,                                        // checkScalarOutputCount
+        0                                         // checkStructureOutputSize
     }
 };
 #endif // __IO80211_TARGET >= __MAC_26_0
@@ -4504,6 +4599,7 @@ void AirportItlwm::prepareLifecycleDrain()
      * does not hold either lifecycle lock across runAction().
      */
     cancelPendingAssocTarget("prepareLifecycleDrain", true);
+    cancelSaeRelay("prepareLifecycleDrain", true);
 #endif
 
     IOSimpleLock *admissionLock = fLifecycleAdmissionLock;
@@ -6026,6 +6122,19 @@ bool AirportItlwm::start(IOService *provider)
     fAssocGenCounter       = 0;
     fAssocTargetCanceled   = false;
     fAssocTargetTerminating = false;
+    AirportItlwmSaeRelayFsmV1Clear(&fSaeRelay);
+    memset(fSaeControllerNonce, 0, sizeof(fSaeControllerNonce));
+    if (!airportItlwmSaeFillNonZero(fSaeControllerNonce)) {
+        XYLog("DEBUG %s [STEP 4] FAIL: SAE relay nonce\n", __FUNCTION__);
+        releaseAll();
+        DISARM_PANIC_TIMER();
+        return false;
+    }
+    memset(fSaeRelayWaitingCookie, 0, sizeof(fSaeRelayWaitingCookie));
+    fSaeRelayCancelEpoch = 0;
+    fSaeRelayWaiterActive = false;
+    fSaeRelayCanceled = false;
+    fSaeRelayTerminating = false;
 #endif
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
@@ -8277,12 +8386,18 @@ bool AirportItlwmUserClient::
 initWithTask(task_t owningTask, void *securityID, UInt32 type,
              OSDictionary *properties)
 {
+    /* free() may run after a base-class init failure; keep its locks inert. */
+    fOwningTask = nullptr;
+    fProvider = nullptr;
+    fProviderLock = nullptr;
+    memset(fSaeClientCookie, 0, sizeof(fSaeClientCookie));
     if (!IOUserClient::initWithTask(owningTask, securityID, type,
                                     properties)) {
         return false;
     }
     fOwningTask = owningTask;
-    fProvider = nullptr;
+    if (!airportItlwmSaeFillNonZero(fSaeClientCookie))
+        return false;
     fProviderLock = IOLockAlloc();
     if (fProviderLock == nullptr)
         return false;
@@ -8346,10 +8461,54 @@ AirportItlwm *AirportItlwmUserClient::takeProvider()
     return provider;
 }
 
+bool AirportItlwmUserClient::
+copySaeClientCookie(uint8_t out[kAirportItlwmSaeRelayV1NonceLength])
+{
+    IOLock *providerLock = fProviderLock;
+    if (out == nullptr || providerLock == nullptr)
+        return false;
+
+    IOLockLock(providerLock);
+    const bool available = fProvider != nullptr &&
+        !AirportItlwmSaeRelayFsmV1BytesAllZero(fSaeClientCookie,
+            sizeof(fSaeClientCookie));
+    if (available)
+        memcpy(out, fSaeClientCookie, sizeof(fSaeClientCookie));
+    else
+        memset(out, 0, kAirportItlwmSaeRelayV1NonceLength);
+    IOLockUnlock(providerLock);
+    return available;
+}
+
+void AirportItlwmUserClient::
+clearSaeClientCookie()
+{
+    IOLock *providerLock = fProviderLock;
+    if (providerLock == nullptr)
+        return;
+    IOLockLock(providerLock);
+    memset(fSaeClientCookie, 0, sizeof(fSaeClientCookie));
+    IOLockUnlock(providerLock);
+}
+
 void AirportItlwmUserClient::
 stop(IOService *provider)
 {
+    uint8_t sae_cookie[kAirportItlwmSaeRelayV1NonceLength];
+    const bool have_sae_cookie = copySaeClientCookie(sae_cookie);
     AirportItlwm *controller = takeProvider();
+    if (controller != nullptr && have_sae_cookie &&
+        controller->beginLifecycleOperation()) {
+        /*
+         * Do not retain the UserClient provider lock across this gate entry.
+         * A normal close may cancel only the exact cookie it owns; a draining
+         * controller has already cancelled/woken all relay waiters.
+         */
+        controller->abortSaeRelayForClient(sae_cookie);
+        controller->endLifecycleOperation();
+    }
+    clearSaeClientCookie();
+    memset(sae_cookie, 0, sizeof(sae_cookie));
     IOUserClient::stop(provider);
     if (controller != nullptr)
         controller->release();
@@ -8358,7 +8517,16 @@ stop(IOService *provider)
 void AirportItlwmUserClient::
 free(void)
 {
+    uint8_t sae_cookie[kAirportItlwmSaeRelayV1NonceLength];
+    const bool have_sae_cookie = copySaeClientCookie(sae_cookie);
     AirportItlwm *controller = takeProvider();
+    if (controller != nullptr && have_sae_cookie &&
+        controller->beginLifecycleOperation()) {
+        controller->abortSaeRelayForClient(sae_cookie);
+        controller->endLifecycleOperation();
+    }
+    clearSaeClientCookie();
+    memset(sae_cookie, 0, sizeof(sae_cookie));
     if (controller != nullptr)
         controller->release();
     if (fProviderLock != nullptr) {
@@ -8487,6 +8655,130 @@ sExtWaitAssociationTarget(AirportItlwmUserClient *target,
     provider->endLifecycleOperation();
     provider->release();
     return kIOReturnSuccess;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtWaitSaeTarget(AirportItlwmUserClient *target,
+                  void *reference,
+                  IOExternalMethodArguments *args)
+{
+    if (target == nullptr || args == nullptr ||
+        args->structureOutput == nullptr)
+        return kIOReturnBadArgument;
+    uint8_t cookie[kAirportItlwmSaeRelayV1NonceLength];
+    if (!target->copySaeClientCookie(cookie))
+        return kIOReturnNotReady;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        memset(cookie, 0, sizeof(cookie));
+        return kIOReturnNotReady;
+    }
+    struct AirportItlwmSaeTargetV1 snap;
+    memset(&snap, 0, sizeof(snap));
+    IOReturn rc = provider->waitSaeTarget(cookie, &snap);
+    if (rc == kIOReturnSuccess)
+        memcpy(args->structureOutput, &snap, sizeof(snap));
+    memset(&snap, 0, sizeof(snap));
+    provider->endLifecycleOperation();
+    provider->release();
+    memset(cookie, 0, sizeof(cookie));
+    return rc;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtSubmitSaeReply(AirportItlwmUserClient *target,
+                   void *reference,
+                   IOExternalMethodArguments *args)
+{
+    if (target == nullptr || args == nullptr ||
+        args->structureInput == nullptr)
+        return kIOReturnBadArgument;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
+    IOReturn rc = provider->submitSaeReply(
+        (const struct AirportItlwmSaeAuthReplyV1 *)args->structureInput);
+    provider->endLifecycleOperation();
+    provider->release();
+    return rc;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtWaitSaeAuthEvent(AirportItlwmUserClient *target,
+                     void *reference,
+                     IOExternalMethodArguments *args)
+{
+    if (target == nullptr || args == nullptr ||
+        args->structureOutput == nullptr)
+        return kIOReturnBadArgument;
+    uint8_t cookie[kAirportItlwmSaeRelayV1NonceLength];
+    if (!target->copySaeClientCookie(cookie))
+        return kIOReturnNotReady;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        memset(cookie, 0, sizeof(cookie));
+        return kIOReturnNotReady;
+    }
+    struct AirportItlwmSaeAuthEventV1 event;
+    memset(&event, 0, sizeof(event));
+    IOReturn rc = provider->waitSaeAuthEvent(cookie,
+        (uint64_t)args->scalarInput[0], &event);
+    if (rc == kIOReturnSuccess)
+        memcpy(args->structureOutput, &event, sizeof(event));
+    memset(&event, 0, sizeof(event));
+    provider->endLifecycleOperation();
+    provider->release();
+    memset(cookie, 0, sizeof(cookie));
+    return rc;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtCompleteSae(AirportItlwmUserClient *target,
+                void *reference,
+                IOExternalMethodArguments *args)
+{
+    if (target == nullptr || args == nullptr ||
+        args->structureInput == nullptr)
+        return kIOReturnBadArgument;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
+    IOReturn rc = provider->completeSae(
+        (const struct AirportItlwmSaeCompletionV1 *)args->structureInput);
+    provider->endLifecycleOperation();
+    provider->release();
+    return rc;
+}
+
+IOReturn AirportItlwmUserClient::
+sExtAbortSae(AirportItlwmUserClient *target,
+             void *reference,
+             IOExternalMethodArguments *args)
+{
+    if (target == nullptr || args == nullptr ||
+        args->structureInput == nullptr)
+        return kIOReturnBadArgument;
+    AirportItlwm *provider = target->retainProvider();
+    if (provider == nullptr || !provider->beginLifecycleOperation()) {
+        if (provider != nullptr)
+            provider->release();
+        return kIOReturnNotReady;
+    }
+    IOReturn rc = provider->abortSae(
+        (const struct AirportItlwmSaeAbortV1 *)args->structureInput);
+    provider->endLifecycleOperation();
+    provider->release();
+    return rc;
 }
 
 // =====================================================================
@@ -8663,6 +8955,352 @@ struct AirportItlwmDeliverPmkArgs {
     uint64_t generation_echo;
     IOReturn rc;
 };
+
+struct AirportItlwmBeginSaeRelayArgs {
+    AirportItlwm *self;
+    struct AirportItlwmSaeTargetV1 target;
+    IOReturn rc;
+};
+
+struct AirportItlwmWaitSaeTargetArgs {
+    AirportItlwm *self;
+    uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength];
+    uint64_t cancel_epoch;
+    struct AirportItlwmSaeTargetV1 *out;
+    IOReturn rc;
+};
+
+struct AirportItlwmSaeReplyArgs {
+    AirportItlwm *self;
+    const struct AirportItlwmSaeAuthReplyV1 *reply;
+    IOReturn rc;
+};
+
+struct AirportItlwmWaitSaeEventArgs {
+    AirportItlwm *self;
+    uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength];
+    uint64_t cancel_epoch;
+    uint64_t last_seen_sequence;
+    struct AirportItlwmSaeAuthEventV1 *out;
+    IOReturn rc;
+};
+
+struct AirportItlwmSaeCompletionArgs {
+    AirportItlwm *self;
+    const struct AirportItlwmSaeCompletionV1 *completion;
+    IOReturn rc;
+};
+
+struct AirportItlwmSaeAbortArgs {
+    AirportItlwm *self;
+    const struct AirportItlwmSaeAbortV1 *abort_message;
+    IOReturn rc;
+};
+
+struct AirportItlwmCancelSaeRelayArgs {
+    AirportItlwm *self;
+    bool terminating;
+};
+
+struct AirportItlwmAbortSaeClientArgs {
+    AirportItlwm *self;
+    uint8_t client_cookie[kAirportItlwmSaeRelayV1NonceLength];
+};
+
+static IOReturn
+airportItlwmSaeFsmResultToIOReturn(enum AirportItlwmSaeRelayFsmResultV1 rc)
+{
+    switch (rc) {
+    case kAirportItlwmSaeRelayFsmAccepted:
+        return kIOReturnSuccess;
+    case kAirportItlwmSaeRelayFsmBadArgument:
+        return kIOReturnBadArgument;
+    case kAirportItlwmSaeRelayFsmNotReady:
+        return kIOReturnNotReady;
+    case kAirportItlwmSaeRelayFsmNotPermitted:
+        return kIOReturnNotPermitted;
+    case kAirportItlwmSaeRelayFsmResultAborted:
+        return kIOReturnAborted;
+    }
+    return kIOReturnError;
+}
+
+static void
+airportItlwmAdvanceSaeRelayCancelEpochLocked(AirportItlwm *self)
+{
+    if (self == nullptr)
+        return;
+    self->fSaeRelayCancelEpoch += 1;
+    if (self->fSaeRelayCancelEpoch == 0)
+        self->fSaeRelayCancelEpoch = 1;
+}
+
+static void
+airportItlwmClearSaeRelayWaiterLocked(
+    AirportItlwm *self, const uint8_t client_cookie[
+        kAirportItlwmSaeRelayV1NonceLength])
+{
+    if (self == nullptr || client_cookie == nullptr ||
+        !self->fSaeRelayWaiterActive ||
+        !AirportItlwmSaeRelayFsmV1BytesEqual(
+            self->fSaeRelayWaitingCookie, client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength))
+        return;
+    memset(self->fSaeRelayWaitingCookie, 0,
+           sizeof(self->fSaeRelayWaitingCookie));
+    self->fSaeRelayWaiterActive = false;
+}
+
+static void
+airportItlwmClearSaeRelayLocked(AirportItlwm *self, bool canceled)
+{
+    if (self == nullptr)
+        return;
+    AirportItlwmSaeRelayFsmV1Clear(&self->fSaeRelay);
+    airportItlwmAdvanceSaeRelayCancelEpochLocked(self);
+    memset(self->fSaeRelayWaitingCookie, 0,
+           sizeof(self->fSaeRelayWaitingCookie));
+    self->fSaeRelayWaiterActive = false;
+    self->fSaeRelayCanceled = canceled;
+    self->getCommandGate()->commandWakeup(&self->fSaeRelay,
+                                           /*oneThread=*/false);
+}
+
+static IOReturn
+airportItlwmBeginSaeRelayAction(OSObject * /*owner*/, void *arg0,
+                                void * /*arg1*/, void * /*arg2*/,
+                                void * /*arg3*/)
+{
+    AirportItlwmBeginSaeRelayArgs *a =
+        (AirportItlwmBeginSaeRelayArgs *)arg0;
+    AirportItlwm *s = a->self;
+    if (s->fSaeRelayTerminating) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    /* A Begin is not a reset primitive: never erase a bound/live session. */
+    if (s->fSaeRelay.phase != kAirportItlwmSaeRelayFsmIdle) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    if (AirportItlwmSaeRelayFsmV1BytesAllZero(s->fSaeControllerNonce,
+            sizeof(s->fSaeControllerNonce))) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    memcpy(a->target.controller_nonce, s->fSaeControllerNonce,
+        sizeof(a->target.controller_nonce));
+    memset(a->target.client_cookie, 0, sizeof(a->target.client_cookie));
+    a->rc = airportItlwmSaeFsmResultToIOReturn(
+        AirportItlwmSaeRelayFsmV1Begin(&s->fSaeRelay, &a->target));
+    if (a->rc == kIOReturnSuccess) {
+        s->fSaeRelayCanceled = false;
+        s->getCommandGate()->commandWakeup(&s->fSaeRelay,
+                                            /*oneThread=*/false);
+    }
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmWaitSaeTargetAction(OSObject * /*owner*/, void *arg0,
+                                 void * /*arg1*/, void * /*arg2*/,
+                                 void * /*arg3*/)
+{
+    AirportItlwmWaitSaeTargetArgs *a =
+        (AirportItlwmWaitSaeTargetArgs *)arg0;
+    AirportItlwm *s = a->self;
+    /*
+     * Only one UserClient may be parked for the next target.  The cancel
+     * epoch is captured before the first sleep, so a cancelled waiter cannot
+     * wake later and bind a target from a replacement association session.
+     */
+    if (s->fSaeRelayWaiterActive) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    memcpy(s->fSaeRelayWaitingCookie, a->client_cookie,
+           sizeof(s->fSaeRelayWaitingCookie));
+    s->fSaeRelayWaiterActive = true;
+    a->cancel_epoch = s->fSaeRelayCancelEpoch;
+    for (;;) {
+        if (s->fSaeRelayTerminating || s->fSaeRelayCanceled ||
+            a->cancel_epoch != s->fSaeRelayCancelEpoch) {
+            airportItlwmClearSaeRelayWaiterLocked(s, a->client_cookie);
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+        if (s->fSaeRelay.phase ==
+            kAirportItlwmSaeRelayFsmAwaitAgentInitialCommit) {
+            a->rc = airportItlwmSaeFsmResultToIOReturn(
+                AirportItlwmSaeRelayFsmV1BindClient(&s->fSaeRelay,
+                                                      a->client_cookie));
+            if (a->rc == kIOReturnSuccess) {
+                memcpy(a->out, &s->fSaeRelay.target, sizeof(*a->out));
+                airportItlwmClearSaeRelayWaiterLocked(s, a->client_cookie);
+            } else {
+                airportItlwmClearSaeRelayWaiterLocked(s, a->client_cookie);
+            }
+            return kIOReturnSuccess;
+        }
+        IOReturn sleep_rc = s->getCommandGate()->commandSleep(
+            &s->fSaeRelay, THREAD_ABORTSAFE);
+        if (sleep_rc != THREAD_AWAKENED && sleep_rc != THREAD_TIMED_OUT) {
+            airportItlwmClearSaeRelayWaiterLocked(s, a->client_cookie);
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+    }
+}
+
+static IOReturn
+airportItlwmSubmitSaeReplyAction(OSObject * /*owner*/, void *arg0,
+                                  void * /*arg1*/, void * /*arg2*/,
+                                  void * /*arg3*/)
+{
+    AirportItlwmSaeReplyArgs *a = (AirportItlwmSaeReplyArgs *)arg0;
+    AirportItlwm *s = a->self;
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    if (!AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay)) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    if (!AirportItlwmSaeRelayFsmV1IdentityMatches(&s->fSaeRelay,
+            a->reply->generation, a->reply->association_epoch,
+            a->reply->controller_nonce, a->reply->client_cookie,
+            a->reply->bssid, a->reply->sta)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+    /*
+     * A reply cannot be accepted until a future Algorithm-3 TX path owns a
+     * per-frame completion token.  Do not call AcceptReply here: that FSM
+     * transition would incorrectly authorize peer RX after enqueue alone.
+     */
+    a->rc = kIOReturnNotReady;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmWaitSaeEventAction(OSObject * /*owner*/, void *arg0,
+                                void * /*arg1*/, void * /*arg2*/,
+                                void * /*arg3*/)
+{
+    AirportItlwmWaitSaeEventArgs *a =
+        (AirportItlwmWaitSaeEventArgs *)arg0;
+    AirportItlwm *s = a->self;
+    a->cancel_epoch = s->fSaeRelayCancelEpoch;
+    for (;;) {
+        if (s->fSaeRelayTerminating || s->fSaeRelayCanceled ||
+            a->cancel_epoch != s->fSaeRelayCancelEpoch) {
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+        if (!AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay)) {
+            a->rc = kIOReturnNotReady;
+            return kIOReturnSuccess;
+        }
+        enum AirportItlwmSaeRelayFsmResultV1 result =
+            AirportItlwmSaeRelayFsmV1TakeEvent(&s->fSaeRelay,
+                a->client_cookie, a->last_seen_sequence, a->out);
+        if (result != kAirportItlwmSaeRelayFsmNotReady) {
+            a->rc = airportItlwmSaeFsmResultToIOReturn(result);
+            return kIOReturnSuccess;
+        }
+        IOReturn sleep_rc = s->getCommandGate()->commandSleep(
+            &s->fSaeRelay, THREAD_ABORTSAFE);
+        if (sleep_rc != THREAD_AWAKENED && sleep_rc != THREAD_TIMED_OUT) {
+            a->rc = kIOReturnAborted;
+            return kIOReturnSuccess;
+        }
+    }
+}
+
+static IOReturn
+airportItlwmCompleteSaeAction(OSObject * /*owner*/, void *arg0,
+                               void * /*arg1*/, void * /*arg2*/,
+                               void * /*arg3*/)
+{
+    AirportItlwmSaeCompletionArgs *a =
+        (AirportItlwmSaeCompletionArgs *)arg0;
+    AirportItlwm *s = a->self;
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    if (!AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay)) {
+        a->rc = kIOReturnNotReady;
+        return kIOReturnSuccess;
+    }
+    if (!AirportItlwmSaeRelayFsmV1IdentityMatches(&s->fSaeRelay,
+            a->completion->generation, a->completion->association_epoch,
+            a->completion->controller_nonce, a->completion->client_cookie,
+            a->completion->bssid, a->completion->sta)) {
+        a->rc = kIOReturnNotPermitted;
+        return kIOReturnSuccess;
+    }
+    /* No PMK is copied or installed until a later SAE-specific PMK owner. */
+    a->rc = kIOReturnNotReady;
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmAbortSaeAction(OSObject * /*owner*/, void *arg0,
+                            void * /*arg1*/, void * /*arg2*/,
+                            void * /*arg3*/)
+{
+    AirportItlwmSaeAbortArgs *a = (AirportItlwmSaeAbortArgs *)arg0;
+    AirportItlwm *s = a->self;
+    if (s->fSaeRelayTerminating || s->fSaeRelayCanceled) {
+        a->rc = kIOReturnAborted;
+        return kIOReturnSuccess;
+    }
+    a->rc = airportItlwmSaeFsmResultToIOReturn(
+        AirportItlwmSaeRelayFsmV1AcceptAbort(&s->fSaeRelay,
+                                               a->abort_message));
+    if (a->rc == kIOReturnSuccess)
+        airportItlwmClearSaeRelayLocked(s, true);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmCancelSaeRelayAction(OSObject * /*owner*/, void *arg0,
+                                  void * /*arg1*/, void * /*arg2*/,
+                                  void * /*arg3*/)
+{
+    AirportItlwmCancelSaeRelayArgs *a =
+        (AirportItlwmCancelSaeRelayArgs *)arg0;
+    AirportItlwm *s = a->self;
+    if (a->terminating)
+        s->fSaeRelayTerminating = true;
+    airportItlwmClearSaeRelayLocked(s, true);
+    return kIOReturnSuccess;
+}
+
+static IOReturn
+airportItlwmAbortSaeClientAction(OSObject * /*owner*/, void *arg0,
+                                  void * /*arg1*/, void * /*arg2*/,
+                                  void * /*arg3*/)
+{
+    AirportItlwmAbortSaeClientArgs *a =
+        (AirportItlwmAbortSaeClientArgs *)arg0;
+    AirportItlwm *s = a->self;
+    const bool owns_bound_target =
+        AirportItlwmSaeRelayFsmV1TargetBound(&s->fSaeRelay) &&
+        AirportItlwmSaeRelayFsmV1BytesEqual(a->client_cookie,
+            s->fSaeRelay.target.client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength);
+    const bool owns_pending_wait = s->fSaeRelayWaiterActive &&
+        AirportItlwmSaeRelayFsmV1BytesEqual(a->client_cookie,
+            s->fSaeRelayWaitingCookie,
+            kAirportItlwmSaeRelayV1NonceLength);
+    if (!s->fSaeRelayTerminating && !s->fSaeRelayCanceled &&
+        (owns_bound_target || owns_pending_wait))
+        airportItlwmClearSaeRelayLocked(s, true);
+    return kIOReturnSuccess;
+}
 
 static IOReturn
 airportItlwmPublishAssocAction(OSObject * /*owner*/, void *arg0,
@@ -9068,6 +9706,152 @@ invalidatePendingAssocTargetOnly(const char *reason)
     if (gate == nullptr)
         return;
     gate->runAction(&airportItlwmInvalidateAssocOnlyAction, this);
+}
+
+IOReturn AirportItlwm::
+beginSaeRelay(const struct AirportItlwmSaeTargetV1 *target)
+{
+    if (target == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmBeginSaeRelayArgs a;
+    memset(&a, 0, sizeof(a));
+    a.self = this;
+    memcpy(&a.target, target, sizeof(a.target));
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmBeginSaeRelayAction, &a);
+    memset(&a.target, 0, sizeof(a.target));
+    return a.rc;
+}
+
+IOReturn AirportItlwm::
+waitSaeTarget(const uint8_t client_cookie[
+                  kAirportItlwmSaeRelayV1NonceLength],
+              struct AirportItlwmSaeTargetV1 *out)
+{
+    if (client_cookie == nullptr || out == nullptr ||
+        AirportItlwmSaeRelayFsmV1BytesAllZero(client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength))
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmWaitSaeTargetArgs a;
+    memset(&a, 0, sizeof(a));
+    a.self = this;
+    memcpy(a.client_cookie, client_cookie, sizeof(a.client_cookie));
+    a.out = out;
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmWaitSaeTargetAction, &a);
+    memset(a.client_cookie, 0, sizeof(a.client_cookie));
+    return a.rc;
+}
+
+IOReturn AirportItlwm::
+submitSaeReply(const struct AirportItlwmSaeAuthReplyV1 *reply)
+{
+    if (reply == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmSaeReplyArgs a;
+    a.self = this;
+    a.reply = reply;
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmSubmitSaeReplyAction, &a);
+    return a.rc;
+}
+
+IOReturn AirportItlwm::
+waitSaeAuthEvent(const uint8_t client_cookie[
+                     kAirportItlwmSaeRelayV1NonceLength],
+                 uint64_t last_seen_sequence,
+                 struct AirportItlwmSaeAuthEventV1 *out)
+{
+    if (client_cookie == nullptr || out == nullptr ||
+        AirportItlwmSaeRelayFsmV1BytesAllZero(client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength))
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmWaitSaeEventArgs a;
+    memset(&a, 0, sizeof(a));
+    a.self = this;
+    memcpy(a.client_cookie, client_cookie, sizeof(a.client_cookie));
+    a.last_seen_sequence = last_seen_sequence;
+    a.out = out;
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmWaitSaeEventAction, &a);
+    memset(a.client_cookie, 0, sizeof(a.client_cookie));
+    return a.rc;
+}
+
+IOReturn AirportItlwm::
+completeSae(const struct AirportItlwmSaeCompletionV1 *completion)
+{
+    if (completion == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmSaeCompletionArgs a;
+    a.self = this;
+    a.completion = completion;
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmCompleteSaeAction, &a);
+    return a.rc;
+}
+
+IOReturn AirportItlwm::
+abortSae(const struct AirportItlwmSaeAbortV1 *abort_message)
+{
+    if (abort_message == nullptr)
+        return kIOReturnBadArgument;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return kIOReturnNotReady;
+    AirportItlwmSaeAbortArgs a;
+    a.self = this;
+    a.abort_message = abort_message;
+    a.rc = kIOReturnNotReady;
+    gate->runAction(&airportItlwmAbortSaeAction, &a);
+    return a.rc;
+}
+
+void AirportItlwm::
+cancelSaeRelay(const char *reason, bool terminating)
+{
+    (void)reason;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return;
+    AirportItlwmCancelSaeRelayArgs a;
+    a.self = this;
+    a.terminating = terminating;
+    gate->runAction(&airportItlwmCancelSaeRelayAction, &a);
+}
+
+void AirportItlwm::
+abortSaeRelayForClient(const uint8_t client_cookie[
+                        kAirportItlwmSaeRelayV1NonceLength])
+{
+    if (client_cookie == nullptr ||
+        AirportItlwmSaeRelayFsmV1BytesAllZero(client_cookie,
+            kAirportItlwmSaeRelayV1NonceLength))
+        return;
+    IOCommandGate *gate = getCommandGate();
+    if (gate == nullptr)
+        return;
+    AirportItlwmAbortSaeClientArgs a;
+    memset(&a, 0, sizeof(a));
+    a.self = this;
+    memcpy(a.client_cookie, client_cookie, sizeof(a.client_cookie));
+    gate->runAction(&airportItlwmAbortSaeClientAction, &a);
+    memset(a.client_cookie, 0, sizeof(a.client_cookie));
 }
 
 IOReturn AirportItlwm::

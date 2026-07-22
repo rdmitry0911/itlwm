@@ -207,3 +207,205 @@ AgentDeliverPMK(io_connect_t conn,
               (unsigned long long)generation);
     return kIOReturnSuccess;
 }
+
+/*
+ * The Agent wrapper is deliberately stricter about fixed-record transport
+ * shape than IOConnectCallMethod alone: a version/size mismatch or a claimed
+ * trailing-body length outside the shared record is never handed to the
+ * controller.  Identity, state, and cryptographic semantics remain solely
+ * kext-owned and are rechecked there under its command gate.
+ */
+static bool
+agent_sae_record_header_is_valid(uint32_t version, uint32_t size,
+                                 size_t expected_size)
+{
+    return version == kAirportItlwmSaeRelayV1Version &&
+        size == expected_size;
+}
+
+static bool
+agent_sae_target_shape_is_valid(const struct AirportItlwmSaeTargetV1 *target)
+{
+    return target != NULL &&
+        agent_sae_record_header_is_valid(target->version, target->size,
+                                         sizeof(*target)) &&
+        target->ssid_len <= kAirportItlwmSaeRelayV1SsidMaxLength;
+}
+
+static bool
+agent_sae_auth_event_shape_is_valid(
+    const struct AirportItlwmSaeAuthEventV1 *event)
+{
+    return event != NULL &&
+        agent_sae_record_header_is_valid(event->version, event->size,
+                                         sizeof(*event)) &&
+        event->body_len <= kAirportItlwmSaeRelayV1MaxAuthBodyLength;
+}
+
+static bool
+agent_sae_auth_reply_shape_is_valid(
+    const struct AirportItlwmSaeAuthReplyV1 *reply)
+{
+    return reply != NULL &&
+        agent_sae_record_header_is_valid(reply->version, reply->size,
+                                         sizeof(*reply)) &&
+        (reply->kind == kAirportItlwmSaeRelayReplyCommit ||
+         reply->kind == kAirportItlwmSaeRelayReplyConfirm) &&
+        reply->body_len != 0 &&
+        reply->body_len <= kAirportItlwmSaeRelayV1MaxAuthBodyLength;
+}
+
+static bool
+agent_sae_completion_shape_is_valid(
+    const struct AirportItlwmSaeCompletionV1 *completion)
+{
+    return completion != NULL &&
+        agent_sae_record_header_is_valid(completion->version,
+                                         completion->size,
+                                         sizeof(*completion));
+}
+
+static bool
+agent_sae_abort_shape_is_valid(const struct AirportItlwmSaeAbortV1 *abort_message)
+{
+    return abort_message != NULL &&
+        agent_sae_record_header_is_valid(abort_message->version,
+                                         abort_message->size,
+                                         sizeof(*abort_message));
+}
+
+kern_return_t
+AgentWaitSaeTarget(io_connect_t conn,
+                   struct AirportItlwmSaeTargetV1 *out_target)
+{
+    if (out_target == NULL)
+        return kIOReturnBadArgument;
+    memset(out_target, 0, sizeof(*out_target));
+    if (conn == MACH_PORT_NULL)
+        return kIOReturnBadArgument;
+
+    size_t struct_out_sz = sizeof(*out_target);
+    kern_return_t kr = IOConnectCallMethod(
+        conn,
+        kAirportItlwmSaeRelayWaitTargetSelector,
+        NULL, 0,
+        NULL, 0,
+        NULL, NULL,
+        out_target, &struct_out_sz);
+    if (kr != kIOReturnSuccess) {
+        AGENT_LOG("SAE WaitTarget kr=0x%x", kr);
+        return kr;
+    }
+    if (struct_out_sz != sizeof(*out_target) ||
+        !agent_sae_target_shape_is_valid(out_target)) {
+        memset(out_target, 0, sizeof(*out_target));
+        AGENT_ERR("SAE WaitTarget malformed fixed-record reply");
+        return kIOReturnInternalError;
+    }
+
+    AGENT_LOG("SAE WaitTarget OK");
+    return kIOReturnSuccess;
+}
+
+kern_return_t
+AgentSubmitSaeReply(io_connect_t conn,
+                    const struct AirportItlwmSaeAuthReplyV1 *reply)
+{
+    if (conn == MACH_PORT_NULL || !agent_sae_auth_reply_shape_is_valid(reply))
+        return kIOReturnBadArgument;
+
+    kern_return_t kr = IOConnectCallMethod(
+        conn,
+        kAirportItlwmSaeRelaySubmitReplySelector,
+        NULL, 0,
+        reply, sizeof(*reply),
+        NULL, NULL,
+        NULL, NULL);
+    if (kr != kIOReturnSuccess) {
+        AGENT_LOG("SAE SubmitReply kr=0x%x", kr);
+        return kr;
+    }
+
+    AGENT_LOG("SAE SubmitReply OK");
+    return kIOReturnSuccess;
+}
+
+kern_return_t
+AgentWaitSaeAuthEvent(io_connect_t conn, uint64_t last_seen_sequence,
+                      struct AirportItlwmSaeAuthEventV1 *out_event)
+{
+    if (out_event == NULL)
+        return kIOReturnBadArgument;
+    memset(out_event, 0, sizeof(*out_event));
+    if (conn == MACH_PORT_NULL)
+        return kIOReturnBadArgument;
+
+    uint64_t scalar_in[1] = { last_seen_sequence };
+    size_t struct_out_sz = sizeof(*out_event);
+    kern_return_t kr = IOConnectCallMethod(
+        conn,
+        kAirportItlwmSaeRelayWaitAuthEventSelector,
+        scalar_in, 1,
+        NULL, 0,
+        NULL, NULL,
+        out_event, &struct_out_sz);
+    if (kr != kIOReturnSuccess) {
+        AGENT_LOG("SAE WaitAuthEvent kr=0x%x", kr);
+        return kr;
+    }
+    if (struct_out_sz != sizeof(*out_event) ||
+        !agent_sae_auth_event_shape_is_valid(out_event)) {
+        memset(out_event, 0, sizeof(*out_event));
+        AGENT_ERR("SAE WaitAuthEvent malformed fixed-record reply");
+        return kIOReturnInternalError;
+    }
+
+    AGENT_LOG("SAE WaitAuthEvent OK");
+    return kIOReturnSuccess;
+}
+
+kern_return_t
+AgentCompleteSae(io_connect_t conn,
+                 const struct AirportItlwmSaeCompletionV1 *completion)
+{
+    if (conn == MACH_PORT_NULL || !agent_sae_completion_shape_is_valid(completion))
+        return kIOReturnBadArgument;
+
+    kern_return_t kr = IOConnectCallMethod(
+        conn,
+        kAirportItlwmSaeRelayCompleteSelector,
+        NULL, 0,
+        completion, sizeof(*completion),
+        NULL, NULL,
+        NULL, NULL);
+    if (kr != kIOReturnSuccess) {
+        AGENT_LOG("SAE Complete kr=0x%x", kr);
+        return kr;
+    }
+
+    AGENT_LOG("SAE Complete OK");
+    return kIOReturnSuccess;
+}
+
+kern_return_t
+AgentAbortSae(io_connect_t conn,
+              const struct AirportItlwmSaeAbortV1 *abort_message)
+{
+    if (conn == MACH_PORT_NULL || !agent_sae_abort_shape_is_valid(abort_message))
+        return kIOReturnBadArgument;
+
+    kern_return_t kr = IOConnectCallMethod(
+        conn,
+        kAirportItlwmSaeRelayAbortSelector,
+        NULL, 0,
+        abort_message, sizeof(*abort_message),
+        NULL, NULL,
+        NULL, NULL);
+    if (kr != kIOReturnSuccess) {
+        AGENT_LOG("SAE Abort kr=0x%x", kr);
+        return kr;
+    }
+
+    AGENT_LOG("SAE Abort OK");
+    return kIOReturnSuccess;
+}

@@ -600,6 +600,139 @@ required configuration digests.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-SAE-CONTROLLER-OWNED-RELAY-BRIDGE-20260722`
+
+### Observation
+
+The product tree contains a versioned SAE relay ABI and a bounded value-only
+FSM, but neither has a controller owner.  `AirportItlwmUserClient` exposes
+only legacy PSK selectors 0/1; no actual kext object retains a relay session,
+binds a UserClient cookie, wakes an SAE waiter, or aborts an SAE transaction
+during lifecycle drain.  The Agent is therefore unable to cross the intended
+driver boundary even before SAE cryptography is considered.
+
+This is the highest-priority eligible discrepancy after the completed
+pre-rekey gate because joining a WPA3-only saved network is a direct,
+frequently used user-facing function.  The narrower PMF runner work was a
+hard evidence prerequisite for its own claim; further runner/watchdog polish
+does not outrank the missing SAE driver/Agent path.
+
+- source evidence: `AirportItlwmSaeRelayV1.h` reserves append-only selectors
+  2--6 and binds target/event/reply/completion/abort messages to controller,
+  UserClient, BSS, and association identities, while
+  `AirportItlwmV2.cpp` still has a two-entry dispatch table and rejects every
+  selector at or above its legacy count;
+- source evidence: the existing FSM can bind exactly one client and fence
+  peer-event delivery, but no `AirportItlwm` field owns it and teardown only
+  cancels the PSK association target;
+- safety constraint: the FSM presently has no TX-completion phase.  It must
+  not accept an Agent Commit/Confirm as sent, expose a peer event, install a
+  PMK, or lower the pure-SAE quarantine until the later Algorithm-3 TX/RX
+  layer has a real driver completion token.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-SAE-CONTROLLER-OWNED-RELAY-BRIDGE-20260722`
+- status: `IMPLEMENTED_BUILD_ONLY_VERIFIED`
+- priority rationale:
+  - this is the earliest safe production-owned prerequisite for the common
+    WPA3-only network join path and therefore takes precedence over remaining
+    standalone PMF evidence/watchdog discrepancies under the user-directed
+    frequency-first rule;
+  - it intentionally does not claim that a WPA3 join becomes functional in
+    this layer: the following direct prerequisites remain Algorithm-3
+    TX-completion fencing, bounded RX/TX plumbing, Agent group-19 HnP
+    cryptography, SAE-specific PMK/AKM/PMF ownership, and association/4-way
+    completion.
+- proposed change:
+  1. make the reserved SAE selectors real append-only `PLTI` dispatch entries
+     while keeping legacy selectors 0/1 byte-for-byte unchanged: WaitTarget
+     has no input and returns `AirportItlwmSaeTargetV1`; SubmitReply accepts
+     `AirportItlwmSaeAuthReplyV1`; WaitAuthEvent takes one last-seen sequence
+     scalar and returns `AirportItlwmSaeAuthEventV1`; Complete and Abort take
+     their respective fixed ABI structures;
+  2. introduce one controller-owned `AirportItlwmSaeRelayFsmV1`, a nonzero
+     controller-lifetime nonce, termination/cancellation state, and
+     command-gate-only helpers for target wait, reply/event/completion/abort,
+     buffer scrubbing, and lifecycle wakeup.  All waiters must sleep only in
+     the controller command gate and return aborted on teardown.  The relay
+     owner must additionally carry a monotonic cancellation epoch and the
+     one pending waiter cookie under that same gate: a cancel/owner-close
+     advances the epoch and wakes/scrubs the waiter, while a later Begin must
+     reject an active FSM rather than clearing it.  This prevents an old
+     waiter, awakened after a cancel followed by a new Begin, from binding to
+     the new association target;
+  3. give each `AirportItlwmUserClient` a kernel-generated nonzero 16-byte
+     SAE cookie.  Bind the first waiter atomically under the controller gate;
+     reject a second client and any caller-supplied/mismatched cookie.  Never
+     obtain this value from an Agent scalar or structure;
+  4. add shared-header Agent wrappers and compile-level contract coverage for
+     the exact selectors and ABI sizes, but do not start an SAE worker yet:
+     its current single PSK wait loop cannot service this connection and its
+     only credential/crypto path is PBKDF2-PSK;
+  5. preserve a fail-closed bridge while Algorithm-3 TX is absent: a
+     SubmitReply or Complete cannot advance the FSM toward a peer/PMK state;
+     it returns `NotReady` after identity/lifecycle admission rather than
+     reporting an unsent reply as accepted.  Abort remains the permitted
+     terminal cancellation action;
+  6. preserve the existing pure-SAE ingress reject, Open-System-only net80211
+     builder/parser, PSK-only `deliverExternalPMK`, `ic_psk`,
+     `IEEE80211_F_PSK`, RSN AKM configuration, and PMF owner.  Do not add an
+     AP action, association attempt, password lookup, packet injection,
+     key material, or runtime kext operation.
+- files/functions to modify:
+  - `AirportItlwm/AirportItlwmV2.hpp` and `.cpp`: controller relay storage,
+    command-gate actions, teardown cancellation, UserClient cookie lifecycle,
+    and selectors 2--6;
+  - `AirportItlwmAgent/src/userclient.h` and `.c`: shared ABI include and
+    exact typed wrapper shapes only, with no SAE credential/crypto worker;
+  - an explicit controller/Agent relay contract or host fixture plus
+    `scripts/test_tahoe_sae_product_foundation_contract.sh` to replace its
+    intentional two-selector assertion while retaining Algorithm-3 and
+    pure-SAE quarantine fences;
+  - documentation/handoff describing the newly active transport/lifecycle
+    boundary and the remaining TX/RX/crypto/PMK work.
+- forbidden alternative fixes considered and rejected:
+  - do not route SAE through legacy `DeliverPMK`, PBKDF2, `ic_psk`, or the
+    PSK Keychain service;
+  - do not lift the WPA3 reject, send Open auth as an SAE stand-in, transition
+    to association, or enable RSN SAE AKM before Algorithm-3 transport and
+    cryptographic verification exist;
+  - do not let a reply return success before a future real TX-completion
+    callback proves it was transmitted; a diagnostic completion is not an
+    ownership fence;
+  - do not enter a command gate from a future net80211 leaf/interrupt path or
+    use a live selected-BSS pointer rather than a later explicit copyout.
+- verification plan:
+  - capture the existing static deterministic proof that selectors 2--6 are
+    absent from the runtime table, then assert the new exact dispatch shapes,
+    legacy 0/1 preservation, per-client cookie ownership, stale/mismatched
+    identity rejection, lifecycle wake/abort, scrubbing, and absence of all
+    PSK/Algorithm-3 side effects;
+  - build and run host C/C++ relay ABI/FSM/owner fixtures and the Agent wrapper
+    compile/static contract; then run payload, post-PLTI, SAE quarantine, and
+    pinned isolated Tahoe build-only gates;
+  - retain the no-live-runtime boundary and state explicitly that this is a
+    driver/Agent transport-lifecycle bridge, not WPA3/SAE association proof.
+- verification result (2026-07-22):
+  - `scripts/test_tahoe_sae_controller_relay_contract.sh` and
+    `scripts/test_tahoe_sae_product_foundation_contract.sh` pass against the
+    staged source.  They cover the exact 0--6 selector table, legacy 0/1
+    preservation, controller-gate ownership, cancellation epoch and pending
+    waiter fencing, close-before-bind cancellation, fail-closed reply and
+    completion admission, Agent wrapper shapes, and retained pure-SAE/Open
+    quarantine;
+  - the canonical `scripts/run_tahoe_sae_quarantine_layer.sh` completed in an
+    isolated pinned Tahoe guest from source identity `dirty582fe64677ff`:
+    AirportItlwm.kext, trace producer audit, Agent clean build, and RegDiag
+    all passed.  The gate explicitly performed no kext install/load/publish,
+    no AP association, and no release operation;
+  - this result verifies compilation and contract properties of the real
+    controller/UserClient/Agent boundary only.  It does not verify WPA3/SAE
+    association because no production driver ingress invokes `beginSaeRelay`,
+    and Algorithm-3 TX/RX, cryptography, SAE PMK installation, and the
+    association state transition remain absent.
+
 ## ANOMALY: `LAB-IWX-PMF-BIP-PRE-REKEY-TRACE-FRESHNESS-20260722`
 
 ### Observation
