@@ -20,6 +20,21 @@ Date: 2026-07-21
   sole mutable asset until a whole version-level feature layer has passed its
   exact-candidate runtime evidence.
 
+## Persistent prioritization rule (user directive, 2026-07-22)
+
+When choosing the next layer that reduces surface mismatch with the reference,
+first choose the eligible layer that unblocks the most frequently used
+user-facing function. Do not prefer a lower-frequency evidence, diagnostic,
+or convenience layer merely because it is smaller or easier to verify.
+
+Safety prerequisites and explicit external blockers still apply. A lower-level
+layer may precede the highest-frequency user path only when it is an actual
+hard prerequisite for that path or prevents a false success claim about it;
+the candidate report must state that dependency explicitly. For the current
+project this means a real saved-profile association/WPA3 path and its
+driver/Agent bridge outrank further standalone PMF diagnostic polish once the
+in-flight bounded verification work is complete.
+
 ## Commits delivered in this checkpoint
 
 1. `efd1c7a test(tahoe): build trace producers before auditing them`

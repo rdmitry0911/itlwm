@@ -57,6 +57,8 @@ AP_REQUIRED_WAS_ACTIVE=0
 AP_ROLLBACK_VERIFIED=0
 AP_ROLLBACK_ATTEMPTED=0
 INITIAL_PMF_PROGRESS=0
+INITIAL_PMF_EPISODE=0
+PRE_REKEY_TRACE_FRESH=0
 TRAFFIC_SUCCESS=0
 REKEY_REQUESTED=0
 CROSS_SLOT_REKEY_OBSERVED=0
@@ -587,39 +589,64 @@ wait_for_reset_snapshot_buffer_sync() {
     return 1
 }
 
+capture_live_initial_pmf_progress() {
+    local label="$1" expected_episode="$2" snapshot progress
+    local snapshot_generation progress_generation snapshot_episode progress_episode
+    case "$expected_episode" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$expected_episode" -le 4294967295 ] || return 1
+    snapshot="$label-snapshot"
+    progress="$label-report"
+    capture_trace_client "$snapshot" get snapshot || return 1
+    capture_trace_client "$progress" get pmf-bip-progress || return 1
+    snapshot_generation="$(extract_u32 "$OUT_DIR/$snapshot.stdout" capture_generation || true)"
+    progress_generation="$(extract_u32 "$OUT_DIR/$progress.stdout" capture_generation || true)"
+    snapshot_episode="$(extract_u32 "$OUT_DIR/$snapshot.stdout" active_episode || true)"
+    progress_episode="$(extract_u32 "$OUT_DIR/$progress.stdout" active_episode || true)"
+    [ "$snapshot_generation" = "$CAPTURE_GENERATION" ] || return 1
+    [ "$progress_generation" = "$CAPTURE_GENERATION" ] || return 1
+    [ -n "$snapshot_episode" ] && [ -n "$progress_episode" ] || return 1
+    [ "$snapshot_episode" -gt 0 ] && [ "$progress_episode" -gt 0 ] || return 1
+    [ "$snapshot_episode" = "$progress_episode" ] || return 1
+    [ "$expected_episode" = 0 ] || [ "$snapshot_episode" = "$expected_episode" ] || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" backend IWX || return 1
+    file_has_token "$OUT_DIR/$progress.stdout" backend IWX || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" enabled 1 || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" target_bound 1 || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" episode_count 1 || return 1
+    file_has_token "$OUT_DIR/$progress.stdout" episode_count 1 || return 1
+    file_has_token "$OUT_DIR/$snapshot.stdout" dropped 0 || return 1
+    file_has_token "$OUT_DIR/$progress.stdout" integrity ok || return 1
+    file_has_token "$OUT_DIR/$progress.stdout" pmf_bip_progress INITIAL_PMF_BIP_READY || return 1
+    file_has_token "$OUT_DIR/$progress.stdout" first_missing_stage none || return 1
+    printf '%s\n' "$snapshot_episode"
+}
+
 wait_for_initial_pmf_progress() {
-    local attempt snapshot progress snapshot_generation progress_generation
-    local snapshot_episode progress_episode
+    local attempt episode
+    INITIAL_PMF_PROGRESS=0
+    INITIAL_PMF_EPISODE=0
     for attempt in $(seq 1 "$INITIAL_ATTEMPTS"); do
-        snapshot="initial-progress-$attempt-snapshot"
-        progress="initial-progress-$attempt-report"
-        if capture_trace_client "$snapshot" get snapshot &&
-            capture_trace_client "$progress" get pmf-bip-progress; then
-            snapshot_generation="$(extract_u32 "$OUT_DIR/$snapshot.stdout" capture_generation || true)"
-            progress_generation="$(extract_u32 "$OUT_DIR/$progress.stdout" capture_generation || true)"
-            snapshot_episode="$(extract_u32 "$OUT_DIR/$snapshot.stdout" active_episode || true)"
-            progress_episode="$(extract_u32 "$OUT_DIR/$progress.stdout" active_episode || true)"
-            if [ "$snapshot_generation" = "$CAPTURE_GENERATION" ] &&
-                [ "$progress_generation" = "$CAPTURE_GENERATION" ] &&
-                [ -n "$snapshot_episode" ] && [ -n "$progress_episode" ] &&
-                [ "$snapshot_episode" -gt 0 ] && [ "$progress_episode" -gt 0 ] &&
-                [ "$snapshot_episode" = "$progress_episode" ] &&
-                file_has_token "$OUT_DIR/$snapshot.stdout" backend IWX &&
-                file_has_token "$OUT_DIR/$progress.stdout" backend IWX &&
-                file_has_token "$OUT_DIR/$snapshot.stdout" enabled 1 &&
-                file_has_token "$OUT_DIR/$snapshot.stdout" episode_count 1 &&
-                file_has_token "$OUT_DIR/$progress.stdout" episode_count 1 &&
-                file_has_token "$OUT_DIR/$snapshot.stdout" dropped 0 &&
-                file_has_token "$OUT_DIR/$progress.stdout" integrity ok &&
-                file_has_token "$OUT_DIR/$progress.stdout" pmf_bip_progress INITIAL_PMF_BIP_READY &&
-                file_has_token "$OUT_DIR/$progress.stdout" first_missing_stage none; then
-                INITIAL_PMF_PROGRESS=1
-                return 0
-            fi
+        if episode="$(capture_live_initial_pmf_progress "initial-progress-$attempt" 0)"; then
+            INITIAL_PMF_EPISODE="$episode"
+            INITIAL_PMF_PROGRESS=1
+            return 0
         fi
         sleep 1
     done
     return 1
+}
+
+verify_pre_rekey_trace_freshness() {
+    local observed_episode
+    PRE_REKEY_TRACE_FRESH=0
+    [ "$INITIAL_PMF_PROGRESS" -eq 1 ] || return 1
+    [ "$INITIAL_PMF_EPISODE" -gt 0 ] 2>/dev/null || return 1
+    observed_episode="$(capture_live_initial_pmf_progress pre-rekey-fresh "$INITIAL_PMF_EPISODE")" || return 1
+    [ "$observed_episode" = "$INITIAL_PMF_EPISODE" ] || return 1
+    PRE_REKEY_TRACE_FRESH=1
+    return 0
 }
 
 read_final_trace_once() {
@@ -704,7 +731,7 @@ write_safe_attestation() {
         "$TRACE_CLIENT_SHA256" "$TRACE_CLIENT_PRE_RESET_BOUND" \
         "$IDENTITY_BEFORE_BOUND" "$IDENTITY_AFTER_BOUND" "$SAVED_PROFILE_READY" \
         "$AP_PREFLIGHT_PASSED" "$AP_REQUIRED_WAS_ACTIVE" "$AP_ROLLBACK_ATTEMPTED" "$AP_ROLLBACK_VERIFIED" \
-        "$INITIAL_PMF_PROGRESS" "$TRAFFIC_SUCCESS" "$REKEY_REQUESTED" "$CROSS_SLOT_REKEY_OBSERVED" "$NETWORK_INVARIANTS_OK" \
+        "$INITIAL_PMF_PROGRESS" "$PRE_REKEY_TRACE_FRESH" "$TRAFFIC_SUCCESS" "$REKEY_REQUESTED" "$CROSS_SLOT_REKEY_OBSERVED" "$NETWORK_INVARIANTS_OK" \
         "$RESET_SEQUENCE" "$CAPTURE_GENERATION" "$TRACE_BACKEND" "$TRACE_INTEGRITY" "$TRACE_ENTRY_COUNT" "$TRACE_EPISODE_COUNT" "$TRACE_DROPPED_ENTRIES" "$TRACE_VERDICT" "$TRACE_FIRST_MISSING_STAGE" \
         "$RESET_ACK_SYNC" "$INITIAL_SNAPSHOT_BUFFER_SYNC" "$TRACE_SEAL_ACKNOWLEDGED" "$FINAL_CONTROL_DISABLED" "$DOUBLE_READ_STABLE" \
         "$RADIO_OFF_OBSERVED" "$RADIO_ON_OBSERVED" "$RADIO_RECOVERY_ATTEMPTED" "$FAILURE_PHASE" "$RUN_COMPLETE" <<'PY'
@@ -716,7 +743,7 @@ from pathlib import Path
     output, source_commit, source_identity, release_tag, archive_sha, binary_sha, macho_uuid,
     trace_client_sha256, trace_client_pre_reset_bound,
     identity_before, identity_after, saved_profile, ap_preflight, ap_required, ap_rollback_attempted, ap_rollback,
-    initial_progress, traffic, rekey_requested, cross_slot, network_ok,
+    initial_progress, pre_rekey_trace_fresh, traffic, rekey_requested, cross_slot, network_ok,
     reset_sequence, generation, backend, integrity, entry_count, episode_count, dropped,
     verdict, first_missing, reset_sync, initial_sync, sealed, disabled, double_read,
     radio_off, radio_on, radio_recovery, failure_phase, run_complete,
@@ -729,7 +756,8 @@ trace_pass = (
     backend == "iwx" and integrity == "ok" and dropped == "0" and
     verdict == "CROSS_SLOT_REKEY_OBSERVED" and first_missing == "none" and
     int(episode_count) == 1 and int(entry_count) > 0 and
-    b(trace_client_pre_reset_bound) and b(reset_sync) and b(initial_sync) and b(sealed) and b(disabled) and b(double_read)
+    b(trace_client_pre_reset_bound) and b(pre_rekey_trace_fresh) and
+    b(reset_sync) and b(initial_sync) and b(sealed) and b(disabled) and b(double_read)
 )
 result = (
     b(identity_before) and b(identity_after) and b(saved_profile) and
@@ -738,7 +766,7 @@ result = (
     b(network_ok) and b(radio_off) and b(radio_on) and b(run_complete) and trace_pass
 )
 document = {
-    "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
+    "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v3",
     "candidate": {
         "source_commit": source_commit,
         "source_identity_sha256": source_identity,
@@ -781,6 +809,7 @@ document = {
     "pmf_bip": {
         "initial_active_prefix_observed_before_rekey": b(initial_progress),
         "bounded_traffic_probe_succeeded_before_rekey": b(traffic),
+        "initial_active_prefix_fresh_at_rekey_admission": b(pre_rekey_trace_fresh),
         "bounded_group_rekey_requested": b(rekey_requested),
         "sealed_cross_slot_rekey_observed": b(cross_slot),
     },
@@ -964,6 +993,8 @@ assert_network_invariants initial-pmf-traffic || fail_phase initial-pmf-traffic-
 
 [ "$INITIAL_PMF_PROGRESS" -eq 1 ] && [ "$TRAFFIC_SUCCESS" -eq 1 ] ||
     fail_phase rekey-without-proven-initial-pmf
+verify_pre_rekey_trace_freshness || fail_phase pre-rekey-trace-freshness
+[ "$PRE_REKEY_TRACE_FRESH" -eq 1 ] || fail_phase rekey-without-fresh-initial-pmf
 "$AP_HELPER" --rekey --state-dir "$AP_STATE_DIR" \
     >"$OUT_DIR/ap-rekey.stdout" 2>"$OUT_DIR/ap-rekey.stderr" || fail_phase bounded-group-rekey
 grep -Fxq 'PMF_AP_REKEY=REQUESTED' "$OUT_DIR/ap-rekey.stdout" || fail_phase bounded-group-rekey-output

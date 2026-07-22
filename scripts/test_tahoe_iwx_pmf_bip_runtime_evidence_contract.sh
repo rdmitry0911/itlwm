@@ -67,7 +67,7 @@ def boolean_fields(mapping: dict, *keys: str) -> None:
 
 
 def validate(document: dict) -> None:
-    require(document.get("schema") == "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
+    require(document.get("schema") == "itlwm-tahoe-iwx-pmf-bip-runtime/v3",
             "unexpected schema")
 
     candidate = document.get("candidate")
@@ -139,6 +139,7 @@ def validate(document: dict) -> None:
     require(isinstance(pmf_bip, dict), "PMF/BIP section missing")
     boolean_fields(pmf_bip, "initial_active_prefix_observed_before_rekey",
                    "bounded_traffic_probe_succeeded_before_rekey",
+                   "initial_active_prefix_fresh_at_rekey_admission",
                    "bounded_group_rekey_requested",
                    "sealed_cross_slot_rekey_observed")
 
@@ -222,6 +223,7 @@ def validate(document: dict) -> None:
         require(all(pmf_bip[key] is True for key in (
             "initial_active_prefix_observed_before_rekey",
             "bounded_traffic_probe_succeeded_before_rekey",
+            "initial_active_prefix_fresh_at_rekey_admission",
             "bounded_group_rekey_requested", "sealed_cross_slot_rekey_observed")),
             "PASS lacks the ordered initial/traffic/rekey chain")
         require(trace["backend"] == "iwx" and trace["integrity"] == "ok" and
@@ -260,7 +262,7 @@ def validate(document: dict) -> None:
 
 def fixture() -> dict:
     return {
-        "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v2",
+        "schema": "itlwm-tahoe-iwx-pmf-bip-runtime/v3",
         "candidate": {
             "source_commit": "a" * 40,
             "source_identity_sha256": "b" * 64,
@@ -307,6 +309,7 @@ def fixture() -> dict:
         "pmf_bip": {
             "initial_active_prefix_observed_before_rekey": True,
             "bounded_traffic_probe_succeeded_before_rekey": True,
+            "initial_active_prefix_fresh_at_rekey_admission": True,
             "bounded_group_rekey_requested": True,
             "sealed_cross_slot_rekey_observed": True,
         },
@@ -369,6 +372,16 @@ if mode == "self-test":
     document["failure_phase"] = "bounded-group-rekey"
     validate(document)
     document["pmf_bip"]["bounded_group_rekey_requested"] = True
+    document["pmf_bip"]["initial_active_prefix_fresh_at_rekey_admission"] = False
+    try:
+        document["result"] = "PASS"
+        document["failure_phase"] = "none"
+        validate(document)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted a PASS without fresh pre-rekey trace")
+    document["pmf_bip"]["initial_active_prefix_fresh_at_rekey_admission"] = True
     document["trace_client"]["pre_reset_bound"] = False
     try:
         document["result"] = "PASS"

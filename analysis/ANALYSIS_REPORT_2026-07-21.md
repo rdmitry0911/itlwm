@@ -600,6 +600,127 @@ required configuration digests.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-IWX-PMF-BIP-PRE-REKEY-TRACE-FRESHNESS-20260722`
+
+### Observation
+
+The bounded IWX PMF/BIP runner turns the initial progress classifier into a
+sticky boolean.  `wait_for_initial_pmf_progress()` polls a matching snapshot
+and `pmf-bip-progress` pair, but it does not retain the nonzero active episode.
+After that one success, the runner performs the traffic probe and its network
+invariant check, then sends `REKEY_GTK` using only
+`INITIAL_PMF_PROGRESS=1` and `TRAFFIC_SUCCESS=1`.  It does not obtain one final
+same-generation, same-episode trace read immediately before the stimulus.
+
+Consequently, an initially admissible prefix can become stale during the
+post-initial interval: a reset, seal, drop, target loss, different active
+episode, or an extra PMF/BIP transition can make the current trace
+inconclusive while the old boolean still authorizes the hostapd command.  The
+initial-prefix evaluator itself rejects terminal/extra events after port-valid,
+but the runner currently does not ask it again at the rekey admission edge.
+
+- scope: future runner/evidence receipt and local synthetic fixtures only. No
+  guest, AP helper invocation, saved profile, radio, candidate kext, traffic,
+  or network state is contacted or changed to demonstrate the defect.
+- deterministic proof: the current main-line segment between
+  `initial-pmf-traffic-invariants` and `--rekey` contains no trace read or
+  correlation to the original active episode.  A local fixture can therefore
+  model a formerly ready initial pair followed by a changed episode,
+  inconclusive progress, or generation mismatch and show that the legacy
+  segment has no gate capable of withholding the simulated rekey witness.
+- trust boundary: a final read narrows stale authorization within the runner;
+  it cannot make a shell trace read and a subsequent hostapd control command
+  atomically causal under arbitrary scheduling.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-IWX-PMF-BIP-PRE-REKEY-TRACE-FRESHNESS-20260722`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. preserve polling only for discovery of the initial prefix, but factor its
+     snapshot/progress checks into a common local helper that requires the
+     armed IWX backend, target binding, exact capture generation, exactly one
+     episode, zero snapshot drops, matching nonzero active episode, intact
+     initial-prefix classifier, and `first_missing_stage=none`;
+  2. save the initial active episode only after that helper succeeds, then add
+     one non-polling `verify_pre_rekey_trace_freshness()` after traffic and its
+     invariant check. It must read one new snapshot/progress pair and require
+     the exact originally recorded episode as well as the original generation;
+  3. run that verifier exactly once before `--rekey`, with no sleep, retry,
+     reset, seal, or AP command in the verifier. A failed or changed trace
+     must route to an inconclusive phase before any bounded stimulus;
+  4. upgrade sanitized runtime evidence to schema v3 with a boolean
+     `initial_active_prefix_fresh_at_rekey_admission`, require it for PASS,
+     and retain neither an episode number nor raw trace/path output;
+  5. add a local fixture for a same-episode pass and changed-episode,
+     integrity-inconclusive, and generation-mismatch failures, asserting one
+     snapshot and one progress read and no retry/sleep before a fake rekey;
+     extend static ordering/evidence contracts and protocol wording.
+- safety and alternatives:
+  - do not alter the AP helper, trace producer, kernel ABI, candidate
+    provenance, saved profile, radio, guest, or live PMF/SAE path;
+  - do not retry a failed final read, since retry would widen the admission
+    window and could conceal the transition that made the first read
+    inconclusive;
+  - do not describe this as eliminating trace-read-to-hostapd-command TOCTOU;
+    eliminating that remaining scheduling edge needs an architectural shared
+    command/trace receipt rather than a shell-only check.
+- verification plan:
+  - add and capture the deterministic pre-fix local fixture failure first;
+  - run the dedicated freshness fixture, IWX evidence and static contracts,
+    post-PLTI/payload contracts, the SAE quarantine aggregate, and the
+    isolated Tahoe build-only gate;
+  - preserve the no-live-runtime and saved-profile-mismatch boundaries.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-IWX-PMF-BIP-PRE-REKEY-TRACE-FRESHNESS-20260722`
+
+- implementation:
+  - factored the initial snapshot/progress predicates into
+    `capture_live_initial_pmf_progress()`.  It requires the armed IWX
+    backend, exact capture generation, target binding, exactly one episode,
+    zero drops, matching nonzero active episodes, and the intact initial
+    PMF/BIP classifier before returning the local-only episode number;
+  - the initial bounded poll now retains that episode only after the common
+    predicate succeeds.  After traffic and the network-invariant check,
+    `verify_pre_rekey_trace_freshness()` makes exactly one fresh
+    snapshot/progress read, with no retry, sleep, reset, seal, or AP action,
+    and requires the same original episode before `--rekey` is reachable;
+  - sanitized runtime evidence is now schema v3.  Its categorical `PASS`
+    requires `initial_active_prefix_fresh_at_rekey_admission=true`; it does
+    not serialize the active episode or raw trace/path material;
+  - added a local extracted-helper fixture and static ordering checks for the
+    new admission edge and protocol.
+- deterministic fixture evidence:
+  - before implementation, the new fixture failed exactly with
+    `FAIL: IWX pre-rekey freshness fixture: runner lacks a one-shot
+    post-traffic trace revalidation before bounded rekey`;
+  - after implementation, the same-episode case reaches only its fake rekey
+    witness.  Changed episode, inconclusive integrity, changed generation,
+    and lost target binding fail before that witness.  Every case performs
+    one initial and one pre-rekey snapshot/progress pair; the final verifier
+    never invokes its mocked `sleep`.
+- verification:
+  - `bash scripts/test_tahoe_iwx_pmf_bip_pre_rekey_trace_freshness_fixture.sh`:
+    PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_payload_builders.sh`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `git diff --check`: PASS;
+  - pinned isolated Tahoe build-only gate: source identity
+    `dirtyf2e5506931a2`; the kext, trace producer, Agent, and RegDiag built,
+    and all 959 undefined symbols resolved against BootKC.  No kext was
+    installed, loaded, published, or released.
+- verification boundary: this closes a runner-local stale-trace admission
+  gap.  It does not eliminate the remaining trace-read-to-hostapd-command
+  scheduling TOCTOU, and is not a live WPA3/SAE association, PMF rekey,
+  candidate activation, guest reboot, or driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-IWX-PMF-BIP-INITIAL-M1-MSG3-MULTI-RX-PREFIX-20260722`
 
 ### Observation

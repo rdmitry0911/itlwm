@@ -1,5 +1,14 @@
 # Tahoe IWX PMF/BIP runtime-gate plan
 
+## Persistent layer-selection criterion (2026-07-22)
+
+For every next surface-reduction cycle, select the eligible discrepancy that
+affects the most frequently used user-facing function first. A smaller
+diagnostic/evidence discrepancy is not a higher priority solely because it is
+easy to test. It may run first only if it is a hard prerequisite for the
+higher-frequency path or prevents a false claim about that path; record that
+dependency in the corresponding `FIX_CANDIDATE`.
+
 Date: 2026-07-21
 
 ## Status

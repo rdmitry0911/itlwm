@@ -188,14 +188,28 @@ sequence:
    sequential q0 doorbell/completion pairs, post-acknowledgement IGTK
    publication, matching selected slot, and port-valid in one active capture
    episode. The snapshot and progress reads must both name the same nonzero
-   active episode and exactly one episode.
+   active episode and exactly one episode. The runner retains that episode only
+   as local correlation state; it never writes the episode number into its
+   sanitized evidence.
    This initial active prefix does not establish final success;
-   it only authorizes the next bounded stimulus.
-5. Require the bounded local traffic probe and all invariants before asking
-   the helper for exactly one group rekey.
-6. Seal the trace, require two identical frozen reads and exactly one sealed
+   it only makes a later one-shot admission check eligible.
+5. Require the bounded local traffic probe and all invariants, then take one
+   final snapshot/progress pair immediately before the stimulus. It must still
+   name the original capture generation and the same active episode, remain
+   target-bound with one episode and no drops, and classify as the intact
+   initial prefix. This final read has no retry or sleep: a reset, seal, extra
+   PMF/BIP event, drop, generation/episode change, or malformed record is
+   inconclusive before any rekey command.
+6. Only after that fresh admission may the helper receive exactly one group
+   rekey request.
+7. Seal the trace, require two identical frozen reads and exactly one sealed
    cross-slot rekey verdict, disable trace control, restore optional PMF, and
    re-check recovery/invariants and loaded candidate identity.
+
+The final same-generation/same-active-episode read narrows stale initial-prefix
+authorization. It does not make the read and later hostapd command atomic; the
+remaining narrow scheduling TOCTOU would need a shared command/trace receipt
+or a different architecture, not another shell retry.
 
 The runner treats its restricted AP state directory as rollback ownership even
 if interruption occurs in the small interval after the external activation
@@ -213,17 +227,18 @@ a PMF/BIP success claim.
 ## Evidence boundary
 
 The runner leaves raw trace, hostapd, interface, and route output local-only in
-its fresh output directory. Its JSON attestation carries only exact candidate
-digests/UUID, the receipt-named trace-client digest and pre-reset binding
-boolean, categorical trace counts/verdicts, booleans, and non-claims. It must
-contain no wireless identity, address, route, hardware address, credential,
-packet, raw capture, remote path, or remote-observed digest.
+its fresh output directory. Its v3 JSON attestation carries only exact
+candidate digests/UUID, the receipt-named trace-client digest and pre-reset
+binding boolean, the boolean fresh-at-rekey admission result, categorical trace
+counts/verdicts, booleans, and non-claims. It must contain no wireless identity,
+address, route, hardware address, credential, packet, raw capture, active episode number,
+remote path, or remote-observed digest.
 
 `test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh` accepts `PASS` only if
 all of these are true: before/after identity binding, saved-profile preflight,
-pre-reset trace-client byte binding,
-required-PMF activation and verified rollback, preserved network invariants,
-the initial prefix and traffic-before-rekey gate, one bounded group rekey,
+pre-reset trace-client byte binding, required-PMF activation and verified
+rollback, preserved network invariants, the initial prefix and traffic gate,
+a fresh same active episode at rekey admission, one bounded group rekey,
 exactly one resulting sealed IWX cross-slot transition, and an intact trace
 verdict. It otherwise accepts only an
 inconclusive record with an explicit failure phase.

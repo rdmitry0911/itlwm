@@ -11,6 +11,7 @@ AP_HELPER="$ROOT/scripts/tahoe_pmf_required_ap_switchover.sh"
 AP_FIXTURE="$ROOT/scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh"
 EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh"
 TRACE_CLIENT_BINDING_FIXTURE="$ROOT/scripts/test_tahoe_iwx_pmf_bip_trace_client_binding_fixture.sh"
+PRE_REKEY_FRESHNESS_FIXTURE="$ROOT/scripts/test_tahoe_iwx_pmf_bip_pre_rekey_trace_freshness_fixture.sh"
 PROTOCOL="$ROOT/docs/TAHOE_IWX_PMF_BIP_RUNTIME_PROTOCOL.md"
 OVERLAY_HELPER="$ROOT/scripts/tahoe_prepare_disposable_overlay.sh"
 OVERLAY_EVIDENCE_CONTRACT="$ROOT/scripts/test_tahoe_disposable_overlay_evidence_contract.sh"
@@ -86,12 +87,12 @@ cleanup_order_fixture() {
 }
 
 for path in "$RUNNER" "$AP_HELPER" "$AP_FIXTURE" "$EVIDENCE_CONTRACT" \
-            "$TRACE_CLIENT_BINDING_FIXTURE" "$PROTOCOL" \
+            "$TRACE_CLIENT_BINDING_FIXTURE" "$PRE_REKEY_FRESHNESS_FIXTURE" "$PROTOCOL" \
             "$OVERLAY_HELPER" "$OVERLAY_EVIDENCE_CONTRACT" "$OVERLAY_PROTOCOL"; do
     [ -f "$path" ] || fail "required file is missing: ${path##*/}"
 done
 [ -x "$RUNNER" ] && [ -x "$AP_HELPER" ] && [ -x "$AP_FIXTURE" ] && [ -x "$EVIDENCE_CONTRACT" ] && \
-    [ -x "$TRACE_CLIENT_BINDING_FIXTURE" ] && \
+    [ -x "$TRACE_CLIENT_BINDING_FIXTURE" ] && [ -x "$PRE_REKEY_FRESHNESS_FIXTURE" ] && \
     [ -x "$OVERLAY_HELPER" ] && [ -x "$OVERLAY_EVIDENCE_CONTRACT" ] ||
     fail 'runtime scripts must be executable'
 bash -n "$RUNNER"
@@ -102,6 +103,7 @@ bash -n "$AP_FIXTURE"
 "$EVIDENCE_CONTRACT" --self-test
 "$AP_FIXTURE"
 "$TRACE_CLIENT_BINDING_FIXTURE"
+"$PRE_REKEY_FRESHNESS_FIXTURE"
 cleanup_order_fixture
 
 for needle in \
@@ -117,6 +119,10 @@ for needle in \
     'ready_for_exact_candidate_runtime_experiment' \
     'get pmf-bip-progress' \
     'INITIAL_PMF_BIP_READY' \
+    'INITIAL_PMF_EPISODE' \
+    'PRE_REKEY_TRACE_FRESH' \
+    'verify_pre_rekey_trace_freshness' \
+    'initial_active_prefix_fresh_at_rekey_admission' \
     'get pmf-bip-report' \
     'CROSS_SLOT_REKEY_OBSERVED' \
     'run_bounded_traffic_probe' \
@@ -127,6 +133,7 @@ for needle in \
     'trace_client' \
     'expected_sha256' \
     'pre_reset_bound' \
+    'itlwm-tahoe-iwx-pmf-bip-runtime/v3' \
     'host_ip_nat_forwarding_route_mutated' \
     'AP_REQUIRED_WAS_ACTIVE' \
     'AP_ROLLBACK_ATTEMPTED=1' \
@@ -295,6 +302,8 @@ ordered(main, "runner PMF/BIP sequence",
         "remote_radio_power on",
         "wait_for_initial_pmf_progress",
         "run_bounded_traffic_probe",
+        "assert_network_invariants initial-pmf-traffic",
+        "verify_pre_rekey_trace_freshness || fail_phase pre-rekey-trace-freshness",
         '"$AP_HELPER" --rekey --state-dir "$AP_STATE_DIR"',
         "seal_trace || fail_phase trace-seal",
         "read_final_trace_once read-1",
@@ -330,28 +339,62 @@ ordered(trace_exec, "trace-client execution guard before exec",
 rekey = main.find('"$AP_HELPER" --rekey --state-dir "$AP_STATE_DIR"')
 initial = main.find("wait_for_initial_pmf_progress")
 traffic = main.find("run_bounded_traffic_probe")
-if not (0 <= initial < traffic < rekey):
-    fail("rekey is not gated by initial PMF progress and traffic")
+traffic_invariant = main.find("assert_network_invariants initial-pmf-traffic")
+freshness = main.find("verify_pre_rekey_trace_freshness || fail_phase pre-rekey-trace-freshness")
+if not (0 <= initial < traffic < traffic_invariant < freshness < rekey):
+    fail("rekey is not gated by initial PMF progress, traffic, and fresh trace")
 
-initial_progress = runner[runner.find("wait_for_initial_pmf_progress() {"):
-                          runner.find("read_final_trace_once() {")]
+initial_progress = shell_function(
+    runner, "capture_live_initial_pmf_progress() {", "wait_for_initial_pmf_progress() {")
 for token in (
     'extract_u32 "$OUT_DIR/$snapshot.stdout" active_episode',
     'extract_u32 "$OUT_DIR/$progress.stdout" active_episode',
     '[ "$snapshot_episode" -gt 0 ]',
     '[ "$progress_episode" -gt 0 ]',
     '[ "$snapshot_episode" = "$progress_episode" ]',
+    '[ "$expected_episode" = 0 ] || [ "$snapshot_episode" = "$expected_episode" ]',
+    'file_has_token "$OUT_DIR/$snapshot.stdout" target_bound 1',
     'file_has_token "$OUT_DIR/$snapshot.stdout" episode_count 1',
     'file_has_token "$OUT_DIR/$progress.stdout" episode_count 1',
 ):
     if token not in initial_progress:
         fail(f"initial PMF progress lacks live-episode fence: {token}")
 
+initial_wait = shell_function(
+    runner, "wait_for_initial_pmf_progress() {", "verify_pre_rekey_trace_freshness() {")
+for token in (
+    'INITIAL_PMF_EPISODE=0',
+    'episode="$(capture_live_initial_pmf_progress "initial-progress-$attempt" 0)"',
+    'INITIAL_PMF_EPISODE="$episode"',
+    'INITIAL_PMF_PROGRESS=1',
+):
+    if token not in initial_wait:
+        fail(f"initial PMF waiter does not retain exact active episode: {token}")
+
+pre_rekey = shell_function(
+    runner, "verify_pre_rekey_trace_freshness() {", "read_final_trace_once() {")
+for token in (
+    'PRE_REKEY_TRACE_FRESH=0',
+    '[ "$INITIAL_PMF_PROGRESS" -eq 1 ]',
+    '[ "$INITIAL_PMF_EPISODE" -gt 0 ]',
+    'capture_live_initial_pmf_progress pre-rekey-fresh "$INITIAL_PMF_EPISODE"',
+    '[ "$observed_episode" = "$INITIAL_PMF_EPISODE" ]',
+    'PRE_REKEY_TRACE_FRESH=1',
+):
+    if token not in pre_rekey:
+        fail(f"pre-rekey freshness verifier is incomplete: {token}")
+if pre_rekey.count("capture_live_initial_pmf_progress") != 1:
+    fail("pre-rekey freshness verifier does not have exactly one trace read pair")
+for token in ("sleep", "for attempt", "seq 1", "AP_HELPER", "remote_radio_power", "seal_trace", "reset"):
+    if token in pre_rekey:
+        fail(f"pre-rekey freshness verifier has forbidden retry or mutation: {token}")
+
 attestation = runner[runner.find("write_safe_attestation() {"):runner.find("cleanup() {")]
 for token in ("PINNED_PROFILE_SSID", "PINNED_LAB_GATEWAY",
               "PINNED_WIFI_INTERFACE", "ACTIVE_CLIENT_MAC",
               "DEFAULT_ROUTE_BASELINE", "MANAGEMENT_IPV4_BASELINE",
-              "LAB_IPV4_BASELINE", "LAB_ROUTE_BASELINE", "TRACE_TOOL"):
+              "LAB_IPV4_BASELINE", "LAB_ROUTE_BASELINE", "TRACE_TOOL",
+              "INITIAL_PMF_EPISODE"):
     if token in attestation:
         fail(f"sanitized attestation serializes runtime identity: {token}")
 
@@ -659,6 +702,8 @@ for token in (
     "precondition failure", "fresh disposable overlay", "REKEY_GTK",
     "tahoe_prepare_disposable_overlay.sh", "local-only receipt",
     "receipt-named trace-client", "TOCTOU", "unbound final-off",
+    "same active episode", "one-shot", "final same-generation/same-active-episode read",
+    "v3 JSON attestation", "active episode number",
 ):
     if token not in protocol:
         fail(f"runtime protocol omits boundary: {token}")
