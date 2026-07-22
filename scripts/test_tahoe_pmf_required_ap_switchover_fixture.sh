@@ -146,6 +146,7 @@ printf '%s\n' \
     'case "$calls" in ""|*[!0-9]*) exit 65;; esac' \
     'calls=$((calls + 1))' \
     'printf "%s\n" "$calls" >"$FAKE_IW_CALL_COUNT"' \
+    'if [ "${FAKE_MUTATE_NETWORK_ON_IW_CALL:-}" = "$calls" ]; then printf "drift\n" >"$FAKE_NETWORK_STATE"; fi' \
     'if [ "${FAKE_TERMINATE_REQUIRED_ON_IW:-0}" = 1 ] && [ -r "$FAKE_REQUIRED_PID" ]; then' \
     '    pid="$(tr -d "[:space:]" <"$FAKE_REQUIRED_PID")"' \
     '    case "$pid" in ""|*[!0-9]*) exit 65;; esac' \
@@ -665,6 +666,54 @@ grep -Fxq 'rollback_verified=true' "$ROLLBACK_FINAL_CONFIG_STATE_DIR/rollback.st
     fail 'rollback final configuration recovery left the active marker'
 if /bin/kill -0 "$ROLLBACK_FINAL_CONFIG_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'rollback final configuration recovery left the watchdog live'
+fi
+
+# Host-network proof must remain current through final optional/AP attestation.
+# Fake iw changes only its generated network source at that third rollback
+# shape probe, after the old single network comparison has already passed.
+ROLLBACK_FINAL_NETWORK_STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$ROLLBACK_FINAL_NETWORK_STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rollback-final-network-activate.out" \
+    2>"$TMP_ROOT/rollback-final-network-activate.err" ||
+    fail 'rollback-final-network fixture could not activate required PMF'
+IW_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_IW_CALL_COUNT")"
+case "$IW_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake iw call counter is invalid';; esac
+ROLLBACK_FINAL_NETWORK_IW_CALL=$((IW_CALLS_BEFORE + 3))
+if FAKE_MUTATE_NETWORK_ON_IW_CALL="$ROLLBACK_FINAL_NETWORK_IW_CALL" "$HELPER" --rollback --state-dir "$ROLLBACK_FINAL_NETWORK_STATE_DIR" >"$TMP_ROOT/rollback-final-network-drift.out" 2>"$TMP_ROOT/rollback-final-network-drift.err"; then
+    fail 'rollback accepted a host-network drift before verification'
+fi
+grep -Fq 'host network invariants changed before rollback verification' "$TMP_ROOT/rollback-final-network-drift.err" ||
+    fail 'rollback final network drift did not retain its categorical diagnostic'
+[ ! -e "$ROLLBACK_FINAL_NETWORK_STATE_DIR/rollback.status" ] ||
+    fail 'rollback final network drift wrote a verification receipt'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'rollback final network drift did not restore optional hostapd'
+ROLLBACK_FINAL_NETWORK_OPTIONAL_PID="$(tr -d '[:space:]' <"$RUN_DIR/hostapd-5g.pid")"
+/bin/kill -0 "$ROLLBACK_FINAL_NETWORK_OPTIONAL_PID" >/dev/null 2>&1 ||
+    fail 'rollback final network drift restored no live optional hostapd'
+[ ! -e "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'rollback final network drift left required hostapd active'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback final network drift cleared the active marker'
+[ -r "$ROLLBACK_FINAL_NETWORK_STATE_DIR/watchdog.pid" ] ||
+    fail 'rollback final network drift did not retain its watchdog receipt'
+ROLLBACK_FINAL_NETWORK_WATCHDOG_PID="$(tr -d '[:space:]' <"$ROLLBACK_FINAL_NETWORK_STATE_DIR/watchdog.pid")"
+/bin/kill -0 "$ROLLBACK_FINAL_NETWORK_WATCHDOG_PID" >/dev/null 2>&1 ||
+    fail 'rollback final network drift did not retain a live watchdog'
+printf 'stable\n' >"$FAKE_NETWORK_STATE"
+"$HELPER" --rollback --state-dir "$ROLLBACK_FINAL_NETWORK_STATE_DIR" \
+    >"$TMP_ROOT/rollback-final-network-recovery.out" \
+    2>"$TMP_ROOT/rollback-final-network-recovery.err" ||
+    fail 'rollback final network restoration did not permit cleanup'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rollback-final-network-recovery.out" ||
+    fail 'rollback final network recovery did not report optional restoration'
+grep -Fxq 'rollback_verified=true' "$ROLLBACK_FINAL_NETWORK_STATE_DIR/rollback.status" ||
+    fail 'rollback final network recovery did not commit its witness'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'rollback final network recovery left the active marker'
+if /bin/kill -0 "$ROLLBACK_FINAL_NETWORK_WATCHDOG_PID" >/dev/null 2>&1; then
+    fail 'rollback final network recovery left the watchdog live'
 fi
 
 # `rollback_verified=true` is a transaction-completion receipt, not a record

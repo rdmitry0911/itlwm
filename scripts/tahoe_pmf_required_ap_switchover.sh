@@ -799,6 +799,10 @@ do_rollback() {
         die "optional-PMF hostapd process or AP shape is not exact before rollback verification"
     config_pair_matches_state ||
         die "staged PMF configuration pair changed before rollback verification"
+    after_signature="$(host_network_signature)" ||
+        die "host network invariants are unreadable before rollback verification"
+    [ "$after_signature" = "$before_signature" ] ||
+        die "host network invariants changed before rollback verification"
     if [ "$FROM_WATCHDOG" -eq 0 ]; then
         cancel_watchdog || die "rollback could not safely cancel its watchdog"
     fi
