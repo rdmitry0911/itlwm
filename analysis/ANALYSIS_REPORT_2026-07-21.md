@@ -1107,6 +1107,113 @@ evidence.
   preflight remains categorically mismatched.  No live configuration was
   read, changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-REKEY-FINAL-WATCHDOG-ATTESTATION-20260721`
+
+### Observation
+
+The rekey command edge now requires an exact independent watchdog before raw
+`REKEY_GTK`, and the success edge reattests required hostapd/AP after the final
+network read.  It still does not prove that the watchdog survived the raw
+command and post-ack network probe before `rekey.status` is written.  A
+watchdog loss during that interval can therefore produce a categorical rekey
+success witness despite no longer having an autonomous rollback owner.
+
+- scope: repository-owned bounded rekey helper and generated fixture only; no
+  kext, firmware, Apple80211, candidate, guest, or physical-AP behavior claim.
+- expected system behavior: a rekey success witness must be emitted only while
+  the required process/AP, network/configuration input, and exact
+  marker/state-bound watchdog all remain current at its final publication edge.
+  A post-command owner loss is inconclusive: the already-issued raw request
+  remains consumed, but no success witness is permitted.
+- actual behavior: after post-command network and final process/AP checks,
+  `do_rekey()` writes `rekey.status` without a second
+  `watchdog_owner_is_current()` check.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::do_rekey()` between final
+  required process/AP attestation and `rekey_requested=true`.
+- source-local proof mechanism: the generated fake `ip` can kill/remove only
+  its temporary watchdog receipt on rekey's second route probe (the post-ack
+  network read) while preserving the fake baseline.  The unmodified source
+  still publishes success, without contacting a real AP/guest or changing a
+  real route, identity, profile, or credential.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-REKEY-FINAL-WATCHDOG-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a fresh generated rekey transaction that kills its watchdog only on
+     the second route probe; before a fix the fixture must fail because success
+     was accepted;
+  2. invoke the existing exact watchdog predicate after final required/AP
+     reattestation and immediately before rekey success receipt publication;
+  3. withhold `rekey.status` and output success on loss while retaining the
+     already-consumed one-shot receipt and existing explicit rollback cleanup;
+  4. extend static ordering and protocol wording for final-success owner proof.
+- safety and side effects: this adds only a read-only PID/argv/state predicate
+  and a local generated watchdog kill.  It creates no extra raw command,
+  retry, AP restart, configuration/network mutation, kext action, guest action,
+  or live AP operation.
+- forbidden alternatives considered and rejected:
+  - treating pre-command owner proof as proof at final result publication
+    ignores post-command watchdog loss;
+  - issuing another rekey after loss violates the exact-one raw command rule;
+  - silently writing success and letting later cleanup discover loss makes a
+    categorical runtime witness unreliable.
+- deterministic verification plan:
+  - pre-fix, the local fixture must stop at its assertion that rekey accepted a
+    watchdog killed before final success publication;
+  - post-fix, it must send exactly one already-authorized fake raw command,
+    retain only the request receipt, emit no success witness, and then restore
+    optional PMF only through its explicit rollback;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-REKEY-FINAL-WATCHDOG-ATTESTATION-20260721`
+
+- implementation:
+  - after final required PID/AP reattestation, `do_rekey()` now repeats the
+    existing exact `watchdog_owner_is_current()` predicate immediately before
+    it can write `rekey.status` or emit its categorical success result;
+  - a final owner loss leaves the previously authorized one-shot raw request
+    consumed but withholds the success witness.  It adds no extra command,
+    retry, restart, configuration/network mutation, kext, guest, or live AP
+    action;
+  - the fixture kills/removes only its generated watchdog at the second rekey
+    route probe.  Static ordering now requires final required PID/AP -> exact
+    watchdog -> success receipt, and the protocol describes that final owner
+    proof.
+- deterministic fixture evidence:
+  - before implementation, the isolated fixture stopped at
+    `group rekey accepted a watchdog that died before final success
+    publication`, proving false success after an otherwise valid fake raw
+    command;
+  - after implementation, the same event reaches exactly one fake raw request
+    and retains `rekey.requested`, but reports
+    `rollback watchdog is not exact before rekey success publication`, writes
+    no `rekey.status`, and emits no success result;
+  - explicit rollback then restores generated optional PMF and clears its
+    marker despite the fixture-only missing watchdog receipt.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirty6c56245c6a9b`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only a host-side final rekey-owner
+  freshness fence.  It is not a live hostapd result, PMF-required association,
+  IGTK observation, candidate activation, guest reboot, or driver-functionality
+  result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was
+  read, changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

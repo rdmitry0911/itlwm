@@ -762,6 +762,8 @@ do_rekey() {
         die "required-PMF hostapd process is not exact before rekey success publication"
     runtime_ap_is_pinned ||
         die "the lab AP left the pinned channel/width before rekey success publication"
+    watchdog_owner_is_current ||
+        die "rollback watchdog is not exact before rekey success publication"
     printf 'rekey_requested=true\n' >"$STATE_DIR/rekey.status"
     chmod 600 "$STATE_DIR/rekey.status"
     printf 'PMF_AP_REKEY=REQUESTED\n'

@@ -184,6 +184,7 @@ for needle in \
     'required-PMF hostapd is not exact before final state promotion' \
     'rollback watchdog is not exact before bounded group-rekey' \
     'required-PMF hostapd process is not exact before rekey success publication' \
+    'rollback watchdog is not exact before rekey success publication' \
     'staged PMF configuration pair changed before bounded group-rekey' \
     'staged PMF configuration pair changed before optional-PMF restart' \
     'optional_hostapd_exact_and_pinned' \
@@ -395,6 +396,8 @@ if "REKEY_WATCHDOG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pm
     fail("AP fixture lacks the bounded-rekey watchdog death discriminator")
 if "FINAL_REKEY_REQUIRED_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the final bounded-rekey required-process discriminator")
+if "FINAL_REKEY_WATCHDOG_ROUTE_CALL" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
+    fail("AP fixture lacks the final bounded-rekey watchdog discriminator")
 if "FAKE_MUTATE_REQUIRED_CONFIG_ON_START" not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
     fail("AP fixture lacks the transition configuration drift discriminator")
 if 'chmod 777 "$UNSAFE_STATE_DIR"' not in Path(sys.argv[2]).with_name("test_tahoe_pmf_required_ap_switchover_fixture.sh").read_text(encoding="utf-8"):
@@ -490,6 +493,8 @@ ordered(rekey_helper, "AP rekey host-network fence",
         'host network invariants changed during bounded group-rekey',
         'configured_hostapd_active "$REQUIRED_CONFIG" "$REQUIRED_PID"',
         "runtime_ap_is_pinned",
+        "watchdog_owner_is_current",
+        'rollback watchdog is not exact before rekey success publication',
         'rekey_requested=true')
 
 rekey_receipt = helper[helper.find("rekey_request_is_fresh() {"):

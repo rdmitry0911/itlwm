@@ -459,6 +459,47 @@ if /bin/kill -0 "$FINAL_REKEY_REQUIRED_WATCHDOG_PID" >/dev/null 2>&1; then
     fail 'final rekey required-child death rollback left the watchdog live'
 fi
 
+# The command-edge owner proof also must survive the raw command and final
+# network read.  Fake ip removes only this generated watchdog at rekey's
+# second route probe, immediately before success publication in the old path.
+STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
+"$HELPER" --activate --state-dir "$STATE_DIR" --lease-seconds 60 \
+    >"$TMP_ROOT/rekey-final-watchdog-activate.out" \
+    2>"$TMP_ROOT/rekey-final-watchdog-activate.err" ||
+    fail 'final-watchdog rekey fixture could not activate required PMF'
+REKEY_CLI_LINES_BEFORE="$(wc -l <"$FAKE_CLI_LOG")"
+ROUTE_CALLS_BEFORE="$(tr -d '[:space:]' <"$FAKE_ROUTE_CALL_COUNT")"
+case "$ROUTE_CALLS_BEFORE" in ''|*[!0-9]*) fail 'fake route call counter is invalid';; esac
+FINAL_REKEY_WATCHDOG_ROUTE_CALL=$((ROUTE_CALLS_BEFORE + 2))
+if FAKE_WATCHDOG_PID_FILE="$STATE_DIR/watchdog.pid" FAKE_TERMINATE_WATCHDOG_ON_ROUTE_CALL="$FINAL_REKEY_WATCHDOG_ROUTE_CALL" "$HELPER" --rekey --state-dir "$STATE_DIR" >"$TMP_ROOT/rekey-final-watchdog-death.out" 2>"$TMP_ROOT/rekey-final-watchdog-death.err"; then
+    fail 'group rekey accepted a watchdog that died before final success publication'
+fi
+grep -Fq 'rollback watchdog is not exact before rekey success publication' "$TMP_ROOT/rekey-final-watchdog-death.err" ||
+    fail 'final rekey watchdog death did not retain its categorical diagnostic'
+[ "$(wc -l <"$FAKE_CLI_LOG")" -eq $((REKEY_CLI_LINES_BEFORE + 1)) ] ||
+    fail 'final rekey watchdog death did not reach exactly one hostapd CLI request'
+[ ! -e "$STATE_DIR/rekey.status" ] ||
+    fail 'final rekey watchdog death wrote a success witness'
+grep -Fxq 'rekey_attempted=true' "$STATE_DIR/rekey.requested" ||
+    fail 'final rekey watchdog death did not retain its one-shot receipt'
+[ -r "$RUN_DIR/hostapd-5g-pmf-required.pid" ] ||
+    fail 'final rekey watchdog death disturbed required hostapd before rollback'
+[ -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey watchdog death cleared the required-state marker'
+[ ! -e "$STATE_DIR/watchdog.pid" ] ||
+    fail 'final rekey watchdog death retained a stale watchdog receipt'
+"$HELPER" --rollback --state-dir "$STATE_DIR" \
+    >"$TMP_ROOT/rekey-final-watchdog-rollback.out" \
+    2>"$TMP_ROOT/rekey-final-watchdog-rollback.err" ||
+    fail 'final rekey watchdog death did not permit explicit optional rollback'
+grep -Fxq 'PMF_AP_ROLLBACK=OPTIONAL_RESTORED' \
+    "$TMP_ROOT/rekey-final-watchdog-rollback.out" ||
+    fail 'final rekey watchdog death rollback did not report optional restoration'
+[ -r "$RUN_DIR/hostapd-5g.pid" ] ||
+    fail 'final rekey watchdog death rollback did not restore optional hostapd'
+[ ! -e "$CONTROL_DIR/active.state" ] ||
+    fail 'final rekey watchdog death rollback left the active marker'
+
 # Restore a fresh required transaction for the existing stable positive rekey
 # and rollback checks below.
 STATE_DIR="$(mktemp -d "$STATE_PREFIX"XXXXXX)"
