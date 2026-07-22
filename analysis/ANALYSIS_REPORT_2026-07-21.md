@@ -2117,6 +2117,112 @@ matches at the actual automatic-recovery edge.
   preflight remains categorically mismatched.  No live configuration was read,
   changed, or bypassed.
 
+## ANOMALY: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+
+### Observation
+
+The automatic recovery now repeats its network baseline after final optional
+PID/AP attestation, but that new signature read follows the final staged-pair
+comparison.  A generated staged required configuration can change during this
+second network read.  The old source receives an unchanged network signature,
+then immediately releases watchdog/marker ownership and reports `optional
+rollback verified`; it never proves the pair remained equal to the state-bound
+baseline at this final automatic-recovery edge.
+
+- scope: repository-owned automatic recovery helper and generated fixture only;
+  no kext, firmware, Apple80211, candidate, guest, physical AP, live profile,
+  or credential behavior claim.
+- expected system behavior: after every later final read, automatic recovery
+  must still require the original staged pair before it calls recovery verified
+  or releases marker/watchdog.  A late pair drift is inconclusive and retains
+  ownership until generated baseline restoration and explicit rollback.
+- actual behavior: the final `config_pair_matches_state` precedes the second
+  `host_network_signature`; neither `cancel_watchdog()` nor `clear_marker()`
+  checks the staged files.
+- exact divergence point:
+  `scripts/tahoe_pmf_required_ap_switchover.sh::finish_post_transition_rollback()`
+  between its final network equality and ownership release.
+- source-local proof mechanism: the generated fake `ip` counts route reads and
+  appends only a harmless directive to the generated required config at a
+  selected call.  On a generated required-start failure, the fourth activation
+  route read is the second/final recovery network signature.  The old helper
+  reports verified optional recovery after that file-only drift.  No real AP,
+  route, profile, identity, credential, or network action is used.
+
+## FIX_CANDIDATE
+
+- anomaly_id: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+- status: `FIX_VERIFIED`
+- proposed change:
+  1. add a generated required-start-failure fixture that mutates only private
+     required config at the final recovery route read; before a fix it must
+     prove false verified recovery;
+  2. repeat `config_pair_matches_state` after the final network comparison and
+     immediately before watchdog/marker release;
+  3. retain marker/watchdog on late pair drift, then prove cleanup only after
+     generated config restoration and explicit rollback;
+  4. add static ordering and runtime-protocol coverage for the post-network
+     automatic-recovery pair fence.
+- safety and side effects: the helper change is a read-only staged-file
+  comparison.  The only mutation exists in the generated fixture; no live
+  config write, network mutation, retry, AP restart, kext action, guest action,
+  or live AP operation is introduced.
+- forbidden alternatives considered and rejected:
+  - treat the pre-network pair sample as permanently current;
+  - report verified optional recovery after late file drift;
+  - clear marker/watchdog or rewrite a staged file to hide the mismatch;
+  - add an AP restart, retry, or host-network recovery action.
+- deterministic verification plan:
+  - pre-fix, the fixture must stop at an assertion that post-transition
+    recovery accepted a post-network configuration drift;
+  - post-fix, it must retain generated optional state/marker/watchdog with the
+    armed-recovery branch and complete only after config restoration plus an
+    explicit rollback;
+  - run fixture, static contracts, trace/evidence self-tests, and the pinned
+    isolated Tahoe build-only gate without live AP/candidate/guest action.
+
+## IMPLEMENTATION AND LOCAL VERIFICATION: `LAB-PMF-AP-POSTTRANSITION-ROLLBACK-POSTNETWORK-CONFIG-ATTESTATION-20260721`
+
+- implementation:
+  - `finish_post_transition_rollback()` now repeats
+    `config_pair_matches_state` after its second/final host-network signature
+    comparison and immediately before it can release watchdog/marker ownership;
+  - a late pair mismatch leaves automatic recovery armed/inconclusive instead
+    of reporting `optional rollback verified`.  The helper gained no config or
+    network mutation, retry, AP restart, kext action, guest action, or live AP
+    operation;
+  - static ordering and the runtime protocol bind the automatic recovery
+    receipt edge to this post-network staged-pair attestation.
+- deterministic fixture evidence:
+  - before implementation, a generated required-start failure combined with a
+    generated required-config append only at the fourth activation route read
+    stopped at `post-transition recovery accepted a post-network configuration
+    drift`; the old source falsely reported verified optional recovery;
+  - after implementation, the same private-only drift keeps optional hostapd,
+    marker, and watchdog live, chooses the armed-recovery branch, and writes no
+    rollback receipt;
+  - restoring only the generated required config permits explicit rollback to
+    report `PMF_AP_ROLLBACK=OPTIONAL_RESTORED` and release both owner receipts.
+- verification:
+  - `bash scripts/test_tahoe_pmf_required_ap_switchover_fixture.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_post_plti_trace_contract.sh`: PASS;
+  - `bash scripts/test_tahoe_iwx_pmf_bip_runtime_evidence_contract.sh
+    --self-test`: PASS;
+  - `bash scripts/test_tahoe_sae_quarantine_contract.sh`: PASS;
+  - `bash scripts/run_tahoe_sae_quarantine_layer.sh`: PASS in the pinned,
+    isolated Tahoe build directory (source identity `dirtyb467619c9f7a`).
+    The kext, trace producer, Agent, and RegDiag built; all 959 undefined
+    symbols resolved against BootKC; no kext was installed, loaded, published,
+    or released.
+- verification boundary: this closes only an automatic host-side recovery
+  staged-file freshness fence.  It is not a live hostapd result, PMF-required
+  association, IGTK observation, candidate activation, guest reboot, or
+  driver-functionality result.
+- external blocker unchanged: the optional/required saved-profile identity
+  preflight remains categorically mismatched.  No live configuration was read,
+  changed, or bypassed.
+
 ## ANOMALY: `LAB-PMF-AP-WATCHDOG-PRETRANSITION-ATTESTATION-20260721`
 
 ### Observation

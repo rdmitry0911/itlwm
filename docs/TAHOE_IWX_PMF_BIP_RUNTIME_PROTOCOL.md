@@ -76,9 +76,10 @@ If any failure occurs after the first optional-PMF process stop, recovery also
 compares the post-restore hash-only host-network signature with the state
 baseline and repeats the state-bound configuration-pair comparison before it
 cancels the watchdog or clears the marker.  After its final optional PID/AP
-attestation it re-reads that network baseline once more.  A mismatch keeps that
-rollback owner armed for a later verified rollback; pre-stop rejections, where
-no AP process changed, retain their lighter cleanup path.
+attestation it re-reads that network baseline once more and repeats the pair
+comparison at the ownership edge.  A mismatch keeps that rollback owner armed
+for a later verified rollback; pre-stop rejections, where no AP process
+changed, retain their lighter cleanup path.
 
 Neither the pinned AP shape nor that host-network signature proves hostapd
 ownership.  Immediately before any rollback witness or marker/watchdog release,
