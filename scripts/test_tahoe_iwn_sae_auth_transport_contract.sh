@@ -172,8 +172,9 @@ ordered(detach, "IWN outer teardown", "iwn_sae_tx_detach_begin(sc)",
         "iwn_interrupt_teardown(sc)", "iwn_free_tx_ring")
 
 # Validate every on-air byte before the legacy TX routine trims the 802.11
-# header.  Only then may normal DMA/scheduler machinery gain descriptor
-# ownership; the final WRPTR write is the cancellation linearization point.
+# header.  Only then may normal DMA machinery gain descriptor ownership; the
+# scheduler mutation and final WRPTR write are one cancellation linearization
+# point.
 tx = iwn_method("iwn_tx")
 for token in (
         "itl_sae_auth_transport_request_is_well_formed(sae_request)",
@@ -190,20 +191,22 @@ for token in (
         "LE_READ_2(auth + 4) != sae_request->auth_status",
         "memcmp(auth + 6, sae_request->body",
         "data->m = m", "data->ni = ni", "data->sae_active = true",
-        "data->sae_lifecycle_generation", "ops->update_sched",
-        "iwn_sae_tx_commit_doorbell"):
+        "data->sae_lifecycle_generation", "iwn_sae_tx_commit_doorbell"):
     require(tx, token, "raw Algorithm-3 TX fence")
 if tx.find("if (sae_request != NULL)") > tx.find("mbuf_adj(m"):
     fail("IWN validates SAE bytes only after header trim")
 dma_tail = tx[tx.find("nsegs = data->map->cursor"):]
 ordered(dma_tail, "descriptor-before-doorbell", "data->m = m", "data->ni = ni",
         "iwn_sae_tx_data_clear(data)", "data->sae_active = true",
-        "ops->update_sched", "iwn_sae_tx_commit_doorbell")
+        "iwn_sae_tx_commit_doorbell")
+forbid(tx, "ops->reset_sched(sc, ring->qid, saved_cur)",
+       "unsafe 4965 pre-doorbell scheduler rollback")
 commit = iwn_method("iwn_sae_tx_commit_doorbell")
 ordered(commit, "doorbell cancellation fence", "IOLockLock(sc->sc_sae_tx_lifecycle_lock)",
         "IOSimpleLockLock(sc->sc_sae_tx_lock)", "sc->sc_sae_tx_active_ticket == ticket",
         "sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation",
         "ticket > sc->sc_sae_tx_cancel_through",
+        "sc->ops.update_sched(sc, qid, descriptor_idx, station_id, length)",
         "sc->sc_sae_tx_doorbelled = true",
         "IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR", "IOSimpleLockUnlock",
         "IOLockUnlock")

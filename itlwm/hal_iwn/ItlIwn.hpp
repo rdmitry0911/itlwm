@@ -223,7 +223,7 @@ public:
                 uint16_t);
     static void        iwn5000_reset_sched(struct iwn_softc *, int, int);
     bool       iwn_sae_tx_commit_doorbell(struct iwn_softc *, uint64_t,
-                int, int);
+                int, int, int, uint8_t, uint16_t);
     int        iwn_tx(struct iwn_softc *, mbuf_t,
                 struct ieee80211_node *,
                 const struct ItlSaeAuthTxRequestV1 * = nullptr);

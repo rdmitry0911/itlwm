@@ -506,7 +506,8 @@ out:
 
 bool ItlIwn::
 iwn_sae_tx_commit_doorbell(struct iwn_softc *sc, uint64_t ticket,
-    int qid, int next_cur)
+    int qid, int descriptor_idx, int next_cur, uint8_t station_id,
+    uint16_t length)
 {
     bool committed = false;
 
@@ -516,9 +517,11 @@ iwn_sae_tx_commit_doorbell(struct iwn_softc *sc, uint64_t ticket,
 
     /*
      * Stop/cancel and the hardware doorbell linearize under the lifecycle
-     * then SAE leaf locks.  Thus cancellation either wins before the WRPTR
-     * write or observes a descriptor that remains firmware-owned to its
-     * native completion/reset; there is no half-accepted physical TX.
+     * then SAE leaf locks.  Scheduler mutation and WRPTR are in that same
+     * critical section: cancellation either wins before either hardware
+     * state is published or observes a descriptor that remains
+     * firmware-owned to its native completion/reset.  This matters for 4965,
+     * whose legacy reset_sched callback has no per-slot rollback.
      */
     IOLockLock(sc->sc_sae_tx_lifecycle_lock);
     if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching) {
@@ -529,6 +532,7 @@ iwn_sae_tx_commit_doorbell(struct iwn_softc *sc, uint64_t ticket,
             sc->sc_sae_tx_active_generation == sc->sc_sae_tx_generation &&
             ticket > sc->sc_sae_tx_cancel_through;
         if (committed) {
+            sc->ops.update_sched(sc, qid, descriptor_idx, station_id, length);
             sc->sc_sae_tx_doorbelled = true;
             IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, qid << 8 | next_cur);
         }
@@ -5710,19 +5714,17 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
 //        (caddr_t)desc - ring->desc_dma.vaddr, sizeof (*desc),
 //        BUS_DMASYNC_PREWRITE);
 
-    /* Update TX scheduler. */
-    ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);
-
-    /* Kick TX ring.  SAE checks cancellation in the same leaf as WRPTR. */
+    /* Kick TX ring.  SAE keeps scheduler publication in the same leaf as
+     * cancellation and WRPTR, so a pre-doorbell abort cannot leave a 4965
+     * scheduler slot live without a matching descriptor. */
     if (sae_request != NULL) {
         const int saved_cur = ring->cur;
         const int next_cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
 
         ring->cur = next_cur;
         if (!iwn_sae_tx_commit_doorbell(sc, sae_request->ticket,
-            ring->qid, next_cur)) {
+            ring->qid, saved_cur, next_cur, tx->id, totlen)) {
             ring->cur = saved_cur;
-            ops->reset_sched(sc, ring->qid, saved_cur);
             explicit_bzero(desc, sizeof(*desc));
             mbuf_freem(data->m);
             data->m = NULL;
@@ -5740,6 +5742,8 @@ iwn_tx(struct iwn_softc *sc, mbuf_t m, struct ieee80211_node *ni,
             return EIO;
         }
     } else {
+        /* Existing non-SAE output keeps its historical scheduler ordering. */
+        ops->update_sched(sc, ring->qid, ring->cur, tx->id, totlen);
         ring->cur = (ring->cur + 1) % IWN_TX_RING_COUNT;
         IWN_WRITE(sc, IWN_HBUS_TARG_WRPTR, ring->qid << 8 | ring->cur);
     }
