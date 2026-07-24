@@ -872,9 +872,17 @@ for needle in (
 ):
     require(completion, needle, "IWN categorical completion event")
 iwn_newstate = body(iwn, "int ItlIwn::\niwn_newstate", "IWN newstate")
-ordered(iwn_newstate, "IWN active SCAN coalesce trace",
+ordered(iwn_newstate, "direct SAE reads its STARTING generation before coalesce",
+        "ieee80211_sae_wcl_request_scan_starting(ic,",
         "if (ic->ic_state == IEEE80211_S_SCAN)", "IWN_FLAG_SCANNING",
-        "kAirportItlwmPostPltiTraceEventIwnScanCoalesced", "return 0;")
+        "kAirportItlwmPostPltiTraceEventIwnScanCoalesced",
+        "if (direct_sae_scan_generation != 0)", "return EAGAIN;",
+        "return 0;")
+ordered(iwn_newstate, "direct SAE promotes only after fresh IWN scan submission",
+        "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",
+        "(sc->sc_flags & IWN_FLAG_SCANNING) == 0",
+        "ieee80211_sae_wcl_request_scan_started(ic,",
+        "direct_sae_scan_generation")
 for needle in (
         "kAirportItlwmPostPltiTraceEventIwnScanStateEntered",
         "iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)",

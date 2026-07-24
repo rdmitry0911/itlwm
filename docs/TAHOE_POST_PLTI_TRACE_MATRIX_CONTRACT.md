@@ -53,6 +53,13 @@ does not relabel that driver policy as an optional WCL PMF-field assertion. It
 does not prove an application/data-plane exchange, rekey, reconnect, roaming,
 multi-AP behavior, physical-host behavior, or broader WPA3 interoperability.
 
+For this direct route, a pre-existing coalesced IWN scan is not a fresh-census
+success. The request remains selection-held while IWN attempts a new scan; if
+IWN reports that a scan is already active, the exact request and staged
+credential are revoked and WCL receives a bounded not-ready retry. Thus the
+completion of that older scan cannot select a BSS, enter SAE authentication,
+or be counted by the direct evaluator as its fresh scan.
+
 The companion active-prefix classifier is narrower still: it accepts only the
 one live initial PMF/BIP chain through port-valid while the same episode remains
 open.  It is a rekey authorization predicate for the bounded runner, never a sealed verdict or final success.

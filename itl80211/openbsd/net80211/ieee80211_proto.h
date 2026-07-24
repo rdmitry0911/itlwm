@@ -190,9 +190,11 @@ extern	void ieee80211_sae_driver_hook_snapshot_copyout(
  * publish() allocates a strictly increasing, nonzero generation and does not
  * retain a credential.  A caller that cannot stage its separate private
  * credential slot must clear the same generation explicitly.  resume_scan()
- * is a one-shot PENDING -> SCAN_ISSUED transition; it invokes the driver's
- * ic_newstate directly so the ordinary SCAN -> SCAN cancellation fence cannot
- * erase the controlled request before node_join_bss binds it.
+ * is a one-shot PENDING -> SCAN_STARTING transition; the IWN driver alone
+ * promotes it to SCAN_ISSUED after a fresh scan submission succeeds.  It
+ * invokes the driver's ic_newstate directly so the ordinary SCAN -> SCAN
+ * cancellation fence cannot erase the controlled request before
+ * node_join_bss binds it.
  */
 /* begin() is the narrow pure-SAE policy entry: it configures only RSN/SAE,
  * CCMP/BIP and required MFP for one exact S_SCAN WCL request, then returns
@@ -206,12 +208,20 @@ extern	int ieee80211_sae_wcl_request_clear_if_generation(
 	    struct ieee80211com *, u_int64_t);
 extern	int ieee80211_sae_wcl_request_resume_scan(struct ieee80211com *,
 	    u_int64_t);
+/* The driver queries an exact STARTING request only while servicing the raw
+ * S_SCAN handoff.  It must promote the same generation only after a fresh
+ * scan has been accepted; a coalesced pre-existing scan remains unowned. */
+extern	int ieee80211_sae_wcl_request_scan_starting(struct ieee80211com *,
+	    u_int64_t *);
+extern	int ieee80211_sae_wcl_request_scan_started(struct ieee80211com *,
+	    u_int64_t);
 /* During the one direct pure-SAE scan handoff the historical ESS list must
  * not overwrite the already-published RSN/SAE policy before BSS selection.
- * HOLD is the pre-publication/PENDING half: end_scan() must return without
- * choosing an old result.  It is deliberately separate from the issued
- * selection predicate below, which allows exactly the new scan to choose its
- * BSS.  Both are read-only, credential-free, and false for ordinary WCL. */
+ * HOLD is the pre-publication/PENDING-or-STARTING half: end_scan() must
+ * return without choosing an old result.  It is deliberately separate from
+ * the issued selection predicate below, which allows exactly the new scan to
+ * choose its BSS.  Both are read-only, credential-free, and false for
+ * ordinary WCL. */
 extern	int ieee80211_sae_wcl_request_scan_selection_held(
 	    struct ieee80211com *);
 extern	int ieee80211_sae_wcl_request_scan_selection_owned(

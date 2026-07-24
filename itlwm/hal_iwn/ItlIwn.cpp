@@ -5553,11 +5553,18 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
     struct iwn_softc *sc = (struct iwn_softc *)ifp->if_softc;
     struct ieee80211_node *ni = ic->ic_bss;
     ItlIwn *that = container_of(sc, ItlIwn, com);
+    u_int64_t direct_sae_scan_generation = 0;
     int error;
 
-    if (nstate == IEEE80211_S_SCAN)
+    if (nstate == IEEE80211_S_SCAN) {
         AirportItlwmPostPltiTraceRecord(
             ic, kAirportItlwmPostPltiTraceEventIwnScanStateEntered);
+        /* A direct request remains HOLD-only until this raw state call has
+         * accepted a fresh IWN scan.  The copied generation is public and
+         * lets the coalesce branch reject only that exact request. */
+        (void)ieee80211_sae_wcl_request_scan_starting(ic,
+            &direct_sae_scan_generation);
+    }
 
     if (ic->ic_state == IEEE80211_S_RUN) {
         if (nstate == IEEE80211_S_SCAN) {
@@ -5579,6 +5586,12 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
             if (sc->sc_flags & IWN_FLAG_SCANNING) {
                 AirportItlwmPostPltiTraceRecord(
                     ic, kAirportItlwmPostPltiTraceEventIwnScanCoalesced);
+                /* Ordinary SCAN -> SCAN stays coalesced, but direct SAE must
+                 * never select from the pre-existing scan census.  Do not
+                 * abort it asynchronously: resume_scan() will scrub this
+                 * exact generation and return a bounded NotReady retry. */
+                if (direct_sae_scan_generation != 0)
+                    return EAGAIN;
                 return 0;
             }
         } else
@@ -5620,6 +5633,14 @@ iwn_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         if ((error = that->iwn_scan(sc, IEEE80211_CHAN_2GHZ, 0)) != 0) {
             printf("%s: could not initiate scan\n",
                 sc->sc_dev.dv_xname);
+        } else if (direct_sae_scan_generation != 0 &&
+            ((sc->sc_flags & IWN_FLAG_SCANNING) == 0 ||
+            !ieee80211_sae_wcl_request_scan_started(ic,
+            direct_sae_scan_generation))) {
+            /* A completion/cancellation that wins before promotion cannot
+             * borrow this scan for SAE.  Report retry so generic code clears
+             * the staged credential rather than binding a stale BSS. */
+            error = EAGAIN;
         }
         return error;
     }

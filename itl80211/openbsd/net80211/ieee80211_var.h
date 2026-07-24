@@ -492,17 +492,30 @@ struct ieee80211_sae_peer_rx_admission {
  * field, including generation allocation and phase changes.
  *
  * PENDING is published by WCL before it asks the normal scan path to choose
- * a BSS.  SCAN_ISSUED is the single controlled SCAN resume that may survive
- * the immediately following selected-BSS replacement.  BOUND is valid only
- * for the exact post-copy BSS and association epoch; every ordinary epoch
- * cancellation erases it.  No generic transition infers SAE from this
- * record: it merely makes an explicit request observable at its exact BSS.
+ * a BSS.  SCAN_STARTING holds historical scan completion while the driver
+ * decides whether it can submit a new scan.  Only SCAN_ISSUED is the single
+ * controlled fresh-SCAN handoff that may survive the immediately following
+ * selected-BSS replacement.  BOUND is valid only for the exact post-copy BSS
+ * and association epoch; every ordinary epoch cancellation erases it.  No
+ * generic transition infers SAE from this record: it merely makes an
+ * explicit request observable at its exact BSS.
  */
 enum ieee80211_sae_wcl_request_phase {
 	IEEE80211_SAE_WCL_REQUEST_NONE = 0,
 	IEEE80211_SAE_WCL_REQUEST_PENDING,
+	IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING,
 	IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED,
 	IEEE80211_SAE_WCL_REQUEST_BOUND,
+};
+
+/* resume_scan() reports a retry separately from terminal admission failure.
+ * RETRY means an existing driver scan was deliberately not reused for direct
+ * SAE, so the caller has already scrubbed this generation and may wait for a
+ * later WCL association request after scan completion. */
+enum ieee80211_sae_wcl_request_resume_result {
+	IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED = 0,
+	IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED = 1,
+	IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY = 2,
 };
 
 enum ieee80211_sae_wcl_request_bind_result {

@@ -64,8 +64,12 @@ def strip_comments(text):
 for token in (
     "IEEE80211_SAE_WCL_REQUEST_NONE = 0",
     "IEEE80211_SAE_WCL_REQUEST_PENDING",
+    "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING",
     "IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED",
     "IEEE80211_SAE_WCL_REQUEST_BOUND",
+    "IEEE80211_SAE_WCL_REQUEST_RESUME_FAILED = 0",
+    "IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED = 1",
+    "IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY = 2",
     "IEEE80211_SAE_WCL_REQUEST_BIND_NONE = 0",
     "IEEE80211_SAE_WCL_REQUEST_BIND_BOUND = 1",
     "IEEE80211_SAE_WCL_REQUEST_BIND_REJECTED = -1",
@@ -111,6 +115,8 @@ for token in (
     "ieee80211_sae_wcl_request_begin",
     "ieee80211_sae_wcl_request_clear_if_generation",
     "ieee80211_sae_wcl_request_resume_scan",
+    "ieee80211_sae_wcl_request_scan_starting",
+    "ieee80211_sae_wcl_request_scan_started",
     "ieee80211_sae_wcl_request_scan_selection_held",
     "ieee80211_sae_wcl_request_scan_selection_owned",
     "ieee80211_sae_wcl_request_join_begin",
@@ -143,6 +149,8 @@ for token in (
 for forbidden in ("ic_psk", "password", "PMK", "PWE", "ic_newstate("):
     if forbidden in publish:
         fail(f"publish must remain public identity only: {forbidden}")
+if "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING" in strip_comments(publish):
+    fail("publish must not replace a raw scan-starting request")
 require(publish, "ic->ic_sae_wcl_request_policy_starting != 0",
         "publish rejects an in-progress pure-SAE policy reservation")
 ordered(publish, "publish supersede revokes after the leaf lock",
@@ -210,6 +218,8 @@ if "IEEE80211_C_MFP" in policy_begin_code:
     fail("pure-SAE policy begin must not require a hardware-MFP capability bit")
 if "ieee80211_disable_rsn(" in policy_begin_code:
     fail("pure-SAE policy begin must not destroy its own upcoming generation")
+if "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING" in policy_begin_code:
+    fail("pure-SAE policy begin must not replace a raw scan-starting request")
 
 policy_clear = body(proto_c,
                     "static void\nieee80211_sae_wcl_request_policy_clear_locked",
@@ -269,19 +279,22 @@ resume = body(proto_c,
               "one-shot scan resume")
 for token in (
     "IEEE80211_SAE_WCL_REQUEST_PENDING",
-    "IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED",
+    "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING",
+    "IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY",
     "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
     "ieee80211_sae_wcl_request_join_active_locked(ic)",
     "ieee80211_sae_wcl_request_fence_run_resume",
+    "ieee80211_sae_wcl_request_scan_starting_locked",
     "ieee80211_sae_wcl_request_scan_issued_locked",
+    "scan_error == EAGAIN",
     "(*ic->ic_newstate)(ic, IEEE80211_S_SCAN, -1)",
     "ieee80211_sae_wcl_request_clear_if_generation",
 ):
     require(resume, token, "one-shot scan resume fence")
 if "ieee80211_new_state(" in resume:
     fail("one-shot scan resume must call ic_newstate directly, not the macro")
-if resume.count("ieee80211_sae_wcl_request_scan_issued_locked") < 2:
-    fail("resume must revalidate its generation after raw driver scan entry")
+if resume.count("ieee80211_sae_wcl_request_scan_starting_locked") != 1:
+    fail("resume must revalidate its STARTING generation before raw scan entry")
 for token in (
         "IEEE80211_SAE_WCL_REQUEST_BOUND",
         "ic->ic_sae_wcl_request.generation == generation",
@@ -296,6 +309,7 @@ for token in (
     "ieee80211_pae_assoc_epoch_advance_locked(ic)",
     "ieee80211_pae_selected_bss_invalidate(ic)",
     "ieee80211_sae_peer_rx_admission_clear_locked(ic)",
+    "ieee80211_sae_wcl_request_scan_starting_locked(ic, generation)",
     "ic->ic_sae_wcl_request.association_epoch = 0",
     "ieee80211_pae_mfp_txn_cancel_locked",
 ):
@@ -562,9 +576,41 @@ for token in (
 ):
     require(scan_policy, token, "exact pure-SAE scan policy fence")
 
-# HOLD and SELECT are intentionally separate.  A policy reservation or a
-# PENDING request can only stop an old scan result from being consumed; only a
-# later SCAN_ISSUED request may suppress switch_ess() and proceed to BSS bind.
+scan_starting = body(proto_c,
+                     "int\nieee80211_sae_wcl_request_scan_starting(struct",
+                     "direct scan-starting query")
+for token in (
+        "*generation = 0",
+        "ieee80211_sae_wcl_request_owner_hooks_ready_locked(ic)",
+        "ieee80211_sae_wcl_request_scan_starting_locked(ic,",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic,",
+        "*generation = ic->ic_sae_wcl_request.generation",
+):
+    require(scan_starting, token, "direct scan-starting query fence")
+for forbidden in ("ieee80211_new_state", "ieee80211_disable_rsn",
+                  "ieee80211_disable_wep", "ic_newstate"):
+    if forbidden in scan_starting:
+        fail(f"direct scan-starting query must be side-effect free: {forbidden}")
+
+scan_started = body(proto_c,
+                    "int\nieee80211_sae_wcl_request_scan_started",
+                    "direct fresh-scan promotion")
+for token in (
+        "ic->ic_state != IEEE80211_S_SCAN",
+        "ieee80211_sae_wcl_request_scan_starting_locked(ic, generation)",
+        "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic,",
+        "IEEE80211_SAE_WCL_REQUEST_SCAN_ISSUED",
+):
+    require(scan_started, token, "direct fresh-scan promotion fence")
+for forbidden in ("ieee80211_new_state", "ieee80211_disable_rsn",
+                  "ieee80211_disable_wep", "ic_newstate"):
+    if forbidden in scan_started:
+        fail(f"direct fresh-scan promotion must be leaf-only: {forbidden}")
+
+# HOLD and SELECT are intentionally separate.  A policy reservation, PENDING,
+# or STARTING request can only stop an old scan result from being consumed;
+# only a later SCAN_ISSUED request may suppress switch_ess() and proceed to
+# BSS bind.
 scan_held = body(proto_c,
                  "int\nieee80211_sae_wcl_request_scan_selection_held",
                  "pure-SAE scan HOLD predicate")
@@ -572,6 +618,7 @@ for token in (
         "ic->ic_state != IEEE80211_S_SCAN",
         "ic->ic_sae_wcl_request_policy_starting != 0",
         "request->phase == IEEE80211_SAE_WCL_REQUEST_PENDING",
+        "request->phase == IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING",
         "ieee80211_sae_wcl_request_scan_policy_matches_locked(ic, request)",
 ):
     require(scan_held, token, "pure-SAE scan HOLD fence")
@@ -589,8 +636,10 @@ for token in (
 ):
     require(scan_owned, token, "pure-SAE scan SELECT fence")
 scan_owned_code = strip_comments(scan_owned)
-if "IEEE80211_SAE_WCL_REQUEST_PENDING" in scan_owned_code:
-    fail("scan SELECT must not treat a PENDING request as selectable")
+for forbidden_phase in ("IEEE80211_SAE_WCL_REQUEST_PENDING",
+                        "IEEE80211_SAE_WCL_REQUEST_SCAN_STARTING"):
+    if forbidden_phase in scan_owned_code:
+        fail("scan SELECT must not treat a pending/starting request as selectable")
 for predicate, label in ((scan_policy, "scan policy"),
                          (scan_held, "scan HOLD"),
                          (scan_owned, "scan SELECT")):
@@ -610,10 +659,13 @@ ordered(end_scan, "issued scan alone suppresses legacy ESS overwrite",
 
 
 class RequestModel:
-    NONE, PENDING, SCAN_ISSUED, BOUND = range(4)
+    NONE, PENDING, SCAN_STARTING, SCAN_ISSUED, BOUND = range(5)
     OWNER_NONE = 0
     OWNER_READY = 1
     OWNER_REJECTED = -1
+    RESUME_FAILED = 0
+    RESUME_STARTED = 1
+    RESUME_RETRY = 2
 
     def __init__(self):
         self.next_generation = 0
@@ -660,11 +712,28 @@ class RequestModel:
         return True
 
     def resume(self):
+        if not self.resume_begin():
+            return False
+        return self.driver_fresh_started() == self.RESUME_STARTED
+
+    def resume_begin(self):
         if not self.owner_ready or self.join_active or self.policy_starting or self.phase != self.PENDING:
             self.clear()
             return False
-        self.phase = self.SCAN_ISSUED
+        self.phase = self.SCAN_STARTING
         return True
+
+    def driver_fresh_started(self):
+        if not self.owner_ready or self.phase != self.SCAN_STARTING:
+            return self.RESUME_FAILED
+        self.phase = self.SCAN_ISSUED
+        return self.RESUME_STARTED
+
+    def driver_coalesced_retry(self):
+        if self.phase != self.SCAN_STARTING:
+            return self.RESUME_FAILED
+        self.clear()
+        return self.RESUME_RETRY
 
     def ordinary_cancel(self):
         self.policy_starting = False
@@ -672,7 +741,7 @@ class RequestModel:
         self.clear()
 
     def policy_begin(self, identity):
-        if self.policy_starting or self.join_active or self.phase == self.BOUND:
+        if self.policy_starting or self.join_active or self.phase in {self.SCAN_STARTING, self.BOUND}:
             return 0
         self.policy_starting = True
         # The out-of-lock WEP teardown has no authority to publish; a real
@@ -698,7 +767,7 @@ class RequestModel:
 
     def policy_held_for_scan(self):
         return self.policy_starting or (
-            self.phase == self.PENDING and self.generation != 0 and
+            self.phase in {self.PENDING, self.SCAN_STARTING} and self.generation != 0 and
             self.policy_generation == self.generation)
 
     def policy_selects_scan(self):
@@ -751,6 +820,25 @@ class RequestModel:
 model = RequestModel()
 target_a = (bytes.fromhex("021122334455"), b"alpha")
 target_b = (bytes.fromhex("021122334466"), b"beta")
+
+coalesced = RequestModel()
+coalesced_generation = coalesced.policy_begin(target_a)
+assert coalesced_generation == 1
+assert coalesced.resume_begin()
+assert coalesced.phase == coalesced.SCAN_STARTING
+assert coalesced.policy_held_for_scan() and not coalesced.policy_selects_scan()
+assert coalesced.publish(target_b) == 0
+assert coalesced.policy_begin(target_b) == 0
+assert coalesced.driver_coalesced_retry() == coalesced.RESUME_RETRY
+assert coalesced.phase == coalesced.NONE and coalesced.revoked == [coalesced_generation]
+
+fresh = RequestModel()
+fresh_generation = fresh.policy_begin(target_a)
+assert fresh_generation == 1 and fresh.resume_begin()
+assert fresh.policy_held_for_scan() and not fresh.policy_selects_scan()
+assert fresh.driver_fresh_started() == fresh.RESUME_STARTED
+assert not fresh.policy_held_for_scan() and fresh.policy_selects_scan()
+
 generation_a = model.publish(target_a)
 assert generation_a == 1
 generation_b = model.publish(target_b)

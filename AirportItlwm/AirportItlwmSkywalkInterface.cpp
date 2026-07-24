@@ -6422,12 +6422,16 @@ setWCL_ASSOCIATEImpl(apple80211AssocCandidates *candidates)
          * in-kext engine.  This is a lab-only proof boundary, never a PMK or
          * credential carrier. */
         AirportItlwmPostPltiTraceBeginDirectSaeEpisode(ic);
-        if (!ieee80211_sae_wcl_request_resume_scan(ic, saeGeneration)) {
+        const int saeScanResume = ieee80211_sae_wcl_request_resume_scan(
+            ic, saeGeneration);
+        if (saeScanResume != IEEE80211_SAE_WCL_REQUEST_RESUME_STARTED) {
             /* Do not close the shared safe recorder here: a replacement
              * lifecycle edge may already own a newer episode.  The bounded
              * lab runner seals this incomplete prefix and reports its first
              * missing direct-SAE boundary without exporting identity. */
-            saeResult = kIOReturnAborted;
+            saeResult = saeScanResume ==
+                IEEE80211_SAE_WCL_REQUEST_RESUME_RETRY ?
+                kIOReturnNotReady : kIOReturnAborted;
             goto sae_out;
         }
         saeResult = kIOReturnSuccess;
