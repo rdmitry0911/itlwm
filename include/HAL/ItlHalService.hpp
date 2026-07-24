@@ -19,6 +19,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlSaeWclCredentialV1.h>
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -250,6 +251,30 @@ public:
     virtual void cancelSaeAuthFrame(uint64_t ticket) {
         (void)ticket;
     }
+
+    /*
+     * Private Tahoe WCL pre-selection credential ingress.  This is a
+     * fixed-size, backend-owned staging record for the CIPHER_PWD carrier;
+     * it is deliberately neither a public key-install selector nor a
+     * UserClient route.  A backend must copy synchronously, keep at most one
+     * generation-bound record, and scrub it at cancellation, reset, stop,
+     * and detach.  Activation is intentionally absent from this base ABI:
+     * a driver-resident selected-BSS SAE owner will consume the staged value
+     * directly once it exists.
+     */
+    virtual IOReturn stageSaeWclCredential(
+        const struct ItlSaeWclCredentialV1 *credential) {
+        (void)credential;
+        return kIOReturnUnsupported;
+    }
+
+    /* A generation-only cancellation can arrive before a bounded stage. */
+    virtual void cancelSaeWclCredential(uint64_t request_generation) {
+        (void)request_generation;
+    }
+
+    /* Overflow carries no trustworthy generation: erase only the slot. */
+    virtual void purgeSaeWclCredentialStage() {}
 
     virtual void free() override;
 

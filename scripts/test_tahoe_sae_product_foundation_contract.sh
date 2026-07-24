@@ -90,9 +90,22 @@ clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
     -o "$tmpdir/iwx-sae-auth-transport-cpp"
 "$tmpdir/iwx-sae-auth-transport-cpp"
 
+clang -std=c11 -Wall -Wextra -Werror \
+    -I"$root/include" \
+    "$root/tests/itl_sae_wcl_credential_v1_test.c" \
+    -o "$tmpdir/iwn-sae-wcl-credential-c"
+"$tmpdir/iwn-sae-wcl-credential-c"
+
+clang++ -std=c++14 -Wall -Wextra -Werror -x c++ \
+    -I"$root/include" \
+    "$root/tests/itl_sae_wcl_credential_v1_test.c" \
+    -o "$tmpdir/iwn-sae-wcl-credential-cpp"
+"$tmpdir/iwn-sae-wcl-credential-cpp"
+
 bash "$root/scripts/test_tahoe_sae_controller_relay_contract.sh"
 bash "$root/scripts/test_tahoe_iwx_sae_auth_transport_contract.sh"
 bash "$root/scripts/test_tahoe_iwn_sae_auth_transport_contract.sh"
+bash "$root/scripts/test_tahoe_iwn_sae_wcl_credential_contract.sh"
 
 python3 - "$root" <<'PY'
 from pathlib import Path

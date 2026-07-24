@@ -92,6 +92,12 @@ public:
     IOReturn submitSaeAuthFrame(
         const struct ItlSaeAuthTxRequestV1 *request) override;
     void cancelSaeAuthFrame(uint64_t ticket) override;
+
+    /* One bounded private CIPHER_PWD staging slot; never an Agent path. */
+    IOReturn stageSaeWclCredential(
+        const struct ItlSaeWclCredentialV1 *credential) override;
+    void cancelSaeWclCredential(uint64_t request_generation) override;
+    void purgeSaeWclCredentialStage() override;
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwn_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -299,6 +305,8 @@ public:
     void       iwn_sae_tx_emit_reset_event(struct iwn_softc *,
                 const struct ItlSaeAuthTransportEventV1 *);
     void       iwn_sae_tx_purge(struct iwn_softc *);
+    void       iwn_sae_wcl_stop_begin(struct iwn_softc *);
+    void       iwn_sae_wcl_detach_begin(struct iwn_softc *);
     static void        iwn_mfp_pae_task(void *);
     static int         iwn_pae_mfp_txn_submit(struct ieee80211com *,
                 u_int64_t, u_int64_t, struct ieee80211_node *,

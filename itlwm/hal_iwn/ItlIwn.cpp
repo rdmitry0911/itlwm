@@ -113,6 +113,20 @@ iwn_sae_auth_transport_lab_opted_in(void)
 #endif
 }
 
+/* The private WCL CIPHER_PWD ingress is kept in the same explicitly built
+ * laboratory artifact as the direct SAE transport.  It does not depend on
+ * PMF capability: it only stages a pre-selection password and cannot emit a
+ * frame or install a key by itself. */
+static bool
+iwn_sae_wcl_credential_lab_opted_in(void)
+{
+#if IWN_SOFTWARE_PMF_LAB_BUILD
+    return true;
+#else
+    return false;
+#endif
+}
+
 namespace {
 
 struct IwnSaeTxGateArgs {
@@ -177,6 +191,91 @@ iwn_sae_tx_data_clear(struct iwn_tx_data *data)
     data->sae_lifecycle_generation = 0;
     explicit_bzero(data->sae_bssid, sizeof(data->sae_bssid));
     explicit_bzero(data->sae_sta, sizeof(data->sae_sta));
+}
+
+/* Caller holds sc_sae_wcl_credential_lock.  This is the sole erase path for
+ * the private pre-selection password; the cancellation fence itself carries
+ * only a public request generation. */
+static void
+iwn_sae_wcl_credential_clear_locked(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    explicit_bzero(&sc->sc_sae_wcl_credential,
+        sizeof(sc->sc_sae_wcl_credential));
+    sc->sc_sae_wcl_credential_staged = false;
+}
+
+/* The caller supplies the fixed, already-validated ABI, so compare the full
+ * canonical record without an early exit.  This runs only under the private
+ * staging leaf and never exposes an equality result outside the HAL. */
+static bool
+iwn_sae_wcl_credential_equal(const struct ItlSaeWclCredentialV1 *left,
+    const struct ItlSaeWclCredentialV1 *right)
+{
+    const uint8_t *left_bytes;
+    const uint8_t *right_bytes;
+    volatile uint8_t difference = 0;
+    size_t index;
+
+    if (left == NULL || right == NULL)
+        return false;
+    left_bytes = (const uint8_t *)left;
+    right_bytes = (const uint8_t *)right;
+    for (index = 0; index < sizeof(*left); index++)
+        difference |= left_bytes[index] ^ right_bytes[index];
+    return difference == 0;
+}
+
+/* Caller holds sc_sae_wcl_credential_lock.  The generic WCL policy assigns
+ * nonzero request generations in strict ascending order.  A cancellation is
+ * therefore a high-water mark: preserving its maximum prevents a delayed
+ * stage from resurrecting any earlier request, including when a newer cancel
+ * races an older staged password. */
+static bool
+iwn_sae_wcl_credential_cancelled_locked(const struct iwn_softc *sc,
+    uint64_t request_generation)
+{
+    return sc != NULL && request_generation != 0 &&
+        sc->sc_sae_wcl_credential_cancel_valid &&
+        request_generation <=
+            sc->sc_sae_wcl_credential_cancel_through_generation;
+}
+
+static void
+iwn_sae_wcl_credential_cancel_through_locked(struct iwn_softc *sc,
+    uint64_t request_generation)
+{
+    if (sc == NULL || request_generation == 0)
+        return;
+    if (!sc->sc_sae_wcl_credential_cancel_valid ||
+        request_generation >
+            sc->sc_sae_wcl_credential_cancel_through_generation) {
+        sc->sc_sae_wcl_credential_cancel_through_generation =
+            request_generation;
+        sc->sc_sae_wcl_credential_cancel_valid = true;
+    }
+    if (sc->sc_sae_wcl_credential_staged &&
+        iwn_sae_wcl_credential_cancelled_locked(sc,
+            sc->sc_sae_wcl_credential.request_generation))
+        iwn_sae_wcl_credential_clear_locked(sc);
+}
+
+/* S_SCAN is the ordinary pre-selection path.  S_RUN is permitted only for a
+ * live STA reconnect request: it records a future candidate while preserving
+ * the current BSS unchanged.  The staging method never starts a scan,
+ * changes state, queues a task, invokes an engine, or transmits a frame. */
+static bool
+iwn_sae_wcl_credential_stage_state_permitted(const struct ieee80211com *ic,
+    const struct _ifnet *ifp)
+{
+    if (ic == NULL || ifp == NULL ||
+        (ifp->if_flags & IFF_RUNNING) == 0 ||
+        ic->ic_opmode != IEEE80211_M_STA)
+        return false;
+    if (ic->ic_state == IEEE80211_S_SCAN)
+        return true;
+    return ic->ic_state == IEEE80211_S_RUN && ic->ic_bss != NULL;
 }
 
 /*
@@ -408,6 +507,136 @@ cancelSaeAuthFrame(uint64_t ticket)
         sc->sc_sae_tx_event_count = 0;
     }
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+/*
+ * Tahoe WCL supplies CIPHER_PWD before it asks net80211 to select a BSS.
+ * This method owns only that short-lived, one-record copy: it neither starts
+ * SAE, emits Authentication traffic, enters an engine, nor carries a secret
+ * through an Agent/controller callback.  The later selected-BSS owner must
+ * rebind SSID/BSSID and atomically consume the record before it can use it.
+ */
+IOReturn ItlIwn::
+stageSaeWclCredential(const struct ItlSaeWclCredentialV1 *credential)
+{
+    struct iwn_softc *sc = &com;
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct _ifnet *ifp = IC2IFP(ic);
+    struct ItlSaeWclCredentialV1 copy;
+    IOReturn rc = kIOReturnNotReady;
+
+    if (credential == NULL)
+        return kIOReturnBadArgument;
+    if (!iwn_sae_wcl_credential_lab_opted_in())
+        return kIOReturnUnsupported;
+
+    /* Copy before validation and never retain the caller's WCL buffer. */
+    explicit_bzero(&copy, sizeof(copy));
+    memcpy(&copy, credential, sizeof(copy));
+    if (!itl_sae_wcl_credential_is_well_formed(&copy)) {
+        rc = kIOReturnBadArgument;
+        goto out;
+    }
+    if (!iwn_sae_tx_lifecycle_enter(sc, false))
+        goto out;
+
+    /* Lifecycle -> WCL leaf is the only nesting order.  Closing the
+     * lifecycle blocks a late producer before reset/stop can scrub the
+     * record, while the lease keeps this leaf allocated through the copy. */
+    IOLockLock(sc->sc_sae_tx_lifecycle_lock);
+    if (!sc->sc_sae_tx_lifecycle_closed && !sc->sc_sae_tx_detaching &&
+        sc->sc_sae_wcl_credential_lock != NULL &&
+        iwn_sae_wcl_credential_stage_state_permitted(ic, ifp)) {
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        if (iwn_sae_wcl_credential_cancelled_locked(sc,
+                copy.request_generation)) {
+            rc = kIOReturnAborted;
+        } else if (!sc->sc_sae_wcl_credential_staged) {
+            sc->sc_sae_wcl_credential = copy;
+            sc->sc_sae_wcl_credential_staged = true;
+            rc = kIOReturnSuccess;
+        } else if (sc->sc_sae_wcl_credential.request_generation ==
+            copy.request_generation) {
+            if (iwn_sae_wcl_credential_equal(
+                    &sc->sc_sae_wcl_credential, &copy)) {
+                /* A WCL retry is harmless only when it is byte-for-byte the
+                 * same canonical record; do not make a second secret copy. */
+                rc = kIOReturnSuccess;
+            } else {
+                /* One generation is immutable.  A conflicting retry could
+                 * otherwise select a password different from the candidate
+                 * it claims to resume, so retire both representations. */
+                iwn_sae_wcl_credential_cancel_through_locked(sc,
+                    copy.request_generation);
+                rc = kIOReturnAborted;
+            }
+        } else if (copy.request_generation >
+            sc->sc_sae_wcl_credential.request_generation) {
+            /* Skywalk intentionally carries only the new request identity;
+             * it cannot safely rediscover the abandoned older generation.
+             * Retire that exact old slot under the same leaf, then accept B
+             * only after confirming its generation remains above the
+             * cancellation high-water. */
+            iwn_sae_wcl_credential_cancel_through_locked(sc,
+                sc->sc_sae_wcl_credential.request_generation);
+            if (!sc->sc_sae_wcl_credential_staged &&
+                !iwn_sae_wcl_credential_cancelled_locked(sc,
+                    copy.request_generation)) {
+                sc->sc_sae_wcl_credential = copy;
+                sc->sc_sae_wcl_credential_staged = true;
+                rc = kIOReturnSuccess;
+            } else {
+                rc = kIOReturnAborted;
+            }
+        } else {
+            /* An out-of-order candidate is never allowed to displace the
+             * current slot or lower the monotonic cancellation fence. */
+            rc = kIOReturnAborted;
+        }
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+    IOLockUnlock(sc->sc_sae_tx_lifecycle_lock);
+    iwn_sae_tx_lifecycle_leave(sc);
+out:
+    explicit_bzero(&copy, sizeof(copy));
+    return rc;
+}
+
+/* A cancellation is meaningful before a selected BSS exists.  Preserve its
+ * monotonic high-water even if an older slot is currently staged: that newer
+ * cancellation retires the old secret and fences every delayed predecessor. */
+void ItlIwn::
+cancelSaeWclCredential(uint64_t request_generation)
+{
+    struct iwn_softc *sc = &com;
+
+    if (request_generation == 0 || !iwn_sae_wcl_credential_lab_opted_in() ||
+        !iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    if (sc->sc_sae_wcl_credential_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        iwn_sae_wcl_credential_cancel_through_locked(sc,
+            request_generation);
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
+    iwn_sae_tx_lifecycle_leave(sc);
+}
+
+/* A queue-overflow path has no trustworthy request generation.  Scrub only
+ * the private secret slot; the policy owner separately closes its epoch. */
+void ItlIwn::
+purgeSaeWclCredentialStage()
+{
+    struct iwn_softc *sc = &com;
+
+    if (!iwn_sae_tx_lifecycle_enter(sc, true))
+        return;
+    if (sc->sc_sae_wcl_credential_lock != NULL) {
+        IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+        iwn_sae_wcl_credential_clear_locked(sc);
+        IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+    }
     iwn_sae_tx_lifecycle_leave(sc);
 }
 
@@ -681,6 +910,46 @@ iwn_sae_tx_stop_begin(struct iwn_softc *sc)
             sizeof(sc->sc_sae_tx_active_event));
     }
     IOSimpleLockUnlock(sc->sc_sae_tx_lock);
+}
+
+/* Stop is a pre-selection secret boundary too.  Close the shared lifecycle
+ * before taking the WCL leaf, then turn a staged generation into the same
+ * cancellation fence used for cancellation-before-stage.  No WCL pointer or
+ * password survives reset, radio stop, or a later reopen. */
+void ItlIwn::
+iwn_sae_wcl_stop_begin(struct iwn_softc *sc)
+{
+    uint64_t generation = 0;
+
+    if (sc == NULL)
+        return;
+    iwn_sae_tx_lifecycle_close(sc, false);
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    if (sc->sc_sae_wcl_credential_staged)
+        generation = sc->sc_sae_wcl_credential.request_generation;
+    if (generation != 0)
+        iwn_sae_wcl_credential_cancel_through_locked(sc, generation);
+    else
+        iwn_sae_wcl_credential_clear_locked(sc);
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
+}
+
+/* iwn_sae_tx_detach_begin() has already closed and drained the shared lease.
+ * Keep this separate from the ordinary stop edge so the detach sequencing is
+ * explicit before the leaf lock itself is freed. */
+void ItlIwn::
+iwn_sae_wcl_detach_begin(struct iwn_softc *sc)
+{
+    if (sc == NULL)
+        return;
+    iwn_sae_tx_lifecycle_close(sc, true);
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        return;
+    IOSimpleLockLock(sc->sc_sae_wcl_credential_lock);
+    iwn_sae_wcl_credential_clear_locked(sc);
+    IOSimpleLockUnlock(sc->sc_sae_wcl_credential_lock);
 }
 
 void ItlIwn::
@@ -1331,6 +1600,9 @@ detach(IOPCIDevice *device)
 
     /* Close direct Algorithm-3 TX before its gate, IRQ or DMA disappear. */
     iwn_sae_tx_detach_begin(sc);
+    /* The shared SAE lifecycle is now closed and drained, so the private
+     * pre-selection password cannot race this final scrub/free boundary. */
+    iwn_sae_wcl_detach_begin(sc);
     /* Close the software-PMF producer before DMA, net80211 nodes, or systq
      * disappear.  This is safe on an early attach unwind as every helper
      * tolerates an uninitialised PMF lock. */
@@ -1361,6 +1633,10 @@ detach(IOPCIDevice *device)
     if (sc->sc_sae_tx_lock != NULL) {
         IOSimpleLockFree(sc->sc_sae_tx_lock);
         sc->sc_sae_tx_lock = NULL;
+    }
+    if (sc->sc_sae_wcl_credential_lock != NULL) {
+        IOSimpleLockFree(sc->sc_sae_wcl_credential_lock);
+        sc->sc_sae_wcl_credential_lock = NULL;
     }
     if (sc->sc_sae_tx_lifecycle_lock != NULL) {
         IOLockFree(sc->sc_sae_tx_lifecycle_lock);
@@ -1929,6 +2205,18 @@ iwn_attach(struct iwn_softc *sc, struct pci_attach_args *pa)
     sc->sc_sae_tx_event_head = 0;
     sc->sc_sae_tx_event_tail = 0;
     sc->sc_sae_tx_event_count = 0;
+
+    /* The normal binary will never admit this slot, but allocate and zero it
+     * with the SAE lifecycle so a separately built lab artifact has one
+     * bounded owner and every attach-unwind path can scrub it uniformly. */
+    sc->sc_sae_wcl_credential_lock = IOSimpleLockAlloc();
+    if (sc->sc_sae_wcl_credential_lock == NULL)
+        XYLog("%s: SAE WCL staging unavailable\n", DEVNAME(sc));
+    sc->sc_sae_wcl_credential_staged = false;
+    sc->sc_sae_wcl_credential_cancel_valid = false;
+    sc->sc_sae_wcl_credential_cancel_through_generation = 0;
+    explicit_bzero(&sc->sc_sae_wcl_credential,
+        sizeof(sc->sc_sae_wcl_credential));
 
     /* This is IWN-private and intentionally not the controller policy gate. */
     fSaeTxGate = IOCommandGate::commandGate(this);
@@ -10041,6 +10329,7 @@ iwn_hw_stop(struct iwn_softc *sc)
      * a controller-cancelled ticket remains deliberately silent.
      */
     that->iwn_sae_tx_stop_begin(sc);
+    that->iwn_sae_wcl_stop_begin(sc);
     emit_reset_event = that->iwn_sae_tx_snapshot_reset(sc, &reset_event);
     that->iwn_sae_tx_cancel_all(sc);
 
@@ -10183,6 +10472,7 @@ iwn_stop(struct _ifnet *ifp)
      * first: generic abort then cannot promote a reconnect successor while
      * this interrupt/timer path is powering the radio down. */
     iwn_sae_tx_stop_begin(sc);
+    iwn_sae_wcl_stop_begin(sc);
     iwn_mfp_pae_abort_all(sc);
     ieee80211_pae_mfp_txn_abort(ic);
     ieee80211_new_state(ic, IEEE80211_S_INIT, -1);

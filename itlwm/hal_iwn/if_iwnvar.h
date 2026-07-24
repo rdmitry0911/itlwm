@@ -36,6 +36,7 @@
 #include <net80211/ieee80211_radiotap.h>
 #include <net80211/ieee80211_priv.h>
 #include <HAL/ItlSaeAuthTransportV1.h>
+#include <HAL/ItlSaeWclCredentialV1.h>
 
 #include <IOKit/network/IOMbufMemoryCursor.h>
 #include <IOKit/IODMACommand.h>
@@ -420,6 +421,22 @@ struct iwn_softc {
     uint8_t             sc_sae_tx_event_head;
     uint8_t             sc_sae_tx_event_tail;
     uint8_t             sc_sae_tx_event_count;
+
+    /*
+     * A private CIPHER_PWD record is allowed only before this request gains
+     * SAE selected-BSS ownership.  It may be staged during S_RUN for a
+     * future reconnect while an unrelated current BSS remains intact.  The
+     * existing SAE-TX lifecycle lease protects this leaf's allocation/free
+     * boundary; this leaf itself is never held across net80211 policy,
+     * workloop, taskq, or engine work.  WCL policy assigns strictly
+     * increasing request generations; the cancellation high-water rejects
+     * every late stage at or below the newest cancellation.
+     */
+    IOSimpleLock       *sc_sae_wcl_credential_lock;
+    bool                sc_sae_wcl_credential_staged;
+    bool                sc_sae_wcl_credential_cancel_valid;
+    uint64_t            sc_sae_wcl_credential_cancel_through_generation;
+    struct ItlSaeWclCredentialV1 sc_sae_wcl_credential;
 
     /* This leaf protects only the two value owners below; it is never held
      * across a taskq operation or software-crypto allocation. */
